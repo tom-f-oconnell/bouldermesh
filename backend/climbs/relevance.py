@@ -32,10 +32,10 @@ REASONS = {"card": "title card or blank frame", "notboulder": "doesn't look like
            "nomatch": "doesn't match known photos of this boulder"}
 FLAT_MAX = 0.5            # share of an image that may be flat
 BOULDER_MIN_P = 0.5       # CLIP probability of the boulder prompts, against the others
-MIN_INLIERS = 30          # same-rock: geometrically consistent SIFT matches to any anchor
-SELF_MIN_INLIERS = 40     # stricter when the anchors must come from the candidates themselves
+MIN_INLIERS = 16          # same-rock: geometrically consistent SIFT matches to any anchor
+SELF_MIN_INLIERS = 20     # stricter when the anchors must come from the candidates themselves
 MIN_COVERAGE = 0.05       # share of the image the matched region must span
-MAX_ANCHORS = 60
+MAX_ANCHORS = 120
 SIFT_FEATURES = 2500
 SIFT_SIDE = 1024
 
@@ -139,16 +139,23 @@ def _features(path: Path):
 
 
 def match(a, b) -> tuple[int, float]:
-    """Geometrically consistent matches between two _features(), and the share of a's image they span."""
+    """Geometrically consistent matches between two _features(), and the share of a's image they span.
+
+    Matches must be mutual, and fit one fundamental matrix to within a pixel. Without those two
+    checks a flyer or a climbing gym can score 50 inliers against rock, from many of its points
+    all matching the same handful of points on the rock.
+    """
     import cv2
     import numpy as np
-    pairs = cv2.BFMatcher(cv2.NORM_L2).knnMatch(a[1], b[1], k=2)
-    good = [x for x, y in (t for t in pairs if len(t) == 2) if x.distance < 0.8 * y.distance]
+    bf = cv2.BFMatcher(cv2.NORM_L2)
+    good = [x for x, y in (t for t in bf.knnMatch(a[1], b[1], k=2) if len(t) == 2) if x.distance < 0.8 * y.distance]
+    back = {m.queryIdx: m.trainIdx for m in bf.match(b[1], a[1])}
+    good = [g for g in good if back.get(g.trainIdx) == g.queryIdx]
     if len(good) < 12:
         return 0, 0.0
     p1 = a[0][[g.queryIdx for g in good]]
     p2 = b[0][[g.trainIdx for g in good]]
-    F, mask = cv2.findFundamentalMat(p1, p2, cv2.USAC_MAGSAC, 1.5, 0.999, 5000)
+    F, mask = cv2.findFundamentalMat(p1, p2, cv2.FM_RANSAC, 1.0, 0.999, 5000)
     # OpenCV can return F=None with an uninitialised mask, or several stacked solutions
     if F is None or F.shape != (3, 3) or mask is None:
         return 0, 0.0
@@ -181,9 +188,15 @@ def _map(fn, items: list, progress: Progress | None, what: str) -> list:
     return out
 
 
-def _spaced(items: list, n: int) -> list:
-    """At most n of items, evenly spread, as frames next to each other are near-duplicates."""
-    return items if len(items) <= n else [items[int(i * len(items) / n)] for i in range(n)]
+def _spaced(items: list[Path], n: int) -> list[Path]:
+    """At most n of the anchors: all the stills, then video frames evenly spread, as neighbouring
+    frames are near-duplicates while a single still can be what a photo from that side matches."""
+    if len(items) <= n:
+        return items
+    frames = [p for p in items if p.name.startswith("yt_")]
+    stills = [p for p in items if not p.name.startswith("yt_")][:n]
+    room = n - len(stills)
+    return stills + [frames[int(i * len(frames) / room)] for i in range(room)]
 
 
 def _self_anchors(paths: list[Path], feats: dict, log: Log, progress: Progress | None) -> list[Path]:
