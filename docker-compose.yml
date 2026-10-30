@@ -1,0 +1,20 @@
+services:
+  bouldermesh:
+    build: .
+    ports: ["8000:8000"]
+    volumes: ["./data:/data"]
+    environment:
+      USE_GPU: "0"          # set "1" and uncomment the gpu block for NVIDIA
+      MAX_UPLOAD_MB: "1024"
+      BOULDERMESH_UA: "BoulderMesh/0.2 (your-email@example.com)"   # identify yourself to the sites you fetch from
+      HTTP_MIN_INTERVAL: "3"      # seconds between requests to the same host
+      # GOOGLE_CSE_KEY: ""        # Google Programmable Search (image mode) - 100 free queries/day
+      # GOOGLE_CSE_CX: ""
+      # FLICKR_KEY: ""            # Flickr API key for geotagged photo search
+      # HARVEST_DDG: "0"          # "1" enables the unofficial DuckDuckGo image search
+      # OPENBETA_MEDIA_BASE: "https://media.openbeta.io"
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    restart: unless-stopped
