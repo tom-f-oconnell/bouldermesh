@@ -37,6 +37,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import pipeline  # noqa: E402
 import climbs as climbs_mod  # noqa: E402
 from climbs import harvest as harvest_mod  # noqa: E402
+from climbs import relevance as relevance_mod  # noqa: E402
+from progress import Tracker  # noqa: E402
 from climbs import kaya as kaya_mod  # noqa: E402
 from climbs.common import Climb  # noqa: E402
 
@@ -85,14 +87,14 @@ def init_db() -> None:
         """)
         # migrations for databases created by v0.1
         cols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
-        for c, t in (("kind", "TEXT DEFAULT 'user'"), ("climb_id", "TEXT"), ("harvest", "TEXT")):
+        for c, t in (("kind", "TEXT DEFAULT 'user'"), ("climb_id", "TEXT"), ("harvest", "TEXT"), ("progress", "TEXT")):
             if c not in cols:
                 con.execute(f"ALTER TABLE projects ADD COLUMN {c} {t}")
         cols = {r[1] for r in con.execute("PRAGMA table_info(meshes)")}
         for c in ("lat", "lng"):
             if c not in cols:
                 con.execute(f"ALTER TABLE meshes ADD COLUMN {c} REAL")
-        con.execute("UPDATE projects SET status='failed', log=log||'\nserver restarted during job' "
+        con.execute("UPDATE projects SET status='failed', progress=NULL, log=log||'\nserver restarted during job' "
                     "WHERE status IN ('queued','running','harvesting')")
 
 
@@ -175,18 +177,38 @@ jobs: "queue.Queue[dict]" = queue.Queue()
 
 
 def append_log(pid: str, line: str) -> None:
-    q("UPDATE projects SET log = log || ? WHERE id=?", line + "\n", pid, write=True)
+    # a file: appending to the database column rewrites the whole log per line, which throttles
+    # a chatty COLMAP once the log reaches megabytes
+    d = PROJECTS / pid
+    d.mkdir(parents=True, exist_ok=True)
+    with open(d / "job.log", "a") as f:
+        f.write(line + "\n")
 
 
-def run_reconstruct(pid: str, internet: bool = False) -> None:
+def read_log(pid: str, older: str = "", tail: int = 64_000) -> str:
+    """The end of a project's log, after what's in its log column (old jobs, server restarts)."""
+    f = PROJECTS / pid / "job.log"
+    if not f.exists():
+        return older[-tail:]
+    with open(f, "rb") as fh:
+        fh.seek(max(0, f.stat().st_size - tail))
+        return (older[-tail:] + fh.read().decode("utf-8", "replace"))
+
+
+def tracker_for(pid: str, steps: list[tuple[str, str, float]]) -> Tracker:
+    return Tracker(steps, lambda snapshot: q("UPDATE projects SET progress=? WHERE id=?", snapshot, pid, write=True))
+
+
+def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = None) -> None:
     pdir = PROJECTS / pid
     q("UPDATE projects SET status='running' WHERE id=?", pid, write=True)
     log = lambda s: append_log(pid, s)  # noqa: E731
+    tracker = tracker or tracker_for(pid, pipeline.steps())
     try:
         work = pdir / "work"
         shutil.rmtree(work, ignore_errors=True)
         mid = new_id()
-        mesh_path, demo = pipeline.reconstruct(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet)
+        mesh_path, demo = pipeline.reconstruct(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker)
         proj = q("SELECT name, climb_id FROM projects WHERE id=?", pid, one=True)
         q("INSERT INTO meshes VALUES(?,?,?,?,?,?,?,?,?)", mid, proj["name"], mesh_path.name, f"project:{pid}",
           time.time(), mesh_path.stat().st_size, int(demo), None, None, write=True)
@@ -194,35 +216,46 @@ def run_reconstruct(pid: str, internet: bool = False) -> None:
             link_mesh(mid, proj["climb_id"], "auto-linked from reconstruction project")
             log(f"mesh linked to climb {proj['climb_id']}")
         q("UPDATE projects SET status='done', mesh_id=?, demo=? WHERE id=?", mid, int(demo), pid, write=True)
+        tracker.finish()
         log("done")
     except Exception as e:
         log(f"FAILED: {e}")
+        tracker.finish("failed")
         q("UPDATE projects SET status='failed' WHERE id=?", pid, write=True)
 
 
-def run_harvest(pid: str, sources: set[str], reconstruct: bool) -> None:
+def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter: bool = True) -> None:
     pdir = PROJECTS / pid
     q("UPDATE projects SET status='harvesting', log='' WHERE id=?", pid, write=True)
+    (pdir / "job.log").unlink(missing_ok=True)
     log = lambda s: append_log(pid, s)  # noqa: E731
+    tracker = None
     try:
         proj = q("SELECT climb_id FROM projects WHERE id=?", pid, one=True)
         c = climb_obj(proj["climb_id"])
-        if c.raw.get("stub"):
+        stub = bool(c.raw.get("stub"))
+        tracker = tracker_for(pid, ([("page", "Fetch problem page", 1)] if stub else []) + harvest_mod.steps(sources, relevance_filter)
+                              + (pipeline.steps() if reconstruct else []))
+        if stub:
+            tracker.update("page", 0.1, "up to a minute on Mountain Project")
             log(f"fetching the problem page for its photos/videos: {c.url}")
             upsert_climb(climbs_mod.fetch_climb_url(c.url, include_children=False)[0])
             c = climb_obj(proj["climb_id"])
-        summary = harvest_mod.harvest(c, pdir, log, sources)
+        summary = harvest_mod.harvest(c, pdir, log, sources, relevance_filter=relevance_filter, tracker=tracker)
         q("UPDATE projects SET harvest=?, status='harvested' WHERE id=?", json.dumps(summary), pid, write=True)
         verdict = (summary.get("diversity") or {}).get("verdict", "unknown")
         log(f"harvest complete: {summary['images']} image(s), verdict {verdict}")
+        if reconstruct and verdict != "poor":
+            run_reconstruct(pid, internet=True, tracker=tracker)
+            return
         if reconstruct:
-            if verdict == "poor":
-                log("not enough viewpoint diversity for photogrammetry - skipping reconstruction "
-                    "(add your own photos to this project and press Reconstruct to try anyway)")
-            else:
-                run_reconstruct(pid, internet=True)
+            log("not enough viewpoint diversity for photogrammetry - skipping reconstruction "
+                "(add your own photos to this project and press Reconstruct to try anyway)")
+        tracker.skip_rest()
     except Exception as e:
         log(f"FAILED: {e}")
+        if tracker:
+            tracker.finish("failed")
         q("UPDATE projects SET status='failed' WHERE id=?", pid, write=True)
 
 
@@ -233,7 +266,7 @@ def worker() -> None:
             if job["type"] == "reconstruct":
                 run_reconstruct(job["pid"], job.get("internet", False))
             elif job["type"] == "harvest":
-                run_harvest(job["pid"], set(job["sources"]), job["reconstruct"])
+                run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True))
         except Exception as e:  # never let the worker die
             append_log(job.get("pid", "?"), f"worker error: {e}")
 
@@ -311,7 +344,7 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/status":
                 env = {k: bool(os.environ.get(k)) for k in ("GOOGLE_CSE_KEY", "GOOGLE_CSE_CX", "FLICKR_KEY", "HARVEST_DDG")}
                 return self.send_json({"real_pipeline": pipeline.real_pipeline_ready(), "tools": pipeline.tools_available(),
-                                       "queue": jobs.qsize(), "harvest_sources": HARVEST_SOURCES, "env": env,
+                                       "queue": jobs.qsize(), "relevance_methods": relevance_mod.available(), "harvest_sources": HARVEST_SOURCES, "env": env,
                                        "ytdlp": bool(shutil.which("yt-dlp") and shutil.which("ffmpeg")),
                                        "opencv": _has("cv2"), "pillow": _has("PIL")})
             # ---- projects
@@ -324,7 +357,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "not found"}, 404)
                 photos = PROJECTS / m[1] / "photos"
                 proj["photos"] = sorted(f.name for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.exists() else []
+                proj["log"] = read_log(m[1], proj.get("log") or "")
                 proj["harvest"] = json.loads(proj["harvest"]) if proj.get("harvest") else None
+                proj["progress"] = json.loads(proj["progress"]) if proj.get("progress") else None
+                rejected = PROJECTS / m[1] / "rejected"
+                proj["filtered"] = [{"file": f.name, "why": relevance_mod.REASONS[f.name.split("_", 1)[0]]}
+                                    for f in (sorted(rejected.iterdir()) if rejected.exists() else [])
+                                    if f.name.split("_", 1)[0] in relevance_mod.REASONS]
                 return self.send_json(proj)
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/harvest", p)
             if m:
@@ -337,6 +376,9 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/photos/([0-9a-f]+)/([A-Za-z0-9._-]+)", p)
             if m:
                 return self.send_file(PROJECTS / m[1] / "photos" / m[2])
+            m = re.fullmatch(r"/photos/([0-9a-f]+)/rejected/([A-Za-z0-9._-]+)", p)
+            if m:
+                return self.send_file(PROJECTS / m[1] / "rejected" / m[2])
             # ---- meshes
             if p == "/api/meshes":
                 rows = q("SELECT * FROM meshes ORDER BY created DESC")
@@ -420,9 +462,19 @@ class Handler(BaseHTTPRequestHandler):
                 n = len([f for f in (PROJECTS / pid / "photos").iterdir() if f.suffix.lower() in PHOTO_EXT])
                 if n < (1 if not pipeline.real_pipeline_ready() else 3):
                     return self.send_json({"error": "upload at least 3 overlapping photos"}, 400)
-                q("UPDATE projects SET status='queued' WHERE id=?", pid, write=True)
+                q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
                 jobs.put({"type": "reconstruct", "pid": pid, "internet": proj["kind"] == "harvest"})
                 return self.send_json({"queued": True, "position": jobs.qsize()}, 202)
+
+            m = re.fullmatch(r"/api/projects/([0-9a-f]+)/restore", p)
+            if m:
+                # a photo the relevance filter rejected wrongly
+                name = Path(self.read_json().get("file") or "").name
+                src = PROJECTS / m[1] / "rejected" / name
+                if "_" not in name or not src.is_file():
+                    return self.send_json({"error": "not found"}, 404)
+                src.rename(PROJECTS / m[1] / "photos" / name.split("_", 1)[1])
+                return self.send_json({"restored": name.split("_", 1)[1]})
 
             # ---- meshes
             if p == "/api/meshes":
@@ -514,7 +566,8 @@ class Handler(BaseHTTPRequestHandler):
                 name = f"{r['name']} (harvest)"[:80]
                 q("INSERT INTO projects(id,name,created,kind,climb_id,status) VALUES(?,?,?,?,?,'queued')",
                   pid, name, time.time(), "harvest", cid, write=True)
-                jobs.put({"type": "harvest", "pid": pid, "sources": sources, "reconstruct": bool(body.get("reconstruct", True))})
+                jobs.put({"type": "harvest", "pid": pid, "sources": sources, "reconstruct": bool(body.get("reconstruct", True)),
+                          "filter": bool(body.get("filter", True))})
                 return self.send_json({"project_id": pid, "queued": True}, 202)
 
             return self.send_json({"error": "not found"}, 404)

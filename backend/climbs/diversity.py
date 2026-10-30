@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Callable
 
 Log = Callable[[str], None]
+Progress = Callable[..., None]   # progress(fraction, detail)
 MIN_SIDE = 480
 DUP_HAMMING = 6
 MIN_INLIERS = 40          # geometrically consistent matches for a pair to count as overlapping views
@@ -44,12 +45,14 @@ def _ham(a: int, b: int) -> int:
     return bin(a ^ b).count("1")
 
 
-def dedupe(photos_dir: Path, log: Log) -> list[Path]:
+def dedupe(photos_dir: Path, log: Log, progress: Progress | None = None) -> list[Path]:
     from PIL import Image
     rejected = photos_dir.parent / "rejected"   # outside photos/ so COLMAP never sees them
     keep: list[tuple[Path, int, int]] = []     # (path, hash, pixels)
     files = sorted(p for p in photos_dir.iterdir() if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".png"))
-    for p in files:
+    for i, p in enumerate(files):
+        if progress:
+            progress(i / max(1, len(files)), f"{i} of {len(files)} photos")
         try:
             with Image.open(p) as im:
                 w, h = im.size
@@ -79,7 +82,7 @@ def _reject(p: Path, rejected: Path, why: str):
     p.rename(rejected / f"{why}_{p.name}")
 
 
-def view_graph(paths: list[Path], log: Log, max_images: int = 120) -> dict:
+def view_graph(paths: list[Path], log: Log, max_images: int = 120, progress: Progress | None = None) -> dict:
     try:
         import cv2
         import numpy as np
@@ -104,6 +107,9 @@ def view_graph(paths: list[Path], log: Log, max_images: int = 120) -> dict:
     inl = np.zeros((n, n), dtype=int)
     ident = np.zeros((n, n), dtype=bool)
     for i in range(n):
+        if progress:
+            # each image is matched against the later ones, so the early rows are the slow ones
+            progress(1 - ((n - i) / max(1, n)) ** 2, f"{i} of {n} photos")
         if feats[i] is None:
             continue
         for j in range(i + 1, n):
@@ -164,9 +170,13 @@ def _components(adj) -> list[list[int]]:
 
 
 def assess(photos_dir: Path, log: Log) -> dict:
-    paths = dedupe(photos_dir, log)
+    return assess_unique(dedupe(photos_dir, log), log)
+
+
+def assess_unique(paths: list[Path], log: Log, progress: Progress | None = None) -> dict:
+    """Verdict on already de-duplicated photos."""
     report = {"unique_images": len(paths)}
-    vg = view_graph(paths, log)
+    vg = view_graph(paths, log, progress=progress)
     report["view_graph"] = vg
     if vg.get("available"):
         k = vg["largest_component"]

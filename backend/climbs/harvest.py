@@ -61,9 +61,11 @@ def search_terms(c: Climb) -> list[str]:
 
 
 # ----------------------------------------------------------------------------- sources
-def from_climb(c: Climb, log: Log) -> list[Media]:
+def from_climb(c: Climb, log: Log, progress: Callable[..., None] | None = None) -> list[Media]:
     out = []
-    for m in c.images:
+    for i, m in enumerate(c.images):
+        if progress:
+            progress(i / max(1, len(c.images)), f"photo {i + 1} of {len(c.images)} on the climb's page")
         if m.source == "mountainproject":
             try:
                 from . import mountainproject
@@ -196,13 +198,16 @@ def flickr_search(lat: float, lng: float, queries: list[str], log: Log, radius_k
 
 
 def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0, max_frames: int = 150,
-                 max_videos: int = 4) -> list[Path]:
+                 max_videos: int = 4, progress: Callable[..., None] | None = None) -> list[Path]:
     ytdlp, ffmpeg = shutil.which("yt-dlp"), shutil.which("ffmpeg")
     if not (ytdlp and ffmpeg):
         log("youtube: skipped (needs yt-dlp and ffmpeg on PATH)")
         return []
     saved = []
+    n_videos = min(len(videos), max_videos)
     for i, v in enumerate(videos[:max_videos]):
+        if progress:
+            progress(i / n_videos, f"downloading video {i + 1} of {n_videos}")
         tag = hashlib.sha1(v.url.encode()).hexdigest()[:8]
         tmp = out_dir / f"_video_{tag}"
         tmp.mkdir(parents=True, exist_ok=True)
@@ -212,6 +217,8 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
                             "-o", str(tmp / "video.%(ext)s"), v.url], check=True, timeout=900,
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             vid = next(tmp.glob("video.*"))
+            if progress:
+                progress((i + 0.7) / n_videos, f"extracting frames from video {i + 1} of {n_videos}")
             subprocess.run([ffmpeg, "-loglevel", "error", "-i", str(vid), "-vf", f"fps={fps}", "-q:v", "2",
                             str(tmp / "f%04d.jpg")], check=True, timeout=900)
             frames = sorted(tmp.glob("f*.jpg"))
@@ -254,11 +261,14 @@ def _sharpest(frames: list[Path], keep: int, log: Log) -> list[Path]:
 
 
 # ----------------------------------------------------------------------------- download
-def download_all(media: list[Media], out_dir: Path, log: Log, min_bytes: int = 20_000, max_total: int = 200) -> list[dict]:
+def download_all(media: list[Media], out_dir: Path, log: Log, min_bytes: int = 20_000, max_total: int = 200,
+                 progress: Callable[..., None] | None = None) -> list[dict]:
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = []
     seen_urls = set()
-    for m in media:
+    for i, m in enumerate(media):
+        if progress:
+            progress(i / max(1, len(media)), f"{i} of {len(media)} photos")
         if not m.url or m.url in seen_urls or len(manifest) >= max_total:
             continue
         seen_urls.add(m.url)
@@ -298,48 +308,76 @@ def _ext_for(data: bytes) -> str | None:
 
 
 # ----------------------------------------------------------------------------- orchestrate
-def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = None) -> dict:
-    """Collect photos for climb `c` into project_dir/photos (provenance + diversity report
-    are written next to it, never inside it, so the reconstruction only sees images)."""
+def steps(sources: set[str], relevance_filter: bool = True) -> list[tuple[str, str, float]]:
+    """The progress steps of harvest(), weighted roughly by duration."""
+    out = [("find", "Find photos", 1), ("download", "Download photos", 5)]
+    if "youtube" in sources:
+        out.append(("video", "Extract video frames", 5))
+    out.append(("dedupe", "Remove duplicates", 1))
+    if relevance_filter:
+        out.append(("filter", "Filter off-topic photos", 3))
+    return out + [("diversity", "Check viewpoint diversity", 3)]
+
+
+def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = None, relevance_filter: bool = True,
+            tracker=None) -> dict:
+    """Collect photos for climb `c` into project_dir/photos (provenance + reports are written
+    next to it, never inside it, so the reconstruction only sees images).
+
+    Args:
+        relevance_filter: drop photos not substantially of the boulder (see relevance.py).
+        tracker: a progress.Tracker with this harvest's steps().
+    """
+    from . import diversity, relevance
     sources = sources or {"climb", "google", "commons", "flickr", "youtube"}
+    progress = tracker.callback if tracker else lambda key: None
     photos_dir = project_dir / "photos"
     photos_dir.mkdir(parents=True, exist_ok=True)
     queries = search_terms(c)
     log(f"harvest for {c.name!r} (boulder: {c.boulder_name or '?'}, coords: {c.lat}, {c.lng})")
     log("queries: " + " | ".join(queries))
     media: list[Media] = []
-    if "climb" in sources:
-        media += from_climb(c, log)
-    if "google" in sources:
-        media += google_images(queries, log)
-    if "ddg" in sources:
-        media += ddg_images(queries, log)
-    if c.lat is not None and c.lng is not None:
-        if "commons" in sources:
+    finding = [s for s in ("climb", "google", "ddg", "commons", "flickr") if s in sources]
+    report_find = progress("find") or (lambda frac=0.0, detail=None: None)
+    for i, s in enumerate(finding):
+        report_find(i / len(finding), s)
+        if s == "climb":
+            media += from_climb(c, log, progress=lambda f=0.0, d=None, i=i: report_find((i + f) / len(finding), d))
+        elif s == "google":
+            media += google_images(queries, log)
+        elif s == "ddg":
+            media += ddg_images(queries, log)
+        elif c.lat is None or c.lng is None:
+            log(f"no coordinates -> skipping {s}")
+        elif s == "commons":
             media += commons_geosearch(c.lat, c.lng, log)
-        if "flickr" in sources:
+        else:
             media += flickr_search(c.lat, c.lng, queries, log)
-    else:
-        log("no coordinates -> skipping geo sources (commons, flickr)")
-    manifest = download_all(media, photos_dir, log)
+    manifest = download_all(media, photos_dir, log, progress=progress("download"))
     frames = []
     if "youtube" in sources and c.videos:
-        frames = video_frames(c.videos, photos_dir, log)
+        frames = video_frames(c.videos, photos_dir, log, progress=progress("video"))
         manifest += [{"file": f.name, "url": None, "kind": "video-frame", "source": "youtube",
                       "license": "frame from linked beta video; reconstruction use only"} for f in frames]
     # remove webp (COLMAP wants jpg/png) by converting if PIL available
     _normalise_images(photos_dir, log)
     (project_dir / "sources.json").write_text(json.dumps({"climb": c.to_dict(), "queries": queries,
                                                            "files": manifest, "created": time.time()}, indent=1))
+    filtered = None
     try:
-        from . import diversity
-        report = diversity.assess(photos_dir, log)
+        paths = diversity.dedupe(photos_dir, log, progress=progress("dedupe"))
+        if relevance_filter:
+            filtered = relevance.filter_photos(paths, project_dir / "rejected", log, progress=progress("filter"))
+            (project_dir / "relevance.json").write_text(json.dumps(filtered, indent=1))
+            paths = [p for p in paths if p.name in set(filtered["kept"])]
+        report = diversity.assess_unique(paths, log, progress=progress("diversity"))
     except Exception as e:
         log(f"diversity check failed: {e}")
         report = {"error": str(e)}
     (project_dir / "diversity.json").write_text(json.dumps(report, indent=1))
     return {"images": len([p for p in photos_dir.iterdir() if p.suffix.lower() in (".jpg", ".png")]),
-            "video_frames": sum(f.exists() for f in frames), "queries": queries, "diversity": report}
+            "video_frames": sum(f.exists() for f in frames), "queries": queries, "diversity": report,
+            "relevance": {k: filtered[k] for k in ("methods", "counts")} if filtered else None}
 
 
 def _normalise_images(photos_dir: Path, log: Log) -> None:

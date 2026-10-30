@@ -9,11 +9,14 @@ Every step logs to a callback so the UI can show progress.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import struct
 import subprocess
 from pathlib import Path
 from typing import Callable
+
+from progress import Tracker
 
 Log = Callable[[str], None]
 
@@ -44,7 +47,7 @@ def real_pipeline_ready() -> bool:
     return all(t[k] for k in ("colmap", "InterfaceCOLMAP", "DensifyPointCloud", "ReconstructMesh"))
 
 
-def _run(cmd: list[str], cwd: Path, log: Log) -> None:
+def _run(cmd: list[str], cwd: Path, log: Log, watch: Callable[[str], None] | None = None) -> None:
     log("$ " + " ".join(cmd))
     proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert proc.stdout
@@ -52,8 +55,83 @@ def _run(cmd: list[str], cwd: Path, log: Log) -> None:
         line = line.rstrip()
         if line:
             log(line)
+            if watch:
+                watch(line)
     if proc.wait() != 0:
         raise RuntimeError(f"{cmd[0]} exited with {proc.returncode}")
+
+
+def steps() -> list[tuple[str, str, float]]:
+    """The progress steps of reconstruct(), weighted by typical CPU share of the run."""
+    if not real_pipeline_ready():
+        return [("demo", "Build demo mesh", 1)]
+    out = [("features", "Find features", 3), ("matching", "Match photos", 15), ("mapper", "Place cameras", 40),
+           ("level", "Level the model", 1), ("undistort", "Undistort photos", 1), ("import", "Import scene", 1),
+           ("dense", "Dense reconstruction", 25), ("mesh", "Build mesh", 8)]
+    return out + ([("texture", "Texture mesh", 6)] if _mvs("TextureMesh") else [])
+
+
+def _phases(tracker: Tracker, key: str, *phases: tuple[str, float, float]) -> Callable[[str], None]:
+    """A log watcher: each phase is (regex, fraction of the step at its start, and at its end).
+
+    The regex's groups give progress within the phase: "12 (37.5%" style with one group
+    (a percentage), "[3/72]" style with two (a count), or none for a phase that just ended.
+    """
+    compiled = [(re.compile(rx), lo, hi) for rx, lo, hi in phases]
+
+    def watch(line: str) -> None:
+        for rx, lo, hi in compiled:
+            m = rx.search(line)
+            if m:
+                g = m.groups()
+                within = int(g[0]) / max(1, int(g[1])) if len(g) == 2 else float(g[0]) / 100 if g else 1.0
+                tracker.update(key, lo + (hi - lo) * within)
+                return
+    return watch
+
+
+def _matching(tracker: Tracker) -> Callable[[str], None]:
+    rx = re.compile(r"Matching block \[(\d+)/(\d+), (\d+)/(\d+)\]")
+
+    def watch(line: str) -> None:
+        m = rx.search(line)
+        if m:
+            a, b, c, d = (int(x) for x in m.groups())
+            tracker.update("matching", ((a - 1) * d + c - 1) / max(1, b * d), f"block {(a - 1) * d + c} of {b * d}")
+    return watch
+
+
+def _mapper(tracker: Tracker, n_images: int) -> Callable[[str], None]:
+    rx = re.compile(r"Registering image #\d+ \((\d+)\)")
+
+    def watch(line: str) -> None:
+        m = rx.search(line)
+        if m:
+            k = int(m[1])
+            tracker.update("mapper", k / max(1, n_images), f"{k} of {n_images} photos in this model")
+    return watch
+
+
+def _geometric(tracker: Tracker) -> Callable[[str], None]:
+    """DensifyPointCloud's depth phases; the geometric-consistency one runs twice over."""
+    rx = re.compile(r"(Geometric-consistent estimated|Estimated|Fused) depth-maps \d+ \(([\d.]+)%")
+    state = {"passes": 0, "last": 0.0}
+
+    def watch(line: str) -> None:
+        m = rx.search(line)
+        if not m:
+            return
+        pct = float(m[2]) / 100
+        if m[1] == "Estimated":
+            tracker.update("dense", 0.45 * pct, "estimating depth maps")
+        elif m[1] == "Fused":
+            tracker.update("dense", 0.85 + 0.15 * pct, "fusing depth maps")
+        else:
+            if pct < state["last"]:
+                state["passes"] += 1
+            state["last"] = pct
+            tracker.update("dense", 0.45 + 0.40 * min(1.0, (state["passes"] + pct) / 2), "checking depth consistency")
+    return watch
 
 
 # --------------------------------------------------------------------------
@@ -75,11 +153,12 @@ def _largest_model(sparse: Path) -> tuple[Path | None, int]:
     return best, best_n
 
 
-def _upright(model: Path, images: Path, work: Path, log: Log) -> Path:
+def _upright(model: Path, images: Path, work: Path, log: Log, tracker: Tracker) -> Path:
     """COLMAP models have no meaningful orientation, and tend to come out upside down in the
     viewer. Level the model from its cameras (most photos are taken upright), which puts gravity
     along +Y, then flip it so +Y is up as glTF expects. Returns the model to use from here on."""
     log("== COLMAP: level the model")
+    tracker.update("level")
     aligned = work / "aligned"
     aligned.mkdir(exist_ok=True)
     flip = work / "flip.txt"
@@ -96,9 +175,10 @@ def _upright(model: Path, images: Path, work: Path, log: Log) -> Path:
 
 
 def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool,
-                               internet: bool = False, min_registered: int = 6) -> Path:
+                               internet: bool = False, min_registered: int = 6, tracker: Tracker | None = None) -> Path:
     """internet=True tunes COLMAP for unordered photos from many cameras (per-image intrinsics,
     affine-shape SIFT, domain-size pooling, guided matching) - slower but far more tolerant."""
+    tracker = tracker or Tracker([])
     work.mkdir(parents=True, exist_ok=True)
     db = work / "database.db"
     sparse = work / "sparse"
@@ -108,6 +188,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     n_images = len([p for p in images.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")])
 
     log(f"== COLMAP: feature extraction ({'internet-collection' if internet else 'single-camera'} settings)")
+    tracker.update("features", 0, f"0 of {n_images} photos")
     cmd = [COLMAP, "feature_extractor", "--database_path", str(db), "--image_path", str(images),
            "--SiftExtraction.use_gpu", gpu, "--ImageReader.camera_model", "SIMPLE_RADIAL"]
     if internet:
@@ -115,52 +196,65 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
                 "--SiftExtraction.domain_size_pooling", "1", "--SiftExtraction.max_image_size", "2400"]
     else:
         cmd += ["--ImageReader.single_camera", "1"]
-    _run(cmd, work, log)
+    _run(cmd, work, log, _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1)))
 
     log("== COLMAP: matching")
-    cmd = [COLMAP, "exhaustive_matcher", "--database_path", str(db), "--SiftMatching.use_gpu", gpu]
+    tracker.update("matching")
+    # smaller blocks than the default 50 only make for finer progress: all pairs get matched either way
+    cmd = [COLMAP, "exhaustive_matcher", "--database_path", str(db), "--SiftMatching.use_gpu", gpu,
+           "--ExhaustiveMatching.block_size", "20"]
     if internet:
         cmd += ["--SiftMatching.guided_matching", "1"]
-    _run(cmd, work, log)
+    _run(cmd, work, log, _matching(tracker))
 
     log("== COLMAP: sparse reconstruction (mapper)")
+    tracker.update("mapper")
     cmd = [COLMAP, "mapper", "--database_path", str(db), "--image_path", str(images), "--output_path", str(sparse)]
     if internet:
         cmd += ["--Mapper.ba_refine_principal_point", "1", "--Mapper.min_num_matches", "20"]
-    _run(cmd, work, log)
+    _run(cmd, work, log, _mapper(tracker, n_images))
     model, registered = _largest_model(sparse)
     log(f"registered {registered}/{n_images} images in the largest model")
     if model is None or registered < min_registered:
         raise RuntimeError(f"only {registered} image(s) could be registered (need >= {min_registered}); "
                            "the photo set doesn't overlap enough for photogrammetry")
 
-    model = _upright(model, images, work, log)
+    model = _upright(model, images, work, log, tracker)
 
     log("== COLMAP: undistort")
+    tracker.update("undistort")
     _run([COLMAP, "image_undistorter", "--image_path", str(images), "--input_path", str(model),
-          "--output_path", str(dense), "--output_type", "COLMAP"], work, log)
+          "--output_path", str(dense), "--output_type", "COLMAP"], work, log,
+         _phases(tracker, "undistort", (r"Undistorting image \[(\d+)/(\d+)\]", 0, 1)))
 
     log("== OpenMVS: import scene")
+    tracker.update("import")
     _run([_mvs("InterfaceCOLMAP"), "-i", str(dense), "-o", "scene.mvs", "--image-folder", str(dense / "images"),
           "-w", str(work)], work, log)
 
     log("== OpenMVS: densify")
-    _run([_mvs("DensifyPointCloud"), "scene.mvs", "-w", str(work), "--resolution-level", "2"], work, log)
+    tracker.update("dense")
+    _run([_mvs("DensifyPointCloud"), "scene.mvs", "-w", str(work), "--resolution-level", "2"], work, log, _geometric(tracker))
 
     log("== OpenMVS: reconstruct mesh")
-    _run([_mvs("ReconstructMesh"), "scene_dense.mvs", "-w", str(work)], work, log)
+    tracker.update("mesh")
+    _run([_mvs("ReconstructMesh"), "scene_dense.mvs", "-w", str(work)], work, log,
+         _phases(tracker, "mesh", (r"Points inserted \d+ \(([\d.]+)%", 0, 0.5), (r"Points weighted \d+ \(([\d.]+)%", 0.5, 0.9)))
     mesh = work / "scene_dense_mesh.ply"
 
     tex = _mvs("TextureMesh")
     if tex:
         log("== OpenMVS: texture mesh")
+        tracker.update("texture")
         try:
             # ReconstructMesh only writes the .ply, so texture it against the dense scene. GLB loads
             # directly in the viewer (and OpenMVS 2.3's OBJ writer segfaults); its texture images are
             # separate files referenced by relative URI, so they're copied alongside it. Faces no photo
             # saw get --empty-color, by default a bright orange that reads as part of the scene.
             _run([tex, "scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o", "scene_dense_mesh_texture.mvs",
-                  "-w", str(work), "--export-type", "glb", "--empty-color", str(0x808080)], work, log)
+                  "-w", str(work), "--export-type", "glb", "--empty-color", str(0x808080)], work, log,
+                 _phases(tracker, "texture", (r"Initialized views \d+ \(([\d.]+)%", 0, 0.3),
+                         (r"Assigning the best view .*completed", 0.3, 0.6), (r"Generating texture atlas .*completed", 0.6, 0.95)))
             glb = work / "scene_dense_mesh_texture.glb"
             if glb.exists():
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -239,13 +333,15 @@ def demo_relief(images: Path, out_dir: Path, log: Log, grid: int = 96) -> Path:
 
 # --------------------------------------------------------------------------
 def reconstruct(images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool = False,
-                internet: bool = False) -> tuple[Path, bool]:
+                internet: bool = False, tracker: Tracker | None = None) -> tuple[Path, bool]:
     """Returns (mesh_path, is_demo). internet=True for harvested web photo collections."""
     n = len([p for p in images.iterdir() if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".png")])
     log(f"{n} photo(s) in {images}")
     if real_pipeline_ready():
-        return reconstruct_colmap_openmvs(images, work, out_dir, log, use_gpu, internet=internet), False
+        return reconstruct_colmap_openmvs(images, work, out_dir, log, use_gpu, internet=internet, tracker=tracker), False
     missing = [k for k, v in tools_available().items() if not v and k != "TextureMesh"]
     log(f"COLMAP/OpenMVS not found ({', '.join(missing)} missing) - falling back to DEMO mode. "
         "Install them (see Dockerfile) for real photogrammetry.")
+    if tracker:
+        tracker.update("demo", 0.1)
     return demo_relief(images, out_dir, log), True

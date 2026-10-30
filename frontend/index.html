@@ -69,6 +69,14 @@
   a{color:var(--acc)}
   details summary{cursor:pointer;color:var(--mute);font-size:12px}
   .notice{font-size:12px;color:var(--mute);border-left:3px solid var(--line);padding:4px 8px}
+  .bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--acc);transition:width .4s}
+  .bar.overall{height:9px;margin:8px 0 2px}
+  .steps{margin-top:6px;display:grid;grid-template-columns:auto 1fr;gap:3px 8px;align-items:center;font-size:11px;color:var(--mute)}
+  .steps .running{color:var(--fg)} .steps .done{color:var(--ok)} .steps .failed{color:var(--bad)} .steps .skipped{opacity:.5}
+  .steps .bar.done i{background:var(--ok)} .steps .bar.failed i{background:var(--bad)}
+  .steps .detail{grid-column:2;margin-top:-2px}
+  .thumbs.rejected img{opacity:.75}
   @media (max-width:860px){main{grid-template-columns:1fr;grid-template-rows:1fr 1fr}aside{border-right:0;border-bottom:1px solid var(--line)}}
 </style>
 </head>
@@ -314,11 +322,15 @@ function renderClimbs(){
 }
 $('#c-filter').oninput = renderClimbs;
 
-async function openClimb(id){
+let openClimbId = null;
+async function openClimb(id, focus=true){
   const c = await api('/api/climbs/' + id);
   const data = c.data || {};
   const st = statusCache;
-  document.querySelector('.tabs button[data-tab=climbs]').click();
+  const harvests = c.projects.filter(p => p.kind === 'harvest');
+  const harvesting = harvests.some(p => BUSY.includes(p.status));
+  openClimbId = id;
+  if (focus) document.querySelector('.tabs button[data-tab=climbs]').click();
   const d = document.createElement('div'); d.className = 'card active';
   const imgs = (data.images||[]).filter(m=>m.url);
   const vids = data.videos||[];
@@ -349,11 +361,13 @@ async function openClimb(id){
         <label><input type="checkbox" name="src" value="flickr" ${st.env.FLICKR_KEY&&c.lat!=null?'checked':'disabled'}> Flickr (geo) ${st.env.FLICKR_KEY?'':'(set FLICKR_KEY)'}</label>
         <label><input type="checkbox" name="src" value="ddg" ${st.env.HARVEST_DDG?'':'disabled'}> DuckDuckGo ${st.env.HARVEST_DDG?'':'(HARVEST_DDG=1)'}</label>
       </div>
-      <div class="row" style="margin-top:6px"><label class="checks"><input type="checkbox" class="autorec" checked> reconstruct if diverse enough</label><span class="grow"></span>
-        <button class="sm harvest">Harvest photos</button><button class="sm danger del">Delete climb</button></div>
+      <div class="checks" style="margin-top:6px"><label title="Drops title cards and photos that don't match this boulder; you can put any back afterwards"><input type="checkbox" class="relfilter" ${st.relevance_methods?.length?'checked':'disabled'}> filter off-topic photos ${st.relevance_methods?.length?`<small>(${esc(st.relevance_methods.join(', '))})</small>`:'(needs numpy)'}</label>
+        <label><input type="checkbox" class="autorec" checked> reconstruct if diverse enough</label></div>
+      <div class="row" style="margin-top:6px"><span class="grow"></span>
+        <button class="sm harvest" ${harvesting?'disabled':''}>${harvesting?'Harvesting…':harvests.length?'Harvest again':'Harvest photos'}</button><button class="sm danger del">Delete climb</button></div>
       <div class="notice" style="margin-top:6px">Downloaded photos stay on this server for reconstruction only; most are copyrighted by their photographers. Provenance is written to sources.json.</div>
     </div>`;
-  d.querySelector('.close').onclick = () => d.remove();
+  d.querySelector('.close').onclick = () => { d.remove(); openClimbId = null; };
   d.querySelector('.fly')?.addEventListener('click', () => flyTo(c.lat, c.lng));
   d.querySelector('.editll').onclick = async () => {
     const v = prompt('Coordinates as "lat, lng" (e.g. from Google Maps right-click):', c.lat!=null ? `${c.lat}, ${c.lng}` : '');
@@ -369,8 +383,9 @@ async function openClimb(id){
   };
   d.querySelector('.harvest').onclick = async () => {
     const sources = [...d.querySelectorAll('input[name=src]:checked')].map(i => i.value);
-    const r = await api(`/api/climbs/${id}/harvest`, { method: 'POST', json: { sources, reconstruct: d.querySelector('.autorec').checked } });
+    const r = await api(`/api/climbs/${id}/harvest`, { method: 'POST', json: { sources, reconstruct: d.querySelector('.autorec').checked, filter: d.querySelector('.relfilter').checked } });
     toast('Harvest queued → see Projects tab'); active = r.project_id;
+    openClimb(id, false);
     document.querySelector('.tabs button[data-tab=projects]').click(); poll();
   };
   d.querySelector('.details')?.addEventListener('click', async () => {
@@ -378,8 +393,9 @@ async function openClimb(id){
     try { await api('/api/climbs/import', { method: 'POST', json: { url: c.url, include_children: false } }); toast('Fetched'); d.remove(); openClimb(id); refreshClimbs(); }
     catch (e) { toast('Fetch failed: ' + e.message, 8000); }
   });
-  d.querySelector('.del').onclick = async () => { if (confirm(`Delete climb "${c.name}" (meshes are kept)?`)) { await api('/api/climbs/' + id, { method: 'DELETE' }); d.remove(); refreshClimbs(); refreshMeshes(); } };
-  $('#climb-open').replaceChildren(d); d.scrollIntoView({ block: 'nearest' });
+  d.querySelector('.del').onclick = async () => { if (confirm(`Delete climb "${c.name}" (meshes are kept)?`)) { await api('/api/climbs/' + id, { method: 'DELETE' }); d.remove(); openClimbId = null; refreshClimbs(); refreshMeshes(); } };
+  $('#climb-open').replaceChildren(d);
+  if (focus) d.scrollIntoView({ block: 'nearest' });
 }
 
 $('#imp-go').onclick = async () => {
@@ -423,12 +439,14 @@ $('#m-export').onchange = async ev => {
 
 // ---------------------------------------------------------------- projects
 let active = null;
+const projectCards = new Map();
 async function refreshProjects(){
   const list = await api('/api/projects');
   const el = $('#projects'); el.innerHTML = list.length ? '' : '<div class="status">No projects yet.</div>';
+  projectCards.clear();
   for (const p of list) {
     const d = document.createElement('div'); d.className = 'card' + (p.id===active ? ' active' : '');
-    const busy = ['queued','running','harvesting'].includes(p.status);
+    const busy = BUSY.includes(p.status);
     d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':''}</b><span class="status ${p.status}">${p.status}${p.demo?' (demo)':''}</span></div>
       <div class="row" style="margin-top:8px">
         <label class="file"><button class="sec sm" type="button">Add photos</button><input type="file" multiple accept="image/jpeg,image/png"></label>
@@ -437,7 +455,9 @@ async function refreshProjects(){
         ${p.climb_id?`<button class="sec sm climb">Climb</button>`:''}
         <span class="grow"></span><button class="danger sm del" title="Delete project">✕</button>
       </div>
+      <div class="prog"></div>
       <div class="harvest-info"></div>
+      <div class="filtered"></div>
       <div class="thumbs"></div><pre class="log" style="display:none"></pre>`;
     d.querySelector('button.sec').onclick = () => d.querySelector('input[type=file]').click();
     d.querySelector('input[type=file]').onchange = async ev => {
@@ -455,14 +475,42 @@ async function refreshProjects(){
     d.querySelector('.del').onclick = async () => { if (confirm(`Delete project "${p.name}"?`)) { await api(`/api/projects/${p.id}`, {method:'DELETE'}); refreshProjects(); } };
     d.onclick = ev => { if (ev.target.tagName !== 'BUTTON') { active = p.id; loadDetail(p.id, d); } };
     el.appendChild(d);
+    projectCards.set(p.id, d);
     loadDetail(p.id, d);
   }
 }
+const BUSY = ['queued', 'running', 'harvesting'];
+function progressHtml(p){
+  const pr = p.progress;
+  if (p.status === 'queued') return '<div class="status queued" style="margin-top:8px">Queued: waits for any job ahead of it</div>';
+  if (!pr || !(BUSY.includes(p.status) || p.status === 'failed')) return '';
+  const pct = v => (100 * v).toFixed(0) + '%';
+  const rows = pr.steps.map(s => `<span class="${s.state}">${s.state==='done'?'✓':s.state==='failed'?'✕':s.state==='running'?'▸':'·'} ${esc(s.label)}</span>
+    <div class="bar ${s.state}" title="${pct(s.frac)}"><i style="width:${pct(s.frac)}"></i></div>${s.state==='running'&&s.detail?`<span></span><span class="detail">${esc(s.detail)}</span>`:''}`).join('');
+  return `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall</small><div class="steps">${rows}</div>`;
+}
 async function loadDetail(id, card){
   const p = await api('/api/projects/' + id);
-  const th = card.querySelector('.thumbs');
-  th.innerHTML = p.photos.slice(0, 30).map(f => `<img src="/photos/${id}/${f}" title="${esc(f)}" loading="lazy">`).join('') + (p.photos.length>30 ? `<span class="status">+${p.photos.length-30}</span>` : '');
-  if (!p.photos.length) th.innerHTML = `<span class="status">${p.kind==='harvest'?'No photos harvested yet.':'No photos yet — add 20–80 overlapping shots around the object.'}</span>`;
+  card.querySelector('.prog').innerHTML = progressHtml(p);
+  // only touch these when they change: rebuilding them closes the list and makes every thumbnail flash
+  const fl = card.querySelector('.filtered'), filteredNames = p.filtered.map(x => x.file).join();
+  if (fl.dataset.names !== filteredNames) {
+    const wasOpen = fl.querySelector('details')?.open;
+    fl.dataset.names = filteredNames;
+    fl.innerHTML = p.filtered.length ? `<details style="margin-top:6px" ${wasOpen?'open':''}><summary>${p.filtered.length} photo(s) filtered out as off-topic: click one to put it back</summary>
+      <div class="thumbs rejected">${p.filtered.map(x => `<img src="/photos/${id}/rejected/${esc(x.file)}" data-file="${esc(x.file)}" title="${esc(x.why)}: click to restore" loading="lazy">`).join('')}</div></details>` : '';
+    fl.querySelectorAll('img').forEach(im => im.onclick = async ev => {
+      ev.stopPropagation();
+      await api(`/api/projects/${id}/restore`, { method: 'POST', json: { file: im.dataset.file } });
+      toast('Restored; press Reconstruct to use it'); loadDetail(id, card);
+    });
+  }
+  const th = card.querySelector(':scope > .thumbs'), photoNames = p.photos.join();
+  if (th.dataset.names !== photoNames || !p.photos.length) {
+    th.dataset.names = photoNames;
+    th.innerHTML = p.photos.slice(0, 30).map(x => `<img src="/photos/${id}/${x}" title="${esc(x)}" loading="lazy">`).join('') + (p.photos.length>30 ? `<span class="status">+${p.photos.length-30}</span>` : '');
+    if (!p.photos.length) th.innerHTML = `<span class="status">${p.kind==='harvest'?'No photos harvested yet.':'No photos yet — add 20–80 overlapping shots around the object.'}</span>`;
+  }
   const hi = card.querySelector('.harvest-info');
   if (p.harvest) {
     const dv = p.harvest.diversity || {}; const vg = dv.view_graph || {};
@@ -477,11 +525,19 @@ async function loadDetail(id, card){
 let polling = false;
 async function poll(){
   if (polling) return; polling = true;
+  let shown = null;
   while (true) {
     const list = await api('/api/projects');
-    const busy = list.some(p => ['queued','running','harvesting'].includes(p.status));
-    await refreshProjects();
-    if (!busy) { await refreshMeshes(); await refreshClimbs(); break; }
+    const busy = list.some(p => BUSY.includes(p.status));
+    const now = list.map(p => [p.id, p.status, p.mesh_id].join()).join(';');
+    if (now !== shown || !list.every(p => projectCards.has(p.id))) await refreshProjects();
+    else await Promise.all(list.filter(p => BUSY.includes(p.status)).map(p => loadDetail(p.id, projectCards.get(p.id))));
+    shown = now;
+    if (!busy) {
+      await refreshMeshes(); await refreshClimbs();
+      if (openClimbId) openClimb(openClimbId, false);   // the job may have changed what it shows
+      break;
+    }
     await new Promise(r => setTimeout(r, 2500));
   }
   polling = false;

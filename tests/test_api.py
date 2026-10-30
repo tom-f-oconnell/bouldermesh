@@ -95,7 +95,8 @@ def req(B, method, path, json_body=None, files=None, fields=None):
 
 
 def simple_img(seed, w=800, h=600) -> bytes:
-    im = Image.new("RGB", (w, h), (30 + seed * 7 % 100, 40, 60))
+    # textured like a photo: flat images are rejected as title cards
+    im = Image.merge("RGB", [Image.effect_noise((w, h), 40 + seed % 7)] * 3)
     d = ImageDraw.Draw(im)
     for i in range(40):
         x = (seed * 37 + i * 53) % w
@@ -160,6 +161,7 @@ def run(B: str, tmp: Path) -> None:
     assert st == 202, r
     pr = wait_project(B, pid)
     assert pr["status"] == "done", pr["log"]
+    assert pr["log"].rstrip().endswith("done") and (tmp / "data" / "projects" / pid / "job.log").exists(), pr["log"]
     st, meshes = req(B, "GET", "/api/meshes")
     m = meshes[0]
     assert m["lat"] == 37.74172 and m["climbs"][0]["id"] == cid, m
@@ -213,6 +215,9 @@ def run(B: str, tmp: Path) -> None:
     assert pr["status"] == "done", pr["status"] + "\n" + pr["log"]
     h = pr["harvest"]
     print("harvest:", h["images"], "images; verdict", h["diversity"]["verdict"], "unique", h["diversity"]["unique_images"])
+    assert pr["progress"]["overall"] == 100 and {s["state"] for s in pr["progress"]["steps"]} == {"done"}, pr["progress"]
+    assert [s["key"] for s in pr["progress"]["steps"]][:3] == ["find", "download", "video"], pr["progress"]
+    assert all(s["frac"] == 1 for s in pr["progress"]["steps"]), pr["progress"]
     assert h["diversity"]["unique_images"] == 14, h["diversity"]
     if HAVE_CV:
         assert h["diversity"]["verdict"] == "good" and h["diversity"]["view_graph"]["largest_component"] >= 12, h["diversity"]
