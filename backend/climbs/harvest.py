@@ -133,9 +133,10 @@ def ddg_images(queries: list[str], log: Log, per_query: int = 40) -> list[Media]
 
 
 def commons_geosearch(lat: float, lng: float, log: Log, radius_m: int = 400, limit: int = 50) -> list[Media]:
+    # iiurlwidth is one of Wikimedia's standard thumbnail sizes: others return the (heavily rate-limited) original
     params = {"action": "query", "format": "json", "generator": "geosearch", "ggscoord": f"{lat}|{lng}",
               "ggsradius": min(radius_m, 10000), "ggsnamespace": 6, "ggslimit": limit,
-              "prop": "imageinfo", "iiprop": "url|size|extmetadata", "iiurlwidth": 2048}
+              "prop": "imageinfo", "iiprop": "url|size|extmetadata", "iiurlwidth": 1920}
     for attempt in range(3):
         try:
             res = http.get_json("https://commons.wikimedia.org/w/api.php?" + urlencode(params), ttl=7 * 86400,
@@ -338,7 +339,7 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         report = {"error": str(e)}
     (project_dir / "diversity.json").write_text(json.dumps(report, indent=1))
     return {"images": len([p for p in photos_dir.iterdir() if p.suffix.lower() in (".jpg", ".png")]),
-            "video_frames": len(frames), "queries": queries, "diversity": report}
+            "video_frames": sum(f.exists() for f in frames), "queries": queries, "diversity": report}
 
 
 def _normalise_images(photos_dir: Path, log: Log) -> None:

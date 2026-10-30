@@ -157,9 +157,10 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         try:
             # ReconstructMesh only writes the .ply, so texture it against the dense scene. GLB loads
             # directly in the viewer (and OpenMVS 2.3's OBJ writer segfaults); its texture images are
-            # separate files referenced by relative URI, so they're copied alongside it.
+            # separate files referenced by relative URI, so they're copied alongside it. Faces no photo
+            # saw get --empty-color, by default a bright orange that reads as part of the scene.
             _run([tex, "scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o", "scene_dense_mesh_texture.mvs",
-                  "-w", str(work), "--export-type", "glb"], work, log)
+                  "-w", str(work), "--export-type", "glb", "--empty-color", str(0x808080)], work, log)
             glb = work / "scene_dense_mesh_texture.glb"
             if glb.exists():
                 out_dir.mkdir(parents=True, exist_ok=True)

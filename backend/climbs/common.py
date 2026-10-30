@@ -5,7 +5,7 @@ The client:
   * rate-limits per host (default one request per 3 s, or robots.txt Crawl-delay if longer)
   * honours robots.txt Disallow rules for the configured user agent, except on documented
     APIs (obey_robots=False), where those rules only address crawlers
-  * never retries aggressively (one retry on 5xx / connection reset)
+  * never retries aggressively (one retry on 5xx / 429 / connection reset, after any Retry-After)
 """
 from __future__ import annotations
 
@@ -184,8 +184,9 @@ class _Http:
                     body = r.read()
                 break
             except urllib.error.HTTPError as e:
-                if e.code >= 500 and attempt == 1:
-                    time.sleep(5)
+                if (e.code >= 500 or e.code == 429) and attempt == 1:
+                    wait = e.headers.get("Retry-After") or ""
+                    time.sleep(min(int(wait), 120) if wait.isdigit() else 5)
                     continue
                 raise HttpError(url, e.code, e.reason) from None
             except (urllib.error.URLError, ConnectionError, TimeoutError) as e:

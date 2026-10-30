@@ -1,5 +1,5 @@
 """Offline parser tests on fixture HTML / nodes.  Run: python3 tests/test_parsers.py"""
-import json, os, sys, tempfile, time
+import io, json, os, sys, tempfile, time, urllib.error, urllib.request
 import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "backend"))
 from climbs import common, harvest, mountainproject as mp, kaya, openbeta, htmlmini, adapter_for_url
@@ -194,6 +194,15 @@ os.environ["FLICKR_KEY"] = "secret"
 http.get = lambda url, **kw: b'{"stat": "fail", "code": 100, "message": "Invalid API Key"}'
 assert harvest.flickr_search(37.7, -119.6, [], logged.append) == [] and "flickr: failed: Invalid API Key" in logged, logged
 del os.environ["FLICKR_KEY"], http.get
+
+# a 429 is retried once, after its Retry-After
+http._robots["u"], slept = None, []
+time.sleep = slept.append
+replies = [urllib.error.HTTPError("https://u/x", 429, "Too Many Requests", {"Retry-After": "34"}, None), io.BytesIO(b"ok")]
+urlopen, urllib.request.urlopen = urllib.request.urlopen, lambda req, timeout=0: (
+    replies.pop(0) if isinstance(replies[0], io.BytesIO) else (_ for _ in ()).throw(replies.pop(0)))
+assert http.get("https://u/x", use_cache=False) == b"ok" and 34 in slept, slept
+urllib.request.urlopen = urlopen
 time.sleep = sleep
 print("api errors OK")
 print("ALL PARSER TESTS PASSED")

@@ -6,7 +6,7 @@ services:
     environment:
       USE_GPU: "0"          # set "1" and uncomment the gpu block for NVIDIA
       MAX_UPLOAD_MB: "1024"
-      BOULDERMESH_UA: "BoulderMesh/0.2 (your-email@example.com)"   # identify yourself to the sites you fetch from
+      BOULDERMESH_UA:             # from your shell: identify yourself to the sites you fetch from (Wikimedia rejects placeholder addresses)
       HTTP_MIN_INTERVAL: "3"      # min. seconds between requests to one host (robots.txt Crawl-delay wins if longer)
       # GOOGLE_CSE_KEY: ""        # Google Programmable Search (image mode) - 100 free queries/day
       # GOOGLE_CSE_CX: ""
