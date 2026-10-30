@@ -75,6 +75,26 @@ def _largest_model(sparse: Path) -> tuple[Path | None, int]:
     return best, best_n
 
 
+def _upright(model: Path, images: Path, work: Path, log: Log) -> Path:
+    """COLMAP models have no meaningful orientation, and tend to come out upside down in the
+    viewer. Level the model from its cameras (most photos are taken upright), which puts gravity
+    along +Y, then flip it so +Y is up as glTF expects. Returns the model to use from here on."""
+    log("== COLMAP: level the model")
+    aligned = work / "aligned"
+    aligned.mkdir(exist_ok=True)
+    flip = work / "flip.txt"
+    flip.write_text("1 0 1 0 0 0 0 0\n")  # scale, quaternion w x y z (180 degrees about X), translation
+    try:
+        _run([COLMAP, "model_orientation_aligner", "--image_path", str(images), "--input_path", str(model),
+              "--output_path", str(aligned), "--method", "IMAGE-ORIENTATION"], work, log)
+        _run([COLMAP, "model_transformer", "--input_path", str(aligned), "--output_path", str(aligned),
+              "--transform_path", str(flip)], work, log)
+        return aligned
+    except RuntimeError as e:  # only costs the orientation
+        log(f"levelling failed ({e}); keeping COLMAP's orientation")
+        return model
+
+
 def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool,
                                internet: bool = False, min_registered: int = 6) -> Path:
     """internet=True tunes COLMAP for unordered photos from many cameras (per-image intrinsics,
@@ -113,6 +133,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     if model is None or registered < min_registered:
         raise RuntimeError(f"only {registered} image(s) could be registered (need >= {min_registered}); "
                            "the photo set doesn't overlap enough for photogrammetry")
+
+    model = _upright(model, images, work, log)
 
     log("== COLMAP: undistort")
     _run([COLMAP, "image_undistorter", "--image_path", str(images), "--input_path", str(model),

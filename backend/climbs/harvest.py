@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import quote_plus, urlencode
 
-from .common import Climb, HttpError, Media, http
+from .common import ApiError, Climb, HttpError, Media, http
 
 Log = Callable[[str], None]
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp"}
@@ -88,9 +88,10 @@ def google_images(queries: list[str], log: Log, per_query: int = 20) -> list[Med
             params = {"key": key, "cx": cx, "q": q, "searchType": "image", "num": 10, "start": start,
                       "imgSize": "large", "safe": "active"}
             try:
-                res = http.get_json("https://www.googleapis.com/customsearch/v1?" + urlencode(params), ttl=7 * 86400)
+                res = http.get_json("https://www.googleapis.com/customsearch/v1?" + urlencode(params), ttl=7 * 86400,
+                                    obey_robots=False)
             except Exception as e:
-                log(f"google: {q!r} failed: {e}")
+                log(f"google: {q!r} failed: {str(e).replace(key, '<key>')}")
                 break
             items = res.get("items") or []
             for it in items:
@@ -135,15 +136,22 @@ def commons_geosearch(lat: float, lng: float, log: Log, radius_m: int = 400, lim
     params = {"action": "query", "format": "json", "generator": "geosearch", "ggscoord": f"{lat}|{lng}",
               "ggsradius": min(radius_m, 10000), "ggsnamespace": 6, "ggslimit": limit,
               "prop": "imageinfo", "iiprop": "url|size|extmetadata", "iiurlwidth": 2048}
-    try:
-        res = http.get_json("https://commons.wikimedia.org/w/api.php?" + urlencode(params), ttl=7 * 86400)
-    except Exception as e:
-        log(f"commons: failed: {e}")
-        return []
+    for attempt in range(3):
+        try:
+            res = http.get_json("https://commons.wikimedia.org/w/api.php?" + urlencode(params), ttl=7 * 86400,
+                                obey_robots=False, error=lambda r: (r.get("error") or {}).get("info"))
+            break
+        except Exception as e:
+            if isinstance(e, ApiError) and attempt < 2:  # geosearch is often "too busy" for a moment
+                log(f"commons: {e} Retrying.")
+                time.sleep(15)
+                continue
+            log(f"commons: failed: {e}")
+            return []
     out = []
     for p in (res.get("query") or {}).get("pages", {}).values():
         for ii in p.get("imageinfo") or []:
-            if not re.search(r"\.(jpe?g|png)$", ii.get("url", ""), re.I):
+            if not re.search(r"\.(jpe?g|png)(\?|$)", ii.get("url", ""), re.I):  # URLs carry utm_ parameters
                 continue
             em = ii.get("extmetadata") or {}
             out.append(Media(url=ii.get("thumburl") or ii["url"], kind="image", page=ii.get("descriptionurl"),
@@ -170,9 +178,10 @@ def flickr_search(lat: float, lng: float, queries: list[str], log: Log, radius_k
     for text in [""] + queries[:2]:
         params = dict(base, **({"text": text} if text else {}))
         try:
-            res = http.get_json("https://api.flickr.com/services/rest/?" + urlencode(params), ttl=7 * 86400)
+            res = http.get_json("https://api.flickr.com/services/rest/?" + urlencode(params), ttl=7 * 86400,
+                                obey_robots=False, error=lambda r: r.get("message") if r.get("stat") == "fail" else None)
         except Exception as e:
-            log(f"flickr: failed: {e}")
+            log(f"flickr: failed: {str(e).replace(key, '<key>')}")
             break
         for p in (res.get("photos") or {}).get("photo", []):
             u = p.get("url_o") or p.get("url_l")

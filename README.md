@@ -18,7 +18,7 @@ Optional extras, each unlocks a feature and is detected at runtime:
 | `pip install opencv-python-headless numpy` | the view-graph diversity estimate (how many photos would register) |
 | `yt-dlp` + `ffmpeg` on PATH | frames from linked YouTube/Vimeo beta videos |
 | COLMAP + OpenMVS (see Docker section) | real photogrammetry instead of demo relief meshes |
-| `GOOGLE_CSE_KEY` + `GOOGLE_CSE_CX` | Google Images via the Custom Search JSON API (100 free queries/day) |
+| `GOOGLE_CSE_KEY` + `GOOGLE_CSE_CX` | Google Images via the Custom Search JSON API (100 free queries/day; existing keys only, see Known gaps) |
 | `FLICKR_KEY` | geotagged Flickr photos around the climb's coordinates |
 | `HARVEST_DDG=1` | unofficial DuckDuckGo image search (no key, brittle) |
 
@@ -43,7 +43,8 @@ mesh from the first photo (tagged `demo`) so every other feature can be exercise
 Terms: the Adventure Projects (Mountain Project) terms disallow automated/bulk scraping,
 so that adapter is deliberately low-volume — one page per import, disk cache, robots.txt
 honoured including its `Crawl-delay` (60 s on MP, so each further MP page or photo takes a
-minute). Importing an area summarises its problems from the area page's own route table;
+minute; documented APIs like Commons and Flickr are exempt from robots rules, which address
+crawlers). Importing an area summarises its problems from the area page's own route table;
 a problem's page (photos, description, route GPS) is fetched when you import it directly,
 press *Fetch problem page*, or harvest it. Use OpenBeta for anything bulk. KAYA's terms
 prohibit scraping and circumventing their app, so the Kaya adapter only records links
@@ -101,12 +102,13 @@ their photographers. `sources.json` lets you credit or remove any of them.
 
     docker compose up --build      # CPU build of COLMAP + OpenMVS (+ OpenCV, ffmpeg, yt-dlp); first build ~5-30 min depending on cores
 
-or natively on Ubuntu: `apt install colmap python3-opencv ffmpeg`, build OpenMVS (see
+(`PORT=8010 docker compose up --build` if 8000 is taken), or natively on Ubuntu: `apt install colmap python3-opencv ffmpeg`, build OpenMVS (see
 Dockerfile, including its one-line patch), `pip install yt-dlp`, then
 `USE_GPU=1 python3 backend/server.py` if COLMAP has CUDA.
 
 A reconstruction produces a textured `mesh.glb` (texture PNGs alongside), or an untextured
-`mesh.ply` if texturing fails. On CPU, OpenMVS's 11-photo sample set takes 2-3 minutes.
+`mesh.ply` if texturing fails, levelled assuming most photos were taken upright. On CPU,
+OpenMVS's 11-photo sample set takes 3-4 minutes.
 
 ## Layout
 
@@ -151,4 +153,6 @@ Both run without network access (the harvest test serves its own "web photos").
   surfaces the API's own error text if a field is renamed.
 - No auth, single in-process job queue — intranet prototype, not a public service.
 - Google Images needs the paid-after-100/day Custom Search API; direct scraping of
-  Google Images is not implemented on purpose.
+  Google Images is not implemented on purpose. That API is reported as closed to new
+  customers and shutting down on 2027-01-01, so it only helps with a key you already hold.
+- With Docker's default user, everything in `./data` ends up owned by root.

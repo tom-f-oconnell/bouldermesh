@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 import re
 
-from .common import Climb, Media, clean, find_videos, http
+from .common import ApiError, Climb, Media, clean, find_videos, http
 
 ENDPOINT = os.environ.get("OPENBETA_API", "https://api.openbeta.io")
 MEDIA_BASE = os.environ.get("OPENBETA_MEDIA_BASE", "https://media.openbeta.io")
@@ -49,9 +49,11 @@ class OpenBetaError(RuntimeError):
 
 
 def gql(query: str, variables: dict | None = None, use_cache: bool = True) -> dict:
-    res = http.get_json(ENDPOINT, {"query": query, "variables": variables or {}}, use_cache=use_cache)
-    if res.get("errors"):
-        raise OpenBetaError("; ".join(e.get("message", str(e)) for e in res["errors"]))
+    try:
+        res = http.get_json(ENDPOINT, {"query": query, "variables": variables or {}}, use_cache=use_cache,
+                            error=lambda r: "; ".join(e.get("message", str(e)) for e in r.get("errors") or []))
+    except ApiError as e:
+        raise OpenBetaError(str(e)) from None
     return res.get("data") or {}
 
 

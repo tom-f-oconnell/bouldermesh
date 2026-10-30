@@ -1,9 +1,9 @@
 """Offline parser tests on fixture HTML / nodes.  Run: python3 tests/test_parsers.py"""
-import json, sys
+import json, os, sys, tempfile, time
 import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "backend"))
-from climbs import mountainproject as mp, kaya, openbeta, htmlmini, adapter_for_url
-from climbs.common import find_videos, parse_latlng
+from climbs import common, harvest, mountainproject as mp, kaya, openbeta, htmlmini, adapter_for_url
+from climbs.common import ApiError, find_videos, http, parse_latlng
 
 # Trimmed from the live pages (Oct 2026), keeping the structures the parser depends on.
 LD_CRUMBS = """<script type="application/ld+json">
@@ -129,6 +129,21 @@ assert (s.name, s.kind, s.grade, s.lat, s.coord_source, s.boulder_name, s.elevat
     ("The Moffat Start", "boulder", "V10 7C+", 37.74172, "parent-area", "Big Columbia Boulder", 1219.0, {"stub": True}), s
 print("area OK:", a.name, routes, children)
 
+# trimmed from the live /route-finder-export response; Location is bottom-up
+CSV = """Route,Location,URL,"Avg Stars","Your Stars","Route Type",Rating,Pitches,Length,"Area Latitude","Area Longitude"
+"Quinn's Slab","The Glass Pyramid > Camp 4 Boulders > * Yosemite Valley Bouldering > California",https://www.mountainproject.com/route/124539964/quinns-slab,2.1,-1,Boulder,"V0+ R",1,15,37.7426,-119.60284
+"Crack Thing","Finger Crack Boulder > Camp 4 Boulders > California",https://www.mountainproject.com/route/1/crack-thing,-1,-1,"Trad, Boulder","5.10a/b V1",1,,37.74,-119.6
+"""
+mp.http.get_text = lambda url, **kw: CSV
+q, ct = mp.export_area_csv(105833471)
+del mp.http.get_text
+assert (q.name, q.source_id, q.kind, q.grade, q.grades, q.rating, q.lat, q.coord_source) == \
+    ("Quinn's Slab", "124539964", "boulder", "V0+ R", {"vscale": "V0+"}, 2.1, 37.7426, "area"), q
+assert q.area_path == ["California", "* Yosemite Valley Bouldering", "Camp 4 Boulders", "The Glass Pyramid"], q.area_path
+assert q.boulder_name == "The Glass Pyramid", q.boulder_name
+assert (ct.grades, ct.rating, ct.boulder_name) == ({"vscale": "V1"}, None, "Finger Crack Boulder"), ct
+print("csv OK:", q.name, q.boulder_name)
+
 k = kaya.fetch("https://kaya-app.kayaclimb.com/location/Index-345070")[0]
 assert k.name == "Index" and k.kind == "area" and k.source == "kaya"
 ex = kaya.from_export([{"Climb": "The Egg", "Grade": "V11", "Area": "Index", "Latitude": "47.82", "Longitude": "-121.55", "Beta": "https://youtu.be/abcdefghijk"}])
@@ -150,4 +165,35 @@ c = openbeta.climb_from_node({**node, "fa": "unknown", "grades": {"vscale": "V10
 assert c.grade == "V10 7C+" and c.coord_source == "parent-area" and c.fa is None, (c.grade, c.coord_source, c.fa)
 print("openbeta OK")
 assert adapter_for_url("https://openbeta.io/climbs/x") is openbeta and adapter_for_url("https://mountainproject.com/route/1/x") is mp
+
+# APIs that report failures in a 200 body: surfaced, retried (Commons), never left in the cache
+BUSY = b'{"error": {"code": "cirrussearch-too-busy-error", "info": "Search is currently too busy."}}'
+COMMONS = json.dumps({"query": {"pages": {"1": {"title": "File:A.jpg", "imageinfo": [
+    {"url": "https://u/A.jpg?utm_source=commons.wikimedia.org&utm_content=original", "thumburl": "https://u/2048px-A.jpg", "thumbwidth": 2048, "thumbheight": 1536, "descriptionurl": "https://c/File:A.jpg",
+     "extmetadata": {"Artist": {"value": "<a href='x'>Ann</a>"}, "LicenseShortName": {"value": "CC BY 4.0"}}}]}}}}).encode()
+with tempfile.TemporaryDirectory() as tmp:
+    common.CACHE_DIR = pathlib.Path(tmp)
+    cp = http._cache_path("https://u/api")
+    cp.parent.mkdir(parents=True)
+    cp.write_bytes(BUSY)
+    try:
+        http.get_json("https://u/api", error=lambda r: (r.get("error") or {}).get("info"))
+        assert False, "no ApiError"
+    except ApiError as e:
+        assert "too busy" in str(e) and not cp.exists(), (e, cp.exists())
+
+logged, sleep = [], time.sleep
+time.sleep = lambda s: None
+responses = [BUSY, COMMONS]
+http.get = lambda url, **kw: responses.pop(0)
+imgs = harvest.commons_geosearch(37.7, -119.6, logged.append)
+assert [(m.url, m.credit, m.license) for m in imgs] == [("https://u/2048px-A.jpg", "Ann", "CC BY 4.0")] and not responses, imgs
+responses = [BUSY] * 3
+assert harvest.commons_geosearch(37.7, -119.6, logged.append) == [] and "commons: failed: Search is currently too busy." in logged, logged
+os.environ["FLICKR_KEY"] = "secret"
+http.get = lambda url, **kw: b'{"stat": "fail", "code": 100, "message": "Invalid API Key"}'
+assert harvest.flickr_search(37.7, -119.6, [], logged.append) == [] and "flickr: failed: Invalid API Key" in logged, logged
+del os.environ["FLICKR_KEY"], http.get
+time.sleep = sleep
+print("api errors OK")
 print("ALL PARSER TESTS PASSED")

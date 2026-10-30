@@ -3,7 +3,8 @@
 The client:
   * caches every response on disk (DATA_DIR/cache/http, default TTL 30 days)
   * rate-limits per host (default one request per 3 s, or robots.txt Crawl-delay if longer)
-  * honours robots.txt Disallow rules for the configured user agent
+  * honours robots.txt Disallow rules for the configured user agent, except on documented
+    APIs (obey_robots=False), where those rules only address crawlers
   * never retries aggressively (one retry on 5xx / connection reset)
 """
 from __future__ import annotations
@@ -109,6 +110,10 @@ class HttpError(RuntimeError):
         self.url = url
 
 
+class ApiError(RuntimeError):
+    """An API reported a failure in the body of a 200 response."""
+
+
 class _Http:
     def __init__(self):
         self._lock = threading.Lock()
@@ -156,18 +161,18 @@ class _Http:
 
     # -- cache ------------------------------------------------------------
     @staticmethod
-    def _cache_path(key: str) -> Path:
+    def _cache_path(url: str, data: bytes | None = None) -> Path:
+        key = url + ("|" + hashlib.sha1(data).hexdigest() if data else "")
         h = hashlib.sha1(key.encode()).hexdigest()
         return CACHE_DIR / h[:2] / h
 
     def get(self, url: str, headers: dict | None = None, data: bytes | None = None, ttl: int = CACHE_TTL,
-            use_cache: bool = True, binary: bool = False) -> bytes:
+            use_cache: bool = True, binary: bool = False, obey_robots: bool = True) -> bytes:
         """GET (or POST when data is given). Returns body bytes. Cached by (url, data)."""
-        key = url + ("|" + hashlib.sha1(data).hexdigest() if data else "")
-        cp = self._cache_path(key)
+        cp = self._cache_path(url, data)
         if use_cache and cp.exists() and time.time() - cp.stat().st_mtime < ttl:
             return cp.read_bytes()
-        if not self.allowed(url):
+        if obey_robots and not self.allowed(url):
             raise HttpError(url, 403, "(disallowed by robots.txt)")
         hdrs = {"User-Agent": USER_AGENT, "Accept": "*/*", "Accept-Language": "en-US,en;q=0.8"}
         hdrs.update(headers or {})
@@ -196,14 +201,21 @@ class _Http:
     def get_text(self, url: str, **kw) -> str:
         return self.get(url, **kw).decode("utf-8", "replace")
 
-    def get_json(self, url: str, payload: Any = None, headers: dict | None = None, **kw) -> Any:
+    def get_json(self, url: str, payload: Any = None, headers: dict | None = None, error=None, **kw) -> Any:
+        """error(response) -> message or None, for APIs that report failures in a 200 response:
+        raises ApiError and keeps the (often transient) failure out of the cache."""
         hdrs = {"Accept": "application/json"}
         data = None
         if payload is not None:
             data = json.dumps(payload).encode()
             hdrs["Content-Type"] = "application/json"
         hdrs.update(headers or {})
-        return json.loads(self.get(url, headers=hdrs, data=data, **kw))
+        res = json.loads(self.get(url, headers=hdrs, data=data, **kw))
+        msg = error(res) if error else None
+        if msg:
+            self._cache_path(url, data).unlink(missing_ok=True)
+            raise ApiError(msg)
+        return res
 
 
 http = _Http()

@@ -174,6 +174,9 @@ def run(B: str, tmp: Path) -> None:
     pipeline.write_ply(ply, [(0, 0, 0), (1, 0, 0), (0, 1, 0)], [(255, 0, 0)] * 3, [(0, 1, 2)])
     st, up = req(B, "POST", "/api/meshes", files=[("files", "cube.ply", ply.read_bytes())], fields={"name": "uploaded", "climb_id": cid})
     assert st == 201, up
+    st, meshes = req(B, "GET", "/api/meshes")
+    um = next(x for x in meshes if x["id"] == up["id"])
+    assert um["lat"] == 37.74172 and um["climbs"][0]["id"] == cid, um
     st, _ = req(B, "DELETE", f"/api/meshes/{up['id']}/links/{cid}")
     st, _ = req(B, "POST", f"/api/meshes/{up['id']}/links", {"climb_id": cid, "note": "west face"})
     assert st == 201

@@ -325,10 +325,13 @@ def export_area_csv(area_id: str | int, route_type: str = "boulder") -> list[Cli
         rurl = row.get("URL") or ""
         rid = (ROUTE_RE.search(rurl) or [0, rurl])[1]
         lat = row.get("Area Latitude"); lng = row.get("Area Longitude")
-        path = [p.strip() for p in (row.get("Location") or "").split(">")]
+        # Location runs from the boulder up to the state; area_path is top-down everywhere else
+        path = [p.strip() for p in (row.get("Location") or "").split(">")][::-1]
+        v = re.search(r"\bV(?:-easy|\d[\d+/-]*)", row.get("Rating") or "")
         c = Climb(source="mountainproject", source_id=str(rid), url=rurl, name=row.get("Route") or rid,
                   kind="boulder" if "boulder" in (row.get("Route Type") or "").lower() else "route",
-                  grade=row.get("Rating"), rating=float(row["Avg Stars"]) if row.get("Avg Stars") not in (None, "", "-1") else None,
+                  grade=row.get("Rating"), grades={"vscale": v[0]} if v else {},
+                  rating=float(row["Avg Stars"]) if row.get("Avg Stars") not in (None, "", "-1") else None,
                   lat=float(lat) if lat else None, lng=float(lng) if lng else None, coord_source="area" if lat else None,
                   area_path=path, cross_refs={"mp_id": str(rid)}, raw=dict(row))
         c.boulder_name = c.guess_boulder_name()

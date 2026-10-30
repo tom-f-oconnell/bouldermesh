@@ -163,6 +163,13 @@ def climb_obj(cid: str) -> Climb:
     return c
 
 
+def link_mesh(mid: str, cid: str, note: str | None) -> None:
+    """Link a mesh to a climb; a mesh without coordinates inherits the climb's."""
+    q("INSERT OR REPLACE INTO mesh_links VALUES(?,?,?,?)", mid, cid, note, time.time(), write=True)
+    q("UPDATE meshes SET lat=COALESCE(lat,(SELECT lat FROM climbs WHERE id=?)), "
+      "lng=COALESCE(lng,(SELECT lng FROM climbs WHERE id=?)) WHERE id=?", cid, cid, mid, write=True)
+
+
 # ------------------------------------------------------------------ worker
 jobs: "queue.Queue[dict]" = queue.Queue()
 
@@ -181,15 +188,10 @@ def run_reconstruct(pid: str, internet: bool = False) -> None:
         mid = new_id()
         mesh_path, demo = pipeline.reconstruct(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet)
         proj = q("SELECT name, climb_id FROM projects WHERE id=?", pid, one=True)
-        lat = lng = None
-        if proj["climb_id"]:
-            cr = q("SELECT lat,lng FROM climbs WHERE id=?", proj["climb_id"], one=True) or {}
-            lat, lng = cr.get("lat"), cr.get("lng")
         q("INSERT INTO meshes VALUES(?,?,?,?,?,?,?,?,?)", mid, proj["name"], mesh_path.name, f"project:{pid}",
-          time.time(), mesh_path.stat().st_size, int(demo), lat, lng, write=True)
+          time.time(), mesh_path.stat().st_size, int(demo), None, None, write=True)
         if proj["climb_id"]:
-            q("INSERT OR IGNORE INTO mesh_links VALUES(?,?,?,?)", mid, proj["climb_id"],
-              "auto-linked from reconstruction project", time.time(), write=True)
+            link_mesh(mid, proj["climb_id"], "auto-linked from reconstruction project")
             log(f"mesh linked to climb {proj['climb_id']}")
         q("UPDATE projects SET status='done', mesh_id=?, demo=? WHERE id=?", mid, int(demo), pid, write=True)
         log("done")
@@ -444,8 +446,7 @@ class Handler(BaseHTTPRequestHandler):
                 q("INSERT INTO meshes VALUES(?,?,?,?,?,?,?,?,?)", mid, name, main, "upload", time.time(),
                   (d / main).stat().st_size, 0, lat, lng, write=True)
                 if fields.get("climb_id"):
-                    q("INSERT OR IGNORE INTO mesh_links VALUES(?,?,?,?)", mid, fields["climb_id"], "linked at upload",
-                      time.time(), write=True)
+                    link_mesh(mid, fields["climb_id"], "linked at upload")
                 return self.send_json({"id": mid, "name": name, "filename": main}, 201)
 
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/links", p)
@@ -453,12 +454,7 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 if not q("SELECT 1 FROM climbs WHERE id=?", body.get("climb_id"), one=True):
                     return self.send_json({"error": "unknown climb"}, 404)
-                q("INSERT OR REPLACE INTO mesh_links VALUES(?,?,?,?)", m[1], body["climb_id"], body.get("note"),
-                  time.time(), write=True)
-                # a mesh without coordinates inherits the climb's
-                q("UPDATE meshes SET lat=COALESCE(lat,(SELECT lat FROM climbs WHERE id=?)), "
-                  "lng=COALESCE(lng,(SELECT lng FROM climbs WHERE id=?)) WHERE id=?",
-                  body["climb_id"], body["climb_id"], m[1], write=True)
+                link_mesh(m[1], body["climb_id"], body.get("note"))
                 return self.send_json({"linked": True}, 201)
 
             # ---- climbs
