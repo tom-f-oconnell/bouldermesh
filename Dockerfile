@@ -1,5 +1,5 @@
 # BoulderMesh with the real pipeline: COLMAP (apt) + OpenMVS (built from source, CPU).
-# Build:  docker build -t bouldermesh .      (takes ~20-30 min the first time)
+# Build:  docker build -t bouldermesh .      (first build ~5-30 min depending on cores)
 # Run:    docker compose up                 (see docker-compose.yml)
 #
 # For NVIDIA GPU acceleration use an nvidia/cuda base image, install COLMAP with
@@ -13,11 +13,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libopencv-dev libcgal-dev libcgal-qt5-dev libeigen3-dev libglu1-mesa-dev libglew-dev libglfw3-dev \
     libjpeg-dev libpng-dev libtiff-dev \
  && rm -rf /var/lib/apt/lists/*
-# VCGLib is a header-only dependency of OpenMVS
+# VCGLib is a header-only dependency of OpenMVS.
+# v2.3.0's Util::formatTime() passes snprintf the whole buffer size at an offset, which
+# Ubuntu's _FORTIFY_SOURCE=3 aborts on ("buffer overflow detected") as soon as a duration has
+# two units, killing DensifyPointCloud; patched as upstream did in v2.4.0 (which needs OpenCV >= 4.11).
 RUN git clone --depth 1 https://github.com/cdcseacave/VCG.git /opt/vcglib \
- && git clone --depth 1 --branch v2.3.0 https://github.com/cdcseacave/openMVS.git /opt/openMVS
+ && git clone --depth 1 --branch v2.3.0 https://github.com/cdcseacave/openMVS.git /opt/openMVS \
+ && sed -i 's/_sntprintf(buf+len, 128,/_sntprintf(buf+len, 128-len,/' /opt/openMVS/libs/Common/Util.h \
+ && grep -q '_sntprintf(buf+len, 128-len,' /opt/openMVS/libs/Common/Util.h
 RUN cmake -S /opt/openMVS -B /opt/openMVS/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DVCG_ROOT=/opt/vcglib -DOpenMVS_USE_CUDA=OFF \
+      -DVCG_ROOT=/opt/vcglib -DOpenMVS_USE_CUDA=OFF -DOpenMVS_USE_PYTHON=OFF \
  && cmake --build /opt/openMVS/build && cmake --install /opt/openMVS/build
 
 FROM ubuntu:24.04

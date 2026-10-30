@@ -102,7 +102,11 @@ their photographers. `sources.json` lets you credit or remove any of them.
     docker compose up --build      # CPU build of COLMAP + OpenMVS (+ OpenCV, ffmpeg, yt-dlp); first build ~5-30 min depending on cores
 
 or natively on Ubuntu: `apt install colmap python3-opencv ffmpeg`, build OpenMVS (see
-Dockerfile), `pip install yt-dlp`, then `USE_GPU=1 python3 backend/server.py` if COLMAP has CUDA.
+Dockerfile, including its one-line patch), `pip install yt-dlp`, then
+`USE_GPU=1 python3 backend/server.py` if COLMAP has CUDA.
+
+A reconstruction produces a textured `mesh.glb` (texture PNGs alongside), or an untextured
+`mesh.ply` if texturing fails. On CPU, OpenMVS's 11-photo sample set takes 2-3 minutes.
 
 ## Layout
 

@@ -133,13 +133,17 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     if tex:
         log("== OpenMVS: texture mesh")
         try:
-            _run([tex, "scene_dense_mesh.mvs", "-w", str(work), "--export-type", "obj"], work, log)
-            obj = work / "scene_dense_mesh_texture.obj"
-            if obj.exists():
+            # ReconstructMesh only writes the .ply, so texture it against the dense scene. GLB loads
+            # directly in the viewer (and OpenMVS 2.3's OBJ writer segfaults); its texture images are
+            # separate files referenced by relative URI, so they're copied alongside it.
+            _run([tex, "scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o", "scene_dense_mesh_texture.mvs",
+                  "-w", str(work), "--export-type", "glb"], work, log)
+            glb = work / "scene_dense_mesh_texture.glb"
+            if glb.exists():
                 out_dir.mkdir(parents=True, exist_ok=True)
-                for f in work.glob("scene_dense_mesh_texture.*"):
+                for f in work.glob("scene_dense_mesh_texture_*"):
                     shutil.copy(f, out_dir / f.name)
-                return out_dir / obj.name
+                return Path(shutil.copy(glb, out_dir / "mesh.glb"))
         except Exception as e:  # texturing is optional
             log(f"texturing failed ({e}); keeping untextured mesh")
 
