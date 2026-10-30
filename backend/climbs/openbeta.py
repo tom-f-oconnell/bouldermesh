@@ -75,7 +75,8 @@ def _grade(g: dict | None, t: dict | None) -> tuple[str | None, dict]:
         order = ("vscale", "font", "yds", "french", "ewbank", "uiaa")
     else:
         order = ("yds", "french", "ewbank", "uiaa", "vscale", "font")
-    parts = [g[k] for k in order if k in g]
+    # boulders carry their V-grade in yds too (inherited from MP's rateYDS spans)
+    parts = dict.fromkeys(g[k] for k in order if k in g)
     return (" ".join(parts) or None), g
 
 
@@ -87,8 +88,9 @@ def climb_from_node(n: dict, area: dict | None = None) -> Climb:
     url = f"https://openbeta.io/climbs/{n['uuid']}"
     content = n.get("content") or {}
     text = " ".join(filter(None, [content.get("description"), content.get("location"), content.get("protection")]))
+    fa = n.get("fa") if (n.get("fa") or "").strip().lower() not in ("", "unknown") else None
     c = Climb(source="openbeta", source_id=n["uuid"], url=url, name=n.get("name") or "?",
-              kind="boulder" if t.get("bouldering") else "route", grade=grade, grades=grades, fa=n.get("fa"),
+              kind="boulder" if t.get("bouldering") else "route", grade=grade, grades=grades, fa=fa,
               lat=md.get("lat"), lng=md.get("lng"), coord_source="route" if md.get("lat") is not None else None,
               area_path=path[:-1] if path and path[-1] == n.get("name") else path,
               description=clean(content.get("description")), location=clean(content.get("location")),
@@ -98,7 +100,8 @@ def climb_from_node(n: dict, area: dict | None = None) -> Climb:
               raw={"type": t})
     if area:
         amd = area.get("metadata") or {}
-        if c.lat is None and amd.get("lat") is not None:
+        # climbs without their own GPS are stored with their area's, so equal coords aren't route-level
+        if (c.lat is None or (c.lat, c.lng) == (amd.get("lat"), amd.get("lng"))) and amd.get("lat") is not None:
             c.lat, c.lng, c.coord_source = amd["lat"], amd["lng"], "parent-area"
         if amd.get("isBoulder"):
             c.boulder_name = area.get("area_name")

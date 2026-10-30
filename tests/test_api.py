@@ -110,7 +110,10 @@ def synthetic_photo_set():
     """14 views of one textured surface (+1 re-encoded duplicate, +1 too-small image)."""
     if not HAVE_CV:
         views = [simple_img(i + 10) for i in range(14)]
-        dup = simple_img(10)
+        # re-encode, so harvest's content-hash filenames don't collapse it into views[0]
+        b = io.BytesIO()
+        Image.open(io.BytesIO(views[0])).save(b, "JPEG", quality=55)
+        dup = b.getvalue()
         small = simple_img(99, 300, 225)
         return views, dup, small
     rng = np.random.default_rng(1)

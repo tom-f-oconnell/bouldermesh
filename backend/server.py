@@ -117,12 +117,18 @@ def safe_name(name: str) -> str:
 # ----------------------------------------------------------------- climbs helpers
 def upsert_climb(c: Climb) -> str:
     row = q("SELECT id FROM climbs WHERE source=? AND source_id=?", c.source, c.source_id, one=True)
+    if row and c.raw.get("stub"):   # an area-table summary never replaces a record we already have
+        return row["id"]
     cid = row["id"] if row else new_id()
+    # coordinates edited by hand survive re-imports
     q("""INSERT INTO climbs(id,source,source_id,url,name,kind,grade,lat,lng,coord_source,boulder_name,area_path,data,created)
          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(source,source_id) DO UPDATE SET url=excluded.url,name=excluded.name,kind=excluded.kind,
-           grade=excluded.grade,lat=COALESCE(excluded.lat,climbs.lat),lng=COALESCE(excluded.lng,climbs.lng),
-           coord_source=COALESCE(excluded.coord_source,climbs.coord_source),boulder_name=excluded.boulder_name,
+         ON CONFLICT(source,source_id) DO UPDATE SET url=excluded.url,name=excluded.name,kind=excluded.kind,grade=excluded.grade,
+           lat=CASE WHEN climbs.coord_source='manual' THEN climbs.lat ELSE COALESCE(excluded.lat,climbs.lat) END,
+           lng=CASE WHEN climbs.coord_source='manual' THEN climbs.lng ELSE COALESCE(excluded.lng,climbs.lng) END,
+           coord_source=CASE WHEN climbs.coord_source='manual' THEN 'manual'
+                             ELSE COALESCE(excluded.coord_source,climbs.coord_source) END,
+           boulder_name=excluded.boulder_name,
            area_path=excluded.area_path,data=excluded.data""",
       cid, c.source, c.source_id, c.url, c.name, c.kind, c.grade, c.lat, c.lng, c.coord_source,
       c.boulder_name, json.dumps(c.area_path), json.dumps(c.to_dict()), time.time(), write=True)
@@ -199,6 +205,10 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool) -> None:
     try:
         proj = q("SELECT climb_id FROM projects WHERE id=?", pid, one=True)
         c = climb_obj(proj["climb_id"])
+        if c.raw.get("stub"):
+            log(f"fetching the problem page for its photos/videos: {c.url}")
+            upsert_climb(climbs_mod.fetch_climb_url(c.url, include_children=False)[0])
+            c = climb_obj(proj["climb_id"])
         summary = harvest_mod.harvest(c, pdir, log, sources)
         q("UPDATE projects SET harvest=?, status='harvested' WHERE id=?", json.dumps(summary), pid, write=True)
         verdict = (summary.get("diversity") or {}).get("verdict", "unknown")

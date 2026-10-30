@@ -5,57 +5,108 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "backend"))
 from climbs import mountainproject as mp, kaya, openbeta, htmlmini, adapter_for_url
 from climbs.common import find_videos, parse_latlng
 
-ROUTE_HTML = """<html><head><title>Climb Midnight Lightning, Yosemite National Park</title>
-<meta property="og:title" content="Climb Midnight Lightning, Yosemite National Park">
-<meta property="og:image" content="https://mountainproject.com/assets/photos/climb/105857128_medium_1557864286.jpg?cache=1779390649"></head>
+# Trimmed from the live pages (Oct 2026), keeping the structures the parser depends on.
+LD_CRUMBS = """<script type="application/ld+json">
+{"@context": "http://schema.org", "@type": "BreadcrumbList", "itemListElement": [
+ {"@type": "ListItem", "position": 1, "item": "https://www.mountainproject.com/route-guide", "name": "All Locations"},
+ {"@type": "ListItem", "position": 2, "item": "https://www.mountainproject.com/area/105708959/california", "name": "California"},
+ {"@type": "ListItem", "position": 3, "item": "https://www.mountainproject.com/area/107457415/yosemite-valley-bouldering", "name": "* Yosemite Valley Bouldering"},
+ {"@type": "ListItem", "position": 4, "item": "https://www.mountainproject.com/area/105833471/camp-4-boulders", "name": "Camp 4 Boulders"}%s]}
+</script>"""
+MP = "https://www.mountainproject.com"
+ASSET = "https://mountainproject.com/assets/photos/climb"
+
+ROUTE_HTML = f"""<html><head><title>Climb Midnight Lightning, Yosemite National Park</title>
+<meta property="og:image" content="{ASSET}/105857128_medium_1557864286.jpg?cache=1779390649"/></head>
 <body>
 <div class="mb-half small text-warm">
- <a href="/route-guide">All Locations</a> &gt; <a href="/area/105708959/california">California</a> &gt;
- <a href="/area/105833381/yosemite-national-park">Yosemite NP</a> &gt; <a href="/area/105833388/yosemite-valley">Yosemite Valley</a> &gt;
- <a href="/area/107457415/yosemite-valley-bouldering">Yosemite Valle&hellip;</a> &gt; <a href="/area/105833471/camp-4-boulders">Camp 4 Boulders</a> &gt;
- <a href="/area/109861444/big-columbia-boulder">Big Columbia Boulder</a></div>
-<h1>Midnight Lightning <a class="small" href="#">Suggest change</a></h1>
-<h2 class="inline-block mr-2"><span class="rateHueco">V8</span> <a href="/international">YDS</a> <span class="rateFont">7B</span> <a href="/international">Font</a></h2>
-<span id="route-star-avg"><span class="scoreStars"></span> Avg: 3.9 from 117 votes</span>
-<table class="description-details"><tr><td>Type:</td><td>Boulder</td></tr><tr><td>GPS:</td><td>37.74367, -119.59863 <a href="http://maps.google.com/maps?q=37.74367,-119.59863">Google Map</a></td></tr>
-<tr><td>FA:</td><td>Ron Kauk, 1978</td></tr><tr><td>Page Views:</td><td>87,031 total &middot; 352/month</td></tr><tr><td>Shared By:</td><td><a href="/user/1/peter">Peter Franzen</a> on Jun 21, 2006</td></tr></table>
+ <a href="{MP}/route-guide">All Locations</a> &gt; <a href="{MP}/area/105708959/california">California</a>
+ &gt; <a href="{MP}/area/107457415/yosemite-valley-bouldering">Yosemite Valle&hellip;</a>
+ &gt; <a href="{MP}/area/105833471/camp-4-boulders">Camp 4 Boulders</a>
+ &gt; <a href="{MP}/area/109861444/big-columbia-boulder">Big Columbia Boulder</a>
+</div>
+<h1>
+    Midnight Lightning
+    <!--EDIT-Route-105835104--><a href="#" data-toggle="modal"><img src='/img/icons/edit_climb.svg' /></a>
+</h1>
+<h2 class="inline-block mr-2"><span class='rateYDS'>V8 <a href="{MP}/international-climbing-grades" class="font-body"><span class="small">YDS</span></a></span> <span class='rateFont'>7B <a href="{MP}/international-climbing-grades" class="font-body"><span class="small">Font</span></a></span></h2>
+<span id="route-star-avg"><span class="scoreStars"></span>
+    &nbsp;Avg: 3.9 from 117
+ votes</span>
+<div id="carousel-item-0" class="carousel-item" style="background-image: url('{ASSET}/105857128_medium_1557864286.jpg?cache=1779390649')">
+  <a href="{MP}/photo/105857128/kurt-smith-1985" class="photo-link" onclick="return photoClicked(105857128)"></a>
+</div>
+<table class="description-details"><tr><td>Type:</td><td>
+    Boulder
+ </td></tr><tr><td>GPS:</td><td>
+    37.74367, -119.59863
+ </td></tr>
+<tr><td>FA:</td><td>Ron Kauk, 1978</td></tr><tr><td class="pr-half text-nowrap">Page Views:</td><td>87,057 total &middot; 352/month</td></tr>
+<tr><td class="pr-half text-nowrap">Shared By:</td><td><a href="{MP}/user/10116/peter-franzen">Peter Franzen</a> on Jun 21, 2006</td></tr></table>
 <h2 class="mt-2">Description <a href="#">Suggest change</a></h2><div class="fr-view"><p>What can you say about such a classic boulder problem?</p><p>First sent by Ron Kauk.</p></div>
 <h2 class="mt-2">Location <a href="#">Suggest change</a></h2><div class="fr-view">Right in Camp 4. Look for the chalked lightning bolt on the rock.</div>
 <h2 class="mt-2">Protection <a href="#">Suggest change</a></h2><div class="fr-view">Crashpad, spotter</div>
-<div class="photos">
- <a href="/photo/105857128/kurt-smith-1985"><img src="https://mountainproject.com/assets/photos/climb/105857128_smallMed_1557864286.jpg" alt="Kurt Smith 1985"></a>
- <a href="/photo/106143224/jerad-friedrichs-on-midnight-lightning"><img data-src="https://mountainproject.com/assets/photos/climb/106143224_smallMed_1559058594.jpg" alt="Jerad Friedrichs"></a>
- <a href="/photo/119694985/one-day">One day</a>
+<div class="col-xs-4 col-lg-3 card-with-photo">
+ <a class="card-with-photo photo-card" href="{MP}/photo/105857128/kurt-smith-1985" onclick='return photoClicked(105857128);'>
+  <div class="img-container position-relative"><img  class="lazy" data-src='{ASSET}/105857128_smallMed_1557864286.jpg?cache=1779390649' alt="Kurt Smith, 1985.<br>
+ No pads or spotters!"></div></a>
+ <div class="card-text small mb-2"><a class="card-with-photo photo-card" href="{MP}/photo/105857128/kurt-smith-1985"><div class="title-row text-truncate">Kurt Smith, 1985.</div></a></div>
+</div>
+<div class="col-xs-4 col-lg-3 card-with-photo">
+ <a class="card-with-photo photo-card" href="{MP}/photo/106143224/jerad-friedrichs-on-midnight-lightning">
+  <div class="img-container position-relative"><img  class="lazy" data-src='{ASSET}/106143224_smallMed_1559058594.jpg?cache=1' alt="Jerad Friedrichs"></div></a>
+</div>
+<a href="{MP}/photo/119694985/one-day">One day</a>
+<div class="col-xs-6 col-sm-4 col-lg-3 video-tile" data-comment-id="107322305">
+ <a href="#" class="video-thumb-link" data-toggle="modal" data-video-embed="https://www.youtube-nocookie.com/embed/H2EeJEvxpJI">
+  <img class="video-thumb lazy" data-src="https://i.ytimg.com/vi/H2EeJEvxpJI/hqdefault.jpg"></a>
 </div>
 <div class="comment-body">Nice video: <a href="http://www.youtube.com/watch?v=H2EeJEvxpJI">http://www.youtube.com/watch?v=H2EeJEvxpJI</a> and https://youtu.be/VU473K7m_Ko?si=abc and https://vimeo.com/12345678</div>
+{LD_CRUMBS % ', {"@type": "ListItem", "position": 5, "item": "https://www.mountainproject.com/area/109861444/big-columbia-boulder", "name": "Big Columbia Boulder"}'}
 </body></html>"""
 
-AREA_HTML = """<html><head><title>Big Columbia Boulder</title></head><body>
-<div class="mb-half small text-warm"><a href="/route-guide">All Locations</a> &gt; <a href="/area/105708959/california">California</a> &gt; <a href="/area/105833471/camp-4-boulders">Camp 4 Boulders</a></div>
-<h1>Big Columbia Boulder <a href="#">Suggest change</a></h1>
-<table class="description-details"><tr><td>Elevation:</td><td>3,998 ft 1,219 m</td></tr><tr><td>GPS:</td><td>37.74172, -119.60355</td></tr></table>
-<h2>Description <a>Suggest change</a></h2><div class="fr-view">Hosts the classic <a href="/route/105835104/midnight-lightning">Midnight Lightning</a>.</div>
+AREA_HTML = f"""<html><head><title>Big Columbia Boulder</title></head><body>
+<div class="mb-half small text-warm"><a href="{MP}/route-guide">All Locations</a> &gt; <a href="{MP}/area/105708959/california">California</a>
+ &gt; <a href="{MP}/area/107457415/yosemite-valley-bouldering">Yosemite Valle&hellip;</a> &gt; <a href="{MP}/area/105833471/camp-4-boulders">Camp 4 Boulders</a></div>
+<h1>
+    Big Columbia Boulder
+            <span class="hidden-md-down">Climbing</span>
+            <!--EDIT-Area-109861444-->
+</h1>
+<table class="description-details"><tr><td class="text-nowrap">Elevation:</td><td class="imperial">3,998 ft</td><td class="metric">1,219 m</td></tr>
+<tr><td>GPS:</td><td>37.74172, -119.60355 <a href="https://maps.google.com/maps?q=37.74172,-119.60355">Google Map</a></td></tr></table>
+<h2>Description <a>Suggest change</a></h2><div class="fr-view">Hosts the classic <a href="{MP}/route/105835104/midnight-lightning">Midnight Lightning</a>.</div>
 <h2>Getting There <a>Suggest change</a></h2><div class="fr-view">Right in Camp 4.</div>
-<table id="left-nav-route-table"><tr><td><a href="/route/105835104/midnight-lightning">Midnight Lightning</a></td><td><span class="rateHueco">V8</span> <span class="rateFont">7B</span></td></tr>
-<tr><td><a href="/route/108080257/after-midnight">After Midnight</a></td><td><span class="rateHueco">V10</span></td></tr></table>
-<div class="lef-nav-row"><a href="/area/200000001/sub-block">Sub Block</a></div>
-<a href="/map/109861444/big-columbia-boulder">Climbing Area Map</a>
+<table id="left-nav-route-table">
+<tr><td><a href="{MP}/route/105835104/midnight-lightning">Midnight Lightning</a>
+ <span class="route-type Boulder"><span class='rateYDS'>V8</span> <span class='rateFont'>7B</span></span></td></tr>
+<tr><td><a href="{MP}/route/113075666/the-moffat-start">Moffat Start, The</a>
+ <span class="route-type Boulder"><span class='rateYDS'>V10</span> <span class='rateFont'>7C+</span></span></td></tr></table>
+<div class="lef-nav-row"><a href="{MP}/area/200000001/sub-block">Sub Block</a></div>
+<a href="{MP}/map/109861444/big-columbia-boulder">Climbing Area Map</a>
+<a class="card-with-photo photo-card" href="{MP}/photo/116495404/jerad-friedrichs-on-midnight-lightning">
+ <div class="img-container"><img class="lazy" data-src='{ASSET}/106143224_smallMed_1559058594.jpg?cache=1' alt="Jerad Friedrichs on Midnight Lightning"></div></a>
+<a href="{MP}/book/120346135"><img class="img-fluid lazy" data-src='{ASSET}/120346735_small_1614820219.jpg?cache=1'></a>
+<form><table><tr><td>Type:</td><td>Rock Boulder Aid</td></tr><tr><td>Elevation:</td><td>Any</td></tr></table></form>
+{LD_CRUMBS % ""}
 </body></html>"""
 
 r = mp.parse_route(ROUTE_HTML, "https://www.mountainproject.com/route/105835104/midnight-lightning")
 d = r.to_dict()
 assert d["name"] == "Midnight Lightning", d["name"]
-assert d["grade"] == "V8 7B", d["grade"]
+assert d["grade"] == "V8 7B" and d["grades"] == {"vscale": "V8", "font": "7B"}, (d["grade"], d["grades"])
 assert d["kind"] == "boulder"
 assert (d["lat"], d["lng"]) == (37.74367, -119.59863), (d["lat"], d["lng"])
 assert d["fa"] == "Ron Kauk, 1978"
 assert d["rating"] == 3.9 and d["votes"] == 117
-assert d["area_path"][-1] == "Big Columbia Boulder" and d["area_path"][0] == "California", d["area_path"]
+assert d["area_path"] == ["California", "* Yosemite Valley Bouldering", "Camp 4 Boulders", "Big Columbia Boulder"], d["area_path"]
 assert d["boulder_name"] == "Big Columbia Boulder"
 assert d["description"].startswith("What can you say"), d["description"]
 assert d["protection"] == "Crashpad, spotter"
-imgs = {m["url"] for m in d["images"]}
-assert "https://www.mountainproject.com/assets/photos/climb/105857128_medium_1557864286.jpg" in imgs, imgs
+imgs = {m["url"]: m for m in d["images"]}
+assert len(d["images"]) == 3, d["images"]
+k1 = imgs["https://www.mountainproject.com/assets/photos/climb/105857128_medium_1557864286.jpg"]
+assert k1["title"] == "Kurt Smith, 1985. No pads or spotters!" and k1["page"].endswith("/photo/105857128/kurt-smith-1985"), k1
 assert "https://www.mountainproject.com/assets/photos/climb/106143224_medium_1559058594.jpg" in imgs, imgs
 assert any(m["page"].endswith("/photo/119694985/one-day") and not m["url"] for m in d["images"])
 vids = [m["url"] for m in d["videos"]]
@@ -63,12 +114,19 @@ assert vids == ["https://www.youtube.com/watch?v=H2EeJEvxpJI", "https://www.yout
 print("route OK:", json.dumps({k: d[k] for k in ("name","grade","lat","lng","fa","boulder_name","area_path")}))
 
 a, routes, children = mp.parse_area(AREA_HTML, "https://www.mountainproject.com/area/109861444/big-columbia-boulder")
-assert a.name == "Big Columbia Boulder" and a.kind == "area"
+assert a.name == "Big Columbia Boulder" and a.kind == "area", a.name
 assert (a.lat, a.lng) == (37.74172, -119.60355) and a.elevation_m == 1219.0, (a.lat, a.lng, a.elevation_m)
 assert a.location == "Right in Camp 4."
-assert routes[0][1] == "Midnight Lightning" and routes[0][2] == "V8 7B", routes
-assert routes[1][2] == "V10"
+assert a.area_path == ["California", "* Yosemite Valley Bouldering", "Camp 4 Boulders", "Big Columbia Boulder"], a.area_path
+assert routes == [("https://www.mountainproject.com/route/105835104/midnight-lightning", "Midnight Lightning", "V8 7B"),
+                  ("https://www.mountainproject.com/route/113075666/the-moffat-start", "The Moffat Start", "V10 7C+")], routes
 assert children == [("https://www.mountainproject.com/area/200000001/sub-block", "Sub Block")], children
+# photo page id != image file id on area pages; the guidebook cover isn't a photo
+assert [(m.url, m.page) for m in a.images] == [("https://www.mountainproject.com/assets/photos/climb/106143224_medium_1559058594.jpg",
+                                                "https://www.mountainproject.com/photo/116495404/jerad-friedrichs-on-midnight-lightning")], a.images
+s = mp._stub(a, *routes[1])
+assert (s.name, s.kind, s.grade, s.lat, s.coord_source, s.boulder_name, s.elevation_m, s.raw) == \
+    ("The Moffat Start", "boulder", "V10 7C+", 37.74172, "parent-area", "Big Columbia Boulder", 1219.0, {"stub": True}), s
 print("area OK:", a.name, routes, children)
 
 k = kaya.fetch("https://kaya-app.kayaclimb.com/location/Index-345070")[0]
@@ -86,6 +144,10 @@ c = openbeta.climb_from_node(node, area)
 assert c.grade == "V8 7B" and c.coord_source == "parent-area" and c.boulder_name == "Big Columbia Boulder" and c.cross_refs["mp_id"] == "105835104"
 assert c.images[0].url == "https://media.openbeta.io/u/x/y.jpg" and c.videos[0].url.endswith("H2EeJEvxpJI")
 assert c.area_path == ["USA", "California", "Camp 4", "Big Columbia Boulder"]
+# as served live: V-grade repeated in yds, the area's coords copied onto the climb, "unknown" FA
+c = openbeta.climb_from_node({**node, "fa": "unknown", "grades": {"vscale": "V10", "font": "7C+", "yds": "V10"},
+                              "metadata": {"lat": 37.7, "lng": -119.6}}, area)
+assert c.grade == "V10 7C+" and c.coord_source == "parent-area" and c.fa is None, (c.grade, c.coord_source, c.fa)
 print("openbeta OK")
 assert adapter_for_url("https://openbeta.io/climbs/x") is openbeta and adapter_for_url("https://mountainproject.com/route/1/x") is mp
 print("ALL PARSER TESTS PASSED")

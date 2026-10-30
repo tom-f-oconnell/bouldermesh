@@ -9,7 +9,8 @@
   python cli.py diversity <photos_dir>                 score an existing photo folder
 
 Environment: GOOGLE_CSE_KEY/GOOGLE_CSE_CX, FLICKR_KEY, HARVEST_DDG=1, DATA_DIR (cache location),
-             BOULDERMESH_UA (please set a contact address), HTTP_MIN_INTERVAL (seconds between requests).
+             BOULDERMESH_UA (please set a contact address), HTTP_MIN_INTERVAL (min. seconds between requests
+             to one host; a longer robots.txt Crawl-delay wins).
 """
 from __future__ import annotations
 

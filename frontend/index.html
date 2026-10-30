@@ -91,7 +91,7 @@
           <input type="text" id="imp-url" class="grow" placeholder="mountainproject.com route or area URL · openbeta.io/climbs/<uuid> · kaya link">
           <button id="imp-go">Import</button>
         </div>
-        <div class="checks" style="margin-top:6px"><label><input type="checkbox" id="imp-children" checked> for areas, also import each problem</label></div>
+        <div class="checks" style="margin-top:6px"><label><input type="checkbox" id="imp-children" checked> for areas, also import each problem (summary from the area page)</label></div>
         <details style="margin-top:8px"><summary>Search OpenBeta by name or near coordinates</summary>
           <div class="row" style="margin-top:6px">
             <input type="text" id="s-q" class="grow" placeholder="area / boulder name (e.g. Camp 4 Boulders)">
@@ -323,6 +323,7 @@ async function openClimb(id){
     <div class="row" style="margin-top:6px"><span class="meta grow">📍 <b>${fmtLL(c.lat,c.lng)}</b> <small>(${esc(c.coord_source||'none')})</small></span>
       ${c.lat!=null?'<button class="sm sec fly">Map</button>':''}<button class="sm sec editll">Edit coords</button>
       <a href="${esc(c.url)}" target="_blank" rel="noopener"><button class="sm sec">Source ↗</button></a></div>
+    ${data.raw?.stub?`<div class="row notice" style="margin-top:6px"><span class="grow">Summary from the area page. Harvesting fetches the problem page first, or fetch it now for its photos and description.</span><button class="sm sec details">Fetch problem page</button></div>`:''}
     ${data.description?`<details style="margin-top:6px"><summary>Description / location</summary><div class="meta">${esc(data.description)}</div><div class="meta">${esc(data.location||'')}</div></details>`:''}
     <div class="meta" style="margin-top:6px">Photos (${imgs.length}) ${imgs.length?'<small>— from the source page; © their uploaders</small>':''}</div>
     <div class="thumbs">${imgs.slice(0,30).map(m=>`<a href="${esc(m.page||m.url)}" target="_blank" rel="noopener"><img class="big" src="${esc(m.url)}" title="${esc(m.title||'')}" loading="lazy" referrerpolicy="no-referrer"></a>`).join('')}</div>
@@ -366,13 +367,18 @@ async function openClimb(id){
     toast('Harvest queued → see Projects tab'); active = r.project_id;
     document.querySelector('.tabs button[data-tab=projects]').click(); poll();
   };
+  d.querySelector('.details')?.addEventListener('click', async () => {
+    toast('Fetching… (Mountain Project asks for up to a minute between pages)', 120000);
+    try { await api('/api/climbs/import', { method: 'POST', json: { url: c.url, include_children: false } }); toast('Fetched'); d.remove(); openClimb(id); refreshClimbs(); }
+    catch (e) { toast('Fetch failed: ' + e.message, 8000); }
+  });
   d.querySelector('.del').onclick = async () => { if (confirm(`Delete climb "${c.name}" (meshes are kept)?`)) { await api('/api/climbs/' + id, { method: 'DELETE' }); d.remove(); refreshClimbs(); refreshMeshes(); } };
   const list = $('#climbs'); list.prepend(d); d.scrollIntoView({ block: 'nearest' });
 }
 
 $('#imp-go').onclick = async () => {
   const url = $('#imp-url').value.trim(); if (!url) return;
-  toast('Fetching… (polite rate limit: a few seconds per page)', 120000);
+  toast('Fetching… (polite rate limit: up to a minute per Mountain Project page)', 120000);
   try {
     const r = await api('/api/climbs/import', { method: 'POST', json: { url, include_children: $('#imp-children').checked } });
     toast(`Imported ${r.imported.length} record(s)`); $('#imp-url').value = '';

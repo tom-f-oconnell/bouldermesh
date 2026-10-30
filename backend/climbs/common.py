@@ -2,8 +2,8 @@
 
 The client:
   * caches every response on disk (DATA_DIR/cache/http, default TTL 30 days)
-  * rate-limits per host (default one request per 3 s)
-  * honours robots.txt for the configured user agent
+  * rate-limits per host (default one request per 3 s, or robots.txt Crawl-delay if longer)
+  * honours robots.txt Disallow rules for the configured user agent
   * never retries aggressively (one retry on 5xx / connection reset)
 """
 from __future__ import annotations
@@ -116,9 +116,9 @@ class _Http:
         self._robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
 
     # -- robots -----------------------------------------------------------
-    def allowed(self, url: str) -> bool:
+    def _robots_for(self, url: str) -> urllib.robotparser.RobotFileParser | None:
         if not RESPECT_ROBOTS:
-            return True
+            return None
         u = urllib.parse.urlparse(url)
         host = u.netloc
         rp = self._robots.get(host, "unset")
@@ -131,15 +131,28 @@ class _Http:
             except Exception:
                 rp = None  # unreachable robots.txt -> assume allowed
             self._robots[host] = rp
+        return rp
+
+    def allowed(self, url: str) -> bool:
+        rp = self._robots_for(url)
         return True if rp is None else rp.can_fetch(USER_AGENT, url)
 
     # -- throttle ---------------------------------------------------------
-    def _throttle(self, host: str):
+    def interval(self, url: str) -> float:
+        """Seconds between requests to url's host: HTTP_MIN_INTERVAL, or robots.txt
+        Crawl-delay when that is longer (Mountain Project asks for 60)."""
+        rp = self._robots_for(url)
+        delay = rp.crawl_delay(USER_AGENT) if rp is not None else None
+        return max(MIN_INTERVAL, float(delay or 0))
+
+    def _throttle(self, url: str):
+        host = urllib.parse.urlparse(url).netloc
+        gap = self.interval(url)
+        # reserve the next slot for this host, but sleep outside the lock so other hosts aren't held up
         with self._lock:
-            wait = self._last.get(host, 0) + MIN_INTERVAL - time.time()
-            if wait > 0:
-                time.sleep(wait)
-            self._last[host] = time.time()
+            slot = max(time.time(), self._last.get(host, 0) + gap)
+            self._last[host] = slot
+        time.sleep(max(0.0, slot - time.time()))
 
     # -- cache ------------------------------------------------------------
     @staticmethod
@@ -156,11 +169,10 @@ class _Http:
             return cp.read_bytes()
         if not self.allowed(url):
             raise HttpError(url, 403, "(disallowed by robots.txt)")
-        host = urllib.parse.urlparse(url).netloc
         hdrs = {"User-Agent": USER_AGENT, "Accept": "*/*", "Accept-Language": "en-US,en;q=0.8"}
         hdrs.update(headers or {})
         for attempt in (1, 2):
-            self._throttle(host)
+            self._throttle(url)
             req = urllib.request.Request(url, data=data, headers=hdrs, method="POST" if data else "GET")
             try:
                 with urllib.request.urlopen(req, timeout=60) as r:
@@ -193,14 +205,6 @@ class _Http:
         hdrs.update(headers or {})
         return json.loads(self.get(url, headers=hdrs, data=data, **kw))
 
-    def head_ok(self, url: str) -> bool:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="HEAD")
-            with urllib.request.urlopen(req, timeout=20) as r:
-                return r.status == 200
-        except Exception:
-            return False
-
 
 http = _Http()
 
@@ -228,7 +232,7 @@ def parse_latlng(text: str | None) -> tuple[float, float] | None:
     return lat, lng
 
 
-YT_RE = re.compile(r"(?:https?://)?(?:www\.|m\.)?(?:youtube\.com/(?:watch\?[^\"'\s<]*v=|shorts/|embed/)|youtu\.be/)([A-Za-z0-9_-]{11})")
+YT_RE = re.compile(r"(?:https?://)?(?:www\.|m\.)?(?:youtube(?:-nocookie)?\.com/(?:watch\?[^\"'\s<]*v=|shorts/|embed/)|youtu\.be/)([A-Za-z0-9_-]{11})")
 VIMEO_RE = re.compile(r"https?://(?:www\.)?vimeo\.com/(\d+)")
 INSTA_RE = re.compile(r"https?://(?:www\.)?instagram\.com/(?:reel|p)/([A-Za-z0-9_-]+)")
 

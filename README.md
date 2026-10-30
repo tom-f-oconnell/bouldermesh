@@ -35,21 +35,24 @@ mesh from the first photo (tagged `demo`) so every other feature can be exercise
 | problem name / grade / FA / type | ✓ | ✓ | manual / your own export |
 | coordinates | route-level GPS when set, else the boulder (area) GPS, with elevation | climb-level lat/lng when set, else the parent area | manual |
 | boulder name | lowest area in the breadcrumb (e.g. "Big Columbia Boulder") | parent area with `isBoulder` | manual |
-| photos | user photos (`…/assets/photos/climb/{id}_medium_{ts}.jpg`, `_large_` tried) | user uploads, CC BY-SA | — |
-| videos | YouTube/Vimeo links climbers post in comments | links found in descriptions | paste a link |
+| photos | user photos (`…/assets/photos/climb/{id}_{size}_{ts}.jpg`; harvest takes `_large_`, ~4× `_medium_`) | user uploads, CC BY-SA | — |
+| videos | the route's beta-video gallery + YouTube/Vimeo links in comments | links found in descriptions | paste a link |
 | bulk | Route-Finder CSV export (`cli.py mp-csv <area_id>`, MP's own feature; area coords only) | name search, `cragsNear` proximity search | ask KAYA (support@kayaclimb.com) |
 | cross-refs | `mp_id` | `mp_id` on climbs and areas → MP↔OpenBeta matching | — |
 
 Terms: the Adventure Projects (Mountain Project) terms disallow automated/bulk scraping,
-so that adapter is deliberately low-volume — one page per import, disk cache, ≥3 s
-between requests, robots.txt honoured. Use OpenBeta for anything bulk. KAYA's terms
+so that adapter is deliberately low-volume — one page per import, disk cache, robots.txt
+honoured including its `Crawl-delay` (60 s on MP, so each further MP page or photo takes a
+minute). Importing an area summarises its problems from the area page's own route table;
+a problem's page (photos, description, route GPS) is fetched when you import it directly,
+press *Fetch problem page*, or harvest it. Use OpenBeta for anything bulk. KAYA's terms
 prohibit scraping and circumventing their app, so the Kaya adapter only records links
 and imports files you already hold.
 
 ### CLI
 
     python cli.py fetch  https://www.mountainproject.com/route/105835104/midnight-lightning
-    python cli.py fetch  https://www.mountainproject.com/area/109861444/big-columbia-boulder   # area + each problem
+    python cli.py fetch  https://www.mountainproject.com/area/109861444/big-columbia-boulder   # area + problem summaries
     python cli.py fetch  https://openbeta.io/climbs/<uuid>
     python cli.py search "Camp 4 Boulders"              # OpenBeta by name
     python cli.py search --near 37.7417 -119.6035 --radius 1500
@@ -96,7 +99,7 @@ their photographers. `sources.json` lets you credit or remove any of them.
 
 ## Real photogrammetry
 
-    docker compose up --build      # CPU build of COLMAP + OpenMVS (+ OpenCV, ffmpeg, yt-dlp); first build ~20-30 min
+    docker compose up --build      # CPU build of COLMAP + OpenMVS (+ OpenCV, ffmpeg, yt-dlp); first build ~5-30 min depending on cores
 
 or natively on Ubuntu: `apt install colmap python3-opencv ffmpeg`, build OpenMVS (see
 Dockerfile), `pip install yt-dlp`, then `USE_GPU=1 python3 backend/server.py` if COLMAP has CUDA.
@@ -138,10 +141,10 @@ Both run without network access (the harvest test serves its own "web photos").
 
 ## Known gaps
 
-- The Mountain Project parser was written against the live page structure as of Oct 2026
-  and verified on fixtures; MP changes markup occasionally — `parse_route()` is one
-  function to adjust.  The OpenBeta queries follow the openbeta-graphql schema and surface
-  the API's own error text if a field is renamed.
+- The Mountain Project parser and OpenBeta queries were checked against the live site and
+  API on 2026-10-30, and the test fixtures mirror that markup. MP changes markup
+  occasionally — `parse_route()` / `parse_area()` are the functions to adjust; OpenBeta
+  surfaces the API's own error text if a field is renamed.
 - No auth, single in-process job queue — intranet prototype, not a public service.
 - Google Images needs the paid-after-100/day Custom Search API; direct scraping of
   Google Images is not implemented on purpose.

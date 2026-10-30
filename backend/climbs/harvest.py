@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import quote_plus, urlencode
 
-from .common import Climb, Media, http
+from .common import Climb, HttpError, Media, http
 
 Log = Callable[[str], None]
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp"}
@@ -253,7 +253,14 @@ def download_all(media: list[Media], out_dir: Path, log: Log, min_bytes: int = 2
             continue
         seen_urls.add(m.url)
         try:
-            data = http.get(m.url, binary=True, ttl=90 * 86400, headers={"Referer": m.page or ""})
+            try:
+                data = http.get(m.url, binary=True, ttl=90 * 86400, headers={"Referer": m.page or ""})
+            except HttpError as e:
+                # mountainproject.resolve_image() picks _large_ without probing that it exists
+                if not (m.source == "mountainproject" and "_large_" in m.url and e.status == 404):
+                    raise
+                m.url = m.url.replace("_large_", "_medium_")
+                data = http.get(m.url, binary=True, ttl=90 * 86400, headers={"Referer": m.page or ""})
         except Exception as e:
             log(f"  skip {m.url[:90]}: {e}")
             continue
