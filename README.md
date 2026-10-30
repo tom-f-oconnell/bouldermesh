@@ -8,7 +8,7 @@ video frames).
 
 ## Run it (no dependencies beyond Python 3.10+)
 
-    python3 backend/server.py          # open http://localhost:8000
+    python3 backend/server.py          # open http://localhost:8470 (PORT=<n> to change)
 
 Optional extras, each unlocks a feature and is detected at runtime:
 
@@ -102,7 +102,7 @@ their photographers. `sources.json` lets you credit or remove any of them.
 
     docker compose up --build      # CPU build of COLMAP + OpenMVS (+ OpenCV, ffmpeg, yt-dlp); first build ~5-30 min depending on cores
 
-(`PORT=8010 docker compose up --build` if 8000 is taken), or natively on Ubuntu: `apt install colmap python3-opencv ffmpeg`, build OpenMVS (see
+(`PORT=<n> docker compose up --build` if 8470 is taken), or natively on Ubuntu: `apt install colmap python3-opencv ffmpeg`, build OpenMVS (see
 Dockerfile, including its one-line patch), `pip install yt-dlp`, then
 `USE_GPU=1 python3 backend/server.py` if COLMAP has CUDA.
 

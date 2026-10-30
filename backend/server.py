@@ -1,6 +1,6 @@
 """BoulderMesh server - standard library only (Python 3.10+).
 
-  python backend/server.py            # http://localhost:8000
+  python backend/server.py            # http://localhost:8470
 
 Data layout (DATA_DIR, default ./data):
   bouldermesh.sqlite
@@ -585,7 +585,7 @@ def _has(mod: str) -> bool:
 def main() -> None:
     init_db()
     threading.Thread(target=worker, daemon=True).start()
-    host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8000"))
+    host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))
     mode = "COLMAP + OpenMVS" if pipeline.real_pipeline_ready() else "DEMO (COLMAP/OpenMVS not found)"
     print(f"BoulderMesh on http://{host}:{port}  data={DATA}  pipeline={mode}", flush=True)
     ThreadingHTTPServer((host, port), Handler).serve_forever()

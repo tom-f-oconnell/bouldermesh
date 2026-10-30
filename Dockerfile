@@ -43,7 +43,7 @@ WORKDIR /app
 COPY backend ./backend
 COPY frontend ./frontend
 COPY cli.py ./cli.py
-ENV DATA_DIR=/data PORT=8000
+ENV DATA_DIR=/data PORT=8470
 VOLUME /data
-EXPOSE 8000
+EXPOSE 8470
 CMD ["python3", "backend/server.py"]

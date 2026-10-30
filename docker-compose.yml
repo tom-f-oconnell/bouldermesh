@@ -1,7 +1,7 @@
 services:
   bouldermesh:
     build: .
-    ports: ["${PORT:-8000}:8000"]
+    ports: ["${PORT:-8470}:8470"]
     volumes: ["./data:/data"]
     environment:
       USE_GPU: "0"          # set "1" and uncomment the gpu block for NVIDIA
