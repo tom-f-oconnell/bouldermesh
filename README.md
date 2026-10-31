@@ -15,7 +15,9 @@ Optional extras, each unlocks a feature and is detected at runtime:
 | extra | gives you |
 |---|---|
 | `pip install pillow` | demo-mode mesh, image de-duplication, blurry-frame rejection |
-| `pip install opencv-python-headless numpy` | the view-graph diversity estimate (how many photos would register) |
+| `pip install opencv-python-headless numpy` | the view-graph diversity estimate (how many photos would register); rejecting harvested photos of other rocks |
+| `pip install torch torchvision` | keeps climbers and spotters out of reconstructions (in the Docker image) |
+| `pip install torch open_clip_torch` | also rejects harvested photos that don't look like a boulder at all (350 MB model download; rarely adds much) |
 | `yt-dlp` + `ffmpeg` on PATH | frames from linked YouTube/Vimeo beta videos |
 | COLMAP + OpenMVS (see Docker section) | real photogrammetry instead of demo relief meshes |
 | `GOOGLE_CSE_KEY` + `GOOGLE_CSE_CX` | Google Images via the Custom Search JSON API (100 free queries/day; existing keys only, see Known gaps) |
@@ -60,6 +62,7 @@ and imports files you already hold.
     python cli.py mp-csv 105833471 --type boulder        # Mountain Project route-finder export
     python cli.py harvest <climb url> ./out              # photos + sources.json + diversity.json
     python cli.py diversity ./out/photos
+    python cli.py relevance ./out/photos [--anchors DIR] [--move]   # which are of the boulder? (report only without --move)
 
 Records are `climbs.common.Climb` dataclasses (`to_dict()` → JSON): name, kind, grade(s),
 fa, rating, lat/lng + `coord_source` (route | area | parent-area | manual), elevation,
@@ -76,24 +79,32 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
 
 ## Harvest → rough photogrammetry
 
-1. Open a climb → *Harvest photos*. Queries are built from the boulder name, area and
-   problem name; geo sources use the coordinates. Everything lands in
-   `data/projects/<id>/photos/`, with provenance in `sources.json`.
-2. Diversity check (`climbs/diversity.py`): resolution filter, perceptual-hash de-dup
-   (dupes moved to `rejected/`), then — with OpenCV — ORB matching + fundamental-matrix
+1. Open a climb → *Harvest photos* (*Harvest again* once it has one). Queries are built from
+   the boulder name, area and problem name; geo sources use the coordinates. Everything lands
+   in `data/projects/<id>/photos/`, with provenance in `sources.json`.
+2. De-duplication, then the relevance filter (`climbs/relevance.py`): title cards and blank
+   frames go, and photos from area-wide sources (web search, Commons, Flickr) must match
+   known photos of the boulder from its climb page or videos, or photos already matched to
+   them, or if there are none, the largest group of photos that match each other. This mostly
+   saves time, as COLMAP ignores most junk anyway. Rejected photos stay in `rejected/`, with
+   a reason in `relevance.json`, and the project card can put any back. Untick *filter
+   off-topic photos* to skip it.
+3. Diversity check (`climbs/diversity.py`): with OpenCV, ORB matching + fundamental-matrix
    RANSAC between every pair to build a view graph. Pairs explained by a 2-D similarity
    (crops, re-encodes, pan/zoom) are discounted because they carry no parallax. The largest
    connected component ≈ number of photos COLMAP could register → verdict
    **good** (≥12) / **marginal** (6–11) / **poor** (<6). Poor sets are not reconstructed
    automatically; add your own photos to the project and press Reconstruct to force it.
-3. Reconstruction runs COLMAP in internet-collection mode (per-image intrinsics,
+4. Reconstruction runs COLMAP in internet-collection mode (per-image intrinsics,
    affine-shape SIFT, domain-size pooling, guided matching), picks the largest sparse model
-   and requires ≥6 registered images before densifying with OpenMVS.
+   and requires ≥6 registered images before densifying with OpenMVS. With torch, people are
+   masked out at every stage, so they don't get painted onto the rock.
 
 Expect *rough* results: web photos mix cameras, seasons, chalk and people; a famous
 boulder with dozens of distinct angles (e.g. Camp 4 classics) is realistic, an obscure
-problem with three topo shots is not. Beta videos that pan around the rock are the best
-source — enable the YouTube option when a climb page links them.
+problem with three topo shots is not. Beta videos that pan around the rock are a good
+source, and web search adds the most: `HARVEST_DDG=1` took Midnight Lightning from about
+30 placed photos to about 65, and from about 190k faces to about 540k.
 
 Downloaded images stay on your server for reconstruction only; most are copyrighted by
 their photographers. `sources.json` lets you credit or remove any of them.
@@ -108,15 +119,18 @@ Dockerfile, including its one-line patch), `pip install yt-dlp`, then
 
 A reconstruction produces a textured `mesh.glb` (texture PNGs alongside), or an untextured
 `mesh.ply` if texturing fails, levelled assuming most photos were taken upright. On CPU,
-OpenMVS's 11-photo sample set takes 3-4 minutes.
+OpenMVS's 11-photo sample set takes 3-4 minutes, and a 100-photo harvest about an hour.
 
 ## Layout
 
     backend/server.py              HTTP server, SQLite, uploads, job worker (reconstruct + harvest)
     backend/pipeline.py            COLMAP/OpenMVS driver (single-camera and internet-collection modes) + demo fallback
+    backend/occlusion.py           person masks for reconstruction
+    backend/progress.py            per-step job progress, behind the UI's progress bars
     backend/climbs/common.py       Climb/Media types, cached + rate-limited + robots-aware HTTP client
     backend/climbs/mountainproject.py, openbeta.py, kaya.py   adapters
     backend/climbs/harvest.py      photo sources, download, provenance
+    backend/climbs/relevance.py    filter for photos substantially of the boulder
     backend/climbs/diversity.py    de-dup + view-graph diversity estimate
     backend/climbs/htmlmini.py     tiny DOM on html.parser (no bs4 needed)
     frontend/index.html            UI: Climbs / Projects / Meshes tabs, three.js viewer, Leaflet map
@@ -129,21 +143,26 @@ OpenMVS's 11-photo sample set takes 3-4 minutes.
     GET  /api/projects · POST /api/projects {name, climb_id?} · GET|DELETE /api/projects/{id}
     POST /api/projects/{id}/photos (multipart "photos") · POST /api/projects/{id}/reconstruct
     GET  /api/projects/{id}/harvest                     sources.json + diversity.json
+    POST /api/projects/{id}/restore {file}              put a photo the filter rejected back
     GET  /api/meshes · POST /api/meshes (multipart "files", +name, +lat/lng, +climb_id) · PATCH|DELETE /api/meshes/{id}
     POST /api/meshes/{id}/links {climb_id, note} · DELETE /api/meshes/{id}/links/{climb_id}
     GET  /api/climbs?q=&source= · GET|PATCH|DELETE /api/climbs/{id}
     POST /api/climbs/import {url, include_children}     MP / OpenBeta / Kaya URL
     POST /api/climbs/search {q, lat, lng, radius_m}     OpenBeta live search
     POST /api/climbs/manual {...} · POST /api/climbs/kaya-export (multipart csv/json)
-    POST /api/climbs/{id}/harvest {sources:[climb,google,ddg,commons,flickr,youtube], reconstruct}
-    GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file}
+    POST /api/climbs/{id}/harvest {sources:[climb,google,ddg,commons,flickr,youtube], reconstruct, filter}
+    GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
 
-## Tests
+## Development
 
-    python3 tests/test_parsers.py   # offline: MP/OpenBeta/Kaya parsers on fixtures
-    python3 tests/test_api.py       # spins up the server on a free port, runs the whole flow incl. a harvest job
+[design.md](design.md) has the measurements behind the relevance filter and people masking.
+`python3 -m venv venv && ./venv/bin/pip install pillow numpy opencv-python-headless torch torchvision open_clip_torch`
+gets every optional check; the tests also pass without them.
 
-Both run without network access (the harvest test serves its own "web photos").
+    python3 tests/test_parsers.py     # offline: MP/OpenBeta/Kaya parsers on fixtures
+    python3 tests/test_relevance.py   # offline: relevance filter on synthetic photos, progress tracking (CLIP downloads its model)
+    python3 tests/test_pipeline.py    # offline: reconstruction steps with COLMAP/OpenMVS stubbed, progress parsing
+    python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job
 
 ## Known gaps
 

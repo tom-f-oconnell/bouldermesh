@@ -8,11 +8,13 @@ frames include title cards. Three methods, each used when its dependency is avai
   boulder    (torch + open_clip, optional) CLIP zero-shot classification: does this look like
              a boulder at all? Very safe, but can't tell one boulder from another.
   same-rock  (OpenCV) does this show the same physical rock? SIFT + fundamental-matrix RANSAC
-             against anchor photos, by default those from the climb's own page and beta videos.
-             Very precise, but photos in other light or from other sides don't match. Only
-             photos from area-wide sources (see UNTRUSTED) have to pass it.
+             against anchor photos, by default those from the climb's own page and beta videos,
+             then against the photos that matched those. Very precise, but photos in other
+             light or from other sides don't match. Only photos from area-wide sources (see
+             UNTRUSTED) have to pass it.
 
 Rejected photos move to rejected/ like de-duplication's, and can be restored from there.
+design.md has the measurements. This mostly saves time: COLMAP ignores most junk by itself.
 """
 from __future__ import annotations
 
@@ -36,6 +38,7 @@ MIN_INLIERS = 16          # same-rock: geometrically consistent SIFT matches to 
 SELF_MIN_INLIERS = 20     # stricter when the anchors must come from the candidates themselves
 MIN_COVERAGE = 0.05       # share of the image the matched region must span
 MAX_ANCHORS = 120
+CHAIN_ROUNDS = 3          # how far confirmed photos pass that on to the photos they match
 SIFT_FEATURES = 2500
 SIFT_SIDE = 1024
 
@@ -222,7 +225,7 @@ def _self_anchors(paths: list[Path], feats: dict, log: Log, progress: Progress |
 
 
 def same_rock(candidates: list[Path], anchors: list[Path], log: Log, progress: Progress | None = None) -> dict[Path, dict]:
-    """For each candidate, its best match against the anchors: {"inliers":, "coverage":, "match":}.
+    """For each candidate, its best match found: {"inliers":, "coverage":, "match":}.
 
     Without anchors the candidates' own largest matching group stands in for them. Returns {}
     if there is nothing to anchor on, as then nothing can be said.
@@ -232,28 +235,45 @@ def same_rock(candidates: list[Path], anchors: list[Path], log: Log, progress: P
     done = _map(_features, everything, (lambda f, d=None: progress(0.2 * f, d)) if progress else None, "reading photos")
     feats = dict(zip(everything, done))
     pair_progress = (lambda f, d=None: progress(0.2 + 0.8 * f, d)) if progress else None
-    if not anchors:
+    self_anchored = not anchors
+    if self_anchored:
         anchors = _self_anchors(candidates, feats, log, pair_progress)
         if not anchors:
             log("relevance: no anchors, and no group of photos matches each other: can't tell which rock is which")
             return {}
         log(f"relevance: no photos from the climb's page or videos: using the {len(anchors)} that match each other")
-    anchor_feats = [(a, feats[a]) for a in anchors if feats[a] is not None]
+    min_inliers = SELF_MIN_INLIERS if self_anchored else MIN_INLIERS
+
+    def passes(result: dict) -> bool:
+        return result["inliers"] >= min_inliers and result["coverage"] >= MIN_COVERAGE
+
+    results = {p: {"inliers": 0, "coverage": 0.0, "match": None} for p in candidates}
+    frontier = [(a, feats[a]) for a in anchors if feats[a] is not None]
+    todo = [p for p in candidates if feats[p] is not None]
+    for p in todo:
+        if p in anchors:
+            results[p] = {"inliers": 10 ** 6, "coverage": 1.0, "match": p.name}
+    todo = [p for p in todo if p not in anchors]
 
     def best_for(p: Path) -> dict:
-        best = {"inliers": 0, "coverage": 0.0, "match": None}
-        if feats[p] is None:
-            return best
-        if p in anchors:
-            return {"inliers": 10 ** 6, "coverage": 1.0, "match": p.name}
-        for a, fa in anchor_feats:
+        best = results[p]
+        for a, fa in frontier:
             k, cov = match(feats[p], fa)
             if k > best["inliers"]:
                 best = {"inliers": k, "coverage": cov, "match": a.name}
-            if k >= 2 * MIN_INLIERS and cov >= MIN_COVERAGE:   # plenty: no need for the rest
+            if passes(best):   # enough: no need for the rest
                 break
         return best
-    return dict(zip(candidates, _map(best_for, candidates, pair_progress, "matching")))
+
+    # a photo often overlaps another web photo better than any anchor, so those confirmed so far
+    # become anchors in turn. Safe because noise stays well below MIN_INLIERS (see design.md).
+    for _ in range(CHAIN_ROUNDS):
+        results.update(zip(todo, _map(best_for, todo, pair_progress, "matching")))
+        frontier = [(p, feats[p]) for p in todo if passes(results[p])]
+        todo = [p for p in todo if not passes(results[p])]
+        if not frontier or not todo:
+            break
+    return results
 
 
 # ------------------------------------------------------------------------------ all together

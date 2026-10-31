@@ -33,7 +33,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libopencv-core4.6 libopencv-imgproc4.6 libopencv-imgcodecs4.6 libopencv-calib3d4.6 libopencv-features2d4.6 \
     libcgal-dev libglew2.2 libglfw3 libjpeg8 libpng16-16 libtiff6 \
  && rm -rf /var/lib/apt/lists/* \
- && pip install --no-cache-dir --break-system-packages yt-dlp
+ && pip install --no-cache-dir --break-system-packages yt-dlp \
+ && pip install --no-cache-dir --break-system-packages torch torchvision --index-url https://download.pytorch.org/whl/cpu
 COPY --from=build /usr/local/bin/OpenMVS /usr/local/bin/OpenMVS
 ENV OPENMVS_BIN=/usr/local/bin/OpenMVS
 # COLMAP's binary needs a display for some commands; run headless via Qt offscreen

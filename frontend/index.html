@@ -593,7 +593,7 @@ statusCache = await api('/api/status');
 const mode = $('#mode');
 mode.textContent = statusCache.real_pipeline ? 'COLMAP + OpenMVS' : 'demo pipeline — install COLMAP/OpenMVS';
 mode.className = 'pill ' + (statusCache.real_pipeline ? 'real' : 'demo');
-$('#caps').textContent = [statusCache.opencv?'opencv':'no opencv', statusCache.ytdlp?'yt-dlp':'no yt-dlp', statusCache.env.GOOGLE_CSE_KEY?'google':'no google key'].join(' · ');
+$('#caps').textContent = [statusCache.opencv?'opencv':'no opencv', statusCache.ytdlp?'yt-dlp':'no yt-dlp', statusCache.env.GOOGLE_CSE_KEY?'google':'no google key', statusCache.people_masks?'people masking':'no people masking'].join(' · ');
 await refreshClimbs(); await refreshMeshes(); await refreshProjects(); poll();
 </script>
 </body>

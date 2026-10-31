@@ -24,9 +24,9 @@ def make_rock(seed: int) -> np.ndarray:
 rock = make_rock(3)
 
 
-def view_of(tmp: pathlib.Path, name: str, x: int, y: int, base=rock) -> pathlib.Path:
+def view_of(tmp: pathlib.Path, name: str, x: int, y: int, base=rock, w: int = 1200, h: int = 900) -> pathlib.Path:
     p = tmp / name
-    Image.fromarray(base[y:y + 900, x:x + 1200]).save(p, quality=92)
+    Image.fromarray(base[y:y + h, x:x + w]).save(p, quality=92)
     return p
 
 
@@ -77,6 +77,21 @@ with tempfile.TemporaryDirectory() as td:
         assert steps and all(0 <= f <= 1 for f in steps), steps
         (tmp / "rejected" / "nomatch_commons_other.jpg").rename(other)
         (tmp / "rejected" / "card_yt_card.jpg").rename(card)
+
+        # a photo that only overlaps another web photo, not the anchor, is found through it
+        near = view_of(photos, "ddg_near.jpg", 300, 0, w=600, h=600)
+        far = view_of(photos, "ddg_far.jpg", 700, 0, w=600, h=600)
+        anchor = view_of(photos, "mountainproject_c.jpg", 0, 0, w=600, h=600)
+        k, _ = relevance.match(relevance._features(far), relevance._features(anchor))
+        assert k < relevance.MIN_INLIERS, k
+        r = relevance.filter_photos([anchor, near, far], None, logs.append, methods=["same-rock"])
+        assert not r["rejected"] and r["scores"]["ddg_far.jpg"]["match"] == "ddg_near.jpg", r
+        rounds, relevance.CHAIN_ROUNDS = relevance.CHAIN_ROUNDS, 1
+        r = relevance.filter_photos([anchor, near, far], None, logs.append, methods=["same-rock"])
+        relevance.CHAIN_ROUNDS = rounds
+        assert list(r["rejected"]) == ["ddg_far.jpg"], r["rejected"]
+        for p in (near, far, anchor):
+            p.unlink()
 
         # no trusted photos at all: the group that matches each other stands in for the anchors
         web = [view_of(photos, f"web_{i}.jpg", x, y) for i, (x, y) in enumerate(((100, 100), (250, 200), (400, 300), (550, 400)))]

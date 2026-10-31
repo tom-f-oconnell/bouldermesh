@@ -16,10 +16,12 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
+import occlusion
 from progress import Tracker
 
 Log = Callable[[str], None]
 
+MAPPER_ATTEMPTS = 3
 COLMAP = shutil.which("colmap")
 # OpenMVS binaries are usually installed under /usr/local/bin/OpenMVS
 _MVS_DIRS = [os.environ.get("OPENMVS_BIN", ""), "/usr/local/bin/OpenMVS", "/usr/local/bin", "/usr/bin"]
@@ -65,9 +67,12 @@ def steps() -> list[tuple[str, str, float]]:
     """The progress steps of reconstruct(), weighted by typical CPU share of the run."""
     if not real_pipeline_ready():
         return [("demo", "Build demo mesh", 1)]
-    out = [("features", "Find features", 3), ("matching", "Match photos", 15), ("mapper", "Place cameras", 40),
-           ("level", "Level the model", 1), ("undistort", "Undistort photos", 1), ("import", "Import scene", 1),
-           ("dense", "Dense reconstruction", 25), ("mesh", "Build mesh", 8)]
+    people = occlusion.available()
+    out = ([("people", "Find people in photos", 1)] if people else []) + [
+        ("features", "Find features", 3), ("matching", "Match photos", 15), ("mapper", "Place cameras", 40),
+        ("level", "Level the model", 1), ("undistort", "Undistort photos", 1)]
+    out += ([("people-undistorted", "Mask people for dense steps", 1)] if people else []) + [
+        ("import", "Import scene", 1), ("dense", "Dense reconstruction", 25), ("mesh", "Build mesh", 8)]
     return out + ([("texture", "Texture mesh", 6)] if _mvs("TextureMesh") else [])
 
 
@@ -187,6 +192,15 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     gpu = "1" if use_gpu else "0"
     n_images = len([p for p in images.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")])
 
+    masks = None
+    if occlusion.available():
+        log("== Finding people to ignore")
+        try:
+            occlusion.write_masks(images, work / "masks", lambda f: f"{f.name}.png", log, tracker.callback("people"))
+            masks = work / "masks"
+        except Exception as e:  # e.g. the model can't be downloaded: only costs the masking
+            log(f"occlusion: failed ({e}); not masking people")
+
     log(f"== COLMAP: feature extraction ({'internet-collection' if internet else 'single-camera'} settings)")
     tracker.update("features", 0, f"0 of {n_images} photos")
     cmd = [COLMAP, "feature_extractor", "--database_path", str(db), "--image_path", str(images),
@@ -196,6 +210,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
                 "--SiftExtraction.domain_size_pooling", "1", "--SiftExtraction.max_image_size", "2400"]
     else:
         cmd += ["--ImageReader.single_camera", "1"]
+    if masks:
+        cmd += ["--ImageReader.mask_path", str(masks)]
     _run(cmd, work, log, _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1)))
 
     log("== COLMAP: matching")
@@ -212,7 +228,19 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     cmd = [COLMAP, "mapper", "--database_path", str(db), "--image_path", str(images), "--output_path", str(sparse)]
     if internet:
         cmd += ["--Mapper.ba_refine_principal_point", "1", "--Mapper.min_num_matches", "20"]
-    _run(cmd, work, log, _mapper(tracker, n_images))
+    # COLMAP 3.9's mapper can abort on one failing model ("NumRegImages() >= 2"; 2 of 25 runs when
+    # tried). It works from the database, so another seed doesn't redo the matching, and the models
+    # an aborted attempt finished before that stay on disk as candidates.
+    for attempt in range(MAPPER_ATTEMPTS):
+        try:
+            _run(cmd + ["--random_seed", str(attempt)], work, log, _mapper(tracker, n_images))
+            break
+        except RuntimeError as e:
+            log(f"mapper failed ({e}), attempt {attempt + 1} of {MAPPER_ATTEMPTS}")
+            if attempt + 1 < MAPPER_ATTEMPTS:
+                for m in list(sparse.iterdir()):
+                    if not m.name.startswith("aborted"):
+                        m.rename(sparse / f"aborted{attempt}-{m.name}")
     model, registered = _largest_model(sparse)
     log(f"registered {registered}/{n_images} images in the largest model")
     if model is None or registered < min_registered:
@@ -227,6 +255,17 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
           "--output_path", str(dense), "--output_type", "COLMAP"], work, log,
          _phases(tracker, "undistort", (r"Undistorting image \[(\d+)/(\d+)\]", 0, 1)))
 
+    mask_args = []
+    if masks:
+        # found again rather than undistorted along with the photos, which COLMAP can't do; OpenMVS
+        # looks for <image name>.mask.png next to each image
+        try:
+            occlusion.write_masks(dense / "images", dense / "images", lambda f: f"{f.stem}.mask.png", log,
+                                  tracker.callback("people-undistorted"))
+            mask_args = ["--ignore-mask-label", "0"]
+        except Exception as e:
+            log(f"occlusion: failed ({e}); not masking people in the dense steps")
+
     log("== OpenMVS: import scene")
     tracker.update("import")
     _run([_mvs("InterfaceCOLMAP"), "-i", str(dense), "-o", "scene.mvs", "--image-folder", str(dense / "images"),
@@ -234,7 +273,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
 
     log("== OpenMVS: densify")
     tracker.update("dense")
-    _run([_mvs("DensifyPointCloud"), "scene.mvs", "-w", str(work), "--resolution-level", "2"], work, log, _geometric(tracker))
+    _run([_mvs("DensifyPointCloud"), "scene.mvs", "-w", str(work), "--resolution-level", "2", *mask_args,
+          *(["--mask-path", str(dense / "images")] if mask_args else [])], work, log, _geometric(tracker))
 
     log("== OpenMVS: reconstruct mesh")
     tracker.update("mesh")
@@ -252,7 +292,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             # separate files referenced by relative URI, so they're copied alongside it. Faces no photo
             # saw get --empty-color, by default a bright orange that reads as part of the scene.
             _run([tex, "scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o", "scene_dense_mesh_texture.mvs",
-                  "-w", str(work), "--export-type", "glb", "--empty-color", str(0x808080)], work, log,
+                  "-w", str(work), "--export-type", "glb", "--empty-color", str(0x808080), *mask_args], work, log,
                  _phases(tracker, "texture", (r"Initialized views \d+ \(([\d.]+)%", 0, 0.3),
                          (r"Assigning the best view .*completed", 0.3, 0.6), (r"Generating texture atlas .*completed", 0.6, 0.95)))
             glb = work / "scene_dense_mesh_texture.glb"

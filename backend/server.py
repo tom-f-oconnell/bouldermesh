@@ -344,7 +344,7 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/status":
                 env = {k: bool(os.environ.get(k)) for k in ("GOOGLE_CSE_KEY", "GOOGLE_CSE_CX", "FLICKR_KEY", "HARVEST_DDG")}
                 return self.send_json({"real_pipeline": pipeline.real_pipeline_ready(), "tools": pipeline.tools_available(),
-                                       "queue": jobs.qsize(), "relevance_methods": relevance_mod.available(), "harvest_sources": HARVEST_SOURCES, "env": env,
+                                       "queue": jobs.qsize(), "relevance_methods": relevance_mod.available(), "people_masks": pipeline.occlusion.available(), "harvest_sources": HARVEST_SOURCES, "env": env,
                                        "ytdlp": bool(shutil.which("yt-dlp") and shutil.which("ffmpeg")),
                                        "opencv": _has("cv2"), "pillow": _has("PIL")})
             # ---- projects
