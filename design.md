@@ -58,8 +58,8 @@ shared a machine at low priority.
 | + filter (105) | yes | 2 | 69, 67 | 1.92-2.10M | 526-554k | 46-55 min |
 
 - **Web photos are where the gain is**: about twice the photos placed and 3x the faces. Google's
-  search API is closing and DuckDuckGo is off by default (`HARVEST_DDG=1`), so the default sources
-  don't get this.
+  search API is closing, so DuckDuckGo's unofficial endpoint is on by default despite being
+  brittle (`HARVEST_DDG=0` turns it off): a failed search only costs its photos.
 - **COLMAP rejects junk well by itself**: of the 71 non-targets, one got into one model across all
   these runs. So junk costs matching time (which grows with the square of the photos), not quality.
 - **The filter saves about a third of the time**, and may make results steadier (unfiltered placed

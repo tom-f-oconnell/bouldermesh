@@ -22,9 +22,12 @@ Optional extras, each unlocks a feature and is detected at runtime:
 | COLMAP + OpenMVS (see Docker section) | real photogrammetry instead of demo relief meshes |
 | `GOOGLE_CSE_KEY` + `GOOGLE_CSE_CX` | Google Images via the Custom Search JSON API (100 free queries/day; existing keys only, see Known gaps) |
 | `FLICKR_KEY` | geotagged Flickr photos around the climb's coordinates |
-| `HARVEST_DDG=1` | unofficial DuckDuckGo image search (no key, brittle) |
 
 Set `BOULDERMESH_UA="BoulderMesh/0.2 (you@example.com)"` so the sites you fetch from can reach you.
+
+Harvests also search DuckDuckGo images by default. That needs no key, but it's an unofficial
+endpoint: if it breaks, the harvest logs that and carries on without it. `HARVEST_DDG=0` turns it
+off.
 
 Without COLMAP/OpenMVS the server runs in **demo mode**: Reconstruct produces a relief
 mesh from the first photo (tagged `demo`) so every other feature can be exercised.
@@ -103,8 +106,8 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
 Expect *rough* results: web photos mix cameras, seasons, chalk and people; a famous
 boulder with dozens of distinct angles (e.g. Camp 4 classics) is realistic, an obscure
 problem with three topo shots is not. Beta videos that pan around the rock are a good
-source, and web search adds the most: `HARVEST_DDG=1` took Midnight Lightning from about
-30 placed photos to about 65, and from about 190k faces to about 540k.
+source, and web search adds the most: DuckDuckGo took Midnight Lightning from about 30
+placed photos to about 65, and from about 190k faces to about 540k.
 
 Downloaded images stay on your server for reconstruction only; most are copyrighted by
 their photographers. `sources.json` lets you credit or remove any of them.

@@ -359,7 +359,7 @@ async function openClimb(id, focus=true){
         <label><input type="checkbox" name="src" value="google" ${st.env.GOOGLE_CSE_KEY&&st.env.GOOGLE_CSE_CX?'checked':'disabled'}> Google Images ${st.env.GOOGLE_CSE_KEY?'':'(set GOOGLE_CSE_KEY/CX)'}</label>
         <label><input type="checkbox" name="src" value="commons" ${c.lat!=null?'checked':'disabled'}> Wikimedia Commons (geo)</label>
         <label><input type="checkbox" name="src" value="flickr" ${st.env.FLICKR_KEY&&c.lat!=null?'checked':'disabled'}> Flickr (geo) ${st.env.FLICKR_KEY?'':'(set FLICKR_KEY)'}</label>
-        <label><input type="checkbox" name="src" value="ddg" ${st.env.HARVEST_DDG?'':'disabled'}> DuckDuckGo ${st.env.HARVEST_DDG?'':'(HARVEST_DDG=1)'}</label>
+        <label><input type="checkbox" name="src" value="ddg" ${st.env.HARVEST_DDG?'checked':'disabled'}> DuckDuckGo ${st.env.HARVEST_DDG?'':'(off: HARVEST_DDG=0)'}</label>
       </div>
       <div class="checks" style="margin-top:6px"><label title="Drops title cards and photos that don't match this boulder; you can put any back afterwards"><input type="checkbox" class="relfilter" ${st.relevance_methods?.length?'checked':'disabled'}> filter off-topic photos ${st.relevance_methods?.length?`<small>(${esc(st.relevance_methods.join(', '))})</small>`:'(needs numpy)'}</label>
         <label><input type="checkbox" class="autorec" checked> reconstruct if diverse enough</label></div>

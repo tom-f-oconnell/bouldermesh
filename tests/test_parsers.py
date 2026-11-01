@@ -195,6 +195,23 @@ http.get = lambda url, **kw: b'{"stat": "fail", "code": 100, "message": "Invalid
 assert harvest.flickr_search(37.7, -119.6, [], logged.append) == [] and "flickr: failed: Invalid API Key" in logged, logged
 del os.environ["FLICKR_KEY"], http.get
 
+# DuckDuckGo is a default source, HARVEST_DDG=0 keeps it off the network, and a failure only costs its photos
+assert "ddg" in harvest.SOURCES and "HARVEST_DDG" not in os.environ and harvest.ddg_enabled()
+http.get_text = lambda url, **kw: "vqd='4-123'"
+http.get_json = lambda url, **kw: {"results": [{"image": "https://u/a.jpg", "url": "https://u/a", "title": "A"}]}
+imgs = harvest.ddg_images(["q"], logged.append)
+assert [(m.url, m.page, m.source) for m in imgs] == [("https://u/a.jpg", "https://u/a", "ddg")], imgs
+http.get_text = lambda url, **kw: "the endpoint changed"
+assert harvest.ddg_images(["q"], logged.append) == [] and any("no vqd token" in x for x in logged), logged
+http.get_text = lambda url, **kw: 1 / 0
+assert harvest.ddg_images(["q"], logged.append) == [] and any(x.startswith("ddg: 'q' failed") for x in logged), logged
+os.environ["HARVEST_DDG"] = "0"
+fetched = []
+http.get_text = lambda url, **kw: fetched.append(url)
+assert not harvest.ddg_enabled() and harvest.ddg_images(["q"], logged.append) == [] and not fetched, fetched
+assert "ddg: skipped (HARVEST_DDG=0)" in logged, logged
+del os.environ["HARVEST_DDG"], http.get_text, http.get_json
+
 # a 429 is retried once, after its Retry-After
 http._robots["u"], slept = None, []
 time.sleep = slept.append

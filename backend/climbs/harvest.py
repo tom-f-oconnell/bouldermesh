@@ -7,7 +7,7 @@ Sources, each optional and independently switchable:
              (free tier: 100 queries/day).  This is the *supported* way to query Google
              Images; scraping google.com/images is against Google's ToS and is not done here.
   ddg        DuckDuckGo image search via its unofficial i.js endpoint (no key; brittle,
-             may break or rate-limit; off by default).
+             may break or rate-limit; HARVEST_DDG=0 turns it off).
   commons    Wikimedia Commons geosearch around the climb's coordinates (no key, CC-licensed).
   flickr     Flickr API photo search around the coordinates (needs FLICKR_KEY; CC filter on
              by default).
@@ -36,6 +36,7 @@ from .common import ApiError, Climb, HttpError, Media, http
 
 Log = Callable[[str], None]
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+SOURCES = ("climb", "google", "ddg", "commons", "flickr", "youtube")
 PEOPLE_WORDS = re.compile(r"\b(climber|climbing|sends?|sending|flash|topping out|dyno|mantle)\b", re.I)
 
 
@@ -107,10 +108,15 @@ def google_images(queries: list[str], log: Log, per_query: int = 20) -> list[Med
     return out
 
 
+def ddg_enabled() -> bool:
+    """Whether DuckDuckGo image search may be used: yes, unless HARVEST_DDG=0."""
+    return os.environ.get("HARVEST_DDG", "1") != "0"
+
+
 def ddg_images(queries: list[str], log: Log, per_query: int = 40) -> list[Media]:
-    """Unofficial DuckDuckGo image endpoint. Off unless HARVEST_DDG=1."""
-    if os.environ.get("HARVEST_DDG", "0") != "1":
-        log("ddg: skipped (set HARVEST_DDG=1 to enable the unofficial DuckDuckGo image search)")
+    """Unofficial DuckDuckGo image endpoint. Off if HARVEST_DDG=0."""
+    if not ddg_enabled():
+        log("ddg: skipped (HARVEST_DDG=0)")
         return []
     out = []
     for q in queries:
@@ -329,7 +335,7 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         tracker: a progress.Tracker with this harvest's steps().
     """
     from . import diversity, relevance
-    sources = sources or {"climb", "google", "commons", "flickr", "youtube"}
+    sources = sources or set(SOURCES)
     progress = tracker.callback if tracker else lambda key: None
     photos_dir = project_dir / "photos"
     photos_dir.mkdir(parents=True, exist_ok=True)

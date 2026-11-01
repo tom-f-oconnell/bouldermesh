@@ -4,14 +4,14 @@
   python cli.py fetch  <url> [--no-children]          metadata for an MP / OpenBeta / Kaya URL -> JSON
   python cli.py search "<area name>" [--near LAT LNG --radius M]   OpenBeta search -> JSON
   python cli.py mp-csv <mp_area_id> [--type boulder]  Mountain Project route-finder CSV export -> JSON
-  python cli.py harvest <url> <out_dir> [--sources climb,google,commons,flickr,youtube,ddg] [--no-filter]
+  python cli.py harvest <url> <out_dir> [--sources climb,google,ddg,commons,flickr,youtube] [--no-filter]
                                                        download public photos + relevance + diversity reports
   python cli.py diversity <photos_dir>                 score an existing photo folder
   python cli.py relevance <photos_dir> [--anchors DIR] [--move]
                                                        which photos are substantially of the boulder? (report-only
                                                        unless --move; anchors default to climb page / video photos)
 
-Environment: GOOGLE_CSE_KEY/GOOGLE_CSE_CX, FLICKR_KEY, HARVEST_DDG=1, DATA_DIR (cache location),
+Environment: GOOGLE_CSE_KEY/GOOGLE_CSE_CX, FLICKR_KEY, HARVEST_DDG=0 (no DuckDuckGo), DATA_DIR (cache location),
              BOULDERMESH_UA (please set a contact address), HTTP_MIN_INTERVAL (min. seconds between requests
              to one host; a longer robots.txt Crawl-delay wins).
 """
@@ -37,7 +37,7 @@ def main():
     s.add_argument("--near", nargs=2, type=float, metavar=("LAT", "LNG")); s.add_argument("--radius", type=int, default=2000)
     c = sub.add_parser("mp-csv"); c.add_argument("area_id"); c.add_argument("--type", default="boulder")
     h = sub.add_parser("harvest"); h.add_argument("url"); h.add_argument("out_dir")
-    h.add_argument("--sources", default="climb,google,commons,flickr,youtube"); h.add_argument("--no-filter", action="store_true")
+    h.add_argument("--sources", default=",".join(harvest.SOURCES)); h.add_argument("--no-filter", action="store_true")
     d = sub.add_parser("diversity"); d.add_argument("photos_dir")
     r = sub.add_parser("relevance"); r.add_argument("photos_dir"); r.add_argument("--anchors"); r.add_argument("--move", action="store_true")
     a = ap.parse_args()

@@ -11,7 +11,7 @@ services:
       # GOOGLE_CSE_KEY: ""        # Google Programmable Search (image mode) - 100 free queries/day
       # GOOGLE_CSE_CX: ""
       # FLICKR_KEY: ""            # Flickr API key for geotagged photo search
-      # HARVEST_DDG: "0"          # "1" enables the unofficial DuckDuckGo image search
+      # HARVEST_DDG: "0"          # turns off the unofficial DuckDuckGo image search
       # OPENBETA_MEDIA_BASE: "https://media.openbeta.io"
     # deploy:
     #   resources:

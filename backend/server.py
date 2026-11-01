@@ -52,7 +52,7 @@ MAX_UPLOAD = int(os.environ.get("MAX_UPLOAD_MB", "512")) * 1024 * 1024
 PHOTO_EXT = {".jpg", ".jpeg", ".png"}
 MESH_EXT = {".ply", ".obj", ".glb", ".gltf", ".stl"}
 SAFE = re.compile(r"[^A-Za-z0-9._-]+")
-HARVEST_SOURCES = ("climb", "google", "ddg", "commons", "flickr", "youtube")
+HARVEST_SOURCES = harvest_mod.SOURCES
 
 # ----------------------------------------------------------------- database
 _db_lock = threading.Lock()
@@ -342,7 +342,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "forbidden"}, 403)
                 return self.send_file(f)
             if p == "/api/status":
-                env = {k: bool(os.environ.get(k)) for k in ("GOOGLE_CSE_KEY", "GOOGLE_CSE_CX", "FLICKR_KEY", "HARVEST_DDG")}
+                env = {k: bool(os.environ.get(k)) for k in ("GOOGLE_CSE_KEY", "GOOGLE_CSE_CX", "FLICKR_KEY")}
+                env["HARVEST_DDG"] = harvest_mod.ddg_enabled()
                 return self.send_json({"real_pipeline": pipeline.real_pipeline_ready(), "tools": pipeline.tools_available(),
                                        "queue": jobs.qsize(), "relevance_methods": relevance_mod.available(), "people_masks": pipeline.occlusion.available(), "harvest_sources": HARVEST_SOURCES, "env": env,
                                        "ytdlp": bool(shutil.which("yt-dlp") and shutil.which("ffmpeg")),
@@ -559,8 +560,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not r:
                     return self.send_json({"error": "not found"}, 404)
                 body = self.read_json()
-                sources = [s for s in (body.get("sources") or ["climb", "google", "commons", "flickr", "youtube"])
-                           if s in HARVEST_SOURCES]
+                sources = [s for s in (body.get("sources") or HARVEST_SOURCES) if s in HARVEST_SOURCES]
                 pid = new_id()
                 (PROJECTS / pid / "photos").mkdir(parents=True)
                 name = f"{r['name']} (harvest)"[:80]

@@ -47,7 +47,8 @@ def main() -> None:
     port = free_port()
     B = f"http://127.0.0.1:{port}"
     env = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(port), HOST="127.0.0.1", HTTP_MIN_INTERVAL="0")
-    srv = subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=env,
+    env.pop("HARVEST_DDG", None)
+    srv =subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
         for _ in range(50):
@@ -139,6 +140,7 @@ def run(B: str, tmp: Path) -> None:
     st, s = req(B, "GET", "/api/status")
     assert st == 200
     print("status:", {k: s[k] for k in ("real_pipeline", "opencv", "pillow", "ytdlp")})
+    assert s["env"]["HARVEST_DDG"] is True and "ddg" in s["harvest_sources"], s
 
     # --- manual climb (kaya link) ------------------------------------------------------------
     st, c = req(B, "POST", "/api/climbs/manual", {"name": "Test Problem", "grade": "V5", "boulder_name": "Test Boulder",
