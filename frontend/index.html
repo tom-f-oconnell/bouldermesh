@@ -199,6 +199,7 @@ const api = async (url, opt={}) => {
 let toastT;
 const toast = (msg, ms=3500) => { const t=$('#toast'); t.textContent=msg; t.style.display='block'; clearTimeout(toastT); toastT=setTimeout(()=>t.style.display='none', ms); };
 const fmtSize = n => n>1e6 ? (n/1e6).toFixed(1)+' MB' : (n/1e3).toFixed(0)+' kB';
+const fmtWhen = t => new Date(t * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const parseLL = s => { const m = /(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)/.exec(s||''); return m ? [parseFloat(m[1]), parseFloat(m[2])] : null; };
 const fmtLL = (lat,lng) => (lat==null||lng==null) ? '—' : `${(+lat).toFixed(5)}, ${(+lng).toFixed(5)}`;
@@ -556,7 +557,7 @@ async function refreshMeshes(){
   const el = $('#meshes'); el.innerHTML = meshesCache.length ? '' : '<div class="status">No meshes yet.</div>';
   for (const m of meshesCache) {
     const d = document.createElement('div'); d.className = 'card mesh';
-    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} · 📍 ${fmtLL(m.lat,m.lng)}</small>
+    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}</small>
         <div class="chips">${m.climbs.map(c=>`<span class="chip" data-climb="${c.id}">${esc(c.name)} ${esc(c.grade||'')} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('')}
           <select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option>${climbsCache.filter(c=>c.kind!=='area').map(c=>`<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('')}</select></div></div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px">

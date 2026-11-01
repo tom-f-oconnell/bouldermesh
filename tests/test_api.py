@@ -167,6 +167,7 @@ def run(B: str, tmp: Path) -> None:
     st, meshes = req(B, "GET", "/api/meshes")
     m = meshes[0]
     assert m["lat"] == 37.74172 and m["climbs"][0]["id"] == cid, m
+    assert abs(time.time() - m["created"]) < 600, m
     print("reconstructed mesh auto-linked:", m["name"], m["lat"], m["lng"])
 
     st, cd = req(B, "GET", f"/api/climbs/{cid}")
