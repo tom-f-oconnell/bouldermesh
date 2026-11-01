@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable
 
 import occlusion
+from climbs.common import jobctl
 from progress import Tracker
 
 Log = Callable[[str], None]
@@ -51,7 +52,7 @@ def real_pipeline_ready() -> bool:
 
 def _run(cmd: list[str], cwd: Path, log: Log, watch: Callable[[str], None] | None = None) -> None:
     log("$ " + " ".join(cmd))
-    proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    proc = jobctl.popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert proc.stdout
     for line in proc.stdout:
         line = line.rstrip()
@@ -59,8 +60,10 @@ def _run(cmd: list[str], cwd: Path, log: Log, watch: Callable[[str], None] | Non
             log(line)
             if watch:
                 watch(line)
-    if proc.wait() != 0:
-        raise RuntimeError(f"{cmd[0]} exited with {proc.returncode}")
+    code = proc.wait()
+    jobctl.check()
+    if code != 0:
+        raise RuntimeError(f"{cmd[0]} exited with {code}")
 
 
 def steps() -> list[tuple[str, str, float]]:

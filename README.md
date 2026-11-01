@@ -112,6 +112,29 @@ placed photos to about 65, and from about 190k faces to about 540k.
 Downloaded images stay on your server for reconstruction only; most are copyrighted by
 their photographers. `sources.json` lets you credit or remove any of them.
 
+## Mesh a whole area
+
+On the *Areas* tab, paste a Mountain Project area URL, such as
+`https://www.mountainproject.com/area/105720495/joshua-tree-national-park`, and pick an order:
+
+- **Most popular**, Mountain Project's own ranking.
+- **Highest rated**, by average stars.
+- **Most photos and videos**, judged from the pages of the next few popular climbs.
+
+Its boulder problems are then meshed one at a time until you stop, or the list runs out. A
+problem on a boulder that already has a mesh is linked to it rather than meshed again. A climb
+without enough photos is skipped, and the run moves on.
+
+*Stop now* drops the climb in progress and *Stop after this climb* finishes it. Either way, every
+finished mesh stays, and *Resume* carries on from there. A server restart also stops the run, so
+press *Resume* afterwards. It also stops by itself after 5 climbs in a row fail before finishing a
+harvest, which usually means a network problem, or with under 50 GB of disk left
+(`CAMPAIGN_MIN_FREE_GB`).
+
+Jobs you start by hand go first, between climbs. Expect each climb to take most of an hour on CPU,
+and about 170 MB of disk plus up to a few hundred MB of download cache. Mountain Project's export
+stops at 1000 climbs: in a bigger area, these are its most popular 1000.
+
 ## Real photogrammetry
 
     docker compose up --build      # CPU build of COLMAP + OpenMVS (+ OpenCV, ffmpeg, yt-dlp); first build ~5-30 min depending on cores
@@ -154,6 +177,8 @@ OpenMVS's 11-photo sample set takes 3-4 minutes, and a 100-photo harvest about a
     POST /api/climbs/search {q, lat, lng, radius_m}     OpenBeta live search
     POST /api/climbs/manual {...} · POST /api/climbs/kaya-export (multipart csv/json)
     POST /api/climbs/{id}/harvest {sources:[climb,google,ddg,commons,flickr,youtube], reconstruct, filter}
+    GET  /api/campaigns · POST /api/campaigns {area, order:popularity|rating|data, start, csv}
+    POST /api/campaigns/{id}/start · POST /api/campaigns/{id}/stop {now} · DELETE /api/campaigns/{id}
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
 
 ## Development
@@ -165,6 +190,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_parsers.py     # offline: MP/OpenBeta/Kaya parsers on fixtures
     python3 tests/test_relevance.py   # offline: relevance filter on synthetic photos, progress tracking (CLIP downloads its model)
     python3 tests/test_pipeline.py    # offline: reconstruction steps with COLMAP/OpenMVS stubbed, progress parsing
+    python3 tests/test_campaign.py    # offline: meshing an area, with harvest and reconstruction stubbed: order, stopping, restarts
     python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job
 
 ## Known gaps

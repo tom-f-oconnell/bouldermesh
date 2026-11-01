@@ -40,7 +40,8 @@ from climbs import harvest as harvest_mod  # noqa: E402
 from climbs import relevance as relevance_mod  # noqa: E402
 from progress import Tracker  # noqa: E402
 from climbs import kaya as kaya_mod  # noqa: E402
-from climbs.common import Climb  # noqa: E402
+from climbs import mountainproject as mp_mod  # noqa: E402
+from climbs.common import Cancelled, Climb, jobctl  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = ROOT / "frontend"
@@ -53,6 +54,14 @@ PHOTO_EXT = {".jpg", ".jpeg", ".png"}
 MESH_EXT = {".ply", ".obj", ".glb", ".gltf", ".stl"}
 SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 HARVEST_SOURCES = harvest_mod.SOURCES
+CAMPAIGN_ORDERS = ("popularity", "rating", "data")
+CAMPAIGN_POLL = 2.0     # seconds the worker waits for a queued job before moving a campaign on
+DATA_WINDOW = 8         # "data" order: how many waiting climbs' pages to have read before picking one
+VIDEO_WORTH = 20        # "data" order: roughly how many usable photos a beta video gives
+OUTAGE_LIMIT = 5        # stop a campaign after this many climbs in a row fail before finishing a harvest
+CAMPAIGN_MIN_FREE = float(os.environ.get("CAMPAIGN_MIN_FREE_GB", "50")) * 2**30   # stop rather than fill a shared disk
+# lowest areas named like these hold several rocks, so one mesh can't stand in for all their climbs
+GROUP_AREA = re.compile(r"\b(boulders|area|circuit|bouldering|rocks|blocks|cluster|complex)\b", re.I)
 
 # ----------------------------------------------------------------- database
 _db_lock = threading.Lock()
@@ -84,6 +93,16 @@ def init_db() -> None:
           UNIQUE(source, source_id));
         CREATE TABLE IF NOT EXISTS mesh_links(
           mesh_id TEXT, climb_id TEXT, note TEXT, created REAL, PRIMARY KEY(mesh_id, climb_id));
+        CREATE TABLE IF NOT EXISTS campaigns(
+          id TEXT PRIMARY KEY, name TEXT, area_id TEXT, ord TEXT, created REAL, note TEXT,
+          status TEXT);                -- running | stopping | stopped | done
+        CREATE TABLE IF NOT EXISTS campaign_items(
+          campaign_id TEXT, source_id TEXT, rank INTEGER, name TEXT, grade TEXT, stars REAL, url TEXT,
+          boulder TEXT, data TEXT, media INTEGER, climb_id TEXT, project_id TEXT, mesh_id TEXT,
+          note TEXT, updated REAL,
+          status TEXT DEFAULT 'pending',   -- pending | running | done | skipped | failed
+          PRIMARY KEY(campaign_id, source_id));
+        CREATE INDEX IF NOT EXISTS campaign_items_boulder ON campaign_items(boulder);
         """)
         # migrations for databases created by v0.1
         cols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
@@ -96,6 +115,9 @@ def init_db() -> None:
                 con.execute(f"ALTER TABLE meshes ADD COLUMN {c} REAL")
         con.execute("UPDATE projects SET status='failed', progress=NULL, log=log||'\nserver restarted during job' "
                     "WHERE status IN ('queued','running','harvesting')")
+        # a restart is an interruption: what finished stays, and nothing heavy restarts unattended
+        con.execute("UPDATE campaign_items SET status='pending', note='interrupted: starts again when resumed' WHERE status='running'")
+        con.execute("UPDATE campaigns SET status='stopped', note='stopped by a server restart' WHERE status IN ('running','stopping')")
 
 
 def q(sql: str, *args, one=False, write=False):
@@ -259,16 +281,215 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
         q("UPDATE projects SET status='failed' WHERE id=?", pid, write=True)
 
 
+# ------------------------------------------------------------------ campaigns: mesh a whole area
+_campaign_running: str | None = None    # the campaign whose climb the worker is on
+_outages: list[tuple[str, str]] = []    # (campaign, climb) failing in a row before finishing a harvest
+
+
+def create_campaign(area: str, order: str = "popularity", csv_text: str | None = None, start: bool = True) -> dict:
+    """List a Mountain Project area's boulder problems, in one request, and queue them for meshing.
+
+    Args:
+        area: its URL or id.
+        order: "popularity" (MP's own ranking, as tick counts are only on each climb's own page),
+            "rating" (average stars), or "data" (most photos and videos first).
+        csv_text: a Route Finder export to use instead of fetching one.
+        start: start meshing as soon as nothing else is queued.
+    """
+    if order not in CAMPAIGN_ORDERS:
+        raise ValueError(f"order must be one of {', '.join(CAMPAIGN_ORDERS)}")
+    aid = mp_mod.area_id(area or "")
+    if not aid and not csv_text:
+        raise ValueError("enter a Mountain Project area URL, like https://www.mountainproject.com/area/105720495/joshua-tree-national-park")
+    recs = mp_mod.parse_area_csv(csv_text) if csv_text else mp_mod.export_area_csv(aid, sort="popularity")
+    if not recs:
+        raise ValueError("Mountain Project lists no boulder problems under that area")
+    common = os.path.commonprefix([c.area_path for c in recs])
+    cid = new_id()
+    note = "Mountain Project's export stops at 1000 climbs: these are the most popular 1000" if len(recs) >= 1000 else None
+    q("INSERT INTO campaigns(id,name,area_id,ord,created,note,status) VALUES(?,?,?,?,?,?,?)", cid,
+      common[-1].strip("* ") if common else f"area {aid}", aid, order, time.time(), note, "running" if start else "stopped", write=True)
+    rows = [(cid, c.source_id, i + 1, c.name, c.grade, c.rating, c.url,
+             "/".join(c.area_path) if c.area_path and not GROUP_AREA.search(c.area_path[-1]) else None,
+             json.dumps(c.to_dict())) for i, c in enumerate(recs)]
+    with _db_lock, db() as con:
+        con.executemany("INSERT OR IGNORE INTO campaign_items(campaign_id,source_id,rank,name,grade,stars,url,boulder,data) "
+                        "VALUES(?,?,?,?,?,?,?,?,?)", rows)
+    return q("SELECT * FROM campaigns WHERE id=?", cid, one=True)
+
+
+def ordered_pending(camp: dict) -> list[dict]:
+    """A campaign's waiting climbs, next first."""
+    items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id FROM campaign_items "
+              "WHERE campaign_id=? AND status='pending' ORDER BY rank", camp["id"])
+    if camp["ord"] == "rating":
+        items.sort(key=lambda i: (-(i["stars"] or 0), i["rank"]))
+    elif camp["ord"] == "data":
+        items.sort(key=lambda i: (i["media"] is None, -(i["media"] or 0), i["rank"]))
+    return items
+
+
+def set_item(camp_id: str, source_id: str, **fields) -> None:
+    fields["updated"] = time.time()
+    q(f"UPDATE campaign_items SET {', '.join(k + '=?' for k in fields)} WHERE campaign_id=? AND source_id=?",
+      *fields.values(), camp_id, source_id, write=True)
+
+
+def campaign_status(camp_id: str) -> str | None:
+    r = q("SELECT status FROM campaigns WHERE id=?", camp_id, one=True)
+    return r["status"] if r else None
+
+
+def read_ahead(camp: dict) -> None:
+    """For "data" order: read waiting climbs' pages, most popular first, until DATA_WINDOW of them
+    have a known amount of data. Each is a page its climb's turn would read anyway, and well below
+    a crawl: one more per climb meshed, after the first few."""
+    items = ordered_pending(camp)
+    known = sum(i["media"] is not None for i in items)
+    for it in items:
+        if known >= DATA_WINDOW or campaign_status(camp["id"]) != "running":
+            return
+        if it["media"] is not None:
+            continue
+        try:
+            rec = climbs_mod.fetch_climb_url(it["url"], include_children=False)[0]
+            set_item(camp["id"], it["source_id"], climb_id=upsert_climb(rec),
+                     media=len(rec.images) + VIDEO_WORTH * len(rec.videos))
+            known += 1
+        except Exception as e:
+            set_item(camp["id"], it["source_id"], status="failed", note=f"couldn't read its page: {e}")
+
+
+def discard_project(pid: str) -> None:
+    q("DELETE FROM projects WHERE id=?", pid, write=True)
+    shutil.rmtree(PROJECTS / pid, ignore_errors=True)
+
+
+def last_failure(pid: str) -> str:
+    for line in reversed(read_log(pid).splitlines()):
+        if line.startswith("FAILED: "):
+            return line[len("FAILED: "):]
+    return "failed; see its project's log"
+
+
+def run_campaign_item(camp: dict, item: dict) -> None:
+    """Mesh one climb, unless a mesh of its boulder already exists. Whatever this finishes is
+    saved like any other mesh, so stopping later loses nothing but the climb in progress."""
+    global _campaign_running
+    cid, sid = camp["id"], item["source_id"]
+    if item["project_id"]:   # the unfinished work of an interrupted attempt
+        discard_project(item["project_id"])
+    jobctl.begin(low_priority=True)
+    _campaign_running = cid
+    try:
+        set_item(cid, sid, status="running", project_id=None, note=None)
+        full = q("SELECT data,climb_id,boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
+        c = Climb.from_dict(json.loads(full["data"]))
+        climb_id = full["climb_id"] or upsert_climb(c)
+        have = q("SELECT mesh_id FROM mesh_links WHERE climb_id=? LIMIT 1", climb_id, one=True)
+        same = full["boulder"] and q("SELECT name,mesh_id FROM campaign_items WHERE boulder=? AND mesh_id IS NOT NULL LIMIT 1",
+                                     full["boulder"], one=True)
+        if have:
+            set_item(cid, sid, status="done", climb_id=climb_id, mesh_id=have["mesh_id"], note="already had a mesh")
+        elif same:
+            link_mesh(same["mesh_id"], climb_id, f"same boulder as {same['name']}")
+            set_item(cid, sid, status="done", climb_id=climb_id, mesh_id=same["mesh_id"], note=f"same boulder as {same['name']}")
+        else:
+            pid = new_id()
+            (PROJECTS / pid / "photos").mkdir(parents=True)
+            q("INSERT INTO projects(id,name,created,kind,climb_id,status) VALUES(?,?,?,?,?,'queued')",
+              pid, f"{c.name} (harvest)"[:80], time.time(), "harvest", climb_id, write=True)
+            set_item(cid, sid, climb_id=climb_id, project_id=pid)
+            try:
+                run_harvest(pid, set(HARVEST_SOURCES), True)
+            except Cancelled:
+                discard_project(pid)
+                set_item(cid, sid, status="pending", project_id=None, note="stopped partway: starts again when resumed")
+                return
+            shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)   # most of a job's disk use, and only useful to itself
+            p = q("SELECT status,mesh_id,harvest FROM projects WHERE id=?", pid, one=True)
+            if p["status"] == "done":
+                set_item(cid, sid, status="done", mesh_id=p["mesh_id"])
+            elif p["status"] == "harvested":
+                set_item(cid, sid, status="skipped", note="photos don't show enough different viewpoints")
+            else:
+                set_item(cid, sid, status="failed", note=last_failure(pid))
+                if not p["harvest"]:
+                    _outages.append((cid, sid))
+                    if len(_outages) >= OUTAGE_LIMIT:
+                        for oc, os_ in _outages:
+                            set_item(oc, os_, status="pending", note="will be tried again when resumed")
+                        q("UPDATE campaigns SET status='stopped', note=? WHERE id=?", f"stopped after {OUTAGE_LIMIT} climbs in a row "
+                          f"failed before finishing a harvest; last error: {last_failure(pid)}", cid, write=True)
+                        _outages.clear()
+                    return
+        _outages.clear()
+    finally:
+        _campaign_running = None
+        q("UPDATE campaigns SET status='stopped', note=NULL WHERE id=? AND status='stopping'", cid, write=True)
+
+
+def next_campaign_step() -> None:
+    """Move the oldest running campaign on by one climb."""
+    camp = q("SELECT * FROM campaigns WHERE status='running' ORDER BY created LIMIT 1", one=True)
+    if not camp:
+        return
+    if shutil.disk_usage(DATA).free < CAMPAIGN_MIN_FREE:
+        q("UPDATE campaigns SET status='stopped', note=? WHERE id=?",
+          f"stopped: under {CAMPAIGN_MIN_FREE / 2**30:.0f} GB of disk left", camp["id"], write=True)
+        return
+    if camp["ord"] == "data":
+        read_ahead(camp)
+    items = ordered_pending(camp)
+    if not items:
+        q("UPDATE campaigns SET status='done', note=NULL WHERE id=? AND status='running'", camp["id"], write=True)
+    elif campaign_status(camp["id"]) == "running":
+        try:
+            run_campaign_item(camp, items[0])
+        except Exception as e:
+            set_item(camp["id"], items[0]["source_id"], status="failed", note=str(e))
+
+
+def stop_campaign(camp_id: str, now: bool = True) -> None:
+    """Stop a campaign, now or once the climb it's on is finished."""
+    running = _campaign_running == camp_id
+    q("UPDATE campaigns SET status=?, note=NULL WHERE id=? AND status IN ('running','stopping')",
+      "stopping" if running and not now else "stopped", camp_id, write=True)
+    if running and now:
+        jobctl.stop()
+
+
+def campaign_view(camp: dict) -> dict:
+    """A campaign for the UI, with where it's got to."""
+    cid = camp["id"]
+    counts = {r["status"]: r["n"] for r in q("SELECT status,COUNT(*) n FROM campaign_items WHERE campaign_id=? GROUP BY status", cid)}
+    worked = q("SELECT rank,name,grade,stars,url,climb_id,mesh_id,project_id,status,note,updated FROM campaign_items "
+               "WHERE campaign_id=? AND status NOT IN ('pending','running') ORDER BY updated DESC LIMIT 300", cid)
+    current = q("SELECT rank,name,grade,stars,project_id FROM campaign_items WHERE campaign_id=? AND status='running' LIMIT 1", cid, one=True)
+    if current and current["project_id"]:
+        p = q("SELECT status,progress FROM projects WHERE id=?", current["project_id"], one=True)
+        current["progress"] = json.loads(p["progress"]) if p and p["progress"] else None
+    return {**camp, "counts": counts, "worked": worked, "current": current, "next": ordered_pending(camp)[:10]}
+
+
 def worker() -> None:
     while True:
-        job = jobs.get()
+        try:
+            job = jobs.get(timeout=CAMPAIGN_POLL)   # jobs people asked for go ahead of a campaign's next climb
+        except queue.Empty:
+            try:
+                next_campaign_step()
+            except (Exception, Cancelled) as e:  # never let the worker die
+                print(f"campaign error: {e!r}", flush=True)
+            continue
+        jobctl.begin()
         try:
             if job["type"] == "reconstruct":
                 run_reconstruct(job["pid"], job.get("internet", False))
             elif job["type"] == "harvest":
                 run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True))
-        except Exception as e:  # never let the worker die
-            append_log(job.get("pid", "?"), f"worker error: {e}")
+        except (Exception, Cancelled) as e:  # never let the worker die
+            append_log(job.get("pid", "?"), f"worker error: {e!r}")
 
 
 # ----------------------------------------------------------------- handler
@@ -326,7 +547,7 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(body or b"{}")
 
     def log_message(self, fmt, *args):  # quieter
-        if "/api/projects" not in (args[0] if args else ""):
+        if not any(x in (args[0] if args else "") for x in ("/api/projects", "/api/campaigns")):
             super().log_message(fmt, *args)
 
     # -- GET ---------------------------------------------------------------
@@ -393,6 +614,8 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/meshes/([0-9a-f]+)/([A-Za-z0-9._-]+)", p)
             if m:
                 return self.send_file(MESHES / m[1] / m[2], download="download" in qs)
+            if p == "/api/campaigns":
+                return self.send_json([campaign_view(c) for c in q("SELECT * FROM campaigns ORDER BY created DESC")])
             # ---- climbs
             if p == "/api/climbs":
                 sql, args = "SELECT id FROM climbs", []
@@ -518,6 +741,23 @@ class Handler(BaseHTTPRequestHandler):
                 ids = [upsert_climb(c) for c in recs]
                 return self.send_json({"imported": [climb_row(i) for i in ids]}, 201)
 
+            if p == "/api/campaigns":
+                b = self.read_json()
+                try:
+                    camp = create_campaign(b.get("area") or "", b.get("order") or "popularity", b.get("csv"), bool(b.get("start", True)))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 400)
+                return self.send_json(campaign_view(camp), 201)
+            m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)/(start|stop)", p)
+            if m:
+                if not campaign_status(m[1]):
+                    return self.send_json({"error": "not found"}, 404)
+                if m[2] == "start":
+                    q("UPDATE campaigns SET status='running', note=NULL WHERE id=? AND status IN ('stopped','stopping')", m[1], write=True)
+                else:
+                    stop_campaign(m[1], bool(self.read_json().get("now", True)))
+                return self.send_json(campaign_view(q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)))
+
             if p == "/api/climbs/search":   # OpenBeta live search (not stored until imported)
                 body = self.read_json()
                 recs = climbs_mod.search(query=body.get("q") or "", lat=body.get("lat"), lng=body.get("lng"),
@@ -603,6 +843,12 @@ class Handler(BaseHTTPRequestHandler):
     # -- DELETE ------------------------------------------------------------
     def do_DELETE(self):
         p = urlparse(self.path).path
+        m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)", p)
+        if m:   # the list goes; meshes and projects it made stay
+            stop_campaign(m[1])
+            q("DELETE FROM campaign_items WHERE campaign_id=?", m[1], write=True)
+            q("DELETE FROM campaigns WHERE id=?", m[1], write=True)
+            return self.send_json({"deleted": m[1]})
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/links/([0-9a-f]+)", p)
         if m:
             q("DELETE FROM mesh_links WHERE mesh_id=? AND climb_id=?", m[1], m[2], write=True)

@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import quote_plus, urlencode
 
-from .common import ApiError, Climb, HttpError, Media, http
+from .common import ApiError, Climb, HttpError, Media, http, jobctl
 
 Log = Callable[[str], None]
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp"}
@@ -219,14 +219,14 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
         tmp.mkdir(parents=True, exist_ok=True)
         try:
             log(f"youtube: downloading {v.url}")
-            subprocess.run([ytdlp, "-q", "--no-playlist", "-f", "bv*[height<=1080]/b", "--max-filesize", "500m",
-                            "-o", str(tmp / "video.%(ext)s"), v.url], check=True, timeout=900,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            jobctl.run([ytdlp, "-q", "--no-playlist", "-f", "bv*[height<=1080]/b", "--max-filesize", "500m",
+                        "-o", str(tmp / "video.%(ext)s"), v.url], timeout=900,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             vid = next(tmp.glob("video.*"))
             if progress:
                 progress((i + 0.7) / n_videos, f"extracting frames from video {i + 1} of {n_videos}")
-            subprocess.run([ffmpeg, "-loglevel", "error", "-i", str(vid), "-vf", f"fps={fps}", "-q:v", "2",
-                            str(tmp / "f%04d.jpg")], check=True, timeout=900)
+            jobctl.run([ffmpeg, "-loglevel", "error", "-i", str(vid), "-vf", f"fps={fps}", "-q:v", "2",
+                        str(tmp / "f%04d.jpg")], timeout=900)
             frames = sorted(tmp.glob("f*.jpg"))
             frames = _sharpest(frames, max_frames // max(1, min(len(videos), max_videos)), log)
             for j, f in enumerate(frames):

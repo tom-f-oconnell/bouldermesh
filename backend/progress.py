@@ -5,6 +5,8 @@ import json
 import time
 from typing import Callable
 
+from climbs.common import jobctl
+
 
 class Tracker:
     """Named steps of one job, each with a 0-1 fraction that only ever goes up.
@@ -26,7 +28,9 @@ class Tracker:
         return next((s for s in self.steps if s["key"] == key), None)
 
     def update(self, key: str, frac: float = 0.0, detail: str | None = None) -> None:
-        """Report progress on a step, which also ends any step before it."""
+        """Report progress on a step, which also ends any step before it. Where the steps that
+        don't run a tool get stopped: raises Cancelled if the job has been."""
+        jobctl.check()
         s = self._step(key)
         if s is None:
             return

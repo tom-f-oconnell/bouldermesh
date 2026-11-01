@@ -12,14 +12,17 @@ What is accessible
 * Photo page  /photo/{id}/{slug}: title, uploader, date.  Image files live at
   /assets/photos/climb/{id}_{size}_{ts}.jpg with size in {sqsmall, smallMed, medium, large}.
 * Route Finder "Export to CSV" (/route-finder-export?...): MP's own export feature;
-  gives every route under an area with *area* lat/lng.  Used by export_area_csv().
+  gives up to 1000 routes under an area with *area* lat/lng, in one request.  Used by
+  export_area_csv().
 
 Terms
 -----
 The Adventure Projects terms of use disallow automated/bulk scraping.  This module
 is deliberately low-volume: one page per import, disk cache, robots.txt respected
 including its Crawl-delay (60 s).  Use it for climbs you are personally working with;
-use the OpenBeta adapter for anything bulk.
+use the OpenBeta adapter for anything bulk.  Meshing a whole area lists it with the one
+export request, then reads one climb's page only when that climb's turn comes, which is
+about one every 10 minutes or more.  Don't read every climb's page up front, e.g. for its tick count.
 """
 from __future__ import annotations
 
@@ -312,14 +315,33 @@ def fetch(url: str, include_children: bool = True, **_) -> list[Climb]:
     raise ValueError("not a Mountain Project route or area URL")
 
 
-def export_area_csv(area_id: str | int, route_type: str = "boulder") -> list[Climb]:
+def area_id(text: str) -> str | None:
+    """The area id in a Mountain Project area URL, or a bare id; None if it's neither."""
+    text = text.strip()
+    if text.isdigit():
+        return text
+    m = AREA_RE.search(text)
+    return m[1] if m and "mountainproject.com" in text else None
+
+
+def export_area_csv(area_id: str | int, route_type: str = "boulder", sort: str = "area") -> list[Climb]:
     """Mountain Project's Route Finder CSV export for everything under an area.
-    Coordinates are the *area* lat/lng (MP's export doesn't include route-level GPS)."""
+    Coordinates are the *area* lat/lng (MP's export doesn't include route-level GPS).
+
+    Args:
+        sort: "area", or "popularity" for MP's own ranking, most popular first. The export stops
+            at 1000 rows, so in a bigger area this also decides which climbs you get.
+    """
     params = ("selectedIds={id}&type={t}&diffMinrock=800&diffMinboulder=20000&diffMinaid=70000&diffMinice=30000"
               "&diffMinmixed=50000&diffMaxrock=12400&diffMaxboulder=21700&diffMaxaid=75260&diffMaxice=38500"
-              "&diffMaxmixed=60000&is_trad_climb=1&is_sport_climb=1&is_top_rope=1&stars=0&pitches=0&sort1=area&sort2=rating")
-    url = f"{BASE}/route-finder-export?" + params.format(id=area_id, t=route_type)
-    text = http.get_text(url)
+              "&diffMaxmixed=60000&is_trad_climb=1&is_sport_climb=1&is_top_rope=1&stars=0&pitches=0&sort1={s}&sort2=rating")
+    s = {"area": "area", "popularity": "popularity+desc"}[sort]
+    return parse_area_csv(http.get_text(f"{BASE}/route-finder-export?" + params.format(id=area_id, t=route_type, s=s)))
+
+
+def parse_area_csv(text: str) -> list[Climb]:
+    """Records from a Route Finder export, in its order. They only summarise each climb
+    (raw['stub']=True): its own page has the photos, videos and description."""
     out = []
     for row in csv.DictReader(io.StringIO(text)):
         rurl = row.get("URL") or ""
@@ -333,7 +355,7 @@ def export_area_csv(area_id: str | int, route_type: str = "boulder") -> list[Cli
                   grade=row.get("Rating"), grades={"vscale": v[0]} if v else {},
                   rating=float(row["Avg Stars"]) if row.get("Avg Stars") not in (None, "", "-1") else None,
                   lat=float(lat) if lat else None, lng=float(lng) if lng else None, coord_source="area" if lat else None,
-                  area_path=path, cross_refs={"mp_id": str(rid)}, raw=dict(row))
+                  area_path=path, cross_refs={"mp_id": str(rid)}, raw={**row, "stub": True})
         c.boulder_name = c.guess_boulder_name()
         out.append(c)
     return out

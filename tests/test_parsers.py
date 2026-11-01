@@ -212,6 +212,24 @@ assert not harvest.ddg_enabled() and harvest.ddg_images(["q"], logged.append) ==
 assert "ddg: skipped (HARVEST_DDG=0)" in logged, logged
 del os.environ["HARVEST_DDG"], http.get_text, http.get_json
 
+# Route Finder export: one request, asks for popularity order, and keeps it
+EXPORT = ('Route,Location,URL,"Avg Stars","Your Stars","Route Type",Rating,Pitches,Length,"Area Latitude","Area Longitude"\n'
+          'Second,"Slash Boulder > Western Belt > * JT Bouldering > Joshua Tree National Park > California",'
+          'https://www.mountainproject.com/route/2/second,3.9,-1,Boulder,"V3 R",1,15,34.0,-116.1\n'
+          'First,"Pig Boulder > Manx > * JT Bouldering > Joshua Tree National Park > California",'
+          'https://www.mountainproject.com/route/1/first,3.1,-1,"Trad, Boulder",V4,,,34.1,-116.2\n')
+urls = []
+http.get_text = lambda url, **kw: urls.append(url) or EXPORT
+recs = mp.export_area_csv("105720495", sort="popularity")
+assert len(urls) == 1 and "selectedIds=105720495" in urls[0] and "sort1=popularity+desc" in urls[0], urls
+assert [(c.name, c.source_id, c.grade, c.rating, c.raw["stub"]) for c in recs] == [("Second", "2", "V3 R", 3.9, True), ("First", "1", "V4", 3.1, True)], recs
+assert recs[0].area_path[-2:] == ["Western Belt", "Slash Boulder"] and recs[0].area_path[0] == "California", recs[0].area_path
+assert "sort1=area" in (mp.export_area_csv(1) and urls[-1]), urls
+del http.get_text
+assert mp.area_id("https://www.mountainproject.com/area/105720495/joshua-tree-national-park") == "105720495"
+assert mp.area_id(" 105720495 ") == "105720495"
+assert mp.area_id("https://openbeta.io/area/123") is None and mp.area_id("Joshua Tree") is None
+
 # a 429 is retried once, after its Retry-After
 http._robots["u"], slept = None, []
 time.sleep = slept.append

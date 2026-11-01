@@ -68,6 +68,8 @@
   .toast{position:fixed;bottom:16px;right:16px;background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:8px;max-width:420px;display:none;z-index:2000}
   a{color:var(--acc)}
   details summary{cursor:pointer;color:var(--mute);font-size:12px}
+  .crows{display:grid;grid-template-columns:auto 1fr auto auto;gap:3px 8px;font-size:12px;margin-top:6px;align-items:baseline}
+  .crows small{color:var(--mute)} .crows .note{grid-column:2/-1;color:var(--mute);font-size:11px;margin-top:-3px}
   .notice{font-size:12px;color:var(--mute);border-left:3px solid var(--line);padding:4px 8px}
   .bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
   .bar i{display:block;height:100%;background:var(--acc);transition:width .4s}
@@ -90,6 +92,7 @@
   <aside>
     <div class="tabs">
       <button data-tab="climbs" class="on">Climbs</button>
+      <button data-tab="areas">Areas</button>
       <button data-tab="projects">Projects</button>
       <button data-tab="meshes">Meshes</button>
     </div>
@@ -125,6 +128,28 @@
         <div class="row" style="margin-bottom:8px"><input type="text" id="c-filter" class="grow" placeholder="filter by name / boulder / area"></div>
         <div id="climb-open"></div>
         <div id="climbs"></div>
+      </section>
+    </div>
+
+    <!-- ============================ AREAS ============================ -->
+    <div class="pane" id="pane-areas">
+      <section>
+        <h2>Mesh a whole area</h2>
+        <input type="text" id="ca-area" placeholder="Mountain Project area URL, e.g. mountainproject.com/area/105720495/joshua-tree-national-park" style="width:100%">
+        <div class="row" style="margin-top:8px">
+          <label class="grow">Order
+            <select id="ca-order" style="width:auto">
+              <option value="popularity">Most popular</option>
+              <option value="rating">Highest rated</option>
+              <option value="data">Most photos and videos</option>
+            </select></label>
+          <button id="ca-go">Start meshing</button>
+        </div>
+        <div class="notice" style="margin-top:8px">Meshes its boulder problems one at a time until you stop it, and keeps every mesh finished before then. Each can take most of an hour. Problems on a boulder that already has a mesh are linked to it.</div>
+      </section>
+      <section>
+        <h2>Areas</h2>
+        <div id="campaigns"></div>
       </section>
     </div>
 
@@ -477,7 +502,7 @@ async function refreshProjects(){
     d.onclick = ev => { if (ev.target.tagName !== 'BUTTON') { active = p.id; loadDetail(p.id, d); } };
     el.appendChild(d);
     projectCards.set(p.id, d);
-    loadDetail(p.id, d);
+    if (projectCards.size <= 15 || busy || p.id === active) loadDetail(p.id, d);   // the rest load when clicked: an area can make hundreds
   }
 }
 const BUSY = ['queued', 'running', 'harvesting'];
@@ -527,21 +552,26 @@ let polling = false;
 async function poll(){
   if (polling) return; polling = true;
   let shown = null;
-  while (true) {
-    const list = await api('/api/projects');
-    const busy = list.some(p => BUSY.includes(p.status));
-    const now = list.map(p => [p.id, p.status, p.mesh_id].join()).join(';');
-    if (now !== shown || !list.every(p => projectCards.has(p.id))) await refreshProjects();
-    else await Promise.all(list.filter(p => BUSY.includes(p.status)).map(p => loadDetail(p.id, projectCards.get(p.id))));
-    shown = now;
-    if (!busy) {
-      await refreshMeshes(); await refreshClimbs();
-      if (openClimbId) openClimb(openClimbId, false);   // the job may have changed what it shows
-      break;
+  try {
+    while (true) {
+      const list = await api('/api/projects');
+      const busy = list.some(p => BUSY.includes(p.status));
+      const now = list.map(p => [p.id, p.status, p.mesh_id].join()).join(';');
+      if (now !== shown || !list.every(p => projectCards.has(p.id))) await refreshProjects();
+      else await Promise.all(list.filter(p => BUSY.includes(p.status)).map(p => loadDetail(p.id, projectCards.get(p.id))));
+      shown = now;
+      if (!busy) {
+        await refreshMeshes(); await refreshClimbs();
+        if (openClimbId) openClimb(openClimbId, false);   // the job may have changed what it shows
+        break;
+      }
+      await new Promise(r => setTimeout(r, 2500));
     }
-    await new Promise(r => setTimeout(r, 2500));
+  } catch (e) {   // e.g. the server restarting: the area loop or the next action starts this again
+    console.warn('polling stopped:', e.message);
+  } finally {
+    polling = false;
   }
-  polling = false;
 }
 $('#create').onclick = async () => {
   const name = $('#pname').value.trim(); if (!name) return $('#pname').focus();
@@ -549,6 +579,82 @@ $('#create').onclick = async () => {
   $('#pname').value = ''; active = p.id; refreshProjects();
 };
 $('#pname').addEventListener('keydown', e => { if (e.key === 'Enter') $('#create').click(); });
+
+// ---------------------------------------------------------------- areas
+const ORDER_NAMES = { popularity: 'most popular first', rating: 'highest rated first', data: 'most photos and videos first' };
+const ITEM_NAMES = { done: 'meshed', skipped: 'skipped', failed: 'failed' };
+const stars = v => v == null ? '' : `★${(+v).toFixed(1)}`;
+let campaignShown = null, meshedShown = null;
+function currentHtml(c){
+  const cur = c.current;
+  if (!cur) return c.status === 'running' ? '<div class="status" style="margin-top:6px">Waiting for the next climb to start…</div>' : '';
+  const pr = cur.progress, step = pr?.steps.find(s => s.state === 'running');
+  return `<div class="meta" style="margin-top:8px">Now: <b>${esc(cur.name)}</b> ${esc(cur.grade||'')} <small>#${cur.rank}</small></div>
+    ${pr ? `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% · ${esc(step?.label || '')}${step?.detail ? ' · ' + esc(step.detail) : ''}</small>` : ''}`;
+}
+async function refreshCampaigns(){
+  const list = await api('/api/campaigns');
+  const el = $('#campaigns');
+  // progress moves constantly: only rebuild when something else changed, which would close open lists
+  const key = JSON.stringify(list.map(c => ({ ...c, current: c.current && { ...c.current, progress: null } })));
+  if (key === campaignShown) {
+    for (const c of list) { const n = el.querySelector(`[data-camp="${c.id}"] .now`); if (n) n.innerHTML = currentHtml(c); }
+  } else {
+    campaignShown = key;
+    const open = new Set([...el.querySelectorAll('details[open]')].map(d => d.dataset.list));
+    el.innerHTML = list.length ? '' : '<div class="status">Nothing yet.</div>';
+    for (const c of list) {
+      const n = c.counts, active = c.status === 'running' || c.status === 'stopping';
+      const left = (n.pending || 0) + (n.running || 0);
+      const d = document.createElement('div'); d.className = 'card'; d.dataset.camp = c.id;
+      const row = i => `<span><small>#${i.rank}</small></span><span>${i.climb_id ? `<a href="#" data-climb="${i.climb_id}">${esc(i.name)}</a>` : `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.name)}</a>`} ${esc(i.grade||'')}</span><small>${stars(i.stars)}</small>
+        <span>${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
+      d.innerHTML = `<div class="row"><b class="grow">${esc(c.name)}</b><span class="status ${c.status === 'stopped' ? '' : c.status === 'done' ? 'done' : 'running'}">${esc(c.status)}</span></div>
+        <div class="meta">${ORDER_NAMES[c.ord] || ''} · <b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go</div>
+        ${c.note ? `<div class="notice" style="margin-top:6px">${esc(c.note)}</div>` : ''}
+        <div class="now">${currentHtml(c)}</div>
+        <div class="row" style="margin-top:8px">
+          ${c.status === 'running' ? `<button class="sm danger stopnow" title="Stops the climb in progress too; it starts again when you resume">Stop now</button><button class="sm sec stoplater">Stop after this climb</button>` : ''}
+          ${c.status === 'stopping' ? `<button class="sm danger stopnow" title="Stops the climb in progress too; it starts again when you resume">Stop now</button><span class="status">finishing this climb, then stopping</span>` : ''}
+          ${c.status === 'stopped' ? `<button class="sm resume">Resume</button>` : ''}
+          <span class="grow"></span><button class="danger sm del" title="Remove this list; its meshes stay">✕</button>
+        </div>
+        ${c.worked.length ? `<details data-list="${c.id}-done"><summary class="meta">Worked through (${c.worked.length}${c.worked.length === 300 ? ' most recent' : ''})</summary><div class="crows">${c.worked.map(row).join('')}</div></details>` : ''}
+        ${c.next.length ? `<details data-list="${c.id}-next"><summary class="meta">Up next</summary><div class="crows">${c.next.map(row).join('')}</div></details>` : ''}`;
+      const post = async (what, json) => { await api(`/api/campaigns/${c.id}/${what}`, { method: 'POST', json: json || {} }); campaignLoop(); };
+      d.querySelector('.stopnow')?.addEventListener('click', () => { if (confirm(`Stop now? The climb in progress is dropped and starts again when you resume. Finished meshes stay.`)) post('stop', { now: true }); });
+      d.querySelector('.stoplater')?.addEventListener('click', () => post('stop', { now: false }));
+      d.querySelector('.resume')?.addEventListener('click', () => post('start'));
+      d.querySelector('.del').onclick = async () => { if (confirm(`Remove the list for "${c.name}"? Its meshes stay.`)) { await api('/api/campaigns/' + c.id, { method: 'DELETE' }); campaignLoop(); } };
+      d.querySelectorAll('[data-mesh]').forEach(b => b.onclick = async () => { if (!meshesById[b.dataset.mesh]) await refreshMeshes(); viewMesh(b.dataset.mesh); });
+      d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
+      d.querySelectorAll('details').forEach(x => { if (open.has(x.dataset.list)) x.open = true; });
+      el.appendChild(d);
+    }
+  }
+  const meshed = list.map(c => c.counts.done || 0).join();
+  if (meshedShown !== null && meshed !== meshedShown) { await refreshMeshes(); await refreshClimbs(); }
+  meshedShown = meshed;
+  return list;
+}
+let campaignTimer = null;
+async function campaignLoop(){
+  clearTimeout(campaignTimer);
+  const list = await refreshCampaigns().catch(() => []);
+  const active = list.some(c => c.current || c.status === 'running' || c.status === 'stopping');
+  if (active && !polling) poll();
+  campaignTimer = setTimeout(campaignLoop, active ? 5000 : 30000);
+}
+$('#ca-go').onclick = async () => {
+  const area = $('#ca-area').value.trim(); if (!area) return $('#ca-area').focus();
+  const go = $('#ca-go'); go.disabled = true;
+  toast('Asking Mountain Project for the area\'s climbs (can take a minute)…', 90000);
+  try {
+    const c = await api('/api/campaigns', { method: 'POST', json: { area, order: $('#ca-order').value } });
+    toast(`${c.name}: ${c.counts.pending} climbs queued`); $('#ca-area').value = ''; campaignLoop();
+  } catch (e) { toast(e.message, 8000); }
+  go.disabled = false;
+};
 
 // ---------------------------------------------------------------- meshes
 let meshesCache = [], meshesById = {};
@@ -595,7 +701,7 @@ const mode = $('#mode');
 mode.textContent = statusCache.real_pipeline ? 'COLMAP + OpenMVS' : 'demo pipeline — install COLMAP/OpenMVS';
 mode.className = 'pill ' + (statusCache.real_pipeline ? 'real' : 'demo');
 $('#caps').textContent = [statusCache.opencv?'opencv':'no opencv', statusCache.ytdlp?'yt-dlp':'no yt-dlp', statusCache.env.GOOGLE_CSE_KEY?'google':'no google key', statusCache.people_masks?'people masking':'no people masking'].join(' · ');
-await refreshClimbs(); await refreshMeshes(); await refreshProjects(); poll();
+await refreshClimbs(); await refreshMeshes(); await refreshProjects(); poll(); campaignLoop();
 </script>
 </body>
 </html>

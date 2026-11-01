@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 import urllib.error
@@ -112,6 +113,62 @@ class HttpError(RuntimeError):
 
 class ApiError(RuntimeError):
     """An API reported a failure in the body of a 200 response."""
+
+
+class Cancelled(BaseException):
+    """The running job was stopped. Not an Exception, so that the many "a failure here only costs
+    this one source" handlers let it through."""
+
+
+class JobControl:
+    """Lets another thread stop the job on the worker thread, including any tool it's running."""
+
+    def __init__(self):
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+        self.low_priority = False
+
+    def begin(self, low_priority: bool = False) -> None:
+        """Start a new job.
+
+        Args:
+            low_priority: run its tools under nice, for unattended work on a shared machine.
+        """
+        self._stop.clear()
+        self.low_priority = low_priority
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stop.set()
+            if self._proc:
+                self._proc.kill()
+
+    def check(self) -> None:
+        if self._stop.is_set():
+            raise Cancelled()
+
+    def popen(self, cmd: list[str], **kw) -> subprocess.Popen:
+        with self._lock:
+            self.check()
+            self._proc = subprocess.Popen(["nice", "-n", "10", *cmd] if self.low_priority else cmd, **kw)
+            return self._proc
+
+    def run(self, cmd: list[str], timeout: float | None = None, **kw) -> None:
+        """Like subprocess.run(cmd, check=True), but stoppable."""
+        proc = self.popen(cmd, **kw)
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise
+        self.check()
+        if proc.returncode:
+            raise subprocess.CalledProcessError(proc.returncode, cmd, out, err)
+
+
+jobctl = JobControl()
 
 
 class _Http:

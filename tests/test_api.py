@@ -193,6 +193,25 @@ def run(B: str, tmp: Path) -> None:
     layers = sorted(f["properties"]["layer"] for f in gj["features"])
     assert layers == ["climb", "mesh", "mesh"], layers
 
+    # --- mesh a whole area: the routes only, as starting one would read Mountain Project ------
+    export = ('Route,Location,URL,"Avg Stars","Your Stars","Route Type",Rating,Pitches,Length,"Area Latitude","Area Longitude"\n'
+              'One,"Rock > * Bouldering > Park",https://www.mountainproject.com/route/1/one,3.5,-1,Boulder,V1,,,34.0,-116.0\n'
+              'Two,"Other > * Bouldering > Park",https://www.mountainproject.com/route/2/two,3.9,-1,Boulder,V2,,,34.0,-116.0\n')
+    st, bad = req(B, "POST", "/api/campaigns", {"area": "Joshua Tree"})
+    assert st == 400 and "Mountain Project area URL" in bad["error"], bad
+    st, ca = req(B, "POST", "/api/campaigns", {"csv": export, "order": "rating", "start": False})
+    assert st == 201 and ca["name"] == "Bouldering" and ca["status"] == "stopped" and ca["counts"] == {"pending": 2}, ca
+    assert [i["name"] for i in ca["next"]] == ["Two", "One"], ca["next"]
+    st, lst = req(B, "GET", "/api/campaigns")
+    assert st == 200 and [c["id"] for c in lst] == [ca["id"]], lst
+    st, stopped = req(B, "POST", f"/api/campaigns/{ca['id']}/stop", {"now": True})
+    assert st == 200 and stopped["status"] == "stopped", stopped
+    st, _ = req(B, "POST", "/api/campaigns/nothere0/start", {})
+    assert st == 404, st
+    st, _ = req(B, "DELETE", f"/api/campaigns/{ca['id']}")
+    st, lst = req(B, "GET", "/api/campaigns")
+    assert st == 200 and lst == [], lst
+
     # --- kaya export -------------------------------------------------------------------------
     csv_blob = b"Climb,Grade,Area,Latitude,Longitude,Beta\nThe Egg,V11,Index,47.82,-121.55,https://youtu.be/abcdefghijk\nNo Coords,V2,Index,,,\n"
     st, ke = req(B, "POST", "/api/climbs/kaya-export", files=[("file", "kaya.csv", csv_blob)])

@@ -111,6 +111,35 @@ COLMAP's mapper aborted in 2 of 25 runs (`NumRegImages() >= 2`), both with masks
 runs against 9 without. That's too few to blame masks, but one of them left only a 5-photo model,
 so the pipeline retries with another seed. The retry doesn't repeat matching.
 
+## Meshing a whole area (`backend/server.py`, "campaigns")
+
+**Staying within Mountain Project's terms decides most of this.** They disallow automated or bulk
+scraping, and robots.txt asks for 60 s between requests. So an area is listed with one request to
+MP's own Route Finder CSV export, and a climb's page is only read when its turn comes.
+
+**"Popular" means MP's ranking, not a tick count.** Ticks are only on each climb's stats page, so
+ranking by them would take a request per climb before meshing anything: about 17 hours of crawling
+for Joshua Tree's list. The export can sort by MP's `popularity` instead. What goes into that isn't
+documented: its top Joshua Tree results are the area's classics, but it also tracks stars closely, so
+it isn't purely ascents. The export has average stars but no vote counts, so *Highest rated* can put a
+problem with one enthusiastic vote ahead of a real classic.
+
+**"Most photos and videos" looks a few pages ahead.** Reading every page to rank them is the same
+crawl, so this reads the next 8 popular climbs' pages and takes the richest, counting a video as 20
+photos, about what one gives after filtering. Each later climb then reads one new page, which it
+would have read anyway. It's a local ordering: the richest climb of the whole area may wait its turn.
+
+**One mesh per boulder.** The 1000 most popular Joshua Tree problems are on 364 lowest-level areas,
+nearly all single boulders, so linking problems to a mesh of their boulder saves about 60% of the work. Areas with
+group names (`GROUP_AREA`, e.g. "Manx Boulders - Northwest Face") hold several rocks, so don't
+share. If a boulder's first problem didn't get a mesh, the next one still tries, as its name finds
+different photos.
+
+**A restart stops the run rather than resuming it.** This machine is shared, and a job that comes
+back by itself after a reboot, using every core, is an unpleasant surprise. Unattended tools run
+under `nice`. Each climb's `work/` directory is deleted when it finishes: at about 800 MB, it's most
+of what a job leaves on disk, and only a re-run would use it, which recreates it anyway.
+
 ## Why job logs aren't in the database
 
 COLMAP prints tens of thousands of lines. `UPDATE projects SET log = log || ?` rewrites the whole
