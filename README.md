@@ -137,15 +137,26 @@ stops at 1000 climbs: in a bigger area, these are its most popular 1000.
 
 ## Real photogrammetry
 
-    docker compose up --build      # CPU build of COLMAP + OpenMVS (+ OpenCV, ffmpeg, yt-dlp); first build ~5-30 min depending on cores
+    docker compose up --build      # COLMAP + OpenMVS (+ OpenCV, ffmpeg, yt-dlp); first build ~10-40 min depending on cores
 
 (`PORT=<n> docker compose up --build` if 8470 is taken), or natively on Ubuntu: `apt install colmap python3-opencv ffmpeg`, build OpenMVS (see
-Dockerfile, including its one-line patch), `pip install yt-dlp`, then
-`USE_GPU=1 python3 backend/server.py` if COLMAP has CUDA.
+Dockerfile, including its one-line patch), `pip install yt-dlp`, then `python3 backend/server.py`.
+
+**With an NVIDIA GPU** (and its container toolkit), photo matching takes about 3 minutes rather than
+12 for 100 photos. Give the container the GPU with `docker-compose.gpu.yml`, which this makes the
+default on that machine:
+
+    echo COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml >> .env
+
+It's used if COLMAP has CUDA, and has 4 GB of its memory free when matching starts. Otherwise, or if
+it runs out partway, matching uses the CPU, so a shared GPU is fine. The top of the page says which
+it would use now, and each job's log says which it did. `USE_GPU=0` keeps it on the CPU.
 
 A reconstruction produces a textured `mesh.glb` (texture PNGs alongside), or an untextured
 `mesh.ply` if texturing fails, levelled assuming most photos were taken upright. On CPU,
 OpenMVS's 11-photo sample set takes 3-4 minutes, and a 100-photo harvest about an hour.
+
+If a browser can't load a mesh's texture, the viewer tries it smaller, then says why on the view.
 
 ## Layout
 

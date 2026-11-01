@@ -2,11 +2,12 @@
 
 Run: python3 tests/test_pipeline.py
 """
-import pathlib, struct, sys, tempfile
+import pathlib, struct, sys, tempfile, types
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "backend"))
 import occlusion
 import pipeline
+from climbs.common import Cancelled
 from progress import Tracker
 
 # ---- progress, from lines as COLMAP and OpenMVS print them
@@ -173,4 +174,74 @@ for tool in ("DensifyPointCloud", "TextureMesh"):
     assert "--ignore-mask-label" not in by_tool(cmds, tool), cmds
 assert any("not masking people" in l for l in logged), logged
 print("people masks OK")
+
+
+# ---- the GPU is used if it's there and has room, and failing on it only costs the time
+def gpu_run(cuda, free, internet=True, fails=(), raises=None) -> tuple[list[list[str]], list[str]]:
+    with tempfile.TemporaryDirectory() as td:
+        tmp, cmds, logged = pathlib.Path(td), [], []
+        images, work = tmp / "images", tmp / "work"
+        images.mkdir()
+        for i in range(8):
+            (images / f"{i}.jpg").write_bytes(b"x")
+
+        def fake_run(cmd, cwd, log, watch=None):
+            cmds.append(cmd)
+            if cmd[1] == "exhaustive_matcher" and "1" == cmd[-1] and raises:
+                raise raises
+            if cmd[1] in fails and cmd[-1] == "1":
+                raise RuntimeError("colmap exited with -6")
+            if cmd[1] == "mapper":
+                raise Stop()
+        saved = pipeline._run, pipeline.COLMAP, pipeline.colmap_has_cuda, pipeline.gpu_free_mb, occlusion.available
+        pipeline._run, pipeline.COLMAP = fake_run, "colmap"
+        pipeline.colmap_has_cuda, pipeline.gpu_free_mb, occlusion.available = (lambda: cuda), (lambda: free), (lambda: False)
+        try:
+            pipeline.reconstruct_colmap_openmvs(images, work, tmp / "out", logged.append, True, internet=internet)
+        except Stop:
+            pass
+        finally:
+            pipeline._run, pipeline.COLMAP, pipeline.colmap_has_cuda, pipeline.gpu_free_mb, occlusion.available = saved
+        return cmds, logged
+
+
+def flags(cmds, tool, flag):
+    return [c[c.index(flag) + 1] for c in cmds if c[1] == tool]
+
+
+MATCH, EXTRACT = "--SiftMatching.use_gpu", "--SiftExtraction.use_gpu"
+cmds, logged = gpu_run(True, 17000)
+assert flags(cmds, "exhaustive_matcher", MATCH) == ["1"], cmds
+assert flags(cmds, "feature_extractor", EXTRACT) == ["0"], "COLMAP's GPU SIFT can't do the internet settings"
+assert any("exhaustive_matcher: using the GPU (17000 MB" in l for l in logged), logged
+cmds, _ = gpu_run(True, 17000, internet=False)
+assert flags(cmds, "feature_extractor", EXTRACT) == ["1"] and flags(cmds, "exhaustive_matcher", MATCH) == ["1"], cmds
+for cuda, free, why in ((False, 17000, "without CUDA"), (True, None, "no GPU visible"), (True, 228, "only 228 MB")):
+    cmds, logged = gpu_run(cuda, free)
+    assert flags(cmds, "exhaustive_matcher", MATCH) == ["0"], cmds
+    assert any(why in l for l in logged if "exhaustive_matcher" in l), logged
+assert pipeline.gpu_choice(False)[0] is False
+cmds, logged = gpu_run(True, 17000, fails=("exhaustive_matcher",))   # out of memory partway: carries on, then on to the mapper
+assert flags(cmds, "exhaustive_matcher", MATCH) == ["1", "0"] and any(c[1] == "mapper" for c in cmds), cmds
+assert any("GPU run failed" in l for l in logged), logged
+try:
+    gpu_run(True, 17000, raises=Cancelled())
+    raise AssertionError("stopping a job mustn't turn into a CPU run")
+except Cancelled:
+    pass
+
+saved = pipeline.subprocess.run
+pipeline.subprocess.run = lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="6518\n17610\n")
+assert pipeline.gpu_free_mb() == 17610
+pipeline.subprocess.run = lambda *a, **k: types.SimpleNamespace(returncode=9, stdout="")
+assert pipeline.gpu_free_mb() is None, "nvidia-smi fails when a container has no GPU"
+pipeline.subprocess.run = lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi"))
+assert pipeline.gpu_free_mb() is None
+pipeline.subprocess.run = saved
+print("gpu OK")
+
+cmds, _ = commands_with(lambda *a, **k: {})
+c = by_tool(cmds, "TextureMesh")
+assert c[c.index("--max-texture-size") + 1] == str(pipeline.MAX_TEXTURE) == "4096", c
+print("texture size OK")
 print("ALL PIPELINE TESTS PASSED")

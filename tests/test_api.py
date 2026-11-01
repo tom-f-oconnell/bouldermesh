@@ -141,6 +141,7 @@ def run(B: str, tmp: Path) -> None:
     assert st == 200
     print("status:", {k: s[k] for k in ("real_pipeline", "opencv", "pillow", "ytdlp")})
     assert s["env"]["HARVEST_DDG"] is True and "ddg" in s["harvest_sources"], s
+    assert s["gpu"] in (True, False) and s["gpu_why"], s
 
     # --- manual climb (kaya link) ------------------------------------------------------------
     st, c = req(B, "POST", "/api/climbs/manual", {"name": "Test Problem", "grade": "V5", "boulder_name": "Test Boulder",
@@ -177,7 +178,18 @@ def run(B: str, tmp: Path) -> None:
     # --- upload mesh + links + patches + geojson ---------------------------------------------
     ply = tmp / "cube.ply"
     pipeline.write_ply(ply, [(0, 0, 0), (1, 0, 0), (0, 1, 0)], [(255, 0, 0)] * 3, [(0, 1, 2)])
-    st, up = req(B, "POST", "/api/meshes", files=[("files", "cube.ply", ply.read_bytes())], fields={"name": "uploaded", "climb_id": cid})
+    atlas = io.BytesIO()
+    Image.new("RGB", (3000, 1000), (200, 40, 40)).save(atlas, "PNG")
+    st, up = req(B, "POST", "/api/meshes", files=[("files", "cube.ply", ply.read_bytes()), ("files", "atlas.png", atlas.getvalue())],
+                 fields={"name": "uploaded", "climb_id": cid})
+    for ask, want, fmt in (("", (3000, 1000), "PNG"), ("?max=2048", (2048, 683), "JPEG"), ("?max=2048", (2048, 683), "JPEG"),   # again: from its copy
+                           ("?max=4096", (3000, 1000), "PNG"), ("?max=7", (3000, 1000), "PNG"), ("?max=x", (3000, 1000), "PNG")):
+        with urllib.request.urlopen(f"{B}/meshes/{up['id']}/atlas.png{ask}") as r:
+            im = Image.open(io.BytesIO(r.read()))
+        assert im.size == want and im.format == fmt, (ask, im.size, im.format)
+    assert (tmp / "data" / "meshes" / up["id"] / "smaller" / "atlas-2048.jpg").exists()
+    with urllib.request.urlopen(f"{B}/meshes/{up['id']}/cube.ply?max=2048") as r:
+        assert r.read() == ply.read_bytes(), "only images get shrunk"
     assert st == 201, up
     st, meshes = req(B, "GET", "/api/meshes")
     um = next(x for x in meshes if x["id"] == up["id"])

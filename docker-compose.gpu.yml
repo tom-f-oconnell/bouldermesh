@@ -1,0 +1,4 @@
+# Lets photo matching use an NVIDIA GPU, when it has room. See "Real photogrammetry" in the README.
+services:
+  bouldermesh:
+    gpus: all

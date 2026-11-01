@@ -48,7 +48,8 @@ FRONTEND = ROOT / "frontend"
 DATA = Path(os.environ.get("DATA_DIR", ROOT / "data")).resolve()
 PROJECTS = DATA / "projects"
 MESHES = DATA / "meshes"
-USE_GPU = os.environ.get("USE_GPU", "0") == "1"
+USE_GPU = os.environ.get("USE_GPU", "1") != "0"   # used if it's there and has room
+SHRINK_SIDES = (2048, 4096)                      # sizes a texture can be asked for, if a browser can't manage the original
 MAX_UPLOAD = int(os.environ.get("MAX_UPLOAD_MB", "512")) * 1024 * 1024
 PHOTO_EXT = {".jpg", ".jpeg", ".png"}
 MESH_EXT = {".ply", ".obj", ".glb", ".gltf", ".stl"}
@@ -192,6 +193,25 @@ def link_mesh(mid: str, cid: str, note: str | None) -> None:
     q("INSERT OR REPLACE INTO mesh_links VALUES(?,?,?,?)", mid, cid, note, time.time(), write=True)
     q("UPDATE meshes SET lat=COALESCE(lat,(SELECT lat FROM climbs WHERE id=?)), "
       "lng=COALESCE(lng,(SELECT lng FROM climbs WHERE id=?)) WHERE id=?", cid, cid, mid, write=True)
+
+
+def shrunk_texture(path: Path, side: int) -> Path:
+    """A copy of a texture at most side pixels wide and high, kept beside it, or itself if that small."""
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = None    # these are our own files, and the large ones are why we're here
+    out = path.parent / "smaller" / f"{path.stem}-{side}.jpg"
+    if out.exists():
+        return out
+    with Image.open(path) as im:
+        if max(im.size) <= side:
+            return path
+        im = im.convert("RGB")
+    im.thumbnail((side, side), Image.LANCZOS)
+    out.parent.mkdir(exist_ok=True)
+    partial = out.with_suffix(".partial")
+    im.save(partial, "JPEG", quality=88)
+    partial.replace(out)
+    return out
 
 
 # ------------------------------------------------------------------ worker
@@ -565,8 +585,10 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/status":
                 env = {k: bool(os.environ.get(k)) for k in ("GOOGLE_CSE_KEY", "GOOGLE_CSE_CX", "FLICKR_KEY")}
                 env["HARVEST_DDG"] = harvest_mod.ddg_enabled()
+                gpu, gpu_why = pipeline.gpu_choice(USE_GPU)
                 return self.send_json({"real_pipeline": pipeline.real_pipeline_ready(), "tools": pipeline.tools_available(),
                                        "queue": jobs.qsize(), "relevance_methods": relevance_mod.available(), "people_masks": pipeline.occlusion.available(), "harvest_sources": HARVEST_SOURCES, "env": env,
+                                       "gpu": gpu, "gpu_why": gpu_why,
                                        "ytdlp": bool(shutil.which("yt-dlp") and shutil.which("ffmpeg")),
                                        "opencv": _has("cv2"), "pillow": _has("PIL")})
             # ---- projects
@@ -613,7 +635,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(rows)
             m = re.fullmatch(r"/meshes/([0-9a-f]+)/([A-Za-z0-9._-]+)", p)
             if m:
-                return self.send_file(MESHES / m[1] / m[2], download="download" in qs)
+                f = MESHES / m[1] / m[2]
+                side = int(qs["max"][0]) if qs.get("max", [""])[0].isdigit() else 0
+                if side in SHRINK_SIDES and f.suffix.lower() in (".png", ".jpg", ".jpeg") and f.is_file():
+                    if not _has("PIL"):
+                        return self.send_json({"error": "shrinking textures needs Pillow"}, 501)
+                    f = shrunk_texture(f, side)
+                return self.send_file(f, download="download" in qs)
             if p == "/api/campaigns":
                 return self.send_json([campaign_view(c) for c in q("SELECT * FROM campaigns ORDER BY created DESC")])
             # ---- climbs

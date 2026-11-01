@@ -8,6 +8,7 @@ Every step logs to a callback so the UI can show progress.
 """
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shutil
@@ -23,6 +24,8 @@ from progress import Tracker
 Log = Callable[[str], None]
 
 MAPPER_ATTEMPTS = 3
+GPU_MIN_FREE_MB = 4000  # matching 113 photos peaked at about 3 GB
+MAX_TEXTURE = 4096      # larger atlases get split: an 8192 x 8192 one takes 270 MB in a browser, which can refuse it
 COLMAP = shutil.which("colmap")
 # OpenMVS binaries are usually installed under /usr/local/bin/OpenMVS
 _MVS_DIRS = [os.environ.get("OPENMVS_BIN", ""), "/usr/local/bin/OpenMVS", "/usr/local/bin", "/usr/bin"]
@@ -50,6 +53,41 @@ def real_pipeline_ready() -> bool:
     return all(t[k] for k in ("colmap", "InterfaceCOLMAP", "DensifyPointCloud", "ReconstructMesh"))
 
 
+@functools.cache
+def colmap_has_cuda() -> bool:
+    if not COLMAP:
+        return False
+    try:
+        return "with CUDA" in subprocess.run([COLMAP, "-h"], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def gpu_free_mb() -> int | None:
+    """Free memory on the emptiest GPU visible here, or None if there isn't one."""
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    free = [int(x) for x in r.stdout.split() if x.isdigit()]
+    return max(free) if r.returncode == 0 and free else None
+
+
+def gpu_choice(allowed: bool = True) -> tuple[bool, str]:
+    """Whether a COLMAP step should use the GPU right now, and why or why not."""
+    if not allowed:
+        return False, "USE_GPU=0, or these settings need the CPU"
+    if not colmap_has_cuda():
+        return False, "this COLMAP was built without CUDA"
+    free = gpu_free_mb()
+    if free is None:
+        return False, "no GPU visible"
+    if free < GPU_MIN_FREE_MB:
+        return False, f"only {free} MB of GPU memory free, and it needs {GPU_MIN_FREE_MB}"
+    return True, f"{free} MB of GPU memory free"
+
+
 def _run(cmd: list[str], cwd: Path, log: Log, watch: Callable[[str], None] | None = None) -> None:
     log("$ " + " ".join(cmd))
     proc = jobctl.popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -64,6 +102,27 @@ def _run(cmd: list[str], cwd: Path, log: Log, watch: Callable[[str], None] | Non
     jobctl.check()
     if code != 0:
         raise RuntimeError(f"{cmd[0]} exited with {code}")
+
+
+def _gpu_or_cpu(cmd: list[str], flag: str, allowed: bool, cwd: Path, log: Log, watch: Callable[[str], None] | None = None) -> None:
+    """Run a COLMAP step on the GPU if it can be, otherwise on the CPU.
+
+    The GPU is shared, and COLMAP aborts outright if it runs out of memory, which can happen at any
+    point. Going again on the CPU only does what's left, as COLMAP skips work already in its database.
+
+    Args:
+        flag: the option that turns the GPU on or off.
+        allowed: False to stay on the CPU, for settings the GPU can't do or USE_GPU=0.
+    """
+    gpu, why = gpu_choice(allowed)
+    log(f"{cmd[1]}: using the {'GPU' if gpu else 'CPU'} ({why})")
+    if gpu:
+        try:
+            _run(cmd + [flag, "1"], cwd, log, watch)
+            return
+        except RuntimeError as e:
+            log(f"{cmd[1]}: GPU run failed ({e}), carrying on with the CPU")
+    _run(cmd + [flag, "0"], cwd, log, watch)
 
 
 def steps() -> list[tuple[str, str, float]]:
@@ -192,7 +251,6 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     sparse = work / "sparse"
     dense = work / "dense"
     sparse.mkdir(exist_ok=True)
-    gpu = "1" if use_gpu else "0"
     n_images = len([p for p in images.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")])
 
     masks = None
@@ -207,7 +265,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     log(f"== COLMAP: feature extraction ({'internet-collection' if internet else 'single-camera'} settings)")
     tracker.update("features", 0, f"0 of {n_images} photos")
     cmd = [COLMAP, "feature_extractor", "--database_path", str(db), "--image_path", str(images),
-           "--SiftExtraction.use_gpu", gpu, "--ImageReader.camera_model", "SIMPLE_RADIAL"]
+           "--ImageReader.camera_model", "SIMPLE_RADIAL"]
     if internet:
         cmd += ["--ImageReader.single_camera", "0", "--SiftExtraction.estimate_affine_shape", "1",
                 "--SiftExtraction.domain_size_pooling", "1", "--SiftExtraction.max_image_size", "2400"]
@@ -215,16 +273,17 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         cmd += ["--ImageReader.single_camera", "1"]
     if masks:
         cmd += ["--ImageReader.mask_path", str(masks)]
-    _run(cmd, work, log, _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1)))
+    # COLMAP has no GPU version of the affine shape and domain-size pooling of the internet settings
+    _gpu_or_cpu(cmd, "--SiftExtraction.use_gpu", use_gpu and not internet, work, log,
+                _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1)))
 
     log("== COLMAP: matching")
     tracker.update("matching")
     # smaller blocks than the default 50 only make for finer progress: all pairs get matched either way
-    cmd = [COLMAP, "exhaustive_matcher", "--database_path", str(db), "--SiftMatching.use_gpu", gpu,
-           "--ExhaustiveMatching.block_size", "20"]
+    cmd = [COLMAP, "exhaustive_matcher", "--database_path", str(db), "--ExhaustiveMatching.block_size", "20"]
     if internet:
         cmd += ["--SiftMatching.guided_matching", "1"]
-    _run(cmd, work, log, _matching(tracker))
+    _gpu_or_cpu(cmd, "--SiftMatching.use_gpu", use_gpu, work, log, _matching(tracker))
 
     log("== COLMAP: sparse reconstruction (mapper)")
     tracker.update("mapper")
@@ -295,7 +354,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             # separate files referenced by relative URI, so they're copied alongside it. Faces no photo
             # saw get --empty-color, by default a bright orange that reads as part of the scene.
             _run([tex, "scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o", "scene_dense_mesh_texture.mvs",
-                  "-w", str(work), "--export-type", "glb", "--empty-color", str(0x808080), *mask_args], work, log,
+                  "-w", str(work), "--export-type", "glb", "--empty-color", str(0x808080),
+                  "--max-texture-size", str(MAX_TEXTURE), *mask_args], work, log,
                  _phases(tracker, "texture", (r"Initialized views \d+ \(([\d.]+)%", 0, 0.3),
                          (r"Assigning the best view .*completed", 0.3, 0.6), (r"Generating texture atlas .*completed", 0.6, 0.95)))
             glb = work / "scene_dense_mesh_texture.glb"

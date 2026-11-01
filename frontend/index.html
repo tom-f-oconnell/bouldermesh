@@ -70,6 +70,8 @@
   details summary{cursor:pointer;color:var(--mute);font-size:12px}
   .crows{display:grid;grid-template-columns:auto 1fr auto auto;gap:3px 8px;font-size:12px;margin-top:6px;align-items:baseline}
   .crows small{color:var(--mute)} .crows .note{grid-column:2/-1;color:var(--mute);font-size:11px;margin-top:-3px}
+  #viewnote{display:none;position:absolute;top:40px;left:22px;max-width:640px;background:#2a2410;color:var(--warn);border:1px solid #5a4a18;border-radius:6px;padding:6px 10px;font-size:12px;z-index:2}
+  #viewnote button{margin-left:8px}
   .notice{font-size:12px;color:var(--mute);border-left:3px solid var(--line);padding:4px 8px}
   .bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
   .bar i{display:block;height:100%;background:var(--acc);transition:width .4s}
@@ -190,6 +192,7 @@
       <span class="status" id="viewing"></span>
     </div>
     <div id="viewer" class="on">
+      <div id="viewnote"></div>
       <div id="hud">Pick a mesh, or drop a mesh file here. Drag to orbit · scroll to zoom · right-drag to pan</div>
       <div id="drop">Drop mesh file to upload &amp; view</div>
     </div>
@@ -289,23 +292,81 @@ function showObject(obj, label){
   $('#viewing').textContent = 'Viewing: ' + label;
   $('#hud').textContent = `${label} — drag to orbit · scroll to zoom · right-drag to pan`;
 }
+function viewNote(text, retry){
+  const n = $('#viewnote'); n.style.display = text ? 'block' : 'none'; n.textContent = text || '';
+  if (retry) { const b = document.createElement('button'); b.className = 'sm sec'; b.textContent = 'Try again'; b.onclick = retry; n.appendChild(b); }
+}
+renderer.domElement.addEventListener('webglcontextlost', ev => { ev.preventDefault(); viewNote('The graphics card dropped this view, usually because it ran out of memory. Close other tabs that use it and reload the page.'); });
+function loadGltf(url, side){
+  const manager = new THREE.LoadingManager();
+  if (side) manager.setURLModifier(u => /\.(png|jpe?g)$/i.test(u) ? `${u}?max=${side}` : u);
+  return new GLTFLoader(manager).loadAsync(url);
+}
+// GLTFLoader only logs a texture it can't load, and leaves it off the material
+function texturesLost(gltf){
+  if (!gltf.parser.json.images?.length) return false;
+  let lost = false;
+  gltf.scene.traverse(o => { if (o.isMesh && [o.material].flat().some(m => !m?.map)) lost = true; });
+  return lost;
+}
+function pngSize(bytes){   // from its header, which reads even when the image is too large to decode
+  const d = new DataView(bytes);
+  return bytes.byteLength > 24 && d.getUint32(0) === 0x89504e47 ? [d.getUint32(16), d.getUint32(20)] : null;
+}
+async function whyNoTexture(gltf, base){
+  for (const { uri } of gltf.parser.json.images) {
+    if (!uri) return 'the image inside this file is damaged or a format this browser can\'t read.';
+    let res;
+    try { res = await fetch(base + uri); } catch { return `the connection to the server failed while fetching ${uri}. It may have just restarted.`; }
+    if (!res.ok) return res.status === 404 ? `${uri} is missing from the server.` : `the server answered ${res.status} for ${uri}.`;
+    let blob;
+    try { blob = await res.blob(); } catch { return `the connection to the server dropped while downloading ${uri}.`; }
+    const wh = pngSize(await blob.slice(0, 32).arrayBuffer());
+    const size = wh ? `${wh[0]}×${wh[1]}, about ${fmtSize(wh[0] * wh[1] * 4)} once decoded` : fmtSize(blob.size);
+    try { (await createImageBitmap(blob)).close(); } catch (e) { return `this browser couldn't decode ${uri} (${size}): ${e.message}`; }
+    const limit = renderer.capabilities.maxTextureSize;
+    if (wh && Math.max(...wh) > limit) return `${uri} is ${wh[0]}×${wh[1]}, and this graphics card's limit is ${limit}.`;
+  }
+  return 'it failed the first time but loads fine now, so that looks temporary: most likely this browser was short of memory, or the connection dropped.';
+}
+async function loadGltfWithTexture(url, base, label){
+  let gltf = await loadGltf(url), note = '';
+  if (texturesLost(gltf)) {
+    const why = await whyNoTexture(gltf, base);
+    note = `Showing plain grey, as its texture wouldn't load: ${why}`;
+    for (const side of [4096, 2048]) {
+      toast(`Texture didn't load: trying it at ${side} pixels…`, 60000);
+      const smaller = await loadGltf(url, side);
+      if (!texturesLost(smaller)) { gltf = smaller; note = `Texture reduced to ${side} pixels, as the full one wouldn't load: ${why}`; break; }
+    }
+  }
+  return { obj: gltf.scene, note };
+}
 async function loadMeshUrl(url, filename, label){
   showRight('3d');
+  viewNote('');
   const ext = filename.split('.').pop().toLowerCase();
   const base = url.slice(0, url.lastIndexOf('/') + 1);
   toast('Loading ' + filename + '…', 60000);
   try {
-    let obj;
+    let obj, note = '';
     if (ext === 'ply') obj = new THREE.Mesh(await new PLYLoader().loadAsync(url));
     else if (ext === 'stl') obj = new THREE.Mesh(await new STLLoader().loadAsync(url));
-    else if (ext === 'glb' || ext === 'gltf') obj = (await new GLTFLoader().loadAsync(url)).scene;
+    else if (ext === 'glb' || ext === 'gltf') ({ obj, note } = await loadGltfWithTexture(url, base, label));
     else if (ext === 'obj') {
       const loader = new OBJLoader();
-      try { const mtl = await new MTLLoader().setPath(base).loadAsync(filename.replace(/\.obj$/i, '.mtl')); mtl.preload(); loader.setMaterials(mtl); } catch {}
+      try { const mtl = await new MTLLoader().setPath(base).loadAsync(filename.replace(/\.obj$/i, '.mtl')); mtl.preload(); loader.setMaterials(mtl); }
+      catch { note = 'Showing plain grey: its .mtl materials file wouldn\'t load.'; }
       obj = await loader.loadAsync(url);
     } else throw new Error('unsupported format .' + ext);
-    showObject(obj, label); toast('Loaded ' + label, 1500);
-  } catch (e) { toast('Could not load mesh: ' + e.message, 6000); }
+    showObject(obj, label);
+    toast(note ? 'Loaded, with a problem: see the note on the view' : 'Loaded ' + label, note ? 5000 : 1500);
+    viewNote(note, note ? () => loadMeshUrl(url, filename, label) : null);
+    requestAnimationFrame(() => requestAnimationFrame(() => {   // a texture too big for the card's memory shows black, not grey
+      const gl = renderer.getContext();
+      if (gl.getError() === gl.OUT_OF_MEMORY) viewNote('The graphics card ran out of memory for this texture, so it may show black.', () => loadMeshUrl(url, filename, label));
+    }));
+  } catch (e) { toast('Could not load mesh: ' + e.message, 6000); viewNote('Could not load this mesh: ' + e.message, () => loadMeshUrl(url, filename, label)); }
 }
 
 // ---------------------------------------------------------------- map
@@ -716,7 +777,8 @@ statusCache = await api('/api/status');
 const mode = $('#mode');
 mode.textContent = statusCache.real_pipeline ? 'COLMAP + OpenMVS' : 'demo pipeline — install COLMAP/OpenMVS';
 mode.className = 'pill ' + (statusCache.real_pipeline ? 'real' : 'demo');
-$('#caps').textContent = [statusCache.opencv?'opencv':'no opencv', statusCache.ytdlp?'yt-dlp':'no yt-dlp', statusCache.env.GOOGLE_CSE_KEY?'google':'no google key', statusCache.people_masks?'people masking':'no people masking'].join(' · ');
+$('#caps').textContent = [statusCache.opencv?'opencv':'no opencv', statusCache.ytdlp?'yt-dlp':'no yt-dlp', statusCache.env.GOOGLE_CSE_KEY?'google':'no google key', statusCache.people_masks?'people masking':'no people masking', statusCache.gpu?'GPU matching':'CPU matching'].join(' · ');
+$('#caps').title = 'Photo matching: ' + statusCache.gpu_why;
 await refreshClimbs(); await refreshMeshes(); await refreshProjects(); poll(); campaignLoop();
 </script>
 </body>

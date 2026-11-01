@@ -4,7 +4,7 @@ services:
     ports: ["${PORT:-8470}:8470"]
     volumes: ["./data:/data"]
     environment:
-      USE_GPU: "0"          # set "1" and uncomment the gpu block for NVIDIA
+      # USE_GPU: "0"              # keeps photo matching on the CPU; docker-compose.gpu.yml is what gives it a GPU
       MAX_UPLOAD_MB: "1024"
       BOULDERMESH_UA:             # from your shell: identify yourself to the sites you fetch from (Wikimedia rejects placeholder addresses)
       HTTP_MIN_INTERVAL: "3"      # min. seconds between requests to one host (robots.txt Crawl-delay wins if longer)
@@ -13,8 +13,4 @@ services:
       # FLICKR_KEY: ""            # Flickr API key for geotagged photo search
       # HARVEST_DDG: "0"          # turns off the unofficial DuckDuckGo image search
       # OPENBETA_MEDIA_BASE: "https://media.openbeta.io"
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
     restart: unless-stopped

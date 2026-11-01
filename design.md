@@ -135,18 +135,31 @@ about 13 minutes (a page and 12 photos). Matching also shrinks with the square o
 less photographed climb looks quite different: White Rastafarian kept 59 and took 31 minutes, of which
 21 were the harvest and 10 the reconstruction.
 
-**Matching** tries all 6328 pairs of those photos, and 30% have 15 or more inliers.
+**Matching** tries all 6328 pairs of those photos, and 30% have 15 or more inliers. The app's COLMAP is
+now 3.9.1 built with CUDA, Ubuntu's own build having none, which allows a fair test: the job's own
+features, the same COLMAP, and only the device changing.
 
-| Matching | Time | Useful pairs | Inliers |
-|---|---|---|---|
-| CPU, guided (the app) | 12.2 min | 1889 | 1.01M |
-| COLMAP 4.2.1 on the 3090, guided | 60 s | 1680 | 0.92M |
-| COLMAP 4.2.1 on the 3090, unguided | 45 s | 1717 | 0.59M |
+| Matching, from the job's features | Time | Useful pairs |
+|---|---|---|
+| CPU, guided, all cores (the job) | 12.2 min | 1889 |
+| CPU, guided, 12 cores | 25.7 min | 1897 |
+| GPU, guided, twice | 3.0 min | 1814, 1811 |
+| GPU, unguided | 2.1 min | 1841 |
 
-The GPU figures are with another user's job holding the card at full load, and took about 3 GB of its
-memory. They're different builds with different features, which may explain the 11% fewer pairs. On a
-36-photo sample on CPU, turning guided matching off halved the time and kept the useful pairs, and
-halved the inliers. Cutting features from 8192 to 4096 saved 37% but lost 12% of the pairs.
+The GPU was also running other people's jobs at full load, and used about 2.5 GB. COLMAP 4.2.1 took
+60 s on it earlier, under a lighter load, but found 1680 pairs from its own different features: most of
+that shortfall was the version, not the GPU.
+
+**Why the GPU finds fewer pairs.** It loses 51 (2.8%) of the 1854 pairs that both CPU runs found useful,
+while 78 pairs differ between those two CPU runs anyway. The lost pairs are borderline ones: a median
+of 17 raw matches on the CPU, against COLMAP's minimum of 15. The GPU has its own SIFT matcher, which
+finds about 4% fewer raw matches on a typical pair (why isn't clear), and 38 of the 51 end up below the
+minimum, so they're discarded before guided matching, which could have taken one from 16 raw matches to
+1035 inliers. They are spread over 54 of the 113 photos, and aren't weak once matched.
+
+Turning guided matching off halves CPU time on a 36-photo sample and keeps the useful pairs, but on the
+full set leaves 40% fewer inliers (0.60M against 1.01M, where guided GPU matching has 1.03M). Cutting features from 8192 to 4096 saved 37% but
+lost 12% of the pairs.
 
 SIFT stays on the CPU however it's built, as COLMAP has no GPU version of the affine shape and
 domain-size pooling these settings use. It only takes 33 s.
@@ -168,7 +181,7 @@ above. "Less often" is `--Mapper.ba_global_images_ratio 1.4 --Mapper.ba_global_p
 The global mapper from GPU matches went on to make meshes of 0.99M and 1.04M faces, with 86-87% of the
 surface in one piece, against 1.06M and 74% for the job's. By eye, each is one coherent rock face with
 fragments around it, as good as the job's or cleaner. That's only two runs on one boulder. It also
-needs work to use:
+needs work to use, and uses COLMAP 4.2.1, not the app's 3.9.1:
 
 - OpenMVS 2.3 aborts on 4.2.1's models. Writing the model as text and undistorting it with 3.9.1 works.
 - It left one photo with camera settings the undistorter wouldn't convert (focal length 1560, likely
@@ -181,6 +194,18 @@ which happened when other jobs took 23.9 of its 24 GB, so anything using it need
 
 Not tried: downloading from different hosts in parallel, keeping each host's rate limit; choosing
 pairs instead of trying all of them.
+
+## Textures that won't load
+
+Plain grey everywhere means the viewer got no texture: GLTFLoader only logs one it can't load, and
+the viewer gives anything without a texture a grey material. That happened once with Midnight
+Lightning's 8192 x 8192 atlas, which takes 270 MB decoded. The cause wasn't caught, as the app's
+restart that day lost the server log, so it may have been the browser's memory or that restart.
+
+So new textures are capped at 4096, with larger atlases split: that scene became two 4096 textures
+(130 MB) with the same detail, and packing them took 23 s rather than 4 min 19 s. For meshes already
+made, the viewer retries at 4096 and 2048, which the server makes on request and keeps. Whatever
+happens, the view says what happened and why, having fetched the file again to find out.
 
 ## Meshing a whole area (`backend/server.py`, "campaigns")
 
