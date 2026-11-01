@@ -111,6 +111,77 @@ COLMAP's mapper aborted in 2 of 25 runs (`NumRegImages() >= 2`), both with masks
 runs against 9 without. That's too few to blame masks, but one of them left only a 5-photo model,
 so the pipeline retries with another seed. The retry doesn't repeat matching.
 
+## Where the time goes
+
+One Midnight Lightning job through the app on 2026-10-31: 113 photos, every core of a shared
+machine, CPU only, 49 minutes in all. The mapper and matching are over half of it.
+
+| Step | Time |
+|---|---|
+| Find and download photos | 7 min |
+| Video frames | 47 s |
+| De-duplicate and filter | 3.8 min |
+| Viewpoint check | 41 s |
+| Find people (twice) | 35 s |
+| Features | 33 s |
+| **Matching** | **12.2 min** |
+| **Mapper** | **14.9 min** |
+| Densify | 2.4 min |
+| Mesh | 34 s |
+| Texture | 5.2 min |
+
+Mountain Project's photos were already cached in that job. On a new climb its 60 s Crawl-delay adds
+about 13 minutes (a page and 12 photos). Matching also shrinks with the square of the photos, so a
+less photographed climb looks quite different: White Rastafarian kept 59 and took 31 minutes, of which
+21 were the harvest and 10 the reconstruction.
+
+**Matching** tries all 6328 pairs of those photos, and 30% have 15 or more inliers.
+
+| Matching | Time | Useful pairs | Inliers |
+|---|---|---|---|
+| CPU, guided (the app) | 12.2 min | 1889 | 1.01M |
+| COLMAP 4.2.1 on the 3090, guided | 60 s | 1680 | 0.92M |
+| COLMAP 4.2.1 on the 3090, unguided | 45 s | 1717 | 0.59M |
+
+The GPU figures are with another user's job holding the card at full load, and took about 3 GB of its
+memory. They're different builds with different features, which may explain the 11% fewer pairs. On a
+36-photo sample on CPU, turning guided matching off halved the time and kept the useful pairs, and
+halved the inliers. Cutting features from 8192 to 4096 saved 37% but lost 12% of the pairs.
+
+SIFT stays on the CPU however it's built, as COLMAP has no GPU version of the affine shape and
+domain-size pooling these settings use. It only takes 33 s.
+
+**The mapper** spends 91% of its time in bundle adjustment (71% in global), and 33% on models that
+aren't the largest and so are thrown away. All from the job's own matches:
+
+| Mapper | Threads | Time | Photos placed | Error |
+|---|---|---|---|---|
+| COLMAP 3.9.1 (the app's settings) | 8 | 34-35 min | 72, 59 | 1.03, 0.98 |
+| Global bundle adjustment less often | 8 | 11-13 min | 78, 77 | 1.02, 1.14 |
+| COLMAP 4.2.1 `global_mapper`, CPU | 8 | 2.7-3.5 min | 110, 110, 110 | 1.24, 1.30, 1.19 |
+| The same from GPU matches | 10 | 3.6 min | 110, 110 | 1.03, 1.02 |
+
+Those runs shared the machine at low priority, so compare them with each other, not with the table
+above. "Less often" is `--Mapper.ba_global_images_ratio 1.4 --Mapper.ba_global_points_ratio 1.4
+--Mapper.ba_global_max_num_iterations 25`, and it stopped short of a mesh.
+
+The global mapper from GPU matches went on to make meshes of 0.99M and 1.04M faces, with 86-87% of the
+surface in one piece, against 1.06M and 74% for the job's. By eye, each is one coherent rock face with
+fragments around it, as good as the job's or cleaner. That's only two runs on one boulder. It also
+needs work to use:
+
+- OpenMVS 2.3 aborts on 4.2.1's models. Writing the model as text and undistorting it with 3.9.1 works.
+- It left one photo with camera settings the undistorter wouldn't convert (focal length 1560, likely
+  an unrefined guess), and OpenMVS aborts on those too. That photo has to be dropped first.
+- It warns that it relies on focal length priors, which most web photos lack.
+- The official image's Ceres has no CUDA, so its bundle adjustment stays on the CPU regardless.
+
+**The GPU is shared, so it can't be assumed.** COLMAP aborts outright on a CUDA out-of-memory error,
+which happened when other jobs took 23.9 of its 24 GB, so anything using it needs a CPU fallback.
+
+Not tried: downloading from different hosts in parallel, keeping each host's rate limit; choosing
+pairs instead of trying all of them.
+
 ## Meshing a whole area (`backend/server.py`, "campaigns")
 
 **Staying within Mountain Project's terms decides most of this.** They disallow automated or bulk
