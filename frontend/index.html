@@ -251,6 +251,22 @@ function resize(){ const w=vEl.clientWidth, h=vEl.clientHeight; if (!w||!h) retu
 new ResizeObserver(resize).observe(vEl); resize();
 renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
 
+// Where most of a model is. Reconstructions can have a few stray fragments far from the rock, which
+// would shrink it to a speck if the view were fitted around everything.
+function mainBox(obj){
+  obj.updateMatrixWorld(true);
+  const axes = [[], [], []], v = new THREE.Vector3();
+  obj.traverse(o => {
+    if (!o.isMesh) return;
+    const p = o.geometry.attributes.position, step = Math.max(1, Math.floor(p.count / 200000));
+    for (let i = 0; i < p.count; i += step) { v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld); axes[0].push(v.x); axes[1].push(v.y); axes[2].push(v.z); }
+  });
+  if (axes[0].length < 100) return new THREE.Box3().setFromObject(obj);
+  const at = f => new THREE.Vector3(...axes.map(a => a[Math.floor(f * (a.length - 1))]));
+  axes.forEach(a => a.sort((x, y) => x - y));
+  const lo = at(.05), hi = at(.95), pad = hi.clone().sub(lo).multiplyScalar(.08);
+  return new THREE.Box3(lo.sub(pad), hi.add(pad));
+}
 function showObject(obj, label){
   if (current) scene.remove(current);
   obj.traverse(o => {
@@ -263,11 +279,11 @@ function showObject(obj, label){
       if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();
     }
   });
-  const box = new THREE.Box3().setFromObject(obj);
+  const box = mainBox(obj);
   const size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
   const s = 2 / Math.max(size.x, size.y, size.z, 1e-6);
   obj.position.sub(c).multiplyScalar(s); obj.scale.setScalar(s);
-  const b2 = new THREE.Box3().setFromObject(obj); obj.position.y -= b2.min.y;
+  obj.position.y -= mainBox(obj).min.y;
   scene.add(obj); current = obj;
   controls.target.set(0, 1, 0); camera.position.set(2.2, 1.8, 2.6); controls.update();
   $('#viewing').textContent = 'Viewing: ' + label;
