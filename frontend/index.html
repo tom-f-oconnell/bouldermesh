@@ -528,7 +528,7 @@ function renderOrientation(m){
   const p = o.iphone, hasBoth = !!p.down, used = o.method === 'iphone', agree = o.estimate.photos_agree_deg;
   const key = c => hasBoth ? `<span class="key" style="background:#${c.toString(16).padStart(6, '0')}"></span>` : '';
   el.innerHTML = `<div>${key(COLOR_ESTIMATE)}<b>Estimate from how photos were framed:</b> ${used ? `not used, ${p.off_estimate_deg}° from the iPhone's down.` : 'used.'}${agree != null ? ` Its photos' bottom edges are a median of ${agree}° from it.` : ''}</div>
-    <div>${key(COLOR_IPHONE)}<b>iPhone gravity:</b> ${iphoneLine(o)}${p.status === 'no_cameras' && p.kept_with_readings ? '<button class="sm sec rebuild">Rebuild to use it</button>' : ''}</div>`;
+    <div>${key(COLOR_IPHONE)}<b>iPhone gravity:</b> ${iphoneLine(o)}${p.status === 'no_cameras' && p.kept_with_readings ? '<button class="sm sec rebuild" title="Builds a new mesh and keeps this one. The reading only counts if the new run places that photo, and the new mesh can come out worse.">Rebuild to try it</button>' : ''}</div>`;
   el.querySelector('.rebuild')?.addEventListener('click', async ev => {
     ev.target.disabled = true;
     try { await api(`/api/projects/${m.source.split(':')[1]}/reconstruct`, { method: 'POST' }); toast('Rebuilding as a new mesh: this one stays', 5000); poll(); }
