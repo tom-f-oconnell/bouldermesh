@@ -142,7 +142,7 @@ stops at 1000 climbs: in a bigger area, these are its most popular 1000.
 (`PORT=<n> docker compose up --build` if 8470 is taken), or natively on Ubuntu: `apt install colmap python3-opencv ffmpeg`, build OpenMVS (see
 Dockerfile, including its one-line patch), `pip install yt-dlp`, then `python3 backend/server.py`.
 
-**With an NVIDIA GPU** (and its container toolkit), photo matching takes about 3 minutes rather than
+**With an NVIDIA GPU** (and its container toolkit), photo matching takes 2-3 minutes rather than
 12 for 100 photos. Give the container the GPU with `docker-compose.gpu.yml`, which this makes the
 default on that machine:
 

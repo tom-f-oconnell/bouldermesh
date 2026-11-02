@@ -143,10 +143,12 @@ features, the same COLMAP, and only the device changing.
 |---|---|---|
 | CPU, guided, all cores (the job) | 12.2 min | 1889 |
 | CPU, guided, 12 cores | 25.7 min | 1897 |
-| GPU, guided, twice | 3.0 min | 1814, 1811 |
+| GPU, guided, twice, COLMAP's minimum | 3.0 min | 1814, 1811 |
 | GPU, unguided | 2.1 min | 1841 |
+| GPU, guided, a minimum of 12 (the app) | 1.9 min | 1971 |
 
-The GPU was also running other people's jobs at full load, and used about 2.5 GB. COLMAP 4.2.1 took
+The GPU was also running other people's jobs at full load, with some more room for the last one, and
+used about 2.5 GB. COLMAP 4.2.1 took
 60 s on it earlier, under a lighter load, but found 1680 pairs from its own different features: most of
 that shortfall was the version, not the GPU.
 
@@ -168,9 +170,14 @@ So the GPU's minimum is 12, which only affects a run on the GPU:
 
 The extra pairs do no visible harm. From CPU matches the mapper placed 59 and 72 photos (error 0.98,
 1.03); from GPU matches at a minimum of 12, 72 and 77 (1.06, 1.02), in about the same time, going on to
-0.98M and 1.05M faces against the job's 1.06M, and looking as coherent by eye. At COLMAP's minimum, 66
-in the one run finished. That's two seeds on one boulder, whose results vary a lot, so this shows no
-harm rather than a gain. 10 wasn't tried further, as its extra pairs are twice as many for 7 more.
+0.98M and 1.05M faces against the job's 1.06M, and looking as coherent by eye. At COLMAP's minimum, 46
+and 66. That's two seeds on one boulder, whose results vary a lot, so this shows no harm rather than a
+gain. 10 wasn't tried further, as its extra pairs are twice as many for 7 more.
+
+On 29 frames of one video, with the settings for your own photos, CPU and GPU matches are equally good:
+317 useful pairs each and 164k inliers, and 3.1 minutes for the whole job rather than 4.4. The mapper
+placed 27 photos on all 6 seeds from the CPU's, and on 5 of 6 from the GPU's. The other seed split them
+into models of 14 and 13, and it's seed 0, the only one the app tries unless the mapper aborts.
 
 Turning guided matching off halves CPU time on a 36-photo sample and keeps the useful pairs, but on the
 full set leaves 40% fewer inliers (0.60M against 1.01M, where guided GPU matching has 1.03M). Cutting features from 8192 to 4096 saved 37% but
