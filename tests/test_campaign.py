@@ -414,4 +414,199 @@ assert server.campaign_status(c["id"]) == "stopped"
 jobctl.begin()
 server.stop_campaign(c["id"])
 jobctl.check()
+# --- trying failed climbs again ----------------------------------------------------------------
+server.climbs_mod.fetch_climb_url = fake_fetch
+server.harvest_mod.harvest = fake_harvest
+pipeline.reconstruct = fake_reconstruct
+jobctl.begin()
+
+
+def photos(pid: str) -> None:
+    for n in range(3):
+        (server.PROJECTS / pid / "photos" / f"{n}.jpg").write_bytes(b"x")
+
+
+def status(cid: str) -> tuple[str, int]:
+    camp = server.q("SELECT status,only_retries FROM campaigns WHERE id=?", cid, one=True)
+    return camp["status"], camp["only_retries"]
+
+
+# a finished area: only what failed runs, without harvesting again, and its work is kept for it
+fresh()
+outcome["Gamma"] = "boom"
+c = server.create_campaign("", "popularity", CSV)
+run_all(c["id"])
+assert status(c["id"]) == ("done", 0), status(c["id"])
+got = items(c["id"])
+assert got["Gamma"]["status"] == "failed" and "only 2 image(s)" in got["Gamma"]["note"], got["Gamma"]
+pid = got["Gamma"]["project_id"]
+assert (server.PROJECTS / pid / "work" / "big.bin").exists(), "a failed climb keeps its work, to carry on from"
+assert not (server.PROJECTS / got["Beta"]["project_id"] / "work").exists(), "a finished one doesn't"
+assert server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["counts"]["failed"] == 1
+outcome.clear()
+harvested.clear()
+assert server.retry_campaign(c["id"]) == 1
+assert status(c["id"]) == ("running", 1), status(c["id"])
+got = items(c["id"])
+assert got["Gamma"]["status"] == "pending" and got["Gamma"]["retry"] == 1 and got["Gamma"]["note"] == "queued to try again", got["Gamma"]
+assert server.q("SELECT status FROM projects WHERE id=?", pid, one=True)["status"] == "queued"
+run_all(c["id"])
+got = items(c["id"])
+assert status(c["id"]) == ("done", 0), status(c["id"])
+assert got["Gamma"]["status"] == "done" and got["Gamma"]["project_id"] == pid and got["Gamma"]["mesh_id"] and got["Gamma"]["retry"] == 0, got["Gamma"]
+assert harvested == [], "its photos were already harvested"
+assert not (server.PROJECTS / pid / "work").exists(), "finished now"
+assert "-- trying again" in server.read_log(pid)
+assert server.retry_campaign(c["id"]) == 0, "nothing left to try"
+assert status(c["id"]) == ("done", 0)
+
+# a stopped area: only what failed runs, and then it stops again, rather than going on down its list
+fresh()
+outcome["Alpha"] = "boom"
+c = server.create_campaign("", "popularity", CSV)
+server.next_campaign_step()
+server.stop_campaign(c["id"])
+assert items(c["id"])["Alpha"]["status"] == "failed" and status(c["id"]) == ("stopped", 0)
+outcome.clear()
+harvested.clear()
+assert server.retry_campaign(c["id"]) == 1
+run_all(c["id"])
+assert harvested == [], "a climb that failed in reconstruction keeps its photos"
+got = items(c["id"])
+assert got["Alpha"]["status"] == "done" and status(c["id"]) == ("stopped", 0), (got["Alpha"], status(c["id"]))
+assert got["Beta"]["status"] == "pending", "the rest of the list stays waiting"
+
+# one that fails again is left failed, with no endless retrying
+fresh()
+outcome["Alpha"] = "boom"
+c = server.create_campaign("", "popularity", CSV)
+server.next_campaign_step()
+server.stop_campaign(c["id"])
+server.retry_campaign(c["id"])
+run_all(c["id"])
+got = items(c["id"])
+assert got["Alpha"]["status"] == "failed" and got["Alpha"]["retry"] == 0 and "only 2 image(s)" in got["Alpha"]["note"], got["Alpha"]
+assert status(c["id"]) == ("stopped", 0)
+
+# a running area: what failed goes next, and it carries on down its list afterwards
+fresh()
+outcome["Alpha"] = "boom"
+c = server.create_campaign("", "popularity", CSV)
+server.next_campaign_step()
+outcome.clear()
+harvested.clear()
+assert server.retry_campaign(c["id"]) == 1
+assert status(c["id"]) == ("running", 0), "it's still working through its whole list"
+assert server.ordered_pending(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))[0]["name"] == "Alpha"
+server.next_campaign_step()
+assert items(c["id"])["Alpha"]["status"] == "done" and harvested == []
+server.next_campaign_step()
+assert harvested == ["Beta"], harvested
+
+# stopping retries leaves them first in line for Resume, which then does the whole list
+fresh()
+outcome["Alpha"] = outcome["Beta"] = "boom"
+c = server.create_campaign("", "popularity", CSV)
+server.next_campaign_step()
+server.next_campaign_step()
+server.stop_campaign(c["id"])
+outcome.clear()
+assert server.retry_campaign(c["id"]) == 2
+server.next_campaign_step()
+server.stop_campaign(c["id"])
+assert status(c["id"]) == ("stopped", 0), status(c["id"])
+got = items(c["id"])
+assert got["Alpha"]["status"] == "done" and got["Beta"]["status"] == "pending" and got["Beta"]["retry"] == 1, got["Beta"]
+assert server.ordered_pending(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))[0]["name"] == "Beta"
+
+# a restart during retries carries on with them, and still stops afterwards
+fresh()
+outcome["Alpha"] = "boom"
+c = server.create_campaign("", "popularity", CSV)
+server.next_campaign_step()
+server.stop_campaign(c["id"])
+outcome.clear()
+server.retry_campaign(c["id"])
+pid = items(c["id"])["Alpha"]["project_id"]
+server.init_db()
+assert server.q("SELECT status FROM projects WHERE id=?", pid, one=True)["status"] == "stopped", "not lost as a queued job would be"
+assert status(c["id"]) == ("running", 1)
+assert items(c["id"])["Alpha"]["retry"] == 1
+run_all(c["id"])
+assert items(c["id"])["Alpha"]["status"] == "done" and status(c["id"]) == ("stopped", 0), status(c["id"])
+
+# one project of a stopped area
+fresh()
+outcome["Alpha"] = outcome["Beta"] = "boom"
+c = server.create_campaign("", "popularity", CSV)
+server.next_campaign_step()
+server.next_campaign_step()
+server.stop_campaign(c["id"])
+outcome.clear()
+pid = items(c["id"])["Beta"]["project_id"]
+photos(pid)
+assert server.retry_project("0" * 12) == ({"error": "not found"}, 404)
+assert server.retry_project(pid) == ({"queued": True}, 202)
+assert server.retry_project(pid)[1] == 409, "already queued"
+assert status(c["id"]) == ("running", 1)
+run_all(c["id"])
+got = items(c["id"])
+assert got["Beta"]["status"] == "done" and got["Alpha"]["status"] == "failed", "only the one asked for"
+assert status(c["id"]) == ("stopped", 0)
+assert server.retry_project(pid)[1] == 409, "it's done: there's nothing to retry"
+
+# a project that isn't part of an area, which keeps its work from the failed run
+fresh()
+pid = "abc123abc123"
+(server.PROJECTS / pid / "photos").mkdir(parents=True, exist_ok=True)
+server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,'failed')", pid, "Solo", time.time(), "user", write=True)
+assert server.retry_project(pid) == ({"error": "upload at least 3 overlapping photos"}, 400) or not pipeline.real_pipeline_ready()
+photos(pid)
+(server.PROJECTS / pid / "work").mkdir(exist_ok=True)
+(server.PROJECTS / pid / "work" / "earlier.bin").write_bytes(b"x")
+assert server.retry_project(pid) == ({"queued": True}, 202)
+job = server.jobs.get_nowait()
+assert job == {"type": "retry", "pid": pid}, job
+server.run_retry(pid)
+assert server.q("SELECT status FROM projects WHERE id=?", pid, one=True)["status"] == "done"
+assert (server.PROJECTS / pid / "work" / "earlier.bin").exists(), "it carried on, rather than starting from scratch"
+assert "-- trying again" in server.read_log(pid)
+
+# reconstructing a failed climb's project by hand counts towards its area
+fresh()
+outcome["Alpha"] = "boom"
+c = server.create_campaign("", "popularity", CSV)
+server.next_campaign_step()
+outcome.clear()
+server.stop_campaign(c["id"])
+server.run_reconstruct(items(c["id"])["Alpha"]["project_id"])
+got = items(c["id"])["Alpha"]
+assert got["status"] == "done" and got["mesh_id"] and got["note"] is None, got
+
+# what a tool's failure says reaches the area's list
+fresh()
+
+
+def killed(images, work, out_dir, log, use_gpu=False, internet=False, tracker=None):
+    work.mkdir(parents=True, exist_ok=True)
+    raise server.diagnostics.ToolFailed("/usr/local/bin/OpenMVS/DensifyPointCloud", -15, "sent from outside this container, by uid 61876")
+
+
+pipeline.reconstruct = killed
+c = server.create_campaign("", "popularity", CSV)
+server.next_campaign_step()
+assert items(c["id"])["Alpha"]["note"] == ("DensifyPointCloud was killed with SIGTERM (signal 15), not by this app: "
+                                            "sent from outside this container, by uid 61876"), items(c["id"])["Alpha"]
+pipeline.reconstruct = fake_reconstruct
+
+# databases from before retries get what they need
+fresh()
+with server.db() as con:
+    con.execute("ALTER TABLE campaign_items DROP COLUMN retry")
+    con.execute("ALTER TABLE campaigns DROP COLUMN only_retries")
+server.init_db()
+c = server.create_campaign("", "popularity", CSV)
+assert status(c["id"]) == ("running", 0)
+assert items(c["id"])["Alpha"]["retry"] == 0
+print("retries OK")
 print("ALL CAMPAIGN TESTS PASSED")

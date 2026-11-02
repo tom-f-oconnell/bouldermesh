@@ -40,6 +40,8 @@ RUN git clone --depth 1 https://github.com/cdcseacave/VCG.git /opt/vcglib \
 RUN cmake -S /opt/openMVS -B /opt/openMVS/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DVCG_ROOT=/opt/vcglib -DOpenMVS_USE_CUDA=OFF -DOpenMVS_USE_PYTHON=OFF \
  && cmake --build /opt/openMVS/build && cmake --install /opt/openMVS/build
+COPY backend/signal_note.c /opt/signal_note.c
+RUN gcc -shared -fPIC -O2 -Wall -o /usr/local/lib/signal_note.so /opt/signal_note.c
 
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
@@ -54,6 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Ubuntu's colmap package is only there for the libraries this one links to: /usr/local/bin comes first
 COPY --from=colmap /opt/colmap-cuda/bin/colmap /usr/local/bin/colmap
 COPY --from=build /usr/local/bin/OpenMVS /usr/local/bin/OpenMVS
+COPY --from=build /usr/local/lib/signal_note.so /usr/local/lib/signal_note.so
 ENV OPENMVS_BIN=/usr/local/bin/OpenMVS
 # COLMAP's binary needs a display for some commands; run headless via Qt offscreen
 ENV QT_QPA_PLATFORM=offscreen

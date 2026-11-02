@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import diagnostics
+
 USER_AGENT = os.environ.get(
     "BOULDERMESH_UA",
     "BoulderMesh/0.2 (personal photogrammetry prototype; contact: set BOULDERMESH_UA env var)")
@@ -151,7 +153,7 @@ class JobControl:
     def popen(self, cmd: list[str], **kw) -> subprocess.Popen:
         with self._lock:
             self.check()
-            self._proc = subprocess.Popen(["nice", "-n", "10", *cmd] if self.low_priority else cmd, **kw)
+            self._proc = subprocess.Popen(["nice", "-n", "10", *cmd] if self.low_priority else cmd, env=diagnostics.tool_env(), **kw)
             return self._proc
 
     def run(self, cmd: list[str], timeout: float | None = None, **kw) -> None:
@@ -165,7 +167,7 @@ class JobControl:
             raise
         self.check()
         if proc.returncode:
-            raise subprocess.CalledProcessError(proc.returncode, cmd, out, err)
+            raise diagnostics.ToolFailed(cmd[0], proc.returncode, detail=diagnostics.last_line(err))
 
 
 jobctl = JobControl()

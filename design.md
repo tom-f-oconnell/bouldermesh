@@ -337,7 +337,40 @@ matching keeps the pairs it's finished, and the mapper starts over. Densifying a
 Rastafarian, restarting during matching, the mapper and densifying, which finished in the same project
 with no errors. Six deployments had interrupted Joshua Tree before this, each early in a climb. Unattended
 tools run under `nice`, as this machine is shared. Each climb's `work/` directory is deleted when it finishes: at about 800 MB, it's most
-of what a job leaves on disk, and only a re-run would use it, which recreates it anyway.
+of what a job leaves on disk. A climb that fails keeps it, so that trying again carries on from its last finished step.
+
+**Retrying** uses the same list rather than the job queue, so it survives a restart and *Stop* works on it.
+A retried climb is flagged and goes first. An area that wasn't running runs only flagged climbs and then
+stops, as pressing Retry on something you'd stopped shouldn't set off the rest of its list.
+
+## When a job fails (`backend/diagnostics.py`)
+
+Every tool's run logs its time, peak memory and CPU. A failure says how it ended: its exit code, a crash
+(SIGSEGV, SIGABRT and so on), or a signal from elsewhere. The app only ever kills a tool with SIGKILL, when
+someone stops a job, and that ends as a stop rather than a failure, so any other kill didn't come from it.
+
+Its parent only learns which signal killed a tool. `signal_note.c`, preloaded into each tool, prints who
+sent it: a pid and uid inside the container, or pid 0 and a uid from outside. On hal, uid 61876 is earlyoom,
+and uid 0 is root. SIGKILL can't be caught, so for that the log has the kernel's out-of-memory kills during
+the run. Memory has recovered by the time a tool is dead, so it's sampled every 2 s while the tool runs, and
+the lowest it reached is logged, with the machine's load, memory pressure, disk and GPU memory.
+
+**Leather and Lace** was the first to raise this: DensifyPointCloud got SIGTERM 51 s in, at 04:37 on 2026-11-02,
+and the signal's sender wasn't recorded yet. What's known:
+
+- The tools run as root, so only root or something with CAP_KILL could signal it.
+- It wasn't the app, which has no SIGTERM anywhere, or a restart, or the kernel's OOM killer, which uses SIGKILL.
+- No Claude session on the account was active from 3 am to noon. Only that account had logins open.
+- earlyoom was armed: it needs memory at 8% and swap at 5%, and swap had been full for 30 hours, because of
+  test data left in the RAM-backed `/tmp`. The only memory reclaim from 04:10 to 05:00 was in the 10 minutes
+  it died in, though 12 such bursts happened in two days.
+- But earlyoom picks the highest `oom_score`, and adds 300 to python's. The app's own server scores 974, and
+  sits ignoring SIGTERM as its container's init. Densify would need about 118 GB to beat that. Rerun on the same
+  photos, it peaked at 1.7 GB, for a score of about 670.
+
+So earlyoom probably wasn't it, unless that run behaved very differently. The likeliest remaining cause is a
+script or person using `kill`, whose default is SIGTERM, with root. Only the system logs can settle it, and
+they aren't readable without `adm`.
 
 ## Why job logs aren't in the database
 

@@ -18,9 +18,11 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
+import diagnostics
 import occlusion
 import orientation
 from climbs.common import jobctl
+from diagnostics import gpu_free_mb
 from progress import Tracker
 
 Log = Callable[[str], None]
@@ -68,17 +70,6 @@ def colmap_has_cuda() -> bool:
         return False
 
 
-def gpu_free_mb() -> int | None:
-    """Free memory on the emptiest GPU visible here, or None if there isn't one."""
-    try:
-        r = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
-                           capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    free = [int(x) for x in r.stdout.split() if x.isdigit()]
-    return max(free) if r.returncode == 0 and free else None
-
-
 def gpu_choice(allowed: bool = True) -> tuple[bool, str]:
     """Whether a COLMAP step should use the GPU right now, and why or why not."""
     if not allowed:
@@ -95,18 +86,29 @@ def gpu_choice(allowed: bool = True) -> tuple[bool, str]:
 
 def _run(cmd: list[str], cwd: Path, log: Log, watch: Callable[[str], None] | None = None) -> None:
     log("$ " + " ".join(cmd))
-    proc = jobctl.popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    proc = jobctl.popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     assert proc.stdout
-    for line in proc.stdout:
-        line = line.rstrip()
-        if line:
-            log(line)
-            if watch:
-                watch(line)
-    code = proc.wait()
+    running = diagnostics.ToolWatch(proc.pid)
+    sender = None
+    try:
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                log(line)
+                sender = diagnostics.read_sender(line) or sender
+                if watch:
+                    watch(line)
+        code = proc.wait()
+    finally:
+        running.stop()
     jobctl.check()
+    log(running.summary())
     if code != 0:
-        raise RuntimeError(f"{cmd[0]} exited with {code}")
+        failure = diagnostics.ToolFailed(cmd[0], code, sender, running.oom_kills)
+        log(f"{failure}")
+        for line in running.report(code, cwd):
+            log(line)
+        raise failure
 
 
 def _gpu_or_cpu(cmd: list[str], flag: str, allowed: bool, cwd: Path, log: Log, watch: Callable[[str], None] | None = None,

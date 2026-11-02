@@ -34,6 +34,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
+import diagnostics  # noqa: E402
 import meshclean  # noqa: E402
 import orientation  # noqa: E402
 import pipeline  # noqa: E402
@@ -98,11 +99,12 @@ def init_db() -> None:
           mesh_id TEXT, climb_id TEXT, note TEXT, created REAL, PRIMARY KEY(mesh_id, climb_id));
         CREATE TABLE IF NOT EXISTS campaigns(
           id TEXT PRIMARY KEY, name TEXT, area_id TEXT, ord TEXT, created REAL, note TEXT,
-          status TEXT);                -- running | stopping | stopped | done
+          status TEXT,                 -- running | stopping | stopped | done
+          only_retries INTEGER DEFAULT 0);   -- run only its retries, and then stop
         CREATE TABLE IF NOT EXISTS campaign_items(
           campaign_id TEXT, source_id TEXT, rank INTEGER, name TEXT, grade TEXT, stars REAL, url TEXT,
           boulder TEXT, data TEXT, media INTEGER, climb_id TEXT, project_id TEXT, mesh_id TEXT,
-          note TEXT, updated REAL,
+          note TEXT, updated REAL, retry INTEGER DEFAULT 0,
           status TEXT DEFAULT 'pending',   -- pending | running | done | skipped | failed
           PRIMARY KEY(campaign_id, source_id));
         CREATE INDEX IF NOT EXISTS campaign_items_boulder ON campaign_items(boulder);
@@ -116,9 +118,16 @@ def init_db() -> None:
         for c in ("lat", "lng"):
             if c not in cols:
                 con.execute(f"ALTER TABLE meshes ADD COLUMN {c} REAL")
+        cols = {r[1] for r in con.execute("PRAGMA table_info(campaigns)")}
+        if "only_retries" not in cols:
+            con.execute("ALTER TABLE campaigns ADD COLUMN only_retries INTEGER DEFAULT 0")
+        cols = {r[1] for r in con.execute("PRAGMA table_info(campaign_items)")}
+        if "retry" not in cols:
+            con.execute("ALTER TABLE campaign_items ADD COLUMN retry INTEGER DEFAULT 0")
         # A restart only pauses an area: its climb carries on from the last step it finished, and the
         # area carries on by itself unless someone stopped it. Other jobs are lost, as their queue is.
-        con.execute("UPDATE projects SET status='stopped' WHERE id IN (SELECT project_id FROM campaign_items WHERE status='running')")
+        con.execute("UPDATE projects SET status='stopped' WHERE id IN "
+                    "(SELECT project_id FROM campaign_items WHERE status='running' OR (status='pending' AND retry=1))")
         con.execute("UPDATE campaign_items SET status='pending', note='interrupted by a restart: carrying on from where it got to' WHERE status='running'")
         con.execute("UPDATE campaigns SET status='stopped', note=NULL WHERE status='stopping'")
         con.execute("UPDATE projects SET status='failed', progress=NULL, log=log||'\nserver restarted during job' "
@@ -313,10 +322,12 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             log(f"mesh linked to climb {proj['climb_id']}")
         clean_mesh(mid, log)
         q("UPDATE projects SET status='done', mesh_id=?, demo=? WHERE id=?", mid, int(demo), pid, write=True)
+        q("UPDATE campaign_items SET status='done', mesh_id=?, retry=0, note=NULL, updated=? WHERE project_id=? AND status='failed'",
+          mid, time.time(), pid, write=True)   # made by hand since its area gave up on it
         tracker.finish()
         log("done")
     except Exception as e:
-        log(f"FAILED: {e}")
+        diagnostics.log_failure(log, e, DATA)
         tracker.finish("failed")
         q("UPDATE projects SET status='failed' WHERE id=?", pid, write=True)
 
@@ -369,7 +380,7 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                 "(add your own photos to this project and press Reconstruct to try anyway)")
         tracker.skip_rest()
     except Exception as e:
-        log(f"FAILED: {e}")
+        diagnostics.log_failure(log, e, DATA)
         if tracker:
             tracker.finish("failed")
         q("UPDATE projects SET status='failed' WHERE id=?", pid, write=True)
@@ -414,13 +425,14 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
 
 def ordered_pending(camp: dict) -> list[dict]:
     """A campaign's waiting climbs, next first."""
-    items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id FROM campaign_items "
+    items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry FROM campaign_items "
               "WHERE campaign_id=? AND status='pending' ORDER BY rank", camp["id"])
     if camp["ord"] == "rating":
         items.sort(key=lambda i: (-(i["stars"] or 0), i["rank"]))
     elif camp["ord"] == "data":
         items.sort(key=lambda i: (i["media"] is None, -(i["media"] or 0), i["rank"]))
-    items.sort(key=lambda i: not i["project_id"])   # a climb that was interrupted comes first, to finish what it started
+    # retries were asked for, and a climb that was interrupted comes next, to finish what it started
+    items.sort(key=lambda i: (not i["retry"], not i["project_id"]))
     return items
 
 
@@ -495,14 +507,17 @@ def run_campaign_item(camp: dict, item: dict) -> None:
                 q("INSERT INTO projects(id,name,created,kind,climb_id,status) VALUES(?,?,?,?,?,'queued')",
                   pid, f"{c.name} (harvest)"[:80], time.time(), "harvest", climb_id, write=True)
             set_item(cid, sid, climb_id=climb_id, project_id=pid)
+            if item.get("retry"):
+                append_log(pid, "-- trying again")
             try:
                 run_harvest(pid, set(HARVEST_SOURCES), True, resume=resume)
             except Cancelled:
                 q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
                 set_item(cid, sid, status="pending", note="stopped partway: carries on from where it got to when resumed")
                 return
-            shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)   # most of a job's disk use, and only useful to itself
             p = q("SELECT status,mesh_id,harvest FROM projects WHERE id=?", pid, one=True)
+            if p["status"] != "failed":     # kept if it failed, so that trying again starts from its last finished step
+                shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)   # most of a job's disk use, and only useful to itself
             if p["status"] == "done":
                 set_item(cid, sid, status="done", mesh_id=p["mesh_id"])
             elif p["status"] == "harvested":
@@ -521,6 +536,7 @@ def run_campaign_item(camp: dict, item: dict) -> None:
         _outages.clear()
     finally:
         _campaign_running = None
+        q("UPDATE campaign_items SET retry=0 WHERE campaign_id=? AND source_id=? AND status NOT IN ('pending','running')", cid, sid, write=True)
         q("UPDATE campaigns SET status='stopped', note=NULL WHERE id=? AND status='stopping'", cid, write=True)
 
 
@@ -533,22 +549,85 @@ def next_campaign_step() -> None:
         q("UPDATE campaigns SET status='stopped', note=? WHERE id=?",
           f"stopped: under {CAMPAIGN_MIN_FREE / 2**30:.0f} GB of disk left", camp["id"], write=True)
         return
-    if camp["ord"] == "data":
+    if camp["ord"] == "data" and not camp["only_retries"]:
         read_ahead(camp)
     items = ordered_pending(camp)
+    waiting = bool(items)
+    if camp["only_retries"]:
+        items = [i for i in items if i["retry"]]
     if not items:
-        q("UPDATE campaigns SET status='done', note=NULL WHERE id=? AND status='running'", camp["id"], write=True)
+        q("UPDATE campaigns SET status=?, only_retries=0, note=NULL WHERE id=? AND status='running'",
+          "stopped" if waiting else "done", camp["id"], write=True)
     elif campaign_status(camp["id"]) == "running":
         try:
             run_campaign_item(camp, items[0])
         except Exception as e:
-            set_item(camp["id"], items[0]["source_id"], status="failed", note=str(e))
+            set_item(camp["id"], items[0]["source_id"], status="failed", note=f"{type(e).__name__}: {e}")
+
+
+def queue_retry(camp_id: str, source_id: str, project_id: str | None) -> None:
+    """Put one of a campaign's climbs at the front of its list. A campaign that isn't running runs
+    only its retries and then stops, rather than carrying on down its list."""
+    set_item(camp_id, source_id, status="pending", retry=1, note="queued to try again")
+    if project_id:
+        q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", project_id, write=True)
+    q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status IN ('stopped','done')", camp_id, write=True)
+
+
+def retry_campaign(camp_id: str) -> int:
+    """Try all of a campaign's failed climbs again, each from the last step it finished.
+
+    Returns:
+        How many climbs were queued.
+    """
+    failed = q("SELECT source_id,project_id FROM campaign_items WHERE campaign_id=? AND status='failed'", camp_id)
+    for item in failed:
+        queue_retry(camp_id, item["source_id"], item["project_id"])
+    return len(failed)
+
+
+def retry_project(pid: str) -> tuple[dict, int]:
+    """Try a project again from the last step it finished.
+
+    Returns:
+        The response, and its HTTP status.
+    """
+    proj = q("SELECT status,kind,harvest FROM projects WHERE id=?", pid, one=True)
+    if not proj:
+        return {"error": "not found"}, 404
+    if proj["status"] in ("queued", "running", "harvesting"):
+        return {"error": "already running"}, 409
+    if proj["status"] not in ("failed", "stopped"):
+        return {"error": "it hasn't failed: Reconstruct makes another mesh"}, 409
+    if proj["kind"] != "harvest" or proj["harvest"]:    # otherwise it gets its photos first
+        n = len([f for f in (PROJECTS / pid / "photos").iterdir() if f.suffix.lower() in PHOTO_EXT])
+        if n < (1 if not pipeline.real_pipeline_ready() else 3):
+            return {"error": "upload at least 3 overlapping photos"}, 400
+    item = q("SELECT campaign_id,source_id FROM campaign_items WHERE project_id=? LIMIT 1", pid, one=True)
+    if item:
+        queue_retry(item["campaign_id"], item["source_id"], pid)
+    else:
+        q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
+        jobs.put({"type": "retry", "pid": pid})
+    return {"queued": True}, 202
+
+
+def run_retry(pid: str) -> None:
+    """Try a project that isn't part of an area again."""
+    proj = q("SELECT kind,harvest FROM projects WHERE id=?", pid, one=True)
+    if not proj:
+        return
+    append_log(pid, "-- trying again")
+    if proj["kind"] == "harvest" and not proj["harvest"]:
+        run_harvest(pid, set(HARVEST_SOURCES), True, resume=True)
+    else:
+        run_reconstruct(pid, internet=proj["kind"] == "harvest", resume=True)
 
 
 def stop_campaign(camp_id: str, now: bool = True) -> None:
     """Stop a campaign, now or once the climb it's on is finished."""
     running = _campaign_running == camp_id
-    q("UPDATE campaigns SET status=?, note=NULL WHERE id=? AND status IN ('running','stopping')",
+    q("UPDATE campaigns SET status=?, note=NULL, only_retries=0 WHERE id=? AND status IN ('running','stopping')",
       "stopping" if running and not now else "stopped", camp_id, write=True)
     if running and now:
         jobctl.stop()
@@ -583,6 +662,8 @@ def worker() -> None:
                 run_reconstruct(job["pid"], job.get("internet", False))
             elif job["type"] == "harvest":
                 run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True))
+            elif job["type"] == "retry":
+                run_retry(job["pid"])
         except (Exception, Cancelled) as e:  # never let the worker die
             append_log(job.get("pid", "?"), f"worker error: {e!r}")
 
@@ -677,6 +758,7 @@ class Handler(BaseHTTPRequestHandler):
                 photos = PROJECTS / m[1] / "photos"
                 proj["photos"] = sorted(f.name for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.exists() else []
                 proj["log"] = read_log(m[1], proj.get("log") or "")
+                proj["failure"] = last_failure(m[1]) if proj["status"] == "failed" else None
                 proj["harvest"] = json.loads(proj["harvest"]) if proj.get("harvest") else None
                 proj["progress"] = json.loads(proj["progress"]) if proj.get("progress") else None
                 rejected = PROJECTS / m[1] / "rejected"
@@ -803,6 +885,10 @@ class Handler(BaseHTTPRequestHandler):
                 jobs.put({"type": "reconstruct", "pid": pid, "internet": proj["kind"] == "harvest"})
                 return self.send_json({"queued": True, "position": jobs.qsize()}, 202)
 
+            m = re.fullmatch(r"/api/projects/([0-9a-f]+)/retry", p)
+            if m:
+                return self.send_json(*retry_project(m[1]))
+
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/restore", p)
             if m:
                 # a photo the relevance filter rejected wrongly
@@ -877,10 +963,17 @@ class Handler(BaseHTTPRequestHandler):
                 if not campaign_status(m[1]):
                     return self.send_json({"error": "not found"}, 404)
                 if m[2] == "start":
-                    q("UPDATE campaigns SET status='running', note=NULL WHERE id=? AND status IN ('stopped','stopping')", m[1], write=True)
+                    q("UPDATE campaigns SET status='running', note=NULL, only_retries=0 WHERE id=? AND status IN ('stopped','stopping')", m[1], write=True)
                 else:
                     stop_campaign(m[1], bool(self.read_json().get("now", True)))
                 return self.send_json(campaign_view(q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)))
+
+            m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)/retry", p)
+            if m:
+                if not campaign_status(m[1]):
+                    return self.send_json({"error": "not found"}, 404)
+                queued = retry_campaign(m[1])
+                return self.send_json({**campaign_view(q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)), "queued": queued})
 
             if p == "/api/climbs/search":   # OpenBeta live search (not stored until imported)
                 body = self.read_json()

@@ -278,6 +278,12 @@ def run(B: str, tmp: Path) -> None:
     assert st == 200 and stopped["status"] == "stopped", stopped
     st, _ = req(B, "POST", "/api/campaigns/nothere0/start", {})
     assert st == 404, st
+    st, none = req(B, "POST", f"/api/campaigns/{ca['id']}/retry", {})
+    assert st == 200 and none["queued"] == 0 and none["status"] == "stopped", none
+    st, _ = req(B, "POST", "/api/campaigns/nothere0/retry", {})
+    assert st == 404, st
+    st, _ = req(B, "POST", "/api/projects/0123456789ab/retry", {})
+    assert st == 404, st
     st, _ = req(B, "DELETE", f"/api/campaigns/{ca['id']}")
     st, lst = req(B, "GET", "/api/campaigns")
     assert st == 200 and lst == [], lst

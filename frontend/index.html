@@ -827,7 +827,8 @@ async function refreshProjects(){
     d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':''}</b><span class="status ${p.status}">${p.status}${p.demo?' (demo)':''}</span></div>
       <div class="row" style="margin-top:8px">
         <label class="file"><button class="sec sm" type="button">Add photos</button><input type="file" multiple accept="image/jpeg,image/png"></label>
-        <button class="rec sm" ${busy?'disabled':''}>Reconstruct</button>
+        ${p.status === 'failed' || p.status === 'stopped' ? '<button class="retry sm" title="Tries again from the last step it finished, rather than from the start">Retry</button>' : ''}
+        <button class="rec sm ${p.status === 'failed' || p.status === 'stopped' ? 'sec' : ''}" title="Makes a new mesh from the start" ${busy?'disabled':''}>Reconstruct</button>
         ${p.mesh_id?'<button class="sec sm view">View mesh</button>':''}
         ${p.climb_id?`<button class="sec sm climb">Climb</button>`:''}
         <span class="grow"></span><button class="danger sm del" title="Delete project">✕</button>
@@ -847,6 +848,10 @@ async function refreshProjects(){
       try { await api(`/api/projects/${p.id}/reconstruct`, {method:'POST'}); toast('Reconstruction queued'); active = p.id; poll(); }
       catch(e){ toast(e.message); }
     };
+    d.querySelector('.retry')?.addEventListener('click', async () => {
+      try { await api(`/api/projects/${p.id}/retry`, {method:'POST'}); toast('Queued to try again'); active = p.id; poll(); }
+      catch(e){ toast(e.message); }
+    });
     d.querySelector('.view')?.addEventListener('click', () => viewMesh(p.mesh_id));
     d.querySelector('.climb')?.addEventListener('click', () => openClimb(p.climb_id));
     d.querySelector('.del').onclick = async () => { if (confirm(`Delete project "${p.name}"?`)) { await api(`/api/projects/${p.id}`, {method:'DELETE'}); refreshProjects(); } };
@@ -868,7 +873,7 @@ function progressHtml(p){
 }
 async function loadDetail(id, card){
   const p = await api('/api/projects/' + id);
-  card.querySelector('.prog').innerHTML = progressHtml(p);
+  card.querySelector('.prog').innerHTML = (p.failure ? `<div class="notice" style="margin-top:8px">${esc(p.failure)}</div>` : '') + progressHtml(p);
   // only touch these when they change: rebuilding them closes the list and makes every thumbnail flash
   const fl = card.querySelector('.filtered'), filteredNames = p.filtered.map(x => x.file).join();
   if (fl.dataset.names !== filteredNames) {
@@ -961,13 +966,14 @@ async function refreshCampaigns(){
       const row = i => `<span><small>#${i.rank}</small></span><span>${i.climb_id ? `<a href="#" data-climb="${i.climb_id}">${esc(i.name)}</a>` : `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.name)}</a>`} ${esc(i.grade||'')}</span><small>${stars(i.stars)}</small>
         <span>${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
       d.innerHTML = `<div class="row"><b class="grow">${esc(c.name)}</b><span class="status ${c.status === 'stopped' ? '' : c.status === 'done' ? 'done' : 'running'}">${esc(c.status)}</span></div>
-        <div class="meta">${ORDER_NAMES[c.ord] || ''} · <b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go</div>
+        <div class="meta">${ORDER_NAMES[c.ord] || ''} · <b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${c.only_retries ? ' · trying failed climbs again, then stopping' : ''}</div>
         ${c.note ? `<div class="notice" style="margin-top:6px">${esc(c.note)}</div>` : ''}
         <div class="now">${currentHtml(c)}</div>
         <div class="row" style="margin-top:8px">
           ${c.status === 'running' ? `<button class="sm danger stopnow" title="Pauses the climb in progress too; it carries on from its last finished step when you resume">Stop now</button><button class="sm sec stoplater">Stop after this climb</button>` : ''}
           ${c.status === 'stopping' ? `<button class="sm danger stopnow" title="Pauses the climb in progress too; it carries on from its last finished step when you resume">Stop now</button><span class="status">finishing this climb, then stopping</span>` : ''}
           ${c.status === 'stopped' ? `<button class="sm resume">Resume</button>` : ''}
+          ${n.failed && c.status !== 'stopping' ? `<button class="sm sec retryfailed" title="${c.status === 'running' ? 'They go next, each from the last step it finished' : 'Only these run, each from the last step it finished, and then it stops'}">Retry ${n.failed} failed</button>` : ''}
           <span class="grow"></span><button class="danger sm del" title="Remove this list; its meshes stay">✕</button>
         </div>
         ${c.worked.length ? `<details data-list="${c.id}-done"><summary class="meta">Worked through (${c.worked.length}${c.worked.length === 300 ? ' most recent' : ''})</summary><div class="crows">${c.worked.map(row).join('')}</div></details>` : ''}
@@ -976,6 +982,7 @@ async function refreshCampaigns(){
       d.querySelector('.stopnow')?.addEventListener('click', () => { if (confirm(`Stop now? The climb in progress pauses, and carries on from its last finished step when you resume. Finished meshes stay.`)) post('stop', { now: true }); });
       d.querySelector('.stoplater')?.addEventListener('click', () => post('stop', { now: false }));
       d.querySelector('.resume')?.addEventListener('click', () => post('start'));
+      d.querySelector('.retryfailed')?.addEventListener('click', () => post('retry'));
       d.querySelector('.del').onclick = async () => { if (confirm(`Remove the list for "${c.name}"? Its meshes stay.`)) { await api('/api/campaigns/' + c.id, { method: 'DELETE' }); campaignLoop(); } };
       d.querySelectorAll('[data-mesh]').forEach(b => b.onclick = async () => { if (!meshesById[b.dataset.mesh]) await refreshMeshes(); viewMesh(b.dataset.mesh); });
       d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });

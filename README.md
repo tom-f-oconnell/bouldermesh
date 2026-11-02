@@ -131,6 +131,10 @@ than that, and it carries on by itself afterwards, unless you'd stopped it. It a
 harvest, which usually means a network problem, or with under 50 GB of disk left
 (`CAMPAIGN_MIN_FREE_GB`).
 
+*Retry N failed* tries an area's failed climbs again, each from the last step it finished. If the area
+is running they go next, and if it isn't, only they run. *Retry* on a failed project does the same for
+that one, and its card and log say what ended it, including when something outside the app killed a tool.
+
 Jobs you start by hand go first, between climbs. Expect each climb to take most of an hour on CPU,
 and about 170 MB of disk plus up to a few hundred MB of download cache. Mountain Project's export
 stops at 1000 climbs: in a bigger area, these are its most popular 1000.
@@ -189,6 +193,7 @@ button leaves out whatever is hidden. It needs numpy, and only works on GLB mesh
     GET  /api/status
     GET  /api/projects · POST /api/projects {name, climb_id?} · GET|DELETE /api/projects/{id}
     POST /api/projects/{id}/photos (multipart "photos") · POST /api/projects/{id}/reconstruct
+    POST /api/projects/{id}/retry                       a failed project, from its last finished step
     GET  /api/projects/{id}/harvest                     sources.json + diversity.json
     POST /api/projects/{id}/restore {file}              put a photo the filter rejected back
     GET  /api/meshes · POST /api/meshes (multipart "files", +name, +lat/lng, +climb_id) · PATCH|DELETE /api/meshes/{id}
@@ -200,6 +205,7 @@ button leaves out whatever is hidden. It needs numpy, and only works on GLB mesh
     POST /api/climbs/{id}/harvest {sources:[climb,google,ddg,commons,flickr,youtube], reconstruct, filter}
     GET  /api/campaigns · POST /api/campaigns {area, order:popularity|rating|data, start, csv}
     POST /api/campaigns/{id}/start · POST /api/campaigns/{id}/stop {now} · DELETE /api/campaigns/{id}
+    POST /api/campaigns/{id}/retry                      its failed climbs, ahead of the rest
     GET|POST|DELETE /api/meshes/{id}/cleanup · PATCH /api/meshes/{id}/cleanup {removed} · GET /meshes/{id}/mesh.glb?cleaned=1
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
 
@@ -212,7 +218,8 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_parsers.py     # offline: MP/OpenBeta/Kaya parsers on fixtures
     python3 tests/test_relevance.py   # offline: relevance filter on synthetic photos, progress tracking (CLIP downloads its model)
     python3 tests/test_pipeline.py    # offline: reconstruction steps with COLMAP/OpenMVS stubbed, progress parsing
-    python3 tests/test_campaign.py    # offline: meshing an area, with harvest and reconstruction stubbed: order, stopping, restarts
+    python3 tests/test_campaign.py    # offline: meshing an area, with harvest and reconstruction stubbed: order, stopping, restarts, retries
+    python3 tests/test_diagnostics.py # offline: what's recorded when real processes fail or get killed
     python3 tests/test_meshclean.py   # offline: finding and hiding stray pieces on small GLBs, the cleaned download
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
     python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job
