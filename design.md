@@ -111,6 +111,14 @@ COLMAP's mapper aborted in 2 of 25 runs (`NumRegImages() >= 2`), both with masks
 runs against 9 without. That's too few to blame masks, but one of them left only a 5-photo model,
 so the pipeline retries with another seed. The retry doesn't repeat matching.
 
+It also retries if a run ends with too few photos, as the result is partly luck. La Migra (25 photos)
+placed 23, 18, 14 and 7 on four runs of the same matches, 23 and 7 from the same seed, and 3 on a fifth,
+which failed. That fifth grew a model to 21 photos and then lost all of them at once (`Filtered images:
+21`) after its points were filtered away. 7 of 31 mapper runs on Joshua Tree lost at least half of a model
+like this, every time at 20-21 photos. The others recovered because they had more photos left to start
+again from. Retries only happen below the 6 photos a mesh needs: small sets above that still get whatever
+the first run gives.
+
 ## Where the time goes
 
 One Midnight Lightning job through the app on 2026-10-31: 113 photos, every core of a shared
@@ -177,7 +185,8 @@ gain. 10 wasn't tried further, as its extra pairs are twice as many for 7 more.
 On 29 frames of one video, with the settings for your own photos, CPU and GPU matches are equally good:
 317 useful pairs each and 164k inliers, and 3.1 minutes for the whole job rather than 4.4. The mapper
 placed 27 photos on all 6 seeds from the CPU's, and on 5 of 6 from the GPU's. The other seed split them
-into models of 14 and 13, and it's seed 0, the only one the app tries unless the mapper aborts.
+into models of 14 and 13, and it's seed 0, the only one the app tries unless the mapper aborts or places
+too few photos.
 
 Turning guided matching off halves CPU time on a 36-photo sample and keeps the useful pairs, but on the
 full set leaves 40% fewer inliers (0.60M against 1.01M, where guided GPU matching has 1.03M). Cutting features from 8192 to 4096 saved 37% but

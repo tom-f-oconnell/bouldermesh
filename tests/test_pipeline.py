@@ -122,6 +122,16 @@ with tempfile.TemporaryDirectory() as td:
         raise AssertionError("too small a model should fail")
     except RuntimeError as e:
         assert "only 2 image(s)" in str(e), e
+# ending with too little gets another seed too, because the mapper can throw away a model it had grown
+assert stops_at([{"models": {"0": 3}}, {"models": {"0": 23}}]).endswith("sparse/0")
+assert stops_at([{"models": {"0": 2}}, {"models": {"0": 1}}, {"models": {"0": 9}}]).endswith("sparse/0")
+assert stops_at([{"models": {"0": 9}}]).endswith("sparse/0"), "enough first time shouldn't try again"
+with tempfile.TemporaryDirectory() as td:
+    try:
+        run_with_mapper([{"models": {"0": 2}}, {"models": {"0": 3}}, {"models": {}}], pathlib.Path(td))
+        raise AssertionError("too small a model should fail")
+    except RuntimeError as e:
+        assert "only 3 image(s)" in str(e), e
 print("mapper abort OK")
 
 

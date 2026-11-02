@@ -353,23 +353,28 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         if internet:
             cmd += ["--Mapper.ba_refine_principal_point", "1", "--Mapper.min_num_matches", "20"]
         # COLMAP 3.9's mapper can abort on one failing model ("NumRegImages() >= 2"; 2 of 25 runs when
-        # tried). It works from the database, so another seed doesn't redo the matching, and the models
-        # an aborted attempt finished before that stay on disk as candidates.
+        # tried), or throw away a whole model it had grown, leaving too little (design.md). It works from
+        # the database, so another seed doesn't redo the matching, and the models an earlier attempt
+        # finished stay on disk as candidates.
         for attempt in range(MAPPER_ATTEMPTS):
             try:
                 _run(cmd + ["--random_seed", str(attempt)], work, log, _mapper(tracker, n_images))
-                break
+                registered = _largest_model(sparse)[1]
+                if registered >= min_registered:
+                    break
+                problem = f"only {registered} of {n_images} photos placed"
             except RuntimeError as e:
-                log(f"mapper failed ({e}), attempt {attempt + 1} of {MAPPER_ATTEMPTS}")
-                if attempt + 1 < MAPPER_ATTEMPTS:
-                    for m in list(sparse.iterdir()):
-                        if not m.name.startswith("aborted"):
-                            m.rename(sparse / f"aborted{attempt}-{m.name}")
+                problem = str(e)
+            log(f"mapper failed ({problem}), attempt {attempt + 1} of {MAPPER_ATTEMPTS}")
+            if attempt + 1 < MAPPER_ATTEMPTS:
+                for m in list(sparse.iterdir()):
+                    if not m.name.startswith("aborted"):
+                        m.rename(sparse / f"aborted{attempt}-{m.name}")
     model, registered = _largest_model(sparse)
     log(f"registered {registered}/{n_images} images in the largest model")
     if model is None or registered < min_registered:
         raise RuntimeError(f"only {registered} image(s) could be registered (need >= {min_registered}); "
-                           "the photo set doesn't overlap enough for photogrammetry")
+                           "the photos may not overlap enough for photogrammetry")
     _finish(work, "mapper")
 
     if _finished(work, "level"):
