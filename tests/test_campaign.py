@@ -272,6 +272,40 @@ assert harvested == ["Beta"] and got["Beta"]["status"] == "done" and got["Beta"]
 assert not (server.PROJECTS / pid).exists() and not server.q("SELECT id FROM projects WHERE id=?", pid), "partial attempt left behind"
 print("restart OK")
 
+# --- new meshes get a cleanup, existing ones are caught up, and failing only costs that -----------
+fresh()
+cleaned, real_clean = [], server.meshclean.clean
+server.meshclean.clean = lambda d, log=print, force=False: cleaned.append(d.name)
+c = server.create_campaign("", "popularity", CSV)
+server.next_campaign_step()
+alpha = items(c["id"])["Alpha"]["mesh_id"]
+assert cleaned == [alpha], (cleaned, alpha)
+
+
+def broken(d, log=print, force=False):
+    raise ValueError("not a GLB file")
+
+
+server.meshclean.clean = broken
+server.next_campaign_step()
+got = items(c["id"])
+assert got["Beta"]["status"] == "done" and got["Beta"]["mesh_id"], "a failed cleanup mustn't cost the mesh"
+assert any("cleanup failed (not a GLB file)" in line for line in server.read_log(got["Beta"]["project_id"]).splitlines())
+cleaned.clear()
+server.meshclean.clean = lambda d, log=print, force=False: cleaned.append(d.name)
+server.q("INSERT INTO meshes VALUES('aaa1','old','mesh.glb','project:x',1,1,0,NULL,NULL)", write=True)
+server.q("INSERT INTO meshes VALUES('aaa2','done already','mesh.glb','project:y',2,1,0,NULL,NULL)", write=True)
+server.q("INSERT INTO meshes VALUES('aaa3','deleted','mesh.glb','project:z',3,1,0,NULL,NULL)", write=True)
+server.q("INSERT INTO meshes VALUES('aaa4','an upload','mesh.glb','upload',4,1,0,NULL,NULL)", write=True)
+server.q("INSERT INTO meshes VALUES('aaa5','untextured','mesh.ply','project:p',5,1,0,NULL,NULL)", write=True)
+for mid, content in (("aaa2", {"removed": []}), ("aaa3", {"deleted": True})):
+    (server.MESHES / mid).mkdir(parents=True)
+    (server.MESHES / mid / "cleanup.json").write_text(json.dumps(content))
+server.clean_existing_meshes()
+assert "aaa1" in cleaned and not {"aaa2", "aaa3", "aaa4", "aaa5"} & set(cleaned), cleaned
+server.meshclean.clean = real_clean
+print("cleanup OK")
+
 # --- the view the site polls -------------------------------------------------------------------
 v = server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))
 assert v["counts"]["done"] == 2 and v["counts"]["pending"] == 4 and [i["name"] for i in v["worked"]] == ["Beta", "Alpha"], v

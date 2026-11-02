@@ -14,6 +14,7 @@ import json
 import os
 import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -204,6 +205,63 @@ def run(B: str, tmp: Path) -> None:
     st, gj = req(B, "GET", "/api/geojson")
     layers = sorted(f["properties"]["layer"] for f in gj["features"])
     assert layers == ["climb", "mesh", "mesh"], layers
+
+    # --- hiding a mesh's stray pieces: a main piece of 400 faces and a stray one of 2, in a GLB
+    if HAVE_CV:
+        def sheet(nx, ny, x0):
+            P = [(x0 + i, float(j), 0.0) for i in range(nx + 1) for j in range(ny + 1)]
+            corner = lambda i, j: i * (ny + 1) + j  # noqa: E731
+            I = [v for i in range(nx) for j in range(ny) for v in (corner(i, j), corner(i + 1, j), corner(i, j + 1), corner(i + 1, j), corner(i + 1, j + 1), corner(i, j + 1))]
+            return P, I
+        P, I = sheet(20, 10, 0.0)
+        P2, I2 = sheet(1, 1, 50.0)
+        I = I + [v + len(P) for v in I2]
+        P = P + P2
+        pos, idx = np.array(P, "<f4"), np.array(I, "<u4")
+        blob = pos.tobytes() + idx.tobytes()
+        gltf = {"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}], "buffers": [{"byteLength": len(blob)}],
+                "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": pos.nbytes}, {"buffer": 0, "byteOffset": pos.nbytes, "byteLength": idx.nbytes}],
+                "accessors": [{"bufferView": 0, "componentType": 5126, "count": len(pos), "type": "VEC3", "min": [0, 0, 0], "max": [51, 10, 0]},
+                              {"bufferView": 1, "componentType": 5125, "count": idx.size, "type": "SCALAR"}],
+                "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}]}
+        text = json.dumps(gltf).encode()
+        text += b" " * (-len(text) % 4)
+        pad = blob + b"\0" * (-len(blob) % 4)
+        glb = struct.pack("<III", 0x46546C67, 2, 28 + len(text) + len(pad)) + struct.pack("<II", len(text), 0x4E4F534A) + text + struct.pack("<II", len(pad), 0x004E4942) + pad
+        st, up = req(B, "POST", "/api/meshes", files=[("files", "my-rock.glb", glb)], fields={"name": "with a stray piece"})
+        assert st == 201, up
+        mid = up["id"]
+        st, none = req(B, "GET", f"/api/meshes/{mid}/cleanup")
+        assert st == 404, "uploads aren't cleaned up unless asked"
+        st, rec = req(B, "POST", f"/api/meshes/{mid}/cleanup", {})
+        assert st == 200 and [p["faces"] for p in rec["pieces"]] == [400, 2] and rec["removed"] == [1], rec
+        st, listed = req(B, "GET", "/api/meshes")
+        c = [m for m in listed if m["id"] == mid][0]["cleanup"]
+        assert (c["pieces"], c["hidden"], c["hidden_faces"], c["faces"], c["edited"]) == (2, 1, 2, 402, False), c
+        with urllib.request.urlopen(f"{B}/meshes/{mid}/cleanup_faces.bin") as r:
+            assert len(r.read()) == 2 * 402
+        with urllib.request.urlopen(f"{B}/meshes/{mid}/my-rock.glb?download=1&cleaned=1") as r:
+            cleaned = r.read()
+            assert "mesh.cleaned.glb" in r.headers["Content-Disposition"] and len(cleaned) < len(glb), r.headers
+        with urllib.request.urlopen(f"{B}/meshes/{mid}/my-rock.glb") as r:
+            assert r.read() == glb, "the mesh's own file doesn't change"
+        st, bad = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": [0, 1]})
+        assert st == 400 and "at least one" in bad["error"], bad
+        st, rec = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": []})
+        assert st == 200 and rec["removed"] == [], rec
+        with urllib.request.urlopen(f"{B}/meshes/{mid}/my-rock.glb?cleaned=1") as r:
+            assert r.read() == glb, "nothing hidden: the original"
+        st, _ = req(B, "DELETE", f"/api/meshes/{mid}/cleanup")
+        st, rec = req(B, "GET", f"/api/meshes/{mid}/cleanup")
+        assert st == 200 and rec["deleted"], rec
+        st, _ = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": [1]})
+        assert st == 400
+        st, rec = req(B, "POST", f"/api/meshes/{mid}/cleanup", {})
+        assert st == 200 and rec["removed"] == [1], rec
+        st, _ = req(B, "DELETE", f"/api/meshes/{mid}")
+        print("mesh cleanup routes OK")
+    st, nomesh = req(B, "POST", "/api/meshes/000000000000/cleanup", {})
+    assert st == 404, nomesh
 
     # --- mesh a whole area: the routes only, as starting one would read Mountain Project ------
     export = ('Route,Location,URL,"Avg Stars","Your Stars","Route Type",Rating,Pitches,Length,"Area Latitude","Area Longitude"\n'

@@ -231,8 +231,9 @@ happens, the view says what happened and why, having fetched the file again to f
 
 ## Stray pieces and sheets
 
-Measured on 29 meshes on 2026-11-01, with candidate filters applied to copies and five of the worst
-looked at by eye. None of this is in the app yet.
+Each reconstruction hides its stray pieces (`backend/meshclean.py`), using the second rule below.
+That's measured on 29 meshes on 2026-11-01, with candidate filters applied to copies and five of the
+worst looked at by eye.
 
 The piece with the most faces holds a median 98.6% of them, but only 92% of the surface, and as little
 as 6%. The Chube's holds 95% of its faces and 6% of its surface, while a piece with 2.3% of the faces has
@@ -246,7 +247,13 @@ at 2.5x the density, and looks like real rock.
 | ...that are also no more than 5x sparser than it | 99.52% [91.7] | 95% [6] | 76% [7] | clean on all five, real pieces kept |
 | Triangles with edges under 20x the median, then pieces as in the first row | 99.38% [94.7] | 84% [5] | 81% [6] | tears holes in rock, and can keep far-off scenery |
 
-"Main" is only the piece with the most faces, which nothing checks is the boulder in question.
+"Main" is only the piece with the most faces, which nothing checks is the boulder in question. And the
+rule can hide real rock: the piece beside White Rastafarian looks real, at 7x sparser than the main one.
+
+So it's a step on top of the mesh rather than a change to it: which pieces are hidden is kept beside the
+mesh's files, can be edited piece by piece, and can be deleted. It costs at most 3 MB and 2 s per mesh.
+The list of faces is what the viewer needs to hide pieces without working them out itself. A cleaned
+file is only made when someone downloads one.
 
 ## Meshing a whole area (`backend/server.py`, "campaigns")
 

@@ -34,6 +34,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
+import meshclean  # noqa: E402
 import pipeline  # noqa: E402
 import climbs as climbs_mod  # noqa: E402
 from climbs import harvest as harvest_mod  # noqa: E402
@@ -195,6 +196,26 @@ def link_mesh(mid: str, cid: str, note: str | None) -> None:
       "lng=COALESCE(lng,(SELECT lng FROM climbs WHERE id=?)) WHERE id=?", cid, cid, mid, write=True)
 
 
+def clean_mesh(mid: str, log) -> None:
+    """Work out which of a new mesh's pieces to hide. Only costs that cleanup if it fails."""
+    if not meshclean.available():
+        return
+    try:
+        meshclean.clean(MESHES / mid, log)
+    except Exception as e:
+        log(f"cleanup failed ({e}); showing the whole mesh")
+
+
+def clean_existing_meshes() -> None:
+    """Give reconstructions from before cleanups existed one. Skips any that has one or had it deleted."""
+    if not meshclean.available():
+        return
+    for m in q("SELECT id,name FROM meshes WHERE source LIKE 'project:%' AND filename='mesh.glb' ORDER BY created"):
+        if meshclean.load(MESHES / m["id"]) is None:
+            clean_mesh(m["id"], lambda line, name=m["name"]: print(f"{name}: {line}", flush=True))
+            time.sleep(0.1)
+
+
 def shrunk_texture(path: Path, side: int) -> Path:
     """A copy of a texture at most side pixels wide and high, kept beside it, or itself if that small."""
     from PIL import Image
@@ -257,6 +278,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         if proj["climb_id"]:
             link_mesh(mid, proj["climb_id"], "auto-linked from reconstruction project")
             log(f"mesh linked to climb {proj['climb_id']}")
+        clean_mesh(mid, log)
         q("UPDATE projects SET status='done', mesh_id=?, demo=? WHERE id=?", mid, int(demo), pid, write=True)
         tracker.finish()
         log("done")
@@ -632,7 +654,12 @@ class Handler(BaseHTTPRequestHandler):
                     by.setdefault(l["mesh_id"], []).append({"id": l["id"], "name": l["name"], "grade": l["grade"]})
                 for r in rows:
                     r["climbs"] = by.get(r["id"], [])
+                    r["cleanup"] = meshclean.summary(meshclean.load(MESHES / r["id"]))
                 return self.send_json(rows)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
+            if m:
+                record = meshclean.load(MESHES / m[1])
+                return self.send_json(record) if record else self.send_json({"error": "no cleanup"}, 404)
             m = re.fullmatch(r"/meshes/([0-9a-f]+)/([A-Za-z0-9._-]+)", p)
             if m:
                 f = MESHES / m[1] / m[2]
@@ -641,6 +668,8 @@ class Handler(BaseHTTPRequestHandler):
                     if not _has("PIL"):
                         return self.send_json({"error": "shrinking textures needs Pillow"}, 501)
                     f = shrunk_texture(f, side)
+                if "cleaned" in qs and f.suffix.lower() == ".glb" and meshclean.available():
+                    f = meshclean.write_cleaned(MESHES / m[1]) or f
                 return self.send_file(f, download="download" in qs)
             if p == "/api/campaigns":
                 return self.send_json([campaign_view(c) for c in q("SELECT * FROM campaigns ORDER BY created DESC")])
@@ -753,6 +782,17 @@ class Handler(BaseHTTPRequestHandler):
                     link_mesh(mid, fields["climb_id"], "linked at upload")
                 return self.send_json({"id": mid, "name": name, "filename": main}, 201)
 
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
+            if m:
+                if not (MESHES / m[1]).is_dir():
+                    return self.send_json({"error": "not found"}, 404)
+                if not meshclean.available():
+                    return self.send_json({"error": "cleaning up meshes needs numpy"}, 501)
+                try:
+                    record = meshclean.clean(MESHES / m[1], print, force=True)
+                except ValueError as e:
+                    return self.send_json({"error": f"can't clean up this mesh: {e}"}, 400)
+                return self.send_json(record) if record else self.send_json({"error": "only GLB meshes can be cleaned up"}, 400)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/links", p)
             if m:
                 body = self.read_json()
@@ -857,6 +897,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "nothing to update"}, 400)
                 q(f"UPDATE climbs SET {', '.join(k + '=?' for k in sets)} WHERE id=?", *sets.values(), m[1], write=True)
                 return self.send_json(climb_row(m[1], full=True))
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
+            if m:
+                try:
+                    return self.send_json(meshclean.set_removed(MESHES / m[1], body.get("removed", [])))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)", p)
             if m:
                 sets = {k: body[k] for k in ("name", "lat", "lng") if k in body}
@@ -877,6 +923,10 @@ class Handler(BaseHTTPRequestHandler):
             q("DELETE FROM campaign_items WHERE campaign_id=?", m[1], write=True)
             q("DELETE FROM campaigns WHERE id=?", m[1], write=True)
             return self.send_json({"deleted": m[1]})
+        m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
+        if m:   # the whole mesh shows again; its own files were never changed
+            meshclean.delete(MESHES / m[1])
+            return self.send_json({"deleted": True})
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/links/([0-9a-f]+)", p)
         if m:
             q("DELETE FROM mesh_links WHERE mesh_id=? AND climb_id=?", m[1], m[2], write=True)
@@ -912,6 +962,7 @@ def _has(mod: str) -> bool:
 def main() -> None:
     init_db()
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=clean_existing_meshes, daemon=True).start()
     host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))
     mode = "COLMAP + OpenMVS" if pipeline.real_pipeline_ready() else "DEMO (COLMAP/OpenMVS not found)"
     print(f"BoulderMesh on http://{host}:{port}  data={DATA}  pipeline={mode}", flush=True)
