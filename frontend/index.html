@@ -954,15 +954,15 @@ async function refreshCampaigns(){
         ${c.note ? `<div class="notice" style="margin-top:6px">${esc(c.note)}</div>` : ''}
         <div class="now">${currentHtml(c)}</div>
         <div class="row" style="margin-top:8px">
-          ${c.status === 'running' ? `<button class="sm danger stopnow" title="Stops the climb in progress too; it starts again when you resume">Stop now</button><button class="sm sec stoplater">Stop after this climb</button>` : ''}
-          ${c.status === 'stopping' ? `<button class="sm danger stopnow" title="Stops the climb in progress too; it starts again when you resume">Stop now</button><span class="status">finishing this climb, then stopping</span>` : ''}
+          ${c.status === 'running' ? `<button class="sm danger stopnow" title="Pauses the climb in progress too; it carries on from its last finished step when you resume">Stop now</button><button class="sm sec stoplater">Stop after this climb</button>` : ''}
+          ${c.status === 'stopping' ? `<button class="sm danger stopnow" title="Pauses the climb in progress too; it carries on from its last finished step when you resume">Stop now</button><span class="status">finishing this climb, then stopping</span>` : ''}
           ${c.status === 'stopped' ? `<button class="sm resume">Resume</button>` : ''}
           <span class="grow"></span><button class="danger sm del" title="Remove this list; its meshes stay">✕</button>
         </div>
         ${c.worked.length ? `<details data-list="${c.id}-done"><summary class="meta">Worked through (${c.worked.length}${c.worked.length === 300 ? ' most recent' : ''})</summary><div class="crows">${c.worked.map(row).join('')}</div></details>` : ''}
         ${c.next.length ? `<details data-list="${c.id}-next"><summary class="meta">Up next</summary><div class="crows">${c.next.map(row).join('')}</div></details>` : ''}`;
       const post = async (what, json) => { await api(`/api/campaigns/${c.id}/${what}`, { method: 'POST', json: json || {} }); campaignLoop(); };
-      d.querySelector('.stopnow')?.addEventListener('click', () => { if (confirm(`Stop now? The climb in progress is dropped and starts again when you resume. Finished meshes stay.`)) post('stop', { now: true }); });
+      d.querySelector('.stopnow')?.addEventListener('click', () => { if (confirm(`Stop now? The climb in progress pauses, and carries on from its last finished step when you resume. Finished meshes stay.`)) post('stop', { now: true }); });
       d.querySelector('.stoplater')?.addEventListener('click', () => post('stop', { now: false }));
       d.querySelector('.resume')?.addEventListener('click', () => post('start'));
       d.querySelector('.del').onclick = async () => { if (confirm(`Remove the list for "${c.name}"? Its meshes stay.`)) { await api('/api/campaigns/' + c.id, { method: 'DELETE' }); campaignLoop(); } };

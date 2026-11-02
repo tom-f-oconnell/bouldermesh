@@ -9,6 +9,7 @@ Every step logs to a callback so the UI can show progress.
 from __future__ import annotations
 
 import functools
+import json
 import os
 import re
 import shutil
@@ -247,6 +248,16 @@ def _upright(model: Path, images: Path, work: Path, log: Log, tracker: Tracker) 
         return model
 
 
+def _finished(work: Path, step: str) -> bool:
+    return (work / "finished" / step).exists()
+
+
+def _finish(work: Path, step: str) -> None:
+    """Record that a step is complete, so that a job interrupted later doesn't do it again."""
+    (work / "finished").mkdir(exist_ok=True)
+    (work / "finished" / step).touch()
+
+
 def _level_from_readings(model: Path, images: Path, work: Path, log: Log) -> dict | None:
     """Check a levelled model against the iPhone gravity readings of its placed photos, and if there
     are any it can believe, level it from them instead. Only costs that if it fails.
@@ -281,7 +292,12 @@ def _level_from_readings(model: Path, images: Path, work: Path, log: Log) -> dic
 def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool,
                                internet: bool = False, min_registered: int = 6, tracker: Tracker | None = None) -> Path:
     """internet=True tunes COLMAP for unordered photos from many cameras (per-image intrinsics,
-    affine-shape SIFT, domain-size pooling, guided matching) - slower but far more tolerant."""
+    affine-shape SIFT, domain-size pooling, guided matching) - slower but far more tolerant.
+
+    Steps that finish are recorded in work/, so called again on the same work/ after an interruption,
+    this carries on from there. Within a step, matching keeps its pairs and densifying its depth maps;
+    the others start that step again. To start from scratch, delete work/.
+    """
     tracker = tracker or Tracker([])
     work.mkdir(parents=True, exist_ok=True)
     db = work / "database.db"
@@ -290,17 +306,16 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     sparse.mkdir(exist_ok=True)
     n_images = len([p for p in images.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")])
 
-    masks = None
-    if occlusion.available():
+    masks = work / "masks" if _finished(work, "people") else None
+    if not masks and occlusion.available():
         log("== Finding people to ignore")
         try:
             occlusion.write_masks(images, work / "masks", lambda f: f"{f.name}.png", log, tracker.callback("people"))
             masks = work / "masks"
+            _finish(work, "people")
         except Exception as e:  # e.g. the model can't be downloaded: only costs the masking
             log(f"occlusion: failed ({e}); not masking people")
 
-    log(f"== COLMAP: feature extraction ({'internet-collection' if internet else 'single-camera'} settings)")
-    tracker.update("features", 0, f"0 of {n_images} photos")
     cmd = [COLMAP, "feature_extractor", "--database_path", str(db), "--image_path", str(images),
            "--ImageReader.camera_model", "SIMPLE_RADIAL"]
     if internet:
@@ -310,80 +325,106 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         cmd += ["--ImageReader.single_camera", "1"]
     if masks:
         cmd += ["--ImageReader.mask_path", str(masks)]
-    # COLMAP has no GPU version of the affine shape and domain-size pooling of the internet settings
-    _gpu_or_cpu(cmd, "--SiftExtraction.use_gpu", use_gpu and not internet, work, log,
-                _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1)))
+    if not _finished(work, "features"):
+        log(f"== COLMAP: feature extraction ({'internet-collection' if internet else 'single-camera'} settings)")
+        tracker.update("features", 0, f"0 of {n_images} photos")
+        # COLMAP has no GPU version of the affine shape and domain-size pooling of the internet settings
+        _gpu_or_cpu(cmd, "--SiftExtraction.use_gpu", use_gpu and not internet, work, log,
+                    _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1)))
+        _finish(work, "features")
 
-    log("== COLMAP: matching")
-    tracker.update("matching")
-    # smaller blocks than the default 50 only make for finer progress: all pairs get matched either way
-    cmd = [COLMAP, "exhaustive_matcher", "--database_path", str(db), "--ExhaustiveMatching.block_size", "20"]
-    if internet:
-        cmd += ["--SiftMatching.guided_matching", "1"]
-    _gpu_or_cpu(cmd, "--SiftMatching.use_gpu", use_gpu, work, log, _matching(tracker), GPU_MATCH_ARGS)
+    if not _finished(work, "matching"):
+        log("== COLMAP: matching")
+        tracker.update("matching")
+        # smaller blocks than the default 50 only make for finer progress: all pairs get matched either way
+        cmd = [COLMAP, "exhaustive_matcher", "--database_path", str(db), "--ExhaustiveMatching.block_size", "20"]
+        if internet:
+            cmd += ["--SiftMatching.guided_matching", "1"]
+        _gpu_or_cpu(cmd, "--SiftMatching.use_gpu", use_gpu, work, log, _matching(tracker), GPU_MATCH_ARGS)
+        _finish(work, "matching")
 
-    log("== COLMAP: sparse reconstruction (mapper)")
-    tracker.update("mapper")
-    cmd = [COLMAP, "mapper", "--database_path", str(db), "--image_path", str(images), "--output_path", str(sparse)]
-    if internet:
-        cmd += ["--Mapper.ba_refine_principal_point", "1", "--Mapper.min_num_matches", "20"]
-    # COLMAP 3.9's mapper can abort on one failing model ("NumRegImages() >= 2"; 2 of 25 runs when
-    # tried). It works from the database, so another seed doesn't redo the matching, and the models
-    # an aborted attempt finished before that stay on disk as candidates.
-    for attempt in range(MAPPER_ATTEMPTS):
-        try:
-            _run(cmd + ["--random_seed", str(attempt)], work, log, _mapper(tracker, n_images))
-            break
-        except RuntimeError as e:
-            log(f"mapper failed ({e}), attempt {attempt + 1} of {MAPPER_ATTEMPTS}")
-            if attempt + 1 < MAPPER_ATTEMPTS:
-                for m in list(sparse.iterdir()):
-                    if not m.name.startswith("aborted"):
-                        m.rename(sparse / f"aborted{attempt}-{m.name}")
+    if not _finished(work, "mapper"):
+        log("== COLMAP: sparse reconstruction (mapper)")
+        tracker.update("mapper")
+        if any(sparse.iterdir()):   # what an interrupted run left may be half written, and it'll be made again
+            sparse.rename(work / f"interrupted_sparse{len(list(work.glob('interrupted_sparse*')))}")
+            sparse.mkdir()
+        cmd = [COLMAP, "mapper", "--database_path", str(db), "--image_path", str(images), "--output_path", str(sparse)]
+        if internet:
+            cmd += ["--Mapper.ba_refine_principal_point", "1", "--Mapper.min_num_matches", "20"]
+        # COLMAP 3.9's mapper can abort on one failing model ("NumRegImages() >= 2"; 2 of 25 runs when
+        # tried). It works from the database, so another seed doesn't redo the matching, and the models
+        # an aborted attempt finished before that stay on disk as candidates.
+        for attempt in range(MAPPER_ATTEMPTS):
+            try:
+                _run(cmd + ["--random_seed", str(attempt)], work, log, _mapper(tracker, n_images))
+                break
+            except RuntimeError as e:
+                log(f"mapper failed ({e}), attempt {attempt + 1} of {MAPPER_ATTEMPTS}")
+                if attempt + 1 < MAPPER_ATTEMPTS:
+                    for m in list(sparse.iterdir()):
+                        if not m.name.startswith("aborted"):
+                            m.rename(sparse / f"aborted{attempt}-{m.name}")
     model, registered = _largest_model(sparse)
     log(f"registered {registered}/{n_images} images in the largest model")
     if model is None or registered < min_registered:
         raise RuntimeError(f"only {registered} image(s) could be registered (need >= {min_registered}); "
                            "the photo set doesn't overlap enough for photogrammetry")
+    _finish(work, "mapper")
 
-    model = _upright(model, images, work, log, tracker)
-    report = _level_from_readings(model, images, work, log)
+    if _finished(work, "level"):
+        level = json.loads((work / "level.json").read_text())
+        model, report = Path(level["model"]), level["report"]
+    else:
+        model = _upright(model, images, work, log, tracker)
+        report = _level_from_readings(model, images, work, log)
+        (work / "level.json").write_text(json.dumps({"model": str(model), "report": report}))
+        _finish(work, "level")
 
     def keep_orientation() -> None:
         if report:
             orientation.save(out_dir, report, model)
 
-    log("== COLMAP: undistort")
-    tracker.update("undistort")
-    _run([COLMAP, "image_undistorter", "--image_path", str(images), "--input_path", str(model),
-          "--output_path", str(dense), "--output_type", "COLMAP"], work, log,
-         _phases(tracker, "undistort", (r"Undistorting image \[(\d+)/(\d+)\]", 0, 1)))
+    if not _finished(work, "undistort"):
+        log("== COLMAP: undistort")
+        tracker.update("undistort")
+        _run([COLMAP, "image_undistorter", "--image_path", str(images), "--input_path", str(model),
+              "--output_path", str(dense), "--output_type", "COLMAP"], work, log,
+             _phases(tracker, "undistort", (r"Undistorting image \[(\d+)/(\d+)\]", 0, 1)))
+        _finish(work, "undistort")
 
-    mask_args = []
-    if masks:
+    mask_args = ["--ignore-mask-label", "0"] if _finished(work, "people-undistorted") else []
+    if masks and not mask_args:
         # found again rather than undistorted along with the photos, which COLMAP can't do; OpenMVS
         # looks for <image name>.mask.png next to each image
         try:
             occlusion.write_masks(dense / "images", dense / "images", lambda f: f"{f.stem}.mask.png", log,
                                   tracker.callback("people-undistorted"))
             mask_args = ["--ignore-mask-label", "0"]
+            _finish(work, "people-undistorted")
         except Exception as e:
             log(f"occlusion: failed ({e}); not masking people in the dense steps")
 
-    log("== OpenMVS: import scene")
-    tracker.update("import")
-    _run([_mvs("InterfaceCOLMAP"), "-i", str(dense), "-o", "scene.mvs", "--image-folder", str(dense / "images"),
-          "-w", str(work)], work, log)
+    if not _finished(work, "import"):
+        log("== OpenMVS: import scene")
+        tracker.update("import")
+        _run([_mvs("InterfaceCOLMAP"), "-i", str(dense), "-o", "scene.mvs", "--image-folder", str(dense / "images"),
+              "-w", str(work)], work, log)
+        _finish(work, "import")
 
-    log("== OpenMVS: densify")
-    tracker.update("dense")
-    _run([_mvs("DensifyPointCloud"), "scene.mvs", "-w", str(work), "--resolution-level", "2", *mask_args,
-          *(["--mask-path", str(dense / "images")] if mask_args else [])], work, log, _geometric(tracker))
+    if not _finished(work, "dense"):
+        log("== OpenMVS: densify")
+        tracker.update("dense")
+        _run([_mvs("DensifyPointCloud"), "scene.mvs", "-w", str(work), "--resolution-level", "2", *mask_args,
+              *(["--mask-path", str(dense / "images")] if mask_args else [])], work, log, _geometric(tracker))
+        _finish(work, "dense")
 
-    log("== OpenMVS: reconstruct mesh")
-    tracker.update("mesh")
-    _run([_mvs("ReconstructMesh"), "scene_dense.mvs", "-w", str(work)], work, log,
-         _phases(tracker, "mesh", (r"Points inserted \d+ \(([\d.]+)%", 0, 0.5), (r"Points weighted \d+ \(([\d.]+)%", 0.5, 0.9)))
+    if not _finished(work, "mesh"):
+        log("== OpenMVS: reconstruct mesh")
+        tracker.update("mesh")
+        _run([_mvs("ReconstructMesh"), "scene_dense.mvs", "-w", str(work)], work, log,
+             _phases(tracker, "mesh", (r"Points inserted \d+ \(([\d.]+)%", 0, 0.5), (r"Points weighted \d+ \(([\d.]+)%", 0.5, 0.9)))
+        _finish(work, "mesh")
     mesh = work / "scene_dense_mesh.ply"
 
     tex = _mvs("TextureMesh")

@@ -2,7 +2,7 @@
 
 Run: python3 tests/test_pipeline.py
 """
-import pathlib, struct, sys, tempfile, types
+import json, pathlib, struct, sys, tempfile, types
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "backend"))
 import occlusion
@@ -291,4 +291,66 @@ cmds, _ = commands_with(lambda *a, **k: {})
 c = by_tool(cmds, "TextureMesh")
 assert c[c.index("--max-texture-size") + 1] == str(pipeline.MAX_TEXTURE) == "4096", c
 print("texture size OK")
+
+
+# ---- an interrupted job carries on from the last step it finished
+def run_until(tmp, stop_at=None):
+    """reconstruct_colmap_openmvs() on the same work/, raising Stop at a tool as a restart would. Returns the tools it ran."""
+    images, work, tools = tmp / "images", tmp / "work", []
+    images.mkdir(exist_ok=True)
+    for i in range(8):
+        (images / f"{i}.jpg").write_bytes(b"x")
+
+    def fake_run(cmd, cwd, log, watch=None):
+        name = cmd[1] if cmd[0] == "colmap" else cmd[0]
+        tools.append(name)
+        if name == stop_at:
+            if name == "mapper":
+                model(work / "sparse", "half", 3)    # what a killed mapper leaves
+            raise Stop()
+        if name == "mapper":
+            model(work / "sparse", "0", 8)
+        if name == "model_orientation_aligner":
+            (work / "aligned").mkdir(exist_ok=True)
+            (work / "aligned" / "images.bin").write_bytes(struct.pack("<Q", 0))
+        if name == "image_undistorter":
+            (work / "dense" / "images").mkdir(parents=True, exist_ok=True)
+        if name == "ReconstructMesh":
+            (work / "scene_dense_mesh.ply").write_bytes(b"ply")
+    saved = pipeline._run, pipeline.COLMAP, pipeline._mvs, occlusion.available, occlusion.write_masks, pipeline.orientation.check
+    pipeline._run, pipeline.COLMAP, pipeline._mvs = fake_run, "colmap", lambda name: name
+    occlusion.available, occlusion.write_masks = (lambda: True), (lambda *a, **k: {})
+    pipeline.orientation.check = lambda m, i: {"placed": 8, "method": "photos", "marker": "kept", "estimate": {"down": [0, -1, 0]}, "iphone": {"status": "no_readings"}}
+    try:
+        pipeline.reconstruct_colmap_openmvs(images, work, tmp / "out", lambda s: None, False)
+    except Stop:
+        pass
+    finally:
+        pipeline._run, pipeline.COLMAP, pipeline._mvs, occlusion.available, occlusion.write_masks, pipeline.orientation.check = saved
+    return tools
+
+
+ALL = ["feature_extractor", "exhaustive_matcher", "mapper", "model_orientation_aligner", "model_transformer", "image_undistorter",
+       "InterfaceCOLMAP", "DensifyPointCloud", "ReconstructMesh", "TextureMesh"]
+for stop in ALL[:2] + ALL[5:]:
+    with tempfile.TemporaryDirectory() as td:
+        tmp = pathlib.Path(td)
+        first = run_until(tmp, stop)
+        assert first == ALL[:ALL.index(stop) + 1], (stop, first)
+        second = run_until(tmp)
+        assert second == ALL[ALL.index(stop):], (stop, second)
+        assert run_until(tmp)[:1] == ["TextureMesh"] or (tmp / "out" / "mesh.ply").exists()
+with tempfile.TemporaryDirectory() as td:   # the mapper starts over, without trusting what it left
+    tmp = pathlib.Path(td)
+    assert run_until(tmp, "mapper")[-1] == "mapper"
+    assert run_until(tmp)[0] == "mapper"
+    assert (tmp / "work" / "interrupted_sparse0" / "half").is_dir() and not (tmp / "work" / "sparse" / "half").exists()
+    assert (tmp / "work" / "sparse" / "0").is_dir()
+    assert json.loads((tmp / "out" / "orientation.json").read_text())["marker"] == "kept"
+with tempfile.TemporaryDirectory() as td:   # levelling isn't done twice, and its report survives to reach the mesh
+    tmp = pathlib.Path(td)
+    run_until(tmp, "DensifyPointCloud")
+    assert "model_orientation_aligner" not in run_until(tmp)
+    assert json.loads((tmp / "out" / "orientation.json").read_text())["marker"] == "kept"
+print("resuming OK")
 print("ALL PIPELINE TESTS PASSED")

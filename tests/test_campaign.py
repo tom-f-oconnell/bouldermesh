@@ -207,8 +207,9 @@ assert server._campaign_running is None and time.time() - killed < 5, "tool wasn
 got = items(c["id"])
 assert server.campaign_status(c["id"]) == "stopped", server.campaign_status(c["id"])
 assert got["Alpha"]["status"] == "done" and (server.MESHES / got["Alpha"]["mesh_id"] / "mesh.ply").exists(), got["Alpha"]   # kept
-assert got["Beta"]["status"] == "pending" and "starts again" in got["Beta"]["note"] and not got["Beta"]["project_id"], got["Beta"]
-assert server.q("SELECT COUNT(*) n FROM projects WHERE name LIKE 'Beta%'", one=True)["n"] == 0   # no half-made project left
+assert got["Beta"]["status"] == "pending" and "carries on" in got["Beta"]["note"] and got["Beta"]["project_id"], got["Beta"]
+paused = got["Beta"]["project_id"]
+assert server.q("SELECT status FROM projects WHERE id=?", paused, one=True)["status"] == "stopped", "paused, not busy or lost"
 time.sleep(0.2)
 assert harvested == ["Alpha", "Beta"], harvested                  # and nothing else started
 print("stop now OK")
@@ -225,6 +226,7 @@ t.join(5)
 got = items(c["id"])
 assert server.campaign_status(c["id"]) == "done" and got["Beta"]["status"] == "done", got
 assert harvested == ["Alpha", "Beta", "Beta", "Gamma", "Delta", "Delta2"], harvested   # Alpha isn't redone
+assert got["Beta"]["project_id"] == paused, "the same project carries on"
 print("resume OK")
 
 # --- stop after this climb ---------------------------------------------------------------------
@@ -233,10 +235,10 @@ c = server.create_campaign("", "popularity", CSV)
 real = server.run_harvest
 
 
-def stop_during(pid, sources, reconstruct, relevance_filter=True):
+def stop_during(pid, sources, reconstruct, relevance_filter=True, resume=False):
     server.stop_campaign(c["id"], now=False)
     assert server.campaign_status(c["id"]) == "stopping"
-    real(pid, sources, reconstruct, relevance_filter)
+    real(pid, sources, reconstruct, relevance_filter, resume)
 
 
 server.run_harvest = stop_during
@@ -247,29 +249,102 @@ assert server.campaign_status(c["id"]) == "stopped" and got["Alpha"]["status"] =
 assert got["Beta"]["status"] == "pending", got["Beta"]
 print("stop after this climb OK")
 
-# --- a server restart: finished work stays, nothing heavy restarts by itself -------------------
+# --- a server restart only pauses it: each climb carries on from where it got to
 fresh()
 c = server.create_campaign("", "popularity", CSV)
 server.next_campaign_step()
-sid = items(c["id"])["Beta"]["source_id"]
-pid = server.new_id()
-(server.PROJECTS / pid / "photos").mkdir(parents=True)
-server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,'running')", pid, "Beta (harvest)", time.time(), "harvest", write=True)
-server.set_item(c["id"], sid, status="running", project_id=pid)
+
+
+def interrupted(name: str, **project) -> str:
+    """Leaves a climb as a restart would find it, in the middle of its project."""
+    i = items(c["id"])[name]
+    pid = server.new_id()
+    (server.PROJECTS / pid / "photos").mkdir(parents=True)
+    climb_id = server.upsert_climb(Climb.from_dict(json.loads(i["data"])))
+    server.q("INSERT INTO projects(id,name,created,kind,climb_id,status,harvest) VALUES(?,?,?,?,?,?,?)", pid, f"{name} (harvest)", time.time(),
+             "harvest", climb_id, project.get("status", "harvesting"), project.get("harvest"), write=True)
+    server.set_item(c["id"], i["source_id"], status="running", project_id=pid, climb_id=climb_id)
+    return pid
+
+
+# in the middle of its harvest: that starts again, in the same project, from nothing
+pid = interrupted("Beta")
+(server.PROJECTS / pid / "photos" / "half_downloaded.jpg").write_bytes(b"x")
+other = server.new_id()
+server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,'running')", other, "someone's own job", time.time(), "user", write=True)
 server.init_db()
 got = items(c["id"])
-camp = server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True)
-assert camp["status"] == "stopped" and "restart" in camp["note"], camp
-assert got["Alpha"]["status"] == "done" and got["Beta"]["status"] == "pending", got
-assert (server.MESHES / got["Alpha"]["mesh_id"] / "mesh.ply").exists()
+assert server.campaign_status(c["id"]) == "running", "carries on by itself"
+assert got["Alpha"]["status"] == "done" and (server.MESHES / got["Alpha"]["mesh_id"] / "mesh.ply").exists(), got["Alpha"]
+assert got["Beta"]["status"] == "pending" and got["Beta"]["project_id"] == pid and "carrying on" in got["Beta"]["note"], got["Beta"]
+assert server.q("SELECT status FROM projects WHERE id=?", pid, one=True)["status"] == "stopped"
+assert server.q("SELECT status FROM projects WHERE id=?", other, one=True)["status"] == "failed", "jobs started by hand are still lost"
 harvested.clear()
 server.next_campaign_step()
-assert harvested == [], harvested                                  # stays stopped until asked
-server.q("UPDATE campaigns SET status='running' WHERE id=?", c["id"], write=True)
+got = items(c["id"])
+assert harvested == ["Beta"] and got["Beta"]["status"] == "done" and got["Beta"]["project_id"] == pid, (harvested, got["Beta"])
+assert not (server.PROJECTS / pid / "photos" / "half_downloaded.jpg").exists()
+assert "carrying on after an interruption" in server.read_log(pid), server.read_log(pid)
+
+# in the middle of its reconstruction: no new harvest, and its finished steps survive
+summary = json.dumps({"images": 20, "diversity": {"verdict": "good"}, "video_frames": 0, "queries": []})
+pid = interrupted("Gamma", status="running", harvest=summary)
+(server.PROJECTS / pid / "work" / "finished").mkdir(parents=True)
+(server.PROJECTS / pid / "work" / "finished" / "matching").touch()
+seen_finished = []
+reconstruct = pipeline.reconstruct
+
+
+def check_work(images, work, out_dir, log, use_gpu=False, internet=False, tracker=None):
+    seen_finished.extend(p.name for p in (work / "finished").iterdir())
+    return reconstruct(images, work, out_dir, log, use_gpu, internet, tracker)
+
+
+pipeline.reconstruct = check_work
+server.init_db()
+harvested.clear()
+server.next_campaign_step()
+pipeline.reconstruct = reconstruct
+got = items(c["id"])
+assert harvested == [] and seen_finished == ["matching"], (harvested, seen_finished)
+assert got["Gamma"]["status"] == "done" and got["Gamma"]["project_id"] == pid and got["Gamma"]["mesh_id"], got["Gamma"]
+
+# in the moment after its mesh was saved: it isn't made twice
+pid = interrupted("Alpha2", status="running", harvest=summary)
+server.q("UPDATE campaign_items SET boulder=NULL WHERE campaign_id=? AND name='Alpha2'", c["id"], write=True)
+server.q("INSERT INTO meshes VALUES('bbb1','saved','mesh.ply',?,1,1,0,NULL,NULL)", f"project:{pid}", write=True)
+server.init_db()
+harvested.clear()
+before = server.q("SELECT COUNT(*) n FROM meshes", one=True)["n"]
 server.next_campaign_step()
 got = items(c["id"])
-assert harvested == ["Beta"] and got["Beta"]["status"] == "done" and got["Beta"]["project_id"] != pid, (harvested, got["Beta"])
-assert not (server.PROJECTS / pid).exists() and not server.q("SELECT id FROM projects WHERE id=?", pid), "partial attempt left behind"
+assert got["Alpha2"]["status"] == "done" and got["Alpha2"]["mesh_id"] == "bbb1" and not harvested, got["Alpha2"]
+assert server.q("SELECT COUNT(*) n FROM meshes", one=True)["n"] == before
+assert server.q("SELECT status FROM projects WHERE id=?", pid, one=True)["status"] == "done"
+
+# stopped stays stopped, and "after this climb" still stops
+fresh()
+c = server.create_campaign("", "popularity", CSV)
+server.stop_campaign(c["id"])
+server.init_db()
+assert server.campaign_status(c["id"]) == "stopped"
+server.next_campaign_step()
+assert harvested == [], harvested
+server.q("UPDATE campaigns SET status='stopping' WHERE id=?", c["id"], write=True)
+server.init_db()
+assert server.campaign_status(c["id"]) == "stopped"
+
+# whichever the order, an interrupted climb goes first, and a project deleted meanwhile just means a new one
+for order in ("rating", "data"):
+    c2 = server.create_campaign("", order, CSV, start=False)
+    server.set_item(c2["id"], "4", project_id="gone")
+    assert server.ordered_pending(c2)[0]["name"] == "Alpha2", server.ordered_pending(c2)[0]
+fresh()
+c = server.create_campaign("", "popularity", CSV)
+server.set_item(c["id"], "1", project_id="gone")
+server.next_campaign_step()
+got = items(c["id"])
+assert harvested == ["Alpha"] and got["Alpha"]["status"] == "done" and got["Alpha"]["project_id"] != "gone", got["Alpha"]
 print("restart OK")
 
 # --- new meshes get a cleanup, existing ones are caught up, and failing only costs that -----------
@@ -322,6 +397,10 @@ server.orientation.save, server.orientation.load, server.orientation.check = rea
 print("orientation reports OK")
 
 # --- the view the site polls -------------------------------------------------------------------
+fresh()
+c = server.create_campaign("", "popularity", CSV)
+server.next_campaign_step()
+server.next_campaign_step()
 v = server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))
 assert v["counts"]["done"] == 2 and v["counts"]["pending"] == 4 and [i["name"] for i in v["worked"]] == ["Beta", "Alpha"], v
 assert [i["name"] for i in v["next"]][:2] == ["Gamma", "Alpha2"] and v["current"] is None, v

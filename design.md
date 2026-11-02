@@ -229,6 +229,37 @@ So new textures are capped at 4096, with larger atlases split: that scene became
 made, the viewer retries at 4096 and 2048, which the server makes on request and keeps. Whatever
 happens, the view says what happened and why, having fetched the file again to find out.
 
+## Which way is down (`backend/orientation.py`)
+
+COLMAP's `IMAGE-ORIENTATION` assumes most photos were taken upright, and takes the typical direction of
+their bottom edges as down. iPhones record the real direction of gravity in each photo's maker note
+(AccelerationVector), so a mesh is levelled from those when any of its placed photos has one. Measured on
+2026-11-01, on the real steps up to levelling, running each project's kept photos twice:
+
+| Project | Photos placed | Readings kept / placed | Estimate off by |
+|---|---|---|---|
+| Fry Problem | 16, 16 | 1 / 1 | 7.7°, 7.6° |
+| False Hueco Traverse | 97, 97 | 1 / 1 | 16.0°, 16.1° |
+| Mystical Vibrations | 18, 25 | 2 / 0 | no reading placed |
+| Hobbit Roof | 24, 26 | 1 / 0 | no reading placed |
+| White Rastafarian | 33 (one run) | 1 / 0 | no reading placed |
+
+JBMFP and The Inquisition, which also have a reading each, weren't run. So where a reading can be used the
+estimate is well off, and consistently so between runs, but that's two photos on two boulders, each looking
+up about 10°. Readings are also rare: 63 of 4,724 stored photos, 8 of them kept, on 7 of 29 meshes, and
+three of the five tried didn't get placed. One reading can also be wrong in itself, and nothing checks that
+unless there are several. A reading over 45° from the estimate is reported but not used.
+
+The reading points up, in the phone's axes. Files nearly always have their pixels turned upright since, with
+the EXIF flag gone, so a reading's quarter turn is worked out from the reading. Shape bears that out: of 63
+files, all 25 landscape readings are landscape files, and 34 of 40 portrait readings are portrait files, the
+rest likely crops. Across all 63, people look up and down about equally (median -0.6°, 10th to 90th
+percentile -33° to +31°), so a lean isn't a given.
+
+Meshes keep their cameras from now on (`cameras.json`), as without them a reading can't be related to a mesh.
+The 27 made before this deleted theirs, so they can only say what their photos hold; rebuilding one makes a
+new mesh, which can be worse: Mystical Vibrations went from 191k faces to 34k.
+
 ## Stray pieces and sheets
 
 Each reconstruction hides its stray pieces (`backend/meshclean.py`), using the second rule below.
@@ -279,9 +310,13 @@ group names (`GROUP_AREA`, e.g. "Manx Boulders - Northwest Face") hold several r
 share. If a boulder's first problem didn't get a mesh, the next one still tries, as its name finds
 different photos.
 
-**A restart stops the run rather than resuming it.** This machine is shared, and a job that comes
-back by itself after a reboot, using every core, is an unpleasant surprise. Unattended tools run
-under `nice`. Each climb's `work/` directory is deleted when it finishes: at about 800 MB, it's most
+**A restart only pauses a run.** It carries on by itself, unless someone had stopped it, and its climb
+in progress carries on from its last finished step: each step of a reconstruction records when it's
+done, and a partial harvest starts again, which is quick, as its downloads are cached. Within a step,
+matching keeps the pairs it's finished, and the mapper starts over. Densifying also keeps its depth maps: restarted at 28 of 31, it reached all 31 in 13 s. Tried for real on White
+Rastafarian, restarting during matching, the mapper and densifying, which finished in the same project
+with no errors. Six deployments had interrupted Joshua Tree before this, each early in a climb. Unattended
+tools run under `nice`, as this machine is shared. Each climb's `work/` directory is deleted when it finishes: at about 800 MB, it's most
 of what a job leaves on disk, and only a re-run would use it, which recreates it anyway.
 
 ## Why job logs aren't in the database

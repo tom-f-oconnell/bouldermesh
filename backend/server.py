@@ -116,11 +116,13 @@ def init_db() -> None:
         for c in ("lat", "lng"):
             if c not in cols:
                 con.execute(f"ALTER TABLE meshes ADD COLUMN {c} REAL")
+        # A restart only pauses an area: its climb carries on from the last step it finished, and the
+        # area carries on by itself unless someone stopped it. Other jobs are lost, as their queue is.
+        con.execute("UPDATE projects SET status='stopped' WHERE id IN (SELECT project_id FROM campaign_items WHERE status='running')")
+        con.execute("UPDATE campaign_items SET status='pending', note='interrupted by a restart: carrying on from where it got to' WHERE status='running'")
+        con.execute("UPDATE campaigns SET status='stopped', note=NULL WHERE status='stopping'")
         con.execute("UPDATE projects SET status='failed', progress=NULL, log=log||'\nserver restarted during job' "
                     "WHERE status IN ('queued','running','harvesting')")
-        # a restart is an interruption: what finished stays, and nothing heavy restarts unattended
-        con.execute("UPDATE campaign_items SET status='pending', note='interrupted: starts again when resumed' WHERE status='running'")
-        con.execute("UPDATE campaigns SET status='stopped', note='stopped by a server restart' WHERE status IN ('running','stopping')")
 
 
 def q(sql: str, *args, one=False, write=False):
@@ -287,14 +289,20 @@ def tracker_for(pid: str, steps: list[tuple[str, str, float]]) -> Tracker:
     return Tracker(steps, lambda snapshot: q("UPDATE projects SET progress=? WHERE id=?", snapshot, pid, write=True))
 
 
-def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = None) -> None:
+def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = None, resume: bool = False) -> None:
+    """Make a project's mesh.
+
+    Args:
+        resume: carry on from the last step an interrupted run finished, rather than from scratch.
+    """
     pdir = PROJECTS / pid
     q("UPDATE projects SET status='running' WHERE id=?", pid, write=True)
     log = lambda s: append_log(pid, s)  # noqa: E731
     tracker = tracker or tracker_for(pid, pipeline.steps())
     try:
         work = pdir / "work"
-        shutil.rmtree(work, ignore_errors=True)
+        if not resume:
+            shutil.rmtree(work, ignore_errors=True)
         mid = new_id()
         mesh_path, demo = pipeline.reconstruct(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker)
         proj = q("SELECT name, climb_id FROM projects WHERE id=?", pid, one=True)
@@ -313,10 +321,21 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         q("UPDATE projects SET status='failed' WHERE id=?", pid, write=True)
 
 
-def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter: bool = True) -> None:
+def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter: bool = True, resume: bool = False) -> None:
+    """Gather a project's photos, and optionally make its mesh.
+
+    Args:
+        resume: carry on after an interruption. A finished harvest isn't repeated. A partial one
+            starts again, which is quick, as its downloads are cached.
+    """
     pdir = PROJECTS / pid
-    q("UPDATE projects SET status='harvesting', log='' WHERE id=?", pid, write=True)
-    (pdir / "job.log").unlink(missing_ok=True)
+    finished = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)["harvest"] if resume else None
+    if resume:
+        append_log(pid, "-- carrying on after an interruption")
+    else:
+        q("UPDATE projects SET log='' WHERE id=?", pid, write=True)
+        (pdir / "job.log").unlink(missing_ok=True)
+    q("UPDATE projects SET status='harvesting' WHERE id=?", pid, write=True)
     log = lambda s: append_log(pid, s)  # noqa: E731
     tracker = None
     try:
@@ -325,17 +344,25 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
         stub = bool(c.raw.get("stub"))
         tracker = tracker_for(pid, ([("page", "Fetch problem page", 1)] if stub else []) + harvest_mod.steps(sources, relevance_filter)
                               + (pipeline.steps() if reconstruct else []))
-        if stub:
-            tracker.update("page", 0.1, "up to a minute on Mountain Project")
-            log(f"fetching the problem page for its photos/videos: {c.url}")
-            upsert_climb(climbs_mod.fetch_climb_url(c.url, include_children=False)[0])
-            c = climb_obj(proj["climb_id"])
-        summary = harvest_mod.harvest(c, pdir, log, sources, relevance_filter=relevance_filter, tracker=tracker)
-        q("UPDATE projects SET harvest=?, status='harvested' WHERE id=?", json.dumps(summary), pid, write=True)
+        if finished:
+            summary = json.loads(finished)
+            log("the photos were already harvested")
+        else:
+            if resume:
+                for partial in ("photos", "rejected"):
+                    shutil.rmtree(pdir / partial, ignore_errors=True)
+                (pdir / "photos").mkdir()
+            if stub:
+                tracker.update("page", 0.1, "up to a minute on Mountain Project")
+                log(f"fetching the problem page for its photos/videos: {c.url}")
+                upsert_climb(climbs_mod.fetch_climb_url(c.url, include_children=False)[0])
+                c = climb_obj(proj["climb_id"])
+            summary = harvest_mod.harvest(c, pdir, log, sources, relevance_filter=relevance_filter, tracker=tracker)
+            q("UPDATE projects SET harvest=?, status='harvested' WHERE id=?", json.dumps(summary), pid, write=True)
         verdict = (summary.get("diversity") or {}).get("verdict", "unknown")
         log(f"harvest complete: {summary['images']} image(s), verdict {verdict}")
         if reconstruct and verdict != "poor":
-            run_reconstruct(pid, internet=True, tracker=tracker)
+            run_reconstruct(pid, internet=True, tracker=tracker, resume=resume)
             return
         if reconstruct:
             log("not enough viewpoint diversity for photogrammetry - skipping reconstruction "
@@ -393,6 +420,7 @@ def ordered_pending(camp: dict) -> list[dict]:
         items.sort(key=lambda i: (-(i["stars"] or 0), i["rank"]))
     elif camp["ord"] == "data":
         items.sort(key=lambda i: (i["media"] is None, -(i["media"] or 0), i["rank"]))
+    items.sort(key=lambda i: not i["project_id"])   # a climb that was interrupted comes first, to finish what it started
     return items
 
 
@@ -427,11 +455,6 @@ def read_ahead(camp: dict) -> None:
             set_item(camp["id"], it["source_id"], status="failed", note=f"couldn't read its page: {e}")
 
 
-def discard_project(pid: str) -> None:
-    q("DELETE FROM projects WHERE id=?", pid, write=True)
-    shutil.rmtree(PROJECTS / pid, ignore_errors=True)
-
-
 def last_failure(pid: str) -> str:
     for line in reversed(read_log(pid).splitlines()):
         if line.startswith("FAILED: "):
@@ -444,34 +467,39 @@ def run_campaign_item(camp: dict, item: dict) -> None:
     saved like any other mesh, so stopping later loses nothing but the climb in progress."""
     global _campaign_running
     cid, sid = camp["id"], item["source_id"]
-    if item["project_id"]:   # the unfinished work of an interrupted attempt
-        discard_project(item["project_id"])
+    pid = item["project_id"]
+    resume = bool(pid and q("SELECT id FROM projects WHERE id=?", pid) and (PROJECTS / pid).is_dir())
     jobctl.begin(low_priority=True)
     _campaign_running = cid
     try:
-        set_item(cid, sid, status="running", project_id=None, note=None)
+        set_item(cid, sid, status="running", project_id=pid if resume else None, note=None)
         full = q("SELECT data,climb_id,boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
         c = Climb.from_dict(json.loads(full["data"]))
         climb_id = full["climb_id"] or upsert_climb(c)
         have = q("SELECT mesh_id FROM mesh_links WHERE climb_id=? LIMIT 1", climb_id, one=True)
         same = full["boulder"] and q("SELECT name,mesh_id FROM campaign_items WHERE boulder=? AND mesh_id IS NOT NULL LIMIT 1",
                                      full["boulder"], one=True)
-        if have:
+        made = q("SELECT id FROM meshes WHERE source=? LIMIT 1", f"project:{pid}", one=True) if resume else None
+        if made:    # interrupted in the moment between saving its mesh and recording that
+            q("UPDATE projects SET status='done', mesh_id=? WHERE id=?", made["id"], pid, write=True)
+            set_item(cid, sid, status="done", climb_id=climb_id, mesh_id=made["id"])
+        elif have:
             set_item(cid, sid, status="done", climb_id=climb_id, mesh_id=have["mesh_id"], note="already had a mesh")
         elif same:
             link_mesh(same["mesh_id"], climb_id, f"same boulder as {same['name']}")
             set_item(cid, sid, status="done", climb_id=climb_id, mesh_id=same["mesh_id"], note=f"same boulder as {same['name']}")
         else:
-            pid = new_id()
-            (PROJECTS / pid / "photos").mkdir(parents=True)
-            q("INSERT INTO projects(id,name,created,kind,climb_id,status) VALUES(?,?,?,?,?,'queued')",
-              pid, f"{c.name} (harvest)"[:80], time.time(), "harvest", climb_id, write=True)
+            if not resume:
+                pid = new_id()
+                (PROJECTS / pid / "photos").mkdir(parents=True)
+                q("INSERT INTO projects(id,name,created,kind,climb_id,status) VALUES(?,?,?,?,?,'queued')",
+                  pid, f"{c.name} (harvest)"[:80], time.time(), "harvest", climb_id, write=True)
             set_item(cid, sid, climb_id=climb_id, project_id=pid)
             try:
-                run_harvest(pid, set(HARVEST_SOURCES), True)
+                run_harvest(pid, set(HARVEST_SOURCES), True, resume=resume)
             except Cancelled:
-                discard_project(pid)
-                set_item(cid, sid, status="pending", project_id=None, note="stopped partway: starts again when resumed")
+                q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
+                set_item(cid, sid, status="pending", note="stopped partway: carries on from where it got to when resumed")
                 return
             shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)   # most of a job's disk use, and only useful to itself
             p = q("SELECT status,mesh_id,harvest FROM projects WHERE id=?", pid, one=True)

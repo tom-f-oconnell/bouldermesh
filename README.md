@@ -125,9 +125,9 @@ Its boulder problems are then meshed one at a time until you stop, or the list r
 problem on a boulder that already has a mesh is linked to it rather than meshed again. A climb
 without enough photos is skipped, and the run moves on.
 
-*Stop now* drops the climb in progress and *Stop after this climb* finishes it. Either way, every
-finished mesh stays, and *Resume* carries on from there. A server restart also stops the run, so
-press *Resume* afterwards. It also stops by itself after 5 climbs in a row fail before finishing a
+*Stop now* pauses the climb in progress and *Stop after this climb* finishes it. Every finished mesh
+stays, and *Resume* carries on from the last step the climb finished. A server restart loses no more
+than that, and it carries on by itself afterwards, unless you'd stopped it. It also stops by itself after 5 climbs in a row fail before finishing a
 harvest, which usually means a network problem, or with under 50 GB of disk left
 (`CAMPAIGN_MIN_FREE_GB`).
 
