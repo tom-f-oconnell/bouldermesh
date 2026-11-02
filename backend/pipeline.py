@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 import occlusion
+import orientation
 from climbs.common import jobctl
 from progress import Tracker
 
@@ -246,6 +247,37 @@ def _upright(model: Path, images: Path, work: Path, log: Log, tracker: Tracker) 
         return model
 
 
+def _level_from_readings(model: Path, images: Path, work: Path, log: Log) -> dict | None:
+    """Check a levelled model against the iPhone gravity readings of its placed photos, and if there
+    are any it can believe, level it from them instead. Only costs that if it fails.
+
+    Returns:
+        The report for the mesh, or None if it couldn't be worked out.
+    """
+    if model.name != "aligned" or not orientation.available():
+        return None
+    try:
+        report = orientation.check(model, images)
+        phone = report["iphone"]
+        if phone["status"] == "used":
+            q = orientation.level_quaternion(phone["down"])
+            transform = work / "gravity.txt"
+            transform.write_text("1 " + " ".join(f"{x:.12f}" for x in q) + " 0 0 0\n")
+            _run([COLMAP, "model_transformer", "--input_path", str(model), "--output_path", str(model),
+                  "--transform_path", str(transform)], work, log)
+            orientation.after_levelling(report, q)
+            log(f"down: from the iPhone gravity readings of {len(phone['readings'])} placed photo(s); "
+                f"the estimate from how photos were framed was {phone['off_estimate_deg']} degrees away")
+        elif phone["status"] == "rejected":
+            log(f"down: estimated from how photos were framed; the iPhone readings are {phone['off_estimate_deg']} degrees away, too far to believe")
+        else:
+            log(f"down: estimated from how photos were framed; none of the {report['placed']} placed photos has an iPhone reading")
+        return report
+    except Exception as e:
+        log(f"checking which way is down failed ({e}); keeping the estimate from how photos were framed")
+        return None
+
+
 def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool,
                                internet: bool = False, min_registered: int = 6, tracker: Tracker | None = None) -> Path:
     """internet=True tunes COLMAP for unordered photos from many cameras (per-image intrinsics,
@@ -315,6 +347,11 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
                            "the photo set doesn't overlap enough for photogrammetry")
 
     model = _upright(model, images, work, log, tracker)
+    report = _level_from_readings(model, images, work, log)
+
+    def keep_orientation() -> None:
+        if report:
+            orientation.save(out_dir, report, model)
 
     log("== COLMAP: undistort")
     tracker.update("undistort")
@@ -366,6 +403,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             glb = work / "scene_dense_mesh_texture.glb"
             if glb.exists():
                 out_dir.mkdir(parents=True, exist_ok=True)
+                keep_orientation()
                 for f in work.glob("scene_dense_mesh_texture_*"):
                     shutil.copy(f, out_dir / f.name)
                 return Path(shutil.copy(glb, out_dir / "mesh.glb"))
@@ -373,6 +411,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             log(f"texturing failed ({e}); keeping untextured mesh")
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    keep_orientation()
     dst = out_dir / "mesh.ply"
     shutil.copy(mesh, dst)
     return dst

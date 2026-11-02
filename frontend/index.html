@@ -75,6 +75,9 @@
   #pieces{display:none;position:absolute;top:12px;right:12px;max-width:340px;background:rgba(15,17,21,.9);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;z-index:2}
   #pieces .row{margin-top:6px;gap:6px;flex-wrap:wrap}
   #pieces .list{max-height:260px;overflow:auto;margin-top:6px;display:grid;grid-template-columns:1fr auto;gap:3px 8px;align-items:center}
+  #orient{display:none;position:absolute;left:12px;bottom:12px;max-width:430px;background:rgba(15,17,21,.9);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.45;z-index:2}
+  #orient b{font-weight:600} #orient .key{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+  #orient div+div{margin-top:5px} #orient button{margin-left:6px}
   .notice{font-size:12px;color:var(--mute);border-left:3px solid var(--line);padding:4px 8px}
   .bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
   .bar i{display:block;height:100%;background:var(--acc);transition:width .4s}
@@ -199,6 +202,7 @@
     <div id="viewer" class="on">
       <div id="viewnote"></div>
       <div id="pieces"></div>
+      <div id="orient"></div>
       <div id="hud">Pick a mesh, or drop a mesh file here. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan</div>
       <div id="drop">Drop mesh file to upload &amp; view</div>
     </div>
@@ -490,6 +494,54 @@ function frameMain(){
   controls.target.copy(mainBox(current).getCenter(new THREE.Vector3()));
   camera.position.copy(controls.target).add(new THREE.Vector3(2.2, .8, 2.6)); controls.update();
 }
+// ---- which way is down: how a mesh was levelled, and how that compares with any iPhone gravity readings
+const COLOR_ESTIMATE = 0xf5c04a, COLOR_IPHONE = 0x5cc8ff;
+let downArrows = null;
+function plural(n, one, many){ return `${n} ${n === 1 ? one : many || one + 's'}`; }
+function downSummary(o){
+  if (!o) return '';
+  const p = o.iphone;
+  if (p.status === 'used') return `down from iPhone, ${p.off_estimate_deg}° from the estimate`;
+  if (p.status === 'rejected' || p.status === 'not_applied') return `down estimated, ${p.off_estimate_deg}° from iPhone`;
+  if (p.status === 'no_cameras' && p.kept_with_readings) return `down estimated, ${plural(p.kept_with_readings, 'iPhone reading')} unusable`;
+  return 'down estimated, no iPhone reading';
+}
+function iphoneLine(o){
+  const p = o.iphone;
+  if (p.status === 'used') return `Used, from ${p.readings.length} of ${o.placed} placed photos${p.readings.length > 1 ? `, which agree within ${p.readings_agree_deg}°` : ''}.`;
+  if (p.status === 'rejected') return `Not used: ${p.off_estimate_deg}° from the estimate, too far to believe, from ${plural(p.readings.length, 'placed photo')}.`;
+  if (p.status === 'not_applied') return `${p.off_estimate_deg}° from the estimate, from ${plural(p.readings.length, 'placed photo')}. This mesh was built before readings were used.`;
+  if (p.status === 'no_cameras') return p.kept_with_readings
+    ? `Not available: ${plural(p.kept_with_readings, 'photo has a reading', 'photos have readings')}, but this mesh didn't keep where its photos were placed.`
+    : 'Not available: none of its photos has a reading.';
+  return p.kept_with_readings
+    ? `Not available: ${plural(p.kept_with_readings, 'photo has a reading', 'photos have readings')}, but none was placed in this mesh.`
+    : `Not available: none of the ${o.placed} placed photos has a reading.`;
+}
+function renderOrientation(m){
+  const el = $('#orient');
+  if (downArrows) { scene.remove(downArrows); downArrows = null; }
+  if (!m || !current) { el.style.display = 'none'; return; }
+  const o = m.orientation;
+  el.style.display = 'block';
+  if (!o) { el.textContent = m.source === 'upload' ? 'Down: not known. Uploaded meshes aren\'t levelled here.' : 'Down: not known for this mesh.'; return; }
+  const p = o.iphone, hasBoth = !!p.down, used = o.method === 'iphone', agree = o.estimate.photos_agree_deg;
+  const key = c => hasBoth ? `<span class="key" style="background:#${c.toString(16).padStart(6, '0')}"></span>` : '';
+  el.innerHTML = `<div>${key(COLOR_ESTIMATE)}<b>Estimate from how photos were framed:</b> ${used ? `not used, ${p.off_estimate_deg}° from the iPhone's down.` : 'used.'}${agree != null ? ` Its photos' bottom edges are a median of ${agree}° from it.` : ''}</div>
+    <div>${key(COLOR_IPHONE)}<b>iPhone gravity:</b> ${iphoneLine(o)}${p.status === 'no_cameras' && p.kept_with_readings ? '<button class="sm sec rebuild">Rebuild to use it</button>' : ''}</div>`;
+  el.querySelector('.rebuild')?.addEventListener('click', async ev => {
+    ev.target.disabled = true;
+    try { await api(`/api/projects/${m.source.split(':')[1]}/reconstruct`, { method: 'POST' }); toast('Rebuilding as a new mesh: this one stays', 5000); poll(); }
+    catch (e) { toast(e.message, 6000); ev.target.disabled = false; }
+  });
+  if (!hasBoth) return;
+  const box = mainBox(current), size = box.getSize(new THREE.Vector3()), length = Math.max(size.y, .8);
+  downArrows = new THREE.Group();
+  const top = new THREE.Vector3(box.min.x - .25, box.max.y + .1, box.getCenter(new THREE.Vector3()).z);
+  for (const [v, color] of [[o.estimate.down, COLOR_ESTIMATE], [p.down, COLOR_IPHONE]])
+    downArrows.add(new THREE.ArrowHelper(new THREE.Vector3(...v).normalize(), top, length, color, length * .12, length * .05));
+  scene.add(downArrows);
+}
 function viewNote(text, retry){
   const n = $('#viewnote'); n.style.display = text ? 'block' : 'none'; n.textContent = text || '';
   if (retry) { const b = document.createElement('button'); b.className = 'sm sec'; b.textContent = 'Try again'; b.onclick = retry; n.appendChild(b); }
@@ -545,6 +597,7 @@ async function loadMeshUrl(url, filename, label, id){
   showRight('3d');
   viewNote('');
   pieces = null; renderPieces();
+  $('#orient').style.display = 'none';
   const again = () => loadMeshUrl(url, filename, label, id);
   const ext = filename.split('.').pop().toLowerCase();
   const base = url.slice(0, url.lastIndexOf('/') + 1);
@@ -568,6 +621,7 @@ async function loadMeshUrl(url, filename, label, id){
     toast(note ? 'Loaded, with a problem: see the note on the view' : 'Loaded ' + label, note ? 5000 : 1500);
     viewNote(note, note ? again : null);
     renderPieces();
+    renderOrientation(id ? meshesById[id] : null);
     requestAnimationFrame(() => requestAnimationFrame(() => {   // a texture too big for the card's memory shows black, not grey
       const gl = renderer.getContext();
       if (gl.getError() === gl.OUT_OF_MEMORY) viewNote('The graphics card ran out of memory for this texture, so it may show black.', again);
@@ -949,7 +1003,7 @@ async function refreshMeshes(){
   const el = $('#meshes'); el.innerHTML = meshesCache.length ? '' : '<div class="status">No meshes yet.</div>';
   for (const m of meshesCache) {
     const d = document.createElement('div'); d.className = 'card mesh';
-    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}</small>
+    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
         <div class="chips">${m.climbs.map(c=>`<span class="chip" data-climb="${c.id}">${esc(c.name)} ${esc(c.grade||'')} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('')}
           <select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option>${climbsCache.filter(c=>c.kind!=='area').map(c=>`<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('')}</select></div></div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px">

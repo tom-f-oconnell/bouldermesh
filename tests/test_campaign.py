@@ -306,6 +306,21 @@ assert "aaa1" in cleaned and not {"aaa2", "aaa3", "aaa4", "aaa5"} & set(cleaned)
 server.meshclean.clean = real_clean
 print("cleanup OK")
 
+# --- existing meshes get a report on which way is down: from a model if it's still there
+reports = []
+real_save, real_load, real_check = server.orientation.save, server.orientation.load, server.orientation.check
+server.orientation.save = lambda d, report, model=None: reports.append((d.name, report["iphone"]["status"], model is not None))
+server.orientation.load = lambda d: {"x": 1} if d.name == "aaa2" else None
+server.orientation.check = lambda model, photos: {"iphone": {"status": "used"}}
+(server.PROJECTS / "x" / "work" / "aligned").mkdir(parents=True)
+(server.PROJECTS / "x" / "work" / "aligned" / "images.bin").write_bytes(b"")
+server.q("DELETE FROM meshes WHERE id NOT IN ('aaa1','aaa2','aaa3','aaa4')", write=True)
+server.orient_existing_meshes()
+assert ("aaa1", "not_applied", True) in reports, "already built: the reading is reported, not applied"
+assert ("aaa3", "no_cameras", False) in reports and not [r for r in reports if r[0] in ("aaa2", "aaa4")], reports
+server.orientation.save, server.orientation.load, server.orientation.check = real_save, real_load, real_check
+print("orientation reports OK")
+
 # --- the view the site polls -------------------------------------------------------------------
 v = server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))
 assert v["counts"]["done"] == 2 and v["counts"]["pending"] == 4 and [i["name"] for i in v["worked"]] == ["Beta", "Alpha"], v

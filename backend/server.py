@@ -35,6 +35,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
 import meshclean  # noqa: E402
+import orientation  # noqa: E402
 import pipeline  # noqa: E402
 import climbs as climbs_mod  # noqa: E402
 from climbs import harvest as harvest_mod  # noqa: E402
@@ -214,6 +215,30 @@ def clean_existing_meshes() -> None:
         if meshclean.load(MESHES / m["id"]) is None:
             clean_mesh(m["id"], lambda line, name=m["name"]: print(f"{name}: {line}", flush=True))
             time.sleep(0.1)
+
+
+def orient_existing_meshes() -> None:
+    """Report on reconstructions from before orientation.json existed. A model still on disk can be
+    checked; most had theirs deleted to save space, so all a report can say is what their photos hold."""
+    if not orientation.available():
+        return
+    for m in q("SELECT id,source FROM meshes WHERE source LIKE 'project:%' ORDER BY created"):
+        mesh_dir = MESHES / m["id"]
+        if orientation.load(mesh_dir) is not None:
+            continue
+        pid = m["source"].split(":", 1)[1]
+        model, photos = PROJECTS / pid / "work" / "aligned", PROJECTS / pid / "photos"
+        try:
+            if (model / "images.bin").exists():
+                report = orientation.check(model, photos)
+                if report["iphone"]["status"] == "used":    # this mesh is already built, so it stays as it is
+                    report["iphone"]["status"] = "not_applied"
+                orientation.save(mesh_dir, report, model)
+            else:
+                orientation.save(mesh_dir, orientation.no_cameras(photos))
+        except Exception as e:
+            print(f"orientation report failed for {m['id']}: {e}", flush=True)
+        time.sleep(0.05)
 
 
 def shrunk_texture(path: Path, side: int) -> Path:
@@ -655,6 +680,7 @@ class Handler(BaseHTTPRequestHandler):
                 for r in rows:
                     r["climbs"] = by.get(r["id"], [])
                     r["cleanup"] = meshclean.summary(meshclean.load(MESHES / r["id"]))
+                    r["orientation"] = orientation.load(MESHES / r["id"])
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
             if m:
@@ -965,6 +991,7 @@ def main() -> None:
     init_db()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=clean_existing_meshes, daemon=True).start()
+    threading.Thread(target=orient_existing_meshes, daemon=True).start()
     host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))
     mode = "COLMAP + OpenMVS" if pipeline.real_pipeline_ready() else "DEMO (COLMAP/OpenMVS not found)"
     print(f"BoulderMesh on http://{host}:{port}  data={DATA}  pipeline={mode}", flush=True)

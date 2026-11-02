@@ -243,6 +243,50 @@ assert pipeline.gpu_free_mb() is None
 pipeline.subprocess.run = saved
 print("gpu OK")
 
+
+# ---- levelling: a reading it believes turns the model and is kept; anything else keeps the estimate
+def levelled(status, fails=False):
+    """_level_from_readings() with a model of 8 placed photos, whose check says this."""
+    logged, cmds = [], []
+    with tempfile.TemporaryDirectory() as td:
+        tmp = pathlib.Path(td)
+        model = tmp / "aligned"
+        model.mkdir()
+
+        def fake_run(cmd, cwd, log, watch=None):
+            cmds.append(cmd)
+            if fails:
+                raise RuntimeError("colmap exited with 1")
+        phone = {"status": status, "kept_with_readings": 1, "placed_with_readings": 1}
+        if status in ("used", "rejected"):
+            phone.update(down=[0.0, -0.8, 0.6], off_estimate_deg=11.5, readings=[{"photo": "a.jpg"}], readings_agree_deg=0.0)
+        fake = {"placed": 8, "method": "photos", "estimate": {"down": [0.0, -1.0, 0.0]}, "iphone": phone}
+        saved = pipeline._run, pipeline.COLMAP, pipeline.orientation.check, pipeline.orientation.available
+        pipeline._run, pipeline.COLMAP = fake_run, "colmap"
+        pipeline.orientation.check, pipeline.orientation.available = (lambda m, i: fake), (lambda: True)
+        try:
+            report = pipeline._level_from_readings(model, tmp, tmp, logged.append)
+            transform = (tmp / "gravity.txt").read_text() if (tmp / "gravity.txt").exists() else None
+        finally:
+            pipeline._run, pipeline.COLMAP, pipeline.orientation.check, pipeline.orientation.available = saved
+        return report, cmds, transform, logged
+
+
+report, cmds, transform, logged = levelled("used")
+assert [c[1] for c in cmds] == ["model_transformer"] and transform.startswith("1 ") and transform.strip().endswith("0 0 0"), (cmds, transform)
+assert report["method"] == "iphone" and abs(report["iphone"]["down"][1] + 1) < 1e-9, report
+assert abs(report["estimate"]["down"][1] + 1) > 0.01, "the estimate moves with the model, to compare in the mesh's coordinates"
+assert any("11.5 degrees away" in line for line in logged), logged
+report, cmds, _, logged = levelled("rejected")
+assert not cmds and report["method"] == "photos" and any("too far to believe" in line for line in logged), (cmds, logged)
+report, cmds, _, logged = levelled("no_readings")
+assert not cmds and report["method"] == "photos" and any("none of the 8 placed" in line for line in logged), (cmds, logged)
+report, cmds, _, logged = levelled("used", fails=True)
+assert report is None and any("keeping the estimate" in line for line in logged), logged
+with tempfile.TemporaryDirectory() as td:
+    assert pipeline._level_from_readings(pathlib.Path(td) / "sparse0", pathlib.Path(td), pathlib.Path(td), print) is None, "levelling failed: nothing to check"
+print("levelling OK")
+
 cmds, _ = commands_with(lambda *a, **k: {})
 c = by_tool(cmds, "TextureMesh")
 assert c[c.index("--max-texture-size") + 1] == str(pipeline.MAX_TEXTURE) == "4096", c

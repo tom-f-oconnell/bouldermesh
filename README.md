@@ -158,6 +158,10 @@ OpenMVS's 11-photo sample set takes 3-4 minutes, and a 100-photo harvest about a
 
 If a browser can't load a mesh's texture, the viewer tries it smaller, then says why on the view.
 
+A reconstruction is levelled from the gravity readings iPhones record in their photos, if any of its
+placed photos has one. Otherwise down is estimated by assuming most photos were taken upright. The
+view shows both and how far apart they are, or why there's no reading. Meshes have no real-world size.
+
 Reconstructions come with stray pieces, so each one hides those that have under 1% of the main piece's
 faces, or are over 5x sparser. This never changes the mesh's own files: on the view, *Edit* lets you
 click any piece to hide or show it, and *Remove cleanup* shows the whole mesh again. The download
@@ -209,6 +213,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_pipeline.py    # offline: reconstruction steps with COLMAP/OpenMVS stubbed, progress parsing
     python3 tests/test_campaign.py    # offline: meshing an area, with harvest and reconstruction stubbed: order, stopping, restarts
     python3 tests/test_meshclean.py   # offline: finding and hiding stray pieces on small GLBs, the cleaned download
+    python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
     python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job
 
 ## Known gaps
