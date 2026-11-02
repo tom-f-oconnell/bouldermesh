@@ -337,7 +337,17 @@ function mainBox(obj){
   const lo = at(.05), hi = at(.95), pad = hi.clone().sub(lo).multiplyScalar(.08);
   return new THREE.Box3(lo.sub(pad), hi.add(pad));
 }
-function showObject(obj, label){
+// From behind, a sheet of rock would show the photos of its front through it, mirrored. Only faces we built
+// can be trusted to have their front towards the photos. The colour matches --empty-color in pipeline.py.
+const BACK_COLOR = new THREE.Color(0x808080).toArray().map(x => x.toFixed(4)).join();
+function plainBack(material){
+  material.onBeforeCompile = shader => {
+    shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>',
+      `#include <color_fragment>\n  if (!gl_FrontFacing) diffuseColor.rgb = vec3(${BACK_COLOR});`);
+  };
+  material.needsUpdate = true;
+}
+function showObject(obj, label, plainBacks = false){
   if (current) scene.remove(current);
   obj.traverse(o => {
     if (o.isMesh && !o.userData.hiddenPieces) {
@@ -346,6 +356,7 @@ function showObject(obj, label){
       if (!o.material?.map && (!o.material || o.material.type === 'MeshBasicMaterial' || hasColor))
         o.material = new THREE.MeshStandardMaterial({ vertexColors: hasColor, color: hasColor ? 0xffffff : 0xb8c4d6, side: THREE.DoubleSide, roughness: .8 });
       else o.material.side = THREE.DoubleSide;
+      if (plainBacks && (o.material.map || hasColor)) plainBack(o.material);
       if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();
     }
   });
@@ -617,7 +628,7 @@ async function loadMeshUrl(url, filename, label, id){
       catch { note = 'Showing plain grey: its .mtl materials file wouldn\'t load.'; }
       obj = await loader.loadAsync(url);
     } else throw new Error('unsupported format .' + ext);
-    showObject(obj, label);
+    showObject(obj, label, !!id && meshesById[id]?.source !== 'upload');
     toast(note ? 'Loaded, with a problem: see the note on the view' : 'Loaded ' + label, note ? 5000 : 1500);
     viewNote(note, note ? again : null);
     renderPieces();

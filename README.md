@@ -156,7 +156,8 @@ A reconstruction produces a textured `mesh.glb` (texture PNGs alongside), or an 
 `mesh.ply` if texturing fails, levelled assuming most photos were taken upright. On CPU,
 OpenMVS's 11-photo sample set takes 3-4 minutes, and a 100-photo harvest about an hour.
 
-If a browser can't load a mesh's texture, the viewer tries it smaller, then says why on the view.
+If a browser can't load a mesh's texture, the viewer tries it smaller, then says why on the view. Grey
+on a mesh means no photo shows that side, including the backs of surfaces.
 
 A reconstruction is levelled from the gravity readings iPhones record in their photos, if any of its
 placed photos has one. Otherwise down is estimated by assuming most photos were taken upright. The

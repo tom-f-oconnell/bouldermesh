@@ -226,6 +226,17 @@ which happened when other jobs took 23.9 of its 24 GB, so anything using it need
 Not tried: downloading from different hosts in parallel, keeping each host's rate limit; choosing
 pairs instead of trying all of them.
 
+## The backs of meshes
+
+Many meshes are open sheets, as photos only show part of the rock. From behind, a sheet used to show its
+front's photos through it, mirrored, which looked like real rock. The viewer now draws back faces in flat
+grey, in its shader, so no mesh had to be rebuilt and the files are unchanged. This relies on faces having
+their front towards the photos. On the 19 meshes with saved cameras, a median of 98% of faces have most of
+their photos in front (lowest 87%), and at most 3% have under a fifth in front. On all 48 meshes, at most
+1.8% of shared edges disagree about which way is front. So a few faces can come out the wrong way round.
+Uploaded meshes keep colour on both sides, as their faces may not follow this. The grey matches
+`--empty-color`, for faces no photo saw, so grey means no photo of that side either way.
+
 ## Textures that won't load
 
 Plain grey everywhere means the viewer got no texture: GLTFLoader only logs one it can't load, and
