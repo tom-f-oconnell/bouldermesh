@@ -349,7 +349,6 @@ function showObject(obj, label){
   const size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
   const s = 2 / Math.max(size.x, size.y, size.z, 1e-6);
   obj.position.sub(c).multiplyScalar(s); obj.scale.setScalar(s);
-  obj.position.y -= mainBox(obj).min.y;
   scene.add(obj); current = obj;
   frameMain();
   $('#vsway').disabled = false;
@@ -471,8 +470,23 @@ $('#vsway').onclick = () => {
   if (!sway) { showRight('3d'); startSway(); }
   else if (sway.stopping === null) sway.stopping = performance.now();
 };
+// Stands a model on the grid, with its lowest shown point at 0, so that nothing hangs below it.
+function standOnGrid(obj){
+  obj.updateMatrixWorld(true);
+  let lowest = Infinity;
+  obj.traverse(o => {
+    if (!o.isMesh || o.userData.hiddenPieces) return;
+    const p = o.geometry.attributes.position, idx = o.geometry.index?.array, n = idx ? idx.length : p.count, e = o.matrixWorld.elements;
+    for (let i = 0; i < n; i++) {
+      const v = idx ? idx[i] : i, y = e[1] * p.getX(v) + e[5] * p.getY(v) + e[9] * p.getZ(v) + e[13];
+      if (y < lowest) lowest = y;
+    }
+  });
+  if (lowest < Infinity) obj.position.y -= lowest;
+}
 function frameMain(){
   endSway();
+  standOnGrid(current);
   controls.target.copy(mainBox(current).getCenter(new THREE.Vector3()));
   camera.position.copy(controls.target).add(new THREE.Vector3(2.2, .8, 2.6)); controls.update();
 }
