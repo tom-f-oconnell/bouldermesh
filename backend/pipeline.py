@@ -25,6 +25,9 @@ Log = Callable[[str], None]
 
 MAPPER_ATTEMPTS = 3
 GPU_MIN_FREE_MB = 4000  # matching 113 photos peaked at about 3 GB
+# COLMAP's minimum of 15 raw matches, on the GPU. Its matcher finds about 4% fewer, which would drop
+# borderline pairs before guided matching can rescue them; design.md has the measurements.
+GPU_MATCH_ARGS = ["--TwoViewGeometry.min_num_inliers", "12"]
 MAX_TEXTURE = 4096      # larger atlases get split: an 8192 x 8192 one takes 270 MB in a browser, which can refuse it
 COLMAP = shutil.which("colmap")
 # OpenMVS binaries are usually installed under /usr/local/bin/OpenMVS
@@ -104,7 +107,8 @@ def _run(cmd: list[str], cwd: Path, log: Log, watch: Callable[[str], None] | Non
         raise RuntimeError(f"{cmd[0]} exited with {code}")
 
 
-def _gpu_or_cpu(cmd: list[str], flag: str, allowed: bool, cwd: Path, log: Log, watch: Callable[[str], None] | None = None) -> None:
+def _gpu_or_cpu(cmd: list[str], flag: str, allowed: bool, cwd: Path, log: Log, watch: Callable[[str], None] | None = None,
+                gpu_args: list[str] | None = None) -> None:
     """Run a COLMAP step on the GPU if it can be, otherwise on the CPU.
 
     The GPU is shared, and COLMAP aborts outright if it runs out of memory, which can happen at any
@@ -113,12 +117,13 @@ def _gpu_or_cpu(cmd: list[str], flag: str, allowed: bool, cwd: Path, log: Log, w
     Args:
         flag: the option that turns the GPU on or off.
         allowed: False to stay on the CPU, for settings the GPU can't do or USE_GPU=0.
+        gpu_args: further options for a run on the GPU.
     """
     gpu, why = gpu_choice(allowed)
     log(f"{cmd[1]}: using the {'GPU' if gpu else 'CPU'} ({why})")
     if gpu:
         try:
-            _run(cmd + [flag, "1"], cwd, log, watch)
+            _run(cmd + (gpu_args or []) + [flag, "1"], cwd, log, watch)
             return
         except RuntimeError as e:
             log(f"{cmd[1]}: GPU run failed ({e}), carrying on with the CPU")
@@ -283,7 +288,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     cmd = [COLMAP, "exhaustive_matcher", "--database_path", str(db), "--ExhaustiveMatching.block_size", "20"]
     if internet:
         cmd += ["--SiftMatching.guided_matching", "1"]
-    _gpu_or_cpu(cmd, "--SiftMatching.use_gpu", use_gpu, work, log, _matching(tracker))
+    _gpu_or_cpu(cmd, "--SiftMatching.use_gpu", use_gpu, work, log, _matching(tracker), GPU_MATCH_ARGS)
 
     log("== COLMAP: sparse reconstruction (mapper)")
     tracker.update("mapper")

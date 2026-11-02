@@ -157,6 +157,21 @@ finds about 4% fewer raw matches on a typical pair (why isn't clear), and 38 of 
 minimum, so they're discarded before guided matching, which could have taken one from 16 raw matches to
 1035 inliers. They are spread over 54 of the 113 photos, and aren't weak once matched.
 
+So the GPU's minimum is 12, which only affects a run on the GPU:
+
+| GPU's minimum | Useful pairs | Lost, of the 1854 | Extra pairs | Inliers |
+|---|---|---|---|---|
+| 15 (COLMAP's) | 1814 | 51 | 5 | 1.03M |
+| 14 | 1857 | 28 | 19 | 1.04M |
+| **12** | 1971 | 7 | 97 | 1.05M |
+| 10 | 2097 | 0 | 208 | 1.06M |
+
+The extra pairs do no visible harm. From CPU matches the mapper placed 59 and 72 photos (error 0.98,
+1.03); from GPU matches at a minimum of 12, 72 and 77 (1.06, 1.02), in about the same time, going on to
+0.98M and 1.05M faces against the job's 1.06M, and looking as coherent by eye. At COLMAP's minimum, 66
+in the one run finished. That's two seeds on one boulder, whose results vary a lot, so this shows no
+harm rather than a gain. 10 wasn't tried further, as its extra pairs are twice as many for 7 more.
+
 Turning guided matching off halves CPU time on a 36-photo sample and keeps the useful pairs, but on the
 full set leaves 40% fewer inliers (0.60M against 1.01M, where guided GPU matching has 1.03M). Cutting features from 8192 to 4096 saved 37% but
 lost 12% of the pairs.

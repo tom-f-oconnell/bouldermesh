@@ -223,6 +223,9 @@ for cuda, free, why in ((False, 17000, "without CUDA"), (True, None, "no GPU vis
 assert pipeline.gpu_choice(False)[0] is False
 cmds, logged = gpu_run(True, 17000, fails=("exhaustive_matcher",))   # out of memory partway: carries on, then on to the mapper
 assert flags(cmds, "exhaustive_matcher", MATCH) == ["1", "0"] and any(c[1] == "mapper" for c in cmds), cmds
+gpu_cmd, cpu_cmd = [c for c in cmds if c[1] == "exhaustive_matcher"]
+assert gpu_cmd[gpu_cmd.index("--TwoViewGeometry.min_num_inliers") + 1] == "12", gpu_cmd
+assert "--TwoViewGeometry.min_num_inliers" not in cpu_cmd, "its lower minimum is only for the GPU's matcher"
 assert any("GPU run failed" in l for l in logged), logged
 try:
     gpu_run(True, 17000, raises=Cancelled())
