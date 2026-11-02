@@ -288,6 +288,9 @@ def run(B: str, tmp: Path) -> None:
     assert st == 201 and len(ke["imported"]) == 2, ke
     st, lst = req(B, "GET", "/api/climbs?q=egg")
     assert len(lst) == 1 and lst[0]["name"] == "The Egg"
+    st, only = req(B, "GET", "/api/climbs?meshed=1")
+    st, every = req(B, "GET", "/api/climbs")
+    assert st == 200 and [c["id"] for c in only] == [cid] and len(every) > 1 and all(c["n_links"] for c in only), (only, len(every))
 
     # --- harvest: climb photos served by this very server stand in for web photos ------------
     views, dup, small = synthetic_photo_set()

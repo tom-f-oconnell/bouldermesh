@@ -130,7 +130,8 @@
       </section>
       <section>
         <h2>Climbs <small id="c-count"></small></h2>
-        <div class="row" style="margin-bottom:8px"><input type="text" id="c-filter" class="grow" placeholder="filter by name / boulder / area"></div>
+        <div class="row" style="margin-bottom:6px"><input type="text" id="c-filter" class="grow" placeholder="filter by name / boulder / area"></div>
+        <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="c-meshed"> Hide climbs without meshes</label></div>
         <div id="climb-open"></div>
         <div id="climbs"></div>
       </section>
@@ -589,9 +590,9 @@ function flyTo(lat, lng){ mapFitted = true; showRight('map'); refreshMap().then(
 
 // ---------------------------------------------------------------- climbs
 let climbsCache = [];
+let meshedClimbs = [];   // fetched separately, as the full list only has the newest climbs
 async function refreshClimbs(){
-  climbsCache = await api('/api/climbs');
-  $('#c-count').textContent = climbsCache.length ? `(${climbsCache.length})` : '';
+  [climbsCache, meshedClimbs] = await Promise.all([api('/api/climbs'), $('#c-meshed').checked ? api('/api/climbs?meshed=1') : []]);
   renderClimbs();
   // fill selects
   for (const sel of [$('#pclimb'), $('#upclimb')]) {
@@ -601,9 +602,11 @@ async function refreshClimbs(){
 }
 function renderClimbs(){
   const f = ($('#c-filter').value || '').toLowerCase();
-  const el = $('#climbs');
-  const list = climbsCache.filter(c => !f || [c.name, c.boulder_name, ...(c.area_path||[])].join(' ').toLowerCase().includes(f));
-  el.innerHTML = list.length ? '' : '<div class="status">No climbs yet — paste a Mountain Project or OpenBeta link above.</div>';
+  const el = $('#climbs'), meshedOnly = $('#c-meshed').checked;
+  const shown = meshedOnly ? meshedClimbs.filter(c => c.n_links) : climbsCache;
+  $('#c-count').textContent = !climbsCache.length ? '' : meshedOnly ? `(${shown.length} of ${climbsCache.length})` : `(${climbsCache.length})`;
+  const list = shown.filter(c => !f || [c.name, c.boulder_name, ...(c.area_path||[])].join(' ').toLowerCase().includes(f));
+  el.innerHTML = list.length ? '' : `<div class="status">${!climbsCache.length ? 'No climbs yet — paste a Mountain Project or OpenBeta link above.' : shown.length ? 'No climbs match that filter.' : 'No climbs have meshes yet.'}</div>`;
   for (const c of list) {
     const d = document.createElement('div'); d.className = 'card';
     d.innerHTML = `<div class="row"><span class="name grow">${esc(c.name)} <small>${esc(c.grade||'')}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${c.n_links?`<span class="tag ok">${c.n_links} mesh</span>`:''}</span>
@@ -615,6 +618,7 @@ function renderClimbs(){
   }
 }
 $('#c-filter').oninput = renderClimbs;
+$('#c-meshed').onchange = refreshClimbs;
 
 let openClimbId = null;
 async function openClimb(id, focus=true){

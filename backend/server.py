@@ -683,6 +683,8 @@ class Handler(BaseHTTPRequestHandler):
                 if qs.get("source"):
                     conds.append("source=?")
                     args.append(qs["source"][0])
+                if qs.get("meshed"):
+                    conds.append("id IN (SELECT climb_id FROM mesh_links)")
                 if conds:
                     sql += " WHERE " + " AND ".join(conds)
                 sql += " ORDER BY created DESC LIMIT 500"
