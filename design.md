@@ -229,6 +229,25 @@ So new textures are capped at 4096, with larger atlases split: that scene became
 made, the viewer retries at 4096 and 2048, which the server makes on request and keeps. Whatever
 happens, the view says what happened and why, having fetched the file again to find out.
 
+## Stray pieces and sheets
+
+Measured on 29 meshes on 2026-11-01, with candidate filters applied to copies and five of the worst
+looked at by eye. None of this is in the app yet.
+
+The piece with the most faces holds a median 98.6% of them, but only 92% of the surface, and as little
+as 6%. The Chube's holds 95% of its faces and 6% of its surface, while a piece with 2.3% of the faces has
+54%: giant sparse triangles, often distant scenery. So pieces should be judged by faces, not surface.
+Keeping only the largest piece isn't safe either: Mystical Vibrations' second piece has 33% of its faces
+at 2.5x the density, and looks like real rock.
+
+| Keep | Faces kept, median [worst] | Surface kept | Box left | By eye |
+|---|---|---|---|---|
+| Pieces with at least 1% of the main piece's faces | 99.75% [96.7] | 97% [52] | 85% [9] | leaves the sparse scenery |
+| ...that are also no more than 5x sparser than it | 99.52% [91.7] | 95% [6] | 76% [7] | clean on all five, real pieces kept |
+| Triangles with edges under 20x the median, then pieces as in the first row | 99.38% [94.7] | 84% [5] | 81% [6] | tears holes in rock, and can keep far-off scenery |
+
+"Main" is only the piece with the most faces, which nothing checks is the boulder in question.
+
 ## Meshing a whole area (`backend/server.py`, "campaigns")
 
 **Staying within Mountain Project's terms decides most of this.** They disallow automated or bulk
