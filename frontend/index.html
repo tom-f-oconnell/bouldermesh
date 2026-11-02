@@ -192,6 +192,7 @@
     <div class="viewbar">
       <button class="sec sm" id="v3d">3D viewer</button>
       <button class="sec sm" id="vmap">Map</button>
+      <button class="sec sm" id="vsway" disabled title="Rocks the view a few degrees either way from where it is now, to show off that it's 3D. Dragging or scrolling stops it.">Sway view</button>
       <span class="status" id="viewing"></span>
     </div>
     <div id="viewer" class="on">
@@ -242,7 +243,7 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + b.dataset.tab));
 });
 function showRight(which){ $('#viewer').classList.toggle('on', which==='3d'); $('#map').classList.toggle('on', which==='map'); if (which==='map') { setTimeout(()=>map.invalidateSize(), 50); } else resize(); }
-$('#v3d').onclick = () => showRight('3d'); $('#vmap').onclick = () => { showRight('map'); refreshMap(!mapFitted); };
+$('#v3d').onclick = () => showRight('3d'); $('#vmap').onclick = () => { endSway(); showRight('map'); refreshMap(!mapFitted); };
 
 // ---------------------------------------------------------------- 3D viewer
 const vEl = $('#viewer');
@@ -281,7 +282,32 @@ const grid = new THREE.GridHelper(4, 20, 0x334, 0x223); grid.position.y = -0.001
 let current = null;
 function resize(){ const w=vEl.clientWidth, h=vEl.clientHeight; if (!w||!h) return; renderer.setSize(w,h,false); renderer.setPixelRatio(devicePixelRatio); camera.aspect=w/h; camera.updateProjectionMatrix(); }
 new ResizeObserver(resize).observe(vEl); resize();
-renderer.setAnimationLoop(() => {
+// ---- swaying the view a few degrees around where it is, as if dragging it gently back and forth
+const SWAY = { sideways: 5 * Math.PI / 180, upDown: 2.5 * Math.PI / 180, seconds: 8, easeIn: 1.5, easeOut: .8 };
+let sway = null;    // {from: where the view was, started, stopping}
+function startSway(){
+  controls.enableDamping = false; controls.update(); controls.enableDamping = true;    // any drift left from a drag ends here
+  sway = { from: new THREE.Spherical().setFromVector3(camera.position.clone().sub(controls.target)), started: performance.now(), stopping: null };
+  showSwayButton();
+}
+function endSway(){ sway = null; showSwayButton(); }
+function showSwayButton(){ $('#vsway').textContent = sway ? 'Stop swaying' : 'Sway view'; }
+function applySway(now){
+  if (!sway) return;
+  const t = (now - sway.started) / 1000;
+  let amount = Math.min(1, t / SWAY.easeIn);     // both ease, so it doesn't jump at either end
+  if (sway.stopping !== null) {
+    const left = 1 - (now - sway.stopping) / 1000 / SWAY.easeOut;
+    if (left <= 0) { camera.position.setFromSpherical(sway.from).add(controls.target); endSway(); return; }
+    amount *= left;
+  }
+  const phase = 2 * Math.PI * t / SWAY.seconds, at = sway.from.clone();
+  at.theta += amount * SWAY.sideways * Math.sin(phase);
+  at.phi = THREE.MathUtils.clamp(at.phi + amount * SWAY.upDown * Math.sin(2 * phase), .05, Math.PI - .05);   // a figure of eight, not just side to side
+  camera.position.setFromSpherical(at).add(controls.target);
+}
+renderer.setAnimationLoop(now => {
+  applySway(now);
   controls.update();
   const near = THREE.MathUtils.clamp(camera.position.distanceTo(controls.target) / 50, 1e-4, .01);   // so a close surface isn't clipped
   if (near !== camera.near) { camera.near = near; camera.updateProjectionMatrix(); }
@@ -325,6 +351,7 @@ function showObject(obj, label){
   obj.position.y -= mainBox(obj).min.y;
   scene.add(obj); current = obj;
   frameMain();
+  $('#vsway').disabled = false;
   $('#viewing').textContent = 'Viewing: ' + label;
   $('#hud').textContent = `${label} — drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan`;
 }
@@ -438,7 +465,13 @@ function fitEverything(){
   controls.target.copy(c);
   camera.position.copy(c).addScaledVector(away, Math.max(r, .5) / Math.sin(camera.fov * Math.PI / 360) * 1.1);
 }
+for (const stop of ['pointerdown', 'wheel']) renderer.domElement.addEventListener(stop, endSway, { capture: true, passive: true });   // the view is theirs again
+$('#vsway').onclick = () => {
+  if (!sway) { showRight('3d'); startSway(); }
+  else if (sway.stopping === null) sway.stopping = performance.now();
+};
 function frameMain(){
+  endSway();
   controls.target.copy(mainBox(current).getCenter(new THREE.Vector3()));
   camera.position.copy(controls.target).add(new THREE.Vector3(2.2, .8, 2.6)); controls.update();
 }
