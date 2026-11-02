@@ -445,6 +445,7 @@ function frameMain(){
 function viewNote(text, retry){
   const n = $('#viewnote'); n.style.display = text ? 'block' : 'none'; n.textContent = text || '';
   if (retry) { const b = document.createElement('button'); b.className = 'sm sec'; b.textContent = 'Try again'; b.onclick = retry; n.appendChild(b); }
+  if (text) { const b = document.createElement('button'); b.className = 'sm sec dismiss'; b.textContent = 'Dismiss'; b.onclick = () => viewNote(''); n.appendChild(b); }
 }
 renderer.domElement.addEventListener('webglcontextlost', ev => { ev.preventDefault(); viewNote('The graphics card dropped this view, usually because it ran out of memory. Close other tabs that use it and reload the page.'); });
 function loadGltf(url, side){
