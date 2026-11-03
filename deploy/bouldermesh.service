@@ -1,0 +1,30 @@
+# BoulderMesh as a systemd service, running its Docker Compose stack. deploy/install-systemd.sh fills in
+# @DIR@ (this repository) and @USER@ (who runs it, in the docker group) and installs it.
+[Unit]
+Description=BoulderMesh: photogrammetry web app for boulders (Docker Compose)
+Documentation=file://@DIR@/README.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=docker
+WorkingDirectory=@DIR@
+# .env in WorkingDirectory is read by Compose: COMPOSE_FILE (add docker-compose.gpu.yml for a GPU), PORT, keys.
+# Building first picks up code changes; with nothing changed it takes seconds.
+ExecStartPre=/usr/bin/docker compose build
+# In the foreground, so its log goes to the journal: journalctl -u bouldermesh -f
+ExecStart=/usr/bin/docker compose up --no-build --remove-orphans
+ExecStop=/usr/bin/docker compose stop
+# what Compose exits with when it's stopped, which isn't a failure
+SuccessExitStatus=130 143
+Restart=on-failure
+RestartSec=10
+# the first build compiles COLMAP and OpenMVS, which takes a long time
+TimeoutStartSec=infinity
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import quote_plus, urlencode
 
+from . import youtube
 from .common import ApiError, Climb, HttpError, Media, http, jobctl
 
 Log = Callable[[str], None]
@@ -211,7 +212,12 @@ def flickr_search(lat: float, lng: float, queries: list[str], log: Log, radius_k
 
 
 def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0, max_frames: int = 150,
-                 max_videos: int = 4, progress: Callable[..., None] | None = None) -> list[Path]:
+                 max_videos: int = 6, progress: Callable[..., None] | None = None, infos: dict | None = None) -> list[Path]:
+    """Download videos and keep their sharpest frames, named yt_<start of the SHA-1 of the URL>_NNN.jpg.
+
+    Args:
+        infos: filled with each video's details (youtube.details) and how many frames it gave, by URL.
+    """
     ytdlp, ffmpeg = shutil.which("yt-dlp"), shutil.which("ffmpeg")
     if not (ytdlp and ffmpeg):
         log("youtube: skipped (needs yt-dlp and ffmpeg on PATH)")
@@ -227,19 +233,24 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
         try:
             log(f"youtube: downloading {v.url}")
             jobctl.run([ytdlp, "-q", "--no-playlist", "-f", "bv*[height<=1080]/b", "--max-filesize", "500m",
-                        "-o", str(tmp / "video.%(ext)s"), v.url], timeout=900,
+                        "--write-info-json", "-o", str(tmp / "video.%(ext)s"), v.url], timeout=900,
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            vid = next(tmp.glob("video.*"))
+            info_file = tmp / "video.info.json"
+            if infos is not None and info_file.exists():
+                infos[v.url] = {**youtube.details(json.loads(info_file.read_text())), "frames": 0}
+            vid = next(p for p in tmp.glob("video.*") if not p.name.endswith((".json", ".part")))
             if progress:
                 progress((i + 0.7) / n_videos, f"extracting frames from video {i + 1} of {n_videos}")
             jobctl.run([ffmpeg, "-loglevel", "error", "-i", str(vid), "-vf", f"fps={fps}", "-q:v", "2",
                         str(tmp / "f%04d.jpg")], timeout=900)
             frames = sorted(tmp.glob("f*.jpg"))
-            frames = _sharpest(frames, max_frames // max(1, min(len(videos), max_videos)), log)
+            frames = _sharpest(frames, (max_frames - len(saved)) // (n_videos - i), log)   # a video that failed leaves its share
             for j, f in enumerate(frames):
                 dst = out_dir / f"yt_{tag}_{j:03d}.jpg"
                 shutil.move(str(f), dst)
                 saved.append(dst)
+            if infos is not None and v.url in infos:
+                infos[v.url]["frames"] = len(frames)
             log(f"youtube: kept {len(frames)} frame(s) from {v.url}")
         except Exception as e:
             log(f"youtube: {v.url} failed: {e}")
@@ -367,12 +378,22 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         else:
             media += flickr_search(c.lat, c.lng, queries, log)
     manifest = download_all(media, photos_dir, log, progress=progress("download"))
-    frames = []
-    if "youtube" in sources and c.videos:
-        frames = video_frames(c.videos, photos_dir, log, progress=progress("video"))
-        by_tag = {hashlib.sha1(v.url.encode()).hexdigest()[:8]: v for v in c.videos}   # as video_frames names them
-        manifest += [{"file": f.name, "url": by_tag[f.name.split("_")[1]].url, "kind": "video-frame", "source": "youtube",
-                      "license": "frame from linked beta video; reconstruction use only"} for f in frames]
+    frames, videos, infos = [], [], {}
+    if "youtube" in sources:
+        report_video = progress("video") or (lambda frac=0.0, detail=None: None)
+        report_video(0, "searching YouTube")
+        seen = {youtube.video_id(v.url) or v.url for v in c.videos}    # the page's links, in any of YouTube's URL forms
+        videos = list(c.videos) + [v for v in youtube.search(c, log) if (youtube.video_id(v.url) or v.url) not in seen]
+    if videos:
+        frames = video_frames(videos, photos_dir, log, progress=progress("video"), infos=infos)
+        by_tag = {hashlib.sha1(v.url.encode()).hexdigest()[:8]: v for v in videos}   # as video_frames names them
+        for f in frames:
+            v = by_tag[f.name.split("_")[1]]
+            info = infos.get(v.url) or {}
+            manifest.append({"file": f.name, "url": v.url, "page": v.url, "kind": "video-frame", "source": "youtube",
+                             "found_by": "search" if v.source == "youtube-search" else "page",
+                             "title": info.get("title") or v.title, "credit": info.get("uploader") or v.credit,
+                             "license": info.get("license") or "frame from linked beta video; licence not recorded"})
     # remove webp (COLMAP wants jpg/png) by converting if PIL available
     _normalise_images(photos_dir, log)
     (project_dir / "sources.json").write_text(json.dumps({"climb": c.to_dict(), "queries": queries,
@@ -391,6 +412,8 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
     (project_dir / "diversity.json").write_text(json.dumps(report, indent=1))
     return {"images": len([p for p in photos_dir.iterdir() if p.suffix.lower() in (".jpg", ".png")]),
             "video_frames": sum(f.exists() for f in frames), "queries": queries, "diversity": report,
+            "videos": [{"url": v.url, "found_by": "search" if v.source == "youtube-search" else "page", "title": v.title,
+                        "uploader": v.credit, "frames": 0, **infos.get(v.url, {})} for v in videos],
             "relevance": {k: filtered[k] for k in ("methods", "counts")} if filtered else None}
 
 

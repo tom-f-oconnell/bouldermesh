@@ -42,6 +42,7 @@ import pipeline  # noqa: E402
 import climbs as climbs_mod  # noqa: E402
 from climbs import harvest as harvest_mod  # noqa: E402
 from climbs import relevance as relevance_mod  # noqa: E402
+from climbs import youtube as youtube_mod  # noqa: E402
 from progress import Tracker  # noqa: E402
 from climbs import kaya as kaya_mod  # noqa: E402
 from climbs import mountainproject as mp_mod  # noqa: E402
@@ -109,6 +110,17 @@ def init_db() -> None:
           status TEXT DEFAULT 'pending',   -- pending | running | done | skipped | failed
           PRIMARY KEY(campaign_id, source_id));
         CREATE INDEX IF NOT EXISTS campaign_items_boulder ON campaign_items(boulder);
+        -- videos of climbs, found on their pages or by searching, and what their uploaders say about the
+        -- climber's size (youtube.stats), for scaling meshes later
+        CREATE TABLE IF NOT EXISTS videos(
+          url TEXT PRIMARY KEY, title TEXT, uploader TEXT, channel_id TEXT, channel_url TEXT, duration REAL,
+          upload_date TEXT, license TEXT, description TEXT, fetched REAL,
+          height_cm REAL, wingspan_cm REAL, ape_index_cm REAL, first_person INTEGER, quotes TEXT);
+        CREATE TABLE IF NOT EXISTS climb_videos(
+          climb_id TEXT, url TEXT, found_by TEXT, frames INTEGER, created REAL, PRIMARY KEY(climb_id, url));
+        CREATE TABLE IF NOT EXISTS channels(
+          channel_url TEXT PRIMARY KEY, channel_id TEXT, name TEXT, description TEXT, fetched REAL,
+          height_cm REAL, wingspan_cm REAL, ape_index_cm REAL, first_person INTEGER, quotes TEXT);
         """)
         # migrations for databases created by v0.1
         cols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
@@ -123,12 +135,18 @@ def init_db() -> None:
         if "only_retries" not in cols:
             con.execute("ALTER TABLE campaigns ADD COLUMN only_retries INTEGER DEFAULT 0")
         cols = {r[1] for r in con.execute("PRAGMA table_info(campaign_items)")}
-        if "retry" not in cols:
-            con.execute("ALTER TABLE campaign_items ADD COLUMN retry INTEGER DEFAULT 0")
+        # redo: what it's queued to do again (REDO_NAMES); was: its status before; changed: its photos have
+        # changed since it was last meshed or checked; redo_started: a rebuild that began, to carry on with
+        for c, t in (("retry", "INTEGER DEFAULT 0"), ("redo", "TEXT"), ("was", "TEXT"), ("changed", "INTEGER DEFAULT 0"),
+                     ("redo_started", "INTEGER DEFAULT 0")):
+            if c not in cols:
+                con.execute(f"ALTER TABLE campaign_items ADD COLUMN {c} {t}")
+        if "replaced_by" not in {r[1] for r in con.execute("PRAGMA table_info(meshes)")}:
+            con.execute("ALTER TABLE meshes ADD COLUMN replaced_by TEXT")   # a rebuild of the same photos' project
         # A restart only pauses an area: its climb carries on from the last step it finished, and the
         # area carries on by itself unless someone stopped it. Other jobs are lost, as their queue is.
-        con.execute("UPDATE projects SET status='stopped' WHERE id IN "
-                    "(SELECT project_id FROM campaign_items WHERE status='running' OR (status='pending' AND retry=1))")
+        con.execute("UPDATE projects SET status='stopped' WHERE id IN (SELECT project_id FROM campaign_items "
+                    "WHERE status='running' OR (status='pending' AND retry=1 AND redo IS NULL))")
         con.execute("UPDATE campaign_items SET status='pending', note='interrupted by a restart: carrying on from where it got to' WHERE status='running'")
         con.execute("UPDATE campaigns SET status='stopped', note=NULL WHERE status='stopping'")
         con.execute("UPDATE projects SET status='failed', progress=NULL, log=log||'\nserver restarted during job' "
@@ -184,6 +202,11 @@ def climb_row(cid: str, full=False) -> dict | None:
         r["data"] = data
         r["meshes"] = q("SELECT m.*, l.note FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=?", cid)
         r["projects"] = q("SELECT id,name,status,kind,mesh_id,harvest FROM projects WHERE climb_id=? ORDER BY created DESC", cid)
+        r["videos_found"] = q("""SELECT cv.url, cv.found_by, cv.frames, v.title, v.uploader, v.license, v.height_cm, v.wingspan_cm,
+                                    v.ape_index_cm, v.quotes, c.height_cm AS channel_height_cm, c.wingspan_cm AS channel_wingspan_cm,
+                                    c.ape_index_cm AS channel_ape_index_cm, c.quotes AS channel_quotes
+                                 FROM climb_videos cv LEFT JOIN videos v ON v.url=cv.url LEFT JOIN channels c ON c.channel_url=v.channel_url
+                                 WHERE cv.climb_id=? ORDER BY cv.found_by, cv.created""", cid)
     else:
         r["n_images"] = len(data.get("images") or [])
         r["n_videos"] = len(data.get("videos") or [])
@@ -207,6 +230,27 @@ def link_mesh(mid: str, cid: str, note: str | None) -> None:
     q("INSERT OR REPLACE INTO mesh_links VALUES(?,?,?,?)", mid, cid, note, time.time(), write=True)
     q("UPDATE meshes SET lat=COALESCE(lat,(SELECT lat FROM climbs WHERE id=?)), "
       "lng=COALESCE(lng,(SELECT lng FROM climbs WHERE id=?)) WHERE id=?", cid, cid, mid, write=True)
+
+
+def supersede(old: str, new: str) -> None:
+    """A rebuilt mesh takes over from the one it replaces: its climbs, and its place in area lists.
+    The old one stays, as an older version of the new one."""
+    for link in q("SELECT climb_id, note FROM mesh_links WHERE mesh_id=?", old):
+        link_mesh(new, link["climb_id"], link["note"])
+    q("DELETE FROM mesh_links WHERE mesh_id=?", old, write=True)
+    q("UPDATE campaign_items SET mesh_id=? WHERE mesh_id=?", new, old, write=True)
+    q("UPDATE meshes SET replaced_by=? WHERE id=? OR replaced_by=?", new, old, old, write=True)
+    q("UPDATE meshes SET replaced_by=NULL WHERE id=?", new, write=True)
+
+
+def make_current(mid: str) -> None:
+    """Go back to an older version of a mesh, which takes over from the one that replaced it."""
+    m = q("SELECT replaced_by, source FROM meshes WHERE id=?", mid, one=True)
+    if not m or not m["replaced_by"]:
+        return
+    supersede(m["replaced_by"], mid)
+    if m["source"].startswith("project:"):
+        q("UPDATE projects SET mesh_id=? WHERE id=?", mid, m["source"].split(":", 1)[1], write=True)
 
 
 def clean_mesh(mid: str, log) -> None:
@@ -332,12 +376,15 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             shutil.rmtree(work, ignore_errors=True)
         mid = new_id()
         mesh_path, demo = pipeline.reconstruct(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker)
-        proj = q("SELECT name, climb_id FROM projects WHERE id=?", pid, one=True)
-        q("INSERT INTO meshes VALUES(?,?,?,?,?,?,?,?,?)", mid, proj["name"], mesh_path.name, f"project:{pid}",
-          time.time(), mesh_path.stat().st_size, int(demo), None, None, write=True)
+        proj = q("SELECT name, climb_id, mesh_id FROM projects WHERE id=?", pid, one=True)
+        q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng) VALUES(?,?,?,?,?,?,?,?,?)", mid, proj["name"],
+          mesh_path.name, f"project:{pid}", time.time(), mesh_path.stat().st_size, int(demo), None, None, write=True)
         if proj["climb_id"]:
             link_mesh(mid, proj["climb_id"], "auto-linked from reconstruction project")
             log(f"mesh linked to climb {proj['climb_id']}")
+        if proj["mesh_id"] and proj["mesh_id"] != mid and q("SELECT id FROM meshes WHERE id=?", proj["mesh_id"]):
+            supersede(proj["mesh_id"], mid)
+            log(f"this replaces mesh {proj['mesh_id']}, which stays as an older version")
         clean_mesh(mid, log)
         record_sources(mid, pid, log)
         q("UPDATE projects SET status='done', mesh_id=?, demo=? WHERE id=?", mid, int(demo), pid, write=True)
@@ -351,17 +398,102 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         q("UPDATE projects SET status='failed' WHERE id=?", pid, write=True)
 
 
-def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter: bool = True, resume: bool = False) -> None:
+CHANNEL_TTL = 30 * 86400    # how long a channel's description is trusted before it's read again
+
+
+def record_videos(climb_id: str, videos: list[dict], log) -> None:
+    """Keep what's known of a climb's videos, and what they and their uploaders' channels say about the
+    climber's size. Only costs that if it fails.
+
+    Args:
+        videos: dicts with url and found_by ("page" or "search"), and whatever youtube.details() gave.
+    """
+    for v in videos:
+        if not v.get("url"):
+            continue
+        try:
+            s = youtube_mod.stats(f"{v.get('title') or ''}\n{v.get('description') or ''}")
+            q("""INSERT INTO videos(url,title,uploader,channel_id,channel_url,duration,upload_date,license,description,fetched,
+                                    height_cm,wingspan_cm,ape_index_cm,first_person,quotes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON CONFLICT(url) DO UPDATE SET title=COALESCE(excluded.title,title), uploader=COALESCE(excluded.uploader,uploader),
+                   channel_id=COALESCE(excluded.channel_id,channel_id), channel_url=COALESCE(excluded.channel_url,channel_url),
+                   duration=COALESCE(excluded.duration,duration), upload_date=COALESCE(excluded.upload_date,upload_date),
+                   license=COALESCE(excluded.license,license), description=COALESCE(excluded.description,description),
+                   fetched=CASE WHEN excluded.description IS NULL THEN fetched ELSE excluded.fetched END,
+                   height_cm=CASE WHEN excluded.description IS NULL THEN height_cm ELSE excluded.height_cm END,
+                   wingspan_cm=CASE WHEN excluded.description IS NULL THEN wingspan_cm ELSE excluded.wingspan_cm END,
+                   ape_index_cm=CASE WHEN excluded.description IS NULL THEN ape_index_cm ELSE excluded.ape_index_cm END,
+                   first_person=CASE WHEN excluded.description IS NULL THEN first_person ELSE excluded.first_person END,
+                   quotes=CASE WHEN excluded.description IS NULL THEN quotes ELSE excluded.quotes END""",
+              v["url"], v.get("title"), v.get("uploader"), v.get("channel_id"), v.get("channel_url"), v.get("duration"),
+              v.get("upload_date"), v.get("license") if v.get("description") is not None else None, v.get("description"),
+              time.time(), s["height_cm"], s["wingspan_cm"], s["ape_index_cm"], int(s["first_person"]),
+              json.dumps(s["quotes"]) if s["quotes"] else None, write=True)
+            q("""INSERT INTO climb_videos(climb_id,url,found_by,frames,created) VALUES(?,?,?,?,?)
+                 ON CONFLICT(climb_id,url) DO UPDATE SET frames=COALESCE(excluded.frames,frames)""",
+              climb_id, v["url"], v.get("found_by") or "page", v.get("frames"), time.time(), write=True)
+            if v.get("channel_url"):
+                record_channel(v["channel_url"])
+            if any(s[k] is not None for k in ("height_cm", "wingspan_cm", "ape_index_cm")):
+                log(f"climber's size in {v['url']}: {s['quotes']}")
+        except Exception as e:
+            log(f"couldn't record video {v.get('url')}: {type(e).__name__}: {e}")
+
+
+def record_channel(url: str) -> None:
+    """Read a channel's description for the climber's size, unless it was read in the last CHANNEL_TTL."""
+    seen = q("SELECT fetched FROM channels WHERE channel_url=?", url, one=True)
+    if seen and time.time() - (seen["fetched"] or 0) < CHANNEL_TTL:
+        return
+    ch = youtube_mod.channel(url)
+    s = youtube_mod.stats(ch["description"])
+    q("""INSERT OR REPLACE INTO channels(channel_url,channel_id,name,description,fetched,height_cm,wingspan_cm,ape_index_cm,
+                                         first_person,quotes) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+      url, ch["channel_id"], ch["name"], ch["description"], time.time(), s["height_cm"], s["wingspan_cm"], s["ape_index_cm"],
+      int(s["first_person"]), json.dumps(s["quotes"]) if s["quotes"] else None, write=True)
+
+
+def photo_names(pid: str) -> list[str]:
+    photos = PROJECTS / pid / "photos"
+    return sorted(p.name for p in photos.iterdir() if p.suffix.lower() in PHOTO_EXT) if photos.is_dir() else []
+
+
+def new_videos(climb_id: str, pid: str, log) -> list[str]:
+    """Search YouTube for a climb, and say which of the videos found its project has no frames from.
+    Also reads the details of its videos from before, which weren't kept then.
+
+    Returns:
+        The new videos' URLs.
+    """
+    c = climb_obj(climb_id)
+    used = {e["url"] for e in provenance.harvested(PROJECTS / pid).values() if e.get("source") == "youtube" and e.get("url")}
+    have = {youtube_mod.video_id(u) or u for u in used | {v.url for v in c.videos}}
+    found = youtube_mod.search(c, log)
+    record_videos(climb_id, [{"url": v.url, "found_by": "search", "title": v.title, "uploader": v.credit} for v in found], log)
+    known = {r["url"] for r in q("SELECT url FROM videos WHERE description IS NOT NULL")}
+    for url in sorted(used - known):
+        try:
+            record_videos(climb_id, [{**youtube_mod.metadata(url), "url": url, "found_by": "page"}], log)
+        except Exception as e:
+            log(f"couldn't read the details of {url}: {e}")
+    return [v.url for v in found if (youtube_mod.video_id(v.url) or v.url) not in have]
+
+
+def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter: bool = True, resume: bool = False,
+                again: bool = False) -> None:
     """Gather a project's photos, and optionally make its mesh.
 
     Args:
         resume: carry on after an interruption. A finished harvest isn't repeated. A partial one
             starts again, which is quick, as its downloads are cached.
+        again: harvest a project that was harvested before, from scratch, adding to its log.
     """
     pdir = PROJECTS / pid
     finished = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)["harvest"] if resume else None
     if resume:
         append_log(pid, "-- carrying on after an interruption")
+    elif again:
+        append_log(pid, "-- harvesting again")
     else:
         q("UPDATE projects SET log='' WHERE id=?", pid, write=True)
         (pdir / "job.log").unlink(missing_ok=True)
@@ -378,7 +510,7 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
             summary = json.loads(finished)
             log("the photos were already harvested")
         else:
-            if resume:
+            if resume or again:
                 for partial in ("photos", "rejected"):
                     shutil.rmtree(pdir / partial, ignore_errors=True)
                 (pdir / "photos").mkdir()
@@ -387,7 +519,16 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                 log(f"fetching the problem page for its photos/videos: {c.url}")
                 upsert_climb(climbs_mod.fetch_climb_url(c.url, include_children=False)[0])
                 c = climb_obj(proj["climb_id"])
+            elif again and c.source == "mountainproject":
+                try:    # from the cache if it's under 30 days old, as most will be
+                    upsert_climb(climbs_mod.fetch_climb_url(c.url, include_children=False)[0])
+                    c = climb_obj(proj["climb_id"])
+                except Exception as e:
+                    log(f"couldn't read the problem page again ({e}); using what was read before")
             summary = harvest_mod.harvest(c, pdir, log, sources, relevance_filter=relevance_filter, tracker=tracker)
+            videos = summary.pop("videos", [])
+            record_videos(proj["climb_id"], videos, log)
+            summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license")} for v in videos]
             q("UPDATE projects SET harvest=?, status='harvested' WHERE id=?", json.dumps(summary), pid, write=True)
         verdict = (summary.get("diversity") or {}).get("verdict", "unknown")
         log(f"harvest complete: {summary['images']} image(s), verdict {verdict}")
@@ -444,7 +585,7 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
 
 def ordered_pending(camp: dict) -> list[dict]:
     """A campaign's waiting climbs, next first."""
-    items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry FROM campaign_items "
+    items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry,redo FROM campaign_items "
               "WHERE campaign_id=? AND status='pending' ORDER BY rank", camp["id"])
     if camp["ord"] == "rating":
         items.sort(key=lambda i: (-(i["stars"] or 0), i["rank"]))
@@ -497,6 +638,8 @@ def run_campaign_item(camp: dict, item: dict) -> None:
     """Mesh one climb, unless a mesh of its boulder already exists. Whatever this finishes is
     saved like any other mesh, so stopping later loses nothing but the climb in progress."""
     global _campaign_running
+    if item.get("redo"):
+        return run_redo(camp, item)
     cid, sid = camp["id"], item["source_id"]
     pid = item["project_id"]
     resume = bool(pid and q("SELECT id FROM projects WHERE id=?", pid) and (PROJECTS / pid).is_dir())
@@ -643,6 +786,118 @@ def run_retry(pid: str) -> None:
         run_reconstruct(pid, internet=proj["kind"] == "harvest", resume=True)
 
 
+REDO_NAMES = {"harvest": "harvest again", "videos": "look for new videos", "rebuild": "rebuild", "rebuild-changed": "rebuild",
+              "harvest+rebuild": "harvest again and rebuild", "videos+rebuild": "look for new videos and rebuild"}
+
+
+def queue_redo(camp_id: str, what: str) -> int:
+    """Queue an area's climbs that have been through it to be harvested or rebuilt again, ahead of the
+    rest of its list. An area that isn't running runs only these, and then stops, as for retries.
+
+    Args:
+        what: "harvest" every climb with photos of its own; "videos": only those that YouTube has new
+            videos of; "rebuild" every one with enough viewpoints; "rebuild-changed": only those whose
+            photos changed since they were meshed or checked. "harvest+rebuild" and "videos+rebuild"
+            rebuild each climb whose photos changed straight after harvesting it.
+
+    Returns:
+        How many climbs were queued.
+    """
+    if what not in REDO_NAMES:
+        raise ValueError(f"what must be one of {', '.join(REDO_NAMES)}")
+    rows = q("SELECT ci.source_id, ci.status FROM campaign_items ci JOIN projects p ON p.id=ci.project_id "
+             "WHERE ci.campaign_id=? AND ci.status IN ('done','skipped','failed') AND p.status NOT IN ('queued','running','harvesting')"
+             + ("" if what.split("+")[0] in ("harvest", "videos") else " AND p.harvest IS NOT NULL")
+             + (" AND ci.changed=1" if what == "rebuild-changed" else ""), camp_id)
+    for r in rows:
+        set_item(camp_id, r["source_id"], status="pending", retry=1, redo=what, was=r["status"], redo_started=0,
+                 note=f"queued to {REDO_NAMES[what]}")
+    if rows:
+        q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status IN ('stopped','done')", camp_id, write=True)
+    return len(rows)
+
+
+def _verdict(pid: str) -> str | None:
+    h = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)["harvest"]
+    return (json.loads(h).get("diversity") or {}).get("verdict") if h else None
+
+
+def _harvest_again(row: dict, log) -> dict:
+    pid = row["project_id"]
+    before = photo_names(pid)
+    if row["redo"].split("+")[0] == "videos":
+        new = new_videos(row["climb_id"], pid, log)
+        if not new:
+            log("no videos of this climb on YouTube that its photos don't already have frames from")
+            return {"status": row["was"], "note": "no new videos found"}
+        log(f"{len(new)} new video(s) of this climb: harvesting it again")
+    run_harvest(pid, set(HARVEST_SOURCES), False, again=True)
+    p = q("SELECT status,harvest FROM projects WHERE id=?", pid, one=True)
+    if row["mesh_id"]:
+        q("UPDATE projects SET status='done' WHERE id=? AND status='harvested'", pid, write=True)
+    if p["status"] == "failed":
+        return {"status": row["was"], "note": f"harvesting again failed: {last_failure(pid)}"}
+    summary, verdict = json.loads(p["harvest"]), _verdict(pid)
+    changed = photo_names(pid) != before
+    status = "done" if row["mesh_id"] else ("skipped" if verdict == "poor" else row["was"])
+    note = f"harvested again: {summary['images']} photos, {summary.get('video_frames') or 0} of them from videos; " + (
+        "not enough different viewpoints" if verdict == "poor" else
+        "Rebuild changed will use them" if changed else "the same photos as before")
+    return {"status": status, "note": note, "changed": int((changed or bool(row["changed"])) and verdict != "poor")}
+
+
+def _rebuild(cid: str, row: dict, log) -> dict:
+    pid = row["project_id"]
+    if _verdict(pid) == "poor":
+        return {"status": "done" if row["mesh_id"] else "skipped", "note": "not enough different viewpoints to mesh", "changed": 0}
+    resume = bool(row["redo_started"]) and (PROJECTS / pid / "work").is_dir()
+    set_item(cid, row["source_id"], redo_started=1)
+    append_log(pid, "-- carrying on rebuilding" if resume else "-- rebuilding")
+    run_reconstruct(pid, internet=True, resume=resume)
+    p = q("SELECT status,mesh_id FROM projects WHERE id=?", pid, one=True)
+    if p["status"] == "done" and p["mesh_id"] and p["mesh_id"] != row["mesh_id"]:
+        shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)
+        return {"status": "done", "mesh_id": p["mesh_id"], "note": "rebuilt" + (": the one before is kept as an older version" if row["mesh_id"] else ""),
+                "changed": 0}
+    if row["mesh_id"]:     # it still has the mesh it had
+        q("UPDATE projects SET status='done', mesh_id=? WHERE id=?", row["mesh_id"], pid, write=True)
+    return {"status": "done" if row["mesh_id"] else "failed", "note": f"rebuilding failed: {last_failure(pid)}"}
+
+
+def run_redo(camp: dict, item: dict) -> None:
+    """Harvest or rebuild again one of an area's climbs that has been through it before."""
+    global _campaign_running
+    cid, sid = camp["id"], item["source_id"]
+    row = q("SELECT source_id,climb_id,project_id,mesh_id,redo,was,changed,redo_started FROM campaign_items "
+            "WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
+    row["was"] = row["was"] or "done"
+    log = lambda s: append_log(row["project_id"], s)  # noqa: E731
+    jobctl.begin(low_priority=True)
+    _campaign_running = cid
+    try:
+        set_item(cid, sid, status="running", note=None)
+        first, *then = row["redo"].split("+")
+        if first in ("harvest", "videos") and not row["redo_started"]:    # a rebuild that started was harvested already
+            end = _harvest_again(row, log)
+            if then and end.get("changed"):
+                set_item(cid, sid, changed=1)
+                harvested_note = end["note"]
+                end = _rebuild(cid, {**row, "changed": 1}, log)
+                end["note"] = f"{harvested_note}; {end['note']}"
+        else:
+            end = _rebuild(cid, row, log)
+    except Cancelled:
+        q("UPDATE projects SET status='stopped' WHERE id=?", row["project_id"], write=True)
+        set_item(cid, sid, status="pending", note=f"stopped partway: carries on with its {REDO_NAMES[row['redo']]} when resumed")
+        return
+    except Exception as e:
+        end = {"status": row["was"], "note": f"{REDO_NAMES[row['redo']]}: {type(e).__name__}: {e}"}
+    finally:
+        _campaign_running = None
+        q("UPDATE campaigns SET status='stopped', note=NULL WHERE id=? AND status='stopping'", cid, write=True)
+    set_item(cid, sid, **end, redo=None, retry=0, redo_started=0)
+
+
 def stop_campaign(camp_id: str, now: bool = True) -> None:
     """Stop a campaign, now or once the climb it's on is finished."""
     running = _campaign_running == camp_id
@@ -656,13 +911,15 @@ def campaign_view(camp: dict) -> dict:
     """A campaign for the UI, with where it's got to."""
     cid = camp["id"]
     counts = {r["status"]: r["n"] for r in q("SELECT status,COUNT(*) n FROM campaign_items WHERE campaign_id=? GROUP BY status", cid)}
+    again = {key: q(f"SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND {where}", cid, one=True)["n"]
+             for key, where in (("changed", "changed=1"), ("queued", "redo IS NOT NULL AND status IN ('pending','running')"))}
     worked = q("SELECT rank,name,grade,stars,url,climb_id,mesh_id,project_id,status,note,updated FROM campaign_items "
                "WHERE campaign_id=? AND status NOT IN ('pending','running') ORDER BY updated DESC LIMIT 300", cid)
     current = q("SELECT rank,name,grade,stars,project_id FROM campaign_items WHERE campaign_id=? AND status='running' LIMIT 1", cid, one=True)
     if current and current["project_id"]:
         p = q("SELECT status,progress FROM projects WHERE id=?", current["project_id"], one=True)
         current["progress"] = json.loads(p["progress"]) if p and p["progress"] else None
-    return {**camp, "counts": counts, "worked": worked, "current": current, "next": ordered_pending(camp)[:10]}
+    return {**camp, "counts": counts, "again": again, "worked": worked, "current": current, "next": ordered_pending(camp)[:10]}
 
 
 def worker() -> None:
@@ -812,6 +1069,14 @@ class Handler(BaseHTTPRequestHandler):
                     r["orientation"] = orientation.load(MESHES / r["id"])
                     r["sources"] = provenance.summary(provenance.load(MESHES / r["id"]))
                 return self.send_json(rows)
+            if p == "/api/videos":   # every video known, and what it or its channel says about the climber's size
+                return self.send_json(q("""SELECT v.url,v.title,v.uploader,v.channel_url,v.duration,v.upload_date,v.license,
+                      v.height_cm,v.wingspan_cm,v.ape_index_cm,v.first_person,v.quotes,
+                      c.height_cm AS channel_height_cm,c.wingspan_cm AS channel_wingspan_cm,c.ape_index_cm AS channel_ape_index_cm,
+                      c.quotes AS channel_quotes,
+                      (SELECT GROUP_CONCAT(cv.climb_id || ':' || cv.found_by || ':' || COALESCE(cv.frames,'')) FROM climb_videos cv
+                       WHERE cv.url=v.url) AS climbs
+                    FROM videos v LEFT JOIN channels c ON c.channel_url=v.channel_url ORDER BY v.url"""))
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/sources", p)
             if m:   # every photo, with where it came from: what crediting or re-hosting a mesh needs
                 record = provenance.load(MESHES / m[1])
@@ -942,7 +1207,7 @@ class Handler(BaseHTTPRequestHandler):
                 name = (fields.get("name") or Path(main).stem)[:80]
                 lat = float(fields["lat"]) if fields.get("lat") else None
                 lng = float(fields["lng"]) if fields.get("lng") else None
-                q("INSERT INTO meshes VALUES(?,?,?,?,?,?,?,?,?)", mid, name, main, "upload", time.time(),
+                q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng) VALUES(?,?,?,?,?,?,?,?,?)", mid, name, main, "upload", time.time(),
                   (d / main).stat().st_size, 0, lat, lng, write=True)
                 if fields.get("climb_id"):
                     link_mesh(mid, fields["climb_id"], "linked at upload")
@@ -998,6 +1263,21 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "not found"}, 404)
                 queued = retry_campaign(m[1])
                 return self.send_json({**campaign_view(q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)), "queued": queued})
+            m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)/(harvest-again|rebuild)", p)
+            if m:
+                if not campaign_status(m[1]):
+                    return self.send_json({"error": "not found"}, 404)
+                b = self.read_json()
+                what = (("videos" if b.get("videos_only") else "harvest") + ("+rebuild" if b.get("then_rebuild") else "")
+                        if m[2] == "harvest-again" else ("rebuild-changed" if b.get("changed_only") else "rebuild"))
+                queued = queue_redo(m[1], what)
+                return self.send_json({**campaign_view(q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)), "queued": queued})
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/make-current", p)
+            if m:
+                if not q("SELECT replaced_by FROM meshes WHERE id=? AND replaced_by IS NOT NULL", m[1]):
+                    return self.send_json({"error": "not an older version"}, 409)
+                make_current(m[1])
+                return self.send_json({"current": m[1]})
 
             if p == "/api/climbs/search":   # OpenBeta live search (not stored until imported)
                 body = self.read_json()

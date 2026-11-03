@@ -109,6 +109,17 @@ problem with three topo shots is not. Beta videos that pan around the rock are a
 source, and web search adds the most: DuckDuckGo took Midnight Lightning from about 30
 placed photos to about 65, and from about 190k faces to about 540k.
 
+Videos come from the climb's page and from a YouTube search for its name, V grade and area,
+through yt-dlp. A result is kept only if its title names the climb, and the title or description
+also gives its area, boulder or grade, as names like "Relic" aren't unique. Up to 6 videos are used,
+the page's first. Each video's uploader, description and licence are recorded, and the uploader's
+channel description too, along with any climber's height, wingspan or ape index stated in them
+(`GET /api/videos`, and on the climb's card), for scaling meshes later.
+
+People are found in every photo before reconstruction, and their masks are kept in
+`data/projects/<id>/masks/` (`<photo>.png`, black where people are), with the share of each photo
+that is people in `masks/people.json`. Only photos without an up-to-date mask are looked at again.
+
 Downloaded images stay on your server for reconstruction only; most are copyrighted by
 their photographers. `sources.json` lets you credit or remove any of them.
 
@@ -132,7 +143,15 @@ harvest, which usually means a network problem, or with under 50 GB of disk left
 (`CAMPAIGN_MIN_FREE_GB`).
 
 *Retry N failed* tries an area's failed climbs again, each from the last step it finished. If the area
-is running they go next, and if it isn't, only they run. *Retry* on a failed project does the same for
+is running they go next, and if it isn't, only they run.
+
+*Harvest again* gathers the photos and videos of every climb in the area that has photos of its own
+again, from scratch, keeping their meshes, so it finds what's been posted since. *Rebuild N changed*
+then meshes those whose photos changed, and *Rebuild all* meshes every climb with enough viewpoints
+again, as after a change to the pipeline. These are queued like retries. A rebuilt mesh takes over
+its climbs, and the one before it stays as an older version: *Show older versions* on the *Meshes*
+tab lists those, and *Use this version* goes back to one. The API can also look only for new videos
+(`{"videos_only": true}`), and rebuild each climb as soon as it has new photos (`{"then_rebuild": true}`). *Retry* on a failed project does the same for
 that one, and its card and log say what ended it, including when something outside the app killed a tool.
 
 Jobs you start by hand go first, between climbs. Expect each climb to take most of an hour on CPU,
@@ -182,6 +201,20 @@ faces, or are over 5x sparser. This never changes the mesh's own files: on the v
 click any piece to hide or show it, and *Remove cleanup* shows the whole mesh again. The download
 button leaves out whatever is hidden. It needs numpy, and only works on GLB meshes.
 
+## Run it as a service
+
+To have systemd start the Docker Compose stack at boot, restart it if it fails, and keep its log:
+
+    sudo deploy/install-systemd.sh              # writes /etc/systemd/system/bouldermesh.service
+    docker compose down                         # if you'd started it by hand
+    sudo systemctl enable --now bouldermesh
+    journalctl -u bouldermesh -f                # its log
+
+It runs as the user who ran the installer, who must be in the `docker` group, from this
+directory, and reads `.env` here (`COMPOSE_FILE` for the GPU, `PORT`). Each start rebuilds the image
+first, which takes seconds when nothing has changed, so `sudo systemctl restart bouldermesh` deploys
+new code. To remove it: `sudo systemctl disable --now bouldermesh`, then delete the unit file.
+
 ## Layout
 
     backend/server.py              HTTP server, SQLite, uploads, job worker (reconstruct + harvest)
@@ -191,12 +224,14 @@ button leaves out whatever is hidden. It needs numpy, and only works on GLB mesh
     backend/climbs/common.py       Climb/Media types, cached + rate-limited + robots-aware HTTP client
     backend/climbs/mountainproject.py, openbeta.py, kaya.py   adapters
     backend/climbs/harvest.py      photo sources, download, provenance
+    backend/climbs/youtube.py      finding climbs' videos, and climbers' heights and ape indexes in their text
     backend/provenance.py          where each mesh's photos came from, kept with the mesh
     backend/climbs/relevance.py    filter for photos substantially of the boulder
     backend/climbs/diversity.py    de-dup + view-graph diversity estimate
     backend/climbs/htmlmini.py     tiny DOM on html.parser (no bs4 needed)
     frontend/index.html            UI: Climbs / Projects / Meshes tabs, three.js viewer, Leaflet map
     cli.py                         command-line access to the same code
+    deploy/                        systemd service, and its installer
     data/                          created at runtime; DATA_DIR overrides
 
 ## API
@@ -217,6 +252,9 @@ button leaves out whatever is hidden. It needs numpy, and only works on GLB mesh
     GET  /api/campaigns · POST /api/campaigns {area, order:popularity|rating|data, start, csv}
     POST /api/campaigns/{id}/start · POST /api/campaigns/{id}/stop {now} · DELETE /api/campaigns/{id}
     POST /api/campaigns/{id}/retry                      its failed climbs, ahead of the rest
+    POST /api/campaigns/{id}/harvest-again {videos_only, then_rebuild} · POST /api/campaigns/{id}/rebuild {changed_only}
+    GET  /api/videos                                    every video, with the climber's size if stated
+    POST /api/meshes/{id}/make-current                  go back to an older version of a rebuilt mesh
     GET|POST|DELETE /api/meshes/{id}/cleanup · PATCH /api/meshes/{id}/cleanup {removed} · GET /meshes/{id}/mesh.glb?cleaned=1
     GET  /api/meshes/{id}/sources                       each photo in the mesh: source, URL, page, credit, licence
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}

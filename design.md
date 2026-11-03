@@ -392,6 +392,26 @@ Could more be scraped per photo? Sampled Nov 2:
 So a video's licence is worth recording (yt-dlp has it at download time, and backfilling is one
 metadata request per video), while a web image's is almost never stated anywhere.
 
+## Videos found by searching, and climbers' sizes (`backend/climbs/youtube.py`)
+
+Only 120 of 317 fetched climb pages linked any video, and Relic's linked none. One YouTube search
+per climb, through yt-dlp, for its name, V grade and area ("Relic V9 Joshua Tree") returned 15
+results, 6 of them Relic, from 5 uploaders. A result counts only if its title names the climb as a
+whole word, and its title or description also gives its area, boulder or grade: that kept exactly
+those 6, and none of the other Joshua Tree V9s. Videos over 15 minutes are left out, as they're
+mostly compilations. Up to 4 found videos are used, and 6 in all with the page's own, which share 150
+frames: a video that fails to download leaves its share to the rest.
+
+Heights, wingspans and ape indexes are read from the title and description of each video, and from
+its uploader's channel description, and kept with the text they came from. A number only counts as a
+height with a word saying it's a person's (tall, height, I'm, climber), unless it's in feet and
+inches, and not next to a word about the rock, as a "6 ft tall boulder" is common. Nothing says the
+person in the video is the uploader: `first_person` records whether the text said "I'm". Using one
+for scale needs the climber found in placed frames, which the masks below are kept for.
+
+People's masks used to be made in `work/` and deleted with it. They're now kept in the project's
+`masks/`, which also makes a rebuild skip photos that already have one.
+
 ## Why job logs aren't in the database
 
 COLMAP prints tens of thousands of lines. `UPDATE projects SET log = log || ?` rewrites the whole

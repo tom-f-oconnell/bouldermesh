@@ -174,6 +174,12 @@ def run(B: str, tmp: Path) -> None:
     assert m["sources"]["total"] == 3 and [s["source"] for s in m["sources"]["sources"]] == ["upload"], m["sources"]
     st, rec = req(B, "GET", f"/api/meshes/{m['id']}/sources")
     assert st == 200 and {p["file"] for p in rec["photos"]} == {f"p{i}.jpg" for i in range(3)}, rec
+    assert m["replaced_by"] is None and req(B, "POST", f"/api/meshes/{m['id']}/make-current")[0] == 409, "not an older version"
+    st, vids = req(B, "GET", "/api/videos")
+    assert st == 200 and vids == [], vids
+    assert req(B, "POST", "/api/campaigns/abcdef123456/harvest-again", {})[0] == 404
+    assert req(B, "POST", "/api/campaigns/abcdef123456/rebuild", {"changed_only": True})[0] == 404
+    assert req(B, "GET", f"/api/climbs/{cid}")[1]["videos_found"] == []
 
     st, cd = req(B, "GET", f"/api/climbs/{cid}")
     assert cd["meshes"][0]["id"] == m["id"] and cd["projects"][0]["id"] == pid

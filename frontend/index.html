@@ -211,6 +211,7 @@
             <input type="file" id="meshfile" multiple accept=".ply,.obj,.mtl,.glb,.gltf,.stl,.png,.jpg"></label>
           <select id="upclimb" style="width:170px"><option value="">link to climb (optional)</option></select>
         </div>
+        <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="m-older"> Show older versions of rebuilt meshes</label></div>
         <div id="meshes"></div>
       </section>
     </div>
@@ -735,7 +736,18 @@ function renderClimbs(){
 }
 $('#c-filter').oninput = renderClimbs;
 $('#c-meshed').onchange = refreshClimbs;
+$('#m-older').onchange = refreshMeshes;
 
+// what a video or its uploader's channel says about the climber: "178 cm (5'10"), ape index +5 cm"
+const feetInches = cm => { const i = Math.round(cm / 2.54); return `${Math.floor(i / 12)}'${i % 12}"`; };
+function climberSize(v){
+  const pick = k => v[k] ?? v['channel_' + k];
+  const h = pick('height_cm'), w = pick('wingspan_cm'), a = pick('ape_index_cm');
+  if (h == null && w == null && a == null) return '';
+  const parts = [h != null && `${Math.round(h)} cm (${feetInches(h)}) tall`, w != null && `wingspan ${Math.round(w)} cm`,
+                 a != null && `ape index ${a > 0 ? '+' : ''}${Math.round(a)} cm`].filter(Boolean);
+  return `${parts.join(', ')} (${v.uploader || 'uploader'}${v.height_cm == null && v.ape_index_cm == null && v.wingspan_cm == null ? ', from their channel' : ''})`;
+}
 let openClimbId = null;
 async function openClimb(id, focus=true){
   const c = await api('/api/climbs/' + id);
@@ -748,6 +760,8 @@ async function openClimb(id, focus=true){
   const d = document.createElement('div'); d.className = 'card active';
   const imgs = (data.images||[]).filter(m=>m.url);
   const vids = data.videos||[];
+  const searched = (c.videos_found||[]).filter(v => v.found_by === 'search' && !vids.some(p => p.url === v.url));
+  const sizes = (c.videos_found||[]).map(climberSize).filter(Boolean);
   d.innerHTML = `
     <div class="row"><span class="name grow">${esc(c.name)} <small>${esc(c.grade||'')}</small><span class="tag src">${esc(c.source)}</span></span><button class="sm sec close">✕ close</button></div>
     <div class="meta">${esc((c.area_path||[]).join(' › '))}</div>
@@ -759,8 +773,9 @@ async function openClimb(id, focus=true){
     ${data.description?`<details style="margin-top:6px"><summary>Description / location</summary><div class="meta">${esc(data.description)}</div><div class="meta">${esc(data.location||'')}</div></details>`:''}
     <div class="meta" style="margin-top:6px">Photos (${imgs.length}) ${imgs.length?'<small>— from the source page; © their uploaders</small>':''}</div>
     <div class="thumbs">${imgs.slice(0,30).map(m=>`<a href="${esc(m.page||m.url)}" target="_blank" rel="noopener"><img class="big" src="${esc(m.url)}" title="${esc(m.title||'')}" loading="lazy" referrerpolicy="no-referrer"></a>`).join('')}</div>
-    <div class="meta" style="margin-top:6px">Videos (${vids.length})</div>
-    <div class="chips">${vids.map(v=>`<a class="chip" href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.url.replace(/^https?:\/\/(www\.)?/,'').slice(0,40))}</a>`).join('')}</div>
+    <div class="meta" style="margin-top:6px">Videos (${vids.length} on its page${searched.length ? `, ${searched.length} more found by searching YouTube` : ''})</div>
+    <div class="chips">${[...vids, ...searched].map(v=>`<a class="chip" href="${esc(v.url)}" target="_blank" rel="noopener" title="${esc(v.title||'')}">${esc(v.title ? v.title.slice(0,40) : v.url.replace(/^https?:\/\/(www\.)?/,'').slice(0,40))}</a>`).join('')}</div>
+    ${sizes.length ? `<div class="meta" style="margin-top:4px">Climbers' sizes, as their videos or channels give them: ${sizes.map(esc).join(' · ')}</div>` : ''}
     <div class="meta" style="margin-top:8px">Linked meshes (${c.meshes.length})</div>
     <div class="chips">${c.meshes.map(m=>`<span class="chip" data-mesh="${m.id}">▣ ${esc(m.name)}</span>`).join('')}
       <select class="linksel" style="width:auto;padding:2px 6px;font-size:12px"><option value="">+ link existing mesh…</option>${meshesCache.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>
@@ -1003,7 +1018,7 @@ async function refreshCampaigns(){
       const row = i => `<span><small>#${i.rank}</small></span><span>${i.climb_id ? `<a href="#" data-climb="${i.climb_id}">${esc(i.name)}</a>` : `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.name)}</a>`} ${esc(i.grade||'')}</span><small>${stars(i.stars)}</small>
         <span>${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
       d.innerHTML = `<div class="row"><b class="grow">${esc(c.name)}</b><span class="status ${c.status === 'stopped' ? '' : c.status === 'done' ? 'done' : 'running'}">${esc(c.status)}</span></div>
-        <div class="meta">${ORDER_NAMES[c.ord] || ''} · <b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${c.only_retries ? ' · trying failed climbs again, then stopping' : ''}</div>
+        <div class="meta">${ORDER_NAMES[c.ord] || ''} · <b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
         ${c.note ? `<div class="notice" style="margin-top:6px">${esc(c.note)}</div>` : ''}
         <div class="now">${currentHtml(c)}</div>
         <div class="row" style="margin-top:8px">
@@ -1011,6 +1026,9 @@ async function refreshCampaigns(){
           ${c.status === 'stopping' ? `<button class="sm danger stopnow" title="Pauses the climb in progress too; it carries on from its last finished step when you resume">Stop now</button><span class="status">finishing this climb, then stopping</span>` : ''}
           ${c.status === 'stopped' ? `<button class="sm resume">Resume</button>` : ''}
           ${n.failed && c.status !== 'stopping' ? `<button class="sm sec retryfailed" title="${c.status === 'running' ? 'They go next, each from the last step it finished' : 'Only these run, each from the last step it finished, and then it stops'}">Retry ${n.failed} failed</button>` : ''}
+          ${c.status !== 'stopping' && (n.done || n.skipped || n.failed) ? `<button class="sm sec harvestagain" title="Gathers every climb's photos and videos again, from scratch, keeping their meshes. Then Rebuild changed makes meshes from them.">Harvest again</button>
+          <button class="sm sec rebuildchanged" ${c.again.changed ? '' : 'disabled'} title="Meshes the climbs whose photos changed when harvested again. Older meshes stay, as older versions.">Rebuild ${c.again.changed || ''} changed</button>
+          <button class="sm sec rebuildall" title="Meshes every climb with enough viewpoints again, as after the pipeline changes. Older meshes stay, as older versions.">Rebuild all</button>` : ''}
           <span class="grow"></span><button class="danger sm del" title="Remove this list; its meshes stay">✕</button>
         </div>
         ${c.worked.length ? `<details data-list="${c.id}-done"><summary class="meta">Worked through (${c.worked.length}${c.worked.length === 300 ? ' most recent' : ''})</summary><div class="crows">${c.worked.map(row).join('')}</div></details>` : ''}
@@ -1020,6 +1038,10 @@ async function refreshCampaigns(){
       d.querySelector('.stoplater')?.addEventListener('click', () => post('stop', { now: false }));
       d.querySelector('.resume')?.addEventListener('click', () => post('start'));
       d.querySelector('.retryfailed')?.addEventListener('click', () => post('retry'));
+      const alone = c.status === 'running' ? 'They go ahead of the rest of the list.' : 'Only these run, and then it stops.';
+      d.querySelector('.harvestagain')?.addEventListener('click', () => { if (confirm(`Harvest every climb in "${c.name}" with photos of its own again, from scratch? That's a few minutes each, as it downloads their videos again. Their meshes stay. ${alone}`)) post('harvest-again'); });
+      d.querySelector('.rebuildchanged')?.addEventListener('click', () => { if (confirm(`Mesh the ${c.again.changed} climbs whose photos changed? Each can take most of an hour. ${alone}`)) post('rebuild', { changed_only: true }); });
+      d.querySelector('.rebuildall')?.addEventListener('click', () => { if (confirm(`Mesh every climb in "${c.name}" with enough viewpoints again? Each can take most of an hour. ${alone}`)) post('rebuild'); });
       d.querySelector('.del').onclick = async () => { if (confirm(`Remove the list for "${c.name}"? Its meshes stay.`)) { await api('/api/campaigns/' + c.id, { method: 'DELETE' }); campaignLoop(); } };
       d.querySelectorAll('[data-mesh]').forEach(b => b.onclick = async () => { if (!meshesById[b.dataset.mesh]) await refreshMeshes(); viewMesh(b.dataset.mesh); });
       d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
@@ -1058,7 +1080,7 @@ let meshesCache = [], meshesById = {};
 const SOURCE_INFO = {
   ddg: { name: 'DuckDuckGo images', color: '#3987e5', varies: 'Varies photo to photo, and is almost never stated.',
     license: 'Images from anywhere on the web. Each belongs to whoever made it, on terms that are rarely stated, so take them as all rights reserved. Only the page each came from is recorded.' },
-  youtube: { name: 'Video frames', color: '#d95926', varies: 'Varies video to video, and isn\'t recorded yet.',
+  youtube: { name: 'Video frames', color: '#d95926', varies: 'Varies video to video, and is recorded for each from Nov 3 on:', perPhoto: true,
     license: 'Frames from beta videos on YouTube or Vimeo. A YouTube video is all rights reserved (its standard licence) unless its uploader chose CC BY; a Vimeo uploader can choose any Creative Commons licence. YouTube\'s terms also forbid downloading except through YouTube itself.' },
   commons: { name: 'Wikimedia Commons', color: '#199e70', varies: 'Varies photo to photo, and is recorded for each:', perPhoto: true,
     license: 'Free licences: mostly CC BY and CC BY-SA, which allow any reuse with credit (BY-SA: adaptations shared under the same licence), and some CC0 and public domain.' },
@@ -1091,7 +1113,7 @@ function showSourceTip(m, anchor){
     const count = x.videos ? `${x.photos} frame${x.photos === 1 ? '' : 's'} from ${x.videos} video${x.videos === 1 ? '' : 's'}` : `${x.photos} photo${x.photos === 1 ? '' : 's'}`;
     body.append(mk('b', null, pct(x.photos, s.total)), document.createTextNode(` ${x.info.name} · ${count}`));
     body.append(mk('div', 'lic', x.info.license));
-    if (x.info.varies) body.append(mk('div', 'lic', x.info.varies + (x.info.perPhoto ? ' ' + Object.entries(x.licenses).map(([l, n]) => `${l} ×${n}`).join(', ') + '.' : '')));
+    if (x.info.varies) body.append(mk('div', 'lic', x.info.varies + (x.info.perPhoto ? ' ' + Object.entries(x.licenses).map(([l, n]) => `${/^frame from linked beta video|^not recorded/.test(l) ? 'not recorded (harvested earlier)' : l} ×${n}`).join(', ') + '.' : '')));
     row.append(key, body); tip.append(row);
   }
   tip.style.display = 'block'; tipFor = anchor;
@@ -1138,9 +1160,11 @@ async function refreshMeshes(){
   hideSourceTip();
   meshesCache = await api('/api/meshes'); meshesById = Object.fromEntries(meshesCache.map(m => [m.id, m]));
   const el = $('#meshes'); el.innerHTML = meshesCache.length ? '' : '<div class="status">No meshes yet.</div>';
-  for (const m of meshesCache) {
+  const older = meshesCache.filter(m => m.replaced_by).length;
+  $('#m-older').parentNode.lastChild.textContent = ` Show older versions of rebuilt meshes (${older})`;
+  for (const m of meshesCache.filter(m => $('#m-older').checked || !m.replaced_by)) {
     const d = document.createElement('div'); d.className = 'card mesh';
-    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
+    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
         <div class="chips">${m.climbs.map(c=>`<span class="chip" data-climb="${c.id}">${esc(c.name)} ${esc(c.grade||'')} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('')}
           <select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option>${climbsCache.filter(c=>c.kind!=='area').map(c=>`<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('')}</select></div></div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px">
@@ -1150,6 +1174,12 @@ async function refreshMeshes(){
         <button class="sm danger del">✕</button></div>`;
     const bar = sourceBar(m);
     if (bar) d.querySelector('.chips').before(bar);
+    if (m.replaced_by) {
+      const b = document.createElement('button'); b.className = 'sm sec'; b.textContent = 'Use this version';
+      b.title = 'Makes this the mesh its climbs link to again, instead of the rebuild that replaced it';
+      b.onclick = async () => { await api(`/api/meshes/${m.id}/make-current`, { method: 'POST' }); await refreshMeshes(); refreshClimbs(); };
+      d.querySelector('.chips').before(b);
+    }
     d.querySelector('.view').onclick = () => viewMesh(m.id);
     d.querySelector('.fly')?.addEventListener('click', () => flyTo(m.lat, m.lng));
     d.querySelector('.setll')?.addEventListener('click', async () => { const ll = parseLL(prompt('lat, lng')); if (!ll) return; await api('/api/meshes/'+m.id, {method:'PATCH', json:{lat:ll[0], lng:ll[1]}}); refreshMeshes(); });

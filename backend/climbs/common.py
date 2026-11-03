@@ -156,8 +156,12 @@ class JobControl:
             self._proc = subprocess.Popen(["nice", "-n", "10", *cmd] if self.low_priority else cmd, env=diagnostics.tool_env(), **kw)
             return self._proc
 
-    def run(self, cmd: list[str], timeout: float | None = None, **kw) -> None:
-        """Like subprocess.run(cmd, check=True), but stoppable."""
+    def run(self, cmd: list[str], timeout: float | None = None, **kw):
+        """Like subprocess.run(cmd, check=True), but stoppable.
+
+        Returns:
+            What it printed, if stdout was a pipe.
+        """
         proc = self.popen(cmd, **kw)
         try:
             out, err = proc.communicate(timeout=timeout)
@@ -168,6 +172,7 @@ class JobControl:
         self.check()
         if proc.returncode:
             raise diagnostics.ToolFailed(cmd[0], proc.returncode, detail=diagnostics.last_line(err))
+        return out
 
 
 jobctl = JobControl()

@@ -312,7 +312,7 @@ assert got["Gamma"]["status"] == "done" and got["Gamma"]["project_id"] == pid an
 # in the moment after its mesh was saved: it isn't made twice
 pid = interrupted("Alpha2", status="running", harvest=summary)
 server.q("UPDATE campaign_items SET boulder=NULL WHERE campaign_id=? AND name='Alpha2'", c["id"], write=True)
-server.q("INSERT INTO meshes VALUES('bbb1','saved','mesh.ply',?,1,1,0,NULL,NULL)", f"project:{pid}", write=True)
+server.q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng) VALUES('bbb1','saved','mesh.ply',?,1,1,0,NULL,NULL)", f"project:{pid}", write=True)
 server.init_db()
 harvested.clear()
 before = server.q("SELECT COUNT(*) n FROM meshes", one=True)["n"]
@@ -368,11 +368,11 @@ assert got["Beta"]["status"] == "done" and got["Beta"]["mesh_id"], "a failed cle
 assert any("cleanup failed (not a GLB file)" in line for line in server.read_log(got["Beta"]["project_id"]).splitlines())
 cleaned.clear()
 server.meshclean.clean = lambda d, log=print, force=False: cleaned.append(d.name)
-server.q("INSERT INTO meshes VALUES('aaa1','old','mesh.glb','project:x',1,1,0,NULL,NULL)", write=True)
-server.q("INSERT INTO meshes VALUES('aaa2','done already','mesh.glb','project:y',2,1,0,NULL,NULL)", write=True)
-server.q("INSERT INTO meshes VALUES('aaa3','deleted','mesh.glb','project:z',3,1,0,NULL,NULL)", write=True)
-server.q("INSERT INTO meshes VALUES('aaa4','an upload','mesh.glb','upload',4,1,0,NULL,NULL)", write=True)
-server.q("INSERT INTO meshes VALUES('aaa5','untextured','mesh.ply','project:p',5,1,0,NULL,NULL)", write=True)
+server.q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng) VALUES('aaa1','old','mesh.glb','project:x',1,1,0,NULL,NULL)", write=True)
+server.q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng) VALUES('aaa2','done already','mesh.glb','project:y',2,1,0,NULL,NULL)", write=True)
+server.q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng) VALUES('aaa3','deleted','mesh.glb','project:z',3,1,0,NULL,NULL)", write=True)
+server.q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng) VALUES('aaa4','an upload','mesh.glb','upload',4,1,0,NULL,NULL)", write=True)
+server.q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng) VALUES('aaa5','untextured','mesh.ply','project:p',5,1,0,NULL,NULL)", write=True)
 for mid, content in (("aaa2", {"removed": []}), ("aaa3", {"deleted": True})):
     (server.MESHES / mid).mkdir(parents=True)
     (server.MESHES / mid / "cleanup.json").write_text(json.dumps(content))
@@ -609,4 +609,142 @@ c = server.create_campaign("", "popularity", CSV)
 assert status(c["id"]) == ("running", 0)
 assert items(c["id"])["Alpha"]["retry"] == 0
 print("retries OK")
+# --- harvesting and rebuilding an area again ---------------------------------------------------
+photo_sets: dict[str, list[str]] = {}    # the photos each climb's harvest finds
+searched: dict[str, list[str]] = {}      # the videos a YouTube search finds of each climb
+
+
+def harvest_with_photos(c, project_dir, log, sources, relevance_filter=True, tracker=None):
+    harvested.append(c.name)
+    for n in photo_sets.get(c.name, ["a.jpg", "b.jpg", "c.jpg"]):
+        (project_dir / "photos" / n).write_bytes(b"x")
+    (project_dir / "sources.json").write_text(json.dumps({"climb": {}, "files": [    # frames of the videos it found, as a real one records
+        {"file": f"yt_{i:08x}_000.jpg", "source": "youtube", "url": u} for i, u in enumerate(searched.get(c.name, []))]}))
+    return {"images": 3, "video_frames": 1, "queries": [], "diversity": {"verdict": "poor" if outcome.get(c.name) == "poor" else "good"},
+            "videos": [{"url": f"https://www.youtube.com/watch?v={c.name[:5]:x<11}", "found_by": "search", "title": c.name,
+                        "description": "I'm 5'10\" with a +2 ape index", "frames": 1, "license": "YouTube standard licence (all rights reserved)"}]}
+
+
+server.harvest_mod.harvest = harvest_with_photos
+server.youtube_mod.search = lambda c, log, known=frozenset(): [Media(url=u, kind="video", title=c.name, source="youtube-search")
+                                                              for u in searched.get(c.name, [])]
+fresh()
+for t in ("videos", "climb_videos"):
+    server.q(f"DELETE FROM {t}", write=True)
+outcome["Gamma"] = "poor"
+c = server.create_campaign("", "popularity", CSV)
+run_all(c["id"])
+got = items(c["id"])
+assert [got[n]["status"] for n in ("Alpha", "Beta", "Gamma", "Alpha2")] == ["done", "done", "skipped", "done"], got
+v = server.q("SELECT * FROM videos WHERE title='Alpha'", one=True)
+assert (v["height_cm"], v["ape_index_cm"], v["first_person"]) == (177.8, 5.1, 1), v
+link = server.q("SELECT * FROM climb_videos WHERE url=?", v["url"], one=True)
+assert link["climb_id"] == got["Alpha"]["climb_id"] and link["found_by"] == "search" and link["frames"] == 1, link
+assert "description" not in json.loads(server.q("SELECT harvest FROM projects WHERE id=?", got["Alpha"]["project_id"], one=True)["harvest"])["videos"][0]
+old = {n: got[n]["mesh_id"] for n in ("Alpha", "Beta")}
+
+# harvesting again: every climb with photos of its own, from scratch, keeping meshes and logs
+outcome.clear()
+harvested.clear()
+photo_sets.update({"Beta": ["a.jpg", "b.jpg", "d.jpg"], "Gamma": ["e.jpg", "f.jpg", "g.jpg"]})
+(server.PROJECTS / got["Beta"]["project_id"] / "photos" / "stale.jpg").write_bytes(b"x")
+assert server.queue_redo(c["id"], "harvest") == 5, "all but Alpha2, which shares Alpha's mesh (Delta Boulders is a group of them)"
+assert status(c["id"]) == ("running", 1)
+assert server.q("SELECT status FROM projects WHERE id=?", got["Alpha"]["project_id"], one=True)["status"] == "done"
+run_all(c["id"])
+got = items(c["id"])
+assert sorted(harvested) == ["Alpha", "Beta", "Delta", "Delta2", "Gamma"], harvested
+assert status(c["id"]) == ("done", 0), status(c["id"])
+assert got["Alpha"]["status"] == "done" and got["Alpha"]["changed"] == 0 and "the same photos" in got["Alpha"]["note"], got["Alpha"]
+assert got["Beta"]["status"] == "done" and got["Beta"]["changed"] == 1 and got["Beta"]["mesh_id"] == old["Beta"], got["Beta"]
+assert not (server.PROJECTS / got["Beta"]["project_id"] / "photos" / "stale.jpg").exists(), "from scratch"
+assert got["Gamma"]["status"] == "skipped" and got["Gamma"]["changed"] == 1 and "Rebuild changed" in got["Gamma"]["note"], got["Gamma"]
+assert got["Alpha"]["redo"] is None and got["Alpha"]["retry"] == 0
+log = server.read_log(got["Beta"]["project_id"])
+assert "-- harvesting again" in log and log.index("done") < log.index("-- harvesting again"), "its log is added to"
+assert server.q("SELECT status FROM projects WHERE id=?", got["Beta"]["project_id"], one=True)["status"] == "done"
+view = server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))
+assert view["again"] == {"changed": 2, "queued": 0}, view["again"]
+
+# rebuilding the changed ones: a new mesh takes over the old one's climbs, which stays as an older version
+assert server.queue_redo(c["id"], "rebuild-changed") == 2
+run_all(c["id"])
+got = items(c["id"])
+assert got["Beta"]["status"] == "done" and got["Beta"]["mesh_id"] != old["Beta"] and got["Beta"]["changed"] == 0, got["Beta"]
+assert "older version" in got["Beta"]["note"], got["Beta"]
+assert server.q("SELECT replaced_by FROM meshes WHERE id=?", old["Beta"], one=True)["replaced_by"] == got["Beta"]["mesh_id"]
+assert server.q("SELECT climb_id FROM mesh_links WHERE mesh_id=?", old["Beta"]) == [], "its climbs moved to the new one"
+assert server.q("SELECT mesh_id FROM mesh_links WHERE climb_id=?", got["Beta"]["climb_id"])[0]["mesh_id"] == got["Beta"]["mesh_id"]
+assert got["Gamma"]["status"] == "done" and got["Gamma"]["mesh_id"] and got["Gamma"]["note"] == "rebuilt", got["Gamma"]
+assert got["Alpha"]["mesh_id"] == old["Alpha"], "unchanged, so not rebuilt"
+assert not (server.PROJECTS / got["Beta"]["project_id"] / "work").exists()
+
+# rebuilding all, including a boulder's mesh that another climb shares, which follows it
+assert server.queue_redo(c["id"], "rebuild") == 5
+run_all(c["id"])
+got = items(c["id"])
+assert got["Alpha"]["mesh_id"] != old["Alpha"] and got["Alpha2"]["mesh_id"] == got["Alpha"]["mesh_id"], (got["Alpha"], got["Alpha2"])
+assert server.q("SELECT mesh_id FROM mesh_links WHERE climb_id=?", got["Alpha2"]["climb_id"])[0]["mesh_id"] == got["Alpha"]["mesh_id"]
+newest = got["Alpha"]["mesh_id"]
+
+# going back to an older version
+server.make_current(old["Alpha"])
+assert server.q("SELECT replaced_by FROM meshes WHERE id=?", old["Alpha"], one=True)["replaced_by"] is None
+assert server.q("SELECT replaced_by FROM meshes WHERE id=?", newest, one=True)["replaced_by"] == old["Alpha"]
+assert server.q("SELECT mesh_id FROM projects WHERE id=?", got["Alpha"]["project_id"], one=True)["mesh_id"] == old["Alpha"]
+assert {r["climb_id"] for r in server.q("SELECT climb_id FROM mesh_links WHERE mesh_id=?", old["Alpha"])} == \
+    {got["Alpha"]["climb_id"], got["Alpha2"]["climb_id"]}
+
+# a rebuild that fails keeps the mesh it had
+outcome["Delta"] = "boom"
+delta_mesh = got["Delta"]["mesh_id"]
+server.queue_redo(c["id"], "rebuild")
+run_all(c["id"])
+got = items(c["id"])
+assert got["Delta"]["status"] == "done" and got["Delta"]["mesh_id"] == delta_mesh and "rebuilding failed" in got["Delta"]["note"], got["Delta"]
+assert server.q("SELECT status,mesh_id FROM projects WHERE id=?", got["Delta"]["project_id"], one=True) == {"status": "done", "mesh_id": delta_mesh}
+outcome.clear()
+
+# looking for new videos only harvests again the climbs YouTube has new ones of
+harvested.clear()
+searched.update({"Alpha": ["https://www.youtube.com/watch?v=aaaaaaaaaaa"]})
+server.youtube_mod.metadata = lambda url: {"url": url, "title": "t", "description": "", "license": "x"}
+assert server.queue_redo(c["id"], "videos") == 5
+run_all(c["id"])
+got = items(c["id"])
+assert harvested == ["Alpha"], harvested
+assert got["Beta"]["note"] == "no new videos found" and got["Beta"]["status"] == "done", got["Beta"]
+assert server.q("SELECT found_by FROM climb_videos WHERE url=?", "https://www.youtube.com/watch?v=aaaaaaaaaaa", one=True)["found_by"] == "search"
+
+# looking for new videos and rebuilding each climb that gets new photos straight away
+harvested.clear()
+searched.update({"Beta": ["https://www.youtube.com/watch?v=bbbbbbbbbbb"]})
+photo_sets["Beta"] = ["a.jpg", "b.jpg", "h.jpg"]
+beta_mesh, alpha_mesh = items(c["id"])["Beta"]["mesh_id"], items(c["id"])["Alpha"]["mesh_id"]
+assert server.queue_redo(c["id"], "videos+rebuild") == 5
+run_all(c["id"])
+got = items(c["id"])
+assert harvested == ["Beta"], harvested
+assert got["Beta"]["mesh_id"] != beta_mesh and got["Beta"]["changed"] == 0 and "harvested again" in got["Beta"]["note"] \
+    and "rebuilt" in got["Beta"]["note"], got["Beta"]
+assert got["Alpha"]["mesh_id"] == alpha_mesh and got["Alpha"]["note"] == "no new videos found", got["Alpha"]
+
+# a restart carries on with what's queued again: a rebuild that had started carries on from its work
+server.queue_redo(c["id"], "rebuild")
+gamma = items(c["id"])["Gamma"]
+server.init_db()
+assert server.q("SELECT status FROM projects WHERE id=?", gamma["project_id"], one=True)["status"] != "stopped", \
+    "a project only queued again isn't marked as stopped"
+server.set_item(c["id"], gamma["source_id"], status="running", redo_started=1)
+(server.PROJECTS / gamma["project_id"] / "work").mkdir(exist_ok=True)
+(server.PROJECTS / gamma["project_id"] / "work" / "kept.bin").write_bytes(b"x")
+server.init_db()
+seen_work = []
+real = pipeline.reconstruct
+pipeline.reconstruct = lambda images, work, *a, **k: (seen_work.append((pathlib.Path(work) / "kept.bin").exists()), real(images, work, *a, **k))[1]
+run_all(c["id"])
+pipeline.reconstruct = real
+assert True in seen_work, "the interrupted rebuild carried on from its work"
+assert items(c["id"])["Gamma"]["status"] == "done" and status(c["id"])[0] == "done"
+print("harvesting and rebuilding again OK")
 print("ALL CAMPAIGN TESTS PASSED")
