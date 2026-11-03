@@ -172,6 +172,12 @@ def commons_geosearch(lat: float, lng: float, log: Log, radius_m: int = 400, lim
     return out
 
 
+# flickr.photos.licenses.getInfo's ids; any others are recorded by number
+FLICKR_LICENSES = {"0": "All rights reserved", "1": "CC BY-NC-SA 2.0", "2": "CC BY-NC 2.0", "3": "CC BY-NC-ND 2.0",
+                   "4": "CC BY 2.0", "5": "CC BY-SA 2.0", "6": "CC BY-ND 2.0", "7": "No known copyright restrictions",
+                   "8": "United States Government Work", "9": "CC0 1.0", "10": "Public Domain Mark 1.0"}
+
+
 def flickr_search(lat: float, lng: float, queries: list[str], log: Log, radius_km: float = 0.5,
                   cc_only: bool = True, limit: int = 100) -> list[Media]:
     key = os.environ.get("FLICKR_KEY")
@@ -196,7 +202,8 @@ def flickr_search(lat: float, lng: float, queries: list[str], log: Log, radius_k
             u = p.get("url_o") or p.get("url_l")
             if u:
                 out.append(Media(url=u, kind="image", page=f"https://www.flickr.com/photos/{p['owner']}/{p['id']}",
-                                 title=p.get("title"), credit=p.get("ownername"), license=f"flickr license id {p.get('license')}",
+                                 title=p.get("title"), credit=p.get("ownername"),
+                                 license=FLICKR_LICENSES.get(str(p.get("license")), f"flickr license id {p.get('license')}"),
                                  source="flickr"))
         if not text:
             log(f"flickr: {len(out)} geotagged photo(s) within {radius_km} km")
@@ -363,7 +370,8 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
     frames = []
     if "youtube" in sources and c.videos:
         frames = video_frames(c.videos, photos_dir, log, progress=progress("video"))
-        manifest += [{"file": f.name, "url": None, "kind": "video-frame", "source": "youtube",
+        by_tag = {hashlib.sha1(v.url.encode()).hexdigest()[:8]: v for v in c.videos}   # as video_frames names them
+        manifest += [{"file": f.name, "url": by_tag[f.name.split("_")[1]].url, "kind": "video-frame", "source": "youtube",
                       "license": "frame from linked beta video; reconstruction use only"} for f in frames]
     # remove webp (COLMAP wants jpg/png) by converting if PIL available
     _normalise_images(photos_dir, log)

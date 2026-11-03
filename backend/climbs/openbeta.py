@@ -66,7 +66,7 @@ def _media(items, page) -> list[Media]:
     out = []
     for m in items or []:
         out.append(Media(url=media_url(m), kind="image", page=page, credit=m.get("username"),
-                         license="CC BY-SA 4.0 (OpenBeta user upload)", width=m.get("width"), height=m.get("height"),
+                         license="© photographer (OpenBeta user upload; reuse needs their permission)", width=m.get("width"), height=m.get("height"),
                          source="openbeta"))
     return out
 
