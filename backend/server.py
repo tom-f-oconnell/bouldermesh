@@ -1332,6 +1332,7 @@ class Handler(BaseHTTPRequestHandler):
                     r["orientation"] = orientation.load(MESHES / r["id"])
                     r["sources"] = provenance.summary(provenance.load(MESHES / r["id"]))
                     r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
+                    r["marked"] = len(beta_mod.load_holds(MESHES / r["id"])["holds"])
                     r["cameras_kept"] = (MESHES / r["id"] / orientation.CAMERAS_FILE).exists()
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)

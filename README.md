@@ -174,6 +174,9 @@ where their photos were placed, so they need rebuilding first.
 again makes it a hand hold, then a finish hold, then a foot hold, then removes it, as setting a climb in
 the Tension Board app does. These are saved with the mesh, apart from those found in videos.
 
+The tab lists meshes with the most holds marked by hand first, then those with the most found in videos.
+*Only show meshes with beta* hides those with neither.
+
 ## Real photogrammetry
 
     docker compose up --build      # COLMAP + OpenMVS (+ OpenCV, ffmpeg, yt-dlp); first build ~10-40 min depending on cores

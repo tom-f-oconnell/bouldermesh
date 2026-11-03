@@ -233,6 +233,7 @@
       </section>
       <section>
         <h2>Meshes</h2>
+        <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="b-only"> Only show meshes with beta</label></div>
         <div id="beta-list"></div>
       </section>
     </div>
@@ -1255,12 +1256,18 @@ function betaLine(m){
 function renderBetaList(){
   const el = $('#beta-list');
   if (!el || !$('#pane-beta').classList.contains('on')) return;
-  const list = (meshesCache || []).filter(m => !m.replaced_by);
-  el.innerHTML = list.length ? '' : '<div class="status">No meshes yet.</div>';
+  // most holds marked by hand first, then most found in videos, then newest
+  const all = (meshesCache || []).filter(m => !m.replaced_by)
+    .sort((a, b) => (b.marked || 0) - (a.marked || 0) || (b.beta?.holds || 0) - (a.beta?.holds || 0));
+  const withBeta = all.filter(m => m.marked || m.beta?.holds);
+  $('#b-only').parentNode.lastChild.textContent = ` Only show meshes with beta (${withBeta.length})`;
+  const list = $('#b-only').checked ? withBeta : all;
+  el.innerHTML = list.length ? '' : `<div class="status">${all.length ? 'No meshes have holds marked or found yet.' : 'No meshes yet.'}</div>`;
   for (const m of list) {
     const d = document.createElement('div'); d.className = 'card mesh' + (betaState?.mid === m.id ? ' active' : '');
     const canFind = m.source.startsWith('project:') && m.cameras_kept && videoCount(m) && !['queued', 'running'].includes(m.beta?.status);
-    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span><br><small>${betaLine(m)}</small></div>
+    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span><br>
+        <small>${m.marked ? `${m.marked} hold${m.marked === 1 ? '' : 's'} marked · ` : ''}${betaLine(m)}</small></div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px"><button class="sm open">Open</button>
         ${canFind ? `<button class="sm sec find">${m.beta?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}</div>`;
     d.querySelector('.open').onclick = () => openBeta(m.id);
@@ -1268,6 +1275,7 @@ function renderBetaList(){
     el.appendChild(d);
   }
 }
+$('#b-only').onchange = renderBetaList;
 async function findBeta(mid){
   try { await api(`/api/meshes/${mid}/beta`, { method: 'POST' }); toast('Finding its beta: a few minutes for each video', 5000); }
   catch (e) { return toast(e.message, 6000); }
@@ -1410,7 +1418,10 @@ function setMarking(on){
 $('#vmark').onclick = () => setMarking(!betaState?.marking);
 async function saveMarked(){
   drawBeta(); renderBetaPanel();
-  try { betaState.marked = (await api(`/api/meshes/${betaState.mid}/holds`, { method: 'POST', json: { holds: betaState.marked } })).holds; }
+  try {
+    betaState.marked = (await api(`/api/meshes/${betaState.mid}/holds`, { method: 'POST', json: { holds: betaState.marked } })).holds;
+    if (meshesById[betaState.mid]) { meshesById[betaState.mid].marked = betaState.marked.length; renderBetaList(); }
+  }
   catch (e) { toast('Couldn\'t save the holds: ' + e.message, 6000); }
 }
 renderer.domElement.addEventListener('click', ev => {

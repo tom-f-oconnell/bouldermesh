@@ -201,8 +201,10 @@ def run(B: str, tmp: Path) -> None:
     assert req(B, "GET", f"/api/climbs/{cid}")[1]["videos_found"] == []
     st, b = req(B, "GET", f"/api/meshes/{m['id']}/beta")
     assert st == 200 and b["found"] is None and b["marked"] == {"holds": []} and m["beta"] is None, (b, m["beta"])
+    assert m["marked"] == 0, m["marked"]
     st, saved = req(B, "POST", f"/api/meshes/{m['id']}/holds", {"holds": [{"p": [0.1, 0.2, 0.3], "role": "start"}]})
     assert st == 200 and req(B, "GET", f"/api/meshes/{m['id']}/beta")[1]["marked"]["holds"] == saved["holds"], saved
+    assert next(x for x in req(B, "GET", "/api/meshes")[1] if x["id"] == m["id"])["marked"] == 1, "counted in the list"
     assert req(B, "POST", f"/api/meshes/{m['id']}/holds", {"holds": [{"p": [0, 0, 0], "role": "jug"}]})[0] == 400
     assert req(B, "GET", "/api/meshes/abcdef123456/beta")[0] == 404
 
