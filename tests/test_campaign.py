@@ -726,7 +726,7 @@ run_all(c["id"])
 got = items(c["id"])
 assert harvested == ["Beta"], harvested
 assert got["Beta"]["mesh_id"] != beta_mesh and got["Beta"]["changed"] == 0 and "harvested again" in got["Beta"]["note"] \
-    and "rebuilt" in got["Beta"]["note"], got["Beta"]
+    and "rebuilt" in got["Beta"]["note"] and "Rebuild changed" not in got["Beta"]["note"], got["Beta"]
 assert got["Alpha"]["mesh_id"] == alpha_mesh and got["Alpha"]["note"] == "no new videos found", got["Alpha"]
 
 # a restart carries on with what's queued again: a rebuild that had started carries on from its work

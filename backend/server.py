@@ -882,7 +882,7 @@ def run_redo(camp: dict, item: dict) -> None:
             end = _harvest_again(row, log)
             if then and end.get("changed"):
                 set_item(cid, sid, changed=1)
-                harvested_note = end["note"]
+                harvested_note = end["note"].split("; ")[0]     # not "Rebuild changed will use them": it's being rebuilt
                 end = _rebuild(cid, {**row, "changed": 1}, log)
                 end["note"] = f"{harvested_note}; {end['note']}"
         else:
