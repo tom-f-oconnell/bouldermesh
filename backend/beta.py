@@ -395,12 +395,13 @@ def annotate(photo: Path, cam: dict, result: dict, out: Path) -> None:
         for a, b in zip(pts, pts[1:]):
             if a and b:
                 cv2.line(im, tuple(map(int, a)), tuple(map(int, b)), colour, max(1, size[0] // 640), cv2.LINE_AA)
-    r = max(6, size[0] // 90)
+    r = max(8, size[0] // 75)     # open rings, as the viewer draws them
+    w = max(2, r // 4)
     for h in result["holds"]:
         uv = project(cam, size, h["p"])
         if uv:
-            cv2.circle(im, tuple(map(int, uv)), r + 2, (255, 255, 255), -1, cv2.LINE_AA)
-            cv2.circle(im, tuple(map(int, uv)), r, COLORS[h["role"]], -1, cv2.LINE_AA)
+            cv2.circle(im, tuple(map(int, uv)), r, (20, 20, 20), w + 3, cv2.LINE_AA)
+            cv2.circle(im, tuple(map(int, uv)), r, COLORS[h["role"]], w, cv2.LINE_AA)
     s = 960 / max(size)
     if s < 1:
         im = cv2.resize(im, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)

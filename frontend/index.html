@@ -373,6 +373,7 @@ function applySway(now){
 renderer.setAnimationLoop(now => {
   applySway(now);
   controls.update();
+  liftRings();
   const near = THREE.MathUtils.clamp(camera.position.distanceTo(controls.target) / 50, 1e-4, .01);   // so a close surface isn't clipped
   if (near !== camera.near) { camera.near = near; camera.updateProjectionMatrix(); }
   renderer.render(scene, camera);
@@ -1298,16 +1299,32 @@ function meshNode(){
   current.traverse(o => { if (!n && o.isMesh && !o.userData.hiddenPieces && !o.userData.beta) n = o; });
   return n && n !== current ? n.parent : current;    // a PLY or STL is a single mesh
 }
+// Holds are open rings, which always face the camera, a little more than a hand across on most boulders. Each is
+// drawn RING_LIFT nearer the camera than its hold, along the line from the camera to it, and shrunk to match, so it
+// looks just as it would on the hold, but rock beside the hold seen at a slant doesn't cut through it. A hold on the
+// far side of the rock, much more than that away, stays hidden. The texture is white with a dark edge, tinted by role.
+function ringTexture(thick){
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const x = c.getContext('2d'), r = 64 - thick / 2 - 4;
+  for (const [w, colour] of [[thick + 6, 'rgba(0,0,0,.7)'], [thick, '#fff']]) {
+    x.lineWidth = w; x.strokeStyle = colour; x.beginPath(); x.arc(64, 64, r, 0, 2 * Math.PI); x.stroke();
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const RING = { found: ringTexture(12), marked: ringTexture(22) };
+const HOLD_SIZE = { found: 0.028, marked: 0.032 };   // ring diameters, as shares of the boulder's size
+const RING_LIFT = 0.12;                               // also a share of the boulder's size
 function drawBeta(){
   if (!betaState || !current) return;
   if (betaState.group) betaState.group.parent?.remove(betaState.group);
-  const node = meshNode(), g = new THREE.Group(), box = new THREE.Box3();
-  node.children.forEach(c => { if (c.isMesh && !c.userData.beta) { c.geometry.computeBoundingBox(); box.union(c.geometry.boundingBox); } });
-  const size = box.isEmpty() ? 1 : Math.max(...box.getSize(new THREE.Vector3()).toArray());
-  const r = size * 0.012, sphere = new THREE.SphereGeometry(1, 16, 12);
-  const dot = (p, role, scale, opacity) => {
-    const m = new THREE.Mesh(sphere, new THREE.MeshBasicMaterial({ color: ROLES[role].color, transparent: opacity < 1, opacity, depthTest: true }));
-    m.position.fromArray(p); m.scale.setScalar(r * scale); m.userData.beta = true; m.renderOrder = 2; g.add(m); return m;
+  const node = meshNode(), g = new THREE.Group();
+  // the boulder's size as the view frames it (not stray pieces), in the units of the node the holds are in
+  const unit = Math.max(...mainBox(current).getSize(new THREE.Vector3()).toArray()) / node.getWorldScale(new THREE.Vector3()).x;
+  const ring = (p, role, kind) => {
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: RING[kind], color: ROLES[role].color, transparent: true, depthWrite: false }));
+    sprite.userData = { beta: true, at: new THREE.Vector3().fromArray(p), size: unit * HOLD_SIZE[kind], lift: unit * RING_LIFT };
+    sprite.renderOrder = kind === 'marked' ? 4 : 3;
+    g.add(sprite); return sprite;
   };
   for (const v of betaState.found?.videos || []) {
     if (!betaState.shown.has(v.tag)) continue;
@@ -1317,17 +1334,22 @@ function drawBeta(){
         new THREE.LineBasicMaterial({ color: limb.endsWith('h') ? 0xe8e8e8 : 0xffc83c, transparent: true, opacity: .55 }));
       line.userData.beta = true; g.add(line);
     }
-    for (const h of v.holds || []) dot(h.p, h.role, .8, .85);
+    for (const h of v.holds || []) ring(h.p, h.role, 'found');
   }
-  betaState.markers = betaState.marked.map((h, i) => {
-    const m = dot(h.p, h.role, 1.25, 1);
-    m.userData.marked = i;
-    const rim = new THREE.Mesh(sphere, new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.BackSide }));
-    rim.scale.setScalar(1.25); rim.userData.beta = true; m.add(rim);
-    return m;
-  });
+  betaState.markers = betaState.marked.map((h, i) => { const sprite = ring(h.p, h.role, 'marked'); sprite.userData.marked = i; return sprite; });
   node.add(g);
-  Object.assign(betaState, { group: g, node });
+  Object.assign(betaState, { group: g, node, rings: g.children.filter(o => o.isSprite) });
+  liftRings();
+}
+const eye = new THREE.Vector3();
+function liftRings(){
+  if (!betaState?.rings?.length) return;
+  betaState.node.worldToLocal(eye.copy(camera.position));
+  for (const r of betaState.rings) {
+    const { at, size } = r.userData, d = eye.distanceTo(at), lift = Math.min(r.userData.lift, d / 2);
+    r.position.copy(eye).sub(at).setLength(lift).add(at);
+    r.scale.setScalar(size * (d - lift) / d);     // nearer by `lift`, so smaller by as much: the same on screen
+  }
 }
 function roleCounts(holds){
   const n = {}; for (const h of holds) n[h.role] = (n[h.role] || 0) + 1;
