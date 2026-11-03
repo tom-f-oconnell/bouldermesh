@@ -102,6 +102,12 @@
   #srctip .src.on{background:var(--line)}
   #srctip .key{width:12px;height:3px;margin-top:8px}
   #srctip .lic{color:var(--mute)}
+  .legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;margin-top:6px}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .swatch{display:inline-block;width:11px;height:11px;border-radius:50%;border:1px solid rgba(255,255,255,.6)}
+  .bvid{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
+  .bvid img{width:100%;border-radius:6px;margin-top:6px;display:block}
+  #vmark.on{background:var(--acc);color:#001018}
   .phone{display:none}
   /* A phone shows either the controls or the view, which then has the whole screen, with nothing over the mesh */
   @media (max-width:860px){
@@ -109,7 +115,7 @@
     body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
     #tofull{margin-left:auto} #caps{display:none}
     #hud,#viewnote,#pieces,#orient{display:none!important}
-    .viewbar button{white-space:nowrap} .viewbar .status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .viewbar{overflow-x:auto} .viewbar button{white-space:nowrap} .viewbar .status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   }
 </style>
 </head>
@@ -127,6 +133,7 @@
       <button data-tab="areas">Areas</button>
       <button data-tab="projects">Projects</button>
       <button data-tab="meshes">Meshes</button>
+      <button data-tab="beta">Beta</button>
     </div>
 
     <!-- ============================ CLIMBS ============================ -->
@@ -215,6 +222,20 @@
         <div id="meshes"></div>
       </section>
     </div>
+    <!-- ============================ BETA ============================ -->
+    <div class="pane" id="pane-beta">
+      <section>
+        <h2>Beta</h2>
+        <div class="notice">Where climbers put their hands and feet, found in the videos each mesh was built from, and holds you
+          mark yourself, in the Tension Board app's colours:</div>
+        <div class="legend" id="b-legend"></div>
+        <div id="beta-open" style="margin-top:10px"></div>
+      </section>
+      <section>
+        <h2>Meshes</h2>
+        <div id="beta-list"></div>
+      </section>
+    </div>
   </aside>
 
   <div id="right">
@@ -222,6 +243,7 @@
       <button class="sm phone" id="toctl">Controls</button>
       <button class="sec sm" id="v3d">3D viewer</button>
       <button class="sec sm" id="vmap">Map</button>
+      <button class="sec sm" id="vmark" style="display:none" title="Click the rock to add a start hold, and a hold again for hand, finish, foot, then none">Mark holds</button>
       <button class="sec sm" id="vsway" disabled title="Rocks the view a few degrees either way from where it is now, to show off that it's 3D. Dragging or scrolling stops it.">Sway view</button>
       <span class="status" id="viewing"></span>
     </div>
@@ -275,6 +297,7 @@ const fmtLL = (lat,lng) => (lat==null||lng==null) ? '—' : `${(+lat).toFixed(5)
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x===b));
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + b.dataset.tab));
+  if (b.dataset.tab === 'beta') renderBetaList();
 });
 // on a phone, the view on its own, or the controls on their own
 function setFull(on){
@@ -301,7 +324,7 @@ function surfaceUnder(ev){
   if (!current) return null;
   const r = renderer.domElement.getBoundingClientRect();
   raycaster.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, 1 - (ev.clientY - r.top) / r.height * 2), camera);
-  return raycaster.intersectObject(current, true).find(h => h.object.visible) || null;
+  return raycaster.intersectObject(current, true).find(h => h.object.visible && !h.object.userData.beta) || null;
 }
 let lastWheel = 0;
 renderer.domElement.addEventListener('wheel', ev => {
@@ -642,6 +665,7 @@ async function loadGltfWithTexture(url, base, label){
   return { gltf, note };
 }
 async function loadMeshUrl(url, filename, label, id){
+  closeBeta(id);
   showRight('3d');
   viewNote('');
   pieces = null; renderPieces();
@@ -671,6 +695,7 @@ async function loadMeshUrl(url, filename, label, id){
     viewNote(note, note ? again : null);
     renderPieces();
     renderOrientation(id ? meshesById[id] : null);
+    if (betaState?.mid === id) drawBeta();     // the same mesh opened again: its markers go on the new copy
     requestAnimationFrame(() => requestAnimationFrame(() => {   // a texture too big for the card's memory shows black, not grey
       const gl = renderer.getContext();
       if (gl.getError() === gl.OUT_OF_MEMORY) viewNote('The graphics card ran out of memory for this texture, so it may show black.', again);
@@ -1189,8 +1214,189 @@ async function refreshMeshes(){
     d.querySelector('.linksel').onchange = async ev => { if (!ev.target.value) return; await api(`/api/meshes/${m.id}/links`, {method:'POST', json:{climb_id: ev.target.value}}); toast('Linked'); refreshMeshes(); refreshClimbs(); };
     el.appendChild(d);
   }
+  renderBetaList();
 }
-function viewMesh(id){ const m = meshesById[id]; if (m) loadMeshUrl(`/meshes/${id}/${m.filename}`, m.filename, m.name + (m.climbs.length?` — ${m.climbs.map(c=>c.name).join(', ')}`:''), id); }
+function viewMesh(id){ const m = meshesById[id]; if (m) return loadMeshUrl(`/meshes/${id}/${m.filename}`, m.filename, m.name + (m.climbs.length?` — ${m.climbs.map(c=>c.name).join(', ')}`:''), id); }
+// ---------------------------------------------------------------- beta: holds climbers used, and holds marked by hand
+// The Tension Board app's colours, in the order it cycles a hold through when setting a climb (then off)
+const ROLES = {
+  start: { name: 'Start', color: '#19d23c', note: 'also for feet' },
+  hand: { name: 'Hand', color: '#2f6bff', note: 'also for feet' },
+  finish: { name: 'Finish', color: '#ff2a2a' },
+  foot: { name: 'Foot only', color: '#f53dff' },
+};
+const ROLE_CYCLE = ['start', 'hand', 'finish', 'foot'];
+let betaState = null;   // {mid, found, marked, available, shown: Set of video tags, marking, group, node, markers}
+let betaPoll = null;
+$('#b-legend').innerHTML = Object.values(ROLES).map(r => `<span><span class="swatch" style="background:${r.color}"></span>${r.name}${r.note ? ` <small>(${r.note})</small>` : ''}</span>`).join('');
+function videoCount(m){ return m.sources?.sources?.find(x => x.source === 'youtube')?.videos || 0; }
+function betaLine(m){
+  const b = m.beta, n = videoCount(m);
+  if (b?.status === 'queued') return 'queued to find its beta';
+  if (b?.status === 'running') return `finding its beta: ${esc(b.progress || '')}`;
+  if (b?.status === 'done') return b.note ? esc(b.note) : `${b.holds} holds found in ${b.videos} video${b.videos === 1 ? '' : 's'}`;
+  if (b) return esc(b.status);
+  if (!m.source.startsWith('project:')) return 'an upload: holds can only be marked by hand';
+  if (!m.cameras_kept) return 'rebuild it to find beta in its videos: where its photos were placed wasn\'t kept';
+  return n ? `${n} video${n === 1 ? '' : 's'} to find beta in` : 'no video frames placed in it';
+}
+function renderBetaList(){
+  const el = $('#beta-list');
+  if (!el || !$('#pane-beta').classList.contains('on')) return;
+  const list = (meshesCache || []).filter(m => !m.replaced_by);
+  el.innerHTML = list.length ? '' : '<div class="status">No meshes yet.</div>';
+  for (const m of list) {
+    const d = document.createElement('div'); d.className = 'card mesh' + (betaState?.mid === m.id ? ' active' : '');
+    const canFind = m.source.startsWith('project:') && m.cameras_kept && videoCount(m) && !['queued', 'running'].includes(m.beta?.status);
+    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span><br><small>${betaLine(m)}</small></div>
+      <div class="row" style="flex-direction:column;align-items:stretch;gap:4px"><button class="sm open">Open</button>
+        ${canFind ? `<button class="sm sec find">${m.beta?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}</div>`;
+    d.querySelector('.open').onclick = () => openBeta(m.id);
+    d.querySelector('.find')?.addEventListener('click', () => findBeta(m.id));
+    el.appendChild(d);
+  }
+}
+async function findBeta(mid){
+  try { await api(`/api/meshes/${mid}/beta`, { method: 'POST' }); toast('Finding its beta: a few minutes for each video', 5000); }
+  catch (e) { return toast(e.message, 6000); }
+  await refreshMeshes();
+  if (betaState?.mid === mid) { await loadBeta(); watchBeta(); }
+}
+async function loadBeta(){
+  const r = await api(`/api/meshes/${betaState.mid}/beta`);
+  const fresh = !betaState.found || (r.found?.videos || []).length !== (betaState.found?.videos || []).length;
+  Object.assign(betaState, { found: r.found, marked: r.marked.holds || [], available: r.available });
+  if (fresh) betaState.shown = new Set((r.found?.videos || []).slice(0, 1).map(v => v.tag));   // one at a time is clearer
+  drawBeta(); renderBetaPanel();
+}
+function watchBeta(){
+  clearInterval(betaPoll);
+  betaPoll = setInterval(async () => {
+    if (!betaState) return clearInterval(betaPoll);
+    await loadBeta();
+    if (!['queued', 'running'].includes(betaState.found?.status)) { clearInterval(betaPoll); refreshMeshes(); }
+  }, 5000);
+}
+async function openBeta(mid){
+  document.querySelector('.tabs button[data-tab=beta]').click();
+  await viewMesh(mid);
+  if (!current) return;
+  betaState = { mid, found: null, marked: [], shown: new Set(), marking: false };
+  await loadBeta();
+  if (['queued', 'running'].includes(betaState.found?.status)) watchBeta();
+  renderBetaList();
+}
+function closeBeta(id){
+  if (!betaState || betaState.mid === id) return;
+  if (betaState.group) betaState.group.parent?.remove(betaState.group);
+  betaState = null; clearInterval(betaPoll);
+  $('#beta-open').innerHTML = ''; showMarkButton(); renderBetaList();
+}
+// markers go under the node the mesh's geometry is in, so they share its coordinates, which are beta.json's
+function meshNode(){
+  let n = null;
+  current.traverse(o => { if (!n && o.isMesh && !o.userData.hiddenPieces && !o.userData.beta) n = o; });
+  return n && n !== current ? n.parent : current;    // a PLY or STL is a single mesh
+}
+function drawBeta(){
+  if (!betaState || !current) return;
+  if (betaState.group) betaState.group.parent?.remove(betaState.group);
+  const node = meshNode(), g = new THREE.Group(), box = new THREE.Box3();
+  node.children.forEach(c => { if (c.isMesh && !c.userData.beta) { c.geometry.computeBoundingBox(); box.union(c.geometry.boundingBox); } });
+  const size = box.isEmpty() ? 1 : Math.max(...box.getSize(new THREE.Vector3()).toArray());
+  const r = size * 0.012, sphere = new THREE.SphereGeometry(1, 16, 12);
+  const dot = (p, role, scale, opacity) => {
+    const m = new THREE.Mesh(sphere, new THREE.MeshBasicMaterial({ color: ROLES[role].color, transparent: opacity < 1, opacity, depthTest: true }));
+    m.position.fromArray(p); m.scale.setScalar(r * scale); m.userData.beta = true; m.renderOrder = 2; g.add(m); return m;
+  };
+  for (const v of betaState.found?.videos || []) {
+    if (!betaState.shown.has(v.tag)) continue;
+    for (const [limb, track] of Object.entries(v.tracks || {})) {
+      if (track.length < 2) continue;
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(track.map(t => new THREE.Vector3(t[1], t[2], t[3]))),
+        new THREE.LineBasicMaterial({ color: limb.endsWith('h') ? 0xe8e8e8 : 0xffc83c, transparent: true, opacity: .55 }));
+      line.userData.beta = true; g.add(line);
+    }
+    for (const h of v.holds || []) dot(h.p, h.role, .8, .85);
+  }
+  betaState.markers = betaState.marked.map((h, i) => {
+    const m = dot(h.p, h.role, 1.25, 1);
+    m.userData.marked = i;
+    const rim = new THREE.Mesh(sphere, new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.BackSide }));
+    rim.scale.setScalar(1.25); rim.userData.beta = true; m.add(rim);
+    return m;
+  });
+  node.add(g);
+  Object.assign(betaState, { group: g, node });
+}
+function roleCounts(holds){
+  const n = {}; for (const h of holds) n[h.role] = (n[h.role] || 0) + 1;
+  return ROLE_CYCLE.filter(r => n[r]).map(r => `<span class="swatch" style="background:${ROLES[r].color}"></span>${n[r]} ${ROLES[r].name.toLowerCase()}`).join(' · ') || 'none';
+}
+function renderBetaPanel(){
+  const el = $('#beta-open'), b = betaState;
+  if (!b) { el.innerHTML = ''; return; }
+  const m = meshesById[b.mid], f = b.found, n = videoCount(m || {});
+  const busy = ['queued', 'running'].includes(f?.status);
+  const canFind = m?.source.startsWith('project:') && m.cameras_kept && n && b.available && !busy;
+  el.innerHTML = `<div class="card active">
+    <div class="row"><b class="grow">${esc(m?.name || '')}</b><button class="sm sec close">✕ close</button></div>
+    <div class="meta" style="margin-top:6px"><b>Yours:</b> ${roleCounts(b.marked)}</div>
+    <div class="row" style="margin-top:4px"><button class="sm mark">${b.marking ? 'Stop marking' : 'Mark holds'}</button>
+      ${b.marked.length ? '<button class="sm sec clearmine">Clear yours</button>' : ''}</div>
+    <div class="notice" style="margin-top:6px">Marking: click the rock to add a start hold, then click a hold again for hand, finish, foot, then none.</div>
+    <div class="meta" style="margin-top:8px"><b>From videos:</b> ${busy ? `${f.status === 'queued' ? 'queued' : esc(f.progress || 'starting')}…` : m ? betaLine(m) : ''}
+      ${canFind ? `<button class="sm sec find" style="margin-left:6px">${f?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}</div>
+    ${!b.available && n ? '<div class="notice">Finding beta needs rtmlib and onnxruntime, which the Docker image has.</div>' : ''}
+    ${(f?.videos || []).map(v => `<div class="bvid">
+      <label class="row" style="gap:6px"><input type="checkbox" data-tag="${v.tag}" ${b.shown.has(v.tag) ? 'checked' : ''}>
+        <span class="grow"><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.title || v.url)}</a>${v.uploader ? ` <small>· ${esc(v.uploader)}</small>` : ''}</span></label>
+      <div class="meta">${v.holds ? roleCounts(v.holds) : ''} ${v.frames ? `<small>· climber in ${v.with_climber} of ${v.frames} frames, ${v.placed_frames} placed on the mesh${v.approximate_lens ? ', lens approximate' : ''}</small>` : ''}
+        ${v.status && v.status !== 'done' ? `<small>· ${esc(v.status)}</small>` : ''}</div>
+      ${v.image ? `<img src="/meshes/${b.mid}/${v.image}?v=${f.finished || ''}" alt="" title="The climber's hands (white) and feet (yellow), and the holds they stayed on, drawn on this video's frame placed in the mesh">` : ''}
+    </div>`).join('')}
+  </div>`;
+  el.querySelector('.close').onclick = () => { closeBeta(null); };
+  el.querySelector('.mark').onclick = () => setMarking(!b.marking);
+  el.querySelector('.clearmine')?.addEventListener('click', () => { if (confirm('Remove the holds you marked on this mesh?')) { b.marked = []; saveMarked(); } });
+  el.querySelector('.find')?.addEventListener('click', () => findBeta(b.mid));
+  el.querySelectorAll('[data-tag]').forEach(c => c.onchange = () => { c.checked ? b.shown.add(c.dataset.tag) : b.shown.delete(c.dataset.tag); drawBeta(); });
+  showMarkButton();
+}
+function showMarkButton(){
+  const btn = $('#vmark');
+  btn.style.display = betaState ? '' : 'none';
+  btn.classList.toggle('on', !!betaState?.marking);
+  btn.textContent = betaState?.marking ? 'Stop marking' : 'Mark holds';
+}
+function setMarking(on){
+  if (!betaState) return;
+  if (on && pieces?.editing) { pieces.editing = false; applyPieces(); renderPieces(); }
+  betaState.marking = on; renderBetaPanel();
+}
+$('#vmark').onclick = () => setMarking(!betaState?.marking);
+async function saveMarked(){
+  drawBeta(); renderBetaPanel();
+  try { betaState.marked = (await api(`/api/meshes/${betaState.mid}/holds`, { method: 'POST', json: { holds: betaState.marked } })).holds; }
+  catch (e) { toast('Couldn\'t save the holds: ' + e.message, 6000); }
+}
+renderer.domElement.addEventListener('click', ev => {
+  const b = betaState;
+  if (!b?.marking || !current || ev.detail > 1 || !pressedAt || Math.hypot(ev.clientX - pressedAt[0], ev.clientY - pressedAt[1]) > 5) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  raycaster.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, 1 - (ev.clientY - r.top) / r.height * 2), camera);
+  const onMarker = raycaster.intersectObjects(b.markers || [], false)[0];
+  if (onMarker) {     // the next role, as the Tension Board app cycles them, and then off
+    const i = onMarker.object.userData.marked, next = ROLE_CYCLE[ROLE_CYCLE.indexOf(b.marked[i].role) + 1];
+    if (next) b.marked[i].role = next; else b.marked.splice(i, 1);
+    return saveMarked();
+  }
+  const hit = surfaceUnder(ev);
+  if (!hit) return;
+  b.marked.push({ p: b.node.worldToLocal(hit.point.clone()).toArray().map(x => +x.toFixed(6)), role: ROLE_CYCLE[0] });
+  saveMarked();
+});
+
 async function uploadMesh(files){
   const fd = new FormData(); for (const f of files) fd.append('files', f);
   if ($('#upclimb').value) fd.append('climb_id', $('#upclimb').value);

@@ -45,6 +45,8 @@ RUN gcc -shared -fPIC -O2 -Wall -o /usr/local/lib/signal_note.so /opt/signal_not
 
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
+# rtmlib (the pose model finding climbers' hands and feet) is installed without its declared dependencies, which
+# would replace Ubuntu's numpy and OpenCV with pip's; it works with Ubuntu's, and onnxruntime's are listed after
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pil python3-numpy python3-opencv python3-pip ffmpeg colmap libcudart12 \
     libboost-iostreams1.83.0 libboost-program-options1.83.0 libboost-serialization1.83.0 \
@@ -52,7 +54,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcgal-dev libglew2.2 libglfw3 libjpeg8 libpng16-16 libtiff6 \
  && rm -rf /var/lib/apt/lists/* \
  && pip install --no-cache-dir --break-system-packages yt-dlp \
- && pip install --no-cache-dir --break-system-packages torch torchvision --index-url https://download.pytorch.org/whl/cpu
+ && pip install --no-cache-dir --break-system-packages torch torchvision --index-url https://download.pytorch.org/whl/cpu \
+ && pip install --no-cache-dir --break-system-packages --no-deps rtmlib onnxruntime \
+ && pip install --no-cache-dir --break-system-packages flatbuffers protobuf coloredlogs humanfriendly sympy packaging tqdm
 # Ubuntu's colmap package is only there for the libraries this one links to: /usr/local/bin comes first
 COPY --from=colmap /opt/colmap-cuda/bin/colmap /usr/local/bin/colmap
 COPY --from=build /usr/local/bin/OpenMVS /usr/local/bin/OpenMVS

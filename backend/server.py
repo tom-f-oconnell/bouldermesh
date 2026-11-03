@@ -34,6 +34,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
+import beta as beta_mod  # noqa: E402
 import diagnostics  # noqa: E402
 import meshclean  # noqa: E402
 import orientation  # noqa: E402
@@ -898,6 +899,25 @@ def run_redo(camp: dict, item: dict) -> None:
     set_item(cid, sid, **end, redo=None, retry=0, redo_started=0)
 
 
+def run_beta(mid: str) -> None:
+    """Find where climbers put their hands and feet in a mesh's videos (beta.py)."""
+    m = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
+    if not m or not m["source"].startswith("project:"):
+        return
+    mesh_dir, pid = MESHES / mid, m["source"].split(":", 1)[1]
+
+    def log(line: str) -> None:
+        with open(mesh_dir / "beta.log", "a") as f:
+            f.write(line.rstrip() + "\n")
+    try:
+        beta_mod.find(mesh_dir, PROJECTS / pid / "photos", log)
+    except Cancelled:
+        beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "stopped", "progress": None})
+    except Exception as e:
+        log(f"FAILED: {type(e).__name__}: {e}")
+        beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": f"failed: {type(e).__name__}: {e}", "progress": None})
+
+
 def stop_campaign(camp_id: str, now: bool = True) -> None:
     """Stop a campaign, now or once the climb it's on is finished."""
     running = _campaign_running == camp_id
@@ -932,9 +952,11 @@ def worker() -> None:
             except (Exception, Cancelled) as e:  # never let the worker die
                 print(f"campaign error: {e!r}", flush=True)
             continue
-        jobctl.begin()
+        jobctl.begin(low_priority=job["type"] == "beta")
         try:
-            if job["type"] == "reconstruct":
+            if job["type"] == "beta":
+                run_beta(job["mid"])
+            elif job["type"] == "reconstruct":
                 run_reconstruct(job["pid"], job.get("internet", False))
             elif job["type"] == "harvest":
                 run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True))
@@ -1068,7 +1090,15 @@ class Handler(BaseHTTPRequestHandler):
                     r["cleanup"] = meshclean.summary(meshclean.load(MESHES / r["id"]))
                     r["orientation"] = orientation.load(MESHES / r["id"])
                     r["sources"] = provenance.summary(provenance.load(MESHES / r["id"]))
+                    r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
+                    r["cameras_kept"] = (MESHES / r["id"] / orientation.CAMERAS_FILE).exists()
                 return self.send_json(rows)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
+            if m:   # what each video's climber did, and the holds marked by hand
+                if not (MESHES / m[1]).is_dir():
+                    return self.send_json({"error": "not found"}, 404)
+                return self.send_json({"found": beta_mod.load(MESHES / m[1]), "marked": beta_mod.load_holds(MESHES / m[1]),
+                                       "available": beta_mod.available()})
             if p == "/api/videos":   # every video known, and what it or its channel says about the climber's size
                 return self.send_json(q("""SELECT v.url,v.title,v.uploader,v.channel_url,v.duration,v.upload_date,v.license,
                       v.height_cm,v.wingspan_cm,v.ape_index_cm,v.first_person,v.quotes,
@@ -1272,6 +1302,28 @@ class Handler(BaseHTTPRequestHandler):
                         if m[2] == "harvest-again" else ("rebuild-changed" if b.get("changed_only") else "rebuild"))
                 queued = queue_redo(m[1], what)
                 return self.send_json({**campaign_view(q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)), "queued": queued})
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
+            if m:
+                mesh = q("SELECT source FROM meshes WHERE id=?", m[1], one=True)
+                if not mesh:
+                    return self.send_json({"error": "not found"}, 404)
+                if not mesh["source"].startswith("project:"):
+                    return self.send_json({"error": "only reconstructed meshes have videos to find beta in"}, 409)
+                if not beta_mod.available():
+                    return self.send_json({"error": "finding beta needs rtmlib and onnxruntime (in the Docker image)"}, 501)
+                if (beta_mod.load(MESHES / m[1]) or {}).get("status") in ("queued", "running"):
+                    return self.send_json({"error": "already finding it"}, 409)
+                beta_mod.save(MESHES / m[1], {"status": "queued", "videos": [], "progress": None})
+                jobs.put({"type": "beta", "mid": m[1]})
+                return self.send_json({"queued": True}, 202)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/holds", p)
+            if m:   # holds marked by hand: {holds: [{p, role}]}, replacing those there
+                if not (MESHES / m[1]).is_dir():
+                    return self.send_json({"error": "not found"}, 404)
+                try:
+                    return self.send_json(beta_mod.save_holds(MESHES / m[1], self.read_json().get("holds") or []))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/make-current", p)
             if m:
                 if not q("SELECT replaced_by FROM meshes WHERE id=? AND replaced_by IS NOT NULL", m[1]):
@@ -1418,6 +1470,8 @@ def main() -> None:
     threading.Thread(target=clean_existing_meshes, daemon=True).start()
     threading.Thread(target=orient_existing_meshes, daemon=True).start()
     threading.Thread(target=source_existing_meshes, daemon=True).start()
+    for d in MESHES.iterdir() if MESHES.exists() else []:
+        beta_mod.interrupted(d)     # a search for beta that a restart stopped, as jobs don't carry on
     host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))
     mode = "COLMAP + OpenMVS" if pipeline.real_pipeline_ready() else "DEMO (COLMAP/OpenMVS not found)"
     print(f"BoulderMesh on http://{host}:{port}  data={DATA}  pipeline={mode}", flush=True)

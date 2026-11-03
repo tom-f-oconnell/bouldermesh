@@ -158,6 +158,22 @@ Jobs you start by hand go first, between climbs. Expect each climb to take most 
 and about 170 MB of disk plus up to a few hundred MB of download cache. Mountain Project's export
 stops at 1000 climbs: in a bigger area, these are its most popular 1000.
 
+## Beta: the holds climbers use
+
+The *Beta* tab shows a mesh with its holds coloured as the Tension Board app does: green start holds,
+blue hand holds, magenta foot-only holds and red finish holds (start and hand holds can be used as feet
+too). *Find beta* looks at each video with frames placed in the mesh. It finds the climber's hands and
+feet with a pose model, casts them onto the mesh, and keeps the points where one stayed still for at
+least a second. The first holds the hands used are start holds, the last ones finish holds, and holds
+only feet touched are foot holds. Each video has its own holds and tracks, which can be shown or
+hidden, and a picture of its frame with the tracks and holds drawn on it. Expect a few minutes per
+video on a CPU. Meshes built before Nov 3 didn't keep their cameras' lenses, and those before Nov 1
+where their photos were placed, so they need rebuilding first.
+
+*Mark holds* lets you set the holds yourself: clicking the rock adds a start hold, and clicking a hold
+again makes it a hand hold, then a finish hold, then a foot hold, then removes it, as setting a climb in
+the Tension Board app does. These are saved with the mesh, apart from those found in videos.
+
 ## Real photogrammetry
 
     docker compose up --build      # COLMAP + OpenMVS (+ OpenCV, ffmpeg, yt-dlp); first build ~10-40 min depending on cores
@@ -226,6 +242,7 @@ new code. To remove it: `sudo systemctl disable --now bouldermesh`, then delete 
     backend/climbs/harvest.py      photo sources, download, provenance
     backend/climbs/youtube.py      finding climbs' videos, and climbers' heights and ape indexes in their text
     backend/provenance.py          where each mesh's photos came from, kept with the mesh
+    backend/beta.py                the holds climbers use, from their hands and feet in videos
     backend/climbs/relevance.py    filter for photos substantially of the boulder
     backend/climbs/diversity.py    de-dup + view-graph diversity estimate
     backend/climbs/htmlmini.py     tiny DOM on html.parser (no bs4 needed)
@@ -255,6 +272,8 @@ new code. To remove it: `sudo systemctl disable --now bouldermesh`, then delete 
     POST /api/campaigns/{id}/harvest-again {videos_only, then_rebuild} · POST /api/campaigns/{id}/rebuild {changed_only}
     GET  /api/videos                                    every video, with the climber's size if stated
     POST /api/meshes/{id}/make-current                  go back to an older version of a rebuilt mesh
+    GET|POST /api/meshes/{id}/beta                      the holds found in its videos, and those marked; POST finds them
+    POST /api/meshes/{id}/holds {holds: [{p, role}]}    the holds marked by hand, roles start, hand, finish or foot
     GET|POST|DELETE /api/meshes/{id}/cleanup · PATCH /api/meshes/{id}/cleanup {removed} · GET /meshes/{id}/mesh.glb?cleaned=1
     GET  /api/meshes/{id}/sources                       each photo in the mesh: source, URL, page, credit, licence
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}

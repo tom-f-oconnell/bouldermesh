@@ -180,6 +180,12 @@ def run(B: str, tmp: Path) -> None:
     assert req(B, "POST", "/api/campaigns/abcdef123456/harvest-again", {})[0] == 404
     assert req(B, "POST", "/api/campaigns/abcdef123456/rebuild", {"changed_only": True})[0] == 404
     assert req(B, "GET", f"/api/climbs/{cid}")[1]["videos_found"] == []
+    st, b = req(B, "GET", f"/api/meshes/{m['id']}/beta")
+    assert st == 200 and b["found"] is None and b["marked"] == {"holds": []} and m["beta"] is None, (b, m["beta"])
+    st, saved = req(B, "POST", f"/api/meshes/{m['id']}/holds", {"holds": [{"p": [0.1, 0.2, 0.3], "role": "start"}]})
+    assert st == 200 and req(B, "GET", f"/api/meshes/{m['id']}/beta")[1]["marked"]["holds"] == saved["holds"], saved
+    assert req(B, "POST", f"/api/meshes/{m['id']}/holds", {"holds": [{"p": [0, 0, 0], "role": "jug"}]})[0] == 400
+    assert req(B, "GET", "/api/meshes/abcdef123456/beta")[0] == 404
 
     st, cd = req(B, "GET", f"/api/climbs/{cid}")
     assert cd["meshes"][0]["id"] == m["id"] and cd["projects"][0]["id"] == pid

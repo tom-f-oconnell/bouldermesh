@@ -412,6 +412,29 @@ for scale needs the climber found in placed frames, which the masks below are ke
 People's masks used to be made in `work/` and deleted with it. They're now kept in the project's
 `masks/`, which also makes a rebuild skip photos that already have one.
 
+## Beta: which holds climbers use (`backend/beta.py`)
+
+People's masks say where people are, not which of their parts are hands and which feet, so a pose
+model finds those. On 12 of Relic's video frames, torchvision's Keypoint R-CNN (already in the image)
+found the climber in 10, at 1.83 s a frame on 8 cores, and RTMPose's body-with-feet model (rtmlib) in
+all 12, at 2.03 s, with toes as well as ankles, which is where feet stand on holds. RTMPose is used, with
+people detected every 5th frame and tracked in between, on 2 frames a second of up to 150 s of each video.
+
+A hand's point is 35% of a forearm past the wrist, and a foot's its big toe, or ankle. Each frame is
+matched (ORB features, ignoring the climber) to the frame of the same video placed in the mesh that it
+shares most with, and the point mapped into that frame by a homography, which treats the rock as
+locally flat. The point is cast onto the mesh from that frame's camera, using its lens as COLMAP fitted
+it (`cameras.json` keeps it from Nov 3). A point that moves under 3% of the rock's size between frames
+for a second is a contact, and contacts within 4% are one hold. Feet within 4% of the mesh's lowest
+part are taken to be on the ground. Roles follow the Tension Board: each hand's first hold is a start
+hold, each hand's last a finish hold, other hands' holds hand holds, and those only feet touched foot
+holds. These are rough rules: a climber who chalks up at a hold, falls and starts again, or tops out
+onto a slab will confuse them, which is why each video's holds are kept apart, and why they can be
+marked by hand.
+
+Marking by hand cycles a hold start, hand, finish, foot, then off. That's the order the Aurora apps
+(Tension, Kilter) list hold roles in, which I couldn't confirm is the order the Tension app cycles them.
+
 ## Why job logs aren't in the database
 
 COLMAP prints tens of thousands of lines. `UPDATE projects SET log = log || ?` rewrites the whole
