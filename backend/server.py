@@ -34,11 +34,16 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
+import admin as admin_mod  # noqa: E402
 import beta as beta_mod  # noqa: E402
+import compute  # noqa: E402
 import diagnostics  # noqa: E402
 import meshclean  # noqa: E402
 import orientation  # noqa: E402
+import policy  # noqa: E402
 import provenance  # noqa: E402
+import retexture  # noqa: E402
+import settings as settings_mod  # noqa: E402
 import pipeline  # noqa: E402
 import climbs as climbs_mod  # noqa: E402
 from climbs import harvest as harvest_mod  # noqa: E402
@@ -47,7 +52,8 @@ from climbs import youtube as youtube_mod  # noqa: E402
 from progress import Tracker  # noqa: E402
 from climbs import kaya as kaya_mod  # noqa: E402
 from climbs import mountainproject as mp_mod  # noqa: E402
-from climbs.common import Cancelled, Climb, jobctl  # noqa: E402
+from climbs.common import Cancelled, Climb, JobControl, jobctl, use_control  # noqa: E402
+from climbs.common import _shared_control as shared_control  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = ROOT / "frontend"
@@ -72,6 +78,16 @@ GROUP_AREA = re.compile(r"\b(boulders|area|circuit|bouldering|rocks|blocks|clust
 
 # ----------------------------------------------------------------- database
 _db_lock = threading.Lock()
+_settings: settings_mod.Settings | None = None
+
+
+def settings() -> settings_mod.Settings:
+    """The admin page's settings (settings.py), kept in this database."""
+    global _settings
+    if _settings is None:
+        DATA.mkdir(parents=True, exist_ok=True)
+        _settings = settings_mod.Settings(DATA / "bouldermesh.sqlite", DATA)
+    return _settings
 
 
 def db() -> sqlite3.Connection:
@@ -376,7 +392,8 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         if not resume:
             shutil.rmtree(work, ignore_errors=True)
         mid = new_id()
-        mesh_path, demo = pipeline.reconstruct(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker)
+        build = _executor.reconstruct if current_worker().remote and _executor else pipeline.reconstruct
+        mesh_path, demo = build(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker)
         proj = q("SELECT name, climb_id, mesh_id FROM projects WHERE id=?", pid, one=True)
         q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng) VALUES(?,?,?,?,?,?,?,?,?)", mid, proj["name"],
           mesh_path.name, f"project:{pid}", time.time(), mesh_path.stat().st_size, int(demo), None, None, write=True)
@@ -393,6 +410,10 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
           mid, time.time(), pid, write=True)   # made by hand since its area gave up on it
         tracker.finish()
         log("done")
+    except compute.ComputeUnavailable as e:    # not the climb's failure: it waits for a machine
+        log(f"waiting for a machine to mesh it on: {e}")
+        q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
+        raise
     except Exception as e:
         diagnostics.log_failure(log, e, DATA)
         tracker.finish("failed")
@@ -540,6 +561,8 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
             log("not enough viewpoint diversity for photogrammetry - skipping reconstruction "
                 "(add your own photos to this project and press Reconstruct to try anyway)")
         tracker.skip_rest()
+    except compute.ComputeUnavailable:
+        raise
     except Exception as e:
         diagnostics.log_failure(log, e, DATA)
         if tracker:
@@ -548,8 +571,42 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
 
 
 # ------------------------------------------------------------------ campaigns: mesh a whole area
-_campaign_running: str | None = None    # the campaign whose climb the worker is on
 _outages: list[tuple[str, str]] = []    # (campaign, climb) failing in a row before finishing a harvest
+COMPUTE_WAIT = 300      # seconds a worker whose machine couldn't be had waits before trying again
+
+
+class Worker:
+    """Somewhere climbs are meshed: this server, or for a remote worker, machines from compute.py. Each
+    has its own thread, and its own JobControl, so stopping one area's climb leaves others alone."""
+
+    def __init__(self, name: str, remote: bool = False, control: JobControl | None = None):
+        self.name, self.remote = name, remote
+        self.control = control or JobControl()
+        self.campaign: str | None = None   # the area whose climb it's on
+        self.boulder: str | None = None    # which no other worker takes a climb on meanwhile
+        self.doing: str | None = None
+        self.error: str | None = None
+        self.wait_until = 0.0
+        self.retired = False
+
+
+_first = Worker("this server", control=shared_control)   # what threads that aren't workers count as
+_workers: list[Worker] = [_first]
+_workers_lock = threading.Lock()
+_claim_lock = threading.Lock()
+_here = threading.local()
+_pool: compute.Pool | None = None
+_old_pools: list[compute.Pool] = []
+_executor: compute.RemoteExecutor | None = None
+_pool_key = None
+
+
+def current_worker() -> Worker:
+    return getattr(_here, "worker", None) or _first
+
+
+def busy_campaigns() -> set[str]:
+    return {w.campaign for w in _workers if w.campaign}
 
 
 def create_campaign(area: str, order: str = "popularity", csv_text: str | None = None, start: bool = True) -> dict:
@@ -586,7 +643,7 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
 
 def ordered_pending(camp: dict) -> list[dict]:
     """A campaign's waiting climbs, next first."""
-    items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry,redo FROM campaign_items "
+    items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry,redo,boulder FROM campaign_items "
               "WHERE campaign_id=? AND status='pending' ORDER BY rank", camp["id"])
     if camp["ord"] == "rating":
         items.sort(key=lambda i: (-(i["stars"] or 0), i["rank"]))
@@ -638,14 +695,12 @@ def last_failure(pid: str) -> str:
 def run_campaign_item(camp: dict, item: dict) -> None:
     """Mesh one climb, unless a mesh of its boulder already exists. Whatever this finishes is
     saved like any other mesh, so stopping later loses nothing but the climb in progress."""
-    global _campaign_running
     if item.get("redo"):
         return run_redo(camp, item)
     cid, sid = camp["id"], item["source_id"]
     pid = item["project_id"]
     resume = bool(pid and q("SELECT id FROM projects WHERE id=?", pid) and (PROJECTS / pid).is_dir())
     jobctl.begin(low_priority=True)
-    _campaign_running = cid
     try:
         set_item(cid, sid, status="running", project_id=pid if resume else None, note=None)
         full = q("SELECT data,climb_id,boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
@@ -678,6 +733,10 @@ def run_campaign_item(camp: dict, item: dict) -> None:
                 q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
                 set_item(cid, sid, status="pending", note="stopped partway: carries on from where it got to when resumed")
                 return
+            except compute.ComputeUnavailable as e:
+                q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
+                set_item(cid, sid, status="pending", note=f"waiting for a machine to mesh it on: {e}")
+                raise
             p = q("SELECT status,mesh_id,harvest FROM projects WHERE id=?", pid, one=True)
             if p["status"] != "failed":     # kept if it failed, so that trying again starts from its last finished step
                 shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)   # most of a job's disk use, and only useful to itself
@@ -698,34 +757,70 @@ def run_campaign_item(camp: dict, item: dict) -> None:
                     return
         _outages.clear()
     finally:
-        _campaign_running = None
         q("UPDATE campaign_items SET retry=0 WHERE campaign_id=? AND source_id=? AND status NOT IN ('pending','running')", cid, sid, write=True)
-        q("UPDATE campaigns SET status='stopped', note=NULL WHERE id=? AND status='stopping'", cid, write=True)
 
 
-def next_campaign_step() -> None:
-    """Move the oldest running campaign on by one climb."""
-    camp = q("SELECT * FROM campaigns WHERE status='running' ORDER BY created LIMIT 1", one=True)
-    if not camp:
-        return
-    if shutil.disk_usage(DATA).free < CAMPAIGN_MIN_FREE:
-        q("UPDATE campaigns SET status='stopped', note=? WHERE id=?",
-          f"stopped: under {CAMPAIGN_MIN_FREE / 2**30:.0f} GB of disk left", camp["id"], write=True)
-        return
-    if camp["ord"] == "data" and not camp["only_retries"]:
-        read_ahead(camp)
-    items = ordered_pending(camp)
-    waiting = bool(items)
-    if camp["only_retries"]:
-        items = [i for i in items if i["retry"]]
-    if not items:
-        q("UPDATE campaigns SET status=?, only_retries=0, note=NULL WHERE id=? AND status='running'",
-          "stopped" if waiting else "done", camp["id"], write=True)
-    elif campaign_status(camp["id"]) == "running":
-        try:
-            run_campaign_item(camp, items[0])
-        except Exception as e:
-            set_item(camp["id"], items[0]["source_id"], status="failed", note=f"{type(e).__name__}: {e}")
+def _claim(w: Worker):
+    """Choose this worker's next climb, and mark it as running, under _claim_lock: an area's next waiting
+    climb, from the area fewest other workers are on, but not one on a boulder another worker is
+    meshing, which would make two meshes of it. Areas with nothing left are settled here.
+
+    Returns:
+        (area, climb), or None.
+    """
+    others = [x for x in _workers if x is not w]
+    camps = q("SELECT * FROM campaigns WHERE status='running' ORDER BY created")
+    camps.sort(key=lambda c: sum(x.campaign == c["id"] for x in others))
+    for camp in camps:
+        if shutil.disk_usage(DATA).free < CAMPAIGN_MIN_FREE:
+            q("UPDATE campaigns SET status='stopped', note=? WHERE id=?",
+              f"stopped: under {CAMPAIGN_MIN_FREE / 2**30:.0f} GB of disk left", camp["id"], write=True)
+            continue
+        if camp["ord"] == "data" and not camp["only_retries"] and not any(x.campaign for x in others):
+            read_ahead(camp)
+        items = ordered_pending(camp)
+        waiting = bool(items)
+        if camp["only_retries"]:
+            items = [i for i in items if i["retry"]]
+        taken = {x.boulder for x in others if x.boulder}
+        free = [i for i in items if not (i["boulder"] and i["boulder"] in taken)]
+        if not free:
+            if not items and not any(x.campaign == camp["id"] for x in others):
+                q("UPDATE campaigns SET status=?, only_retries=0, note=NULL WHERE id=? AND status='running'",
+                  "stopped" if waiting else "done", camp["id"], write=True)
+            continue
+        item = free[0]
+        set_item(camp["id"], item["source_id"], status="running")
+        w.campaign, w.boulder, w.doing = camp["id"], item["boulder"], item["name"]
+        return camp, item
+    return None
+
+
+def next_campaign_step() -> bool:
+    """Mesh the next climb of a running area on this thread's worker, if there's one it can take.
+
+    Returns:
+        Whether there was one.
+    """
+    w = current_worker()
+    with _claim_lock:
+        picked = _claim(w)
+    if not picked:
+        return False
+    camp, item = picked
+    try:
+        run_campaign_item(camp, item)
+        w.error = None
+    except compute.ComputeUnavailable as e:     # the climb waits; so does this worker, for a while
+        w.error, w.wait_until = f"{time.strftime('%H:%M')}: {e}", time.time() + COMPUTE_WAIT
+        set_item(camp["id"], item["source_id"], status="pending")
+    except Exception as e:
+        set_item(camp["id"], item["source_id"], status="failed", note=f"{type(e).__name__}: {e}")
+    finally:
+        w.campaign = w.boulder = w.doing = None
+        if not any(x.campaign == camp["id"] for x in _workers):
+            q("UPDATE campaigns SET status='stopped', note=NULL WHERE id=? AND status='stopping'", camp["id"], write=True)
+    return True
 
 
 def queue_retry(camp_id: str, source_id: str, project_id: str | None) -> None:
@@ -867,14 +962,12 @@ def _rebuild(cid: str, row: dict, log) -> dict:
 
 def run_redo(camp: dict, item: dict) -> None:
     """Harvest or rebuild again one of an area's climbs that has been through it before."""
-    global _campaign_running
     cid, sid = camp["id"], item["source_id"]
     row = q("SELECT source_id,climb_id,project_id,mesh_id,redo,was,changed,redo_started FROM campaign_items "
             "WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
     row["was"] = row["was"] or "done"
     log = lambda s: append_log(row["project_id"], s)  # noqa: E731
     jobctl.begin(low_priority=True)
-    _campaign_running = cid
     try:
         set_item(cid, sid, status="running", note=None)
         first, *then = row["redo"].split("+")
@@ -891,11 +984,12 @@ def run_redo(camp: dict, item: dict) -> None:
         q("UPDATE projects SET status='stopped' WHERE id=?", row["project_id"], write=True)
         set_item(cid, sid, status="pending", note=f"stopped partway: carries on with its {REDO_NAMES[row['redo']]} when resumed")
         return
+    except compute.ComputeUnavailable as e:
+        q("UPDATE projects SET status='stopped' WHERE id=?", row["project_id"], write=True)
+        set_item(cid, sid, status="pending", note=f"waiting for a machine to mesh it on: {e}")
+        raise
     except Exception as e:
         end = {"status": row["was"], "note": f"{REDO_NAMES[row['redo']]}: {type(e).__name__}: {e}"}
-    finally:
-        _campaign_running = None
-        q("UPDATE campaigns SET status='stopped', note=NULL WHERE id=? AND status='stopping'", cid, write=True)
     set_item(cid, sid, **end, redo=None, retry=0, redo_started=0)
 
 
@@ -918,13 +1012,67 @@ def run_beta(mid: str) -> None:
         beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": f"failed: {type(e).__name__}: {e}", "progress": None})
 
 
+def run_retexture(mid: str) -> None:
+    """Texture a mesh again from only its photos that are free to copy (retexture.py)."""
+    m = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
+    if not m or not m["source"].startswith("project:"):
+        return
+    mesh_dir = MESHES / mid
+
+    def log(line: str) -> None:
+        with open(mesh_dir / "retexture.log", "a") as f:
+            f.write(line.rstrip() + "\n")
+    try:
+        retexture.retexture(mesh_dir, PROJECTS / m["source"].split(":", 1)[1] / "photos", log)
+    except Exception as e:
+        log(f"FAILED: {type(e).__name__}: {e}")
+    finally:
+        _retexturing.discard(mid)
+
+
+_retexturing: set[str] = set()
+
+
+# ------------------------------------------------------------------ what the site shows (policy.py)
+def texture_mode(mid: str, source: str | None = None) -> str:
+    """How a mesh's texture is shown: "full", "permitted" (from permitted/) or "hidden"."""
+    if source is None:
+        row = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
+        source = row["source"] if row else ""
+    return policy.texture_mode(settings().get("site.textures"), source == "upload", provenance.load(MESHES / mid),
+                               retexture.has_variant(MESHES / mid))
+
+
+def served_dir(mid: str, mode: str | None = None) -> Path:
+    """The folder a mesh's files are served from: permitted/ when that's the version shown."""
+    return MESHES / mid / retexture.DIR if (mode or texture_mode(mid)) == "permitted" else MESHES / mid
+
+
+_sources_cache: dict[str, tuple[float, dict]] = {}
+
+
+def photo_entry(pid: str, name: str) -> dict:
+    """What's known of where one of a project's photos came from, for policy.source_access."""
+    path = PROJECTS / pid / "sources.json"
+    stamp = path.stat().st_mtime if path.exists() else 0.0
+    if _sources_cache.get(pid, (None,))[0] != stamp:
+        _sources_cache[pid] = (stamp, provenance.harvested(PROJECTS / pid))
+    return provenance.describe(name, _sources_cache[pid][1])
+
+
+def video_entry(url: str) -> dict:
+    lic = q("SELECT license FROM videos WHERE url=?", url, one=True)
+    return {"source": "youtube", "license": lic["license"] if lic else None}
+
+
 def stop_campaign(camp_id: str, now: bool = True) -> None:
-    """Stop a campaign, now or once the climb it's on is finished."""
-    running = _campaign_running == camp_id
+    """Stop a campaign, now or once the climbs it's on are finished."""
+    on = [w for w in _workers if w.campaign == camp_id]
     q("UPDATE campaigns SET status=?, note=NULL, only_retries=0 WHERE id=? AND status IN ('running','stopping')",
-      "stopping" if running and not now else "stopped", camp_id, write=True)
-    if running and now:
-        jobctl.stop()
+      "stopping" if on and not now else "stopped", camp_id, write=True)
+    if now:
+        for w in on:
+            w.control.stop()
 
 
 def campaign_view(camp: dict) -> dict:
@@ -935,35 +1083,121 @@ def campaign_view(camp: dict) -> dict:
              for key, where in (("changed", "changed=1"), ("queued", "redo IS NOT NULL AND status IN ('pending','running')"))}
     worked = q("SELECT rank,name,grade,stars,url,climb_id,mesh_id,project_id,status,note,updated FROM campaign_items "
                "WHERE campaign_id=? AND status NOT IN ('pending','running') ORDER BY updated DESC LIMIT 300", cid)
-    current = q("SELECT rank,name,grade,stars,project_id FROM campaign_items WHERE campaign_id=? AND status='running' LIMIT 1", cid, one=True)
-    if current and current["project_id"]:
-        p = q("SELECT status,progress FROM projects WHERE id=?", current["project_id"], one=True)
-        current["progress"] = json.loads(p["progress"]) if p and p["progress"] else None
-    return {**camp, "counts": counts, "again": again, "worked": worked, "current": current, "next": ordered_pending(camp)[:10]}
+    running = q("SELECT rank,name,grade,stars,project_id FROM campaign_items WHERE campaign_id=? AND status='running' ORDER BY updated", cid)
+    for r in running:
+        p = q("SELECT status,progress FROM projects WHERE id=?", r["project_id"], one=True) if r["project_id"] else None
+        r["progress"] = json.loads(p["progress"]) if p and p["progress"] else None
+    return {**camp, "counts": counts, "again": again, "worked": worked, "current": running[0] if running else None,
+            "running": running, "next": ordered_pending(camp)[:10]}
 
 
-def worker() -> None:
-    while True:
-        try:
-            job = jobs.get(timeout=CAMPAIGN_POLL)   # jobs people asked for go ahead of a campaign's next climb
-        except queue.Empty:
-            try:
-                next_campaign_step()
-            except (Exception, Cancelled) as e:  # never let the worker die
-                print(f"campaign error: {e!r}", flush=True)
+def run_job(job: dict) -> None:
+    """A job someone asked for, on this thread's worker."""
+    jobctl.begin(low_priority=job["type"] in ("beta", "retexture"))
+    try:
+        if job["type"] == "beta":
+            run_beta(job["mid"])
+        elif job["type"] == "retexture":
+            run_retexture(job["mid"])
+        elif job["type"] == "reconstruct":
+            run_reconstruct(job["pid"], job.get("internet", False))
+        elif job["type"] == "harvest":
+            run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True))
+        elif job["type"] == "retry":
+            run_retry(job["pid"])
+    except (Exception, Cancelled) as e:  # never let the worker die
+        append_log(job.get("pid", "?"), f"worker error: {e!r}")
+
+
+def worker(w: Worker | None = None) -> None:
+    """A worker's thread: jobs people asked for first (on this server's workers only), then areas' climbs."""
+    w = w or _first
+    _here.worker = w
+    use_control(w.control)
+    while not w.retired:
+        if time.time() < w.wait_until:
+            time.sleep(2)
             continue
-        jobctl.begin(low_priority=job["type"] == "beta")
+        if not w.remote:
+            try:
+                run_job(jobs.get(timeout=CAMPAIGN_POLL))
+                continue
+            except queue.Empty:
+                pass
         try:
-            if job["type"] == "beta":
-                run_beta(job["mid"])
-            elif job["type"] == "reconstruct":
-                run_reconstruct(job["pid"], job.get("internet", False))
-            elif job["type"] == "harvest":
-                run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True))
-            elif job["type"] == "retry":
-                run_retry(job["pid"])
+            if not next_campaign_step() and w.remote:
+                time.sleep(CAMPAIGN_POLL)
         except (Exception, Cancelled) as e:  # never let the worker die
-            append_log(job.get("pid", "?"), f"worker error: {e!r}")
+            print(f"campaign error on {w.name}: {e!r}", flush=True)
+
+
+def server_id() -> str:
+    """This server's own name for the cloud machines it starts, so that it ends only its own."""
+    path = DATA / "compute" / "server_id"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(secrets.token_hex(8))
+    return path.read_text().strip()
+
+
+def configure_workers() -> None:
+    """Start or retire workers, and make the pool of remote machines, to match the settings."""
+    global _pool, _executor, _pool_key
+    s = settings().all()
+    with _workers_lock:
+        key = (s["compute.provider"], s["compute.remote_workers"], s["compute.idle_minutes"], tuple(s["compute.ssh_hosts"]),
+               s["compute.image"], s["compute.command"], *(v for k, v in s.items() if k.startswith("compute.aws.")),
+               tuple(sorted((settings().secrets_status()["credentials"]).items())))
+        if key != _pool_key:
+            if _pool:
+                _pool.close()
+                _old_pools.append(_pool)
+            _pool = _executor = None
+            provider = None
+            try:
+                provider = compute.provider_for(s, settings().secret, DATA / "compute", server_id())
+            except Exception as e:
+                print(f"compute: can't use {s['compute.provider']}: {e}", flush=True)
+            if provider and s["compute.remote_workers"]:
+                _pool = compute.Pool(provider, s["compute.remote_workers"], s["compute.idle_minutes"])
+                _executor = compute.RemoteExecutor(_pool, s["compute.image"], s["compute.command"], jobctl)
+            _pool_key = key
+        want = {False: s["compute.local_workers"], True: s["compute.remote_workers"] if _pool else 0}
+        for remote in (False, True):
+            mine = [w for w in _workers if w.remote == remote and not w.retired]
+            for w in mine[want[remote]:]:
+                if w is not _first:
+                    w.retired = True
+            for i in range(len(mine), want[remote]):
+                w = Worker(f"{'remote' if remote else 'this server'} {i + 1}", remote=remote)
+                _workers.append(w)
+                threading.Thread(target=worker, args=(w,), daemon=True).start()
+        _workers[:] = [w for w in _workers if not w.retired or w.campaign]
+
+
+def reap_machines() -> None:
+    """End idle remote machines, every minute; at startup, any of this server's left from before."""
+    if settings().get("compute.provider") == "aws":
+        try:
+            prov = compute.provider_for(settings().all(), settings().secret, DATA / "compute", server_id())
+            for iid in prov.leftovers():
+                print(f"compute: ending {iid}, left running from before a restart", flush=True)
+                prov.stop(compute.Node(host="", user="", id=iid))
+        except Exception as e:
+            print(f"compute: couldn't check for machines left running: {e}", flush=True)
+    while True:
+        time.sleep(60)
+        for pool in [_pool, *_old_pools]:
+            if pool:
+                pool.reap()
+        _old_pools[:] = [p for p in _old_pools if p.nodes]
+
+
+def compute_state() -> dict:
+    return {"workers": [{"name": w.name, "remote": w.remote, "error": w.error,
+                         "busy": f"meshing {w.doing}" if w.doing else ("waiting for a machine" if time.time() < w.wait_until else None)}
+                        for w in _workers if not w.retired],
+            "pool": _pool.status() if _pool else None}
 
 
 # ----------------------------------------------------------------- handler
@@ -1044,7 +1278,8 @@ class Handler(BaseHTTPRequestHandler):
                                        "queue": jobs.qsize(), "relevance_methods": relevance_mod.available(), "people_masks": pipeline.occlusion.available(), "harvest_sources": HARVEST_SOURCES, "env": env,
                                        "gpu": gpu, "gpu_why": gpu_why,
                                        "ytdlp": bool(shutil.which("yt-dlp") and shutil.which("ffmpeg")),
-                                       "opencv": _has("cv2"), "pillow": _has("PIL")})
+                                       "opencv": _has("cv2"), "pillow": _has("PIL"),
+                                       "policy": {"textures": settings().get("site.textures"), "sources": settings().get("site.sources")}})
             # ---- projects
             if p == "/api/projects":
                 return self.send_json(q("SELECT id,name,created,status,mesh_id,demo,kind,climb_id FROM projects ORDER BY created DESC"))
@@ -1063,6 +1298,11 @@ class Handler(BaseHTTPRequestHandler):
                 proj["filtered"] = [{"file": f.name, "why": relevance_mod.REASONS[f.name.split("_", 1)[0]]}
                                     for f in (sorted(rejected.iterdir()) if rejected.exists() else [])
                                     if f.name.split("_", 1)[0] in relevance_mod.REASONS]
+                setting = settings().get("site.sources")     # what of each photo the page may show
+                proj["access"] = {}
+                for name in proj["photos"] + [x["file"].split("_", 1)[1] for x in proj["filtered"]]:
+                    e = photo_entry(m[1], name)
+                    proj["access"][name] = {"show": policy.source_access(setting, e), "page": e.get("page") or e.get("url")}
                 return self.send_json(proj)
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/harvest", p)
             if m:
@@ -1072,12 +1312,12 @@ class Handler(BaseHTTPRequestHandler):
                     f = d / f"{name}.json"
                     out[name] = json.loads(f.read_text()) if f.exists() else None
                 return self.send_json(out)
-            m = re.fullmatch(r"/photos/([0-9a-f]+)/([A-Za-z0-9._-]+)", p)
-            if m:
-                return self.send_file(PROJECTS / m[1] / "photos" / m[2])
-            m = re.fullmatch(r"/photos/([0-9a-f]+)/rejected/([A-Za-z0-9._-]+)", p)
-            if m:
-                return self.send_file(PROJECTS / m[1] / "rejected" / m[2])
+            m = re.fullmatch(r"/photos/([0-9a-f]+)/(rejected/)?([A-Za-z0-9._-]+)", p)
+            if m:   # rejected photos are named <reason>_<name>
+                name = m[3].split("_", 1)[1] if m[2] and "_" in m[3] else m[3]
+                if policy.source_access(settings().get("site.sources"), photo_entry(m[1], name)) != "show":
+                    return self.send_json({"error": "not shown: it isn't clearly free to copy"}, 403)
+                return self.send_file(PROJECTS / m[1] / ("rejected" if m[2] else "photos") / m[3])
             # ---- meshes
             if p == "/api/meshes":
                 rows = q("SELECT * FROM meshes ORDER BY created DESC")
@@ -1087,7 +1327,8 @@ class Handler(BaseHTTPRequestHandler):
                     by.setdefault(l["mesh_id"], []).append({"id": l["id"], "name": l["name"], "grade": l["grade"]})
                 for r in rows:
                     r["climbs"] = by.get(r["id"], [])
-                    r["cleanup"] = meshclean.summary(meshclean.load(MESHES / r["id"]))
+                    r["texture"] = texture_mode(r["id"], r["source"])
+                    r["cleanup"] = meshclean.summary(meshclean.load(served_dir(r["id"], r["texture"])))
                     r["orientation"] = orientation.load(MESHES / r["id"])
                     r["sources"] = provenance.summary(provenance.load(MESHES / r["id"]))
                     r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
@@ -1097,8 +1338,15 @@ class Handler(BaseHTTPRequestHandler):
             if m:   # what each video's climber did, and the holds marked by hand
                 if not (MESHES / m[1]).is_dir():
                     return self.send_json({"error": "not found"}, 404)
-                return self.send_json({"found": beta_mod.load(MESHES / m[1]), "marked": beta_mod.load_holds(MESHES / m[1]),
-                                       "available": beta_mod.available()})
+                found = beta_mod.load(MESHES / m[1])
+                setting = settings().get("site.sources")
+                for v in (found or {}).get("videos", []):     # a video's frames, drawn on, are copies of it
+                    access = policy.source_access(setting, video_entry(v["url"]))
+                    if access != "show":
+                        v.pop("image", None)
+                    if access == "hide":
+                        v.update(url=None, title="a video that isn't clearly free to copy", uploader=None)
+                return self.send_json({"found": found, "marked": beta_mod.load_holds(MESHES / m[1]), "available": beta_mod.available()})
             if p == "/api/videos":   # every video known, and what it or its channel says about the climber's size
                 return self.send_json(q("""SELECT v.url,v.title,v.uploader,v.channel_url,v.duration,v.upload_date,v.license,
                       v.height_cm,v.wingspan_cm,v.ape_index_cm,v.first_person,v.quotes,
@@ -1113,18 +1361,32 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(record) if record else self.send_json({"error": "not recorded for this mesh"}, 404)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
             if m:
-                record = meshclean.load(MESHES / m[1])
+                record = meshclean.load(served_dir(m[1]))
                 return self.send_json(record) if record else self.send_json({"error": "no cleanup"}, 404)
             m = re.fullmatch(r"/meshes/([0-9a-f]+)/([A-Za-z0-9._-]+)", p)
             if m:
-                f = MESHES / m[1] / m[2]
+                mid, name = m[1], m[2]
+                if name.startswith("beta_"):     # a video's frame, drawn on: shown as the video's licence allows
+                    v = next((v for v in (beta_mod.load(MESHES / mid) or {}).get("videos", []) if v.get("image") == name), None)
+                    if not v or policy.source_access(settings().get("site.sources"), video_entry(v["url"])) != "show":
+                        return self.send_json({"error": "not shown: it isn't clearly free to copy"}, 403)
+                    return self.send_file(MESHES / mid / name)
+                mode = texture_mode(mid)
+                base = served_dir(mid, mode)
+                f = base / name
+                is_image = f.suffix.lower() in (".png", ".jpg", ".jpeg")
+                if mode == "hidden" and is_image:
+                    return self.send_json({"error": "textures aren't shown"}, 403)
                 side = int(qs["max"][0]) if qs.get("max", [""])[0].isdigit() else 0
-                if side in SHRINK_SIDES and f.suffix.lower() in (".png", ".jpg", ".jpeg") and f.is_file():
+                if side in SHRINK_SIDES and is_image and f.is_file():
                     if not _has("PIL"):
                         return self.send_json({"error": "shrinking textures needs Pillow"}, 501)
                     f = shrunk_texture(f, side)
-                if "cleaned" in qs and f.suffix.lower() == ".glb" and meshclean.available():
-                    f = meshclean.write_cleaned(MESHES / m[1]) or f
+                if f.suffix.lower() == ".glb" and f.is_file():
+                    if "cleaned" in qs and meshclean.available():
+                        f = meshclean.write_cleaned(base) or f
+                    if mode == "hidden":
+                        f = meshclean.strip_textures(f, base / f"{f.stem}.untextured.glb")
                 return self.send_file(f, download="download" in qs)
             if p == "/api/campaigns":
                 return self.send_json([campaign_view(c) for c in q("SELECT * FROM campaigns ORDER BY created DESC")])
@@ -1147,7 +1409,23 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/climbs/([0-9a-f]+)", p)
             if m:
                 r = climb_row(m[1], full=True)
-                return self.send_json(r) if r else self.send_json({"error": "not found"}, 404)
+                if not r:
+                    return self.send_json({"error": "not found"}, 404)
+                setting = settings().get("site.sources")
+                if setting != "all":    # its page's photos and videos, as far as their licences allow
+                    data = r["data"]
+                    images = []
+                    for im in data.get("images") or []:
+                        access = policy.source_access(setting, {"source": im.get("source"), "license": im.get("license")})
+                        if access == "show":
+                            images.append(im)
+                        elif access == "link":
+                            images.append({**im, "url": None})
+                    data["images"] = images
+                    if setting == "permitted":
+                        data["videos"] = [v for v in data.get("videos") or [] if policy.permitted(video_entry(v["url"]))]
+                        r["videos_found"] = [v for v in r["videos_found"] if policy.permitted(video_entry(v["url"]))]
+                return self.send_json(r)
             if p == "/api/geojson":
                 feats = []
                 for r in q("SELECT id,name,grade,kind,lat,lng,coord_source,boulder_name,source FROM climbs WHERE lat IS NOT NULL"):
@@ -1250,7 +1528,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not meshclean.available():
                     return self.send_json({"error": "cleaning up meshes needs numpy"}, 501)
                 try:
-                    record = meshclean.clean(MESHES / m[1], print, force=True)
+                    record = meshclean.clean(served_dir(m[1]), print, force=True)
                 except ValueError as e:
                     return self.send_json({"error": f"can't clean up this mesh: {e}"}, 400)
                 return self.send_json(record) if record else self.send_json({"error": "only GLB meshes can be cleaned up"}, 400)
@@ -1405,7 +1683,7 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
             if m:
                 try:
-                    return self.send_json(meshclean.set_removed(MESHES / m[1], body.get("removed", [])))
+                    return self.send_json(meshclean.set_removed(served_dir(m[1]), body.get("removed", [])))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)", p)
@@ -1430,7 +1708,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"deleted": m[1]})
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
         if m:   # the whole mesh shows again; its own files were never changed
-            meshclean.delete(MESHES / m[1])
+            meshclean.delete(served_dir(m[1]))
             return self.send_json({"deleted": True})
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/links/([0-9a-f]+)", p)
         if m:
@@ -1464,9 +1742,67 @@ def _has(mod: str) -> bool:
         return False
 
 
+ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "36184"))
+
+
+def admin_state() -> dict:
+    """What the admin page shows: settings, which credentials are set, the workers, and how many meshes
+    each texture setting would affect."""
+    counts = dict.fromkeys(("meshes", "all_permitted", "variant", "hidden_if_permitted", "can_retexture", "need_rebuild"), 0)
+    for m in q("SELECT id, source FROM meshes WHERE replaced_by IS NULL"):
+        d, upload = MESHES / m["id"], m["source"] == "upload"
+        ok, variant = upload or bool(policy.mesh_permitted(provenance.load(d))), retexture.has_variant(d)
+        counts["meshes"] += 1
+        counts["all_permitted"] += ok
+        counts["variant"] += variant and not ok
+        counts["hidden_if_permitted"] += not ok and not variant
+        if not ok and m["source"].startswith("project:"):
+            found, why = retexture.usable(d, PROJECTS / m["source"].split(":", 1)[1] / "photos")
+            counts["can_retexture"] += bool(found)
+            counts["need_rebuild"] += bool(why and "rebuild" in why)
+    return {"settings": settings().all(), "secrets": settings().secrets_status(), "compute": compute_state(),
+            "policy": counts, "retexture_queued": len(_retexturing), "site_port": int(os.environ.get("PORT", "8470"))}
+
+
+def admin_test(_: dict) -> dict:
+    prov = compute.provider_for(settings().all(), settings().secret, DATA / "compute", server_id())
+    return {"result": prov.test() if prov else "nothing to test: this server does everything itself"}
+
+
+def admin_end_nodes(_: dict) -> dict:
+    ended = 0
+    for pool in [_pool, *_old_pools]:
+        if pool:
+            ended += len([n for n in pool.nodes if not n.busy])
+            pool.close()
+    prov = compute.provider_for(settings().all(), settings().secret, DATA / "compute", server_id())
+    busy = {n.id for pool in [_pool, *_old_pools] if pool for n in pool.nodes}
+    for iid in (prov.leftovers() if prov else []):
+        if iid not in busy:
+            prov.stop(compute.Node(host="", user="", id=iid))
+            ended += 1
+    return {"result": f"ended {ended} machine(s); any in use end when their climb is done"}
+
+
+def admin_retexture(_: dict) -> dict:
+    """Queue every mesh that can be textured from only its photos that are free to copy."""
+    n = 0
+    for m in q("SELECT id, source FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%'"):
+        d = MESHES / m["id"]
+        if m["id"] in _retexturing or policy.mesh_permitted(provenance.load(d)):
+            continue
+        if retexture.usable(d, PROJECTS / m["source"].split(":", 1)[1] / "photos")[0]:
+            _retexturing.add(m["id"])
+            jobs.put({"type": "retexture", "mid": m["id"]})
+            n += 1
+    return {"result": f"queued {n} mesh(es) to be textured from only the photos free to copy"}
+
+
 def main() -> None:
     init_db()
+    configure_workers()
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=reap_machines, daemon=True).start()
     threading.Thread(target=clean_existing_meshes, daemon=True).start()
     threading.Thread(target=orient_existing_meshes, daemon=True).start()
     threading.Thread(target=source_existing_meshes, daemon=True).start()
@@ -1475,6 +1811,10 @@ def main() -> None:
     host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))
     mode = "COLMAP + OpenMVS" if pipeline.real_pipeline_ready() else "DEMO (COLMAP/OpenMVS not found)"
     print(f"BoulderMesh on http://{host}:{port}  data={DATA}  pipeline={mode}", flush=True)
+    in_docker = Path("/.dockerenv").exists()
+    admin_mod.start(admin_mod.Context(settings(), admin_state, configure_workers,
+                                      {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture}),
+                    os.environ.get("ADMIN_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), ADMIN_PORT)
     ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 

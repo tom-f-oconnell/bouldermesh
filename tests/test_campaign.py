@@ -196,14 +196,14 @@ t = threading.Thread(target=loop, daemon=True)
 t.start()
 assert started.wait(20), "never got to Beta"
 time.sleep(0.2)
-assert server._campaign_running == c["id"]
+assert c["id"] in server.busy_campaigns()
 killed = time.time()
 server.stop_campaign(c["id"], now=True)
 for _ in range(500):
-    if server._campaign_running is None:
+    if not server.busy_campaigns():
         break
     time.sleep(0.02)
-assert server._campaign_running is None and time.time() - killed < 5, "tool wasn't killed"
+assert not server.busy_campaigns() and time.time() - killed < 5, "tool wasn't killed"
 got = items(c["id"])
 assert server.campaign_status(c["id"]) == "stopped", server.campaign_status(c["id"])
 assert got["Alpha"]["status"] == "done" and (server.MESHES / got["Alpha"]["mesh_id"] / "mesh.ply").exists(), got["Alpha"]   # kept
@@ -747,4 +747,67 @@ pipeline.reconstruct = real
 assert True in seen_work, "the interrupted rebuild carried on from its work"
 assert items(c["id"])["Gamma"]["status"] == "done" and status(c["id"])[0] == "done"
 print("harvesting and rebuilding again OK")
+
+# --- more than one worker at once -----------------------------------------------------------------------
+fresh()
+c = server.create_campaign("", "popularity", CSV)
+w1, w2, w3 = server.Worker("one"), server.Worker("two", remote=True), server.Worker("three")
+server._workers.extend([w1, w2, w3])
+with server._claim_lock:
+    picks = [server._claim(w) for w in (w1, w2, w3)]
+assert [p[1]["name"] for p in picks] == ["Alpha", "Beta", "Gamma"], "Alpha2 waits: its boulder is Alpha's, being meshed"
+assert [w.doing for w in (w1, w2, w3)] == ["Alpha", "Beta", "Gamma"] and server.busy_campaigns() == {c["id"]}
+assert {i["name"] for i in server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["running"]} == {"Alpha", "Beta", "Gamma"}
+server.stop_campaign(c["id"], now=True)
+assert all(w.control._stop.is_set() for w in (w1, w2, w3)) and not server._first.control._stop.is_set(), "stops every worker on it, and only those"
+assert server.campaign_status(c["id"]) == "stopped"
+server._workers[:] = [server._first]
+
+# two running areas share the workers
+fresh()
+c1 = server.create_campaign("", "popularity", CSV)
+c2 = server.create_campaign("", "rating", CSV.replace("Alpha", "Zeta").replace("route/1/", "route/101/"))
+w1, w2 = server.Worker("one"), server.Worker("two")
+server._workers.extend([w1, w2])
+with server._claim_lock:
+    a, b = server._claim(w1), server._claim(w2)
+assert {a[0]["id"], b[0]["id"]} == {c1["id"], c2["id"]}, "one on each"
+server._workers[:] = [server._first]
+
+# a remote worker that can't get a machine: the climb waits, and so does the worker
+fresh()
+c = server.create_campaign("", "popularity", CSV)
+real_harvest = server.run_harvest
+
+
+def no_machine(*a, **k):
+    raise server.compute.ComputeUnavailable("EC2 wouldn't start an instance: no capacity")
+
+
+server.run_harvest = no_machine
+w = server.Worker("remote 1", remote=True)
+server._workers.append(w)
+server._here.worker = w
+assert server.next_campaign_step()
+got = items(c["id"])["Alpha"]
+assert got["status"] == "pending" and "waiting for a machine" in got["note"] and got["project_id"], got
+assert w.wait_until > time.time() and "no capacity" in w.error and w.campaign is None
+assert server.q("SELECT status FROM projects WHERE id=?", got["project_id"], one=True)["status"] == "stopped"
+server._here.worker = None
+server.run_harvest = real_harvest
+server._workers[:] = [server._first]
+server.stop_campaign(c["id"])
+
+# the admin page's settings start and retire workers
+server.settings().update({"compute.local_workers": 2})
+server.configure_workers()
+assert [x.name for x in server._workers if not x.retired] == ["this server", "this server 2"], [x.name for x in server._workers]
+server.settings().update({"compute.local_workers": 1, "compute.provider": "ssh", "compute.ssh_hosts": ["me@10.0.0.9"], "compute.remote_workers": 2})
+server.configure_workers()
+state = server.compute_state()
+assert [x["name"] for x in state["workers"]] == ["this server", "remote 1", "remote 2"] and state["pool"]["limit"] == 2, state
+server.settings().update({"compute.provider": "none"})
+server.configure_workers()
+assert [x["name"] for x in server.compute_state()["workers"]] == ["this server"] and server.compute_state()["pool"] is None
+print("several workers OK")
 print("ALL CAMPAIGN TESTS PASSED")

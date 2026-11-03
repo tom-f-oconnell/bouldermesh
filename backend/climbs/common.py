@@ -175,7 +175,24 @@ class JobControl:
         return out
 
 
-jobctl = JobControl()
+_shared_control = JobControl()
+_thread_control = threading.local()
+
+
+def use_control(control: JobControl | None) -> None:
+    """Give the calling thread its own JobControl, as each worker has, or None for the shared one."""
+    _thread_control.control = control
+
+
+class _CurrentControl:
+    """jobctl: the JobControl of the thread using it, so that stopping one worker's job leaves the
+    others alone. Threads that haven't been given one (requests, the first worker) share one."""
+
+    def __getattr__(self, name):
+        return getattr(getattr(_thread_control, "control", None) or _shared_control, name)
+
+
+jobctl = _CurrentControl()
 
 
 class _Http:

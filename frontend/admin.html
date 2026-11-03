@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BoulderMesh admin</title>
+<style>
+  :root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#e6e8ee;--mute:#8b93a7;--acc:#5cc8ff;--ok:#5fd68a;--bad:#ff6b6b;--warn:#ffc857}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{padding:12px 18px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;gap:12px;align-items:center}
+  header h1{font-size:16px;margin:0}
+  main{max-width:860px;margin:0 auto;padding:16px}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:14px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:var(--mute);margin:0 0 10px}
+  label{display:block;margin:8px 0 3px;color:var(--mute);font-size:12px}
+  input[type=text],input[type=number],input[type=password],select,textarea{background:var(--bg);border:1px solid var(--line);color:var(--fg);padding:7px 9px;border-radius:6px;width:100%;font:inherit}
+  textarea{min-height:70px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  button{background:var(--acc);color:#001018;border:0;padding:7px 12px;border-radius:6px;font:inherit;font-weight:600;cursor:pointer}
+  button.sec{background:transparent;color:var(--fg);border:1px solid var(--line)}
+  button.danger{background:transparent;color:var(--bad);border:1px solid var(--line)}
+  .note{font-size:12px;color:var(--mute);margin-top:6px}
+  .choice{display:block;margin:6px 0;font-size:13px;color:var(--fg)}
+  .choice small{color:var(--mute)}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+  td,th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
+  #msg{position:fixed;bottom:14px;right:14px;background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:8px;display:none;max-width:420px}
+  .aws,.ssh{display:none}
+  body.p-aws .aws, body.p-ssh .ssh{display:block}
+  body.p-aws .grid.aws{display:grid}
+</style>
+</head>
+<body>
+<header><h1>BoulderMesh admin</h1><span class="note" id="where"></span></header>
+<main>
+  <section>
+    <h2>What the main site shows</h2>
+    <div><b>Mesh textures</b> <span class="note" id="tex-counts"></span></div>
+    <label class="choice"><input type="radio" name="tex" value="all"> All <small>(as built, from every photo)</small></label>
+    <label class="choice"><input type="radio" name="tex" value="permitted"> Only from photos clearly free to copy <small>(a mesh's texture if all its photos are, or else one made from only those, or none)</small></label>
+    <label class="choice"><input type="radio" name="tex" value="none"> None <small>(every mesh plain grey)</small></label>
+    <div class="row"><button class="sec" id="retex">Make textures from only the photos free to copy</button><span class="note" id="retex-note"></span></div>
+    <div style="margin-top:14px"><b>Source photos and video frames</b></div>
+    <label class="choice"><input type="radio" name="src" value="all"> Show all <small>(as now)</small></label>
+    <label class="choice"><input type="radio" name="src" value="link"> Show those free to copy, and only link to the rest <small>(their copies here aren't shown)</small></label>
+    <label class="choice"><input type="radio" name="src" value="permitted"> Show only those free to copy <small>(the rest aren't shown or linked)</small></label>
+    <div class="note">"Free to copy" means public domain, CC0, or a Creative Commons licence without No Derivatives, or your own uploads. Mountain Project, OpenBeta and web images, and YouTube's standard licence, aren't. See license_considerations.md.</div>
+  </section>
+
+  <section>
+    <h2>Compute</h2>
+    <div id="slots" class="note"></div>
+    <div class="grid">
+      <div><label>Reconstructions at once on this server</label><input type="number" id="local" min="1" max="4"></div>
+      <div><label>Run more on</label><select id="provider"><option value="none">Nothing else: this server only</option><option value="ssh">Machines reached over SSH</option><option value="aws">AWS EC2 instances, started when needed</option></select></div>
+      <div><label>At most this many other machines at once</label><input type="number" id="remote" min="0" max="16"></div>
+      <div><label>End an idle cloud machine after (minutes)</label><input type="number" id="idle" min="1" max="240"></div>
+    </div>
+    <div class="ssh aws"><label>Docker image the machines run (pushed to a registry they can pull from)</label><input type="text" id="image" placeholder="ghcr.io/you/bouldermesh:latest"></div>
+    <div class="ssh"><label>Machines (one user@host[:port] a line), with Docker and the image</label><textarea id="hosts"></textarea></div>
+    <div class="grid aws">
+      <div><label>Region</label><input type="text" id="region"></div>
+      <div><label>Instance type</label><input type="text" id="itype"></div>
+      <div><label>AMI (empty: AWS's latest Deep Learning base GPU AMI)</label><input type="text" id="ami"></div>
+      <div><label>Security group (empty: made, open to SSH from this server only)</label><input type="text" id="sg"></div>
+      <div><label>Subnet (empty: the default VPC's)</label><input type="text" id="subnet"></div>
+      <div><label>Disk (GB)</label><input type="number" id="vol" min="30"></div>
+      <div><label>Instance profile (for pulling from ECR)</label><input type="text" id="profile"></div>
+      <div><label class="choice" style="margin-top:28px"><input type="checkbox" id="spot"> Spot instances <small>(cheaper; can be taken back, and the climb then waits)</small></label></div>
+    </div>
+    <div class="ssh aws"><label>How a machine runs a job (empty for docker run with the image)</label><input type="text" id="command" placeholder="docker run --rm --name bm-{job} {gpus} -v {dir}:/job {image} python3 /app/backend/remote_job.py /job {flags}"></div>
+    <div class="row"><button id="save">Save</button><button class="sec" id="test">Test the connection</button><button class="danger" id="end">End all cloud machines</button></div>
+    <div id="nodes"></div>
+  </section>
+
+  <section>
+    <h2>Credentials</h2>
+    <div class="note" id="cred-note"></div>
+    <table id="creds"></table>
+    <div class="grid aws">
+      <div><label>AWS access key id</label><input type="password" id="akid" autocomplete="off"></div>
+      <div><label>AWS secret access key</label><input type="password" id="secret" autocomplete="off"></div>
+    </div>
+    <div class="ssh"><label>SSH private key for the machines</label><textarea id="sshkey" autocomplete="off"></textarea></div>
+    <div class="row"><button id="savecreds">Save credentials</button><span class="note">Saved encrypted, and never shown again: leave a field empty to keep what's there.</span></div>
+  </section>
+</main>
+<div id="msg"></div>
+<script>
+const $ = s => document.querySelector(s);
+let state = null;
+const msg = (text, ms = 4000) => { const m = $('#msg'); m.textContent = text; m.style.display = 'block'; clearTimeout(msg.t); msg.t = setTimeout(() => m.style.display = 'none', ms); };
+async function call(path, body){
+  const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function render(s){
+  state = s;
+  const v = s.settings;
+  document.body.className = 'p-' + v['compute.provider'];
+  $('#where').textContent = `the main site is on port ${s.site_port}`;
+  for (const r of document.querySelectorAll('input[name=tex]')) r.checked = r.value === v['site.textures'];
+  for (const r of document.querySelectorAll('input[name=src]')) r.checked = r.value === v['site.sources'];
+  const c = s.policy;
+  $('#tex-counts').textContent = `${c.meshes} meshes: ${c.all_permitted} only from photos free to copy, ${c.variant} with a texture made from those, ${c.hidden_if_permitted} that would be plain grey`;
+  $('#retex-note').textContent = `${c.can_retexture} can be, ${c.need_rebuild} need rebuilding first` + (s.retexture_queued ? `; ${s.retexture_queued} queued` : '');
+  $('#local').value = v['compute.local_workers']; $('#provider').value = v['compute.provider']; $('#remote').value = v['compute.remote_workers'];
+  $('#idle').value = v['compute.idle_minutes']; $('#image').value = v['compute.image']; $('#hosts').value = v['compute.ssh_hosts'].join('\n');
+  $('#region').value = v['compute.aws.region']; $('#itype').value = v['compute.aws.instance_type']; $('#ami').value = v['compute.aws.ami'];
+  $('#sg').value = v['compute.aws.security_group']; $('#subnet').value = v['compute.aws.subnet']; $('#vol').value = v['compute.aws.volume_gb'];
+  $('#profile').value = v['compute.aws.instance_profile']; $('#spot').checked = v['compute.aws.spot']; $('#command').value = v['compute.command'];
+  $('#slots').innerHTML = 'Workers: ' + s.compute.workers.map(w => `<b>${esc(w.name)}</b> ${w.busy ? esc(w.busy) : '<span class="ok">idle</span>'}${w.error ? ` <span class="bad">${esc(w.error)}</span>` : ''}`).join(' · ');
+  const p = s.compute.pool;
+  $('#nodes').innerHTML = p ? `<table><tr><th>Machine</th><th>Up (min)</th><th>State</th></tr>${p.nodes.map(n => `<tr><td>${esc(n.id || n.host)}${n.gpu ? ' (GPU)' : ''}</td><td>${n.up_minutes}</td><td>${n.busy ? 'working' : `idle ${n.idle_minutes} min`}</td></tr>`).join('') || '<tr><td colspan="3">none running</td></tr>'}</table>
+    ${p.starting ? `<div class="note">${p.starting} starting</div>` : ''}${p.error ? `<div class="note bad">${esc(p.error)}</div>` : ''}` : '';
+  const cr = s.secrets;
+  $('#cred-note').innerHTML = cr.can_save ? 'Credentials can be saved here, encrypted with BOULDERMESH_SECRETS_KEY.'
+    : '<span class="warn">Credentials can\'t be saved here until BOULDERMESH_SECRETS_KEY is set (in .env, outside the data directory). Until then, give them as environment variables, such as AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.</span>'
+    + (cr.error ? ` <span class="bad">${esc(cr.error)}</span>` : '');
+  $('#creds').innerHTML = Object.entries(cr.credentials).map(([k, where]) => `<tr><td>${esc(k)}</td><td>${where ? `<span class="ok">${where === 'saved' ? 'saved' : 'from the environment'}</span>` : '<span class="note">not set</span>'}</td></tr>`).join('');
+  $('#savecreds').disabled = !cr.can_save;
+}
+async function refresh(){ try { render(await call('/api/admin/state')); } catch (e) { msg(e.message, 8000); } }
+async function save(changes){ try { render(await call('/api/admin/settings', changes)); msg('Saved'); } catch (e) { msg(e.message, 8000); refresh(); } }
+document.querySelectorAll('input[name=tex]').forEach(r => r.onchange = () => save({ 'site.textures': r.value }));
+document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => save({ 'site.sources': r.value }));
+$('#provider').onchange = () => { document.body.className = 'p-' + $('#provider').value; };
+$('#save').onclick = () => save({
+  'compute.local_workers': +$('#local').value, 'compute.provider': $('#provider').value, 'compute.remote_workers': +$('#remote').value,
+  'compute.idle_minutes': +$('#idle').value, 'compute.image': $('#image').value, 'compute.command': $('#command').value,
+  'compute.ssh_hosts': $('#hosts').value.split('\n'), 'compute.aws.region': $('#region').value, 'compute.aws.instance_type': $('#itype').value,
+  'compute.aws.ami': $('#ami').value, 'compute.aws.security_group': $('#sg').value, 'compute.aws.subnet': $('#subnet').value,
+  'compute.aws.volume_gb': +$('#vol').value, 'compute.aws.instance_profile': $('#profile').value, 'compute.aws.spot': $('#spot').checked });
+$('#savecreds').onclick = async () => {
+  const body = {};
+  if ($('#akid').value) body['aws.access_key_id'] = $('#akid').value;
+  if ($('#secret').value) body['aws.secret_access_key'] = $('#secret').value;
+  if ($('#sshkey').value) body['ssh.private_key'] = $('#sshkey').value;
+  if (!Object.keys(body).length) return msg('Nothing to save');
+  try { render(await call('/api/admin/secrets', body)); ['#akid', '#secret', '#sshkey'].forEach(s => $(s).value = ''); msg('Credentials saved'); }
+  catch (e) { msg(e.message, 8000); }
+};
+$('#test').onclick = async () => { msg('Testing…', 60000); try { msg((await call('/api/admin/actions/test', {})).result, 12000); } catch (e) { msg(e.message, 12000); } };
+$('#end').onclick = async () => { if (!confirm('End every cloud machine this server started? Jobs on them wait and run again.')) return; try { msg((await call('/api/admin/actions/end-nodes', {})).result); refresh(); } catch (e) { msg(e.message, 8000); } };
+$('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
+refresh(); setInterval(refresh, 10000);
+</script>
+</body>
+</html>

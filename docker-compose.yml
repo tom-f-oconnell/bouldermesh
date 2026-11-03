@@ -1,11 +1,20 @@
 services:
   bouldermesh:
     build: .
-    ports: ["${PORT:-8470}:8470"]
+    ports:
+      - "${PORT:-8470}:8470"
+      # the admin page: only on this host's loopback, or a LAN address (ADMIN_BIND), never on every address
+      - "${ADMIN_BIND:-127.0.0.1}:${ADMIN_PORT:-36184}:36184"
     volumes: ["./data:/data"]
     environment:
       # USE_GPU: "0"              # keeps photo matching on the CPU; docker-compose.gpu.yml is what gives it a GPU
       MAX_UPLOAD_MB: "1024"
+      ADMIN_PORT: "36184"
+      BOULDERMESH_SECRETS_KEY:    # from .env: encrypts credentials saved on the admin page (see backend/settings.py)
+      ADMIN_PASSWORD:             # from .env, optional: a password for the admin page (user "admin")
+      ADMIN_HOSTNAMES:            # from .env, optional: names the admin page is reached by besides addresses and LAN names
+      AWS_ACCESS_KEY_ID:          # from .env, optional: compute credentials, instead of saving them on the admin page
+      AWS_SECRET_ACCESS_KEY:
       BOULDERMESH_UA:             # from your shell: identify yourself to the sites you fetch from (Wikimedia rejects placeholder addresses)
       HTTP_MIN_INTERVAL: "3"      # min. seconds between requests to one host (robots.txt Crawl-delay wins if longer)
       # GOOGLE_CSE_KEY: ""        # Google Programmable Search (image mode) - 100 free queries/day

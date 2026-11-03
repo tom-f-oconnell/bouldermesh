@@ -43,11 +43,30 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+ADMIN = None    # the admin page's address
+
+
+def admin_set(changes: dict) -> None:
+    urllib.request.urlopen(urllib.request.Request(ADMIN + "/api/admin/settings", data=json.dumps(changes).encode(),
+                                                  headers={"Content-Type": "application/json"}, method="POST")).read()
+
+
+def status_of(url: str) -> int:
+    try:
+        with urllib.request.urlopen(url) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
 def main() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="bouldermesh-test-"))
     port = free_port()
     B = f"http://127.0.0.1:{port}"
-    env = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(port), HOST="127.0.0.1", HTTP_MIN_INTERVAL="0")
+    global ADMIN
+    admin_port = free_port()
+    ADMIN = f"http://127.0.0.1:{admin_port}"
+    env = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(port), HOST="127.0.0.1", HTTP_MIN_INTERVAL="0", ADMIN_PORT=str(admin_port))
     env.pop("HARVEST_DDG", None)
     srv =subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -211,6 +230,17 @@ def run(B: str, tmp: Path) -> None:
     um = next(x for x in meshes if x["id"] == up["id"])
     assert um["lat"] == 37.74172 and um["climbs"][0]["id"] == cid, um
     assert um["sources"] is None and req(B, "GET", f"/api/meshes/{up['id']}/sources")[0] == 404, "an upload's photos aren't known"
+
+    # --- what the admin page lets the site show ------------------------------------------------------
+    assert um["texture"] == "full" and req(B, "GET", "/api/status")[1]["policy"] == {"textures": "all", "sources": "all"}
+    admin_set({"site.textures": "none"})
+    assert status_of(f"{B}/meshes/{up['id']}/atlas.png") == 403 and status_of(f"{B}/meshes/{up['id']}/atlas.png?max=2048") == 403
+    assert next(x for x in req(B, "GET", "/api/meshes")[1] if x["id"] == up["id"])["texture"] == "hidden"
+    admin_set({"site.textures": "permitted", "site.sources": "permitted"})
+    assert status_of(f"{B}/meshes/{up['id']}/atlas.png") == 200, "an upload is the user's own"
+    assert status_of(f"{B}/photos/{pid}/p0.jpg") == 200, "and so are their photos"
+    assert req(B, "GET", f"/api/projects/{pid}")[1]["access"]["p0.jpg"]["show"] == "show"
+    admin_set({"site.textures": "all", "site.sources": "all"})
     st, _ = req(B, "DELETE", f"/api/meshes/{up['id']}/links/{cid}")
     st, _ = req(B, "POST", f"/api/meshes/{up['id']}/links", {"climb_id": cid, "note": "west face"})
     assert st == 201

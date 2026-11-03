@@ -231,6 +231,61 @@ directory, and reads `.env` here (`COMPOSE_FILE` for the GPU, `PORT`). Each star
 first, which takes seconds when nothing has changed, so `sudo systemctl restart bouldermesh` deploys
 new code. To remove it: `sudo systemctl disable --now bouldermesh`, then delete the unit file.
 
+## The admin page
+
+A separate page, on port 36184, sets what the main site shows and where its reconstructions run. It
+listens only on this machine's loopback address unless `.env` says otherwise, and never on every address:
+
+    ADMIN_BIND=10.0.0.5                         # this machine's LAN address, to reach it from the LAN
+    BOULDERMESH_SECRETS_KEY=...                 # to save credentials on it (see below)
+    ADMIN_PASSWORD=...                          # optional: then it asks for user "admin" and this password
+
+Then `docker compose up -d` and open `http://10.0.0.5:36184`. Anyone who can reach it can change settings,
+so keep it off public addresses (it refuses to start on one). It refuses changes sent by other sites'
+pages, and requests naming a host that isn't an address or a LAN name (`ADMIN_HOSTNAMES` adds names).
+
+**What the site shows.** "Free to copy" means public domain, CC0, or a Creative Commons licence without
+No Derivatives, or your own uploads ([license_considerations.md](license_considerations.md) has why).
+- *Mesh textures*: all of them; or only those made from photos free to copy, with a version of each
+  other mesh coloured from only those photos where *Make textures from only the photos free to copy*
+  has made one (else plain grey); or none. Hidden textures aren't served at all, and meshes come without them.
+- *Source photos and video frames*: all; or those free to copy, with only links to the rest, whose copies
+  here aren't served; or only those free to copy.
+
+The coloured versions are made per vertex from the photos free to copy, so they're less sharp than a
+texture, and grey where none of those photos sees the rock. Meshes built before Nov 3 need rebuilding
+first, as they didn't keep their cameras' lenses.
+
+**Credentials** are saved encrypted with `BOULDERMESH_SECRETS_KEY`, which stays in `.env`, outside
+`data/`. Make one with `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+They're never shown again. Without that key, give them as environment variables instead
+(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` in `.env`).
+
+## Running reconstructions elsewhere
+
+By default this server does everything. *Reconstructions at once on this server* can be raised, which
+runs climbs side by side (two areas then share the workers), though most steps already use every core.
+On the admin page, *Run more on* adds up to *At most this many other machines at once* (2 by default):
+
+- **Machines reached over SSH**: any you keep running, with Docker (and NVIDIA's container toolkit for
+  the GPU), listed as `user@host[:port]`, all reached with one private key saved as a credential.
+- **AWS EC2**: instances started when there's a climb to mesh, a spot `g4dn.2xlarge` (T4 GPU, 8 cores)
+  by default, from AWS's Deep Learning GPU image. Each one is reached over SSH from this server's address
+  only, and ended after *End an idle cloud machine after* minutes without work. One also ends itself
+  after a while with no job running, in case this server has gone, and any left running from before a
+  restart are ended. Its credentials need EC2 (run, describe and terminate instances, security groups)
+  and SSM's GetParameter. *Test the connection* checks them without starting anything.
+
+Machines run the same Docker image as this server, which they pull from a registry:
+
+    docker tag bouldermesh-bouldermesh ghcr.io/you/bouldermesh:latest && docker push ghcr.io/you/bouldermesh:latest
+
+and set that as *Docker image the machines run*. A private image on ECR works with an *Instance profile*
+that may pull it. Each climb's photos and people masks go to the machine, and the mesh, its cameras and
+the masks come back. Harvesting stays here. A climb whose machine can't be had or is lost waits, rather
+than failing, and that worker tries again in 5 minutes. design.md has what offloading costs and saves.
+The AWS side has been tested against stand-ins for AWS, not against AWS itself.
+
 ## Layout
 
     backend/server.py              HTTP server, SQLite, uploads, job worker (reconstruct + harvest)
@@ -243,6 +298,12 @@ new code. To remove it: `sudo systemctl disable --now bouldermesh`, then delete 
     backend/climbs/youtube.py      finding climbs' videos, and climbers' heights and ape indexes in their text
     backend/provenance.py          where each mesh's photos came from, kept with the mesh
     backend/beta.py                the holds climbers use, from their hands and feet in videos
+    backend/admin.py               the admin page's server; frontend/admin.html is the page
+    backend/settings.py            the admin page's settings, and credentials kept encrypted
+    backend/policy.py              which photos are free to copy, and what the site may show
+    backend/retexture.py           colouring a mesh from only the photos free to copy
+    backend/compute.py             running reconstructions on other machines, and starting and ending them
+    backend/remote_job.py          what such a machine runs
     backend/climbs/relevance.py    filter for photos substantially of the boulder
     backend/climbs/diversity.py    de-dup + view-graph diversity estimate
     backend/climbs/htmlmini.py     tiny DOM on html.parser (no bs4 needed)
@@ -276,6 +337,8 @@ new code. To remove it: `sudo systemctl disable --now bouldermesh`, then delete 
     POST /api/meshes/{id}/holds {holds: [{p, role}]}    the holds marked by hand, roles start, hand, finish or foot
     GET|POST|DELETE /api/meshes/{id}/cleanup · PATCH /api/meshes/{id}/cleanup {removed} · GET /meshes/{id}/mesh.glb?cleaned=1
     GET  /api/meshes/{id}/sources                       each photo in the mesh: source, URL, page, credit, licence
+    On the admin page's port: GET /api/admin/state · POST /api/admin/settings · POST /api/admin/secrets
+    POST /api/admin/actions/{test,end-nodes,retexture}
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
 
 ## Development

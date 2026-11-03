@@ -784,7 +784,7 @@ async function openClimb(id, focus=true){
   openClimbId = id;
   if (focus) { setFull(false); document.querySelector('.tabs button[data-tab=climbs]').click(); }
   const d = document.createElement('div'); d.className = 'card active';
-  const imgs = (data.images||[]).filter(m=>m.url);
+  const imgs = (data.images||[]).filter(m=>m.url), linked = (data.images||[]).filter(m=>!m.url && m.page);   // linked only, as the admin page allows
   const vids = data.videos||[];
   const searched = (c.videos_found||[]).filter(v => v.found_by === 'search' && !vids.some(p => p.url === v.url));
   const sizes = (c.videos_found||[]).map(climberSize).filter(Boolean);
@@ -799,6 +799,7 @@ async function openClimb(id, focus=true){
     ${data.description?`<details style="margin-top:6px"><summary>Description / location</summary><div class="meta">${esc(data.description)}</div><div class="meta">${esc(data.location||'')}</div></details>`:''}
     <div class="meta" style="margin-top:6px">Photos (${imgs.length}) ${imgs.length?'<small>— from the source page; © their uploaders</small>':''}</div>
     <div class="thumbs">${imgs.slice(0,30).map(m=>`<a href="${esc(m.page||m.url)}" target="_blank" rel="noopener"><img class="big" src="${esc(m.url)}" title="${esc(m.title||'')}" loading="lazy" referrerpolicy="no-referrer"></a>`).join('')}</div>
+    ${linked.length ? `<div class="chips">${linked.slice(0,30).map((m,i)=>`<a class="chip" href="${esc(m.page)}" target="_blank" rel="noopener" title="${esc(m.title||'')}">photo ${i+1} ↗</a>`).join('')}</div>` : ''}
     <div class="meta" style="margin-top:6px">Videos (${vids.length} on its page${searched.length ? `, ${searched.length} more found by searching YouTube` : ''})</div>
     <div class="chips">${[...vids, ...searched].map(v=>`<a class="chip" href="${esc(v.url)}" target="_blank" rel="noopener" title="${esc(v.title||'')}">${esc(v.title ? v.title.slice(0,40) : v.url.replace(/^https?:\/\/(www\.)?/,'').slice(0,40))}</a>`).join('')}</div>
     ${sizes.length ? `<div class="meta" style="margin-top:4px">Climbers' sizes, as their videos or channels give them: ${sizes.map(esc).join(' · ')}</div>` : ''}
@@ -949,6 +950,12 @@ function progressHtml(p){
     <div class="bar ${s.state}" title="${pct(s.frac)}"><i style="width:${pct(s.frac)}"></i></div>${s.state==='running'&&s.detail?`<span></span><span class="detail">${esc(s.detail)}</span>`:''}`).join('');
   return `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall</small><div class="steps">${rows}</div>`;
 }
+// a project's photo as the admin page allows: shown, a link to where it came from, or nothing
+function photoThumb(id, name, access){
+  const show = access?.show || 'show';
+  if (show === 'show') return `<img src="/photos/${id}/${esc(name)}" title="${esc(name)}" loading="lazy">`;
+  return show === 'link' && access.page ? `<a class="chip" href="${esc(access.page)}" target="_blank" rel="noopener" title="${esc(name)}: not shown here, as it isn't clearly free to copy">${esc(name.split('_')[0])} ↗</a>` : '';
+}
 async function loadDetail(id, card){
   const p = await api('/api/projects/' + id);
   card.querySelector('.prog').innerHTML = (p.failure ? `<div class="notice" style="margin-top:8px">${esc(p.failure)}</div>` : '') + progressHtml(p);
@@ -958,7 +965,9 @@ async function loadDetail(id, card){
     const wasOpen = fl.querySelector('details')?.open;
     fl.dataset.names = filteredNames;
     fl.innerHTML = p.filtered.length ? `<details style="margin-top:6px" ${wasOpen?'open':''}><summary>${p.filtered.length} photo(s) filtered out as off-topic: click one to put it back</summary>
-      <div class="thumbs rejected">${p.filtered.map(x => `<img src="/photos/${id}/rejected/${esc(x.file)}" data-file="${esc(x.file)}" title="${esc(x.why)}: click to restore" loading="lazy">`).join('')}</div></details>` : '';
+      <div class="thumbs rejected">${p.filtered.map(x => (p.access?.[x.file.split('_').slice(1).join('_')]?.show || 'show') === 'show'
+        ? `<img src="/photos/${id}/rejected/${esc(x.file)}" data-file="${esc(x.file)}" title="${esc(x.why)}: click to restore" loading="lazy">`
+        : photoThumb(id, x.file, p.access?.[x.file.split('_').slice(1).join('_')])).join('')}</div></details>` : '';
     fl.querySelectorAll('img').forEach(im => im.onclick = async ev => {
       ev.stopPropagation();
       await api(`/api/projects/${id}/restore`, { method: 'POST', json: { file: im.dataset.file } });
@@ -968,7 +977,7 @@ async function loadDetail(id, card){
   const th = card.querySelector(':scope > .thumbs'), photoNames = p.photos.join();
   if (th.dataset.names !== photoNames || !p.photos.length) {
     th.dataset.names = photoNames;
-    th.innerHTML = p.photos.slice(0, 30).map(x => `<img src="/photos/${id}/${x}" title="${esc(x)}" loading="lazy">`).join('') + (p.photos.length>30 ? `<span class="status">+${p.photos.length-30}</span>` : '');
+    th.innerHTML = p.photos.slice(0, 30).map(x => photoThumb(id, x, p.access?.[x])).join('') + (p.photos.length>30 ? `<span class="status">+${p.photos.length-30}</span>` : '');
     if (!p.photos.length) th.innerHTML = `<span class="status">${p.kind==='harvest'?'No photos harvested yet.':'No photos yet — add 20–80 overlapping shots around the object.'}</span>`;
   }
   const hi = card.querySelector('.harvest-info');
@@ -1020,17 +1029,19 @@ const ITEM_NAMES = { done: 'meshed', skipped: 'skipped', failed: 'failed' };
 const stars = v => v == null ? '' : `★${(+v).toFixed(1)}`;
 let campaignShown = null, meshedShown = null;
 function currentHtml(c){
-  const cur = c.current;
-  if (!cur) return c.status === 'running' ? '<div class="status" style="margin-top:6px">Waiting for the next climb to start…</div>' : '';
-  const pr = cur.progress, step = pr?.steps.find(s => s.state === 'running');
-  return `<div class="meta" style="margin-top:8px">Now: <b>${esc(cur.name)}</b> ${esc(cur.grade||'')} <small>#${cur.rank}</small></div>
-    ${pr ? `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% · ${esc(step?.label || '')}${step?.detail ? ' · ' + esc(step.detail) : ''}</small>` : ''}`;
+  const running = c.running || (c.current ? [c.current] : []);
+  if (!running.length) return c.status === 'running' ? '<div class="status" style="margin-top:6px">Waiting for the next climb to start…</div>' : '';
+  return running.map(cur => {
+    const pr = cur.progress, step = pr?.steps.find(s => s.state === 'running');
+    return `<div class="meta" style="margin-top:8px">Now: <b>${esc(cur.name)}</b> ${esc(cur.grade||'')} <small>#${cur.rank}</small></div>
+      ${pr ? `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% · ${esc(step?.label || '')}${step?.detail ? ' · ' + esc(step.detail) : ''}</small>` : ''}`;
+  }).join('');
 }
 async function refreshCampaigns(){
   const list = await api('/api/campaigns');
   const el = $('#campaigns');
   // progress moves constantly: only rebuild when something else changed, which would close open lists
-  const key = JSON.stringify(list.map(c => ({ ...c, current: c.current && { ...c.current, progress: null } })));
+  const key = JSON.stringify(list.map(c => ({ ...c, current: c.current && { ...c.current, progress: null }, running: (c.running || []).map(r => r.name) })));
   if (key === campaignShown) {
     for (const c of list) { const n = el.querySelector(`[data-camp="${c.id}"] .now`); if (n) n.innerHTML = currentHtml(c); }
   } else {
@@ -1190,7 +1201,7 @@ async function refreshMeshes(){
   $('#m-older').parentNode.lastChild.textContent = ` Show older versions of rebuilt meshes (${older})`;
   for (const m of meshesCache.filter(m => $('#m-older').checked || !m.replaced_by)) {
     const d = document.createElement('div'); d.className = 'card mesh';
-    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
+    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
         <div class="chips">${m.climbs.map(c=>`<span class="chip" data-climb="${c.id}">${esc(c.name)} ${esc(c.grade||'')} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('')}
           <select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option>${climbsCache.filter(c=>c.kind!=='area').map(c=>`<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('')}</select></div></div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px">

@@ -246,6 +246,55 @@ def delete(mesh_dir: Path) -> None:
     _write_json(mesh_dir, {"deleted": True, "created": time.time()})
 
 
+def strip_textures(src: Path, dst: Path) -> Path:
+    """A copy of a GLB with only its shape: the same meshes, primitives and faces in the same order,
+    so its cleanup still fits, with one plain material, and no images or texture coordinates, so
+    nothing of the photos it was textured from. Made again only if src is newer."""
+    import numpy as np
+    if dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime:
+        return dst
+    j, bufs = _read_glb(src)
+    blob, views, accessors = bytearray(), [], []
+
+    def accessor(values, kind: str, component: int, target: int, bounds: bool = False) -> int:
+        blob.extend(b"\0" * (-len(blob) % 4))
+        views.append({"buffer": 0, "byteOffset": len(blob), "byteLength": values.nbytes, "target": target})
+        blob.extend(values.tobytes())
+        a = {"bufferView": len(views) - 1, "componentType": component, "count": len(values), "type": kind}
+        if bounds:
+            a["min"], a["max"] = [float(x) for x in values.min(0)], [float(x) for x in values.max(0)]
+        accessors.append(a)
+        return len(accessors) - 1
+
+    new = {k: copy.deepcopy(j[k]) for k in ("asset", "scene", "scenes", "nodes") if k in j}
+    new["materials"] = [{"name": "untextured", "doubleSided": True,
+                         "pbrMetallicRoughness": {"baseColorFactor": [0.72, 0.75, 0.8, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.9}}]
+    new["meshes"] = []
+    for m in j.get("meshes", []):
+        prims = []
+        for p in m["primitives"]:
+            out = {"attributes": {}, "material": 0, "mode": p.get("mode", 4)}
+            for name in ("POSITION", "NORMAL"):
+                if name in p["attributes"]:
+                    values = np.ascontiguousarray(_accessor(j, bufs, p["attributes"][name]), "<f4")
+                    out["attributes"][name] = accessor(values, "VEC3", 5126, 34962, bounds=name == "POSITION")
+            if "indices" in p:
+                out["indices"] = accessor(np.ascontiguousarray(_accessor(j, bufs, p["indices"]), "<u4"), "SCALAR", 5125, 34963)
+            prims.append(out)
+        new["meshes"].append({"primitives": prims})
+    blob.extend(b"\0" * (-len(blob) % 4))
+    new["bufferViews"], new["accessors"], new["buffers"] = views, accessors, [{"byteLength": len(blob)}]
+    text = json.dumps(new).encode()
+    text += b" " * (-len(text) % 4)
+    tmp = dst.with_suffix(".partial")
+    with open(tmp, "wb") as f:
+        f.write(struct.pack("<III", 0x46546C67, 2, 12 + 8 + len(text) + 8 + len(blob)))
+        f.write(struct.pack("<II", len(text), 0x4E4F534A) + text)
+        f.write(struct.pack("<II", len(blob), 0x004E4942) + bytes(blob))
+    tmp.replace(dst)
+    return dst
+
+
 def write_cleaned(mesh_dir: Path) -> Path | None:
     """A GLB without the hidden pieces, using the same texture files; None if nothing is hidden."""
     import numpy as np

@@ -435,6 +435,43 @@ marked by hand.
 Marking by hand cycles a hold start, hand, finish, foot, then off. That's the order the Aurora apps
 (Tension, Kilter) list hold roles in, which I couldn't confirm is the order the Tension app cycles them.
 
+## Running climbs side by side, and elsewhere (`backend/compute.py`)
+
+Until Nov 3 one worker thread did everything, one climb at a time, so a second area waited for the
+first. Workers are now threads with their own job control, each claiming an area's next climb under a
+lock: from the area fewest other workers are on, and never a climb on a boulder another worker is
+meshing, which would make two meshes of it. Running two locally isn't measured. The heavy steps
+(matching, bundle adjustment, densifying, texturing) already use every core, so it mostly helps by
+overlapping one climb's downloads and Mountain Project's 60 s crawl delay with another's reconstruction.
+That might be 1.2-1.6x, at the cost of memory (CPU matching of 30 photos peaked at 22 GB) and being a
+heavier neighbour on a shared machine.
+
+A remote worker sends only the reconstruction: a climb's photos and masks, typically 50-300 MB, out over
+SSH, and the mesh, its cameras and new masks, 20-60 MB, back. The rest stays here. A new EC2 instance
+takes a minute or two to boot, and another minute or so to pull the 2 GB image, so machines are kept
+while there's work and ended when idle. A GPU only speeds up matching: with the internet-photo
+settings, feature extraction has no GPU version in COLMAP, and the mapper, OpenMVS's densifying (built
+without CUDA here) and texturing all run on the CPU. So a node with few cores is slower per climb than
+this 48-core machine, and the gain is in doing several at once. Hence `g4dn.2xlarge` (8 cores) rather
+than the 4-core `g4dn.xlarge`. Building OpenMVS with CUDA for nodes would speed densifying up.
+
+What's specific to a provider is only starting and ending machines, so the rest works with any machine
+with Docker that SSH reaches. Adding GCP would be another class like `AWSProvider`.
+
+## Textures from only photos free to copy (`backend/retexture.py`)
+
+Re-texturing with OpenMVS's TextureMesh from only the permitted photos, using the cameras kept in
+`cameras.json`, failed on White Rastafarian with its 20 video frames standing in for permitted photos.
+With seam levelling it crashed straight after assigning views. Without it, it ran for 15 minutes on 11
+cores without finishing, probably packing the many small patches of a mesh mostly not seen. Importing a
+camera-only model into OpenMVS also ran out of memory until it was given points, taken from the mesh.
+
+So each vertex is coloured instead. It takes the median of its three best views (most squarely and
+nearest, not blocked per a coarse depth buffer of the mesh's vertices, and not where a mask has a
+person). That took 3 s for 457k vertices and keeps every face in order, so the mesh's cleanup still fits.
+It's less sharp than a texture, and something in front of the rock in several frames of one video still
+shows (a dark stripe on White Rastafarian's face), which a single best view showed much more strongly.
+
 ## Why job logs aren't in the database
 
 COLMAP prints tens of thousands of lines. `UPDATE projects SET log = log || ?` rewrites the whole

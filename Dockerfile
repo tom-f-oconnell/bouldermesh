@@ -49,6 +49,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # would replace Ubuntu's numpy and OpenCV with pip's; it works with Ubuntu's, and onnxruntime's are listed after
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pil python3-numpy python3-opencv python3-pip ffmpeg colmap libcudart12 \
+    openssh-client python3-boto3 python3-cryptography \
     libboost-iostreams1.83.0 libboost-program-options1.83.0 libboost-serialization1.83.0 \
     libopencv-core4.6 libopencv-imgproc4.6 libopencv-imgcodecs4.6 libopencv-calib3d4.6 libopencv-features2d4.6 \
     libcgal-dev libglew2.2 libglfw3 libjpeg8 libpng16-16 libtiff6 \
