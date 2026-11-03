@@ -171,6 +171,9 @@ def run(B: str, tmp: Path) -> None:
     assert m["lat"] == 37.74172 and m["climbs"][0]["id"] == cid, m
     assert abs(time.time() - m["created"]) < 600, m
     print("reconstructed mesh auto-linked:", m["name"], m["lat"], m["lng"])
+    assert m["sources"]["total"] == 3 and [s["source"] for s in m["sources"]["sources"]] == ["upload"], m["sources"]
+    st, rec = req(B, "GET", f"/api/meshes/{m['id']}/sources")
+    assert st == 200 and {p["file"] for p in rec["photos"]} == {f"p{i}.jpg" for i in range(3)}, rec
 
     st, cd = req(B, "GET", f"/api/climbs/{cid}")
     assert cd["meshes"][0]["id"] == m["id"] and cd["projects"][0]["id"] == pid
@@ -195,6 +198,7 @@ def run(B: str, tmp: Path) -> None:
     st, meshes = req(B, "GET", "/api/meshes")
     um = next(x for x in meshes if x["id"] == up["id"])
     assert um["lat"] == 37.74172 and um["climbs"][0]["id"] == cid, um
+    assert um["sources"] is None and req(B, "GET", f"/api/meshes/{up['id']}/sources")[0] == 404, "an upload's photos aren't known"
     st, _ = req(B, "DELETE", f"/api/meshes/{up['id']}/links/{cid}")
     st, _ = req(B, "POST", f"/api/meshes/{up['id']}/links", {"climb_id": cid, "note": "west face"})
     assert st == 201

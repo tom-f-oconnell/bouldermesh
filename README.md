@@ -167,6 +167,12 @@ On a phone, the page shows either the controls or the view. Viewing a mesh fills
 *Controls* goes back. Nothing is shown over the mesh there, so texture problems, stray-piece cleanup
 and the iPhone gravity comparison are only shown on wider screens (over 860 px).
 
+Each mesh's card has a bar of where its photos came from, by source, in the same colour for each
+source everywhere. Hovering it, focusing it or tapping it shows each source's licence terms, and the
+licence recorded for each photo where the source gives one (Commons, Flickr). It counts the photos
+placed in the mesh, or for meshes from before Nov 1, every photo it was given.
+`GET /api/meshes/{id}/sources` lists each photo with its URL, page, credit and licence.
+
 A reconstruction is levelled from the gravity readings iPhones record in their photos, if any of its
 placed photos has one. Otherwise down is estimated by assuming most photos were taken upright. The
 view shows both and how far apart they are, or why there's no reading. Meshes have no real-world size.
@@ -185,6 +191,7 @@ button leaves out whatever is hidden. It needs numpy, and only works on GLB mesh
     backend/climbs/common.py       Climb/Media types, cached + rate-limited + robots-aware HTTP client
     backend/climbs/mountainproject.py, openbeta.py, kaya.py   adapters
     backend/climbs/harvest.py      photo sources, download, provenance
+    backend/provenance.py          where each mesh's photos came from, kept with the mesh
     backend/climbs/relevance.py    filter for photos substantially of the boulder
     backend/climbs/diversity.py    de-dup + view-graph diversity estimate
     backend/climbs/htmlmini.py     tiny DOM on html.parser (no bs4 needed)
@@ -211,6 +218,7 @@ button leaves out whatever is hidden. It needs numpy, and only works on GLB mesh
     POST /api/campaigns/{id}/start · POST /api/campaigns/{id}/stop {now} · DELETE /api/campaigns/{id}
     POST /api/campaigns/{id}/retry                      its failed climbs, ahead of the rest
     GET|POST|DELETE /api/meshes/{id}/cleanup · PATCH /api/meshes/{id}/cleanup {removed} · GET /meshes/{id}/mesh.glb?cleaned=1
+    GET  /api/meshes/{id}/sources                       each photo in the mesh: source, URL, page, credit, licence
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
 
 ## Development

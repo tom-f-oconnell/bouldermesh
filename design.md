@@ -372,6 +372,26 @@ So earlyoom probably wasn't it, unless that run behaved very differently. The li
 script or person using `kill`, whose default is SIGTERM, with root. Only the system logs can settle it, and
 they aren't readable without `adm`.
 
+## Where photos come from, and their licences (`backend/provenance.py`)
+
+The harvest records each photo's source, URL, page, credit and licence in its project's `sources.json`,
+and each mesh keeps a copy for its own photos in `photo_sources.json`, as projects change. Only Commons
+(and Flickr, unused without a key) give a licence per photo. The rest are one licence per source in the
+UI. Across the 56 meshes on Nov 2, their photos were 75% video frames (1,946), 16% DuckDuckGo (418) and
+9% Mountain Project (224). Video frames hadn't recorded their video; the frame's name holds a hash of its
+URL, which is matched against the climb's videos.
+
+Could more be scraped per photo? Sampled Nov 2:
+
+| Where | What it held |
+|---|---|
+| Embedded in the files (EXIF, IPTC, XMP) | Any rights metadata in 5% of 1,259 used DuckDuckGo images, a licence or rights URL in 1%; 3% of 769 Mountain Project photos |
+| The pages DuckDuckGo images came from | Of 36: a site-wide "©" or "all rights reserved" on 32, a schema.org copyright field on 3, a licence field on 2, a Creative Commons link on none |
+| yt-dlp's `license` for the videos | None for 12 of 174 in use, which means YouTube's standard licence: it reports "Creative Commons Attribution license (reuse allowed)" for a CC BY video |
+
+So a video's licence is worth recording (yt-dlp has it at download time, and backfilling is one
+metadata request per video), while a web image's is almost never stated anywhere.
+
 ## Why job logs aren't in the database
 
 COLMAP prints tens of thousands of lines. `UPDATE projects SET log = log || ?` rewrites the whole

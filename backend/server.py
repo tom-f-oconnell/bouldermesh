@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import diagnostics  # noqa: E402
 import meshclean  # noqa: E402
 import orientation  # noqa: E402
+import provenance  # noqa: E402
 import pipeline  # noqa: E402
 import climbs as climbs_mod  # noqa: E402
 from climbs import harvest as harvest_mod  # noqa: E402
@@ -252,6 +253,23 @@ def orient_existing_meshes() -> None:
         time.sleep(0.05)
 
 
+def record_sources(mid: str, pid: str, log) -> None:
+    """Keep with a new mesh where its photos came from. Only costs that record if it fails."""
+    try:
+        provenance.save(MESHES / mid, PROJECTS / pid)
+    except Exception as e:
+        log(f"recording where the photos came from failed ({e})")
+
+
+def source_existing_meshes() -> None:
+    """Record where the photos of reconstructions from before photo_sources.json came from, from their
+    projects as they are now. Those without cameras.json can only list every photo they were given."""
+    for m in q("SELECT id,source FROM meshes WHERE source LIKE 'project:%' ORDER BY created"):
+        pid = m["source"].split(":", 1)[1]
+        if provenance.load(MESHES / m["id"]) is None and (PROJECTS / pid).exists() and (MESHES / m["id"]).exists():
+            record_sources(m["id"], pid, lambda line, mid=m["id"]: print(f"{mid}: {line}", flush=True))
+
+
 def shrunk_texture(path: Path, side: int) -> Path:
     """A copy of a texture at most side pixels wide and high, kept beside it, or itself if that small."""
     from PIL import Image
@@ -321,6 +339,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             link_mesh(mid, proj["climb_id"], "auto-linked from reconstruction project")
             log(f"mesh linked to climb {proj['climb_id']}")
         clean_mesh(mid, log)
+        record_sources(mid, pid, log)
         q("UPDATE projects SET status='done', mesh_id=?, demo=? WHERE id=?", mid, int(demo), pid, write=True)
         q("UPDATE campaign_items SET status='done', mesh_id=?, retry=0, note=NULL, updated=? WHERE project_id=? AND status='failed'",
           mid, time.time(), pid, write=True)   # made by hand since its area gave up on it
@@ -791,7 +810,12 @@ class Handler(BaseHTTPRequestHandler):
                     r["climbs"] = by.get(r["id"], [])
                     r["cleanup"] = meshclean.summary(meshclean.load(MESHES / r["id"]))
                     r["orientation"] = orientation.load(MESHES / r["id"])
+                    r["sources"] = provenance.summary(provenance.load(MESHES / r["id"]))
                 return self.send_json(rows)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/sources", p)
+            if m:   # every photo, with where it came from: what crediting or re-hosting a mesh needs
+                record = provenance.load(MESHES / m[1])
+                return self.send_json(record) if record else self.send_json({"error": "not recorded for this mesh"}, 404)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
             if m:
                 record = meshclean.load(MESHES / m[1])
@@ -1113,6 +1137,7 @@ def main() -> None:
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=clean_existing_meshes, daemon=True).start()
     threading.Thread(target=orient_existing_meshes, daemon=True).start()
+    threading.Thread(target=source_existing_meshes, daemon=True).start()
     host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))
     mode = "COLMAP + OpenMVS" if pipeline.real_pipeline_ready() else "DEMO (COLMAP/OpenMVS not found)"
     print(f"BoulderMesh on http://{host}:{port}  data={DATA}  pipeline={mode}", flush=True)

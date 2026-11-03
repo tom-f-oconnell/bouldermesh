@@ -1,0 +1,109 @@
+"""Where each mesh's photos came from, and under what licence, kept with the mesh.
+
+  photo_sources.json    one entry per photo: file, source, url, page, credit and licence, as the
+                        harvest recorded them. For the photos placed in the mesh if cameras.json
+                        says which they were, otherwise for every photo it was given.
+
+Kept with the mesh rather than looked up in its project, as a project's photos can change or be
+deleted after the mesh is built. Photos in a project that the harvest didn't record are taken to be
+the user's own uploads.
+"""
+from __future__ import annotations
+
+import collections
+import hashlib
+import json
+import time
+from pathlib import Path
+
+FILE = "photo_sources.json"
+PHOTO_EXT = {".jpg", ".jpeg", ".png"}
+SOURCES = ("ddg", "youtube", "commons", "mountainproject", "openbeta", "flickr", "google")
+
+
+def _video_urls(climb: dict) -> dict[str, str]:
+    """Video frames are named yt_<tag>_NNN.jpg, the tag being the start of the SHA-1 of the video's
+    URL (harvest.video_frames), which older harvests didn't record. The climb lists its videos."""
+    out = {}
+    for v in climb.get("videos") or []:
+        url = v.get("url") if isinstance(v, dict) else v
+        if url:
+            out[hashlib.sha1(url.encode()).hexdigest()[:8]] = url
+    return out
+
+
+def harvested(project_dir: Path) -> dict[str, dict]:
+    """What the harvest recorded about each of a project's photos, by file name and by stem (photos
+    converted to JPEG after downloading keep their stem)."""
+    path = project_dir / "sources.json"
+    if not path.exists():
+        return {}
+    record = json.loads(path.read_text())
+    videos = _video_urls(record.get("climb") or {})
+    out = {}
+    for entry in record.get("files") or []:
+        entry = dict(entry)
+        if entry.get("source") == "youtube" and not entry.get("url"):
+            parts = entry["file"].split("_")
+            entry["url"] = videos.get(parts[1]) if len(parts) > 2 else None
+        out[entry["file"]] = out[Path(entry["file"]).stem] = entry
+    return out
+
+
+def describe(name: str, known: dict[str, dict]) -> dict:
+    """One photo's entry, from what the harvest recorded, or else from its name."""
+    entry = known.get(name) or known.get(Path(name).stem)
+    if entry:
+        return {**entry, "file": name}
+    prefix = name.split("_")[0]
+    if prefix == "yt":
+        return {"file": name, "source": "youtube", "license": None}
+    if prefix in SOURCES:
+        return {"file": name, "source": prefix, "license": None}
+    return {"file": name, "source": "upload", "license": "the user's own photo"}
+
+
+def save(mesh_dir: Path, project_dir: Path) -> dict:
+    """Record where a mesh's photos came from.
+
+    Returns:
+        The record written.
+    """
+    cameras = mesh_dir / "cameras.json"
+    placed = [c["name"] for c in json.loads(cameras.read_text())] if cameras.exists() else None
+    photos = project_dir / "photos"
+    names = placed if placed is not None else sorted(
+        p.name for p in (photos.iterdir() if photos.exists() else []) if p.suffix.lower() in PHOTO_EXT)
+    known = harvested(project_dir)
+    record = {"basis": "placed" if placed is not None else "given", "created": time.time(),
+              "photos": [describe(n, known) for n in names]}
+    (mesh_dir / FILE).write_text(json.dumps(record, indent=1))
+    return record
+
+
+def load(mesh_dir: Path) -> dict | None:
+    path = mesh_dir / FILE
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def summary(record: dict | None) -> dict | None:
+    """Photos per source, with the licences recorded for them and, for video frames, how many videos.
+
+    Returns:
+        {basis, total, sources: [{source, photos, licenses: {licence: photos}, videos}]}, sources
+        most photos first, or None without a record.
+    """
+    if not record:
+        return None
+    by: dict[str, dict] = {}
+    for p in record["photos"]:
+        s = by.setdefault(p["source"], {"source": p["source"], "photos": 0, "licenses": collections.Counter(), "videos": set()})
+        s["photos"] += 1
+        s["licenses"][p.get("license") or "not recorded"] += 1
+        if p["source"] == "youtube" and p.get("url"):
+            s["videos"].add(p["url"])
+    out = sorted(by.values(), key=lambda s: -s["photos"])
+    for s in out:
+        s["licenses"] = dict(s["licenses"].most_common())
+        s["videos"] = len(s["videos"]) if s["source"] == "youtube" else None
+    return {"basis": record["basis"], "total": len(record["photos"]), "sources": out}

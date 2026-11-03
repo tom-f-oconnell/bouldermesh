@@ -87,6 +87,21 @@
   .steps .bar.done i{background:var(--ok)} .steps .bar.failed i{background:var(--bad)}
   .steps .detail{grid-column:2;margin-top:-2px}
   .thumbs.rejected img{opacity:.75}
+  .srcs{margin-top:6px;max-width:320px;cursor:default;border-radius:4px}
+  .srcs:focus-visible{outline:1px solid var(--acc);outline-offset:3px}
+  .srcbar{display:flex;gap:2px;height:8px}
+  .srcbar i{border-radius:4px;min-width:3px}
+  .srcbar i.on{filter:brightness(1.35)}
+  .srclegend{display:flex;flex-wrap:wrap;gap:1px 10px;font-size:11px;color:var(--mute);margin-top:4px}
+  .srclegend span{display:inline-flex;align-items:center;gap:4px}
+  .srclegend b,#srctip .key{display:inline-block;border-radius:2px}
+  .srclegend b{width:8px;height:8px}
+  #srctip{position:fixed;display:none;z-index:3000;width:370px;max-width:calc(100vw - 16px);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.4;box-shadow:0 6px 20px rgba(0,0,0,.45)}
+  #srctip .head{color:var(--mute);font-size:11px}
+  #srctip .src{display:grid;grid-template-columns:12px 1fr;gap:0 8px;margin-top:7px;padding:3px 4px;border-radius:4px}
+  #srctip .src.on{background:var(--line)}
+  #srctip .key{width:12px;height:3px;margin-top:8px}
+  #srctip .lic{color:var(--mute)}
   .phone{display:none}
   /* A phone shows either the controls or the view, which then has the whole screen, with nothing over the mesh */
   @media (max-width:860px){
@@ -220,6 +235,7 @@
   </div>
 </main>
 <div class="toast" id="toast"></div>
+<div id="srctip" role="tooltip"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script type="importmap">
@@ -1037,7 +1053,89 @@ $('#ca-go').onclick = async () => {
 
 // ---------------------------------------------------------------- meshes
 let meshesCache = [], meshesById = {};
+// ---- where a mesh's photos came from. Colours follow the source, in a fixed order checked for colour blindness
+// against this page's background (the dataviz validator: adjacent pairs ΔE >= 8.4 under CVD).
+const SOURCE_INFO = {
+  ddg: { name: 'DuckDuckGo images', color: '#3987e5', varies: 'Varies photo to photo, and is almost never stated.',
+    license: 'Images from anywhere on the web. Each belongs to whoever made it, on terms that are rarely stated, so take them as all rights reserved. Only the page each came from is recorded.' },
+  youtube: { name: 'Video frames', color: '#d95926', varies: 'Varies video to video, and isn\'t recorded yet.',
+    license: 'Frames from beta videos on YouTube or Vimeo. A YouTube video is all rights reserved (its standard licence) unless its uploader chose CC BY; a Vimeo uploader can choose any Creative Commons licence. YouTube\'s terms also forbid downloading except through YouTube itself.' },
+  commons: { name: 'Wikimedia Commons', color: '#199e70', varies: 'Varies photo to photo, and is recorded for each:', perPhoto: true,
+    license: 'Free licences: mostly CC BY and CC BY-SA, which allow any reuse with credit (BY-SA: adaptations shared under the same licence), and some CC0 and public domain.' },
+  mountainproject: { name: 'Mountain Project', color: '#c98500',
+    license: 'The same for every photo: its photographer\'s copyright, licensed only to onX, which runs Mountain Project. Its terms allow personal, non-commercial viewing, and forbid copying, derivative works and scraping.' },
+  openbeta: { name: 'OpenBeta', color: '#d55181',
+    license: 'The same for every photo: its photographer\'s copyright, and OpenBeta says to get their permission before using it. Its route data is open; its photos aren\'t.' },
+  flickr: { name: 'Flickr', color: '#008300', varies: 'Varies photo to photo, and is recorded for each:', perPhoto: true,
+    license: 'Chosen by each photographer. The harvest only asks for Creative Commons and public-domain photos, which includes non-commercial (NC) and no-adaptations (ND) ones.' },
+  google: { name: 'Google images', color: '#9085e9', varies: 'Varies photo to photo, and is almost never stated.',
+    license: 'Like DuckDuckGo\'s: images from anywhere on the web, on terms that are rarely stated.' },
+  upload: { name: 'Your own photos', color: '#e66767', license: 'Yours to use, unless someone else took them.' },
+  other: { name: 'Other', color: '#7d8597', license: 'Not recorded.' },
+};
+const ORDER = Object.keys(SOURCE_INFO);
+const pct = (n, total) => { const p = 100 * n / total; return p < 1 ? '<1%' : Math.round(p) + '%'; };
+const sourceParts = s => [...s.sources].map(x => ({ ...x, info: SOURCE_INFO[x.source] || SOURCE_INFO.other }))
+  .sort((a, b) => ORDER.indexOf(a.source in SOURCE_INFO ? a.source : 'other') - ORDER.indexOf(b.source in SOURCE_INFO ? b.source : 'other'));
+const mk = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+let tipFor = null, tipPinned = false;
+function showSourceTip(m, anchor){
+  const s = m.sources, tip = $('#srctip');
+  tip.replaceChildren(mk('div', 'head', s.basis === 'placed'
+    ? `The ${s.total} photos placed in this mesh, by where they came from, and their licences`
+    : `All ${s.total} photos this mesh was given, by where they came from (which were placed wasn't kept), and their licences`));
+  for (const x of sourceParts(s)) {
+    const row = mk('div', 'src'); row.dataset.src = x.source;
+    const key = mk('span', 'key'); key.style.background = x.info.color;
+    const body = mk('div');
+    const count = x.videos ? `${x.photos} frame${x.photos === 1 ? '' : 's'} from ${x.videos} video${x.videos === 1 ? '' : 's'}` : `${x.photos} photo${x.photos === 1 ? '' : 's'}`;
+    body.append(mk('b', null, pct(x.photos, s.total)), document.createTextNode(` ${x.info.name} · ${count}`));
+    body.append(mk('div', 'lic', x.info.license));
+    if (x.info.varies) body.append(mk('div', 'lic', x.info.varies + (x.info.perPhoto ? ' ' + Object.entries(x.licenses).map(([l, n]) => `${l} ×${n}`).join(', ') + '.' : '')));
+    row.append(key, body); tip.append(row);
+  }
+  tip.style.display = 'block'; tipFor = anchor;
+  const r = anchor.getBoundingClientRect(), h = tip.offsetHeight, w = tip.offsetWidth;
+  tip.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + 'px';
+  tip.style.top = (r.bottom + 6 + h < innerHeight ? r.bottom + 6 : Math.max(8, r.top - h - 6)) + 'px';
+}
+function hideSourceTip(){ $('#srctip').style.display = 'none'; tipFor = null; tipPinned = false; document.querySelectorAll('.srcbar i.on').forEach(i => i.classList.remove('on')); }
+function markSource(wrap, src){
+  wrap.querySelectorAll('.srcbar i').forEach(i => i.classList.toggle('on', i.dataset.src === src));
+  document.querySelectorAll('#srctip .src').forEach(r => r.classList.toggle('on', r.dataset.src === src));
+}
+function sourceBar(m){
+  const s = m.sources;
+  if (!s?.total) return null;
+  const parts = sourceParts(s);
+  const wrap = mk('div', 'srcs'); wrap.tabIndex = 0;
+  wrap.setAttribute('aria-label', 'Photos by source: ' + parts.map(x => `${x.info.name} ${pct(x.photos, s.total)}`).join(', ') + '. Hover, focus or tap for their licences.');
+  const bar = mk('div', 'srcbar'), legend = mk('div', 'srclegend');
+  for (const x of parts) {
+    const seg = mk('i'); seg.dataset.src = x.source; seg.style.background = x.info.color; seg.style.flex = `${x.photos} 1 0`;
+    bar.append(seg);
+    const item = mk('span'); item.dataset.src = x.source;
+    const key = mk('b'); key.style.background = x.info.color;
+    item.append(key, document.createTextNode(`${x.info.name} ${pct(x.photos, s.total)}`)); legend.append(item);
+  }
+  wrap.append(bar, legend);
+  wrap.addEventListener('pointerenter', ev => { if (ev.pointerType === 'mouse' && !tipPinned) showSourceTip(m, wrap); });
+  wrap.addEventListener('pointermove', ev => { const src = ev.target.closest('[data-src]')?.dataset.src; if (tipFor === wrap) markSource(wrap, src); });
+  wrap.addEventListener('pointerleave', ev => { if (ev.pointerType === 'mouse' && !tipPinned) hideSourceTip(); });
+  wrap.addEventListener('focus', () => { if (!tipPinned) showSourceTip(m, wrap); });
+  wrap.addEventListener('blur', () => { if (!tipPinned) hideSourceTip(); });
+  wrap.addEventListener('click', ev => {   // a phone has no hover: a tap keeps it open until the next tap
+    ev.stopPropagation();
+    if (tipPinned && tipFor === wrap) return hideSourceTip();
+    showSourceTip(m, wrap); tipPinned = true; markSource(wrap, ev.target.closest('[data-src]')?.dataset.src);
+  });
+  return wrap;
+}
+document.addEventListener('click', ev => { if (tipPinned && !ev.target.closest('#srctip')) hideSourceTip(); });
+document.addEventListener('scroll', () => { if (tipFor) hideSourceTip(); }, true);
+
 async function refreshMeshes(){
+  hideSourceTip();
   meshesCache = await api('/api/meshes'); meshesById = Object.fromEntries(meshesCache.map(m => [m.id, m]));
   const el = $('#meshes'); el.innerHTML = meshesCache.length ? '' : '<div class="status">No meshes yet.</div>';
   for (const m of meshesCache) {
@@ -1050,6 +1148,8 @@ async function refreshMeshes(){
         ${m.lat!=null?'<button class="sm sec fly">Map</button>':'<button class="sm sec setll">Set coords</button>'}
         <a href="/meshes/${m.id}/${m.filename}?download=1${m.cleanup?.hidden ? '&cleaned=1' : ''}" download title="${m.cleanup?.hidden ? 'Without the hidden pieces. To get the whole mesh, remove the cleanup first.' : 'Download'}"><button class="sm sec" style="width:100%">⤓</button></a>
         <button class="sm danger del">✕</button></div>`;
+    const bar = sourceBar(m);
+    if (bar) d.querySelector('.chips').before(bar);
     d.querySelector('.view').onclick = () => viewMesh(m.id);
     d.querySelector('.fly')?.addEventListener('click', () => flyTo(m.lat, m.lng));
     d.querySelector('.setll')?.addEventListener('click', async () => { const ll = parseLL(prompt('lat, lng')); if (!ll) return; await api('/api/meshes/'+m.id, {method:'PATCH', json:{lat:ll[0], lng:ll[1]}}); refreshMeshes(); });
