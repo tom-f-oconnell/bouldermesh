@@ -2,7 +2,7 @@
 
 Run: python3 tests/test_pipeline.py
 """
-import json, pathlib, struct, sys, tempfile, types
+import json, os, pathlib, struct, sys, tempfile, time, types
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "backend"))
 import occlusion
@@ -136,13 +136,16 @@ print("mapper abort OK")
 
 
 # ---- people masks reach every step that can use them, and only cost the masking if they fail
-def commands_with(write_masks) -> tuple[list[list[str]], list[str]]:
+def commands_with(write_masks, setup=None, check=None) -> tuple[list[list[str]], list[str]]:
+    """The commands a reconstruction runs. setup(tmp) runs before it, and check(tmp) after."""
     with tempfile.TemporaryDirectory() as td:
         tmp, cmds, logged = pathlib.Path(td), [], []
         images, work = tmp / "images", tmp / "work"
         images.mkdir()
         for i in range(8):
             (images / f"{i}.jpg").write_bytes(b"x")
+        if setup:
+            setup(tmp)
 
         def fake_run(cmd, cwd, log, watch=None):
             cmds.append(cmd)
@@ -159,6 +162,8 @@ def commands_with(write_masks) -> tuple[list[list[str]], list[str]]:
             pipeline.reconstruct_colmap_openmvs(images, work, tmp / "out", logged.append, False)
         finally:
             pipeline._run, pipeline.COLMAP, pipeline._mvs, occlusion.available, occlusion.write_masks = saved
+        if check:
+            check(tmp)
         return cmds, logged
 
 
@@ -172,6 +177,20 @@ for tool in ("DensifyPointCloud", "TextureMesh"):
     c = by_tool(cmds, tool)
     assert c[c.index("--ignore-mask-label") + 1] == "0", c
 assert "--mask-path" in by_tool(cmds, "DensifyPointCloud")
+mask_dir = by_tool(cmds, "feature_extractor")[by_tool(cmds, "feature_extractor").index("--ImageReader.mask_path") + 1]
+assert mask_dir.endswith("/masks") and "/work/" not in mask_dir, "kept next to the photos, as work/ is deleted"
+
+
+def legacy(tmp):    # masks from before they were kept, in work/
+    (tmp / "work" / "masks").mkdir(parents=True)
+    (tmp / "work" / "masks" / "0.jpg.png").write_bytes(b"m")
+
+
+def moved(tmp):
+    assert (tmp / "masks" / "0.jpg.png").read_bytes() == b"m" and not (tmp / "work" / "masks").exists()
+
+
+commands_with(lambda *a, **k: {}, setup=legacy, check=moved)
 
 
 def failing(*a, **k):
@@ -184,6 +203,40 @@ for tool in ("DensifyPointCloud", "TextureMesh"):
     assert "--ignore-mask-label" not in by_tool(cmds, tool), cmds
 assert any("not masking people" in l for l in logged), logged
 print("people masks OK")
+
+# ---- masks are only made for photos without an up-to-date one, and say how much of each is people
+try:
+    import numpy as np
+    import cv2  # noqa: F401
+except ImportError:
+    print("numpy or OpenCV not installed: skipping the mask files test")
+else:
+    with tempfile.TemporaryDirectory() as td:
+        images, out, looked = pathlib.Path(td) / "photos", pathlib.Path(td) / "masks", []
+        images.mkdir()
+        for i in range(3):
+            (images / f"{i}.jpg").write_bytes(b"x")
+
+        def fake_mask(path, log, grow=0.02):
+            looked.append(path.name)
+            m = np.zeros((4, 4), bool)
+            m[:2, :1] = True     # an eighth of it
+            return m
+        saved, occlusion.person_mask = occlusion.person_mask, fake_mask
+        try:
+            shares = occlusion.write_masks(images, out, lambda f: f"{f.name}.png", print)
+            assert looked == ["0.jpg", "1.jpg", "2.jpg"] and shares == {f"{i}.jpg": 0.125 for i in range(3)}, (looked, shares)
+            assert json.loads((out / occlusion.SHARES).read_text()) == shares
+            looked.clear()
+            assert occlusion.write_masks(images, out, lambda f: f"{f.name}.png", print) == shares and looked == [], looked
+            future = time.time() + 5
+            os.utime(images / "1.jpg", (future, future))     # changed since its mask was made
+            (images / "3.jpg").write_bytes(b"x")
+            occlusion.write_masks(images, out, lambda f: f"{f.name}.png", print)
+            assert looked == ["1.jpg", "3.jpg"], looked
+        finally:
+            occlusion.person_mask = saved
+    print("mask files OK")
 
 
 # ---- the GPU is used if it's there and has room, and failing on it only costs the time

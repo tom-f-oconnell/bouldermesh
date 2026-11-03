@@ -14,6 +14,7 @@ from typing import Callable
 Log = Callable[[str], None]
 Progress = Callable[..., None]   # progress(fraction, detail)
 PHOTO_EXT = {".jpg", ".jpeg", ".png"}
+SHARES = "people.json"   # the share of each photo that is people, next to its masks
 _model = None
 
 
@@ -59,7 +60,8 @@ def person_mask(path: Path, log: Log, grow: float = 0.02):
 
 def write_masks(images: Path, out: Path, name_for: Callable[[Path], str], log: Log,
                 progress: Progress | None = None) -> dict[str, float]:
-    """Write a mask for every photo, 0 where there are people and 255 elsewhere.
+    """Write a mask for every photo, 0 where there are people and 255 elsewhere, and the share of
+    each photo that is people to out/people.json. A mask newer than its photo is kept as it is.
 
     Args:
         name_for: mask file name for a photo.
@@ -67,15 +69,25 @@ def write_masks(images: Path, out: Path, name_for: Callable[[Path], str], log: L
     Returns:
         The share of each photo that is people, by file name.
     """
+    import json
+
     import cv2
     import numpy as np
     out.mkdir(parents=True, exist_ok=True)
     photos = sorted(p for p in images.iterdir() if p.suffix.lower() in PHOTO_EXT and not p.name.endswith(".mask.png"))
-    shares = {}
-    for i, p in enumerate(photos):
+    record = out / SHARES
+    shares = json.loads(record.read_text()) if record.exists() else {}
+    todo = [p for p in photos if not ((out / name_for(p)).exists() and (out / name_for(p)).stat().st_mtime >= p.stat().st_mtime
+                                     and p.name in shares)]
+    if len(todo) < len(photos):
+        log(f"occlusion: {len(photos) - len(todo)} of {len(photos)} photos already have a mask")
+    for i, p in enumerate(todo):
         if progress:
-            progress(i / max(1, len(photos)), f"{i} of {len(photos)} photos")
+            progress(i / max(1, len(todo)), f"{i} of {len(todo)} photos")
         mask = person_mask(p, log)
         shares[p.name] = float(mask.mean())
         cv2.imwrite(str(out / name_for(p)), np.where(mask, 0, 255).astype(np.uint8))
-    return shares
+        if i % 20 == 19:   # so an interrupted run keeps what it did
+            record.write_text(json.dumps(shares))
+    record.write_text(json.dumps(shares))
+    return {p.name: shares[p.name] for p in photos}

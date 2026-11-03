@@ -308,15 +308,20 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     sparse.mkdir(exist_ok=True)
     n_images = len([p for p in images.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")])
 
-    masks = work / "masks" if _finished(work, "people") else None
-    if not masks and occlusion.available():
+    # Kept next to the photos rather than in work/, which is deleted, as where the people are is also
+    # what estimating their size needs. Only photos without an up-to-date mask are looked at again.
+    masks = images.parent / "masks"
+    if (work / "masks").is_dir() and not masks.exists():    # where they used to be kept
+        (work / "masks").rename(masks)
+    if not _finished(work, "people") and occlusion.available():
         log("== Finding people to ignore")
         try:
-            occlusion.write_masks(images, work / "masks", lambda f: f"{f.name}.png", log, tracker.callback("people"))
-            masks = work / "masks"
+            occlusion.write_masks(images, masks, lambda f: f"{f.name}.png", log, tracker.callback("people"))
             _finish(work, "people")
         except Exception as e:  # e.g. the model can't be downloaded: only costs the masking
             log(f"occlusion: failed ({e}); not masking people")
+    if not _finished(work, "people"):
+        masks = None
 
     cmd = [COLMAP, "feature_extractor", "--database_path", str(db), "--image_path", str(images),
            "--ImageReader.camera_model", "SIMPLE_RADIAL"]
