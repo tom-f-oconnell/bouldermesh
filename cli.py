@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -81,8 +82,13 @@ def jobs(server: str) -> int:
     Returns:
         1 if a restart would interrupt anything, else 0.
     """
-    with urllib.request.urlopen(server.rstrip("/") + "/api/jobs", timeout=30) as r:
-        st = json.load(r)
+    get = lambda path: json.load(urllib.request.urlopen(server.rstrip("/") + path, timeout=30))  # noqa: E731
+    try:
+        st = get("/api/jobs")
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+        st = old_jobs(get)
 
     def line(j):
         bits = [j["type"]] + ([f"{j['progress']:.0f}%"] if j.get("progress") is not None else []) + \
@@ -101,6 +107,23 @@ def jobs(server: str) -> int:
     if not busy:
         print("nothing outside areas is running or queued: a restart interrupts nothing")
     return int(busy)
+
+
+def old_jobs(get) -> dict:
+    """/api/jobs, pieced together from a server from before it, which ignores SIGTERM, and fails what a
+    restart interrupts: projects not in an area that are busy, searches for beta, and how many are queued."""
+    print("(a server from before /api/jobs: a restart fails the jobs below, and it ignores SIGTERM, so give "
+          "`docker compose up` -t 10)")
+    areas = {r["project_id"]: (r["name"], c["name"]) for c in get("/api/campaigns") for r in c.get("running") or [] if r.get("project_id")}
+    busy = [p for p in get("/api/projects") if p["status"] in ("queued", "running", "harvesting")]
+    beta = [m for m in get("/api/meshes") if (m.get("beta") or {}).get("status") in ("queued", "running")]
+    queued = get("/api/status").get("queue") or 0
+    out = [{"type": p["status"], "name": p["name"]} for p in busy if p["id"] not in areas]
+    out += [{"type": f"beta, {m['beta']['status']}", "name": m["name"]} for m in beta]
+    if queued and not any(p["status"] == "queued" for p in busy):
+        out.append({"type": "queued", "name": f"{queued} job(s) not tied to a project"})
+    return {"running": out, "queued": [], "stopping": None,
+            "area_climbs": [{"name": name, "area": area} for pid, (name, area) in areas.items()]}
 
 
 if __name__ == "__main__":
