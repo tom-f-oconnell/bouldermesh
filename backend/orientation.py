@@ -99,20 +99,40 @@ def reading(path: Path) -> dict | None:
     return {"down": down, "pitch": math.degrees(math.asin(max(-1.0, min(1.0, -down[2]))))}
 
 
+CAMERA_PARAMS = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8, 5: 8, 6: 12, 7: 5, 8: 4, 9: 5, 10: 12}   # COLMAP camera model id: parameters
+
+
+def read_lenses(model: Path) -> dict[int, dict]:
+    """A COLMAP model's cameras.bin, by camera id: its model id (2 is SIMPLE_RADIAL: f, cx, cy, k),
+    image size and parameters, in pixels of the photo it was found for."""
+    out = {}
+    path = model / "cameras.bin"
+    if not path.exists():
+        return out
+    with open(path, "rb") as f:
+        for _ in range(struct.unpack("<Q", f.read(8))[0]):
+            cam_id, model_id = struct.unpack("<ii", f.read(8))
+            width, height = struct.unpack("<QQ", f.read(16))
+            params = struct.unpack(f"<{CAMERA_PARAMS[model_id]}d", f.read(8 * CAMERA_PARAMS[model_id]))
+            out[cam_id] = {"model": model_id, "width": width, "height": height, "params": list(params)}
+    return out
+
+
 def read_cameras(model: Path) -> list[dict]:
-    """The placed photos of a COLMAP model, from its images.bin: name, rotation and translation."""
-    out = []
+    """The placed photos of a COLMAP model, from its images.bin: name, rotation and translation
+    (world to camera), and the lens it was taken with, where cameras.bin has it."""
+    out, lenses = [], read_lenses(model)
     with open(model / "images.bin", "rb") as f:
         for _ in range(struct.unpack("<Q", f.read(8))[0]):
             f.read(4)
             q = struct.unpack("<4d", f.read(32))
             t = struct.unpack("<3d", f.read(24))
-            f.read(4)
+            cam_id = struct.unpack("<i", f.read(4))[0]
             name = b""
             while (c := f.read(1)) != b"\0":
                 name += c
             f.seek(24 * struct.unpack("<Q", f.read(8))[0], 1)
-            out.append({"name": name.decode(), "q": list(q), "t": list(t)})
+            out.append({"name": name.decode(), "q": list(q), "t": list(t), **({"lens": lenses[cam_id]} if cam_id in lenses else {})})
     return out
 
 

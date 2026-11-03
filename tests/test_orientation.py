@@ -113,6 +113,12 @@ with tempfile.TemporaryDirectory() as td:
     cameras = o.read_cameras(model)
     assert [c["name"] for c in cameras] == list(cams) and close(cameras[0]["t"], [1.0, 2.0, 3.0]), cameras[0]
     assert close(np.ravel(o._matrix(cameras[0]["q"])), np.ravel(cam)), "quaternion to matrix"
+    assert "lens" not in cameras[0], "no cameras.bin, no lens"
+    with open(model / "cameras.bin", "wb") as f:   # camera 1: SIMPLE_RADIAL 640x480, f 500, centre (320, 240), k 0.01
+        f.write(struct.pack("<Q", 1) + struct.pack("<ii", 1, 2) + struct.pack("<QQ", 640, 480) + struct.pack("<4d", 500, 320, 240, 0.01))
+    lens = o.read_cameras(model)[0]["lens"]
+    assert lens == {"model": 2, "width": 640, "height": 480, "params": [500.0, 320.0, 240.0, 0.01]}, lens
+    (model / "cameras.bin").unlink()
 
     # no readings at all
     photo(images / "ddg_none.jpg", None, 1)
