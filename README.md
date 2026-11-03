@@ -163,6 +163,10 @@ OpenMVS's 11-photo sample set takes 3-4 minutes, and a 100-photo harvest about a
 If a browser can't load a mesh's texture, the viewer tries it smaller, then says why on the view. Grey
 on a mesh means no photo shows that side, including the backs of surfaces.
 
+On a phone, the page shows either the controls or the view. Viewing a mesh fills the screen, and
+*Controls* goes back. Nothing is shown over the mesh there, so texture problems, stray-piece cleanup
+and the iPhone gravity comparison are only shown on wider screens (over 860 px).
+
 A reconstruction is levelled from the gravity readings iPhones record in their photos, if any of its
 placed photos has one. Otherwise down is estimated by assuming most photos were taken upright. The
 view shows both and how far apart they are, or why there's no reading. Meshes have no real-world size.

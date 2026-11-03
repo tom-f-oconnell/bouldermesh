@@ -9,7 +9,7 @@
 <style>
   :root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#e6e8ee;--mute:#8b93a7;--acc:#5cc8ff;--ok:#5fd68a;--bad:#ff6b6b;--warn:#ffc857;--climb:#ff9f5c}
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;height:100vh;display:grid;grid-template-rows:auto 1fr}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;height:100vh;height:100dvh;display:grid;grid-template-rows:auto 1fr}
   header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
   header h1{font-size:16px;margin:0;letter-spacing:.3px}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mute)}
@@ -51,7 +51,7 @@
   .meta b{color:var(--fg);font-weight:500}
   .checks{display:flex;gap:10px;flex-wrap:wrap;font-size:12px}
   .checks label{display:flex;gap:4px;align-items:center}
-  #right{position:relative;min-height:0;display:grid;grid-template-rows:auto 1fr}
+  #right{position:relative;min-height:0;display:grid;grid-template-rows:auto 1fr;grid-template-columns:minmax(0,1fr)}
   .viewbar{display:flex;gap:6px;padding:6px 10px;border-bottom:1px solid var(--line);background:var(--panel);align-items:center}
   .viewbar .status{margin-left:auto}
   #viewer,#map{position:relative;min-height:0;display:none}
@@ -87,7 +87,15 @@
   .steps .bar.done i{background:var(--ok)} .steps .bar.failed i{background:var(--bad)}
   .steps .detail{grid-column:2;margin-top:-2px}
   .thumbs.rejected img{opacity:.75}
-  @media (max-width:860px){main{grid-template-columns:1fr;grid-template-rows:1fr 1fr}aside{border-right:0;border-bottom:1px solid var(--line)}}
+  .phone{display:none}
+  /* A phone shows either the controls or the view, which then has the whole screen, with nothing over the mesh */
+  @media (max-width:860px){
+    body,main{grid-template-columns:minmax(0,1fr)} aside{border-right:0} #right{display:none} .phone{display:inline-block}
+    body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
+    #tofull{margin-left:auto} #caps{display:none}
+    #hud,#viewnote,#pieces,#orient{display:none!important}
+    .viewbar button{white-space:nowrap} .viewbar .status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  }
 </style>
 </head>
 <body>
@@ -95,6 +103,7 @@
   <h1>BoulderMesh</h1>
   <span id="mode" class="pill">checking…</span>
   <span id="caps" class="status"></span>
+  <button class="sm phone" id="tofull">Viewer</button>
 </header>
 <main>
   <aside>
@@ -194,6 +203,7 @@
 
   <div id="right">
     <div class="viewbar">
+      <button class="sm phone" id="toctl">Controls</button>
       <button class="sec sm" id="v3d">3D viewer</button>
       <button class="sec sm" id="vmap">Map</button>
       <button class="sec sm" id="vsway" disabled title="Rocks the view a few degrees either way from where it is now, to show off that it's 3D. Dragging or scrolling stops it.">Sway view</button>
@@ -235,7 +245,9 @@ const api = async (url, opt={}) => {
   return j;
 };
 let toastT;
-const toast = (msg, ms=3500) => { const t=$('#toast'); t.textContent=msg; t.style.display='block'; clearTimeout(toastT); toastT=setTimeout(()=>t.style.display='none', ms); };
+const phone = matchMedia('(max-width:860px)');   // the same width as the CSS for phones
+const overMesh = () => phone.matches && document.body.classList.contains('full');
+const toast = (msg, ms=3500) => { if (overMesh()) return; const t=$('#toast'); t.textContent=msg; t.style.display='block'; clearTimeout(toastT); toastT=setTimeout(()=>t.style.display='none', ms); };
 const fmtSize = n => n>1e6 ? (n/1e6).toFixed(1)+' MB' : (n/1e3).toFixed(0)+' kB';
 const fmtWhen = t => new Date(t * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -247,7 +259,14 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x===b));
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + b.dataset.tab));
 });
-function showRight(which){ $('#viewer').classList.toggle('on', which==='3d'); $('#map').classList.toggle('on', which==='map'); if (which==='map') { setTimeout(()=>map.invalidateSize(), 50); } else resize(); }
+// on a phone, the view on its own, or the controls on their own
+function setFull(on){
+  document.body.classList.toggle('full', on);
+  if (overMesh()) $('#toast').style.display = 'none';
+  if ($('#map').classList.contains('on')) setTimeout(() => map.invalidateSize(), 50);
+}
+$('#tofull').onclick = () => setFull(true); $('#toctl').onclick = () => setFull(false);
+function showRight(which){ setFull(true); $('#viewer').classList.toggle('on', which==='3d'); $('#map').classList.toggle('on', which==='map'); if (which==='map') { setTimeout(()=>map.invalidateSize(), 50); } else resize(); }
 $('#v3d').onclick = () => showRight('3d'); $('#vmap').onclick = () => { endSway(); showRight('map'); refreshMap(!mapFitted); };
 
 // ---------------------------------------------------------------- 3D viewer
@@ -503,7 +522,8 @@ function frameMain(){
   endSway();
   standOnGrid(current);
   controls.target.copy(mainBox(current).getCenter(new THREE.Vector3()));
-  camera.position.copy(controls.target).add(new THREE.Vector3(2.2, .8, 2.6)); controls.update();
+  // further back on a screen taller than it's wide, as a phone's is, so that the rock fits across it too
+  camera.position.copy(controls.target).add(new THREE.Vector3(2.2, .8, 2.6).multiplyScalar(Math.max(1, 1 / camera.aspect))); controls.update();
 }
 // ---- which way is down: how a mesh was levelled, and how that compares with any iPhone gravity readings
 const COLOR_ESTIMATE = 0xf5c04a, COLOR_IPHONE = 0x5cc8ff;
@@ -558,7 +578,7 @@ function viewNote(text, retry){
   if (retry) { const b = document.createElement('button'); b.className = 'sm sec'; b.textContent = 'Try again'; b.onclick = retry; n.appendChild(b); }
   if (text) { const b = document.createElement('button'); b.className = 'sm sec dismiss'; b.textContent = 'Dismiss'; b.onclick = () => viewNote(''); n.appendChild(b); }
 }
-renderer.domElement.addEventListener('webglcontextlost', ev => { ev.preventDefault(); viewNote('The graphics card dropped this view, usually because it ran out of memory. Close other tabs that use it and reload the page.'); });
+renderer.domElement.addEventListener('webglcontextlost', ev => { ev.preventDefault(); $('#viewing').textContent = 'The view stopped working: reload the page'; viewNote('The graphics card dropped this view, usually because it ran out of memory. Close other tabs that use it and reload the page.'); });
 function loadGltf(url, side){
   const manager = new THREE.LoadingManager();
   if (side) manager.setURLModifier(u => /\.(png|jpe?g)$/i.test(u) ? `${u}?max=${side}` : u);
@@ -613,6 +633,7 @@ async function loadMeshUrl(url, filename, label, id){
   const ext = filename.split('.').pop().toLowerCase();
   const base = url.slice(0, url.lastIndexOf('/') + 1);
   toast('Loading ' + filename + '…', 60000);
+  $('#viewing').textContent = `Loading ${label}…`;   // where a phone, which shows no toasts over the mesh, can see it
   try {
     let obj, note = '';
     if (ext === 'ply') obj = new THREE.Mesh(await new PLYLoader().loadAsync(url));
@@ -637,7 +658,7 @@ async function loadMeshUrl(url, filename, label, id){
       const gl = renderer.getContext();
       if (gl.getError() === gl.OUT_OF_MEMORY) viewNote('The graphics card ran out of memory for this texture, so it may show black.', again);
     }));
-  } catch (e) { toast('Could not load mesh: ' + e.message, 6000); viewNote('Could not load this mesh: ' + e.message, again); }
+  } catch (e) { toast('Could not load mesh: ' + e.message, 6000); $('#viewing').textContent = 'Could not load: ' + e.message; viewNote('Could not load this mesh: ' + e.message, again); }
 }
 
 // ---------------------------------------------------------------- map
@@ -707,7 +728,7 @@ async function openClimb(id, focus=true){
   const harvests = c.projects.filter(p => p.kind === 'harvest');
   const harvesting = harvests.some(p => BUSY.includes(p.status));
   openClimbId = id;
-  if (focus) document.querySelector('.tabs button[data-tab=climbs]').click();
+  if (focus) { setFull(false); document.querySelector('.tabs button[data-tab=climbs]').click(); }
   const d = document.createElement('div'); d.className = 'card active';
   const imgs = (data.images||[]).filter(m=>m.url);
   const vids = data.videos||[];
