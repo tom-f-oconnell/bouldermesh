@@ -23,3 +23,6 @@ services:
       # HARVEST_DDG: "0"          # turns off the unofficial DuckDuckGo image search
       # OPENBETA_MEDIA_BASE: "https://media.openbeta.io"
     restart: unless-stopped
+    # on a stop or restart, the server waits up to 10 min for jobs started outside areas to
+    # finish, as a restart interrupts them; this is how long Docker lets it before killing it
+    stop_grace_period: 11m

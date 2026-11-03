@@ -23,6 +23,7 @@ import queue
 import re
 import secrets
 import shutil
+import signal
 import sqlite3
 import sys
 import threading
@@ -141,7 +142,8 @@ def init_db() -> None:
         """)
         # migrations for databases created by v0.1
         cols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
-        for c, t in (("kind", "TEXT DEFAULT 'user'"), ("climb_id", "TEXT"), ("harvest", "TEXT"), ("progress", "TEXT")):
+        # job: the last job queued for it outside an area, to run again, as it was asked for, if a restart stops it
+        for c, t in (("kind", "TEXT DEFAULT 'user'"), ("climb_id", "TEXT"), ("harvest", "TEXT"), ("progress", "TEXT"), ("job", "TEXT")):
             if c not in cols:
                 con.execute(f"ALTER TABLE projects ADD COLUMN {c} {t}")
         cols = {r[1] for r in con.execute("PRAGMA table_info(meshes)")}
@@ -161,13 +163,22 @@ def init_db() -> None:
         if "replaced_by" not in {r[1] for r in con.execute("PRAGMA table_info(meshes)")}:
             con.execute("ALTER TABLE meshes ADD COLUMN replaced_by TEXT")   # a rebuild of the same photos' project
         # A restart only pauses an area: its climb carries on from the last step it finished, and the
-        # area carries on by itself unless someone stopped it. Other jobs are lost, as their queue is.
+        # area carries on by itself unless someone stopped it. Other jobs are lost, as their queue is, so
+        # they're marked interrupted, not failed: Retry carries on with one, or runs one that hadn't started.
         con.execute("UPDATE projects SET status='stopped' WHERE id IN (SELECT project_id FROM campaign_items "
                     "WHERE status='running' OR (status='pending' AND retry=1 AND redo IS NULL))")
         con.execute("UPDATE campaign_items SET status='pending', note='interrupted by a restart: carrying on from where it got to' WHERE status='running'")
         con.execute("UPDATE campaigns SET status='stopped', note=NULL WHERE status='stopping'")
-        con.execute("UPDATE projects SET status='failed', progress=NULL, log=log||'\nserver restarted during job' "
-                    "WHERE status IN ('queued','running','harvesting')")
+        cut = con.execute("SELECT id, status, job FROM projects WHERE status IN ('queued','running','harvesting')").fetchall()
+        for r in cut:
+            job = json.loads(r["job"]) if r["job"] else None
+            if job and r["status"] != "queued":
+                job["resume"] = True    # it had started: it carries on from the last step it finished
+            con.execute("UPDATE projects SET status='interrupted', progress=NULL, job=? WHERE id=?",
+                        (json.dumps(job) if job else None, r["id"]))
+    for r in cut:
+        append_log(r["id"], "INTERRUPTED: the server restarted " + ("before this job started: Retry runs it" if r["status"] == "queued"
+                                                                    else "during this job: Retry carries on from the last step it finished"))
 
 
 def q(sql: str, *args, one=False, write=False):
@@ -352,6 +363,14 @@ def shrunk_texture(path: Path, side: int) -> Path:
 
 # ------------------------------------------------------------------ worker
 jobs: "queue.Queue[dict]" = queue.Queue()
+
+
+def queue_job(job: dict) -> None:
+    """Queue a job someone asked for, keeping a project's with the project, to run again as it was asked for
+    if a restart interrupts it."""
+    if job.get("pid"):
+        q("UPDATE projects SET job=? WHERE id=?", json.dumps(job), job["pid"], write=True)
+    jobs.put(job)
 
 
 def append_log(pid: str, line: str) -> None:
@@ -585,6 +604,7 @@ class Worker:
         self.campaign: str | None = None   # the area whose climb it's on
         self.boulder: str | None = None    # which no other worker takes a climb on meanwhile
         self.doing: str | None = None
+        self.job: dict | None = None       # a job someone asked for that it's running: {job, started, from (% done)}
         self.error: str | None = None
         self.wait_until = 0.0
         self.retired = False
@@ -685,10 +705,10 @@ def read_ahead(camp: dict) -> None:
             set_item(camp["id"], it["source_id"], status="failed", note=f"couldn't read its page: {e}")
 
 
-def last_failure(pid: str) -> str:
+def last_failure(pid: str, prefix: str = "FAILED: ") -> str:
     for line in reversed(read_log(pid).splitlines()):
-        if line.startswith("FAILED: "):
-            return line[len("FAILED: "):]
+        if line.startswith(prefix):
+            return line[len(prefix):]
     return "failed; see its project's log"
 
 
@@ -845,17 +865,18 @@ def retry_campaign(camp_id: str) -> int:
 
 
 def retry_project(pid: str) -> tuple[dict, int]:
-    """Try a project again from the last step it finished.
+    """Try a project again from the last step it finished. One a restart interrupted runs its job as it was
+    asked for, carrying on from there if it had started.
 
     Returns:
         The response, and its HTTP status.
     """
-    proj = q("SELECT status,kind,harvest FROM projects WHERE id=?", pid, one=True)
+    proj = q("SELECT status,kind,harvest,job FROM projects WHERE id=?", pid, one=True)
     if not proj:
         return {"error": "not found"}, 404
     if proj["status"] in ("queued", "running", "harvesting"):
         return {"error": "already running"}, 409
-    if proj["status"] not in ("failed", "stopped"):
+    if proj["status"] not in ("failed", "stopped", "interrupted"):
         return {"error": "it hasn't failed: Reconstruct makes another mesh"}, 409
     if proj["kind"] != "harvest" or proj["harvest"]:    # otherwise it gets its photos first
         n = len([f for f in (PROJECTS / pid / "photos").iterdir() if f.suffix.lower() in PHOTO_EXT])
@@ -866,7 +887,7 @@ def retry_project(pid: str) -> tuple[dict, int]:
         queue_retry(item["campaign_id"], item["source_id"], pid)
     else:
         q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
-        jobs.put({"type": "retry", "pid": pid})
+        queue_job(json.loads(proj["job"]) if proj["status"] == "interrupted" and proj["job"] else {"type": "retry", "pid": pid})
     return {"queued": True}, 202
 
 
@@ -1093,6 +1114,8 @@ def campaign_view(camp: dict) -> dict:
 
 def run_job(job: dict) -> None:
     """A job someone asked for, on this thread's worker."""
+    w = current_worker()
+    w.job = {"job": job, "started": time.time(), "from": job_progress(job) or 0.0}
     jobctl.begin(low_priority=job["type"] in ("beta", "retexture"))
     try:
         if job["type"] == "beta":
@@ -1100,35 +1123,140 @@ def run_job(job: dict) -> None:
         elif job["type"] == "retexture":
             run_retexture(job["mid"])
         elif job["type"] == "reconstruct":
-            run_reconstruct(job["pid"], job.get("internet", False))
+            run_reconstruct(job["pid"], job.get("internet", False), resume=job.get("resume", False))
         elif job["type"] == "harvest":
-            run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True))
+            run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True), resume=job.get("resume", False))
         elif job["type"] == "retry":
             run_retry(job["pid"])
     except (Exception, Cancelled) as e:  # never let the worker die
         append_log(job.get("pid", "?"), f"worker error: {e!r}")
+    finally:
+        w.job = None
 
 
 def worker(w: Worker | None = None) -> None:
-    """A worker's thread: jobs people asked for first (on this server's workers only), then areas' climbs."""
+    """A worker's thread: jobs people asked for first (on this server's workers only), then areas' climbs.
+    Once the server is stopping, it takes no more of either."""
     w = w or _first
     _here.worker = w
     use_control(w.control)
     while not w.retired:
-        if time.time() < w.wait_until:
+        if _stopping or time.time() < w.wait_until:
             time.sleep(2)
             continue
         if not w.remote:
             try:
-                run_job(jobs.get(timeout=CAMPAIGN_POLL))
-                continue
+                job = jobs.get(timeout=CAMPAIGN_POLL)
             except queue.Empty:
-                pass
+                job = None
+            if job and _stopping:   # it came as the stop began: it stays queued, to be marked interrupted
+                jobs.put(job)
+                continue
+            if job:
+                run_job(job)
+                continue
         try:
             if not next_campaign_step() and w.remote:
                 time.sleep(CAMPAIGN_POLL)
         except (Exception, Cancelled) as e:  # never let the worker die
             print(f"campaign error on {w.name}: {e!r}", flush=True)
+
+
+# ------------------------------------------------------------------ stopping, and what it would interrupt
+STOP_WAIT = float(os.environ.get("STOP_WAIT_MINUTES", "10")) * 60   # docker-compose.yml's stop_grace_period is longer
+_stopping: dict | None = None    # once a stop has begun: {since, until, waiting_for}
+AGAIN = {"reconstruct": "Retry on its project", "harvest": "Retry on its project", "retry": "Retry on its project",
+         "beta": "Find beta on the Beta tab", "retexture": "Make textures... on the admin page"}
+
+
+def job_progress(job: dict) -> float | None:
+    """How far a job someone asked for has got, in percent, if it says."""
+    if job.get("pid"):
+        try:
+            return float(json.loads(q("SELECT progress FROM projects WHERE id=?", job["pid"], one=True)["progress"])["overall"])
+        except (TypeError, ValueError, KeyError):
+            return None
+    if job["type"] == "beta":
+        m = re.match(r"video (\d+) of (\d+)", (beta_mod.load(MESHES / job["mid"]) or {}).get("progress") or "")
+        return 100 * (int(m[1]) - 1) / int(m[2]) if m else None
+    return None
+
+
+def job_info(job: dict, run: dict | None = None) -> dict:
+    """A job someone asked for, as /api/jobs gives it; if it's running, how far it's got, and roughly how many
+    seconds it has left, from how fast it's got on so far (None until that's clear)."""
+    table, key = ("projects", "pid") if job.get("pid") else ("meshes", "mid")
+    row = q(f"SELECT name FROM {table} WHERE id=?", job.get(key), one=True)
+    out = {"type": job["type"], ("project_id" if key == "pid" else "mesh_id"): job.get(key), "name": row["name"] if row else job.get(key)}
+    if run:
+        now, took = job_progress(job), time.time() - run["started"]
+        gained = (now or 0.0) - run["from"]
+        out.update(started=run["started"], progress=now,
+                   eta=took * (100 - now) / gained if now is not None and took >= 60 and gained >= 2 else None)
+    return out
+
+
+def jobs_state() -> dict:
+    """What a restart would stop now: jobs people started outside areas, which it interrupts (running and
+    queued), and areas' climbs, which it only pauses."""
+    with jobs.mutex:
+        waiting = list(jobs.queue)
+    runs = [w.job for w in list(_workers)]
+    return {"running": [job_info(r["job"], r) for r in runs if r], "queued": [job_info(j) for j in waiting],
+            "area_climbs": q("SELECT c.name AS area, i.name, i.project_id FROM campaign_items i JOIN campaigns c ON c.id=i.campaign_id "
+                             "WHERE i.status='running' ORDER BY i.updated"),
+            "stopping": _stopping}
+
+
+def minutes(s: float) -> str:
+    return f"{max(1, round(s / 60))} min"
+
+
+def job_label(j: dict) -> str:
+    bits = [j["type"]] + ([f"{j['progress']:.0f}%"] if j.get("progress") is not None else []) + \
+        ([f"about {minutes(j['eta'])} left"] if j.get("eta") is not None else [])
+    return f"{j['name']} ({', '.join(bits)})"
+
+
+def stop_when_idle(server: ThreadingHTTPServer) -> None:
+    """Stop the server (on SIGTERM) once the jobs people started outside areas have finished, as a restart
+    interrupts them. Meanwhile it takes no more work, and serves the site as before. It waits at most
+    STOP_WAIT, and only for jobs that look like finishing by then. Areas' climbs aren't waited for, as a
+    restart only pauses them. A second SIGTERM stops it at once."""
+    global _stopping
+    say = lambda s: print(f"stopping: {s}", flush=True)  # noqa: E731
+    if _stopping:
+        say("now, as asked again")
+        return server.shutdown()
+    _stopping = {"since": time.time(), "until": time.time() + STOP_WAIT, "waiting_for": []}
+    passed, said = set(), 0.0     # jobs not waited for, as they'd take too long
+    ident = lambda j: (j["type"], j.get("project_id") or j.get("mesh_id"))  # noqa: E731
+    while True:
+        state = jobs_state()
+        for j in state["running"]:
+            if j["eta"] is not None and time.time() + j["eta"] > _stopping["until"] and ident(j) not in passed:
+                passed.add(ident(j))
+                say(f"not waiting for {job_label(j)}, as it won't finish in time: after the restart, {AGAIN[j['type']]} runs it again")
+        waiting = [j for j in state["running"] if ident(j) not in passed]
+        _stopping["waiting_for"] = [job_label(j) for j in waiting]
+        left = _stopping["until"] - time.time()
+        if not waiting or left <= 0:
+            break
+        if time.time() - said >= 60:
+            say(f"{'still ' if said else ''}waiting up to {minutes(left)} for jobs started outside areas to finish, as a restart "
+                f"would interrupt them: {'; '.join(_stopping['waiting_for'])}. Taking no new work meanwhile. SIGTERM again stops now.")
+            said = time.time()
+        time.sleep(2)
+    for j in waiting:
+        say(f"{job_label(j)} didn't finish in time: after the restart, {AGAIN[j['type']]} runs it again")
+    if state["queued"]:
+        say(f"{len(state['queued'])} queued job(s) won't start before the restart: " +
+            "; ".join(f"{j['name']} ({j['type']}): {AGAIN[j['type']]} runs it" for j in state["queued"]))
+    if state["area_climbs"]:
+        say("areas' climbs pause, and carry on after the restart: " + "; ".join(f"{c['name']} ({c['area']})" for c in state["area_climbs"]))
+    say("now" if state["running"] or state["queued"] or state["area_climbs"] else
+        "now, as what it waited for has finished" if said else "now: nothing was running")
+    server.shutdown()
 
 
 def server_id() -> str:
@@ -1172,7 +1300,7 @@ def configure_workers() -> None:
                 w = Worker(f"{'remote' if remote else 'this server'} {i + 1}", remote=remote)
                 _workers.append(w)
                 threading.Thread(target=worker, args=(w,), daemon=True).start()
-        _workers[:] = [w for w in _workers if not w.retired or w.campaign]
+        _workers[:] = [w for w in _workers if not w.retired or w.campaign or w.job]
 
 
 def reap_machines() -> None:
@@ -1279,7 +1407,10 @@ class Handler(BaseHTTPRequestHandler):
                                        "gpu": gpu, "gpu_why": gpu_why,
                                        "ytdlp": bool(shutil.which("yt-dlp") and shutil.which("ffmpeg")),
                                        "opencv": _has("cv2"), "pillow": _has("PIL"),
-                                       "policy": {"textures": settings().get("site.textures"), "sources": settings().get("site.sources")}})
+                                       "policy": {"textures": settings().get("site.textures"), "sources": settings().get("site.sources")},
+                                       "stopping": _stopping})
+            if p == "/api/jobs":     # what a restart would interrupt now, and what it would only pause
+                return self.send_json(jobs_state())
             # ---- projects
             if p == "/api/projects":
                 return self.send_json(q("SELECT id,name,created,status,mesh_id,demo,kind,climb_id FROM projects ORDER BY created DESC"))
@@ -1291,7 +1422,8 @@ class Handler(BaseHTTPRequestHandler):
                 photos = PROJECTS / m[1] / "photos"
                 proj["photos"] = sorted(f.name for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.exists() else []
                 proj["log"] = read_log(m[1], proj.get("log") or "")
-                proj["failure"] = last_failure(m[1]) if proj["status"] == "failed" else None
+                proj["failure"] = (last_failure(m[1]) if proj["status"] == "failed" else
+                                   last_failure(m[1], "INTERRUPTED: ") if proj["status"] == "interrupted" else None)
                 proj["harvest"] = json.loads(proj["harvest"]) if proj.get("harvest") else None
                 proj["progress"] = json.loads(proj["progress"]) if proj.get("progress") else None
                 rejected = PROJECTS / m[1] / "rejected"
@@ -1480,12 +1612,15 @@ class Handler(BaseHTTPRequestHandler):
                 if n < (1 if not pipeline.real_pipeline_ready() else 3):
                     return self.send_json({"error": "upload at least 3 overlapping photos"}, 400)
                 q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
-                jobs.put({"type": "reconstruct", "pid": pid, "internet": proj["kind"] == "harvest"})
+                queue_job({"type": "reconstruct", "pid": pid, "internet": proj["kind"] == "harvest"})
                 return self.send_json({"queued": True, "position": jobs.qsize()}, 202)
 
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/retry", p)
             if m:
                 return self.send_json(*retry_project(m[1]))
+            if p == "/api/projects/retry-interrupted":     # every project a restart interrupted, oldest first
+                ids = [r["id"] for r in q("SELECT id FROM projects WHERE status='interrupted' ORDER BY created")]
+                return self.send_json({"queued": sum(retry_project(pid)[1] == 202 for pid in ids), "of": len(ids)})
 
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/restore", p)
             if m:
@@ -1593,7 +1728,7 @@ class Handler(BaseHTTPRequestHandler):
                 if (beta_mod.load(MESHES / m[1]) or {}).get("status") in ("queued", "running"):
                     return self.send_json({"error": "already finding it"}, 409)
                 beta_mod.save(MESHES / m[1], {"status": "queued", "videos": [], "progress": None})
-                jobs.put({"type": "beta", "mid": m[1]})
+                queue_job({"type": "beta", "mid": m[1]})
                 return self.send_json({"queued": True}, 202)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/holds", p)
             if m:   # holds marked by hand: {holds: [{p, role}]}, replacing those there
@@ -1658,7 +1793,7 @@ class Handler(BaseHTTPRequestHandler):
                 name = f"{r['name']} (harvest)"[:80]
                 q("INSERT INTO projects(id,name,created,kind,climb_id,status) VALUES(?,?,?,?,?,'queued')",
                   pid, name, time.time(), "harvest", cid, write=True)
-                jobs.put({"type": "harvest", "pid": pid, "sources": sources, "reconstruct": bool(body.get("reconstruct", True)),
+                queue_job({"type": "harvest", "pid": pid, "sources": sources, "reconstruct": bool(body.get("reconstruct", True)),
                           "filter": bool(body.get("filter", True))})
                 return self.send_json({"project_id": pid, "queued": True}, 202)
 
@@ -1794,7 +1929,7 @@ def admin_retexture(_: dict) -> dict:
             continue
         if retexture.usable(d, PROJECTS / m["source"].split(":", 1)[1] / "photos")[0]:
             _retexturing.add(m["id"])
-            jobs.put({"type": "retexture", "mid": m["id"]})
+            queue_job({"type": "retexture", "mid": m["id"]})
             n += 1
     return {"result": f"queued {n} mesh(es) to be textured from only the photos free to copy"}
 
@@ -1816,7 +1951,11 @@ def main() -> None:
     admin_mod.start(admin_mod.Context(settings(), admin_state, configure_workers,
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture}),
                     os.environ.get("ADMIN_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), ADMIN_PORT)
-    ThreadingHTTPServer((host, port), Handler).serve_forever()
+    server = ThreadingHTTPServer((host, port), Handler)
+    signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=stop_when_idle, args=(server,), daemon=True).start())
+    server.serve_forever()
+    sys.stdout.flush()
+    os._exit(0)     # without waiting on workers' threads, whose jobs the next start marks interrupted
 
 
 if __name__ == "__main__":

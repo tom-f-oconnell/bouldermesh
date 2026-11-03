@@ -278,7 +278,7 @@ assert server.campaign_status(c["id"]) == "running", "carries on by itself"
 assert got["Alpha"]["status"] == "done" and (server.MESHES / got["Alpha"]["mesh_id"] / "mesh.ply").exists(), got["Alpha"]
 assert got["Beta"]["status"] == "pending" and got["Beta"]["project_id"] == pid and "carrying on" in got["Beta"]["note"], got["Beta"]
 assert server.q("SELECT status FROM projects WHERE id=?", pid, one=True)["status"] == "stopped"
-assert server.q("SELECT status FROM projects WHERE id=?", other, one=True)["status"] == "failed", "jobs started by hand are still lost"
+assert server.q("SELECT status FROM projects WHERE id=?", other, one=True)["status"] == "interrupted", "jobs started by hand are lost"
 harvested.clear()
 server.next_campaign_step()
 got = items(c["id"])
@@ -346,6 +346,96 @@ server.next_campaign_step()
 got = items(c["id"])
 assert harvested == ["Alpha"] and got["Alpha"]["status"] == "done" and got["Alpha"]["project_id"] != "gone", got["Alpha"]
 print("restart OK")
+
+# --- jobs started outside areas: a restart marks them interrupted, not failed, and Retry runs them again
+fresh()
+
+
+def own_project(status: str, job: dict | None = None) -> str:
+    pid = server.new_id()
+    (server.PROJECTS / pid / "photos").mkdir(parents=True)
+    for i in range(3):
+        (server.PROJECTS / pid / "photos" / f"p{i}.jpg").write_bytes(b"x")
+    server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,?)", pid, f"mine {status}", time.time(), "user", status, write=True)
+    if job:
+        server.queue_job({**job, "pid": pid})
+    return pid
+
+
+ran = own_project("running", {"type": "reconstruct", "internet": False})
+waited = own_project("queued", {"type": "reconstruct", "internet": False})
+st = server.jobs_state()
+assert [j["name"] for j in st["queued"]] == ["mine running", "mine queued"] and st["running"] == [] and st["stopping"] is None, st
+with server.jobs.mutex:
+    server.jobs.queue.clear()     # lost with the restart
+server.init_db()
+for pid, when in ((ran, "during this job"), (waited, "before this job started")):
+    row = server.q("SELECT status, job FROM projects WHERE id=?", pid, one=True)
+    assert row["status"] == "interrupted" and when in server.last_failure(pid, "INTERRUPTED: "), (row, server.read_log(pid))
+assert json.loads(server.q("SELECT job FROM projects WHERE id=?", ran, one=True)["job"])["resume"], "it had started: Retry carries on with it"
+assert server.retry_project(ran) == ({"queued": True}, 202) and server.retry_project(waited)[1] == 202
+with server.jobs.mutex:
+    again = list(server.jobs.queue)
+    server.jobs.queue.clear()
+assert again == [{"type": "reconstruct", "internet": False, "pid": ran, "resume": True},
+                 {"type": "reconstruct", "internet": False, "pid": waited}], "as they were asked for"
+server.q("UPDATE projects SET status='failed' WHERE id=?", ran, write=True)
+assert server.retry_project(ran)[1] == 202 and server.jobs.queue[-1] == {"type": "retry", "pid": ran}, "a failure: tried again"
+with server.jobs.mutex:
+    server.jobs.queue.clear()
+assert server.retry_project(waited)[1] == 409, "already queued"
+
+# a stop waits for a job outside an area that looks like finishing in time, but not for one that doesn't
+w = server.Worker("this server 2")
+server._workers.append(w)
+server.q("UPDATE projects SET status='running', progress=? WHERE id=?", json.dumps({"overall": 50.0, "steps": []}), ran, write=True)
+w.job = {"job": {"type": "retry", "pid": ran}, "started": time.time() - 120, "from": 0.0}    # half done in 2 min
+server.STOP_WAIT = 30
+
+
+class FakeServer:
+    def __init__(self):
+        self.stopped = threading.Event()
+
+    def shutdown(self):
+        self.stopped.set()
+
+
+said = []
+real_print = print
+server.print = lambda *a, **k: said.append(" ".join(map(str, a)))
+fake = FakeServer()
+stopper = threading.Thread(target=server.stop_when_idle, args=(fake,))
+stopper.start()
+stopper.join(5)
+assert fake.stopped.is_set() and not stopper.is_alive(), "it didn't wait for it"
+assert any("not waiting for mine running (retry, 50%, about 2 min left)" in x for x in said), said
+assert server._stopping["waiting_for"] == []
+
+server._stopping, said[:] = None, []
+fake = FakeServer()
+w.job["started"] = time.time() - 10     # half done in 10 s: about 10 s to go
+stopper = threading.Thread(target=server.stop_when_idle, args=(fake,))
+stopper.start()
+time.sleep(0.5)
+assert not fake.stopped.is_set() and "waiting up to 1 min" in said[0] and "mine running (retry, 50%" in said[0], said
+before = len(said)
+server.queue_job({"type": "reconstruct", "pid": waited, "internet": False})
+taker = server.Worker("this server 3")
+server._workers.append(taker)
+threading.Thread(target=server.worker, args=(taker,), daemon=True).start()
+time.sleep(2.5)
+assert taker.job is None and server.jobs.qsize() == 1, "no new work while stopping"
+w.job = None      # it finished
+stopper.join(5)
+assert fake.stopped.is_set() and any("1 queued job(s) won't start" in x and "Retry on its project" in x for x in said[before:]), said
+taker.retired = True
+with server.jobs.mutex:
+    server.jobs.queue.clear()
+server._stopping = None
+server.print = real_print
+server._workers[:] = [server._first]
+print("interrupted jobs OK")
 
 # --- new meshes get a cleanup, existing ones are caught up, and failing only costs that -----------
 fresh()

@@ -13,7 +13,7 @@
   header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
   header h1{font-size:16px;margin:0;letter-spacing:.3px}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mute)}
-  .pill.real{color:var(--ok);border-color:var(--ok)} .pill.demo{color:var(--warn);border-color:var(--warn)}
+  .pill.real{color:var(--ok);border-color:var(--ok)} .pill.demo,.pill.stopping{color:var(--warn);border-color:var(--warn)}
   main{display:grid;grid-template-columns:400px 1fr;min-height:0}
   aside{border-right:1px solid var(--line);overflow:hidden;background:var(--panel);display:flex;flex-direction:column;min-height:0}
   .tabs{display:flex;border-bottom:1px solid var(--line)}
@@ -34,7 +34,7 @@
   button:disabled{opacity:.45;cursor:default}
   label.file input{display:none}
   .status{font-size:12px;color:var(--mute)}
-  .status.done,.status.harvested{color:var(--ok)} .status.failed{color:var(--bad)} .status.running,.status.queued,.status.harvesting{color:var(--warn)}
+  .status.done,.status.harvested{color:var(--ok)} .status.failed{color:var(--bad)} .status.running,.status.queued,.status.harvesting,.status.interrupted{color:var(--warn)}
   .thumbs{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}
   .thumbs img{width:44px;height:44px;object-fit:cover;border-radius:4px;border:1px solid var(--line);cursor:pointer}
   .thumbs img.big{width:92px;height:92px}
@@ -123,6 +123,7 @@
 <header>
   <h1>BoulderMesh</h1>
   <span id="mode" class="pill">checking…</span>
+  <span id="stopping" class="pill stopping" style="display:none"></span>
   <span id="caps" class="status"></span>
   <button class="sm phone" id="tofull">Viewer</button>
 </header>
@@ -205,6 +206,7 @@
       </section>
       <section>
         <h2>Projects (photos → mesh)</h2>
+        <div id="p-interrupted"></div>
         <div id="projects"></div>
       </section>
     </div>
@@ -901,14 +903,21 @@ async function refreshProjects(){
   const list = await api('/api/projects');
   const el = $('#projects'); el.innerHTML = list.length ? '' : '<div class="status">No projects yet.</div>';
   projectCards.clear();
+  const cut = list.filter(p => p.status === 'interrupted').length;
+  $('#p-interrupted').innerHTML = cut ? `<div class="row" style="margin-bottom:8px"><span class="grow status">${cut} interrupted by a server restart</span>
+    <button class="sm" title="Each carries on from the last step it finished, or starts if it hadn't">Retry ${cut} interrupted</button></div>` : '';
+  $('#p-interrupted').querySelector('button')?.addEventListener('click', async () => {
+    try { const r = await api('/api/projects/retry-interrupted', { method: 'POST' }); toast(`Queued ${r.queued} of ${r.of} to try again`); poll(); }
+    catch (e) { toast(e.message); }
+  });
   for (const p of list) {
     const d = document.createElement('div'); d.className = 'card' + (p.id===active ? ' active' : '');
     const busy = BUSY.includes(p.status);
     d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':''}</b><span class="status ${p.status}">${p.status}${p.demo?' (demo)':''}</span></div>
       <div class="row" style="margin-top:8px">
         <label class="file"><button class="sec sm" type="button">Add photos</button><input type="file" multiple accept="image/jpeg,image/png"></label>
-        ${p.status === 'failed' || p.status === 'stopped' ? '<button class="retry sm" title="Tries again from the last step it finished, rather than from the start">Retry</button>' : ''}
-        <button class="rec sm ${p.status === 'failed' || p.status === 'stopped' ? 'sec' : ''}" title="Makes a new mesh from the start" ${busy?'disabled':''}>Reconstruct</button>
+        ${RETRYABLE.includes(p.status) ? '<button class="retry sm" title="Tries again from the last step it finished, rather than from the start">Retry</button>' : ''}
+        <button class="rec sm ${RETRYABLE.includes(p.status) ? 'sec' : ''}" title="Makes a new mesh from the start" ${busy?'disabled':''}>Reconstruct</button>
         ${p.mesh_id?'<button class="sec sm view">View mesh</button>':''}
         ${p.climb_id?`<button class="sec sm climb">Climb</button>`:''}
         <span class="grow"></span><button class="danger sm del" title="Delete project">✕</button>
@@ -941,7 +950,7 @@ async function refreshProjects(){
     if (projectCards.size <= 15 || busy || p.id === active) loadDetail(p.id, d);   // the rest load when clicked: an area can make hundreds
   }
 }
-const BUSY = ['queued', 'running', 'harvesting'];
+const BUSY = ['queued', 'running', 'harvesting'], RETRYABLE = ['failed', 'stopped', 'interrupted'];
 function progressHtml(p){
   const pr = p.progress;
   if (p.status === 'queued') return '<div class="status queued" style="margin-top:8px">Queued: waits for any job ahead of it</div>';
@@ -1093,8 +1102,18 @@ async function refreshCampaigns(){
   return list;
 }
 let campaignTimer = null;
+// while the server waits for jobs to finish before it restarts, say so, as nothing new starts meanwhile
+async function showStopping(){
+  const s = (await api('/api/jobs').catch(() => null))?.stopping, el = $('#stopping');
+  el.style.display = s ? '' : 'none';
+  if (!s) return;
+  const n = s.waiting_for.length;
+  el.textContent = n ? `restarting once ${n === 1 ? 'a job finishes' : `${n} jobs finish`}` : 'restarting';
+  el.title = `The server is restarting${s.waiting_for.length ? `, after ${s.waiting_for.join('; ')}, or by ${new Date(s.until * 1000).toLocaleTimeString()}` : ''}. Nothing new starts until then: anything queued meanwhile can be run with Retry afterwards.`;
+}
 async function campaignLoop(){
   clearTimeout(campaignTimer);
+  showStopping();
   const list = await refreshCampaigns().catch(() => []);
   const active = list.some(c => c.current || c.status === 'running' || c.status === 'stopping');
   if (active && !polling) poll();

@@ -24,7 +24,8 @@ Restart=on-failure
 RestartSec=10
 # the first build compiles COLMAP and OpenMVS, which takes a long time
 TimeoutStartSec=infinity
-TimeoutStopSec=120
+# longer than docker-compose.yml's stop_grace_period, for which the server waits for jobs started outside areas
+TimeoutStopSec=12min
 
 [Install]
 WantedBy=multi-user.target

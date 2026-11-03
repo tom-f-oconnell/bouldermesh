@@ -154,36 +154,40 @@ def write_coloured(src: Path, dst: Path, colour_of) -> None:
 
 
 def retexture(mesh_dir: Path, photos: Path, log: Log) -> dict:
-    """Make permitted/ for a mesh, replacing any from before.
+    """Make permitted/ for a mesh, replacing any from before once the new one is finished, so that one
+    stopped partway (as by a restart) leaves the old one.
 
     Returns:
         info.json's contents: the photos used and the share of the mesh they saw, or why there are none.
     """
     import numpy as np
-    out = mesh_dir / DIR
+    out, new = mesh_dir / DIR, mesh_dir / (DIR + ".partial")
     cams, why = usable(mesh_dir, photos)
-    shutil.rmtree(out, ignore_errors=True)
-    out.mkdir()
+    shutil.rmtree(new, ignore_errors=True)
+    new.mkdir()
     if why:
         info = {"photos": [], "note": why, "created": time.time()}
-        (out / INFO).write_text(json.dumps(info))
-        return info
-    log(f"retexture: from {len(cams)} permitted photo(s)")
-    src = meshclean.mesh_file(mesh_dir)
-    j, bufs = meshclean._read_glb(src)
-    V, F, counts = meshclean._geometry(j, bufs)
-    welded, inverse = np.unique(np.asarray(V, float), axis=0, return_inverse=True)   # the GLB splits vertices at texture seams
-    inverse = inverse.ravel()
-    colour, seen = vertex_colours(welded, inverse[F], cams, photos, photos.parent / "masks", log)
-    starts = np.cumsum([0] + [len(meshclean._accessor(j, bufs, p["attributes"]["POSITION"])) for _, _, p in meshclean._primitives(j)])
-    tmp = out / "mesh.glb.partial"
-    write_coloured(src, tmp, lambda i, P: colour[inverse[starts[i]:starts[i] + len(P)]])
-    tmp.replace(out / "mesh.glb")
-    for name in ("cleanup.json", "cleanup_faces.bin"):     # the same faces, so the mesh's own cleanup fits
-        if (mesh_dir / name).exists():
-            shutil.copy(mesh_dir / name, out / name)
-    info = {"photos": [c["name"] for c in cams], "seen": round(float(seen.mean()), 3), "created": time.time()}
-    (out / INFO).write_text(json.dumps(info))
+    else:
+        log(f"retexture: from {len(cams)} permitted photo(s)")
+        src = meshclean.mesh_file(mesh_dir)
+        j, bufs = meshclean._read_glb(src)
+        V, F, counts = meshclean._geometry(j, bufs)
+        welded, inverse = np.unique(np.asarray(V, float), axis=0, return_inverse=True)   # the GLB splits vertices at texture seams
+        inverse = inverse.ravel()
+        colour, seen = vertex_colours(welded, inverse[F], cams, photos, photos.parent / "masks", log)
+        starts = np.cumsum([0] + [len(meshclean._accessor(j, bufs, p["attributes"]["POSITION"])) for _, _, p in meshclean._primitives(j)])
+        write_coloured(src, new / "mesh.glb", lambda i, P: colour[inverse[starts[i]:starts[i] + len(P)]])
+        for name in ("cleanup.json", "cleanup_faces.bin"):     # the same faces, so the mesh's own cleanup fits
+            if (mesh_dir / name).exists():
+                shutil.copy(mesh_dir / name, new / name)
+        info = {"photos": [c["name"] for c in cams], "seen": round(float(seen.mean()), 3), "created": time.time()}
+    (new / INFO).write_text(json.dumps(info))
+    old = mesh_dir / (DIR + ".old")
+    shutil.rmtree(old, ignore_errors=True)
+    if out.exists():
+        out.rename(old)
+    new.rename(out)
+    shutil.rmtree(old, ignore_errors=True)
     return info
 
 

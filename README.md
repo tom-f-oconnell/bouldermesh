@@ -66,6 +66,7 @@ and imports files you already hold.
     python cli.py harvest <climb url> ./out              # photos + sources.json + diversity.json
     python cli.py diversity ./out/photos
     python cli.py relevance ./out/photos [--anchors DIR] [--move]   # which are of the boulder? (report only without --move)
+    python cli.py jobs [--server URL]                   # what restarting the running server would interrupt
 
 Records are `climbs.common.Climb` dataclasses (`to_dict()` → JSON): name, kind, grade(s),
 fa, rating, lat/lng + `coord_source` (route | area | parent-area | manual), elevation,
@@ -234,6 +235,16 @@ directory, and reads `.env` here (`COMPOSE_FILE` for the GPU, `PORT`). Each star
 first, which takes seconds when nothing has changed, so `sudo systemctl restart bouldermesh` deploys
 new code. To remove it: `sudo systemctl disable --now bouldermesh`, then delete the unit file.
 
+**Restarting.** A restart only pauses areas' climbs, which carry on afterwards. Jobs started outside an
+area (a harvest or reconstruction started by hand, a retry, *Find beta*, recolouring from the admin page)
+can't carry on by themselves. So when it's stopped, the server takes no new work and first waits up to 10
+minutes for those jobs, if they look like finishing by then. Its log and the top of the page say what it's
+waiting for, and stopping it again stops it at once. Projects it doesn't wait for come back *interrupted*,
+not failed: *Retry*, or *Retry N interrupted* on the *Projects* tab, carries on with each from the last step
+it finished, as it was asked for. To see what a restart would interrupt now:
+
+    python3 cli.py jobs                         # exits 1 if a restart would interrupt anything
+
 ## The admin page
 
 A separate page, on port 36184, sets what the main site shows and where its reconstructions run. It
@@ -320,7 +331,9 @@ The AWS side has been tested against stand-ins for AWS, not against AWS itself.
     GET  /api/status
     GET  /api/projects · POST /api/projects {name, climb_id?} · GET|DELETE /api/projects/{id}
     POST /api/projects/{id}/photos (multipart "photos") · POST /api/projects/{id}/reconstruct
-    POST /api/projects/{id}/retry                       a failed project, from its last finished step
+    POST /api/projects/{id}/retry                       a failed or interrupted project, from its last finished step
+    POST /api/projects/retry-interrupted                every project a restart interrupted
+    GET  /api/jobs                                      what a restart would interrupt (jobs outside areas) or pause (areas' climbs)
     GET  /api/projects/{id}/harvest                     sources.json + diversity.json
     POST /api/projects/{id}/restore {file}              put a photo the filter rejected back
     GET  /api/meshes · POST /api/meshes (multipart "files", +name, +lat/lng, +climb_id) · PATCH|DELETE /api/meshes/{id}

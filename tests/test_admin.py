@@ -225,5 +225,16 @@ with tempfile.TemporaryDirectory() as td:
     left, right = C[Q[:, 0] < -0.1], C[Q[:, 0] > 0.1]
     assert (left[:, 0] > 0.8).all() and (left[:, 2] < 0.1).all() and (right[:, 2] > 0.8).all() and (right[:, 0] < 0.1).all(), (left[:3], right[:3])
     assert (meshclean._geometry(jc, bc)[1] == meshclean._geometry(*meshclean._read_glb(mesh / "mesh.glb"))[1]).all(), "same faces, same order"
+    made = (mesh / "permitted" / "mesh.glb").read_bytes()
+    colours = retexture.vertex_colours
+    retexture.vertex_colours = lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt())    # stopped partway, as by a restart
+    try:
+        retexture.retexture(mesh, photos, print)
+        raise AssertionError("not stopped")
+    except KeyboardInterrupt:
+        pass
+    retexture.vertex_colours = colours
+    assert (mesh / "permitted" / "mesh.glb").read_bytes() == made and retexture.load(mesh)["photos"] == ["commons_a.jpg"], "the old one stays"
+    assert retexture.retexture(mesh, photos, print)["photos"] == ["commons_a.jpg"] and not (mesh / "permitted.partial").exists()
 print("textures OK")
 print("ALL ADMIN TESTS PASSED")

@@ -54,6 +54,7 @@ def admin_set(changes: dict) -> None:
 def status_of(url: str) -> int:
     try:
         with urllib.request.urlopen(url) as r:
+            r.read()    # all of it: closing early breaks the server's pipe
             return r.status
     except urllib.error.HTTPError as e:
         return e.code
@@ -66,10 +67,12 @@ def main() -> None:
     global ADMIN
     admin_port = free_port()
     ADMIN = f"http://127.0.0.1:{admin_port}"
-    env = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(port), HOST="127.0.0.1", HTTP_MIN_INTERVAL="0", ADMIN_PORT=str(admin_port))
+    env = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(port), HOST="127.0.0.1", HTTP_MIN_INTERVAL="0", ADMIN_PORT=str(admin_port),
+               STOP_WAIT_MINUTES="0.2")
     env.pop("HARVEST_DDG", None)
     srv =subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    out = None
     try:
         for _ in range(50):
             try:
@@ -78,13 +81,17 @@ def main() -> None:
             except Exception:
                 time.sleep(0.2)
         run(B, tmp)
+        srv.terminate()     # a stop, as Docker sends it: it says what it waited for, and exits cleanly
+        out = srv.communicate(timeout=30)[0]
+        assert srv.returncode == 0 and "stopping: " in out, (srv.returncode, out[-3000:])
+        print("stopped:", [line for line in out.splitlines() if line.startswith("stopping: ")])
     finally:
-        srv.terminate()
-        try:
-            out = srv.communicate(timeout=5)[0]
-        except subprocess.TimeoutExpired:
-            srv.kill()
-            out = ""
+        if srv.poll() is None:
+            srv.terminate()
+            try:
+                out = srv.communicate(timeout=5)[0]
+            except subprocess.TimeoutExpired:
+                srv.kill()
         if "Traceback" in (out or ""):
             print("SERVER OUTPUT:\n", out)
 
@@ -202,6 +209,10 @@ def run(B: str, tmp: Path) -> None:
     st, b = req(B, "GET", f"/api/meshes/{m['id']}/beta")
     assert st == 200 and b["found"] is None and b["marked"] == {"holds": []} and m["beta"] is None, (b, m["beta"])
     assert m["marked"] == 0, m["marked"]
+    st, jb = req(B, "GET", "/api/jobs")
+    assert st == 200 and set(jb) == {"running", "queued", "area_climbs", "stopping"} and jb["stopping"] is None, jb
+    cli = subprocess.run([sys.executable, str(ROOT / "cli.py"), "jobs", "--server", B], capture_output=True, text=True, timeout=60)
+    assert cli.returncode in (0, 1) and "restart" in cli.stdout, cli    # 1 if a job is still going
     st, saved = req(B, "POST", f"/api/meshes/{m['id']}/holds", {"holds": [{"p": [0.1, 0.2, 0.3], "role": "start"}]})
     assert st == 200 and req(B, "GET", f"/api/meshes/{m['id']}/beta")[1]["marked"]["holds"] == saved["holds"], saved
     assert next(x for x in req(B, "GET", "/api/meshes")[1] if x["id"] == m["id"])["marked"] == 1, "counted in the list"
