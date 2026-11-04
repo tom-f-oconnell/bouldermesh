@@ -14,6 +14,8 @@
   header h1{font-size:16px;margin:0;letter-spacing:.3px}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mute)}
   .pill.real{color:var(--ok);border-color:var(--ok)} .pill.demo,.pill.stopping{color:var(--warn);border-color:var(--warn)}
+  #code{margin-left:auto;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;text-decoration:none}
+  #code:hover{border-color:var(--acc)}
   main{display:grid;grid-template-columns:400px 1fr;min-height:0}
   aside{border-right:1px solid var(--line);overflow:hidden;background:var(--panel);display:flex;flex-direction:column;min-height:0}
   .tabs{display:flex;border-bottom:1px solid var(--line)}
@@ -113,7 +115,7 @@
   @media (max-width:860px){
     body,main{grid-template-columns:minmax(0,1fr)} aside{border-right:0} #right{display:none} .phone{display:inline-block}
     body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
-    #tofull{margin-left:auto} #caps{display:none}
+    #tofull{margin-left:auto} #caps,#code{display:none}
     #hud,#viewnote,#pieces,#orient{display:none!important}
     .viewbar{overflow-x:auto} .viewbar button{white-space:nowrap} .viewbar .status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   }
@@ -126,6 +128,7 @@
   <span id="stopping" class="pill stopping" style="display:none"></span>
   <span id="caps" class="status"></span>
   <button class="sm phone" id="tofull">Viewer</button>
+  <a id="code" href="https://github.com/tom-f-oconnell/bouldermesh" target="_blank" rel="noopener">Code</a>
 </header>
 <main>
   <aside>
