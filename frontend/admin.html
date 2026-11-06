@@ -50,7 +50,7 @@
     <div class="note">"Free to copy" means public domain, CC0, or a Creative Commons licence without No Derivatives, or your own uploads. Mountain Project, OpenBeta and web images, and YouTube's standard licence, aren't. See license_considerations.md.</div>
   </section>
 
-  <section>
+  <section id="compute">
     <h2>Compute</h2>
     <div id="slots" class="note"></div>
     <div class="grid">
@@ -72,19 +72,20 @@
       <div><label class="choice" style="margin-top:28px"><input type="checkbox" id="spot"> Spot instances <small>(cheaper; can be taken back, and the climb then waits)</small></label></div>
     </div>
     <div class="ssh aws"><label>How a machine runs a job (empty for docker run with the image)</label><input type="text" id="command" placeholder="docker run --rm --name bm-{job} {gpus} -v {dir}:/job {image} python3 /app/backend/remote_job.py /job {flags}"></div>
-    <div class="row"><button id="save">Save</button><button class="sec" id="test">Test the connection</button><button class="danger" id="end">End all cloud machines</button></div>
+    <div class="row"><button id="save">Save</button><span class="note warn" id="unsaved"></span><button class="sec" id="test">Test the connection</button><button class="danger" id="end">End all cloud machines</button></div>
     <div id="nodes"></div>
   </section>
 
   <section>
     <h2>Credentials</h2>
     <div class="note" id="cred-note"></div>
-    <table id="creds"></table>
-    <div class="grid aws">
-      <div><label>AWS access key id</label><input type="password" id="akid" autocomplete="off"></div>
-      <div><label>AWS secret access key</label><input type="password" id="secret" autocomplete="off"></div>
+    <div class="grid">
+      <div><label>AWS access key id <span data-status="aws.access_key_id"></span></label><input type="password" data-secret="aws.access_key_id" autocomplete="off"></div>
+      <div><label>AWS secret access key <span data-status="aws.secret_access_key"></span></label><input type="password" data-secret="aws.secret_access_key" autocomplete="off"></div>
     </div>
-    <div class="ssh"><label>SSH private key for the machines</label><textarea id="sshkey" autocomplete="off"></textarea></div>
+    <div class="note">For AWS EC2 instances. Without them, AWS's usual places are used (~/.aws, or an instance role); the instances get an SSH key of their own.</div>
+    <label>SSH private key <span data-status="ssh.private_key"></span></label><textarea data-secret="ssh.private_key" autocomplete="off"></textarea>
+    <div class="note">For machines reached over SSH: one key for all of them.</div>
     <div class="row"><button id="savecreds">Save credentials</button><span class="note">Saved encrypted, and never shown again: leave a field empty to keep what's there.</span></div>
   </section>
 </main>
@@ -92,6 +93,7 @@
 <script>
 const $ = s => document.querySelector(s);
 let state = null;
+let editing = false;   // the Compute form has changes not saved yet, which refreshing mustn't undo
 const msg = (text, ms = 4000) => { const m = $('#msg'); m.textContent = text; m.style.display = 'block'; clearTimeout(msg.t); msg.t = setTimeout(() => m.style.display = 'none', ms); };
 async function call(path, body){
   const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -103,18 +105,21 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 function render(s){
   state = s;
   const v = s.settings;
-  document.body.className = 'p-' + v['compute.provider'];
   $('#where').textContent = `the main site is on port ${s.site_port}`;
   for (const r of document.querySelectorAll('input[name=tex]')) r.checked = r.value === v['site.textures'];
   for (const r of document.querySelectorAll('input[name=src]')) r.checked = r.value === v['site.sources'];
   const c = s.policy;
   $('#tex-counts').textContent = `${c.meshes} meshes: ${c.all_permitted} only from photos free to copy, ${c.variant} with a texture made from those, ${c.hidden_if_permitted} that would be plain grey`;
   $('#retex-note').textContent = `${c.can_retexture} can be, ${c.need_rebuild} need rebuilding first` + (s.retexture_queued ? `; ${s.retexture_queued} queued` : '');
-  $('#local').value = v['compute.local_workers']; $('#provider').value = v['compute.provider']; $('#remote').value = v['compute.remote_workers'];
-  $('#idle').value = v['compute.idle_minutes']; $('#image').value = v['compute.image']; $('#hosts').value = v['compute.ssh_hosts'].join('\n');
-  $('#region').value = v['compute.aws.region']; $('#itype').value = v['compute.aws.instance_type']; $('#ami').value = v['compute.aws.ami'];
-  $('#sg').value = v['compute.aws.security_group']; $('#subnet').value = v['compute.aws.subnet']; $('#vol').value = v['compute.aws.volume_gb'];
-  $('#profile').value = v['compute.aws.instance_profile']; $('#spot').checked = v['compute.aws.spot']; $('#command').value = v['compute.command'];
+  if (!editing) {
+    document.body.className = 'p-' + v['compute.provider'];
+    $('#local').value = v['compute.local_workers']; $('#provider').value = v['compute.provider']; $('#remote').value = v['compute.remote_workers'];
+    $('#idle').value = v['compute.idle_minutes']; $('#image').value = v['compute.image']; $('#hosts').value = v['compute.ssh_hosts'].join('\n');
+    $('#region').value = v['compute.aws.region']; $('#itype').value = v['compute.aws.instance_type']; $('#ami').value = v['compute.aws.ami'];
+    $('#sg').value = v['compute.aws.security_group']; $('#subnet').value = v['compute.aws.subnet']; $('#vol').value = v['compute.aws.volume_gb'];
+    $('#profile').value = v['compute.aws.instance_profile']; $('#spot').checked = v['compute.aws.spot']; $('#command').value = v['compute.command'];
+  }
+  $('#unsaved').textContent = editing ? 'Not saved yet' : '';
   $('#slots').innerHTML = 'Workers: ' + s.compute.workers.map(w => `<b>${esc(w.name)}</b> ${w.busy ? esc(w.busy) : '<span class="ok">idle</span>'}${w.error ? ` <span class="bad">${esc(w.error)}</span>` : ''}`).join(' · ');
   const p = s.compute.pool;
   $('#nodes').innerHTML = p ? `<table><tr><th>Machine</th><th>Up (min)</th><th>State</th></tr>${p.nodes.map(n => `<tr><td>${esc(n.id || n.host)}${n.gpu ? ' (GPU)' : ''}</td><td>${n.up_minutes}</td><td>${n.busy ? 'working' : `idle ${n.idle_minutes} min`}</td></tr>`).join('') || '<tr><td colspan="3">none running</td></tr>'}</table>
@@ -123,11 +128,17 @@ function render(s){
   $('#cred-note').innerHTML = cr.can_save ? 'Credentials can be saved here, encrypted with BOULDERMESH_SECRETS_KEY.'
     : '<span class="warn">Credentials can\'t be saved here until BOULDERMESH_SECRETS_KEY is set (in .env, outside the data directory). Until then, give them as environment variables, such as AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.</span>'
     + (cr.error ? ` <span class="bad">${esc(cr.error)}</span>` : '');
-  $('#creds').innerHTML = Object.entries(cr.credentials).map(([k, where]) => `<tr><td>${esc(k)}</td><td>${where ? `<span class="ok">${where === 'saved' ? 'saved' : 'from the environment'}</span>` : '<span class="note">not set</span>'}</td></tr>`).join('');
+  for (const [k, where] of Object.entries(cr.credentials))
+    document.querySelector(`[data-status="${k}"]`).innerHTML = where ? `<span class="ok">· ${where === 'saved' ? 'saved' : 'from the environment'}</span>` : '· not set';
+  document.querySelectorAll('[data-secret]').forEach(f => f.disabled = !cr.can_save);
   $('#savecreds').disabled = !cr.can_save;
 }
 async function refresh(){ try { render(await call('/api/admin/state')); } catch (e) { msg(e.message, 8000); } }
-async function save(changes){ try { render(await call('/api/admin/settings', changes)); msg('Saved'); } catch (e) { msg(e.message, 8000); refresh(); } }
+async function save(changes, compute){
+  try { const s = await call('/api/admin/settings', changes); if (compute) editing = false; render(s); msg('Saved'); }
+  catch (e) { msg(e.message, 8000); refresh(); }
+}
+$('#compute').addEventListener('input', () => { editing = true; $('#unsaved').textContent = 'Not saved yet'; });
 document.querySelectorAll('input[name=tex]').forEach(r => r.onchange = () => save({ 'site.textures': r.value }));
 document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => save({ 'site.sources': r.value }));
 $('#provider').onchange = () => { document.body.className = 'p-' + $('#provider').value; };
@@ -136,14 +147,11 @@ $('#save').onclick = () => save({
   'compute.idle_minutes': +$('#idle').value, 'compute.image': $('#image').value, 'compute.command': $('#command').value,
   'compute.ssh_hosts': $('#hosts').value.split('\n'), 'compute.aws.region': $('#region').value, 'compute.aws.instance_type': $('#itype').value,
   'compute.aws.ami': $('#ami').value, 'compute.aws.security_group': $('#sg').value, 'compute.aws.subnet': $('#subnet').value,
-  'compute.aws.volume_gb': +$('#vol').value, 'compute.aws.instance_profile': $('#profile').value, 'compute.aws.spot': $('#spot').checked });
+  'compute.aws.volume_gb': +$('#vol').value, 'compute.aws.instance_profile': $('#profile').value, 'compute.aws.spot': $('#spot').checked }, true);
 $('#savecreds').onclick = async () => {
-  const body = {};
-  if ($('#akid').value) body['aws.access_key_id'] = $('#akid').value;
-  if ($('#secret').value) body['aws.secret_access_key'] = $('#secret').value;
-  if ($('#sshkey').value) body['ssh.private_key'] = $('#sshkey').value;
-  if (!Object.keys(body).length) return msg('Nothing to save');
-  try { render(await call('/api/admin/secrets', body)); ['#akid', '#secret', '#sshkey'].forEach(s => $(s).value = ''); msg('Credentials saved'); }
+  const fields = [...document.querySelectorAll('[data-secret]')].filter(f => f.value);
+  if (!fields.length) return msg('Nothing to save');
+  try { render(await call('/api/admin/secrets', Object.fromEntries(fields.map(f => [f.dataset.secret, f.value])))); fields.forEach(f => f.value = ''); msg('Credentials saved'); }
   catch (e) { msg(e.message, 8000); }
 };
 $('#test').onclick = async () => { msg('Testing…', 60000); try { msg((await call('/api/admin/actions/test', {})).result, 12000); } catch (e) { msg(e.message, 12000); } };
