@@ -193,6 +193,7 @@ assert [x["source_id"] for x in server.poolable(c["id"])] == [got["Alpha"]["sour
 assert server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["again"]["poolable"] == 1
 harvests = {got["Alpha"]["project_id"], got["Alpha2"]["project_id"]}
 assert server.queue_pooled(c["id"]) == 1 and server.campaign_status(c["id"]) == "running"
+assert server.poolable(c["id"]) == [] and server.queue_pooled(c["id"]) == 0, "queued once, not again by its other climb"
 harvested.clear()
 run_all(c["id"])
 got = items(c["id"])

@@ -1088,13 +1088,14 @@ POOLED = " (pooled)"     # the name of a project made from every harvest of a bo
 
 def poolable(camp_id: str) -> list[dict]:
     """An area's boulders that every climb so far was skipped on, with photos from more than one harvest,
-    not yet tried with them together: each one's highest-ranked skipped climb."""
+    not yet tried with them together, nor queued to be: each one's highest-ranked skipped climb."""
     return q(f"""SELECT ci.source_id, ci.boulder, MIN(ci.rank) AS rank FROM campaign_items ci
                  WHERE ci.campaign_id=? AND ci.boulder IS NOT NULL AND ci.status='skipped' AND ci.redo IS NULL
                    AND NOT EXISTS (SELECT 1 FROM campaign_items m WHERE m.boulder=ci.boulder AND m.mesh_id IS NOT NULL)
                    AND (SELECT COUNT(DISTINCT x.project_id) FROM campaign_items x WHERE x.boulder=ci.boulder AND x.project_id IS NOT NULL) >= 2
                    AND NOT EXISTS (SELECT 1 FROM campaign_items y JOIN projects p ON p.id=y.project_id
                                    WHERE y.boulder=ci.boulder AND p.name LIKE '%{POOLED}')
+                   AND NOT EXISTS (SELECT 1 FROM campaign_items z WHERE z.boulder=ci.boulder AND z.redo='pool')
                  GROUP BY ci.boulder""", camp_id)
 
 
