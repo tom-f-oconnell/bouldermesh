@@ -26,6 +26,9 @@
   section h2{font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:var(--mute);margin:0 0 8px}
   .card{border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--bg);margin-bottom:8px}
   .card.active{border-color:var(--acc)}
+  #climbs>.card{cursor:pointer}
+  #climbs>.card.open{border-color:var(--acc);border-bottom-left-radius:0;border-bottom-right-radius:0;margin-bottom:0}
+  .card.active.under{border-top-left-radius:0;border-top-right-radius:0;border-top-color:var(--line);cursor:default}
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .grow{flex:1;min-width:0}
   input[type=text],input[type=number],select,textarea{background:var(--bg);border:1px solid var(--line);color:var(--fg);padding:7px 9px;border-radius:6px;width:100%;font:inherit}
@@ -153,10 +156,10 @@
   <aside>
     <div class="tabs">
       <button data-tab="climbs" class="on">Climbs</button>
-      <button data-tab="areas">Areas</button>
-      <button data-tab="projects">Projects</button>
       <button data-tab="meshes">Meshes</button>
       <button data-tab="beta">Beta</button>
+      <button data-tab="areas">Areas</button>
+      <button data-tab="projects">Projects</button>
     </div>
 
     <!-- ============================ CLIMBS ============================ -->
@@ -847,15 +850,17 @@ function renderClimbs(){
     : total > climbsCache.length ? `(the newest ${climbsCache.length} of ${total}: searching covers them all)` : `(${total})`;
   el.innerHTML = list.length ? '' : `<div class="status">${!climbsCache.length ? 'No climbs yet — paste a Mountain Project or OpenBeta link above.' : query ? 'No climbs match.' : 'No climbs.'}</div>`;
   for (const c of list) {
-    const d = document.createElement('div'); d.className = 'card';
+    const d = document.createElement('div'); d.className = 'card' + (c.id === openClimbId ? ' open' : ''); d.dataset.id = c.id;
     d.innerHTML = `<div class="row"><span class="name grow">${esc(c.name)} <small>${esc(c.grade||'')}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${c.n_links?`<span class="tag ok">${c.n_links} mesh</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
-        <button class="sm sec open">Open</button></div>
+        <button class="sm sec viewmesh" ${c.n_links ? '' : 'disabled'} title="${c.n_links ? 'Show its newest mesh' : 'No mesh is linked to it yet'}">Mesh</button></div>
       <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
       <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
       ${c.coords_doubt ? `<div class="meta bad">Coordinates look wrong: ${esc(c.coords_doubt.why)}.${c.url ? ` <a href="${esc(c.url)}" target="_blank" rel="noopener">Put them right on ${esc(SOURCE_NAME[c.source] || c.source)} ↗</a>, then paste its link above to import it again.` : ''}</div>` : ''}`;
-    d.querySelector('.open').onclick = () => openClimb(c.id);
+    d.querySelector('.viewmesh').onclick = ev => { ev.stopPropagation(); viewClimbMesh(c.id); };
+    d.onclick = ev => { if (ev.target.closest('button, a, select, input, label')) return; c.id === openClimbId && openClimbEl ? closeClimb() : openClimb(c.id); };
     el.appendChild(d);
   }
+  if (openClimbEl && openClimbId) placeClimb(openClimbEl, openClimbId);   // the list was made again around it
 }
 $('#c-filter').oninput = () => { clearTimeout(searchT); searchT = setTimeout(searchClimbs, 250); };
 $('#c-meshed').onchange = searchClimbs;
@@ -872,7 +877,30 @@ function climberSize(v){
                  a != null && `ape index ${a > 0 ? '+' : ''}${Math.round(a)} cm`].filter(Boolean);
   return `${parts.join(', ')} (${v.uploader || 'uploader'}${v.height_cm == null && v.ape_index_cm == null && v.wingspan_cm == null ? ', from their channel' : ''})`;
 }
-let openClimbId = null;
+let openClimbId = null, openClimbEl = null;
+// A climb's details go under its card in the list, or at the top of the pane when the list doesn't show it
+function placeClimb(d, id){
+  if (openClimbEl && openClimbEl !== d) openClimbEl.remove();
+  openClimbEl = d;
+  document.querySelectorAll('#climbs > .card.open').forEach(x => x.classList.remove('open'));
+  const card = document.querySelector(`#climbs > .card[data-id="${id}"]`);
+  d.classList.toggle('under', !!card);
+  if (card) { card.classList.add('open'); card.after(d); $('#climb-open').replaceChildren(); }
+  else $('#climb-open').replaceChildren(d);
+}
+function closeClimb(){
+  openClimbEl?.remove(); openClimbEl = null; openClimbId = null;
+  document.querySelectorAll('#climbs > .card.open').forEach(x => x.classList.remove('open'));
+}
+// A climb's meshes, a current one before an older version, newest first
+const climbMeshes = id => (meshesCache || []).filter(m => m.climbs.some(c => c.id === id))
+  .sort((a, b) => (a.replaced_by ? 1 : 0) - (b.replaced_by ? 1 : 0) || (b.created || 0) - (a.created || 0));
+async function viewClimbMesh(id){
+  if (!climbMeshes(id).length) await refreshMeshes();
+  const m = climbMeshes(id)[0];
+  if (!m) return toast('No mesh is linked to this climb yet.');
+  viewMesh(m.id);
+}
 const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', done: 'meshed', failed: 'failed', skipped: 'skipped' };
 async function openClimb(id, focus=true){
   const c = await api('/api/climbs/' + id);
@@ -924,7 +952,7 @@ async function openClimb(id, focus=true){
         <button class="sm harvest" ${harvesting?'disabled':''}>${harvesting?'Harvesting…':harvests.length?'Harvest again':'Harvest photos'}</button><button class="sm danger del">Delete climb</button></div>
       <div class="notice" style="margin-top:6px">Downloaded photos stay on this server for reconstruction only; most are copyrighted by their photographers. Provenance is written to sources.json.</div>
     </div>`;
-  d.querySelector('.close').onclick = () => { d.remove(); openClimbId = null; };
+  d.querySelector('.close').onclick = closeClimb;
   d.querySelector('.fly')?.addEventListener('click', () => flyTo(c.lat, c.lng));
   d.querySelector('.editll').onclick = async () => {
     const v = prompt('Coordinates as "lat, lng" (e.g. from Google Maps right-click):', c.lat!=null ? `${c.lat}, ${c.lng}` : '');
@@ -950,8 +978,8 @@ async function openClimb(id, focus=true){
     try { await api('/api/climbs/import', { method: 'POST', json: { url: c.url, include_children: false } }); toast('Fetched'); d.remove(); openClimb(id); refreshClimbs(); }
     catch (e) { toast('Fetch failed: ' + e.message, 8000); }
   });
-  d.querySelector('.del').onclick = async () => { if (confirm(`Delete climb "${c.name}" (meshes are kept)?`)) { await api('/api/climbs/' + id, { method: 'DELETE' }); d.remove(); openClimbId = null; refreshClimbs(); refreshMeshes(); } };
-  $('#climb-open').replaceChildren(d);
+  d.querySelector('.del').onclick = async () => { if (confirm(`Delete climb "${c.name}" (meshes are kept)?`)) { await api('/api/climbs/' + id, { method: 'DELETE' }); closeClimb(); refreshClimbs(); refreshMeshes(); } };
+  placeClimb(d, id);
   if (focus) d.scrollIntoView({ block: 'nearest' });
 }
 
