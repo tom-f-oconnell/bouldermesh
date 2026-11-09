@@ -38,7 +38,7 @@
   .status{font-size:12px;color:var(--mute)}
   .status.done,.status.harvested{color:var(--ok)} .status.failed{color:var(--bad)} .status.running,.status.queued,.status.harvesting,.status.interrupted{color:var(--warn)}
   .thumbs{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}
-  .thumbs img{width:44px;height:44px;object-fit:cover;border-radius:4px;border:1px solid var(--line);cursor:pointer}
+  .thumbs img{width:44px;height:44px;object-fit:cover;border-radius:4px;border:1px solid var(--line)}
   .thumbs img.big{width:92px;height:92px}
   pre.log{font:11px/1.4 ui-monospace,Menlo,Consolas,monospace;background:#0a0c10;border:1px solid var(--line);border-radius:6px;padding:8px;max-height:180px;overflow:auto;margin:8px 0 0;white-space:pre-wrap;color:#b9c0d0}
   .mesh{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
@@ -88,7 +88,17 @@
   .steps .running{color:var(--fg)} .steps .done{color:var(--ok)} .steps .failed{color:var(--bad)} .steps .skipped{opacity:.5}
   .steps .bar.done i{background:var(--ok)} .steps .bar.failed i{background:var(--bad)}
   .steps .detail{grid-column:2;margin-top:-2px}
-  .thumbs.rejected img{opacity:.75}
+  .photoset{margin-top:10px}
+  .photoset>summary,.photoset>.head{font-size:12px;cursor:pointer}
+  .photoset>.head{cursor:default}
+  .photoset .why{display:flex;align-items:center;gap:8px;color:var(--mute);font-size:12px;margin:10px 0 4px}
+  .tiles{display:flex;flex-wrap:wrap;gap:8px}
+  .tile{width:76px;display:flex;flex-direction:column;gap:4px;font-size:11px}
+  .tile img,.tile .hidden{width:76px;height:76px;object-fit:cover;border-radius:4px;border:2px dashed var(--bad);display:block}
+  .tile .hidden{display:flex;align-items:center;justify-content:center;text-align:center;color:var(--mute);box-sizing:border-box;padding:4px}
+  .tile button{width:100%;padding:3px 0}
+  .tile.back img{border:2px solid var(--ok);opacity:.55}
+  .tile.back .done{color:var(--ok);text-align:center}
   .srcs{margin-top:6px;max-width:320px;cursor:default;border-radius:4px}
   .srcs:focus-visible{outline:1px solid var(--acc);outline-offset:3px}
   .srcbar{display:flex;gap:2px;height:8px}
@@ -970,8 +980,8 @@ async function refreshProjects(){
       </div>
       <div class="prog"></div>
       <div class="harvest-info"></div>
-      <div class="filtered"></div>
-      <div class="thumbs"></div><pre class="log" style="display:none"></pre>`;
+      <div class="photoset kept"><div class="head"></div><div class="thumbs"></div></div>
+      <div class="filtered"></div><pre class="log" style="display:none"></pre>`;
     d.querySelector('button.sec').onclick = () => d.querySelector('input[type=file]').click();
     d.querySelector('input[type=file]').onchange = async ev => {
       const fd = new FormData(); for (const f of ev.target.files) fd.append('photos', f);
@@ -1009,8 +1019,34 @@ function progressHtml(p){
 // a project's photo as the admin page allows: shown, a link to where it came from, or nothing
 function photoThumb(id, name, access){
   const show = access?.show || 'show';
-  if (show === 'show') return `<img src="/photos/${id}/${esc(name)}" title="${esc(name)}" loading="lazy">`;
+  if (show === 'show') return `<a href="/photos/${id}/${esc(name)}" target="_blank" rel="noopener"><img src="/photos/${id}/${esc(name)}" title="${esc(name)}: opens full size" loading="lazy"></a>`;
   return show === 'link' && access.page ? `<a class="chip" href="${esc(access.page)}" target="_blank" rel="noopener" title="${esc(name)}: not shown here, as it isn't clearly free to copy">${esc(name.split('_')[0])} ↗</a>` : '';
+}
+// a photo the filter left out: large enough to judge, opening full size, with a button to put it back
+function filteredTile(id, x, access){
+  const show = access?.show || 'show', title = `${esc(x.why)}: opens full size`;
+  const pic = show === 'show' ? `<a href="/photos/${id}/rejected/${esc(x.file)}" target="_blank" rel="noopener"><img src="/photos/${id}/rejected/${esc(x.file)}" title="${title}" loading="lazy"></a>`
+    : show === 'link' && access.page ? `<a class="hidden" href="${esc(access.page)}" target="_blank" rel="noopener" title="Not shown here, as it isn't clearly free to copy">${esc(x.file.split('_')[1] || x.file)} ↗</a>`
+    : `<span class="hidden" title="Not shown here, as it isn't clearly free to copy">not shown</span>`;
+  return `<div class="tile" data-file="${esc(x.file)}">${pic}<button class="sm sec back">Put back</button></div>`;
+}
+async function putBack(id, card, tiles, groupButton){
+  if (groupButton) groupButton.disabled = true;
+  let done = 0;
+  for (const t of tiles) {
+    const b = t.querySelector('button.back');
+    b.disabled = true; b.textContent = 'Putting back…';
+    try {
+      await api(`/api/projects/${id}/restore`, { method: 'POST', json: { file: t.dataset.file } });
+      t.classList.add('back'); b.replaceWith(Object.assign(document.createElement('span'), { className: 'done', textContent: '✓ put back' }));
+      done++;
+    } catch (e) { b.disabled = false; b.textContent = 'Put back'; toast(`Couldn't put it back: ${e.message}`, 6000); break; }
+  }
+  if (!done) { if (groupButton) groupButton.disabled = false; return; }
+  const count = (el, by, label) => { if (el) el.textContent = `${label} (${parseInt(el.textContent.match(/\d+/)?.[0] || '0') + by})`; };
+  count(card.querySelector('.photoset.kept .head b'), done, 'Kept for the mesh');
+  count(card.querySelector('.filtered summary b'), -done, 'Filtered out as off-topic');
+  toast(`Put ${done === 1 ? 'it' : done + ' photos'} back with those kept: press Reconstruct to make a mesh with ${done === 1 ? 'it' : 'them'}`, 6000);
 }
 async function loadDetail(id, card){
   const p = await api('/api/projects/' + id);
@@ -1020,19 +1056,19 @@ async function loadDetail(id, card){
   if (fl.dataset.names !== filteredNames) {
     const wasOpen = fl.querySelector('details')?.open;
     fl.dataset.names = filteredNames;
-    fl.innerHTML = p.filtered.length ? `<details style="margin-top:6px" ${wasOpen?'open':''}><summary>${p.filtered.length} photo(s) filtered out as off-topic: click one to put it back</summary>
-      <div class="thumbs rejected">${p.filtered.map(x => (p.access?.[x.file.split('_').slice(1).join('_')]?.show || 'show') === 'show'
-        ? `<img src="/photos/${id}/rejected/${esc(x.file)}" data-file="${esc(x.file)}" title="${esc(x.why)}: click to restore" loading="lazy">`
-        : photoThumb(id, x.file, p.access?.[x.file.split('_').slice(1).join('_')])).join('')}</div></details>` : '';
-    fl.querySelectorAll('img').forEach(im => im.onclick = async ev => {
-      ev.stopPropagation();
-      await api(`/api/projects/${id}/restore`, { method: 'POST', json: { file: im.dataset.file } });
-      toast('Restored; press Reconstruct to use it'); loadDetail(id, card);
-    });
+    fl.innerHTML = p.filtered.length ? `<details class="photoset" ${wasOpen ? 'open' : ''}><summary><b>Filtered out as off-topic (${p.filtered.length})</b>: not used for the mesh. Open one to look at it full size, and put back any of the boulder.</summary>
+      ${[...new Set(p.filtered.map(x => x.why))].map(why => {
+        const group = p.filtered.filter(x => x.why === why);
+        return `<div class="why"><span>${esc(why[0].toUpperCase() + why.slice(1))} (${group.length})</span>${group.length > 1 ? '<button class="sm sec all">Put all back</button>' : ''}</div>
+          <div class="tiles">${group.map(x => filteredTile(id, x, p.access?.[x.file.split('_').slice(1).join('_')])).join('')}</div>`;
+      }).join('')}</details>` : '';
+    fl.querySelectorAll('.tile .back').forEach(b => b.onclick = ev => { ev.stopPropagation(); putBack(id, card, [b.closest('.tile')]); });
+    fl.querySelectorAll('.why .all').forEach(b => b.onclick = ev => { ev.stopPropagation(); putBack(id, card, [...b.parentNode.nextElementSibling.querySelectorAll('.tile:not(.back)')], b); });
   }
-  const th = card.querySelector(':scope > .thumbs'), photoNames = p.photos.join();
+  const kept = card.querySelector('.photoset.kept'), th = kept.querySelector('.thumbs'), photoNames = p.photos.join();
   if (th.dataset.names !== photoNames || !p.photos.length) {
     th.dataset.names = photoNames;
+    kept.querySelector('.head').innerHTML = p.photos.length ? `<b>Kept for the mesh (${p.photos.length})</b>${p.photos.length > 30 ? ': the first 30' : ''}` : '';
     th.innerHTML = p.photos.slice(0, 30).map(x => photoThumb(id, x, p.access?.[x])).join('') + (p.photos.length>30 ? `<span class="status">+${p.photos.length-30}</span>` : '');
     if (!p.photos.length) th.innerHTML = `<span class="status">${p.kind==='harvest'?'No photos harvested yet.':'No photos yet — add 20–80 overlapping shots around the object.'}</span>`;
   }
