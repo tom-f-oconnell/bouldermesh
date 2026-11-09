@@ -244,6 +244,31 @@ def upsert_climb(c: Climb) -> str:
 BOULDER_KM = 1.0   # a climb this far from the others on its boulder is probably misplaced
 
 
+def settle_far_coordinates() -> int:
+    """Climbs saved before importing compared a route page's GPS with its area's (upsert_climb): where the page's
+    is over FAR_KM from the area's, the area's are used instead, and the page's are kept for coord_doubts() to
+    show, to be put right there.
+
+    Returns:
+        How many were changed.
+    """
+    rows = q("""SELECT c.id, c.lat, c.lng, c.data, json_extract(ci.data, '$.lat') AS alat, json_extract(ci.data, '$.lng') AS alng
+                FROM climbs c JOIN campaign_items ci ON ci.source_id=c.source_id
+                WHERE c.source='mountainproject' AND c.coord_source='route' AND ci.data IS NOT NULL""")
+    done = set()
+    for r in rows:
+        if r["id"] in done or r["alat"] is None or r["alng"] is None or r["lat"] is None or r["lng"] is None \
+                or _km(r["lat"], r["lng"], r["alat"], r["alng"]) <= FAR_KM:
+            continue
+        data = json.loads(r["data"] or "{}")
+        data.setdefault("raw", {})["route_gps_ignored"] = [r["lat"], r["lng"]]
+        data.update(lat=r["alat"], lng=r["alng"], coord_source="area")
+        q("UPDATE climbs SET lat=?, lng=?, coord_source='area', data=? WHERE id=?", r["alat"], r["alng"], json.dumps(data), r["id"], write=True)
+        done.add(r["id"])
+    _doubts["at"] = 0.0
+    return len(done)
+
+
 _doubts: dict = {"at": 0.0, "found": {}}
 
 
@@ -2084,6 +2109,9 @@ def admin_retexture(_: dict) -> dict:
 
 def main() -> None:
     init_db()
+    moved = settle_far_coordinates()
+    if moved:
+        print(f"{moved} climb(s) whose page's GPS was far from their area's now use their area's", flush=True)
     configure_workers()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=reap_machines, daemon=True).start()

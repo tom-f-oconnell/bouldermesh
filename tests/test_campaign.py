@@ -923,5 +923,13 @@ assert ids[2] in doubts and ids[0] not in doubts and ids[1] not in doubts, doubt
 assert "3.3 km from where most of the climbs on Big Rock are" == doubts[ids[2]]["why"], doubts[ids[2]]
 server.q("UPDATE climbs SET coord_source='manual' WHERE id=?", ids[2], write=True)
 assert ids[2] not in server.coord_doubts(fresh=True), "coordinates set by hand are taken as right"
+server.q("INSERT INTO campaign_items(campaign_id, source_id, rank, name, data, status) VALUES('zz', '777', 1, 'Old', ?, 'skipped')",
+         json.dumps({"lat": 33.81573, "lng": -116.64921}), write=True)
+old = server.upsert_climb(Climb(source="mountainproject", source_id="777", url="https://x/777", name="Old", lat=33.8158, lng=-116.6493, coord_source="route"))
+server.q("UPDATE climbs SET lat=32.64058, lng=-116.99956 WHERE id=?", old, write=True)     # as saved before importing checked
+assert server.settle_far_coordinates() == 1 and server.settle_far_coordinates() == 0, "once, then left alone"
+row = server.climb_row(old, full=True)
+assert (row["lat"], row["lng"], row["coord_source"]) == (33.81573, -116.64921, "area") and row["data"]["lat"] == 33.81573, row
+assert "(32.64058, -116.99956)" in server.coord_doubts()[old]["why"], "still flagged, with what its page said"
 print("route coordinates OK")
 print("ALL CAMPAIGN TESTS PASSED")
