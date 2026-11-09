@@ -306,7 +306,8 @@ one built elsewhere. From the machine that built it, with the meshes to show:
 
     deploy/ship.sh you@boulders.example.com      # the image (2.4 GB), the meshes, and a copy of the database with every area stopped
 
-Projects' photos don't go, so their cards show none, and the database there is replaced each time. Or push the image to
+Projects' photos don't go, so their cards show none, and the database there is replaced each time, with any settings
+changed on its admin page. Or push the image to
 a registry (see "Running reconstructions elsewhere"), put `BM_IMAGE=ghcr.io/<github-user>/bouldermesh:latest` in `.env`,
 and `docker compose -f docker-compose.yml -f docker-compose.public.yml pull`. Ports 80 and 443 must be open to the world.
 To run it under systemd as above, put `COMPOSE_FILE=docker-compose.yml:docker-compose.public.yml` in `.env` too (with
@@ -321,9 +322,11 @@ the site doesn't know who changed what: that's for accounts, later.
 
 **The admin page** stays on this machine's loopback address (`ADMIN_BIND` is refused if it isn't private). Reach it through
 an SSH tunnel, `ssh -L 36184:127.0.0.1:36184 you@boulders.example.com`, at `http://localhost:36184`, and set
-`ADMIN_PASSWORD` in `.env` anyway. Before the site is public, set what it may show there: most harvested photos are
-copyrighted ([license_considerations.md](license_considerations.md)), and *Source photos and video frames: free to copy, with
-links to the rest* keeps their copies here from being served.
+`ADMIN_PASSWORD` in `.env` anyway. What the site may show is set there too, but the public setup already starts it as
+*Source photos and video frames: free to copy, with links to the rest*, so the copies here of photos that aren't clearly
+free to copy aren't served (most harvested photos are copyrighted: [license_considerations.md](license_considerations.md)),
+and *Mesh textures: all*. `SITE_SOURCES` and `SITE_TEXTURES` in `.env` change those starting points, and last across
+`deploy/ship.sh`, which replaces the database the admin page's choices live in.
 
 **What else the public setup does.** The container has no capabilities, can't gain privileges, and runs as uid 1000
 (`BM_USER` in `.env` changes it; `./data` must be writable by that user). Pages come with a Content-Security-Policy that

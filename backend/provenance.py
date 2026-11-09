@@ -6,7 +6,8 @@
 
 Kept with the mesh rather than looked up in its project, as a project's photos can change or be
 deleted after the mesh is built. Photos in a project that the harvest didn't record are taken to be
-the user's own uploads.
+the user's own uploads. A video frame's licence and uploader, when the harvest hadn't recorded them,
+come from what the server has since learnt of the video (load's `videos`).
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import hashlib
 import json
 import time
 from pathlib import Path
+from typing import Callable
 
 FILE = "photo_sources.json"
 PHOTO_EXT = {".jpg", ".jpeg", ".png"}
@@ -86,13 +88,32 @@ def save(mesh_dir: Path, project_dir: Path) -> dict:
     return record
 
 
-def load(mesh_dir: Path) -> dict | None:
+def unrecorded(licence: str | None) -> bool:
+    """Whether a licence string says nothing: missing, or the harvest's note that it wasn't recorded."""
+    return not licence or licence.startswith(("frame from linked beta video", "not recorded"))
+
+
+def load(mesh_dir: Path, videos: Callable[[str], dict | None] | None = None) -> dict | None:
+    """The record kept with a mesh, or None.
+
+    Args:
+        videos: what's known of a video by its URL, {"license", "uploader"} or None, for frames whose licence
+            or credit the harvest hadn't recorded: the server learns these after some harvests.
+    """
     path = mesh_dir / FILE
     if not path.exists():
         return None
     record = json.loads(path.read_text())
     # saved before describe() filled in pooled photos' sources
     record["photos"] = [p if p.get("source") else describe(p["file"], {p["file"]: p}) for p in record["photos"]]
+    if videos:
+        for p in record["photos"]:
+            if p.get("source") == "youtube" and p.get("url") and (unrecorded(p.get("license")) or not p.get("credit")):
+                info = videos(p["url"]) or {}
+                if unrecorded(p.get("license")) and info.get("license"):
+                    p["license"] = info["license"]
+                if not p.get("credit") and info.get("uploader"):
+                    p["credit"] = info["uploader"]
     return record
 
 

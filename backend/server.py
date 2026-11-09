@@ -1401,9 +1401,19 @@ def queue_scale(mid: str) -> bool:
     return True
 
 
+KNOWN_OBJECT_FILE = "known_object.json"   # in a project: what of known size its photos show (scale.known_object())
+
+
+def known_object(pid: str) -> dict | None:
+    try:
+        return json.loads((PROJECTS / pid / KNOWN_OBJECT_FILE).read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
 def mesh_videos(mid: str) -> dict:
     """What each of a mesh's videos, and its uploader's channel, says about the climber's size, by url."""
-    record = provenance.load(MESHES / mid) or {}
+    record = mesh_record(MESHES / mid) or {}
     urls = {p["url"] for p in record.get("photos", []) if p.get("source") == "youtube" and p.get("url")}
     rows = q(f"""SELECT v.url, v.height_cm, v.wingspan_cm, v.ape_index_cm, c.height_cm AS channel_height_cm,
                         c.wingspan_cm AS channel_wingspan_cm, c.ape_index_cm AS channel_ape_index_cm
@@ -1424,7 +1434,8 @@ def run_scale(mid: str) -> None:
             f.write(line.rstrip() + "\n")
     climbs = [json.loads(r["data"]) for r in q("SELECT c.data FROM mesh_links l JOIN climbs c ON c.id=l.climb_id WHERE l.mesh_id=?", mid)]
     try:
-        scale_mod.estimate(mesh_dir, PROJECTS / pid / "photos", PROJECTS / pid / "masks", climbs, mesh_videos(mid), log)
+        scale_mod.estimate(mesh_dir, PROJECTS / pid / "photos", PROJECTS / pid / "masks", climbs, mesh_videos(mid), log,
+                           known=known_object(pid))
     except Cancelled:
         scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": "stopped", "progress": None})
     except Exception as e:
@@ -1443,7 +1454,7 @@ def run_retexture(mid: str) -> None:
         with open(mesh_dir / "retexture.log", "a") as f:
             f.write(line.rstrip() + "\n")
     try:
-        retexture.retexture(mesh_dir, PROJECTS / m["source"].split(":", 1)[1] / "photos", log)
+        retexture.retexture(mesh_dir, PROJECTS / m["source"].split(":", 1)[1] / "photos", log, video_info)
     except Exception as e:
         log(f"FAILED: {type(e).__name__}: {e}")
     finally:
@@ -1459,7 +1470,7 @@ def texture_mode(mid: str, source: str | None = None) -> str:
     if source is None:
         row = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
         source = row["source"] if row else ""
-    return policy.texture_mode(settings().get("site.textures"), source == "upload", provenance.load(MESHES / mid),
+    return policy.texture_mode(settings().get("site.textures"), source == "upload", mesh_record(MESHES / mid),
                                retexture.has_variant(MESHES / mid))
 
 
@@ -1480,9 +1491,21 @@ def photo_entry(pid: str, name: str) -> dict:
     return provenance.describe(name, _sources_cache[pid][1])
 
 
+def video_info(url: str) -> dict | None:
+    """What the videos table knows of a video, for provenance.load: its licence and uploader; None if nothing."""
+    row = q("SELECT license, uploader FROM videos WHERE url=?", url, one=True)
+    return {"license": row["license"], "uploader": row["uploader"]} if row else None
+
+
 def video_entry(url: str) -> dict:
-    lic = q("SELECT license FROM videos WHERE url=?", url, one=True)
-    return {"source": "youtube", "license": lic["license"] if lic else None}
+    """A video as a photo's record, for policy.permitted and source_access."""
+    return {"source": "youtube", **(video_info(url) or {"license": None})}
+
+
+def mesh_record(mesh_dir: Path) -> dict | None:
+    """A mesh's provenance, with its frames' licences and uploaders filled in from the videos table where the
+    harvest hadn't recorded them: older harvests didn't, and a video's licence is learnt from its metadata later."""
+    return provenance.load(mesh_dir, video_info)
 
 
 def stop_campaign(camp_id: str, now: bool = True) -> None:
@@ -1912,6 +1935,7 @@ class Handler(BaseHTTPRequestHandler):
                                        "gpu": gpu, "gpu_why": gpu_why,
                                        "ytdlp": bool(shutil.which("yt-dlp") and shutil.which("ffmpeg")),
                                        "youtube_refusing": youtube_mod.refused(),
+                                       "known_objects": {k: v[2] for k, v in scale_mod.KNOWN.items()},
                                        "opencv": _has("cv2"), "pillow": _has("PIL"),
                                        "policy": {"textures": settings().get("site.textures"), "sources": settings().get("site.sources")},
                                        "editing": "none" if READ_ONLY else "token" if EDIT_TOKEN else "open",
@@ -1933,6 +1957,7 @@ class Handler(BaseHTTPRequestHandler):
                                    last_failure(m[1], "INTERRUPTED: ") if proj["status"] == "interrupted" else None)
                 proj["harvest"] = json.loads(proj["harvest"]) if proj.get("harvest") else None
                 proj["progress"] = json.loads(proj["progress"]) if proj.get("progress") else None
+                proj["known_object"] = known_object(m[1])
                 rejected = PROJECTS / m[1] / "rejected"
                 try:
                     clipped = "boulder" in json.loads((PROJECTS / m[1] / "relevance.json").read_text()).get("methods", [])
@@ -1975,7 +2000,7 @@ class Handler(BaseHTTPRequestHandler):
                     try:    # one mesh's unreadable file shouldn't empty the whole list
                         r["cleanup"] = meshclean.summary(meshclean.load(served_dir(r["id"], r["texture"])))
                         r["orientation"] = orientation.load(MESHES / r["id"])
-                        r["sources"] = provenance.summary(provenance.load(MESHES / r["id"]))
+                        r["sources"] = provenance.summary(mesh_record(MESHES / r["id"]))
                         r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
                         r["marked"] = len(beta_mod.load_holds(MESHES / r["id"])["holds"])
                         r["scale"] = scale_mod.summary(scale_mod.load(MESHES / r["id"]))
@@ -2006,7 +2031,7 @@ class Handler(BaseHTTPRequestHandler):
                     FROM videos v LEFT JOIN channels c ON c.channel_url=v.channel_url ORDER BY v.url"""))
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/sources", p)
             if m:   # every photo, with where it came from: what crediting or re-hosting a mesh needs
-                record = provenance.load(MESHES / m[1])
+                record = mesh_record(MESHES / m[1])
                 return self.send_json(record) if record else self.send_json({"error": "not recorded for this mesh"}, 404)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
             if m:
@@ -2127,6 +2152,22 @@ class Handler(BaseHTTPRequestHandler):
                     saved.append(fname)
                 return self.send_json({"saved": saved})
 
+            m = re.fullmatch(r"/api/projects/([0-9a-f]+)/known-object", p)
+            if m:   # {kind} or {what, height_cm, width_cm}, or {} for nothing: its mesh is sized again
+                proj = q("SELECT mesh_id FROM projects WHERE id=?", m[1], one=True)
+                if not proj:
+                    return self.send_json({"error": "not found"}, 404)
+                body = self.read_json()
+                if not isinstance(body, dict) or body and not scale_mod.known_object(body):
+                    return self.send_json({"error": "give one of " + ", ".join(scale_mod.KNOWN) + ", or a bottle's height_cm (5-100)"}, 400)
+                f = PROJECTS / m[1] / KNOWN_OBJECT_FILE
+                if body:
+                    f.write_text(json.dumps(body))
+                else:
+                    f.unlink(missing_ok=True)
+                mid = proj["mesh_id"]
+                sizing = bool(mid and q("SELECT 1 FROM meshes WHERE id=?", mid) and (MESHES / mid / "cameras.json").exists() and queue_scale(mid))
+                return self.send_json({"known_object": body or None, "sizing": sizing})
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/reconstruct", p)
             if m:
                 pid = m[1]
@@ -2449,13 +2490,13 @@ def admin_state() -> dict:
     counts = dict.fromkeys(("meshes", "all_permitted", "variant", "hidden_if_permitted", "can_retexture", "need_rebuild"), 0)
     for m in q("SELECT id, source FROM meshes WHERE replaced_by IS NULL"):
         d, upload = MESHES / m["id"], m["source"] == "upload"
-        ok, variant = upload or bool(policy.mesh_permitted(provenance.load(d))), retexture.has_variant(d)
+        ok, variant = upload or bool(policy.mesh_permitted(mesh_record(d))), retexture.has_variant(d)
         counts["meshes"] += 1
         counts["all_permitted"] += ok
         counts["variant"] += variant and not ok
         counts["hidden_if_permitted"] += not ok and not variant
         if not ok and m["source"].startswith("project:"):
-            found, why = retexture.usable(d, PROJECTS / m["source"].split(":", 1)[1] / "photos")
+            found, why = retexture.usable(d, PROJECTS / m["source"].split(":", 1)[1] / "photos", video_info)
             counts["can_retexture"] += bool(found)
             counts["need_rebuild"] += bool(why and "rebuild" in why)
     return {"settings": settings().all(), "secrets": settings().secrets_status(), "compute": compute_state(),
@@ -2487,9 +2528,9 @@ def admin_retexture(_: dict) -> dict:
     n = 0
     for m in q("SELECT id, source FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%'"):
         d = MESHES / m["id"]
-        if m["id"] in _retexturing or policy.mesh_permitted(provenance.load(d)):
+        if m["id"] in _retexturing or policy.mesh_permitted(mesh_record(d)):
             continue
-        if retexture.usable(d, PROJECTS / m["source"].split(":", 1)[1] / "photos")[0]:
+        if retexture.usable(d, PROJECTS / m["source"].split(":", 1)[1] / "photos", video_info)[0]:
             _retexturing.add(m["id"])
             queue_job({"type": "retexture", "mid": m["id"]})
             n += 1

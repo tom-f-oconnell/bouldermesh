@@ -5,7 +5,8 @@
 # That machine needs Docker with you in the docker group, zstd, and this repository cloned at ~/bouldermesh
 # (REMOTE_DIR to change) with ./data writable by you. The image is the one Compose built here unless named, and
 # BM_IMAGE in the machine's .env must name it if it isn't bouldermesh-bouldermesh:latest. The database there is
-# replaced each time, so holds marked or cleanups edited there with the editing token are lost: do those here.
+# replaced each time, so holds marked or cleanups edited there with the editing token are lost (do those here), and so
+# are settings changed on its admin page: what the site shows is given in its .env (SITE_SOURCES, SITE_TEXTURES).
 # Running it again is cheap: an image the machine already has isn't sent again, and only changed meshes are.
 set -eu
 dest=${1:?usage: deploy/ship.sh user@host [image]}

@@ -1,6 +1,8 @@
 """Settings changed on the admin page, and credentials kept for it.
 
-Settings live in the database's settings table, as JSON, with DEFAULTS for any not set. Credentials
+Settings live in the database's settings table, as JSON, with DEFAULTS for any not set; SITE_TEXTURES and
+SITE_SOURCES in the environment change those two defaults, for a copy of the site set up by its compose file
+rather than its admin page. Credentials
 (cloud keys, an SSH key) are kept apart, in DATA_DIR/secrets.json, readable only by the server's user,
 and encrypted with a key that isn't kept in DATA_DIR: BOULDERMESH_SECRETS_KEY, a Fernet key, which
 `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` makes.
@@ -42,6 +44,12 @@ CHOICES = {"compute.provider": ("none", "ssh", "aws"), "site.textures": ("all", 
            "site.sources": ("all", "link", "permitted")}
 LIMITS = {"compute.local_workers": (1, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000)}
+for _key in ("site.textures", "site.sources"):    # the public copy's database is replaced on each ship, its .env isn't
+    _given = os.environ.get(_key.replace(".", "_").upper(), "").strip()
+    if _given in CHOICES[_key]:
+        DEFAULTS[_key] = _given
+    elif _given:
+        print(f"{_key.replace('.', '_').upper()}={_given} ignored: one of {', '.join(CHOICES[_key])}", flush=True)
 SECRETS = ("aws.access_key_id", "aws.secret_access_key", "ssh.private_key")
 SECRETS_FILE = "secrets.json"
 _lock = threading.Lock()

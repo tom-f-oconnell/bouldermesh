@@ -82,3 +82,21 @@ with tempfile.TemporaryDirectory() as td:
     s = provenance.summary(provenance.load(mesh))
     assert sorted(x["source"] for x in s["sources"]) == ["ddg", "youtube"], s
 print("ALL PROVENANCE TESTS PASSED")
+
+# what the server has since learnt of a frame's video fills in what the harvest hadn't recorded
+with tempfile.TemporaryDirectory() as td:
+    mesh = pathlib.Path(td)
+    other = "https://www.youtube.com/watch?v=zzz"
+    (mesh / provenance.FILE).write_text(json.dumps({"basis": "placed", "photos": [
+        {"file": f"yt_{TAG}_000.jpg", "source": "youtube", "url": VIDEO, "license": "frame from linked beta video; licence not recorded"},
+        {"file": f"yt_{TAG}_001.jpg", "source": "youtube", "url": VIDEO, "license": None, "credit": "Bo"},
+        {"file": "yt_other_000.jpg", "source": "youtube", "url": other, "license": None},
+        {"file": "ddg_aa.jpg", "source": "ddg", "url": "https://a/1.jpg", "license": None}]}))
+    known = {VIDEO: {"license": "Creative Commons Attribution license (reuse allowed)", "uploader": "Al"},
+             other: {"license": None, "uploader": None}}
+    by = {p["file"]: p for p in provenance.load(mesh, known.get)["photos"]}
+    assert by[f"yt_{TAG}_000.jpg"]["license"].startswith("Creative Commons") and by[f"yt_{TAG}_000.jpg"]["credit"] == "Al", by
+    assert by[f"yt_{TAG}_001.jpg"]["license"].startswith("Creative Commons") and by[f"yt_{TAG}_001.jpg"]["credit"] == "Bo", "a credit the harvest recorded stays"
+    assert by["yt_other_000.jpg"]["license"] is None and by["ddg_aa.jpg"]["license"] is None, by
+    assert provenance.load(mesh)["photos"][0]["license"].startswith("frame from"), "without a lookup, as recorded"
+    assert provenance.unrecorded(None) and provenance.unrecorded("frame from linked beta video; x") and not provenance.unrecorded("CC BY 2.0")

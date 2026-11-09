@@ -34,9 +34,10 @@ DEPTH_CELLS = 400     # the depth buffer's long side, in cells
 DEPTH_SLACK = 0.02    # a vertex this far behind the nearest in its cell, as a share of its depth, is still seen
 
 
-def usable(mesh_dir: Path, photos: Path) -> tuple[list[dict], str | None]:
-    """The permitted photos placed in a mesh, with their cameras, or why there aren't any to use."""
-    record, cams_file = provenance.load(mesh_dir), mesh_dir / "cameras.json"
+def usable(mesh_dir: Path, photos: Path, videos=None) -> tuple[list[dict], str | None]:
+    """The permitted photos placed in a mesh, with their cameras, or why there aren't any to use.
+    `videos` is provenance.load's: what's known of a frame's video beyond what the harvest recorded."""
+    record, cams_file = provenance.load(mesh_dir, videos), mesh_dir / "cameras.json"
     if not record or not cams_file.exists():
         return [], "where its photos were placed wasn't kept: rebuild it"
     placed = {c["name"]: c for c in json.loads(cams_file.read_text())}
@@ -153,7 +154,7 @@ def write_coloured(src: Path, dst: Path, colour_of) -> None:
         f.write(struct.pack("<II", len(blob), 0x004E4942) + bytes(blob))
 
 
-def retexture(mesh_dir: Path, photos: Path, log: Log) -> dict:
+def retexture(mesh_dir: Path, photos: Path, log: Log, videos=None) -> dict:
     """Make permitted/ for a mesh, replacing any from before once the new one is finished, so that one
     stopped partway (as by a restart) leaves the old one.
 
@@ -162,7 +163,7 @@ def retexture(mesh_dir: Path, photos: Path, log: Log) -> dict:
     """
     import numpy as np
     out, new = mesh_dir / DIR, mesh_dir / (DIR + ".partial")
-    cams, why = usable(mesh_dir, photos)
+    cams, why = usable(mesh_dir, photos, videos)
     shutil.rmtree(new, ignore_errors=True)
     new.mkdir()
     if why:
