@@ -216,6 +216,12 @@ before Nov 8 haven't been sized: `curl -X POST localhost:8470/api/meshes/scale-a
 `-H "Authorization: Bearer $EDIT_TOKEN"` on a site with an editing token), at a
 few minutes each, at low priority.
 
+For your own photos, a bottle of known size gives a mesh its size better than any of these. Stand a 32 oz
+Nalgene (or another bottle) upright at the foot of the rock, on ground that the photos also show, and get it
+in several of them. On the project's card, pick it under *Something of known size in these photos* ("another
+bottle…" asks its height). Finding the size then looks for bottles in the placed photos (Faster R-CNN, a 175 MB
+download the first time), measures each one standing on the ground in the mesh, and goes by it most.
+
 ## Real photogrammetry
 
     docker compose up --build      # COLMAP + OpenMVS (+ OpenCV, ffmpeg, yt-dlp); first build ~10-40 min depending on cores

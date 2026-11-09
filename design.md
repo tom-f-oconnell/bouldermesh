@@ -566,6 +566,19 @@ letters (Mad Rock, Evolv, Organic in a sample of 10), which reading text could n
 equivalent. `scale.KNOWN` and `measure_upright()` are there for one: a 32 oz Nalgene put at the foot of the
 rock in your own photos, on ground that gets reconstructed, would be measured to about the box's pixel.
 
+So a project of your own can say what its photos show (`known_object.json`: a Nalgene from `scale.KNOWN`, or a
+bottle's height). Sizing then runs the detector on its placed photos at 1600-2400 px rather than its default
+800-1333, as a bottle is a small part of a photo of a boulder, keeps the bottles whose base lands on ground
+in the mesh and whose width for their height is within 1.6 times the real one's, and drops measurements 1.5
+times off their median (another bottle). What's left is one estimate, at a log sd of 0.1: tighter than a
+video's climber, as nothing about the object is guessed, but not as tight as the pixel, as the base point
+and the vertical plane through it come from the mesh. It hasn't been tried on a real Nalgene photo set yet.
+
+Reading crash pads' makers was tried on the 486 boxes at least 120 px wide that the detector called
+suitcases or books (RapidOCR, on the GPU, 3.5 minutes): 130 had any text, but only 17 (in 10 meshes)
+named a maker even loosely ("ROCK" for Mad Rock, "Black Diamono"), and a maker's pads still range from
+about 100 to 160 cm long. So it isn't used.
+
 Casting a ray at a million triangles took 120-190 ms. Each placed photo's camera now projects every
 triangle's bounding sphere once (0.1-0.5 s) and files it by where it lands, so a ray takes 10-15 ms; the
 beta search uses the same.

@@ -175,6 +175,30 @@ got = scale.measure_upright(mesh.view(low, SIZE), box)
 assert near(got["height"], h, 0.02) and near(got["width"], w, 0.02), got
 assert scale.measure_upright(view, (0, -900, 10, -800)) is None, "its base over the top of the wall, meeting nothing"
 
+# a project's photos said to show it: found in two photos, plus something else upright, and a box that misses the ground
+assert scale.known_object({"kind": "nalgene_narrow_32"}) == {"what": "a 32 oz narrow-mouth Nalgene", "height": h, "width": w}
+assert scale.known_object({"height_cm": 30}) == {"what": "a bottle", "height": 0.3, "width": None}
+assert scale.known_object({"height_cm": 500}) is None and scale.known_object({"kind": "anvil"}) is None and scale.known_object(None) is None
+X1 = np.array([-0.4, -2.0, -2.0])
+corners1 = [beta.project(low, SIZE, X1 + d) for d in ([-w / 2, 0, 0], [w / 2, h, 0])]
+box1 = (min(c[0] for c in corners1), min(c[1] for c in corners1), max(c[0] for c in corners1), max(c[1] for c in corners1))
+wide = (box[0] - 40, box[1], box[2] + 40, box[3])                       # something squat where it stands: not it
+with tempfile.TemporaryDirectory() as td:
+    td = pathlib.Path(td)
+    for n in ("a.jpg", "b.jpg", "c.jpg"):
+        (td / n).write_bytes(b"x")
+    boxes = {"a.jpg": [box, wide], "b.jpg": [box1], "c.jpg": [(0, -900, 10, -800)]}
+    seen = []
+    found = scale.find_objects(td, td, ["a.jpg", "b.jpg", "c.jpg", "missing.jpg"], print,
+                               detect=lambda f: (seen.append(f.name), [{"box": list(b), "score": 0.9} for b in boxes[f.name]])[1])
+    assert sorted(found) == ["a.jpg", "b.jpg", "c.jpg"] and len(seen) == 3
+    assert scale.find_objects(td, td, ["a.jpg"], print, detect=lambda f: 1 / 0) == found, "kept, not looked for again"
+    est = scale.object_estimates(mesh, {n: low for n in found}, {n: SIZE for n in found}, found, scale.known_object({"kind": "nalgene_narrow_32"}))
+    assert len(est) == 1 and est[0]["kind"] == "object" and est[0]["n"] == 2 and near(est[0]["metres_per_unit"], 1.0, 0.03), est
+    combined = scale.combine(est + [{"kind": "stated", "metres_per_unit": 1.6, "sd": scale.METHOD_SD["stated"]}])
+    assert combined["method"] == "object" and near(combined["metres_per_unit"], 1.0, 0.03), combined
+    assert scale.object_estimates(mesh, {}, {}, found, scale.known_object({"height_cm": 23.5})) == [], "no cameras, nothing measured"
+
 # ------------------------------------------------------------------ the rock's height, near where the photos look
 cams = [camera(0, origin=(x, 0.0, -5.0)) for x in (-1.0, 0.0, 1.0)]
 got = scale.heights(mesh, cams)

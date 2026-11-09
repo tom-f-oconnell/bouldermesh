@@ -649,7 +649,7 @@ function renderOrientation(m){
   scene.add(downArrows);
 }
 const FT = 0.3048;
-const SIZE_BY = { video: 'climbers\' limbs in its videos', photos: 'climbers\' limbs in its photos', standing: 'people standing near it', stated: 'Mountain Project\'s height for the problem' };
+const SIZE_BY = { video: 'climbers\' limbs in its videos', photos: 'climbers\' limbs in its photos', standing: 'people standing near it', stated: 'Mountain Project\'s height for the problem', object: 'the object of known size in its photos' };
 function sizeHtml(m){
   if (m.source === 'upload' || !m.cameras_kept) return '';
   const s = m.scale, again = label => `<button class="sm sec findsize" title="Looks for people in its photos, measures them against the rock, and checks Mountain Project's height">${label}</button>`;
@@ -657,7 +657,8 @@ function sizeHtml(m){
   if (['queued', 'running'].includes(s.status)) return `<div><b>Size:</b> finding it${s.progress ? `: ${esc(s.progress)}` : ''}…</div>`;
   if (!s.metres_per_unit || !s.height_m) return `<div><b>Size:</b> ${esc(s.status === 'done' ? 'not clear' : s.status)}.${again('Try again')}</div>`;
   const r = s.height_m / s.metres_per_unit, lo = s.low * r, hi = s.high * r, mp = s.stated;
-  const from = [s.videos ? `${s.videos} video${s.videos === 1 ? '' : 's'}` : '', s.photos ? 'photos' : '', s.standing ? `${s.standing} standing` : ''].filter(Boolean).join(', ');
+  const from = [s.videos ? `${s.videos} video${s.videos === 1 ? '' : 's'}` : '', s.photos ? 'photos' : '', s.standing ? `${s.standing} standing` : ''].filter(Boolean).join(', ')
+    + (s.object ? `${s.videos || s.photos || s.standing ? '; ' : ''}${esc(s.object.what)} measured ${s.object.n} time${s.object.n === 1 ? '' : 's'}` : '');
   return `<div><b>Size:</b> the rock is about ${s.height_m.toFixed(1)} m (${Math.round(s.height_m / FT)} ft) tall where the photos look, ${lo.toFixed(1)}–${hi.toFixed(1)} m, going most by ${SIZE_BY[s.method] || s.method}${from ? ` (people in ${from})` : ''}.`
     + `${mp ? ` Mountain Project gives the problem as ${Math.round(mp.m / FT)} ft.` : ''}${again('Find again')}</div>`;
 }
@@ -1020,7 +1021,7 @@ async function refreshProjects(){
         <span class="grow"></span><button class="danger sm del" title="Delete project">✕</button>
       </div>
       <div class="prog"></div>
-      <div class="harvest-info"></div>
+      <div class="harvest-info"></div><div class="known"></div>
       <div class="photoset kept"><div class="head"></div><div class="thumbs"></div></div>
       <div class="filtered"></div><pre class="log" style="display:none"></pre>`;
     d.querySelector('button.sec').onclick = () => d.querySelector('input[type=file]').click();
@@ -1113,6 +1114,29 @@ async function loadDetail(id, card){
     th.innerHTML = p.photos.slice(0, 30).map(x => photoThumb(id, x, p.access?.[x])).join('') + (p.photos.length>30 ? `<span class="status">+${p.photos.length-30}</span>` : '');
     if (!p.photos.length) th.innerHTML = `<span class="status">${p.kind==='harvest'?'No photos harvested yet.':'No photos yet — add 20–80 overlapping shots around the object.'}</span>`;
   }
+  const kn = card.querySelector('.known'), known = JSON.stringify(p.known_object);
+  if (p.kind !== 'harvest' && kn.dataset.v !== known) {
+    kn.dataset.v = known;
+    const k = p.known_object || {}, opts = statusCache?.known_objects || {};
+    kn.innerHTML = `<div class="row meta" style="margin-top:6px;gap:6px;flex-wrap:wrap"><span title="Stand it upright at the foot of the rock, on ground that the photos also show, in several of them: finding the mesh's size then measures it, and goes by it most.">Something of known size in these photos:</span>
+      <select class="w">${['<option value="">nothing</option>', ...Object.entries(opts).map(([key, what]) => `<option value="${key}" ${k.kind === key ? 'selected' : ''}>${esc(what)}</option>`),
+        `<option value="other" ${k.height_cm ? 'selected' : ''}>another bottle…</option>`].join('')}</select>
+      ${k.height_cm ? `<small>${esc(k.what || 'a bottle')}, ${k.height_cm} cm tall</small>` : ''}</div>`;
+    kn.querySelector('select').onchange = async ev => {
+      const v = ev.target.value;
+      let body = v === '' ? {} : { kind: v };
+      if (v === 'other') {
+        const h = prompt('How tall is it, in cm, lid included?', k.height_cm || '');
+        if (!h) { kn.dataset.v = ''; return loadDetail(id, card); }
+        body = { what: 'a bottle', height_cm: Number(h) };
+      }
+      try {
+        const r = await api(`/api/projects/${id}/known-object`, { method: 'POST', json: body });
+        toast(r.sizing ? 'Saved: finding its mesh\'s size again' : 'Saved: its mesh\'s size will go by it', 5000);
+      } catch (e) { toast(e.message, 6000); }
+      loadDetail(id, card);
+    };
+  } else if (p.kind === 'harvest') kn.innerHTML = '';
   const hi = card.querySelector('.harvest-info');
   if (p.harvest) {
     const dv = p.harvest.diversity || {}; const vg = dv.view_graph || {};

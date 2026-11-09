@@ -226,6 +226,14 @@ def run(B: str, tmp: Path) -> None:
     assert m["scale"] is None, "a demo mesh keeps no cameras, so isn't sized"
     assert req(B, "POST", f"/api/meshes/{m['id']}/scale")[0] == 409 and req(B, "POST", "/api/meshes/abcdef123456/scale")[0] == 404
     assert req(B, "POST", "/api/meshes/scale-all", {}) == (202, {"queued": 0}), "nothing with cameras to size"
+    assert req(B, "POST", f"/api/projects/{pid}/known-object", {"kind": "anvil"})[0] == 400
+    assert req(B, "POST", f"/api/projects/{pid}/known-object", [1])[0] == 400
+    st, r = req(B, "POST", f"/api/projects/{pid}/known-object", {"kind": "nalgene_wide_32"})
+    assert st == 200 and r == {"known_object": {"kind": "nalgene_wide_32"}, "sizing": False}, r   # a demo mesh isn't sized
+    assert req(B, "GET", f"/api/projects/{pid}")[1]["known_object"] == {"kind": "nalgene_wide_32"}
+    assert req(B, "POST", f"/api/projects/{pid}/known-object", {})[1]["known_object"] is None
+    assert req(B, "GET", f"/api/projects/{pid}")[1]["known_object"] is None
+    assert "nalgene_wide_32" in req(B, "GET", "/api/status")[1]["known_objects"]
 
     st, cd = req(B, "GET", f"/api/climbs/{cid}")
     assert cd["meshes"][0]["id"] == m["id"] and cd["projects"][0]["id"] == pid

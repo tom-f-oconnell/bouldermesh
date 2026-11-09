@@ -10,12 +10,13 @@ COLMAP's meshes come out at an arbitrary scale. Things in the photos placed in a
   stated     Mountain Project's height for the problem, against the rock's height near where the
              photos look: a fallback
   span       a video's climber's reach between hands on holds (beta.py's contacts): recorded, not yet used
-
-Objects of known size (KNOWN) can be measured standing on the mesh (measure_upright), but in harvested
-photos they're too few and too small, and the ground under them isn't in the mesh.
+  object     a bottle of known size that a project's photos are said to show (known_object()), standing on
+             ground in the mesh: for your own photos, as in harvested ones they're too few and too small,
+             and the ground under them isn't in the mesh
 
   poses.json         per placed photo with people: each person's keypoints and their scores
   scale_people.json  each person measured against the mesh (measure())
+  objects.json       per placed photo looked at: the bottles found in it, {box, score}
   scale.json         {status, metres_per_unit, low, high, sd, method, height_m, heights, estimates, checks}
 
 design.md has how far these agree.
@@ -266,6 +267,106 @@ def standing(view, kp, sc) -> float | None:
 # Each: its height and width in metres, as made, and what it is. Height includes the lid.
 KNOWN = {"nalgene_wide_32": (0.215, 0.089, "a 32 oz wide-mouth Nalgene"),
          "nalgene_narrow_32": (0.235, 0.089, "a 32 oz narrow-mouth Nalgene")}
+OBJECTS_FILE = "objects.json"
+OBJECT_LABEL = "bottle"     # the COCO class looked for
+OBJECT_MIN_SCORE = 0.5
+OBJECT_SHAPE = 1.6          # its measured width for its height within this factor of the real one's: it, not something else
+OBJECT_TRIM = 1.5           # measurements this far from the median are another bottle, or a bad one
+
+
+def known_object(spec: dict | None) -> dict | None:
+    """What a project says its photos show, as {what, height, width} in metres, or None.
+
+    Args:
+        spec: {"kind": a KNOWN key}, or {"what", "height_cm", "width_cm" (optional)} for another bottle.
+    """
+    if not spec:
+        return None
+    if spec.get("kind") in KNOWN:
+        h, w, what = KNOWN[spec["kind"]]
+        return {"what": what, "height": h, "width": w}
+    try:
+        h = float(spec["height_cm"]) / 100
+        w = float(spec["width_cm"]) / 100 if spec.get("width_cm") else None
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not 0.05 <= h <= 1.0 or (w is not None and not 0.01 <= w <= 0.5):
+        return None
+    return {"what": str(spec.get("what") or "a bottle")[:80], "height": h, "width": w}
+
+
+def _detector(log: Log):
+    """torchvision's COCO Faster R-CNN, untrained further, at a larger size than its default, as a bottle is a
+    small part of a photo of a boulder."""
+    import torch
+    from torchvision.models.detection import FasterRCNN_ResNet50_FPN_V2_Weights, fasterrcnn_resnet50_fpn_v2
+    from climbs.common import CACHE_DIR
+    torch.hub.set_dir(str(CACHE_DIR.parent / "models"))
+    weights = FasterRCNN_ResNet50_FPN_V2_Weights.COCO_V1
+    model = fasterrcnn_resnet50_fpn_v2(weights=weights, min_size=1600, max_size=2400, box_score_thresh=OBJECT_MIN_SCORE).eval()
+    log("scale: object detector Faster R-CNN (COCO)")
+    return model, weights.meta["categories"].index(OBJECT_LABEL)
+
+
+def find_objects(mesh_dir: Path, photos: Path, names: list[str], log: Log, progress: Callable[[str], None] = lambda s: None,
+                 detect=None) -> dict:
+    """The bottles in each of a mesh's placed photos, kept in objects.json: photos already there aren't looked at again.
+
+    Args:
+        detect: photo path -> [{box, score}], instead of the detector (for tests).
+
+    Returns:
+        {photo name: [{box: [x0, y0, x1, y1], score}]}
+    """
+    from climbs.common import jobctl
+    path = mesh_dir / OBJECTS_FILE
+    try:
+        found = json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        found = {}
+    todo = [n for n in names if n not in found and (photos / n).exists()]
+    if todo and detect is None:
+        import torch
+        from PIL import Image
+        from torchvision.transforms.functional import to_tensor
+        model, label = _detector(log)
+
+        def detect(f):
+            with Image.open(f) as im, torch.no_grad():
+                out = model([to_tensor(im.convert("RGB"))])[0]
+            return [{"box": [round(float(v), 1) for v in b], "score": round(float(sc), 3)}
+                    for b, lab, sc in zip(out["boxes"], out["labels"], out["scores"]) if int(lab) == label]
+    for i, n in enumerate(todo):
+        jobctl.check()
+        progress(f"looking for it in photo {i + 1} of {len(todo)}")
+        found[n] = detect(photos / n)
+        path.write_text(json.dumps(found))
+    return found
+
+
+def object_estimates(mesh, cams: dict, sizes: dict, found: dict, obj: dict) -> list[dict]:
+    """Metres per unit from a known object standing on the mesh in the photos it was found in (measure_upright()):
+    one estimate, from the median of its measurements that agree, as they're mostly of the same bottle."""
+    import numpy as np
+    heights = []
+    for name, boxes in found.items():
+        if name not in cams or name not in sizes:
+            continue
+        view = None
+        for b in boxes:
+            view = view or mesh.view(cams[name], sizes[name])
+            m = measure_upright(view, b["box"])
+            if not m or m["height"] <= 0:
+                continue
+            if obj["width"] and not 1 / OBJECT_SHAPE <= (m["width"] / m["height"]) / (obj["width"] / obj["height"]) <= OBJECT_SHAPE:
+                continue
+            heights.append(m["height"])
+    if not heights:
+        return []
+    mid = float(np.median(heights))
+    kept = [h for h in heights if 1 / OBJECT_TRIM <= h / mid <= OBJECT_TRIM]
+    return [{"kind": "object", "group": "object", "metres_per_unit": obj["height"] / float(np.median(kept)),
+             "sd": METHOD_SD["object"], "n": len(kept), "of": len(heights), "what": obj["what"]}]
 
 
 def measure_upright(view, box) -> dict | None:
@@ -430,7 +531,8 @@ Q = 0.75              # a segment's length: this quantile of how long it looks a
 TRIM = 1.5            # frames whose own estimate is this far from the video's median are left out
 DEPTH_AGREE = 0.15    # a person's depth: their nearest hand or foot on the mesh with another this close
 MIN_SEGMENT = 5       # measurements a segment needs, in one video, to count
-METHOD_SD = {"video": 0.12, "photos": 0.25, "standing": 0.3, "stated": 0.33, "span": 0.2}   # log sd of one estimate; see design.md
+METHOD_SD = {"video": 0.12, "photos": 0.25, "standing": 0.3, "stated": 0.33, "span": 0.2,   # log sd of one estimate; see design.md
+             "object": 0.1}
 FLOOR_SD = 0.05       # however many agree: what's common to them all (proportions, depth), as a log sd
 
 
@@ -650,7 +752,7 @@ def available() -> bool:
 
 
 def estimate(mesh_dir: Path, photos: Path, masks: Path | None, climbs: list[dict], videos: dict, log: Log,
-             progress: Callable[[str], None] = lambda s: None) -> dict:
+             progress: Callable[[str], None] = lambda s: None, known: dict | None = None, detect=None) -> dict:
     """Find a mesh's scale and save scale.json, with people's measurements in scale_people.json. Where the
     beta search kept its frames, climbers' reach (span_estimates()) is recorded as a check, not yet used.
 
@@ -659,6 +761,8 @@ def estimate(mesh_dir: Path, photos: Path, masks: Path | None, climbs: list[dict
         climbs: the climbs it's linked to, as climbs' data.
         videos: what each of its videos (by url) says about its climber: {height_cm, wingspan_cm,
             ape_index_cm, channel_height_cm, ...}.
+        known: what its project says its photos show, for known_object().
+        detect: find_objects()'s, for tests.
 
     Returns:
         The record saved.
@@ -684,6 +788,14 @@ def estimate(mesh_dir: Path, photos: Path, masks: Path | None, climbs: list[dict
     rows = measure(mesh, cams, poses, sources, beta_poses, photos, check=jobctl.check)
     (mesh_dir / MEASURED_FILE).write_text(json.dumps(rows))
     estimates = people_estimates(rows, videos)
+    obj = known_object(known)
+    if obj:
+        found = find_objects(mesh_dir, photos, list(cams), log, step, detect)
+        sizes = {n: tuple(poses[n]["size"]) if n in poses else _photo_size(photos / n) for n in found}
+        objects = object_estimates(mesh, cams, {n: v for n, v in sizes.items() if v}, found, obj)
+        log(f"scale: {obj['what']}: found in {sum(1 for b in found.values() if b)} of {len(found)} photos"
+            + (f", {objects[0]['n']} measurements agreeing" if objects else ", never standing on ground in the mesh"))
+        estimates += objects
     stated = stated_estimate(climbs, measured)
     final = combine(estimates + ([stated] if stated else []))
     checks = []
@@ -723,7 +835,8 @@ def summary(record: dict | None) -> dict | None:
     kinds = [e["kind"] for e in record.get("estimates") or []]
     out.update(videos=kinds.count("video"), photos="photos" in kinds, standing=next((e["n"] for e in record.get("estimates") or [] if e["kind"] == "standing"), 0),
                stated=next(({"m": e["stated_m"], "text": e["text"], "metres_per_unit": e["metres_per_unit"]}
-                            for e in record.get("estimates") or [] if e["kind"] == "stated"), None))
+                            for e in record.get("estimates") or [] if e["kind"] == "stated"), None),
+               object=next(({"what": e["what"], "n": e["n"]} for e in record.get("estimates") or [] if e["kind"] == "object"), None))
     return out
 
 
