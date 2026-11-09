@@ -13,7 +13,8 @@ Three tiers, each used when its dependency is available:
   3. COLMAP itself (pipeline.py): the final arbiter is the number of images registered
      in the largest sparse model.
 
-Verdicts: good (>=12 connected views), marginal (6-11), poor (<6), unknown (no OpenCV).
+Verdicts: good (>=12 connected views), marginal (6-11, or fewer with enough photos to be worth COLMAP's
+own try: see judge()), poor (the rest), unknown (no OpenCV).
 """
 from __future__ import annotations
 
@@ -29,6 +30,8 @@ MIN_INLIERS = 40          # geometrically consistent matches for a pair to count
 MIN_INLIER_RATIO = 0.2    # inliers / putative matches; lower = repetitive texture, not real overlap
 IDENTICAL_INLIERS = 150   # above this, check whether it's just the same shot (crop / re-encode / pan-zoom)
 IDENTICAL_SIM_FRACTION = 0.9  # fraction of inliers a 2-D similarity must explain for 'no parallax'
+GOOD, MARGINAL = 12, 6    # connected views for each verdict
+TRY_VIEWS, TRY_PHOTOS = 3, 10     # fewer connected views than MARGINAL, but worth COLMAP's try (design.md)
 
 
 def _dhash(img, size=8) -> int:
@@ -173,6 +176,18 @@ def assess(photos_dir: Path, log: Log) -> dict:
     return assess_unique(dedupe(photos_dir, log), log)
 
 
+def judge(report: dict | None) -> str:
+    """The verdict on a report from assess_unique(), by the current rules, which may be newer than the report:
+    poor stops a harvest from being meshed. The view graph's estimate is often far too low at the bottom, while
+    COLMAP gives up within minutes when it can't place enough (pipeline.py), so a set with TRY_PHOTOS photos
+    and TRY_VIEWS connected ones is worth its try."""
+    report = report or {}
+    if not (report.get("view_graph") or {}).get("available"):
+        return report.get("verdict") or "unknown"
+    k, n = report.get("estimated_registerable") or 0, report.get("unique_images") or 0
+    return "good" if k >= GOOD else "marginal" if k >= MARGINAL or (k >= TRY_VIEWS and n >= TRY_PHOTOS) else "poor"
+
+
 def assess_unique(paths: list[Path], log: Log, progress: Progress | None = None) -> dict:
     """Verdict on already de-duplicated photos."""
     report = {"unique_images": len(paths)}
@@ -180,13 +195,12 @@ def assess_unique(paths: list[Path], log: Log, progress: Progress | None = None)
     report["view_graph"] = vg
     if vg.get("available"):
         k = vg["largest_component"]
-        verdict = "good" if k >= 12 else "marginal" if k >= 6 else "poor"
         report["recommend_files"] = vg["component_files"]
     else:
         k = len(paths)
-        verdict = "unknown-good" if k >= 15 else "unknown-marginal" if k >= 8 else "poor"
-    report["verdict"] = verdict
+        report["verdict"] = "unknown-good" if k >= 15 else "unknown-marginal" if k >= 8 else "poor"
     report["estimated_registerable"] = k
+    verdict = report["verdict"] = judge(report)
     log(f"diversity: {len(paths)} unique, est. {k} registerable -> {verdict}")
     return report
 

@@ -52,6 +52,7 @@ import retexture  # noqa: E402
 import settings as settings_mod  # noqa: E402
 import pipeline  # noqa: E402
 import climbs as climbs_mod  # noqa: E402
+from climbs import diversity as diversity_mod  # noqa: E402
 from climbs import harvest as harvest_mod  # noqa: E402
 from climbs import relevance as relevance_mod  # noqa: E402
 from climbs import youtube as youtube_mod  # noqa: E402
@@ -745,7 +746,7 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
             record_videos(proj["climb_id"], videos, log)
             summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license")} for v in videos]
             q("UPDATE projects SET harvest=?, status='harvested' WHERE id=?", json.dumps(summary), pid, write=True)
-        verdict = (summary.get("diversity") or {}).get("verdict", "unknown")
+        verdict = diversity_mod.judge(summary.get("diversity"))     # by the current rules, for a harvest finished earlier
         log(f"harvest complete: {summary['images']} image(s), verdict {verdict}")
         if reconstruct and verdict != "poor":
             run_reconstruct(pid, internet=True, tracker=tracker, resume=resume)
@@ -938,6 +939,8 @@ def run_campaign_item(camp: dict, item: dict) -> None:
                 set_item(cid, sid, status="done", mesh_id=p["mesh_id"])
             elif p["status"] == "harvested":
                 set_item(cid, sid, status="skipped", note="photos don't show enough different viewpoints")
+            elif too_few_placed(pid):
+                set_item(cid, sid, status="skipped", note=too_few_placed(pid))
             else:
                 set_item(cid, sid, status="failed", note=last_failure(pid))
                 if not p["harvest"]:
@@ -1079,7 +1082,7 @@ def run_retry(pid: str) -> None:
 
 REDO_NAMES = {"harvest": "harvest again", "videos": "look for new videos", "rebuild": "rebuild", "rebuild-changed": "rebuild",
               "harvest+rebuild": "harvest again and rebuild", "videos+rebuild": "look for new videos and rebuild",
-              "pool": "try again with every photo of its boulder"}
+              "pool": "try again with every photo of its boulder", "try-skipped": "try meshing, as the viewpoint check would let it now"}
 POOLED = " (pooled)"     # the name of a project made from every harvest of a boulder
 
 
@@ -1111,6 +1114,16 @@ def queue_pooled(camp_id: str) -> int:
     return len(rows)
 
 
+def triable(camp_id: str) -> list[dict]:
+    """An area's climbs skipped for too few viewpoints whose harvest the current rules would mesh (diversity.judge()),
+    but not those with new photos, which Rebuild changed meshes."""
+    rows = q("""SELECT ci.source_id, ci.status, p.harvest FROM campaign_items ci JOIN projects p ON p.id=ci.project_id
+                WHERE ci.campaign_id=? AND ci.status='skipped' AND ci.redo IS NULL AND ci.mesh_id IS NULL AND ci.changed=0
+                  AND p.status='harvested' AND p.harvest IS NOT NULL""", camp_id)
+    return [{"source_id": r["source_id"], "status": r["status"]} for r in rows
+            if diversity_mod.judge(json.loads(r["harvest"]).get("diversity")) != "poor"]
+
+
 def queue_redo(camp_id: str, what: str) -> int:
     """Queue an area's climbs that have been through it to be harvested or rebuilt again, ahead of the
     rest of its list. An area that isn't running runs only these, and then stops, as for retries.
@@ -1126,10 +1139,11 @@ def queue_redo(camp_id: str, what: str) -> int:
     """
     if what not in REDO_NAMES:
         raise ValueError(f"what must be one of {', '.join(REDO_NAMES)}")
-    rows = q("SELECT ci.source_id, ci.status FROM campaign_items ci JOIN projects p ON p.id=ci.project_id "
-             "WHERE ci.campaign_id=? AND ci.status IN ('done','skipped','failed') AND p.status NOT IN ('queued','running','harvesting')"
-             + ("" if what.split("+")[0] in ("harvest", "videos") else " AND p.harvest IS NOT NULL")
-             + (" AND ci.changed=1" if what == "rebuild-changed" else ""), camp_id)
+    rows = triable(camp_id) if what == "try-skipped" else q(
+        "SELECT ci.source_id, ci.status FROM campaign_items ci JOIN projects p ON p.id=ci.project_id "
+        "WHERE ci.campaign_id=? AND ci.status IN ('done','skipped','failed') AND p.status NOT IN ('queued','running','harvesting')"
+        + ("" if what.split("+")[0] in ("harvest", "videos") else " AND p.harvest IS NOT NULL")
+        + (" AND ci.changed=1" if what == "rebuild-changed" else ""), camp_id)
     for r in rows:
         set_item(camp_id, r["source_id"], status="pending", retry=1, redo=what, was=r["status"], redo_started=0,
                  note=f"queued to {REDO_NAMES[what]}")
@@ -1139,8 +1153,17 @@ def queue_redo(camp_id: str, what: str) -> int:
 
 
 def _verdict(pid: str) -> str | None:
+    """A harvest's viewpoint verdict, by the current rules (diversity.judge())."""
     h = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)["harvest"]
-    return (json.loads(h).get("diversity") or {}).get("verdict") if h else None
+    return diversity_mod.judge(json.loads(h).get("diversity")) if h else None
+
+
+def too_few_placed(pid: str) -> str | None:
+    """Why a project's reconstruction failed, if it was that COLMAP couldn't place enough of its photos: an area
+    counts that as skipped, not failed, as it says nothing's wrong, only that the photos aren't enough."""
+    why = last_failure(pid) or ""
+    m = re.search(r"only (\d+) image\(s\) could be registered", why)
+    return f"COLMAP could place only {m[1]} of its photos together" if m else None
 
 
 def _harvest_again(row: dict, log) -> dict:
@@ -1182,6 +1205,8 @@ def _rebuild(cid: str, row: dict, log) -> dict:
                 "changed": 0}
     if row["mesh_id"]:     # it still has the mesh it had
         q("UPDATE projects SET status='done', mesh_id=? WHERE id=?", row["mesh_id"], pid, write=True)
+    if not row["mesh_id"] and too_few_placed(pid):
+        return {"status": "skipped", "note": too_few_placed(pid), "changed": 0}
     return {"status": "done" if row["mesh_id"] else "failed", "note": f"rebuilding failed: {last_failure(pid)}"}
 
 
@@ -1214,6 +1239,8 @@ def _pool_again(cid: str, row: dict, log) -> dict:
         return {"status": "done", "mesh_id": p["mesh_id"], "note": f"meshed from {images} photos of {len(others)} harvests of its boulder", "changed": 0}
     if p["status"] == "harvested":
         return {"status": "skipped", "note": f"{images} photos from {len(others)} harvests of its boulder: still not enough different viewpoints"}
+    if too_few_placed(pid):
+        return {"status": "skipped", "note": f"{images} photos from {len(others)} harvests of its boulder: {too_few_placed(pid)}"}
     return {"status": row["was"], "note": f"trying again with every photo of its boulder failed: {last_failure(pid)}"}
 
 
@@ -1381,6 +1408,7 @@ def campaign_view(camp: dict) -> dict:
     again = {key: q(f"SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND {where}", cid, one=True)["n"]
              for key, where in (("changed", "changed=1"), ("queued", "redo IS NOT NULL AND status IN ('pending','running')"))}
     again["poolable"] = len(poolable(cid))
+    again["triable"] = len(triable(cid))
     worked = q("SELECT rank,name,grade,stars,url,climb_id,mesh_id,project_id,status,note,updated FROM campaign_items "
                "WHERE campaign_id=? AND status NOT IN ('pending','running') ORDER BY updated DESC LIMIT 300", cid)
     running = q("SELECT rank,name,grade,stars,project_id FROM campaign_items WHERE campaign_id=? AND status='running' ORDER BY updated", cid)
@@ -2125,7 +2153,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "not found"}, 404)
                 b = self.read_json()
                 what = (("videos" if b.get("videos_only") else "harvest") + ("+rebuild" if b.get("then_rebuild") else "")
-                        if m[2] == "harvest-again" else ("rebuild-changed" if b.get("changed_only") else "rebuild"))
+                        if m[2] == "harvest-again" else "try-skipped" if b.get("skipped_only")
+                        else ("rebuild-changed" if b.get("changed_only") else "rebuild"))
                 queued = queue_redo(m[1], what)
                 return self.send_json({**campaign_view(q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)), "queued": queued})
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)

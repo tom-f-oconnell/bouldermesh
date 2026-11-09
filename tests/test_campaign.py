@@ -30,7 +30,7 @@ def row(rid: int, name: str, stars: float, boulder: str) -> str:
 
 CSV = HEAD + "".join([row(1, "Alpha", 3.0, "Alpha Boulder"), row(2, "Beta", 3.9, "Beta Boulder"), row(3, "Gamma", 2.0, "Gamma Boulder"),
                       row(4, "Alpha2", 2.5, "Alpha Boulder"), row(5, "Delta", 1.0, "Delta Boulders"), row(6, "Delta2", 1.0, "Delta Boulders")])
-outcome: dict[str, str] = {}      # climb name -> "poor", "boom", "outage", "stop": what its harvest does
+outcome: dict[str, str] = {}      # climb name -> "poor", "boom", "few", "outage", "stop": what its harvest does
 harvested: list[str] = []
 videos = {"Gamma": 2}             # how many videos each climb's page has
 started = threading.Event()
@@ -69,7 +69,9 @@ def fake_reconstruct(images, work, out_dir, log, use_gpu=False, internet=False, 
     (work / "big.bin").write_bytes(b"x" * 10)
     name = server.q("SELECT name FROM projects WHERE id=?", pathlib.Path(images).parent.name, one=True)["name"]
     if outcome.get(name.split(" (")[0]) == "boom":
-        raise RuntimeError("only 2 image(s) could be registered")
+        raise RuntimeError("OpenMVS crashed")
+    if outcome.get(name.split(" (")[0]) == "few":
+        raise RuntimeError("only 2 image(s) could be registered (need >= 6); the photos may not overlap enough for photogrammetry")
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "mesh.ply").write_text("ply")
     return out_dir / "mesh.ply", False
@@ -167,7 +169,7 @@ outcome.update(Alpha="poor", Beta="boom")
 c = server.create_campaign("", "popularity", CSV)
 run_all(c["id"])
 got = items(c["id"])
-assert got["Beta"]["status"] == "failed" and "only 2 image(s)" in got["Beta"]["note"], got["Beta"]
+assert got["Beta"]["status"] == "failed" and "OpenMVS crashed" in got["Beta"]["note"], got["Beta"]
 assert got["Gamma"]["status"] == "done", got["Gamma"]
 assert got["Alpha2"]["status"] == "done" and "Alpha2" in harvested, got["Alpha2"]   # its boulder has no mesh yet: worth trying
 assert pools["Alpha2"] == [got["Alpha"]["project_id"]], "its harvest had the photos of Alpha's, on the same boulder"
@@ -201,6 +203,31 @@ assert got["Alpha"]["status"] == "done" and "harvests of its boulder" in got["Al
 assert got["Alpha2"]["status"] == "done" and got["Alpha2"]["mesh_id"] == got["Alpha"]["mesh_id"], got["Alpha2"]
 assert server.poolable(c["id"]) == [] and server.queue_pooled(c["id"]) == 0, "tried once"
 print("pooling OK")
+
+# --- COLMAP placing too few is a skip, not a failure; skipped climbs the viewpoint check now lets through ---
+fresh()
+outcome.update(Gamma="few")
+c = server.create_campaign("", "popularity", CSV)
+run_all(c["id"])
+got = items(c["id"])["Gamma"]
+assert got["status"] == "skipped" and got["note"] == "COLMAP could place only 2 of its photos together", got
+fresh()
+outcome.update(Gamma="poor")
+c = server.create_campaign("", "popularity", CSV)
+run_all(c["id"])
+gamma = items(c["id"])["Gamma"]
+assert gamma["status"] == "skipped" and server.triable(c["id"]) == [], "the fake's harvest has no view graph: nothing to judge again"
+summary = json.loads(server.q("SELECT harvest FROM projects WHERE id=?", gamma["project_id"], one=True)["harvest"])
+summary["diversity"] = {"verdict": "poor", "unique_images": 20, "estimated_registerable": 4, "view_graph": {"available": True}}
+server.q("UPDATE projects SET harvest=? WHERE id=?", json.dumps(summary), gamma["project_id"], write=True)
+assert [x["source_id"] for x in server.triable(c["id"])] == [gamma["source_id"]], "4 of 20 views is worth COLMAP's try now"
+assert server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["again"]["triable"] == 1
+outcome.clear()
+assert server.queue_redo(c["id"], "try-skipped") == 1
+run_all(c["id"])
+got = items(c["id"])["Gamma"]
+assert got["status"] == "done" and got["mesh_id"] and got["redo"] is None, got
+print("viewpoint check OK")
 
 # --- an outage stops the run rather than failing the whole list --------------------------------
 fresh()
@@ -564,7 +591,7 @@ c = server.create_campaign("", "popularity", CSV)
 run_all(c["id"])
 assert status(c["id"]) == ("done", 0), status(c["id"])
 got = items(c["id"])
-assert got["Gamma"]["status"] == "failed" and "only 2 image(s)" in got["Gamma"]["note"], got["Gamma"]
+assert got["Gamma"]["status"] == "failed" and "OpenMVS crashed" in got["Gamma"]["note"], got["Gamma"]
 pid = got["Gamma"]["project_id"]
 assert (server.PROJECTS / pid / "work" / "big.bin").exists(), "a failed climb keeps its work, to carry on from"
 assert not (server.PROJECTS / got["Beta"]["project_id"] / "work").exists(), "a finished one doesn't"
@@ -611,7 +638,7 @@ server.stop_campaign(c["id"])
 server.retry_campaign(c["id"])
 run_all(c["id"])
 got = items(c["id"])
-assert got["Alpha"]["status"] == "failed" and got["Alpha"]["retry"] == 0 and "only 2 image(s)" in got["Alpha"]["note"], got["Alpha"]
+assert got["Alpha"]["status"] == "failed" and got["Alpha"]["retry"] == 0 and "OpenMVS crashed" in got["Alpha"]["note"], got["Alpha"]
 assert status(c["id"]) == ("stopped", 0)
 
 # a running area: what failed goes next, and it carries on down its list afterwards
@@ -790,7 +817,7 @@ log = server.read_log(got["Beta"]["project_id"])
 assert "-- harvesting again" in log and log.index("done") < log.index("-- harvesting again"), "its log is added to"
 assert server.q("SELECT status FROM projects WHERE id=?", got["Beta"]["project_id"], one=True)["status"] == "done"
 view = server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))
-assert view["again"] == {"changed": 2, "queued": 0, "poolable": 0}, view["again"]
+assert view["again"] == {"changed": 2, "queued": 0, "poolable": 0, "triable": 0}, view["again"]
 
 # rebuilding the changed ones: a new mesh takes over the old one's climbs, which stays as an older version
 assert server.queue_redo(c["id"], "rebuild-changed") == 2

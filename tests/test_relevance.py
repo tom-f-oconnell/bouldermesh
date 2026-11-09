@@ -193,4 +193,16 @@ with tempfile.TemporaryDirectory() as td:
     finally:
         relevance.boulder_probability, relevance.available = real
 print("pooling and splitting OK")
+
+# --- the viewpoint verdict, by the current rules, from a report made under older ones ---------------
+from climbs import diversity  # noqa: E402
+
+graph = lambda k, n, verdict="poor": {"estimated_registerable": k, "unique_images": n, "verdict": verdict, "view_graph": {"available": True}}  # noqa: E731
+assert diversity.judge(graph(diversity.GOOD, 40)) == "good" and diversity.judge(graph(diversity.MARGINAL, 6)) == "marginal"
+assert diversity.judge(graph(diversity.TRY_VIEWS, diversity.TRY_PHOTOS)) == "marginal", "few connected views, but enough photos for COLMAP to try"
+assert diversity.judge(graph(diversity.TRY_VIEWS, diversity.TRY_PHOTOS - 1)) == "poor"
+assert diversity.judge(graph(diversity.TRY_VIEWS - 1, 200)) == "poor", "many photos that hardly connect are mostly junk"
+assert diversity.judge({"verdict": "unknown-good", "view_graph": {"available": False}}) == "unknown-good", "nothing to judge again"
+assert diversity.judge(None) == "unknown"
+print("viewpoint verdict OK")
 print("ALL RELEVANCE TESTS PASSED")

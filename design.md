@@ -93,6 +93,27 @@ shared a machine at low priority.
 The whole flow through the app, with web search on and the filter without chaining, took 70 minutes
 on 20 CPUs alongside other jobs, placed 63 of 100 photos and made a 592k-face mesh.
 
+## The viewpoint check (`backend/climbs/diversity.py`)
+
+After the filter, ORB features (2,500 at 1,024 px) are matched between every pair of up to 120 photos. A
+pair with 40 matches that fit one fundamental matrix is two views of the same thing, unless a 2-D similarity
+explains them (a crop, or a fixed camera's frames), and the largest connected group of views estimates how
+many photos COLMAP could place. Below 6, a harvest wasn't meshed.
+
+On 219 harvests that went on to COLMAP, it placed a median 1.14 times the estimate, but anywhere from 2 to
+24 photos for estimates of 6-7. Below 6 nothing had been tried, so COLMAP's sparse stage, as the pipeline
+runs it (with people unmasked), was run on 8 harvests skipped with estimates of 3-5 and at least 15 photos,
+out of 25 such: 6 placed 7-43 photos (Slash Boulder, pooled: 43 of 60, estimated 5), and the other two gave
+up in 24 and 208 seconds, 3 mapper attempts included. Of 3 skipped with estimates of 0-2 but 65-121 photos,
+all web results kept unfiltered as their climbs had no anchors, COLMAP placed 2 photos of each, giving up
+in 72-297 seconds, so they stay skipped.
+
+So a set with 3 connected views among at least 10 photos is now marginal, and COLMAP decides: placing fewer
+than 6 stops it within minutes, and an area counts that as skipped, not failed. Verdicts are worked out
+again from the numbers a harvest kept (`judge()`), so older harvests pass by the new rule too: 24 skipped
+area climbs did, besides pooled retries. Of the 1,225 harvests skipped as poor then, 928 had under 10
+photos and estimates of 0-2.
+
 ## People (`backend/occlusion.py`)
 
 Nearly every photo of a boulder problem has a climber or spotter in it (6.6% of the pixels on

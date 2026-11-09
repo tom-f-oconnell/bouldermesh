@@ -103,8 +103,10 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
    RANSAC between every pair to build a view graph. Pairs explained by a 2-D similarity
    (crops, re-encodes, pan/zoom) are discounted because they carry no parallax. The largest
    connected component ≈ number of photos COLMAP could register → verdict
-   **good** (≥12) / **marginal** (6–11) / **poor** (<6). Poor sets are not reconstructed
-   automatically; add your own photos to the project and press Reconstruct to force it.
+   **good** (≥12) / **marginal** (6–11, or 3–5 among at least 10 photos, as the estimate is often far
+   too low there, and COLMAP gives up within minutes when it can't place 6) / **poor** (the rest).
+   Poor sets are not reconstructed automatically; add your own photos to the project and press
+   Reconstruct to force it. In an area, COLMAP placing too few counts as skipped, not failed.
 5. Reconstruction runs COLMAP in internet-collection mode (per-image intrinsics,
    affine-shape SIFT, domain-size pooling, guided matching), picks the largest sparse model
    and requires ≥6 registered images before densifying with OpenMVS. With torch, people are
@@ -145,7 +147,9 @@ those skipped earlier once their boulder gets one. A climb without enough photos
 run moves on; the next on its boulder starts with the photos its harvest found.
 
 *Try N skipped boulders with all their photos* tries boulders that every climb so far was skipped on
-again, each from the photos all their harvests found together, without downloading anything.
+again, each from the photos all their harvests found together, without downloading anything. *Try N
+skipped climbs again* meshes climbs skipped for too few viewpoints that the viewpoint check would now
+let COLMAP try.
 
 *Stop now* pauses the climb in progress and *Stop after this climb* finishes it. Every finished mesh
 stays, and *Resume* carries on from the last step the climb finished. A server restart loses no more
@@ -431,7 +435,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     GET  /api/campaigns · POST /api/campaigns {area, order:popularity|rating|data, start, csv}
     POST /api/campaigns/{id}/start · POST /api/campaigns/{id}/stop {now} · DELETE /api/campaigns/{id}
     POST /api/campaigns/{id}/retry                      its failed climbs, ahead of the rest
-    POST /api/campaigns/{id}/harvest-again {videos_only, then_rebuild} · POST /api/campaigns/{id}/rebuild {changed_only}
+    POST /api/campaigns/{id}/harvest-again {videos_only, then_rebuild} · POST /api/campaigns/{id}/rebuild {changed_only, skipped_only}
     POST /api/campaigns/{id}/pool                       its boulders every climb was skipped on, again from all their photos
     GET  /api/videos                                    every video, with the climber's size if stated
     POST /api/meshes/{id}/make-current                  go back to an older version of a rebuilt mesh
