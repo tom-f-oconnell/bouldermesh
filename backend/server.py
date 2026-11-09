@@ -361,6 +361,45 @@ def link_mesh(mid: str, cid: str, note: str | None) -> None:
       "lng=COALESCE(lng,(SELECT lng FROM climbs WHERE id=?)) WHERE id=?", cid, cid, mid, write=True)
 
 
+def boulder_key(area_path: list[str] | None) -> str | None:
+    """Which boulder a climb is on, as areas' lists record it: its area path, unless the last area holds
+    several boulders."""
+    return "/".join(area_path) if area_path and not GROUP_AREA.search(area_path[-1]) else None
+
+
+def link_boulder_mesh(mid: str, boulder: str | None, name: str, but: str | None = None) -> int:
+    """Link a mesh to the climbs on its boulder that areas skipped or failed before it was made, as an area
+    links those it reaches later.
+
+    Args:
+        but: the climb it was made for, which is recorded as meshed itself.
+
+    Returns:
+        How many were linked.
+    """
+    if not boulder:
+        return 0
+    rows = q("SELECT campaign_id, source_id, climb_id FROM campaign_items WHERE boulder=? AND status IN ('skipped','failed') "
+             "AND mesh_id IS NULL AND climb_id IS NOT NULL AND climb_id != ?", boulder, but or "")
+    for r in rows:
+        link_mesh(mid, r["climb_id"], f"same boulder as {name}")
+        set_item(r["campaign_id"], r["source_id"], status="done", mesh_id=mid, retry=0, note=f"same boulder as {name}")
+    return len(rows)
+
+
+def link_existing_boulder_meshes() -> int:
+    """Areas' climbs skipped or failed before another climb on their boulder got a mesh: linked to it."""
+    rows = q("""SELECT b.boulder, b.mesh_id, b.name FROM campaign_items b JOIN meshes m ON m.id=b.mesh_id AND m.replaced_by IS NULL
+                WHERE b.boulder IS NOT NULL AND b.status='done' AND EXISTS (SELECT 1 FROM campaign_items a WHERE a.boulder=b.boulder
+                  AND a.status IN ('skipped','failed') AND a.mesh_id IS NULL AND a.climb_id IS NOT NULL) ORDER BY b.updated""")
+    done, linked = set(), 0
+    for r in rows:
+        if r["boulder"] not in done:
+            done.add(r["boulder"])
+            linked += link_boulder_mesh(r["mesh_id"], r["boulder"], r["name"])
+    return linked
+
+
 def supersede(old: str, new: str) -> None:
     """A rebuilt mesh takes over from the one it replaces: its climbs, and its place in area lists.
     The old one stays, as an older version of the new one."""
@@ -520,6 +559,10 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         if proj["climb_id"]:
             link_mesh(mid, proj["climb_id"], "auto-linked from reconstruction project")
             log(f"mesh linked to climb {proj['climb_id']}")
+            climb = climb_row(proj["climb_id"])
+            n = link_boulder_mesh(mid, boulder_key(climb and climb["area_path"]), climb["name"] if climb else proj["name"], proj["climb_id"])
+            if n:
+                log(f"also linked to {n} climb(s) on the same boulder that areas had skipped")
         if proj["mesh_id"] and proj["mesh_id"] != mid and q("SELECT id FROM meshes WHERE id=?", proj["mesh_id"]):
             supersede(proj["mesh_id"], mid)
             log(f"this replaces mesh {proj['mesh_id']}, which stays as an older version")
@@ -623,14 +666,26 @@ def new_videos(climb_id: str, pid: str, log) -> list[str]:
     return [v.url for v in found if (youtube_mod.video_id(v.url) or v.url) not in have]
 
 
+def boulder_projects(climb_id: str, but: str | None = None) -> list[Path]:
+    """The harvests of every climb on a climb's boulder (as boulder_key() has it), its own included, newest
+    first: what a harvest of it pools photos from."""
+    c = q("SELECT area_path FROM climbs WHERE id=?", climb_id, one=True)
+    if not c or not boulder_key(json.loads(c["area_path"] or "[]")):
+        return []
+    rows = q("""SELECT p.id FROM projects p JOIN climbs c ON c.id=p.climb_id WHERE c.area_path=? AND p.kind='harvest'
+                AND p.harvest IS NOT NULL AND p.id != ? ORDER BY p.created DESC""", c["area_path"], but or "")
+    return [PROJECTS / r["id"] for r in rows if (PROJECTS / r["id"] / "photos").is_dir()]
+
+
 def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter: bool = True, resume: bool = False,
-                again: bool = False) -> None:
+                again: bool = False, pool_from: list[Path] | None = None) -> None:
     """Gather a project's photos, and optionally make its mesh.
 
     Args:
         resume: carry on after an interruption. A finished harvest isn't repeated. A partial one
             starts again, which is quick, as its downloads are cached.
         again: harvest a project that was harvested before, from scratch, adding to its log.
+        pool_from: other harvests to add the photos of; by default, those of every climb on its boulder.
     """
     pdir = PROJECTS / pid
     finished = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)["harvest"] if resume else None
@@ -669,7 +724,8 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                     c = climb_obj(proj["climb_id"])
                 except Exception as e:
                     log(f"couldn't read the problem page again ({e}); using what was read before")
-            summary = harvest_mod.harvest(c, pdir, log, sources, relevance_filter=relevance_filter, tracker=tracker)
+            others = boulder_projects(proj["climb_id"], pid) if pool_from is None else pool_from
+            summary = harvest_mod.harvest(c, pdir, log, sources, relevance_filter=relevance_filter, tracker=tracker, pool_from=others)
             videos = summary.pop("videos", [])
             record_videos(proj["climb_id"], videos, log)
             summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license")} for v in videos]
@@ -1007,7 +1063,37 @@ def run_retry(pid: str) -> None:
 
 
 REDO_NAMES = {"harvest": "harvest again", "videos": "look for new videos", "rebuild": "rebuild", "rebuild-changed": "rebuild",
-              "harvest+rebuild": "harvest again and rebuild", "videos+rebuild": "look for new videos and rebuild"}
+              "harvest+rebuild": "harvest again and rebuild", "videos+rebuild": "look for new videos and rebuild",
+              "pool": "try again with every photo of its boulder"}
+POOLED = " (pooled)"     # the name of a project made from every harvest of a boulder
+
+
+def poolable(camp_id: str) -> list[dict]:
+    """An area's boulders that every climb so far was skipped on, with photos from more than one harvest,
+    not yet tried with them together: each one's highest-ranked skipped climb."""
+    return q(f"""SELECT ci.source_id, ci.boulder, MIN(ci.rank) AS rank FROM campaign_items ci
+                 WHERE ci.campaign_id=? AND ci.boulder IS NOT NULL AND ci.status='skipped' AND ci.redo IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM campaign_items m WHERE m.boulder=ci.boulder AND m.mesh_id IS NOT NULL)
+                   AND (SELECT COUNT(DISTINCT x.project_id) FROM campaign_items x WHERE x.boulder=ci.boulder AND x.project_id IS NOT NULL) >= 2
+                   AND NOT EXISTS (SELECT 1 FROM campaign_items y JOIN projects p ON p.id=y.project_id
+                                   WHERE y.boulder=ci.boulder AND p.name LIKE '%{POOLED}')
+                 GROUP BY ci.boulder""", camp_id)
+
+
+def queue_pooled(camp_id: str) -> int:
+    """Queue each of an area's poolable() boulders to be tried again from every photo its harvests found, as
+    queue_redo() does.
+
+    Returns:
+        How many were queued.
+    """
+    rows = poolable(camp_id)
+    for r in rows:
+        set_item(camp_id, r["source_id"], status="pending", retry=1, redo="pool", was="skipped", redo_started=0,
+                 note=f"queued to {REDO_NAMES['pool']}")
+    if rows:
+        q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status IN ('stopped','done')", camp_id, write=True)
+    return len(rows)
 
 
 def queue_redo(camp_id: str, what: str) -> int:
@@ -1084,6 +1170,38 @@ def _rebuild(cid: str, row: dict, log) -> dict:
     return {"status": "done" if row["mesh_id"] else "failed", "note": f"rebuilding failed: {last_failure(pid)}"}
 
 
+def _pool_again(cid: str, row: dict, log) -> dict:
+    """An area's skipped climb tried again, in a project of its own, from every photo that the harvests of its
+    boulder found, without downloading anything; a mesh is linked to the other climbs on it."""
+    others = boulder_projects(row["climb_id"])
+    name = q("SELECT name FROM projects WHERE id=?", row["project_id"], one=True) if row["project_id"] else None
+    resume = bool(row["redo_started"] and name and name["name"].endswith(POOLED) and (PROJECTS / row["project_id"]).is_dir())
+    if resume:
+        pid = row["project_id"]
+        others = [o for o in others if o.name != pid]
+    else:
+        others = [o for o in others if not o.name.endswith(POOLED)]
+        if len(others) < 2:
+            return {"status": row["was"], "note": "no other harvests of its boulder to try it with"}
+        climb = climb_row(row["climb_id"])
+        pid = new_id()
+        (PROJECTS / pid / "photos").mkdir(parents=True)
+        q("INSERT INTO projects(id,name,created,kind,climb_id,status) VALUES(?,?,?,?,?,'queued')",
+          pid, f"{climb['boulder_name'] or climb['name']}{POOLED}"[:80], time.time(), "harvest", row["climb_id"], write=True)
+        set_item(cid, row["source_id"], project_id=pid, redo_started=1)
+    log = lambda s: append_log(pid, s)  # noqa: E731
+    log(f"-- trying again with the photos of {len(others)} harvests of its boulder")
+    run_harvest(pid, set(), True, resume=resume, pool_from=others)
+    p = q("SELECT status,mesh_id,harvest FROM projects WHERE id=?", pid, one=True)
+    images = json.loads(p["harvest"])["images"] if p["harvest"] else 0
+    if p["status"] == "done" and p["mesh_id"]:
+        shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)
+        return {"status": "done", "mesh_id": p["mesh_id"], "note": f"meshed from {images} photos of {len(others)} harvests of its boulder", "changed": 0}
+    if p["status"] == "harvested":
+        return {"status": "skipped", "note": f"{images} photos from {len(others)} harvests of its boulder: still not enough different viewpoints"}
+    return {"status": row["was"], "note": f"trying again with every photo of its boulder failed: {last_failure(pid)}"}
+
+
 def run_redo(camp: dict, item: dict) -> None:
     """Harvest or rebuild again one of an area's climbs that has been through it before."""
     cid, sid = camp["id"], item["source_id"]
@@ -1095,7 +1213,9 @@ def run_redo(camp: dict, item: dict) -> None:
     try:
         set_item(cid, sid, status="running", note=None)
         first, *then = row["redo"].split("+")
-        if first in ("harvest", "videos") and not row["redo_started"]:    # a rebuild that started was harvested already
+        if first == "pool":
+            end = _pool_again(cid, row, log)
+        elif first in ("harvest", "videos") and not row["redo_started"]:    # a rebuild that started was harvested already
             end = _harvest_again(row, log)
             if then and end.get("changed"):
                 set_item(cid, sid, changed=1)
@@ -1245,6 +1365,7 @@ def campaign_view(camp: dict) -> dict:
     counts = {r["status"]: r["n"] for r in q("SELECT status,COUNT(*) n FROM campaign_items WHERE campaign_id=? GROUP BY status", cid)}
     again = {key: q(f"SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND {where}", cid, one=True)["n"]
              for key, where in (("changed", "changed=1"), ("queued", "redo IS NOT NULL AND status IN ('pending','running')"))}
+    again["poolable"] = len(poolable(cid))
     worked = q("SELECT rank,name,grade,stars,url,climb_id,mesh_id,project_id,status,note,updated FROM campaign_items "
                "WHERE campaign_id=? AND status NOT IN ('pending','running') ORDER BY updated DESC LIMIT 300", cid)
     running = q("SELECT rank,name,grade,stars,project_id FROM campaign_items WHERE campaign_id=? AND status='running' ORDER BY updated", cid)
@@ -1575,9 +1696,14 @@ class Handler(BaseHTTPRequestHandler):
                 proj["harvest"] = json.loads(proj["harvest"]) if proj.get("harvest") else None
                 proj["progress"] = json.loads(proj["progress"]) if proj.get("progress") else None
                 rejected = PROJECTS / m[1] / "rejected"
-                proj["filtered"] = [{"file": f.name, "why": relevance_mod.REASONS[f.name.split("_", 1)[0]]}
-                                    for f in (sorted(rejected.iterdir()) if rejected.exists() else [])
-                                    if f.name.split("_", 1)[0] in relevance_mod.REASONS]
+                try:
+                    clipped = "boulder" in json.loads((PROJECTS / m[1] / "relevance.json").read_text()).get("methods", [])
+                except (FileNotFoundError, ValueError):
+                    clipped = False
+                order = ("nomatch", "notboulder", "card")     # the plausible ones first
+                found = [(f.name.split("_", 1)[0], f.name) for f in (rejected.iterdir() if rejected.exists() else [])]
+                proj["filtered"] = [{"file": name, "why": relevance_mod.NOMATCH_CLIPPED if why == "nomatch" and clipped else relevance_mod.REASONS[why]}
+                                    for why, name in sorted((x for x in found if x[0] in order), key=lambda x: (order.index(x[0]), x[1]))]
                 setting = settings().get("site.sources")     # what of each photo the page may show
                 proj["access"] = {}
                 for name in proj["photos"] + [x["file"].split("_", 1)[1] for x in proj["filtered"]]:
@@ -1865,6 +1991,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "not found"}, 404)
                 queued = retry_campaign(m[1])
                 return self.send_json({**campaign_view(q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)), "queued": queued})
+            m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)/pool", p)
+            if m:   # its boulders every climb was skipped on, tried again from every photo their harvests found
+                camp = q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)
+                if not camp:
+                    return self.send_json({"error": "not found"}, 404)
+                queued = queue_pooled(m[1])
+                return self.send_json({**campaign_view(q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)), "queued": queued})
             m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)/(harvest-again|rebuild)", p)
             if m:
                 if not campaign_status(m[1]):
@@ -2112,6 +2245,9 @@ def main() -> None:
     moved = settle_far_coordinates()
     if moved:
         print(f"{moved} climb(s) whose page's GPS was far from their area's now use their area's", flush=True)
+    linked = link_existing_boulder_meshes()
+    if linked:
+        print(f"{linked} climb(s) that areas skipped are now linked to a mesh made later of their boulder", flush=True)
     configure_workers()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=reap_machines, daemon=True).start()

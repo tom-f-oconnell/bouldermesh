@@ -12,6 +12,8 @@
                                                        unless --move; anchors default to climb page / video photos)
   python cli.py jobs [--server URL]                    what a restart of the running server would interrupt; exits 1
                                                        if that's anything (default http://localhost:$PORT, or 8470)
+  python cli.py offtopic-split [--limit N]             harvests filtered before the boulder check (CLIP): split what
+                                                       didn't match into what looks like bouldering and what doesn't
 
 Environment: GOOGLE_CSE_KEY/GOOGLE_CSE_CX, FLICKR_KEY, HARVEST_DDG=0 (no DuckDuckGo), DATA_DIR (cache location),
              BOULDERMESH_UA (please set a contact address), HTTP_MIN_INTERVAL (min. seconds between requests
@@ -46,10 +48,13 @@ def main():
     d = sub.add_parser("diversity"); d.add_argument("photos_dir")
     r = sub.add_parser("relevance"); r.add_argument("photos_dir"); r.add_argument("--anchors"); r.add_argument("--move", action="store_true")
     j = sub.add_parser("jobs"); j.add_argument("--server", default=f"http://localhost:{os.environ.get('PORT', '8470')}")
+    o = sub.add_parser("offtopic-split"); o.add_argument("--limit", type=int, default=0)
     a = ap.parse_args()
 
     if a.cmd == "jobs":
         sys.exit(jobs(a.server))
+    if a.cmd == "offtopic-split":
+        sys.exit(offtopic_split(a.limit))
 
     if a.cmd == "fetch":
         recs = climbs.fetch_climb_url(a.url, include_children=not a.no_children)
@@ -107,6 +112,27 @@ def jobs(server: str) -> int:
     if not busy:
         print("nothing outside areas is running or queued: a restart interrupts nothing")
     return int(busy)
+
+
+def offtopic_split(limit: int = 0) -> int:
+    """relevance.split_rejected() for every harvest under DATA_DIR (default ./data), newest first.
+
+    Returns:
+        1 without CLIP (torch and open_clip), else 0.
+    """
+    if "boulder" not in relevance.available():
+        print("needs torch and open_clip")
+        return 1
+    root = Path(os.environ.get("DATA_DIR", "data")) / "projects"
+    done = sorted((p for p in root.iterdir() if (p / "relevance.json").exists()), key=lambda p: (p / "relevance.json").stat().st_mtime, reverse=True)
+    total = {"nomatch": 0, "notboulder": 0}
+    for i, p in enumerate(done[:limit or None]):
+        r = relevance.split_rejected(p, lambda s: None)
+        if r:
+            total = {k: total[k] + r[k] for k in total}
+            print(f"{i + 1}/{len(done)} {p.name}: {r['nomatch']} look like bouldering, {r['notboulder']} don't", flush=True)
+    print(f"in all: {total['nomatch']} look like bouldering, {total['notboulder']} don't")
+    return 0
 
 
 def old_jobs(get) -> dict:

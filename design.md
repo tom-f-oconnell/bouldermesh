@@ -43,6 +43,26 @@ colour and texture (targets median 0.76, non-targets 0.62, other boulders 0.66).
 The no-anchor case only works because the target dominates these results. It picks the largest
 group that matches, whatever that shows, and a pair of photos of the same truck could form one.
 
+**What it rejects in an area (Nov 8).** Over the 400 latest harvests, almost all from the Joshua Tree and
+Tramway areas, DuckDuckGo gave 42,419 photos and the filter kept 9%: per climb a median of 3 web photos
+kept and 104 rejected, against a median of 1 anchor (149 climbs had none). The rejected weren't near
+misses: 25,584 had 8-11 SIFT inliers and 11,109 none, all noise. CLIP's boulder prompts called 57% of
+3,000 of them bouldering (a median of 64% per climb), so most are of climbing, not junk. But LoFTR
+(kornia, outdoor weights), which found about 10 times SIFT's inliers between the photos the filter kept and
+their anchors (Swing Dance's: 160-672, against 16-67), matched only 5 of 379 rejected photos from 4 climbs
+to their anchors, with noise at 13-18. So most are of other
+boulders nearby: Swing Dance's search found other Tramway boulders, swing dancers and a college. A learned
+matcher would add about 1% for the price of a GPU (LoFTR took 18 s a pair on 8 CPU threads, DISK and
+LightGlue 3.8 s), and looser thresholds would let in what sits just below them.
+
+What helps is the boulder. 1,565 of 1,808 problems share one, with a median of 1 page photo each but 4
+between a boulder's problems. Areas meshed each boulder once, but harvested each problem alone until one
+was meshed: 248 boulders had no mesh after 2 or more of their problems were each skipped, from 811 harvests,
+and 117 skipped climbs were on a boulder meshed later, never linked (Swing Dance, 4th, and Line Dance,
+11th, before Square Dance, 66th). So a harvest now pools what the boulder's earlier harvests found, those
+boulders can be tried again from all of it, and skipped climbs are linked once their boulder has a mesh.
+CLIP runs first in the image now, so that what didn't match is the plausible half, listed apart.
+
 ## Does filtering help the mesh?
 
 Not much: web photos do, but filtering them mostly saves time. Times are rough, as these runs

@@ -38,6 +38,8 @@ from .common import ApiError, Climb, HttpError, Media, http, jobctl
 Log = Callable[[str], None]
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 SOURCES = ("climb", "google", "ddg", "commons", "flickr", "youtube")
+POOL_SKIP = ("small", "unreadable", "dup", "card", "notboulder")   # what other harvests judged unusable, not pooled
+POOL_MAX = 400            # photos pooled into one harvest at most
 PEOPLE_WORDS = re.compile(r"\b(climber|climbing|sends?|sending|flash|topping out|dyno|mantle)\b", re.I)
 
 
@@ -331,6 +333,52 @@ def _ext_for(data: bytes) -> str | None:
     return None
 
 
+# ----------------------------------------------------------------------------- other harvests of the boulder
+def pool(project_dir: Path, others: list[Path], log: Log, limit: int = POOL_MAX) -> list[dict]:
+    """Photos that other harvests of the same boulder found, linked into this one's photos/: first what each
+    kept, then what its filter found didn't match known photos, as a search for one problem often finds
+    another's side of the rock. What they judged junk or duplicates isn't pooled. Photos from a problem's
+    page or videos are trusted anchors here too (relevance.py), so this harvest has its boulder's anchors.
+
+    Args:
+        others: those harvests' project folders, most useful first.
+
+    Returns:
+        The sources.json entries of the photos added, each with pooled_from: the project it came from.
+    """
+    photos = project_dir / "photos"
+    photos.mkdir(parents=True, exist_ok=True)
+    have = {p.name for p in photos.iterdir()}
+    entries: dict[str, dict] = {}
+    kept, unmatched = [], []
+    for o in others:
+        try:
+            for f in json.loads((o / "sources.json").read_text()).get("files", []):
+                entries.setdefault(f["file"], {**f, "pooled_from": o.name})
+        except (OSError, ValueError, KeyError):
+            pass
+        if (o / "photos").is_dir():
+            kept += [(f, f.name, o) for f in sorted((o / "photos").iterdir()) if f.suffix.lower() in (".jpg", ".jpeg", ".png")]
+        if (o / "rejected").is_dir():
+            unmatched += [(f, f.name.split("_", 1)[1], o) for f in sorted((o / "rejected").iterdir())
+                          if "_" in f.name and f.name.split("_", 1)[0] not in POOL_SKIP]
+    added = []
+    for src, name, o in kept + unmatched:
+        if len(added) >= limit:
+            break
+        if name in have or not src.is_file():
+            continue
+        try:
+            os.link(src, photos / name)
+        except OSError:
+            shutil.copy2(src, photos / name)
+        have.add(name)
+        added.append(entries.get(name) or {"file": name, "pooled_from": o.name})
+    if others:
+        log(f"pooled {len(added)} photo(s) from {len(others)} other harvest(s) of this boulder")
+    return added
+
+
 # ----------------------------------------------------------------------------- orchestrate
 def steps(sources: set[str], relevance_filter: bool = True) -> list[tuple[str, str, float]]:
     """The progress steps of harvest(), weighted roughly by duration."""
@@ -344,16 +392,18 @@ def steps(sources: set[str], relevance_filter: bool = True) -> list[tuple[str, s
 
 
 def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = None, relevance_filter: bool = True,
-            tracker=None) -> dict:
+            tracker=None, pool_from: list[Path] | None = None) -> dict:
     """Collect photos for climb `c` into project_dir/photos (provenance + reports are written
     next to it, never inside it, so the reconstruction only sees images).
 
     Args:
+        sources: where to look; None for all of SOURCES, and none for only what pool_from has.
         relevance_filter: drop photos not substantially of the boulder (see relevance.py).
         tracker: a progress.Tracker with this harvest's steps().
+        pool_from: other harvests of the same boulder, whose photos are added (pool()).
     """
     from . import diversity, relevance
-    sources = sources or set(SOURCES)
+    sources = set(SOURCES) if sources is None else set(sources)
     progress = tracker.callback if tracker else lambda key: None
     photos_dir = project_dir / "photos"
     photos_dir.mkdir(parents=True, exist_ok=True)
@@ -394,6 +444,8 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
                              "found_by": "search" if v.source == "youtube-search" else "page",
                              "title": info.get("title") or v.title, "credit": info.get("uploader") or v.credit,
                              "license": info.get("license") or "frame from linked beta video; licence not recorded"})
+    if pool_from:
+        manifest += pool(project_dir, pool_from, log)
     # remove webp (COLMAP wants jpg/png) by converting if PIL available
     _normalise_images(photos_dir, log)
     (project_dir / "sources.json").write_text(json.dumps({"climb": c.to_dict(), "queries": queries,

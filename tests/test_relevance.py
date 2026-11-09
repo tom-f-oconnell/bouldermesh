@@ -140,4 +140,57 @@ t = Tracker([("a", "A", 1)])
 t.update("unknown", 0.5)   # jobs report steps that a given install may not have
 assert t.snapshot()["overall"] == 0
 print("progress OK")
+
+# --- pooling other harvests of the same boulder ---------------------------------------------------
+from climbs import harvest  # noqa: E402
+
+with tempfile.TemporaryDirectory() as td:
+    td = pathlib.Path(td)
+
+    def project(name, kept, rejected, files):
+        d = td / name
+        (d / "photos").mkdir(parents=True)
+        (d / "rejected").mkdir()
+        for f in kept:
+            (d / "photos" / f).write_bytes(f.encode())
+        for f in rejected:
+            (d / "rejected" / f).write_bytes(f.encode())
+        (d / "sources.json").write_text(json.dumps({"files": [{"file": f, "url": f"http://x/{f}", "license": "CC BY"} for f in files]}))
+        return d
+    a = project("a", ["mountainproject_1.jpg", "ddg_2.jpg"], ["nomatch_ddg_3.jpg", "notboulder_ddg_4.jpg", "card_yt_x_5.jpg", "dup_ddg_6.jpg"],
+                ["mountainproject_1.jpg", "ddg_2.jpg", "ddg_3.jpg"])
+    b = project("b", ["ddg_2.jpg", "yt_ab_7.jpg"], ["nomatch_ddg_8.jpg"], ["yt_ab_7.jpg"])
+    here = project("here", ["ddg_9.jpg"], [], [])
+    logged = []
+    added = harvest.pool(here, [a, b], logged.append)
+    got = sorted(x.name for x in (here / "photos").iterdir())
+    assert got == ["ddg_2.jpg", "ddg_3.jpg", "ddg_8.jpg", "ddg_9.jpg", "mountainproject_1.jpg", "yt_ab_7.jpg"], got
+    assert (here / "photos" / "mountainproject_1.jpg").stat().st_ino == (a / "photos" / "mountainproject_1.jpg").stat().st_ino, "linked, not copied"
+    by = {x["file"]: x for x in added}
+    assert by["mountainproject_1.jpg"]["url"] == "http://x/mountainproject_1.jpg" and by["mountainproject_1.jpg"]["pooled_from"] == "a"
+    assert by["yt_ab_7.jpg"]["pooled_from"] == "b" and by["ddg_8.jpg"] == {"file": "ddg_8.jpg", "pooled_from": "b"}, "kept, then unmatched; no junk"
+    assert "pooled 5 photo(s) from 2 other harvest(s)" in logged[0], logged
+    assert len(harvest.pool(project("few", [], [], []), [a, b], logged.append, limit=2)) == 2
+
+# --- splitting what didn't match into what looks like bouldering and what doesn't ------------------
+with tempfile.TemporaryDirectory() as td:
+    d = pathlib.Path(td)
+    (d / "rejected").mkdir()
+    for f in ("nomatch_ddg_a.jpg", "nomatch_ddg_b.jpg", "card_ddg_c.jpg"):
+        (d / "rejected" / f).write_bytes(b"x")
+    (d / "relevance.json").write_text(json.dumps({"methods": ["cards", "same-rock"], "kept": [], "scores": {},
+                                                  "rejected": {"ddg_a.jpg": "nomatch", "ddg_b.jpg": "nomatch", "ddg_c.jpg": "card"}}))
+    real = relevance.boulder_probability, relevance.available
+    relevance.boulder_probability = lambda paths, log, progress=None: {p: (0.9 if p.name.endswith("a.jpg") else 0.1) for p in paths}
+    relevance.available = lambda: ["cards", "boulder", "same-rock"]
+    try:
+        assert relevance.split_rejected(d, print) == {"nomatch": 1, "notboulder": 1}
+        assert sorted(x.name for x in (d / "rejected").iterdir()) == ["card_ddg_c.jpg", "nomatch_ddg_a.jpg", "notboulder_ddg_b.jpg"]
+        r = json.loads((d / "relevance.json").read_text())
+        assert r["rejected"]["ddg_b.jpg"] == "notboulder" and r["scores"]["ddg_a.jpg"]["boulder"] == 0.9 and "boulder" in r["methods"], r
+        assert r["counts"] == {"card": 1, "notboulder": 1, "nomatch": 1}, r["counts"]
+        assert relevance.split_rejected(d, print) is None, "once"
+    finally:
+        relevance.boulder_probability, relevance.available = real
+print("pooling and splitting OK")
 print("ALL RELEVANCE TESTS PASSED")

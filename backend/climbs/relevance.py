@@ -32,6 +32,7 @@ Progress = Callable[..., None]   # progress(fraction, detail)
 UNTRUSTED = ("commons", "flickr", "google", "ddg", "web")   # file name prefixes of area-wide / search sources
 REASONS = {"card": "title card or blank frame", "notboulder": "doesn't look like a boulder",
            "nomatch": "doesn't match known photos of this boulder"}
+NOMATCH_CLIPPED = "looks like bouldering, but doesn't match known photos of this boulder"   # with the boulder check run
 FLAT_MAX = 0.5            # share of an image that may be flat
 BOULDER_MIN_P = 0.5       # CLIP probability of the boulder prompts, against the others
 MIN_INLIERS = 16          # same-rock: geometrically consistent SIFT matches to any anchor
@@ -96,13 +97,14 @@ def _load_clip(log: Log):
         import open_clip
         import torch
         cache = CACHE_DIR.parent / "models"
-        log(f"relevance: loading CLIP {CLIP_MODEL} (a ~350 MB download the first time, kept in {cache})")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        log(f"relevance: loading CLIP {CLIP_MODEL} on the {device.upper()} (a ~350 MB download the first time, kept in {cache})")
         model, _, prep = open_clip.create_model_and_transforms(CLIP_MODEL, pretrained=CLIP_WEIGHTS, cache_dir=str(cache))
-        model.eval()
+        model = model.eval().to(device)
         with torch.no_grad():
-            text = model.encode_text(open_clip.get_tokenizer(CLIP_MODEL)(BOULDER_PROMPTS + OTHER_PROMPTS))
+            text = model.encode_text(open_clip.get_tokenizer(CLIP_MODEL)(BOULDER_PROMPTS + OTHER_PROMPTS).to(device))
             text /= text.norm(dim=-1, keepdim=True)
-        _clip = (model, prep, text)
+        _clip = (model, prep, text, device)
     return _clip
 
 
@@ -110,13 +112,13 @@ def boulder_probability(paths: list[Path], log: Log, progress: Progress | None =
     """CLIP's probability, for each photo, that one of the boulder prompts fits it best."""
     import torch
     from PIL import Image
-    model, prep, text = _load_clip(log)
+    model, prep, text, device = _load_clip(log)
     out = {}
     for i, p in enumerate(paths):
         if progress:
             progress(i / max(1, len(paths)), f"{i} of {len(paths)} photos")
         with torch.no_grad(), Image.open(p) as im:
-            v = model.encode_image(prep(im.convert("RGB")).unsqueeze(0))
+            v = model.encode_image(prep(im.convert("RGB")).unsqueeze(0).to(device))
             v /= v.norm(dim=-1, keepdim=True)
             probs = (100 * v @ text.T).softmax(dim=-1)[0]
         out[p] = float(probs[:len(BOULDER_PROMPTS)].sum())
@@ -274,6 +276,39 @@ def same_rock(candidates: list[Path], anchors: list[Path], log: Log, progress: P
         if not frontier or not todo:
             break
     return results
+
+
+def split_rejected(project_dir: Path, log: Log, progress: Progress | None = None) -> dict | None:
+    """Re-sort a harvest's photos that didn't match known photos of the boulder, rejected before the boulder
+    check was run: those that don't look like bouldering at all are rejected as such instead, which leaves
+    the plausible ones together to look through.
+
+    Returns:
+        {nomatch, notboulder}: how many are each now; None if there's nothing to do, or no CLIP.
+    """
+    import json
+    record_path = project_dir / "relevance.json"
+    rejected = project_dir / "rejected"
+    try:
+        record = json.loads(record_path.read_text())
+    except (FileNotFoundError, ValueError):
+        return None
+    if "boulder" in record.get("methods", []) or "boulder" not in available() or not rejected.is_dir():
+        return None
+    todo = {f: f.name.split("_", 1)[1] for f in sorted(rejected.glob("nomatch_*"))}
+    moved = 0
+    for f, prob in boulder_probability(list(todo), log, progress).items():
+        name = todo[f]
+        record.setdefault("scores", {}).setdefault(name, {})["boulder"] = round(prob, 3)
+        if prob < BOULDER_MIN_P:
+            f.rename(rejected / f"notboulder_{name}")
+            record.setdefault("rejected", {})[name] = "notboulder"
+            moved += 1
+    record["methods"] = record.get("methods", []) + ["boulder"]
+    record["counts"] = {r: sum(1 for w in record.get("rejected", {}).values() if w == r) for r in REASONS}
+    record_path.write_text(json.dumps(record, indent=1))
+    log(f"relevance: of {len(todo)} photos that didn't match, {moved} don't look like bouldering")
+    return {"nomatch": len(todo) - moved, "notboulder": moved}
 
 
 # ------------------------------------------------------------------------------ all together

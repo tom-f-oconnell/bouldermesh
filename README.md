@@ -67,6 +67,7 @@ and imports files you already hold.
     python cli.py diversity ./out/photos
     python cli.py relevance ./out/photos [--anchors DIR] [--move]   # which are of the boulder? (report only without --move)
     python cli.py jobs [--server URL]                   # what restarting the running server would interrupt
+    python cli.py offtopic-split [--limit N]            # sort photos rejected before CLIP into bouldering or not
 
 Records are `climbs.common.Climb` dataclasses (`to_dict()` → JSON): name, kind, grade(s),
 fa, rating, lat/lng + `coord_source` (route | area | parent-area | manual), elevation,
@@ -86,20 +87,25 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
 1. Open a climb → *Harvest photos* (*Harvest again* once it has one). Queries are built from
    the boulder name, area and problem name; geo sources use the coordinates. Everything lands
    in `data/projects/<id>/photos/`, with provenance in `sources.json`.
-2. De-duplication, then the relevance filter (`climbs/relevance.py`): title cards and blank
-   frames go, and photos from area-wide sources (web search, Commons, Flickr) must match
-   known photos of the boulder from its climb page or videos, or photos already matched to
-   them, or if there are none, the largest group of photos that match each other. This mostly
-   saves time, as COLMAP ignores most junk anyway. Rejected photos stay in `rejected/`, with
-   a reason in `relevance.json`, and the project card can put any back. Untick *filter
-   off-topic photos* to skip it.
-3. Diversity check (`climbs/diversity.py`): with OpenCV, ORB matching + fundamental-matrix
+2. The photos earlier harvests of the same boulder found are added, for any of its problems: what
+   each kept, and what didn't match known photos, as a search for one problem often finds another's
+   side of the rock. Their page photos and video frames count as known photos of it too.
+3. De-duplication, then the relevance filter (`climbs/relevance.py`): title cards and blank
+   frames go, then photos that don't look like bouldering at all (CLIP), and photos from
+   area-wide sources (web search, Commons, Flickr) must match known photos of the boulder from
+   its climbs' pages or videos, or photos already matched to them, or if there are none, the
+   largest group of photos that match each other. This mostly saves time, as COLMAP ignores most
+   junk anyway. Rejected photos stay in `rejected/`, with a reason in `relevance.json`, and the
+   project card lists them by reason, those that look like bouldering first, to put any back.
+   Untick *filter off-topic photos* to skip it. `python3 cli.py offtopic-split` sorts harvests
+   filtered before the CLIP check the same way.
+4. Diversity check (`climbs/diversity.py`): with OpenCV, ORB matching + fundamental-matrix
    RANSAC between every pair to build a view graph. Pairs explained by a 2-D similarity
    (crops, re-encodes, pan/zoom) are discounted because they carry no parallax. The largest
    connected component ≈ number of photos COLMAP could register → verdict
    **good** (≥12) / **marginal** (6–11) / **poor** (<6). Poor sets are not reconstructed
    automatically; add your own photos to the project and press Reconstruct to force it.
-4. Reconstruction runs COLMAP in internet-collection mode (per-image intrinsics,
+5. Reconstruction runs COLMAP in internet-collection mode (per-image intrinsics,
    affine-shape SIFT, domain-size pooling, guided matching), picks the largest sparse model
    and requires ≥6 registered images before densifying with OpenMVS. With torch, people are
    masked out at every stage, so they don't get painted onto the rock.
@@ -134,8 +140,12 @@ On the *Areas* tab, paste a Mountain Project area URL, such as
 - **Most photos and videos**, judged from the pages of the next few popular climbs.
 
 Its boulder problems are then meshed one at a time until you stop, or the list runs out. A
-problem on a boulder that already has a mesh is linked to it rather than meshed again. A climb
-without enough photos is skipped, and the run moves on.
+problem on a boulder that already has a mesh is linked to it rather than meshed again, and so are
+those skipped earlier once their boulder gets one. A climb without enough photos is skipped, and the
+run moves on; the next on its boulder starts with the photos its harvest found.
+
+*Try N skipped boulders with all their photos* tries boulders that every climb so far was skipped on
+again, each from the photos all their harvests found together, without downloading anything.
 
 *Stop now* pauses the climb in progress and *Stop after this climb* finishes it. Every finished mesh
 stays, and *Resume* carries on from the last step the climb finished. A server restart loses no more
@@ -362,6 +372,7 @@ The AWS side has been tested against stand-ins for AWS, not against AWS itself.
     POST /api/campaigns/{id}/start · POST /api/campaigns/{id}/stop {now} · DELETE /api/campaigns/{id}
     POST /api/campaigns/{id}/retry                      its failed climbs, ahead of the rest
     POST /api/campaigns/{id}/harvest-again {videos_only, then_rebuild} · POST /api/campaigns/{id}/rebuild {changed_only}
+    POST /api/campaigns/{id}/pool                       its boulders every climb was skipped on, again from all their photos
     GET  /api/videos                                    every video, with the climber's size if stated
     POST /api/meshes/{id}/make-current                  go back to an older version of a rebuilt mesh
     GET|POST /api/meshes/{id}/beta                      the holds found in its videos, and those marked; POST finds them
