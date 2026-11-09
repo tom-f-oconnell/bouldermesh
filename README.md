@@ -280,16 +280,15 @@ ordinary user, and makes the site view-only for everyone but you:
     docker compose -f docker-compose.yml -f docker-compose.public.yml up -d
 
 The image isn't built there: compiling COLMAP wants cores and memory a small server hasn't got, so the public setup runs
-one built elsewhere. From a machine that has built it, either copy it straight over (2.4 GB):
+one built elsewhere. From the machine that built it, with the meshes to show:
 
-    docker save bouldermesh-bouldermesh:latest | zstd | ssh you@boulders.example.com 'zstd -d | docker load'
+    deploy/ship.sh you@boulders.example.com      # the image (2.4 GB), the meshes, and a copy of the database with every area stopped
 
-or push it to a registry (see "Running reconstructions elsewhere"), put `BM_IMAGE=ghcr.io/<github-user>/bouldermesh:latest`
-in `.env`, and `docker compose -f docker-compose.yml -f docker-compose.public.yml pull`. Copy `data/meshes/` and
-`data/bouldermesh.sqlite` over the same way; projects' photos needn't come, their cards just show none. Ports 80 and 443
-must be open to the world. To run it under systemd as above, put `COMPOSE_FILE=docker-compose.yml:docker-compose.public.yml`
-in `.env` too (with `docker-compose.gpu.yml` between them on a machine with a GPU) and install the unit; its build step
-then has nothing to build.
+Projects' photos don't go, so their cards show none, and the database there is replaced each time. Or push the image to
+a registry (see "Running reconstructions elsewhere"), put `BM_IMAGE=ghcr.io/<github-user>/bouldermesh:latest` in `.env`,
+and `docker compose -f docker-compose.yml -f docker-compose.public.yml pull`. Ports 80 and 443 must be open to the world.
+To run it under systemd as above, put `COMPOSE_FILE=docker-compose.yml:docker-compose.public.yml` in `.env` too (with
+`docker-compose.gpu.yml` between them on a machine with a GPU) and install the unit; its build step then has nothing to build.
 
 **Changing things.** With `EDIT_TOKEN` set, the page has an *Edit…* button in its header: enter the token there (it stays in
 that browser) and the controls appear; without it, the site shows only what's there, and every change sent to it is refused
@@ -404,7 +403,7 @@ The AWS side has been tested against stand-ins for AWS, not against AWS itself.
     backend/climbs/htmlmini.py     tiny DOM on html.parser (no bs4 needed)
     frontend/index.html            UI: Climbs / Projects / Meshes tabs, three.js viewer, Leaflet map
     cli.py                         command-line access to the same code
-    deploy/                        systemd service, and its installer
+    deploy/                        systemd service and its installer, the public setup's Caddyfile, and ship.sh for a public server
     data/                          created at runtime; DATA_DIR overrides
 
 ## API
