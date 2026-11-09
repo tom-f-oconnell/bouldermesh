@@ -562,3 +562,23 @@ COLMAP prints tens of thousands of lines. `UPDATE projects SET log = log || ?` r
 log for each one: on ZFS that managed 8,700 of a real job's 46,700 lines in 150 s and kept slowing
 down, while appending to a file does all of them in about a second. This is the likely reason a
 reconstruction once took 54 minutes through the app and 26 outside it (not re-measured).
+
+## Exposure: one token, not accounts (`backend/server.py`)
+
+For a public copy of the site, the question was what to put between visitors and the write endpoints: harvests and
+areas make this server fetch from Mountain Project, YouTube and DuckDuckGo for hours under its own address and user
+agent, start cloud machines that cost money, and delete work; and an uploaded mesh folder served from the site's own
+origin could carry a page. The data itself is disposable, the domain's and address's standing aren't.
+
+Viewers get no token: a view-only site's risks are bandwidth and the copyright of what it shows, which tokens don't
+touch and the licence settings and a cache in front do. There's one editing token, for the owner, sent as a bearer
+header, which a page on another site can't make a browser send, so it also ends cross-site request forgery; an open
+(LAN) site gets an Origin check for that instead. Accounts would add who-did-what and per-person limits, which a demo
+with one editor doesn't need, and would fix now what the site's users should be allowed to change, which isn't known.
+
+The rest is the usual: the standard library's server has no limits, so a reverse proxy takes TLS, slow clients and
+request sizes, and an edge cache takes rate limiting; files from `data/` are typed from a short list or sent as
+downloads, and uploads keep only mesh files, so nothing stored can run on the site's origin; the page's inline scripts
+are allowed by hash, computed from the file when it changes, so the policy needs no maintenance until a new CDN or
+inline handler appears; and the fetcher refuses private addresses because its URLs come from search results, which
+anyone can seed, and a cloud machine's metadata service hands out credentials to whoever asks from inside.

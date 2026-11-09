@@ -197,7 +197,8 @@ used. People standing near the rock and Mountain Project's height for the proble
 The panel at the bottom left of the viewer then says how tall the rock is where the photos look, with a
 range. Videos of one rock agree to about 10% on the median rock, and Mountain Project's height to about
 25% for half of them ([design.md](design.md) has the rest). *Find size* finds it again. Meshes made
-before Nov 8 haven't been sized: `curl -X POST localhost:8470/api/meshes/scale-all` queues them all, at a
+before Nov 8 haven't been sized: `curl -X POST localhost:8470/api/meshes/scale-all` queues them all (with
+`-H "Authorization: Bearer $EDIT_TOKEN"` on a site with an editing token), at a
 few minutes each, at low priority.
 
 ## Real photogrammetry
@@ -266,6 +267,51 @@ not failed: *Retry*, or *Retry N interrupted* on the *Projects* tab, carries on 
 it finished, as it was asked for. To see what a restart would interrupt now:
 
     python3 cli.py jobs                         # exits 1 if a restart would interrupt anything
+
+## Putting it on the public internet
+
+As it comes, anyone who can reach the port can change anything, which suits a LAN and nothing else. The public
+setup puts Caddy in front for HTTPS, keeps the app's own ports on the machine itself, runs the container as an
+ordinary user, and makes the site view-only for everyone but you:
+
+    mkdir data                                  # owned by the user the container runs as: uid 1000, a fresh machine's first user
+    echo SITE_HOST=boulders.example.com >> .env  # its name in DNS, pointed at this machine, for the certificate
+    echo EDIT_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(24))") >> .env
+    docker compose -f docker-compose.yml -f docker-compose.public.yml up -d --build
+
+Ports 80 and 443 must be open to the world. To run it under systemd as above, put
+`COMPOSE_FILE=docker-compose.yml:docker-compose.public.yml` in `.env` too (with `docker-compose.gpu.yml` between them on a
+machine with a GPU) and install the unit.
+
+**Changing things.** With `EDIT_TOKEN` set, the page has an *Edit…* button in its header: enter the token there (it stays in
+that browser) and the controls appear; without it, the site shows only what's there, and every change sent to it is refused
+before its body is read, and logged with the sender's address. Scripts send `Authorization: Bearer <token>` with each POST,
+PATCH or DELETE. Viewers need nothing. Leave `EDIT_TOKEN` out of `.env`, or set `READ_ONLY=1`, for a site no one can change
+from a browser; the comments in `deploy/Caddyfile` show how to refuse changes at the edge as well. Only one token exists, so
+the site doesn't know who changed what: that's for accounts, later.
+
+**The admin page** stays on this machine's loopback address (`ADMIN_BIND` is refused if it isn't private). Reach it through
+an SSH tunnel, `ssh -L 36184:127.0.0.1:36184 you@boulders.example.com`, at `http://localhost:36184`, and set
+`ADMIN_PASSWORD` in `.env` anyway. Before the site is public, set what it may show there: most harvested photos are
+copyrighted ([license_considerations.md](license_considerations.md)), and *Source photos and video frames: free to copy, with
+links to the rest* keeps their copies here from being served.
+
+**What else the public setup does.** The container has no capabilities, can't gain privileges, and runs as uid 1000
+(`BM_USER` in `.env` changes it; `./data` must be writable by that user). Pages come with a Content-Security-Policy that
+allows only the site's own scripts, by their hashes, and the two CDNs; images and map tiles from anywhere; and no framing.
+If you change `frontend/index.html`, the hashes follow, but a new inline `onclick` or another CDN needs the policy changed
+in `backend/server.py` (`CSP=0` in `.env` turns it off, and `CSP=<policy>` replaces it). Files under `data/` are served only
+as meshes, textures, JSON or bytes, so nothing uploaded there can run as a page of the site, and uploaded meshes keep only
+mesh, texture and material files. Meshes, photos and static files are sent with `Last-Modified`, and may be cached for an
+hour (`FILE_CACHE_SECONDS`). Harvests fetch only `http(s)` URLs, and never from private, loopback or link-local addresses,
+such as a cloud machine's metadata service (`HTTP_ALLOW_PRIVATE=1` lifts that, for tests).
+
+**What it doesn't do.** There's no rate limiting, and `GET /api/meshes` reads every mesh's records for each request, so a
+busy site wants a cache in front: Cloudflare's free plan, with the name proxied and SSL mode *Full (strict)*, caches the
+meshes and textures, limits requests, and hides the machine's address, and Caddy still gets its certificate through it. Each
+project's log is public, as the Projects tab shows it, so it reveals where photos came from and the names of compute
+machines, not credentials. Back up `data/` yourself: a mesh is an hour of compute. Compute credentials are kept as before
+(encrypted on the admin page, or in `.env`), and cloud machines accept SSH only from this server's address.
 
 ## The admin page
 
@@ -351,6 +397,9 @@ The AWS side has been tested against stand-ins for AWS, not against AWS itself.
 
 ## API
 
+With `EDIT_TOKEN` set, every POST, PATCH and DELETE needs `Authorization: Bearer <token>`; with `READ_ONLY=1`, none is
+accepted. `GET /api/status` says which (`editing`: open, token or none, and `editor` for the caller).
+
     GET  /api/status
     GET  /api/projects · POST /api/projects {name, climb_id?} · GET|DELETE /api/projects/{id}
     POST /api/projects/{id}/photos (multipart "photos") · POST /api/projects/{id}/reconstruct
@@ -400,6 +449,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
     python3 tests/test_scale.py       # offline: sizing people, objects and the rock on scenes built with known sizes
     python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job
+    python3 tests/test_public.py      # the editing token and read-only modes, other sites' pages refused, the page's policy and headers, what's served how
 
 ## Known gaps
 
@@ -407,7 +457,8 @@ gets every optional check; the tests also pass without them.
   API on 2026-10-30, and the test fixtures mirror that markup. MP changes markup
   occasionally — `parse_route()` / `parse_area()` are the functions to adjust; OpenBeta
   surfaces the API's own error text if a field is renamed.
-- No auth, single in-process job queue — intranet prototype, not a public service.
+- One editing token or none, rather than accounts, so who changed what isn't recorded; and a single in-process job
+  queue. No rate limiting: see "Putting it on the public internet".
 - Google Images needs the paid-after-100/day Custom Search API; direct scraping of
   Google Images is not implemented on purpose. That API is reported as closed to new
   customers and shutting down on 2027-01-01, so it only helps with a key you already hold.

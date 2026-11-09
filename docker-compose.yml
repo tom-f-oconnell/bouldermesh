@@ -13,6 +13,10 @@ services:
       BOULDERMESH_SECRETS_KEY:    # from .env: encrypts credentials saved on the admin page (see backend/settings.py)
       ADMIN_PASSWORD:             # from .env, optional: a password for the admin page (user "admin")
       ADMIN_HOSTNAMES:            # from .env, optional: names the admin page is reached by besides addresses and LAN names
+      ADMIN_BIND:                 # the address above, so that the server can refuse to publish the admin page on a public one
+      EDIT_TOKEN:                 # from .env, optional: then every change needs "Authorization: Bearer <token>" (README: Putting it on the public internet)
+      READ_ONLY:                  # from .env, optional: "1" refuses every change over HTTP; "auto" does unless EDIT_TOKEN is set
+      CSP:                        # from .env, optional: "0" turns the page's Content-Security-Policy off, or a policy to use instead
       AWS_ACCESS_KEY_ID:          # from .env, optional: compute credentials, instead of saving them on the admin page
       AWS_SECRET_ACCESS_KEY:
       BOULDERMESH_UA:             # from your shell: identify yourself to the sites you fetch from (Wikimedia rejects placeholder addresses)

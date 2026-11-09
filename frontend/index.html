@@ -34,6 +34,12 @@
   button.danger{background:transparent;color:var(--bad);border:1px solid var(--line)}
   button.sm{padding:3px 8px;font-size:12px}
   button:disabled{opacity:.45;cursor:default}
+  /* a view-only copy of the site (no editing token): everything that would change something is hidden */
+  body.readonly .w,body.readonly .del,body.readonly .editll,body.readonly .details,body.readonly .linksel,body.readonly .unlink,body.readonly .harvest,
+  body.readonly .rec,body.readonly .retry,body.readonly #p-interrupted,body.readonly button.back,body.readonly button.all,body.readonly label.file,
+  body.readonly .stopnow,body.readonly .stoplater,body.readonly .resume,body.readonly .retryfailed,body.readonly .harvestagain,body.readonly .rebuildchanged,
+  body.readonly .rebuildall,body.readonly .pool,body.readonly .setll,body.readonly #pieces .edit,body.readonly #pieces .redo,body.readonly .rebuild,
+  body.readonly .findsize,body.readonly button.find,body.readonly button.mark,body.readonly .clearmine,body.readonly #vmark{display:none!important}
   label.file input{display:none}
   .status{font-size:12px;color:var(--mute)}
   .status.done,.status.harvested{color:var(--ok)} .status.failed{color:var(--bad)} .status.running,.status.queued,.status.harvesting,.status.interrupted{color:var(--warn)}
@@ -138,6 +144,8 @@
   <span id="mode" class="pill">checking…</span>
   <span id="stopping" class="pill stopping" style="display:none"></span>
   <span id="caps" class="status"></span>
+  <span id="viewonly" class="pill" style="display:none" title="This copy of the site can't be changed from a browser">view-only</span>
+  <button class="sm sec" id="edit" style="display:none"></button>
   <button class="sm phone" id="tofull">Viewer</button>
   <a id="code" href="https://github.com/tom-f-oconnell/bouldermesh" target="_blank" rel="noopener">Code</a>
 </header>
@@ -153,7 +161,7 @@
 
     <!-- ============================ CLIMBS ============================ -->
     <div class="pane on" id="pane-climbs">
-      <section>
+      <section class="w">
         <h2>Import a climb / boulder</h2>
         <div class="row">
           <input type="text" id="imp-url" class="grow" placeholder="mountainproject.com route or area URL · openbeta.io/climbs/<uuid> · kaya link">
@@ -173,7 +181,7 @@
           <div class="row" style="margin-top:6px"><input type="text" id="m-boulder" placeholder="boulder name" class="grow"><input type="text" id="m-ll" placeholder="lat, lng" style="width:150px"></div>
           <div class="row" style="margin-top:6px"><input type="text" id="m-url" placeholder="source URL (kaya link etc.)" class="grow"><input type="text" id="m-video" placeholder="video URL" class="grow"></div>
           <div class="row" style="margin-top:6px"><button class="sec" id="m-go">Add climb</button>
-            <label class="file"><button class="sec" type="button" onclick="this.parentNode.querySelector('input').click()">Import Kaya/CSV/JSON export</button><input type="file" id="m-export" accept=".csv,.json"></label></div>
+            <label class="file"><button class="sec" type="button">Import Kaya/CSV/JSON export</button><input type="file" id="m-export" accept=".csv,.json"></label></div>
           <div class="notice" style="margin-top:6px">Kaya has no public API and its terms forbid scraping, so Kaya climbs are added from links or an export you hold.</div>
         </details>
       </section>
@@ -189,7 +197,7 @@
 
     <!-- ============================ AREAS ============================ -->
     <div class="pane" id="pane-areas">
-      <section>
+      <section class="w">
         <h2>Mesh a whole area</h2>
         <input type="text" id="ca-area" placeholder="Mountain Project area URL, e.g. mountainproject.com/area/105720495/joshua-tree-national-park" style="width:100%">
         <div class="row" style="margin-top:8px">
@@ -211,7 +219,7 @@
 
     <!-- ============================ PROJECTS ============================ -->
     <div class="pane" id="pane-projects">
-      <section>
+      <section class="w">
         <h2>New project (your own photos)</h2>
         <div class="row">
           <input type="text" id="pname" placeholder="Project name (e.g. Big Columbia Boulder, west face)" class="grow">
@@ -230,8 +238,8 @@
     <div class="pane" id="pane-meshes">
       <section>
         <h2>Meshes</h2>
-        <div class="row" style="margin-bottom:8px">
-          <label class="file"><button class="sec" type="button" onclick="this.parentNode.querySelector('input').click()">Upload mesh (.ply .obj .glb .stl)</button>
+        <div class="row w" style="margin-bottom:8px">
+          <label class="file"><button class="sec" type="button">Upload mesh (.ply .obj .glb .stl)</button>
             <input type="file" id="meshfile" multiple accept=".ply,.obj,.mtl,.glb,.gltf,.stl,.png,.jpg"></label>
           <select id="upclimb" style="width:170px"><option value="">link to climb (optional)</option></select>
         </div>
@@ -294,8 +302,13 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 
 // ---------------------------------------------------------------- helpers
 const $ = s => document.querySelector(s);
+// whether this copy of the site may be changed from here: open, or with its editing token (kept in this browser)
+let editor = true, token = null;
+try { token = localStorage.getItem('bm_token'); } catch {}
 const api = async (url, opt={}) => {
   if (opt.json) { opt.body = JSON.stringify(opt.json); opt.headers = {'Content-Type':'application/json'}; delete opt.json; }
+  if (!editor && opt.method && opt.method !== 'GET') throw new Error('This copy of the site is view-only.');
+  if (token) opt.headers = { ...(opt.headers || {}), Authorization: 'Bearer ' + token };
   const r = await fetch(url, opt);
   const j = await r.json().catch(()=>({}));
   if (!r.ok) throw new Error(j.error || r.statusText);
@@ -310,6 +323,7 @@ const fmtWhen = t => new Date(t * 1000).toLocaleString(undefined, { dateStyle: '
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const parseLL = s => { const m = /(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)/.exec(s||''); return m ? [parseFloat(m[1]), parseFloat(m[2])] : null; };
 const fmtLL = (lat,lng) => (lat==null||lng==null) ? '—' : `${(+lat).toFixed(5)}, ${(+lng).toFixed(5)}`;
+document.querySelectorAll('label.file > button').forEach(b => b.onclick = () => b.parentNode.querySelector('input').click());
 
 // tabs + right pane
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
@@ -892,7 +906,7 @@ async function openClimb(id, focus=true){
       <select class="linksel" style="width:auto;padding:2px 6px;font-size:12px"><option value="">+ link existing mesh…</option>${meshesCache.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>
     ${c.projects.length?`<div class="meta" style="margin-top:8px">Projects: ${c.projects.map(p=>`<span class="chip" data-proj="${p.id}">${esc(p.name)} <small>${p.status}</small></span>`).join(' ')}</div>`:''}
     ${(c.areas||[]).map(a => `<div class="meta" style="margin-top:6px">In the area <b>${esc(a.name)}</b> (${a.area_status}), #${a.rank}: ${AREA_ITEM[a.status] || esc(a.status)}${a.note ? ` — ${esc(a.note)}` : ''}</div>`).join('')}
-    <div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+    <div class="w" style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
       <div class="meta"><b>Harvest public photos → rough photogrammetry</b></div>
       <div class="checks" style="margin-top:4px">
         <label><input type="checkbox" name="src" value="climb" checked> source-page photos</label>
@@ -1342,7 +1356,7 @@ async function refreshMeshes(){
     const bar = sourceBar(m);
     if (bar) d.querySelector('.chips').before(bar);
     if (m.replaced_by) {
-      const b = document.createElement('button'); b.className = 'sm sec'; b.textContent = 'Use this version';
+      const b = document.createElement('button'); b.className = 'sm sec w'; b.textContent = 'Use this version';
       b.title = 'Makes this the mesh its climbs link to again, instead of the rebuild that replaced it';
       b.onclick = async () => { await api(`/api/meshes/${m.id}/make-current`, { method: 'POST' }); await refreshMeshes(); refreshClimbs(); };
       d.querySelector('.chips').before(b);
@@ -1514,7 +1528,7 @@ function renderBetaPanel(){
     <div class="meta" style="margin-top:6px"><b>Yours:</b> ${roleCounts(b.marked)}</div>
     <div class="row" style="margin-top:4px"><button class="sm mark">${b.marking ? 'Stop marking' : 'Mark holds'}</button>
       ${b.marked.length ? '<button class="sm sec clearmine">Clear yours</button>' : ''}</div>
-    <div class="notice" style="margin-top:6px">Marking: click the rock to add a start hold, then click a hold again for hand, finish, foot, then none.</div>
+    <div class="notice w" style="margin-top:6px">Marking: click the rock to add a start hold, then click a hold again for hand, finish, foot, then none.</div>
     <div class="meta" style="margin-top:8px"><b>From videos:</b> ${busy ? `${f.status === 'queued' ? 'queued' : esc(f.progress || 'starting')}…` : m ? betaLine(m) : ''}
       ${canFind ? `<button class="sm sec find" style="margin-left:6px">${f?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}</div>
     ${!b.available && n ? '<div class="notice">Finding beta needs rtmlib and onnxruntime, which the Docker image has.</div>' : ''}
@@ -1571,6 +1585,7 @@ renderer.domElement.addEventListener('click', ev => {
 });
 
 async function uploadMesh(files){
+  if (!editor) return toast('This copy of the site is view-only.');
   const fd = new FormData(); for (const f of files) fd.append('files', f);
   if ($('#upclimb').value) fd.append('climb_id', $('#upclimb').value);
   toast('Uploading mesh…', 60000);
@@ -1585,6 +1600,25 @@ vEl.addEventListener('drop', ev => { ev.preventDefault(); vEl.classList.remove('
 // ---------------------------------------------------------------- boot
 let statusCache = { env: {} };
 statusCache = await api('/api/status');
+editor = !!statusCache.editor;
+document.body.classList.toggle('readonly', !editor);
+if (statusCache.editing === 'none') $('#viewonly').style.display = '';
+if (statusCache.editing === 'token') {
+  const b = $('#edit');
+  b.style.display = '';
+  b.textContent = editor ? 'Editing' : 'Edit…';
+  b.title = editor ? 'Changes made here are allowed by the token you entered. Click to forget it.' : 'This copy of the site is view-only. Enter its editing token to change things from here.';
+  b.onclick = () => {
+    if (editor) { if (!confirm('Stop editing here, and forget the token?')) return; try { localStorage.removeItem('bm_token'); } catch {} }
+    else {
+      const t = prompt('Editing token'); if (!t) return;
+      try { localStorage.setItem('bm_token', t.trim()); } catch { return toast('This browser blocks site storage, so the token can\'t be kept.', 6000); }
+    }
+    location.reload();
+  };
+  if (token && !editor) toast('The editing token kept in this browser wasn\'t accepted.', 6000);
+}
+if (!editor) $('#hud').textContent = 'Pick a mesh. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan';
 const mode = $('#mode');
 mode.textContent = statusCache.real_pipeline ? 'COLMAP + OpenMVS' : 'demo pipeline — install COLMAP/OpenMVS';
 mode.className = 'pill ' + (statusCache.real_pipeline ? 'real' : 'demo');

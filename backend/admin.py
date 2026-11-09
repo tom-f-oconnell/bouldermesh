@@ -3,7 +3,7 @@
 Served by its own small server, on ADMIN_PORT, which is never reachable from the main site's port, and
 which listens only on loopback or a private (LAN) address: ADMIN_HOST, by default 127.0.0.1. In Docker
 it listens on the container's own network, and docker-compose.yml publishes it only on ADMIN_BIND, the
-host's loopback or LAN address. A public address is refused.
+host's loopback or LAN address. A public address is refused, for ADMIN_BIND too.
 
 Anyone who can reach it can change settings (credentials are write-only: they're never sent back).
 ADMIN_PASSWORD adds a password. As a page on the LAN could be visited while browsing elsewhere, changes
@@ -141,11 +141,22 @@ def _is_ip(text: str) -> bool:
         return False
 
 
+def refusal(host: str, published: str | None, in_docker: bool) -> str | None:
+    """Why the admin page mustn't be served: the address it would listen on, or in Docker the host's address it would
+    be published on (ADMIN_BIND, which Compose passes in), is public. None if it may."""
+    if not allowed_host(host, in_docker):
+        return f"{host} isn't a loopback or private address"
+    if in_docker and published and not allowed_host(published, False):
+        return f"ADMIN_BIND={published} would publish it on a public address"
+    return None
+
+
 def start(ctx: Context, host: str, port: int) -> ThreadingHTTPServer | None:
     """Serve the admin page in the background, or refuse to on a public address."""
     in_docker = Path("/.dockerenv").exists()
-    if not allowed_host(host, in_docker):
-        print(f"admin page NOT started: {host} isn't a loopback or private address", flush=True)
+    why = refusal(host, os.environ.get("ADMIN_BIND"), in_docker)
+    if why:
+        print(f"admin page NOT started: {why}", flush=True)
         return None
     try:
         httpd = ThreadingHTTPServer((host, port), handler_for(ctx, os.environ.get("ADMIN_PASSWORD") or None))

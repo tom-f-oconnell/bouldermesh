@@ -69,7 +69,7 @@ def main() -> None:
     admin_port = free_port()
     ADMIN = f"http://127.0.0.1:{admin_port}"
     env = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(port), HOST="127.0.0.1", HTTP_MIN_INTERVAL="0", ADMIN_PORT=str(admin_port),
-               STOP_WAIT_MINUTES="0.2")
+               STOP_WAIT_MINUTES="0.2", HTTP_ALLOW_PRIVATE="1")     # the "web photos" are fetched from this server itself
     env.pop("HARVEST_DDG", None)
     srv =subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -181,7 +181,7 @@ def run(B: str, tmp: Path) -> None:
     assert c["source"] == "kaya" and c["coord_source"] == "manual", c
 
     st, e = req(B, "POST", "/api/climbs/import", {"url": "https://example.com/x"})
-    assert st == 500 and "unsupported" in e["error"], e
+    assert st == 400 and "unsupported" in e["error"], e
 
     # --- project linked to climb -> upload -> reconstruct -> mesh auto-linked --------------
     st, p = req(B, "POST", "/api/projects", {"name": "test boulder photos", "climb_id": cid})

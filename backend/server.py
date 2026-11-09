@@ -14,7 +14,11 @@ Data layout (DATA_DIR, default ./data):
 """
 from __future__ import annotations
 
+import base64
 import csv
+import email.utils
+import hashlib
+import hmac
 import io
 import json
 import mimetypes
@@ -68,6 +72,17 @@ MAX_UPLOAD = int(os.environ.get("MAX_UPLOAD_MB", "512")) * 1024 * 1024
 PHOTO_EXT = {".jpg", ".jpeg", ".png"}
 MESH_EXT = {".ply", ".obj", ".glb", ".gltf", ".stl"}
 SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+# exposure: by default anyone who can reach the port can change anything, as on a LAN. EDIT_TOKEN makes every change need
+# "Authorization: Bearer <token>"; READ_ONLY=1 refuses them all, and READ_ONLY=auto does unless there's a token (the public
+# Compose setup's default). The README's "Putting it on the public internet" has the rest.
+EDIT_TOKEN = os.environ.get("EDIT_TOKEN") or None
+READ_ONLY = os.environ.get("READ_ONLY", "0") == "1" or (os.environ.get("READ_ONLY") == "auto" and not EDIT_TOKEN)
+FILE_CACHE = int(os.environ.get("FILE_CACHE_SECONDS", "3600"))   # how long browsers and proxies may keep meshes, photos and static files
+MESH_EXTRA_EXT = {".png", ".jpg", ".jpeg", ".bin", ".mtl"}       # what may be uploaded beside a mesh: its textures and material
+# how files under data/ are served; anything else is sent as bytes to save, so that nothing put there can run as a page of this site
+SERVED_TYPES = {".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".json": "application/json", ".bin": "application/octet-stream", ".ply": "application/octet-stream",
+                ".obj": "application/octet-stream", ".stl": "application/octet-stream", ".mtl": "application/octet-stream"}
 HARVEST_SOURCES = harvest_mod.SOURCES
 CAMPAIGN_ORDERS = ("popularity", "rating", "data")
 CAMPAIGN_POLL = 2.0     # seconds the worker waits for a queued job before moving a campaign on
@@ -1598,38 +1613,136 @@ def compute_state() -> dict:
 
 
 # ----------------------------------------------------------------- handler
+_csp: dict = {"mtime": None, "value": ""}
+
+
+def page_csp() -> str | None:
+    """The page's Content-Security-Policy: its own inline scripts by their hashes, libraries from their CDNs, images from
+    anywhere (climbs' photos are shown from their sites), and never framed. CSP=0 turns it off; CSP=<policy> replaces it."""
+    setting = os.environ.get("CSP")
+    if setting == "0":
+        return None
+    if setting:
+        return setting
+    page = FRONTEND / "index.html"
+    mtime = page.stat().st_mtime
+    if _csp["mtime"] != mtime:
+        hashes = " ".join(f"'sha256-{base64.b64encode(hashlib.sha256(m).digest()).decode()}'"
+                          for m in re.findall(rb"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", page.read_bytes(), re.S))
+        _csp.update(mtime=mtime, value=(
+            f"default-src 'self'; script-src 'self' {hashes} https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: blob: https:; connect-src 'self'; "
+            "font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"))
+    return _csp["value"]
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "BoulderMesh/0.2"
+    sys_version = ""        # not the Python version
+    timeout = 120           # seconds a connection may sit idle, so that stalled clients don't hold threads for ever
 
     # -- helpers ----------------------------------------------------------
-    def send_json(self, obj, code=200):
+    def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        super().end_headers()
+
+    def send_json(self, obj, code=200, headers: dict | None = None):
         body = json.dumps(obj, default=str).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
-    def send_file(self, path: Path, download=False):
+    def send_error_json(self, e: Exception, code: int | None = None) -> None:
+        """A failure as JSON: its message without this server's paths, and the whole of it in the log. A ValueError
+        is the client's fault (400) unless a code is given."""
+        code = code or (400 if isinstance(e, ValueError) else 500)
+        if code == 500:
+            print(f"error: {self.command} {self.path}: {type(e).__name__}: {e}", flush=True)
+        self.send_json({"error": str(e).replace(str(DATA), "data").replace(str(ROOT), ".")}, code)
+
+    def send_file(self, path: Path, download=False, headers: dict | None = None):
+        """Send a file, as its type if it's one the site serves (SERVED_TYPES; anything under frontend/), else as bytes to
+        save; with Last-Modified, so that a browser asking If-Modified-Since gets a 304 instead of the file again."""
         if not path.is_file():
             return self.send_json({"error": "not found"}, 404)
-        ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-        if path.suffix in (".ply", ".obj", ".stl"):
-            ctype = "application/octet-stream"
+        st = path.stat()
+        in_frontend = FRONTEND.resolve() in path.resolve().parents
+        if in_frontend:
+            ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        else:
+            ctype = SERVED_TYPES.get(path.suffix.lower(), "application/octet-stream")
+            download = download or path.suffix.lower() not in SERVED_TYPES
+        modified = email.utils.formatdate(st.st_mtime, usegmt=True)
+        cache = "no-cache" if in_frontend and path.suffix == ".html" else f"public, max-age={FILE_CACHE}"
+        since = self.headers.get("If-Modified-Since")
+        if since and not download:
+            try:
+                unchanged = email.utils.parsedate_to_datetime(since).timestamp() >= int(st.st_mtime)
+            except (TypeError, ValueError):
+                unchanged = False
+            if unchanged:
+                self.send_response(304)
+                self.send_header("Last-Modified", modified)
+                self.send_header("Cache-Control", cache)
+                return self.end_headers()
         self.send_response(200)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(path.stat().st_size))
+        self.send_header("Content-Length", str(st.st_size))
+        self.send_header("Last-Modified", modified)
+        self.send_header("Cache-Control", cache)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         if download:
             self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
         self.end_headers()
-        with open(path, "rb") as f:
-            shutil.copyfileobj(f, self.wfile)
+        try:
+            with open(path, "rb") as f:
+                shutil.copyfileobj(f, self.wfile)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            self.close_connection = True    # the client went away
 
     def read_body(self) -> bytes:
-        n = int(self.headers.get("Content-Length", 0))
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ValueError("Content-Length isn't a number") from None
+        if n < 0:
+            raise ValueError("Content-Length is negative")
         if n > MAX_UPLOAD:
             raise ValueError(f"upload exceeds {MAX_UPLOAD // 2**20} MB")
         return self.rfile.read(n)
+
+    # -- changes -----------------------------------------------------------
+    def is_editor(self) -> bool:
+        """Whether this request carries the editing token (EDIT_TOKEN), as "Authorization: Bearer <token>"."""
+        got = self.headers.get("Authorization", "")
+        return bool(EDIT_TOKEN) and hmac.compare_digest(got.encode(), f"Bearer {EDIT_TOKEN}".encode())
+
+    def refused(self) -> bool:
+        """Refuse a change, before its body is read: every change on a read-only site (READ_ONLY=1); any without the
+        editing token when one is set (EDIT_TOKEN); and any that another site's page sent, with an Origin that isn't this
+        host, as a visitor to an open site may have such a page open. Says so in the log."""
+        hosts = {(self.headers.get(h) or "").lower() for h in ("Host", "X-Forwarded-Host")}
+        origin = self.headers.get("Origin")
+        why, code, headers = None, 403, None
+        if READ_ONLY:
+            why = "this copy of the site is view-only"
+        elif EDIT_TOKEN and not self.is_editor():
+            why, code, headers = "editing this site needs its token", 401, {"WWW-Authenticate": 'Bearer realm="BoulderMesh"'}
+        elif (origin is not None and origin.split("//", 1)[-1].lower() not in hosts) or self.headers.get("Sec-Fetch-Site") == "cross-site":
+            why = "refused: sent from another site's page"
+        if why:
+            print(f"refused {self.command} {self.path} from {self.client_address[0]}: {why}", flush=True)
+            self.send_json({"error": why}, code, headers=headers)
+        return bool(why)
 
     def read_multipart(self) -> tuple[dict, list[tuple[str, bytes]]]:
         ctype = self.headers.get("Content-Type", "")
@@ -1661,7 +1774,8 @@ class Handler(BaseHTTPRequestHandler):
         p, qs = u.path, parse_qs(u.query)
         try:
             if p in ("/", "/index.html"):
-                return self.send_file(FRONTEND / "index.html")
+                csp = page_csp()
+                return self.send_file(FRONTEND / "index.html", headers={"Content-Security-Policy": csp} if csp else None)
             if p.startswith("/static/"):
                 f = (FRONTEND / p[len("/static/"):]).resolve()
                 if FRONTEND.resolve() not in f.parents:
@@ -1677,7 +1791,8 @@ class Handler(BaseHTTPRequestHandler):
                                        "ytdlp": bool(shutil.which("yt-dlp") and shutil.which("ffmpeg")),
                                        "opencv": _has("cv2"), "pillow": _has("PIL"),
                                        "policy": {"textures": settings().get("site.textures"), "sources": settings().get("site.sources")},
-                                       "stopping": _stopping})
+                                       "editing": "none" if READ_ONLY else "token" if EDIT_TOKEN else "open",
+                                       "editor": not READ_ONLY and (not EDIT_TOKEN or self.is_editor()), "stopping": _stopping})
             if p == "/api/jobs":     # what a restart would interrupt now, and what it would only pause
                 return self.send_json(jobs_state())
             # ---- projects
@@ -1854,11 +1969,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"type": "FeatureCollection", "features": feats})
             return self.send_json({"error": "not found"}, 404)
         except Exception as e:
-            return self.send_json({"error": str(e)}, 500)
+            return self.send_error_json(e, 500)
 
     # -- POST --------------------------------------------------------------
     def do_POST(self):
         p = urlparse(self.path).path
+        if self.refused():
+            return
         try:
             # ---- projects
             if p == "/api/projects":
@@ -1924,10 +2041,14 @@ class Handler(BaseHTTPRequestHandler):
                 mid = new_id()
                 d = MESHES / mid
                 d.mkdir(parents=True)
-                main = None
+                main, skipped = None, []
                 for fname, data in files:
+                    ext = Path(fname).suffix.lower()
+                    if ext not in MESH_EXT and ext not in MESH_EXTRA_EXT:    # a mesh, its textures and material; never a page
+                        skipped.append(fname)
+                        continue
                     (d / fname).write_bytes(data)
-                    if Path(fname).suffix.lower() in MESH_EXT and main is None:
+                    if ext in MESH_EXT and main is None:
                         main = fname
                 if main is None:
                     shutil.rmtree(d)
@@ -1939,7 +2060,7 @@ class Handler(BaseHTTPRequestHandler):
                   (d / main).stat().st_size, 0, lat, lng, write=True)
                 if fields.get("climb_id"):
                     link_mesh(mid, fields["climb_id"], "linked at upload")
-                return self.send_json({"id": mid, "name": name, "filename": main}, 201)
+                return self.send_json({"id": mid, "name": name, "filename": main, "skipped": skipped}, 201)
 
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
             if m:
@@ -2105,11 +2226,13 @@ class Handler(BaseHTTPRequestHandler):
 
             return self.send_json({"error": "not found"}, 404)
         except Exception as e:
-            return self.send_json({"error": str(e)}, 500)
+            return self.send_error_json(e)
 
     # -- PATCH -------------------------------------------------------------
     def do_PATCH(self):
         p = urlparse(self.path).path
+        if self.refused():
+            return
         try:
             body = self.read_json()
             m = re.fullmatch(r"/api/climbs/([0-9a-f]+)", p)
@@ -2137,11 +2260,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(q("SELECT * FROM meshes WHERE id=?", m[1], one=True))
             return self.send_json({"error": "not found"}, 404)
         except Exception as e:
-            return self.send_json({"error": str(e)}, 500)
+            return self.send_error_json(e)
 
     # -- DELETE ------------------------------------------------------------
     def do_DELETE(self):
         p = urlparse(self.path).path
+        if self.refused():
+            return
         m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)", p)
         if m:   # the list goes; meshes and projects it made stay
             stop_campaign(m[1])
@@ -2260,6 +2385,8 @@ def main() -> None:
     host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))
     mode = "COLMAP + OpenMVS" if pipeline.real_pipeline_ready() else "DEMO (COLMAP/OpenMVS not found)"
     print(f"BoulderMesh on http://{host}:{port}  data={DATA}  pipeline={mode}", flush=True)
+    print("editing: " + ("none: READ_ONLY=1" if READ_ONLY else "with the token in EDIT_TOKEN" if EDIT_TOKEN else
+                         "open to anyone who can reach this port; set EDIT_TOKEN, or READ_ONLY=1, before exposing it"), flush=True)
     in_docker = Path("/.dockerenv").exists()
     admin_mod.start(admin_mod.Context(settings(), admin_state, configure_workers,
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture}),

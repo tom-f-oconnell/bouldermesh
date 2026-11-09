@@ -91,6 +91,11 @@ print("settings OK")
 assert admin.allowed_host("127.0.0.1", False) and admin.allowed_host("10.0.0.5", False) and admin.allowed_host("192.168.1.9", False)
 assert not admin.allowed_host("8.8.8.8", False) and not admin.allowed_host("0.0.0.0", False) and admin.allowed_host("0.0.0.0", True)
 assert admin.allowed_host("localhost", False) and not admin.allowed_host("example.com", False)
+# in Docker it listens on every address of the container, and Compose publishes it on ADMIN_BIND: that must be private too
+assert admin.refusal("127.0.0.1", None, False) is None and admin.refusal("0.0.0.0", "10.0.0.5", True) is None
+assert admin.refusal("0.0.0.0", None, True) is None and admin.refusal("0.0.0.0", "127.0.0.1", True) is None
+assert "ADMIN_BIND=0.0.0.0" in admin.refusal("0.0.0.0", "0.0.0.0", True) and "ADMIN_BIND=8.8.8.8" in admin.refusal("0.0.0.0", "8.8.8.8", True)
+assert "isn't a loopback" in admin.refusal("0.0.0.0", None, False) and "isn't a loopback" in admin.refusal("8.8.8.8", None, True)
 assert admin.start(None, "8.8.8.8", 1) is None, "refuses a public address"
 
 

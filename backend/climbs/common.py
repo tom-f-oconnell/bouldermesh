@@ -6,14 +6,19 @@ The client:
   * honours robots.txt Disallow rules for the configured user agent, except on documented
     APIs (obey_robots=False), where those rules only address crawlers
   * never retries aggressively (one retry on 5xx / 429 / connection reset, after any Retry-After)
+  * fetches only http(s) URLs, and none from private, loopback or link-local addresses (this server, a cloud
+    machine's metadata service), as the URLs come from pages and search results anyone could put one in;
+    HTTP_ALLOW_PRIVATE=1 lifts that, for tests
 """
 from __future__ import annotations
 
 import dataclasses
 import hashlib
+import ipaddress
 import json
 import os
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -34,6 +39,7 @@ CACHE_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parents[2] 
 CACHE_TTL = int(os.environ.get("HTTP_CACHE_TTL", str(30 * 86400)))
 MIN_INTERVAL = float(os.environ.get("HTTP_MIN_INTERVAL", "3.0"))  # seconds between requests to one host
 RESPECT_ROBOTS = os.environ.get("HTTP_IGNORE_ROBOTS", "0") != "1"
+ALLOW_PRIVATE = os.environ.get("HTTP_ALLOW_PRIVATE", "0") == "1"
 
 
 # ------------------------------------------------------------------ types
@@ -115,6 +121,38 @@ class HttpError(RuntimeError):
 
 class ApiError(RuntimeError):
     """An API reported a failure in the body of a 200 response."""
+
+
+def check_destination(url: str) -> None:
+    """Refuse a URL that isn't http(s), or whose host is at a private, loopback or link-local address, unless
+    ALLOW_PRIVATE. A host that doesn't resolve is left for the request itself to report.
+
+    Raises:
+        HttpError: for a refused URL, with status 0.
+    """
+    u = urllib.parse.urlparse(url)
+    if u.scheme not in ("http", "https"):
+        raise HttpError(url, 0, "(only http and https URLs are fetched)")
+    if ALLOW_PRIVATE or not u.hostname:
+        return
+    try:
+        addresses = {info[4][0] for info in socket.getaddrinfo(u.hostname, None)}
+    except socket.gaierror:
+        return
+    for a in addresses:
+        if not ipaddress.ip_address(a.split("%")[0]).is_global:
+            raise HttpError(url, 0, f"(refused: {u.hostname} is at {a}, which isn't a public address)")
+
+
+class _CheckedRedirects(urllib.request.HTTPRedirectHandler):
+    """Redirects are fetched only where a URL could have been fetched directly."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        check_destination(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+urllib.request.install_opener(urllib.request.build_opener(_CheckedRedirects))    # what urlopen uses from here on
 
 
 class Cancelled(BaseException):
@@ -253,6 +291,7 @@ class _Http:
         cp = self._cache_path(url, data)
         if use_cache and cp.exists() and time.time() - cp.stat().st_mtime < ttl:
             return cp.read_bytes()
+        check_destination(url)
         if obey_robots and not self.allowed(url):
             raise HttpError(url, 403, "(disallowed by robots.txt)")
         hdrs = {"User-Agent": USER_AGENT, "Accept": "*/*", "Accept-Language": "en-US,en;q=0.8"}

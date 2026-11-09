@@ -1,0 +1,17 @@
+# BoulderMesh behind Caddy, for docker-compose.public.yml: HTTPS for SITE_HOST with a Let's Encrypt certificate, which
+# Caddy gets and renews by itself, compression, and an access log to Caddy's output (docker compose logs caddy).
+{$SITE_HOST} {
+	encode zstd gzip
+	log
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	# To refuse every change at the edge as well, even with the editing token, uncomment these two lines:
+	# @write not method GET HEAD OPTIONS
+	# respond @write `{"error": "this copy of the site is view-only"}` 405
+	request_body {
+		max_size {$MAX_BODY:1100MB}
+	}
+	reverse_proxy bouldermesh:8470
+}
