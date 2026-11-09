@@ -281,6 +281,7 @@ ordinary user, and makes the site view-only for everyone but you:
 
     mkdir data                                  # owned by the user the container runs as: uid 1000, a fresh machine's first user
     echo SITE_HOST=boulders.example.com >> .env  # its name in DNS, pointed at this machine, for the certificate
+    echo WWW_HOST=www.boulders.example.com >> .env  # optional: a second name, also pointed here, that redirects to the first
     echo EDIT_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(24))") >> .env
     docker compose -f docker-compose.yml -f docker-compose.public.yml up -d
 

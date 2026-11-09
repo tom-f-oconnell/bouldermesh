@@ -25,6 +25,7 @@ services:
     ports: ["80:80", "443:443", "443:443/udp"]
     environment:
       SITE_HOST: "${SITE_HOST:?set SITE_HOST in .env to the site's domain name}"
+      WWW_HOST:                             # from .env, optional: a second name (www.…) pointed here, which redirects to SITE_HOST
       MAX_BODY:                             # from .env, optional: the largest request Caddy passes on (default 1100MB, for uploads with the token)
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
