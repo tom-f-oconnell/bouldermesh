@@ -239,7 +239,8 @@ it runs out partway, matching uses the CPU, so a shared GPU is fine. The top of 
 it would use now, and each job's log says which it did. `USE_GPU=0` keeps it on the CPU.
 
 A reconstruction produces a textured `mesh.glb` (texture PNGs alongside), or an untextured
-`mesh.ply` if texturing fails, levelled assuming most photos were taken upright. On CPU,
+`mesh.ply` if texturing fails (which can still be sized, and have its beta found, but not cleaned up),
+levelled assuming most photos were taken upright. On CPU,
 OpenMVS's 11-photo sample set takes 3-4 minutes, and a 100-photo harvest about an hour.
 
 If a browser can't load a mesh's texture, the viewer tries it smaller, then says why on the view. Grey

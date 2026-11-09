@@ -114,6 +114,76 @@ def project(cam: dict, size, X) -> tuple[float, float] | None:
     return float(f * x * r + cx), float(f * y * r + cy)
 
 
+PLY_TYPES = {"char": "i1", "int8": "i1", "uchar": "u1", "uint8": "u1", "short": "i2", "int16": "i2", "ushort": "u2",
+             "uint16": "u2", "int": "i4", "int32": "i4", "uint": "u4", "uint32": "u4", "float": "f4", "float32": "f4",
+             "double": "f8", "float64": "f8"}
+
+
+def read_ply(path: Path):
+    """A PLY mesh's vertex positions and triangles (polygons split into fans): binary or ASCII, with any other
+    vertex properties, and faces whose only property is their list of vertices, as OpenMVS writes them."""
+    import numpy as np
+    data = Path(path).read_bytes()
+    end = data.index(b"end_header") + len(b"end_header")
+    end += 2 if data[end:end + 2] == b"\r\n" else 1
+    lines = data[:end].decode("ascii", "replace").splitlines()
+    fmt = next(ln.split()[1] for ln in lines if ln.startswith("format "))
+    elements = []    # [name, count, [(property name, numpy type) or (name, count type, index type)]]
+    for ln in lines:
+        w = ln.split()
+        if w[:1] == ["element"]:
+            elements.append([w[1], int(w[2]), []])
+        elif w[:2] == ["property", "list"]:
+            elements[-1][2].append((w[4], PLY_TYPES[w[2]], PLY_TYPES[w[3]]))
+        elif w[:1] == ["property"]:
+            elements[-1][2].append((w[2], PLY_TYPES[w[1]]))
+    V = F = None
+    if fmt == "ascii":
+        rows = iter(data[end:].decode("ascii").splitlines())
+        for name, count, props in elements:
+            got = [next(rows).split() for _ in range(count)]
+            if name == "vertex":
+                cols = [p[0] for p in props]
+                V = np.array([[float(r[cols.index(k)]) for k in "xyz"] for r in got])
+            elif name == "face":
+                F = [[int(x) for x in r[1:1 + int(r[0])]] for r in got]
+    else:
+        order = "<" if fmt == "binary_little_endian" else ">"
+        at = end
+        for name, count, props in elements:
+            if any(len(p) == 3 for p in props):
+                if name != "face" or len(props) != 1:
+                    raise ValueError(f"can't read a PLY whose {name} has lists among other properties")
+                _, ct, it = props[0]
+                n0 = np.frombuffer(data, order + ct, 1, at)[0] if count else 3
+                rec = np.dtype([("n", order + ct), ("i", order + it, (int(n0),))])
+                try:
+                    faces = np.frombuffer(data, rec, count, at)
+                    fixed = bool((faces["n"] == n0).all())
+                except ValueError:
+                    fixed = False
+                if fixed:
+                    F, at = faces["i"], at + count * rec.itemsize
+                else:     # polygons of different sizes: one at a time
+                    F, cs, isz = [], np.dtype(order + ct), np.dtype(order + it)
+                    for _ in range(count):
+                        n = int(np.frombuffer(data, cs, 1, at)[0])
+                        F.append(np.frombuffer(data, isz, n, at + cs.itemsize).tolist())
+                        at += cs.itemsize + n * isz.itemsize
+            else:
+                rec = np.dtype([(p[0], order + p[1]) for p in props])
+                rows = np.frombuffer(data, rec, count, at)
+                at += count * rec.itemsize
+                if name == "vertex":
+                    V = np.stack([rows[k].astype(float) for k in "xyz"], axis=1)
+    if V is None or F is None:
+        raise ValueError("no vertices or faces in the PLY")
+    if not isinstance(F, np.ndarray) or F.shape[1] != 3:
+        F = np.array([(f[0], f[i], f[i + 1]) for f in (F if not isinstance(F, np.ndarray) else F.tolist())
+                      for i in range(1, len(f) - 1)], dtype=np.int64).reshape(-1, 3)
+    return V, np.asarray(F, dtype=np.int64)
+
+
 class Mesh:
     """A mesh's triangles, ready to cast rays at, and its size."""
 
@@ -134,11 +204,16 @@ class Mesh:
 
     @classmethod
     def load(cls, mesh_dir: Path) -> "Mesh":
+        """A mesh's GLB, or the untextured mesh.ply a reconstruction keeps when texturing fails: both are in the
+        frame its cameras were placed in."""
         import meshclean
         path = meshclean.mesh_file(mesh_dir)
-        if not path:
-            raise ValueError("only GLB meshes can be read here")
-        V, F, _ = meshclean._geometry(*meshclean._read_glb(path))
+        if path:
+            V, F, _ = meshclean._geometry(*meshclean._read_glb(path))
+        elif (mesh_dir / "mesh.ply").exists():
+            V, F = read_ply(mesh_dir / "mesh.ply")
+        else:
+            raise ValueError("no GLB or PLY mesh to read")
         return cls(V, F)
 
     def hit(self, origin, direction):

@@ -99,6 +99,24 @@ with tempfile.TemporaryDirectory() as td:
     assert beta.load(d)["status"] == "queued" and beta.load(d)["resume"], "a restart queues it again, keeping what's done"
     assert beta.videos(d) == {}, "no record of its photos"
 
+# --- untextured meshes: the PLY a reconstruction keeps when texturing fails, binary or ASCII ---------------------
+import pipeline  # noqa: E402
+with tempfile.TemporaryDirectory() as td:
+    d = pathlib.Path(td)
+    try:
+        beta.Mesh.load(d)
+        raise AssertionError("nothing to read")
+    except ValueError:
+        pass
+    pipeline.write_ply(d / "mesh.ply", [(0, 0, 0), (2, 0, 0), (0, 2, 0), (2, 2, 0)], [(9, 9, 9)] * 4, [(0, 1, 2), (1, 3, 2)])
+    m = beta.Mesh.load(d)
+    assert m.F.tolist() == [[0, 1, 2], [1, 3, 2]] and close(m.V[3], [2, 2, 0]), (m.V, m.F)
+    assert close(m.hit([0.5, 0.5, 5], [0, 0, -1]), [0.5, 0.5, 0]), "rays meet it like a GLB's"
+    (d / "q.ply").write_text("ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\n"
+                             "element face 1\nproperty list uchar int vertex_indices\nend_header\n0 0 0\n1 0 0\n1 1 0\n0 1 0\n4 0 1 2 3\n")
+    V, F = beta.read_ply(d / "q.ply")
+    assert F.tolist() == [[0, 1, 2], [0, 2, 3]] and V.shape == (4, 3), "a quad becomes two triangles"
+
 # --- YouTube refusing partway: it waits, and then does only the videos it hadn't ---------------------------------
 from climbs import youtube  # noqa: E402
 with tempfile.TemporaryDirectory() as td:
