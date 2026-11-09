@@ -106,7 +106,8 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
    **good** (≥12) / **marginal** (6–11, or 3–5 among at least 10 photos, as the estimate is often far
    too low there, and COLMAP gives up within minutes when it can't place 6) / **poor** (the rest).
    Poor sets are not reconstructed automatically; add your own photos to the project and press
-   Reconstruct to force it. In an area, COLMAP placing too few counts as skipped, not failed.
+   Reconstruct to force it. In an area, COLMAP placing too few, or those it places making a mesh of under
+   1,000 faces, counts as skipped, not failed.
 5. Reconstruction runs COLMAP in internet-collection mode (per-image intrinsics,
    affine-shape SIFT, domain-size pooling, guided matching), picks the largest sparse model
    and requires ≥6 registered images before densifying with OpenMVS. With torch, people are

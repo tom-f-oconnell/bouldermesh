@@ -160,6 +160,13 @@ like this, every time at 20-21 photos. The others recovered because they had mor
 again from. Retries only happen below the 6 photos a mesh needs: small sets above that still get whatever
 the first run gives.
 
+Placing 6 photos doesn't mean there's a mesh. By 2026-11-09, 23 of 231 meshes, all from harvests, had next to
+no surface: OpenMVS's mesh from their points had 0 to 7,352 faces, and its cleaning step then removed every
+one in 21 of them, which were kept as 136-byte untextured `mesh.ply`s once TextureMesh failed on nothing. The
+other two were textured scraps of 513 and 574 faces. The smallest real mesh then had 3,870, and most had
+over 50k. So a reconstruction now fails when its mesh has under 1,000 faces (`MIN_FACES`), and an area counts
+that as skipped, like too few photos placed.
+
 ## Where the time goes
 
 One Midnight Lightning job through the app on 2026-10-31: 113 photos, every core of a shared

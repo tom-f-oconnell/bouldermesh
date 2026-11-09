@@ -1160,11 +1160,15 @@ def _verdict(pid: str) -> str | None:
 
 
 def too_few_placed(pid: str) -> str | None:
-    """Why a project's reconstruction failed, if it was that COLMAP couldn't place enough of its photos: an area
-    counts that as skipped, not failed, as it says nothing's wrong, only that the photos aren't enough."""
+    """Why a project's reconstruction failed, if it was that its photos weren't enough: COLMAP couldn't place enough
+    of them, or those it placed made a mesh with next to no faces. An area counts that as skipped, not failed, as it
+    says nothing's wrong, only that the photos aren't enough."""
     why = last_failure(pid) or ""
-    m = re.search(r"only (\d+) image\(s\) could be registered", why)
-    return f"COLMAP could place only {m[1]} of its photos together" if m else None
+    if m := re.search(r"only (\d+) image\(s\) could be registered", why):
+        return f"COLMAP could place only {m[1]} of its photos together"
+    if m := re.search(r"the mesh has only (\d+) face", why):
+        return f"its photos made a mesh of only {m[1]} faces"
+    return None
 
 
 def _harvest_again(row: dict, log) -> dict:

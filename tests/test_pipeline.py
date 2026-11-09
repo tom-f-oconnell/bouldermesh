@@ -357,8 +357,12 @@ print("texture size OK")
 
 
 # ---- an interrupted job carries on from the last step it finished
-def run_until(tmp, stop_at=None):
-    """reconstruct_colmap_openmvs() on the same work/, raising Stop at a tool as a restart would. Returns the tools it ran."""
+def run_until(tmp, stop_at=None, faces=None):
+    """reconstruct_colmap_openmvs() on the same work/, raising Stop at a tool as a restart would. Returns the tools it ran.
+
+    Args:
+        faces: the faces ReconstructMesh's mesh says it has; without, a file with no header.
+    """
     images, work, tools = tmp / "images", tmp / "work", []
     images.mkdir(exist_ok=True)
     for i in range(8):
@@ -379,7 +383,8 @@ def run_until(tmp, stop_at=None):
         if name == "image_undistorter":
             (work / "dense" / "images").mkdir(parents=True, exist_ok=True)
         if name == "ReconstructMesh":
-            (work / "scene_dense_mesh.ply").write_bytes(b"ply")
+            (work / "scene_dense_mesh.ply").write_bytes(b"ply" if faces is None else
+                                                        f"ply\nformat ascii 1.0\nelement vertex 6\nelement face {faces}\nend_header\n".encode())
     saved = pipeline._run, pipeline.COLMAP, pipeline._mvs, occlusion.available, occlusion.write_masks, pipeline.orientation.check
     pipeline._run, pipeline.COLMAP, pipeline._mvs = fake_run, "colmap", lambda name: name
     occlusion.available, occlusion.write_masks = (lambda: True), (lambda *a, **k: {})
@@ -416,4 +421,18 @@ with tempfile.TemporaryDirectory() as td:   # levelling isn't done twice, and it
     assert "model_orientation_aligner" not in run_until(tmp)
     assert json.loads((tmp / "out" / "orientation.json").read_text())["marker"] == "kept"
 print("resuming OK")
+
+# a mesh with too few faces isn't one: the reconstruction fails, saying why, rather than saving it
+for n in (0, pipeline.MIN_FACES - 1):
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            run_until(pathlib.Path(td), faces=n)
+            raise AssertionError("an empty mesh should fail")
+        except RuntimeError as e:
+            assert f"only {n} face(s)" in str(e), e
+            assert not (pathlib.Path(td) / "out").exists(), "nothing saved"
+with tempfile.TemporaryDirectory() as td:
+    assert run_until(pathlib.Path(td), faces=50_000)[-1] == "TextureMesh"
+assert pipeline.ply_faces(pathlib.Path("/nonexistent")) is None
+print("empty meshes OK")
 print("ALL PIPELINE TESTS PASSED")

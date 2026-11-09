@@ -33,6 +33,7 @@ GPU_MIN_FREE_MB = 4000  # matching 113 photos peaked at about 3 GB
 # borderline pairs before guided matching can rescue them; design.md has the measurements.
 GPU_MATCH_ARGS = ["--TwoViewGeometry.min_num_inliers", "12"]
 MAX_TEXTURE = 4096      # larger atlases get split: an 8192 x 8192 one takes 270 MB in a browser, which can refuse it
+MIN_FACES = 1000        # a mesh with fewer isn't one: harvests' empty meshes had 0-574, real ones 3,870 and up (design.md)
 COLMAP = shutil.which("colmap")
 # OpenMVS binaries are usually installed under /usr/local/bin/OpenMVS
 _MVS_DIRS = [os.environ.get("OPENMVS_BIN", ""), "/usr/local/bin/OpenMVS", "/usr/local/bin", "/usr/bin"]
@@ -438,6 +439,10 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
              _phases(tracker, "mesh", (r"Points inserted \d+ \(([\d.]+)%", 0, 0.5), (r"Points weighted \d+ \(([\d.]+)%", 0.5, 0.9)))
         _finish(work, "mesh")
     mesh = work / "scene_dense_mesh.ply"
+    faces = ply_faces(mesh)
+    if faces is not None and faces < MIN_FACES:
+        raise RuntimeError(f"the mesh has only {faces} face(s) (need >= {MIN_FACES}): too few points were found in the photos "
+                           "to build a surface")
 
     tex = _mvs("TextureMesh")
     if tex:
@@ -474,6 +479,17 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
 # Fallback: DEMO relief mesh from the first photo (so the app is testable
 # without COLMAP/OpenMVS). Clearly labelled as a demo in the job log.
 # --------------------------------------------------------------------------
+def ply_faces(path: Path) -> int | None:
+    """How many faces a PLY file says it has, from its header, or None if that can't be read."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096)
+    except OSError:
+        return None
+    m = re.search(rb"^element face (\d+)", head.split(b"end_header", 1)[0], re.M)
+    return int(m[1]) if m and head.startswith(b"ply") else None
+
+
 def write_ply(path: Path, verts: list[tuple[float, float, float]], colors: list[tuple[int, int, int]],
               faces: list[tuple[int, int, int]]) -> None:
     with open(path, "wb") as f:

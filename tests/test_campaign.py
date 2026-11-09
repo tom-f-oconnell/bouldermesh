@@ -30,7 +30,7 @@ def row(rid: int, name: str, stars: float, boulder: str) -> str:
 
 CSV = HEAD + "".join([row(1, "Alpha", 3.0, "Alpha Boulder"), row(2, "Beta", 3.9, "Beta Boulder"), row(3, "Gamma", 2.0, "Gamma Boulder"),
                       row(4, "Alpha2", 2.5, "Alpha Boulder"), row(5, "Delta", 1.0, "Delta Boulders"), row(6, "Delta2", 1.0, "Delta Boulders")])
-outcome: dict[str, str] = {}      # climb name -> "poor", "boom", "few", "outage", "stop": what its harvest does
+outcome: dict[str, str] = {}      # climb name -> "poor", "boom", "few", "empty", "outage", "stop": what its harvest does
 harvested: list[str] = []
 videos = {"Gamma": 2}             # how many videos each climb's page has
 started = threading.Event()
@@ -72,6 +72,8 @@ def fake_reconstruct(images, work, out_dir, log, use_gpu=False, internet=False, 
         raise RuntimeError("OpenMVS crashed")
     if outcome.get(name.split(" (")[0]) == "few":
         raise RuntimeError("only 2 image(s) could be registered (need >= 6); the photos may not overlap enough for photogrammetry")
+    if outcome.get(name.split(" (")[0]) == "empty":
+        raise RuntimeError("the mesh has only 0 face(s) (need >= 1000): too few points were found in the photos to build a surface")
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "mesh.ply").write_text("ply")
     return out_dir / "mesh.ply", False
@@ -212,6 +214,13 @@ c = server.create_campaign("", "popularity", CSV)
 run_all(c["id"])
 got = items(c["id"])["Gamma"]
 assert got["status"] == "skipped" and got["note"] == "COLMAP could place only 2 of its photos together", got
+fresh()
+outcome.update(Gamma="empty")
+c = server.create_campaign("", "popularity", CSV)
+run_all(c["id"])
+got = items(c["id"])["Gamma"]
+assert got["status"] == "skipped" and got["note"] == "its photos made a mesh of only 0 faces" and not got["mesh_id"] and got["climb_id"], got
+assert not server.q("SELECT 1 FROM mesh_links WHERE climb_id=?", got["climb_id"]), "nothing linked to a mesh that wasn't made"
 fresh()
 outcome.update(Gamma="poor")
 c = server.create_campaign("", "popularity", CSV)
