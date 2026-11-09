@@ -116,7 +116,7 @@ def with_token(tmp: Path) -> None:
         csp = h["Content-Security-Policy"]
         inline = re.findall(rb"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", (ROOT / "frontend" / "index.html").read_bytes(), re.S)
         want = {f"'sha256-{base64.b64encode(hashlib.sha256(m).digest()).decode()}'" for m in inline}
-        assert len(inline) == 2 and want <= set(re.findall(r"'sha256-[^']+'", csp)), (want, csp)
+        assert len(inline) == 3 and want <= set(re.findall(r"'sha256-[^']+'", csp)), (want, csp)
         assert "frame-ancestors 'none'" in csp and "object-src 'none'" in csp and "'unsafe-inline'" not in csp.split("style-src")[0], csp
         assert b'onclick="' not in page, "an inline handler, which the policy would block"
         assert h["X-Content-Type-Options"] == "nosniff" and h["X-Frame-Options"] == "DENY" and h["Referrer-Policy"], h
