@@ -1171,6 +1171,19 @@ def too_few_placed(pid: str) -> str | None:
     return None
 
 
+def settle_too_few_placed() -> int:
+    """Areas' climbs that failed, before too_few_placed() counted that as skipped, for the same reason: skipped
+    now, with its note. Returns how many."""
+    n = 0
+    for r in q("SELECT campaign_id, source_id, project_id FROM campaign_items WHERE status='failed' AND redo IS NULL "
+               "AND project_id IS NOT NULL"):
+        note = too_few_placed(r["project_id"])
+        if note:
+            set_item(r["campaign_id"], r["source_id"], status="skipped", note=note)
+            n += 1
+    return n
+
+
 def _harvest_again(row: dict, log) -> dict:
     pid = row["project_id"]
     before = photo_names(pid)
@@ -2488,6 +2501,9 @@ def main() -> None:
     moved = settle_far_coordinates()
     if moved:
         print(f"{moved} climb(s) whose page's GPS was far from their area's now use their area's", flush=True)
+    settled = settle_too_few_placed()
+    if settled:
+        print(f"{settled} area climb(s) that failed as COLMAP placed too few photos now count as skipped, as they would now", flush=True)
     linked = link_existing_boulder_meshes()
     if linked:
         print(f"{linked} climb(s) that areas skipped are now linked to a mesh made later of their boulder", flush=True)

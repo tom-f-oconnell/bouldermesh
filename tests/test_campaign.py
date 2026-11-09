@@ -214,6 +214,10 @@ c = server.create_campaign("", "popularity", CSV)
 run_all(c["id"])
 got = items(c["id"])["Gamma"]
 assert got["status"] == "skipped" and got["note"] == "COLMAP could place only 2 of its photos together", got
+server.set_item(c["id"], got["source_id"], status="failed", note="as recorded before such failures were skipped")
+assert server.settle_too_few_placed() == 1 and server.settle_too_few_placed() == 0, "once"
+again = items(c["id"])["Gamma"]
+assert again["status"] == "skipped" and again["note"] == "COLMAP could place only 2 of its photos together", again
 fresh()
 outcome.update(Gamma="empty")
 c = server.create_campaign("", "popularity", CSV)
