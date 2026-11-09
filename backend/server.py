@@ -1309,6 +1309,8 @@ def run_beta(mid: str) -> None:
             f.write(line.rstrip() + "\n")
     try:
         beta_mod.find(mesh_dir, PROJECTS / pid / "photos", log)
+        if (mesh_dir / beta_mod.POSES_FILE).exists():
+            queue_scale(mid)    # the climbers' reach is checked against the size there
     except youtube_mod.Refused:
         pass    # it says it's waiting, and stays queued
     except Cancelled:

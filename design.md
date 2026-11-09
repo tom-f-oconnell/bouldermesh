@@ -547,6 +547,12 @@ contacts (a hand still for a second) say which are on holds, so it now keeps eac
 (`beta_poses.json`), and the size job records this from them as a check, not yet used. Running beta again
 to test it was blocked: YouTube refused hal's downloads that evening ("confirm you're not a bot").
 
+The one video whose skeletons were kept before then (JBMFP's, 9 frames with both hands on holds and
+both arms straight) put the rock at 0.59 of the size from limbs, where that mesh's three videos' limbs
+agree within 7%. One video can't say whether that's the method or that climber, so it stays a check. A
+mesh is now sized again whenever its beta finishes with skeletons, and `python3 cli.py span-check`
+compares every video's span with the limbs, so *Find beta in all* will test it once YouTube allows.
+
 **Mountain Project's height.** 1,379 of 1,808 boulder pages give one ("Boulder, 15 ft (5 m)"), mostly
 round numbers: 10, 12, 15 and 20 ft account for 63%. Text gave it for only 16 more. Against the rock's
 height within one and a half times the spread of where the placed photos' centres land, MP's scale is 4%

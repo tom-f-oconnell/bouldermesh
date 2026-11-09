@@ -214,7 +214,8 @@ range. Videos of one rock agree to about 10% on the median rock, and Mountain Pr
 25% for half of them ([design.md](design.md) has the rest). *Find size* finds it again. Meshes made
 before Nov 8 haven't been sized: `curl -X POST localhost:8470/api/meshes/scale-all` queues them all (with
 `-H "Authorization: Bearer $EDIT_TOKEN"` on a site with an editing token), at a
-few minutes each, at low priority.
+few minutes each, at low priority. A mesh is sized again when its beta has been found, and
+`python3 cli.py span-check` (with `DATA_DIR`) compares the climbers' reach there with their limbs.
 
 For your own photos, a bottle of known size gives a mesh its size better than any of these. Stand a 32 oz
 Nalgene (or another bottle) upright at the foot of the rock, on ground that the photos also show, and get it
