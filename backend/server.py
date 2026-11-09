@@ -1296,11 +1296,87 @@ def run_beta(mid: str) -> None:
             f.write(line.rstrip() + "\n")
     try:
         beta_mod.find(mesh_dir, PROJECTS / pid / "photos", log)
+    except youtube_mod.Refused:
+        pass    # it says it's waiting, and stays queued
     except Cancelled:
         beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "stopped", "progress": None})
     except Exception as e:
         log(f"FAILED: {type(e).__name__}: {e}")
         beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": f"failed: {type(e).__name__}: {e}", "progress": None})
+
+
+# ------------------------------------------------------------------ finding beta, on a thread of its own
+BETA_NICE = 19
+_beta_control = JobControl()
+_beta_wake = threading.Event()
+_beta_now: dict | None = None    # the mesh it's finding beta in: {mid, started}
+
+
+def queue_beta(mid: str, ahead: bool = False) -> bool:
+    """Queue finding a mesh's beta, unless it's queued or being found already; whether it was queued.
+
+    Args:
+        ahead: before those queued for every mesh at once, as someone asked for this one.
+    """
+    if (beta_mod.load(MESHES / mid) or {}).get("status") in ("queued", "running"):
+        return False
+    beta_mod.save(MESHES / mid, {"status": "queued", "videos": [], "progress": None, "queued": time.time(), "ahead": ahead})
+    _beta_wake.set()
+    return True
+
+
+def beta_queue() -> list[str]:
+    """Meshes queued to find beta in, in the order it'll take them: those asked for one at a time first."""
+    found = []
+    for d in MESHES.iterdir() if MESHES.exists() else []:
+        rec = beta_mod.load(d)
+        if rec and rec["status"] == "queued":
+            found.append(((not rec.get("ahead"), rec.get("queued", 0)), d.name))
+    return [mid for _, mid in sorted(found)]
+
+
+def beta_findable() -> list[str]:
+    """Meshes with video frames placed in them, whose beta hasn't been found or isn't being: newest first."""
+    out = []
+    for r in q("SELECT id FROM meshes WHERE source LIKE 'project:%' AND replaced_by IS NULL ORDER BY created DESC"):
+        status = (beta_mod.load(MESHES / r["id"]) or {}).get("status")
+        if status not in ("done", "queued", "running") and beta_mod.videos(MESHES / r["id"]):
+            out.append(r["id"])
+    return out
+
+
+def stop_beta() -> int:
+    """Stop finding beta: the mesh it's on, and those queued. Returns how many were queued."""
+    queued = beta_queue()
+    for mid in queued:
+        rec = beta_mod.load(MESHES / mid) or {}
+        beta_mod.save(MESHES / mid, {**rec, "status": "stopped", "progress": None, "waiting": None, "resume": None})
+    _beta_control.stop()
+    return len(queued)
+
+
+def beta_worker() -> None:
+    """Finds beta in queued meshes, one at a time, alongside the workers' meshing. It's on its own thread so that
+    it never holds up an area, at the lowest CPU priority (the pose model's threads inherit it), as it can make do
+    with what meshing leaves. While YouTube is refusing downloads, it waits."""
+    global _beta_now
+    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    use_control(_beta_control)
+    while True:
+        _beta_wake.wait(timeout=60)
+        _beta_wake.clear()
+        while not _stopping and not youtube_mod.refused():
+            queued = beta_queue()
+            if not queued:
+                break
+            _beta_now = {"mid": queued[0], "started": time.time()}
+            jobctl.begin(low_priority=True)
+            try:
+                run_beta(queued[0])
+            except Exception as e:  # never let the thread die
+                print(f"beta error on {queued[0]}: {e!r}", flush=True)
+            finally:
+                _beta_now = None
 
 
 def queue_scale(mid: str) -> bool:
@@ -1428,11 +1504,9 @@ def run_job(job: dict) -> None:
     """A job someone asked for, on this thread's worker."""
     w = current_worker()
     w.job = {"job": job, "started": time.time(), "from": job_progress(job) or 0.0}
-    jobctl.begin(low_priority=job["type"] in ("beta", "retexture", "scale"))
+    jobctl.begin(low_priority=job["type"] in ("retexture", "scale"))
     try:
-        if job["type"] == "beta":
-            run_beta(job["mid"])
-        elif job["type"] == "scale":
+        if job["type"] == "scale":
             run_scale(job["mid"])
         elif job["type"] == "retexture":
             run_retexture(job["mid"])
@@ -1480,7 +1554,7 @@ def worker(w: Worker | None = None) -> None:
 STOP_WAIT = float(os.environ.get("STOP_WAIT_MINUTES", "10")) * 60   # docker-compose.yml's stop_grace_period is longer
 _stopping: dict | None = None    # once a stop has begun: {since, until, waiting_for}
 AGAIN = {"reconstruct": "Retry on its project", "harvest": "Retry on its project", "retry": "Retry on its project",
-         "beta": "Find beta on the Beta tab", "retexture": "Make textures... on the admin page", "scale": "Find size in the viewer"}
+         "retexture": "Make textures... on the admin page", "scale": "Find size in the viewer"}
 
 
 def job_progress(job: dict) -> float | None:
@@ -1490,9 +1564,6 @@ def job_progress(job: dict) -> float | None:
             return float(json.loads(q("SELECT progress FROM projects WHERE id=?", job["pid"], one=True)["progress"])["overall"])
         except (TypeError, ValueError, KeyError):
             return None
-    if job["type"] == "beta":
-        m = re.match(r"video (\d+) of (\d+)", (beta_mod.load(MESHES / job["mid"]) or {}).get("progress") or "")
-        return 100 * (int(m[1]) - 1) / int(m[2]) if m else None
     if job["type"] == "scale":
         m = re.match(r"people in photo (\d+) of (\d+)", (scale_mod.load(MESHES / job["mid"]) or {}).get("progress") or "")
         return 90 * (int(m[1]) - 1) / int(m[2]) if m else None
@@ -1519,9 +1590,11 @@ def jobs_state() -> dict:
     with jobs.mutex:
         waiting = list(jobs.queue)
     runs = [w.job for w in list(_workers)]
+    now = _beta_now and q("SELECT name FROM meshes WHERE id=?", _beta_now["mid"], one=True)
     return {"running": [job_info(r["job"], r) for r in runs if r], "queued": [job_info(j) for j in waiting],
             "area_climbs": q("SELECT c.name AS area, i.name, i.project_id FROM campaign_items i JOIN campaigns c ON c.id=i.campaign_id "
                              "WHERE i.status='running' ORDER BY i.updated"),
+            "beta": {"running": now["name"] if now else None, "queued": len(beta_queue()), "youtube": youtube_mod.refused()},
             "stopping": _stopping}
 
 
@@ -1571,6 +1644,9 @@ def stop_when_idle(server: ThreadingHTTPServer) -> None:
             "; ".join(f"{j['name']} ({j['type']}): {AGAIN[j['type']]} runs it" for j in state["queued"]))
     if state["area_climbs"]:
         say("areas' climbs pause, and carry on after the restart: " + "; ".join(f"{c['name']} ({c['area']})" for c in state["area_climbs"]))
+    if state["beta"]["running"] or state["beta"]["queued"]:
+        say(f"finding beta pauses, and carries on after the restart: {state['beta']['running'] or 'nothing'} now, "
+            f"{state['beta']['queued']} queued")
     say("now" if state["running"] or state["queued"] or state["area_climbs"] else
         "now, as what it waited for has finished" if said else "now: nothing was running")
     server.shutdown()
@@ -1822,6 +1898,7 @@ class Handler(BaseHTTPRequestHandler):
                                        "queue": jobs.qsize(), "relevance_methods": relevance_mod.available(), "people_masks": pipeline.occlusion.available(), "harvest_sources": HARVEST_SOURCES, "env": env,
                                        "gpu": gpu, "gpu_why": gpu_why,
                                        "ytdlp": bool(shutil.which("yt-dlp") and shutil.which("ffmpeg")),
+                                       "youtube_refusing": youtube_mod.refused(),
                                        "opencv": _has("cv2"), "pillow": _has("PIL"),
                                        "policy": {"textures": settings().get("site.textures"), "sources": settings().get("site.sources")},
                                        "editing": "none" if READ_ONLY else "token" if EDIT_TOKEN else "open",
@@ -2174,11 +2251,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "only reconstructed meshes have videos to find beta in"}, 409)
                 if not beta_mod.available():
                     return self.send_json({"error": "finding beta needs rtmlib and onnxruntime (in the Docker image)"}, 501)
-                if (beta_mod.load(MESHES / m[1]) or {}).get("status") in ("queued", "running"):
+                if not queue_beta(m[1], ahead=True):
                     return self.send_json({"error": "already finding it"}, 409)
-                beta_mod.save(MESHES / m[1], {"status": "queued", "videos": [], "progress": None})
-                queue_job({"type": "beta", "mid": m[1]})
                 return self.send_json({"queued": True}, 202)
+            if p == "/api/meshes/beta-all":     # every mesh with videos whose beta hasn't been found
+                if not beta_mod.available():
+                    return self.send_json({"error": "finding beta needs rtmlib and onnxruntime (in the Docker image)"}, 501)
+                return self.send_json({"queued": sum(queue_beta(mid) for mid in beta_findable())}, 202)
+            if p == "/api/meshes/beta-stop":    # the mesh it's on, and every one queued
+                return self.send_json({"unqueued": stop_beta()})
             if p == "/api/meshes/scale-all":   # every reconstructed mesh without a scale, or {"again": true} all of them
                 again = bool(self.read_json().get("again"))
                 queued = sum(queue_scale(r["id"]) for r in q("SELECT id FROM meshes WHERE source LIKE 'project:%' AND replaced_by IS NULL ORDER BY created")
@@ -2417,8 +2498,9 @@ def main() -> None:
     threading.Thread(target=orient_existing_meshes, daemon=True).start()
     threading.Thread(target=source_existing_meshes, daemon=True).start()
     for d in MESHES.iterdir() if MESHES.exists() else []:
-        beta_mod.interrupted(d)     # a search for beta that a restart stopped, as jobs don't carry on
+        beta_mod.carry_on(d)        # finding beta carries on after a restart, like areas
         scale_mod.interrupted(d)
+    threading.Thread(target=beta_worker, daemon=True).start()
     host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))
     mode = "COLMAP + OpenMVS" if pipeline.real_pipeline_ready() else "DEMO (COLMAP/OpenMVS not found)"
     print(f"BoulderMesh on http://{host}:{port}  data={DATA}  pipeline={mode}", flush=True)

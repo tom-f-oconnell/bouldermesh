@@ -108,6 +108,10 @@ def jobs(server: str) -> int:
     if st["area_climbs"]:
         print("areas' climbs, which a restart pauses, to carry on afterwards:",
               *(f"  {c['name']} ({c['area']})" for c in st["area_climbs"]), sep="\n")
+    beta = st.get("beta") or {}
+    if beta.get("running") or beta.get("queued"):
+        print(f"finding beta, which a restart pauses, to carry on afterwards: {beta['running'] or 'nothing'} now, "
+              f"{beta['queued']} queued" + (" (waiting while YouTube refuses downloads)" if beta.get("youtube") else ""))
     busy = bool(st["running"] or st["queued"])
     if not busy:
         print("nothing outside areas is running or queued: a restart interrupts nothing")

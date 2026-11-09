@@ -126,6 +126,11 @@ the page's first. Each video's uploader, description and licence are recorded, a
 channel description too, along with any climber's height, wingspan or ape index stated in them
 (`GET /api/videos`, and on the climb's card), for scaling meshes later.
 
+YouTube is asked for one thing at a time across the whole server, 8-15 s apart. When it answers with its
+bot check ("Sign in to confirm you're not a bot"), the server leaves it alone for an hour, then 2, 4 and 8
+hours while it still does. Meanwhile harvests skip videos (an area's *look for new videos* gets them
+later), finding beta waits, and the *Beta* tab says until when.
+
 People are found in every photo before reconstruction, and their masks are kept in
 `data/projects/<id>/masks/` (`<photo>.png`, black where people are), with the share of each photo
 that is people in `masks/people.json`. Only photos without an up-to-date mask are looked at again.
@@ -192,6 +197,11 @@ the Tension Board app does. These are saved with the mesh, apart from those foun
 
 The tab lists meshes with the most holds marked by hand first, then those with the most found in videos.
 *Only show meshes with beta* hides those with neither.
+
+*Find beta in all N not done* queues every mesh with video frames whose beta hasn't been found, and *Stop
+finding beta* unqueues them. Beta is found one mesh at a time, on a thread of its own at the lowest CPU
+priority, so it never holds up meshing, and a restart only pauses it. 148 meshes had 364 videos to look
+at (Nov 2026): about 10 hours on the CPU, more while meshing runs alongside.
 
 ## How big a boulder is
 
@@ -268,8 +278,8 @@ directory, and reads `.env` here (`COMPOSE_FILE` for the GPU, `PORT`). Each star
 first, which takes seconds when nothing has changed, so `sudo systemctl restart bouldermesh` deploys
 new code. To remove it: `sudo systemctl disable --now bouldermesh`, then delete the unit file.
 
-**Restarting.** A restart only pauses areas' climbs, which carry on afterwards. Jobs started outside an
-area (a harvest or reconstruction started by hand, a retry, *Find beta*, recolouring from the admin page)
+**Restarting.** A restart only pauses areas' climbs and finding beta, which carry on afterwards. Jobs started outside an
+area (a harvest or reconstruction started by hand, a retry, recolouring from the admin page)
 can't carry on by themselves. So when it's stopped, the server takes no new work and first waits up to 10
 minutes for those jobs, if they look like finishing by then. Its log and the top of the page say what it's
 waiting for, and stopping it again stops it at once. Projects it doesn't wait for come back *interrupted*,
@@ -470,6 +480,11 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_meshclean.py   # offline: finding and hiding stray pieces on small GLBs, the cleaned download
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
     python3 tests/test_scale.py       # offline: sizing people, objects and the rock on scenes built with known sizes
+    python3 tests/test_youtube.py     # offline: telling a climb's videos apart, climbers' sizes in text, leaving YouTube alone when it refuses
+    python3 tests/test_beta.py        # offline: cameras, rays, contacts and roles for beta; waiting out YouTube and carrying on
+    python3 tests/test_provenance.py  # offline: where each mesh's photos came from
+    python3 tests/test_compute.py     # offline: running reconstructions on other machines, through stand-ins for ssh and AWS
+    python3 tests/test_admin.py       # offline: the admin page's settings, credentials and photo permissions
     python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job
     python3 tests/test_public.py      # the editing token and read-only modes, other sites' pages refused, the page's policy and headers, what's served how
 

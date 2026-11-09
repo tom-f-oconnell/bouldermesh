@@ -60,6 +60,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && pip install --no-cache-dir --break-system-packages flatbuffers protobuf coloredlogs humanfriendly sympy packaging tqdm \
  && pip install --no-cache-dir --break-system-packages --ignore-installed idna \
  && pip install --no-cache-dir --break-system-packages open_clip_torch
+# YouTube needs a JavaScript runtime and yt-dlp's challenge scripts (yt-dlp-ejs, in its "default" extras) for full
+# support: without them yt-dlp warns that formats may be missing. Deno is the runtime it looks for on PATH.
+RUN pip install --no-cache-dir --break-system-packages --upgrade "yt-dlp[default]" deno \
+ && deno --version | head -1 && python3 -c "import yt_dlp_ejs"
 # Ubuntu's colmap package is only there for the libraries this one links to: /usr/local/bin comes first
 COPY --from=colmap /opt/colmap-cuda/bin/colmap /usr/local/bin/colmap
 COPY --from=build /usr/local/bin/OpenMVS /usr/local/bin/OpenMVS

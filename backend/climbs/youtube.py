@@ -7,17 +7,25 @@ picked out the right videos.
 
 Climbers often give their height or ape index in a video's description or on their channel, which
 could later give a mesh a scale. stats() reads them from free text; nothing is inferred.
+
+Every yt-dlp run goes through call(): one at a time across the app, GAP seconds apart. When YouTube
+answers with its bot check ("Sign in to confirm you're not a bot") or a rate limit, nothing that fetches
+a video or its details is asked of it for an hour, then 2, 4 and 8 while it still answers that way;
+searches still go through, as they never got the check. design.md has what led to this.
 """
 from __future__ import annotations
 
 import json
+import random
 import re
 import shutil
 import subprocess
+import threading
+import time
 import unicodedata
 from typing import Callable
 
-from .common import Climb, Media, jobctl
+from .common import CACHE_DIR, Climb, Media, jobctl
 
 Log = Callable[[str], None]
 MAX_RESULTS = 15           # search results to look through per climb
@@ -25,10 +33,79 @@ MAX_MATCHES = 4            # of which at most this many are kept
 MAX_MINUTES = 15           # longer videos are mostly compilations and vlogs, with little of any one rock
 REGION_SUFFIX = re.compile(r"\b(national|state|regional|county)\s+(park|forest|monument|recreation area)\b|\bbouldering\b|\barea\b", re.I)
 GENERIC = {"boulder", "boulders", "the boulder", "area", "bouldering"}
+GAP = (8.0, 15.0)          # seconds between one yt-dlp run and the next, at random in this range (yt-dlp's wiki: 5-10)
+SLEEP_REQUESTS = ["--sleep-requests", "0.75"]   # between the requests within one run, as yt-dlp's `-t sleep` does
+BLOCK_HOURS = (1, 2, 4, 8)  # how long to leave YouTube alone after its bot check, each time it's still there
+REFUSAL = re.compile(r"not a bot|HTTP Error 429|Too Many Requests|content isn.t available, try again later", re.I)
+STATE_FILE = CACHE_DIR.parent / "youtube.json"
+_gate = threading.Lock()
+_last = 0.0
+
+
+class Refused(RuntimeError):
+    """YouTube is refusing this machine for now (its bot check, or a rate limit)."""
+
+    def __init__(self, state: dict):
+        self.state = state
+        super().__init__(f"YouTube is refusing this machine's downloads (its bot check) until "
+                         f"{time.strftime('%H:%M UTC', time.gmtime(state['until']))}")
 
 
 def available() -> bool:
     return shutil.which("yt-dlp") is not None
+
+
+def refused() -> dict | None:
+    """While YouTube is being left alone: {since, until, level, error}, else None."""
+    try:
+        state = json.loads(STATE_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    return state if time.time() < state.get("until", 0) else None
+
+
+def call(cmd: list[str], video: bool = True, **kw) -> str:
+    """Run a yt-dlp command (jobctl.run's arguments) through the gate.
+
+    Args:
+        video: it fetches a video or a video's details, which YouTube's bot check applies to: refused
+            while that's on, and turning it on when YouTube answers with it.
+
+    Raises:
+        Refused: YouTube is refusing, or just did.
+    """
+    global _last
+    while not _gate.acquire(timeout=1):
+        jobctl.check()
+    try:
+        try:
+            state = json.loads(STATE_FILE.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            state = None
+        if video and state and time.time() < state["until"]:
+            raise Refused(state)
+        until = _last + random.uniform(*GAP)
+        while time.time() < until:
+            jobctl.check()
+            time.sleep(min(1.0, until - time.time()))
+        try:
+            out = jobctl.run(cmd[:1] + SLEEP_REQUESTS + cmd[1:], **kw)
+        except Exception as e:
+            if video and REFUSAL.search(str(e)):
+                level = min(len(BLOCK_HOURS) - 1, state["level"] + 1) if state else 0
+                state = {"since": state["since"] if state else time.time(), "level": level,
+                         "until": time.time() + BLOCK_HOURS[level] * 3600, "error": str(e)[:300]}
+                STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                STATE_FILE.write_text(json.dumps(state))
+                raise Refused(state) from None
+            raise
+        finally:
+            _last = time.time()
+        if video and state:     # it let one through: it's stopped refusing
+            STATE_FILE.unlink(missing_ok=True)
+        return out
+    finally:
+        _gate.release()
 
 
 def norm(text: str | None) -> str:
@@ -72,9 +149,9 @@ def matches(c: Climb, title: str | None, description: str | None = None) -> bool
     return any(x in text for x in context(c))
 
 
-def _ytdlp(args: list[str], timeout: int = 180) -> dict:
-    out = jobctl.run(["yt-dlp", "-J", "--no-warnings", *args], timeout=timeout,
-                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+def _ytdlp(args: list[str], timeout: int = 180, video: bool = True) -> dict:
+    out = call(["yt-dlp", "-J", "--no-warnings", *args], video=video, timeout=timeout,
+               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return json.loads(out or "{}")
 
 
@@ -89,7 +166,7 @@ def search(c: Climb, log: Log, known: set[str] = frozenset()) -> list[Media]:
         return []
     q = query(c)
     try:
-        found = _ytdlp(["--flat-playlist", f"ytsearch{MAX_RESULTS}:{q}"]).get("entries") or []
+        found = _ytdlp(["--flat-playlist", f"ytsearch{MAX_RESULTS}:{q}"], video=False).get("entries") or []
     except Exception as e:
         log(f"youtube search: {q!r} failed: {e}")
         return []
@@ -130,7 +207,7 @@ def metadata(url: str) -> dict:
 
 def channel(url: str) -> dict:
     """A channel's name and description (its "about" text)."""
-    info = _ytdlp(["--flat-playlist", "--playlist-items", "0", url], timeout=120)
+    info = _ytdlp(["--flat-playlist", "--playlist-items", "0", url], timeout=120, video=False)
     return {"channel_url": url, "channel_id": info.get("channel_id") or info.get("id"),
             "name": info.get("channel") or info.get("uploader") or info.get("title"), "description": info.get("description") or ""}
 

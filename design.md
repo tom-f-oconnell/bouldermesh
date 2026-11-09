@@ -457,6 +457,20 @@ inches, and not next to a word about the rock, as a "6 ft tall boulder" is commo
 person in the video is the uploader: `first_person` records whether the text said "I'm". The size of
 a mesh uses them for its climbers, as below.
 
+**When YouTube refuses.** From Nov 1 to 9, 2026, harvests on hal (one Caltech campus address) asked YouTube
+for about 1,700 videos, and 640 of those were refused with its bot check ("Sign in to confirm you're not a
+bot"). The refusals came in spells: about ten, of 1-11 hours each, mostly after a few hours of harvests
+taking 20-30 videos an hour, well under the limit below. Each spell ended by itself, even with harvests still asking (and failing) throughout,
+and searches never got the check. yt-dlp's wiki puts YouTube's limit for a session that isn't signed in at
+about 300 videos an hour, and suggests 5-10 s between downloads. Nothing used to space them: several
+workers each fetched up to 6 videos back to back, and kept asking for each through a refusal. So now
+every yt-dlp run waits its turn (one at a time, 8-15 s apart, `--sleep-requests 0.75` within one), and a
+refusal leaves YouTube alone for 1, 2, 4, then 8 hours, with the next video after that as the test.
+Signing in with a throwaway account's cookies would raise the limit, at the risk of that account being
+banned. A PO-token provider (bgutil) doesn't get past refusals based on the address, by its own account.
+A cloud server's address is refused far more often than a home or campus one, so harvesting stays on hal:
+the public server only shows what's shipped to it.
+
 People's masks used to be made in `work/` and deleted with it. They're now kept in the project's
 `masks/`, which also makes a rebuild skip photos that already have one.
 
@@ -479,6 +493,15 @@ hold, each hand's last a finish hold, other hands' holds hand holds, and those o
 holds. These are rough rules: a climber who chalks up at a hold, falls and starts again, or tops out
 onto a slab will confuse them, which is why each video's holds are kept apart, and why they can be
 marked by hand.
+
+Finding beta in every mesh with videos (148 of them, 364 videos, in Nov 2026) takes about 10 hours on the
+CPU: the three earlier runs took 0.55 s a frame, about 100 s a video, most of it the pose model. It runs
+on a thread of its own rather than as a job, as jobs come before areas' climbs on the same workers, so a
+queue of 148 would hold up meshing for those 10 hours. That thread runs at nice 19, which the pose
+model's threads inherit, and the CPU limit is shared, so it gets what meshing leaves. It needs little
+memory. On the GPU, RTMPose took 10 ms a person against 266 ms on the CPU (an experiment outside the
+image, Nov 8), but the image's onnxruntime is the CPU build: the GPU build needs cuDNN and more of CUDA's
+libraries than the image has for COLMAP.
 
 Marking by hand cycles a hold start, hand, finish, foot, then off. That's the order the Aurora apps
 (Tension, Kilter) list hold roles in, which I couldn't confirm is the order the Tension app cycles them.

@@ -3,6 +3,7 @@
 Offline: the pose model and videos aren't used."""
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 import tempfile
@@ -93,8 +94,34 @@ with tempfile.TemporaryDirectory() as td:
         except ValueError:
             pass
     beta.save(d, {"status": "running", "videos": [{"holds": [{}, {}]}]})
-    assert beta.summary(beta.load(d)) == {"status": "running", "progress": None, "note": None, "videos": 1, "holds": 2}
-    beta.interrupted(d)
-    assert beta.load(d)["status"] == "interrupted"
+    assert beta.summary(beta.load(d)) == {"status": "running", "progress": None, "note": None, "waiting": None, "videos": 1, "holds": 2}
+    beta.carry_on(d)
+    assert beta.load(d)["status"] == "queued" and beta.load(d)["resume"], "a restart queues it again, keeping what's done"
     assert beta.videos(d) == {}, "no record of its photos"
+
+# --- YouTube refusing partway: it waits, and then does only the videos it hadn't ---------------------------------
+from climbs import youtube  # noqa: E402
+with tempfile.TemporaryDirectory() as td:
+    d = pathlib.Path(td)
+    urls = [f"https://www.youtube.com/watch?v=v{i}" for i in range(3)]
+    found = {u: {"tag": f"t{i}", "title": None, "uploader": None, "frames": {f"yt_t{i}_000.jpg": {}}} for i, u in enumerate(urls)}
+    done, refuse = [], {urls[1]}
+
+    def analyse(url, *a, **k):
+        if url in refuse:
+            raise youtube.Refused({"since": 0, "until": 1e10, "level": 0, "error": "not a bot"})
+        done.append(url)
+        return {"holds": [{"p": [0, 0, 0]}], "reference": None, "poses": {"f": url}, "with_climber": 1, "frames": 1, "placed_frames": 1}
+    beta.videos, beta.Mesh.load, beta._pose_model, beta.analyse_video = (lambda _: found), (lambda _: None), (lambda _: None), analyse
+    try:
+        beta.find(d, d, lambda s: None)
+        raise AssertionError("refused")
+    except youtube.Refused:
+        pass
+    rec = beta.load(d)
+    assert rec["status"] == "queued" and rec["waiting"] == 1e10 and [v["url"] for v in rec["videos"]] == urls[:1], rec
+    refuse.clear()
+    rec = beta.find(d, d, lambda s: None)
+    assert done == [urls[0], urls[1], urls[2]] and rec["status"] == "done" and len(rec["videos"]) == 3, (done, rec)
+    assert set(json.loads((d / beta.POSES_FILE).read_text())) == set(urls), "the first video's skeletons are kept too"
 print("ALL BETA TESTS PASSED")

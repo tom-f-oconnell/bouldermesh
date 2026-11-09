@@ -39,7 +39,7 @@
   body.readonly .rec,body.readonly .retry,body.readonly #p-interrupted,body.readonly button.back,body.readonly button.all,body.readonly label.file,
   body.readonly .stopnow,body.readonly .stoplater,body.readonly .resume,body.readonly .retryfailed,body.readonly .harvestagain,body.readonly .rebuildchanged,
   body.readonly .rebuildall,body.readonly .pool,body.readonly .setll,body.readonly #pieces .edit,body.readonly #pieces .redo,body.readonly .rebuild,
-  body.readonly .findsize,body.readonly button.find,body.readonly button.mark,body.readonly .clearmine,body.readonly #vmark{display:none!important}
+  body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly button.mark,body.readonly .clearmine,body.readonly #vmark{display:none!important}
   label.file input{display:none}
   .status{font-size:12px;color:var(--mute)}
   .status.done,.status.harvested{color:var(--ok)} .status.failed{color:var(--bad)} .status.running,.status.queued,.status.harvesting,.status.interrupted{color:var(--warn)}
@@ -259,6 +259,7 @@
       <section>
         <h2>Meshes</h2>
         <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="b-only"> Only show meshes with beta</label></div>
+        <div id="beta-all" class="row" style="margin-bottom:8px;flex-wrap:wrap;gap:6px"></div>
         <div id="beta-list"></div>
       </section>
     </div>
@@ -1229,8 +1230,10 @@ async function refreshCampaigns(){
 }
 let campaignTimer = null;
 // while the server waits for jobs to finish before it restarts, say so, as nothing new starts meanwhile
+let betaJobs = null;   // /api/jobs' beta: {running, queued, youtube}
 async function showStopping(){
-  const s = (await api('/api/jobs').catch(() => null))?.stopping, el = $('#stopping');
+  const jobs = await api('/api/jobs').catch(() => null), s = jobs?.stopping, el = $('#stopping');
+  if (jobs && JSON.stringify(jobs.beta) !== JSON.stringify(betaJobs)) { betaJobs = jobs.beta; renderBetaAll(); }
   el.style.display = s ? '' : 'none';
   if (!s) return;
   const n = s.waiting_for.length;
@@ -1388,8 +1391,10 @@ let betaState = null;   // {mid, found, marked, available, shown: Set of video t
 let betaPoll = null;
 $('#b-legend').innerHTML = Object.values(ROLES).map(r => `<span><span class="swatch" style="background:${r.color}"></span>${r.name}${r.note ? ` <small>(${r.note})</small>` : ''}</span>`).join('');
 function videoCount(m){ return m.sources?.sources?.find(x => x.source === 'youtube')?.videos || 0; }
+const hhmm = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 function betaLine(m){
   const b = m.beta, n = videoCount(m);
+  if (b?.status === 'queued' && b.waiting) return `waiting: YouTube is refusing this server's downloads until about ${hhmm(b.waiting)}`;
   if (b?.status === 'queued') return 'queued to find its beta';
   if (b?.status === 'running') return `finding its beta: ${esc(b.progress || '')}`;
   if (b?.status === 'done') return b.note ? esc(b.note) : `${b.holds} holds found in ${b.videos} video${b.videos === 1 ? '' : 's'}`;
@@ -1398,9 +1403,32 @@ function betaLine(m){
   if (!m.cameras_kept) return 'rebuild it to find beta in its videos: where its photos were placed wasn\'t kept';
   return n ? `${n} video${n === 1 ? '' : 's'} to find beta in` : 'no video frames placed in it';
 }
+// finding beta in every mesh that has videos, one at a time, alongside meshing
+function renderBetaAll(){
+  const el = $('#beta-all');
+  if (!el || !$('#pane-beta').classList.contains('on')) return;
+  const todo = (meshesCache || []).filter(m => !m.replaced_by && m.source.startsWith('project:') && m.cameras_kept && videoCount(m)
+    && !['done', 'queued', 'running'].includes(m.beta?.status)).length;
+  const b = betaJobs || {}, busy = b.running || b.queued;
+  el.innerHTML = (todo ? `<button class="sm sec findall" title="Queues every mesh with frames of videos whose beta hasn't been found. They're done one at a time, alongside meshing, at the lowest priority: a few minutes a video.">Find beta in all ${todo} not done</button>` : '')
+    + (busy ? `<button class="sm sec stopall">Stop finding beta</button><small class="grow">${b.running ? `finding it in ${esc(b.running)}; ` : ''}${b.queued} queued</small>` : '')
+    + (b.youtube ? `<div class="meta bad" style="width:100%">YouTube is refusing this server's downloads (its bot check) until about ${hhmm(b.youtube.until)}: finding beta waits until then, and harvests meanwhile skip videos.</div>` : '');
+  el.querySelector('.findall')?.addEventListener('click', async () => {
+    try { const r = await api('/api/meshes/beta-all', { method: 'POST' }); toast(`Queued ${r.queued} mesh${r.queued === 1 ? '' : 'es'} to find beta in`, 5000); }
+    catch (e) { return toast(e.message, 6000); }
+    await refreshMeshes(); showStopping();
+  });
+  el.querySelector('.stopall')?.addEventListener('click', async () => {
+    if (!confirm('Stop finding beta, and unqueue the meshes waiting for it?')) return;
+    try { const r = await api('/api/meshes/beta-stop', { method: 'POST' }); toast(`Stopped; ${r.unqueued} unqueued`, 5000); }
+    catch (e) { return toast(e.message, 6000); }
+    await refreshMeshes(); showStopping();
+  });
+}
 function renderBetaList(){
   const el = $('#beta-list');
   if (!el || !$('#pane-beta').classList.contains('on')) return;
+  renderBetaAll();
   // most holds marked by hand first, then most found in videos, then newest
   const all = (meshesCache || []).filter(m => !m.replaced_by)
     .sort((a, b) => (b.marked || 0) - (a.marked || 0) || (b.beta?.holds || 0) - (a.beta?.holds || 0));

@@ -211,7 +211,11 @@ def run(B: str, tmp: Path) -> None:
     assert st == 200 and b["found"] is None and b["marked"] == {"holds": []} and m["beta"] is None, (b, m["beta"])
     assert m["marked"] == 0, m["marked"]
     st, jb = req(B, "GET", "/api/jobs")
-    assert st == 200 and set(jb) == {"running", "queued", "area_climbs", "stopping"} and jb["stopping"] is None, jb
+    assert st == 200 and set(jb) == {"running", "queued", "area_climbs", "beta", "stopping"} and jb["stopping"] is None, jb
+    assert jb["beta"] == {"running": None, "queued": 0, "youtube": None}, jb["beta"]
+    st, r = req(B, "POST", "/api/meshes/beta-all")
+    assert (st, r) == (202, {"queued": 0}) or st == 501, (st, r)   # a demo mesh keeps no cameras; 501 without the pose model
+    assert req(B, "POST", "/api/meshes/beta-stop") == (200, {"unqueued": 0})
     cli = subprocess.run([sys.executable, str(ROOT / "cli.py"), "jobs", "--server", B], capture_output=True, text=True, timeout=60)
     assert cli.returncode in (0, 1) and "restart" in cli.stdout, cli    # 1 if a job is still going
     st, saved = req(B, "POST", f"/api/meshes/{m['id']}/holds", {"holds": [{"p": [0.1, 0.2, 0.3], "role": "start"}]})

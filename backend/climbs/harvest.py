@@ -234,9 +234,9 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
         tmp.mkdir(parents=True, exist_ok=True)
         try:
             log(f"youtube: downloading {v.url}")
-            jobctl.run([ytdlp, "-q", "--no-playlist", "-f", "bv*[height<=1080]/b", "--max-filesize", "500m",
-                        "--write-info-json", "-o", str(tmp / "video.%(ext)s"), v.url], timeout=900,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            youtube.call([ytdlp, "-q", "--no-playlist", "-f", "bv*[height<=1080]/b", "--max-filesize", "500m",
+                          "--write-info-json", "-o", str(tmp / "video.%(ext)s"), v.url], timeout=900,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             info_file = tmp / "video.info.json"
             if infos is not None and info_file.exists():
                 infos[v.url] = {**youtube.details(json.loads(info_file.read_text())), "frames": 0}
@@ -254,6 +254,10 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
             if infos is not None and v.url in infos:
                 infos[v.url]["frames"] = len(frames)
             log(f"youtube: kept {len(frames)} frame(s) from {v.url}")
+        except youtube.Refused as e:
+            left = n_videos - i
+            log(f"youtube: {e}: skipping {left} video(s). An area's \"look for new videos\" gets them later.")
+            break
         except Exception as e:
             log(f"youtube: {v.url} failed: {e}")
         finally:

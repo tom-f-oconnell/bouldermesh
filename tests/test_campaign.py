@@ -1005,4 +1005,31 @@ row = server.climb_row(old, full=True)
 assert (row["lat"], row["lng"], row["coord_source"]) == (33.81573, -116.64921, "area") and row["data"]["lat"] == 33.81573, row
 assert "(32.64058, -116.99956)" in server.coord_doubts()[old]["why"], "still flagged, with what its page said"
 print("route coordinates OK")
+
+# --- finding beta: its own queue, asked-for first, waiting out YouTube's refusals, stopped all at once -----------
+fresh()
+for i, mid in enumerate(("aaaaaaaaaaa1", "aaaaaaaaaaa2", "aaaaaaaaaaa3", "aaaaaaaaaaa4")):
+    server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES(?,?,?,?,?)", mid, f"m{i}", "mesh.glb", f"project:p{i}", i,
+             write=True)
+    (server.MESHES / mid).mkdir(parents=True, exist_ok=True)
+videos, server.beta_mod.videos = server.beta_mod.videos, lambda d: {} if d.name == "aaaaaaaaaaa4" else {"u": {}}
+server.beta_mod.save(server.MESHES / "aaaaaaaaaaa3", {"status": "done", "videos": []})
+assert server.beta_findable() == ["aaaaaaaaaaa2", "aaaaaaaaaaa1"], "newest first; not one already done, nor one with no videos"
+assert [server.queue_beta(m) for m in server.beta_findable()] == [True, True]
+assert server.queue_beta("aaaaaaaaaaa3", ahead=True) and not server.queue_beta("aaaaaaaaaaa3"), "once"
+assert server.beta_queue() == ["aaaaaaaaaaa3", "aaaaaaaaaaa2", "aaaaaaaaaaa1"], "the one asked for on its own goes first"
+assert server.jobs_state()["beta"] == {"running": None, "queued": 3, "youtube": None}
+refusal = {"since": 0, "until": time.time() + 3600, "level": 0, "error": "not a bot"}
+
+
+def refused(mesh_dir, photos, log):
+    server.beta_mod.save(mesh_dir, {"status": "queued", "videos": [], "waiting": refusal["until"], "resume": True})
+    raise server.youtube_mod.Refused(refusal)
+find, server.beta_mod.find = server.beta_mod.find, refused
+server.run_beta("aaaaaaaaaaa3")
+assert server.beta_mod.load(server.MESHES / "aaaaaaaaaaa3")["status"] == "queued", "waiting, not failed"
+assert server.stop_beta() == 3 and server.beta_queue() == [], "stopping unqueues them all"
+assert {server.beta_mod.load(server.MESHES / m)["status"] for m in ("aaaaaaaaaaa1", "aaaaaaaaaaa2", "aaaaaaaaaaa3")} == {"stopped"}
+server.beta_mod.videos, server.beta_mod.find = videos, find
+print("beta queue OK")
 print("ALL CAMPAIGN TESTS PASSED")

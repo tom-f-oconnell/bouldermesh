@@ -342,11 +342,12 @@ def climber(kps, scs, previous=None) -> int | None:
 # ------------------------------------------------------------------ one video
 def frames_of(url: str, tmp: Path, log: Log) -> list[tuple[float, Path]]:
     """FPS frames a second of a video, up to MAX_SECONDS, at up to 720p."""
+    from climbs import youtube
     from climbs.common import jobctl
     import subprocess
     tmp.mkdir(parents=True, exist_ok=True)
-    jobctl.run(["yt-dlp", "-q", "--no-playlist", "-f", "bv*[height<=720]/b[height<=720]/b", "--max-filesize", "300m",
-                "-o", str(tmp / "video.%(ext)s"), url], timeout=900, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    youtube.call(["yt-dlp", "-q", "--no-playlist", "-f", "bv*[height<=720]/b[height<=720]/b", "--max-filesize", "300m",
+                  "-o", str(tmp / "video.%(ext)s"), url], timeout=900, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     video = next(p for p in tmp.glob("video.*") if not p.name.endswith((".json", ".part")))
     jobctl.run(["ffmpeg", "-loglevel", "error", "-t", str(MAX_SECONDS), "-i", str(video), "-vf", f"fps={FPS},scale=-2:'min(720,ih)'",
                 "-q:v", "3", str(tmp / "f%05d.jpg")], timeout=900)
@@ -549,25 +550,32 @@ def summary(record: dict | None) -> dict | None:
     if not record:
         return None
     return {"status": record["status"], "progress": record.get("progress"), "note": record.get("note"),
-            "videos": len(record["videos"]), "holds": sum(len(v.get("holds") or []) for v in record["videos"])}
+            "waiting": record.get("waiting"), "videos": len(record["videos"]), "holds": sum(len(v.get("holds") or []) for v in record["videos"])}
 
 
-def interrupted(mesh_dir: Path) -> None:
-    """Mark a search that a restart stopped, as jobs aren't carried on after one."""
+def carry_on(mesh_dir: Path) -> None:
+    """Queue again a search that a restart stopped, as finding beta carries on after one."""
     record = load(mesh_dir)
-    if record and record["status"] in ("queued", "running"):
-        record.update(status="interrupted", progress=None)
+    if record and record["status"] == "running":
+        record.update(status="queued", progress=None, resume=True)
         save(mesh_dir, record)
 
 
 def find(mesh_dir: Path, photos: Path, log: Log) -> dict:
     """Find the beta in each of a mesh's videos, saving beta.json as it goes, so the page can follow it.
+    Videos already done by a search that YouTube's refusal or a restart stopped partway aren't done again.
 
     Returns:
         The record saved.
+
+    Raises:
+        youtube.Refused: YouTube is refusing downloads; beta.json says "waiting", with the videos done so far.
     """
+    from climbs import youtube
     found = videos(mesh_dir)
-    record = {"status": "running", "started": time.time(), "videos": [], "progress": None}
+    before = load(mesh_dir) or {}
+    kept = [v for v in before.get("videos", []) if before.get("resume") and v["url"] in found and v["status"] in ("done", "no holds found")]
+    record = {"status": "running", "started": time.time(), "videos": kept, "progress": None}
     if not found:
         record.update(status="done", note="none of its photos are frames of videos, or where they were placed wasn't kept")
         save(mesh_dir, record)
@@ -575,8 +583,13 @@ def find(mesh_dir: Path, photos: Path, log: Log) -> dict:
     save(mesh_dir, record)
     mesh = Mesh.load(mesh_dir)
     tracker = _pose_model(log)
-    poses = {}
+    try:
+        poses = {u: p for u, p in json.loads((mesh_dir / POSES_FILE).read_text()).items() if u in {v["url"] for v in kept}}
+    except (FileNotFoundError, json.JSONDecodeError):
+        poses = {}
     for n, (url, v) in enumerate(found.items()):
+        if url in {k["url"] for k in kept}:
+            continue
         entry = {"url": url, "tag": v["tag"], "title": v["title"], "uploader": v["uploader"], "placed": len(v["frames"])}
 
         def progress(s, n=n):
@@ -593,6 +606,11 @@ def find(mesh_dir: Path, photos: Path, log: Log) -> dict:
                 entry["image"] = f"beta_{v['tag']}.jpg"
             log(f"beta: {url}: {len(result['holds'])} holds, climber in {result['with_climber']} of {result['frames']} frames, "
                 f"{result['placed_frames']} placed")
+        except youtube.Refused as e:
+            log(f"beta: {e}: waiting")
+            record.update(status="queued", progress=None, waiting=e.state["until"], resume=True)
+            save(mesh_dir, record)
+            raise
         except Exception as e:
             entry.update(status=f"failed: {type(e).__name__}: {e}")
             log(f"beta: {url} failed: {e}")

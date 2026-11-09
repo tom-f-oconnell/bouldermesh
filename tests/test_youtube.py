@@ -2,8 +2,13 @@
 """Telling a climb's videos from others, and reading climbers' heights and ape indexes. Offline."""
 from __future__ import annotations
 
+import json
 import pathlib
+import shutil
+import subprocess
 import sys
+import tempfile
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
@@ -65,4 +70,66 @@ for text, height, span, ape, me in cases:
 d = yt.details({"webpage_url": "https://www.youtube.com/watch?v=x", "extractor": "youtube", "title": "t", "channel": "c", "license": None})
 assert d["license"] == "YouTube standard licence (all rights reserved)" and d["uploader"] == "c", d
 assert yt.details({"webpage_url": "https://vimeo.com/1", "extractor": "vimeo", "license": "by-nc"})["license"] == "by-nc"
+
+# --- the gate: YouTube's bot check leaves it alone for a while, longer each time; searches still go through ---------
+with tempfile.TemporaryDirectory() as td:
+    td = pathlib.Path(td)
+    calls, fake = td / "calls", td / "yt-dlp"
+    # a stand-in yt-dlp: records its arguments, and answers with the bot check while td/refuse exists
+    fake.write_text(f"""#!/bin/sh
+echo "$*" >> {calls}
+if [ -e {td}/refuse ] && [ "$4" != "--flat-playlist" ]; then
+  echo "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. This helps protect our community." >&2; exit 1
+fi
+echo '{{"entries": [], "title": "t"}}'
+""")
+    fake.chmod(0o755)
+    yt.STATE_FILE, yt.GAP = td / "youtube.json", (0.0, 0.0)
+    run = lambda video=True, args=("--skip-download", "x"): yt.call([str(fake), "-J", *args], video=video, timeout=30,  # noqa: E731
+                                                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert json.loads(run())["title"] == "t" and yt.refused() is None
+    assert "--sleep-requests 0.75" in calls.read_text(), "requests within a run are spaced too"
+    (td / "refuse").touch()
+    try:
+        run()
+        raise AssertionError("refused")
+    except yt.Refused as e:
+        first = e.state
+    assert first["level"] == 0 and 3500 < first["until"] - time.time() <= 3600 and "not a bot" in first["error"], first
+    n = len(calls.read_text().splitlines())
+    try:
+        run()
+        raise AssertionError("still refused")
+    except yt.Refused:
+        pass
+    assert len(calls.read_text().splitlines()) == n, "nothing asked of YouTube meanwhile"
+    run(video=False, args=("--flat-playlist", "ytsearch15:x"))
+    assert len(calls.read_text().splitlines()) == n + 1, "a search still goes"
+    yt.STATE_FILE.write_text(json.dumps({**first, "until": time.time() - 1}))    # an hour on: it tries again
+    assert yt.refused() is None
+    try:
+        run()
+        raise AssertionError("refused again")
+    except yt.Refused as e:
+        second = e.state
+    assert second["level"] == 1 and 7100 < second["until"] - time.time() <= 7200 and second["since"] == first["since"], second
+    yt.STATE_FILE.write_text(json.dumps({**second, "until": time.time() - 1}))
+    (td / "refuse").unlink()
+    run()
+    assert yt.refused() is None and not yt.STATE_FILE.exists(), "one let through: it's over"
+
+    # a harvest skips the rest of its videos rather than asking again for each
+    from climbs import harvest
+    from climbs.common import Media
+    (td / "refuse").touch()
+    saved = shutil.which
+    shutil.which = lambda name: str(fake) if name == "yt-dlp" else saved(name)
+    lines, n = [], len(calls.read_text().splitlines())
+    try:
+        got = harvest.video_frames([Media(url=f"https://www.youtube.com/watch?v=v{i}", kind="video") for i in range(4)],
+                                   td / "out", lines.append)
+    finally:
+        shutil.which = saved
+    assert got == [] and len(calls.read_text().splitlines()) == n + 1, lines
+    assert any("skipping 4 video(s)" in x for x in lines), lines
 print("ALL YOUTUBE TESTS PASSED")
