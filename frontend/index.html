@@ -44,7 +44,8 @@
   .mesh{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
   .name{font-weight:600}
   small{color:var(--mute)}
-  .tag{font-size:10px;padding:1px 6px;border-radius:4px;background:#2a2410;color:var(--warn);margin-left:6px}
+  .tag{font-size:10px;padding:1px 6px;border-radius:4px;background:#2a2410;color:var(--warn);margin-left:6px;white-space:nowrap}
+  .meta.bad{color:var(--bad)} .meta.bad a{color:var(--bad)}
   .tag.climb{background:#2a1a10;color:var(--climb)} .tag.ok{background:#102a1a;color:var(--ok)} .tag.bad{background:#2a1010;color:var(--bad)} .tag.src{background:#1a2030;color:var(--acc)}
   .chips{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
   .chip{font-size:11px;padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--fg);cursor:pointer}
@@ -178,8 +179,9 @@
       </section>
       <section>
         <h2>Climbs <small id="c-count"></small></h2>
-        <div class="row" style="margin-bottom:6px"><input type="text" id="c-filter" class="grow" placeholder="filter by name / boulder / area"></div>
-        <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="c-meshed"> Hide climbs without meshes</label></div>
+        <div class="row" style="margin-bottom:6px"><input type="text" id="c-filter" class="grow" placeholder="search every climb: name, boulder, area, grade"></div>
+        <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="c-meshed"> Hide climbs without meshes</label>
+          <label title="Their page's GPS is far from their area's, or they're far from the other climbs on their boulder: put them right where they came from, then import them again"><input type="checkbox" id="c-doubtful"> Only climbs whose coordinates look wrong <span id="c-doubtful-n"></span></label></div>
         <div id="climb-open"></div>
         <div id="climbs"></div>
       </section>
@@ -792,35 +794,56 @@ function flyTo(lat, lng){ mapFitted = true; showRight('map'); refreshMap().then(
 
 // ---------------------------------------------------------------- climbs
 let climbsCache = [];
-let meshedClimbs = [];   // fetched separately, as the full list only has the newest climbs
+let climbsTotal = null, climbsDoubtful = null;   // every climb there is, of which the list has the newest 500
+let climbsFound = null;       // with a search or a box ticked: the server's matches among every climb
 async function refreshClimbs(){
-  [climbsCache, meshedClimbs] = await Promise.all([api('/api/climbs'), $('#c-meshed').checked ? api('/api/climbs?meshed=1') : []]);
-  renderClimbs();
+  const [list, count] = await Promise.all([api('/api/climbs'), api('/api/climbs/count').catch(() => ({}))]);
+  climbsCache = list; climbsTotal = count.climbs ?? null; climbsDoubtful = count.doubtful ?? null;
+  await searchClimbs();
   // fill selects
   for (const sel of [$('#pclimb'), $('#upclimb')]) {
     const first = sel.options[0].outerHTML;
     sel.innerHTML = first + climbsCache.filter(c=>c.kind!=='area').map(c => `<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('');
   }
 }
+function climbQuery(){
+  const q = new URLSearchParams(), text = $('#c-filter').value.trim();
+  if (text) q.set('q', text);
+  if ($('#c-meshed').checked) q.set('meshed', '1');
+  if ($('#c-doubtful').checked) q.set('doubtful', '1');
+  return q.toString();
+}
+let searchSeq = 0, searchT;
+async function searchClimbs(){   // searches every climb, on the server: each word in the name, boulder, area or grade
+  const query = climbQuery(), seq = ++searchSeq;
+  if (!query) { climbsFound = null; return renderClimbs(); }
+  try {
+    const found = await api('/api/climbs?' + query);
+    if (seq === searchSeq) { climbsFound = found; renderClimbs(); }
+  } catch (e) { if (seq === searchSeq) toast('Search failed: ' + e.message, 5000); }
+}
+const SOURCE_NAME = { mountainproject: 'Mountain Project', openbeta: 'OpenBeta', kaya: 'Kaya' };
 function renderClimbs(){
-  const f = ($('#c-filter').value || '').toLowerCase();
-  const el = $('#climbs'), meshedOnly = $('#c-meshed').checked;
-  const shown = meshedOnly ? meshedClimbs.filter(c => c.n_links) : climbsCache;
-  $('#c-count').textContent = !climbsCache.length ? '' : meshedOnly ? `(${shown.length} of ${climbsCache.length})` : `(${climbsCache.length})`;
-  const list = shown.filter(c => !f || [c.name, c.boulder_name, ...(c.area_path||[])].join(' ').toLowerCase().includes(f));
-  el.innerHTML = list.length ? '' : `<div class="status">${!climbsCache.length ? 'No climbs yet — paste a Mountain Project or OpenBeta link above.' : shown.length ? 'No climbs match that filter.' : 'No climbs have meshes yet.'}</div>`;
+  const el = $('#climbs'), query = climbQuery(), list = query && climbsFound ? climbsFound : climbsCache;
+  const total = climbsTotal ?? climbsCache.length;
+  $('#c-doubtful-n').textContent = climbsDoubtful ? `(${climbsDoubtful})` : '';
+  $('#c-count').textContent = !climbsCache.length ? '' : query ? `(${list.length >= 500 ? 'the first 500' : list.length} found, of ${total})`
+    : total > climbsCache.length ? `(the newest ${climbsCache.length} of ${total}: searching covers them all)` : `(${total})`;
+  el.innerHTML = list.length ? '' : `<div class="status">${!climbsCache.length ? 'No climbs yet — paste a Mountain Project or OpenBeta link above.' : query ? 'No climbs match.' : 'No climbs.'}</div>`;
   for (const c of list) {
     const d = document.createElement('div'); d.className = 'card';
-    d.innerHTML = `<div class="row"><span class="name grow">${esc(c.name)} <small>${esc(c.grade||'')}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${c.n_links?`<span class="tag ok">${c.n_links} mesh</span>`:''}</span>
+    d.innerHTML = `<div class="row"><span class="name grow">${esc(c.name)} <small>${esc(c.grade||'')}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${c.n_links?`<span class="tag ok">${c.n_links} mesh</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
         <button class="sm sec open">Open</button></div>
       <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
-      <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>`;
+      <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
+      ${c.coords_doubt ? `<div class="meta bad">Coordinates look wrong: ${esc(c.coords_doubt.why)}.${c.url ? ` <a href="${esc(c.url)}" target="_blank" rel="noopener">Put them right on ${esc(SOURCE_NAME[c.source] || c.source)} ↗</a>, then paste its link above to import it again.` : ''}</div>` : ''}`;
     d.querySelector('.open').onclick = () => openClimb(c.id);
     el.appendChild(d);
   }
 }
-$('#c-filter').oninput = renderClimbs;
-$('#c-meshed').onchange = refreshClimbs;
+$('#c-filter').oninput = () => { clearTimeout(searchT); searchT = setTimeout(searchClimbs, 250); };
+$('#c-meshed').onchange = searchClimbs;
+$('#c-doubtful').onchange = searchClimbs;
 $('#m-older').onchange = refreshMeshes;
 
 // what a video or its uploader's channel says about the climber: "178 cm (5'10"), ape index +5 cm"
@@ -834,6 +857,7 @@ function climberSize(v){
   return `${parts.join(', ')} (${v.uploader || 'uploader'}${v.height_cm == null && v.ape_index_cm == null && v.wingspan_cm == null ? ', from their channel' : ''})`;
 }
 let openClimbId = null;
+const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', done: 'meshed', failed: 'failed', skipped: 'skipped' };
 async function openClimb(id, focus=true){
   const c = await api('/api/climbs/' + id);
   const data = c.data || {};
@@ -854,6 +878,7 @@ async function openClimb(id, focus=true){
     <div class="row" style="margin-top:6px"><span class="meta grow">📍 <b>${fmtLL(c.lat,c.lng)}</b> <small>(${esc(c.coord_source||'none')})</small></span>
       ${c.lat!=null?'<button class="sm sec fly">Map</button>':''}<button class="sm sec editll">Edit coords</button>
       <a href="${esc(c.url)}" target="_blank" rel="noopener"><button class="sm sec">Source ↗</button></a></div>
+    ${c.coords_doubt ? `<div class="meta bad">Coordinates look wrong: ${esc(c.coords_doubt.why)}.${c.url ? ` <a href="${esc(c.url)}" target="_blank" rel="noopener">Put them right on ${esc(SOURCE_NAME[c.source] || c.source)} ↗</a>, then import it again, or Edit coords here.` : ''}</div>` : ''}
     ${data.raw?.stub?`<div class="row notice" style="margin-top:6px"><span class="grow">Summary from the area page. Harvesting fetches the problem page first, or fetch it now for its photos and description.</span><button class="sm sec details">Fetch problem page</button></div>`:''}
     ${data.description?`<details style="margin-top:6px"><summary>Description / location</summary><div class="meta">${esc(data.description)}</div><div class="meta">${esc(data.location||'')}</div></details>`:''}
     <div class="meta" style="margin-top:6px">Photos (${imgs.length}) ${imgs.length?'<small>— from the source page; © their uploaders</small>':''}</div>
@@ -866,6 +891,7 @@ async function openClimb(id, focus=true){
     <div class="chips">${c.meshes.map(m=>`<span class="chip" data-mesh="${m.id}">▣ ${esc(m.name)}</span>`).join('')}
       <select class="linksel" style="width:auto;padding:2px 6px;font-size:12px"><option value="">+ link existing mesh…</option>${meshesCache.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>
     ${c.projects.length?`<div class="meta" style="margin-top:8px">Projects: ${c.projects.map(p=>`<span class="chip" data-proj="${p.id}">${esc(p.name)} <small>${p.status}</small></span>`).join(' ')}</div>`:''}
+    ${(c.areas||[]).map(a => `<div class="meta" style="margin-top:6px">In the area <b>${esc(a.name)}</b> (${a.area_status}), #${a.rank}: ${AREA_ITEM[a.status] || esc(a.status)}${a.note ? ` — ${esc(a.note)}` : ''}</div>`).join('')}
     <div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
       <div class="meta"><b>Harvest public photos → rough photogrammetry</b></div>
       <div class="checks" style="margin-top:4px">

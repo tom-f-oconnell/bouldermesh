@@ -900,4 +900,28 @@ server.settings().update({"compute.provider": "none"})
 server.configure_workers()
 assert [x["name"] for x in server.compute_state()["workers"]] == ["this server"] and server.compute_state()["pool"] is None
 print("several workers OK")
+
+# a route page's GPS far from its area's is a mistake on the page: the area's are kept
+area = Climb(source="mountainproject", source_id="555", url="https://www.mountainproject.com/route/555/x", name="Far Off",
+             lat=33.81573, lng=-116.64921, coord_source="area", raw={"stub": True})
+fid = server.upsert_climb(area)
+page = Climb(source="mountainproject", source_id="555", url=area.url, name="Far Off", lat=32.64058, lng=-116.99956, coord_source="route")
+assert server.upsert_climb(page) == fid
+row = server.climb_row(fid, full=True)
+assert (row["lat"], row["lng"], row["coord_source"]) == (33.81573, -116.64921, "area"), row
+assert row["data"]["raw"]["route_gps_ignored"] == [32.64058, -116.99956], row["data"]["raw"]
+server.upsert_climb(Climb(source="mountainproject", source_id="555", url=area.url, name="Far Off", lat=33.8158, lng=-116.6493, coord_source="route"))
+assert server.climb_row(fid)["coord_source"] == "route", "a route's own GPS near its area's is better"
+assert fid not in server.coord_doubts(fresh=True)
+server.upsert_climb(page)
+assert "used here instead" in server.coord_doubts()[fid]["why"], "flagged, to be put right on its page"
+on = lambda sid, lat, lng: server.upsert_climb(Climb(source="mountainproject", source_id=sid, url=f"https://x/{sid}", name=sid,  # noqa: E731
+                                                     lat=lat, lng=lng, coord_source="route", boulder_name="Big Rock", area_path=["CA", "Big Rock"]))
+ids = [on("b1", 34.0, -116.0), on("b2", 34.0001, -116.0001), on("b3", 34.03, -116.0)]
+doubts = server.coord_doubts(fresh=True)
+assert ids[2] in doubts and ids[0] not in doubts and ids[1] not in doubts, doubts
+assert "3.3 km from where most of the climbs on Big Rock are" == doubts[ids[2]]["why"], doubts[ids[2]]
+server.q("UPDATE climbs SET coord_source='manual' WHERE id=?", ids[2], write=True)
+assert ids[2] not in server.coord_doubts(fresh=True), "coordinates set by hand are taken as right"
+print("route coordinates OK")
 print("ALL CAMPAIGN TESTS PASSED")

@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -357,6 +358,13 @@ def run(B: str, tmp: Path) -> None:
     assert st == 201 and len(ke["imported"]) == 2, ke
     st, lst = req(B, "GET", "/api/climbs?q=egg")
     assert len(lst) == 1 and lst[0]["name"] == "The Egg"
+    assert [c["name"] for c in req(B, "GET", "/api/climbs?q=" + urllib.parse.quote("index egg"))[1]] == ["The Egg"], "each word, anywhere"
+    assert [c["name"] for c in req(B, "GET", "/api/climbs?q=" + urllib.parse.quote("problem test"))[1]] == ["Test Problem"]
+    assert req(B, "GET", "/api/climbs?q=" + urllib.parse.quote("egg nowhere"))[1] == [], "every word has to match"
+    assert [c["name"] for c in req(B, "GET", "/api/climbs?q=v11")[1]] == ["The Egg"], "grades too"
+    n = req(B, "GET", "/api/climbs/count")[1]
+    assert n["climbs"] == len(req(B, "GET", "/api/climbs")[1]) >= 3 and n["doubtful"] == 0, n
+    assert req(B, "GET", "/api/climbs?doubtful=1")[1] == [] and all(c["coords_doubt"] is None for c in req(B, "GET", "/api/climbs")[1])
     st, only = req(B, "GET", "/api/climbs?meshed=1")
     st, every = req(B, "GET", "/api/climbs")
     assert st == 200 and [c["id"] for c in only] == [cid] and len(every) > 1 and all(c["n_links"] for c in only), (only, len(every))

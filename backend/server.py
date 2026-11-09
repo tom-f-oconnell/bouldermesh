@@ -201,10 +201,29 @@ def safe_name(name: str) -> str:
 
 
 # ----------------------------------------------------------------- climbs helpers
+FAR_KM = 5.0    # a route's own GPS this far from its area's is a mistake on its page: Swing Dance's was 135 km off
+
+
+def _km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    import math
+    p = math.pi / 180
+    h = math.sin((lat2 - lat1) * p / 2) ** 2 + math.cos(lat1 * p) * math.cos(lat2 * p) * math.sin((lng2 - lng1) * p / 2) ** 2
+    return 12742 * math.asin(math.sqrt(h))
+
+
 def upsert_climb(c: Climb) -> str:
-    row = q("SELECT id FROM climbs WHERE source=? AND source_id=?", c.source, c.source_id, one=True)
+    row = q("SELECT id, lat, lng, coord_source FROM climbs WHERE source=? AND source_id=?", c.source, c.source_id, one=True)
     if row and c.raw.get("stub"):   # an area-table summary never replaces a record we already have
         return row["id"]
+    if c.coord_source == "route" and c.lat is not None and c.lng is not None:
+        known = (row["lat"], row["lng"], row["coord_source"]) if row and row["coord_source"] in ("area", "parent-area") else None
+        if known is None and c.source == "mountainproject":    # as an area's table gave it
+            item = q("SELECT data FROM campaign_items WHERE source_id=? AND data IS NOT NULL LIMIT 1", c.source_id, one=True)
+            d = json.loads(item["data"]) if item else {}
+            known = (d["lat"], d["lng"], d.get("coord_source") or "area") if d.get("lat") is not None and d.get("lng") is not None else None
+        if known and known[0] is not None and _km(c.lat, c.lng, known[0], known[1]) > FAR_KM:
+            c.raw["route_gps_ignored"] = [c.lat, c.lng]
+            c.lat, c.lng, c.coord_source = known
     cid = row["id"] if row else new_id()
     # coordinates edited by hand survive re-imports
     q("""INSERT INTO climbs(id,source,source_id,url,name,kind,grade,lat,lng,coord_source,boulder_name,area_path,data,created)
@@ -218,7 +237,58 @@ def upsert_climb(c: Climb) -> str:
            area_path=excluded.area_path,data=excluded.data""",
       cid, c.source, c.source_id, c.url, c.name, c.kind, c.grade, c.lat, c.lng, c.coord_source,
       c.boulder_name, json.dumps(c.area_path), json.dumps(c.to_dict()), time.time(), write=True)
+    _doubts["at"] = 0.0
     return cid
+
+
+BOULDER_KM = 1.0   # a climb this far from the others on its boulder is probably misplaced
+
+
+_doubts: dict = {"at": 0.0, "found": {}}
+
+
+def coord_doubts(fresh: bool = False) -> dict[str, dict]:
+    """Climbs whose coordinates look wrong, so that they can be put right where they came from; worked out
+    again at most every 30 s unless fresh, as it reads every climb.
+
+    Returns:
+        {climb id: {km, why, expected: [lat, lng]}}: a route page's GPS far from its area's (FAR_KM), whether
+        set aside on import or from before that was, or a climb far from the other climbs on its boulder.
+    """
+    import statistics
+    if not fresh and time.time() - _doubts["at"] < 30:
+        return _doubts["found"]
+    rows = q("""SELECT id, source, source_id, lat, lng, coord_source, boulder_name, area_path,
+                       json_extract(data, '$.raw.route_gps_ignored') AS ignored FROM climbs WHERE kind != 'area'""")
+    area = {r["source_id"]: (r["lat"], r["lng"]) for r in q("""SELECT source_id, json_extract(data, '$.lat') AS lat,
+                json_extract(data, '$.lng') AS lng FROM campaign_items WHERE data IS NOT NULL""") if r["lat"] is not None and r["lng"] is not None}
+    out = {}
+    for r in rows:
+        if r["ignored"] and r["lat"] is not None:
+            g = json.loads(r["ignored"])
+            km = _km(g[0], g[1], r["lat"], r["lng"])
+            out[r["id"]] = {"km": round(km, 1), "expected": [r["lat"], r["lng"]],
+                            "why": f"its page's GPS ({g[0]:.5f}, {g[1]:.5f}) is {km:.0f} km from its area's, which are used here instead"}
+        elif r["coord_source"] == "route" and r["lat"] is not None and r["source"] == "mountainproject" and r["source_id"] in area:
+            a = area[r["source_id"]]
+            km = _km(r["lat"], r["lng"], *a)
+            if km > FAR_KM:
+                out[r["id"]] = {"km": round(km, 1), "expected": list(a), "why": f"its page's GPS is {km:.0f} km from where its area puts it"}
+    boulders = {}
+    for r in rows:
+        if r["lat"] is not None and r["boulder_name"] and r["coord_source"] != "manual":
+            boulders.setdefault((r["boulder_name"], r["area_path"]), []).append(r)
+    for (name, _), rs in boulders.items():
+        if len(rs) < 3:
+            continue
+        mid = (statistics.median(x["lat"] for x in rs), statistics.median(x["lng"] for x in rs))   # where most of them are
+        for r in rs:
+            km = _km(r["lat"], r["lng"], *mid)
+            if r["id"] not in out and km > BOULDER_KM:
+                out[r["id"]] = {"km": round(km, 1), "expected": [round(mid[0], 5), round(mid[1], 5)],
+                                "why": f"{km:.1f} km from where most of the climbs on {name} are"}
+    _doubts.update(at=time.time(), found=out)
+    return out
 
 
 def climb_row(cid: str, full=False) -> dict | None:
@@ -231,6 +301,11 @@ def climb_row(cid: str, full=False) -> dict | None:
         r["data"] = data
         r["meshes"] = q("SELECT m.*, l.note FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=?", cid)
         r["projects"] = q("SELECT id,name,status,kind,mesh_id,harvest FROM projects WHERE climb_id=? ORDER BY created DESC", cid)
+        # the areas it's in, and how far meshing it there got: an area's climbs it hasn't reached have no climb yet
+        r["areas"] = q("""SELECT c.id, c.name, c.status AS area_status, ci.status, ci.note, ci.rank, ci.mesh_id, ci.project_id
+                          FROM campaign_items ci JOIN campaigns c ON c.id=ci.campaign_id
+                          WHERE ci.climb_id=? OR (?='mountainproject' AND ci.source_id=?) ORDER BY c.created""",
+                       cid, r["source"], r["source_id"])
         r["videos_found"] = q("""SELECT cv.url, cv.found_by, cv.frames, v.title, v.uploader, v.license, v.height_cm, v.wingspan_cm,
                                     v.ape_index_cm, v.quotes, c.height_cm AS channel_height_cm, c.wingspan_cm AS channel_wingspan_cm,
                                     c.ape_index_cm AS channel_ape_index_cm, c.quotes AS channel_quotes
@@ -1573,12 +1648,18 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/campaigns":
                 return self.send_json([campaign_view(c) for c in q("SELECT * FROM campaigns ORDER BY created DESC")])
             # ---- climbs
-            if p == "/api/climbs":
-                sql, args = "SELECT id FROM climbs", []
-                conds = []
-                if qs.get("q"):
-                    conds.append("(name LIKE ? OR boulder_name LIKE ? OR area_path LIKE ?)")
-                    args += [f"%{qs['q'][0]}%"] * 3
+            if p == "/api/climbs":   # the newest 500, or with q those of every climb with each of its words
+                sql, args, order = "SELECT id FROM climbs", [], []
+                conds, doubts = [], coord_doubts()
+                if qs.get("doubtful"):    # only those whose coordinates look wrong
+                    conds.append(f"id IN ({','.join('?' * len(doubts)) or 'NULL'})")
+                    args += list(doubts)
+                text = (qs.get("q") or [""])[0].strip()
+                for word in text.split()[:8]:
+                    conds.append("(name LIKE ? OR boulder_name LIKE ? OR area_path LIKE ? OR grade LIKE ?)")
+                    args += [f"%{word}%"] * 4
+                if text:
+                    order, oargs = ["lower(name)=lower(?) DESC", "name LIKE ? DESC"], [text, f"%{text}%"]
                 if qs.get("source"):
                     conds.append("source=?")
                     args.append(qs["source"][0])
@@ -1586,13 +1667,16 @@ class Handler(BaseHTTPRequestHandler):
                     conds.append("id IN (SELECT climb_id FROM mesh_links)")
                 if conds:
                     sql += " WHERE " + " AND ".join(conds)
-                sql += " ORDER BY created DESC LIMIT 500"
-                return self.send_json([climb_row(r["id"]) for r in q(sql, *args)])
+                sql += " ORDER BY " + ", ".join(order + ["created DESC"]) + " LIMIT 500"
+                return self.send_json([{**climb_row(r["id"]), "coords_doubt": doubts.get(r["id"])} for r in q(sql, *args, *(oargs if text else []))])
+            if p == "/api/climbs/count":
+                return self.send_json({"climbs": q("SELECT count(*) AS n FROM climbs", one=True)["n"], "doubtful": len(coord_doubts())})
             m = re.fullmatch(r"/api/climbs/([0-9a-f]+)", p)
             if m:
                 r = climb_row(m[1], full=True)
                 if not r:
                     return self.send_json({"error": "not found"}, 404)
+                r["coords_doubt"] = coord_doubts().get(m[1])
                 setting = settings().get("site.sources")
                 if setting != "all":    # its page's photos and videos, as far as their licences allow
                     data = r["data"]

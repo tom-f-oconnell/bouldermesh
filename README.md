@@ -351,7 +351,9 @@ The AWS side has been tested against stand-ins for AWS, not against AWS itself.
     POST /api/projects/{id}/restore {file}              put a photo the filter rejected back
     GET  /api/meshes · POST /api/meshes (multipart "files", +name, +lat/lng, +climb_id) · PATCH|DELETE /api/meshes/{id}
     POST /api/meshes/{id}/links {climb_id, note} · DELETE /api/meshes/{id}/links/{climb_id}
-    GET  /api/climbs?q=&source= · GET|PATCH|DELETE /api/climbs/{id}
+    GET  /api/climbs?q=&source=&meshed=&doubtful=       the newest 500, or of every climb those with each word of q (name, boulder,
+                                                        area or grade), with meshes, or whose coordinates look wrong
+    GET  /api/climbs/count · GET|PATCH|DELETE /api/climbs/{id}
     POST /api/climbs/import {url, include_children}     MP / OpenBeta / Kaya URL
     POST /api/climbs/search {q, lat, lng, radius_m}     OpenBeta live search
     POST /api/climbs/manual {...} · POST /api/climbs/kaya-export (multipart csv/json)
