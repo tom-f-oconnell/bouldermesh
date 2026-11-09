@@ -219,6 +219,11 @@ default on that machine:
 
     echo COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml >> .env
 
+It hands the GPU over as a CDI device, which needs the toolkit's spec: `nvidia-ctk cdi list` should show
+`nvidia.com/gpu=all` (toolkit 1.18 and later make it at boot; otherwise
+`sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`). Docker's `gpus: all` would lose the GPU
+whenever the container's limits change (`docker update`) or systemd reloads.
+
 It's used if COLMAP has CUDA, and has 4 GB of its memory free when matching starts. Otherwise, or if
 it runs out partway, matching uses the CPU, so a shared GPU is fine. The top of the page says which
 it would use now, and each job's log says which it did. `USE_GPU=0` keeps it on the CPU.

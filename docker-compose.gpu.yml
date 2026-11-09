@@ -1,4 +1,7 @@
 # Lets photo matching use an NVIDIA GPU, when it has room. See "Real photogrammetry" in the README.
+# The GPU comes as a CDI device (the NVIDIA Container Toolkit's spec, in /var/run/cdi), not `gpus: all`: with that,
+# changing the running container (`docker update --cpus`) or a `systemctl daemon-reload` takes the GPU away from it.
 services:
   bouldermesh:
-    gpus: all
+    devices:
+      - nvidia.com/gpu=all
