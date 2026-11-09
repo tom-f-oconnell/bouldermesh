@@ -1,11 +1,15 @@
 # The public setup, over docker-compose.yml:
-#     docker compose -f docker-compose.yml -f docker-compose.public.yml up -d --build
+#     docker compose -f docker-compose.yml -f docker-compose.public.yml up -d
+# The image is built elsewhere (compiling COLMAP wants cores and memory a small server hasn't got) and loaded from a
+# docker save, or pulled from a registry named in BM_IMAGE; nothing is built here.
 # Caddy takes the site's traffic on ports 80 and 443, with a Let's Encrypt certificate for SITE_HOST, and the app's own
 # ports are reachable only from this machine (the admin page over an SSH tunnel). Nothing can be changed from a browser
 # unless .env sets EDIT_TOKEN, and then only with it. The container runs as uid 1000, not root, so ./data must be writable
 # by that user. See the README, "Putting it on the public internet".
 services:
   bouldermesh:
+    build: !reset null
+    image: "${BM_IMAGE:-bouldermesh-bouldermesh:latest}"
     ports: !override
       - "127.0.0.1:${PORT:-8470}:8470"
       - "127.0.0.1:${ADMIN_PORT:-36184}:36184"

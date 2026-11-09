@@ -277,11 +277,19 @@ ordinary user, and makes the site view-only for everyone but you:
     mkdir data                                  # owned by the user the container runs as: uid 1000, a fresh machine's first user
     echo SITE_HOST=boulders.example.com >> .env  # its name in DNS, pointed at this machine, for the certificate
     echo EDIT_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(24))") >> .env
-    docker compose -f docker-compose.yml -f docker-compose.public.yml up -d --build
+    docker compose -f docker-compose.yml -f docker-compose.public.yml up -d
 
-Ports 80 and 443 must be open to the world. To run it under systemd as above, put
-`COMPOSE_FILE=docker-compose.yml:docker-compose.public.yml` in `.env` too (with `docker-compose.gpu.yml` between them on a
-machine with a GPU) and install the unit.
+The image isn't built there: compiling COLMAP wants cores and memory a small server hasn't got, so the public setup runs
+one built elsewhere. From a machine that has built it, either copy it straight over (2.4 GB):
+
+    docker save bouldermesh-bouldermesh:latest | zstd | ssh you@boulders.example.com 'zstd -d | docker load'
+
+or push it to a registry (see "Running reconstructions elsewhere"), put `BM_IMAGE=ghcr.io/<github-user>/bouldermesh:latest`
+in `.env`, and `docker compose -f docker-compose.yml -f docker-compose.public.yml pull`. Copy `data/meshes/` and
+`data/bouldermesh.sqlite` over the same way; projects' photos needn't come, their cards just show none. Ports 80 and 443
+must be open to the world. To run it under systemd as above, put `COMPOSE_FILE=docker-compose.yml:docker-compose.public.yml`
+in `.env` too (with `docker-compose.gpu.yml` between them on a machine with a GPU) and install the unit; its build step
+then has nothing to build.
 
 **Changing things.** With `EDIT_TOKEN` set, the page has an *Edit…* button in its header: enter the token there (it stays in
 that browser) and the controls appear; without it, the site shows only what's there, and every change sent to it is refused
@@ -358,11 +366,15 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   restart are ended. Its credentials need EC2 (run, describe and terminate instances, security groups)
   and SSM's GetParameter. *Test the connection* checks them without starting anything.
 
-Machines run the same Docker image as this server, which they pull from a registry:
+Machines run the same Docker image as this server, which they pull from a registry. GitHub's wants a token that may
+write packages (`gh auth refresh -h github.com -s write:packages`, or a classic personal access token with that scope),
+and your user name in lower case:
 
-    docker tag bouldermesh-bouldermesh ghcr.io/you/bouldermesh:latest && docker push ghcr.io/you/bouldermesh:latest
+    gh auth token | docker login ghcr.io -u <github-user> --password-stdin
+    docker tag bouldermesh-bouldermesh ghcr.io/<github-user>/bouldermesh:latest && docker push ghcr.io/<github-user>/bouldermesh:latest
 
-and set that as *Docker image the machines run*. A private image on ECR works with an *Instance profile*
+The package starts private: make it public in its settings on GitHub (*Change visibility*), or `docker login` wherever
+it's pulled. Set it as *Docker image the machines run*. A private image on ECR works with an *Instance profile*
 that may pull it. Each climb's photos and people masks go to the machine, and the mesh, its cameras and
 the masks come back. Harvesting stays here. A climb whose machine can't be had or is lost waits, rather
 than failing, and that worker tries again in 5 minutes. design.md has what offloading costs and saves.
