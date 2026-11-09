@@ -51,10 +51,15 @@ def harvested(project_dir: Path) -> dict[str, dict]:
 
 
 def describe(name: str, known: dict[str, dict]) -> dict:
-    """One photo's entry, from what the harvest recorded, or else from its name."""
+    """One photo's entry, from what the harvest recorded, or else from its name. A pooled photo whose harvest
+    hadn't recorded it has an entry without a source (harvest.pool()), which its name fills in."""
     entry = known.get(name) or known.get(Path(name).stem)
-    if entry:
+    if entry and entry.get("source"):
         return {**entry, "file": name}
+    return {**_by_name(name), **(entry or {}), "file": name}
+
+
+def _by_name(name: str) -> dict:
     prefix = name.split("_")[0]
     if prefix == "yt":
         return {"file": name, "source": "youtube", "license": None}
@@ -83,7 +88,12 @@ def save(mesh_dir: Path, project_dir: Path) -> dict:
 
 def load(mesh_dir: Path) -> dict | None:
     path = mesh_dir / FILE
-    return json.loads(path.read_text()) if path.exists() else None
+    if not path.exists():
+        return None
+    record = json.loads(path.read_text())
+    # saved before describe() filled in pooled photos' sources
+    record["photos"] = [p if p.get("source") else describe(p["file"], {p["file"]: p}) for p in record["photos"]]
+    return record
 
 
 def summary(record: dict | None) -> dict | None:

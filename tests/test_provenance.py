@@ -69,4 +69,16 @@ with tempfile.TemporaryDirectory() as td:
     assert by["ddg_aa.jpg"]["source"] == "ddg" and by["ddg_aa.jpg"]["license"] is None, by["ddg_aa.jpg"]
     assert by[f"yt_{TAG}_000.jpg"]["source"] == "youtube" and by["mine.jpg"]["source"] == "upload"
     assert provenance.summary(None) is None and provenance.load(root / "nowhere") is None
+
+    # a pooled photo its own harvest hadn't recorded: an entry without a source, which its name fills in
+    (proj / "sources.json").write_text(json.dumps({"files": [{"file": "ddg_aa.jpg", "pooled_from": "other"},
+                                                             {"file": "mine.jpg", "pooled_from": "other"}]}))
+    by = {p["file"]: p for p in provenance.save(mesh, proj)["photos"]}
+    assert by["ddg_aa.jpg"]["source"] == "ddg" and by["ddg_aa.jpg"]["pooled_from"] == "other", by["ddg_aa.jpg"]
+    assert by["mine.jpg"]["source"] == "upload", by["mine.jpg"]
+    # and one saved like that before: loading it fills it in, so the summary doesn't fail
+    (mesh / provenance.FILE).write_text(json.dumps({"basis": "given", "photos": [{"file": "ddg_aa.jpg", "pooled_from": "other"},
+                                                                                 {"file": f"yt_{TAG}_000.jpg", "source": "youtube"}]}))
+    s = provenance.summary(provenance.load(mesh))
+    assert sorted(x["source"] for x in s["sources"]) == ["ddg", "youtube"], s
 print("ALL PROVENANCE TESTS PASSED")

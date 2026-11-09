@@ -1882,12 +1882,15 @@ class Handler(BaseHTTPRequestHandler):
                 for r in rows:
                     r["climbs"] = by.get(r["id"], [])
                     r["texture"] = texture_mode(r["id"], r["source"])
-                    r["cleanup"] = meshclean.summary(meshclean.load(served_dir(r["id"], r["texture"])))
-                    r["orientation"] = orientation.load(MESHES / r["id"])
-                    r["sources"] = provenance.summary(provenance.load(MESHES / r["id"]))
-                    r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
-                    r["marked"] = len(beta_mod.load_holds(MESHES / r["id"])["holds"])
-                    r["scale"] = scale_mod.summary(scale_mod.load(MESHES / r["id"]))
+                    try:    # one mesh's unreadable file shouldn't empty the whole list
+                        r["cleanup"] = meshclean.summary(meshclean.load(served_dir(r["id"], r["texture"])))
+                        r["orientation"] = orientation.load(MESHES / r["id"])
+                        r["sources"] = provenance.summary(provenance.load(MESHES / r["id"]))
+                        r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
+                        r["marked"] = len(beta_mod.load_holds(MESHES / r["id"])["holds"])
+                        r["scale"] = scale_mod.summary(scale_mod.load(MESHES / r["id"]))
+                    except Exception as e:
+                        print(f"error: listing mesh {r['id']}: {type(e).__name__}: {e}", flush=True)
                     r["cameras_kept"] = (MESHES / r["id"] / orientation.CAMERAS_FILE).exists()
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
