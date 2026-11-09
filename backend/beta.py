@@ -12,6 +12,8 @@ and which feet, which is why a pose model is used.
   beta.json      per video: its holds, each limb's track on the mesh, and how far it got
   beta_<tag>.jpg the video's placed frame most matched, with the tracks and holds drawn on it
   holds.json     holds marked by hand in the viewer: [{p: [x, y, z], role}]
+  beta_poses.json per video, each frame's climber: {t, kp, sc, ref, H}, all their keypoints and scores,
+                 the placed frame it matched and the homography into it, which scale.py measures them by
 
 Positions are in the mesh's own coordinates, as are its cameras in cameras.json.
 """
@@ -27,7 +29,7 @@ from pathlib import Path
 from typing import Callable
 
 Log = Callable[[str], None]
-FILE, HOLDS_FILE = "beta.json", "holds.json"
+FILE, HOLDS_FILE, POSES_FILE = "beta.json", "holds.json", "beta_poses.json"
 ROLES = ("start", "hand", "finish", "foot")     # the order the Tension Board app cycles a hold through
 COLORS = {"start": (60, 210, 25), "hand": (255, 107, 47), "finish": (42, 42, 255), "foot": (245, 61, 255)}   # BGR
 FPS = 2.0               # frames a second looked at
@@ -74,15 +76,27 @@ def lens(cam: dict, size: tuple[int, int]) -> tuple[float, float, float, float, 
     return 1.2 * max(w, h), w / 2, h / 2, 0.0, True
 
 
-def camera_ray(cam: dict, size, uv) -> tuple:
-    """The ray through pixel uv of a placed photo, in the mesh's coordinates: origin, unit direction."""
-    import numpy as np
+def normalized(cam: dict, size, uv) -> tuple[float, float]:
+    """Pixel uv of a placed photo as x/z, y/z in its camera's coordinates, its lens's distortion undone."""
     f, cx, cy, k, _ = lens(cam, size)
     xd, yd = (uv[0] - cx) / f, (uv[1] - cy) / f
     x, y = xd, yd
     for _ in range(5):     # undo SIMPLE_RADIAL distortion: xd = x (1 + k r^2)
         r2 = x * x + y * y
         x, y = xd / (1 + k * r2), yd / (1 + k * r2)
+    return x, y
+
+
+def depth(cam: dict, X) -> float:
+    """How far in front of a placed photo's camera a point is, along its axis."""
+    import numpy as np
+    return float((_rotation(cam["q"]) @ np.asarray(X, float) + np.asarray(cam["t"], float))[2])
+
+
+def camera_ray(cam: dict, size, uv) -> tuple:
+    """The ray through pixel uv of a placed photo, in the mesh's coordinates: origin, unit direction."""
+    import numpy as np
+    x, y = normalized(cam, size, uv)
     R, t = _rotation(cam["q"]), np.asarray(cam["t"], float)
     d = R.T @ np.array([x, y, 1.0])
     return -R.T @ t, d / np.linalg.norm(d)
@@ -106,8 +120,14 @@ class Mesh:
     def __init__(self, V, F):
         import numpy as np
         V = np.asarray(V, float)
+        self.V, self.F = V, np.asarray(F)
         self.v0 = V[F[:, 0]]
         self.e1, self.e2 = V[F[:, 1]] - self.v0, V[F[:, 2]] - self.v0
+        # each triangle's bounding sphere, so that a ray is only tested against the few it passes near
+        self.c = self.v0 + (self.e1 + self.e2) / 3
+        self.r = np.sqrt(np.max([np.einsum("ij,ij->i", d, d) for d in (self.v0 - self.c, self.e1 + self.v0 - self.c,
+                                                                         self.e2 + self.v0 - self.c)], axis=0))
+        self.cc = np.einsum("ij,ij->i", self.c, self.c)
         lo, hi = np.percentile(V, 5, axis=0), np.percentile(V, 95, axis=0)
         self.size = float(max(hi - lo))
         self.ground = float(np.percentile(V[:, 1], 2))    # +Y is up in a levelled mesh
@@ -117,26 +137,106 @@ class Mesh:
         import meshclean
         path = meshclean.mesh_file(mesh_dir)
         if not path:
-            raise ValueError("only GLB meshes have beta")
+            raise ValueError("only GLB meshes can be read here")
         V, F, _ = meshclean._geometry(*meshclean._read_glb(path))
         return cls(V, F)
 
     def hit(self, origin, direction):
-        """The nearest point where a ray meets the mesh, or None (Möller-Trumbore, all triangles at once)."""
+        """The nearest point where a ray meets the mesh, or None (Möller-Trumbore, on the triangles whose
+        bounding spheres it passes through)."""
         import numpy as np
-        p = np.cross(direction, self.e2)
-        det = np.einsum("ij,ij->i", self.e1, p)
+        origin, direction = np.asarray(origin, float), np.asarray(direction, float)
+        along = self.c @ direction - origin @ direction
+        perp2 = self.cc - 2 * (self.c @ origin) + origin @ origin - along * along
+        near = np.flatnonzero((along > -self.r) & (perp2 <= self.r * self.r))
+        if not near.size:
+            return None
+        e1, e2, v0 = self.e1[near], self.e2[near], self.v0[near]
+        p = np.cross(direction, e2)
+        det = np.einsum("ij,ij->i", e1, p)
         ok = np.abs(det) > 1e-12
         inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
-        s = origin - self.v0
+        s = origin - v0
         u = np.einsum("ij,ij->i", s, p) * inv
-        qv = np.cross(s, self.e1)
+        qv = np.cross(s, e1)
         v = (qv @ direction) * inv
-        t = np.einsum("ij,ij->i", self.e2, qv) * inv
+        t = np.einsum("ij,ij->i", e2, qv) * inv
         good = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 1e-9)
         if not good.any():
             return None
         return origin + direction * float(t[good].min())
+
+    def view(self, cam: dict, size) -> "View":
+        """Ready to cast many rays from one placed photo's camera."""
+        return View(self, cam, size)
+
+
+class View:
+    """A mesh as one placed photo's camera sees it: each triangle's bounding sphere projected into the
+    photo once, and filed by where it lands, so that a ray through a pixel is only tested against the
+    triangles whose spheres cover it."""
+
+    def __init__(self, mesh: Mesh, cam: dict, size):
+        import numpy as np
+        self.mesh, self.cam, self.size = mesh, cam, size
+        R, t = _rotation(cam["q"]), np.asarray(cam["t"], float)
+        p = mesh.c @ R.T + t
+        z = p[:, 2]
+        front = np.flatnonzero(z + mesh.r > 0)
+        z, r = np.maximum(z[front], 1e-9), mesh.r[front]
+        x, y = p[front, 0] / z, p[front, 1] / z
+        # generously: a sphere off the axis looks wider, by up to 1 + x^2 + y^2, and one close by more than r/z
+        rad = np.where(z > 2 * r, r / np.maximum(z - r, 1e-9) * (1 + x ** 2 + y ** 2), np.inf)
+        corners = [normalized(cam, size, uv) for uv in ((0, 0), (size[0], 0), (0, size[1]), size)]
+        xs, ys = [c[0] for c in corners], [c[1] for c in corners]
+        seen = (x + rad >= min(xs)) & (x - rad <= max(xs)) & (y + rad >= min(ys)) & (y - rad <= max(ys))
+        front, x, y, rad = front[seen], x[seen], y[seen], rad[seen]
+        finite = rad[np.isfinite(rad)]
+        self.CELL = max(float(np.quantile(finite, 0.98)), 1e-4) if finite.size else 1.0
+        small = rad <= self.CELL
+        self.big = front[~small]
+        ids = self._cell(x[small], y[small])
+        order = np.argsort(ids)
+        self.ids, self.tri = ids[order], front[small][order]
+        self.origin = -R.T @ t
+        self.R = R
+
+    def _cell(self, x, y):
+        import numpy as np
+        return np.floor(np.asarray(x) / self.CELL).astype(np.int64) * 1_000_003 + np.floor(np.asarray(y) / self.CELL).astype(np.int64)
+
+    def hit(self, uv, normal: bool = False):
+        """Where the ray through pixel uv meets the mesh, and its depth along the camera's axis, or (None, None);
+        with normal, also the unit normal of the triangle it meets, or None."""
+        import numpy as np
+        x, y = normalized(self.cam, self.size, uv)
+        keys = [self._cell(x + dx * self.CELL, y + dy * self.CELL) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]
+        lo, hi = np.searchsorted(self.ids, keys, "left"), np.searchsorted(self.ids, keys, "right")
+        near = np.concatenate([self.big, *(self.tri[a:b] for a, b in zip(lo, hi))])
+        if not near.size:
+            return (None, None, None) if normal else (None, None)
+        d = self.R.T @ np.array([x, y, 1.0])
+        d /= np.linalg.norm(d)
+        m = self.mesh
+        e1, e2, v0 = m.e1[near], m.e2[near], m.v0[near]
+        p = np.cross(d, e2)
+        det = np.einsum("ij,ij->i", e1, p)
+        ok = np.abs(det) > 1e-12
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        s = self.origin - v0
+        u = np.einsum("ij,ij->i", s, p) * inv
+        qv = np.cross(s, e1)
+        v = (qv @ d) * inv
+        t = np.einsum("ij,ij->i", e2, qv) * inv
+        good = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 1e-9)
+        if not good.any():
+            return (None, None, None) if normal else (None, None)
+        i = int(np.argmin(np.where(good, t, np.inf)))
+        X = self.origin + d * float(t[i])
+        if not normal:
+            return X, depth(self.cam, X)
+        n = np.cross(e1[i], e2[i])
+        return X, depth(self.cam, X), n / max(np.linalg.norm(n), 1e-12)
 
 
 # ------------------------------------------------------------------ contacts and holds
@@ -335,8 +435,9 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
         photos: where those frames are.
 
     Returns:
-        {frames, with_climber, placed_frames, approximate_lens, holds, tracks, reference}: tracks are each
-        limb's [t, x, y, z] on the mesh, reference the placed frame most matched.
+        {frames, with_climber, placed_frames, approximate_lens, holds, tracks, reference, poses}: tracks are
+        each limb's [t, x, y, z] on the mesh, reference the placed frame most matched, poses the climber in
+        each frame they're found in: {t, kp, sc, ref, H}, ref and H None where it matched no placed frame.
     """
     import cv2
     import numpy as np
@@ -346,7 +447,7 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
     sizes = {n: v[2] for n, v in matcher.refs.items()}
     tracker.reset()
     tracks = {limb: [] for limb in LIMBS}
-    used, seen, prev = {}, 0, None
+    used, seen, prev, views, poses = {}, 0, None, {}, []
     for i, (t, path) in enumerate(frames):
         jobctl.check()
         if i % 10 == 0:
@@ -362,15 +463,18 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
             lo, hi = kps[who][good].min(axis=0), kps[who][good].max(axis=0)
             pad = 0.15 * (hi - lo)
             name, H = matcher.match(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), (*(lo - pad), *(hi + pad)))
+            poses.append({"t": round(t, 2), "kp": [[round(float(a), 1), round(float(b), 1)] for a, b in kps[who]],
+                          "sc": [round(float(x), 3) for x in scs[who]], "ref": name,
+                          "H": None if H is None else [round(float(x), 7) for x in np.asarray(H).ravel()]})
             if name is not None:
                 used[name] = used.get(name, 0) + 1
+                if name not in views:
+                    views[name] = mesh.view(placed[name], sizes[name])
                 for limb, uv in limb_points(kps[who], scs[who]).items():
                     if uv is None:
                         continue
                     q = cv2.perspectiveTransform(np.float32([[uv]]), H)[0][0]
-                    origin, d = camera_ray(placed[name], sizes[name], q)
-                    hit = mesh.hit(origin, d)
-                    points[limb] = None if hit is None else hit
+                    points[limb] = views[name].hit(q)[0]
         for limb in LIMBS:
             tracks[limb].append((t, points[limb]))
         path.unlink()
@@ -381,7 +485,8 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
     reference = max(used, key=used.get) if used else None
     return {"frames": len(frames), "with_climber": seen, "placed_frames": sum(used.values()),
             "approximate_lens": any(lens(placed[n], sizes[n])[4] for n in used), "reference": reference, "holds": result,
-            "tracks": {limb: [[round(t, 2), *(round(float(x), 5) for x in p)] for t, p in tr if p is not None] for limb, tr in tracks.items()}}
+            "tracks": {limb: [[round(t, 2), *(round(float(x), 5) for x in p)] for t, p in tr if p is not None] for limb, tr in tracks.items()},
+            "poses": poses}
 
 
 def annotate(photo: Path, cam: dict, result: dict, out: Path) -> None:
@@ -470,6 +575,7 @@ def find(mesh_dir: Path, photos: Path, log: Log) -> dict:
     save(mesh_dir, record)
     mesh = Mesh.load(mesh_dir)
     tracker = _pose_model(log)
+    poses = {}
     for n, (url, v) in enumerate(found.items()):
         entry = {"url": url, "tag": v["tag"], "title": v["title"], "uploader": v["uploader"], "placed": len(v["frames"])}
 
@@ -479,6 +585,8 @@ def find(mesh_dir: Path, photos: Path, log: Log) -> dict:
         progress("downloading")
         try:
             result = analyse_video(url, v["frames"], photos, mesh, tracker, mesh_dir / "beta_tmp", log, progress)
+            poses[url] = result.pop("poses")
+            (mesh_dir / POSES_FILE).write_text(json.dumps(poses))
             entry.update(result, status="done" if result["holds"] else "no holds found")
             if result["reference"]:
                 annotate(photos / result["reference"], v["frames"][result["reference"]], result, mesh_dir / f"beta_{v['tag']}.jpg")

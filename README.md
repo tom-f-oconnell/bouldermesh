@@ -178,6 +178,18 @@ the Tension Board app does. These are saved with the mesh, apart from those foun
 The tab lists meshes with the most holds marked by hand first, then those with the most found in videos.
 *Only show meshes with beta* hides those with neither.
 
+## How big a boulder is
+
+Photogrammetry alone can't tell a boulder from a pebble. Once a mesh is reconstructed, it's sized from
+the climbers in its photos: their limb lengths against usual body proportions, at the depth where their
+hands and feet meet the rock. Where a video or its channel gives the climber's height or ape index, that's
+used. People standing near the rock and Mountain Project's height for the problem count too, for less.
+The panel at the bottom left of the viewer then says how tall the rock is where the photos look, with a
+range. Videos of one rock agree to about 10% on the median rock, and Mountain Project's height to about
+25% for half of them ([design.md](design.md) has the rest). *Find size* finds it again. Meshes made
+before Nov 8 haven't been sized: `curl -X POST localhost:8470/api/meshes/scale-all` queues them all, at a
+few minutes each, at low priority.
+
 ## Real photogrammetry
 
     docker compose up --build      # COLMAP + OpenMVS (+ OpenCV, ffmpeg, yt-dlp); first build ~10-40 min depending on cores
@@ -312,6 +324,7 @@ The AWS side has been tested against stand-ins for AWS, not against AWS itself.
     backend/climbs/youtube.py      finding climbs' videos, and climbers' heights and ape indexes in their text
     backend/provenance.py          where each mesh's photos came from, kept with the mesh
     backend/beta.py                the holds climbers use, from their hands and feet in videos
+    backend/scale.py               how big a mesh is, from the people in its photos and Mountain Project's height
     backend/admin.py               the admin page's server; frontend/admin.html is the page
     backend/settings.py            the admin page's settings, and credentials kept encrypted
     backend/policy.py              which photos are free to copy, and what the site may show
@@ -351,6 +364,8 @@ The AWS side has been tested against stand-ins for AWS, not against AWS itself.
     POST /api/meshes/{id}/make-current                  go back to an older version of a rebuilt mesh
     GET|POST /api/meshes/{id}/beta                      the holds found in its videos, and those marked; POST finds them
     POST /api/meshes/{id}/holds {holds: [{p, role}]}    the holds marked by hand, roles start, hand, finish or foot
+    POST /api/meshes/{id}/scale                         find its size (scale.json: metres per unit, and each estimate)
+    POST /api/meshes/scale-all {again}                  size every reconstructed mesh not yet sized, or all of them
     GET|POST|DELETE /api/meshes/{id}/cleanup · PATCH /api/meshes/{id}/cleanup {removed} · GET /meshes/{id}/mesh.glb?cleaned=1
     GET  /api/meshes/{id}/sources                       each photo in the mesh: source, URL, page, credit, licence
     On the admin page's port: GET /api/admin/state · POST /api/admin/settings · POST /api/admin/secrets
@@ -370,6 +385,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_diagnostics.py # offline: what's recorded when real processes fail or get killed
     python3 tests/test_meshclean.py   # offline: finding and hiding stray pieces on small GLBs, the cleaned download
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
+    python3 tests/test_scale.py       # offline: sizing people, objects and the rock on scenes built with known sizes
     python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job
 
 ## Known gaps

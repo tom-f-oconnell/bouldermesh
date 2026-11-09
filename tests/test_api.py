@@ -218,6 +218,9 @@ def run(B: str, tmp: Path) -> None:
     assert next(x for x in req(B, "GET", "/api/meshes")[1] if x["id"] == m["id"])["marked"] == 1, "counted in the list"
     assert req(B, "POST", f"/api/meshes/{m['id']}/holds", {"holds": [{"p": [0, 0, 0], "role": "jug"}]})[0] == 400
     assert req(B, "GET", "/api/meshes/abcdef123456/beta")[0] == 404
+    assert m["scale"] is None, "a demo mesh keeps no cameras, so isn't sized"
+    assert req(B, "POST", f"/api/meshes/{m['id']}/scale")[0] == 409 and req(B, "POST", "/api/meshes/abcdef123456/scale")[0] == 404
+    assert req(B, "POST", "/api/meshes/scale-all", {}) == (202, {"queued": 0}), "nothing with cameras to size"
 
     st, cd = req(B, "GET", f"/api/climbs/{cid}")
     assert cd["meshes"][0]["id"] == m["id"] and cd["projects"][0]["id"] == pid
@@ -243,6 +246,7 @@ def run(B: str, tmp: Path) -> None:
     um = next(x for x in meshes if x["id"] == up["id"])
     assert um["lat"] == 37.74172 and um["climbs"][0]["id"] == cid, um
     assert um["sources"] is None and req(B, "GET", f"/api/meshes/{up['id']}/sources")[0] == 404, "an upload's photos aren't known"
+    assert req(B, "POST", f"/api/meshes/{up['id']}/scale")[0] == 409, "nor can it be sized from them"
 
     # --- what the admin page lets the site show ------------------------------------------------------
     assert um["texture"] == "full" and req(B, "GET", "/api/status")[1]["policy"] == {"textures": "all", "sources": "all"}

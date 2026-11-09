@@ -37,6 +37,7 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, str(Path(__file__).parent))
 import admin as admin_mod  # noqa: E402
 import beta as beta_mod  # noqa: E402
+import scale as scale_mod  # noqa: E402
 import compute  # noqa: E402
 import diagnostics  # noqa: E402
 import meshclean  # noqa: E402
@@ -424,11 +425,13 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             log(f"this replaces mesh {proj['mesh_id']}, which stays as an older version")
         clean_mesh(mid, log)
         record_sources(mid, pid, log)
+        tracker.finish()     # before it's marked done, so that anything waiting for that sees it all finished
+        log("done")
         q("UPDATE projects SET status='done', mesh_id=?, demo=? WHERE id=?", mid, int(demo), pid, write=True)
         q("UPDATE campaign_items SET status='done', mesh_id=?, retry=0, note=NULL, updated=? WHERE project_id=? AND status='failed'",
           mid, time.time(), pid, write=True)   # made by hand since its area gave up on it
-        tracker.finish()
-        log("done")
+        if not demo:
+            queue_scale(mid)
     except compute.ComputeUnavailable as e:    # not the climb's failure: it waits for a machine
         log(f"waiting for a machine to mesh it on: {e}")
         q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
@@ -1033,6 +1036,46 @@ def run_beta(mid: str) -> None:
         beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": f"failed: {type(e).__name__}: {e}", "progress": None})
 
 
+def queue_scale(mid: str) -> bool:
+    """Queue finding a reconstructed mesh's scale (scale.py), unless it's being found; whether it was queued."""
+    if not (MESHES / mid / "cameras.json").exists() or (scale_mod.load(MESHES / mid) or {}).get("status") in ("queued", "running"):
+        return False
+    scale_mod.save(MESHES / mid, {"status": "queued", "progress": None})
+    queue_job({"type": "scale", "mid": mid})
+    return True
+
+
+def mesh_videos(mid: str) -> dict:
+    """What each of a mesh's videos, and its uploader's channel, says about the climber's size, by url."""
+    record = provenance.load(MESHES / mid) or {}
+    urls = {p["url"] for p in record.get("photos", []) if p.get("source") == "youtube" and p.get("url")}
+    rows = q(f"""SELECT v.url, v.height_cm, v.wingspan_cm, v.ape_index_cm, c.height_cm AS channel_height_cm,
+                        c.wingspan_cm AS channel_wingspan_cm, c.ape_index_cm AS channel_ape_index_cm
+                 FROM videos v LEFT JOIN channels c ON c.channel_url=v.channel_url WHERE v.url IN ({",".join("?" * len(urls))})""",
+             *urls) if urls else []
+    return {r["url"]: r for r in rows}
+
+
+def run_scale(mid: str) -> None:
+    """Find how big a reconstructed mesh is (scale.py)."""
+    m = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
+    if not m or not m["source"].startswith("project:"):
+        return
+    mesh_dir, pid = MESHES / mid, m["source"].split(":", 1)[1]
+
+    def log(line: str) -> None:
+        with open(mesh_dir / "scale.log", "a") as f:
+            f.write(line.rstrip() + "\n")
+    climbs = [json.loads(r["data"]) for r in q("SELECT c.data FROM mesh_links l JOIN climbs c ON c.id=l.climb_id WHERE l.mesh_id=?", mid)]
+    try:
+        scale_mod.estimate(mesh_dir, PROJECTS / pid / "photos", PROJECTS / pid / "masks", climbs, mesh_videos(mid), log)
+    except Cancelled:
+        scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": "stopped", "progress": None})
+    except Exception as e:
+        log(f"FAILED: {type(e).__name__}: {e}")
+        scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": f"failed: {type(e).__name__}: {e}", "progress": None})
+
+
 def run_retexture(mid: str) -> None:
     """Texture a mesh again from only its photos that are free to copy (retexture.py)."""
     m = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
@@ -1116,10 +1159,12 @@ def run_job(job: dict) -> None:
     """A job someone asked for, on this thread's worker."""
     w = current_worker()
     w.job = {"job": job, "started": time.time(), "from": job_progress(job) or 0.0}
-    jobctl.begin(low_priority=job["type"] in ("beta", "retexture"))
+    jobctl.begin(low_priority=job["type"] in ("beta", "retexture", "scale"))
     try:
         if job["type"] == "beta":
             run_beta(job["mid"])
+        elif job["type"] == "scale":
+            run_scale(job["mid"])
         elif job["type"] == "retexture":
             run_retexture(job["mid"])
         elif job["type"] == "reconstruct":
@@ -1166,7 +1211,7 @@ def worker(w: Worker | None = None) -> None:
 STOP_WAIT = float(os.environ.get("STOP_WAIT_MINUTES", "10")) * 60   # docker-compose.yml's stop_grace_period is longer
 _stopping: dict | None = None    # once a stop has begun: {since, until, waiting_for}
 AGAIN = {"reconstruct": "Retry on its project", "harvest": "Retry on its project", "retry": "Retry on its project",
-         "beta": "Find beta on the Beta tab", "retexture": "Make textures... on the admin page"}
+         "beta": "Find beta on the Beta tab", "retexture": "Make textures... on the admin page", "scale": "Find size in the viewer"}
 
 
 def job_progress(job: dict) -> float | None:
@@ -1179,6 +1224,9 @@ def job_progress(job: dict) -> float | None:
     if job["type"] == "beta":
         m = re.match(r"video (\d+) of (\d+)", (beta_mod.load(MESHES / job["mid"]) or {}).get("progress") or "")
         return 100 * (int(m[1]) - 1) / int(m[2]) if m else None
+    if job["type"] == "scale":
+        m = re.match(r"people in photo (\d+) of (\d+)", (scale_mod.load(MESHES / job["mid"]) or {}).get("progress") or "")
+        return 90 * (int(m[1]) - 1) / int(m[2]) if m else None
     return None
 
 
@@ -1465,6 +1513,7 @@ class Handler(BaseHTTPRequestHandler):
                     r["sources"] = provenance.summary(provenance.load(MESHES / r["id"]))
                     r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
                     r["marked"] = len(beta_mod.load_holds(MESHES / r["id"])["holds"])
+                    r["scale"] = scale_mod.summary(scale_mod.load(MESHES / r["id"]))
                     r["cameras_kept"] = (MESHES / r["id"] / orientation.CAMERAS_FILE).exists()
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
@@ -1730,6 +1779,21 @@ class Handler(BaseHTTPRequestHandler):
                 beta_mod.save(MESHES / m[1], {"status": "queued", "videos": [], "progress": None})
                 queue_job({"type": "beta", "mid": m[1]})
                 return self.send_json({"queued": True}, 202)
+            if p == "/api/meshes/scale-all":   # every reconstructed mesh without a scale, or {"again": true} all of them
+                again = bool(self.read_json().get("again"))
+                queued = sum(queue_scale(r["id"]) for r in q("SELECT id FROM meshes WHERE source LIKE 'project:%' AND replaced_by IS NULL ORDER BY created")
+                             if again or not scale_mod.load(MESHES / r["id"]) or scale_mod.load(MESHES / r["id"])["status"] not in ("done", "nothing to go by"))
+                return self.send_json({"queued": queued}, 202)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/scale", p)
+            if m:
+                mesh = q("SELECT source FROM meshes WHERE id=?", m[1], one=True)
+                if not mesh:
+                    return self.send_json({"error": "not found"}, 404)
+                if not mesh["source"].startswith("project:") or not (MESHES / m[1] / "cameras.json").exists():
+                    return self.send_json({"error": "only meshes reconstructed here, with their cameras kept, can be sized"}, 409)
+                if not queue_scale(m[1]):
+                    return self.send_json({"error": "already finding it"}, 409)
+                return self.send_json({"queued": True}, 202)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/holds", p)
             if m:   # holds marked by hand: {holds: [{p, role}]}, replacing those there
                 if not (MESHES / m[1]).is_dir():
@@ -1944,6 +2008,7 @@ def main() -> None:
     threading.Thread(target=source_existing_meshes, daemon=True).start()
     for d in MESHES.iterdir() if MESHES.exists() else []:
         beta_mod.interrupted(d)     # a search for beta that a restart stopped, as jobs don't carry on
+        scale_mod.interrupted(d)
     host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))
     mode = "COLMAP + OpenMVS" if pipeline.real_pipeline_ready() else "DEMO (COLMAP/OpenMVS not found)"
     print(f"BoulderMesh on http://{host}:{port}  data={DATA}  pipeline={mode}", flush=True)

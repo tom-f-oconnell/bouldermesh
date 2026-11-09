@@ -602,11 +602,12 @@ function renderOrientation(m){
   if (!m || !current) { el.style.display = 'none'; return; }
   const o = m.orientation;
   el.style.display = 'block';
-  if (!o) { el.textContent = m.source === 'upload' ? 'Down: not known. Uploaded meshes aren\'t levelled here.' : 'Down: not known for this mesh.'; return; }
+  if (!o) { el.innerHTML = esc(m.source === 'upload' ? 'Down: not known. Uploaded meshes aren\'t levelled here.' : 'Down: not known for this mesh.') + sizeHtml(m); bindSize(el, m); return; }
   const p = o.iphone, hasBoth = !!p.down, used = o.method === 'iphone', agree = o.estimate.photos_agree_deg;
   const key = c => hasBoth ? `<span class="key" style="background:#${c.toString(16).padStart(6, '0')}"></span>` : '';
   el.innerHTML = `<div>${key(COLOR_ESTIMATE)}<b>Estimate from how photos were framed:</b> ${used ? `not used, ${p.off_estimate_deg}° from the iPhone's down.` : 'used.'}${agree != null ? ` Its photos' bottom edges are a median of ${agree}° from it.` : ''}</div>
-    <div>${key(COLOR_IPHONE)}<b>iPhone gravity:</b> ${iphoneLine(o)}${p.status === 'no_cameras' && p.kept_with_readings ? '<button class="sm sec rebuild" title="Builds a new mesh and keeps this one. The reading only counts if the new run places that photo, and the new mesh can come out worse.">Rebuild to try it</button>' : ''}</div>`;
+    <div>${key(COLOR_IPHONE)}<b>iPhone gravity:</b> ${iphoneLine(o)}${p.status === 'no_cameras' && p.kept_with_readings ? '<button class="sm sec rebuild" title="Builds a new mesh and keeps this one. The reading only counts if the new run places that photo, and the new mesh can come out worse.">Rebuild to try it</button>' : ''}</div>` + sizeHtml(m);
+  bindSize(el, m);
   el.querySelector('.rebuild')?.addEventListener('click', async ev => {
     ev.target.disabled = true;
     try { await api(`/api/projects/${m.source.split(':')[1]}/reconstruct`, { method: 'POST' }); toast('Rebuilding as a new mesh: this one stays', 5000); poll(); }
@@ -619,6 +620,46 @@ function renderOrientation(m){
   for (const [v, color] of [[o.estimate.down, COLOR_ESTIMATE], [p.down, COLOR_IPHONE]])
     downArrows.add(new THREE.ArrowHelper(new THREE.Vector3(...v).normalize(), top, length, color, length * .12, length * .05));
   scene.add(downArrows);
+}
+const FT = 0.3048;
+const SIZE_BY = { video: 'climbers\' limbs in its videos', photos: 'climbers\' limbs in its photos', standing: 'people standing near it', stated: 'Mountain Project\'s height for the problem' };
+function sizeHtml(m){
+  if (m.source === 'upload' || !m.cameras_kept) return '';
+  const s = m.scale, again = label => `<button class="sm sec findsize" title="Looks for people in its photos, measures them against the rock, and checks Mountain Project's height">${label}</button>`;
+  if (!s) return `<div><b>Size:</b> not found yet.${again('Find size')}</div>`;
+  if (['queued', 'running'].includes(s.status)) return `<div><b>Size:</b> finding it${s.progress ? `: ${esc(s.progress)}` : ''}…</div>`;
+  if (!s.metres_per_unit || !s.height_m) return `<div><b>Size:</b> ${esc(s.status === 'done' ? 'not clear' : s.status)}.${again('Try again')}</div>`;
+  const r = s.height_m / s.metres_per_unit, lo = s.low * r, hi = s.high * r, mp = s.stated;
+  const from = [s.videos ? `${s.videos} video${s.videos === 1 ? '' : 's'}` : '', s.photos ? 'photos' : '', s.standing ? `${s.standing} standing` : ''].filter(Boolean).join(', ');
+  return `<div><b>Size:</b> the rock is about ${s.height_m.toFixed(1)} m (${Math.round(s.height_m / FT)} ft) tall where the photos look, ${lo.toFixed(1)}–${hi.toFixed(1)} m, going most by ${SIZE_BY[s.method] || s.method}${from ? ` (people in ${from})` : ''}.`
+    + `${mp ? ` Mountain Project gives the problem as ${Math.round(mp.m / FT)} ft.` : ''}${again('Find again')}</div>`;
+}
+function bindSize(el, m){
+  if (['queued', 'running'].includes(m.scale?.status)) watchSize(m.id);
+  el.querySelector('.findsize')?.addEventListener('click', async ev => {
+    ev.target.disabled = true;
+    try {
+      await api(`/api/meshes/${m.id}/scale`, { method: 'POST' });
+      toast('Finding its size: this takes a few minutes', 4000);
+      m.scale = { status: 'queued' }; renderOrientation(m); watchSize(m.id);
+    } catch (e) { toast(e.message, 6000); ev.target.disabled = false; }
+  });
+}
+const sizeWatched = new Set();
+async function watchSize(id){   // until it's found, while that mesh is still the one shown
+  if (sizeWatched.has(id)) return;
+  sizeWatched.add(id);
+  try {
+    while (true) {
+      await new Promise(r => setTimeout(r, 5000));
+      if (shownMesh !== id) return;
+      const m = (await api('/api/meshes')).find(x => x.id === id);
+      if (!m || shownMesh !== id) return;
+      meshesById[id] = m;
+      renderOrientation(m);
+      if (!['queued', 'running'].includes(m.scale?.status)) return;
+    }
+  } catch { /* the server restarting: opening the mesh again starts this again */ } finally { sizeWatched.delete(id); }
 }
 function viewNote(text, retry){
   const n = $('#viewnote'); n.style.display = text ? 'block' : 'none'; n.textContent = text || '';
@@ -671,7 +712,9 @@ async function loadGltfWithTexture(url, base, label){
   }
   return { gltf, note };
 }
+let shownMesh = null;    // the id of the mesh in the viewer, if it's one of ours
 async function loadMeshUrl(url, filename, label, id){
+  shownMesh = id || null;
   closeBeta(id);
   showRight('3d');
   viewNote('');

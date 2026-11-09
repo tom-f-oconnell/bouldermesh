@@ -406,8 +406,8 @@ Heights, wingspans and ape indexes are read from the title and description of ea
 its uploader's channel description, and kept with the text they came from. A number only counts as a
 height with a word saying it's a person's (tall, height, I'm, climber), unless it's in feet and
 inches, and not next to a word about the rock, as a "6 ft tall boulder" is common. Nothing says the
-person in the video is the uploader: `first_person` records whether the text said "I'm". Using one
-for scale needs the climber found in placed frames, which the masks below are kept for.
+person in the video is the uploader: `first_person` records whether the text said "I'm". The size of
+a mesh uses them for its climbers, as below.
 
 People's masks used to be made in `work/` and deleted with it. They're now kept in the project's
 `masks/`, which also makes a rebuild skip photos that already have one.
@@ -434,6 +434,70 @@ marked by hand.
 
 Marking by hand cycles a hold start, hand, finish, foot, then off. That's the order the Aurora apps
 (Tension, Kilter) list hold roles in, which I couldn't confirm is the order the Tension app cycles them.
+
+## How big a boulder is (`backend/scale.py`)
+
+COLMAP's meshes have no scale of their own. On Nov 8 every placed photo of the 187 meshes with kept
+cameras was searched for things of known size: 5,442 photos, 4,493 of them with people in their masks.
+
+**People** are in nearly every photo. RTMPose (beta's model) finds each person's keypoints. The rays
+through their hands and feet meet the mesh where those touch rock or ground, which gives how far away
+they are. One alone is often a ray past the rock's edge, meeting rock far behind: Flake's hands met the
+mesh at 60-68 units while its climber's feet were at 35, with the climber about 5 units tall. So a
+person's depth is the nearest of their hands and feet that another is within 15% of. Each limb's
+length then follows in mesh units. Limbs pointing toward the camera look shorter, so across a video's
+frames, of one climber, each segment's 75th percentile is taken as its length, after leaving out
+frames whose own estimate is more than 1.5 times off the video's median. Against Winter's proportions of
+height (wingspan, for arms), using the climber's stated height where their video or channel gives one (40
+of 177 videos), and 174 ± 9 cm otherwise, each segment gives metres per unit, and their median is the video's.
+
+| Check, over the 137 meshes measured (107 with a video's climber) | Result |
+|---|---|
+| Two videos of one rock | median 10% apart; 61% within 15%, 76% within 25%; worst tenth over 55% |
+| Segments of one video's climber | each within 4% of their median, after the two below |
+| Standing people (head to heels, on the vertical plane through where their feet meet level ground) | 53 people in 24 meshes, 3.5% from the limbs' |
+| Bottles standing on level ground in the mesh | 13 in 8 meshes, a median of 26 cm tall by people's scale |
+| Rock heights near where the photos look | median 4.3 m; 96% between 1.5 and 10 m |
+
+The quantile, the depth rule and the trimming were chosen by how well videos of one rock agree (most other
+choices gave a median between 9% and 17% apart), and the absolute level is checked by standing people and
+Mountain Project, which agree with it on average. The model's shoulder, neck and mid-hip points aren't the joints Winter measured, so the upper
+arm read 10% long and the torso (neck to mid-hip) 21% short against the forearms and legs. Their shares
+are calibrated to 0.169 and 0.354, from 0.186 and 0.288. Single photos, of a different person in each,
+are pooled, and count for less. Standing people are rare, as their feet have to meet level ground in the
+mesh, and the ground mostly isn't reconstructed.
+
+**Wingspan.** With both hands on holds, both are points on the mesh, with no depth to guess. The way from
+one hand through the shoulders to the other, with the shoulders 25 cm in front of the rock behind them, is
+at most the climber's reach from palm to palm, 0.85 of their wingspan, and equals it with straight arms,
+in any direction and around the rock, not through it. In single placed photos it came out 21% below
+limbs, scattered by 30%: a hand that only looks to be on a hold casts its ray past it. The beta search's
+contacts (a hand still for a second) say which are on holds, so it now keeps each frame's climber
+(`beta_poses.json`), and the size job records this from them as a check, not yet used. Running beta again
+to test it was blocked: YouTube refused hal's downloads that evening ("confirm you're not a bot").
+
+**Mountain Project's height.** 1,379 of 1,808 boulder pages give one ("Boulder, 15 ft (5 m)"), mostly
+round numbers: 10, 12, 15 and 20 ft account for 63%. Text gave it for only 16 more. Against the rock's
+height within one and a half times the spread of where the placed photos' centres land, MP's scale is 4%
+from people's on the median mesh, within 25% for 48% of them and 50% for 70%. Against the whole mesh,
+often taking in a hillside, 34% and 62%. Some of that is the mesh: the rock near the photos is often
+taller than the problem. So it's a fallback, weighted as a log sd of 0.33 against a video's 0.12.
+
+**Objects of known size.** torchvision's COCO Faster R-CNN, without training, found 153 bottles in 52
+meshes. Crash pads came out as suitcases and books, and climbing shoes as skateboards. CLIP (ViT-B/32) labelled 16 as Nalgenes,
+mostly shoes, cans and other bottles, as most were 12-30 pixels wide in video frames. The likeliest
+Nalgene, a narrow-mouth one in two frames of Fishbait, stands on ground that isn't in the mesh, and the
+camera barely moved (0.1 degrees between the two frames' rays), so it can't be triangulated either. On
+a level plane at the ground's height, bottles came out 33-134 cm tall. Crash pads vary too much (91 by
+122 cm to 153 by 121 cm) to help unless their model is known, though many show their maker in large
+letters (Mad Rock, Evolv, Organic in a sample of 10), which reading text could narrow down. Reverse image search would need a paid API
+(Google Cloud Vision's web detection); a table of known sizes with CLIP picking among them is the offline
+equivalent. `scale.KNOWN` and `measure_upright()` are there for one: a 32 oz Nalgene put at the foot of the
+rock in your own photos, on ground that gets reconstructed, would be measured to about the box's pixel.
+
+Casting a ray at a million triangles took 120-190 ms. Each placed photo's camera now projects every
+triangle's bounding sphere once (0.1-0.5 s) and files it by where it lands, so a ray takes 10-15 ms; the
+beta search uses the same.
 
 ## Running climbs side by side, and elsewhere (`backend/compute.py`)
 
