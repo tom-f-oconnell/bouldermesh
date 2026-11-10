@@ -309,12 +309,13 @@ ordinary user, and makes the site view-only for everyone but you:
     docker compose -f docker-compose.yml -f docker-compose.public.yml up -d
 
 The image isn't built there: compiling COLMAP wants cores and memory a small server hasn't got, so the public setup runs
-one built elsewhere. From the machine that built it, with the meshes to show:
+one built elsewhere. On a machine with the meshes to show:
 
-    deploy/ship.sh you@boulders.example.com      # the image (2.4 GB), the meshes, and a copy of the database with every area stopped
+    deploy/build.sh                              # bouldermesh:public, from the commit checked out, named for the registry by that commit
+    deploy/ship.sh you@boulders.example.com bouldermesh:public  # pushes it, then sends it (2.4 GB), the meshes, and a copy of the database
 
-Projects' photos don't go, so their cards show none, and the database there is replaced each time, with any settings
-changed on its admin page. Or push the image to
+Areas are stopped in the copy, so nothing runs there by itself. Projects' photos don't go, so their cards show none, and
+the database there is replaced each time, all but the settings changed on its admin page. Or push the image to
 a registry (see "Running reconstructions elsewhere"), put `BM_IMAGE=ghcr.io/<github-user>/bouldermesh:latest` in `.env`,
 and `docker compose -f docker-compose.yml -f docker-compose.public.yml pull`. Ports 80 and 443 must be open to the world.
 To run it under systemd as above, put `COMPOSE_FILE=docker-compose.yml:docker-compose.public.yml` in `.env` too (with
@@ -332,8 +333,8 @@ an SSH tunnel, `ssh -L 36184:127.0.0.1:36184 you@boulders.example.com`, at `http
 `ADMIN_PASSWORD` in `.env` anyway. What the site may show is set there too, but the public setup already starts it as
 *Source photos and video frames: free to copy, with links to the rest*, so the copies here of photos that aren't clearly
 free to copy aren't served (most harvested photos are copyrighted: [license_considerations.md](license_considerations.md)),
-and *Mesh textures: all*. `SITE_SOURCES` and `SITE_TEXTURES` in `.env` change those starting points, and last across
-`deploy/ship.sh`, which replaces the database the admin page's choices live in.
+and *Mesh textures: all*. `SITE_SOURCES` and `SITE_TEXTURES` in `.env` change those starting points; choices made on its
+admin page last across `deploy/ship.sh`, which keeps the machine's own settings when it replaces the rest of its database.
 
 **What else the public setup does.** The container has no capabilities, can't gain privileges, and runs as uid 1000
 (`BM_USER` in `.env` changes it; `./data` must be writable by that user). Pages come with a Content-Security-Policy that
@@ -403,16 +404,15 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   restart are ended. Its credentials need EC2 (run, describe and terminate instances, security groups)
   and SSM's GetParameter. *Test the connection* checks them without starting anything.
 
-Machines run the same Docker image as this server, which they pull from a registry. GitHub's wants a token that may
-write packages (`gh auth refresh -h github.com -s write:packages`, or a classic personal access token with that scope),
-and your user name in lower case:
-
-    gh auth token | docker login ghcr.io -u <github-user> --password-stdin
-    docker tag bouldermesh-bouldermesh ghcr.io/<github-user>/bouldermesh:latest && docker push ghcr.io/<github-user>/bouldermesh:latest
-
-The package starts private: make it public in its settings on GitHub (*Change visibility*), or `docker login` wherever
-it's pulled. Set it as *Docker image the machines run*. A private image on ECR works with an *Instance profile*
-that may pull it. Each climb's photos and people masks go to the machine, and the mesh, its cameras and
+Machines run the same Docker image as this server, which they pull from a registry. `deploy/build.sh` names the image
+for GitHub's by its commit (`ghcr.io/<owner>/bouldermesh:<commit>`, or `REGISTRY` for another), and `deploy/ship.sh`
+pushes it there, and as `:latest`, before the server gets it. Left empty, *Docker image the machines run* is then the
+build the server runs, so each ship moves the machines with it, and a machine that has an older build pulls the new one
+by its new name; the admin page shows which. Pushing to GitHub's registry needs gh's token to be allowed to write packages
+(`gh auth refresh -h github.com -s write:packages`, once); ship.sh logs in with it for the push only. The package starts
+private: make it public in its settings on GitHub (*Change visibility*), or `docker login` wherever it's pulled. Naming
+an image on the admin page instead pins the machines to it, as for a private image on ECR, which works with an
+*Instance profile* that may pull it. Each climb's photos and people masks go to the machine, and the mesh, its cameras and
 the masks come back. Harvesting stays here. A climb whose machine can't be had or is lost waits, rather
 than failing, and that worker tries again in 5 minutes. design.md has what offloading costs and saves.
 The AWS side has been tested against stand-ins for AWS, not against AWS itself.

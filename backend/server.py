@@ -83,6 +83,10 @@ FILE_CACHE = int(os.environ.get("FILE_CACHE_SECONDS", "3600"))   # how long brow
 # the header in which a proxy in front names the sender, for the log (X-Real-IP behind deploy/Caddyfile); only for a port
 # nothing but that proxy can reach, as anyone else could write it
 CLIENT_IP_HEADER = os.environ.get("CLIENT_IP_HEADER") or None
+# which build this is, and the name it's pushed under, which remote machines run unless the admin page names another
+# image: given by deploy/build.sh (the Dockerfile's last lines), and empty for any other build
+VERSION = os.environ.get("BOULDERMESH_COMMIT") or None
+OWN_IMAGE = os.environ.get("BOULDERMESH_IMAGE") or None
 # the Caddyfile in front, whose trusted proxies are compared with Cloudflare's published ranges each day (proxy_ranges.py)
 RANGES = proxy_ranges.Watch(Path(os.environ["CADDYFILE"])) if os.environ.get("CADDYFILE") else None
 MESH_EXTRA_EXT = {".png", ".jpg", ".jpeg", ".bin", ".mtl"}       # what may be uploaded beside a mesh: its textures and material
@@ -1705,10 +1709,19 @@ def server_id() -> str:
     return path.read_text().strip()
 
 
+def compute_settings() -> dict:
+    """The settings, with the image remote machines run filled in as this server's own (OWN_IMAGE) where the admin page
+    leaves it empty: then they run the build the server runs, whichever was shipped last."""
+    s = settings().all()
+    if not s["compute.image"] and OWN_IMAGE:
+        s["compute.image"] = OWN_IMAGE
+    return s
+
+
 def configure_workers() -> None:
     """Start or retire workers, and make the pool of remote machines, to match the settings."""
     global _pool, _executor, _pool_key
-    s = settings().all()
+    s = compute_settings()
     with _workers_lock:
         key = (s["compute.provider"], s["compute.remote_workers"], s["compute.idle_minutes"], tuple(s["compute.ssh_hosts"]),
                s["compute.image"], s["compute.command"], *(v for k, v in s.items() if k.startswith("compute.aws.")),
@@ -1744,7 +1757,7 @@ def reap_machines() -> None:
     """End idle remote machines, every minute; at startup, any of this server's left from before."""
     if settings().get("compute.provider") == "aws":
         try:
-            prov = compute.provider_for(settings().all(), settings().secret, DATA / "compute", server_id())
+            prov = compute.provider_for(compute_settings(), settings().secret, DATA / "compute", server_id())
             for iid in prov.leftovers():
                 print(f"compute: ending {iid}, left running from before a restart", flush=True)
                 prov.stop(compute.Node(host="", user="", id=iid))
@@ -1976,7 +1989,8 @@ class Handler(BaseHTTPRequestHandler):
                                        "opencv": _has("cv2"), "pillow": _has("PIL"),
                                        "policy": {"textures": settings().get("site.textures"), "sources": settings().get("site.sources")},
                                        "editing": "none" if READ_ONLY else "token" if EDIT_TOKEN else "open",
-                                       "editor": not READ_ONLY and (not EDIT_TOKEN or self.is_editor()), "stopping": _stopping})
+                                       "editor": not READ_ONLY and (not EDIT_TOKEN or self.is_editor()), "stopping": _stopping,
+                                       "version": VERSION})
             if p == "/api/jobs":     # what a restart would interrupt now, and what it would only pause
                 return self.send_json(jobs_state())
             # ---- projects
@@ -2538,11 +2552,12 @@ def admin_state() -> dict:
             counts["need_rebuild"] += bool(why and "rebuild" in why)
     return {"settings": settings().all(), "secrets": settings().secrets_status(), "compute": compute_state(),
             "policy": counts, "retexture_queued": len(_retexturing), "site_port": int(os.environ.get("PORT", "8470")),
-            "proxy_ranges": RANGES.state() if RANGES else None}
+            "proxy_ranges": RANGES.state() if RANGES else None, "version": VERSION,
+            "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE}
 
 
 def admin_test(_: dict) -> dict:
-    prov = compute.provider_for(settings().all(), settings().secret, DATA / "compute", server_id())
+    prov = compute.provider_for(compute_settings(), settings().secret, DATA / "compute", server_id())
     return {"result": prov.test() if prov else "nothing to test: this server does everything itself"}
 
 
@@ -2552,7 +2567,7 @@ def admin_end_nodes(_: dict) -> dict:
         if pool:
             ended += len([n for n in pool.nodes if not n.busy])
             pool.close()
-    prov = compute.provider_for(settings().all(), settings().secret, DATA / "compute", server_id())
+    prov = compute.provider_for(compute_settings(), settings().secret, DATA / "compute", server_id())
     busy = {n.id for pool in [_pool, *_old_pools] if pool for n in pool.nodes}
     for iid in (prov.leftovers() if prov else []):
         if iid not in busy:
@@ -2600,7 +2615,7 @@ def main() -> None:
         threading.Thread(target=RANGES.run, daemon=True).start()
     host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))
     mode = "COLMAP + OpenMVS" if pipeline.real_pipeline_ready() else "DEMO (COLMAP/OpenMVS not found)"
-    print(f"BoulderMesh on http://{host}:{port}  data={DATA}  pipeline={mode}", flush=True)
+    print(f"BoulderMesh {VERSION or '(no build recorded)'} on http://{host}:{port}  data={DATA}  pipeline={mode}", flush=True)
     print("editing: " + ("none: READ_ONLY=1" if READ_ONLY else "with the token in EDIT_TOKEN" if EDIT_TOKEN else
                          "open to anyone who can reach this port; set EDIT_TOKEN, or READ_ONLY=1, before exposing it"), flush=True)
     in_docker = Path("/.dockerenv").exists()

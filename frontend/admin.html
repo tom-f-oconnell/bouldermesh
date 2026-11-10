@@ -66,7 +66,7 @@
       <div><label>At most this many other machines at once</label><input type="number" id="remote" min="0" max="16"></div>
       <div><label>End an idle cloud machine after (minutes)</label><input type="number" id="idle" min="1" max="240"></div>
     </div>
-    <div class="ssh aws"><label>Docker image the machines run (pushed to a registry they can pull from)</label><input type="text" id="image" placeholder="ghcr.io/you/bouldermesh:latest"></div>
+    <div class="ssh aws"><label>Docker image the machines run (pushed to a registry they can pull from)</label><input type="text" id="image" placeholder="ghcr.io/you/bouldermesh:latest"><div class="note" id="image-note"></div></div>
     <div class="ssh"><label>Machines (one user@host[:port] a line), with Docker and the image</label><textarea id="hosts"></textarea></div>
     <div class="grid aws">
       <div><label>Region</label><input type="text" id="region"></div>
@@ -112,7 +112,10 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 function render(s){
   state = s;
   const v = s.settings;
-  $('#where').textContent = `the main site is on port ${s.site_port}`;
+  $('#where').textContent = `the main site is on port ${s.site_port} · ${s.version ? `build ${s.version}` : 'no build recorded'}`;
+  if (s.own_image) $('#image').placeholder = `empty: ${s.own_image}, the build this server runs`;
+  $('#image-note').textContent = s.own_image ? (v['compute.image'] ? `Empty, the machines would run ${s.own_image}, the build this server runs, which changes with each ship.` : 'Left empty, the machines run the build this server runs, which deploy/ship.sh pushed, and change with it on each ship.')
+    : 'This server\'s image wasn\'t made by deploy/build.sh, so name the one the machines run.';
   for (const r of document.querySelectorAll('input[name=tex]')) r.checked = r.value === v['site.textures'];
   for (const r of document.querySelectorAll('input[name=src]')) r.checked = r.value === v['site.sources'];
   const c = s.policy;

@@ -44,7 +44,7 @@ CHOICES = {"compute.provider": ("none", "ssh", "aws"), "site.textures": ("all", 
            "site.sources": ("all", "link", "permitted")}
 LIMITS = {"compute.local_workers": (1, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000)}
-for _key in ("site.textures", "site.sources"):    # the public copy's database is replaced on each ship, its .env isn't
+for _key in ("site.textures", "site.sources"):    # a public copy's starting points, from its .env
     _given = os.environ.get(_key.replace(".", "_").upper(), "").strip()
     if _given in CHOICES[_key]:
         DEFAULTS[_key] = _given

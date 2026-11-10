@@ -76,6 +76,11 @@ WORKDIR /app
 COPY backend ./backend
 COPY frontend ./frontend
 COPY cli.py ./cli.py
+# Which build this is, given by deploy/build.sh, and the name it's pushed under: shown on the admin page, and the image
+# remote machines run unless the admin page names another. Here at the end, so that the steps above stay cached.
+ARG BOULDERMESH_COMMIT=
+ARG BOULDERMESH_IMAGE=
+ENV BOULDERMESH_COMMIT=$BOULDERMESH_COMMIT BOULDERMESH_IMAGE=$BOULDERMESH_IMAGE
 ENV DATA_DIR=/data PORT=8470
 VOLUME /data
 EXPOSE 8470

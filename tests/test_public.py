@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """What the site does when exposed: the editing token and read-only modes, refusing other sites' pages, the page's
 Content-Security-Policy and the other headers, files served as what they are or as downloads, 304s, bad lengths, and
-the fetcher's refusal of private addresses, HEAD requests, and the sender's address from a proxy's header. Starts the server three times on free ports; offline.
+the fetcher's refusal of private addresses, HEAD requests, the sender's address from a proxy's header, and the build deploy/build.sh records, which remote
+machines then run. Starts the server three times on free ports; offline.
 
     python3 tests/test_public.py
 """
@@ -41,11 +42,11 @@ class Server:
     """The server on a free port with its own data directory, stopped as Docker would stop it."""
 
     def __init__(self, tmp: Path, **env: str):
-        self.port = free_port()
+        self.port, self.admin_port = free_port(), free_port()
         self.url = f"http://127.0.0.1:{self.port}"
-        full = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(self.port), HOST="127.0.0.1", ADMIN_PORT=str(free_port()),
+        full = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(self.port), HOST="127.0.0.1", ADMIN_PORT=str(self.admin_port),
                     HTTP_MIN_INTERVAL="0", STOP_WAIT_MINUTES="0.1", **env)
-        for k in ("EDIT_TOKEN", "READ_ONLY", "CSP", "CLIENT_IP_HEADER"):
+        for k in ("EDIT_TOKEN", "READ_ONLY", "CSP", "CLIENT_IP_HEADER", "BOULDERMESH_COMMIT", "BOULDERMESH_IMAGE"):
             if k not in env:
                 full.pop(k, None)
         self.proc = subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=full,
@@ -223,6 +224,31 @@ def read_only(tmp: Path) -> None:
     print("read-only and open OK")
 
 
+def build(tmp: Path) -> None:
+    """A build from deploy/build.sh says which it is, and remote machines run it unless the admin page names another."""
+    own = "ghcr.io/someone/bouldermesh:abc1234"
+    srv = Server(tmp, BOULDERMESH_COMMIT="abc1234", BOULDERMESH_IMAGE=own)
+    admin = f"http://127.0.0.1:{srv.admin_port}"
+    try:
+        assert req(srv.url, "GET", "/api/status")[2]["version"] == "abc1234"
+        st = req(admin, "GET", "/api/admin/state")[2]
+        assert st["version"] == "abc1234" and st["own_image"] == own and st["worker_image"] == own, st
+        st = req(admin, "POST", "/api/admin/settings", {"compute.image": "registry.example/other:1"})[2]
+        assert st["worker_image"] == "registry.example/other:1" and st["own_image"] == own, st
+        st = req(admin, "POST", "/api/admin/settings", {"compute.image": ""})[2]
+        assert st["worker_image"] == own, st
+    finally:
+        out = srv.stop()
+    assert "BoulderMesh abc1234 on" in out, out[-1000:]
+    srv = Server(tmp)     # any other build
+    try:
+        st = req(f"http://127.0.0.1:{srv.admin_port}", "GET", "/api/admin/state")[2]
+        assert st["version"] is None and st["own_image"] is None and st["worker_image"] == "", st
+    finally:
+        srv.stop()
+    print("build OK")
+
+
 def fetcher() -> None:
     """Only http(s), and never a private, loopback or link-local address, however it's written."""
     def refused(url: str) -> bool:
@@ -250,6 +276,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="bouldermesh-public-") as td:
         with_token(Path(td) / "a")
         read_only(Path(td) / "b")
+        build(Path(td) / "c")
     print("ALL PUBLIC TESTS PASSED")
 
 
