@@ -285,6 +285,7 @@
       <button class="sec sm" id="vmap">Map</button>
       <button class="sec sm" id="vmark" style="display:none" title="Click the rock to add a start hold, and a hold again for hand, finish, foot, then none">Mark holds</button>
       <button class="sec sm" id="vsway" disabled title="Rocks the view a few degrees either way from where it is now, to show off that it's 3D. Dragging or scrolling stops it.">Sway view</button>
+      <button class="sec sm" id="vwire" disabled title="Shows only the edges of the mesh's triangles, to see how it's built: where it's dense, thin or patched. Click again for its surface.">Wireframe</button>
       <button class="sec sm" id="vnotes" title="Hides the notes over the view: about its texture, its stray pieces, and how it was framed and scaled. Click again to show them.">Hide notes</button>
       <select id="vfrom" style="display:none;width:auto" title="A boulder's own mesh is made from the photos of every climb on it: this looks at it from where one climb's own photos (its page's and its videos') were taken"></select>
       <span class="status" id="viewing"></span>
@@ -522,6 +523,7 @@ function showObject(obj, label, plainBacks = false){
   if (current) scene.remove(current);
   obj.traverse(o => {
     if (o.isMesh && !o.userData.hiddenPieces) {
+      o.userData.model = true;      // the mesh itself, as opposed to what's drawn over it later
       const hasColor = !!o.geometry.attributes.color;
       // PLY/STL arrive with three's default MeshBasicMaterial; OpenMVS GLBs are also basic (unlit) but textured
       if (!o.material?.map && (!o.material || o.material.type === 'MeshBasicMaterial' || hasColor))
@@ -536,13 +538,15 @@ function showObject(obj, label, plainBacks = false){
   const s = 2 / Math.max(size.x, size.y, size.z, 1e-6);
   obj.position.sub(c).multiplyScalar(s); obj.scale.setScalar(s);
   scene.add(obj); current = obj;
+  applyWire();
   frameMain();
-  $('#vsway').disabled = false;
+  $('#vsway').disabled = $('#vwire').disabled = false;
   $('#viewing').textContent = 'Viewing: ' + label;
   $('#hud').textContent = `${label} — drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan`;
 }
 // ---- a mesh's cleanup: the pieces of it that are hidden, which meshclean.py works out on the server
 let pieces = null;   // {id, deleted} or {id, record, parts: [{mesh, faces, labels, hidden}], editing}
+let indexEdits = 0;
 const hiddenMaterial = new THREE.MeshBasicMaterial({ color: 0xff5544, transparent: true, opacity: .4, side: THREE.DoubleSide, depthWrite: false });
 async function attachPieces(gltf, id){
   const res = await fetch(`/api/meshes/${id}/cleanup`);
@@ -582,6 +586,7 @@ function applyPieces(){
       to[k * 3] = part.faces[f * 3]; to[k * 3 + 1] = part.faces[f * 3 + 1]; to[k * 3 + 2] = part.faces[f * 3 + 2];
     }
     part.mesh.geometry.setIndex(new THREE.BufferAttribute(shown, 1));
+    part.mesh.geometry.index.version = ++indexEdits;    // three remakes a geometry's wireframe only for a newer index
     part.mesh.userData.faceList = shownFaces; part.mesh.userData.part = part;
     if (!part.hidden) {
       const g = new THREE.BufferGeometry();
@@ -780,6 +785,19 @@ let quiet = false; try { quiet = localStorage.getItem('bm_quiet') === '1'; } cat
 function showQuiet(){ $('#viewer').classList.toggle('quiet', quiet); $('#vnotes').textContent = quiet ? 'Show notes' : 'Hide notes'; }
 showQuiet();
 $('#vnotes').onclick = () => { quiet = !quiet; if (quiet) viewNote(''); try { localStorage.setItem('bm_quiet', quiet ? '1' : '0'); } catch {} showQuiet(); };
+// The wireframe: only the edges of the mesh's triangles, in the accent colour, in place of its surface
+let wire = false; try { wire = localStorage.getItem('bm_wire') === '1'; } catch {}
+const wireMaterial = new THREE.MeshBasicMaterial({ wireframe: true, transparent: true, opacity: .6 });
+function applyWire(){
+  wireMaterial.color.set(getComputedStyle(document.documentElement).getPropertyValue('--acc').trim());
+  current?.traverse(o => {
+    if (!o.userData.model) return;
+    if (wire && o.material !== wireMaterial) { o.userData.surface = o.material; o.material = wireMaterial; }
+    else if (!wire && o.userData.surface) { o.material = o.userData.surface; delete o.userData.surface; }
+  });
+  $('#vwire').textContent = wire ? 'Show surface' : 'Wireframe';
+}
+$('#vwire').onclick = () => { wire = !wire; try { localStorage.setItem('bm_wire', wire ? '1' : '0'); } catch {} applyWire(); };
 // ---------------------------------------------------------------- theme: the browser's, or chosen here
 const themeMedia = matchMedia('(prefers-color-scheme: light)');
 let themeChoice = 'system'; try { themeChoice = localStorage.getItem('bm_theme') || 'system'; } catch {}
@@ -787,6 +805,7 @@ function applyTheme(){
   if (themeChoice === 'light' || themeChoice === 'dark') document.documentElement.dataset.theme = themeChoice; else delete document.documentElement.dataset.theme;
   document.querySelectorAll('#theme button').forEach(b => b.classList.toggle('on', b.dataset.theme === themeChoice));
   scene.background.set(getComputedStyle(document.documentElement).getPropertyValue('--bg').trim());
+  applyWire();      // its colour follows the theme's accent
 }
 applyTheme();
 themeMedia.addEventListener('change', applyTheme);
