@@ -308,7 +308,7 @@
     <!-- ============================ MESHES ============================ -->
     <div class="pane" id="pane-meshes">
       <section>
-        <h2>Meshes</h2>
+        <h2>Meshes <small id="m-count"></small></h2>
         <div class="row w" style="margin-bottom:8px">
           <label class="file"><button class="sec" type="button">Upload mesh (.ply .obj .glb .stl)</button>
             <input type="file" id="meshfile" multiple accept=".ply,.obj,.mtl,.glb,.gltf,.stl,.png,.jpg"></label>
@@ -1891,6 +1891,8 @@ async function refreshMeshes(){
   meshesCache = await api('/api/meshes'); meshesById = Object.fromEntries(meshesCache.map(m => [m.id, m]));
   const el = $('#meshes'); el.innerHTML = meshesCache.length ? '' : '<div class="status">No meshes yet.</div>';
   const older = meshesCache.filter(m => m.replaced_by).length;
+  // each mesh once, however many climbs link to it; a boulder's own mesh and its climbs' own are each one
+  $('#m-count').textContent = meshesCache.length ? `(${meshesCache.length - older}${$('#m-older').checked && older ? `, and ${older} older` : ''})` : '';
   $('#m-older').parentNode.lastChild.textContent = ` Show older versions of rebuilt meshes (${older})`;
   for (const m of meshesCache.filter(m => $('#m-older').checked || !m.replaced_by)) {
     const d = document.createElement('div'); d.className = 'card mesh';
