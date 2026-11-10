@@ -21,7 +21,7 @@
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mute)}
   .pill.real{color:var(--ok);border-color:var(--ok)} .pill.demo,.pill.stopping{color:var(--warn);border-color:var(--warn)}
   .seg{display:inline-flex;margin-left:auto;border:1px solid var(--line);border-radius:6px;overflow:hidden}
-  #random{margin-left:auto} header .seg{flex:none}
+  #prefs{margin-left:auto} header .seg{flex:none}   /* Random and the editing token's buttons at the left; the rest at the right */
   #tofull small{display:block;color:inherit;opacity:.9;font-size:10px;font-weight:400;line-height:1.1;max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #tofull:disabled{background:var(--line);color:var(--mute);opacity:1}
   .phone-only{display:none!important}
@@ -174,7 +174,7 @@
   @media (max-width:860px){
     body,main{grid-template-columns:minmax(0,1fr)} aside{border-right:0} #right{display:none} .phone{display:inline-block}
     body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
-    header{padding:6px 10px;gap:8px} header h1,#mode{display:none} #random{margin-left:0}
+    header{padding:6px 10px;gap:8px} header h1,#mode{display:none} #prefs{margin-left:0}
     #volunteer{order:1;margin-left:auto} #edit,#viewonly,#forget{order:2}
     /* the view on its own: back, and a toggle between the mesh and the map; wireframe and notes live elsewhere or not at all */
     #toctl{font-size:17px;line-height:1;padding:3px 10px} #v3d,#vwire,#vnotes,#viewing{display:none!important}
@@ -202,10 +202,10 @@
   <span id="mode" class="pill">checking…</span>
   <span id="stopping" class="pill stopping" style="display:none"></span>
   <span id="caps" class="status"></span>
+  <button class="sm" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random</button>
   <span id="viewonly" class="pill" style="display:none" title="This copy of the site can't be changed from a browser">view-only</span>
   <button class="sm sec" id="edit" style="display:none"></button>
   <button class="sm danger" id="forget" style="display:none" title="Forget the editing token kept in this browser: changing anything here then needs it again">Forget edit token</button>
-  <button class="sm" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random</button>
   <button class="sm sec phone prefsbtn" id="prefsbtn" title="Background and colours" aria-label="Settings" aria-expanded="false">⚙︎</button>
   <span id="prefs">
     <span class="plabel phone-only">Mesh</span>
