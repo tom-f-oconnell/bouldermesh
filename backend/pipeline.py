@@ -463,15 +463,15 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
                 out_dir.mkdir(parents=True, exist_ok=True)
                 keep_orientation()
                 for f in work.glob("scene_dense_mesh_texture_*"):
-                    shutil.copy(f, out_dir / f.name)
-                return Path(shutil.copy(glb, out_dir / "mesh.glb"))
+                    shutil.copyfile(f, out_dir / f.name)
+                return Path(shutil.copyfile(glb, out_dir / "mesh.glb"))
         except Exception as e:  # texturing is optional
             log(f"texturing failed ({e}); keeping untextured mesh")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     keep_orientation()
     dst = out_dir / "mesh.ply"
-    shutil.copy(mesh, dst)
+    shutil.copyfile(mesh, dst)    # not its mode: OpenMVS writes PLYs readable only by whoever ran it
     return dst
 
 

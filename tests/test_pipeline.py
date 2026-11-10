@@ -385,6 +385,7 @@ def run_until(tmp, stop_at=None, faces=None):
         if name == "ReconstructMesh":
             (work / "scene_dense_mesh.ply").write_bytes(b"ply" if faces is None else
                                                         f"ply\nformat ascii 1.0\nelement vertex 6\nelement face {faces}\nend_header\n".encode())
+            (work / "scene_dense_mesh.ply").chmod(0o600)     # as OpenMVS leaves it
     saved = pipeline._run, pipeline.COLMAP, pipeline._mvs, occlusion.available, occlusion.write_masks, pipeline.orientation.check
     pipeline._run, pipeline.COLMAP, pipeline._mvs = fake_run, "colmap", lambda name: name
     occlusion.available, occlusion.write_masks = (lambda: True), (lambda *a, **k: {})
@@ -433,6 +434,7 @@ for n in (0, pipeline.MIN_FACES - 1):
             assert not (pathlib.Path(td) / "out").exists(), "nothing saved"
 with tempfile.TemporaryDirectory() as td:
     assert run_until(pathlib.Path(td), faces=50_000)[-1] == "TextureMesh"
+    assert (pathlib.Path(td) / "out" / "mesh.ply").stat().st_mode & 0o044 == 0o044, "the untextured mesh readable by all, as the rest"
 assert pipeline.ply_faces(pathlib.Path("/nonexistent")) is None
 print("empty meshes OK")
 print("ALL PIPELINE TESTS PASSED")
