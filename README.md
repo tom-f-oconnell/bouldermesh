@@ -347,9 +347,10 @@ such as a cloud machine's metadata service (`HTTP_ALLOW_PRIVATE=1` lifts that, f
 
 **What it doesn't do.** There's no rate limiting, and `GET /api/meshes` reads every mesh's records for each request, so a
 busy site wants a cache in front: Cloudflare's free plan, with the name proxied and SSL mode *Full (strict)*, caches the
-meshes and textures, limits requests, and hides the machine's address, and Caddy still gets its certificate through it. Each
-project's log is public, as the Projects tab shows it, so it reveals where photos came from and the names of compute
-machines, not credentials. Back up `data/` yourself: a mesh is an hour of compute. Compute credentials are kept as before
+textures by itself and the meshes once a cache rule makes `/meshes/` eligible, limits requests, and hides the machine's
+address, and Caddy still gets its certificate through it; its proxy does cap an upload at 100 MB. Each project's log is
+public, as the Projects tab shows it, so it reveals where photos came from and the names of compute machines, not
+credentials. Back up `data/` yourself: a mesh is an hour of compute. Compute credentials are kept as before
 (encrypted on the admin page, or in `.env`), and cloud machines accept SSH only from this server's address.
 
 ## The admin page
