@@ -34,7 +34,10 @@
   .tag{font-size:11px;padding:1px 6px;border-radius:999px;border:1px solid var(--warn);color:var(--warn);margin-left:4px}
   td button{margin:2px 0}
   .inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px} .inline input[type=number]{width:80px}
-  .qrs{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0} .qrs figure{margin:0;width:220px} .qrs svg{display:block;width:180px;height:auto}
+  /* Android's at the left of the box and iPhone's at the right, apart, so a phone's camera finds the one it's pointed at */
+  .qrs{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:10px 0} .qrs figure{margin:0;width:220px}
+  .qrs figure:last-child{margin-left:auto;text-align:right} .qrs svg{display:block;width:180px;height:auto}
+  .qrs figure:last-child svg{margin-left:auto}
   .qrs figcaption{font-size:12px;color:var(--mute);margin-top:4px}
   /* what the data takes, by kind: ranked bars on one baseline, largest first, one hue */
   .bars{display:grid;grid-template-columns:max-content minmax(60px,1fr) max-content;gap:6px 10px;align-items:center;margin:10px 0 4px;font-size:12px}
