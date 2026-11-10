@@ -213,6 +213,38 @@ def flickr_search(lat: float, lng: float, queries: list[str], log: Log, radius_k
     return out
 
 
+def extract_frames(video: Path, work: Path, keep: int, log: Log, fps: float | None = None) -> list[Path]:
+    """A video's sharpest frames, as JPEGs in work/ (f0001.jpg...), the rest deleted.
+
+    Args:
+        keep: how many to keep at most.
+        fps: frames a second to choose from; by default about twice keep of them over the video's length (ffprobe's),
+            from 0.5 to 4 a second, or 1 if its length can't be read.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("extracting frames needs ffmpeg on PATH")
+    if keep <= 0:
+        return []
+    if fps is None:
+        fps = 1.0
+        try:
+            secs = float(jobctl.run([shutil.which("ffprobe") or "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                     "-of", "csv=p=0", str(video)], timeout=60, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True).strip())
+            fps = min(4.0, max(0.5, 2 * keep / secs))
+        except (ValueError, ZeroDivisionError, OSError, RuntimeError, subprocess.SubprocessError):
+            pass
+    work.mkdir(parents=True, exist_ok=True)
+    jobctl.run([ffmpeg, "-loglevel", "error", "-threads", "2", "-i", str(video), "-vf", f"fps={fps:g}", "-q:v", "2",
+                str(work / "f%04d.jpg")], timeout=900)
+    frames = sorted(work.glob("f*.jpg"))
+    chosen = _sharpest(frames, keep, log)
+    for f in set(frames) - set(chosen):
+        f.unlink()
+    return chosen
+
+
 def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0, max_frames: int = 150,
                  max_videos: int = 6, progress: Callable[..., None] | None = None, infos: dict | None = None) -> list[Path]:
     """Download videos and keep their sharpest frames, named yt_<start of the SHA-1 of the URL>_NNN.jpg.
@@ -243,10 +275,7 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
             vid = next(p for p in tmp.glob("video.*") if not p.name.endswith((".json", ".part")))
             if progress:
                 progress((i + 0.7) / n_videos, f"extracting frames from video {i + 1} of {n_videos}")
-            jobctl.run([ffmpeg, "-loglevel", "error", "-i", str(vid), "-vf", f"fps={fps}", "-q:v", "2",
-                        str(tmp / "f%04d.jpg")], timeout=900)
-            frames = sorted(tmp.glob("f*.jpg"))
-            frames = _sharpest(frames, (max_frames - len(saved)) // (n_videos - i), log)   # a video that failed leaves its share
+            frames = extract_frames(vid, tmp, (max_frames - len(saved)) // (n_videos - i), log, fps)   # a video that failed leaves its share
             for j, f in enumerate(frames):
                 dst = out_dir / f"yt_{tag}_{j:03d}.jpg"
                 shutil.move(str(f), dst)

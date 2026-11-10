@@ -341,6 +341,57 @@ const api = async (url, opt={}) => {
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 };
+// Cloudflare's free plan refuses any request over 100 MB, so files go in requests under BATCH, and a file bigger than
+// that on its own in parts (POST /api/uploads), which the request then names in its "uploads" field
+const BATCH = 80e6;
+const pause = ms => new Promise(ok => setTimeout(ok, ms));
+async function sendInParts(file, progress){
+  const { id, part } = await api('/api/uploads', { method: 'POST', json: { name: file.name, size: file.size } });
+  let sent = 0, tries = 0;
+  while (sent < file.size) {
+    try {
+      sent = (await api(`/api/uploads/${id}?offset=${sent}`, { method: 'POST', body: file.slice(sent, sent + part),
+                                                              headers: { 'Content-Type': 'application/octet-stream' } })).received;
+      tries = 0;
+    } catch (e) {     // a dropped connection: carry on from what the server has, a few times
+      if (++tries > 5) throw e;
+      await pause(2000 * tries);
+      const s = await fetch(`/api/uploads/${id}`).then(r => r.ok ? r.json() : null).catch(() => null);
+      if (s) sent = s.received;
+    }
+    progress(sent);
+  }
+  return id;
+}
+// Sends files to url as the field `field`, in requests under BATCH, or all in one if `together` (a mesh with its
+// textures), with `fields` in each; the answers. progress(bytes sent, of all).
+async function sendFiles(url, files, field, { together = false, fields = {}, progress = () => {} } = {}){
+  files = [...files];
+  const total = files.reduce((n, f) => n + f.size, 0);
+  const inParts = together && total > BATCH ? files : files.filter(f => f.size > BATCH);
+  let done = 0;
+  const ids = [];
+  for (const f of inParts) { ids.push(await sendInParts(f, n => progress(done + n, total))); done += f.size; }
+  const batches = [];
+  let batch = [], size = 0;
+  for (const f of files.filter(f => !inParts.includes(f))) {
+    if (batch.length && size + f.size > BATCH) { batches.push(batch); batch = []; size = 0; }
+    batch.push(f); size += f.size;
+  }
+  if (batch.length || !batches.length) batches.push(batch);
+  const out = [];
+  for (const [i, b] of batches.entries()) {
+    const fd = new FormData();
+    for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+    for (const f of b) fd.append(field, f);
+    if (i === 0 && ids.length) fd.append('uploads', ids.join(','));
+    out.push(await api(url, { method: 'POST', body: fd }));
+    done += b.reduce((n, f) => n + f.size, 0);
+    progress(done, total);
+  }
+  return out;
+}
+const mb = n => (n / 1e6).toFixed(n < 1e7 ? 1 : 0);
 let toastT;
 const phone = matchMedia('(max-width:860px)');   // the same width as the CSS for phones
 const overMesh = () => phone.matches && document.body.classList.contains('full');
@@ -1087,7 +1138,7 @@ async function refreshProjects(){
     const busy = BUSY.includes(p.status);
     d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':''}</b><span class="status ${p.status}">${p.status}${p.demo?' (demo)':''}</span></div>
       <div class="row" style="margin-top:8px">
-        <label class="file"><button class="sec sm" type="button">Add photos</button><input type="file" multiple accept="image/jpeg,image/png"></label>
+        <label class="file"><button class="sec sm" type="button">Add photos or videos</button><input type="file" multiple accept="image/jpeg,image/png,video/*"></label>
         ${RETRYABLE.includes(p.status) ? '<button class="retry sm" title="Tries again from the last step it finished, rather than from the start">Retry</button>' : ''}
         <button class="rec sm ${RETRYABLE.includes(p.status) ? 'sec' : ''}" title="Makes a new mesh from the start" ${busy?'disabled':''}>Reconstruct</button>
         ${p.mesh_id?'<button class="sec sm view">View mesh</button>':''}
@@ -1096,14 +1147,20 @@ async function refreshProjects(){
       </div>
       <div class="prog"></div>
       <div class="harvest-info"></div><div class="known"></div>
-      <div class="photoset kept"><div class="head"></div><div class="thumbs"></div></div>
+      <div class="vwait meta"></div><div class="photoset kept"><div class="head"></div><div class="thumbs"></div></div>
       <div class="filtered"></div><pre class="log" style="display:none"></pre>`;
     d.querySelector('button.sec').onclick = () => d.querySelector('input[type=file]').click();
     d.querySelector('input[type=file]').onchange = async ev => {
-      const fd = new FormData(); for (const f of ev.target.files) fd.append('photos', f);
-      toast(`Uploading ${ev.target.files.length} photo(s)…`, 30000);
-      try { const r = await api(`/api/projects/${p.id}/photos`, {method:'POST', body:fd}); toast(`Saved ${r.saved.length} photo(s)`); loadDetail(p.id, d); }
-      catch(e){ toast('Upload failed: ' + e.message); }
+      const files = [...ev.target.files];
+      toast(`Uploading ${files.length} file(s)…`, 60000);
+      try {
+        const res = await sendFiles(`/api/projects/${p.id}/photos`, files, 'photos',
+                                    { progress: (n, t) => toast(`Uploading ${files.length} file(s): ${mb(n)} of ${mb(t)} MB…`, 60000) });
+        const saved = res.flatMap(r => r.saved || []), videos = res.flatMap(r => r.videos || []);
+        toast(`Saved ${saved.length} photo(s)` + (videos.length ? `, and ${videos.length} video(s) to be turned into photos` : ''), 6000);
+        loadDetail(p.id, d);
+      }
+      catch(e){ toast('Upload failed: ' + e.message, 8000); }
     };
     d.querySelector('.rec').onclick = async () => {
       try { await api(`/api/projects/${p.id}/reconstruct`, {method:'POST'}); toast('Reconstruction queued'); active = p.id; poll(); }
@@ -1181,12 +1238,16 @@ async function loadDetail(id, card){
     fl.querySelectorAll('.tile .back').forEach(b => b.onclick = ev => { ev.stopPropagation(); putBack(id, card, [b.closest('.tile')]); });
     fl.querySelectorAll('.why .all').forEach(b => b.onclick = ev => { ev.stopPropagation(); putBack(id, card, [...b.parentNode.nextElementSibling.querySelectorAll('.tile:not(.back)')], b); });
   }
+  const waiting = p.videos_waiting || [];
+  card.querySelector('.vwait').textContent = waiting.length ? `Turning ${waiting.length} video(s) into photos: ${waiting.join(', ')}. Their frames appear here as each is done.` : '';
+  clearTimeout(card._vwait);
+  if (waiting.length) card._vwait = setTimeout(() => card.isConnected && loadDetail(id, card), 15000);
   const kept = card.querySelector('.photoset.kept'), th = kept.querySelector('.thumbs'), photoNames = p.photos.join();
   if (th.dataset.names !== photoNames || !p.photos.length) {
     th.dataset.names = photoNames;
     kept.querySelector('.head').innerHTML = p.photos.length ? `<b>Kept for the mesh (${p.photos.length})</b>${p.photos.length > 30 ? ': the first 30' : ''}` : '';
     th.innerHTML = p.photos.slice(0, 30).map(x => photoThumb(id, x, p.access?.[x])).join('') + (p.photos.length>30 ? `<span class="status">+${p.photos.length-30}</span>` : '');
-    if (!p.photos.length) th.innerHTML = `<span class="status">${p.kind==='harvest'?'No photos harvested yet.':'No photos yet — add 20–80 overlapping shots around the object.'}</span>`;
+    if (!p.photos.length) th.innerHTML = `<span class="status">${p.kind==='harvest'?'No photos harvested yet.':'No photos yet — add 20–80 overlapping shots around the object, or a video walking around it.'}</span>`;
   }
   const kn = card.querySelector('.known'), known = JSON.stringify(p.known_object);
   if (p.kind !== 'harvest' && kn.dataset.v !== known) {
@@ -1714,11 +1775,13 @@ renderer.domElement.addEventListener('click', ev => {
 
 async function uploadMesh(files){
   if (!editor) return toast('This copy of the site is view-only.');
-  const fd = new FormData(); for (const f of files) fd.append('files', f);
-  if ($('#upclimb').value) fd.append('climb_id', $('#upclimb').value);
   toast('Uploading mesh…', 60000);
-  try { const r = await api('/api/meshes', {method:'POST', body:fd}); await refreshMeshes(); await refreshClimbs(); viewMesh(r.id); }
-  catch(e){ toast('Upload failed: ' + e.message); }
+  try {
+    const [r] = await sendFiles('/api/meshes', files, 'files', { together: true, fields: $('#upclimb').value ? { climb_id: $('#upclimb').value } : {},
+                                                               progress: (n, t) => toast(`Uploading mesh: ${mb(n)} of ${mb(t)} MB…`, 60000) });
+    await refreshMeshes(); await refreshClimbs(); viewMesh(r.id);
+  }
+  catch(e){ toast('Upload failed: ' + e.message, 8000); }
 }
 $('#meshfile').onchange = ev => uploadMesh(ev.target.files);
 vEl.addEventListener('dragover', ev => { ev.preventDefault(); vEl.classList.add('dragging'); });

@@ -1,6 +1,6 @@
 # BoulderMesh — prototype photogrammetry web app for boulders
 
-Upload photos → reconstruct a mesh (COLMAP + OpenMVS) → view it in the browser.
+Upload photos or a video → reconstruct a mesh (COLMAP + OpenMVS) → view it in the browser.
 Import climbs from Mountain Project / OpenBeta / Kaya, put them on a map, link meshes to
 the problems on them, and try **rough photogrammetry from publicly available photos**
 of a boulder (source-page photos, Google Images, geotagged Commons/Flickr photos, beta
@@ -19,6 +19,7 @@ Optional extras, each unlocks a feature and is detected at runtime:
 | `pip install torch torchvision` | keeps climbers and spotters out of reconstructions (in the Docker image) |
 | `pip install torch open_clip_torch` | also rejects harvested photos that don't look like a boulder at all (350 MB model download; rarely adds much) |
 | `yt-dlp` + `ffmpeg` on PATH | frames from linked YouTube/Vimeo beta videos |
+| `ffmpeg` on PATH | videos you upload to a project, turned into its photos (its 200 sharpest frames, spread over its length) |
 | COLMAP + OpenMVS (see Docker section) | real photogrammetry instead of demo relief meshes |
 | `GOOGLE_CSE_KEY` + `GOOGLE_CSE_CX` | Google Images via the Custom Search JSON API (100 free queries/day; existing keys only, see Known gaps) |
 | `FLICKR_KEY` | geotagged Flickr photos around the climb's coordinates |
@@ -349,7 +350,9 @@ such as a cloud machine's metadata service (`HTTP_ALLOW_PRIVATE=1` lifts that, f
 **What it doesn't do.** There's no rate limiting, and `GET /api/meshes` reads every mesh's records for each request, so a
 busy site wants a cache in front: Cloudflare's free plan, with the name proxied and SSL mode *Full (strict)*, caches the
 textures by itself and the meshes once a cache rule makes `/meshes/` eligible, limits requests, and hides the machine's
-address, and Caddy still gets its certificate through it; its proxy does cap an upload at 100 MB. Caddy's access log
+address, and Caddy still gets its certificate through it. Its proxy refuses any request over 100 MB, so the page sends
+files in requests under 80 MB, and a bigger one in parts of 64 MB (`POST /api/uploads`), which carry on from where they
+got to if the connection drops. Caddy's access log
 (`docker compose logs caddy`) still names each visitor, as `client_ip`, because `deploy/Caddyfile` believes Cloudflare's
 addresses when they say who it is, and so does the app's own log. A firewall can then let ports 80 and 443 in only from
 those addresses ([cloudflare.com/ips](https://www.cloudflare.com/ips/)), so that no one goes around the proxy. Cloudflare

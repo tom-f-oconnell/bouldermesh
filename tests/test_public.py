@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """What the site does when exposed: the editing token and read-only modes, refusing other sites' pages, the page's
 Content-Security-Policy and the other headers, files served as what they are or as downloads, 304s, bad lengths, and
-the fetcher's refusal of private addresses, HEAD requests, the sender's address from a proxy's header, and the build deploy/build.sh records, which remote
-machines then run. Starts the server three times on free ports; offline.
+the fetcher's refusal of private addresses, HEAD requests, the sender's address from a proxy's header, the build deploy/build.sh records, which remote
+machines then run, and files sent in parts, including a video turned into a project's photos. Starts the server three times on free ports; offline.
 
     python3 tests/test_public.py
 """
@@ -14,6 +14,7 @@ import io
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -71,13 +72,18 @@ class Server:
         return out
 
 
-def req(B: str, method: str, path: str, body: dict | None = None, headers: dict | None = None, files=None):
+def req(B: str, method: str, path: str, body: dict | bytes | None = None, headers: dict | None = None, files=None,
+        form: dict | None = None):
     """(status, headers, decoded JSON or bytes)."""
     data, hdrs = None, dict(headers or {})
-    if body is not None:
+    if isinstance(body, bytes):
+        data, hdrs["Content-Type"] = body, "application/octet-stream"
+    elif body is not None:
         data, hdrs["Content-Type"] = json.dumps(body).encode(), "application/json"
     if files is not None:
         bnd, buf = uuid.uuid4().hex, io.BytesIO()
+        for k, v in (form or {}).items():
+            buf.write(f'--{bnd}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
         for name, fname, blob in files:
             buf.write(f'--{bnd}\r\nContent-Disposition: form-data; name="{name}"; filename="{fname}"\r\n'
                       f"Content-Type: application/octet-stream\r\n\r\n".encode() + blob + b"\r\n")
@@ -249,6 +255,57 @@ def build(tmp: Path) -> None:
     print("build OK")
 
 
+def in_parts(tmp: Path) -> None:
+    """A file too big for one request (Cloudflare's 100 MB) goes in parts, which a request then names: a mesh's, and a
+    video's, which becomes a project's photos."""
+    srv = Server(tmp, EDIT_TOKEN=TOKEN, READ_ONLY="auto", MAX_UPLOAD_MB="2")
+    B = srv.url
+    try:
+        assert req(B, "POST", "/api/uploads", {"name": "x.ply", "size": 10})[0] == 401, "the token, as for any change"
+        assert req(B, "POST", "/api/uploads", {"name": "x.ply", "size": 3 * 2**20}, headers=AUTH)[0] == 400, "over MAX_UPLOAD"
+        st, _, up = req(B, "POST", "/api/uploads", {"name": "../big.ply", "size": len(PLY)}, headers=AUTH)
+        assert st == 201 and up["part"] == 64 * 2**20, up
+        uid = up["id"]
+        assert req(B, "POST", f"/api/uploads/{uid}?offset=0", PLY[:50], headers=AUTH)[2]["received"] == 50
+        st, _, e = req(B, "POST", f"/api/uploads/{uid}?offset=0", PLY[:50], headers=AUTH)     # sent twice
+        assert st == 409 and e["received"] == 50, (st, e)
+        assert req(B, "GET", f"/api/uploads/{uid}")[2] == {"name": "big.ply", "size": len(PLY), "received": 50}
+        st, _, e = req(B, "POST", "/api/meshes", headers=AUTH, files=[], form={"uploads": uid})
+        assert st == 400 and "only in part" in e["error"], (st, e)
+        assert req(B, "POST", f"/api/uploads/{uid}?offset=50", PLY[50:] + b"extra", headers=AUTH)[0] == 400, "past its size"
+        assert req(B, "POST", f"/api/uploads/{uid}?offset=50", PLY[50:], headers=AUTH)[2]["received"] == len(PLY)
+        st, _, m = req(B, "POST", "/api/meshes", headers=AUTH, files=[("files", "tex.png", PNG)], form={"uploads": uid, "name": "parts"})
+        assert st == 201 and m["filename"] == "big.ply" and m["name"] == "parts", m
+        assert req(B, "GET", f"/meshes/{m['id']}/big.ply")[2] == PLY and req(B, "GET", f"/meshes/{m['id']}/tex.png")[2] == PNG
+        assert req(B, "GET", f"/api/uploads/{uid}")[0] == 404, "used up"
+        assert req(B, "POST", "/api/meshes", headers=AUTH, files=[], form={"uploads": uid})[0] == 400
+
+        if shutil.which("ffmpeg"):
+            video = tmp / "walk.mp4"
+            subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=4:size=320x240:rate=10",
+                            "-pix_fmt", "yuv420p", str(video)], check=True)
+            blob = video.read_bytes()
+            pid = req(B, "POST", "/api/projects", {"name": "walk-around"}, headers=AUTH)[2]["id"]
+            uid = req(B, "POST", "/api/uploads", {"name": "walk.mp4", "size": len(blob)}, headers=AUTH)[2]["id"]
+            req(B, "POST", f"/api/uploads/{uid}?offset=0", blob, headers=AUTH)
+            st, _, r = req(B, "POST", f"/api/projects/{pid}/photos", headers=AUTH, files=[("photos", "a.png", PNG), ("photos", "notes.txt", b"x")],
+                           form={"uploads": uid})
+            assert st == 200 and r == {"saved": ["a.png"], "videos": ["walk.mp4"]}, r
+            for _ in range(60):
+                proj = req(B, "GET", f"/api/projects/{pid}")[2]
+                if not proj["videos_waiting"]:
+                    break
+                time.sleep(0.5)
+            frames = [f for f in proj["photos"] if f.startswith("vid_")]
+            assert not proj["videos_waiting"] and 4 <= len(frames) <= 16 and "a.png" in proj["photos"], proj
+            assert "frame(s) added to the photos" in proj["log"], proj["log"][-500:]
+        else:
+            print("ffmpeg not installed: skipping the video upload")
+    finally:
+        srv.stop()
+    print("uploads in parts OK")
+
+
 def fetcher() -> None:
     """Only http(s), and never a private, loopback or link-local address, however it's written."""
     def refused(url: str) -> bool:
@@ -277,6 +334,7 @@ def main() -> None:
         with_token(Path(td) / "a")
         read_only(Path(td) / "b")
         build(Path(td) / "c")
+        in_parts(Path(td) / "d")
     print("ALL PUBLIC TESTS PASSED")
 
 

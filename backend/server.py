@@ -72,6 +72,12 @@ USE_GPU = os.environ.get("USE_GPU", "1") != "0"   # used if it's there and has r
 SHRINK_SIDES = (2048, 4096)                      # sizes a texture can be asked for, if a browser can't manage the original
 MAX_UPLOAD = int(os.environ.get("MAX_UPLOAD_MB", "512")) * 1024 * 1024
 PHOTO_EXT = {".jpg", ".jpeg", ".png"}
+VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}   # uploaded to a project, turned into photos
+VIDEO_FRAMES = 200      # frames kept from each such video: its sharpest, spread over its length
+# Files sent in parts, kept here until the request that uses them: Cloudflare's free plan refuses any request over 100 MB
+UPLOADS = DATA / "uploads"
+PART_MAX = 64 * 2**20   # the largest part
+UPLOAD_HOURS = 24       # how long an upload no request has used is kept
 MESH_EXT = {".ply", ".obj", ".glb", ".gltf", ".stl"}
 SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 # exposure: by default anyone who can reach the port can change anything, as on a LAN. EDIT_TOKEN makes every change need
@@ -224,6 +230,76 @@ def new_id() -> str:
 def safe_name(name: str) -> str:
     name = SAFE.sub("_", Path(name).name).strip("._") or "file"
     return name[:120]
+
+
+# ----------------------------------------------------------------- files sent in parts
+_uploads_lock = threading.Lock()
+
+
+def upload_paths(uid: str) -> tuple[Path, Path]:
+    """An upload's data so far, and what it is ({name, size, created})."""
+    if not re.fullmatch(r"[0-9a-f]{12}", uid):
+        raise ValueError(f"no upload {uid}")
+    return UPLOADS / f"{uid}.part", UPLOADS / f"{uid}.json"
+
+
+def start_upload(name: str, size: int) -> str:
+    """Make room for a file that's coming in parts; its id. Uploads left unused for UPLOAD_HOURS are cleared first."""
+    if size <= 0:
+        raise ValueError("an upload needs its size")
+    if size > MAX_UPLOAD:
+        raise ValueError(f"upload exceeds {MAX_UPLOAD // 2**20} MB")
+    UPLOADS.mkdir(parents=True, exist_ok=True)
+    for f in UPLOADS.iterdir():
+        try:
+            if time.time() - f.stat().st_mtime > UPLOAD_HOURS * 3600:
+                f.unlink()
+        except FileNotFoundError:
+            pass
+    uid = new_id()
+    data, meta = upload_paths(uid)
+    data.touch()
+    meta.write_text(json.dumps({"name": safe_name(name), "size": size, "created": time.time()}))
+    return uid
+
+
+def upload_state(uid: str) -> dict | None:
+    """{name, size, received}, or None if there's no such upload."""
+    data, meta = upload_paths(uid)
+    try:
+        info = json.loads(meta.read_text())
+        return {"name": info["name"], "size": info["size"], "received": data.stat().st_size}
+    except FileNotFoundError:
+        return None
+
+
+def finished_upload(uid: str) -> tuple[str, Path]:
+    """A file sent in full, as (its name, where it is), for the request using it to move; it's no longer an upload.
+
+    Raises:
+        ValueError: there's no such upload, or not all of it has come.
+    """
+    state = upload_state(uid)
+    if not state:
+        raise ValueError(f"no upload {uid}: send that file again")
+    if state["received"] != state["size"]:
+        raise ValueError(f"{state['name']} has come only in part ({state['received']} of {state['size']} bytes)")
+    data, meta = upload_paths(uid)
+    meta.unlink()
+    return state["name"], data
+
+
+def put_file(source: bytes | Path, dest: Path) -> None:
+    """Save a file a request brought (bytes) or that came in parts (a path, moved)."""
+    if isinstance(source, Path):
+        shutil.move(source, dest)
+    else:
+        dest.write_bytes(source)
+
+
+def drop_file(source: bytes | Path) -> None:
+    if isinstance(source, Path):
+        source.unlink(missing_ok=True)
 
 
 # ----------------------------------------------------------------- climbs helpers
@@ -1404,6 +1480,49 @@ def beta_worker() -> None:
                 _beta_now = None
 
 
+_frames_wake = threading.Event()
+_frames_control = JobControl()
+
+
+def frames_worker() -> None:
+    """Turns videos uploaded to projects into photos, one at a time, oldest first, on a thread of its own at the lowest
+    CPU priority, like finding beta. A video is deleted once it's done, or has failed; one a restart cut short is
+    done again."""
+    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    use_control(_frames_control)
+    while True:
+        _frames_wake.wait(timeout=300)
+        _frames_wake.clear()
+        while not _stopping:
+            waiting = sorted((f for f in PROJECTS.glob("*/videos/*") if f.is_file()), key=lambda f: f.stat().st_mtime)
+            if not waiting:
+                break
+            video, pid = waiting[0], waiting[0].parent.parent.name
+            jobctl.begin(low_priority=True)
+            try:
+                frames_from_video(pid, video)
+            except Exception as e:  # never let the thread die
+                append_log(pid, f"video {video.name}: no photos from it: {e}")
+            finally:
+                video.unlink(missing_ok=True)
+
+
+def frames_from_video(pid: str, video: Path) -> None:
+    """A video's VIDEO_FRAMES sharpest frames, spread over its length, as the project's photos vid_<tag>_NNN.jpg."""
+    tag = hashlib.sha1(video.name.encode()).hexdigest()[:8]
+    work = PROJECTS / pid / f"_frames_{tag}"
+    append_log(pid, f"video {video.name}: choosing its sharpest frames")
+    try:
+        frames = harvest_mod.extract_frames(video, work, VIDEO_FRAMES, lambda line: append_log(pid, line))
+        photos = PROJECTS / pid / "photos"
+        photos.mkdir(exist_ok=True)
+        for j, f in enumerate(frames):
+            shutil.move(str(f), photos / f"vid_{tag}_{j:03d}.jpg")
+        append_log(pid, f"video {video.name}: {len(frames)} frame(s) added to the photos")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def queue_scale(mid: str) -> bool:
     """Queue finding a reconstructed mesh's scale (scale.py), unless it's being found; whether it was queued."""
     if not (MESHES / mid / "cameras.json").exists() or (scale_mod.load(MESHES / mid) or {}).get("status") in ("queued", "running"):
@@ -1946,6 +2065,13 @@ class Handler(BaseHTTPRequestHandler):
                 fields[part.get_param("name", header="content-disposition")] = data.decode(errors="replace")
         return fields, files
 
+    def read_files(self) -> tuple[dict, list[tuple[str, bytes | Path]]]:
+        """A multipart request's fields and files, with the files sent before in parts that its "uploads" field names
+        (their ids, separated by commas) as paths."""
+        fields, files = self.read_multipart()
+        files = list(files) + [finished_upload(u) for u in re.split(r"[\s,]+", fields.pop("uploads", "")) if u]
+        return fields, files
+
     def read_json(self) -> dict:
         body = self.read_body()
         return json.loads(body or b"{}")
@@ -2003,6 +2129,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "not found"}, 404)
                 photos = PROJECTS / m[1] / "photos"
                 proj["photos"] = sorted(f.name for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.exists() else []
+                videos = PROJECTS / m[1] / "videos"
+                proj["videos_waiting"] = sorted(f.name for f in videos.iterdir() if f.is_file()) if videos.exists() else []
                 proj["log"] = read_log(m[1], proj.get("log") or "")
                 proj["failure"] = (last_failure(m[1]) if proj["status"] == "failed" else
                                    last_failure(m[1], "INTERRUPTED: ") if proj["status"] == "interrupted" else None)
@@ -2088,6 +2216,10 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 record = meshclean.load(served_dir(m[1]))
                 return self.send_json(record) if record else self.send_json({"error": "no cleanup"}, 404)
+            m = re.fullmatch(r"/api/uploads/([0-9a-f]{12})", p)
+            if m:   # how much of a file sent in parts has come, to carry on from there
+                state = upload_state(m[1])
+                return self.send_json(state) if state else self.send_json({"error": "no such upload"}, 404)
             m = re.fullmatch(r"/meshes/([0-9a-f]+)/([A-Za-z0-9._-]+)", p)
             if m:
                 mid, name = m[1], m[2]
@@ -2189,19 +2321,53 @@ class Handler(BaseHTTPRequestHandler):
                   "user", body.get("climb_id"), write=True)
                 return self.send_json({"id": pid, "name": name}, 201)
 
+            if p == "/api/uploads":    # {name, size}: a file to come in parts of at most PART_MAX
+                body = self.read_json()
+                uid = start_upload(str(body.get("name") or "file"), int(body.get("size") or 0))
+                return self.send_json({"id": uid, "part": PART_MAX}, 201)
+            m = re.fullmatch(r"/api/uploads/([0-9a-f]{12})", p)
+            if m:   # ?offset=<bytes so far>, with the next part as the body
+                state = upload_state(m[1])
+                n = int(self.headers.get("Content-Length") or 0)
+                if not state:
+                    return self.send_json({"error": "no such upload: start again"}, 404)
+                if not 0 < n <= PART_MAX:
+                    return self.send_json({"error": f"a part is 1 byte to {PART_MAX // 2**20} MB"}, 400)
+                part = self.read_body()
+                offset = int((parse_qs(urlparse(self.path).query).get("offset") or ["-1"])[0])
+                data, _ = upload_paths(m[1])
+                with _uploads_lock:
+                    have = data.stat().st_size
+                    if offset != have:      # a part lost or sent twice: the sender carries on from what's here
+                        return self.send_json({"error": f"expected the part at byte {have}", "received": have}, 409)
+                    if have + len(part) > state["size"]:
+                        return self.send_json({"error": "more than the size it was started with"}, 400)
+                    with open(data, "ab") as f:
+                        f.write(part)
+                return self.send_json({"received": have + len(part), "size": state["size"]})
+
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/photos", p)
             if m:
                 pid = m[1]
                 if not q("SELECT 1 FROM projects WHERE id=?", pid, one=True):
                     return self.send_json({"error": "not found"}, 404)
-                _, files = self.read_multipart()
-                saved = []
+                _, files = self.read_files()
+                saved, videos = [], []
                 for fname, data in files:
-                    if Path(fname).suffix.lower() not in PHOTO_EXT:
-                        continue
-                    (PROJECTS / pid / "photos" / fname).write_bytes(data)
-                    saved.append(fname)
-                return self.send_json({"saved": saved})
+                    ext = Path(fname).suffix.lower()
+                    if ext in PHOTO_EXT:
+                        put_file(data, PROJECTS / pid / "photos" / fname)
+                        saved.append(fname)
+                    elif ext in VIDEO_EXT:      # turned into photos by frames_worker
+                        (PROJECTS / pid / "videos").mkdir(exist_ok=True)
+                        put_file(data, PROJECTS / pid / "videos" / fname)
+                        videos.append(fname)
+                    else:
+                        drop_file(data)
+                if videos:
+                    append_log(pid, f"videos uploaded, to be turned into photos: {', '.join(videos)}")
+                    _frames_wake.set()
+                return self.send_json({"saved": saved, "videos": videos})
 
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/known-object", p)
             if m:   # {kind} or {what, height_cm, width_cm}, or {} for nothing: its mesh is sized again
@@ -2253,7 +2419,7 @@ class Handler(BaseHTTPRequestHandler):
 
             # ---- meshes
             if p == "/api/meshes":
-                fields, files = self.read_multipart()
+                fields, files = self.read_files()
                 if not files:
                     return self.send_json({"error": "no file"}, 400)
                 mid = new_id()
@@ -2264,8 +2430,9 @@ class Handler(BaseHTTPRequestHandler):
                     ext = Path(fname).suffix.lower()
                     if ext not in MESH_EXT and ext not in MESH_EXTRA_EXT:    # a mesh, its textures and material; never a page
                         skipped.append(fname)
+                        drop_file(data)
                         continue
-                    (d / fname).write_bytes(data)
+                    put_file(data, d / fname)
                     if ext in MESH_EXT and main is None:
                         main = fname
                 if main is None:
@@ -2611,6 +2778,7 @@ def main() -> None:
         beta_mod.carry_on(d)        # finding beta carries on after a restart, like areas
         scale_mod.interrupted(d)
     threading.Thread(target=beta_worker, daemon=True).start()
+    threading.Thread(target=frames_worker, daemon=True).start()
     if RANGES:
         threading.Thread(target=RANGES.run, daemon=True).start()
     host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))
