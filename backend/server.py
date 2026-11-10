@@ -52,6 +52,7 @@ import retexture  # noqa: E402
 import settings as settings_mod  # noqa: E402
 import pipeline  # noqa: E402
 import proxy_ranges  # noqa: E402
+import volunteers as volunteers_mod  # noqa: E402
 import climbs as climbs_mod  # noqa: E402
 from climbs import diversity as diversity_mod  # noqa: E402
 from climbs import harvest as harvest_mod  # noqa: E402
@@ -95,6 +96,10 @@ VERSION = os.environ.get("BOULDERMESH_COMMIT") or None
 OWN_IMAGE = os.environ.get("BOULDERMESH_IMAGE") or None
 # the Caddyfile in front, whose trusted proxies are compared with Cloudflare's published ranges each day (proxy_ranges.py)
 RANGES = proxy_ranges.Watch(Path(os.environ["CADDYFILE"])) if os.environ.get("CADDYFILE") else None
+# volunteers fetching YouTube videos (volunteers.py), served on VOLUNTEER_PORT if it's set, for a proxy to pass on
+# /volunteer/... to; VOLUNTEER_URL is the address they reach it at, for the command the admin page gives them
+VOLUNTEER_PORT = int(os.environ.get("VOLUNTEER_PORT") or 0)
+VOLUNTEER_URL = os.environ.get("VOLUNTEER_URL") or (f"https://{os.environ['SITE_HOST']}" if os.environ.get("SITE_HOST") else None)
 MESH_EXTRA_EXT = {".png", ".jpg", ".jpeg", ".bin", ".mtl"}       # what may be uploaded beside a mesh: its textures and material
 # how files under data/ are served; anything else is sent as bytes to save, so that nothing put there can run as a page of this site
 SERVED_TYPES = {".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -701,23 +706,7 @@ def record_videos(climb_id: str, videos: list[dict], log) -> None:
         if not v.get("url"):
             continue
         try:
-            s = youtube_mod.stats(f"{v.get('title') or ''}\n{v.get('description') or ''}")
-            q("""INSERT INTO videos(url,title,uploader,channel_id,channel_url,duration,upload_date,license,description,fetched,
-                                    height_cm,wingspan_cm,ape_index_cm,first_person,quotes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                 ON CONFLICT(url) DO UPDATE SET title=COALESCE(excluded.title,title), uploader=COALESCE(excluded.uploader,uploader),
-                   channel_id=COALESCE(excluded.channel_id,channel_id), channel_url=COALESCE(excluded.channel_url,channel_url),
-                   duration=COALESCE(excluded.duration,duration), upload_date=COALESCE(excluded.upload_date,upload_date),
-                   license=COALESCE(excluded.license,license), description=COALESCE(excluded.description,description),
-                   fetched=CASE WHEN excluded.description IS NULL THEN fetched ELSE excluded.fetched END,
-                   height_cm=CASE WHEN excluded.description IS NULL THEN height_cm ELSE excluded.height_cm END,
-                   wingspan_cm=CASE WHEN excluded.description IS NULL THEN wingspan_cm ELSE excluded.wingspan_cm END,
-                   ape_index_cm=CASE WHEN excluded.description IS NULL THEN ape_index_cm ELSE excluded.ape_index_cm END,
-                   first_person=CASE WHEN excluded.description IS NULL THEN first_person ELSE excluded.first_person END,
-                   quotes=CASE WHEN excluded.description IS NULL THEN quotes ELSE excluded.quotes END""",
-              v["url"], v.get("title"), v.get("uploader"), v.get("channel_id"), v.get("channel_url"), v.get("duration"),
-              v.get("upload_date"), v.get("license") if v.get("description") is not None else None, v.get("description"),
-              time.time(), s["height_cm"], s["wingspan_cm"], s["ape_index_cm"], int(s["first_person"]),
-              json.dumps(s["quotes"]) if s["quotes"] else None, write=True)
+            s = save_video(v)
             q("""INSERT INTO climb_videos(climb_id,url,found_by,frames,created) VALUES(?,?,?,?,?)
                  ON CONFLICT(climb_id,url) DO UPDATE SET frames=COALESCE(excluded.frames,frames)""",
               climb_id, v["url"], v.get("found_by") or "page", v.get("frames"), time.time(), write=True)
@@ -727,6 +716,28 @@ def record_videos(climb_id: str, videos: list[dict], log) -> None:
                 log(f"climber's size in {v['url']}: {s['quotes']}")
         except Exception as e:
             log(f"couldn't record video {v.get('url')}: {type(e).__name__}: {e}")
+
+
+def save_video(v: dict) -> dict:
+    """Keep a video's details (youtube.details()) in the videos table; what they say about the climber's size."""
+    s = youtube_mod.stats(f"{v.get('title') or ''}\n{v.get('description') or ''}")
+    q("""INSERT INTO videos(url,title,uploader,channel_id,channel_url,duration,upload_date,license,description,fetched,
+                            height_cm,wingspan_cm,ape_index_cm,first_person,quotes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(url) DO UPDATE SET title=COALESCE(excluded.title,title), uploader=COALESCE(excluded.uploader,uploader),
+           channel_id=COALESCE(excluded.channel_id,channel_id), channel_url=COALESCE(excluded.channel_url,channel_url),
+           duration=COALESCE(excluded.duration,duration), upload_date=COALESCE(excluded.upload_date,upload_date),
+           license=COALESCE(excluded.license,license), description=COALESCE(excluded.description,description),
+           fetched=CASE WHEN excluded.description IS NULL THEN fetched ELSE excluded.fetched END,
+           height_cm=CASE WHEN excluded.description IS NULL THEN height_cm ELSE excluded.height_cm END,
+           wingspan_cm=CASE WHEN excluded.description IS NULL THEN wingspan_cm ELSE excluded.wingspan_cm END,
+           ape_index_cm=CASE WHEN excluded.description IS NULL THEN ape_index_cm ELSE excluded.ape_index_cm END,
+           first_person=CASE WHEN excluded.description IS NULL THEN first_person ELSE excluded.first_person END,
+           quotes=CASE WHEN excluded.description IS NULL THEN quotes ELSE excluded.quotes END""",
+      v["url"], v.get("title"), v.get("uploader"), v.get("channel_id"), v.get("channel_url"), v.get("duration"),
+      v.get("upload_date"), v.get("license") if v.get("description") is not None else None, v.get("description"),
+      time.time(), s["height_cm"], s["wingspan_cm"], s["ape_index_cm"], int(s["first_person"]),
+      json.dumps(s["quotes"]) if s["quotes"] else None, write=True)
+    return s
 
 
 def record_channel(url: str) -> None:
@@ -827,7 +838,8 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                 except Exception as e:
                     log(f"couldn't read the problem page again ({e}); using what was read before")
             others = boulder_projects(proj["climb_id"], pid) if pool_from is None else pool_from
-            summary = harvest_mod.harvest(c, pdir, log, sources, relevance_filter=relevance_filter, tracker=tracker, pool_from=others)
+            summary = harvest_mod.harvest(c, pdir, log, sources, relevance_filter=relevance_filter, tracker=tracker, pool_from=others,
+                                          want=video_wanter("harvest", pid))
             videos = summary.pop("videos", [])
             record_videos(proj["climb_id"], videos, log)
             summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license")} for v in videos]
@@ -1397,8 +1409,16 @@ def run_beta(mid: str) -> None:
         beta_mod.find(mesh_dir, PROJECTS / pid / "photos", log)
         if (mesh_dir / beta_mod.POSES_FILE).exists():
             queue_scale(mid)    # the climbers' reach is checked against the size there
-    except youtube_mod.Refused:
-        pass    # it says it's waiting, and stays queued
+    except youtube_mod.Refused:     # it says it's waiting, and stays queued: for volunteers to fetch its videos, if any can
+        want = video_wanter("beta", mid)
+        rec = beta_mod.load(mesh_dir) or {}
+        done = {v["url"] for v in rec.get("videos", [])}
+        missing = [u for u in beta_mod.videos(mesh_dir) if u not in done and not youtube_mod.cached(u)]
+        if want and missing:
+            for u in missing:
+                want(u)
+            beta_mod.save(mesh_dir, {**rec, "waiting_videos": missing})
+            log(f"beta: {len(missing)} video(s) asked of volunteers")
     except Cancelled:
         beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "stopped", "progress": None})
     except Exception as e:
@@ -1424,6 +1444,15 @@ def queue_beta(mid: str, ahead: bool = False) -> bool:
     beta_mod.save(MESHES / mid, {"status": "queued", "videos": [], "progress": None, "queued": time.time(), "ahead": ahead})
     _beta_wake.set()
     return True
+
+
+def beta_ready(mid: str) -> bool:
+    """Whether a queued mesh's beta can be looked for now: the videos it waited for are all in the cache, or this
+    server may fetch videos from YouTube now (it isn't refusing, and they aren't left to volunteers)."""
+    waiting = (beta_mod.load(MESHES / mid) or {}).get("waiting_videos") or []
+    if waiting and all(youtube_mod.cached(u) for u in waiting):
+        return True
+    return not youtube_mod.refused() and youtube_mod.via != "volunteers"
 
 
 def beta_queue() -> list[str]:
@@ -1459,15 +1488,16 @@ def stop_beta() -> int:
 def beta_worker() -> None:
     """Finds beta in queued meshes, one at a time, alongside the workers' meshing. It's on its own thread so that
     it never holds up an area, at the lowest CPU priority (the pose model's threads inherit it), as it can make do
-    with what meshing leaves. While YouTube is refusing downloads, it waits."""
+    with what meshing leaves. While YouTube is refusing downloads, it takes only meshes whose videos are all in the
+    cache, as volunteers fetched them (beta_ready())."""
     global _beta_now
     os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
     use_control(_beta_control)
     while True:
         _beta_wake.wait(timeout=60)
         _beta_wake.clear()
-        while not _stopping and not youtube_mod.refused():
-            queued = beta_queue()
+        while not _stopping:
+            queued = [mid for mid in beta_queue() if beta_ready(mid)]
             if not queued:
                 break
             _beta_now = {"mid": queued[0], "started": time.time()}
@@ -1680,7 +1710,8 @@ def run_job(job: dict) -> None:
         elif job["type"] == "reconstruct":
             run_reconstruct(job["pid"], job.get("internet", False), resume=job.get("resume", False))
         elif job["type"] == "harvest":
-            run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True), resume=job.get("resume", False))
+            run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True), resume=job.get("resume", False),
+                        again=job.get("again", False))
         elif job["type"] == "retry":
             run_retry(job["pid"])
     except (Exception, Cancelled) as e:  # never let the worker die
@@ -2702,6 +2733,114 @@ def _has(mod: str) -> bool:
 ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "36184"))
 
 
+# ----------------------------------------------------------------- volunteers
+def video_wanter(purpose: str, ref: str):
+    """What to ask volunteers for a video with, for purpose ("harvest" or "beta") and ref (its project or mesh), when
+    YouTube won't let this server have it; None if there's no volunteer, or the admin page says to fetch only here."""
+    if settings().get("youtube.via") == "here" or not VOLUNTEERS.any():
+        return None
+    return lambda url: VOLUNTEERS.want("video", youtube_mod.video_id(url) or "", purpose, ref)
+
+
+def volunteer_delivered(task: dict, path: Path | None, info: dict) -> None:
+    """A video, or its details, that a volunteer fetched: the video into youtube's cache, the details where the
+    harvest would have kept them (every URL of the videos table naming it)."""
+    info = youtube_mod.details({**info, "webpage_url": info["url"], "extractor": "youtube"})
+    if path:
+        youtube_mod.cache_put(task["video_id"], path, info)
+    urls = [r["url"] for r in q("SELECT url FROM videos WHERE url LIKE ?", f"%{task['video_id']}%")
+            if youtube_mod.video_id(r["url"]) == task["video_id"]]
+    for url in urls or [info["url"]]:
+        save_video({**info, "url": url})
+
+
+def volunteer_ready(purpose: str, ref: str) -> None:
+    """Everything a harvest or a mesh's beta wanted of volunteers has come or failed: carry on with it."""
+    if purpose == "harvest":
+        reharvest_with_videos(ref)
+    elif purpose == "beta":
+        _beta_wake.set()
+
+
+def reharvest_with_videos(pid: str) -> None:
+    """Harvest a project again with the videos volunteers fetched for it, now in the cache. An area's climb is queued
+    to harvest again and rebuild (if its photos changed), and a finished area runs only that; a stopped one waits
+    to be started. Any other project is harvested again, to be rebuilt by hand."""
+    proj = q("SELECT status FROM projects WHERE id=?", pid, one=True)
+    if not proj or proj["status"] in ("queued", "running", "harvesting"):
+        return
+    item = q("SELECT campaign_id, source_id, status FROM campaign_items WHERE project_id=? LIMIT 1", pid, one=True)
+    if item:
+        if item["status"] in ("done", "skipped", "failed"):
+            set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="harvest+rebuild", was=item["status"],
+                     redo_started=0, note="queued to harvest again with the videos volunteers fetched")
+            q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", item["campaign_id"], write=True)
+        return
+    append_log(pid, "volunteers fetched the videos this harvest couldn't have: harvesting it again (Reconstruct uses them)")
+    q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
+    queue_job({"type": "harvest", "pid": pid, "sources": sorted(HARVEST_SOURCES), "reconstruct": False, "again": True})
+
+
+VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteers", volunteer_delivered, volunteer_ready)
+
+
+def want_skipped() -> dict:
+    """Ask volunteers for every video a harvest went without (of the 6 it takes), and every video a mesh queued to
+    find beta in is waiting for; how many of each are coming."""
+    n = {"harvest": 0, "beta": 0}
+    for r in q("SELECT id, harvest FROM projects WHERE harvest IS NOT NULL"):
+        for v in (json.loads(r["harvest"]).get("videos") or [])[:6]:
+            vid = youtube_mod.video_id(v.get("url") or "")
+            if vid and not v.get("frames") and not youtube_mod.cached(vid):
+                n["harvest"] += VOLUNTEERS.want("video", vid, "harvest", r["id"])
+    for mid in beta_queue():
+        rec = beta_mod.load(MESHES / mid) or {}
+        done = {v["url"] for v in rec.get("videos", [])}
+        for url in beta_mod.videos(MESHES / mid):
+            vid = youtube_mod.video_id(url)
+            if vid and url not in done and not youtube_mod.cached(vid):
+                n["beta"] += VOLUNTEERS.want("video", vid, "beta", mid)
+    return n
+
+
+def admin_volunteer_add(body: dict) -> dict:
+    v = VOLUNTEERS.add(body.get("name") or "", body.get("per_hour"), body.get("per_day"))
+    url = VOLUNTEER_URL or "https://<this site>"
+    return {**v, "result": f"added {v['name']}: give them the command below, which has their token (shown only now)",
+            "command": f"python3 bouldermesh_volunteer.py --server {url} --token {v['token']}",
+            "download": f"{url}/volunteer/bouldermesh_volunteer.py"}
+
+
+def admin_volunteer_revoke(body: dict) -> dict:
+    VOLUNTEERS.revoke(str(body.get("id") or ""))
+    return {"result": "revoked: its token no longer works, and what it was fetching goes to someone else"}
+
+
+def admin_volunteers_skipped(_: dict) -> dict:
+    n = want_skipped()
+    return {"result": f"asked volunteers for {n['harvest']} video(s) harvests went without and {n['beta']} for finding beta; "
+                      "each climb is harvested again once its videos have come"}
+
+
+def admin_volunteers_details(_: dict) -> dict:
+    """Videos whose licence and uploader were never read (before that was kept): their details, without the video."""
+    n = 0
+    for r in q("SELECT url FROM videos WHERE license IS NULL"):
+        vid = youtube_mod.video_id(r["url"])
+        n += bool(vid) and VOLUNTEERS.want("details", vid, "details", r["url"])
+    return {"result": f"asked volunteers for the details of {n} video(s)"}
+
+
+def admin_volunteers_cancel(_: dict) -> dict:
+    return {"result": f"dropped {VOLUNTEERS.cancel()} queued; what's being fetched carries on"}
+
+
+def apply_settings() -> None:
+    """What changing the admin page's settings changes at once."""
+    youtube_mod.via = settings().get("youtube.via")
+    configure_workers()
+
+
 def admin_state() -> dict:
     """What the admin page shows: settings, which credentials are set, the workers, and how many meshes
     each texture setting would affect."""
@@ -2720,7 +2859,8 @@ def admin_state() -> dict:
     return {"settings": settings().all(), "secrets": settings().secrets_status(), "compute": compute_state(),
             "policy": counts, "retexture_queued": len(_retexturing), "site_port": int(os.environ.get("PORT", "8470")),
             "proxy_ranges": RANGES.state() if RANGES else None, "version": VERSION,
-            "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE}
+            "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE,
+            "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL}}
 
 
 def admin_test(_: dict) -> dict:
@@ -2768,7 +2908,7 @@ def main() -> None:
     linked = link_existing_boulder_meshes()
     if linked:
         print(f"{linked} climb(s) that areas skipped are now linked to a mesh made later of their boulder", flush=True)
-    configure_workers()
+    apply_settings()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=reap_machines, daemon=True).start()
     threading.Thread(target=clean_existing_meshes, daemon=True).start()
@@ -2787,9 +2927,15 @@ def main() -> None:
     print("editing: " + ("none: READ_ONLY=1" if READ_ONLY else "with the token in EDIT_TOKEN" if EDIT_TOKEN else
                          "open to anyone who can reach this port; set EDIT_TOKEN, or READ_ONLY=1, before exposing it"), flush=True)
     in_docker = Path("/.dockerenv").exists()
-    admin_mod.start(admin_mod.Context(settings(), admin_state, configure_workers,
-                                      {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture}),
+    admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
+                                      {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture,
+                                       "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
+                                       "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
+                                       "volunteers-cancel": admin_volunteers_cancel}),
                     os.environ.get("ADMIN_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), ADMIN_PORT)
+    if VOLUNTEER_PORT:
+        volunteers_mod.serve(VOLUNTEERS, os.environ.get("VOLUNTEER_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), VOLUNTEER_PORT,
+                             lambda line: print(line, flush=True))
     server = ThreadingHTTPServer((host, port), Handler)
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=stop_when_idle, args=(server,), daemon=True).start())
     server.serve_forever()

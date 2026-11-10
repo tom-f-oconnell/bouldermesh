@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+"""Volunteers fetching YouTube videos: the broker's queue, limits and rests; the volunteer script against it, with a
+stand-in for yt-dlp; the video cache, and a harvest asking volunteers for what YouTube refused; and the whole way
+through the server, from the admin page's buttons to a project harvested again. Offline; needs ffmpeg for the videos.
+
+    python3 tests/test_volunteers.py
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import socket
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+TMP = Path(tempfile.mkdtemp(prefix="bouldermesh-volunteers-"))
+os.environ["DATA_DIR"] = str(TMP / "data")      # before the climbs package reads it
+sys.path.insert(0, str(ROOT / "backend"))
+import volunteers  # noqa: E402
+from climbs import harvest, youtube  # noqa: E402
+from climbs.common import Media  # noqa: E402
+
+SCRIPT = ROOT / "volunteer" / "bouldermesh_volunteer.py"
+FAKE_YTDLP = '''#!/usr/bin/env python3
+import json, os, shutil, sys
+args = sys.argv[1:]
+if "--version" in args:
+    print("2099.01.01"); sys.exit(0)
+url = args[-1]
+vid = url.rsplit("=", 1)[-1]
+with open(os.environ["FAKE_LOG"], "a") as f:
+    f.write(" ".join(args) + "\\n")
+if vid.startswith("refused"):
+    sys.stderr.write("ERROR: [youtube] " + vid + ": Sign in to confirm you\\u2019re not a bot. This helps protect our community.\\n"); sys.exit(1)
+if vid.startswith("private"):
+    sys.stderr.write("ERROR: [youtube] " + vid + ": Private video. Sign in if you've been granted access to this video\\n"); sys.exit(1)
+info = {"id": vid, "title": "Relic V9 Joshua Tree", "uploader": "a climber", "duration": 4.0, "description": "I'm 180 cm tall",
+        "webpage_url": url, "formats": [{"url": "https://rr1---sn.googlevideo.com/videoplayback?ip=203.0.113.9"}]}
+if "-J" in args:
+    print(json.dumps(info)); sys.exit(0)
+out = args[args.index("-o") + 1]
+shutil.copy(os.environ["FAKE_VIDEO"], out.replace("%(ext)s", "mp4"))
+json.dump(info, open(out.replace("%(ext)s", "info.json"), "w"))
+'''
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def call(url: str, body=None, token: str | None = None, method: str | None = None):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method or ("POST" if data else "GET"),
+                                 headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {token}"} if token else {})})
+    try:
+        with urllib.request.urlopen(req) as r:
+            raw = r.read()
+            return r.status, (json.loads(raw) if r.headers.get("Content-Type", "").startswith("application/json") else raw)
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b"{}")
+
+
+def make_video(path: Path, seconds: int = 4) -> Path:
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"testsrc=duration={seconds}:size=320x240:rate=10",
+                    "-pix_fmt", "yuv420p", str(path)], check=True)
+    return path
+
+
+# --- the broker on its own ---------------------------------------------------------------------------------------
+def broker_alone() -> None:
+    got, ready = [], []
+    b = volunteers.Broker(TMP / "b1" / "v.sqlite", TMP / "b1" / "files", lambda t, p, i: got.append((t, p, i)),
+                          lambda purpose, ref: ready.append((purpose, ref)), probe=lambda p: 4.0)
+    assert not b.any() and not b.want("video", "not-an-id", "harvest", "p1")
+    v = b.add("Alice", per_hour=3)
+    assert v["token"].startswith("bmv_") and b.any()
+    alice = b.volunteer(v["token"])
+    assert alice and alice["per_hour"] == 3 and b.volunteer("bmv_wrong") is None
+    assert b.add("Bob", per_hour=99)["id"] and b.volunteer(b.add("Carol")["token"])["per_hour"] == volunteers.PER_HOUR, "capped"
+
+    assert b.work(alice, "198.51.100.1")["why"] == "nothing wanted now"
+    for vid, ref in (("aaaaaaaaaaa", "p1"), ("bbbbbbbbbbb", "p1"), ("ccccccccccc", "p2")):
+        assert b.want("video", vid, "harvest", ref)
+    assert b.want("video", "aaaaaaaaaaa", "beta", "m1"), "a second purpose for the same video"
+    assert len(b.q("SELECT * FROM tasks")) == 3
+
+    t = b.work(alice, "198.51.100.1")["task"]
+    assert t["video_id"] == "aaaaaaaaaaa" and t["format"] == volunteers.VIDEO_FORMAT
+    assert b.work(alice, "198.51.100.1")["task"]["id"] == t["id"], "one at a time: what it has, again"
+    try:
+        b.part(alice, t["id"], 5, 10, "mp4", b"x")
+        raise AssertionError("not where it's got to")
+    except volunteers.OffsetError as e:
+        assert e.have == 0
+    for bad in ((0, 10, "exe", b"x"), (0, 2 * volunteers.MAX_VIDEO, "mp4", b"x"), (0, 3, "mp4", b"toolong")):
+        try:
+            b.part(alice, t["id"], *bad)
+            raise AssertionError(bad)
+        except ValueError:
+            pass
+    assert b.part(alice, t["id"], 0, 10, "mp4", b"01234") == 5 and b.received(alice, t["id"]) == 5
+    try:
+        b.finish(alice, t["id"], {"status": "ok", "info": {}})
+        raise AssertionError("not all of it")
+    except ValueError:
+        pass
+    assert b.part(alice, t["id"], 5, 10, "mp4", b"56789") == 10
+    assert b.finish(alice, t["id"], {"status": "ok", "info": {"duration": 4, "title": "x" * 1000, "formats": ["ip=1"]}})["ok"]
+    task, path, info = got[0]
+    assert task["video_id"] == "aaaaaaaaaaa" and path.name.endswith(".mp4") and set(info) <= set(volunteers.DETAILS) | {"url", "duration"}
+    assert info["url"] == "https://www.youtube.com/watch?v=aaaaaaaaaaa" and len(info["title"]) == 500
+    assert ready == [("beta", "m1")], "p1 still wants bbbbbbbbbbb; m1 wanted only this"
+    try:
+        b.part(alice, t["id"], 0, 10, "mp4", b"x")
+        raise AssertionError("done: not Alice's any more")
+    except LookupError:
+        pass
+
+    # a refusal: Alice rests an hour, and the video goes back for someone else
+    t = b.work(alice, "198.51.100.1")["task"]
+    assert b.finish(alice, t["id"], {"status": "refused", "error": "not a bot"})["rest_until"] > time.time() + 3500
+    alice = b.volunteer(v["token"])
+    assert b.work(alice, "198.51.100.1")["why"].startswith("YouTube refused")
+    bob = b.volunteer(b.add("Bob2")["token"])
+    t2 = b.work(bob, "198.51.100.2")["task"]
+    assert t2["id"] == t["id"], "the refused one, to the next volunteer"
+    assert b.finish(bob, t2["id"], {"status": "failed", "error": "Private video", "permanent": True})["ok"]
+    assert ready == [("beta", "m1"), ("harvest", "p1")], "p1: one came, one failed for good"
+    assert not b.want("video", "bbbbbbbbbbb", "harvest", "p1"), "failed for good: not asked for again"
+    t3 = b.work(bob, "198.51.100.2")["task"]
+    assert b.finish(bob, t3["id"], {"status": "released"})["ok"] and b.work(bob, "198.51.100.2")["task"]["id"] == t3["id"]
+    b.finish(bob, t3["id"], {"status": "failed", "error": "network"})
+    assert b.q("SELECT state, tries FROM tasks WHERE id=?", t3["id"], one=True) == {"state": "queued", "tries": 1}, "might pass"
+
+    # limits: Alice's 3 an hour are spent (1 done, 1 refused, plus this); and her address's, for anyone there
+    b.q("UPDATE volunteers SET refused_until=NULL")
+    alice = b.volunteer(v["token"])
+    b.want("video", "ddddddddddd", "harvest", "p3")
+    b.want("video", "eeeeeeeeeee", "harvest", "p3")
+    assert "task" in b.work(alice, "198.51.100.1")
+    b.finish(alice, b.work(alice, "198.51.100.1")["task"]["id"], {"status": "released"})
+    w = b.work(alice, "198.51.100.1")
+    assert "an hour is the most for you" in w["why"] and 3500 < w["wait"] < 3700, w
+    carol = b.volunteer(b.add("Carol2", per_hour=2)["token"])
+    assert "your address" in b.work(carol, "198.51.100.1")["why"]
+    assert "task" in b.work(carol, "198.51.100.9")
+
+    # work given out that never came back goes to someone else; revoking hands back what it had
+    b.q("UPDATE tasks SET touched=?, assigned=? WHERE state='assigned'", time.time() - 7200, time.time() - 7200)
+    b.requeue_stale()
+    assert not b.q("SELECT 1 FROM tasks WHERE state='assigned'")
+    t = b.work(carol, "198.51.100.9")["task"]
+    b.revoke(carol["id"])
+    assert b.q("SELECT state FROM tasks WHERE id=?", t["id"], one=True)["state"] == "queued"
+    st = b.state()
+    assert {x["name"]: x["status"] for x in st["volunteers"]}["Carol2"] == "revoked" and st["counts"]["done_video"] == 1, st
+    assert b.cancel() >= 1 and not b.q("SELECT 1 FROM tasks WHERE state='queued'")
+    print("broker OK")
+
+
+# --- the script against the broker --------------------------------------------------------------------------------
+def script_and_broker() -> None:
+    video = make_video(TMP / "fake.mp4")
+    fake = TMP / "fake-yt-dlp"
+    fake.write_text(FAKE_YTDLP)
+    fake.chmod(0o755)
+    got, ready = [], []
+    b = volunteers.Broker(TMP / "b2" / "v.sqlite", TMP / "b2" / "files",
+                          lambda t, p, i: got.append((t["video_id"], p.read_bytes() if p else None, i)),
+                          lambda purpose, ref: ready.append((purpose, ref)))
+    port = free_port()
+    httpd = volunteers.serve(b, "127.0.0.1", port, log=lambda line: None)
+    base = f"http://127.0.0.1:{port}"
+    token = b.add("tester")["token"]
+    env = {**os.environ, "FAKE_VIDEO": str(video), "FAKE_LOG": str(TMP / "fake.log")}
+
+    def volunteer(*extra) -> str:
+        r = subprocess.run([sys.executable, str(SCRIPT), "--server", base, "--token", token, "--agree", "--once",
+                            "--yt-dlp", str(fake), "--home", str(TMP / "home"), *extra], env=env, capture_output=True, text=True, timeout=120)
+        assert r.returncode == 0, r.stdout + r.stderr
+        return r.stdout
+
+    try:
+        st, page = call(base + "/volunteer/")
+        assert st == 200 and b"bouldermesh_volunteer.py" in page
+        st, script = call(base + "/volunteer/bouldermesh_volunteer.py")
+        assert st == 200 and script == SCRIPT.read_bytes()
+        assert call(base + "/volunteer/api/work", {"version": 1})[0] == 401
+        assert call(base + "/volunteer/api/work", {"version": 0}, token)[0] == 426, "too old a script"
+        assert call(base + "/api/status")[0] == 404, "only /volunteer/"
+
+        assert "nothing to do" in volunteer()
+        b.want("video", "vvvvvvvvvvv", "harvest", "p1")
+        b.want("details", "ddddddddddd", "details", "https://youtu.be/ddddddddddd")
+        out = volunteer()
+        assert "sent" in out, out
+        vid, data, info = got[0]
+        assert vid == "vvvvvvvvvvv" and data == video.read_bytes() and info["uploader"] == "a climber", info
+        assert "formats" not in info and "203.0.113.9" not in json.dumps(info), "nothing of the volunteer's own"
+        assert ready == [("harvest", "p1")]
+        cmd = (TMP / "fake.log").read_text().splitlines()[-1]
+        assert "--sleep-requests 0.75" in cmd and "bv*[height<=1080]/b" in cmd and cmd.endswith("https://www.youtube.com/watch?v=vvvvvvvvvvv")
+
+        conf = json.loads((TMP / "home" / "config.json").read_text())
+        assert conf["token"] == token and oct((TMP / "home" / "config.json").stat().st_mode)[-3:] == "600"
+        r = subprocess.run([sys.executable, str(SCRIPT), "--once", "--yt-dlp", str(fake), "--home", str(TMP / "home")],
+                           env=env, capture_output=True, text=True, timeout=120)    # remembered, and the gap kept
+        assert r.returncode == 0 and "sent" in r.stdout and got[1][0] == "ddddddddddd" and got[1][1] is None, r.stdout + r.stderr
+        state = json.loads((TMP / "home" / "state.json").read_text())
+        gaps = sorted(state["fetched"])
+        assert gaps[1] - gaps[0] >= 8, "8-15 s between fetches"
+
+        b.want("video", "refused0000", "harvest", "p2")
+        assert "YouTube refused: resting 1 h" in volunteer()
+        assert b.q("SELECT refused_until FROM volunteers", one=True)["refused_until"] > time.time() + 3500
+        assert json.loads((TMP / "home" / "state.json").read_text())["rest_until"] > time.time() + 3500, "and it rests itself"
+        print("script OK")
+    finally:
+        httpd.shutdown()
+
+
+# --- the cache, and a harvest asking volunteers -----------------------------------------------------------------------
+def cache_and_harvest() -> None:
+    video = make_video(TMP / "cached.mp4", 6)
+    youtube.cache_put("https://www.youtube.com/watch?v=CCCCCCCCCCC", Path(shutil.copy(video, TMP / "c1.mp4")),
+                      {"title": "cached", "license": "CC BY"})
+    assert youtube.cached("https://youtu.be/CCCCCCCCCCC") and youtube.cached_details("CCCCCCCCCCC")["license"] == "CC BY"
+    assert youtube.cached("https://www.youtube.com/watch?v=NNNNNNNNNNN") is None
+    vimeo = Path(shutil.copy(video, TMP / "v1.mp4"))
+    assert youtube.cache_put("https://vimeo.com/1234", vimeo) == vimeo and vimeo.exists(), "not YouTube's: left where it is"
+
+    calls, wanted = [], []
+    real_call = youtube.call
+
+    def refusing(cmd, **kw):
+        calls.append(cmd)
+        raise youtube.Refused({"since": 0, "until": time.time() + 60, "level": 0, "error": "not a bot"})
+    youtube.call = refusing
+    try:
+        out = TMP / "project" / "photos"
+        out.mkdir(parents=True)
+        lines = []
+        videos = [Media(url="https://www.youtube.com/watch?v=NNNNNNNNNNN", kind="video", page=None, source="youtube"),
+                  Media(url="https://www.youtube.com/watch?v=CCCCCCCCCCC", kind="video", page=None, source="youtube"),
+                  Media(url="https://www.youtube.com/watch?v=MMMMMMMMMMM", kind="video", page=None, source="youtube")]
+        infos = {}
+        frames = harvest.video_frames(videos, out, lines.append, infos=infos, want=wanted.append)
+        assert len(calls) <= 1, "after a refusal, YouTube isn't asked again in this harvest"
+        assert wanted == ["https://www.youtube.com/watch?v=NNNNNNNNNNN", "https://www.youtube.com/watch?v=MMMMMMMMMMM"], wanted
+        assert frames and all(f.name.startswith("yt_") for f in frames), "the cached one's frames"
+        assert infos["https://www.youtube.com/watch?v=CCCCCCCCCCC"]["license"] == "CC BY"
+        assert youtube.cached("CCCCCCCCCCC"), "kept for beta"
+        assert any("asked of volunteers" in line for line in lines), lines
+        lines.clear()
+        harvest.video_frames(videos[:1], out, lines.append)
+        assert any("skipping 1 video" in line for line in lines), lines
+
+        youtube.via = "volunteers"
+        youtube.call = real_call
+        try:
+            youtube.call(["yt-dlp", "x"])
+            raise AssertionError("never here")
+        except youtube.Refused as e:
+            assert "volunteers" in str(e)
+        assert youtube.call(["true"], video=False, stdout=subprocess.DEVNULL) is None, "searches still go"
+    finally:
+        youtube.call, youtube.via = real_call, "volunteers_when_refused"
+
+    big = TMP / "big.bin"
+    big.write_bytes(b"\0" * 2**20)
+    youtube.CACHE_BYTES = 2**20     # room for the new one only
+    youtube.cache_put("OOOOOOOOOOO", Path(shutil.copy(big, TMP / "o.mp4")))
+    assert youtube.cached("OOOOOOOOOOO") and not youtube.cached("CCCCCCCCCCC"), "the least recently used goes first"
+    print("cache and harvest OK")
+
+
+# --- through the server ---------------------------------------------------------------------------------------------
+def through_the_server() -> None:
+    data = TMP / "server"
+    port, admin_port, vport = free_port(), free_port(), free_port()
+    env = {**os.environ, "DATA_DIR": str(data), "PORT": str(port), "HOST": "127.0.0.1", "ADMIN_PORT": str(admin_port),
+           "VOLUNTEER_PORT": str(vport), "VOLUNTEER_URL": "https://rocks.example", "HTTP_MIN_INTERVAL": "0", "STOP_WAIT_MINUTES": "0.1"}
+    for k in ("EDIT_TOKEN", "READ_ONLY", "YOUTUBE_VIA"):
+        env.pop(k, None)
+    proc = subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    admin, vbase = f"http://127.0.0.1:{admin_port}", f"http://127.0.0.1:{vport}"
+    try:
+        for _ in range(100):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=1).read()
+                break
+            except Exception:
+                time.sleep(0.1)
+        st = call(admin + "/api/admin/state")[1]
+        assert st["volunteers"]["served"] and st["settings"]["youtube.via"] == "volunteers_when_refused" and not st["volunteers"]["volunteers"]
+        assert call(vbase + "/volunteer/")[0] == 200
+
+        # a harvest that went without a video, as the database would have it
+        con = sqlite3.connect(data / "bouldermesh.sqlite")
+        con.execute("INSERT INTO projects(id,name,created,kind,status,harvest) VALUES('abcdef012345','Relic',?, 'harvest','harvested',?)",
+                    (time.time(), json.dumps({"images": 3, "videos": [{"url": "https://www.youtube.com/watch?v=vvvvvvvvvvv", "frames": 0},
+                                                                    {"url": "https://www.youtube.com/watch?v=wwwwwwwwwww", "frames": 40}]})))
+        con.execute("INSERT INTO videos(url) VALUES('https://youtu.be/vvvvvvvvvvv')")
+        con.commit()
+        con.close()
+        (data / "projects" / "abcdef012345" / "photos").mkdir(parents=True)
+
+        r = call(admin + "/api/admin/actions/volunteer-add", {"name": "Dana", "per_hour": 5})[1]
+        assert r["command"] == f"python3 bouldermesh_volunteer.py --server https://rocks.example --token {r['token']}", r
+        r2 = call(admin + "/api/admin/actions/volunteers-skipped", {})[1]
+        assert "1 video(s) harvests went without" in r2["result"], r2
+        assert "1 video(s)" in call(admin + "/api/admin/actions/volunteers-details", {})[1]["result"]
+
+        fake = TMP / "fake-yt-dlp"
+        renv = {**os.environ, "FAKE_VIDEO": str(TMP / "fake.mp4"), "FAKE_LOG": str(TMP / "fake2.log")}
+        out = subprocess.run([sys.executable, str(SCRIPT), "--server", vbase, "--token", r["token"], "--agree", "--once",
+                              "--yt-dlp", str(fake), "--home", str(TMP / "home2")], env=renv, capture_output=True, text=True, timeout=120)
+        assert "sent" in out.stdout, out.stdout + out.stderr
+        assert (data / "cache" / "videos" / "vvvvvvvvvvv.mp4").exists(), "in the cache, for the harvest"
+        con = sqlite3.connect(data / "bouldermesh.sqlite")
+        row = con.execute("SELECT uploader, license, height_cm FROM videos WHERE url='https://youtu.be/vvvvvvvvvvv'").fetchone()
+        assert row == ("a climber", "YouTube standard licence (all rights reserved)", 180.0), row
+        con.close()
+        for _ in range(50):
+            log_file = data / "projects" / "abcdef012345" / "job.log"
+            if log_file.exists() and "volunteers fetched" in log_file.read_text():
+                break
+            time.sleep(0.2)
+        assert "volunteers fetched" in log_file.read_text(), "harvested again with it"
+        st = call(admin + "/api/admin/state")[1]["volunteers"]
+        assert st["volunteers"][0]["name"] == "Dana" and st["volunteers"][0]["done"] == 1 and st["counts"]["queued_details"] == 1, st
+        call(admin + "/api/admin/actions/volunteer-revoke", {"id": st["volunteers"][0]["id"]})
+        assert call(vbase + "/volunteer/api/work", {"version": 1}, r["token"])[0] == 403
+        assert call(admin + "/api/admin/settings", {"youtube.via": "nowhere"})[0] == 400
+    finally:
+        proc.terminate()
+        out = proc.communicate(timeout=30)[0]
+    assert "volunteers: served on" in out and "Traceback" not in out, out[-3000:]
+    print("through the server OK")
+
+
+try:
+    broker_alone()
+    if shutil.which("ffmpeg"):
+        script_and_broker()
+        cache_and_harvest()
+        through_the_server()
+    else:
+        print("ffmpeg not installed: skipping the script, the cache and the server")
+    print("ALL VOLUNTEER TESTS PASSED")
+finally:
+    shutil.rmtree(TMP, ignore_errors=True)

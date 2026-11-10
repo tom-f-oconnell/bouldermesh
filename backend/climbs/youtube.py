@@ -12,10 +12,15 @@ Every yt-dlp run goes through call(): one at a time across the app, GAP seconds 
 answers with its bot check ("Sign in to confirm you're not a bot") or a rate limit, nothing that fetches
 a video or its details is asked of it for an hour, then 2, 4 and 8 while it still answers that way;
 searches still go through, as they never got the check. design.md has what led to this.
+
+Videos fetched are kept in a cache by their id, with their details, so that finding beta and harvesting again don't
+ask YouTube a second time: those this server downloads, and those volunteers fetch from their own addresses
+(volunteers.py) when YouTube refuses this server, or always if `via` says so.
 """
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import shutil
@@ -23,6 +28,7 @@ import subprocess
 import threading
 import time
 import unicodedata
+from pathlib import Path
 from typing import Callable
 
 from .common import CACHE_DIR, Climb, Media, jobctl
@@ -38,6 +44,12 @@ SLEEP_REQUESTS = ["--sleep-requests", "0.75"]   # between the requests within on
 BLOCK_HOURS = (1, 2, 4, 8)  # how long to leave YouTube alone after its bot check, each time it's still there
 REFUSAL = re.compile(r"not a bot|HTTP Error 429|Too Many Requests|content isn.t available, try again later", re.I)
 STATE_FILE = CACHE_DIR.parent / "youtube.json"
+VIDEO_CACHE = CACHE_DIR.parent / "videos"     # <id>.<ext> and <id>.json, its details
+CACHE_BYTES = int(float(os.environ.get("VIDEO_CACHE_GB", "50")) * 2**30)   # the oldest used go beyond this
+VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
+# where videos come from, set by the server from its settings: "here"; "volunteers_when_refused", here unless YouTube is
+# refusing this server, when volunteers are asked; or "volunteers", never here (a cloud server, which YouTube refuses)
+via = "volunteers_when_refused"
 _gate = threading.Lock()
 _last = 0.0
 
@@ -47,7 +59,8 @@ class Refused(RuntimeError):
 
     def __init__(self, state: dict):
         self.state = state
-        super().__init__(f"YouTube is refusing this machine's downloads (its bot check) until "
+        super().__init__("this server leaves fetching videos from YouTube to volunteers" if state.get("volunteers") else
+                         f"YouTube is refusing this machine's downloads (its bot check) until "
                          f"{time.strftime('%H:%M UTC', time.gmtime(state['until']))}")
 
 
@@ -75,6 +88,9 @@ def call(cmd: list[str], video: bool = True, **kw) -> str:
         Refused: YouTube is refusing, or just did.
     """
     global _last
+    if video and via == "volunteers":
+        raise Refused({"since": time.time(), "until": time.time() + 3600, "level": 0, "volunteers": True,
+                       "error": "this server doesn't fetch videos from YouTube itself"})
     while not _gate.acquire(timeout=1):
         jobctl.check()
     try:
@@ -106,6 +122,57 @@ def call(cmd: list[str], video: bool = True, **kw) -> str:
         return out
     finally:
         _gate.release()
+
+
+def cached(url: str) -> Path | None:
+    """The video at url (or with that YouTube id), if it's in the cache; marked as just used."""
+    vid = url if VIDEO_ID.fullmatch(url or "") else video_id(url or "")
+    if not vid or not VIDEO_CACHE.is_dir():
+        return None
+    for f in VIDEO_CACHE.glob(f"{vid}.*"):
+        if f.suffix != ".json" and not f.name.endswith(".part"):
+            try:
+                os.utime(f)
+            except OSError:
+                pass
+            return f
+    return None
+
+
+def cached_details(url: str) -> dict | None:
+    vid = url if VIDEO_ID.fullmatch(url or "") else video_id(url or "")
+    try:
+        return json.loads((VIDEO_CACHE / f"{vid}.json").read_text()) if vid else None
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def cache_put(url: str, video: Path, info: dict | None = None) -> Path:
+    """Keep a fetched video (moved) and its details by its YouTube id, then drop the least recently used beyond
+    CACHE_BYTES. A video that isn't YouTube's stays where it is. Returns where it is now."""
+    vid = url if VIDEO_ID.fullmatch(url or "") else video_id(url or "")
+    if not vid:
+        return video
+    VIDEO_CACHE.mkdir(parents=True, exist_ok=True)
+    for old in VIDEO_CACHE.glob(f"{vid}.*"):
+        old.unlink(missing_ok=True)
+    dest = VIDEO_CACHE / f"{vid}{video.suffix.lower()}"
+    shutil.move(str(video), dest)
+    if info:
+        (VIDEO_CACHE / f"{vid}.json").write_text(json.dumps(info))
+    trim_cache(keep=dest)
+    return dest
+
+
+def trim_cache(keep: Path | None = None) -> None:
+    files = [f for f in VIDEO_CACHE.glob("*") if f.suffix != ".json" and f != keep] if VIDEO_CACHE.is_dir() else []
+    total = sum(f.stat().st_size for f in files) + (keep.stat().st_size if keep else 0)
+    for f in sorted(files, key=lambda f: f.stat().st_mtime):
+        if total <= CACHE_BYTES:
+            break
+        total -= f.stat().st_size
+        f.unlink(missing_ok=True)
+        (VIDEO_CACHE / f"{f.stem}.json").unlink(missing_ok=True)
 
 
 def norm(text: str | None) -> str:

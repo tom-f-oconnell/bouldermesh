@@ -39,12 +39,13 @@ DEFAULTS = {
     # what the main site shows
     "site.textures": "all",                # all | permitted (only from clearly licensed photos) | none
     "site.sources": "all",                 # all | link (non-permitted ones only as links) | permitted
+    "youtube.via": "volunteers_when_refused",   # here | volunteers_when_refused | volunteers (never here: a cloud server)
 }
 CHOICES = {"compute.provider": ("none", "ssh", "aws"), "site.textures": ("all", "permitted", "none"),
-           "site.sources": ("all", "link", "permitted")}
+           "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers")}
 LIMITS = {"compute.local_workers": (1, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000)}
-for _key in ("site.textures", "site.sources"):    # a public copy's starting points, from its .env
+for _key in ("site.textures", "site.sources", "youtube.via"):    # a public copy's starting points, from its .env
     _given = os.environ.get(_key.replace(".", "_").upper(), "").strip()
     if _given in CHOICES[_key]:
         DEFAULTS[_key] = _given

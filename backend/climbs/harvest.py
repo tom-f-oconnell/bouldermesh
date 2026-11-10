@@ -246,33 +246,50 @@ def extract_frames(video: Path, work: Path, keep: int, log: Log, fps: float | No
 
 
 def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0, max_frames: int = 150,
-                 max_videos: int = 6, progress: Callable[..., None] | None = None, infos: dict | None = None) -> list[Path]:
-    """Download videos and keep their sharpest frames, named yt_<start of the SHA-1 of the URL>_NNN.jpg.
+                 max_videos: int = 6, progress: Callable[..., None] | None = None, infos: dict | None = None,
+                 want: Callable[[str], None] | None = None) -> list[Path]:
+    """Download videos and keep their sharpest frames, named yt_<start of the SHA-1 of the URL>_NNN.jpg. A YouTube
+    video is kept in youtube's cache, so that finding beta, or harvesting again, needn't ask YouTube for it again,
+    and one in the cache isn't asked for.
 
     Args:
         infos: filled with each video's details (youtube.details) and how many frames it gave, by URL.
+        want: called with the URL of each video not had because YouTube is refusing this server, to have it
+            fetched by volunteers; without it, they're skipped.
     """
     ytdlp, ffmpeg = shutil.which("yt-dlp"), shutil.which("ffmpeg")
-    if not (ytdlp and ffmpeg):
-        log("youtube: skipped (needs yt-dlp and ffmpeg on PATH)")
+    if not ffmpeg:
+        log("youtube: skipped (needs ffmpeg on PATH)")
         return []
-    saved = []
+    saved, refused, missed = [], None, []
     n_videos = min(len(videos), max_videos)
     for i, v in enumerate(videos[:max_videos]):
+        have = youtube.cached(v.url)
+        if not have and (refused or not ytdlp):
+            missed.append(v.url)
+            continue
         if progress:
             progress(i / n_videos, f"downloading video {i + 1} of {n_videos}")
         tag = hashlib.sha1(v.url.encode()).hexdigest()[:8]
         tmp = out_dir / f"_video_{tag}"
         tmp.mkdir(parents=True, exist_ok=True)
         try:
-            log(f"youtube: downloading {v.url}")
-            youtube.call([ytdlp, "-q", "--no-playlist", "-f", "bv*[height<=1080]/b", "--max-filesize", "500m",
-                          "--write-info-json", "-o", str(tmp / "video.%(ext)s"), v.url], timeout=900,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            info_file = tmp / "video.info.json"
-            if infos is not None and info_file.exists():
-                infos[v.url] = {**youtube.details(json.loads(info_file.read_text())), "frames": 0}
-            vid = next(p for p in tmp.glob("video.*") if not p.name.endswith((".json", ".part")))
+            if have:
+                log(f"youtube: {v.url}: fetched before")
+                vid, details = have, youtube.cached_details(v.url)
+                if infos is not None and details:
+                    infos[v.url] = {**details, "frames": 0}
+            else:
+                log(f"youtube: downloading {v.url}")
+                youtube.call([ytdlp, "-q", "--no-playlist", "-f", "bv*[height<=1080]/b", "--max-filesize", "500m",
+                              "--write-info-json", "-o", str(tmp / "video.%(ext)s"), v.url], timeout=900,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                info_file = tmp / "video.info.json"
+                details = youtube.details(json.loads(info_file.read_text())) if info_file.exists() else None
+                if infos is not None and details:
+                    infos[v.url] = {**details, "frames": 0}
+                vid = next(p for p in tmp.glob("video.*") if not p.name.endswith((".json", ".part")))
+                vid = youtube.cache_put(v.url, vid, details)
             if progress:
                 progress((i + 0.7) / n_videos, f"extracting frames from video {i + 1} of {n_videos}")
             frames = extract_frames(vid, tmp, (max_frames - len(saved)) // (n_videos - i), log, fps)   # a video that failed leaves its share
@@ -284,13 +301,20 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
                 infos[v.url]["frames"] = len(frames)
             log(f"youtube: kept {len(frames)} frame(s) from {v.url}")
         except youtube.Refused as e:
-            left = n_videos - i
-            log(f"youtube: {e}: skipping {left} video(s). An area's \"look for new videos\" gets them later.")
-            break
+            refused = e
+            missed.append(v.url)
         except Exception as e:
             log(f"youtube: {v.url} failed: {e}")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+    if missed:
+        why = refused or "no yt-dlp on PATH"
+        if want:
+            for url in missed:
+                want(url)
+            log(f"youtube: {why}: {len(missed)} video(s) asked of volunteers; this climb is harvested again when they come")
+        else:
+            log(f"youtube: {why}: skipping {len(missed)} video(s). An area's \"look for new videos\" gets them later.")
     return saved
 
 
@@ -425,7 +449,7 @@ def steps(sources: set[str], relevance_filter: bool = True) -> list[tuple[str, s
 
 
 def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = None, relevance_filter: bool = True,
-            tracker=None, pool_from: list[Path] | None = None) -> dict:
+            tracker=None, pool_from: list[Path] | None = None, want: Callable[[str], None] | None = None) -> dict:
     """Collect photos for climb `c` into project_dir/photos (provenance + reports are written
     next to it, never inside it, so the reconstruction only sees images).
 
@@ -434,6 +458,7 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         relevance_filter: drop photos not substantially of the boulder (see relevance.py).
         tracker: a progress.Tracker with this harvest's steps().
         pool_from: other harvests of the same boulder, whose photos are added (pool()).
+        want: given the URL of each video YouTube wouldn't let this server have, to ask volunteers (video_frames()).
     """
     from . import diversity, relevance
     sources = set(SOURCES) if sources is None else set(sources)
@@ -468,7 +493,7 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         seen = {youtube.video_id(v.url) or v.url for v in c.videos}    # the page's links, in any of YouTube's URL forms
         videos = list(c.videos) + [v for v in youtube.search(c, log) if (youtube.video_id(v.url) or v.url) not in seen]
     if videos:
-        frames = video_frames(videos, photos_dir, log, progress=progress("video"), infos=infos)
+        frames = video_frames(videos, photos_dir, log, progress=progress("video"), infos=infos, want=want)
         by_tag = {hashlib.sha1(v.url.encode()).hexdigest()[:8]: v for v in videos}   # as video_frames names them
         for f in frames:
             v = by_tag[f.name.split("_")[1]]

@@ -416,17 +416,20 @@ def climber(kps, scs, previous=None) -> int | None:
 
 # ------------------------------------------------------------------ one video
 def frames_of(url: str, tmp: Path, log: Log) -> list[tuple[float, Path]]:
-    """FPS frames a second of a video, up to MAX_SECONDS, at up to 720p."""
+    """FPS frames a second of a video, up to MAX_SECONDS, at up to 720p, from youtube's cache if it's there."""
     from climbs import youtube
     from climbs.common import jobctl
     import subprocess
     tmp.mkdir(parents=True, exist_ok=True)
-    youtube.call(["yt-dlp", "-q", "--no-playlist", "-f", "bv*[height<=720]/b[height<=720]/b", "--max-filesize", "300m",
-                  "-o", str(tmp / "video.%(ext)s"), url], timeout=900, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    video = next(p for p in tmp.glob("video.*") if not p.name.endswith((".json", ".part")))
+    video = youtube.cached(url)     # as the harvest, or a volunteer, fetched it: then YouTube isn't asked again
+    if not video:
+        youtube.call(["yt-dlp", "-q", "--no-playlist", "-f", "bv*[height<=720]/b[height<=720]/b", "--max-filesize", "300m",
+                      "-o", str(tmp / "video.%(ext)s"), url], timeout=900, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        video = next(p for p in tmp.glob("video.*") if not p.name.endswith((".json", ".part")))
     jobctl.run(["ffmpeg", "-loglevel", "error", "-t", str(MAX_SECONDS), "-i", str(video), "-vf", f"fps={FPS},scale=-2:'min(720,ih)'",
                 "-q:v", "3", str(tmp / "f%05d.jpg")], timeout=900)
-    video.unlink()
+    if video.parent == tmp:
+        video.unlink()
     return [((i + 0.5) / FPS, p) for i, p in enumerate(sorted(tmp.glob("f*.jpg")))]
 
 

@@ -1,0 +1,24 @@
+# Brings the public server's /volunteer/ to this machine, when volunteers fetch YouTube videos for a server other than
+# the public one (README, "Volunteers"): Caddy there passes /volunteer/ to a Unix socket in its data/tunnel/, which this
+# SSH connection forwards to this machine's volunteer port. Nothing else here is reachable through it.
+# Edit User, HOST (an SSH alias or user@host, reached with a key that needs no passphrase or agent) and REMOTE_DIR (the
+# repository there), then:
+#     sudo cp deploy/volunteer-tunnel.service /etc/systemd/system/ && sudo systemctl enable --now volunteer-tunnel
+# and on the public server put VOLUNTEER_UPSTREAM=unix//run/bm-tunnel/volunteer.sock in .env and restart it.
+[Unit]
+Description=BoulderMesh volunteers: SSH tunnel from the public server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tom
+Environment=HOST=bouldermesh REMOTE_DIR=/home/tom/bouldermesh LOCAL_PORT=47613
+# a socket left from the last connection would stop this one from taking its place
+ExecStartPre=/usr/bin/ssh -o BatchMode=yes ${HOST} "mkdir -p ${REMOTE_DIR}/data/tunnel && rm -f ${REMOTE_DIR}/data/tunnel/volunteer.sock"
+ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -R ${REMOTE_DIR}/data/tunnel/volunteer.sock:127.0.0.1:${LOCAL_PORT} ${HOST}
+Restart=always
+RestartSec=20
+
+[Install]
+WantedBy=multi-user.target

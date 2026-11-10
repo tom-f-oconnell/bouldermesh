@@ -52,7 +52,7 @@ def fake_fetch(url, include_children=False):
                   videos=[Media(url=f"http://y/{i}", kind="video") for i in range(videos.get(name, 0))])]
 
 
-def fake_harvest(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None):
+def fake_harvest(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, want=None):
     harvested.append(c.name)
     pools[c.name] = [p.name for p in pool_from or []]
     what = outcome.get(c.name) if sources else outcome.get("pooled")
@@ -781,7 +781,7 @@ photo_sets: dict[str, list[str]] = {}    # the photos each climb's harvest finds
 searched: dict[str, list[str]] = {}      # the videos a YouTube search finds of each climb
 
 
-def harvest_with_photos(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None):
+def harvest_with_photos(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, want=None):
     harvested.append(c.name)
     for n in photo_sets.get(c.name, ["a.jpg", "b.jpg", "c.jpg"]):
         (project_dir / "photos" / n).write_bytes(b"x")

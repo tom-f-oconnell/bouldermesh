@@ -83,6 +83,24 @@
     <div id="nodes"></div>
   </section>
 
+  <section id="vols">
+    <h2>Volunteers fetching YouTube videos</h2>
+    <div class="note" id="vol-note"></div>
+    <label>Fetch videos from YouTube</label>
+    <select id="via"><option value="volunteers_when_refused">Here, and through volunteers while YouTube refuses this server</option>
+      <option value="here">Only here</option><option value="volunteers">Only through volunteers (for a cloud server, which YouTube refuses)</option></select>
+    <div id="vol-list"></div>
+    <div class="grid">
+      <div><label>New volunteer's name</label><input type="text" id="vol-name" placeholder="who it is, for you"></div>
+      <div><label>At most this many videos an hour (15 at most; 100 a day)</label><input type="number" id="vol-hour" min="1" max="15" value="15"></div>
+    </div>
+    <div class="row"><button id="vol-add">Add volunteer</button></div>
+    <div id="vol-new"></div>
+    <div class="row"><button class="sec" id="vol-skipped">Fetch the videos harvests went without</button>
+      <button class="sec" id="vol-details">Fetch videos' missing details (licences)</button><button class="danger" id="vol-cancel">Drop what's queued</button></div>
+    <div class="note" id="vol-queue"></div>
+  </section>
+
   <section>
     <h2>Credentials</h2>
     <div class="note" id="cred-note"></div>
@@ -149,6 +167,19 @@ function render(s){
     if (pr.error) h += `<div class="bad">Couldn't check${pr.failing_since ? ' since ' + when(pr.failing_since) : ''}: ${esc(pr.error)}</div>`;
     $('#ranges-body').innerHTML = h + `<div class="note">Checked once a day${pr.checked ? `, last at ${when(pr.checked)}` : ''}. The firewall can't be seen from here, so keep it to the same list.</div>`;
   }
+  const vs = s.volunteers, when = t => t ? new Date(t * 1000).toLocaleString() : 'never';
+  $('#vol-note').textContent = vs.served ? `Volunteers reach this server at ${vs.url || '(VOLUNTEER_URL not set)'}/volunteer/, which has the script and what to do.`
+    : 'Not taking volunteers here: VOLUNTEER_PORT isn\'t set (README, "Volunteers").';
+  if (document.activeElement !== $('#via')) $('#via').value = v['youtube.via'];
+  $('#vol-list').innerHTML = vs.volunteers.length ? `<table><tr><th>Volunteer</th><th>Now</th><th>Last seen</th><th>Address</th><th>Last hour / day</th><th>Fetched</th><th></th></tr>${
+    vs.volunteers.map(x => `<tr><td>${esc(x.name)}</td><td class="${x.status === 'resting' ? 'warn' : x.status === 'revoked' ? 'bad' : x.status === 'fetching' ? 'ok' : ''}">${esc(x.status)}${
+      x.refused_until ? ` until ${when(x.refused_until)}` : ''}${x.fetching ? `: ${esc(x.fetching.kind)} ${esc(x.fetching.video_id)}` : ''}</td><td>${when(x.last_seen)}</td><td>${esc(x.address || '')}</td>
+      <td>${x.last_hour} / ${x.last_day} (of ${x.per_hour} / ${x.per_day})</td><td>${x.done}</td><td>${x.status === 'revoked' ? '' : `<button class="danger" data-revoke="${esc(x.id)}">Revoke</button>`}</td></tr>`).join('')}</table>` : '<div class="note">No volunteers yet.</div>';
+  const vc = vs.counts, n = k => vc[k] || 0, active = vs.volunteers.some(x => x.status !== 'revoked');
+  $('#vol-queue').innerHTML = `Wanted: ${n('queued_video') + n('assigned_video')} video(s)${vs.wanted.harvest ? `, ${vs.wanted.harvest} for harvests` : ''}${vs.wanted.beta ? `, ${vs.wanted.beta} for finding beta` : ''}; `
+    + `${n('queued_details') + n('assigned_details')} video(s)' details. Fetched: ${n('done_video')} video(s), ${n('done_details')} details; failed: ${n('failed_video') + n('failed_details')}. `
+    + `${vs.connected} volunteer(s) connected.` + (vs.recent.length ? '<br>Lately: ' + vs.recent.map(r => `${esc(r.kind)} ${esc(r.video_id)} <span class="${r.state === 'done' ? 'ok' : 'bad'}">${esc(r.state)}</span>${r.error ? ` (${esc(r.error)})` : ''}`).join(', ') : '');
+  for (const b of ['#vol-skipped', '#vol-details']) $(b).disabled = !active;
   const cr = s.secrets;
   $('#cred-note').innerHTML = cr.can_save ? 'Credentials can be saved here, encrypted with BOULDERMESH_SECRETS_KEY.'
     : '<span class="warn">Credentials can\'t be saved here until BOULDERMESH_SECRETS_KEY is set (in .env, outside the data directory). Until then, give them as environment variables, such as AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.</span>'
@@ -182,6 +213,22 @@ $('#savecreds').onclick = async () => {
 $('#test').onclick = async () => { msg('Testing…', 60000); try { msg((await call('/api/admin/actions/test', {})).result, 12000); } catch (e) { msg(e.message, 12000); } };
 $('#end').onclick = async () => { if (!confirm('End every cloud machine this server started? Jobs on them wait and run again.')) return; try { msg((await call('/api/admin/actions/end-nodes', {})).result); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
+$('#via').onchange = () => save({ 'youtube.via': $('#via').value });
+$('#vol-add').onclick = async () => {
+  try {
+    const r = await call('/api/admin/actions/volunteer-add', { name: $('#vol-name').value, per_hour: +$('#vol-hour').value });
+    $('#vol-name').value = '';
+    $('#vol-new').innerHTML = `<div class="note ok">${esc(r.result)}</div><div class="note">They download the script from ${esc(r.download)} and run:</div><textarea readonly id="vol-cmd">${esc(r.command)}</textarea>`;
+    msg('Added ' + r.name); refresh();
+  } catch (e) { msg(e.message, 8000); }
+};
+$('#vol-list').addEventListener('click', async ev => {
+  const id = ev.target.dataset.revoke;
+  if (!id || !confirm('Revoke this volunteer? Their token stops working at once.')) return;
+  try { msg((await call('/api/admin/actions/volunteer-revoke', { id })).result); refresh(); } catch (e) { msg(e.message, 8000); }
+});
+for (const [b, action, ask] of [['#vol-skipped', 'volunteers-skipped'], ['#vol-details', 'volunteers-details'], ['#vol-cancel', 'volunteers-cancel', 'Drop every video and detail still queued for volunteers?']])
+  $(b).onclick = async () => { if (ask && !confirm(ask)) return; try { msg((await call(`/api/admin/actions/${action}`, {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
 refresh(); setInterval(refresh, 10000);
 </script>
 </body>

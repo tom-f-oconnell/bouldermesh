@@ -129,8 +129,9 @@ channel description too, along with any climber's height, wingspan or ape index 
 
 YouTube is asked for one thing at a time across the whole server, 8-15 s apart. When it answers with its
 bot check ("Sign in to confirm you're not a bot"), the server leaves it alone for an hour, then 2, 4 and 8
-hours while it still does. Meanwhile harvests skip videos (an area's *look for new videos* gets them
-later), finding beta waits, and the *Beta* tab says until when.
+hours while it still does. Meanwhile harvests skip videos, finding beta waits, and the *Beta* tab says until
+when; volunteers fetch them if there are any ("Volunteers fetching YouTube videos"), or else an area's *look for new
+videos* gets them later.
 
 People are found in every photo before reconstruction, and their masks are kept in
 `data/projects/<id>/masks/` (`<photo>.png`, black where people are), with the share of each photo
@@ -420,6 +421,34 @@ the masks come back. Harvesting stays here. A climb whose machine can't be had o
 than failing, and that worker tries again in 5 minutes. design.md has what offloading costs and saves.
 The AWS side has been tested against stand-ins for AWS, not against AWS itself.
 
+## Volunteers fetching YouTube videos
+
+YouTube refuses a server's downloads after a while (a cloud server's at once), so people can lend their computers to
+fetch videos from their own addresses, slowly. Add one on the admin page under *Volunteers*, which shows the token once
+and the command to give them; `https://<site>/volunteer/` has the script and says what it does. It needs Python 3.9 and
+installs yt-dlp and Deno in `~/.bouldermesh-volunteer`, and on first run explains the costs (YouTube's terms, and the
+bot check their whole network may get) and asks them to agree.
+
+- **What they fetch:** only YouTube ids this server gives them, one video at a time, 8-15 s apart, at most 15 an hour and
+  100 a day for each volunteer and each address, resting 1, 2, 4 then 8 hours when YouTube refuses them. A video comes
+  back whole (up to 1080p, no sound, 500 MB), checked against its length, with its details but nothing of theirs.
+- **What's asked of them:** with *Fetch videos from YouTube* at its default, videos a harvest or finding beta couldn't
+  have because YouTube is refusing this server, once there's a volunteer. *Fetch the videos harvests went without* asks
+  for earlier ones too, and *Fetch videos' missing details* for licences never read. A climb is harvested again once its
+  videos have come: an area's as *harvest again and rebuild*, which a finished area runs by itself and a stopped one when
+  it's started. *Only through volunteers* is for a cloud server, which shouldn't ask YouTube itself at all.
+- **Fetched videos** are kept (`data/cache/videos`, up to `VIDEO_CACHE_GB`, 50 by default and 10 in the public setup)
+  for finding beta and harvesting again, so YouTube isn't asked for one twice; this server's own downloads too.
+
+Volunteers reach the public site's `/volunteer/`, which Caddy passes to a port that answers nothing else (`VOLUNTEER_PORT`,
+47613 in Compose, on loopback only). By default that's the public server's own app, for when it does the harvesting.
+While another machine harvests (hal), `deploy/volunteer-tunnel.service` there keeps an SSH connection to the public
+server that brings `/volunteer/` back to it, through a socket in the public server's `data/tunnel/`: start it first, so
+that folder is yours rather than Docker's, then put `VOLUNTEER_UPSTREAM=unix//run/bm-tunnel/volunteer.sock` in the
+public server's `.env`, restart it, and put `VOLUNTEER_URL=https://<site>` in the harvesting machine's `.env`, for the
+command the admin page gives. Each server keeps its volunteers in `data/volunteers.sqlite`, which `deploy/ship.sh`
+doesn't send.
+
 ## Layout
 
     backend/server.py              HTTP server, SQLite, uploads, job worker (reconstruct + harvest)
@@ -435,6 +464,8 @@ The AWS side has been tested against stand-ins for AWS, not against AWS itself.
     backend/scale.py               how big a mesh is, from the people in its photos and Mountain Project's height
     backend/admin.py               the admin page's server; frontend/admin.html is the page
     backend/settings.py            the admin page's settings, and credentials kept encrypted
+    backend/volunteers.py          volunteers fetching YouTube videos: their tokens, the queue, and their port
+    volunteer/bouldermesh_volunteer.py  the script volunteers run
     backend/proxy_ranges.py        whether the Caddyfile's trusted proxies are still Cloudflare's
     backend/policy.py              which photos are free to copy, and what the site may show
     backend/retexture.py           colouring a mesh from only the photos free to copy

@@ -474,6 +474,37 @@ the public server only shows what's shipped to it.
 People's masks used to be made in `work/` and deleted with it. They're now kept in the project's
 `masks/`, which also makes a rebuild skip photos that already have one.
 
+## Volunteers fetching videos (`backend/volunteers.py`)
+
+Volunteers do only what needs a residential or campus address: asking YouTube for a video, or a video's details.
+Searching stays with the server, as YouTube never refused searches, and so does everything after the download (the
+frames, the filtering, finding beta), so the script needs nothing but yt-dlp and Deno, and the server decides which
+frames to keep. A volunteer gets a video's id, never an address, so a compromised server can't point their computer at
+anything else. It sends the video whole rather than frames: the harvest takes 1 frame a second and finding beta 2 a
+second of the first 150 s at 720p, and frames chosen there couldn't be chosen again later without another download,
+where a YouTube request is the scarce thing, not bandwidth. Kept in the cache, one download serves both, where before
+finding beta downloaded every video a second time.
+
+The limits are hal's, halved: one video at a time, 8-15 s apart, at most 15 an hour (hal's refusals came after hours at
+20-30) and 100 a day, shared by everyone at one address so that two volunteers on one network don't double it. A
+refused volunteer rests as the server would, 1, 2, 4, then 8 hours, and the script enforces all of it itself as well,
+so a misconfigured server can't make it go faster. A video is sent in parts of 64 MB, under Cloudflare's 100 MB a
+request, resuming after a dropped connection. The server checks the file's length against the video's, which catches
+a wrong or cut-short file but not a deliberate fake, so tokens go to people you know, and can be revoked. yt-dlp's
+full details carry the volunteer's IP address in YouTube's signed download links, so only the fields the harvest keeps
+are sent, and the server keeps a volunteer's last address only to share the limits.
+
+Where volunteers connect follows where harvesting is. The public server is the only machine they can reach. While hal
+harvests (option A), an SSH connection from hal forwards the public server's `/volunteer/` to hal's volunteer port,
+which answers nothing else; it ends in a Unix socket that Caddy's container reads through a mounted folder, which needs
+neither sshd's GatewayPorts nor Caddy on the host's network. When the public server harvests, with reconstruction on AWS
+workers (option B), Caddy passes `/volunteer/` to its own app instead, and nothing reaches hal. Each server keeps its
+volunteers in a database of its own, as ship.sh replaces the public server's main one.
+
+The costs fall on volunteers: YouTube's terms forbid downloading except through YouTube itself, spreading downloads over
+other addresses is plainly a way around its per-address limit, and a refused address gets the bot check for everyone on
+that network for hours. The script says so and asks them to agree before it starts.
+
 ## Beta: which holds climbers use (`backend/beta.py`)
 
 People's masks say where people are, not which of their parts are hands and which feet, so a pose

@@ -17,6 +17,8 @@ services:
       READ_ONLY: "${READ_ONLY:-auto}"       # view-only unless EDIT_TOKEN is set in .env
       CLIENT_IP_HEADER: X-Real-IP           # Caddy names the sender there, for the log
       CADDYFILE: /app/deploy/Caddyfile      # the admin page says when Cloudflare's addresses no longer match its trusted_proxies
+      VOLUNTEER_URL: "https://${SITE_HOST}" # where volunteers reach it (Caddy passes /volunteer/ on), for the admin page's command
+      VIDEO_CACHE_GB: "${VIDEO_CACHE_GB:-10}"
       SITE_SOURCES: "${SITE_SOURCES:-link}"  # photos and frames not clearly free to copy are linked to, not served (all | link | permitted)
       SITE_TEXTURES:                        # from .env, optional: all (the default) | permitted | none. The admin page can change
                                             # both, and its choices last across deploy/ship.sh
@@ -34,8 +36,11 @@ services:
       SITE_HOST: "${SITE_HOST:?set SITE_HOST in .env to the site's domain name}"
       WWW_HOST:                             # from .env, optional: a second name (www.…) pointed here, which redirects to SITE_HOST
       MAX_BODY:                             # from .env, optional: the largest request Caddy passes on (default 1100MB, for uploads with the token)
+      VOLUNTEER_UPSTREAM:                   # from .env, optional: where /volunteer/ goes: this machine's app (the default), or
+                                            # unix//run/bm-tunnel/volunteer.sock for another's, through deploy/volunteer-tunnel.service
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/tunnel:/run/bm-tunnel        # the SSH tunnel's socket, when volunteers are another machine's
       - caddy_data:/data
       - caddy_config:/config
     depends_on: [bouldermesh]

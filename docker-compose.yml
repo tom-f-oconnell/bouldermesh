@@ -5,6 +5,9 @@ services:
       - "${PORT:-8470}:8470"
       # the admin page: only on this host's loopback, or a LAN address (ADMIN_BIND), never on every address
       - "${ADMIN_BIND:-127.0.0.1}:${ADMIN_PORT:-36184}:36184"
+      # volunteers fetching YouTube videos: only on this host's loopback, for an SSH tunnel from the public server's
+      # Caddy (deploy/volunteer-tunnel.service, README "Volunteers")
+      - "127.0.0.1:${VOLUNTEER_PORT:-47613}:47613"
     volumes: ["./data:/data"]
     environment:
       # USE_GPU: "0"              # keeps photo matching on the CPU; docker-compose.gpu.yml is what gives it a GPU
@@ -14,6 +17,10 @@ services:
       ADMIN_PASSWORD:             # from .env, optional: a password for the admin page (user "admin")
       ADMIN_HOSTNAMES:            # from .env, optional: names the admin page is reached by besides addresses and LAN names
       ADMIN_BIND:                 # the address above, so that the server can refuse to publish the admin page on a public one
+      VOLUNTEER_PORT: "47613"
+      VOLUNTEER_URL:              # from .env, optional: the address volunteers reach this at, as https://boulders.example.com
+      YOUTUBE_VIA:                # from .env, optional: here | volunteers_when_refused (the default) | volunteers
+      VIDEO_CACHE_GB:             # from .env, optional: room for fetched videos, kept for beta and harvesting again (50)
       EDIT_TOKEN:                 # from .env, optional: then every change needs "Authorization: Bearer <token>" (README: Putting it on the public internet)
       READ_ONLY:                  # from .env, optional: "1" refuses every change over HTTP; "auto" does unless EDIT_TOKEN is set
       CSP:                        # from .env, optional: "0" turns the page's Content-Security-Policy off, or a policy to use instead

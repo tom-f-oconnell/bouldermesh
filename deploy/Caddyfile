@@ -28,6 +28,14 @@
 	request_body {
 		max_size {$MAX_BODY:1100MB}
 	}
+	# volunteers fetching YouTube videos (README, "Volunteers"): this machine's app, on a port that answers only this, or
+	# with VOLUNTEER_UPSTREAM=unix//run/bm-tunnel/volunteer.sock another machine's, through deploy/volunteer-tunnel.service
+	@volunteer path /volunteer /volunteer/*
+	handle @volunteer {
+		reverse_proxy {$VOLUNTEER_UPSTREAM:bouldermesh:47613} {
+			header_up X-Real-IP {client_ip}
+		}
+	}
 	reverse_proxy bouldermesh:8470 {
 		header_up X-Real-IP {client_ip}
 	}
