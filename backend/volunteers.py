@@ -34,6 +34,7 @@ PER_HOUR = 15               # videos a volunteer, or an address, may be given in
 PER_DAY = 100
 BLOCK_HOURS = (1, 2, 4, 8)  # a volunteer YouTube refused rests this long, longer each time it's still refused
 STALE_MINUTES = 90          # work given out that nothing has come of for this long goes back to the queue
+PAUSE_WAIT = 1800           # seconds a volunteer waits before asking again, while the server says it can't take more
 MAX_TRIES = 3               # a video that fails this often, for reasons that might pass, isn't asked for again
 PART_MAX = 64 * 2**20       # the largest part of a file, under Cloudflare's 100 MB per request
 MAX_VIDEO = 600 * 2**20     # the script asks yt-dlp for at most 500 MB
@@ -107,11 +108,14 @@ class Broker:
         ready: called with (purpose, ref) once every video wanted for that is done or has failed, at least one
             having come: ("harvest", project id), ("beta", mesh id), ("details", url).
         probe: a video file's length, to check it's the one asked for (probe_duration()).
+        paused: why no volunteer is to be given work now (as when the server is out of room), or None.
     """
 
     def __init__(self, db_path: Path, files: Path, delivered: Callable[[dict, Path | None, dict], None],
-                 ready: Callable[[str, str], None], probe: Callable[[Path], float | None] = probe_duration):
+                 ready: Callable[[str, str], None], probe: Callable[[Path], float | None] = probe_duration,
+                 paused: Callable[[], str | None] = lambda: None):
         self.db_path, self.files, self.delivered, self.ready, self.probe = db_path, files, delivered, ready, probe
+        self.paused = paused
         self.lock = threading.RLock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with self.db() as con:
@@ -210,6 +214,9 @@ class Broker:
         with self.lock:
             self.requeue_stale()
             self.q("UPDATE volunteers SET last_seen=?, last_ip=?, client=? WHERE id=?", now, ip, client[:80], v["id"])
+            why = self.paused()
+            if why:     # what it has stays its own, to send when it can
+                return {"wait": PAUSE_WAIT, "why": why}
             if (v.get("refused_until") or 0) > now:
                 return {"wait": v["refused_until"] - now, "why": "YouTube refused you lately: resting"}
             mine = self.q("SELECT * FROM tasks WHERE volunteer=? AND state='assigned'", v["id"], one=True)

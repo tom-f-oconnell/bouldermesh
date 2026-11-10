@@ -20,6 +20,7 @@ services:
       VOLUNTEER_URL: "https://${SITE_HOST}" # where volunteers reach it (Caddy passes /volunteer/ on), for the admin page's command
       VIDEO_CACHE_GB: "${VIDEO_CACHE_GB:-10}"
       CAMPAIGN_MIN_FREE_GB: "${CAMPAIGN_MIN_FREE_GB:-10}"   # areas stop with less disk left than this (50 elsewhere)
+      DATA_CAP_GB: "${DATA_CAP_GB:-50}"     # over this much data, volunteers and areas wait for room to be made (none elsewhere)
       SITE_SOURCES: "${SITE_SOURCES:-link}"  # photos and frames not clearly free to copy are linked to, not served (all | link | permitted)
       SITE_TEXTURES:                        # from .env, optional: all (the default) | permitted | none. The admin page can change
                                             # both, and its choices last across deploy/ship.sh

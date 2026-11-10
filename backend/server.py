@@ -119,6 +119,10 @@ DATA_WINDOW = 8         # "data" order: how many waiting climbs' pages to have r
 VIDEO_WORTH = 20        # "data" order: roughly how many usable photos a beta video gives
 OUTAGE_LIMIT = 5        # stop a campaign after this many climbs in a row fail before finishing a harvest
 CAMPAIGN_MIN_FREE = float(os.environ.get("CAMPAIGN_MIN_FREE_GB", "50")) * 2**30   # stop rather than fill a shared disk
+# the most DATA_DIR may hold (0: no limit): over it, volunteers are given nothing and areas take no new climb, until
+# room is made (the admin page shows what takes it, and can delete photos the filter rejected)
+DATA_CAP = float(os.environ.get("DATA_CAP_GB") or 0) * 2**30
+USAGE_EVERY = 600       # seconds between measurings of DATA_DIR
 # lowest areas named like these hold several rocks, so one mesh can't stand in for all their climbs
 GROUP_AREA = re.compile(r"\b(boulders|area|circuit|bouldering|rocks|blocks|cluster|complex)\b", re.I)
 
@@ -1322,6 +1326,51 @@ def settle_waiting(camp_id: str) -> None:
       write=True)
 
 
+# ------------------------------------------------------------------ how much room the data takes (DATA_CAP)
+_usage: dict = {}       # {total, by: {name: bytes}, checked}
+
+
+def measure_usage() -> dict:
+    """How much DATA_DIR holds, by what: meshes, projects' photos, masks, rejected photos and work, the caches."""
+    def size(path: Path) -> int:
+        total = 0
+        for root, _, files in os.walk(path):
+            for f in files:
+                try:
+                    total += os.lstat(os.path.join(root, f)).st_size
+                except OSError:
+                    pass
+        return total
+    by = {"meshes": size(MESHES), "videos": size(DATA / "cache" / "videos"), "other cache": 0, "other": 0}
+    for part in ("photos", "rejected", "masks", "work"):
+        by[f"projects' {part}"] = 0
+    for d in PROJECTS.iterdir() if PROJECTS.exists() else []:
+        for part in ("photos", "rejected", "masks", "work"):
+            by[f"projects' {part}"] += size(d / part)
+    by["other cache"] = size(DATA / "cache") - by["videos"]
+    by["other"] = size(DATA) - sum(by.values())
+    _usage.update(total=sum(by.values()), by=by, checked=time.time())
+    return _usage
+
+
+def full() -> str | None:
+    """Why no more is fetched (DATA_CAP reached), or None."""
+    if DATA_CAP and _usage.get("total", 0) > DATA_CAP:
+        return (f"the server is out of room ({_usage['total'] / 2**30:.1f} of {DATA_CAP / 2**30:.0f} GB): "
+                "waiting for some to be made")
+    return None
+
+
+def watch_usage() -> None:
+    """Measure DATA_DIR now and every USAGE_EVERY seconds, if there's a cap."""
+    while DATA_CAP:
+        try:
+            measure_usage()
+        except Exception as e:  # never let the thread die
+            print(f"usage error: {e!r}", flush=True)
+        time.sleep(USAGE_EVERY)
+
+
 def _claim(w: Worker):
     """Choose this worker's next climb, and mark it as running, under _claim_lock: an area's next waiting
     climb, from the area fewest other workers are on, but not one on a boulder another worker is on, whose
@@ -1332,6 +1381,13 @@ def _claim(w: Worker):
     """
     others = [x for x in _workers if x is not w]
     camps = q("SELECT * FROM campaigns WHERE status='running' ORDER BY created")
+    why = full()
+    for camp in camps:      # paused, not stopped: they carry on once there's room
+        note = f"paused: {why}" if why else None
+        if (camp["note"] or "").startswith("paused: ") or note:
+            q("UPDATE campaigns SET note=? WHERE id=? AND COALESCE(note,'')!=COALESCE(?,'')", note, camp["id"], note, write=True)
+    if why:
+        return None
     camps.sort(key=lambda c: sum(x.campaign == c["id"] for x in others))
     for camp in camps:
         if shutil.disk_usage(DATA).free < CAMPAIGN_MIN_FREE:
@@ -3431,7 +3487,8 @@ def reharvest_with_videos(pid: str) -> None:
     queue_job({"type": "harvest", "pid": pid, "sources": sorted(HARVEST_SOURCES), "reconstruct": False, "again": True})
 
 
-VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteers", volunteer_delivered, volunteer_ready)
+VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteers", volunteer_delivered, volunteer_ready,
+                                   paused=lambda: full())
 
 
 def want_skipped() -> dict:
@@ -3513,7 +3570,8 @@ def admin_state() -> dict:
             "policy": counts, "retexture_queued": len(_retexturing), "site_port": int(os.environ.get("PORT", "8470")),
             "proxy_ranges": RANGES.state() if RANGES else None, "version": VERSION,
             "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE,
-            "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL}}
+            "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
+            "usage": {**_usage, "cap": DATA_CAP or None, "full": full()}}
 
 
 def admin_test(_: dict) -> dict:
@@ -3539,6 +3597,27 @@ def admin_end_nodes(_: dict) -> dict:
             prov.stop(compute.Node(host="", user="", id=iid))
             ended += 1
     return {"result": f"ended {ended} machine(s); any in use end when their climb is done"}
+
+
+def admin_clear_rejected(_: dict) -> dict:
+    """Delete the photos the filter rejected (projects' rejected/), of every project not being harvested or meshed:
+    most of what harvests leave on disk, and needed only to put one back by hand."""
+    freed, n = 0, 0
+    for r in q("SELECT id, status FROM projects"):
+        d = PROJECTS / r["id"] / "rejected"
+        if r["status"] in ("queued", "running", "harvesting") or not d.is_dir():
+            continue
+        freed += sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+        shutil.rmtree(d, ignore_errors=True)
+        n += 1
+    if DATA_CAP:
+        measure_usage()
+    return {"result": f"deleted the rejected photos of {n} project(s): {freed / 2**30:.1f} GB"}
+
+
+def admin_measure(_: dict) -> dict:
+    u = measure_usage()
+    return {"result": f"the data takes {u['total'] / 2**30:.1f} GB" + (f" of {DATA_CAP / 2**30:.0f}" if DATA_CAP else "")}
 
 
 def admin_retexture(_: dict) -> dict:
@@ -3573,6 +3652,7 @@ def main() -> None:
         beta_mod.carry_on(d)        # finding beta carries on after a restart, like areas
         scale_mod.interrupted(d)
     threading.Thread(target=beta_worker, daemon=True).start()
+    threading.Thread(target=watch_usage, daemon=True).start()
     threading.Thread(target=frames_worker, daemon=True).start()
     if splat_mod.enabled():
         why = splat_mod.unavailable()
@@ -3592,7 +3672,8 @@ def main() -> None:
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
                                        "volunteers-cancel": admin_volunteers_cancel, "machine-add": admin_machine_add,
-                                       "machine-revoke": admin_machine_revoke}),
+                                       "machine-revoke": admin_machine_revoke, "clear-rejected": admin_clear_rejected,
+                                       "measure": admin_measure}),
                     os.environ.get("ADMIN_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), ADMIN_PORT)
     if VOLUNTEER_PORT:
         volunteers_mod.serve(VOLUNTEERS, os.environ.get("VOLUNTEER_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), VOLUNTEER_PORT,

@@ -1022,6 +1022,39 @@ assert it["status"] == "done" and len(meshed) == 1 and harvested.count("Beta") =
 server.VOLUNTEERS.pending, server.harvest_mod.harvest, pipeline.reconstruct = real_pending, fake_harvest, fake_reconstruct
 print("waiting for volunteers OK")
 
+# --- over the cap on the data's size, areas take no new climb and volunteers get nothing, until there's room ----------
+fresh()
+c = server.create_campaign("", "popularity", only("Alpha"))
+old = server.PROJECTS / "deadbeef0001"
+(old / "rejected").mkdir(parents=True)
+(old / "rejected" / "x.jpg").write_bytes(b"x" * 300_000)
+server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,?)", old.name, "old", time.time(), "harvest", "done", write=True)
+assert not server.full(), "no cap, nothing to be full"
+server.DATA_CAP = server.measure_usage()["total"] - 1000
+assert "out of room" in server.full() and server._usage["by"]["projects' rejected"] == 300_000
+w = server.Worker("capped")
+with server._claim_lock:
+    assert server._claim(w) is None
+assert server.q("SELECT note FROM campaigns WHERE id=?", c["id"], one=True)["note"].startswith("paused: the server is out of room")
+assert server.campaign_status(c["id"]) == "running", "paused, not stopped"
+erin = server.VOLUNTEERS.add("Erin")
+v = server.VOLUNTEERS.volunteer(erin["token"])
+server.VOLUNTEERS.want("video", "ggggggggggg", "harvest", "x")
+got = server.VOLUNTEERS.work(v, "203.0.113.30")
+assert "out of room" in got["why"] and got["wait"] == server.volunteers_mod.PAUSE_WAIT, got
+assert "1 project(s)" in server.admin_clear_rejected({})["result"] and not (old / "rejected").exists()
+assert not server.full(), "measured again after"
+with server._claim_lock:
+    assert server._claim(w)[1]["name"] == "Alpha"
+assert not server.q("SELECT note FROM campaigns WHERE id=?", c["id"], one=True)["note"]
+assert "task" in server.VOLUNTEERS.work(v, "203.0.113.30")
+server.DATA_CAP = 0
+server.VOLUNTEERS.revoke(erin["id"])
+server.VOLUNTEERS.cancel()
+server.stop_campaign(c["id"])
+fresh()
+print("the cap on the data OK")
+
 # --- more than one worker at once -----------------------------------------------------------------------
 fresh()
 c = server.create_campaign("", "popularity", CSV)

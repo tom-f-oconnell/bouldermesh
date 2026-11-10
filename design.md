@@ -512,6 +512,14 @@ results coming have it harvested again, which may ask for the videos they found,
 and meshed. 24 hours of waiting (`VOLUNTEER_WAIT_HOURS`) is the most, as volunteers come and go: then it's meshed with
 what's there, and what comes later rebuilds it as before.
 
+**Room on the public server.** Its disk is 75 GB, with about 59 free. Of hal's 97 GB of projects on Nov 10, 2026, 92
+were photos the filter rejected (kept only to put one back by hand), 9.4 the photos themselves (3 for the projects of
+current meshes), 4.4 work folders kept by failed climbs (which a server meshing elsewhere never has) and 0.1 masks. So
+the public setup caps its data at 50 GB: harvesting climbs is what fills it, so over the cap volunteers are given nothing
+and areas take no new climb, paused rather than stopped, until room is made, which deleting the rejected photos mostly
+does. hal's photos and masks go to it once (ship.sh's PHOTOS=1), as rebuilding, retexturing, sizes and boulders' own
+meshes need them.
+
 Checked on Nov 10, 2026, from the public server's address (Hetzner's): Mountain Project's pages, its area export and its
 photos, OpenBeta, DuckDuckGo's image search and the photos it found, and Wikimedia Commons' search and photos all
 answered the first requests. If any of them starts refusing a cloud address, as YouTube does, its requests could go to

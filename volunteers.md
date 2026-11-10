@@ -148,15 +148,15 @@ The public server lists areas, harvests their climbs and keeps everything they m
 searches and fetching its videos, as YouTube refuses a cloud address. It's too small to reconstruct (2 cores, 4 GB), so
 its climbs wait for machines that connect to it for work: hal, or any machine with Docker, which fetches a climb's
 photos, meshes them and sends the mesh back, through Cloudflare like any visitor; and finds meshes' beta and size the
-same way. Projects' photos from hal's harvests don't go to the public
-server (97 GB on Nov 10, 2026, more than its disk), so a climb meshed on hal is only rebuilt there by harvesting it again.
+same way. Its data is capped at 50 GB: over that, volunteers and areas wait until room is made (README, "Putting it on
+the public internet").
 
 From hal, in `~/src/bouldermesh`:
 
-1. **Ship the current code, with hal's database and meshes, one last time**, and update the public server's checkout
-   (its Caddyfile passes `/worker/` on, and its Compose file sets the ports):
+1. **Ship the current code, with hal's database, meshes and projects' photos, one last time**, and update the public
+   server's checkout (its Caddyfile passes `/worker/` on, and its Compose file sets the ports):
 
-       deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public && ssh bouldermesh 'cd bouldermesh && git pull --ff-only'
+       deploy/build.sh && PHOTOS=1 deploy/ship.sh bouldermesh bouldermesh:public && ssh bouldermesh 'cd bouldermesh && git pull --ff-only'
 
 On the public server (`ssh bouldermesh`), in `~/bouldermesh`:
 

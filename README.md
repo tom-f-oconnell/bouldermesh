@@ -364,7 +364,8 @@ Areas are stopped in the copy, so nothing runs there by itself. Projects' photos
 the database there is replaced each time, all but the settings changed on its admin page. Once the public server harvests
 by itself instead ([volunteers.md](volunteers.md), "The public server harvests"), `HARVESTS_HERE=1` in its `.env` makes
 ship.sh send it only the image, as its database and meshes are then the only copies (`IMAGE_ONLY=1` does that for
-any machine). Or push the image to
+any machine). `PHOTOS=1` sends projects' photos and masks as well (about 9 GB from hal's 1,667 projects on Nov 10, 2026),
+which rebuilding, retexturing and finding size there need, never replacing any it has. Or push the image to
 a registry (see "Running reconstructions elsewhere"), put `BM_IMAGE=ghcr.io/<github-user>/bouldermesh:latest` in `.env`,
 and `docker compose -f docker-compose.yml -f docker-compose.public.yml pull`. Ports 80 and 443 must be open to the world.
 To run it under systemd as above, put `COMPOSE_FILE=docker-compose.yml:docker-compose.public.yml` in `.env` too (with
@@ -397,6 +398,11 @@ hour (`FILE_CACHE_SECONDS`). The page itself is sent with `Cache-Control: no-tra
 it as it is: Cloudflare, for one, adds its Web Analytics script to free plans' pages unless that's turned off, and the
 page's policy would only block it. Harvests fetch only `http(s)` URLs, and never from private, loopback or link-local addresses,
 such as a cloud machine's metadata service (`HTTP_ALLOW_PRIVATE=1` lifts that, for tests).
+
+**Room.** The public setup caps its data at 50 GB (`DATA_CAP_GB`; no cap elsewhere): measured every 10 minutes, and over
+it, volunteers are given nothing and areas take no new climb (they say they're paused) until there's room again. The
+admin page's *Room for data* shows what takes it, and deletes the photos the filter rejected, which are only kept to put
+one back by hand and were 92 of hal's 97 GB of projects. Fetched videos have a cap of their own, `VIDEO_CACHE_GB`.
 
 **What it doesn't do.** There's no rate limiting, and `GET /api/meshes` reads every mesh's records for each request, so a
 busy site wants a cache in front: Cloudflare's free plan, with the name proxied and SSL mode *Full (strict)*, caches the

@@ -11,6 +11,9 @@
 # Running it again is cheap: an image the machine already has isn't sent again, and only changed meshes are.
 # A machine that harvests by itself (HARVESTS_HERE=1 in its .env: volunteers.md, "The public server harvests") has the
 # only copy of its database and meshes, so it gets only the image; IMAGE_ONLY=1 does that for any machine.
+# PHOTOS=1 also sends projects' photos, people masks and records of where they came from (not the photos the filter
+# rejected, nor work folders), which rebuilding, retexturing, finding size and boulders' own meshes there need, never
+# replacing any already there.
 set -eu
 dest=${1:?usage: deploy/ship.sh user@host [image]}
 image=${2:-bouldermesh-bouldermesh:latest}
@@ -84,6 +87,14 @@ if [ "$(ssh "$dest" "docker image inspect $image --format '{{.Id}}' 2>/dev/null"
 else
     echo "image $image, as $dest will load it (a few minutes for 2.4 GB)"
     docker save "$image" | zstd | ssh "$dest" 'zstd -d | docker load'
+fi
+if [ -n "${PHOTOS:-}" ]; then
+    echo "projects' photos, masks and where they came from"
+    rsync -a --ignore-existing --info=stats1 --include='/*/' --include='/*/photos/***' --include='/*/masks/***' --include='/*/*.json' --exclude='*' \
+        "$data/projects/" "$dest:$remote/data/projects/" || case $? in
+        23|24) echo "warning: not every photo could be sent (see above); carrying on" ;;
+        *) exit 1 ;;
+    esac
 fi
 if [ -n "$only_image" ]; then
     echo "done. On $dest:  cd $remote && sudo systemctl restart bouldermesh   (or docker compose up -d)"
