@@ -499,8 +499,11 @@ Searching could be refused too, but hasn't been. From Nov 1 to 9, 2026, 1,474 ha
 every spell of refused downloads, and one search failed, with an error fetching the results page rather than the bot
 check. A search is one request for a page of results; a download also asks YouTube's player for the video, which is where
 the bot check is. A cloud server's address is another matter: when the public server harvests (option B), its searches
-may be refused from the start. If they are on either server (a harvest's log says `youtube search: ... failed:` with
-"not a bot" or a 429), searching moves to volunteers as a third kind of work: the server sends the search's words, never
+may be refused from the start. A refused search pauses searching (and reading channels) the way a refused download
+pauses downloads, 1, 2, 4 then 8 hours, apart from them, so that each climb after doesn't ask again; until then a
+harvest goes on without searching. If that happens on either server (a harvest's log says `youtube search: ... failed:
+YouTube is refusing this machine's searches`, and `/api/status` has `youtube_searches_refusing`), searching moves to
+volunteers as a third kind of work: the server sends the search's words, never
 an address, the script runs `yt-dlp --flat-playlist ytsearch15:<words>` within the same limits, and sends back each
 result's id, title, channel and length; the harvest carries on without videos, and is harvested again once the results,
 and then their videos, have come, as for videos now.

@@ -10,8 +10,9 @@ could later give a mesh a scale. stats() reads them from free text; nothing is i
 
 Every yt-dlp run goes through call(): one at a time across the app, GAP seconds apart. When YouTube
 answers with its bot check ("Sign in to confirm you're not a bot") or a rate limit, nothing that fetches
-a video or its details is asked of it for an hour, then 2, 4 and 8 while it still answers that way;
-searches still go through, as they never got the check. design.md has what led to this.
+a video or its details is asked of it for an hour, then 2, 4 and 8 while it still answers that way.
+Searches and channel pages have a pause of their own, the same, kept apart: they went through while
+downloads were refused, and never got the check on hal. design.md has what led to this.
 
 Videos fetched are kept in a cache by their id, with their details, so that finding beta and harvesting again don't
 ask YouTube a second time: those this server downloads, and those volunteers fetch from their own addresses
@@ -44,6 +45,7 @@ SLEEP_REQUESTS = ["--sleep-requests", "0.75"]   # between the requests within on
 BLOCK_HOURS = (1, 2, 4, 8)  # how long to leave YouTube alone after its bot check, each time it's still there
 REFUSAL = re.compile(r"not a bot|HTTP Error 429|Too Many Requests|content isn.t available, try again later", re.I)
 STATE_FILE = CACHE_DIR.parent / "youtube.json"
+PAGES_STATE_FILE = CACHE_DIR.parent / "youtube-pages.json"   # searches and channel pages, refused apart from videos
 VIDEO_CACHE = CACHE_DIR.parent / "videos"     # <id>.<ext> and <id>.json, its details
 CACHE_BYTES = int(float(os.environ.get("VIDEO_CACHE_GB", "50")) * 2**30)   # the oldest used go beyond this
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
@@ -60,7 +62,7 @@ class Refused(RuntimeError):
     def __init__(self, state: dict):
         self.state = state
         super().__init__("this server leaves fetching videos from YouTube to volunteers" if state.get("volunteers") else
-                         f"YouTube is refusing this machine's downloads (its bot check) until "
+                         f"YouTube is refusing this machine's {state.get('what', 'downloads')} (its bot check) until "
                          f"{time.strftime('%H:%M UTC', time.gmtime(state['until']))}")
 
 
@@ -68,10 +70,11 @@ def available() -> bool:
     return shutil.which("yt-dlp") is not None
 
 
-def refused() -> dict | None:
-    """While YouTube is being left alone: {since, until, level, error}, else None."""
+def refused(video: bool = True) -> dict | None:
+    """While YouTube's videos, or with video=False its searches and channel pages, are being left alone:
+    {since, until, level, error, what}, else None."""
     try:
-        state = json.loads(STATE_FILE.read_text())
+        state = json.loads((STATE_FILE if video else PAGES_STATE_FILE).read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return None
     return state if time.time() < state.get("until", 0) else None
@@ -81,8 +84,8 @@ def call(cmd: list[str], video: bool = True, **kw) -> str:
     """Run a yt-dlp command (jobctl.run's arguments) through the gate.
 
     Args:
-        video: it fetches a video or a video's details, which YouTube's bot check applies to: refused
-            while that's on, and turning it on when YouTube answers with it.
+        video: it fetches a video or a video's details, rather than a search or a channel page. Each kind is
+            refused while YouTube's bot check is on for it, which its answer turns on.
 
     Raises:
         Refused: YouTube is refusing, or just did.
@@ -91,14 +94,15 @@ def call(cmd: list[str], video: bool = True, **kw) -> str:
     if video and via == "volunteers":
         raise Refused({"since": time.time(), "until": time.time() + 3600, "level": 0, "volunteers": True,
                        "error": "this server doesn't fetch videos from YouTube itself"})
+    path, what = (STATE_FILE, "downloads") if video else (PAGES_STATE_FILE, "searches")
     while not _gate.acquire(timeout=1):
         jobctl.check()
     try:
         try:
-            state = json.loads(STATE_FILE.read_text())
+            state = json.loads(path.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
             state = None
-        if video and state and time.time() < state["until"]:
+        if state and time.time() < state["until"]:
             raise Refused(state)
         until = _last + random.uniform(*GAP)
         while time.time() < until:
@@ -107,18 +111,18 @@ def call(cmd: list[str], video: bool = True, **kw) -> str:
         try:
             out = jobctl.run(cmd[:1] + SLEEP_REQUESTS + cmd[1:], **kw)
         except Exception as e:
-            if video and REFUSAL.search(str(e)):
+            if REFUSAL.search(str(e)):
                 level = min(len(BLOCK_HOURS) - 1, state["level"] + 1) if state else 0
-                state = {"since": state["since"] if state else time.time(), "level": level,
+                state = {"since": state["since"] if state else time.time(), "level": level, "what": what,
                          "until": time.time() + BLOCK_HOURS[level] * 3600, "error": str(e)[:300]}
-                STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-                STATE_FILE.write_text(json.dumps(state))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(state))
                 raise Refused(state) from None
             raise
         finally:
             _last = time.time()
-        if video and state:     # it let one through: it's stopped refusing
-            STATE_FILE.unlink(missing_ok=True)
+        if state:     # it let one through: it's stopped refusing
+            path.unlink(missing_ok=True)
         return out
     finally:
         _gate.release()

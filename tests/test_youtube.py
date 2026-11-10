@@ -78,13 +78,17 @@ with tempfile.TemporaryDirectory() as td:
     # a stand-in yt-dlp: records its arguments, and answers with the bot check while td/refuse exists
     fake.write_text(f"""#!/bin/sh
 echo "$*" >> {calls}
-if [ -e {td}/refuse ] && [ "$4" != "--flat-playlist" ]; then
+case "$*" in *--flat-playlist*) search=1 ;; *) search= ;; esac
+if [ -e {td}/refuse ] && [ -z "$search" ]; then
   echo "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. This helps protect our community." >&2; exit 1
+fi
+if [ -e {td}/refuse-search ] && [ -n "$search" ]; then
+  echo "ERROR: [youtube:search] x: Sign in to confirm you’re not a bot. This helps protect our community." >&2; exit 1
 fi
 echo '{{"entries": [], "title": "t"}}'
 """)
     fake.chmod(0o755)
-    yt.STATE_FILE, yt.GAP = td / "youtube.json", (0.0, 0.0)
+    yt.STATE_FILE, yt.PAGES_STATE_FILE, yt.GAP = td / "youtube.json", td / "youtube-pages.json", (0.0, 0.0)
     run = lambda video=True, args=("--skip-download", "x"): yt.call([str(fake), "-J", *args], video=video, timeout=30,  # noqa: E731
                                                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     assert json.loads(run())["title"] == "t" and yt.refused() is None
@@ -117,6 +121,40 @@ echo '{{"entries": [], "title": "t"}}'
     (td / "refuse").unlink()
     run()
     assert yt.refused() is None and not yt.STATE_FILE.exists(), "one let through: it's over"
+
+    # searches refused have a pause of their own, which leaves downloads alone
+    search = lambda: run(video=False, args=("--flat-playlist", "ytsearch15:x"))     # noqa: E731
+    (td / "refuse-search").touch()
+    try:
+        search()
+        raise AssertionError("search refused")
+    except yt.Refused as e:
+        assert e.state["what"] == "searches" and "searches" in str(e) and yt.refused(video=False) and yt.refused() is None, e.state
+    n = len(calls.read_text().splitlines())
+    try:
+        search()
+        raise AssertionError("searches still refused")
+    except yt.Refused:
+        pass
+    assert len(calls.read_text().splitlines()) == n, "no search asked of YouTube meanwhile"
+    run()
+    assert len(calls.read_text().splitlines()) == n + 1, "a download still goes"
+    yt.PAGES_STATE_FILE.write_text(json.dumps({**yt.refused(video=False), "until": time.time() - 1}))
+    (td / "refuse-search").unlink()
+    search()
+    assert yt.refused(video=False) is None and not yt.PAGES_STATE_FILE.exists()
+    log, real_call = [], yt.call
+    yt.call = lambda cmd, **kw: real_call([str(fake), *cmd[1:]], **kw)     # search() names yt-dlp itself
+    (td / "refuse-search").touch()
+    try:
+        n = len(calls.read_text().splitlines())
+        for _ in range(2):
+            assert yt.search(relic, log.append) == [] and "refusing this machine's searches" in log[-1], log
+        assert len(calls.read_text().splitlines()) == n + 1, "the second search waits, without asking"
+    finally:
+        yt.call = real_call
+    (td / "refuse-search").unlink()
+    yt.PAGES_STATE_FILE.unlink()
 
     # a harvest skips the rest of its videos rather than asking again for each
     from climbs import harvest

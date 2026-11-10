@@ -2373,7 +2373,7 @@ class Handler(BaseHTTPRequestHandler):
                                        "queue": jobs.qsize(), "relevance_methods": relevance_mod.available(), "people_masks": pipeline.occlusion.available(), "harvest_sources": HARVEST_SOURCES, "env": env,
                                        "gpu": gpu, "gpu_why": gpu_why,
                                        "ytdlp": bool(shutil.which("yt-dlp") and shutil.which("ffmpeg")),
-                                       "youtube_refusing": youtube_mod.refused(),
+                                       "youtube_refusing": youtube_mod.refused(), "youtube_searches_refusing": youtube_mod.refused(video=False),
                                        "known_objects": {k: v[2] for k, v in scale_mod.KNOWN.items()},
                                        "opencv": _has("cv2"), "pillow": _has("PIL"),
                                        "policy": {"textures": settings().get("site.textures"), "sources": settings().get("site.sources")},

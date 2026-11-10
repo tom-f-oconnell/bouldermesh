@@ -136,7 +136,8 @@ YouTube is asked for one thing at a time across the whole server, 8-15 s apart. 
 bot check ("Sign in to confirm you're not a bot"), the server leaves it alone for an hour, then 2, 4 and 8
 hours while it still does. Meanwhile harvests skip videos, finding beta waits, and the *Beta* tab says until
 when; volunteers fetch them if there are any ("Volunteers fetching YouTube videos"), or else an area's *look for new
-videos* gets them later.
+videos* gets them later. A refused search pauses searches the same way, apart from downloads, and harvests meanwhile go
+without searching (design.md has when searching would move to volunteers).
 
 People are found in every photo before reconstruction, and their masks are kept in
 `data/projects/<id>/masks/` (`<photo>.png`, black where people are), with the share of each photo
