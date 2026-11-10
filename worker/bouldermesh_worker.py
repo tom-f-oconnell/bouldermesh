@@ -30,7 +30,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 1
+VERSION = 2
+TASKS = ("reconstruct", "beta", "scale")     # remote_job.py's: meshing a climb, finding its beta, finding its size
+INPUTS = ("photos", "masks", "mesh", "videos", "task.json")   # what a job's folder may hold
 SEND_EVERY = 5              # seconds between reports of a job's log, which also tell the server it's alive
 JOB_ID = re.compile(r"[0-9a-f]{12}")
 IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}")
@@ -111,8 +113,8 @@ class Worker:
 
     # -- one job --------------------------------------------------------------------------------------------------------
     def do(self, job: dict) -> None:
-        jid, image = str(job.get("id") or ""), str(job.get("image") or "")
-        if not JOB_ID.fullmatch(jid) or not IMAGE.fullmatch(image):
+        jid, image, task = str(job.get("id") or ""), str(job.get("image") or ""), str(job.get("task") or "reconstruct")
+        if not JOB_ID.fullmatch(jid) or not IMAGE.fullmatch(image) or task not in TASKS:
             raise RuntimeError(f"the server sent a job this script can't run: {job}")
         api = f"/worker/api/jobs/{jid}"
         if self.args.image_prefix and not image.startswith(self.args.image_prefix):
@@ -135,7 +137,8 @@ class Worker:
                    "--security-opt", "no-new-privileges", "--cap-drop", "ALL", *self.gpu,
                    *(["--cpus", str(self.args.cpus)] if self.args.cpus else []), *self.args.docker_arg, image,
                    "nice", "-n", str(self.args.nice), "python3", "/app/backend/remote_job.py", "/job",
-                   *(["--internet"] if job.get("internet") else []), *(["--gpu"] if self.gpu else [])]
+                   *(["--task", task] if task != "reconstruct" else []), *(["--internet"] if job.get("internet") else []),
+                   *(["--gpu"] if self.gpu else [])]
             code, last = self.stream(api, cmd, f"remote: running on {socket.gethostname()}" + (" with its GPU" if self.gpu else ""))
             self.container = None
             if code:
@@ -143,7 +146,7 @@ class Worker:
                 log(f"job {jid} failed: {last}")
                 return
             with tarfile.open(work / "output.tar", "w") as tar:
-                for part in ("out", "masks"):
+                for part in ("out", "masks") if task == "reconstruct" else ("out",):
                     if (work / "job" / part).is_dir():
                         tar.add(work / "job" / part, arcname=part)
             self.send(api, work / "output.tar")
@@ -272,12 +275,12 @@ class Worker:
 
 
 def extract(tar_path: Path, dest: Path) -> None:
-    """Unpack the job's photos and masks: only files and folders, under photos/ and masks/."""
+    """Unpack what the job needs (photos, masks, a mesh, videos, its task.json): only files and folders, under INPUTS."""
     with tarfile.open(tar_path) as tar:
         members = tar.getmembers()
         for t in members:
             parts = Path(t.name).parts
-            if not (t.isfile() or t.isdir()) or not parts or parts[0] not in ("photos", "masks") or ".." in parts or Path(t.name).is_absolute():
+            if not (t.isfile() or t.isdir()) or not parts or parts[0] not in INPUTS or ".." in parts or Path(t.name).is_absolute():
                 raise RuntimeError(f"the job holds something it shouldn't: {t.name!r}")
         tar.extractall(dest, members=members, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
 

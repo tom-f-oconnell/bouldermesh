@@ -144,10 +144,11 @@ Volunteers don't notice which it is: their address and the script are the same e
 
 ### The public server harvests
 
-The public server lists areas, harvests their climbs and keeps everything they make, with volunteers fetching its YouTube
-videos, as YouTube refuses a cloud address. It's too small to reconstruct (2 cores, 4 GB), so its climbs wait for
-machines that connect to it for work: hal, or any machine with Docker, which fetches a climb's photos, meshes them and
-sends the mesh back, through Cloudflare like any visitor. Projects' photos from hal's harvests don't go to the public
+The public server lists areas, harvests their climbs and keeps everything they make, with volunteers doing its YouTube
+searches and fetching its videos, as YouTube refuses a cloud address. It's too small to reconstruct (2 cores, 4 GB), so
+its climbs wait for machines that connect to it for work: hal, or any machine with Docker, which fetches a climb's
+photos, meshes them and sends the mesh back, through Cloudflare like any visitor; and finds meshes' beta and size the
+same way. Projects' photos from hal's harvests don't go to the public
 server (97 GB on Nov 10, 2026, more than its disk), so a climb meshed on hal is only rebuilt there by harvesting it again.
 
 From hal, in `~/src/bouldermesh`:

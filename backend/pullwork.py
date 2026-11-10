@@ -15,6 +15,7 @@ ends them anyway, the climbs carry on after it as new jobs, and a machine still 
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import secrets
@@ -62,6 +63,8 @@ class Job:
     lines: list[str] = field(default_factory=list)   # what its machine sent that the waiting thread hasn't followed yet
     out_size: int | None = None
     error: str | None = None
+    task: str = "reconstruct"       # or one of remote_job.py's other tasks: "beta", "scale"
+    version: int = 1                # the oldest script that does it
 
     @property
     def output(self) -> Path:
@@ -156,7 +159,9 @@ class Board:
                 mine.out_size = None
                 mine.output.unlink(missing_ok=True)
             else:
-                mine = min((j for j in self.jobs.values() if j.state == "queued"), key=lambda j: j.created, default=None)
+                version = int(_number(client.get("version")) or 1)
+                mine = min((j for j in self.jobs.values() if j.state == "queued" and j.version <= version), key=lambda j: j.created,
+                           default=None)
                 if not mine:
                     return {"wait": POLL}
                 gpu = " (GPU)" if client.get("gpu") else ""
@@ -164,7 +169,8 @@ class Board:
                 mine.lines.append(f"remote: {m['name']}{gpu} took it after {now - mine.created:.0f} s")
             mine.touched = now
             self.cond.notify_all()
-            return {"job": {"id": mine.id, "image": mine.image, "internet": mine.internet, "size": mine.size, "part": PART_MAX}}
+            return {"job": {"id": mine.id, "image": mine.image, "internet": mine.internet, "size": mine.size, "part": PART_MAX,
+                            "task": mine.task}}
 
     def _mine(self, m: dict, job_id: str) -> Job:
         j = self.jobs.get(job_id)
@@ -272,9 +278,47 @@ class Board:
         Raises:
             compute.ComputeUnavailable: no machine has been in touch lately, or the one doing it went quiet.
         """
+        project = images.parent
+        files = {part: project / part for part in ("photos", "masks") if (project / part).is_dir()}
+        result, back, job = self._run("reconstruct", files, {"internet": internet}, project.name, project, log, tracker)
+        try:
+            safe_extract(job.output, back, TOP)
+            mesh = compute.take_results(back, out_dir, project, result)
+        finally:
+            shutil.rmtree(back, ignore_errors=True)
+            job.output.unlink(missing_ok=True)
+        return mesh, bool(result.get("demo"))
+
+    def task(self, kind: str, files: dict[str, Path], args: dict, label: str, log, tracker=None) -> tuple[dict, Path]:
+        """Run another kind of job (remote_job.py's --task: "beta" or "scale") on a machine that connects here.
+
+        Args:
+            files: what to send, by the name it has in the job's folder there (a file, or a folder and all in it).
+            args: given to the job as task.json.
+            label: what the admin page calls it.
+
+        Returns:
+            What the job said it made, and a new folder holding its out/, which is the caller's to delete.
+
+        Raises:
+            compute.ComputeUnavailable: no machine has been in touch lately, or the one doing it went quiet.
+        """
+        self.files.mkdir(parents=True, exist_ok=True)
+        result, back, job = self._run(kind, files, args, label, self.files, log, tracker)
+        try:
+            safe_extract(job.output, back, ("out",))
+        except BaseException:
+            shutil.rmtree(back, ignore_errors=True)
+            raise
+        finally:
+            job.output.unlink(missing_ok=True)
+        return result, back
+
+    def _run(self, kind: str, files: dict[str, Path], args: dict, label: str, near: Path, log, tracker) -> tuple[dict, Path, "Job"]:
+        """Hand a job to a machine and follow it until it's done: its result, a new folder in near for its results,
+        and the job, whose output (a tar) is the caller's to unpack and delete."""
         from progress import Tracker
         tracker = tracker or Tracker([])
-        project = images.parent
         until = time.time() + 3 * POLL     # as just after a restart here, before machines have asked again
         while not self.connected():
             if time.time() > until:
@@ -284,8 +328,8 @@ class Board:
         image = self.image()
         if not image:
             raise compute.ComputeUnavailable("set the Docker image the machines run on the admin page")
-        job = self._new_job(project, internet, image)
-        log(f"remote: {job.size / 1e6:.0f} MB of photos ready for the machines that connect here, job {job.id}")
+        job = self._new_job(kind, files, args, label, image)
+        log(f"remote: {job.size / 1e6:.0f} MB ready for the machines that connect here, job {job.id}")
         result, last = None, ""
         try:
             while True:
@@ -309,29 +353,30 @@ class Board:
                     break
             if not result:
                 raise compute.job_failed(last)
-            back = Path(tempfile.mkdtemp(prefix="bm-remote-", dir=project))
-            try:
-                safe_extract(job.output, back, TOP)
-                mesh = compute.take_results(back, out_dir, project, result)
-            finally:
-                shutil.rmtree(back, ignore_errors=True)
             log(f"remote: {job.machine_name} finished in {(time.time() - job.taken) / 60:.0f} min")
-            return mesh, bool(result.get("demo"))
+            return result, Path(tempfile.mkdtemp(prefix="bm-remote-", dir=near)), job
+        except BaseException:
+            job.output.unlink(missing_ok=True)
+            raise
         finally:
             with self.cond:     # a machine still on it hears it's gone the next time it reports
                 self.jobs.pop(job.id, None)
             job.input.unlink(missing_ok=True)
-            job.output.unlink(missing_ok=True)
 
-    def _new_job(self, project: Path, internet: bool, image: str) -> Job:
+    def _new_job(self, kind: str, files: dict[str, Path], args: dict, label: str, image: str) -> Job:
         jid = secrets.token_hex(6)
         self.files.mkdir(parents=True, exist_ok=True)
         path = self.files / f"{jid}.in.tar"
         with tarfile.open(path, "w") as tar:
-            for part in ("photos", "masks"):
-                if (project / part).is_dir():
-                    tar.add(project / part, arcname=part)
-        job = Job(id=jid, label=project.name, input=path, size=path.stat().st_size, internet=internet, image=image)
+            for name, src in files.items():
+                tar.add(src, arcname=name)
+            if kind != "reconstruct":
+                data = json.dumps(args).encode()
+                info = tarfile.TarInfo("task.json")
+                info.size, info.mtime = len(data), time.time()
+                tar.addfile(info, io.BytesIO(data))
+        job = Job(id=jid, label=label, input=path, size=path.stat().st_size, internet=bool(args.get("internet")), image=image,
+                  task=kind, version=1 if kind == "reconstruct" else 2)
         with self.cond:
             self.jobs[jid] = job
         return job
@@ -340,7 +385,7 @@ class Board:
     def state(self) -> dict:
         now = time.time()
         with self.cond:
-            jobs = [{"id": j.id, "project": j.label, "state": j.state, "machine": j.machine_name, "machine_id": j.machine,
+            jobs = [{"id": j.id, "project": j.label, "task": j.task, "state": j.state, "machine": j.machine_name, "machine_id": j.machine,
                      "minutes": round((now - (j.taken or j.created)) / 60, 1)} for j in self.jobs.values()]
             seen = dict(self.seen)
         machines = []

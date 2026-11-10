@@ -1166,4 +1166,74 @@ assert server.stop_beta() == 3 and server.beta_queue() == [], "stopping unqueues
 assert {server.beta_mod.load(server.MESHES / m)["status"] for m in ("aaaaaaaaaaa1", "aaaaaaaaaaa2", "aaaaaaaaaaa3")} == {"stopped"}
 server.beta_mod.videos, server.beta_mod.find = videos, find
 print("beta queue OK")
+
+# --- finding beta and size on machines that connect here, when this server meshes nothing itself ------------------------
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+
+mid, pid = "beefbeefbeef", "cafecafecafe"
+md = server.MESHES / mid
+md.mkdir(parents=True)
+(md / "mesh.glb").write_bytes(b"glb")
+(md / "texture.png").write_bytes(b"png")
+(md / "cameras.json").write_text(json.dumps([{"name": "yt_aaaaaaaa_000.jpg"}, {"name": "p.jpg"}]))
+for name in ("yt_aaaaaaaa_000.jpg", "p.jpg"):
+    (server.PROJECTS / pid / "photos").mkdir(parents=True, exist_ok=True)
+    (server.PROJECTS / pid / "photos" / name).write_bytes(b"jpg")
+(server.PROJECTS / pid / "masks").mkdir()
+(server.PROJECTS / pid / "masks" / "p.jpg.png").write_bytes(b"mask")
+server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES(?,?,?,?,?)", mid, "Gamma", "mesh.glb", f"project:{pid}", time.time(),
+         write=True)
+url = "https://www.youtube.com/watch?v=aaaaaaaaaaa"
+sent = []
+
+
+def fake_task(kind, files, args, label, log):
+    sent.append((kind, files, args))
+    back = pathlib.Path(tempfile.mkdtemp())
+    (back / "out").mkdir()
+    (back / "out" / ("beta.json" if kind == "beta" else "scale.json")).write_text(json.dumps({"status": "done", "videos": []}))
+    (back / "out" / "page.html").write_text("<script>")
+    return {"mesh": "", "files": []}, back
+
+
+saved = (server.MACHINES.task, server.MACHINES.connected, server.beta_mod.videos, server._local_meshing, server._executor, server.queue_job)
+server.MACHINES.task = fake_task
+server.beta_mod.videos = lambda d: {url: {"tag": "aaaaaaaa", "title": "t", "uploader": "u", "frames": {"yt_aaaaaaaa_000.jpg": {}}}}
+server._local_meshing, server._executor = False, server.MACHINES
+assert server.offloading()
+server.queue_beta(mid)
+server.run_beta(mid)
+rec = server.beta_mod.load(md)
+assert rec["status"] == "queued" and rec["waiting_videos"] == [url] and not sent, "its video isn't here: it waits for it"
+junk = pathlib.Path(tempfile.mkdtemp()) / "v.mp4"
+junk.write_bytes(b"not really a video")
+server.youtube_mod.cache_put(url, junk)
+server.run_beta(mid)
+kind, files, args = sent[-1]
+assert kind == "beta" and {"mesh/mesh.glb", "mesh/cameras.json", "photos/yt_aaaaaaaa_000.jpg", "videos/aaaaaaaaaaa.mp4"} <= set(files), files
+assert "mesh/texture.png" not in files and "photos/p.jpg" not in files, "only the mesh, and the video frames placed in it"
+assert server.beta_mod.load(md)["status"] == "done" and not (md / "page.html").exists(), "only what the job may make comes back"
+server.run_scale(mid)
+kind, files, args = sent[-1]
+assert kind == "scale" and "masks/p.jpg.png" in files and set(args) == {"climbs", "videos", "known"} and server.scale_mod.load(md)["status"] == "done"
+
+
+def no_machine(*a, **k):
+    raise server.compute.ComputeUnavailable("no machine has asked this server for work in the last 2 minutes")
+
+
+server.MACHINES.task = no_machine
+server.run_scale(mid)
+assert server.scale_mod.load(md)["status"] == server.MACHINE_WAIT
+queued = []
+server.queue_job = queued.append
+server.MACHINES.connected = lambda: True
+server.requeue_waiting_scale()
+assert server.scale_mod.load(md)["status"] == "queued" and queued == [{"type": "scale", "mid": mid}], "again once one's there"
+server.run_beta(mid)
+assert server.beta_mod.load(md)["machine_wait"] > time.time() and not server.beta_ready(mid), "beta waits a while"
+(server.MACHINES.task, server.MACHINES.connected, server.beta_mod.videos, server._local_meshing, server._executor, server.queue_job) = saved
+shutil.rmtree(md)
+print("beta and size on machines OK")
 print("ALL CAMPAIGN TESTS PASSED")

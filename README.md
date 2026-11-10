@@ -492,7 +492,10 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   `deploy/bouldermesh-worker.service` runs it under systemd. Its other options: `--gpu auto|all|cdi|none` (`cdi` for
   a host whose GPU is a CDI device), `--docker-arg=--memory=64g` (repeatable), and `--image-prefix ghcr.io/<owner>/`
   to refuse any other image, should the server be taken over. The public setup's Caddy passes `/worker/` to a port that
-  answers only that (`WORKER_PORT`, 47614); elsewhere, publish that port to where the machines are.
+  answers only that (`WORKER_PORT`, 47614); elsewhere, publish that port to where the machines are. With
+  *Reconstructions at once on this server* at 0, finding beta and finding a mesh's size go to these machines too: a
+  mesh's files, its placed photos and masks, and for beta its videos from the cache, cut to the 150 s it looks at
+  (they never ask YouTube themselves). One waiting for a machine is tried again once one is there.
 
 Machines run the same Docker image as this server, which they pull from a registry. `deploy/build.sh` names the image
 for GitHub's by its commit (`ghcr.io/<owner>/bouldermesh:<commit>`, or `REGISTRY` for another), and `deploy/ship.sh`

@@ -686,7 +686,13 @@ reports, and its container is ended. Jobs are kept only in memory, as a restart 
 anyway and they carry on as new jobs. The script runs jobs as its own user, so their files are its to delete, with no
 capabilities, and only the server's image (`--image-prefix` makes sure of that); the server only ever names an image,
 never a command. With *Reconstructions at once on this server* at 0, a server that's too small to mesh (the public one:
-2 cores, 4 GB) harvests and keeps everything, and every mesh is made elsewhere.
+2 cores, 4 GB) harvests and keeps everything, and every mesh is made elsewhere. So is what's heavy after meshing: finding
+beta (a pose model on 300 frames a video) and a mesh's size (the same model on its photos, and a detector for bottles),
+which the same machines run as remote_job.py's other jobs, from the mesh's own files (not its textures), the photos
+placed in it and their masks, and for beta the mesh's videos from the cache, cut to the first 150 s, which is all it
+looks at, without re-encoding: the job's YouTube is set to never ask YouTube, so a video that isn't there fails it
+rather than having hal ask for it. What they make comes back by name (beta.json, beta_poses.json, beta_<tag>.jpg;
+scale.json, poses.json, scale_people.json, objects.json), and nothing else.
 
 What's specific to a provider is only starting and ending machines, so the rest works with any machine
 with Docker that SSH reaches. Adding GCP would be another class like `AWSProvider`.

@@ -30,6 +30,7 @@ import shutil
 import signal
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 from email.parser import BytesParser
@@ -1704,7 +1705,10 @@ def run_beta(mid: str) -> None:
         with open(mesh_dir / "beta.log", "a") as f:
             f.write(line.rstrip() + "\n")
     try:
-        beta_mod.find(mesh_dir, PROJECTS / pid / "photos", log)
+        if offloading():
+            remote_beta(mid, pid, log)
+        else:
+            beta_mod.find(mesh_dir, PROJECTS / pid / "photos", log)
         if (mesh_dir / beta_mod.POSES_FILE).exists():
             queue_scale(mid)    # the climbers' reach is checked against the size there
     except youtube_mod.Refused:     # it says it's waiting, and stays queued: for volunteers to fetch its videos, if any can
@@ -1712,11 +1716,15 @@ def run_beta(mid: str) -> None:
         rec = beta_mod.load(mesh_dir) or {}
         done = {v["url"] for v in rec.get("videos", [])}
         missing = [u for u in beta_mod.videos(mesh_dir) if u not in done and not youtube_mod.cached(u)]
-        if want and missing:
-            for u in missing:
+        if missing:     # it waits for them, which volunteers, if any, are asked for
+            for u in missing if want else []:
                 want(u)
-            beta_mod.save(mesh_dir, {**rec, "waiting_videos": missing})
-            log(f"beta: {len(missing)} video(s) asked of volunteers")
+            beta_mod.save(mesh_dir, {**rec, "status": "queued", "progress": None, "waiting_videos": missing})
+            log(f"beta: {len(missing)} video(s) " + ("asked of volunteers" if want else "to wait for: there are no volunteers to ask"))
+    except compute.ComputeUnavailable as e:     # tried again in a while
+        log(f"beta: waiting for a machine to find it on: {e}")
+        beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "queued", "progress": None, "resume": True,
+                                 "machine_wait": time.time() + COMPUTE_WAIT})
     except Cancelled:
         beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "stopped", "progress": None})
     except Exception as e:
@@ -1746,11 +1754,17 @@ def queue_beta(mid: str, ahead: bool = False) -> bool:
 
 def beta_ready(mid: str) -> bool:
     """Whether a queued mesh's beta can be looked for now: the videos it waited for are all in the cache, or this
-    server may fetch videos from YouTube now (it isn't refusing, and they aren't left to volunteers)."""
-    waiting = (beta_mod.load(MESHES / mid) or {}).get("waiting_videos") or []
+    server may fetch videos from YouTube now (it isn't refusing, and they aren't left to volunteers), or, where they
+    are, it hasn't asked volunteers for any yet. Not while it waits for a machine to find it on."""
+    rec = beta_mod.load(MESHES / mid) or {}
+    if rec.get("machine_wait", 0) > time.time():
+        return False
+    waiting = rec.get("waiting_videos") or []
     if waiting and all(youtube_mod.cached(u) for u in waiting):
         return True
-    return not youtube_mod.refused() and youtube_mod.via != "volunteers"
+    if youtube_mod.via == "volunteers":
+        return not waiting
+    return not youtube_mod.refused()
 
 
 def beta_queue() -> list[str]:
@@ -1794,6 +1808,10 @@ def beta_worker() -> None:
     while True:
         _beta_wake.wait(timeout=60)
         _beta_wake.clear()
+        try:
+            requeue_waiting_scale()
+        except Exception as e:  # never let the thread die
+            print(f"scale requeue error: {e!r}", flush=True)
         while not _stopping:
             queued = [mid for mid in beta_queue() if beta_ready(mid)]
             if not queued:
@@ -1923,13 +1941,109 @@ def run_scale(mid: str) -> None:
     climbs = [json.loads(r["data"]) for r in q("SELECT c.data FROM mesh_links l JOIN climbs c ON c.id=l.climb_id WHERE l.mesh_id=?", mid)
               or q("SELECT c.data FROM meshes m JOIN climbs c ON c.area_path=m.boulder WHERE m.id=?", mid)]   # a boulder's: all on it
     try:
-        scale_mod.estimate(mesh_dir, PROJECTS / pid / "photos", PROJECTS / pid / "masks", climbs, mesh_videos(mid), log,
-                           known=known_object(pid))
+        if offloading():
+            remote_scale(mid, pid, climbs, log)
+        else:
+            scale_mod.estimate(mesh_dir, PROJECTS / pid / "photos", PROJECTS / pid / "masks", climbs, mesh_videos(mid), log,
+                               known=known_object(pid))
+    except compute.ComputeUnavailable as e:     # queued again once a machine is there (beta_worker)
+        log(f"scale: waiting for a machine to find it on: {e}")
+        scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": MACHINE_WAIT, "progress": None})
     except Cancelled:
         scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": "stopped", "progress": None})
     except Exception as e:
         log(f"FAILED: {type(e).__name__}: {e}")
         scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": f"failed: {type(e).__name__}: {e}", "progress": None})
+
+
+# ------------------------------------------------------------------ beta and size, on machines that connect here
+MESH_INPUT = {".glb", ".ply", ".json", ".bin"}   # what of a mesh's folder its beta and size need: not textures
+MACHINE_WAIT = "waiting for a machine"
+
+
+def offloading() -> bool:
+    """Whether finding beta and size goes to the machines that connect here too: when this server meshes nothing itself."""
+    return not _local_meshing and _executor is MACHINES
+
+
+def mesh_inputs(mid: str, pid: str, photos: list[str]) -> dict[str, Path]:
+    """A mesh's own files, and those of its project's photos and people masks named, for a job (pullwork.Board.task)."""
+    out = {f"mesh/{f.name}": f for f in (MESHES / mid).iterdir()
+           if f.is_file() and f.suffix in MESH_INPUT and f.name != meshclean.CLEANED_FILE}
+    for name in photos:
+        for kind, f in (("photos", PROJECTS / pid / "photos" / name), ("masks", PROJECTS / pid / "masks" / f"{name}.png")):
+            if f.is_file():
+                out[f"{kind}/{f.name}"] = f
+    return out
+
+
+def take_made(back: Path, mid: str, kind: str) -> list[str]:
+    """Move what a job made (remote_job.MADE) into the mesh's folder."""
+    import remote_job
+    moved = []
+    for f in (back / "out").iterdir() if (back / "out").is_dir() else []:
+        if f.is_file() and remote_job.MADE[kind].fullmatch(f.name):
+            os.replace(f, MESHES / mid / f.name)
+            moved.append(f.name)
+    return moved
+
+
+def remote_beta(mid: str, pid: str, log) -> None:
+    """beta_mod.find(), on a machine that connects here: with its videos from the cache, cut to the seconds it looks at.
+
+    Raises:
+        youtube_mod.Refused: some of its videos aren't in the cache, for volunteers to fetch (as run_beta() does).
+    """
+    mesh_dir = MESHES / mid
+    found = beta_mod.videos(mesh_dir)
+    rec = beta_mod.load(mesh_dir) or {}
+    done = {v["url"] for v in rec.get("videos", []) if rec.get("resume") and v.get("status") in ("done", "no holds found")}
+    todo = [u for u in found if u not in done]
+    if any(not youtube_mod.cached(u) for u in todo):
+        raise youtube_mod.Refused({"since": time.time(), "until": time.time() + 3600, "level": 0, "volunteers": True,
+                                   "error": "some of its videos aren't here yet"})
+    stage = Path(tempfile.mkdtemp(prefix="bm-beta-", dir=DATA / "compute"))
+    try:
+        files = mesh_inputs(mid, pid, sorted({n for v in found.values() for n in v["frames"]}))
+        for url in todo:
+            src = youtube_mod.cached(url)
+            dst = stage / f"{youtube_mod.video_id(url) or src.stem}{src.suffix}"
+            try:
+                jobctl.run(["ffmpeg", "-loglevel", "error", "-y", "-t", str(beta_mod.MAX_SECONDS), "-i", str(src), "-an", "-c", "copy",
+                            str(dst)], timeout=600)
+            except Exception:
+                shutil.copy(src, dst)
+            files[f"videos/{dst.name}"] = dst
+        beta_mod.save(mesh_dir, {**rec, "status": "running", "progress": "on a machine that connects here", "started": time.time()})
+        _, back = MACHINES.task("beta", files, {}, f"beta: {mid}", log)
+        try:
+            log(f"beta: back from the machine: {', '.join(take_made(back, mid, 'beta')) or 'nothing'}")
+        finally:
+            shutil.rmtree(back, ignore_errors=True)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
+def remote_scale(mid: str, pid: str, climbs: list[dict], log) -> None:
+    """scale_mod.estimate(), on a machine that connects here."""
+    mesh_dir = MESHES / mid
+    names = [c["name"] for c in json.loads((mesh_dir / "cameras.json").read_text())]
+    scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": "running", "progress": "on a machine that connects here"})
+    _, back = MACHINES.task("scale", mesh_inputs(mid, pid, names), {"climbs": climbs, "videos": mesh_videos(mid), "known": known_object(pid)},
+                            f"size: {mid}", log)
+    try:
+        log(f"scale: back from the machine: {', '.join(take_made(back, mid, 'scale')) or 'nothing'}")
+    finally:
+        shutil.rmtree(back, ignore_errors=True)
+
+
+def requeue_waiting_scale() -> None:
+    """Queue again the sizes that waited for a machine, once one is there."""
+    if not (offloading() and MACHINES.connected()):
+        return
+    for d in MESHES.iterdir() if MESHES.exists() else []:
+        if (scale_mod.load(d) or {}).get("status") == MACHINE_WAIT:
+            queue_scale(d.name)
 
 
 def run_retexture(mid: str) -> None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -62,7 +63,7 @@ if args[:1] == ["run"]:
     name = args[args.index("--name") + 1]
     mounts = dict(reversed(args[i + 1].rsplit(":", 1)) for i, a in enumerate(args) if a == "-v")
     open(os.path.join(state, name + ".pid"), "w").write(str(os.getpid()))
-    os.environ["DATA_DIR"] = mounts["/data"]
+    os.environ["DATA_DIR"], os.environ["JOB"] = mounts["/data"], mounts["/job"]
     if os.environ.get("FAKE_JOB"):
         os.execvp("sh", ["sh", "-c", os.environ["FAKE_JOB"]])
     i = args.index("/app/backend/remote_job.py")
@@ -268,6 +269,26 @@ assert any("hal (GPU) took it" in line for line in logged) and any("stopped befo
 assert any("other was revoked" in line for line in logged), logged
 print("quiet, given back, revoked and bad results OK")
 
+# --- other jobs: finding beta, or size, from a mesh's files, and what they made coming back ---------------------------------
+src = TMP / "task-in"
+src.mkdir()
+(src / "cameras.json").write_text('[{"name": "a.jpg"}]')
+logged = []
+got = in_thread(board.task, "beta", {"mesh/cameras.json": src / "cameras.json"}, {"why": "test"}, "beta: m1", logged.append)
+time.sleep(0.5)
+assert "wait" in board.work(board.machine(hal["token"]), ip, {"version": 1}), "a script too old for it isn't given it"
+made = 'mkdir -p "$JOB/out" && cp "$JOB/mesh/cameras.json" "$JOB/out/beta.json" && grep -q test "$JOB/task.json" && echo \'@@result {"mesh": "", "files": ["beta.json"]}\''
+r = worker(hal["token"], "--once", env={**ENV, "FAKE_JOB": made})
+got["thread"].join(30)
+assert "value" in got, (got, r.stdout, r.stderr, logged)
+result, back = got["value"]
+assert result["files"] == ["beta.json"] and (back / "out" / "beta.json").read_text() == '[{"name": "a.jpg"}]', result
+shutil.rmtree(back)
+run = [line for line in (fake / "calls").read_text().splitlines() if line.startswith("run ")][-1]
+assert "remote_job.py /job --task beta" in run, run
+assert not board.jobs and not list((TMP / "data" / "compute" / "jobs").glob("*"))
+print("other jobs OK")
+
 # --- a machine that won't run the image asked for gives the job back, and stops -------------------------------------------
 p = project("prefix")
 got = in_thread(board.reconstruct, p / "photos", p / "work", TMP / "out6", print)
@@ -280,4 +301,31 @@ ctl.stop()
 got["thread"].join(10)
 ctl.begin()
 print("image prefix OK")
+
+# --- remote_job.py's other jobs, here: what they make in the mesh's folder goes in out/, and nothing else -----------------
+import contextlib  # noqa: E402
+
+import beta  # noqa: E402
+import remote_job  # noqa: E402
+import scale  # noqa: E402
+from climbs import youtube  # noqa: E402
+
+job = TMP / "remote-job"
+(job / "mesh").mkdir(parents=True)
+(job / "photos").mkdir()
+(job / "task.json").write_text(json.dumps({"climbs": [{"name": "Alpha"}], "videos": {}, "known": None}))
+seen = {}
+beta.find = lambda mesh, photos, log: [(mesh / "beta.json").write_text("{}"), (mesh / "beta_0123abcd.jpg").write_bytes(b"j"),
+                                       (mesh / "notes.html").write_text("x"), seen.update(via=youtube.via, cache=youtube.VIDEO_CACHE)]
+scale.estimate = lambda mesh, photos, masks, climbs, videos, log, known=None: [(mesh / "scale.json").write_text("{}"),
+                                                                              seen.update(climbs=climbs, masks=masks)]
+printed = io.StringIO()
+with contextlib.redirect_stdout(printed):
+    assert remote_job.task(job, "beta", lambda line: None) == 0
+    assert remote_job.task(job, "scale", lambda line: None) == 0
+assert sorted(f.name for f in (job / "out").iterdir()) == ["beta.json", "beta_0123abcd.jpg", "scale.json"]
+assert '"files": ["beta.json", "beta_0123abcd.jpg"]' in printed.getvalue() and '"files": ["scale.json"]' in printed.getvalue()
+assert seen == {"via": "volunteers", "cache": job / "videos", "climbs": [{"name": "Alpha"}], "masks": None}, "never YouTube from there"
+youtube.via = "volunteers_when_refused"
+print("remote_job's other jobs OK")
 print("ALL MACHINES TESTS PASSED")
