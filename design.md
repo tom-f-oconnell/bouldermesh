@@ -162,7 +162,7 @@ then, up to 80. It needs a GPU unless `VGGT_CPU=1`. Its weights (4.7 GB) downloa
 the first time. For it, the image's torch is now the CUDA build (cu126), which takes the image from 2.5 to 10.4 GB. So
 `deploy/build.sh` builds two images: the server's, which meshes nothing itself, keeps torch's CPU build, while hal and
 the machines that mesh run the GPU one. The server pulls its image from the registry, moving only changed layers,
-rather than being sent the whole image each time. Its disk (75 GB, data capped at 47.5 GB) couldn't hold two 10 GB
+rather than being sent the whole image each time. Its disk (75 GB, data capped at 60 GB) couldn't hold two 10 GB
 builds while shipping one over another.
 `VGGT_FALLBACK=0` turns it off. VGGT-1B's weights are licensed for non-commercial use only, which this hobby project is.
 
@@ -563,11 +563,16 @@ what's there, and what comes later rebuilds it as before.
 **Room on the public server.** Its disk is 75 GB, with about 59 free. Of hal's 97 GB of projects on Nov 10, 2026, 92
 were photos the filter rejected (kept only to put one back by hand), 9.4 the photos themselves (3 for the projects of
 current meshes), 4.4 work folders kept by failed climbs (which a server meshing elsewhere never has) and 0.1 masks. So
-the public setup caps its data, at 47.5 GB: of the disk's 77 GB that its user may fill (80.3 less what ext4 keeps for
-root), the system took 1.4 and Docker's images 7.1 (the 2.5 GB image and 15 older builds' last layers, before ship.sh
-deleted those), and from 28754f6 on the image is 10.4 GB unpacked, plus its 4.4 GB of compressed layers, which Docker's
-containerd store keeps too: 14.8 GB, or 17 if the server counts it as it counts today's (4.1 for hal's 2.5). That leaves
-53.7 GB, or 51.4, and 47.5 is the most in steps of 2.5 that leaves 2.5 GB free either way. Harvesting climbs is what fills it, so over the cap volunteers are given nothing
+the public setup caps its data, at 60 GB to start: the most, in steps of 2.5, that leaves 2.5 GB of the disk free. GB
+here, as in the cap, the admin page and `df -h`, are 2^30 bytes. Measured on Nov 10, 2026: of the 74.8 GB disk, an
+ordinary user may fill 71.7 (`df`'s used and available; ext4 keeps the rest for root), and the system took 1.3. Docker
+counts a build of the server's image (torch's CPU build, since 6003868) as 3.8 GB, and each build adds about 0.9 GB of
+its own over the one before. The server keeps the build it runs and the one before it (ship.sh deletes the rest): 4.7
+GB if they share their base, or 7.6 if they share nothing, as after a change low in the Dockerfile. That leaves 65.7 GB
+for data and headroom, or 62.8, and 60 is the most that leaves 2.5 either way. (Until 6003868 the server was to run the
+10.4 GB GPU build, which Docker's containerd store keeps with its 4.4 GB of compressed layers: that left 49.9 GB, or 47.8
+counted as the server counts its builds, for a cap of 45. 47.5 was chosen then, from sizes taken as 10^9 bytes, which
+left too little in the second case.) Harvesting climbs is what fills it, so over the cap volunteers are given nothing
 and areas take no new climb, paused rather than stopped, until room is made, which deleting the rejected photos mostly
 does. hal's photos and masks go to it once (ship.sh's PHOTOS=1), as rebuilding, retexturing, sizes and boulders' own
 meshes need them.
