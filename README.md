@@ -565,6 +565,9 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     On the admin page's port: GET /api/admin/state · POST /api/admin/settings · POST /api/admin/secrets
     POST /api/admin/actions/{test,end-nodes,retexture}
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
+    POST /api/client-errors {kind, message, mesh?, file?, page?, source?}   what failed in a visitor's browser, from anyone
+                                                        viewing the site (not other sites' pages; 8 KB, 20 in 10 min an address):
+                                                        kept in data/client-errors.jsonl; `python3 cli.py client-errors` lists them
 
 ## Development
 
