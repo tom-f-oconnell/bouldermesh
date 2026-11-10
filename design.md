@@ -757,7 +757,9 @@ lost and the climb waits, as for a lost SSH machine; a climb stopped on the serv
 reports, and its container is ended. Jobs are kept only in memory, as a restart of the server ends the climbs' threads
 anyway and they carry on as new jobs. The script runs jobs as its own user, so their files are its to delete, with no
 capabilities, and only the server's image (`--image-prefix` makes sure of that); the server only ever names an image,
-never a command. With *Reconstructions at once on this server* at 0, a server that's too small to mesh (the public one:
+never a command. Machines' tokens are kept as they are, not only hashed as volunteers' are, so that the admin page can
+show a machine's command again: they're few, and the database is readable only by the server's user, though its
+nightly backup holds them too. With *Reconstructions at once on this server* at 0, a server that's too small to mesh (the public one:
 2 cores, 4 GB) harvests and keeps everything, and every mesh is made elsewhere. So is what's heavy after meshing: finding
 beta (a pose model on 300 frames a video) and a mesh's size (the same model on its photos, and a detector for bottles),
 which the same machines run as remote_job.py's other jobs, from the mesh's own files (not its textures), the photos

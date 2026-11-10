@@ -9,7 +9,8 @@ an SSH machine, and a climb no machine is there to take, or whose machine goes q
 
 Files go in parts, under Cloudflare's 100 MB a request, and carry on after a dropped connection. Like volunteers.py,
 it's served on a port of its own (WORKER_PORT) that answers only /worker/..., for the proxy in front to pass on.
-Machines and their tokens (hashed) are kept in a database of their own. Jobs are kept only in memory: a restart here
+Machines are kept in a database of their own, readable only by the server's user: their tokens' hashes, to know them by,
+and the tokens themselves, so that the admin page can show a machine's command again. Jobs are kept only in memory: a restart here
 ends them anyway, the climbs carry on after it as new jobs, and a machine still running an old one is told it's gone.
 """
 from __future__ import annotations
@@ -17,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 import secrets
 import shutil
@@ -92,8 +94,11 @@ class Board:
             con.executescript("""
                 CREATE TABLE IF NOT EXISTS machines(id TEXT PRIMARY KEY, name TEXT, token_hash TEXT UNIQUE, created REAL,
                   revoked REAL, last_seen REAL, last_ip TEXT, client TEXT, gpu INTEGER, cpus REAL, done INTEGER DEFAULT 0,
-                  failed INTEGER DEFAULT 0);
+                  failed INTEGER DEFAULT 0, token TEXT);
             """)
+            if "token" not in {r[1] for r in con.execute("PRAGMA table_info(machines)")}:   # kept since 2026-11-10
+                con.execute("ALTER TABLE machines ADD COLUMN token TEXT")
+        os.chmod(db_path, 0o600)
 
     def db(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.db_path, timeout=30)
@@ -112,13 +117,19 @@ class Board:
         if not name:
             raise ValueError("give the machine a name")
         mid, token = secrets.token_hex(4), "bmw_" + secrets.token_urlsafe(32)
-        self.q("INSERT INTO machines(id,name,token_hash,created) VALUES(?,?,?,?)", mid, name,
-               hashlib.sha256(token.encode()).hexdigest(), time.time())
+        self.q("INSERT INTO machines(id,name,token_hash,created,token) VALUES(?,?,?,?,?)", mid, name,
+               hashlib.sha256(token.encode()).hexdigest(), time.time(), token)
         return {"id": mid, "name": name, "token": token}
+
+    def token(self, mid: str) -> dict | None:
+        """A machine's name and token, to show its command again: None for one unknown, and token None for one revoked,
+        or added before tokens were kept."""
+        m = self.q("SELECT id, name, token, revoked FROM machines WHERE id=?", mid, one=True)
+        return m and {"id": m["id"], "name": m["name"], "token": None if m["revoked"] else m["token"]}
 
     def revoke(self, mid: str) -> None:
         """Its token stops working at once, and what it was doing goes to another machine."""
-        self.q("UPDATE machines SET revoked=? WHERE id=?", time.time(), mid)
+        self.q("UPDATE machines SET revoked=?, token=NULL WHERE id=?", time.time(), mid)
         with self.cond:
             self.seen.pop(mid, None)
             for j in self.jobs.values():
@@ -398,6 +409,7 @@ class Board:
             else:
                 status = "not connected"
             machines.append({"id": m["id"], "name": m["name"], "status": status, "last_seen": m["last_seen"], "address": m["last_ip"],
+                             "token_kept": bool(m["token"]),
                              "client": m["client"], "gpu": bool(m["gpu"]), "cpus": m["cpus"], "done": m["done"], "failed": m["failed"],
                              "job": doing})
         return {"machines": machines, "jobs": jobs, "connected": sum(m["status"] in ("working", "waiting for work") for m in machines)}

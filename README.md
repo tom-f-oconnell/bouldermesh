@@ -525,7 +525,8 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   restart are ended. Its credentials need EC2 (run, describe and terminate instances, security groups)
   and SSM's GetParameter. *Test the connection* checks them without starting anything.
 - **Machines that connect here for work**: for any this server can't reach, such as one behind a lab's firewall. Add one
-  under *Machines* (shown with this choice), which shows its token once, and on the machine, which needs Python 3.9,
+  under *Machines* (shown with this choice), which shows the command to run on it with its token (clicking the
+  machine in the list shows it again), and on the machine, which needs Python 3.9,
   Docker you may use, and NVIDIA's container toolkit for the GPU, run:
 
       curl -O https://<site>/worker/bouldermesh_worker.py      # or worker/bouldermesh_worker.py in this repository

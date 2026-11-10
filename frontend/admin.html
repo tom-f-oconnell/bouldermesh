@@ -30,6 +30,7 @@
   section.alert{border-color:var(--warn)}
   code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}
   a{color:var(--acc);overflow-wrap:anywhere}
+  tr.mach{cursor:pointer} tr.mach:hover td{background:var(--line)}
   #msg{position:fixed;bottom:14px;right:14px;background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:8px;display:none;max-width:420px}
   .aws,.ssh,.pull{display:none}
   body.p-aws .aws, body.p-ssh .ssh, body.p-pull .pull{display:block}
@@ -184,7 +185,7 @@ function render(s){
     : '<span class="warn">Not taking machines here: WORKER_PORT isn\'t set (README, "Running reconstructions elsewhere").</span>')
     + (s.compute.local_meshing ? '' : ' This server meshes nothing itself: climbs wait for a machine.');
   $('#mach-list').innerHTML = ms.machines.length ? `<table><tr><th>Machine</th><th>Now</th><th>Last seen</th><th>Address</th><th>Done / failed</th><th></th></tr>${
-    ms.machines.map(m => `<tr><td>${esc(m.name)}${m.client ? `<div class="note">${esc(m.client)}${m.gpu ? ', GPU' : ''}${m.cpus ? `, ${m.cpus} cores` : ''}</div>` : ''}</td>
+    ms.machines.map(m => `<tr class="mach" data-mshow="${esc(m.id)}" title="Shows the command to run on it again"><td>${esc(m.name)}${m.client ? `<div class="note">${esc(m.client)}${m.gpu ? ', GPU' : ''}${m.cpus ? `, ${m.cpus} cores` : ''}</div>` : ''}</td>
       <td class="${m.status === 'working' ? 'ok' : m.status === 'revoked' ? 'bad' : ''}">${esc(m.status)}${m.job ? ` (${esc(m.job.project)}, ${m.job.minutes} min)` : ''}</td>
       <td>${seen(m.last_seen)}</td><td>${esc(m.address || '')}</td><td>${m.done} / ${m.failed}</td><td>${m.status === 'revoked' ? '' : `<button class="danger" data-mrevoke="${esc(m.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
     : '<div class="note">No machines yet.</div>';
@@ -261,16 +262,25 @@ $('#savecreds').onclick = async () => {
 };
 $('#test').onclick = async () => { msg('Testing…', 60000); try { msg((await call('/api/admin/actions/test', {})).result, 12000); } catch (e) { msg(e.message, 12000); } };
 $('#end').onclick = async () => { if (!confirm('End every cloud machine this server started? Jobs on them wait and run again.')) return; try { msg((await call('/api/admin/actions/end-nodes', {})).result); refresh(); } catch (e) { msg(e.message, 8000); } };
+function showMachine(r){
+  $('#mach-new').innerHTML = `<div class="note ${r.token ? 'ok' : 'warn'}">${esc(r.result)}</div><div class="note">Download the script from <a href="${esc(r.download)}" download="bouldermesh_worker.py">${esc(r.download)}</a> (or use worker/bouldermesh_worker.py in the repository), then run:</div><textarea readonly>${esc(r.command)}</textarea>`
+      + `<div class="note">Add <code>--cpus N</code> to limit the cores its jobs use, <code>--image-prefix ${esc(r.image_prefix || 'ghcr.io/you/bouldermesh:')}</code> to run only this server's images, and <code>--data DIR</code> to put its jobs' photos and results, and the models they download (a few GB), in DIR rather than in <code>~/.bouldermesh-worker</code>, such as on a bigger disk. It remembers them all, with the server and token. Run it once with <code>--check</code> to see the server knows it and there's room for jobs: it stops, saying what's short, rather than fill a disk partway through one.</div>`;
+  $('#mach-new').scrollIntoView({ block: 'nearest' });
+}
 $('#mach-add').onclick = async () => {
   try {
     const r = await call('/api/admin/actions/machine-add', { name: $('#mach-name').value });
     $('#mach-name').value = '';
-    $('#mach-new').innerHTML = `<div class="note ok">${esc(r.result)}</div><div class="note">Download the script from <a href="${esc(r.download)}" download="bouldermesh_worker.py">${esc(r.download)}</a> (or use worker/bouldermesh_worker.py in the repository), then run:</div><textarea readonly>${esc(r.command)}</textarea>`
-      + `<div class="note">Add <code>--cpus N</code> to limit the cores its jobs use, <code>--image-prefix ${esc(r.image_prefix || 'ghcr.io/you/bouldermesh:')}</code> to run only this server's images, and <code>--data DIR</code> to put its jobs' photos and results, and the models they download (a few GB), in DIR rather than in <code>~/.bouldermesh-worker</code>, such as on a bigger disk. It remembers them all, with the server and token. Run it once with <code>--check</code> to see the server knows it and there's room for jobs: it stops, saying what's short, rather than fill a disk partway through one.</div>`;
+    showMachine(r);
     msg('Added ' + r.name); refresh();
   } catch (e) { msg(e.message, 8000); }
 };
 $('#mach-list').addEventListener('click', async ev => {
+  const row = ev.target.closest('tr[data-mshow]');
+  if (row && !ev.target.dataset.mrevoke) {
+    try { showMachine(await call('/api/admin/actions/machine-show', { id: row.dataset.mshow })); } catch (e) { msg(e.message, 8000); }
+    return;
+  }
   const id = ev.target.dataset.mrevoke;
   if (!id || !confirm('Revoke this machine? Its token stops working at once, and a climb it was meshing waits for another.')) return;
   try { msg((await call('/api/admin/actions/machine-revoke', { id })).result); refresh(); } catch (e) { msg(e.message, 8000); }

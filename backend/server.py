@@ -2552,13 +2552,26 @@ MACHINES = pullwork.Board(DATA / "compute" / "machines.sqlite", DATA / "compute"
                           jobctl)
 
 
-def admin_machine_add(body: dict) -> dict:
-    m = MACHINES.add(body.get("name") or "")
+def machine_command(m: dict, result: str) -> dict:
+    """What the admin page shows for a machine: the command to run on it, with its token, and where to get the script."""
     url = WORKER_URL or "https://<this site>"
     image = compute_settings()["compute.image"]
-    return {**m, "result": f"added {m['name']}: run the command below on it, which has its token (shown only now)",
-            "command": f"python3 bouldermesh_worker.py --server {url} --token {m['token']}",
+    return {**m, "result": result, "command": f"python3 bouldermesh_worker.py --server {url} --token {m['token'] or 'bmw_...'}",
             "download": f"{url}/worker/bouldermesh_worker.py", "image_prefix": image.rsplit(":", 1)[0] + ":" if image else None}
+
+
+def admin_machine_add(body: dict) -> dict:
+    m = MACHINES.add(body.get("name") or "")
+    return machine_command(m, f"added {m['name']}: run the command below on it, which has its token (keep it private)")
+
+
+def admin_machine_show(body: dict) -> dict:
+    m = MACHINES.token(str(body.get("id") or ""))
+    if not m:
+        raise ValueError("no such machine")
+    return machine_command(m, f"{m['name']}: run the command below on it, which has its token (keep it private)" if m["token"] else
+                           f"{m['name']}: its token wasn't kept (it was added before tokens were, or it's revoked): revoke it and "
+                           "add it again for a command with one")
 
 
 def admin_machine_revoke(body: dict) -> dict:
@@ -3786,7 +3799,7 @@ def main() -> None:
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
-                                       "volunteers-cancel": admin_volunteers_cancel, "machine-add": admin_machine_add,
+                                       "volunteers-cancel": admin_volunteers_cancel, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
                                        "machine-revoke": admin_machine_revoke, "clear-rejected": admin_clear_rejected,
                                        "measure": admin_measure}),
                     os.environ.get("ADMIN_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), ADMIN_PORT)

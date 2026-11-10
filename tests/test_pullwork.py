@@ -153,6 +153,11 @@ pullwork.POLL = 0.3     # the wait for a machine to turn up, after a restart her
 # --- machines and their tokens -----------------------------------------------------------------------------------------
 hal = board.add("hal")
 assert hal["token"].startswith("bmw_") and board.machine(hal["token"])["name"] == "hal" and board.machine("bmw_nope") is None
+assert board.token(hal["id"]) == {"id": hal["id"], "name": "hal", "token": hal["token"]}, "kept, to show its command again"
+assert oct((TMP / "data" / "compute" / "machines.sqlite").stat().st_mode)[-3:] == "600" and board.token("nope") is None
+gone = board.add("gone")
+board.revoke(gone["id"])
+assert board.token(gone["id"])["token"] is None and not board.q("SELECT token FROM machines WHERE id=?", gone["id"], one=True)["token"]
 try:
     board.add("  ")
     raise AssertionError("a machine needs a name")
