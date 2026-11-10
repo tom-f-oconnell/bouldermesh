@@ -1023,6 +1023,29 @@ assert [x["name"] for x in state["workers"]] == ["this server", "remote 1", "rem
 server.settings().update({"compute.provider": "none"})
 server.configure_workers()
 assert [x["name"] for x in server.compute_state()["workers"]] == ["this server"] and server.compute_state()["pool"] is None
+# machines that connect here for work (pullwork.py): workers for them, and none to start; with none meshing here, a
+# reconstruction asked for here goes to them too, and waits while none has asked for work
+server.pullwork.POLL = 0.1
+server.settings().update({"compute.provider": "pull", "compute.remote_workers": 1, "compute.local_workers": 0})
+server.configure_workers()
+state = server.compute_state()
+assert [x["name"] for x in state["workers"]] == ["this server", "remote 1"] and state["pool"] is None, state
+assert server._executor is server.MACHINES and not state["local_meshing"] and state["machines"]["machines"] == []
+pid = server.new_id()
+(server.PROJECTS / pid / "photos").mkdir(parents=True)
+server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,?)", pid, "by hand", time.time(), "upload", "queued", write=True)
+for provider, why in (("pull", "no machine has asked"), ("none", "meshes nothing itself")):
+    server.settings().update({"compute.provider": provider})
+    server.configure_workers()
+    try:
+        server.run_reconstruct(pid)
+        raise AssertionError("should have waited for a machine")
+    except server.compute.ComputeUnavailable as e:
+        assert why in str(e), e
+    assert server.q("SELECT status FROM projects WHERE id=?", pid, one=True)["status"] == "stopped"
+server.settings().update({"compute.local_workers": 1})
+server.configure_workers()
+assert server._local_meshing and [x["name"] for x in server.compute_state()["workers"]] == ["this server"]
 print("several workers OK")
 
 # a route page's GPS far from its area's is a mistake on the page: the area's are kept

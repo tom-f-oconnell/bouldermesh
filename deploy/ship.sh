@@ -9,6 +9,8 @@
 # (NO_PUSH=1 skips that). The database there is replaced each time, all but its settings (the admin page's), so holds
 # marked or cleanups edited there with the editing token are lost: do those here.
 # Running it again is cheap: an image the machine already has isn't sent again, and only changed meshes are.
+# A machine that harvests by itself (HARVESTS_HERE=1 in its .env: volunteers.md, "The public server harvests") has the
+# only copy of its database and meshes, so it gets only the image; IMAGE_ONLY=1 does that for any machine.
 set -eu
 dest=${1:?usage: deploy/ship.sh user@host [image]}
 image=${2:-bouldermesh-bouldermesh:latest}
@@ -41,6 +43,12 @@ else
     DOCKER_CONFIG=${cfg:-${DOCKER_CONFIG:-$HOME/.docker}} docker push -q "$latest"
 fi
 
+only_image=${IMAGE_ONLY:-}
+if [ -z "$only_image" ] && [ "$(ssh "$dest" "sed -n 's/^HARVESTS_HERE=//p' $remote/.env 2>/dev/null" | tail -1 | tr -d "\"' ")" = 1 ]; then
+    only_image=1
+    echo "$dest harvests by itself (HARVESTS_HERE=1 in its .env): sending only the image, not this machine's database or meshes"
+fi
+if [ -z "$only_image" ]; then
 # the settings there, which the copy keeps in place of these
 ssh "$dest" "python3 - $remote/data/bouldermesh.sqlite" > "$kept" <<'PY'
 import json
@@ -69,12 +77,17 @@ n = lambda table: dst.execute(f"SELECT count(*) FROM {table}").fetchone()[0]  # 
 print(f"database: {n('meshes')} meshes, {n('climbs')} climbs, {n('projects')} projects, {stopped} running area(s) stopped "
       f"in the copy, and {len(kept)} setting(s) of the machine's own kept")
 PY
+fi
 id=$(docker image inspect "$image" --format '{{.Id}}')
 if [ "$(ssh "$dest" "docker image inspect $image --format '{{.Id}}' 2>/dev/null")" = "$id" ]; then
     echo "image $image: $dest already has it"
 else
     echo "image $image, as $dest will load it (a few minutes for 2.4 GB)"
     docker save "$image" | zstd | ssh "$dest" 'zstd -d | docker load'
+fi
+if [ -n "$only_image" ]; then
+    echo "done. On $dest:  cd $remote && sudo systemctl restart bouldermesh   (or docker compose up -d)"
+    exit 0
 fi
 echo "meshes: $(du -sh "$data/meshes" | cut -f1)"
 # 23 and 24: some files couldn't be read or vanished while sending, as when a reconstruction here is still writing

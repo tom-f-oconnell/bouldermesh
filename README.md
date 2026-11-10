@@ -361,7 +361,10 @@ one built elsewhere. On a machine with the meshes to show:
     deploy/ship.sh you@boulders.example.com bouldermesh:public  # pushes it, then sends it (2.4 GB), the meshes, and a copy of the database
 
 Areas are stopped in the copy, so nothing runs there by itself. Projects' photos don't go, so their cards show none, and
-the database there is replaced each time, all but the settings changed on its admin page. Or push the image to
+the database there is replaced each time, all but the settings changed on its admin page. Once the public server harvests
+by itself instead ([volunteers.md](volunteers.md), "The public server harvests"), `HARVESTS_HERE=1` in its `.env` makes
+ship.sh send it only the image, as its database and meshes are then the only copies (`IMAGE_ONLY=1` does that for
+any machine). Or push the image to
 a registry (see "Running reconstructions elsewhere"), put `BM_IMAGE=ghcr.io/<github-user>/bouldermesh:latest` in `.env`,
 and `docker compose -f docker-compose.yml -f docker-compose.public.yml pull`. Ports 80 and 443 must be open to the world.
 To run it under systemd as above, put `COMPOSE_FILE=docker-compose.yml:docker-compose.public.yml` in `.env` too (with
@@ -462,7 +465,8 @@ They're never shown again. Without that key, give them as environment variables 
 ## Running reconstructions elsewhere
 
 By default this server does everything. *Reconstructions at once on this server* can be raised, which
-runs climbs side by side (two areas then share the workers), though most steps already use every core.
+runs climbs side by side (two areas then share the workers), though most steps already use every core, or set to 0,
+for a small server that only harvests: then every climb waits for another machine to mesh it.
 On the admin page, *Run more on* adds up to *At most this many other machines at once* (2 by default):
 
 - **Machines reached over SSH**: any you keep running, with Docker (and NVIDIA's container toolkit for
@@ -473,6 +477,20 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   after a while with no job running, in case this server has gone, and any left running from before a
   restart are ended. Its credentials need EC2 (run, describe and terminate instances, security groups)
   and SSM's GetParameter. *Test the connection* checks them without starting anything.
+- **Machines that connect here for work**: for any this server can't reach, such as one behind a lab's firewall. Add one
+  under *Machines* (shown with this choice), which shows its token once, and on the machine, which needs Python 3.9,
+  Docker you may use, and NVIDIA's container toolkit for the GPU, run:
+
+      curl -O https://<site>/worker/bouldermesh_worker.py      # or worker/bouldermesh_worker.py in this repository
+      python3 bouldermesh_worker.py --server https://<site> --token bmw_... --cpus 12
+
+  It asks this server for a climb every 15 s over HTTPS, fetches its photos, runs the job in Docker as you, with no
+  capabilities, at niceness 10, and sends the log as it goes and then the mesh. Ctrl-C gives the climb back. The
+  server, token and options are remembered (in `~/.bouldermesh-worker`); `--check` only checks the token, after which
+  `deploy/bouldermesh-worker.service` runs it under systemd. Its other options: `--gpu auto|all|cdi|none` (`cdi` for
+  a host whose GPU is a CDI device), `--docker-arg=--memory=64g` (repeatable), and `--image-prefix ghcr.io/<owner>/`
+  to refuse any other image, should the server be taken over. The public setup's Caddy passes `/worker/` to a port that
+  answers only that (`WORKER_PORT`, 47614); elsewhere, publish that port to where the machines are.
 
 Machines run the same Docker image as this server, which they pull from a registry. `deploy/build.sh` names the image
 for GitHub's by its commit (`ghcr.io/<owner>/bouldermesh:<commit>`, or `REGISTRY` for another), and `deploy/ship.sh`
@@ -508,8 +526,9 @@ volunteers and for connecting the public site to whichever server harvests.
   for finding beta and harvesting again, so YouTube isn't asked for one twice; this server's own downloads too.
 
 Volunteers reach the public site's `/volunteer/`, which Caddy passes to a port that answers nothing else (`VOLUNTEER_PORT`,
-47613 in Compose, on loopback only). By default that's the public server's own app, for when it does the harvesting.
-While another machine harvests (hal), `deploy/volunteer-tunnel.service` there keeps an SSH connection to the public
+47613 in Compose, on loopback only). By default that's the public server's own app, which harvests, with its meshes made
+by machines that connect to it for work (above; volunteers.md, "The public server harvests", has every step). The other
+way, while another machine harvests (hal), `deploy/volunteer-tunnel.service` there keeps an SSH connection to the public
 server that brings `/volunteer/` back to it, through a socket in the public server's `data/tunnel/`. It runs with no one
 logged in, so it has a key of its own, with no passphrase, which the public server takes for forwarding only:
 
@@ -548,13 +567,15 @@ the admin page gives. Each server keeps its volunteers in `data/volunteers.sqlit
     backend/policy.py              which photos are free to copy, and what the site may show
     backend/retexture.py           colouring a mesh from only the photos free to copy
     backend/compute.py             running reconstructions on other machines, and starting and ending them
+    backend/pullwork.py            machines that connect here for work: their tokens, the jobs, and their port
     backend/remote_job.py          what such a machine runs
+    worker/bouldermesh_worker.py   the script a machine that connects here runs
     backend/climbs/relevance.py    filter for photos substantially of the boulder
     backend/climbs/diversity.py    de-dup + view-graph diversity estimate
     backend/climbs/htmlmini.py     tiny DOM on html.parser (no bs4 needed)
     frontend/index.html            UI: Climbs / Projects / Meshes tabs, three.js viewer, Leaflet map
     cli.py                         command-line access to the same code
-    deploy/                        systemd service and its installer, the public setup's Caddyfile, and ship.sh for a public server
+    deploy/                        systemd services and an installer, the public setup's Caddyfile, and ship.sh for a public server
     data/                          created at runtime; DATA_DIR overrides
 
 ## API
@@ -594,7 +615,9 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     GET|POST|DELETE /api/meshes/{id}/cleanup · PATCH /api/meshes/{id}/cleanup {removed} · GET /meshes/{id}/mesh.glb?cleaned=1
     GET  /api/meshes/{id}/sources                       each photo in the mesh: source, URL, page, credit, licence
     On the admin page's port: GET /api/admin/state · POST /api/admin/settings · POST /api/admin/secrets
-    POST /api/admin/actions/{test,end-nodes,retexture}
+    POST /api/admin/actions/{test,end-nodes,retexture,machine-add,machine-revoke,volunteer-add,volunteer-revoke,...}
+    On WORKER_PORT, with a machine's token: POST /worker/api/work · GET /worker/api/jobs/{id}/input?offset=
+    POST /worker/api/jobs/{id}/{log,output,done} · GET /worker/api/jobs/{id}/output (how much has come)
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
     POST /api/mesh-views {mesh, via, seconds, note?}    a mesh a visitor's browser showed, as client-errors are taken (120 in 10
                                                         min an address): kept in data/mesh-views.jsonl; `cli.py mesh-views`
@@ -622,6 +645,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_beta.py        # offline: cameras, rays, contacts and roles for beta; waiting out YouTube and carrying on
     python3 tests/test_provenance.py  # offline: where each mesh's photos came from
     python3 tests/test_compute.py     # offline: running reconstructions on other machines, through stand-ins for ssh and AWS
+    python3 tests/test_pullwork.py    # offline: machines that connect here for work, through the script and a stand-in for docker
     python3 tests/test_admin.py       # offline: the admin page's settings, credentials and photo permissions
     python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job
     python3 tests/test_public.py      # the editing token and read-only modes, other sites' pages refused, the page's policy and headers, what's served how

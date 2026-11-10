@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory() as td:
     assert s.get("compute.remote_workers") == 2 and s.get("site.textures") == "all" and s.get("compute.provider") == "none"
     s.update({"compute.remote_workers": 3, "site.sources": "link", "compute.ssh_hosts": [" a@b ", "", "c@d:2222"]})
     assert s.get("compute.remote_workers") == 3 and s.all()["site.sources"] == "link" and s.get("compute.ssh_hosts") == ["a@b", "c@d:2222"]
-    for bad, text in (({"nope": 1}, "no setting"), ({"site.textures": "some"}, "one of"), ({"compute.local_workers": 9}, "from 1 to 4"),
+    for bad, text in (({"nope": 1}, "no setting"), ({"site.textures": "some"}, "one of"), ({"compute.local_workers": 9}, "from 0 to 4"),
                       ({"compute.aws.spot": "yes"}, "true or false"), ({"compute.remote_workers": 1.5}, "whole number")):
         must_raise(lambda: s.update(bad), ValueError, text)
     assert s.get("compute.local_workers") == 1, "nothing saved from a bad update"

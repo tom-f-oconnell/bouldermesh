@@ -52,6 +52,7 @@ import retexture  # noqa: E402
 import settings as settings_mod  # noqa: E402
 import pipeline  # noqa: E402
 import proxy_ranges  # noqa: E402
+import pullwork  # noqa: E402
 import splat as splat_mod  # noqa: E402
 import viewpoints  # noqa: E402
 import volunteers as volunteers_mod  # noqa: E402
@@ -102,6 +103,8 @@ RANGES = proxy_ranges.Watch(Path(os.environ["CADDYFILE"])) if os.environ.get("CA
 # /volunteer/... to; VOLUNTEER_URL is the address they reach it at, for the command the admin page gives them
 VOLUNTEER_PORT = int(os.environ.get("VOLUNTEER_PORT") or 0)
 VOLUNTEER_URL = os.environ.get("VOLUNTEER_URL") or (f"https://{os.environ['SITE_HOST']}" if os.environ.get("SITE_HOST") else None)
+# machines that connect here for work (pullwork.py), served on WORKER_PORT if it's set, for a proxy to pass on /worker/... to
+WORKER_PORT = int(os.environ.get("WORKER_PORT") or 0)
 MESH_EXTRA_EXT = {".png", ".jpg", ".jpeg", ".bin", ".mtl"}       # what may be uploaded beside a mesh: its textures and material
 # how files under data/ are served; anything else is sent as bytes to save, so that nothing put there can run as a page of this site
 SERVED_TYPES = {".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -723,7 +726,11 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         if not resume:
             shutil.rmtree(work, ignore_errors=True)
         mid = new_id()
-        build = _executor.reconstruct if current_worker().remote and _executor else pipeline.reconstruct
+        remote = bool(_executor) and (current_worker().remote or not _local_meshing)
+        if not remote and not _local_meshing:
+            raise compute.ComputeUnavailable("this server meshes nothing itself (Reconstructions at once on this server is 0), "
+                                             "and no other machines are set up")
+        build = _executor.reconstruct if remote else pipeline.reconstruct
         mesh_path, demo = build(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker)
         proj = q("SELECT name, climb_id, mesh_id, kind, boulder FROM projects WHERE id=?", pid, one=True)
         q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng,boulder) VALUES(?,?,?,?,?,?,?,?,?,?)", mid, proj["name"],
@@ -1103,8 +1110,9 @@ _claim_lock = threading.Lock()
 _here = threading.local()
 _pool: compute.Pool | None = None
 _old_pools: list[compute.Pool] = []
-_executor: compute.RemoteExecutor | None = None
+_executor: compute.RemoteExecutor | pullwork.Board | None = None
 _pool_key = None
+_local_meshing = True    # whether this server meshes climbs itself; with compute.local_workers 0, only other machines do
 
 
 def current_worker() -> Worker:
@@ -2004,6 +2012,8 @@ def worker(w: Worker | None = None) -> None:
             if job:
                 run_job(job)
                 continue
+        if not (w.remote or _local_meshing):    # areas' climbs are for other machines' workers
+            continue
         try:
             if not next_campaign_step() and w.remote:
                 time.sleep(CAMPAIGN_POLL)
@@ -2134,7 +2144,7 @@ def compute_settings() -> dict:
 
 def configure_workers() -> None:
     """Start or retire workers, and make the pool of remote machines, to match the settings."""
-    global _pool, _executor, _pool_key
+    global _pool, _executor, _pool_key, _local_meshing
     s = compute_settings()
     with _workers_lock:
         key = (s["compute.provider"], s["compute.remote_workers"], s["compute.idle_minutes"], tuple(s["compute.ssh_hosts"]),
@@ -2146,15 +2156,19 @@ def configure_workers() -> None:
                 _old_pools.append(_pool)
             _pool = _executor = None
             provider = None
-            try:
-                provider = compute.provider_for(s, settings().secret, DATA / "compute", server_id())
-            except Exception as e:
-                print(f"compute: can't use {s['compute.provider']}: {e}", flush=True)
+            if s["compute.provider"] == "pull":     # machines that connect here: no machines to start, only jobs to hand out
+                _executor = MACHINES if s["compute.remote_workers"] else None
+            else:
+                try:
+                    provider = compute.provider_for(s, settings().secret, DATA / "compute", server_id())
+                except Exception as e:
+                    print(f"compute: can't use {s['compute.provider']}: {e}", flush=True)
             if provider and s["compute.remote_workers"]:
                 _pool = compute.Pool(provider, s["compute.remote_workers"], s["compute.idle_minutes"])
                 _executor = compute.RemoteExecutor(_pool, s["compute.image"], s["compute.command"], jobctl)
             _pool_key = key
-        want = {False: s["compute.local_workers"], True: s["compute.remote_workers"] if _pool else 0}
+        _local_meshing = s["compute.local_workers"] > 0
+        want = {False: s["compute.local_workers"], True: s["compute.remote_workers"] if _executor else 0}
         for remote in (False, True):
             mine = [w for w in _workers if w.remote == remote and not w.retired]
             for w in mine[want[remote]:]:
@@ -2189,7 +2203,27 @@ def compute_state() -> dict:
     return {"workers": [{"name": w.name, "remote": w.remote, "error": w.error,
                          "busy": f"meshing {w.doing}" if w.doing else ("waiting for a machine" if time.time() < w.wait_until else None)}
                         for w in _workers if not w.retired],
-            "pool": _pool.status() if _pool else None}
+            "pool": _pool.status() if _pool else None, "local_meshing": _local_meshing,
+            "machines": {**MACHINES.state(), "served": bool(WORKER_PORT), "url": WORKER_URL}}
+
+
+# ----------------------------------------------------------------- machines that connect here for work
+WORKER_URL = os.environ.get("WORKER_URL") or VOLUNTEER_URL     # the address they reach this at, for the admin page's command
+MACHINES = pullwork.Board(DATA / "compute" / "machines.sqlite", DATA / "compute" / "jobs", lambda: compute_settings()["compute.image"],
+                          jobctl)
+
+
+def admin_machine_add(body: dict) -> dict:
+    m = MACHINES.add(body.get("name") or "")
+    url = WORKER_URL or "https://<this site>"
+    return {**m, "result": f"added {m['name']}: run the command below on it, which has its token (shown only now)",
+            "command": f"python3 bouldermesh_worker.py --server {url} --token {m['token']}",
+            "download": f"{url}/worker/bouldermesh_worker.py"}
+
+
+def admin_machine_revoke(body: dict) -> dict:
+    MACHINES.revoke(str(body.get("id") or ""))
+    return {"result": "revoked: its token no longer works, and any climb it was meshing waits for another machine"}
 
 
 # ----------------------------------------------------------------- errors in visitors' browsers
@@ -3284,6 +3318,11 @@ def admin_state() -> dict:
 
 
 def admin_test(_: dict) -> dict:
+    if settings().get("compute.provider") == "pull":
+        st = MACHINES.state()
+        return {"result": f"{st['connected']} of {len([m for m in st['machines'] if m['status'] != 'revoked'])} machine(s) "
+                          f"asked for work in the last {pullwork.CONNECTED // 60} minutes"
+                          + ("" if WORKER_PORT else "; WORKER_PORT isn't set, so none can reach this server")}
     prov = compute.provider_for(compute_settings(), settings().secret, DATA / "compute", server_id())
     return {"result": prov.test() if prov else "nothing to test: this server does everything itself"}
 
@@ -3353,11 +3392,15 @@ def main() -> None:
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
-                                       "volunteers-cancel": admin_volunteers_cancel}),
+                                       "volunteers-cancel": admin_volunteers_cancel, "machine-add": admin_machine_add,
+                                       "machine-revoke": admin_machine_revoke}),
                     os.environ.get("ADMIN_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), ADMIN_PORT)
     if VOLUNTEER_PORT:
         volunteers_mod.serve(VOLUNTEERS, os.environ.get("VOLUNTEER_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), VOLUNTEER_PORT,
                              lambda line: print(line, flush=True))
+    if WORKER_PORT:
+        pullwork.serve(MACHINES, os.environ.get("WORKER_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), WORKER_PORT,
+                       lambda line: print(line, flush=True))
     server = ThreadingHTTPServer((host, port), Handler)
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=stop_when_idle, args=(server,), daemon=True).start())
     server.serve_forever()

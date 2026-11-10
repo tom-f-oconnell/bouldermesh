@@ -99,8 +99,8 @@ Tell whoever runs the site, so they can revoke your token.
 
 ### Adding and removing volunteers
 
-Volunteers are added on the admin page of the server that harvests: hal's while hal harvests (option A below), or the
-public server's once it does (option B). Under *Volunteers*:
+Volunteers are added on the admin page of the server that harvests: the public server's (below), or hal's if hal
+harvests through a tunnel (the other way, further below). Under *Volunteers*:
 
 1. Type the volunteer's name, choose how many videos an hour they may fetch (15 at most), and press *Add volunteer*.
 2. Send them the command it shows, privately. It contains their token, which is shown only this once.
@@ -130,18 +130,80 @@ rebuild*. An area that has finished runs that by itself; a stopped area waits un
 ### How volunteers reach the server
 
 Volunteers always use the public site's address, `https://boulderme.sh/volunteer/`. Caddy on the public server passes
-`/volunteer/` (and nothing else) to a port that answers only that: `VOLUNTEER_PORT`, 47613. Which machine's port it reaches
-depends on which machine harvests:
+`/volunteer/` (and nothing else) to a port that answers only that: `VOLUNTEER_PORT`, 47613, on whichever machine harvests:
 
-- **Option A:** hal harvests. An SSH connection from hal to the public server brings `/volunteer/` back to hal.
-- **Option B:** the public server harvests, with reconstructions on AWS workers. Caddy passes `/volunteer/` to the public
-  server's own app, and nothing reaches hal.
+- **The public server harvests** (below): its own app's port. Its reconstructions run on machines that connect to it for
+  work, such as hal, which only ever connects out, over HTTPS, so nothing has to reach into the lab's network.
+- **hal harvests** (the other way, further below): an SSH connection from hal to the public server brings `/volunteer/`
+  back to hal. That keeps a way into the lab open from outside, and hal's address is the one YouTube keeps refusing.
 
 Volunteers don't notice which it is: their address and the script are the same either way.
 
-### Option A: hal harvests
+### The public server harvests
 
-On hal, in `~/src/bouldermesh`:
+The public server lists areas, harvests their climbs and keeps everything they make, with volunteers fetching its YouTube
+videos, as YouTube refuses a cloud address. It's too small to reconstruct (2 cores, 4 GB), so its climbs wait for
+machines that connect to it for work: hal, or any machine with Docker, which fetches a climb's photos, meshes them and
+sends the mesh back, through Cloudflare like any visitor. Projects' photos from hal's harvests don't go to the public
+server (97 GB on Nov 10, 2026, more than its disk), so a climb meshed on hal is only rebuilt there by harvesting it again.
+
+From hal, in `~/src/bouldermesh`:
+
+1. **Ship the current code, with hal's database and meshes, one last time**, and update the public server's checkout
+   (its Caddyfile passes `/worker/` on, and its Compose file sets the ports):
+
+       deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public && ssh bouldermesh 'cd bouldermesh && git pull --ff-only'
+
+On the public server (`ssh bouldermesh`), in `~/bouldermesh`:
+
+2. **Settings in `.env`.** Delete the `VOLUNTEER_UPSTREAM` line, if there is one, so that Caddy passes `/volunteer/` to
+   this machine's own app, and add these two lines. Then `sudo systemctl restart bouldermesh`.
+
+       HARVESTS_HERE=1
+       YOUTUBE_VIA=volunteers
+
+   `HARVESTS_HERE=1` makes `deploy/ship.sh` send only the image from now on, as the database and meshes here are then
+   the only copies. `YOUTUBE_VIA=volunteers` keeps it from ever asking YouTube for a video from its cloud address.
+
+3. **Its admin page**, through an SSH tunnel from your own computer: `ssh -N -L 36185:127.0.0.1:36184 bouldermesh`,
+   then `http://localhost:36185`. Under *Compute*, set *Reconstructions at once on this server* to 0, *Run more on* to
+   *Machines that connect here for work*, and *At most this many other machines at once* to 2, and press *Save*. That's
+   how many climbs are under way at once, each harvested here and then waiting for a machine: with 2, the next climb
+   is harvested while hal meshes one, and waits for hal after. Then, under *Machines*, add one named hal, and keep the command
+   it shows: it has hal's token, shown only this once.
+
+4. **Volunteers.** Each server keeps its own in `data/volunteers.sqlite`, which ship.sh doesn't send. Add them again on
+   this admin page, and send each a new command; or copy hal's file across, so their tokens keep working:
+   `scp data/volunteers.sqlite bouldermesh:bouldermesh/data/` from hal, with the public server stopped, and then press
+   *Drop what's queued* here, as that queue was hal's projects.
+
+Back on hal:
+
+5. **Lend hal to the public server.** The command from step 3, with how many cores its jobs may use, the only images it
+   may run (in case the public server is ever taken over), and `--check`:
+
+       python3 worker/bouldermesh_worker.py --server https://boulderme.sh --token bmw_... --cpus 12 \
+           --image-prefix ghcr.io/tom-f-oconnell/bouldermesh: --check
+
+   It should say the server knows the token as `hal`, and it remembers all of that. Then run it whenever hal is up:
+
+       sudo cp deploy/bouldermesh-worker.service /etc/systemd/system/
+       sudo systemctl enable --now bouldermesh-worker
+       journalctl -u bouldermesh-worker -f
+
+   Its jobs are containers of their own, named `bmw-<job>`, so a `docker update --cpus` of hal's own app doesn't change
+   them: `--cpus` is their limit.
+
+6. **Stop hal's own areas**, which would harvest the same climbs, and start them on the public site instead, with the
+   editing token. Its admin page then shows hal working or waiting for work, and each climb's log says where it was meshed.
+
+Fetched videos are kept for finding beta and for harvesting again: up to `VIDEO_CACHE_GB` gigabytes, which is 10 in the
+public setup and 50 elsewhere. Areas there stop once its disk has less than `CAMPAIGN_MIN_FREE_GB` left, also 10.
+
+### The other way: hal harvests, through a tunnel
+
+This is how volunteers were first connected, on Nov 9, 2026, before hal's place moved to meshing for the public
+server. On hal, in `~/src/bouldermesh`:
 
 1. **Run the current code.** hal's Compose setup publishes the volunteer port on loopback only (`127.0.0.1:47613`).
    Rebuild and restart it as usual, from committed code. Check it answers:
@@ -216,36 +278,6 @@ If `https://boulderme.sh/volunteer/` gives a 502, Caddy can't reach hal:
 
 Nothing in the firewall needs changing: the tunnel uses SSH, which is already open, and Caddy reaches the socket inside
 the public server.
-
-### Option B: the public server harvests
-
-Once the public server does the harvesting, with reconstructions on AWS workers:
-
-1. **On the public server**, in `~/bouldermesh/.env`, delete the `VOLUNTEER_UPSTREAM` line, so that Caddy passes
-   `/volunteer/` to its own app. Add `YOUTUBE_VIA=volunteers`, so that it never asks YouTube for videos from its cloud
-   address. `VOLUNTEER_URL` comes from `SITE_HOST`, so it needs nothing. Then restart it:
-
-       sudo systemctl restart bouldermesh
-
-2. **On hal**, stop the tunnel:
-
-       sudo systemctl disable --now volunteer-tunnel
-
-3. **Bring the volunteers over.** Each server keeps its own volunteers in `data/volunteers.sqlite`, which
-   `deploy/ship.sh` doesn't send. Either:
-   - add them again on the public server's admin page, and send each a new command; or
-   - copy hal's file across, so their tokens keep working and they need do nothing:
-     `scp data/volunteers.sqlite bouldermesh:bouldermesh/data/`, with both servers stopped. Then press *Drop what's
-     queued* on the public server's admin page, as that queue was hal's projects.
-
-4. **Reach the public server's admin page** through an SSH tunnel: `ssh -L 36185:127.0.0.1:36184 bouldermesh`, then open
-   `http://localhost:36185`.
-
-Fetched videos are kept for finding beta and for harvesting again: up to `VIDEO_CACHE_GB` gigabytes, which is 10 in the
-public setup and 50 elsewhere.
-
-To go back to option A, undo these: put `VOLUNTEER_UPSTREAM` back, start the tunnel again
-(`sudo systemctl enable --now volunteer-tunnel`), and restart the public server.
 
 ### If YouTube starts refusing searches
 

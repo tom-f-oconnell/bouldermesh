@@ -36,6 +36,14 @@
 			header_up X-Real-IP {client_ip}
 		}
 	}
+	# machines lent for reconstructions, asking this server for work (README, "Running reconstructions elsewhere"): the
+	# app, on a port that answers only this
+	@worker path /worker /worker/*
+	handle @worker {
+		reverse_proxy bouldermesh:47614 {
+			header_up X-Real-IP {client_ip}
+		}
+	}
 	reverse_proxy bouldermesh:8470 {
 		header_up X-Real-IP {client_ip}
 	}

@@ -478,8 +478,8 @@ every yt-dlp run waits its turn (one at a time, 8-15 s apart, `--sleep-requests 
 refusal leaves YouTube alone for 1, 2, 4, then 8 hours, with the next video after that as the test.
 Signing in with a throwaway account's cookies would raise the limit, at the risk of that account being
 banned. A PO-token provider (bgutil) doesn't get past refusals based on the address, by its own account.
-A cloud server's address is refused far more often than a home or campus one, so harvesting stays on hal:
-the public server only shows what's shipped to it.
+A cloud server's address is refused far more often than a home or campus one, so the public server never asks YouTube
+for a video itself: volunteers fetch them (below).
 
 People's masks used to be made in `work/` and deleted with it. They're now kept in the project's
 `masks/`, which also makes a rebuild skip photos that already have one.
@@ -498,7 +498,7 @@ finding beta downloaded every video a second time.
 Searching could be refused too, but hasn't been. From Nov 1 to 9, 2026, 1,474 harvests on hal searched YouTube, through
 every spell of refused downloads, and one search failed, with an error fetching the results page rather than the bot
 check. A search is one request for a page of results; a download also asks YouTube's player for the video, which is where
-the bot check is. A cloud server's address is another matter: when the public server harvests (option B), its searches
+the bot check is. A cloud server's address is another matter: when the public server harvests, its searches
 may be refused from the start. A refused search pauses searching (and reading channels) the way a refused download
 pauses downloads, 1, 2, 4 then 8 hours, apart from them, so that each climb after doesn't ask again; until then a
 harvest goes on without searching. If that happens on either server (a harvest's log says `youtube search: ... failed:
@@ -517,12 +517,15 @@ a wrong or cut-short file but not a deliberate fake, so tokens go to people you 
 full details carry the volunteer's IP address in YouTube's signed download links, so only the fields the harvest keeps
 are sent, and the server keeps a volunteer's last address only to share the limits.
 
-Where volunteers connect follows where harvesting is. The public server is the only machine they can reach. While hal
-harvests (option A), an SSH connection from hal forwards the public server's `/volunteer/` to hal's volunteer port,
-which answers nothing else; it ends in a Unix socket that Caddy's container reads through a mounted folder, which needs
-neither sshd's GatewayPorts nor Caddy on the host's network. When the public server harvests, with reconstruction on AWS
-workers (option B), Caddy passes `/volunteer/` to its own app instead, and nothing reaches hal. Each server keeps its
-volunteers in a database of its own, as ship.sh replaces the public server's main one.
+Where volunteers connect follows where harvesting is. The public server is the only machine they can reach. At first
+(Nov 9, 2026) hal harvested, and an SSH connection from hal forwarded the public server's `/volunteer/` to hal's
+volunteer port, which answers nothing else; it ended in a Unix socket that Caddy's container reads through a mounted
+folder, which needs neither sshd's GatewayPorts nor Caddy on the host's network. That kept a way into the lab's network
+open from outside, though, an exception to the lab's gateway in all but name, for a machine whose own address YouTube
+keeps refusing. So the public server harvests, Caddy passes `/volunteer/` to its
+own app, and hal meshes for it as a machine that connects to it for work ("Running climbs side by side, and
+elsewhere"). The tunnel still works, for a harvesting server that can be reached from outside. Each server keeps its
+volunteers in a database of its own, as ship.sh replaced the public server's main one.
 
 The costs fall on volunteers: YouTube's terms forbid downloading except through YouTube itself, spreading downloads over
 other addresses is plainly a way around its per-address limit, and a refused address gets the bot check for everyone on
@@ -662,6 +665,19 @@ settings, feature extraction has no GPU version in COLMAP, and the mapper, OpenM
 without CUDA here) and texturing all run on the CPU. So a node with few cores is slower per climb than
 this 48-core machine, and the gain is in doing several at once. Hence `g4dn.2xlarge` (8 cores) rather
 than the 4-core `g4dn.xlarge`. Building OpenMVS with CUDA for nodes would speed densifying up.
+
+**Machines that connect here for work** (`backend/pullwork.py`). SSH needs the server to reach the machine, and the
+machine that meshes best, hal, is behind a lab's firewall, with the public server outside it. So such a machine runs a
+script that asks the server for work instead, over HTTPS, through Cloudflare and Caddy like any visitor: nothing is
+opened into its network. It sends the same things SSH does, in the same image: a climb's photos and masks (a tar,
+fetched in parts) and the mesh, cameras and masks back (sent in parts, under Cloudflare's 100 MB a request), with the
+job's log every 5 s, which is also how the server knows it's still there. A machine quiet for 15 minutes is taken as
+lost and the climb waits, as for a lost SSH machine; a climb stopped on the server is gone the next time the machine
+reports, and its container is ended. Jobs are kept only in memory, as a restart of the server ends the climbs' threads
+anyway and they carry on as new jobs. The script runs jobs as its own user, so their files are its to delete, with no
+capabilities, and only the server's image (`--image-prefix` makes sure of that); the server only ever names an image,
+never a command. With *Reconstructions at once on this server* at 0, a server that's too small to mesh (the public one:
+2 cores, 4 GB) harvests and keeps everything, and every mesh is made elsewhere.
 
 What's specific to a provider is only starting and ending machines, so the rest works with any machine
 with Docker that SSH reaches. Adding GCP would be another class like `AWSProvider`.

@@ -19,10 +19,10 @@ import threading
 from pathlib import Path
 
 DEFAULTS = {
-    # compute: where reconstructions run. The server itself always runs local_workers of them; with a
-    # provider, up to remote_workers more run on other machines at once.
+    # compute: where reconstructions run. The server itself runs local_workers of them (0: none, as on a small server
+    # that only harvests); with a provider, up to remote_workers more run on other machines at once.
     "compute.local_workers": 1,
-    "compute.provider": "none",            # none | ssh | aws
+    "compute.provider": "none",            # none | ssh | aws | pull (machines that connect here for work: pullwork.py)
     "compute.remote_workers": 2,
     "compute.idle_minutes": 10,            # a cloud node with nothing to do is ended after this
     "compute.image": "",                   # the Docker image nodes run, e.g. ghcr.io/you/bouldermesh:latest
@@ -41,9 +41,9 @@ DEFAULTS = {
     "site.sources": "all",                 # all | link (non-permitted ones only as links) | permitted
     "youtube.via": "volunteers_when_refused",   # here | volunteers_when_refused | volunteers (never here: a cloud server)
 }
-CHOICES = {"compute.provider": ("none", "ssh", "aws"), "site.textures": ("all", "permitted", "none"),
+CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers")}
-LIMITS = {"compute.local_workers": (1, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
+LIMITS = {"compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000)}
 for _key in ("site.textures", "site.sources", "youtube.via"):    # a public copy's starting points, from its .env
     _given = os.environ.get(_key.replace(".", "_").upper(), "").strip()

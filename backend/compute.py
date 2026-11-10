@@ -122,40 +122,73 @@ def run_remote(node: Node, images: Path, out_dir: Path, log: Log, internet: bool
         proc = jobctl.popen(ssh_args(node) + [cmd], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         for line in proc.stdout:
             line = line.rstrip("\n")
-            if line.startswith("@@progress "):
-                _, key, frac, detail = (line.split(" ", 3) + [""])[:4]
-                tracker.update(key, float(frac), json.loads(detail) if detail else None)
-            elif line.startswith("@@result "):
-                result = json.loads(line[len("@@result "):])
-            else:
+            result = follow(line, tracker, log) or result
+            if not line.startswith("@@"):
                 last = line or last
-                log(line)
         proc.wait()
         jobctl.check()
         if proc.returncode == 255:
             raise ComputeUnavailable(f"lost {node.host} partway: {last[-200:]}")
         if proc.returncode or not result:
-            raise RuntimeError(last[len("FAILED: "):] if last.startswith("FAILED: ") else f"the remote job ended without a mesh: {last[-200:]}")
+            raise job_failed(last)
         t0 = time.time()
         back = Path(tempfile.mkdtemp(prefix="bm-remote-", dir=project))
         try:
             _pipe(ssh_args(node) + [f"tar -C {base} -cf - out masks"], ["tar", "-C", str(back), "-xf", "-"], jobctl)
-            out_dir.mkdir(parents=True, exist_ok=True)
-            for f in (back / "out").iterdir():
-                shutil.move(str(f), out_dir / f.name)
-            if (back / "masks").is_dir():
-                (project / "masks").mkdir(exist_ok=True)
-                for f in (back / "masks").iterdir():
-                    os.replace(f, project / "masks" / f.name)
+            mesh = take_results(back, out_dir, project, result)
         finally:
             shutil.rmtree(back, ignore_errors=True)
         log(f"remote: results back in {time.time() - t0:.0f} s")
-        return out_dir / result["mesh"], bool(result.get("demo"))
+        return mesh, bool(result.get("demo"))
     finally:
         try:   # not stoppable: this is the tidying up after a stop
             subprocess.run(ssh_args(node) + [f"docker rm -f bm-{job} >/dev/null 2>&1; rm -rf {base}"], capture_output=True, timeout=60)
         except Exception:
             pass
+
+
+def follow(line: str, tracker, log: Log) -> dict | None:
+    """One line a remote job printed (remote_job.py): its progress goes to tracker, anything that isn't progress or
+    the result is logged, and the result is returned."""
+    try:
+        if line.startswith("@@progress "):
+            _, key, frac, detail = (line.split(" ", 3) + [""])[:4]
+            tracker.update(key, float(frac), json.loads(detail) if detail else None)
+            return None
+        if line.startswith("@@result "):
+            result = json.loads(line[len("@@result "):])
+            if isinstance(result, dict) and isinstance(result.get("mesh"), str):
+                return result
+    except (ValueError, TypeError, KeyError):
+        pass
+    log(line)
+    return None
+
+
+def job_failed(last: str) -> RuntimeError:
+    """A remote job that ended without a mesh, from the last line it printed (pipeline's "FAILED: why")."""
+    return RuntimeError(last[len("FAILED: "):] if last.startswith("FAILED: ") else f"the remote job ended without a mesh: {last[-200:]}")
+
+
+def take_results(back: Path, out_dir: Path, project: Path, result: dict) -> Path:
+    """Move what a remote job sent back from back/ into place: out/ (the mesh, its textures, cameras.json,
+    orientation.json) into out_dir, and new people masks into the project's masks/.
+
+    Returns:
+        The mesh file its result named.
+    """
+    mesh = Path(result["mesh"]).name
+    if not (back / "out" / mesh).is_file():
+        raise RuntimeError(f"the remote job named a mesh it didn't send back: {mesh!r}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for f in (back / "out").iterdir():
+        shutil.move(str(f), out_dir / f.name)
+    if (back / "masks").is_dir():
+        (project / "masks").mkdir(exist_ok=True)
+        for f in (back / "masks").iterdir():
+            if f.is_file():
+                os.replace(f, project / "masks" / f.name)
+    return out_dir / mesh
 
 
 def _pipe(source: list[str], sink: list[str], jobctl) -> None:

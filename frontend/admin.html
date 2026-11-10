@@ -30,8 +30,8 @@
   section.alert{border-color:var(--warn)}
   code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}
   #msg{position:fixed;bottom:14px;right:14px;background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:8px;display:none;max-width:420px}
-  .aws,.ssh{display:none}
-  body.p-aws .aws, body.p-ssh .ssh{display:block}
+  .aws,.ssh,.pull{display:none}
+  body.p-aws .aws, body.p-ssh .ssh, body.p-pull .pull{display:block}
   body.p-aws .grid.aws{display:grid}
 </style>
 </head>
@@ -61,12 +61,12 @@
     <h2>Compute</h2>
     <div id="slots" class="note"></div>
     <div class="grid">
-      <div><label>Reconstructions at once on this server</label><input type="number" id="local" min="1" max="4"></div>
-      <div><label>Run more on</label><select id="provider"><option value="none">Nothing else: this server only</option><option value="ssh">Machines reached over SSH</option><option value="aws">AWS EC2 instances, started when needed</option></select></div>
+      <div><label>Reconstructions at once on this server (0: none, it only harvests)</label><input type="number" id="local" min="0" max="4"></div>
+      <div><label>Run more on</label><select id="provider"><option value="none">Nothing else: this server only</option><option value="ssh">Machines reached over SSH</option><option value="aws">AWS EC2 instances, started when needed</option><option value="pull">Machines that connect here for work (behind a firewall)</option></select></div>
       <div><label>At most this many other machines at once</label><input type="number" id="remote" min="0" max="16"></div>
       <div><label>End an idle cloud machine after (minutes)</label><input type="number" id="idle" min="1" max="240"></div>
     </div>
-    <div class="ssh aws"><label>Docker image the machines run (pushed to a registry they can pull from)</label><input type="text" id="image" placeholder="ghcr.io/you/bouldermesh:latest"><div class="note" id="image-note"></div></div>
+    <div class="ssh aws pull"><label>Docker image the machines run (pushed to a registry they can pull from)</label><input type="text" id="image" placeholder="ghcr.io/you/bouldermesh:latest"><div class="note" id="image-note"></div></div>
     <div class="ssh"><label>Machines (one user@host[:port] a line), with Docker and the image</label><textarea id="hosts"></textarea></div>
     <div class="grid aws">
       <div><label>Region</label><input type="text" id="region"></div>
@@ -81,6 +81,15 @@
     <div class="ssh aws"><label>How a machine runs a job (empty for docker run with the image)</label><input type="text" id="command" placeholder="docker run --rm --name bm-{job} {gpus} -v {dir}:/job {image} python3 /app/backend/remote_job.py /job {flags}"></div>
     <div class="row"><button id="save">Save</button><span class="note warn" id="unsaved"></span><button class="sec" id="test">Test the connection</button><button class="danger" id="end">End all cloud machines</button></div>
     <div id="nodes"></div>
+    <div class="pull">
+      <div class="note" id="mach-note"></div>
+      <div id="mach-list"></div>
+      <div class="grid">
+        <div><label>New machine's name</label><input type="text" id="mach-name" placeholder="which machine it is, for you"></div>
+        <div class="row" style="margin-top:22px"><button id="mach-add">Add machine</button></div>
+      </div>
+      <div id="mach-new"></div>
+    </div>
   </section>
 
   <section id="vols">
@@ -152,6 +161,17 @@ function render(s){
   const p = s.compute.pool;
   $('#nodes').innerHTML = p ? `<table><tr><th>Machine</th><th>Up (min)</th><th>State</th></tr>${p.nodes.map(n => `<tr><td>${esc(n.id || n.host)}${n.gpu ? ' (GPU)' : ''}</td><td>${n.up_minutes}</td><td>${n.busy ? 'working' : `idle ${n.idle_minutes} min`}</td></tr>`).join('') || '<tr><td colspan="3">none running</td></tr>'}</table>
     ${p.starting ? `<div class="note">${p.starting} starting</div>` : ''}${p.error ? `<div class="note bad">${esc(p.error)}</div>` : ''}` : '';
+  const ms = s.compute.machines, seen = t => t ? new Date(t * 1000).toLocaleString() : 'never';
+  $('#mach-note').innerHTML = (ms.served ? `Each machine runs <code>bouldermesh_worker.py</code> (from ${esc(ms.url || '(WORKER_URL not set)')}/worker/) with a token of its own, and asks this server for climbs to mesh over HTTPS, so this server never has to reach it.`
+    : '<span class="warn">Not taking machines here: WORKER_PORT isn\'t set (README, "Running reconstructions elsewhere").</span>')
+    + (s.compute.local_meshing ? '' : ' This server meshes nothing itself: climbs wait for a machine.');
+  $('#mach-list').innerHTML = ms.machines.length ? `<table><tr><th>Machine</th><th>Now</th><th>Last seen</th><th>Address</th><th>Done / failed</th><th></th></tr>${
+    ms.machines.map(m => `<tr><td>${esc(m.name)}${m.client ? `<div class="note">${esc(m.client)}${m.gpu ? ', GPU' : ''}${m.cpus ? `, ${m.cpus} cores` : ''}</div>` : ''}</td>
+      <td class="${m.status === 'working' ? 'ok' : m.status === 'revoked' ? 'bad' : ''}">${esc(m.status)}${m.job ? ` (${esc(m.job.project)}, ${m.job.minutes} min)` : ''}</td>
+      <td>${seen(m.last_seen)}</td><td>${esc(m.address || '')}</td><td>${m.done} / ${m.failed}</td><td>${m.status === 'revoked' ? '' : `<button class="danger" data-mrevoke="${esc(m.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
+    : '<div class="note">No machines yet.</div>';
+  const waiting = ms.jobs.filter(j => j.state === 'queued');
+  if (waiting.length) $('#mach-list').innerHTML += `<div class="note">${waiting.length} climb(s) waiting for a machine.</div>`;
   const pr = s.proxy_ranges, box = $('#ranges');
   box.hidden = !pr;
   if (pr) {
@@ -194,7 +214,7 @@ async function save(changes, compute){
   try { const s = await call('/api/admin/settings', changes); if (compute) editing = false; render(s); msg('Saved'); }
   catch (e) { msg(e.message, 8000); refresh(); }
 }
-$('#compute').addEventListener('input', () => { editing = true; $('#unsaved').textContent = 'Not saved yet'; });
+$('#compute').addEventListener('input', ev => { if (ev.target.id === 'mach-name') return; editing = true; $('#unsaved').textContent = 'Not saved yet'; });
 document.querySelectorAll('input[name=tex]').forEach(r => r.onchange = () => save({ 'site.textures': r.value }));
 document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => save({ 'site.sources': r.value }));
 $('#provider').onchange = () => { document.body.className = 'p-' + $('#provider').value; };
@@ -212,6 +232,19 @@ $('#savecreds').onclick = async () => {
 };
 $('#test').onclick = async () => { msg('Testing…', 60000); try { msg((await call('/api/admin/actions/test', {})).result, 12000); } catch (e) { msg(e.message, 12000); } };
 $('#end').onclick = async () => { if (!confirm('End every cloud machine this server started? Jobs on them wait and run again.')) return; try { msg((await call('/api/admin/actions/end-nodes', {})).result); refresh(); } catch (e) { msg(e.message, 8000); } };
+$('#mach-add').onclick = async () => {
+  try {
+    const r = await call('/api/admin/actions/machine-add', { name: $('#mach-name').value });
+    $('#mach-name').value = '';
+    $('#mach-new').innerHTML = `<div class="note ok">${esc(r.result)}</div><div class="note">Download the script from ${esc(r.download)} (or use worker/bouldermesh_worker.py in the repository), then run:</div><textarea readonly>${esc(r.command)}</textarea>`;
+    msg('Added ' + r.name); refresh();
+  } catch (e) { msg(e.message, 8000); }
+};
+$('#mach-list').addEventListener('click', async ev => {
+  const id = ev.target.dataset.mrevoke;
+  if (!id || !confirm('Revoke this machine? Its token stops working at once, and a climb it was meshing waits for another.')) return;
+  try { msg((await call('/api/admin/actions/machine-revoke', { id })).result); refresh(); } catch (e) { msg(e.message, 8000); }
+});
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#via').onchange = () => save({ 'youtube.via': $('#via').value });
 $('#vol-add').onclick = async () => {
