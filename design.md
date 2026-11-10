@@ -59,9 +59,19 @@ What helps is the boulder. 1,565 of 1,808 problems share one, with a median of 1
 between a boulder's problems. Areas meshed each boulder once, but harvested each problem alone until one
 was meshed: 248 boulders had no mesh after 2 or more of their problems were each skipped, from 811 harvests,
 and 117 skipped climbs were on a boulder meshed later, never linked (Swing Dance, 4th, and Line Dance,
-11th, before Square Dance, 66th). So a harvest now pools what the boulder's earlier harvests found, those
-boulders can be tried again from all of it, and skipped climbs are linked once their boulder has a mesh.
-CLIP runs first in the image now, so that what didn't match is the plausible half, listed apart.
+11th, before Square Dance, 66th). So for a while a harvest pooled what the boulder's earlier harvests
+found, those boulders could be tried again from all of it, and skipped climbs were linked once their
+boulder had a mesh. CLIP runs first in the image now, so that what didn't match is the plausible half,
+listed apart.
+
+**Each climb its own mesh, and each boulder one too (Nov 9).** By then 141 of 199 meshes were linked to more
+than one climb (473 links "same boulder as" another), and on the 142 meshed boulders with two or more
+climbs, 320 of their 619 climbs had been linked without ever being harvested: not even their pages had
+been read, so none of their photos or videos were in any mesh, and a mesh made from the photos of a problem
+on one side of a rock was shown as the mesh of problems on the other. Only 18 meshes held pooled photos (459
+of the 8,115 photos behind them). Areas now harvest and mesh every climb from its own photos (the boulder's
+other harvests only anchor the filter), and a boulder gets a mesh of its own from all of them, apart from
+its climbs' meshes, with each climb placed on it by its own page photos and video frames.
 
 ## Does filtering help the mesh?
 

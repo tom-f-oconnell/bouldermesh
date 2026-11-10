@@ -22,6 +22,7 @@ only - most are copyrighted by their photographers; don't redistribute them.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -392,22 +393,27 @@ def _ext_for(data: bytes) -> str | None:
 
 # ----------------------------------------------------------------------------- other harvests of the boulder
 def pool(project_dir: Path, others: list[Path], log: Log, limit: int = POOL_MAX) -> list[dict]:
-    """Photos that other harvests of the same boulder found, linked into this one's photos/: first what each
-    kept, then what its filter found didn't match known photos, as a search for one problem often finds
-    another's side of the rock. What they judged junk or duplicates isn't pooled. Photos from a problem's
-    page or videos are trusted anchors here too (relevance.py), so this harvest has its boulder's anchors.
+    """Photos that other harvests of the same boulder found, linked into this one's photos/: first each one's
+    own (its problem's page photos and video frames), then the rest each kept, then what its filter found
+    didn't match known photos, as a search for one problem often finds another's side of the rock. Within
+    each, the harvests take turns, so that up to the limit, each has as many as any other. What they judged
+    junk or duplicates isn't pooled. Own photos are trusted anchors here too (relevance.py), so this harvest
+    has its boulder's anchors.
 
     Args:
         others: those harvests' project folders, most useful first.
 
     Returns:
-        The sources.json entries of the photos added, each with pooled_from: the project it came from.
+        The sources.json entries of the photos added, each with pooled_from: the first project it came
+        from, and also_in: any others that had it too.
     """
+    from .relevance import is_trusted
     photos = project_dir / "photos"
     photos.mkdir(parents=True, exist_ok=True)
     have = {p.name for p in photos.iterdir()}
     entries: dict[str, dict] = {}
-    kept, unmatched = [], []
+    found_in: dict[str, list[str]] = {}
+    own, kept, unmatched = ({o.name: [] for o in others} for _ in range(3))
     for o in others:
         try:
             for f in json.loads((o / "sources.json").read_text()).get("files", []):
@@ -415,12 +421,19 @@ def pool(project_dir: Path, others: list[Path], log: Log, limit: int = POOL_MAX)
         except (OSError, ValueError, KeyError):
             pass
         if (o / "photos").is_dir():
-            kept += [(f, f.name, o) for f in sorted((o / "photos").iterdir()) if f.suffix.lower() in (".jpg", ".jpeg", ".png")]
+            for f in sorted((o / "photos").iterdir()):
+                if f.suffix.lower() in (".jpg", ".jpeg", ".png"):
+                    (own if is_trusted(f) else kept)[o.name].append((f, f.name, o))
+                    found_in.setdefault(f.name, []).append(o.name)
         if (o / "rejected").is_dir():
-            unmatched += [(f, f.name.split("_", 1)[1], o) for f in sorted((o / "rejected").iterdir())
-                          if "_" in f.name and f.name.split("_", 1)[0] not in POOL_SKIP]
+            for f in sorted((o / "rejected").iterdir()):
+                if "_" in f.name and f.name.split("_", 1)[0] not in POOL_SKIP:
+                    unmatched[o.name].append((f, f.name.split("_", 1)[1], o))
+                    found_in.setdefault(f.name.split("_", 1)[1], []).append(o.name)
+    def turns(by: dict[str, list]) -> list:
+        return [x for row in itertools.zip_longest(*by.values()) for x in row if x]
     added = []
-    for src, name, o in kept + unmatched:
+    for src, name, o in turns(own) + turns(kept) + turns(unmatched):
         if len(added) >= limit:
             break
         if name in have or not src.is_file():
@@ -430,10 +443,22 @@ def pool(project_dir: Path, others: list[Path], log: Log, limit: int = POOL_MAX)
         except OSError:
             shutil.copy2(src, photos / name)
         have.add(name)
-        added.append(entries.get(name) or {"file": name, "pooled_from": o.name})
+        entry = {**(entries.get(name) or {"file": name}), "pooled_from": o.name}
+        also = [p for p in dict.fromkeys(found_in.get(name, [])) if p != o.name]
+        if also:
+            entry["also_in"] = also
+        added.append(entry)
     if others:
         log(f"pooled {len(added)} photo(s) from {len(others)} other harvest(s) of this boulder")
     return added
+
+
+def anchors_of(others: list[Path]) -> list[Path]:
+    """The photos other harvests of the same boulder kept from their problems' pages and videos: known photos
+    of the boulder, for the relevance filter to match this harvest's web photos against."""
+    from .relevance import is_trusted
+    return [f for o in others if (o / "photos").is_dir() for f in sorted((o / "photos").iterdir())
+            if f.suffix.lower() in (".jpg", ".jpeg", ".png") and is_trusted(f)]
 
 
 # ----------------------------------------------------------------------------- orchestrate
@@ -449,7 +474,8 @@ def steps(sources: set[str], relevance_filter: bool = True) -> list[tuple[str, s
 
 
 def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = None, relevance_filter: bool = True,
-            tracker=None, pool_from: list[Path] | None = None, want: Callable[[str], None] | None = None) -> dict:
+            tracker=None, pool_from: list[Path] | None = None, anchors_from: list[Path] | None = None,
+            want: Callable[[str], None] | None = None) -> dict:
     """Collect photos for climb `c` into project_dir/photos (provenance + reports are written
     next to it, never inside it, so the reconstruction only sees images).
 
@@ -458,6 +484,8 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         relevance_filter: drop photos not substantially of the boulder (see relevance.py).
         tracker: a progress.Tracker with this harvest's steps().
         pool_from: other harvests of the same boulder, whose photos are added (pool()).
+        anchors_from: other harvests of the same boulder, whose own photos (anchors_of()) the relevance
+            filter matches web photos against, without adding them.
         want: given the URL of each video YouTube wouldn't let this server have, to ask volunteers (video_frames()).
     """
     from . import diversity, relevance
@@ -512,7 +540,12 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
     try:
         paths = diversity.dedupe(photos_dir, log, progress=progress("dedupe"))
         if relevance_filter:
-            filtered = relevance.filter_photos(paths, project_dir / "rejected", log, progress=progress("filter"))
+            more = anchors_of(anchors_from) if anchors_from else []
+            if more:
+                log(f"relevance: also matching against {len(more)} photo(s) from the pages and videos of "
+                    f"{len(anchors_from)} other harvest(s) of this boulder")
+            filtered = relevance.filter_photos(paths, project_dir / "rejected", log, progress=progress("filter"),
+                                               more_anchors=more)
             (project_dir / "relevance.json").write_text(json.dumps(filtered, indent=1))
             paths = [p for p in paths if p.name in set(filtered["kept"])]
         report = diversity.assess_unique(paths, log, progress=progress("diversity"))

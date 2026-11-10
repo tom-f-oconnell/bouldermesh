@@ -14,6 +14,12 @@
                                                        if that's anything (default http://localhost:$PORT, or 8470)
   python cli.py offtopic-split [--limit N]             harvests filtered before the boulder check (CLIP): split what
                                                        didn't match into what looks like bouldering and what doesn't
+  python cli.py export-boulders <bundle.tar> [--boulder NAME ...] [--since TIME] [--data DIR]
+                                                       boulders' own meshes, with their climbs' harvests, from a copy
+                                                       of the data (default every boulder with a project; TIME is
+                                                       seconds since 1970, or YYYY-MM-DD[THH:MM] local time)
+  python cli.py import-bundle <bundle.tar> [--data DIR]  add such a bundle to another copy, replacing nothing there
+                                                       (run it where the data is writable: in Docker, docker exec)
 
 Environment: GOOGLE_CSE_KEY/GOOGLE_CSE_CX, FLICKR_KEY, HARVEST_DDG=0 (no DuckDuckGo), DATA_DIR (cache location),
              BOULDERMESH_UA (please set a contact address), HTTP_MIN_INTERVAL (min. seconds between requests
@@ -50,7 +56,24 @@ def main():
     j = sub.add_parser("jobs"); j.add_argument("--server", default=f"http://localhost:{os.environ.get('PORT', '8470')}")
     o = sub.add_parser("offtopic-split"); o.add_argument("--limit", type=int, default=0)
     sub.add_parser("span-check")
+    e = sub.add_parser("export-boulders"); e.add_argument("bundle"); e.add_argument("--boulder", action="append")
+    e.add_argument("--since"); e.add_argument("--data")
+    i = sub.add_parser("import-bundle"); i.add_argument("bundle"); i.add_argument("--data")
     a = ap.parse_args()
+
+    if a.cmd in ("export-boulders", "import-bundle"):
+        if a.data:
+            os.environ["DATA_DIR"] = str(Path(a.data).resolve())
+        import bundle
+        if a.cmd == "import-bundle":
+            bundle.import_(Path(a.bundle).resolve())
+        else:
+            since = None
+            if a.since:
+                import datetime
+                since = float(a.since) if a.since.replace(".", "").isdigit() else datetime.datetime.fromisoformat(a.since).timestamp()
+            bundle.export(Path(a.bundle).resolve(), a.boulder, since)
+        return
 
     if a.cmd == "jobs":
         sys.exit(jobs(a.server))

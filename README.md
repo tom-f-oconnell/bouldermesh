@@ -76,11 +76,16 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
 
 ## Linking meshes to climbs
 
-* Every climb gets a row in `climbs`; `mesh_links` is many-to-many (one boulder mesh ↔
-  several problems). Meshes also carry their own lat/lng (inherited from the first linked
-  climb, editable).
+* Every climb gets a row in `climbs`; `mesh_links` is many-to-many. Meshes also carry their own
+  lat/lng (inherited from the first linked climb, editable).
 * Create a project with a climb selected, or harvest from a climb page, and the resulting
   mesh is auto-linked and geolocated.
+* A climb's card lists its own meshes, then its boulder: the boulder's own mesh (below), and the
+  other climbs on it, marked ▣ where they have meshes of their own. Climbs share a boulder when
+  their area paths match, unless the last area's name says it holds several (`... Boulders`,
+  `... Area`, `... Cluster`). Areas used to link a climb to the mesh made for another climb on its
+  boulder rather than mesh it; those links show as "made for" that climb, as such a mesh may not
+  show the other side of the rock.
 * `GET /api/geojson` serves climbs + meshes for the map tab (Leaflet, OSM/OpenTopoMap).
 
 ## Harvest → rough photogrammetry
@@ -88,9 +93,9 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
 1. Open a climb → *Harvest photos* (*Harvest again* once it has one). Queries are built from
    the boulder name, area and problem name; geo sources use the coordinates. Everything lands
    in `data/projects/<id>/photos/`, with provenance in `sources.json`.
-2. The photos earlier harvests of the same boulder found are added, for any of its problems: what
-   each kept, and what didn't match known photos, as a search for one problem often finds another's
-   side of the rock. Their page photos and video frames count as known photos of it too.
+2. Only photos found for the climb are kept, so that its mesh shows it. The page photos and video
+   frames that other harvests of its boulder kept still count as known photos of the rock for the
+   filter below.
 3. De-duplication, then the relevance filter (`climbs/relevance.py`): title cards and blank
    frames go, then photos that don't look like bouldering at all (CLIP), and photos from
    area-wide sources (web search, Commons, Flickr) must match known photos of the boulder from
@@ -149,15 +154,15 @@ On the *Areas* tab, paste a Mountain Project area URL, such as
 - **Highest rated**, by average stars.
 - **Most photos and videos**, judged from the pages of the next few popular climbs.
 
-Its boulder problems are then meshed one at a time until you stop, or the list runs out. A
-problem on a boulder that already has a mesh is linked to it rather than meshed again, and so are
-those skipped earlier once their boulder gets one. A climb without enough photos is skipped, and the
-run moves on; the next on its boulder starts with the photos its harvest found.
+Its boulder problems are then meshed one at a time until you stop, or the list runs out: each one
+harvested and meshed on its own, whatever else on its boulder has a mesh, as a mesh made for a problem
+on one side of a rock isn't one of a problem on the other side. A climb without enough photos is
+skipped, and the run moves on.
 
-*Try N skipped boulders with all their photos* tries boulders that every climb so far was skipped on
-again, each from the photos all their harvests found together, without downloading anything. *Try N
-skipped climbs again* meshes climbs skipped for too few viewpoints that the viewpoint check would now
-let COLMAP try.
+*Mesh N boulders from all their climbs' photos* makes each boulder with more than one climb on the
+list a mesh of its own (below), harvesting first its climbs the list hasn't reached. *Try N skipped
+climbs again* meshes climbs skipped for too few viewpoints that the viewpoint check would now let
+COLMAP try.
 
 *Stop now* pauses the climb in progress and *Stop after this climb* finishes it. Every finished mesh
 stays, and *Resume* carries on from the last step the climb finished. A server restart loses no more
@@ -180,6 +185,32 @@ that one, and its card and log say what ended it, including when something outsi
 Jobs you start by hand go first, between climbs. Expect each climb to take most of an hour on CPU,
 and about 170 MB of disk plus up to a few hundred MB of download cache. Mountain Project's export
 stops at 1000 climbs: in a bigger area, these are its most popular 1000.
+
+## A boulder's own mesh
+
+*Mesh the boulder from all its climbs' photos*, on a climb's card, makes a mesh of the whole rock from
+every photo its climbs' harvests kept, in a project and mesh of its own (`<boulder> (boulder)`), which
+leaves each climb's own mesh and harvest as they are. Climbs on it that have never been harvested are
+harvested first, each in a project of its own, as an area would, which an area then meshes from when it
+gets there. The pool takes each harvest's page photos and video frames first, the harvests taking turns,
+then their other photos, up to 400; `climbs.json` in the project records which harvests were pooled for
+each climb, and which of their photos are the climb's own.
+
+Each climb is then placed on the mesh by its own photos, the ones from its page and its videos (a web
+search finds the boulder, not the problem): it's seen from the middle one of those the mesh placed,
+looking at where they all look (`backend/viewpoints.py`, `views.json` in the mesh). The climb's *Mesh*
+button and the boulder chip on its card open the boulder's mesh from there, and the viewer's *Seen
+from* menu moves between the climbs on it. Meshing the boulder again pools again and makes a new
+version; the old one stays, as for rebuilt meshes.
+
+A test copy's boulders can be moved to another server with what made them:
+
+    python3 cli.py export-boulders bundle.tar --data <copy's data> [--boulder "Dino's Egg"] [--since 2026-11-10]
+    docker compose exec -T bouldermesh python3 cli.py import-bundle /data/bundle.tar   # the bundle in ./data
+
+The import adds the boulders' projects and meshes, the harvests behind them, and their climbs, matched
+by their Mountain Project id, and replaces nothing. A public server's database is replaced each time
+`deploy/ship.sh` runs, so import into the server you ship from.
 
 ## Beta: the holds climbers use
 
@@ -468,6 +499,8 @@ the admin page gives. Each server keeps its volunteers in `data/volunteers.sqlit
     backend/climbs/harvest.py      photo sources, download, provenance
     backend/climbs/youtube.py      finding climbs' videos, and climbers' heights and ape indexes in their text
     backend/provenance.py          where each mesh's photos came from, kept with the mesh
+    backend/viewpoints.py          where each climb on a boulder's own mesh is seen from
+    backend/bundle.py              moving boulders' meshes and their harvests from one copy of the data to another
     backend/beta.py                the holds climbers use, from their hands and feet in videos
     backend/scale.py               how big a mesh is, from the people in its photos and Mountain Project's height
     backend/admin.py               the admin page's server; frontend/admin.html is the page
@@ -509,11 +542,12 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/climbs/search {q, lat, lng, radius_m}     OpenBeta live search
     POST /api/climbs/manual {...} · POST /api/climbs/kaya-export (multipart csv/json)
     POST /api/climbs/{id}/harvest {sources:[climb,google,ddg,commons,flickr,youtube], reconstruct, filter}
+    POST /api/climbs/{id}/boulder                       mesh its boulder from every photo of its climbs, harvesting those never harvested
     GET  /api/campaigns · POST /api/campaigns {area, order:popularity|rating|data, start, csv}
     POST /api/campaigns/{id}/start · POST /api/campaigns/{id}/stop {now} · DELETE /api/campaigns/{id}
     POST /api/campaigns/{id}/retry                      its failed climbs, ahead of the rest
     POST /api/campaigns/{id}/harvest-again {videos_only, then_rebuild} · POST /api/campaigns/{id}/rebuild {changed_only, skipped_only}
-    POST /api/campaigns/{id}/pool                       its boulders every climb was skipped on, again from all their photos
+    POST /api/campaigns/{id}/boulders                   its boulders with more than one climb, each meshed from all their photos
     GET  /api/videos                                    every video, with the climber's size if stated
     POST /api/meshes/{id}/make-current                  go back to an older version of a rebuilt mesh
     GET|POST /api/meshes/{id}/beta                      the holds found in its videos, and those marked; POST finds them
@@ -535,7 +569,9 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_parsers.py     # offline: MP/OpenBeta/Kaya parsers on fixtures
     python3 tests/test_relevance.py   # offline: relevance filter on synthetic photos, progress tracking (CLIP downloads its model)
     python3 tests/test_pipeline.py    # offline: reconstruction steps with COLMAP/OpenMVS stubbed, progress parsing
-    python3 tests/test_campaign.py    # offline: meshing an area, with harvest and reconstruction stubbed: order, stopping, restarts, retries
+    python3 tests/test_campaign.py    # offline: meshing an area, with harvest and reconstruction stubbed: order, stopping, restarts, retries, boulders' meshes
+    python3 tests/test_viewpoints.py  # offline: placing each climb on a boulder's mesh by its own photos
+    python3 tests/test_bundle.py      # offline: moving a boulder's mesh and its harvests to another copy of the data
     python3 tests/test_diagnostics.py # offline: what's recorded when real processes fail or get killed
     python3 tests/test_meshclean.py   # offline: finding and hiding stray pieces on small GLBs, the cleaned download
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Meshing a whole area: order, one mesh per boulder, stopping, restarts. Offline: the harvest and
+"""Meshing a whole area: order, a mesh per climb, boulders' own meshes, stopping, restarts. Offline: the harvest and
 reconstruction are stubbed, but stopping kills a real running process."""
 from __future__ import annotations
 
@@ -37,7 +37,8 @@ started = threading.Event()
 fetched: list[str] = []
 
 
-pools: dict[str, list[str]] = {}   # climb name -> the projects its harvest pooled photos from
+pools: dict[str, list[str]] = {}     # climb or boulder name -> the projects its harvest pooled photos from
+anchors: dict[str, list[str]] = {}   # climb name -> the projects its harvest matched web photos against
 
 
 def fake_fetch(url, include_children=False):
@@ -52,9 +53,10 @@ def fake_fetch(url, include_children=False):
                   videos=[Media(url=f"http://y/{i}", kind="video") for i in range(videos.get(name, 0))])]
 
 
-def fake_harvest(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, want=None):
+def fake_harvest(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, anchors_from=None, want=None):
     harvested.append(c.name)
     pools[c.name] = [p.name for p in pool_from or []]
+    anchors[c.name] = [p.name for p in anchors_from or []]
     what = outcome.get(c.name) if sources else outcome.get("pooled")
     if what == "outage":
         raise RuntimeError("no network")
@@ -119,18 +121,19 @@ try:
 except ValueError as e:
     assert "no boulder problems" in str(e), e
 
-# --- popularity order: the export's own; one mesh per boulder ----------------------------------
+# --- popularity order: the export's own; a mesh per climb, whatever else is on its boulder ------------
 c = server.create_campaign("", "popularity", CSV)
 assert c["name"] == "Sector" and c["status"] == "running", c
 run_all(c["id"])
-assert harvested == ["Alpha", "Beta", "Gamma", "Delta", "Delta2"], harvested   # Alpha2 shares Alpha's rock; "Boulders" don't share
+assert harvested == ["Alpha", "Beta", "Gamma", "Alpha2", "Delta", "Delta2"], harvested   # Alpha2 has its own, on Alpha's rock
 got = items(c["id"])
 assert server.campaign_status(c["id"]) == "done" and all(i["status"] == "done" for i in got.values()), got
-assert got["Alpha2"]["mesh_id"] == got["Alpha"]["mesh_id"] and got["Alpha2"]["note"] == "same boulder as Alpha", got["Alpha2"]
+assert got["Alpha2"]["mesh_id"] != got["Alpha"]["mesh_id"] and got["Alpha2"]["note"] is None, got["Alpha2"]
+assert anchors["Alpha2"] == [got["Alpha"]["project_id"]] and pools["Alpha2"] == [], "matched against Alpha's photos, not given them"
 assert got["Delta2"]["mesh_id"] != got["Delta"]["mesh_id"]
-assert server.q("SELECT COUNT(*) n FROM meshes", one=True)["n"] == 5
+assert server.q("SELECT COUNT(*) n FROM meshes", one=True)["n"] == 6
 links = server.q("SELECT COUNT(*) n FROM mesh_links WHERE mesh_id=?", got["Alpha"]["mesh_id"], one=True)["n"]
-assert links == 2, links
+assert links == 1, links
 pdir = server.PROJECTS / got["Alpha"]["project_id"]
 assert (pdir / "photos").is_dir() and not (pdir / "work").exists(), list(pdir.iterdir())
 assert (server.MESHES / got["Alpha"]["mesh_id"] / "mesh.ply").exists()
@@ -173,17 +176,12 @@ run_all(c["id"])
 got = items(c["id"])
 assert got["Beta"]["status"] == "failed" and "OpenMVS crashed" in got["Beta"]["note"], got["Beta"]
 assert got["Gamma"]["status"] == "done", got["Gamma"]
-assert got["Alpha2"]["status"] == "done" and "Alpha2" in harvested, got["Alpha2"]   # its boulder has no mesh yet: worth trying
-assert pools["Alpha2"] == [got["Alpha"]["project_id"]], "its harvest had the photos of Alpha's, on the same boulder"
-assert got["Alpha"]["status"] == "done" and got["Alpha"]["mesh_id"] == got["Alpha2"]["mesh_id"], "linked once its boulder had a mesh"
-assert got["Alpha"]["note"] == "same boulder as Alpha2", got["Alpha"]
-assert server.q("SELECT 1 FROM mesh_links WHERE climb_id=? AND mesh_id=?", got["Alpha"]["climb_id"], got["Alpha2"]["mesh_id"])
-server.set_item(c["id"], got["Alpha"]["source_id"], status="skipped", mesh_id=None)    # as before linking was done
-assert server.link_existing_boulder_meshes() == 1 and server.link_existing_boulder_meshes() == 0
-assert items(c["id"])["Alpha"]["status"] == "done"
+assert got["Alpha2"]["status"] == "done" and "Alpha2" in harvested, got["Alpha2"]
+assert got["Alpha"]["status"] == "skipped" and got["Alpha"]["mesh_id"] is None, "not linked to the mesh made for Alpha2"
+assert not server.q("SELECT 1 FROM mesh_links WHERE climb_id=?", got["Alpha"]["climb_id"])
 print("failures OK")
 
-# --- a boulder whose climbs were each skipped, tried again with all their photos together --------------
+# --- a boulder's own mesh, from every photo of its climbs, apart from theirs ---------------------------------
 fresh()
 pools.clear()
 outcome.update(Alpha="poor", Alpha2="poor")
@@ -191,21 +189,70 @@ c = server.create_campaign("", "popularity", CSV)
 run_all(c["id"])
 got = items(c["id"])
 assert got["Alpha"]["status"] == got["Alpha2"]["status"] == "skipped", (got["Alpha"], got["Alpha2"])
-assert [x["source_id"] for x in server.poolable(c["id"])] == [got["Alpha"]["source_id"]], "one per boulder, its top climb"
-assert server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["again"]["poolable"] == 1
+assert [x["source_id"] for x in server.boulders_to_mesh(c["id"])] == [got["Alpha"]["source_id"]], "one per boulder, its top climb"
+assert server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["again"]["boulders"] == 1
 harvests = {got["Alpha"]["project_id"], got["Alpha2"]["project_id"]}
-assert server.queue_pooled(c["id"]) == 1 and server.campaign_status(c["id"]) == "running"
-assert server.poolable(c["id"]) == [] and server.queue_pooled(c["id"]) == 0, "queued once, not again by its other climb"
+assert server.queue_boulders(c["id"]) == 1 and server.campaign_status(c["id"]) == "running"
+assert server.boulders_to_mesh(c["id"]) == [] and server.queue_boulders(c["id"]) == 0, "queued once, not again by its other climb"
 harvested.clear()
 run_all(c["id"])
 got = items(c["id"])
-pooled = server.q("SELECT * FROM projects WHERE id=?", got["Alpha"]["project_id"], one=True)
-assert pooled["name"] == "Alpha Boulder (pooled)" and pooled["status"] == "done", pooled
-assert set(pools["Alpha"]) == harvests and harvested == ["Alpha"], (pools, harvested)
-assert got["Alpha"]["status"] == "done" and "harvests of its boulder" in got["Alpha"]["note"], got["Alpha"]
-assert got["Alpha2"]["status"] == "done" and got["Alpha2"]["mesh_id"] == got["Alpha"]["mesh_id"], got["Alpha2"]
-assert server.poolable(c["id"]) == [] and server.queue_pooled(c["id"]) == 0, "tried once"
-print("pooling OK")
+proj = server.q("SELECT * FROM projects WHERE kind='boulder'", one=True)
+boulder = server.boulder_of(server.climb_row(got["Alpha"]["climb_id"])["area_path"])
+assert proj["name"] == "Alpha Boulder (boulder)" and proj["status"] == "done" and proj["boulder"] == boulder, proj
+assert proj["climb_id"] is None, "nobody's climb in particular"
+assert set(pools["Alpha Boulder"]) == harvests and harvested == ["Alpha Boulder"], (pools, harvested)
+mesh = server.q("SELECT * FROM meshes WHERE id=?", proj["mesh_id"], one=True)
+assert mesh["boulder"] == boulder and (mesh["lat"], mesh["lng"]) == (34.0, -116.0), mesh
+assert not server.q("SELECT 1 FROM mesh_links WHERE mesh_id=?", mesh["id"]), "linked to no climb as its own"
+assert got["Alpha"]["status"] == got["Alpha2"]["status"] == "skipped" and got["Alpha"]["mesh_id"] is None, got["Alpha"]
+assert "its boulder meshed from 20 photos of 2 of its 2 climbs" in got["Alpha"]["note"] and got["Alpha"]["redo"] is None, got["Alpha"]
+record = json.loads((server.PROJECTS / proj["id"] / server.CLIMBS_FILE).read_text())
+assert {x["name"]: x["projects"] for x in record["climbs"]} == {"Alpha": [got["Alpha"]["project_id"]], "Alpha2": [got["Alpha2"]["project_id"]]}
+assert "no cameras were kept" in server.read_log(proj["id"]), "the stand-in keeps none, so no views"
+info = server.climb_row(got["Alpha"]["climb_id"], full=True)
+assert info["meshes"] == [] and info["n_links"] == 0 and info["n_boulder"] == 1, info
+assert [m["id"] for m in info["boulder"]["meshes"]] == [mesh["id"]] and [x["name"] for x in info["boulder"]["climbs"]] == ["Alpha2"], info["boulder"]
+assert server.boulders_to_mesh(c["id"]) == [] and server.queue_boulders(c["id"]) == 0, "meshed once"
+
+# meshing it again replaces its mesh, which stays as an older version; the climbs' own meshes are left alone
+outcome.clear()
+code, status = server.mesh_boulder(boulder)
+assert status == 202 and code["project_id"] == proj["id"], code
+assert server.mesh_boulder(boulder)[1] == 409, "already queued"
+job = server.jobs.get_nowait()
+assert job == {"type": "boulder", "pid": proj["id"]}, job
+server.run_job(job)
+again = server.q("SELECT * FROM projects WHERE id=?", proj["id"], one=True)
+assert again["status"] == "done" and again["mesh_id"] != mesh["id"], again
+assert server.q("SELECT replaced_by FROM meshes WHERE id=?", mesh["id"], one=True)["replaced_by"] == again["mesh_id"]
+assert "pooling its climbs' photos again" in server.read_log(proj["id"])
+print("boulder meshes OK")
+
+# --- a boulder's mesh harvests first its climbs an area hasn't reached; the area then meshes them from that ----
+fresh()
+pools.clear()
+c = server.create_campaign("", "popularity", CSV)
+server.next_campaign_step()     # Alpha
+server.stop_campaign(c["id"])
+got = items(c["id"])
+assert got["Alpha"]["status"] == "done" and got["Alpha2"]["status"] == "pending" and got["Alpha2"]["climb_id"] is None, got
+assert [x["source_id"] for x in server.boulders_to_mesh(c["id"])] == [got["Alpha"]["source_id"]]
+harvested.clear()
+assert server.queue_boulders(c["id"]) == 1
+run_all(c["id"])
+got = items(c["id"])
+assert harvested == ["Alpha2", "Alpha Boulder"], harvested
+assert got["Alpha2"]["climb_id"] and got["Alpha2"]["project_id"] and got["Alpha2"]["status"] == "pending", got["Alpha2"]
+assert server.q("SELECT status FROM projects WHERE id=?", got["Alpha2"]["project_id"], one=True)["status"] == "harvested"
+assert set(pools["Alpha Boulder"]) == {got["Alpha"]["project_id"], got["Alpha2"]["project_id"]}
+assert server.campaign_status(c["id"]) == "stopped", "it ran only what was queued"
+harvested.clear()
+server.q("UPDATE campaigns SET status='running' WHERE id=?", c["id"], write=True)
+run_all(c["id"])
+got = items(c["id"])
+assert "Alpha2" not in harvested and got["Alpha2"]["status"] == "done" and got["Alpha2"]["mesh_id"], (harvested, got["Alpha2"])
+print("boulder harvests OK")
 
 # --- COLMAP placing too few is a skip, not a failure; skipped climbs the viewpoint check now lets through ---
 fresh()
@@ -302,7 +349,7 @@ stop_worker.set()
 t.join(5)
 got = items(c["id"])
 assert server.campaign_status(c["id"]) == "done" and got["Beta"]["status"] == "done", got
-assert harvested == ["Alpha", "Beta", "Beta", "Gamma", "Delta", "Delta2"], harvested   # Alpha isn't redone
+assert harvested == ["Alpha", "Beta", "Beta", "Gamma", "Alpha2", "Delta", "Delta2"], harvested   # Alpha isn't redone
 assert got["Beta"]["project_id"] == paused, "the same project carries on"
 print("resume OK")
 
@@ -781,14 +828,14 @@ photo_sets: dict[str, list[str]] = {}    # the photos each climb's harvest finds
 searched: dict[str, list[str]] = {}      # the videos a YouTube search finds of each climb
 
 
-def harvest_with_photos(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, want=None):
+def harvest_with_photos(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, anchors_from=None, want=None):
     harvested.append(c.name)
     for n in photo_sets.get(c.name, ["a.jpg", "b.jpg", "c.jpg"]):
         (project_dir / "photos" / n).write_bytes(b"x")
     (project_dir / "sources.json").write_text(json.dumps({"climb": {}, "files": [    # frames of the videos it found, as a real one records
         {"file": f"yt_{i:08x}_000.jpg", "source": "youtube", "url": u} for i, u in enumerate(searched.get(c.name, []))]}))
     return {"images": 3, "video_frames": 1, "queries": [], "diversity": {"verdict": "poor" if outcome.get(c.name) == "poor" else "good"},
-            "videos": [{"url": f"https://www.youtube.com/watch?v={c.name[:5]:x<11}", "found_by": "search", "title": c.name,
+            "videos": [{"url": f"https://www.youtube.com/watch?v={c.name[:6]:x<11}", "found_by": "search", "title": c.name,
                         "description": "I'm 5'10\" with a +2 ape index", "frames": 1, "license": "YouTube standard licence (all rights reserved)"}]}
 
 
@@ -815,12 +862,12 @@ outcome.clear()
 harvested.clear()
 photo_sets.update({"Beta": ["a.jpg", "b.jpg", "d.jpg"], "Gamma": ["e.jpg", "f.jpg", "g.jpg"]})
 (server.PROJECTS / got["Beta"]["project_id"] / "photos" / "stale.jpg").write_bytes(b"x")
-assert server.queue_redo(c["id"], "harvest") == 5, "all but Alpha2, which shares Alpha's mesh (Delta Boulders is a group of them)"
+assert server.queue_redo(c["id"], "harvest") == 6
 assert status(c["id"]) == ("running", 1)
 assert server.q("SELECT status FROM projects WHERE id=?", got["Alpha"]["project_id"], one=True)["status"] == "done"
 run_all(c["id"])
 got = items(c["id"])
-assert sorted(harvested) == ["Alpha", "Beta", "Delta", "Delta2", "Gamma"], harvested
+assert sorted(harvested) == ["Alpha", "Alpha2", "Beta", "Delta", "Delta2", "Gamma"], harvested
 assert status(c["id"]) == ("done", 0), status(c["id"])
 assert got["Alpha"]["status"] == "done" and got["Alpha"]["changed"] == 0 and "the same photos" in got["Alpha"]["note"], got["Alpha"]
 assert got["Beta"]["status"] == "done" and got["Beta"]["changed"] == 1 and got["Beta"]["mesh_id"] == old["Beta"], got["Beta"]
@@ -831,7 +878,7 @@ log = server.read_log(got["Beta"]["project_id"])
 assert "-- harvesting again" in log and log.index("done") < log.index("-- harvesting again"), "its log is added to"
 assert server.q("SELECT status FROM projects WHERE id=?", got["Beta"]["project_id"], one=True)["status"] == "done"
 view = server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))
-assert view["again"] == {"changed": 2, "queued": 0, "poolable": 0, "triable": 0}, view["again"]
+assert view["again"] == {"changed": 2, "queued": 0, "boulders": 1, "triable": 0}, view["again"]
 
 # rebuilding the changed ones: a new mesh takes over the old one's climbs, which stays as an older version
 assert server.queue_redo(c["id"], "rebuild-changed") == 2
@@ -846,12 +893,13 @@ assert got["Gamma"]["status"] == "done" and got["Gamma"]["mesh_id"] and got["Gam
 assert got["Alpha"]["mesh_id"] == old["Alpha"], "unchanged, so not rebuilt"
 assert not (server.PROJECTS / got["Beta"]["project_id"] / "work").exists()
 
-# rebuilding all, including a boulder's mesh that another climb shares, which follows it
-assert server.queue_redo(c["id"], "rebuild") == 5
+# rebuilding all, each climb on a boulder its own
+alpha2 = got["Alpha2"]["mesh_id"]
+assert server.queue_redo(c["id"], "rebuild") == 6
 run_all(c["id"])
 got = items(c["id"])
-assert got["Alpha"]["mesh_id"] != old["Alpha"] and got["Alpha2"]["mesh_id"] == got["Alpha"]["mesh_id"], (got["Alpha"], got["Alpha2"])
-assert server.q("SELECT mesh_id FROM mesh_links WHERE climb_id=?", got["Alpha2"]["climb_id"])[0]["mesh_id"] == got["Alpha"]["mesh_id"]
+assert got["Alpha"]["mesh_id"] != old["Alpha"] and got["Alpha2"]["mesh_id"] not in (alpha2, got["Alpha"]["mesh_id"]), (got["Alpha"], got["Alpha2"])
+assert server.q("SELECT mesh_id FROM mesh_links WHERE climb_id=?", got["Alpha2"]["climb_id"])[0]["mesh_id"] == got["Alpha2"]["mesh_id"]
 newest = got["Alpha"]["mesh_id"]
 
 # going back to an older version
@@ -859,8 +907,7 @@ server.make_current(old["Alpha"])
 assert server.q("SELECT replaced_by FROM meshes WHERE id=?", old["Alpha"], one=True)["replaced_by"] is None
 assert server.q("SELECT replaced_by FROM meshes WHERE id=?", newest, one=True)["replaced_by"] == old["Alpha"]
 assert server.q("SELECT mesh_id FROM projects WHERE id=?", got["Alpha"]["project_id"], one=True)["mesh_id"] == old["Alpha"]
-assert {r["climb_id"] for r in server.q("SELECT climb_id FROM mesh_links WHERE mesh_id=?", old["Alpha"])} == \
-    {got["Alpha"]["climb_id"], got["Alpha2"]["climb_id"]}
+assert {r["climb_id"] for r in server.q("SELECT climb_id FROM mesh_links WHERE mesh_id=?", old["Alpha"])} == {got["Alpha"]["climb_id"]}
 
 # a rebuild that fails keeps the mesh it had
 outcome["Delta"] = "boom"
@@ -876,7 +923,7 @@ outcome.clear()
 harvested.clear()
 searched.update({"Alpha": ["https://www.youtube.com/watch?v=aaaaaaaaaaa"]})
 server.youtube_mod.metadata = lambda url: {"url": url, "title": "t", "description": "", "license": "x"}
-assert server.queue_redo(c["id"], "videos") == 5
+assert server.queue_redo(c["id"], "videos") == 6
 run_all(c["id"])
 got = items(c["id"])
 assert harvested == ["Alpha"], harvested
@@ -888,7 +935,7 @@ harvested.clear()
 searched.update({"Beta": ["https://www.youtube.com/watch?v=bbbbbbbbbbb"]})
 photo_sets["Beta"] = ["a.jpg", "b.jpg", "h.jpg"]
 beta_mesh, alpha_mesh = items(c["id"])["Beta"]["mesh_id"], items(c["id"])["Alpha"]["mesh_id"]
-assert server.queue_redo(c["id"], "videos+rebuild") == 5
+assert server.queue_redo(c["id"], "videos+rebuild") == 6
 run_all(c["id"])
 got = items(c["id"])
 assert harvested == ["Beta"], harvested
@@ -922,7 +969,7 @@ w1, w2, w3 = server.Worker("one"), server.Worker("two", remote=True), server.Wor
 server._workers.extend([w1, w2, w3])
 with server._claim_lock:
     picks = [server._claim(w) for w in (w1, w2, w3)]
-assert [p[1]["name"] for p in picks] == ["Alpha", "Beta", "Gamma"], "Alpha2 waits: its boulder is Alpha's, being meshed"
+assert [p[1]["name"] for p in picks] == ["Alpha", "Beta", "Gamma"], "Alpha2 waits: its boulder is Alpha's, being harvested"
 assert [w.doing for w in (w1, w2, w3)] == ["Alpha", "Beta", "Gamma"] and server.busy_campaigns() == {c["id"]}
 assert {i["name"] for i in server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["running"]} == {"Alpha", "Beta", "Gamma"}
 server.stop_campaign(c["id"], now=True)

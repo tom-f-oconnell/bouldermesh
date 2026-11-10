@@ -313,7 +313,8 @@ def split_rejected(project_dir: Path, log: Log, progress: Progress | None = None
 
 # ------------------------------------------------------------------------------ all together
 def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: list[str] | None = None,
-                  anchors: list[Path] | None = None, progress: Progress | None = None) -> dict:
+                  anchors: list[Path] | None = None, progress: Progress | None = None,
+                  more_anchors: list[Path] | None = None) -> dict:
     """Filter photos, moving the rejected ones to `rejected` (None: only report).
 
     Args:
@@ -322,6 +323,8 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
         methods: which of available() to run; default all.
         anchors: photos known to show the boulder; default those from trusted sources.
         progress: progress(fraction, detail).
+        more_anchors: photos known to show the boulder from elsewhere, such as other problems' pages: matched
+            against after this set's own anchors, but not themselves filtered or kept.
 
     Returns:
         A JSON-able report: methods run, kept file names, rejected {name: reason}, per-photo scores.
@@ -356,6 +359,11 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
     if "same-rock" in methods and alive:
         anchor_list = [p for p in (anchors if anchors is not None else alive) if p in alive and (anchors is not None or is_trusted(p))]
         candidates = [p for p in alive if p not in anchor_list]
+        names = {a.name for a in anchor_list}
+        for p in more_anchors or []:     # the same photo can be on more than one problem's page
+            if p.name not in names:
+                anchor_list.append(p)
+                names.add(p.name)
         if candidates:
             for p, r in same_rock(candidates, anchor_list, log, sub(0.3, 1.0)).items():
                 scores[p.name].update(inliers=r["inliers"], coverage=round(r["coverage"], 3), match=r["match"])

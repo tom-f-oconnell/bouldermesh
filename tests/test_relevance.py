@@ -93,6 +93,16 @@ with tempfile.TemporaryDirectory() as td:
         for p in (near, far, anchor):
             p.unlink()
 
+        # another problem's page photo of the same rock, from another harvest, anchors web photos without being kept
+        elsewhere = tmp / "elsewhere"
+        elsewhere.mkdir()
+        theirs = view_of(elsewhere, "mountainproject_z.jpg", 650, 450)
+        web_only = [view_of(photos, "ddg_w1.jpg", 700, 500), other]
+        r = relevance.filter_photos(web_only, None, logs.append, methods=["same-rock"], more_anchors=[theirs])
+        assert r["rejected"] == {"commons_other.jpg": "nomatch"} and r["kept"] == ["ddg_w1.jpg"], r
+        assert r["scores"]["ddg_w1.jpg"]["match"] == "mountainproject_z.jpg", r["scores"]
+        web_only[0].unlink()
+
         # no trusted photos at all: the group that matches each other stands in for the anchors
         web = [view_of(photos, f"web_{i}.jpg", x, y) for i, (x, y) in enumerate(((100, 100), (250, 200), (400, 300), (550, 400)))]
         r = relevance.filter_photos(web + [other], None, logs.append, methods=["same-rock"])
@@ -170,7 +180,10 @@ with tempfile.TemporaryDirectory() as td:
     assert by["mountainproject_1.jpg"]["url"] == "http://x/mountainproject_1.jpg" and by["mountainproject_1.jpg"]["pooled_from"] == "a"
     assert by["yt_ab_7.jpg"]["pooled_from"] == "b" and by["ddg_8.jpg"] == {"file": "ddg_8.jpg", "pooled_from": "b"}, "kept, then unmatched; no junk"
     assert "pooled 5 photo(s) from 2 other harvest(s)" in logged[0], logged
-    assert len(harvest.pool(project("few", [], [], []), [a, b], logged.append, limit=2)) == 2
+    assert by["ddg_2.jpg"]["pooled_from"] == "a" and by["ddg_2.jpg"]["also_in"] == ["b"] and "also_in" not in by["ddg_3.jpg"], by
+    few = harvest.pool(project("few", [], [], []), [a, b], logged.append, limit=2)
+    assert [x["file"] for x in few] == ["mountainproject_1.jpg", "yt_ab_7.jpg"], "each one's own first, taking turns"
+    assert [p.name for p in harvest.anchors_of([a, b])] == ["mountainproject_1.jpg", "yt_ab_7.jpg"]
 
 # --- splitting what didn't match into what looks like bouldering and what doesn't ------------------
 with tempfile.TemporaryDirectory() as td:
