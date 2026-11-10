@@ -443,11 +443,19 @@ bot check their whole network may get) and asks them to agree.
 Volunteers reach the public site's `/volunteer/`, which Caddy passes to a port that answers nothing else (`VOLUNTEER_PORT`,
 47613 in Compose, on loopback only). By default that's the public server's own app, for when it does the harvesting.
 While another machine harvests (hal), `deploy/volunteer-tunnel.service` there keeps an SSH connection to the public
-server that brings `/volunteer/` back to it, through a socket in the public server's `data/tunnel/`: start it first, so
-that folder is yours rather than Docker's, then put `VOLUNTEER_UPSTREAM=unix//run/bm-tunnel/volunteer.sock` in the
-public server's `.env`, restart it, and put `VOLUNTEER_URL=https://<site>` in the harvesting machine's `.env`, for the
-command the admin page gives. Each server keeps its volunteers in `data/volunteers.sqlite`, which `deploy/ship.sh`
-doesn't send.
+server that brings `/volunteer/` back to it, through a socket in the public server's `data/tunnel/`. It runs with no one
+logged in, so it has a key of its own, with no passphrase, which the public server takes for forwarding only:
+
+- on the harvesting machine, make it: `ssh-keygen -t ed25519 -C 'volunteer tunnel' -f ~/.ssh/bouldermesh_tunnel`, with
+  an empty passphrase;
+- on the public server, add its `.pub` to `~/.ssh/authorized_keys` as a line starting
+  `restrict,port-forwarding,command="/bin/false" `, put `StreamLocalBindUnlink yes` in
+  `/etc/ssh/sshd_config.d/20-tunnel.conf` and reload sshd, so a socket left from a dropped connection is replaced, and
+  `mkdir -p ~/bouldermesh/data/tunnel` before Caddy is restarted, so that folder is yours rather than Docker's.
+
+Then install the unit (its first lines say how), put `VOLUNTEER_UPSTREAM=unix//run/bm-tunnel/volunteer.sock` in the public
+server's `.env` and restart it, and put `VOLUNTEER_URL=https://<site>` in the harvesting machine's `.env`, for the command
+the admin page gives. Each server keeps its volunteers in `data/volunteers.sqlite`, which `deploy/ship.sh` doesn't send.
 
 ## Layout
 

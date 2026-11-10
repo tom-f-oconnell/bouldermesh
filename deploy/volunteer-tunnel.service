@@ -1,10 +1,10 @@
 # Brings the public server's /volunteer/ to this machine, when volunteers fetch YouTube videos for a server other than
 # the public one (README, "Volunteers"): Caddy there passes /volunteer/ to a Unix socket in its data/tunnel/, which this
 # SSH connection forwards to this machine's volunteer port. Nothing else here is reachable through it.
-# Edit User, HOST (an SSH alias or user@host, reached with a key that needs no passphrase or agent) and REMOTE_DIR (the
-# repository there), then:
+# It runs with no one logged in, so it needs a key of its own with no passphrase, which the public server accepts for
+# forwarding only, and that server's sshd must replace a socket left from the last connection. README has the steps.
+# Edit User, HOST, KEY and SOCKET (in the repository there: data/tunnel/volunteer.sock), then:
 #     sudo cp deploy/volunteer-tunnel.service /etc/systemd/system/ && sudo systemctl enable --now volunteer-tunnel
-# and on the public server put VOLUNTEER_UPSTREAM=unix//run/bm-tunnel/volunteer.sock in .env and restart it.
 [Unit]
 Description=BoulderMesh volunteers: SSH tunnel from the public server
 After=network-online.target
@@ -12,11 +12,9 @@ Wants=network-online.target
 
 [Service]
 User=tom
-Environment=HOST=bouldermesh REMOTE_DIR=/home/tom/bouldermesh LOCAL_PORT=47613
-# a socket left from the last connection would stop this one from taking its place
-ExecStartPre=/usr/bin/ssh -o BatchMode=yes ${HOST} "mkdir -p ${REMOTE_DIR}/data/tunnel && rm -f ${REMOTE_DIR}/data/tunnel/volunteer.sock"
-ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-    -R ${REMOTE_DIR}/data/tunnel/volunteer.sock:127.0.0.1:${LOCAL_PORT} ${HOST}
+Environment=HOST=tom@178.105.53.11 KEY=/home/tom/.ssh/bouldermesh_tunnel SOCKET=/home/tom/bouldermesh/data/tunnel/volunteer.sock LOCAL_PORT=47613
+ExecStart=/usr/bin/ssh -N -i ${KEY} -o IdentitiesOnly=yes -o BatchMode=yes -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R ${SOCKET}:127.0.0.1:${LOCAL_PORT} ${HOST}
 Restart=always
 RestartSec=20
 
