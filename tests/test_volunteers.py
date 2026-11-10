@@ -348,7 +348,9 @@ def registering() -> None:
 
         # turned down: its token stops working, and says why
         b.revoke(b.volunteer(token("r2"))["id"], "denied")
-        assert "turned down by whoever runs this site" in volunteer("r2", ok=False)
+        out = volunteer("r2", ok=False)
+        assert "won't take this token: this token was turned down by whoever runs this site" in out and "--register" in out, out
+        assert "Traceback" not in out, "a message, not a traceback"
         assert {v["name"]: v["status"] for v in b.state()["volunteers"]}["jane-q-public-2"] == "denied"
 
         # so many waiting that more must wait; and those never heard from again go
@@ -357,6 +359,12 @@ def registering() -> None:
         b.q("UPDATE volunteers SET created=?, last_seen=NULL WHERE status='provisional'", time.time() - 15 * 86400)
         assert "as 'someone'" in volunteer("r5", "--name", "someone"), "the old one dropped, making room"
         assert b.volunteer(token("r3")) is None
+        r = subprocess.run([sys.executable, str(SCRIPT), "--agree", "--once", "--yt-dlp", str(fake), "--home", str(TMP / "r3")],
+                           env=env, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+        assert r.returncode == 3 and "doesn't know this token" in r.stdout and "Traceback" not in r.stderr, r.stdout + r.stderr
+        rules.update(max_waiting=30)
+        out = volunteer("r2", "--register", "--name", "jane again")
+        assert "as 'jane-again': waiting for approval" in out and b.volunteer(token("r2"))["status"] == "provisional", out
     finally:
         httpd.shutdown()
 

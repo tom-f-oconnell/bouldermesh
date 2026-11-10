@@ -40,6 +40,7 @@ GAP = (8.0, 15.0)           # seconds between one fetch from YouTube and the nex
 PER_HOUR, PER_DAY = 15, 100  # the most, whatever the server allows
 BLOCK_HOURS = (1, 2, 4, 8)  # rest after YouTube refuses, longer each time it still does
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
+TURNED_AWAY = 3             # the exit status when the server won't take this token or script: starting again won't help
 CHANNEL_ID = re.compile(r"UC[A-Za-z0-9_-]{22}")
 WORDS = re.compile(r"[^\x00-\x1f\x7f]{3,200}")
 RESULT_KEYS = ("id", "title", "description", "duration", "channel", "channel_id", "uploader")
@@ -88,6 +89,21 @@ def register(server: str, name: str | None) -> str:
         + (f"Until then, it fetches at most {r.get('per_hour')} an hour and {r.get('per_day')} a day."
            if r.get("may_work") else "Until then, it waits."))
     return token
+
+
+def turned_away(server: str, e: urllib.error.HTTPError) -> SystemExit:
+    """Says why the server won't take this token (401, 403) or this script (426), and what to do, rather than a
+    traceback; returns the exit to raise."""
+    said = (getattr(e, "answer", None) or {}).get("error") or f"HTTP {e.code}"
+    if e.code == 401:
+        log(f"{server} doesn't know this token. Run this script with --register to make a new one and register it (it "
+            "waits for approval), or give it a token from whoever runs the site with --token.")
+    elif e.code == 403:
+        log(f"{server} won't take this token: {said}. If that's a mistake, ask whoever runs it; --register makes a new "
+            "token, which waits for their approval.")
+    else:
+        log(f"{server} says this script is too old. Download it again: curl -O {server}/volunteer/bouldermesh_volunteer.py")
+    return SystemExit(TURNED_AWAY)
 
 
 class Server:
@@ -330,7 +346,7 @@ class Volunteer:
                                                              "per_hour": self.per_hour, "per_day": self.per_day, "kinds": KINDS})
             except urllib.error.HTTPError as e:
                 if e.code in (401, 403, 426):
-                    raise SystemExit(f"the server said: {e.answer.get('error') or e}") from None
+                    raise turned_away(self.server.url, e) from None
                 log(f"the server said: {e.answer.get('error') or e}; asking again in 10 min")
                 time.sleep(600)
                 continue
@@ -342,7 +358,12 @@ class Volunteer:
                 try:
                     self.do(r["task"])
                 except urllib.error.HTTPError as e:
-                    log(f"the server said: {e.answer.get('error') or e}")
+                    if e.code in (401, 403, 426):       # its token stopped working partway through
+                        raise turned_away(self.server.url, e) from None
+                    log(f"the server said: {(getattr(e, 'answer', None) or {}).get('error') or e}")
+                except (urllib.error.URLError, OSError) as e:      # as the server going, after trying again
+                    log(f"stopped partway ({e}); asking again in 10 min")
+                    time.sleep(600)
                 if self.args.once:
                     return
                 continue
@@ -361,6 +382,8 @@ def main() -> None:
     ap.add_argument("--token", help="a token whoever runs the server gave you (remembered); without one, it makes its own "
                     "the first time, and registers it")
     ap.add_argument("--name", help="your name or a nickname for whoever runs the server, when registering (asked for if not given)")
+    ap.add_argument("--register", action="store_true", help="make a new token and register it, in place of the one remembered "
+                    "(for one the server no longer takes)")
     ap.add_argument("--per-hour", type=int, default=PER_HOUR, help=f"at most this many videos an hour ({PER_HOUR} at most)")
     ap.add_argument("--per-day", type=int, default=PER_DAY, help=f"at most this many a day ({PER_DAY} at most)")
     ap.add_argument("--agree", action="store_true", help="agree to what's explained on the first run without being asked")
@@ -378,7 +401,9 @@ def main() -> None:
         conf = {}
     server_changed = args.server and args.server != conf.get("server")
     args.server = args.server or conf.get("server")
-    args.token = args.token or (None if server_changed else conf.get("token"))
+    if args.register and args.token:
+        ap.error("--register makes a new token, so not with --token")
+    args.token = args.token or (None if server_changed or args.register else conf.get("token"))
     if not args.server:
         ap.error("--server is needed the first time")
     if conf.get("agreed") != args.server:

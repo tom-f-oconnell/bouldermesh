@@ -51,6 +51,8 @@ MODELS_GB = 5.5             # the models jobs download the first time they need 
 IMAGE_TIMES = 4             # an image takes about this many times its download (compressed layers, kept, and unpacked)
 IMAGE_GUESS_GB = 18         # what to allow for an image whose size the registry won't say (the GPU build's is about 16)
 IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}")
+TURNED_AWAY = 3             # the exit status when the server won't take this token or script: starting again won't help,
+                            # so systemd units leave it stopped (RestartPreventExitStatus)
 
 
 def log(msg: str) -> None:
@@ -63,6 +65,21 @@ class Gone(Exception):
 
 class NotHere(Exception):
     """This machine can't do a job now, through no fault of the job's: it goes back for another machine."""
+
+
+def turned_away(server: str, e: urllib.error.HTTPError) -> SystemExit:
+    """Says why the server won't take this machine's token (401, 403) or this script (426), and what to do, rather than
+    a traceback; returns the exit to raise."""
+    said = (getattr(e, "answer", None) or {}).get("error") or f"HTTP {e.code}"
+    if e.code == 401:
+        log(f"{server} doesn't know this machine's token. Run this script with --register to make a new one and register "
+            "it (it waits for approval), or give it a token from whoever runs the server with --token.")
+    elif e.code == 403:
+        log(f"{server} won't take this machine's token: {said}. If that's a mistake, ask whoever runs it; --register makes "
+            "a new token, which waits for their approval.")
+    else:
+        log(f"{server} says this script is too old. Download it again: curl -O {server}/worker/bouldermesh_worker.py")
+    return SystemExit(TURNED_AWAY)
 
 
 class Server:
@@ -321,7 +338,14 @@ class Worker:
         client = self.client()
         short = self.data_room()
         if self.args.check:
-            r = self.server.call("/worker/api/work", {**client, "check": True})
+            try:
+                r = self.server.call("/worker/api/work", {**client, "check": True}, tries=2)
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403, 426):
+                    raise turned_away(self.server.url, e) from None
+                raise SystemExit(f"the server said: {(getattr(e, 'answer', None) or {}).get('error') or e}") from None
+            except (urllib.error.URLError, OSError) as e:
+                raise SystemExit(f"can't reach {self.server.url}: {e}") from None
             log(f"{self.server.url} knows this token as {r.get('name')!r}"
                 + (": approved" if r.get("status") != "provisional" else
                    ", waiting for approval" + ("; it may get climbs meanwhile" if r.get("may_work") else "; no climbs until then")))
@@ -339,7 +363,7 @@ class Worker:
                 r = self.server.call("/worker/api/work", client)
             except urllib.error.HTTPError as e:
                 if e.code in (401, 403, 426):
-                    raise SystemExit(f"the server said: {e.answer.get('error') or e}") from None
+                    raise turned_away(self.server.url, e) from None
                 log(f"the server said: {e.answer.get('error') or e}; asking again in 5 min")
                 time.sleep(300)
                 continue
@@ -352,7 +376,9 @@ class Worker:
                 try:
                     self.do(r["job"])
                 except urllib.error.HTTPError as e:
-                    log(f"the server said: {e.answer.get('error') or e}")
+                    if e.code in (401, 403, 426):       # its token stopped working partway through: the job went back
+                        raise turned_away(self.server.url, e) from None
+                    log(f"the server said: {(getattr(e, 'answer', None) or {}).get('error') or e}")
                 except (NotHere, OSError) as e:
                     log(f"couldn't do it here ({e}): gave it back; asking again in 5 min")
                     if not self.args.once:
@@ -438,6 +464,8 @@ def main() -> None:
     ap.add_argument("--token", help="a token from the server's admin page (remembered); without one, it makes its own the "
                     "first time, and registers it")
     ap.add_argument("--name", help="your name or a nickname for whoever runs the server, when registering (asked for if not given)")
+    ap.add_argument("--register", action="store_true", help="make a new token and register it, in place of the one remembered "
+                    "(for one the server no longer takes)")
     ap.add_argument("--cpus", type=float, help="at most this many cores for a job (docker run --cpus; remembered)")
     ap.add_argument("--gpu", choices=("auto", "all", "cdi", "none"), help="give jobs the GPU: auto (if nvidia-smi finds one, "
                     "the default), all (--gpus all), cdi (the CDI device nvidia.com/gpu=all) or none (remembered)")
@@ -464,7 +492,9 @@ def main() -> None:
         conf = json.loads(conf_file.read_text())
     except (FileNotFoundError, ValueError):
         conf = {}
-    if args.server and args.server != conf.get("server") and not args.token:
+    if args.register and args.token:
+        ap.error("--register makes a new token, so not with --token")
+    if args.server and args.server != conf.get("server") and not args.token or args.register:
         conf.pop("token", None)     # a token is the server's it was registered with
     for k in ("server", "token", "cpus", "gpu", "image_prefix", "data"):
         if getattr(args, k) is None:

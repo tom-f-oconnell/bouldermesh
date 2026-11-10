@@ -581,6 +581,7 @@ Description=BoulderMesh: meshes for {base}
 ExecStart=/usr/bin/python3 %h/bouldermesh_worker.py
 Restart=always
 RestartSec=60
+RestartPreventExitStatus=3
 
 [Install]
 WantedBy=default.target

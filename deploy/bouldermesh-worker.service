@@ -18,6 +18,8 @@ Environment=SCRIPT=/home/tom/src/bouldermesh/worker/bouldermesh_worker.py
 ExecStart=/usr/bin/python3 ${SCRIPT}
 Restart=always
 RestartSec=60
+# 3: the server won't take its token or this script (it says why, and what to do): starting again won't help
+RestartPreventExitStatus=3
 # a job's container is ended by the script when it stops, which takes a few seconds
 TimeoutStopSec=60
 

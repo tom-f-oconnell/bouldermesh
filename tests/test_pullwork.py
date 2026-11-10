@@ -409,6 +409,18 @@ assert nobody["name"] == "machine" and nobody["status"] == "provisional"
 board.revoke(nobody["id"], "denied")
 assert not list(held.glob("other.*"))
 assert "turned down" in call("/worker/api/work", {"version": 2}, "bmw_" + "z" * 40)[1]["error"]
+# the script says so, and what to do, rather than a traceback, and exits as systemd's units leave stopped
+for token, says in (("bmw_" + "z" * 40, "won't take this machine's token: this machine was turned down"),
+                    ("bmw_" + "u" * 40, "doesn't know this machine's token")):
+    r = worker(token, "--check")
+    assert r.returncode == 3 and says in r.stdout and "--register" in r.stdout and "Traceback" not in r.stderr, r.stdout + r.stderr
+r = worker("bmw_" + "u" * 40, "--once")
+assert r.returncode == 3 and "doesn't know this machine's token" in r.stdout and "Traceback" not in r.stderr, r.stdout + r.stderr
+out = subprocess.run([sys.executable, str(SCRIPT), "--home", str(TMP / "home"), "--register", "--name", "again", "--check"], env=ENV,
+                     capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+again = json.loads((TMP / "home" / "config.json").read_text())["token"]
+assert out.returncode == 0 and "as 'again'" in out.stdout and again != "bmw_" + "u" * 40, out.stdout + out.stderr
+assert board.machine(again)["status"] == "provisional", "--register: a new token in place of the remembered one"
 assert call("/worker/api/register", {"version": 2}, "short")[0] == 400
 st, j = call("/worker/api/register", {"version": 2, "name": "x"}, lab_token)
 assert st == 200 and j["name"] == "lab-box" and j["status"] == "approved", "registering again is harmless"
