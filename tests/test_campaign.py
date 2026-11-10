@@ -1153,7 +1153,7 @@ old = server.PROJECTS / "deadbeef0001"
 server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,?)", old.name, "old", time.time(), "harvest", "done", write=True)
 assert not server.full(), "no cap, nothing to be full"
 server.settings().update({"storage.cap_gb": (server.measure_usage()["total"] - 1000) / 2**30})
-assert "out of room" in server.full() and server._usage["by"]["projects' rejected"] == 300_000
+assert "out of room" in server.full() and server._usage["by"]["rejected photos"] == 300_000
 w = server.Worker("capped")
 with server._claim_lock:
     assert server._claim(w) is None

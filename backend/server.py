@@ -1436,26 +1436,49 @@ def settle_waiting(camp_id: str) -> None:
 _usage: dict = {}       # {total, by: {name: bytes}, checked}
 
 
+USAGE_PARTS = {"photos": "photos", "rejected": "rejected photos", "videos": "videos", "masks": "people masks",
+               "work": "reconstructions' work"}    # a project's folders, and what the admin page calls each
+
+
 def measure_usage() -> dict:
-    """How much DATA_DIR holds, by what: meshes, projects' photos, masks, rejected photos and work, the caches."""
-    def size(path: Path) -> int:
+    """How much DATA_DIR holds, by what (the admin page's bars): projects' photos, the photos their filter rejected,
+    videos (fetched, in the cache, and uploaded to projects), meshes, people masks, what reconstructions left, the
+    web cache, models, the rest of the cache, and everything else (the databases, their snapshots, logs). With how many
+    climbs, meshes, photos and videos that is, and the disk's room."""
+    def size(path: Path, files: list | None = None) -> int:
         total = 0
-        for root, _, files in os.walk(path):
-            for f in files:
+        for root, _, names in os.walk(path):
+            for f in names:
                 try:
                     total += os.lstat(os.path.join(root, f)).st_size
                 except OSError:
-                    pass
+                    continue
+                if files is not None:
+                    files.append(f)
         return total
-    by = {"meshes": size(MESHES), "videos": size(DATA / "cache" / "videos"), "other cache": 0, "other": 0}
-    for part in ("photos", "rejected", "masks", "work"):
-        by[f"projects' {part}"] = 0
-    for d in PROJECTS.iterdir() if PROJECTS.exists() else []:
-        for part in ("photos", "rejected", "masks", "work"):
-            by[f"projects' {part}"] += size(d / part)
-    by["other cache"] = size(DATA / "cache") - by["videos"]
+    by = dict.fromkeys(USAGE_PARTS.values(), 0)
+    counted = {"photos": [], "rejected": [], "videos": []}
+    projects = [d for d in PROJECTS.iterdir() if d.is_dir()] if PROJECTS.exists() else []
+    for d in projects:
+        for part, name in USAGE_PARTS.items():
+            by[name] += size(d / part, counted.get(part))
+    fetched: list = []
+    cache = {name: size(DATA / "cache" / sub, fetched if sub == "videos" else None)
+             for sub, name in (("videos", "fetched videos"), ("http", "web cache"), ("models", "models"))}
+    by["videos"] += cache.pop("fetched videos")
+    by.update(meshes=size(MESHES), **cache)
+    by["other cache"] = size(DATA / "cache") - sum(size(DATA / "cache" / sub) for sub in ("videos", "http", "models"))
     by["other"] = size(DATA) - sum(by.values())
-    _usage.update(total=sum(by.values()), by=by, checked=time.time())
+    names = {d.name for d in projects}
+    climbs = {r["climb_id"] for r in q("SELECT id, climb_id FROM projects WHERE climb_id IS NOT NULL") if r["id"] in names}
+    meshes = sum(1 for d in MESHES.iterdir() if d.is_dir()) if MESHES.exists() else 0
+    disk = shutil.disk_usage(DATA)
+    _usage.update(total=sum(by.values()), by=by, checked=time.time(), free=disk.free, disk=disk.total,
+                  counts={"climbs": len(climbs), "projects": len(projects), "meshes": meshes, "photos": len(counted["photos"]),
+                          "rejected photos": len(counted["rejected"]), "videos": len(counted["videos"]) + len(fetched)},
+                  # a climb's data: its projects' folders (photos, rejected, masks, videos, work), over the climbs that have any
+                  per_climb=sum(by[n] for n in USAGE_PARTS.values()) / len(climbs) if climbs else None,
+                  per_mesh=by["meshes"] / meshes if meshes else None)
     return _usage
 
 

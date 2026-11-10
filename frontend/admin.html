@@ -36,6 +36,12 @@
   .inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px} .inline input[type=number]{width:80px}
   .qrs{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0} .qrs figure{margin:0;width:220px} .qrs svg{display:block;width:180px;height:auto}
   .qrs figcaption{font-size:12px;color:var(--mute);margin-top:4px}
+  /* what the data takes, by kind: ranked bars on one baseline, largest first, one hue */
+  .bars{display:grid;grid-template-columns:max-content minmax(60px,1fr) max-content;gap:6px 10px;align-items:center;margin:10px 0 4px;font-size:12px}
+  .bars .name{color:var(--fg)} .bars .fig{color:var(--mute);font-variant-numeric:tabular-nums;text-align:right}
+  .bars .track{height:16px;display:flex;align-items:center} .bars .bar{height:16px;background:var(--acc);border-radius:0 4px 4px 0;min-width:2px}
+  .bars .row.free .bar{background:transparent;border:1px dashed var(--mute);box-sizing:border-box}
+  .bars .row{display:contents} .bars .row:hover .name,.bars .row:hover .fig{color:var(--fg)} .bars .row:hover .bar{filter:brightness(1.15)}
   #msg{position:fixed;bottom:14px;right:14px;background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:8px;display:none;max-width:420px}
   .aws,.ssh,.pull{display:none}
   body.p-aws .aws, body.p-ssh .ssh, body.p-pull .pull{display:block}
@@ -149,6 +155,8 @@
   <section id="room">
     <h2>Room for data</h2>
     <div id="room-body" class="note"></div>
+    <div id="room-bars" class="bars" role="table" aria-label="What the data takes, by kind"></div>
+    <div id="room-more" class="note"></div>
     <div class="grid"><div><label>The most the data may take (GB; 0 for no limit)</label><input type="number" id="room-cap" min="0" step="2.5"></div>
       <div class="row" style="margin-top:22px"><button id="room-save">Save</button></div></div>
     <div class="row"><button class="sec" id="room-measure">Measure now</button><button class="danger" id="room-rejected">Delete the photos the filter rejected</button></div>
@@ -224,9 +232,32 @@ function render(s){
   const u = s.usage || {}, gb = b => (b / 2 ** 30).toFixed(1) + ' GB';
   $('#room').classList.toggle('alert', !!u.full);
   if (document.activeElement !== $('#room-cap')) $('#room-cap').value = v['storage.cap_gb'];
+  // ranked bars: each kind's share of what the data takes, largest first; under 1% each folds into "other"
+  const parts = u.total ? Object.entries(u.by).filter(([, b]) => b > 0) : [];
+  const small = parts.filter(([k, b]) => k !== 'other' && b / u.total < 0.01), rest = small.reduce((t, [, b]) => t + b, 0);
+  const shown = parts.filter(p => !small.includes(p)).map(([k, b]) => k === 'other' ? [k, b + rest] : [k, b]);
+  if (rest && !shown.some(([k]) => k === 'other')) shown.push(['other', rest]);
+  shown.sort((a, b) => (a[0] === 'other') - (b[0] === 'other') || b[1] - a[1]);
+  // the room left, on the same scale: on its disk, or under the cap if that's nearer
+  const capped = u.cap && u.cap - u.total < u.free, free = u.total ? Math.max(0, capped ? u.cap - u.total : u.free) : 0;
+  const top = Math.max(1, free, ...shown.map(([, b]) => b));
+  const size = b => b >= 2 ** 30 ? gb(b) : `${(b / 2 ** 20).toFixed(0)} MB`;
+  $('#room-bars').innerHTML = shown.map(([k, b]) => {
+    const pct = 100 * b / u.total, label = pct < 1 ? '<1%' : `${pct.toFixed(0)}%`;
+    const tip = `${k}: ${gb(b)}, ${pct.toFixed(1)}% of ${gb(u.total)}` + (k === 'other' && small.length ? ` (with ${small.map(([n]) => n).join(', ')})` : '');
+    return `<div class="row" role="row" title="${esc(tip)}"><span class="name" role="rowheader">${esc(k)}</span>`
+      + `<span class="track" role="cell"><span class="bar" style="width:${(100 * b / top).toFixed(1)}%"></span></span>`
+      + `<span class="fig" role="cell">${label} · ${gb(b)}</span></div>`;
+  }).join('') + (u.total ? `<div class="row free" role="row" title="${esc(capped ? `${gb(free)} left under the cap of ${gb(u.cap)}; ${gb(u.free)} free on the disk` : `${gb(u.free)} free on the disk, of ${gb(u.disk)}`)}">`
+      + `<span class="name" role="rowheader">${capped ? 'free under the cap' : 'free on its disk'}</span>`
+      + `<span class="track" role="cell"><span class="bar" style="width:${(100 * free / top).toFixed(1)}%"></span></span>`
+      + `<span class="fig" role="cell">${gb(free)}</span></div>` : '');
   $('#room-body').innerHTML = (u.total === undefined ? (u.cap ? 'Not measured yet.' : 'No cap on this server\'s data, so it isn\'t measured by itself: Measure now does.')
-      : `The data takes <b>${gb(u.total)}</b>${u.cap ? ` of its cap of ${gb(u.cap)}` : ''}, measured ${new Date(u.checked * 1000).toLocaleString()}`
-        + [''].concat(Object.entries(u.by).filter(([, b]) => b > 2 ** 20).sort((a, b) => b[1] - a[1]).map(([k, b]) => `${esc(k)} ${gb(b)}`)).join(', ').replace(/^, /, ': ') + '.')
+      : `The data takes <b>${gb(u.total)}</b>${u.cap ? ` of its cap of ${gb(u.cap)}` : ''}, measured ${new Date(u.checked * 1000).toLocaleString()}${shown.length ? ':' : '.'}`);
+  const cnt = u.counts || {}, num = x => (x || 0).toLocaleString();
+  $('#room-more').innerHTML = (u.counts ? `<div>It holds the data of <b>${num(cnt.climbs)}</b> climbs (in ${num(cnt.projects)} projects) and <b>${num(cnt.meshes)}</b> meshes:
+      ${num(cnt.photos)} photos, ${num(cnt['rejected photos'])} more the filter rejected, and ${num(cnt.videos)} videos.
+      ${u.per_climb ? `On average, a climb's data takes <b>${size(u.per_climb)}</b>` : ''}${u.per_mesh ? `${u.per_climb ? ', and' : 'On average,'} a mesh <b>${size(u.per_mesh)}</b>` : ''}${u.per_climb || u.per_mesh ? '.' : ''}</div>` : '')
     + (u.full ? `<div class="warn">${esc(u.full)}. Volunteers are given nothing, and areas take no new climb, until there's room again.</div>` : '')
     + '<div>The photos the filter rejected are only kept to put one back by hand (on the Projects tab), and are usually most of what harvests leave.</div>';
   const pr = s.proxy_ranges, box = $('#ranges');
