@@ -34,4 +34,11 @@ if [ "${GPU:-1}" != 0 ]; then
         --build-arg BOULDERMESH_WORKER_IMAGE="$machines" -t "$gpu_image" -t "$machines" "$tmp"
     echo "built $gpu_image, which is $machines"
 fi
+# earlier builds: this one's and the one before's names stay (KEEP_BUILDS), and older ones' go: an image whose last name
+# that was goes with it, and whatever layers only it used (each build shares all but its last few, the code, with the one
+# before). One still named otherwise, as hal's own app's, or that a container uses, stays.
+for old in $(docker images --format '{{.Tag}} {{.CreatedAt}}' "$REGISTRY" | grep -v -E '^latest(-gpu)? ' | sed 's/^\([^ ]*\)-gpu /\1 /' |
+             sort -k2 -r | awk '!seen[$1]++ {print $1}' | awk -v keep="${KEEP_BUILDS:-2}" 'NR > keep'); do
+    docker image rm "$REGISTRY:$old" "$REGISTRY:$old-gpu" > /dev/null 2>&1 || true
+done
 echo "Next: deploy/ship.sh you@host $image"

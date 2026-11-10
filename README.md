@@ -387,6 +387,32 @@ and `docker compose -f docker-compose.yml -f docker-compose.public.yml pull`. Po
 To run it under systemd as above, put `COMPOSE_FILE=docker-compose.yml:docker-compose.public.yml` in `.env` too (with
 `docker-compose.gpu.yml` between them on a machine with a GPU) and install the unit; its build step then has nothing to build.
 
+**Deploying, once the public server harvests by itself** (`HARVESTS_HERE=1` in its `.env`), from hal's checkout:
+
+    deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public && ssh bouldermesh 'cd bouldermesh && git pull --ff-only && sudo systemctl restart bouldermesh'
+
+- It builds what's committed, other sessions' commits too: `git log` first says what would go.
+- Changes to the database apply themselves when the server starts, and the Caddyfile and Compose files come with the
+  pull. A change that needs a new setting in the server's `.env` says so; it goes in before the restart.
+- The restart cuts off work in progress: a climb hal is meshing starts over as a new job (up to an hour of hal's), areas'
+  climbs pause and carry on, and jobs started by hand get 10 minutes. On the server,
+  `docker compose exec -T bouldermesh python3 cli.py jobs` says what's running.
+- Changes only to what runs on hal (the worker script, `deploy/backup.sh`, the systemd units) need no deploy: restart the
+  worker (`sudo systemctl restart bouldermesh-worker`), or copy a changed unit into `/etc/systemd/system/` and
+  `sudo systemctl daemon-reload`.
+- Volunteers keep their copy of the script until they download it again; older ones still fetch videos, not searches.
+- `PHOTOS=1` isn't needed again. Never take `HARVESTS_HERE=1` out: the next ship would replace the server's database
+  with hal's.
+- Room for images: each build shares all but its last few layers (the code, under a MB) with the one before, and Docker
+  keeps a layer once however many images have it, so a deploy that changes code takes almost no room. Only a change to
+  the Dockerfile's earlier steps (the packages it installs, as for VGGT) brings new layers of GBs. build.sh keeps this
+  build's names and the one before's (`KEEP_BUILDS`, 2) and drops older ones', deleting the images that leaves nameless,
+  unless a container uses them; ship.sh deletes the server's unused images before sending one. `GPU=0` skips the
+  machines' build when nothing about meshing changed. `docker image prune` is safe whenever: it deletes only images with
+  no name that no container uses. `docker image prune -a` would also delete named ones no container runs, such as the
+  build hal's worker runs between jobs, and `docker builder prune` the build cache, after which the next build compiles
+  COLMAP and OpenMVS again.
+
 **Changing things.** With `EDIT_TOKEN` set, the page has an *Edit…* button in its header: enter the token there (it
 stays in that browser) and the controls appear, with the Areas and Projects tabs. The button then says *Editing*, and
 *Forget edit token* beside it forgets the token in that browser. Without it, the site shows only what's
