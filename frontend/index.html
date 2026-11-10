@@ -319,10 +319,22 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 const $ = s => document.querySelector(s);
 // whether this copy of the site may be changed from here: open, or with its editing token (kept in this browser)
 let editor = true, token = null;
+// what a button that would change something says on a copy of the site this browser can't change, in place of
+// what it would do
+function viewOnlyNote(){
+  return statusCache.editing === 'token'
+    ? 'Changing anything here needs this site\'s editing token: press "Edit…" at the top of the page, enter it, and try again.'
+    : 'This copy of the site is view-only: nothing can be changed from a browser.';
+}
+// confirm() for a change: on a copy this browser can't change, says why instead, and goes no further
+function ask(msg){
+  if (!editor) { alert(viewOnlyNote()); return false; }
+  return confirm(msg);
+}
 try { token = localStorage.getItem('bm_token'); } catch {}
 const api = async (url, opt={}) => {
   if (opt.json) { opt.body = JSON.stringify(opt.json); opt.headers = {'Content-Type':'application/json'}; delete opt.json; }
-  if (!editor && opt.method && opt.method !== 'GET') throw new Error('This copy of the site is view-only.');
+  if (!editor && opt.method && opt.method !== 'GET') throw new Error(viewOnlyNote());
   if (token) opt.headers = { ...(opt.headers || {}), Authorization: 'Bearer ' + token };
   const r = await fetch(url, opt);
   const j = await r.json().catch(()=>({}));
@@ -1012,7 +1024,7 @@ async function openClimb(id, focus=true){
     try { await api('/api/climbs/import', { method: 'POST', json: { url: c.url, include_children: false } }); toast('Fetched'); d.remove(); openClimb(id); refreshClimbs(); }
     catch (e) { toast('Fetch failed: ' + e.message, 8000); }
   });
-  d.querySelector('.del').onclick = async () => { if (confirm(`Delete climb "${c.name}" (meshes are kept)?`)) { await api('/api/climbs/' + id, { method: 'DELETE' }); closeClimb(); refreshClimbs(); refreshMeshes(); } };
+  d.querySelector('.del').onclick = async () => { if (ask(`Delete climb "${c.name}" (meshes are kept)?`)) { await api('/api/climbs/' + id, { method: 'DELETE' }); closeClimb(); refreshClimbs(); refreshMeshes(); } };
   placeClimb(d, id);
   if (focus) d.scrollIntoView({ block: 'nearest' });
 }
@@ -1103,7 +1115,7 @@ async function refreshProjects(){
     });
     d.querySelector('.view')?.addEventListener('click', () => viewMesh(p.mesh_id));
     d.querySelector('.climb')?.addEventListener('click', () => openClimb(p.climb_id));
-    d.querySelector('.del').onclick = async () => { if (confirm(`Delete project "${p.name}"?`)) { await api(`/api/projects/${p.id}`, {method:'DELETE'}); refreshProjects(); } };
+    d.querySelector('.del').onclick = async () => { if (ask(`Delete project "${p.name}"?`)) { await api(`/api/projects/${p.id}`, {method:'DELETE'}); refreshProjects(); } };
     d.onclick = ev => { if (ev.target.tagName !== 'BUTTON') { active = p.id; loadDetail(p.id, d); } };
     el.appendChild(d);
     projectCards.set(p.id, d);
@@ -1292,17 +1304,17 @@ async function refreshCampaigns(){
         ${c.worked.length ? `<details data-list="${c.id}-done"><summary class="meta">Worked through (${c.worked.length}${c.worked.length === 300 ? ' most recent' : ''})</summary><div class="crows">${c.worked.map(row).join('')}</div></details>` : ''}
         ${c.next.length ? `<details data-list="${c.id}-next"><summary class="meta">Up next</summary><div class="crows">${c.next.map(row).join('')}</div></details>` : ''}`;
       const post = async (what, json) => { await api(`/api/campaigns/${c.id}/${what}`, { method: 'POST', json: json || {} }); campaignLoop(); };
-      d.querySelector('.stopnow')?.addEventListener('click', () => { if (confirm(`Stop now? The climb in progress pauses, and carries on from its last finished step when you resume. Finished meshes stay.`)) post('stop', { now: true }); });
+      d.querySelector('.stopnow')?.addEventListener('click', () => { if (ask(`Stop now? The climb in progress pauses, and carries on from its last finished step when you resume. Finished meshes stay.`)) post('stop', { now: true }); });
       d.querySelector('.stoplater')?.addEventListener('click', () => post('stop', { now: false }));
       d.querySelector('.resume')?.addEventListener('click', () => post('start'));
       d.querySelector('.retryfailed')?.addEventListener('click', () => post('retry'));
       const alone = c.status === 'running' ? 'They go ahead of the rest of the list.' : 'Only these run, and then it stops.';
-      d.querySelector('.harvestagain')?.addEventListener('click', () => { if (confirm(`Harvest every climb in "${c.name}" with photos of its own again, from scratch? That's a few minutes each, as it downloads their videos again. Their meshes stay. ${alone}`)) post('harvest-again'); });
-      d.querySelector('.rebuildchanged')?.addEventListener('click', () => { if (confirm(`Mesh the ${c.again.changed} climbs whose photos changed? Each can take most of an hour. ${alone}`)) post('rebuild', { changed_only: true }); });
-      d.querySelector('.tryskipped')?.addEventListener('click', () => { if (confirm(`Try meshing the ${c.again.triable} climbs in "${c.name}" that were skipped for too few viewpoints, which the check now lets COLMAP try? Those it can't place enough photos of take a few minutes each; those it can, most of an hour. ${alone}`)) post('rebuild', { skipped_only: true }); });
-      d.querySelector('.pool')?.addEventListener('click', () => { if (confirm(`Try the ${c.again.poolable} boulders in "${c.name}" that every climb so far was skipped on again, each from all the photos its climbs' harvests found together? Nothing is downloaded again. Filtering takes a few minutes each, and meshing most of an hour for those with enough viewpoints. ${alone}`)) post('pool'); });
-      d.querySelector('.rebuildall')?.addEventListener('click', () => { if (confirm(`Mesh every climb in "${c.name}" with enough viewpoints again? Each can take most of an hour. ${alone}`)) post('rebuild'); });
-      d.querySelector('.del').onclick = async () => { if (confirm(`Remove the list for "${c.name}"? Its meshes stay.`)) { await api('/api/campaigns/' + c.id, { method: 'DELETE' }); campaignLoop(); } };
+      d.querySelector('.harvestagain')?.addEventListener('click', () => { if (ask(`Harvest every climb in "${c.name}" with photos of its own again, from scratch? That's a few minutes each, as it downloads their videos again. Their meshes stay. ${alone}`)) post('harvest-again'); });
+      d.querySelector('.rebuildchanged')?.addEventListener('click', () => { if (ask(`Mesh the ${c.again.changed} climbs whose photos changed? Each can take most of an hour. ${alone}`)) post('rebuild', { changed_only: true }); });
+      d.querySelector('.tryskipped')?.addEventListener('click', () => { if (ask(`Try meshing the ${c.again.triable} climbs in "${c.name}" that were skipped for too few viewpoints, which the check now lets COLMAP try? Those it can't place enough photos of take a few minutes each; those it can, most of an hour. ${alone}`)) post('rebuild', { skipped_only: true }); });
+      d.querySelector('.pool')?.addEventListener('click', () => { if (ask(`Try the ${c.again.poolable} boulders in "${c.name}" that every climb so far was skipped on again, each from all the photos its climbs' harvests found together? Nothing is downloaded again. Filtering takes a few minutes each, and meshing most of an hour for those with enough viewpoints. ${alone}`)) post('pool'); });
+      d.querySelector('.rebuildall')?.addEventListener('click', () => { if (ask(`Mesh every climb in "${c.name}" with enough viewpoints again? Each can take most of an hour. ${alone}`)) post('rebuild'); });
+      d.querySelector('.del').onclick = async () => { if (ask(`Remove the list for "${c.name}"? Its meshes stay.`)) { await api('/api/campaigns/' + c.id, { method: 'DELETE' }); campaignLoop(); } };
       d.querySelectorAll('[data-mesh]').forEach(b => b.onclick = async () => { if (!meshesById[b.dataset.mesh]) await refreshMeshes(); viewMesh(b.dataset.mesh); });
       d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
       d.querySelectorAll('details').forEach(x => { if (open.has(x.dataset.list)) x.open = true; });
@@ -1455,7 +1467,7 @@ async function refreshMeshes(){
     d.querySelector('.view').onclick = () => viewMesh(m.id);
     d.querySelector('.fly')?.addEventListener('click', () => flyTo(m.lat, m.lng));
     d.querySelector('.setll')?.addEventListener('click', async () => { const ll = parseLL(prompt('lat, lng')); if (!ll) return; await api('/api/meshes/'+m.id, {method:'PATCH', json:{lat:ll[0], lng:ll[1]}}); refreshMeshes(); });
-    d.querySelector('.del').onclick = async () => { if (confirm(`Delete mesh "${m.name}"?`)) { await api('/api/meshes/' + m.id, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); } };
+    d.querySelector('.del').onclick = async () => { if (ask(`Delete mesh "${m.name}"?`)) { await api('/api/meshes/' + m.id, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); } };
     d.querySelectorAll('[data-climb]').forEach(ch => ch.onclick = ev => { if (ev.target.dataset.unlink) return; openClimb(ch.dataset.climb); });
     d.querySelectorAll('[data-unlink]').forEach(x => x.onclick = async ev => { ev.stopPropagation(); await api(`/api/meshes/${m.id}/links/${x.dataset.unlink}`, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); });
     d.querySelector('.linksel').onchange = async ev => { if (!ev.target.value) return; await api(`/api/meshes/${m.id}/links`, {method:'POST', json:{climb_id: ev.target.value}}); toast('Linked'); refreshMeshes(); refreshClimbs(); };
@@ -1505,7 +1517,7 @@ function renderBetaAll(){
     await refreshMeshes(); showStopping();
   });
   el.querySelector('.stopall')?.addEventListener('click', async () => {
-    if (!confirm('Stop finding beta, and unqueue the meshes waiting for it?')) return;
+    if (!ask('Stop finding beta, and unqueue the meshes waiting for it?')) return;
     try { const r = await api('/api/meshes/beta-stop', { method: 'POST' }); toast(`Stopped; ${r.unqueued} unqueued`, 5000); }
     catch (e) { return toast(e.message, 6000); }
     await refreshMeshes(); showStopping();
@@ -1658,7 +1670,7 @@ function renderBetaPanel(){
   </div>`;
   el.querySelector('.close').onclick = () => { closeBeta(null); };
   el.querySelector('.mark').onclick = () => setMarking(!b.marking);
-  el.querySelector('.clearmine')?.addEventListener('click', () => { if (confirm('Remove the holds you marked on this mesh?')) { b.marked = []; saveMarked(); } });
+  el.querySelector('.clearmine')?.addEventListener('click', () => { if (ask('Remove the holds you marked on this mesh?')) { b.marked = []; saveMarked(); } });
   el.querySelector('.find')?.addEventListener('click', () => findBeta(b.mid));
   el.querySelectorAll('[data-tag]').forEach(c => c.onchange = () => { c.checked ? b.shown.add(c.dataset.tag) : b.shown.delete(c.dataset.tag); drawBeta(); });
   showMarkButton();
