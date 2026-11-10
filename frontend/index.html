@@ -909,7 +909,7 @@ async function loadMeshUrl(url, filename, label, id){
       const gl = renderer.getContext();
       if (gl.getError() === gl.OUT_OF_MEMORY) viewNote('The graphics card ran out of memory for this texture, so it may show black.', again);
     }));
-  } catch (e) { toast('Could not load mesh: ' + e.message, 6000); $('#viewing').textContent = 'Could not load: ' + e.message; viewNote('Could not load this mesh: ' + e.message, again); }
+  } catch (e) { reportError('mesh', e, { mesh: id, file: filename }); toast('Could not load mesh: ' + e.message, 6000); $('#viewing').textContent = 'Could not load: ' + e.message; viewNote('Could not load this mesh: ' + e.message, again); }
 }
 
 // ---------------------------------------------------------------- map
@@ -1876,6 +1876,20 @@ $('#meshfile').onchange = ev => uploadMesh(ev.target.files);
 vEl.addEventListener('dragover', ev => { ev.preventDefault(); vEl.classList.add('dragging'); });
 vEl.addEventListener('dragleave', () => vEl.classList.remove('dragging'));
 vEl.addEventListener('drop', ev => { ev.preventDefault(); vEl.classList.remove('dragging'); uploadMesh(ev.dataTransfer.files); });
+
+// ---------------------------------------------------------------- errors, told to the server for looking at later
+// A mesh that won't load, and errors in the page, go to /api/client-errors (data/client-errors.jsonl there). Not a texture
+// that won't load at full size, which the viewer works around and notes. A few a page, each once.
+const reported = new Set();
+function reportError(kind, error, extra = {}){
+  const message = String(error?.message || error || '').slice(0, 1000), key = kind + message;
+  if (!message || reported.has(key) || reported.size >= 10) return;
+  reported.add(key);
+  fetch('/api/client-errors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind, message, page: location.pathname + location.hash, ...extra }) }).catch(() => {});
+}
+addEventListener('error', ev => { if (!/^(chrome|moz|safari)-extension:/.test(ev.filename || '')) reportError('page', ev.error || ev.message, { source: `${ev.filename || ''}:${ev.lineno || ''}` }); });
+addEventListener('unhandledrejection', ev => reportError('page', ev.reason));
 
 // ---------------------------------------------------------------- a mesh picked at random
 // Weighted by how many faces it shows (the reconstruction's, less stray pieces hidden), by rank among the meshes: the most

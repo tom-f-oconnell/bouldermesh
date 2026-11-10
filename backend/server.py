@@ -2160,6 +2160,41 @@ def compute_state() -> dict:
             "pool": _pool.status() if _pool else None}
 
 
+# ----------------------------------------------------------------- errors in visitors' browsers
+CLIENT_ERRORS = DATA / "client-errors.jsonl"   # one report a line; the one before it, client-errors.jsonl.1, once it's full
+CLIENT_ERRORS_BYTES = 2 * 2**20                # how big the file gets before that
+CLIENT_REPORT_MAX = 8192                       # the largest report taken
+CLIENT_REPORTS = (20, 600)                     # at most this many from one address in this many seconds
+_client_reports: dict[str, list[float]] = {}
+_client_lock = threading.Lock()
+
+
+def record_client_error(report: dict, sender: str, user_agent: str, editor: bool) -> bool:
+    """Keep what a visitor's browser said went wrong (a mesh that wouldn't load, an error in the page), for looking at
+    later: in CLIENT_ERRORS and the log. Who sent it isn't kept, only their browser. Returns False if that address has
+    sent too many lately."""
+    now = time.time()
+    with _client_lock:
+        recent = [t for t in _client_reports.get(sender, []) if now - t < CLIENT_REPORTS[1]]
+        if len(recent) >= CLIENT_REPORTS[0]:
+            _client_reports[sender] = recent
+            return False
+        _client_reports[sender] = recent + [now]
+        for k in [k for k, ts in _client_reports.items() if not ts or now - ts[-1] > CLIENT_REPORTS[1]]:
+            del _client_reports[k]
+        text = lambda k, n: str(report.get(k) or "")[:n] or None  # noqa: E731
+        line = {"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), "version": VERSION, "kind": text("kind", 40),
+                "message": text("message", 1000), "mesh": text("mesh", 40), "file": text("file", 200), "page": text("page", 300),
+                "source": text("source", 300), "browser": user_agent[:300] or None, "editor": editor}
+        CLIENT_ERRORS.parent.mkdir(parents=True, exist_ok=True)
+        if CLIENT_ERRORS.exists() and CLIENT_ERRORS.stat().st_size > CLIENT_ERRORS_BYTES:
+            CLIENT_ERRORS.replace(CLIENT_ERRORS.with_name(CLIENT_ERRORS.name + ".1"))
+        with open(CLIENT_ERRORS, "a") as f:
+            f.write(json.dumps({k: v for k, v in line.items() if v is not None}) + "\n")
+    print(f"browser error ({line['kind']}){' in mesh ' + line['mesh'] if line['mesh'] else ''}: {(line['message'] or '')[:200]}", flush=True)
+    return True
+
+
 # ----------------------------------------------------------------- handler
 _csp: dict = {"mtime": None, "value": ""}
 
@@ -2172,7 +2207,9 @@ def admin_origins() -> list[str]:
 
 def page_csp() -> str | None:
     """The page's Content-Security-Policy: its own inline scripts by their hashes, libraries from their CDNs, images from
-    anywhere (climbs' photos are shown from their sites), and never framed. CSP=0 turns it off; CSP=<policy> replaces it."""
+    anywhere (climbs' photos are shown from their sites), and never framed. It may fetch data: and blob: URLs, as the 3D
+    viewer loads a mesh's buffers embedded in it that way (OpenMVS embeds a second one when a texture is split in two).
+    CSP=0 turns it off; CSP=<policy> replaces it."""
     setting = os.environ.get("CSP")
     if setting == "0":
         return None
@@ -2186,7 +2223,7 @@ def page_csp() -> str | None:
         _csp.update(mtime=mtime, value=(
             f"default-src 'self'; script-src 'self' {hashes} https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
             "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: blob: https:; "
-            f"connect-src 'self' {' '.join(dict.fromkeys(admin_origins()))}; "
+            f"connect-src 'self' data: blob: {' '.join(dict.fromkeys(admin_origins()))}; "
             "font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"))
     return _csp["value"]
 
@@ -2305,19 +2342,45 @@ class Handler(BaseHTTPRequestHandler):
         """Refuse a change, before its body is read: every change on a read-only site (READ_ONLY=1); any without the
         editing token when one is set (EDIT_TOKEN); and any that another site's page sent, with an Origin that isn't this
         host, as a visitor to an open site may have such a page open. Says so in the log."""
-        hosts = {(self.headers.get(h) or "").lower() for h in ("Host", "X-Forwarded-Host")}
-        origin = self.headers.get("Origin")
         why, code, headers = None, 403, None
         if READ_ONLY:
             why = "this copy of the site is view-only"
         elif EDIT_TOKEN and not self.is_editor():
             why, code, headers = "editing this site needs its token", 401, {"WWW-Authenticate": 'Bearer realm="BoulderMesh"'}
-        elif (origin is not None and origin.split("//", 1)[-1].lower() not in hosts) or self.headers.get("Sec-Fetch-Site") == "cross-site":
+        elif self.cross_site():
             why = "refused: sent from another site's page"
         if why:
             print(f"refused {self.command} {self.path} from {self.address_string()}: {why}", flush=True)
             self.send_json({"error": why}, code, headers=headers)
         return bool(why)
+
+    def cross_site(self) -> bool:
+        """Whether another site's page sent this: its Origin isn't this host, or the browser says so."""
+        hosts = {(self.headers.get(h) or "").lower() for h in ("Host", "X-Forwarded-Host")}
+        origin = self.headers.get("Origin")
+        return (origin is not None and origin.split("//", 1)[-1].lower() not in hosts) or self.headers.get("Sec-Fetch-Site") == "cross-site"
+
+    def client_error(self) -> None:
+        """POST /api/client-errors: what went wrong in a visitor's browser (record_client_error()). Anyone viewing the site
+        may send one, even where nothing may be changed, but only from its own pages, small, and not too often."""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if self.cross_site():
+            return self.send_json({"error": "refused: sent from another site's page"}, 403)
+        if not 0 < n <= CLIENT_REPORT_MAX:
+            self.close_connection = True    # its body, unread, would otherwise be taken for the next request
+            return self.send_json({"error": f"a report is 1 byte to {CLIENT_REPORT_MAX // 1024} KB of JSON"}, 413 if n > 0 else 400)
+        try:
+            report = json.loads(self.rfile.read(n))
+            assert isinstance(report, dict)
+        except (ValueError, AssertionError):
+            return self.send_json({"error": "a report is a JSON object"}, 400)
+        if not record_client_error(report, self.address_string(), self.headers.get("User-Agent") or "",
+                                   not READ_ONLY and (not EDIT_TOKEN or self.is_editor())):
+            return self.send_json({"error": "too many reports from here lately"}, 429)
+        self.send_json({"kept": True}, 202)
 
     def read_multipart(self) -> tuple[dict, list[tuple[str, bytes]]]:
         ctype = self.headers.get("Content-Type", "")
@@ -2588,6 +2651,8 @@ class Handler(BaseHTTPRequestHandler):
     # -- POST --------------------------------------------------------------
     def do_POST(self):
         p = urlparse(self.path).path
+        if p == "/api/client-errors":    # from any visitor, not only editors
+            return self.client_error()
         if self.refused():
             return
         try:

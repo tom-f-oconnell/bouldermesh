@@ -20,6 +20,8 @@
                                                        seconds since 1970, or YYYY-MM-DD[THH:MM] local time)
   python cli.py import-bundle <bundle.tar> [--data DIR]  add such a bundle to another copy, replacing nothing there
                                                        (run it where the data is writable: in Docker, docker exec)
+  python cli.py client-errors [-n N] [--data DIR]      the last N errors visitors' browsers reported (meshes that
+                                                       wouldn't load, errors in the page), newest last
 
 Environment: GOOGLE_CSE_KEY/GOOGLE_CSE_CX, FLICKR_KEY, HARVEST_DDG=0 (no DuckDuckGo), DATA_DIR (cache location),
              BOULDERMESH_UA (please set a contact address), HTTP_MIN_INTERVAL (min. seconds between requests
@@ -59,7 +61,11 @@ def main():
     e = sub.add_parser("export-boulders"); e.add_argument("bundle"); e.add_argument("--boulder", action="append")
     e.add_argument("--since"); e.add_argument("--data")
     i = sub.add_parser("import-bundle"); i.add_argument("bundle"); i.add_argument("--data")
+    ce = sub.add_parser("client-errors"); ce.add_argument("-n", type=int, default=30); ce.add_argument("--data")
     a = ap.parse_args()
+
+    if a.cmd == "client-errors":
+        sys.exit(client_errors(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n))
 
     if a.cmd in ("export-boulders", "import-bundle"):
         if a.data:
@@ -104,6 +110,22 @@ def main():
         photos = sorted(p for p in d.iterdir() if p.suffix.lower() in IMAGE_EXT)
         print(json.dumps(relevance.filter_photos(photos + (anchors or []), d.parent / "rejected" if a.move else None, print,
                                                  anchors=anchors), indent=1))
+
+
+def client_errors(data: Path, n: int) -> int:
+    """Print the last n reports from visitors' browsers (server.record_client_error()), from the file and the one before."""
+    lines = []
+    for f in (data / "client-errors.jsonl.1", data / "client-errors.jsonl"):
+        if f.exists():
+            lines += f.read_text().splitlines()
+    if not lines:
+        print(f"no errors reported (nothing in {data / 'client-errors.jsonl'})")
+        return 0
+    for line in lines[-n:]:
+        r = json.loads(line)
+        where = " ".join(x for x in (f"mesh {r['mesh']}" if r.get("mesh") else "", r.get("source") or "", r.get("page") or "") if x)
+        print(f"{r['time']} {r.get('version') or '-'} {r['kind']}: {r.get('message', '')[:300]}\n    {where} | {r.get('browser', '')[:120]}")
+    return 0
 
 
 def jobs(server: str) -> int:

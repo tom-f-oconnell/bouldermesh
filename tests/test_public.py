@@ -132,7 +132,8 @@ def with_token(tmp: Path) -> None:
         since = h["Last-Modified"]
         st, h, _ = req(B, "GET", "/", headers={"If-Modified-Since": since})
         assert st == 304, st
-        assert f"connect-src 'self' http://localhost:{srv.admin_port}" in csp, "the Admin button may look for the admin page"
+        assert f"connect-src 'self' data: blob: http://localhost:{srv.admin_port}" in csp, \
+            "buffers embedded in a mesh load as data: URLs; the Admin button may look for the admin page"
         st, h, s = req(B, "GET", "/api/status")
         assert st == 200 and s["editing"] == "token" and s["editor"] is False and h["Cache-Control"] == "no-cache", s
         assert s["admin"] is None, "where the admin page is, and how to reach it, are for editors"
@@ -142,6 +143,20 @@ def with_token(tmp: Path) -> None:
         p = srv.admin_port
         assert s["admin"] == {"url": f"http://localhost:{p}", "local": f"http://localhost:{p}", "lan": False, "password": False,
                               "ssh": f"ssh -N -L {p}:127.0.0.1:{p} <you>@<this server>", "ssh_known": False}, s["admin"]
+
+        # what went wrong in a visitor's browser is kept, from anyone viewing it, but only from its own pages, small, not too often
+        report = {"kind": "mesh", "message": "THREE.GLTFLoader: Failed to load buffer " + "x" * 2000, "mesh": "abc123", "file": "mesh.glb"}
+        st, _, r = req(B, "POST", "/api/client-errors", report, headers={"User-Agent": "TestBrowser/1", "X-Real-IP": "198.51.100.7"})
+        assert st == 202 and r == {"kept": True}, (st, r)
+        kept = [json.loads(x) for x in (tmp / "data" / "client-errors.jsonl").read_text().splitlines()]
+        assert kept[-1]["kind"] == "mesh" and kept[-1]["mesh"] == "abc123" and len(kept[-1]["message"]) == 1000, kept[-1]
+        assert kept[-1]["browser"] == "TestBrowser/1" and kept[-1]["editor"] is False and "198.51.100.7" not in json.dumps(kept), kept[-1]
+        assert req(B, "POST", "/api/client-errors", report, headers={"Origin": "https://evil.example"})[0] == 403
+        assert req(B, "POST", "/api/client-errors", b"x" * 9000)[0] == 413
+        assert req(B, "POST", "/api/client-errors", b"[1]")[0] == 400
+        codes = [req(B, "POST", "/api/client-errors", report, headers={"X-Real-IP": "198.51.100.8"})[0] for _ in range(21)]
+        assert codes == [202] * 20 + [429], codes
+        assert req(B, "POST", "/api/client-errors", report, headers={"X-Real-IP": "198.51.100.9"})[0] == 202, "others still can"
 
         # changes: refused without the token, before the body is read; with it, as before; never from another site's page
         st, h, e = req(B, "POST", "/api/projects", {"name": "x"})
