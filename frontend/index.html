@@ -21,6 +21,7 @@
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mute)}
   .pill.real{color:var(--ok);border-color:var(--ok)} .pill.demo,.pill.stopping{color:var(--warn);border-color:var(--warn)}
   .seg{display:inline-flex;margin-left:auto;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  #random{margin-left:auto} #random+.seg{margin-left:0}
   .seg button{background:transparent;color:var(--mute);border:0;border-radius:0;padding:3px 8px;font-size:12px} .seg button.on{color:var(--fg);background:var(--line)}
   #code{color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;text-decoration:none}
   #admindlg{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;max-width:600px;padding:16px}
@@ -149,7 +150,7 @@
   @media (max-width:860px){
     body,main{grid-template-columns:minmax(0,1fr)} aside{border-right:0} #right{display:none} .phone{display:inline-block}
     body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
-    #tofull{margin-left:auto} #caps,#code,#admin{display:none!important}
+    #tofull{margin-left:auto} #random{margin-left:0} #caps,#code,#admin{display:none!important}
     #hud,#viewnote,#pieces,#orient{display:none!important}
     .viewbar{overflow-x:auto} .viewbar button{white-space:nowrap} .viewbar .status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   }
@@ -164,6 +165,7 @@
   <span id="viewonly" class="pill" style="display:none" title="This copy of the site can't be changed from a browser">view-only</span>
   <button class="sm sec" id="edit" style="display:none"></button>
   <button class="sm phone" id="tofull">Viewer</button>
+  <button class="sm sec" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random mesh</button>
   <span class="seg" id="theme" title="Colours: the browser's setting, or light or dark here"><button data-theme="system" class="on">System</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span>
   <button class="sm sec" id="admin" style="display:none" title="The admin page: what the site shows, where reconstructions run, credentials. It's on a port of its own, which only the server itself (or its LAN) can reach.">Admin</button>
   <a id="code" href="https://github.com/tom-f-oconnell/bouldermesh" target="_blank" rel="noopener">Code</a>
@@ -288,6 +290,7 @@
   <div id="right">
     <div class="viewbar">
       <button class="sm phone" id="toctl">Controls</button>
+      <button class="sm sec phone" id="vrandom" title="Another mesh, picked at random">Random</button>
       <button class="sec sm" id="v3d">3D viewer</button>
       <button class="sec sm" id="vmap">Map</button>
       <button class="sec sm" id="vmark" style="display:none" title="Click the rock to add a start hold, and a hold again for hand, finish, foot, then none">Mark holds</button>
@@ -1873,6 +1876,28 @@ $('#meshfile').onchange = ev => uploadMesh(ev.target.files);
 vEl.addEventListener('dragover', ev => { ev.preventDefault(); vEl.classList.add('dragging'); });
 vEl.addEventListener('dragleave', () => vEl.classList.remove('dragging'));
 vEl.addEventListener('drop', ev => { ev.preventDefault(); vEl.classList.remove('dragging'); uploadMesh(ev.dataTransfer.files); });
+
+// ---------------------------------------------------------------- a mesh picked at random
+// Weighted by how many faces it shows (the reconstruction's, less stray pieces hidden), by rank among the meshes: the most
+// detailed comes up twice as often as the least. Those not counted (uploads) count as in the middle.
+const facesShown = m => m.cleanup?.faces != null ? m.cleanup.faces - (m.cleanup.hidden_faces || 0) : null;
+function pickWeighted(pool, rand = Math.random()){
+  const counted = pool.map(facesShown).filter(f => f != null).sort((a, b) => a - b);
+  const rank = f => f == null || counted.length < 2 ? 0.5 : counted.findIndex(x => x >= f) / (counted.length - 1);
+  const weights = pool.map(m => 1 + rank(facesShown(m)));
+  let r = rand * weights.reduce((a, b) => a + b, 0);
+  return pool.find((_, i) => (r -= weights[i]) < 0) || pool[pool.length - 1];
+}
+let lastRandom = null;
+async function randomMesh(){
+  if (!meshesCache?.length) await refreshMeshes();
+  const current = (meshesCache || []).filter(m => !m.replaced_by && !m.demo);
+  if (!current.length) return toast('No meshes yet.');
+  const m = pickWeighted(current.length > 1 ? current.filter(m => m.id !== lastRandom) : current);   // not the same one twice running
+  lastRandom = m.id;
+  viewMesh(m.id);
+}
+$('#random').onclick = $('#vrandom').onclick = randomMesh;   // the viewer's, on a phone, where it hides the header
 
 // ---------------------------------------------------------------- the admin page
 // It has a port of its own, which only the server itself, or its LAN, can reach. The button opens it if this browser
