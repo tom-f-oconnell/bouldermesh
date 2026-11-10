@@ -3,7 +3,8 @@
 # Run:    docker compose up                 (see docker-compose.yml)
 #
 # The image works with or without a GPU: photo matching uses one if it's given to the container
-# (docker-compose.gpu.yml) and has room, and the CPU otherwise.
+# (docker-compose.gpu.yml) and has room, and the CPU otherwise. torch is its CUDA build, for VGGT placing photos where
+# COLMAP's mapper can't (backend/vggt_place.py), which needs a GPU; everything else of torch's runs on the CPU.
 
 # The same COLMAP version as Ubuntu's package, which has no CUDA, so that only the device changes.
 # It predates this compiler, which no longer brings in those two headers by itself.
@@ -55,11 +56,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcgal-dev libglew2.2 libglfw3 libjpeg8 libpng16-16 libtiff6 \
  && rm -rf /var/lib/apt/lists/* \
  && pip install --no-cache-dir --break-system-packages yt-dlp \
- && pip install --no-cache-dir --break-system-packages torch torchvision --index-url https://download.pytorch.org/whl/cpu \
+ && pip install --no-cache-dir --break-system-packages torch torchvision --index-url https://download.pytorch.org/whl/cu126 \
  && pip install --no-cache-dir --break-system-packages --no-deps rtmlib onnxruntime \
  && pip install --no-cache-dir --break-system-packages flatbuffers protobuf coloredlogs humanfriendly sympy packaging tqdm \
  && pip install --no-cache-dir --break-system-packages --ignore-installed idna \
  && pip install --no-cache-dir --break-system-packages open_clip_torch
+# VGGT at the commit tried in experiments/depth; its weights (4.7 GB) download into the models cache when first needed.
+# Without its dependencies, as it pins numpy below 2 and pip's OpenCV, where Ubuntu's work.
+RUN pip install --no-cache-dir --break-system-packages einops safetensors huggingface_hub \
+ && pip install --no-cache-dir --break-system-packages --no-deps \
+      https://github.com/facebookresearch/vggt/archive/a288dd0f14786c93483e45524328726ab7b1b4ce.zip \
+ && python3 -c "import vggt.models.vggt"
 # YouTube needs a JavaScript runtime and yt-dlp's challenge scripts (yt-dlp-ejs, in its "default" extras) for full
 # support: without them yt-dlp warns that formats may be missing. Deno is the runtime it looks for on PATH.
 RUN pip install --no-cache-dir --break-system-packages --upgrade "yt-dlp[default]" deno \

@@ -279,6 +279,11 @@ It's used if COLMAP has CUDA, and has 4 GB of its memory free when matching star
 it runs out partway, matching uses the CPU, so a shared GPU is fine. The top of the page says which
 it would use now, and each job's log says which it did. `USE_GPU=0` keeps it on the CPU.
 
+**When COLMAP can't place the photos** (its mapper places fewer than 6), VGGT places them instead, and COLMAP refines
+that. This needs the GPU with about 7 GB of its memory free. The first time, it downloads its 4.7 GB of weights into
+`data/cache/models`. A mesh made that way has a `placement.json` beside it. `VGGT_FALLBACK=0` turns it off.
+[design.md](design.md#when-colmap-cant-place-the-photos-backendvggt_placepy) has how it works and how well it did.
+
 A reconstruction produces a textured `mesh.glb` (texture PNGs alongside), or an untextured
 `mesh.ply` if texturing fails (which can still be sized, and have its beta found, but not cleaned up),
 levelled assuming most photos were taken upright. On CPU,
@@ -650,6 +655,8 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_parsers.py     # offline: MP/OpenBeta/Kaya parsers on fixtures
     python3 tests/test_relevance.py   # offline: relevance filter on synthetic photos, progress tracking (CLIP downloads its model)
     python3 tests/test_pipeline.py    # offline: reconstruction steps with COLMAP/OpenMVS stubbed, progress parsing
+    python3 tests/test_vggt_place.py  # offline: which photos VGGT places, its cameras as a COLMAP model, the rounds after
+    python3 tests/test_splat.py       # offline: splats' cameras and lenses, their file, the rock's box, photos for fitting
     python3 tests/test_campaign.py    # offline: meshing an area, with harvest and reconstruction stubbed: order, stopping, restarts, retries, boulders' meshes
     python3 tests/test_viewpoints.py  # offline: placing each climb on a boulder's mesh by its own photos
     python3 tests/test_bundle.py      # offline: moving a boulder's mesh and its harvests to another copy of the data

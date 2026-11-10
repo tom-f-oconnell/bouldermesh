@@ -61,3 +61,11 @@ Sources:
 - [YouTube Terms of Service](https://www.youtube.com/static?template=terms)
 - [YouTube Standard vs Creative Commons licence](https://vondranlegal.com/what-is-a-youtube-standard-license-vs-creative-commons-attribution-sharing-videos-legal/)
 - [University of Waterloo on downloading YouTube videos](https://uwaterloo.ca/copyright-at-waterloo/faq-0-9)
+
+## Models the pipeline runs
+
+- **VGGT-1B** places photos when COLMAP's mapper can't (`backend/vggt_place.py`). Meta licenses its weights for
+  non-commercial use only. BoulderMesh is a non-commercial hobby project (the owner, 2026-11-10), so it's used. A
+  commercial use would need another model, or a licence of Meta's that allows it.
+- **Only in experiments** (`experiments/depth`): Depth Anything V2, MoGe-2, and VGGSfM's tracker with ALIKED and
+  SuperPoint keypoints. Check each one's licence before bringing it into the app.

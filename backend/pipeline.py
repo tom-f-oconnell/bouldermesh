@@ -1,6 +1,7 @@
 """Photogrammetry pipeline: photos -> mesh.
 
-Real path:  COLMAP (sparse SfM) -> OpenMVS (dense + mesh), via subprocess.
+Real path:  COLMAP (sparse SfM) -> OpenMVS (dense + mesh), via subprocess. Where COLMAP's mapper can't place the
+            photos, VGGT places them and COLMAP refines that (vggt_place.py).
 Fallback:   if either tool is missing, builds a labelled DEMO relief mesh from
             the first photo so the rest of the app can be exercised.
 
@@ -21,7 +22,8 @@ from typing import Callable
 import diagnostics
 import occlusion
 import orientation
-from climbs.common import jobctl
+import vggt_place
+from climbs.common import Cancelled, jobctl
 from diagnostics import gpu_free_mb
 from progress import Tracker
 
@@ -251,6 +253,24 @@ def _upright(model: Path, images: Path, work: Path, log: Log, tracker: Tracker) 
         return model
 
 
+def _place_with_vggt(db: Path, images: Path, sparse: Path, work: Path, log: Log, tracker: Tracker, registered: int) -> None:
+    """When the mapper placed too few photos: VGGT's placements, refined by COLMAP, as another model in sparse/ (vggt),
+    for the largest to be chosen from as before. Failing only costs the time."""
+    why = vggt_place.unavailable()
+    if why:
+        log(f"VGGT could try placing them instead, but not here: {why}")
+        return
+    log(f"== VGGT: placing the photos, as COLMAP's mapper placed only {registered}")
+    tracker.update("mapper", 0, "placing them with VGGT")
+    try:
+        n = vggt_place.place(COLMAP, db, images, sparse / "vggt", work / "vggt", log, lambda cmd: _run(cmd, work, log))
+        log(f"VGGT and COLMAP placed {n} photos")
+    except Cancelled:
+        raise
+    except Exception as e:
+        log(f"placing them with VGGT failed: {e}")
+
+
 def _finished(work: Path, step: str) -> bool:
     return (work / "finished" / step).exists()
 
@@ -378,6 +398,9 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
                 for m in list(sparse.iterdir()):
                     if not m.name.startswith("aborted"):
                         m.rename(sparse / f"aborted{attempt}-{m.name}")
+        registered = _largest_model(sparse)[1]
+        if registered < min_registered:
+            _place_with_vggt(db, images, sparse, work, log, tracker, registered)
     model, registered = _largest_model(sparse)
     log(f"registered {registered}/{n_images} images in the largest model")
     if model is None or registered < min_registered:
@@ -397,6 +420,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     def keep_orientation() -> None:
         if report:
             orientation.save(out_dir, report, model)
+        if _largest_model(sparse)[0] == sparse / "vggt" and (work / "vggt" / "placed.json").exists():   # the mesh's model came from VGGT's
+            shutil.copyfile(work / "vggt" / "placed.json", out_dir / "placement.json")
 
     if not _finished(work, "undistort"):
         log("== COLMAP: undistort")

@@ -5,6 +5,7 @@ Run: python3 tests/test_pipeline.py
 import json, os, pathlib, struct, sys, tempfile, time, types
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "backend"))
+os.environ["VGGT_FALLBACK"] = "0"      # VGGT stays out of it, whatever this machine has, unless a test stands it in
 import occlusion
 import pipeline
 from climbs.common import Cancelled
@@ -133,6 +134,70 @@ with tempfile.TemporaryDirectory() as td:
     except RuntimeError as e:
         assert "only 3 image(s)" in str(e), e
 print("mapper abort OK")
+
+
+# ---- when the mapper places too few, VGGT's placements (refined by COLMAP) are another model to choose from
+def with_vggt(why=None, placed=None, fails=None):
+    """vggt_place standing in: unavailable for why, or placing that many photos as sparse/vggt, or raising fails."""
+    calls = []
+
+    def place(colmap, db, images, out, work, log, run):
+        calls.append((db, images, out, work))
+        if fails:
+            raise fails
+        model(out.parent, out.name, placed)
+        return placed
+    saved = pipeline.vggt_place.unavailable, pipeline.vggt_place.place
+    pipeline.vggt_place.unavailable, pipeline.vggt_place.place = (lambda: why), place
+    return calls, saved
+
+
+def restore(saved):
+    pipeline.vggt_place.unavailable, pipeline.vggt_place.place = saved
+
+
+calls, saved = with_vggt(placed=12)
+try:
+    assert stops_at([{"models": {"0": 2}}] * pipeline.MAPPER_ATTEMPTS).endswith("sparse/vggt")
+    db, images, out, work = calls[0]
+    assert db.name == "database.db" and out == work.parent / "sparse" / "vggt" and work.name == "vggt", calls
+    calls.clear()
+    assert stops_at([{"models": {"0": 9}}]).endswith("sparse/0") and not calls, "enough placed: no VGGT"
+finally:
+    restore(saved)
+calls, saved = with_vggt(placed=4)          # VGGT's model is too small as well: fails as before
+try:
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            run_with_mapper([{"models": {"0": 2}}] * pipeline.MAPPER_ATTEMPTS, pathlib.Path(td))
+            raise AssertionError("too small a model should fail")
+        except RuntimeError as e:
+            assert "only 4 image(s)" in str(e), e
+finally:
+    restore(saved)
+for why, fails, said in (("no CUDA GPU is visible", None, "but not here: no CUDA GPU is visible"),
+                         (None, RuntimeError("only 1 photo(s) share verified matches"), "placing them with VGGT failed: only 1")):
+    calls, saved = with_vggt(why=why, fails=fails)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                run_with_mapper([{"models": {"0": 2}}] * pipeline.MAPPER_ATTEMPTS, pathlib.Path(td))
+                raise AssertionError("too small a model should fail")
+            except RuntimeError as e:
+                assert "only 2 image(s)" in str(e), e
+    finally:
+        restore(saved)
+calls, saved = with_vggt(fails=Cancelled())     # stopping the job stops it, rather than being taken for a failure
+try:
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            run_with_mapper([{"models": {"0": 2}}] * pipeline.MAPPER_ATTEMPTS, pathlib.Path(td))
+            raise AssertionError("should have been stopped")
+        except Cancelled:
+            pass
+finally:
+    restore(saved)
+print("VGGT placing OK")
 
 
 # ---- people masks reach every step that can use them, and only cost the masking if they fail
@@ -357,11 +422,12 @@ print("texture size OK")
 
 
 # ---- an interrupted job carries on from the last step it finished
-def run_until(tmp, stop_at=None, faces=None):
+def run_until(tmp, stop_at=None, faces=None, placed=8):
     """reconstruct_colmap_openmvs() on the same work/, raising Stop at a tool as a restart would. Returns the tools it ran.
 
     Args:
         faces: the faces ReconstructMesh's mesh says it has; without, a file with no header.
+        placed: how many photos the mapper places.
     """
     images, work, tools = tmp / "images", tmp / "work", []
     images.mkdir(exist_ok=True)
@@ -376,7 +442,7 @@ def run_until(tmp, stop_at=None, faces=None):
                 model(work / "sparse", "half", 3)    # what a killed mapper leaves
             raise Stop()
         if name == "mapper":
-            model(work / "sparse", "0", 8)
+            model(work / "sparse", "0", placed)
         if name == "model_orientation_aligner":
             (work / "aligned").mkdir(exist_ok=True)
             (work / "aligned" / "images.bin").write_bytes(struct.pack("<Q", 0))
@@ -437,4 +503,23 @@ with tempfile.TemporaryDirectory() as td:
     assert (pathlib.Path(td) / "out" / "mesh.ply").stat().st_mode & 0o044 == 0o044, "the untextured mesh readable by all, as the rest"
 assert pipeline.ply_faces(pathlib.Path("/nonexistent")) is None
 print("empty meshes OK")
+
+# a mesh from VGGT's placements says so, and one from the mapper's doesn't
+for placed, vggt in ((2, True), (8, False)):
+    with tempfile.TemporaryDirectory() as td:
+        tmp = pathlib.Path(td)
+
+        def place(colmap, db, images, out, work, log, run):
+            model(out.parent, out.name, 7)
+            work.mkdir(parents=True, exist_ok=True)
+            (work / "placed.json").write_text(json.dumps({"by": "vggt", "photos": 7}))
+            return 7
+        saved = pipeline.vggt_place.unavailable, pipeline.vggt_place.place
+        pipeline.vggt_place.unavailable, pipeline.vggt_place.place = (lambda: None), place
+        try:
+            assert run_until(tmp, faces=50_000, placed=placed)[-1] == "TextureMesh"
+        finally:
+            restore(saved)
+        assert (tmp / "out" / "placement.json").exists() is vggt, (placed, vggt)
+print("placement record OK")
 print("ALL PIPELINE TESTS PASSED")

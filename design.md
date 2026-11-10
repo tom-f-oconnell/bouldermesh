@@ -124,6 +124,50 @@ again from the numbers a harvest kept (`judge()`), so older harvests pass by the
 area climbs did, besides pooled retries. Of the 1,225 harvests skipped as poor then, 928 had under 10
 photos and estimates of 0-2.
 
+## When COLMAP can't place the photos (`backend/vggt_place.py`)
+
+COLMAP's mapper starts from a pair of photos seen from far enough apart, and grows the model from there. When every
+photo was taken from about the same place, as with a climb's videos all filmed from one spot, it has no such pair. It
+then places none, or a few, or places them wrongly. VGGT (Meta's Visual Geometry Grounded Transformer, the 1B model)
+estimates every photo's camera at once, from the photos alone.
+
+So when the mapper places fewer than 6 photos, VGGT is given the photos COLMAP's verified matches link: the largest
+linked group, or, of more than fit, those best linked. Its cameras become a COLMAP model with no points. COLMAP then
+triangulates its own verified matches from those cameras, and adjusts cameras, points and lenses together, over three
+rounds:
+- first keeping points up to 8° and 150 px off, as VGGT's cameras are a few degrees off;
+- then 3° and 20 px;
+- then COLMAP's usual 2° and 4 px.
+
+Points only two photos see count, as with few photos most are. The model that leaves is one more for the largest to be
+chosen from, and the pipeline carries on as after the mapper. A mesh made from it has a `placement.json`.
+
+What it did on poor subsets of four climbs with good meshes (`experiments/depth`, test 3; one run each):
+- **Where COLMAP had placed nothing, or placed them wrongly:**
+  - Monkey Gone to Heaven's 10 video frames came out 0.31% of the rock's size off, covering 79% of what they see.
+  - Midnight Lightning's came out 0.33% off, covering 66%.
+  - Monkey's 8 side photos drifted to 15° off (0.79%, 29%).
+  - Square Dance's 8 had too few matched pairs for OpenMVS to densify.
+- **Where COLMAP worked:** about the same, 0.19-0.29% against its 0.10-0.23%.
+- **Keeping VGGT's focal lengths:** worse for most when kept through all three rounds. Kept for the first two, they
+  helped Monkey's side photos (0.48%, 40%) but cost Square Dance's video (0.65%, 31% against 0.23%, 53%). So they're
+  refined from the start for now.
+- **VGGT's own route** (its tracks across the photos, then bundle adjustment, with no COLMAP matches): it placed
+  Monkey's side photos best (3° off, 0.29%), but covered less everywhere and was worse on four of the others. So
+  COLMAP's matches stay.
+
+VGGT's camera head alone is loaded: no depth, point or track heads. On hal's 3090 it took 7.3 GB of GPU memory for 10
+photos (1.3 s), 12.1 GB for 60 (13 s) and 15.0 GB for 90 (27 s). So it takes as many photos as fit in the memory free
+then, up to 80. It needs a GPU unless `VGGT_CPU=1`. Its weights (4.7 GB) download into `data/cache/models/huggingface`
+the first time. For it, the image's torch is now the CUDA build (cu126), which takes the image from 2.5 to 10.4 GB.
+`VGGT_FALLBACK=0` turns it off. VGGT-1B's weights are licensed for non-commercial use only, which this hobby project is.
+
+Not covered yet:
+- Machines reached over SSH or AWS run each job in a fresh container with no models cache, so they would download
+  the weights for each job that needs them. Machines that connect for work keep theirs in their data folder.
+- The viewpoint check still skips the harvests it judges too poor before COLMAP or VGGT see them.
+- More tests wait for videos: [experiments/depth](experiments/depth/README.md#queued-for-when-videos-are-back).
+
 ## People (`backend/occlusion.py`)
 
 Nearly every photo of a boulder problem has a climber or spotter in it (6.6% of the pixels on
