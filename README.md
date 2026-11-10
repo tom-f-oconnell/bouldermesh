@@ -362,8 +362,13 @@ ordinary user, and makes the site view-only for everyone but you:
 The image isn't built there: compiling COLMAP wants cores and memory a small server hasn't got, so the public setup runs
 one built elsewhere. On a machine with the meshes to show:
 
-    deploy/build.sh                              # bouldermesh:public, from the commit checked out, named for the registry by that commit
-    deploy/ship.sh you@boulders.example.com bouldermesh:public  # pushes it, then sends it (2.4 GB), the meshes, and a copy of the database
+    deploy/build.sh                          # from the commit checked out: bouldermesh:public (2.5 GB), bouldermesh:gpu (10.4 GB)
+    deploy/ship.sh you@boulders.example.com bouldermesh:public   # pushes both, the server pulls its own; meshes, database
+
+The server's image has torch's CPU build, as it meshes nothing itself. The GPU one, with the CUDA libraries VGGT needs, is
+for the machines that mesh (see "Running reconstructions elsewhere"), and for hal. The server pulls its image from the
+registry, so a ship moves only the layers that changed, usually a few MB. Its earlier builds' images go once nothing runs
+them. `NO_PUSH=1` sends the image whole instead. `GPU=0 deploy/build.sh` builds only the server's.
 
 Areas are stopped in the copy, so nothing runs there by itself. Projects' photos don't go, so their cards show none, and
 the database there is replaced each time, all but the settings changed on its admin page. Once the public server harvests
@@ -535,10 +540,11 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   mesh's files, its placed photos and masks, and for beta its videos from the cache, cut to the 150 s it looks at
   (they never ask YouTube themselves). One waiting for a machine is tried again once one is there.
 
-Machines run the same Docker image as this server, which they pull from a registry. `deploy/build.sh` names the image
-for GitHub's by its commit (`ghcr.io/<owner>/bouldermesh:<commit>`, or `REGISTRY` for another), and `deploy/ship.sh`
-pushes it there, and as `:latest`, before the server gets it. Left empty, *Docker image the machines run* is then the
-build the server runs, so each ship moves the machines with it, and a machine that has an older build pulls the new one
+Machines run the same commit as this server, in its GPU build (torch's CUDA libraries, for VGGT), which they pull from a
+registry. `deploy/build.sh` names both builds for GitHub's by their commit: `ghcr.io/<owner>/bouldermesh:<commit>` for
+the server, and `:<commit>-gpu` for machines (`REGISTRY` for another registry). `deploy/ship.sh` pushes them there, and
+as `:latest` and `:latest-gpu`, before the server gets its own. Left empty, *Docker image the machines run* is then the
+GPU build of the commit the server runs, so each ship moves the machines with it, and a machine that has an older build pulls the new one
 by its new name; the admin page shows which. Pushing to GitHub's registry needs gh's token to be allowed to write packages
 (`gh auth refresh -h github.com -s write:packages`, once); ship.sh logs in with it for the push only. The package starts
 private: make it public in its settings on GitHub (*Change visibility*), or `docker login` wherever it's pulled. Naming

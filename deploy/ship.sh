@@ -5,9 +5,11 @@
 # That machine needs Docker with you in the docker group, zstd, python3, and this repository cloned at ~/bouldermesh
 # (REMOTE_DIR to change) with ./data writable by you. The image is the one Compose built here unless named, and
 # BM_IMAGE in the machine's .env must name it if it isn't bouldermesh-bouldermesh:latest. An image from deploy/build.sh
-# is pushed to its registry first, and as :latest, so that remote machines can pull the build the server runs
-# (NO_PUSH=1 skips that). The database there is replaced each time, all but its settings (the admin page's), so holds
-# marked or cleanups edited there with the editing token are lost: do those here.
+# is pushed to its registry first, and as :latest, along with the same commit's GPU build for remote machines (as
+# :latest-gpu), so that they can pull the commit the server runs; the server then pulls its image from there too, which
+# moves only the layers it doesn't have. NO_PUSH=1 skips pushing, and the image is sent whole instead. The database
+# there is replaced each time, all but its settings (the admin page's), so holds marked or cleanups edited there with
+# the editing token are lost: do those here.
 # Running it again is cheap: an image the machine already has isn't sent again, and only changed meshes are.
 # A machine that harvests by itself (HARVESTS_HERE=1 in its .env: volunteers.md, "The public server harvests") has the
 # only copy of its database and meshes, so it gets only the image; IMAGE_ONLY=1 does that for any machine.
@@ -25,25 +27,36 @@ kept=$(mktemp --suffix .json)
 cfg=
 trap 'rm -rf "$snap" "$kept" ${cfg:+"$cfg"}' EXIT
 
-# the name deploy/build.sh gave the image, which remote machines pull: pushed before the server gets the image, so that
-# it never runs a build they can't have
-pushed=$(docker image inspect "$image" --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^BOULDERMESH_IMAGE=//p')
+# the names deploy/build.sh gave the image and the same commit's build for remote machines, which they pull: pushed
+# before the server gets the image, so that it never runs a build they can't have
+env=$(docker image inspect "$image" --format '{{range .Config.Env}}{{println .}}{{end}}')
+pushed=$(echo "$env" | sed -n 's/^BOULDERMESH_IMAGE=//p')
+machines=$(echo "$env" | sed -n 's/^BOULDERMESH_WORKER_IMAGE=//p')
+push() {    # local image, name, also as
+    docker tag "$1" "$2"
+    docker tag "$1" "$3"
+    echo "image $1: pushing it as $2 and $3"
+    DOCKER_CONFIG=${cfg:-${DOCKER_CONFIG:-$HOME/.docker}} docker push -q "$2"
+    DOCKER_CONFIG=${cfg:-${DOCKER_CONFIG:-$HOME/.docker}} docker push -q "$3"
+}
 if [ -z "$pushed" ]; then
     echo "image $image: not from deploy/build.sh, so not pushed (remote machines run the image the admin page names)"
 elif [ -n "${NO_PUSH:-}" ]; then
-    echo "image $image: not pushed (NO_PUSH), so remote machines can only pull $pushed if it was pushed before"
+    echo "image $image: not pushed (NO_PUSH), so remote machines can only pull ${machines:-$pushed} if it was pushed before"
 else
-    latest=${pushed%:*}:latest
-    docker tag "$image" "$pushed"
-    docker tag "$image" "$latest"
     if [ "${pushed%%/*}" = ghcr.io ] && gh auth token > /dev/null 2>&1; then     # logged in with gh's token, for this only
         cfg=$(mktemp -d)
         gh auth token | DOCKER_CONFIG=$cfg docker login ghcr.io -u "$(gh api user --jq .login)" --password-stdin > /dev/null 2>&1 ||
             { echo "couldn't log in to ghcr.io with gh's token: it needs write:packages (gh auth refresh -s write:packages)" >&2; exit 1; }
     fi
-    echo "image $image: pushing it as $pushed and $latest"
-    DOCKER_CONFIG=${cfg:-${DOCKER_CONFIG:-$HOME/.docker}} docker push -q "$pushed"
-    DOCKER_CONFIG=${cfg:-${DOCKER_CONFIG:-$HOME/.docker}} docker push -q "$latest"
+    push "$image" "$pushed" "${pushed%:*}:latest"
+    if [ -n "$machines" ] && [ "$machines" != "$pushed" ]; then
+        if docker image inspect "$machines" > /dev/null 2>&1; then
+            push "$machines" "$machines" "${machines%:*}:latest-gpu"
+        else
+            echo "warning: remote machines will pull $machines, which isn't here to push: build it with deploy/build.sh" >&2
+        fi
+    fi
 fi
 
 only_image=${IMAGE_ONLY:-}
@@ -87,8 +100,16 @@ if [ "$(ssh "$dest" "docker image inspect $image --format '{{.Id}}' 2>/dev/null"
 else
     # images no container uses any more (each ship's leaves one, after the restart that follows it), for room
     ssh "$dest" 'docker image prune -f' | tail -1
-    echo "image $image, as $dest will load it (a few minutes for 2.5 GB; more for 10 GB)"
-    docker save "$image" | zstd | ssh "$dest" 'zstd -d | docker load'
+    if [ -n "$pushed" ] && [ -z "${NO_PUSH:-}" ]; then
+        # from the registry, which sends only the layers it hasn't got; then earlier builds' names go, so that their
+        # images go too once no container runs them (the one running now keeps its own until the restart after this)
+        echo "image $image: $dest pulls it as $pushed"
+        ssh "$dest" "docker pull -q $pushed > /dev/null && docker tag $pushed $image && { docker images --format '{{.Repository}}:{{.Tag}}' |
+            grep '^${pushed%:*}:' | grep -vx '$pushed' | xargs -r docker rmi > /dev/null 2>&1; true; }"
+    else
+        echo "image $image, as $dest will load it (a few minutes for 2.5 GB)"
+        docker save "$image" | zstd | ssh "$dest" 'zstd -d | docker load'
+    fi
 fi
 if [ -n "${PHOTOS:-}" ]; then
     echo "projects' photos, masks and where they came from"

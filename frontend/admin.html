@@ -149,8 +149,9 @@ function render(s){
   state = s;
   const v = s.settings;
   $('#where').textContent = `the main site is on port ${s.site_port} · ${s.version ? `build ${s.version}` : 'no build recorded'}`;
-  if (s.own_image) $('#image').placeholder = `empty: ${s.own_image}, the build this server runs`;
-  $('#image-note').textContent = s.own_image ? (v['compute.image'] ? `Empty, the machines would run ${s.own_image}, the build this server runs, which changes with each ship.` : 'Left empty, the machines run the build this server runs, which deploy/ship.sh pushed, and change with it on each ship.')
+  const theirs = s.machines_image || s.own_image;
+  if (theirs) $('#image').placeholder = `empty: ${theirs}, the build of this server's commit for them`;
+  $('#image-note').textContent = theirs ? (v['compute.image'] ? `Empty, the machines would run ${theirs}, the build of the commit this server runs for them (with VGGT's GPU libraries), which changes with each ship.` : 'Left empty, the machines run the build of the commit this server runs that\'s made for them (with VGGT\'s GPU libraries), which deploy/ship.sh pushed, and change with it on each ship.')
     : 'This server\'s image wasn\'t made by deploy/build.sh, so name the one the machines run.';
   for (const r of document.querySelectorAll('input[name=tex]')) r.checked = r.value === v['site.textures'];
   for (const r of document.querySelectorAll('input[name=src]')) r.checked = r.value === v['site.sources'];

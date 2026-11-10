@@ -159,7 +159,11 @@ What it did on poor subsets of four climbs with good meshes (`experiments/depth`
 VGGT's camera head alone is loaded: no depth, point or track heads. On hal's 3090 it took 7.3 GB of GPU memory for 10
 photos (1.3 s), 12.1 GB for 60 (13 s) and 15.0 GB for 90 (27 s). So it takes as many photos as fit in the memory free
 then, up to 80. It needs a GPU unless `VGGT_CPU=1`. Its weights (4.7 GB) download into `data/cache/models/huggingface`
-the first time. For it, the image's torch is now the CUDA build (cu126), which takes the image from 2.5 to 10.4 GB.
+the first time. For it, the image's torch is now the CUDA build (cu126), which takes the image from 2.5 to 10.4 GB. So
+`deploy/build.sh` builds two images: the server's, which meshes nothing itself, keeps torch's CPU build, while hal and
+the machines that mesh run the GPU one. The server pulls its image from the registry, moving only changed layers,
+rather than being sent the whole image each time. Its disk (75 GB, data capped at 47.5 GB) couldn't hold two 10 GB
+builds while shipping one over another.
 `VGGT_FALLBACK=0` turns it off. VGGT-1B's weights are licensed for non-commercial use only, which this hobby project is.
 
 Not covered yet:

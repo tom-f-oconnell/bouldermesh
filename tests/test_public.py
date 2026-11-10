@@ -48,7 +48,7 @@ class Server:
         full = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(self.port), HOST="127.0.0.1", ADMIN_PORT=str(self.admin_port),
                     HTTP_MIN_INTERVAL="0", STOP_WAIT_MINUTES="0.1", **env)
         for k in ("EDIT_TOKEN", "READ_ONLY", "CSP", "CLIENT_IP_HEADER", "BOULDERMESH_COMMIT", "BOULDERMESH_IMAGE", "ADMIN_SSH",
-                  "ADMIN_BIND", "ADMIN_PUBLISHED_PORT", "ADMIN_URL", "ADMIN_PASSWORD", "ADMIN_HOST"):
+                  "BOULDERMESH_WORKER_IMAGE", "ADMIN_BIND", "ADMIN_PUBLISHED_PORT", "ADMIN_URL", "ADMIN_PASSWORD", "ADMIN_HOST"):
             if k not in env:
                 full.pop(k, None)
         self.proc = subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=full,
@@ -289,6 +289,13 @@ def build(tmp: Path) -> None:
     finally:
         out = srv.stop()
     assert "BoulderMesh abc1234 on" in out, out[-1000:]
+    # the server's CPU build, whose machines run the same commit's GPU build
+    srv = Server(tmp, BOULDERMESH_COMMIT="abc1234", BOULDERMESH_IMAGE=own, BOULDERMESH_WORKER_IMAGE=own + "-gpu")
+    try:
+        st = req(f"http://127.0.0.1:{srv.admin_port}", "GET", "/api/admin/state")[2]
+        assert st["own_image"] == own and st["machines_image"] == st["worker_image"] == own + "-gpu", st
+    finally:
+        srv.stop()
     srv = Server(tmp)     # any other build
     try:
         st = req(f"http://127.0.0.1:{srv.admin_port}", "GET", "/api/admin/state")[2]

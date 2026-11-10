@@ -3,8 +3,9 @@
 # Run:    docker compose up                 (see docker-compose.yml)
 #
 # The image works with or without a GPU: photo matching uses one if it's given to the container
-# (docker-compose.gpu.yml) and has room, and the CPU otherwise. torch is its CUDA build, for VGGT placing photos where
-# COLMAP's mapper can't (backend/vggt_place.py), which needs a GPU; everything else of torch's runs on the CPU.
+# (docker-compose.gpu.yml) and has room, and the CPU otherwise. torch is its CUDA build (TORCH=cu126, 10.4 GB in all),
+# for VGGT placing photos where COLMAP's mapper can't (backend/vggt_place.py), which needs a GPU; everything else of
+# torch's runs on the CPU. --build-arg TORCH=cpu makes the 2.5 GB image a server that meshes nothing needs (build.sh).
 
 # The same COLMAP version as Ubuntu's package, which has no CUDA, so that only the device changes.
 # It predates this compiler, which no longer brings in those two headers by itself.
@@ -46,6 +47,7 @@ RUN gcc -shared -fPIC -O2 -Wall -o /usr/local/lib/signal_note.so /opt/signal_not
 
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
+ARG TORCH=cu126
 # rtmlib (the pose model finding climbers' hands and feet) is installed without its declared dependencies, which
 # would replace Ubuntu's numpy and OpenCV with pip's; it works with Ubuntu's, and onnxruntime's are listed after
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -56,7 +58,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcgal-dev libglew2.2 libglfw3 libjpeg8 libpng16-16 libtiff6 \
  && rm -rf /var/lib/apt/lists/* \
  && pip install --no-cache-dir --break-system-packages yt-dlp \
- && pip install --no-cache-dir --break-system-packages torch torchvision --index-url https://download.pytorch.org/whl/cu126 \
+ && pip install --no-cache-dir --break-system-packages torch torchvision --index-url https://download.pytorch.org/whl/$TORCH \
  && pip install --no-cache-dir --break-system-packages --no-deps rtmlib onnxruntime \
  && pip install --no-cache-dir --break-system-packages flatbuffers protobuf coloredlogs humanfriendly sympy packaging tqdm \
  && pip install --no-cache-dir --break-system-packages --ignore-installed idna \
@@ -85,11 +87,13 @@ COPY frontend ./frontend
 COPY cli.py ./cli.py
 COPY volunteer ./volunteer
 COPY worker ./worker
-# Which build this is, given by deploy/build.sh, and the name it's pushed under: shown on the admin page, and the image
-# remote machines run unless the admin page names another. Here at the end, so that the steps above stay cached.
+# Which build this is, given by deploy/build.sh, and the name it's pushed under, both shown on the admin page; and the
+# image remote machines run unless the admin page names another, the commit's GPU build. Here at the end, so that the
+# steps above stay cached.
 ARG BOULDERMESH_COMMIT=
 ARG BOULDERMESH_IMAGE=
-ENV BOULDERMESH_COMMIT=$BOULDERMESH_COMMIT BOULDERMESH_IMAGE=$BOULDERMESH_IMAGE
+ARG BOULDERMESH_WORKER_IMAGE=
+ENV BOULDERMESH_COMMIT=$BOULDERMESH_COMMIT BOULDERMESH_IMAGE=$BOULDERMESH_IMAGE BOULDERMESH_WORKER_IMAGE=$BOULDERMESH_WORKER_IMAGE
 ENV DATA_DIR=/data PORT=8470
 VOLUME /data
 EXPOSE 8470

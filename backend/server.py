@@ -94,10 +94,12 @@ FILE_CACHE = int(os.environ.get("FILE_CACHE_SECONDS", "3600"))   # how long brow
 # the header in which a proxy in front names the sender, for the log (X-Real-IP behind deploy/Caddyfile); only for a port
 # nothing but that proxy can reach, as anyone else could write it
 CLIENT_IP_HEADER = os.environ.get("CLIENT_IP_HEADER") or None
-# which build this is, and the name it's pushed under, which remote machines run unless the admin page names another
-# image: given by deploy/build.sh (the Dockerfile's last lines), and empty for any other build
+# which build this is, and the name it's pushed under; and the image remote machines run unless the admin page names
+# another, the same commit's GPU build (or this one, from before there was a separate one): given by deploy/build.sh
+# (the Dockerfile's last lines), and empty for any other build
 VERSION = os.environ.get("BOULDERMESH_COMMIT") or None
 OWN_IMAGE = os.environ.get("BOULDERMESH_IMAGE") or None
+MACHINES_IMAGE = os.environ.get("BOULDERMESH_WORKER_IMAGE") or OWN_IMAGE
 # the Caddyfile in front, whose trusted proxies are compared with Cloudflare's published ranges each day (proxy_ranges.py)
 RANGES = proxy_ranges.Watch(Path(os.environ["CADDYFILE"])) if os.environ.get("CADDYFILE") else None
 # volunteers fetching YouTube videos (volunteers.py), served on VOLUNTEER_PORT if it's set, for a proxy to pass on
@@ -2407,11 +2409,11 @@ def server_id() -> str:
 
 
 def compute_settings() -> dict:
-    """The settings, with the image remote machines run filled in as this server's own (OWN_IMAGE) where the admin page
-    leaves it empty: then they run the build the server runs, whichever was shipped last."""
+    """The settings, with the image remote machines run filled in as this build's own for them (MACHINES_IMAGE) where
+    the admin page leaves it empty: then they run the commit the server runs, whichever was shipped last."""
     s = settings().all()
-    if not s["compute.image"] and OWN_IMAGE:
-        s["compute.image"] = OWN_IMAGE
+    if not s["compute.image"] and MACHINES_IMAGE:
+        s["compute.image"] = MACHINES_IMAGE
     return s
 
 
@@ -3614,7 +3616,7 @@ def admin_state() -> dict:
     return {"settings": settings().all(), "secrets": settings().secrets_status(), "compute": compute_state(),
             "policy": counts, "retexture_queued": len(_retexturing), "site_port": int(os.environ.get("PORT", "8470")),
             "proxy_ranges": RANGES.state() if RANGES else None, "version": VERSION,
-            "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE,
+            "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE, "machines_image": MACHINES_IMAGE,
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
             "usage": {**_usage, "cap": data_cap() or None, "full": full()}}
 
