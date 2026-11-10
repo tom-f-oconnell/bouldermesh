@@ -21,7 +21,8 @@
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mute)}
   .pill.real{color:var(--ok);border-color:var(--ok)} .pill.demo,.pill.stopping{color:var(--warn);border-color:var(--warn)}
   .seg{display:inline-flex;margin-left:auto;border:1px solid var(--line);border-radius:6px;overflow:hidden}
-  #random{margin-left:auto} #random+.seg, #bgmode+.seg{margin-left:0} header .seg{flex:none}
+  #random{margin-left:auto} header .seg{flex:none}
+  #prefs{display:inline-flex;gap:12px;align-items:center;flex:none} #prefs .seg{margin-left:0} .plabel{display:none}
   .seg button{background:transparent;color:var(--mute);border:0;border-radius:0;padding:3px 8px;font-size:12px} .seg button.on{color:var(--fg);background:var(--line)}
   #code{color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;text-decoration:none}
   #admindlg{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;max-width:600px;padding:16px}
@@ -56,7 +57,8 @@
   body.readonly .rec,body.readonly .retry,body.readonly #p-interrupted,body.readonly button.back,body.readonly button.all,body.readonly label.file,
   body.readonly .stopnow,body.readonly .stoplater,body.readonly .resume,body.readonly .retryfailed,body.readonly .harvestagain,body.readonly .rebuildchanged,
   body.readonly .rebuildall,body.readonly .boulders,body.readonly .meshboulder,body.readonly .setll,body.readonly #pieces .edit,body.readonly #pieces .redo,body.readonly .rebuild,
-  body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly button.mark,body.readonly .clearmine,body.readonly #vmark{display:none!important}
+  body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly button.mark,body.readonly .clearmine,body.readonly #vmark,
+  body.readonly .tabs button[data-tab=areas],body.readonly .tabs button[data-tab=projects],body.readonly .projs{display:none!important}
   label.file input{display:none}
   .status{font-size:12px;color:var(--mute)}
   .status.done,.status.harvested{color:var(--ok)} .status.failed{color:var(--bad)} .status.running,.status.queued,.status.harvesting,.status.interrupted{color:var(--warn)}
@@ -151,11 +153,30 @@
   .bvid img{width:100%;border-radius:6px;margin-top:6px;display:block}
   #vmark.on{background:var(--acc);color:var(--acc-fg)}
   .phone{display:none}
+  /* A phone's progress loading a mesh, over whichever view is showing until the mesh is ready to see */
+  #loading{position:fixed;inset:0;z-index:2500;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.3);pointer-events:none}
+  #loading[hidden]{display:none}
+  #loading .card{width:min(320px,calc(100vw - 32px));display:grid;justify-items:center;gap:8px;padding:16px;background:var(--panel);
+    border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.45)}
+  #loading .spin{width:32px;height:32px;border-radius:50%;border:3px solid var(--line);border-top-color:var(--acc);animation:spin .8s linear infinite}
+  #loading .what{font-weight:600;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #loading .detail{font-size:12px;color:var(--mute);min-height:1.45em}
+  #loading .bar{width:100%;height:4px;border-radius:2px;background:var(--line);overflow:hidden}
+  #loading .bar i{display:block;height:100%;width:0;background:var(--acc);transition:width .2s}
+  #loading .bar.indef i{width:30%;animation:slide 1.2s ease-in-out infinite}
+  @keyframes spin{to{transform:rotate(360deg)}} @keyframes slide{from{transform:translateX(-100%)}to{transform:translateX(340%)}}
   /* A phone shows either the controls or the view, which then has the whole screen, with nothing over the mesh */
   @media (max-width:860px){
     body,main{grid-template-columns:minmax(0,1fr)} aside{border-right:0} #right{display:none} .phone{display:inline-block}
     body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
-    #tofull{margin-left:auto} #random{margin-left:0} #caps,#code,#admin{display:none!important}
+    header{padding:6px 10px;gap:8px} header h1,#mode{display:none} #random{margin-left:0} #edit,#viewonly{order:1;margin-left:auto}
+    #caps,#code,#admin{display:none!important}
+    /* the background and colour choices open from a button in either view, as a panel over it */
+    #prefs{position:fixed;z-index:2600;display:none;grid-template-columns:auto auto;gap:10px 12px;align-items:center;padding:12px;
+      background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.45)}
+    body.prefs-open #prefs{display:grid} #prefs .plabel{display:block;font-size:12px;color:var(--mute)}
+    #prefs .seg{justify-self:start} #prefs .seg button{padding:6px 10px;font-size:13px}
+    .prefsbtn{font-size:15px;line-height:1.2;padding-top:2px;padding-bottom:2px} .prefsbtn[aria-expanded=true]{background:var(--line)}
     #hud,#viewnote,#pieces,#orient{display:none!important}
     #vtitle:not(:empty){display:block;position:absolute;top:6px;left:8px;max-width:calc(100% - 16px);font-size:12px;line-height:1.35;
       padding:2px 8px;border-radius:10px;background:var(--overlay-soft);color:var(--fg);white-space:nowrap;overflow:hidden;
@@ -166,16 +187,21 @@
 </head>
 <body>
 <header>
+  <button class="sm phone" id="tofull">Viewer</button>
   <h1>BoulderMesh</h1>
   <span id="mode" class="pill">checking…</span>
   <span id="stopping" class="pill stopping" style="display:none"></span>
   <span id="caps" class="status"></span>
   <span id="viewonly" class="pill" style="display:none" title="This copy of the site can't be changed from a browser">view-only</span>
   <button class="sm sec" id="edit" style="display:none"></button>
-  <button class="sm phone" id="tofull">Viewer</button>
   <button class="sm sec" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random mesh</button>
-  <span class="seg" id="bgmode" title="Behind a mesh: the plain page colour, or a scene: a sky over ground the colour of the rock's foot, and around a reconstructed mesh, where its photos show it, what's really there"><button data-bg="solid">Solid</button><button data-bg="scene" class="on">Scene</button></span>
-  <span class="seg" id="theme" title="Colours: the browser's setting, or light or dark here"><button data-theme="system" class="on">System</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span>
+  <button class="sm sec phone prefsbtn" id="prefsbtn" title="Background and colours" aria-label="Settings" aria-expanded="false">⚙︎</button>
+  <span id="prefs">
+    <span class="plabel">Background</span>
+    <span class="seg" id="bgmode" title="Behind a mesh: the plain page colour, or a scene: a sky over ground the colour of the rock's foot, and around a reconstructed mesh, where its photos show it, what's really there"><button data-bg="solid">Solid</button><button data-bg="scene" class="on">Scene</button></span>
+    <span class="plabel">Colours</span>
+    <span class="seg" id="theme" title="Colours: the browser's setting, or light or dark here"><button data-theme="system" class="on">System</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span>
+  </span>
   <button class="sm sec" id="admin" style="display:none" title="The admin page: what the site shows, where reconstructions run, credentials. It's on a port of its own, which only the server itself (or its LAN) can reach.">Admin</button>
   <a id="code" href="https://github.com/tom-f-oconnell/bouldermesh" target="_blank" rel="noopener">Code</a>
 </header>
@@ -300,6 +326,7 @@
     <div class="viewbar">
       <button class="sm phone" id="toctl">Controls</button>
       <button class="sm sec phone" id="vrandom" title="Another mesh, picked at random">Random</button>
+      <button class="sm sec phone prefsbtn" id="vprefs" title="Background and colours" aria-label="Settings" aria-expanded="false">⚙︎</button>
       <button class="sec sm" id="v3d">3D viewer</button>
       <button class="sec sm" id="vmap">Map</button>
       <button class="sec sm" id="vmark" style="display:none" title="Click the rock to add a start hold, and a hold again for hand, finish, foot, then none">Mark holds</button>
@@ -321,6 +348,7 @@
     <div id="map"></div>
   </div>
 </main>
+<div id="loading" hidden><div class="card"><div class="spin"></div><div class="what"></div><div class="detail"></div><div class="bar"><i></i></div></div></div>
 <div class="toast" id="toast"></div>
 <div id="srctip" role="tooltip"></div>
 
@@ -434,6 +462,7 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
 });
 // on a phone, the view on its own, or the controls on their own
 function setFull(on){
+  setPrefs(false);
   document.body.classList.toggle('full', on);
   if (overMesh()) $('#toast').style.display = 'none';
   if ($('#map').classList.contains('on')) setTimeout(() => map.invalidateSize(), 50);
@@ -979,11 +1008,35 @@ document.querySelectorAll('#theme button').forEach(b => b.onclick = () => {
   try { themeChoice === 'system' ? localStorage.removeItem('bm_theme') : localStorage.setItem('bm_theme', themeChoice); } catch {}
   applyTheme();
 });
+// On a phone, the background and colour choices open from a button in either view, as a panel over it
+const prefs = $('#prefs'), prefsHome = prefs.parentNode, prefsNext = prefs.nextSibling;
+function setPrefs(open, btn){
+  document.body.classList.toggle('prefs-open', open);
+  document.querySelectorAll('.prefsbtn').forEach(b => b.setAttribute('aria-expanded', String(open && b === btn)));
+  if (!open) return;
+  const r = btn.getBoundingClientRect();
+  prefs.style.top = r.bottom + 6 + 'px';
+  prefs.style.left = Math.max(8, Math.min(r.left, innerWidth - prefs.offsetWidth - 8)) + 'px';
+}
+function placePrefs(){
+  setPrefs(false);
+  if (phone.matches) document.body.append(prefs);
+  else { prefsHome.insertBefore(prefs, prefsNext); prefs.style.top = prefs.style.left = ''; }
+}
+placePrefs();
+phone.addEventListener('change', placePrefs);
+document.querySelectorAll('.prefsbtn').forEach(b => b.onclick = () => setPrefs(b.getAttribute('aria-expanded') !== 'true', b));
+document.addEventListener('pointerdown', ev => { if (document.body.classList.contains('prefs-open') && !ev.target.closest('#prefs, .prefsbtn')) setPrefs(false); });
+addEventListener('keydown', ev => { if (ev.key === 'Escape') setPrefs(false); });
 renderer.domElement.addEventListener('webglcontextlost', ev => { ev.preventDefault(); $('#viewing').textContent = 'The view stopped working: reload the page'; viewNote('The graphics card dropped this view, usually because it ran out of memory. Close other tabs that use it and reload the page.'); });
 function loadGltf(url, side){
   const manager = new THREE.LoadingManager();
-  if (side) manager.setURLModifier(u => /\.(png|jpe?g)$/i.test(u) ? `${u}?max=${side}` : u);
-  return new GLTFLoader(manager).loadAsync(url);
+  manager.setURLModifier(u => {
+    if (!/\.(png|jpe?g|webp)$/i.test(u)) return u;
+    loadingUpdate?.({ texture: true });     // its texture files follow the model's
+    return side ? `${u}?max=${side}` : u;
+  });
+  return new GLTFLoader(manager).loadAsync(url, ev => loadingUpdate?.(ev));
 }
 // GLTFLoader only logs a texture it can't load, and leaves it off the material
 function texturesLost(gltf){
@@ -1026,25 +1079,46 @@ async function loadGltfWithTexture(url, base, label){
   return { gltf, note };
 }
 let shownMesh = null;    // the id of the mesh in the viewer, if it's one of ours
+// A phone shows a mesh's progress over whichever view is showing, and moves to the view once it's ready to see, rather
+// than to an empty view while it loads. Returns what to call when it's done.
+let loadSeq = 0, loadingUpdate = null;
+function loading(label){
+  const seq = ++loadSeq, el = $('#loading');
+  loadingUpdate = null;
+  if (!phone.matches) { el.hidden = true; return () => {}; }
+  const bar = el.querySelector('.bar'), fill = bar.querySelector('i'), detail = el.querySelector('.detail');
+  const show = (frac, text) => { bar.classList.toggle('indef', frac == null); fill.style.width = frac == null ? '' : `${Math.round(frac * 100)}%`; detail.textContent = text; };
+  el.querySelector('.what').textContent = 'Loading ' + label;
+  show(null, '');
+  el.hidden = false;
+  loadingUpdate = ev => {
+    if (ev.texture) show(null, 'Its texture…');
+    else if (ev.lengthComputable && ev.total) show(ev.loaded / ev.total, `${mb(ev.loaded)} of ${mb(ev.total)} MB`);
+    else if (ev.loaded) show(null, `${mb(ev.loaded)} MB`);
+  };
+  return () => { if (seq === loadSeq) { el.hidden = true; loadingUpdate = null; } };
+}
 async function loadMeshUrl(url, filename, label, id){
   shownMesh = id || null;
   const began = performance.now(), via = viewVia;
   viewVia = '';
   $('#vfrom').style.display = 'none';
   closeBeta(id);
-  showRight('3d');
+  const loaded = loading(label);
+  if (!phone.matches) showRight('3d');
   viewNote('');
   pieces = null; renderPieces();
   $('#orient').style.display = 'none';
   const again = () => loadMeshUrl(url, filename, label, id);
   const ext = filename.split('.').pop().toLowerCase();
   const base = url.slice(0, url.lastIndexOf('/') + 1);
-  toast('Loading ' + filename + '…', 60000);
-  $('#viewing').textContent = `Loading ${label}…`;   // where a phone, which shows no toasts over the mesh, can see it
+  if (!phone.matches) toast('Loading ' + filename + '…', 60000);
+  $('#viewing').textContent = `Loading ${label}…`;
   try {
     let obj, note = '';
-    if (ext === 'ply') obj = new THREE.Mesh(await new PLYLoader().loadAsync(url));
-    else if (ext === 'stl') obj = new THREE.Mesh(await new STLLoader().loadAsync(url));
+    const progress = ev => loadingUpdate?.(ev);
+    if (ext === 'ply') obj = new THREE.Mesh(await new PLYLoader().loadAsync(url, progress));
+    else if (ext === 'stl') obj = new THREE.Mesh(await new STLLoader().loadAsync(url, progress));
     else if (ext === 'glb' || ext === 'gltf') {
       const { gltf, note: textureNote } = await loadGltfWithTexture(url, base, label);
       const piecesNote = id ? await attachPieces(gltf, id) : '';
@@ -1054,8 +1128,10 @@ async function loadMeshUrl(url, filename, label, id){
       const loader = new OBJLoader();
       try { const mtl = await new MTLLoader().setPath(base).loadAsync(filename.replace(/\.obj$/i, '.mtl')); mtl.preload(); loader.setMaterials(mtl); }
       catch { note = 'Showing plain grey: its .mtl materials file wouldn\'t load.'; }
-      obj = await loader.loadAsync(url);
+      obj = await loader.loadAsync(url, progress);
     } else throw new Error('unsupported format .' + ext);
+    if (phone.matches) showRight('3d');
+    loaded();
     showObject(obj, label, !!id && meshesById[id]?.source !== 'upload');
     toast(note ? 'Loaded, with a problem: see the note on the view' : 'Loaded ' + label, note ? 5000 : 1500);
     if (id) reportView(id, via, (performance.now() - began) / 1000, note);
@@ -1067,7 +1143,7 @@ async function loadMeshUrl(url, filename, label, id){
       const gl = renderer.getContext();
       if (gl.getError() === gl.OUT_OF_MEMORY) viewNote('The graphics card ran out of memory for this texture, so it may show black.', again);
     }));
-  } catch (e) { reportError('mesh', e, { mesh: id, file: filename }); toast('Could not load mesh: ' + e.message, 6000); $('#viewing').textContent = 'Could not load: ' + e.message; viewNote('Could not load this mesh: ' + e.message, again); }
+  } catch (e) { loaded(); reportError('mesh', e, { mesh: id, file: filename }); toast('Could not load mesh: ' + e.message, 6000); $('#viewing').textContent = 'Could not load: ' + e.message; viewNote('Could not load this mesh: ' + e.message, again); }
 }
 
 // ---------------------------------------------------------------- map
@@ -1239,7 +1315,7 @@ async function openClimb(id, focus=true){
     <div class="chips">${c.meshes.map(m=>`<span class="chip" data-mesh="${m.id}">▣ ${esc(m.name)}</span>`).join('')}
       <select class="linksel" style="width:auto;padding:2px 6px;font-size:12px"><option value="">+ link existing mesh…</option>${meshesCache.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>
     ${boulderHtml(c)}
-    ${c.projects.length?`<div class="meta" style="margin-top:8px">Projects: ${c.projects.map(p=>`<span class="chip" data-proj="${p.id}">${esc(p.name)} <small>${p.status}</small></span>`).join(' ')}</div>`:''}
+    ${c.projects.length?`<div class="meta projs" style="margin-top:8px">Projects: ${c.projects.map(p=>`<span class="chip" data-proj="${p.id}">${esc(p.name)} <small>${p.status}</small></span>`).join(' ')}</div>`:''}
     ${(c.areas||[]).map(a => `<div class="meta" style="margin-top:6px">In the area <b>${esc(a.name)}</b> (${a.area_status}), #${a.rank}: ${AREA_ITEM[a.status] || esc(a.status)}${a.note ? ` — ${esc(a.note)}` : ''}</div>`).join('')}
     <div class="w" style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
       <div class="meta"><b>Harvest public photos → rough photogrammetry</b></div>

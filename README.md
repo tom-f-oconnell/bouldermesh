@@ -294,10 +294,11 @@ elsewhere. Fitting splats is off (`SPLATS=1` turns it on for new meshes, and `py
 as it needs CUDA builds of torch and gsplat, and the few photos most meshes are placed from make poor ones: design.md,
 "Scenes around meshes". A splat is learnt from all of a mesh's photos, so it's shown only where the site shows all its textures.
 
-On a phone, the page shows either the controls or the view. Viewing a mesh fills the screen, and
-*Controls* goes back. Over the mesh it shows only the climb's name, small, at the top, so texture problems, stray-piece
-cleanup and the iPhone gravity comparison are only shown on wider screens (over 860 px). A long press on the view gives a
-link to the mesh, to copy or share.
+On a phone, the page shows either the controls or the view, switched by the button at the top left of each (*Viewer*,
+*Controls*). The header then holds only that, *Random mesh*, and a ⚙ button for the background and colours. While a mesh
+loads, its progress shows over whichever is on screen, and the view takes over once it's ready. Over the mesh it shows
+only the climb's name, small, at the top, so texture problems, stray-piece cleanup and the iPhone gravity comparison are
+only shown on wider screens (over 860 px). A long press on the view gives a link to the mesh, to copy or share.
 
 The page's address follows the mesh in view (`#mesh=<id>`, and `&climb=<id>` for a boulder's mesh seen from one of its
 climbs), so it can be copied from there too, and opening such a link shows that mesh.
@@ -366,12 +367,13 @@ and `docker compose -f docker-compose.yml -f docker-compose.public.yml pull`. Po
 To run it under systemd as above, put `COMPOSE_FILE=docker-compose.yml:docker-compose.public.yml` in `.env` too (with
 `docker-compose.gpu.yml` between them on a machine with a GPU) and install the unit; its build step then has nothing to build.
 
-**Changing things.** With `EDIT_TOKEN` set, the page has an *Edit…* button in its header: enter the token there (it stays in
-that browser) and the controls appear; without it, the site shows only what's there, and every change sent to it is refused
-before its body is read, and logged with the sender's address. Scripts send `Authorization: Bearer <token>` with each POST,
-PATCH or DELETE. Viewers need nothing. Leave `EDIT_TOKEN` out of `.env`, or set `READ_ONLY=1`, for a site no one can change
-from a browser; the comments in `deploy/Caddyfile` show how to refuse changes at the edge as well. Only one token exists, so
-the site doesn't know who changed what: that's for accounts, later.
+**Changing things.** With `EDIT_TOKEN` set, the page has an *Edit…* button in its header: enter the token there (it
+stays in that browser) and the controls appear, with the Areas and Projects tabs; without it, the site shows only what's
+there, and every change sent to it is refused before its body is read, and logged with the sender's address. Scripts
+send `Authorization: Bearer <token>` with each POST, PATCH or DELETE. Viewers need nothing. Leave `EDIT_TOKEN` out of
+`.env`, or set `READ_ONLY=1`, for a site no one can change from a browser; the comments in `deploy/Caddyfile` show how
+to refuse changes at the edge as well. Only one token exists, so the site doesn't know who changed what: that's for
+accounts, later.
 
 **The admin page** stays on this machine's loopback address (`ADMIN_BIND` is refused if it isn't private). Reach it through
 an SSH tunnel, `ssh -L 36184:127.0.0.1:36184 you@boulders.example.com`, at `http://localhost:36184`, and set
