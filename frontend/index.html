@@ -52,6 +52,7 @@
   button.danger{background:transparent;color:var(--bad);border:1px solid var(--line)}
   button.sm{padding:3px 8px;font-size:12px}
   button:disabled{opacity:.45;cursor:default}
+  #edit:disabled{opacity:1}   /* "Editing": a sign that this browser's token was accepted, not a button */
   /* a view-only copy of the site (no editing token): everything that would change something is hidden */
   body.readonly .w,body.readonly .del,body.readonly .editll,body.readonly .details,body.readonly .linksel,body.readonly .unlink,body.readonly .harvest,
   body.readonly .rec,body.readonly .retry,body.readonly #p-interrupted,body.readonly button.back,body.readonly button.all,body.readonly label.file,
@@ -169,7 +170,7 @@
   @media (max-width:860px){
     body,main{grid-template-columns:minmax(0,1fr)} aside{border-right:0} #right{display:none} .phone{display:inline-block}
     body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
-    header{padding:6px 10px;gap:8px} header h1,#mode{display:none} #random{margin-left:0} #edit,#viewonly{order:1;margin-left:auto}
+    header{padding:6px 10px;gap:8px} header h1,#mode{display:none} #random{margin-left:0} #edit,#viewonly{order:1;margin-left:auto} #forget{order:1}
     #caps,#code,#admin{display:none!important}
     /* the background and colour choices open from a button in either view, as a panel over it */
     #prefs{position:fixed;z-index:2600;display:none;grid-template-columns:auto auto;gap:10px 12px;align-items:center;padding:12px;
@@ -194,6 +195,7 @@
   <span id="caps" class="status"></span>
   <span id="viewonly" class="pill" style="display:none" title="This copy of the site can't be changed from a browser">view-only</span>
   <button class="sm sec" id="edit" style="display:none"></button>
+  <button class="sm danger" id="forget" style="display:none" title="Forget the editing token kept in this browser: changing anything here then needs it again">Forget edit token</button>
   <button class="sm sec" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random mesh</button>
   <button class="sm sec phone prefsbtn" id="prefsbtn" title="Background and colours" aria-label="Settings" aria-expanded="false">⚙︎</button>
   <span id="prefs">
@@ -2227,15 +2229,22 @@ if (statusCache.editing === 'token') {
   const b = $('#edit');
   b.style.display = '';
   b.textContent = editor ? 'Editing' : 'Edit…';
-  b.title = editor ? 'Changes made here are allowed by the token you entered. Click to forget it.' : 'This copy of the site is view-only. Enter its editing token to change things from here.';
+  b.disabled = editor;    // then only a sign that it's accepted: Forget edit token, beside it, is what forgets it
+  b.title = editor ? 'Changes made here are allowed by the token you entered.' : 'This copy of the site is view-only. Enter its editing token to change things from here.';
   b.onclick = () => {
-    if (editor) { if (!confirm('Stop editing here, and forget the token?')) return; try { localStorage.removeItem('bm_token'); } catch {} }
-    else {
-      const t = prompt('Editing token'); if (!t) return;
-      try { localStorage.setItem('bm_token', t.trim()); } catch { return toast('This browser blocks site storage, so the token can\'t be kept.', 6000); }
-    }
+    const t = prompt('Editing token'); if (!t) return;
+    try { localStorage.setItem('bm_token', t.trim()); } catch { return toast('This browser blocks site storage, so the token can\'t be kept.', 6000); }
     location.reload();
   };
+  if (editor) {
+    const f = $('#forget');
+    f.style.display = '';
+    f.onclick = () => {
+      if (!confirm('Forget the editing token in this browser? Changing anything here then needs it again.')) return;
+      try { localStorage.removeItem('bm_token'); } catch {}
+      location.reload();
+    };
+  }
   if (token && !editor) toast('The editing token kept in this browser wasn\'t accepted.', 6000);
 }
 if (statusCache.admin) { $('#admin').style.display = ''; $('#admin').onclick = openAdmin; }

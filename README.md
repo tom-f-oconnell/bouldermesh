@@ -372,7 +372,8 @@ To run it under systemd as above, put `COMPOSE_FILE=docker-compose.yml:docker-co
 `docker-compose.gpu.yml` between them on a machine with a GPU) and install the unit; its build step then has nothing to build.
 
 **Changing things.** With `EDIT_TOKEN` set, the page has an *Edit…* button in its header: enter the token there (it
-stays in that browser) and the controls appear, with the Areas and Projects tabs; without it, the site shows only what's
+stays in that browser) and the controls appear, with the Areas and Projects tabs. The button then says *Editing*, and
+*Forget edit token* beside it forgets the token in that browser. Without it, the site shows only what's
 there, and every change sent to it is refused before its body is read, and logged with the sender's address. Scripts
 send `Authorization: Bearer <token>` with each POST, PATCH or DELETE. Viewers need nothing. Leave `EDIT_TOKEN` out of
 `.env`, or set `READ_ONLY=1`, for a site no one can change from a browser; the comments in `deploy/Caddyfile` show how
