@@ -583,8 +583,69 @@ def through_the_server() -> None:
     print("through the server OK")
 
 
+def tools_python():
+    """Which Python the script's venv for yt-dlp and Deno is made with, with the commands stood in for: this one if it's
+    new enough, else a newer one on the PATH, else one uv fetches (installed from PyPI first, if it isn't there)."""
+    sys.path.insert(0, str(SCRIPT.parent))
+    import bouldermesh_volunteer as bv
+    real = (bv.subprocess.run, bv.shutil.which, bv.python_version, bv.sys.executable)
+    ran, versions, on_path = [], {}, {}
+
+    def run(cmd, **kw):
+        ran.append([str(c) for c in cmd])
+        if cmd[1:3] == ["-m", "venv"] or cmd[1] == "venv":     # a venv: its python, of the Python that made it
+            made = Path(cmd[-1]) / "bin" / "python"
+            made.parent.mkdir(parents=True, exist_ok=True)
+            versions[str(made)] = versions.get(str(cmd[0]), (3, 12))
+        if "yt-dlp[default]" in cmd:
+            (Path(cmd[0]).parent / "yt-dlp").touch()
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    bv.subprocess.run, bv.shutil.which = run, lambda name: on_path.get(name)
+    bv.python_version = lambda exe: versions.get(str(exe), (0, 0))
+    try:
+        def tools(home, here, path=None):
+            ran.clear()
+            versions.clear()
+            on_path.clear()
+            on_path.update(path or {})
+            bv.sys.executable = "/usr/bin/python-here"
+            versions["/usr/bin/python-here"] = here
+            for name, exe in (path or {}).items():
+                versions[exe] = (3, int(name.split(".")[1])) if "python" in name else (0, 0)
+            args = type("Args", (), {"home": str(TMP / home), "yt_dlp": None, "server": "https://x.example", "token": "t",
+                                     "per_hour": 1, "per_day": 1})()
+            v = bv.Volunteer(args)
+            v.tools()
+            return v, [" ".join(Path(c).name if i == 0 else c for i, c in enumerate(cmd)) for cmd in ran]
+
+        _, cmds = tools("t1", (3, 12))
+        assert cmds[0].startswith("python-here -m venv") and len(cmds) == 3, cmds
+        _, cmds = tools("t2", (3, 8), {"python3.13": "/opt/py/python3.13"})
+        assert cmds[0].startswith("python3.13 -m venv"), cmds
+        _, cmds = tools("t3", (3, 8))
+        assert [c.split()[:5] for c in cmds[:4]] == [["python-here", "-m", "venv", str(TMP / "t3" / "uv")],
+                                                     ["python", "-m", "pip", "install", "-q"], ["python", "-m", "pip", "install", "-q"],
+                                                     ["uv", "venv", "-q", "--seed", "--python"]], cmds
+        assert "uv" in cmds[2] and "3.12" in cmds[3], cmds
+        _, cmds = tools("t4", (3, 8), {"uv": "/home/me/.local/bin/uv"})
+        assert cmds[0].startswith("uv venv"), "uv there already: not installed again"
+        # a venv made before, with a Python too old for today's yt-dlp: made again
+        old = TMP / "t5" / "venv" / "bin"
+        old.mkdir(parents=True)
+        (old / "yt-dlp").touch()
+        versions_before = {str(old / "python"): (3, 8)}
+        bv.python_version = lambda exe: {**versions, **versions_before}.get(str(exe), (0, 0))
+        _, cmds = tools("t5", (3, 8), {"python3.11": "/usr/bin/python3.11"})
+        assert cmds[0].startswith("python3.11 -m venv"), cmds
+    finally:
+        bv.subprocess.run, bv.shutil.which, bv.python_version, bv.sys.executable = real
+    print("tools' Python OK")
+
+
 try:
     broker_alone()
+    tools_python()
     if shutil.which("ffmpeg"):
         script_and_broker()
         registering()

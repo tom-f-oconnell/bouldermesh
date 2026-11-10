@@ -28,7 +28,9 @@ The script explains this again the first time it runs, and asks you to agree.
 
 ### What you need
 
-- **Python 3.9 or newer.** Check with `python3 --version` (on Windows, `py --version`).
+- **Python 3.8 or newer.** Check with `python3 --version` (on Windows, `py --version`). yt-dlp itself needs 3.11 or
+  newer: with an older Python (as Ubuntu 22.04's and before), the script installs uv in its own folder, which fetches
+  Python 3.12 for yt-dlp, about 200 MB in all.
   - macOS: install it from [python.org](https://www.python.org/downloads/), or with Homebrew: `brew install python`.
   - Windows: install it from [python.org](https://www.python.org/downloads/), and tick *Add python.exe to PATH*.
   - Debian or Ubuntu: Python is there, but its `venv` module may not be: `sudo apt install python3-venv`.
@@ -50,10 +52,10 @@ The script explains this again the first time it runs, and asks you to agree.
 
    On Windows: `py bouldermesh_volunteer.py --server https://boulderme.sh`.
 
-3. Read what it says, and type `yes`. It then makes your token and asks your name or a nickname, for whoever runs the
-   site (Enter leaves it out; `--name` gives it beforehand). It registers the token, which waits for their approval:
-   until then, it fetches only a few videos a day, or none. The first time, it then takes a minute or two to install
-   yt-dlp and Deno. If whoever runs the site gave you a token instead, add `--token YOUR_TOKEN`: that works at once.
+3. Read what it says, and type `yes`. The first time, it takes a minute or two to install yt-dlp and Deno. It then
+   makes your token and asks your name or a nickname, for whoever runs the site (Enter leaves it out; `--name` gives it
+   beforehand). It registers the token, which waits for their approval: until then, it fetches only a few videos a day,
+   or none. If whoever runs the site gave you a token instead, add `--token YOUR_TOKEN`: that works at once.
 
 4. Leave it running. It prints what it's doing: fetching a video, sending it, or waiting. Stop it at any time with Ctrl-C.
    Whatever it was fetching goes back to the site for someone else.
@@ -95,7 +97,9 @@ and rests whatever the site says.
 | `warning: ... no longer takes this token` | The site dropped or turned down your token. The script forgot it and registered a new one, which waits for approval again. If you think that's a mistake, ask whoever runs the site. |
 | `this script is too old` | Download it again (step 1). |
 
-If installing fails with a message about `venv` or `ensurepip`, install `python3-venv` (Debian or Ubuntu, above).
+If installing fails with a message about `venv` or `ensurepip`, install `python3-venv` (Debian or Ubuntu, above), or
+for another Python than the default, its own, such as `python3.9-venv`. It installs before registering, so a failed
+install leaves no registration waiting; run it again once it's fixed.
 
 ### Stopping for good
 

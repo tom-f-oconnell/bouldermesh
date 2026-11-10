@@ -529,7 +529,8 @@ site, and whoever runs it then approves it. A third way, collecting data yoursel
 <section id="videos">
 <h2>Help collect videos</h2>
 <p>YouTube stops one server from fetching many videos, so volunteers fetch some from their own computers, slowly: at most
-15 an hour and 100 a day, one at a time. You need Python 3.9 or newer.</p>
+15 an hour and 100 a day, one at a time. You need Python 3.8 or newer (with one older than 3.11, it fetches a newer one
+for yt-dlp by itself).</p>
 <h3>1. Get the script</h3>
 <div class="box"><pre>curl -O {base}/volunteer/bouldermesh_volunteer.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
 <p><a href="/volunteer/bouldermesh_volunteer.py" download="bouldermesh_volunteer.py">Or download it here</a>. On Windows,

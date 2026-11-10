@@ -13,9 +13,10 @@ The first time, it makes a token of its own, asks your name (optional, for whoev
 token with the server, where it waits for approval: until then it fetches only a few videos a day, or none. A token
 whoever runs the server gave you works too (--token), at once.
 
-Python 3.9 or newer, nothing else: it installs yt-dlp, and Deno (the JavaScript runtime yt-dlp needs for YouTube), into
-a folder of its own (~/.bouldermesh-volunteer), and updates them daily. Stop it with Ctrl-C at any time; delete that
-folder to remove everything.
+Python 3.8 or newer, nothing else: it installs yt-dlp, and Deno (the JavaScript runtime yt-dlp needs for YouTube), into
+a folder of its own (~/.bouldermesh-volunteer), and updates them daily. yt-dlp needs Python 3.11 or newer: with an older
+one (as Ubuntu 22.04's and before), it installs uv there too, which fetches a newer Python for them. Stop it with Ctrl-C
+at any time; delete that folder to remove everything.
 """
 from __future__ import annotations
 
@@ -35,6 +36,8 @@ import urllib.request
 from pathlib import Path
 
 VERSION = 2
+TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
+FETCHED_PYTHON = "3.12"     # what uv fetches for them when this computer has none as new
 KINDS = ["video", "details", "search", "channel"]   # what this version does
 GAP = (8.0, 15.0)           # seconds between one fetch from YouTube and the next, at random in this range
 PER_HOUR, PER_DAY = 15, 100  # the most, whatever the server allows
@@ -70,6 +73,19 @@ Stop it with Ctrl-C at any time. Everything it installs is in {home}."""
 
 def log(msg: str) -> None:
     print(time.strftime("%Y-%m-%d %H:%M:%S ") + msg, flush=True)
+
+
+def why(e: Exception) -> str:
+    return f"{Path(e.cmd[0]).name} exited with {e.returncode}" if isinstance(e, subprocess.CalledProcessError) else str(e)
+
+
+def python_version(exe) -> tuple[int, int]:
+    """A Python's major and minor version, or (0, 0) if it won't run."""
+    try:
+        r = subprocess.run([str(exe), "-c", "import sys; print(*sys.version_info[:2])"], capture_output=True, text=True, timeout=60)
+        return tuple(map(int, r.stdout.split())) if r.returncode == 0 else (0, 0)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return (0, 0)
 
 
 def register(server: str, name: str | None, patient: bool = False) -> tuple[str, str]:
@@ -185,23 +201,66 @@ class Volunteer:
 
     # -- yt-dlp ---------------------------------------------------------------------------------------------------
     def tools(self) -> None:
-        """yt-dlp and Deno in a venv here, made the first time and updated daily, unless --yt-dlp names one."""
+        """yt-dlp and Deno in a venv here, made the first time (again, if its Python is too old for them) and updated
+        daily, unless --yt-dlp names one. Exits saying why if they can't be installed; a failed update carries on with
+        those there are."""
         if self.args.yt_dlp:
             return
         venv = self.home / "venv"
         bindir = venv / ("Scripts" if os.name == "nt" else "bin")
+        python = bindir / ("python.exe" if os.name == "nt" else "python")
         self.ytdlp = str(bindir / ("yt-dlp.exe" if os.name == "nt" else "yt-dlp"))
-        if not Path(self.ytdlp).exists():
-            log(f"installing yt-dlp and Deno in {venv} (a minute or two)")
-            subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
-        elif time.time() - self.state.get("updated", 0) < 86400:
+        fresh = not Path(self.ytdlp).exists() or python_version(python) < TOOLS_PYTHON
+        if not fresh and time.time() - self.state.get("updated", 0) < 86400:
             return
-        else:
-            log("updating yt-dlp and Deno")
-        pip = str(bindir / ("pip.exe" if os.name == "nt" else "pip"))
-        subprocess.run([pip, "install", "-q", "--upgrade", "yt-dlp[default]", "deno"], check=True)
+        try:
+            if fresh:
+                if venv.exists():
+                    log(f"making {venv} again, with a Python new enough for today's yt-dlp")
+                    shutil.rmtree(venv)
+                log(f"installing yt-dlp and Deno in {venv} (a minute or two)")
+                self.make_venv(venv)
+            else:
+                log("updating yt-dlp and Deno")
+            pip = [str(python), "-m", "pip", "install", "-q", "--upgrade"]
+            subprocess.run([*pip, "pip"], check=True)
+            subprocess.run([*pip, "yt-dlp[default]", "deno"], check=True)
+        except (subprocess.CalledProcessError, OSError) as e:
+            if fresh:
+                shutil.rmtree(venv, ignore_errors=True)     # tried again from the start next time
+                raise SystemExit(f"couldn't install yt-dlp and Deno ({why(e)}): what's printed above says why. Or give "
+                                 "--yt-dlp with one you have, version 2025.11 or newer, with Deno on the PATH.") from None
+            log(f"couldn't update yt-dlp and Deno ({why(e)}): carrying on with those there are, and trying again tomorrow")
         self.state["updated"] = time.time()
         self.save()
+
+    def make_venv(self, venv: Path) -> None:
+        """A venv for yt-dlp and Deno, from this Python, or another on the PATH new enough for them, or else one uv
+        fetches: uv itself installed from PyPI in a venv of this Python's, and its Python kept here too."""
+        for exe in [sys.executable, *filter(None, (shutil.which(f"python3.{m}") for m in range(20, TOOLS_PYTHON[1] - 1, -1)))]:
+            if python_version(exe) >= TOOLS_PYTHON:
+                subprocess.run([exe, "-m", "venv", str(venv)], check=True)
+                return
+        here = ".".join(map(str, sys.version_info[:2]))
+        uv = shutil.which("uv")
+        if not uv:
+            log(f"this computer's Python ({here}) is older than yt-dlp needs ({'.'.join(map(str, TOOLS_PYTHON))}): "
+                f"installing uv in {self.home / 'uv'}, to fetch Python {FETCHED_PYTHON} for it")
+            boot = self.home / "uv"
+            shutil.rmtree(boot, ignore_errors=True)
+            try:
+                subprocess.run([sys.executable, "-m", "venv", str(boot)], check=True)
+            except subprocess.CalledProcessError:
+                raise SystemExit("couldn't make a venv with this Python: on Debian or Ubuntu, `sudo apt install python3-venv` "
+                                 "first") from None
+            bpy = boot / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            subprocess.run([str(bpy), "-m", "pip", "install", "-q", "--upgrade", "pip"], check=True)
+            subprocess.run([str(bpy), "-m", "pip", "install", "-q", "uv"], check=True)
+            uv = str(boot / ("Scripts/uv.exe" if os.name == "nt" else "bin/uv"))
+        else:
+            log(f"this computer's Python ({here}) is older than yt-dlp needs: {uv} fetches Python {FETCHED_PYTHON} for it")
+        env = {**os.environ, "UV_PYTHON_INSTALL_DIR": str(self.home / "python"), "UV_CACHE_DIR": str(self.home / "uv-cache")}
+        subprocess.run([uv, "venv", "-q", "--seed", "--python", FETCHED_PYTHON, str(venv)], check=True, env=env)
 
     def run_ytdlp(self, args: list[str], cwd: Path) -> subprocess.CompletedProcess:
         env = dict(os.environ)
@@ -453,13 +512,16 @@ def main() -> None:
                                per_day=min(args.per_day, PER_DAY), home=home))
         if not args.agree and input("\nType yes to start: ").strip().lower() != "yes":
             raise SystemExit("not started")
-    if not args.token:
-        args.token, conf["name"] = register(args.server, args.name if args.name is not None else conf.get("name"))
-    conf.update(server=args.server, token=args.token, agreed=args.server)
-    save_conf(home, conf)
     signal.signal(signal.SIGTERM, _stop)    # as Ctrl-C: what it was fetching goes back to the server
     try:
-        Volunteer(args).run()
+        volunteer = Volunteer(args)
+        volunteer.tools()       # first, so that a computer that can't install them leaves no registration waiting
+        if not args.token:
+            args.token, conf["name"] = register(args.server, args.name if args.name is not None else conf.get("name"))
+            volunteer.server.token = args.token
+        conf.update(server=args.server, token=args.token, agreed=args.server)
+        save_conf(home, conf)
+        volunteer.run()
     except KeyboardInterrupt:
         log("stopped")
 

@@ -631,8 +631,9 @@ server answers volunteers, has three ways to help, as buttons. *Collect videos* 
 *Compute meshes* has the machines' script (above), what a computer needs for it (an NVIDIA GPU, as Docker can't use a
 Mac's), and how to run it as the user's own systemd service, which starts with the computer. *Data collection* says
 what's coming: uploading one's own photos and videos, and a way to take photos with a scale reference in them, to scale
-and orient existing meshes. The video script needs Python 3.9 and
-installs yt-dlp and Deno in `~/.bouldermesh-volunteer`, and on first run explains the costs (YouTube's terms, and the
+and orient existing meshes. The video script needs Python 3.8 and
+installs yt-dlp and Deno in `~/.bouldermesh-volunteer` (with uv's Python 3.12 there, under a Python older than yt-dlp's
+3.11), and on first run explains the costs (YouTube's terms, and the
 bot check their whole network may get) and asks them to agree. [volunteers.md](volunteers.md) has every step, for
 volunteers and for connecting the public site to whichever server harvests.
 
