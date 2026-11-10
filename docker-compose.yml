@@ -24,7 +24,7 @@ services:
       VOLUNTEER_URL:              # from .env, optional: the address volunteers reach this at, as https://boulders.example.com
       YOUTUBE_VIA:                # from .env, optional: here | volunteers_when_refused (the default) | volunteers
       VIDEO_CACHE_GB:             # from .env, optional: room for fetched videos, kept for beta and harvesting again (50)
-      DATA_CAP_GB:                # from .env, optional: over this much in ./data, volunteers and areas wait for room (no cap)
+      DATA_CAP_GB:                # from .env, optional: over this much in ./data, volunteers and areas wait for room (no cap); the admin page changes it
       EDIT_TOKEN:                 # from .env, optional: then every change needs "Authorization: Bearer <token>" (README: Putting it on the public internet)
       READ_ONLY:                  # from .env, optional: "1" refuses every change over HTTP; "auto" does unless EDIT_TOKEN is set
       CSP:                        # from .env, optional: "0" turns the page's Content-Security-Policy off, or a policy to use instead

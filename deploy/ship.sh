@@ -85,7 +85,9 @@ id=$(docker image inspect "$image" --format '{{.Id}}')
 if [ "$(ssh "$dest" "docker image inspect $image --format '{{.Id}}' 2>/dev/null")" = "$id" ]; then
     echo "image $image: $dest already has it"
 else
-    echo "image $image, as $dest will load it (a few minutes for 2.4 GB)"
+    # images no container uses any more (each ship's leaves one, after the restart that follows it), for room
+    ssh "$dest" 'docker image prune -f' | tail -1
+    echo "image $image, as $dest will load it (a few minutes for 2.5 GB; more for 10 GB)"
     docker save "$image" | zstd | ssh "$dest" 'zstd -d | docker load'
 fi
 if [ -n "${PHOTOS:-}" ]; then

@@ -40,10 +40,12 @@ DEFAULTS = {
     "site.textures": "all",                # all | permitted (only from clearly licensed photos) | none
     "site.sources": "all",                 # all | link (non-permitted ones only as links) | permitted
     "youtube.via": "volunteers_when_refused",   # here | volunteers_when_refused | volunteers (never here: a cloud server)
+    # the most the data may take, in GB (0: no limit): over it, volunteers and areas wait for room (DATA_CAP_GB starts it)
+    "storage.cap_gb": 0.0,
 }
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers")}
-LIMITS = {"compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
+LIMITS = {"storage.cap_gb": (0, 100000), "compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000)}
 for _key in ("site.textures", "site.sources", "youtube.via"):    # a public copy's starting points, from its .env
     _given = os.environ.get(_key.replace(".", "_").upper(), "").strip()
@@ -51,6 +53,10 @@ for _key in ("site.textures", "site.sources", "youtube.via"):    # a public copy
         DEFAULTS[_key] = _given
     elif _given:
         print(f"{_key.replace('.', '_').upper()}={_given} ignored: one of {', '.join(CHOICES[_key])}", flush=True)
+try:
+    DEFAULTS["storage.cap_gb"] = max(0.0, float(os.environ.get("DATA_CAP_GB") or 0))
+except ValueError:
+    print(f"DATA_CAP_GB={os.environ['DATA_CAP_GB']} ignored: a number of GB", flush=True)
 SECRETS = ("aws.access_key_id", "aws.secret_access_key", "ssh.private_key")
 SECRETS_FILE = "secrets.json"
 _lock = threading.Lock()
@@ -98,6 +104,13 @@ class Settings:
             if want is bool:
                 if not isinstance(v, bool):
                     raise ValueError(f"{k} is true or false")
+            elif want is float:
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    raise ValueError(f"{k} is a number")
+                v = float(v)
+                lo, hi = LIMITS.get(k, (0, 10 ** 9))
+                if not lo <= v <= hi:
+                    raise ValueError(f"{k} is from {lo} to {hi}")
             elif want is int:
                 if isinstance(v, bool) or not isinstance(v, (int, float)) or int(v) != v:
                     raise ValueError(f"{k} is a whole number")

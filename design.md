@@ -559,7 +559,11 @@ what's there, and what comes later rebuilds it as before.
 **Room on the public server.** Its disk is 75 GB, with about 59 free. Of hal's 97 GB of projects on Nov 10, 2026, 92
 were photos the filter rejected (kept only to put one back by hand), 9.4 the photos themselves (3 for the projects of
 current meshes), 4.4 work folders kept by failed climbs (which a server meshing elsewhere never has) and 0.1 masks. So
-the public setup caps its data at 50 GB: harvesting climbs is what fills it, so over the cap volunteers are given nothing
+the public setup caps its data, at 47.5 GB: of the disk's 77 GB that its user may fill (80.3 less what ext4 keeps for
+root), the system took 1.4 and Docker's images 7.1 (the 2.5 GB image and 15 older builds' last layers, before ship.sh
+deleted those), and from 28754f6 on the image is 10.4 GB unpacked, plus its 4.4 GB of compressed layers, which Docker's
+containerd store keeps too: 14.8 GB, or 17 if the server counts it as it counts today's (4.1 for hal's 2.5). That leaves
+53.7 GB, or 51.4, and 47.5 is the most in steps of 2.5 that leaves 2.5 GB free either way. Harvesting climbs is what fills it, so over the cap volunteers are given nothing
 and areas take no new climb, paused rather than stopped, until room is made, which deleting the rejected photos mostly
 does. hal's photos and masks go to it once (ship.sh's PHOTOS=1), as rebuilding, retexturing, sizes and boulders' own
 meshes need them.

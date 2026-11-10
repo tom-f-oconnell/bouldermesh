@@ -114,6 +114,8 @@
   <section id="room">
     <h2>Room for data</h2>
     <div id="room-body" class="note"></div>
+    <div class="grid"><div><label>The most the data may take (GB; 0 for no limit)</label><input type="number" id="room-cap" min="0" step="2.5"></div>
+      <div class="row" style="margin-top:22px"><button id="room-save">Save</button></div></div>
     <div class="row"><button class="sec" id="room-measure">Measure now</button><button class="danger" id="room-rejected">Delete the photos the filter rejected</button></div>
   </section>
 
@@ -181,9 +183,10 @@ function render(s){
   if (waiting.length) $('#mach-list').innerHTML += `<div class="note">${waiting.length} climb(s) waiting for a machine.</div>`;
   const u = s.usage || {}, gb = b => (b / 2 ** 30).toFixed(1) + ' GB';
   $('#room').classList.toggle('alert', !!u.full);
-  $('#room-body').innerHTML = (u.total === undefined ? (u.cap ? 'Not measured yet.' : 'No cap on this server\'s data (DATA_CAP_GB), so it isn\'t measured by itself: Measure now does.')
-      : `The data takes <b>${gb(u.total)}</b>${u.cap ? ` of its cap of ${gb(u.cap)}` : ''}, measured ${new Date(u.checked * 1000).toLocaleString()}: `
-        + Object.entries(u.by).filter(([, b]) => b > 2 ** 20).sort((a, b) => b[1] - a[1]).map(([k, b]) => `${esc(k)} ${gb(b)}`).join(', ') + '.')
+  if (document.activeElement !== $('#room-cap')) $('#room-cap').value = v['storage.cap_gb'];
+  $('#room-body').innerHTML = (u.total === undefined ? (u.cap ? 'Not measured yet.' : 'No cap on this server\'s data, so it isn\'t measured by itself: Measure now does.')
+      : `The data takes <b>${gb(u.total)}</b>${u.cap ? ` of its cap of ${gb(u.cap)}` : ''}, measured ${new Date(u.checked * 1000).toLocaleString()}`
+        + [''].concat(Object.entries(u.by).filter(([, b]) => b > 2 ** 20).sort((a, b) => b[1] - a[1]).map(([k, b]) => `${esc(k)} ${gb(b)}`)).join(', ').replace(/^, /, ': ') + '.')
     + (u.full ? `<div class="warn">${esc(u.full)}. Volunteers are given nothing, and areas take no new climb, until there's room again.</div>` : '')
     + '<div>The photos the filter rejected are only kept to put one back by hand (on the Projects tab), and are usually most of what harvests leave.</div>';
   const pr = s.proxy_ranges, box = $('#ranges');
@@ -262,6 +265,7 @@ $('#mach-list').addEventListener('click', async ev => {
   if (!id || !confirm('Revoke this machine? Its token stops working at once, and a climb it was meshing waits for another.')) return;
   try { msg((await call('/api/admin/actions/machine-revoke', { id })).result); refresh(); } catch (e) { msg(e.message, 8000); }
 });
+$('#room-save').onclick = async () => { await save({ 'storage.cap_gb': +$('#room-cap').value }); try { await call('/api/admin/actions/measure', {}); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#room-measure').onclick = async () => { msg('Measuring…', 60000); try { msg((await call('/api/admin/actions/measure', {})).result); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#room-rejected').onclick = async () => { if (!confirm('Delete every photo the filter rejected, from every project not being harvested or meshed now? They can\'t be put back after.')) return; msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };

@@ -148,8 +148,8 @@ The public server lists areas, harvests their climbs and keeps everything they m
 searches and fetching its videos, as YouTube refuses a cloud address. It's too small to reconstruct (2 cores, 4 GB), so
 its climbs wait for machines that connect to it for work: hal, or any machine with Docker, which fetches a climb's
 photos, meshes them and sends the mesh back, through Cloudflare like any visitor; and finds meshes' beta and size the
-same way. Its data is capped at 50 GB: over that, volunteers and areas wait until room is made (README, "Putting it on
-the public internet").
+same way. Its data is capped at 47.5 GB, which its admin page can change: over that, volunteers and areas wait until room
+is made (README, "Putting it on the public internet").
 
 From hal, in `~/src/bouldermesh`:
 

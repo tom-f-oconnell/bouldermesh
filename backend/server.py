@@ -119,9 +119,9 @@ DATA_WINDOW = 8         # "data" order: how many waiting climbs' pages to have r
 VIDEO_WORTH = 20        # "data" order: roughly how many usable photos a beta video gives
 OUTAGE_LIMIT = 5        # stop a campaign after this many climbs in a row fail before finishing a harvest
 CAMPAIGN_MIN_FREE = float(os.environ.get("CAMPAIGN_MIN_FREE_GB", "50")) * 2**30   # stop rather than fill a shared disk
-# the most DATA_DIR may hold (0: no limit): over it, volunteers are given nothing and areas take no new climb, until
-# room is made (the admin page shows what takes it, and can delete photos the filter rejected)
-DATA_CAP = float(os.environ.get("DATA_CAP_GB") or 0) * 2**30
+# the most DATA_DIR may hold is the admin page's storage.cap_gb (DATA_CAP_GB starts it; 0: no limit): over it, volunteers
+# are given nothing and areas take no new climb, until room is made (the admin page shows what takes it, and can delete
+# photos the filter rejected)
 USAGE_EVERY = 600       # seconds between measurings of DATA_DIR
 # copies of the databases made safely while they're in use, for deploy/backup.sh to copy (0: none)
 SNAPSHOTS = DATA / "snapshots"
@@ -1329,7 +1329,7 @@ def settle_waiting(camp_id: str) -> None:
       write=True)
 
 
-# ------------------------------------------------------------------ how much room the data takes (DATA_CAP)
+# ------------------------------------------------------------------ how much room the data takes (storage.cap_gb)
 _usage: dict = {}       # {total, by: {name: bytes}, checked}
 
 
@@ -1356,19 +1356,26 @@ def measure_usage() -> dict:
     return _usage
 
 
+def data_cap() -> float:
+    """The most the data may take, in bytes (storage.cap_gb), or 0 for no limit."""
+    return settings().get("storage.cap_gb") * 2**30
+
+
 def full() -> str | None:
-    """Why no more is fetched (DATA_CAP reached), or None."""
-    if DATA_CAP and _usage.get("total", 0) > DATA_CAP:
-        return (f"the server is out of room ({_usage['total'] / 2**30:.1f} of {DATA_CAP / 2**30:.0f} GB): "
+    """Why no more is fetched (the cap is reached), or None."""
+    cap = data_cap()
+    if cap and _usage.get("total", 0) > cap:
+        return (f"the server is out of room ({_usage['total'] / 2**30:.1f} of {cap / 2**30:g} GB): "
                 "waiting for some to be made")
     return None
 
 
 def watch_usage() -> None:
-    """Measure DATA_DIR now and every USAGE_EVERY seconds, if there's a cap."""
-    while DATA_CAP:
+    """Measure DATA_DIR now and every USAGE_EVERY seconds, while there's a cap."""
+    while True:
         try:
-            measure_usage()
+            if data_cap():
+                measure_usage()
         except Exception as e:  # never let the thread die
             print(f"usage error: {e!r}", flush=True)
         time.sleep(USAGE_EVERY)
@@ -3609,7 +3616,7 @@ def admin_state() -> dict:
             "proxy_ranges": RANGES.state() if RANGES else None, "version": VERSION,
             "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE,
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
-            "usage": {**_usage, "cap": DATA_CAP or None, "full": full()}}
+            "usage": {**_usage, "cap": data_cap() or None, "full": full()}}
 
 
 def admin_test(_: dict) -> dict:
@@ -3648,14 +3655,14 @@ def admin_clear_rejected(_: dict) -> dict:
         freed += sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
         shutil.rmtree(d, ignore_errors=True)
         n += 1
-    if DATA_CAP:
+    if data_cap():
         measure_usage()
     return {"result": f"deleted the rejected photos of {n} project(s): {freed / 2**30:.1f} GB"}
 
 
 def admin_measure(_: dict) -> dict:
     u = measure_usage()
-    return {"result": f"the data takes {u['total'] / 2**30:.1f} GB" + (f" of {DATA_CAP / 2**30:.0f}" if DATA_CAP else "")}
+    return {"result": f"the data takes {u['total'] / 2**30:.1f} GB" + (f" of {data_cap() / 2**30:g}" if data_cap() else "")}
 
 
 def admin_retexture(_: dict) -> dict:
