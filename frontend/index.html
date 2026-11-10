@@ -59,7 +59,7 @@
   body.readonly .stopnow,body.readonly .stoplater,body.readonly .resume,body.readonly .retryfailed,body.readonly .harvestagain,body.readonly .rebuildchanged,
   body.readonly .rebuildall,body.readonly .boulders,body.readonly .meshboulder,body.readonly .setll,body.readonly #pieces .edit,body.readonly #pieces .redo,body.readonly .rebuild,
   body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly button.mark,body.readonly .clearmine,body.readonly #vmark,
-  body.readonly .tabs button[data-tab=areas],body.readonly .tabs button[data-tab=projects],body.readonly .projs{display:none!important}
+  body.readonly .tabs button[data-tab=areas],body.readonly .tabs button[data-tab=projects],body.readonly .projs,body.readonly .doubtful{display:none!important}
   label.file input{display:none}
   .status{font-size:12px;color:var(--mute)}
   .status.done,.status.harvested{color:var(--ok)} .status.failed{color:var(--bad)} .status.running,.status.queued,.status.harvesting,.status.interrupted{color:var(--warn)}
@@ -248,7 +248,7 @@
         <h2>Climbs <small id="c-count"></small></h2>
         <div class="row" style="margin-bottom:6px"><input type="text" id="c-filter" class="grow" placeholder="search every climb: name, boulder, area, grade"></div>
         <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="c-meshed"> Hide climbs without meshes</label>
-          <label title="Their page's GPS is far from their area's, or they're far from the other climbs on their boulder: put them right where they came from, then import them again"><input type="checkbox" id="c-doubtful"> Only climbs whose coordinates look wrong <span id="c-doubtful-n"></span></label></div>
+          <label class="doubtful" title="Their page's GPS is far from their area's, or they're far from the other climbs on their boulder: put them right where they came from, then import them again"><input type="checkbox" id="c-doubtful" autocomplete="off"> Only climbs whose coordinates look wrong <span id="c-doubtful-n"></span></label></div>
         <div id="climb-open"></div>
         <div id="climbs"></div>
       </section>
@@ -2224,6 +2224,7 @@ let statusCache = { env: {} };
 statusCache = await api('/api/status');
 editor = !!statusCache.editor;
 document.body.classList.toggle('readonly', !editor);
+if (!editor) $('#c-doubtful').checked = false;     // its box is only an editor's (coordinates to put right)
 if (statusCache.editing === 'none') $('#viewonly').style.display = '';
 if (statusCache.editing === 'token') {
   const b = $('#edit');
