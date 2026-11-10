@@ -459,7 +459,8 @@ YouTube refuses a server's downloads after a while (a cloud server's at once), s
 fetch videos from their own addresses, slowly. Add one on the admin page under *Volunteers*, which shows the token once
 and the command to give them; `https://<site>/volunteer/` has the script and says what it does. It needs Python 3.9 and
 installs yt-dlp and Deno in `~/.bouldermesh-volunteer`, and on first run explains the costs (YouTube's terms, and the
-bot check their whole network may get) and asks them to agree.
+bot check their whole network may get) and asks them to agree. [volunteers.md](volunteers.md) has every step, for
+volunteers and for connecting the public site to whichever server harvests.
 
 - **What they fetch:** only YouTube ids this server gives them, one video at a time, 8-15 s apart, at most 15 an hour and
   100 a day for each volunteer and each address, resting 1, 2, 4 then 8 hours when YouTube refuses them. A video comes

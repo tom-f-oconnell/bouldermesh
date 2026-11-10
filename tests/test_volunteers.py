@@ -40,6 +40,8 @@ with open(os.environ["FAKE_LOG"], "a") as f:
     f.write(" ".join(args) + "\\n")
 if vid.startswith("refused"):
     sys.stderr.write("ERROR: [youtube] " + vid + ": Sign in to confirm you\\u2019re not a bot. This helps protect our community.\\n"); sys.exit(1)
+if vid.startswith("slow"):
+    import time; time.sleep(30)
 if vid.startswith("private"):
     sys.stderr.write("ERROR: [youtube] " + vid + ": Private video. Sign in if you've been granted access to this video\\n"); sys.exit(1)
 info = {"id": vid, "title": "Relic V9 Joshua Tree", "uploader": "a climber", "duration": 4.0, "description": "I'm 180 cm tall",
@@ -224,6 +226,20 @@ def script_and_broker() -> None:
         assert "YouTube refused: resting 1 h" in volunteer()
         assert b.q("SELECT refused_until FROM volunteers", one=True)["refused_until"] > time.time() + 3500
         assert json.loads((TMP / "home" / "state.json").read_text())["rest_until"] > time.time() + 3500, "and it rests itself"
+
+        # stopped partway (a kill, as by pkill): what it had goes back for someone else
+        b.q("UPDATE volunteers SET refused_until=NULL")
+        b.want("video", "slow0000000", "harvest", "p3")
+        proc = subprocess.Popen([sys.executable, str(SCRIPT), "--server", base, "--token", token, "--agree", "--yt-dlp", str(fake),
+                                 "--home", str(TMP / "home3")], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for _ in range(100):
+            if "slow0000000" in (TMP / "fake.log").read_text():     # yt-dlp has started on it
+                break
+            time.sleep(0.1)
+        proc.terminate()
+        out = proc.communicate(timeout=30)[0]
+        assert "stopped" in out and b.q("SELECT state, volunteer FROM tasks WHERE video_id='slow0000000'", one=True) == \
+            {"state": "queued", "volunteer": None}, out
         print("script OK")
     finally:
         httpd.shutdown()

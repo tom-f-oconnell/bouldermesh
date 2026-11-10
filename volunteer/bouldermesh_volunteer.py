@@ -20,6 +20,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -305,10 +306,15 @@ def main() -> None:
     conf.update(server=args.server, token=args.token, agreed=args.server)
     conf_file.write_text(json.dumps(conf))
     os.chmod(conf_file, 0o600)
+    signal.signal(signal.SIGTERM, _stop)    # as Ctrl-C: what it was fetching goes back to the server
     try:
         Volunteer(args).run()
     except KeyboardInterrupt:
         log("stopped")
+
+
+def _stop(*_) -> None:
+    raise KeyboardInterrupt
 
 
 if __name__ == "__main__":
