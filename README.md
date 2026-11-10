@@ -351,7 +351,9 @@ textures by itself and the meshes once a cache rule makes `/meshes/` eligible, l
 address, and Caddy still gets its certificate through it; its proxy does cap an upload at 100 MB. Caddy's access log
 (`docker compose logs caddy`) still names each visitor, as `client_ip`, because `deploy/Caddyfile` believes Cloudflare's
 addresses when they say who it is, and so does the app's own log. A firewall can then let ports 80 and 443 in only from
-those addresses ([cloudflare.com/ips](https://www.cloudflare.com/ips/)), so that no one goes around the proxy. Each project's log is
+those addresses ([cloudflare.com/ips](https://www.cloudflare.com/ips/)), so that no one goes around the proxy. Cloudflare
+changes them rarely; the public setup checks its list once a day, and the admin page says when it no longer matches the
+Caddyfile's, which the firewall should follow too. Each project's log is
 public, as the Projects tab shows it, so it reveals where photos came from and the names of compute machines, not
 credentials. Back up `data/` yourself: a mesh is an hour of compute. Compute credentials are kept as before
 (encrypted on the admin page, or in `.env`), and cloud machines accept SSH only from this server's address.
@@ -430,6 +432,7 @@ The AWS side has been tested against stand-ins for AWS, not against AWS itself.
     backend/scale.py               how big a mesh is, from the people in its photos and Mountain Project's height
     backend/admin.py               the admin page's server; frontend/admin.html is the page
     backend/settings.py            the admin page's settings, and credentials kept encrypted
+    backend/proxy_ranges.py        whether the Caddyfile's trusted proxies are still Cloudflare's
     backend/policy.py              which photos are free to copy, and what the site may show
     backend/retexture.py           colouring a mesh from only the photos free to copy
     backend/compute.py             running reconstructions on other machines, and starting and ending them

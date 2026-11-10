@@ -16,9 +16,12 @@ services:
     environment:
       READ_ONLY: "${READ_ONLY:-auto}"       # view-only unless EDIT_TOKEN is set in .env
       CLIENT_IP_HEADER: X-Real-IP           # Caddy names the sender there, for the log
+      CADDYFILE: /app/deploy/Caddyfile      # the admin page says when Cloudflare's addresses no longer match its trusted_proxies
       SITE_SOURCES: "${SITE_SOURCES:-link}"  # photos and frames not clearly free to copy are linked to, not served (all | link | permitted)
       SITE_TEXTURES:                        # from .env, optional: all (the default) | permitted | none. The admin page can change
                                             # both, but deploy/ship.sh replaces its database, so lasting choices go in .env
+    volumes:
+      - ./deploy:/app/deploy:ro             # a folder, not the file, so that a git pull is seen without recreating the container
     user: "${BM_USER:-1000:1000}"
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]

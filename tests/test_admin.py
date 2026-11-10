@@ -150,6 +150,44 @@ with tempfile.TemporaryDirectory() as td:
     os.environ.pop("ADMIN_PASSWORD")
 print("admin server OK")
 
+# --- Cloudflare's ranges against the Caddyfile's trusted_proxies ---------------------------------
+import proxy_ranges  # noqa: E402
+
+caddy = (ROOT / "deploy" / "Caddyfile").read_text()
+mine = proxy_ranges.trusted(caddy)
+assert len(mine) == 22 and "173.245.48.0/20" in mine and "2c0f:f248::/32" in mine, mine
+assert proxy_ranges.trusted("{\n\tservers {\n\t\ttrusted_proxies static private_ranges 10.0.0.1 # 1.2.3.0/24\n\t}\n}") == ["10.0.0.1/32"]
+v4, v6 = [r for r in mine if ":" not in r], [r for r in mine if ":" in r]
+
+
+def cloudflare(ipv4, ipv6):
+    return lambda url: json.dumps({"success": True, "errors": [], "result": {"ipv4_cidrs": ipv4, "ipv6_cidrs": ipv6}}).encode()
+
+
+with tempfile.TemporaryDirectory() as td:
+    f = pathlib.Path(td) / "Caddyfile"
+    f.write_text(caddy)
+    said = []
+    w = proxy_ranges.Watch(f, fetch=cloudflare(v4, v6), log=said.append)
+    st = w.check()
+    assert st["published"] == st["trusted"] == 22 and not st["missing"] and not st["extra"] and st["checked"] and not said, st
+    w.fetch = cloudflare(v4[1:] + ["198.51.100.0/24"], v6)     # one added, one dropped
+    st = w.check()
+    assert st["missing"] == ["198.51.100.0/24"] and st["extra"] == [v4[0]] and len(said) == 1 and "198.51.100.0/24" in said[0], (st, said)
+    w.check()
+    assert len(said) == 1, "said once"
+    w.fetch = lambda url: (_ for _ in ()).throw(OSError("offline"))
+    st = w.check()
+    assert "offline" in st["error"] and st["failing_since"] and st["missing"] == ["198.51.100.0/24"], "the last comparison stands"
+    w.fetch = cloudflare(v4[1:] + ["198.51.100.0/24"], v6)
+    f.write_text(caddy.replace(" ".join(v4), " ".join(v4[1:] + ["198.51.100.0/24"])))
+    st = w.check()
+    assert not st["missing"] and not st["extra"] and not st["error"] and "again" in said[-1], (st, said)
+    w2 = proxy_ranges.Watch(f, fetch=lambda url: (_ for _ in ()).throw(AssertionError("asked Cloudflare for nothing")))
+    f.write_text(caddy.replace("trusted_proxies", "# trusted_proxies"))
+    assert w2.check() is None, "nothing trusted, nothing to compare or show"
+print("proxy ranges OK")
+
 # --- textures: stripped, and coloured from only permitted photos ----------------------------------
 try:
     import numpy as np

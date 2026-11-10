@@ -27,6 +27,8 @@
   .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)}
   table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
   td,th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
+  section.alert{border-color:var(--warn)}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}
   #msg{position:fixed;bottom:14px;right:14px;background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:8px;display:none;max-width:420px}
   .aws,.ssh{display:none}
   body.p-aws .aws, body.p-ssh .ssh{display:block}
@@ -36,6 +38,11 @@
 <body>
 <header><h1>BoulderMesh admin</h1><span class="note" id="where"></span></header>
 <main>
+  <section id="ranges" hidden>
+    <h2>Cloudflare's addresses</h2>
+    <div id="ranges-body"></div>
+  </section>
+
   <section>
     <h2>What the main site shows</h2>
     <div><b>Mesh textures</b> <span class="note" id="tex-counts"></span></div>
@@ -124,6 +131,21 @@ function render(s){
   const p = s.compute.pool;
   $('#nodes').innerHTML = p ? `<table><tr><th>Machine</th><th>Up (min)</th><th>State</th></tr>${p.nodes.map(n => `<tr><td>${esc(n.id || n.host)}${n.gpu ? ' (GPU)' : ''}</td><td>${n.up_minutes}</td><td>${n.busy ? 'working' : `idle ${n.idle_minutes} min`}</td></tr>`).join('') || '<tr><td colspan="3">none running</td></tr>'}</table>
     ${p.starting ? `<div class="note">${p.starting} starting</div>` : ''}${p.error ? `<div class="note bad">${esc(p.error)}</div>` : ''}` : '';
+  const pr = s.proxy_ranges, box = $('#ranges');
+  box.hidden = !pr;
+  if (pr) {
+    const when = t => new Date(t * 1000).toLocaleString();
+    const off = pr.missing.length || pr.extra.length, alert = !!(off || pr.error);
+    box.classList.toggle('alert', alert);
+    $('main')[alert ? 'prepend' : 'append'](box);     // up top while something needs doing
+    let h = pr.checked && !off ? `<span class="ok">${esc(pr.caddyfile)} trusts all ${pr.published} of Cloudflare's published ranges.</span>` : '';
+    if (off) h = '<b class="warn">Cloudflare\'s published ranges have changed.</b>'
+      + (pr.missing.length ? `<div>Not trusted yet: <code>${pr.missing.map(esc).join(' ')}</code></div>` : '')
+      + (pr.extra.length ? `<div>Trusted, but no longer Cloudflare's: <code>${pr.extra.map(esc).join(' ')}</code></div>` : '')
+      + `<div class="note">Change <code>trusted_proxies</code> in ${esc(pr.caddyfile)}, and the firewall's sources for ports 80 and 443, to the list at cloudflare.com/ips, then restart. Until then, visitors who come through a range not yet trusted are logged as Cloudflare, and get Cloudflare's 522 error if the firewall leaves it out.</div>`;
+    if (pr.error) h += `<div class="bad">Couldn't check${pr.failing_since ? ' since ' + when(pr.failing_since) : ''}: ${esc(pr.error)}</div>`;
+    $('#ranges-body').innerHTML = h + `<div class="note">Checked once a day${pr.checked ? `, last at ${when(pr.checked)}` : ''}. The firewall can't be seen from here, so keep it to the same list.</div>`;
+  }
   const cr = s.secrets;
   $('#cred-note').innerHTML = cr.can_save ? 'Credentials can be saved here, encrypted with BOULDERMESH_SECRETS_KEY.'
     : '<span class="warn">Credentials can\'t be saved here until BOULDERMESH_SECRETS_KEY is set (in .env, outside the data directory). Until then, give them as environment variables, such as AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.</span>'

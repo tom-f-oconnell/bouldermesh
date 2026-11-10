@@ -51,6 +51,7 @@ import provenance  # noqa: E402
 import retexture  # noqa: E402
 import settings as settings_mod  # noqa: E402
 import pipeline  # noqa: E402
+import proxy_ranges  # noqa: E402
 import climbs as climbs_mod  # noqa: E402
 from climbs import diversity as diversity_mod  # noqa: E402
 from climbs import harvest as harvest_mod  # noqa: E402
@@ -82,6 +83,8 @@ FILE_CACHE = int(os.environ.get("FILE_CACHE_SECONDS", "3600"))   # how long brow
 # the header in which a proxy in front names the sender, for the log (X-Real-IP behind deploy/Caddyfile); only for a port
 # nothing but that proxy can reach, as anyone else could write it
 CLIENT_IP_HEADER = os.environ.get("CLIENT_IP_HEADER") or None
+# the Caddyfile in front, whose trusted proxies are compared with Cloudflare's published ranges each day (proxy_ranges.py)
+RANGES = proxy_ranges.Watch(Path(os.environ["CADDYFILE"])) if os.environ.get("CADDYFILE") else None
 MESH_EXTRA_EXT = {".png", ".jpg", ".jpeg", ".bin", ".mtl"}       # what may be uploaded beside a mesh: its textures and material
 # how files under data/ are served; anything else is sent as bytes to save, so that nothing put there can run as a page of this site
 SERVED_TYPES = {".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -2534,7 +2537,8 @@ def admin_state() -> dict:
             counts["can_retexture"] += bool(found)
             counts["need_rebuild"] += bool(why and "rebuild" in why)
     return {"settings": settings().all(), "secrets": settings().secrets_status(), "compute": compute_state(),
-            "policy": counts, "retexture_queued": len(_retexturing), "site_port": int(os.environ.get("PORT", "8470"))}
+            "policy": counts, "retexture_queued": len(_retexturing), "site_port": int(os.environ.get("PORT", "8470")),
+            "proxy_ranges": RANGES.state() if RANGES else None}
 
 
 def admin_test(_: dict) -> dict:
@@ -2592,6 +2596,8 @@ def main() -> None:
         beta_mod.carry_on(d)        # finding beta carries on after a restart, like areas
         scale_mod.interrupted(d)
     threading.Thread(target=beta_worker, daemon=True).start()
+    if RANGES:
+        threading.Thread(target=RANGES.run, daemon=True).start()
     host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))
     mode = "COLMAP + OpenMVS" if pipeline.real_pipeline_ready() else "DEMO (COLMAP/OpenMVS not found)"
     print(f"BoulderMesh on http://{host}:{port}  data={DATA}  pipeline={mode}", flush=True)
