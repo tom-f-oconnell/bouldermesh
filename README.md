@@ -419,7 +419,7 @@ the checkout whose `.env` names the compose files. On the server:
 or from your own machine, `ssh you@server 'cd bouldermesh && docker compose exec -T bouldermesh python3 cli.py client-errors'`.
 A browser's report has its time, the build it was using, what failed (a mesh that wouldn't load, with its id, or an error in
 the page), and the browser, but not who sent it. Each mesh shown is kept too (`data/mesh-views.jsonl`, and a "viewed mesh"
-line in the log): which, how it was opened (random, climb, meshes, map, area, project, beta), how long it took, and its note,
+line in the log): which, how it was opened (random, climb, meshes, map, area, project, beta, link), how long it took, and its note,
 such as a texture loaded smaller, but not who or with what. The requests for the mesh files don't tell you that, as browsers
 and Cloudflare keep copies for an hour. The same commands work on any machine running it under Docker.
 

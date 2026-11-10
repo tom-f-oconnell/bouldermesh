@@ -2238,7 +2238,7 @@ def record_client_error(report: dict, sender: str, user_agent: str, editor: bool
 
 
 def record_mesh_view(report: dict, sender: str, editor: bool) -> bool | None:
-    """Keep that a visitor's browser showed a mesh, in MESH_VIEWS and the log: which, how it was asked for (via: random,
+    """Keep that a visitor's browser showed a mesh, in MESH_VIEWS and the log: which, how it was asked for (via: random, link,
     climb, meshes, map, area, project, beta), how long it took to load, and its note if it had one. Requests for the
     files don't say, as browsers and Cloudflare keep copies. Not who, nor their browser.
 
