@@ -495,6 +495,16 @@ second of the first 150 s at 720p, and frames chosen there couldn't be chosen ag
 where a YouTube request is the scarce thing, not bandwidth. Kept in the cache, one download serves both, where before
 finding beta downloaded every video a second time.
 
+Searching could be refused too, but hasn't been. From Nov 1 to 9, 2026, 1,474 harvests on hal searched YouTube, through
+every spell of refused downloads, and one search failed, with an error fetching the results page rather than the bot
+check. A search is one request for a page of results; a download also asks YouTube's player for the video, which is where
+the bot check is. A cloud server's address is another matter: when the public server harvests (option B), its searches
+may be refused from the start. If they are on either server (a harvest's log says `youtube search: ... failed:` with
+"not a bot" or a 429), searching moves to volunteers as a third kind of work: the server sends the search's words, never
+an address, the script runs `yt-dlp --flat-playlist ytsearch15:<words>` within the same limits, and sends back each
+result's id, title, channel and length; the harvest carries on without videos, and is harvested again once the results,
+and then their videos, have come, as for videos now.
+
 The limits are hal's, halved: one video at a time, 8-15 s apart, at most 15 an hour (hal's refusals came after hours at
 20-30) and 100 a day, shared by everyone at one address so that two volunteers on one network don't double it. A
 refused volunteer rests as the server would, 1, 2, 4, then 8 hours, and the script enforces all of it itself as well,
