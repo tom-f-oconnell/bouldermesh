@@ -614,6 +614,51 @@ The costs fall on volunteers: YouTube's terms forbid downloading except through 
 other addresses is plainly a way around its per-address limit, and a refused address gets the bot check for everyone on
 that network for hours. The script says so and asks them to agree before it starts.
 
+## Registering, and approving from a phone (`backend/registration.py`, `backend/notify.py`)
+
+Handing out tokens by hand doesn't scale past a few people, so the volunteer and worker scripts make their own token,
+ask for a name (optional) and register it. The server keeps only the token's hash, as for the admin page's. A new token
+is provisional until approved, on the admin page or from the phone.
+
+What a provisional client may do is the admin page's choice:
+- **Volunteers:** fetching, at most 3 an hour and 10 a day, by default. The worst one can do is send the wrong video.
+  The server never asks YouTube itself, so its length check has only what volunteers said. The sender's own word only
+  catches a file gone wrong, so a video is also checked against its length in another volunteer's search results,
+  where there's one.
+- **Machines: nothing, by default.** A machine gets other people's photos, and what it sends back would be published
+  under the site's name. Allowed, a provisional machine only meshes, and the mesh is held beside the machines'
+  database. Its climb waits ("waiting for a machine", tried again every few minutes), and takes the held mesh once the
+  machine is approved. If the machine is turned down, or the climb's photos have changed since, the climb is meshed
+  again. Holding meshes there, rather than marking them hidden, keeps them out of the 30 or so places that list meshes.
+
+Registering is open to anyone who can reach the site, so it's limited:
+- 5 a day from one address, which leaves room for someone who lost a token to make another;
+- 30 waiting at once, of each kind, past which the next is told to try later;
+- unapproved ones dropped after 14 days unheard from;
+- a Cloudflare rate-limiting rule in front, for floods (README).
+
+Names are the given one, stripped, with whitespace inside it made single dashes, and numbered (-2, -3) only when taken.
+
+**The phone: ntfy.** It's free and open source, with apps for Android and iOS, and takes a notification in one HTTP
+request, with buttons that make the phone send an HTTP request of their own. The admin page is only reachable through
+an SSH tunnel, so a button can't call it. Instead, a button posts to a second ntfy topic, which the server follows over
+a connection it opens itself, so nothing new is exposed. Each reply is signed (HMAC-SHA256, with a key kept in
+DATA_DIR/notify.key) over what it does and until when, a week. The server acts on each once, and does nothing that
+would undo another choice: a Deny after an Approve is refused.
+
+What that doesn't stop: on ntfy.sh, anyone who knows a topic's name can read it, and the notifications carry their
+buttons' signed replies, so whoever reads them could approve themselves. The topic names are 32 random characters,
+which can't be guessed. But they live in the ntfy app and on ntfy.sh, which also sees the notifications' text: names,
+never addresses.
+
+Running ntfy on the Hetzner box instead would fix that with accounts: only your phone could read the topic, and only the
+server publish to it. The costs:
+- one more public service on a 2-core, 4 GB box, to keep updated;
+- iOS still needs ntfy.sh to wake the app (only message ids pass through it);
+- if the box is down, nothing tells you.
+
+ntfy.sh's free limits (a few hundred messages a day from one address) are far above what registrations need.
+
 ## Beta: which holds climbers use (`backend/beta.py`)
 
 People's masks say where people are, not which of their parts are hands and which feet, so a pose

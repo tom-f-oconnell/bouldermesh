@@ -5,9 +5,13 @@ BoulderMesh makes 3D models of boulders from photos and climbing videos. YouTube
 videos, so volunteers fetch some from their own addresses. This script asks the server for a video (only ever by its
 YouTube id: it makes the youtube.com address itself), fetches it with yt-dlp, sends it to the server, deletes its copy,
 and waits before the next. It also searches YouTube for a climb's videos (the server sends only the words), and reads a
-channel's description (by its id), sending back what they say. Run it with the token you were given:
+channel's description (by its id), sending back what they say. Run it with the server's address:
 
-    python3 bouldermesh_volunteer.py --server https://boulders.example.com --token bmv_...
+    python3 bouldermesh_volunteer.py --server https://boulders.example.com
+
+The first time, it makes a token of its own, asks your name (optional, for whoever runs the server), and registers the
+token with the server, where it waits for approval: until then it fetches only a few videos a day, or none. A token
+whoever runs the server gave you works too (--token), at once.
 
 Python 3.9 or newer, nothing else: it installs yt-dlp, and Deno (the JavaScript runtime yt-dlp needs for YouTube), into
 a folder of its own (~/.bouldermesh-volunteer), and updates them daily. Stop it with Ctrl-C at any time; delete that
@@ -20,6 +24,7 @@ import json
 import os
 import random
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -56,13 +61,33 @@ Before you start: what this does, and what it may cost you.
 - If YouTube decides your address is fetching too much, it may ask everyone on your network to sign in or prove
   they're not a bot for a while. When that happens, this stops for 1, then 2, 4 or 8 hours.
 - YouTube and {server} see your IP address. The server keeps the address you last connected from, to share the
-  limits above between everyone at that address, and doesn't keep it with the videos.
+  limits above between everyone at that address, and doesn't keep it with the videos. It also keeps the name you
+  give it next, if any, to show whoever runs it.
 
 Stop it with Ctrl-C at any time. Everything it installs is in {home}."""
 
 
 def log(msg: str) -> None:
     print(time.strftime("%Y-%m-%d %H:%M:%S ") + msg, flush=True)
+
+
+def register(server: str, name: str | None) -> str:
+    """Make a token, register it with the server under name (asked for, if not given and there's someone to ask), and
+    return it; exits saying why if the server won't have it."""
+    if name is None and sys.stdin.isatty():
+        name = input("Your name or a nickname, shown to whoever runs the server (optional; Enter to leave it out): ")
+    token = "bmv_" + secrets.token_urlsafe(32)
+    try:
+        r = Server(server, token).call("/volunteer/api/register", {"name": (name or "").strip(), "version": VERSION,
+                                                                    "client": f"script {VERSION}"}, tries=1)
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"the server wouldn't register this: {e.answer.get('error') or e}") from None
+    except (urllib.error.URLError, OSError) as e:
+        raise SystemExit(f"can't reach {server}: {e}") from None
+    log(f"registered with {server} as {r.get('name')!r}: waiting for approval by whoever runs it. "
+        + (f"Until then, it fetches at most {r.get('per_hour')} an hour and {r.get('per_day')} a day."
+           if r.get("may_work") else "Until then, it waits."))
+    return token
 
 
 class Server:
@@ -324,7 +349,7 @@ class Volunteer:
             if self.args.once:
                 log(f"nothing to do: {r.get('why')}")
                 return
-            log(f"nothing to fetch now ({r.get('why')}): asking again in {r['wait'] / 60:.0f} min")
+            log(f"nothing to fetch now ({r.get('why')}): asking again in {max(60, min(r['wait'], 3600)) / 60:.0f} min")
             time.sleep(max(60, min(r["wait"], 3600)))
             if time.time() - self.state.get("updated", 0) > 86400:
                 self.tools()
@@ -333,7 +358,9 @@ class Volunteer:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--server", help="the BoulderMesh site, such as https://boulders.example.com (remembered)")
-    ap.add_argument("--token", help="the token you were given (remembered)")
+    ap.add_argument("--token", help="a token whoever runs the server gave you (remembered); without one, it makes its own "
+                    "the first time, and registers it")
+    ap.add_argument("--name", help="your name or a nickname for whoever runs the server, when registering (asked for if not given)")
     ap.add_argument("--per-hour", type=int, default=PER_HOUR, help=f"at most this many videos an hour ({PER_HOUR} at most)")
     ap.add_argument("--per-day", type=int, default=PER_DAY, help=f"at most this many a day ({PER_DAY} at most)")
     ap.add_argument("--agree", action="store_true", help="agree to what's explained on the first run without being asked")
@@ -349,14 +376,18 @@ def main() -> None:
         conf = json.loads(conf_file.read_text())
     except (FileNotFoundError, ValueError):
         conf = {}
-    args.server, args.token = args.server or conf.get("server"), args.token or conf.get("token")
-    if not args.server or not args.token:
-        ap.error("--server and --token are needed the first time")
+    server_changed = args.server and args.server != conf.get("server")
+    args.server = args.server or conf.get("server")
+    args.token = args.token or (None if server_changed else conf.get("token"))
+    if not args.server:
+        ap.error("--server is needed the first time")
     if conf.get("agreed") != args.server:
         print(AGREEMENT.format(server=args.server, gap_lo=GAP[0], gap_hi=GAP[1], per_hour=min(args.per_hour, PER_HOUR),
                                per_day=min(args.per_day, PER_DAY), home=home))
         if not args.agree and input("\nType yes to start: ").strip().lower() != "yes":
             raise SystemExit("not started")
+    if not args.token:
+        args.token = register(args.server, args.name)
     conf.update(server=args.server, token=args.token, agreed=args.server)
     conf_file.write_text(json.dumps(conf))
     os.chmod(conf_file, 0o600)

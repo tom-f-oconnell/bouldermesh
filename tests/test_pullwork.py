@@ -352,6 +352,68 @@ got["thread"].join(10)
 ctl.begin()
 print("image prefix OK")
 
+# --- a machine registering itself: no climbs until it's approved, or with the admin page's leave, meshing whose results wait --
+rules = dict(pullwork.RULES)
+board.rules = lambda: rules
+news: list = []
+board.registered = news.append
+reg_home = TMP / "home-reg"
+
+
+def registered_worker(*extra: str, ok: bool = True) -> str:
+    r = subprocess.run([sys.executable, str(SCRIPT), "--server", URL, "--home", str(reg_home), "--gpu", "none", *extra], env=ENV,
+                       capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    assert (r.returncode == 0) is ok, r.stdout + r.stderr
+    return r.stdout + r.stderr
+
+
+out = registered_worker("--check", "--name", "lab  box")
+assert "as 'lab-box'" in out and "waiting for approval; no climbs until then" in out, out
+lab_token = json.loads((reg_home / "config.json").read_text())["token"]
+lab = board.machine(lab_token)
+assert lab_token.startswith("bmw_") and lab["status"] == "provisional" and [n["id"] for n in news] == [lab["id"]]
+assert board.work(lab, ip, {"version": 2}) == {"wait": 300, "why": "waiting for approval by whoever runs this site", "provisional": True}
+assert next(m for m in board.state()["machines"] if m["name"] == "lab-box")["status"] == "awaiting approval"
+rules["provisional_work"] = True
+board.jobs["b" * 12] = pullwork.Job(id="b" * 12, label="beta: x", input=TMP / "none.tar", size=1, internet=False, image=image[0],
+                                    task="beta", version=2)
+assert "wait" in board.work(lab, ip, {"version": 2}), "only meshing: not finding beta, or size"
+del board.jobs["b" * 12]
+p = project("held")
+got = in_thread(board.reconstruct, p / "photos", p / "work", TMP / "out-held", print)
+r = registered_worker("--once")
+got["thread"].join(60)
+assert isinstance(got.get("error"), compute.ComputeUnavailable) and "waits for approval" in str(got["error"]), (got, r)
+held = TMP / "data" / "compute" / "held"
+assert (held / "held.tar").exists() and json.loads((held / "held.json").read_text())["machine"] == lab["id"]
+assert not (TMP / "out-held").exists() and next(m for m in board.state()["machines"] if m["name"] == "lab-box")["held"] == 1
+try:
+    board.reconstruct(p / "photos", p / "work", TMP / "out-held", print)
+    raise AssertionError("its machine still waits")
+except compute.ComputeUnavailable as e:
+    assert "waits for approval" in str(e) and not board.jobs, "at once, with no new job"
+board.approve(lab["id"])
+logged = []
+mesh, demo = board.reconstruct(p / "photos", p / "work", TMP / "out-held", logged.append)
+assert mesh.exists() and mesh.parent == TMP / "out-held" and not list(held.glob("*")), (mesh, list(held.glob("*")))
+assert any("before it was approved" in line for line in logged), logged
+(p / "photos" / "p0.jpg").write_bytes(b"other")      # held from other photos than the climb has now: not taken
+(held / "held.json").write_text(json.dumps({"machine": lab["id"], "inputs": [], "result": {}}))
+(held / "held.tar").write_bytes(b"x")
+assert board._take_held(p, {"photos": p / "photos"}, print) is None and not list(held.glob("*"))
+# turned down: what it made goes, and its token says so
+nobody = board.register("bmw_" + "z" * 40, " \t ", "198.51.100.7")
+assert nobody["name"] == "machine" and nobody["status"] == "provisional"
+(held / "other.json").write_text(json.dumps({"machine": nobody["id"]}))
+(held / "other.tar").write_bytes(b"x")
+board.revoke(nobody["id"], "denied")
+assert not list(held.glob("other.*"))
+assert "turned down" in call("/worker/api/work", {"version": 2}, "bmw_" + "z" * 40)[1]["error"]
+assert call("/worker/api/register", {"version": 2}, "short")[0] == 400
+st, j = call("/worker/api/register", {"version": 2, "name": "x"}, lab_token)
+assert st == 200 and j["name"] == "lab-box" and j["status"] == "approved", "registering again is harmless"
+print("registering OK")
+
 # --- remote_job.py's other jobs, here: what they make in the mesh's folder goes in out/, and nothing else -----------------
 import contextlib  # noqa: E402
 

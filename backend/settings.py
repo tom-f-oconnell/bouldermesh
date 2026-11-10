@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -46,12 +47,30 @@ DEFAULTS = {
     # an area's climbs that share a boulder with others it lists: harvested, and meshed together as their boulder
     # ("boulders"), or each meshed on its own ("climbs")
     "areas.meshes": "boulders",
+    # clients that register themselves (registration.py): provisional until approved here or from a phone. Volunteers
+    # fetching videos: their limits (the script's own are 15 an hour, 100 a day), and while provisional, whether they
+    # get work and how much. Machines meshing: whether provisional ones get work (then what they make waits for approval).
+    "volunteers.per_hour": 15,
+    "volunteers.per_day": 100,
+    "volunteers.provisional_work": True,
+    "volunteers.provisional_per_hour": 3,
+    "volunteers.provisional_per_day": 10,
+    "machines.provisional_work": False,
+    "registration.per_address_day": 5,     # registrations a day from one address, of each kind
+    "registration.max_waiting": 30,        # provisional ones waiting at once, of each kind; more must wait
+    # notifications on a phone through ntfy (notify.py): the server, and the topics, which are made on the admin page
+    "notify.enabled": False,
+    "notify.server": "https://ntfy.sh",
+    "notify.topic": "",
+    "notify.reply_topic": "",
 }
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
            "areas.meshes": ("boulders", "climbs")}
 LIMITS = {"site.map_km": (0.05, 2000), "storage.cap_gb": (0, 100000), "compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
-          "compute.aws.volume_gb": (30, 2000)}
+          "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 100),
+          "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 100),
+          "registration.per_address_day": (1, 100), "registration.max_waiting": (1, 1000)}
 for _key in ("site.textures", "site.sources", "youtube.via"):    # a public copy's starting points, from its .env
     _given = os.environ.get(_key.replace(".", "_").upper(), "").strip()
     if _given in CHOICES[_key]:
@@ -133,6 +152,10 @@ class Settings:
                 v = v.strip()
             if k in CHOICES and v not in CHOICES[k]:
                 raise ValueError(f"{k} is one of {', '.join(CHOICES[k])}")
+            if k == "notify.server" and not (v.startswith("https://") and len(v) > 8 and " " not in v):
+                raise ValueError("notify.server is an https:// address, such as https://ntfy.sh")
+            if k in ("notify.topic", "notify.reply_topic") and v and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", v):
+                raise ValueError(f"{k} is up to 64 letters, digits, - and _")
             clean[k] = v
         with self._db() as con:
             con.executemany("INSERT OR REPLACE INTO settings VALUES(?,?)", [(k, json.dumps(v)) for k, v in clean.items()])

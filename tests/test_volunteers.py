@@ -287,6 +287,95 @@ def script_and_broker() -> None:
         httpd.shutdown()
 
 
+# --- the script registering a token of its own, and its approval -----------------------------------------------------
+def registering() -> None:
+    import registration
+    assert registration.clean_name("  Jane   Q\tPublic\n ", "volunteer") == "Jane-Q-Public"
+    assert registration.clean_name(" \x07 ", "volunteer") == "volunteer" and len(registration.clean_name("x" * 99, "v")) == 40
+    assert registration.unique_name("Jane", ["jane", "Jane-2", "bob"]) == "Jane-3" and registration.unique_name("Al", ["Alan"]) == "Al"
+
+    video = make_video(TMP / "fake-r.mp4")
+    fake = TMP / "fake-yt-dlp"
+    rules = dict(volunteers.RULES, provisional_work=False, registrations_per_address=3, max_waiting=30)
+    news, got = [], []
+    b = volunteers.Broker(TMP / "b5" / "v.sqlite", TMP / "b5" / "files", lambda t, p, i: got.append(t["video_id"]), lambda *_: None,
+                          rules=lambda: rules, registered=news.append)
+    port = free_port()
+    httpd = volunteers.serve(b, "127.0.0.1", port, log=lambda line: None)
+    base = f"http://127.0.0.1:{port}"
+    env = {**os.environ, "FAKE_VIDEO": str(video), "FAKE_LOG": str(TMP / "fake-r.log")}
+
+    def volunteer(home: str, *extra, ok: bool = True) -> str:
+        r = subprocess.run([sys.executable, str(SCRIPT), "--server", base, "--agree", "--once", "--yt-dlp", str(fake),
+                            "--home", str(TMP / home), *extra], env=env, capture_output=True, text=True, timeout=120,
+                           stdin=subprocess.DEVNULL)
+        assert (r.returncode == 0) is ok, r.stdout + r.stderr
+        return r.stdout + r.stderr
+
+    def token(home: str) -> str:
+        return json.loads((TMP / home / "config.json").read_text())["token"]
+
+    try:
+        out = volunteer("r1", "--name", "  Jane   Q  Public ")
+        assert "as 'Jane-Q-Public': waiting for approval" in out and "Until then, it waits" in out, out
+        v1 = b.volunteer(token("r1"))
+        assert token("r1").startswith("bmv_") and v1["status"] == "provisional" and v1["name"] == "Jane-Q-Public"
+        assert [v["id"] for v in news] == [v1["id"]], "the server hears of it, once"
+        b.want("video", "vvvvvvvvvvv", "harvest", "p1")
+        assert "waiting for approval by whoever runs this site" in volunteer("r1") and not got, "no work until approved"
+        assert not b.any(), "no one to ask, while the only volunteer waits and mayn't work"
+        assert "'jane-q-public-2'" in volunteer("r2", "--name", "jane q public"), "a name taken: numbered"
+        assert "as 'volunteer'" in volunteer("r3"), "no name given, and no one to ask: the default"
+        assert "3 a day is the most" in volunteer("r4", ok=False), "a fourth from one address in a day"
+        assert not (TMP / "r4" / "config.json").exists() or not json.loads((TMP / "r4" / "config.json").read_text()).get("token")
+        st, j = call(base + "/volunteer/api/register", {"version": 2, "name": "someone else"}, token("r1"))
+        assert st == 200 and j["name"] == "Jane-Q-Public" and j["status"] == "provisional" and len(news) == 3, "registering again is harmless"
+        assert call(base + "/volunteer/api/register", {"version": 2}, "short")[0] == 400
+        assert call(base + "/volunteer/api/register", {"version": 0}, "bmv_" + "a" * 40)[0] == 426
+
+        # while waiting, with the admin page's leave: within its own limits
+        rules.update(provisional_work=True, provisional_per_hour=1)
+        assert b.any()
+        assert "sent" in volunteer("r1") and got == ["vvvvvvvvvvv"]
+        b.want("video", "wwwwwwwwwww", "harvest", "p1")
+        assert "1 an hour is the most for you until you're approved" in volunteer("r1")
+        assert b.approve(v1["id"])["status"] == "approved" and b.get(v1["id"])["approved"]
+        b.q("UPDATE volunteers SET refused_until=NULL")
+        assert "sent" in volunteer("r1") and got[-1] == "wwwwwwwwwww", "approved: everyone's limits"
+        st = {v["name"]: v for v in b.state()["volunteers"]}
+        assert not st["Jane-Q-Public"]["provisional"] and st["jane-q-public-2"]["provisional"] and st["volunteer"]["registered"]
+
+        # turned down: its token stops working, and says why
+        b.revoke(b.volunteer(token("r2"))["id"], "denied")
+        assert "turned down by whoever runs this site" in volunteer("r2", ok=False)
+        assert {v["name"]: v["status"] for v in b.state()["volunteers"]}["jane-q-public-2"] == "denied"
+
+        # so many waiting that more must wait; and those never heard from again go
+        rules.update(registrations_per_address=100, max_waiting=1)
+        assert "too many are waiting" in volunteer("r5", ok=False)
+        b.q("UPDATE volunteers SET created=?, last_seen=NULL WHERE status='provisional'", time.time() - 15 * 86400)
+        assert "as 'someone'" in volunteer("r5", "--name", "someone"), "the old one dropped, making room"
+        assert b.volunteer(token("r3")) is None
+    finally:
+        httpd.shutdown()
+
+    # a video's length, by someone else's search: one sending a video can't vouch for it alone
+    b = volunteers.Broker(TMP / "b6" / "v.sqlite", TMP / "b6" / "files", lambda *a: None, lambda *_: None, probe=lambda p: 4.0)
+    a, c = (b.volunteer(b.add(n)["token"]) for n in ("a", "c"))
+    b.want("search", "Relic V9 Joshua Tree", "harvest", "p")
+    t = b.work(a, "10.0.0.1", kinds=["search"])["task"]
+    b.finish(a, t["id"], {"status": "ok", "results": [{"id": "xxxxxxxxxxx", "duration": 100}]})
+    for who, ok in ((c, False), (a, True)):
+        b.want("video", "xxxxxxxxxxx", "harvest", "p")
+        t = b.work(b.get(who["id"]), "10.0.0.2")["task"]
+        b.part(who, t["id"], 0, 3, "mp4", b"abc")
+        r = b.finish(who, t["id"], {"status": "ok", "info": {"duration": 4}})
+        assert r["ok"] is ok, (who["name"], r)
+        if not ok:
+            assert "100 s by another's search" in b.q("SELECT error FROM tasks WHERE id=?", t["id"], one=True)["error"]
+    print("registering OK")
+
+
 # --- the cache, and a harvest asking volunteers -----------------------------------------------------------------------
 def cache_and_harvest() -> None:
     video = make_video(TMP / "cached.mp4", 6)
@@ -443,6 +532,28 @@ def through_the_server() -> None:
         assert "volunteers fetched" in log_file.read_text(), "harvested again with what it found"
         call(admin + "/api/admin/actions/volunteer-revoke", {"id": st["volunteers"][0]["id"]})
         assert call(vbase + "/volunteer/api/work", {"version": 1}, r["token"])[0] == 403
+
+        # one registering itself: waiting, approved on the admin page, and the admin page's limits
+        out = subprocess.run([sys.executable, str(SCRIPT), "--server", vbase, "--agree", "--once", "--name", "Sam", "--yt-dlp", str(fake),
+                              "--home", str(TMP / "home4")], env=renv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+        assert "as 'Sam'" in out.stdout and "at most 3 an hour and 10 a day" in out.stdout, out.stdout + out.stderr
+        st = call(admin + "/api/admin/state")[1]
+        sam = next(v for v in st["volunteers"]["volunteers"] if v["name"] == "Sam")
+        assert sam["provisional"] and (sam["per_hour"], sam["per_day"]) == (3, 10) and st["notify"]["enabled"] is False, sam
+        assert call(admin + "/api/admin/settings", {"volunteers.provisional_per_hour": 99})[0] == 400
+        assert call(admin + "/api/admin/settings", {"volunteers.provisional_work": False, "volunteers.per_hour": 7})[0] == 200
+        sam = next(v for v in call(admin + "/api/admin/state")[1]["volunteers"]["volunteers"] if v["name"] == "Sam")
+        assert sam["status"] == "awaiting approval", sam
+        assert "approved Sam" in call(admin + "/api/admin/actions/volunteer-approve", {"id": sam["id"]})[1]["result"]
+        sam = next(v for v in call(admin + "/api/admin/state")[1]["volunteers"]["volunteers"] if v["name"] == "Sam")
+        assert not sam["provisional"] and sam["per_hour"] == 7, sam
+        assert call(admin + "/api/admin/actions/volunteer-approve", {"id": sam["id"]})[0] == 200, "again: no harm"
+        assert call(admin + "/api/admin/actions/volunteer-approve", {"id": "nope"})[0] == 400
+        assert call(admin + "/api/admin/settings", {"notify.server": "http://ntfy.example"})[0] == 400, "https only"
+        r3 = call(admin + "/api/admin/actions/notify-topics", {})[1]
+        nt = call(admin + "/api/admin/state")[1]
+        assert "new topics" in r3["result"] and nt["settings"]["notify.enabled"] and nt["notify"]["subscribe"].startswith("https://ntfy.sh/bm-"), nt["notify"]
+        assert call(admin + "/api/admin/settings", {"notify.enabled": False})[0] == 200
         assert call(admin + "/api/admin/settings", {"youtube.via": "nowhere"})[0] == 400
     finally:
         proc.terminate()
@@ -455,6 +566,7 @@ try:
     broker_alone()
     if shutil.which("ffmpeg"):
         script_and_broker()
+        registering()
         cache_and_harvest()
         through_the_server()
     else:

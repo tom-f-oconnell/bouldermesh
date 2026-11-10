@@ -4,9 +4,13 @@
 BoulderMesh makes 3D models of boulders from photos. A small server can't reconstruct them itself, and one machine
 that can may be behind a firewall the server can't get through. This script asks the server for a climb to mesh, fetches
 its photos over HTTPS, runs the reconstruction in the server's own Docker image (with the GPU, if there is one), sends
-its log as it goes, and then the mesh. Run it with a token from the server's admin page:
+its log as it goes, and then the mesh. Run it with the server's address:
 
-    python3 bouldermesh_worker.py --server https://boulders.example.com --token bmw_...
+    python3 bouldermesh_worker.py --server https://boulders.example.com --check
+
+The first time, it makes this machine's token, asks your name (optional, for whoever runs the server), and registers
+the token with the server, which gives it climbs once whoever runs it approves the machine. A token from the server's
+admin page works too (--token), at once.
 
 Python 3.9 or newer and Docker (with NVIDIA's container toolkit, for a GPU), which whoever runs it may use. The server
 and token are remembered (in ~/.bouldermesh-worker), so after the first time it's only `python3 bouldermesh_worker.py`.
@@ -23,6 +27,7 @@ import json
 import os
 import queue
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -94,6 +99,24 @@ class Server:
                 log(f"can't reach {self.url} ({e}); trying again")
                 time.sleep(min(30 * (attempt + 1), 120))
         raise RuntimeError("unreachable")
+
+
+def register(server: str, name: str | None) -> str:
+    """Make a token, register it with the server under name (asked for, if not given and there's someone to ask), and
+    return it; exits saying why if the server won't have it."""
+    if name is None and os.isatty(0):
+        name = input("Your name or a nickname, shown to whoever runs the server (optional; Enter to leave it out): ")
+    token = "bmw_" + secrets.token_urlsafe(32)
+    try:
+        r = Server(server, token).call("/worker/api/register", {"name": (name or "").strip(), "version": VERSION,
+                                                                 "client": f"script {VERSION} on {socket.gethostname()}"}, tries=1)
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"the server wouldn't register this machine: {e.answer.get('error') or e}") from None
+    except (urllib.error.URLError, OSError) as e:
+        raise SystemExit(f"can't reach {server}: {e}") from None
+    log(f"registered with {server} as {r.get('name')!r}: it gives this machine climbs once whoever runs it approves it"
+        + (" (meanwhile it may give it some, whose meshes wait for that approval)" if r.get("may_work") else ""))
+    return token
 
 
 class Worker:
@@ -299,7 +322,9 @@ class Worker:
         short = self.data_room()
         if self.args.check:
             r = self.server.call("/worker/api/work", {**client, "check": True})
-            log(f"{self.server.url} knows this token as {r.get('name')!r}")
+            log(f"{self.server.url} knows this token as {r.get('name')!r}"
+                + (": approved" if r.get("status") != "provisional" else
+                   ", waiting for approval" + ("; it may get climbs meanwhile" if r.get("may_work") else "; no climbs until then")))
             if short:
                 raise SystemExit(f"but there isn't room for jobs: {short}")
             log(f"room for jobs in {self.home}: {free_gb(self.home):.0f} GB free; Docker's images: "
@@ -333,8 +358,11 @@ class Worker:
                     if not self.args.once:
                         time.sleep(300)
             elif self.args.once:
-                log("nothing to do")
+                log(f"nothing to do{': ' + r['why'] if r.get('why') else ''}")
             else:
+                if r.get("why") and r["why"] != getattr(self, "why", None):
+                    log(f"no climbs for now: {r['why']}")
+                self.why = r.get("why")
                 time.sleep(max(5, min(float(r.get("wait") or 15), 300)))
             if self.args.once:
                 return
@@ -407,7 +435,9 @@ def extract(tar_path: Path, dest: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--server", help="the BoulderMesh site, such as https://boulders.example.com (remembered)")
-    ap.add_argument("--token", help="this machine's token, from the server's admin page (remembered)")
+    ap.add_argument("--token", help="a token from the server's admin page (remembered); without one, it makes its own the "
+                    "first time, and registers it")
+    ap.add_argument("--name", help="your name or a nickname for whoever runs the server, when registering (asked for if not given)")
     ap.add_argument("--cpus", type=float, help="at most this many cores for a job (docker run --cpus; remembered)")
     ap.add_argument("--gpu", choices=("auto", "all", "cdi", "none"), help="give jobs the GPU: auto (if nvidia-smi finds one, "
                     "the default), all (--gpus all), cdi (the CDI device nvidia.com/gpu=all) or none (remembered)")
@@ -434,6 +464,8 @@ def main() -> None:
         conf = json.loads(conf_file.read_text())
     except (FileNotFoundError, ValueError):
         conf = {}
+    if args.server and args.server != conf.get("server") and not args.token:
+        conf.pop("token", None)     # a token is the server's it was registered with
     for k in ("server", "token", "cpus", "gpu", "image_prefix", "data"):
         if getattr(args, k) is None:
             setattr(args, k, conf.get(k))
@@ -444,8 +476,10 @@ def main() -> None:
         args.data = conf["data"] = str(Path(args.data).expanduser().resolve())
         Path(args.data).mkdir(parents=True, exist_ok=True)
         os.chmod(args.data, 0o700)
-    if not args.server or not args.token:
-        ap.error("--server and --token are needed the first time")
+    if not args.server:
+        ap.error("--server is needed the first time")
+    if not args.token:
+        args.token = conf["token"] = register(args.server, args.name)
     tmp = conf_file.with_suffix(".tmp")
     tmp.write_text(json.dumps(conf))
     os.chmod(tmp, 0o600)

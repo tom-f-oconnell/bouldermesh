@@ -2,7 +2,8 @@
 
 compute.py reaches its machines over SSH, so they must be reachable from the server. A machine behind a firewall or
 NAT, such as a lab's workstation reached only through the lab's VPN, isn't. It runs worker/bouldermesh_worker.py
-instead, with a token from the admin page, and asks this server for work over HTTPS: it fetches a climb's photos and
+instead, which makes its own token and registers it here (registration.py), or uses one from the admin page, and asks
+this server for work over HTTPS: it fetches a climb's photos and
 people masks, runs the same job on them in the same Docker image as an SSH machine would (remote_job.py), sends its log
 as it goes, and then the mesh, its cameras and the masks. The climb's worker thread here waits for that as it would for
 an SSH machine, and a climb no machine is there to take, or whose machine goes quiet, waits (ComputeUnavailable).
@@ -10,12 +11,16 @@ an SSH machine, and a climb no machine is there to take, or whose machine goes q
 Files go in parts, under Cloudflare's 100 MB a request, and carry on after a dropped connection. Like volunteers.py,
 it's served on a port of its own (WORKER_PORT) that answers only /worker/..., for the proxy in front to pass on.
 Machines are kept in a database of their own, readable only by the server's user: their tokens' hashes, to know them by,
-and the tokens themselves, so that the admin page can show a machine's command again. Jobs are kept only in memory: a restart here
+and for those made on the admin page the tokens themselves, so that it can show a machine's command again.
+
+A machine that registered itself is provisional until approved, and gets no work meanwhile unless the admin page says
+it may. Then it's given only reconstructions, and what it makes is held (in held/, beside the database) rather than
+becoming a mesh: its climb waits, and takes the held mesh once the machine is approved, or is meshed again elsewhere if
+it's turned down. Jobs are kept only in memory: a restart here
 ends them anyway, the climbs carry on after it as new jobs, and a machine still running an old one is told it's gone.
 """
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import os
@@ -34,6 +39,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 import compute
+import registration
 from volunteers import OffsetError, _client_ip
 
 PART_MAX = 64 * 2**20       # the largest part of a file either way, under Cloudflare's 100 MB a request
@@ -46,6 +52,8 @@ MAX_LINES = 5000            # lines in one report
 CLIENT_VERSION = 1          # the oldest script that speaks to this
 SCRIPT = Path(__file__).resolve().parents[1] / "worker" / "bouldermesh_worker.py"
 TOP = ("out", "masks")      # what a job's results may hold
+# the admin page's settings by default (machines.* there): whether a provisional machine gets work, and how many may register
+RULES = {"provisional_work": False, "registrations_per_address": 5, "max_waiting": 30}
 
 
 @dataclass
@@ -81,10 +89,15 @@ class Board:
         files: where jobs' photos wait to be fetched and their results come in.
         image: the Docker image a job runs, asked for each job (the admin page's, or this server's own build).
         jobctl: the waiting thread's job control, to stop waiting when its climb is stopped.
+        rules: the admin page's settings, as RULES.
+        registered: called with a new machine's row when one registers itself.
     """
 
-    def __init__(self, db_path: Path, files: Path, image: Callable[[], str], jobctl):
+    def __init__(self, db_path: Path, files: Path, image: Callable[[], str], jobctl, rules: Callable[[], dict] = lambda: RULES,
+                 registered: Callable[[dict], None] = lambda m: None):
         self.db_path, self.files, self.image, self.jobctl = db_path, files, image, jobctl
+        self.rules, self.registered = rules, registered
+        self.held = db_path.parent / "held"     # what provisional machines made, for climbs to take once they're approved
         self.jobs: dict[str, Job] = {}
         self.cond = threading.Condition(threading.RLock())
         self.seen: dict[str, float] = {}
@@ -98,6 +111,7 @@ class Board:
             """)
             if "token" not in {r[1] for r in con.execute("PRAGMA table_info(machines)")}:   # kept since 2026-11-10
                 con.execute("ALTER TABLE machines ADD COLUMN token TEXT")
+            registration.migrate(con, "machines")
         os.chmod(db_path, 0o600)
 
     def db(self) -> sqlite3.Connection:
@@ -116,10 +130,29 @@ class Board:
         name = (name or "").strip()[:80]
         if not name:
             raise ValueError("give the machine a name")
+        name = registration.unique_name(name, (r["name"] for r in self.q("SELECT name FROM machines")))
         mid, token = secrets.token_hex(4), "bmw_" + secrets.token_urlsafe(32)
-        self.q("INSERT INTO machines(id,name,token_hash,created,token) VALUES(?,?,?,?,?)", mid, name,
-               hashlib.sha256(token.encode()).hexdigest(), time.time(), token)
+        self.q("INSERT INTO machines(id,name,token_hash,created,token,status,approved) VALUES(?,?,?,?,?,?,?)", mid, name,
+               registration.token_hash(token), time.time(), token, "approved", time.time())
         return {"id": mid, "name": name, "token": token}
+
+    def register(self, token: str, name, ip: str, client: str = "") -> dict:
+        """A machine's script registering the token it made: provisional until approved (registration.register()).
+        The new machine goes to registered()."""
+        rules = {**RULES, **self.rules()}
+        before = self.machine(token)
+        m = registration.register(self.q, "machines", token, name, ip, "machine", rules["registrations_per_address"],
+                                  rules["max_waiting"], {"client": str(client)[:120]})
+        if not before:
+            self.registered(m)
+        return m
+
+    def approve(self, mid: str) -> dict | None:
+        """A provisional machine approved: it gets work, and its climbs take what it made. None for one unknown or revoked."""
+        return registration.approve(self.q, "machines", mid)
+
+    def get(self, mid: str) -> dict | None:
+        return self.q("SELECT * FROM machines WHERE id=?", mid, one=True)
 
     def token(self, mid: str) -> dict | None:
         """A machine's name and token, to show its command again: None for one unknown, and token None for one revoked,
@@ -127,9 +160,17 @@ class Board:
         m = self.q("SELECT id, name, token, revoked FROM machines WHERE id=?", mid, one=True)
         return m and {"id": m["id"], "name": m["name"], "token": None if m["revoked"] else m["token"]}
 
-    def revoke(self, mid: str) -> None:
-        """Its token stops working at once, and what it was doing goes to another machine."""
-        self.q("UPDATE machines SET revoked=?, token=NULL WHERE id=?", time.time(), mid)
+    def revoke(self, mid: str, status: str | None = None) -> None:
+        """Its token stops working at once, and what it was doing goes to another machine; what it made and is held
+        goes. status "denied" for one never approved."""
+        self.q("UPDATE machines SET revoked=?, token=NULL, status=COALESCE(?, status) WHERE id=?", time.time(), status, mid)
+        for f in self.held.glob("*.json") if self.held.is_dir() else []:
+            try:
+                if json.loads(f.read_text()).get("machine") == mid:
+                    f.with_suffix(".tar").unlink(missing_ok=True)
+                    f.unlink(missing_ok=True)
+            except (OSError, ValueError):
+                pass
         with self.cond:
             self.seen.pop(mid, None)
             for j in self.jobs.values():
@@ -137,7 +178,7 @@ class Board:
                     self._requeue(j, f"remote: {j.machine_name} was revoked: waiting for another machine")
 
     def machine(self, token: str) -> dict | None:
-        return self.q("SELECT * FROM machines WHERE token_hash=?", hashlib.sha256((token or "").encode()).hexdigest(), one=True)
+        return self.q("SELECT * FROM machines WHERE token_hash=?", registration.token_hash(token), one=True)
 
     def connected(self) -> bool:
         """Whether a machine has asked for work or reported lately."""
@@ -160,8 +201,12 @@ class Board:
         """What a machine asking for work is to do: {"job": ...}, the job it had if it lost track of it (it starts
         again), or the oldest waiting; or {"wait": seconds}. With "check" in client, only says whose token it is."""
         self._touch(m, ip, client)
+        waiting = registration.provisional(m)
+        allowed = not waiting or {**RULES, **self.rules()}["provisional_work"]
         if client.get("check"):
-            return {"name": m["name"], "wait": POLL}
+            return {"name": m["name"], "wait": POLL, "status": "provisional" if waiting else "approved", "may_work": allowed}
+        if not allowed:
+            return {"wait": 300, "why": "waiting for approval by whoever runs this site", "provisional": True}
         now = time.time()
         with self.cond:
             mine = next((j for j in self.jobs.values() if j.machine == m["id"] and j.state == "running"), None)
@@ -171,8 +216,8 @@ class Board:
                 mine.output.unlink(missing_ok=True)
             else:
                 version = int(_number(client.get("version")) or 1)
-                mine = min((j for j in self.jobs.values() if j.state == "queued" and j.version <= version), key=lambda j: j.created,
-                           default=None)
+                mine = min((j for j in self.jobs.values() if j.state == "queued" and j.version <= version
+                            and (not waiting or j.task == "reconstruct")), key=lambda j: j.created, default=None)
                 if not mine:
                     return {"wait": POLL}
                 gpu = " (GPU)" if client.get("gpu") else ""
@@ -291,7 +336,28 @@ class Board:
         """
         project = images.parent
         files = {part: project / part for part in ("photos", "masks") if (project / part).is_dir()}
+        made = self._take_held(project, files, log)
+        if made:
+            result, tar = made
+            back = Path(tempfile.mkdtemp(prefix="bm-remote-", dir=project))
+            try:
+                safe_extract(tar, back, TOP)
+                mesh = compute.take_results(back, out_dir, project, result)
+            finally:
+                shutil.rmtree(back, ignore_errors=True)
+                tar.unlink(missing_ok=True)
+                tar.with_suffix(".json").unlink(missing_ok=True)
+            return mesh, bool(result.get("demo"))
         result, back, job = self._run("reconstruct", files, {"internet": internet}, project.name, project, log, tracker)
+        m = self.get(job.machine or "")
+        if registration.provisional(m):     # held until its machine is approved
+            shutil.rmtree(back, ignore_errors=True)
+            self.held.mkdir(parents=True, exist_ok=True)
+            os.replace(job.output, self.held / f"{project.name}.tar")
+            (self.held / f"{project.name}.json").write_text(json.dumps({"machine": m["id"], "name": m["name"], "inputs": _inputs(files),
+                                                                       "result": result, "made": time.time()}))
+            raise compute.ComputeUnavailable(f"meshed on {m['name']}, which waits for approval: once it's approved on the admin page, "
+                                             "this climb takes that mesh")
         try:
             safe_extract(job.output, back, TOP)
             mesh = compute.take_results(back, out_dir, project, result)
@@ -299,6 +365,29 @@ class Board:
             shutil.rmtree(back, ignore_errors=True)
             job.output.unlink(missing_ok=True)
         return mesh, bool(result.get("demo"))
+
+    def _take_held(self, project: Path, files: dict[str, Path], log) -> tuple[dict, Path] | None:
+        """What a provisional machine made for this project, once it's approved: (its result, the tar of it). None
+        if there's none, or it was made from other photos, or its machine was turned down (then it goes).
+
+        Raises:
+            compute.ComputeUnavailable: its machine still waits for approval.
+        """
+        note, tar = self.held / f"{project.name}.json", self.held / f"{project.name}.tar"
+        try:
+            held = json.loads(note.read_text())
+        except (OSError, ValueError):
+            return None
+        m = self.get(held.get("machine") or "")
+        if not tar.exists() or not m or m.get("revoked") or held.get("inputs") != _inputs(files):
+            tar.unlink(missing_ok=True)
+            note.unlink(missing_ok=True)
+            return None
+        if registration.provisional(m):
+            raise compute.ComputeUnavailable(f"meshed on {m['name']}, which waits for approval: once it's approved on the admin page, "
+                                             "this climb takes that mesh")
+        log(f"remote: taking what {m['name']} made before it was approved")
+        return held["result"], tar
 
     def task(self, kind: str, files: dict[str, Path], args: dict, label: str, log, tracker=None) -> tuple[dict, Path]:
         """Run another kind of job (remote_job.py's --task: "beta" or "scale") on a machine that connects here.
@@ -399,11 +488,21 @@ class Board:
             jobs = [{"id": j.id, "project": j.label, "task": j.task, "state": j.state, "machine": j.machine_name, "machine_id": j.machine,
                      "minutes": round((now - (j.taken or j.created)) / 60, 1)} for j in self.jobs.values()]
             seen = dict(self.seen)
-        machines = []
+        machines, rules = [], {**RULES, **self.rules()}
+        held = {}
+        for f in self.held.glob("*.json") if self.held.is_dir() else []:
+            try:
+                mid = json.loads(f.read_text()).get("machine")
+                held[mid] = held.get(mid, 0) + 1
+            except (OSError, ValueError):
+                pass
         for m in self.q("SELECT * FROM machines ORDER BY created"):
             doing = next((j for j in jobs if j["state"] == "running" and j["machine_id"] == m["id"]), None)
+            waiting = registration.provisional(m)
             if m["revoked"]:
-                status = "revoked"
+                status = "denied" if m.get("status") == "denied" else "revoked"
+            elif waiting and not rules["provisional_work"]:
+                status = "awaiting approval"
             elif seen.get(m["id"], 0) > now - CONNECTED:
                 status = "working" if doing else "waiting for work"
             else:
@@ -411,8 +510,18 @@ class Board:
             machines.append({"id": m["id"], "name": m["name"], "status": status, "last_seen": m["last_seen"], "address": m["last_ip"],
                              "token_kept": bool(m["token"]),
                              "client": m["client"], "gpu": bool(m["gpu"]), "cpus": m["cpus"], "done": m["done"], "failed": m["failed"],
-                             "job": doing})
+                             "job": doing, "provisional": waiting, "held": held.get(m["id"], 0), "created": m["created"]})
         return {"machines": machines, "jobs": jobs, "connected": sum(m["status"] in ("working", "waiting for work") for m in machines)}
+
+
+def _inputs(files: dict[str, Path]) -> list:
+    """What a reconstruction is made from, to know a held one is still what its climb would make: each file's name and size."""
+    out = []
+    for name, src in sorted(files.items()):
+        for f in sorted(src.rglob("*")) if src.is_dir() else [src]:
+            if f.is_file():
+                out.append([name + "/" + str(f.relative_to(src)) if src.is_dir() else name, f.stat().st_size])
+    return out
 
 
 def _number(v) -> float | None:
@@ -434,7 +543,7 @@ def safe_extract(tar_path: Path, dest: Path, top: tuple[str, ...]) -> None:
 
 
 # ------------------------------------------------------------------------------------------- serving it
-PAGE = """BoulderMesh: machines lent for reconstructions connect here, with a token from the admin page.
+PAGE = """BoulderMesh: machines lent for reconstructions connect here: the script makes a token and registers it.
 The script: {base}/worker/bouldermesh_worker.py
 """
 
@@ -466,10 +575,11 @@ def handler_for(board: Board, log: Callable[[str], None]):
             auth = self.headers.get("Authorization", "")
             m = board.machine(auth[7:].strip()) if auth.startswith("Bearer ") else None
             if not m:
-                self.json({"error": "unknown token: make one on the server's admin page"}, 401)
+                self.json({"error": "unknown token: run the script without --token, and it makes one and registers it"}, 401)
                 return None
             if m["revoked"]:
-                self.json({"error": "this token no longer works"}, 403)
+                self.json({"error": "this machine was turned down by whoever runs this site" if m.get("status") == "denied" else
+                           "this token no longer works"}, 403)
                 return None
             return m
 
@@ -515,9 +625,31 @@ def handler_for(board: Board, log: Callable[[str], None]):
 
             self.handle_errors(get)
 
+        def register(self) -> None:
+            """A script registering the token it made (the Authorization header's), with its name if it gave one."""
+            auth = self.headers.get("Authorization", "")
+            try:
+                body = json.loads(self.body(2**16) or b"{}")
+                if int(body.get("version") or 0) < CLIENT_VERSION:
+                    return self.json({"error": "this script is too old: download it again from /worker/"}, 426)
+                m = board.register(auth[7:].strip() if auth.startswith("Bearer ") else "", body.get("name"), _client_ip(self),
+                                   str(body.get("client") or ""))
+            except registration.Refused as e:
+                return self.json({"error": str(e)}, e.code)
+            except ValueError as e:
+                return self.json({"error": str(e)}, 400)
+            if m["revoked"]:
+                return self.json({"error": "this token no longer works"}, 403)
+            waiting = registration.provisional(m)
+            log(f"machines: {m['name']} registered from {_client_ip(self)}" if waiting else f"machines: {m['name']} registered again")
+            self.json({"id": m["id"], "name": m["name"], "status": "provisional" if waiting else "approved",
+                       "may_work": not waiting or {**RULES, **board.rules()}["provisional_work"]})
+
         def do_POST(self):
             u = urlparse(self.path)
             qs = parse_qs(u.query)
+            if u.path == "/worker/api/register":
+                return self.register()
             who = self.who()
             if not who:
                 return

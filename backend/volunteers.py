@@ -1,8 +1,9 @@
 """Volunteers: other people's computers fetching YouTube videos, videos' details, searches and channels' pages for this server.
 
 YouTube refuses a server's downloads with its bot check after a few hours of harvesting, and a cloud server's almost
-at once (design.md, "When YouTube refuses"). A volunteer runs volunteer/bouldermesh_volunteer.py with a token from the
-admin page. It asks for work, fetches one video at a time from its own address, at least as cautiously as this server
+at once (design.md, "When YouTube refuses"). A volunteer runs volunteer/bouldermesh_volunteer.py, which makes a token
+and registers it here (registration.py): provisional until approved on the admin page or from a phone notification, and
+meanwhile given work only as the admin page's settings allow. A token made on the admin page works at once. It asks for work, fetches one video at a time from its own address, at least as cautiously as this server
 would, and sends each back in parts. Work names a video only by its YouTube id, a search only by its words and a
 channel only by its id, which the script turns into a youtube.com address itself, so it can't be made to fetch
 anything else. A search sends back each result's id, title, description, length and channel; a channel its name and
@@ -15,7 +16,6 @@ app (option B in design.md), or through an SSH tunnel to another server (option 
 """
 from __future__ import annotations
 
-import hashlib
 import ipaddress
 import json
 import re
@@ -30,8 +30,14 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
+import registration
+
 PER_HOUR = 15               # videos a volunteer, or an address, may be given in an hour (hal's refusals came after 20-30)
 PER_DAY = 100
+# what the admin page's settings say by default (volunteers.* there): a provisional volunteer's limits, whether one gets
+# work at all before it's approved, and how many may register
+RULES = {"per_hour": PER_HOUR, "per_day": PER_DAY, "provisional_per_hour": 3, "provisional_per_day": 10,
+         "provisional_work": True, "registrations_per_address": 5, "max_waiting": 30}
 BLOCK_HOURS = (1, 2, 4, 8)  # a volunteer YouTube refused rests this long, longer each time it's still refused
 STALE_MINUTES = 90          # work given out that nothing has come of for this long goes back to the queue
 PAUSE_WAIT = 1800           # seconds a volunteer waits before asking again, while the server says it can't take more
@@ -109,13 +115,16 @@ class Broker:
             having come: ("harvest", project id), ("beta", mesh id), ("details", url).
         probe: a video file's length, to check it's the one asked for (probe_duration()).
         paused: why no volunteer is to be given work now (as when the server is out of room), or None.
+        rules: the admin page's limits, as RULES.
+        registered: called with a new volunteer's row when one registers itself.
     """
 
     def __init__(self, db_path: Path, files: Path, delivered: Callable[[dict, Path | None, dict], None],
                  ready: Callable[[str, str], None], probe: Callable[[Path], float | None] = probe_duration,
-                 paused: Callable[[], str | None] = lambda: None):
+                 paused: Callable[[], str | None] = lambda: None, rules: Callable[[], dict] = lambda: RULES,
+                 registered: Callable[[dict], None] = lambda v: None):
         self.db_path, self.files, self.delivered, self.ready, self.probe = db_path, files, delivered, ready, probe
-        self.paused = paused
+        self.paused, self.rules, self.registered = paused, rules, registered
         self.lock = threading.RLock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with self.db() as con:
@@ -132,6 +141,7 @@ class Broker:
                   PRIMARY KEY(task, purpose, ref));
                 CREATE TABLE IF NOT EXISTS given(volunteer TEXT, ip TEXT, at REAL);
             """)
+            registration.migrate(con, "volunteers")
 
     def db(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.db_path, timeout=30)
@@ -149,22 +159,45 @@ class Broker:
         name = (name or "").strip()[:80]
         if not name:
             raise ValueError("give the volunteer a name")
+        name = registration.unique_name(name, (r["name"] for r in self.q("SELECT name FROM volunteers")))
         vid, token = secrets.token_hex(4), "bmv_" + secrets.token_urlsafe(32)
-        self.q("INSERT INTO volunteers(id,name,token_hash,created,per_hour,per_day) VALUES(?,?,?,?,?,?)", vid, name,
-               hashlib.sha256(token.encode()).hexdigest(), time.time(), _limit(per_hour, PER_HOUR), _limit(per_day, PER_DAY))
+        self.q("INSERT INTO volunteers(id,name,token_hash,created,per_hour,per_day,status,approved) VALUES(?,?,?,?,?,?,?,?)", vid,
+               name, registration.token_hash(token), time.time(), _limit(per_hour, PER_HOUR), _limit(per_day, PER_DAY),
+               "approved", time.time())
         return {"id": vid, "name": name, "token": token}
 
-    def revoke(self, vid: str) -> None:
-        """Its token stops working, and what it was fetching goes back to the queue."""
-        self.q("UPDATE volunteers SET revoked=? WHERE id=?", time.time(), vid)
+    def register(self, token: str, name, ip: str, client: str = "") -> dict:
+        """A volunteer's script registering the token it made: provisional until approved (registration.register()).
+        The new volunteer goes to registered()."""
+        rules = {**RULES, **self.rules()}
+        before = self.volunteer(token)
+        v = registration.register(self.q, "volunteers", token, name, ip, "volunteer", rules["registrations_per_address"],
+                                  rules["max_waiting"], {"per_hour": PER_HOUR, "per_day": PER_DAY, "client": str(client)[:80]})
+        if not before:
+            self.registered(v)
+        return v
+
+    def approve(self, vid: str) -> dict | None:
+        """A provisional volunteer approved: its limits become everyone's. None for one unknown or revoked."""
+        return registration.approve(self.q, "volunteers", vid)
+
+    def revoke(self, vid: str, status: str | None = None) -> None:
+        """Its token stops working, and what it was fetching goes back to the queue. status "denied" for one never
+        approved."""
+        self.q("UPDATE volunteers SET revoked=?, status=COALESCE(?, status) WHERE id=?", time.time(), status, vid)
         self.q("UPDATE tasks SET state='queued', volunteer=NULL WHERE volunteer=? AND state='assigned'", vid)
 
     def volunteer(self, token: str) -> dict | None:
-        return self.q("SELECT * FROM volunteers WHERE token_hash=?", hashlib.sha256((token or "").encode()).hexdigest(), one=True)
+        return self.q("SELECT * FROM volunteers WHERE token_hash=?", registration.token_hash(token), one=True)
+
+    def get(self, vid: str) -> dict | None:
+        return self.q("SELECT * FROM volunteers WHERE id=?", vid, one=True)
 
     def any(self) -> bool:
-        """Whether there's a volunteer who could fetch what's wanted."""
-        return bool(self.q("SELECT 1 FROM volunteers WHERE revoked IS NULL LIMIT 1"))
+        """Whether there's a volunteer who could fetch what's wanted: one approved, or provisional ones while they may."""
+        if {**RULES, **self.rules()}["provisional_work"]:
+            return bool(self.q("SELECT 1 FROM volunteers WHERE revoked IS NULL LIMIT 1"))
+        return bool(self.q("SELECT 1 FROM volunteers WHERE revoked IS NULL AND COALESCE(status,'approved')!='provisional' LIMIT 1"))
 
     # -- what's wanted --------------------------------------------------------------------------------------------
     def want(self, kind: str, video_id: str, purpose: str, ref: str) -> bool:
@@ -217,18 +250,25 @@ class Broker:
             why = self.paused()
             if why:     # what it has stays its own, to send when it can
                 return {"wait": PAUSE_WAIT, "why": why}
+            rules = {**RULES, **self.rules()}
+            waiting = registration.provisional(v)
+            if waiting and not rules["provisional_work"]:
+                return {"wait": PAUSE_WAIT, "why": "waiting for approval by whoever runs this site", "provisional": True}
             if (v.get("refused_until") or 0) > now:
                 return {"wait": v["refused_until"] - now, "why": "YouTube refused you lately: resting"}
             mine = self.q("SELECT * FROM tasks WHERE volunteer=? AND state='assigned'", v["id"], one=True)
             if mine:
                 return {"task": self._task_view(mine)}
-            hour, day = _limit(per_hour, v["per_hour"]), _limit(per_day, v["per_day"])
-            for span, cap, what in ((3600, min(hour, v["per_hour"]), "an hour"), (86400, min(day, v["per_day"]), "a day")):
+            most_hour, most_day = ((rules["provisional_per_hour"], rules["provisional_per_day"]) if waiting else
+                                   (rules["per_hour"], rules["per_day"]))
+            hour = min(_limit(per_hour, v["per_hour"] or PER_HOUR), _limit(most_hour, PER_HOUR))
+            day = min(_limit(per_day, v["per_day"] or PER_DAY), _limit(most_day, PER_DAY))
+            for span, cap, what in ((3600, hour, "an hour"), (86400, day, "a day")):
                 for field, value, whose in (("volunteer", v["id"], "you"), ("ip", ip, "your address")):
                     rows = self.q(f"SELECT at FROM given WHERE {field}=? AND at>? ORDER BY at", value, now - span)
                     if len(rows) >= cap:
                         return {"wait": rows[len(rows) - cap]["at"] + span - now + 1,
-                                "why": f"{cap} {what} is the most for {whose}"}
+                                "why": f"{cap} {what} is the most for {whose}" + (" until you're approved" if waiting else "")}
             task = self.q(f"SELECT * FROM tasks WHERE state='queued' AND kind IN ({','.join('?' * len(kinds))}) "
                           "ORDER BY kind IN ('details','channel'), created LIMIT 1", *kinds, one=True)
             if not task:
@@ -325,10 +365,13 @@ class Broker:
                 path = f.with_name(f"{task_id}.{t['ext']}")
                 f.rename(path)
                 length = self.probe(path)
-                if length is None or (info["duration"] and abs(length - info["duration"]) > max(5, 0.1 * info["duration"])):
+                listed = self.listed_duration(t["video_id"], v["id"])
+                off = lambda d: d and abs(length - d) > max(5, 0.1 * d)  # noqa: E731
+                if length is None or off(info["duration"]) or off(listed):
                     path.unlink(missing_ok=True)
                     self._failed(t, "the file didn't look like that video" if length is None else
-                                 f"the file is {length:.0f} s long, the video {info['duration']:.0f} s", False)
+                                 f"the file is {length:.0f} s long, the video {(listed if off(listed) else info['duration']):.0f} s"
+                                 + (" by another's search" if off(listed) else ""), False)
                     return {"ok": False}
             self.q("UPDATE tasks SET state='done', finished=?, info=?, error=NULL WHERE id=?", now, json.dumps(info), task_id)
             self.q("UPDATE volunteers SET refusal_level=-1, refused_until=NULL, done=done+1 WHERE id=?", v["id"])
@@ -339,6 +382,25 @@ class Broker:
                 path.unlink(missing_ok=True)
             self._settle(task_id)
         return {"ok": True}
+
+    def listed_duration(self, video_id: str, besides: str) -> float | None:
+        """The video's length as someone other than this volunteer saw it: in a search's results, or its details,
+        that another volunteer sent lately. The volunteer sending a video also says how long it is, which only catches
+        a file that went wrong, not one sent in its place on purpose."""
+        for t in self.q("SELECT kind, info FROM tasks WHERE state='done' AND kind IN ('search','details') AND volunteer!=? "
+                        "AND (kind='search' OR video_id=?) ORDER BY finished DESC LIMIT 500", besides, video_id):
+            try:
+                info = json.loads(t["info"] or "{}")
+            except ValueError:
+                continue
+            found = [info] if t["kind"] == "details" else [r for r in info.get("results") or [] if r.get("id") == video_id]
+            for r in found:
+                try:
+                    if r.get("duration"):
+                        return float(r["duration"])
+                except (TypeError, ValueError):
+                    pass
+        return None
 
     def _failed(self, t: dict, error: str, permanent: bool) -> None:
         if permanent or t["tries"] + 1 >= MAX_TRIES:
@@ -366,11 +428,15 @@ class Broker:
     def state(self) -> dict:
         now = time.time()
         vols = []
+        rules = {**RULES, **self.rules()}
         for v in self.q("SELECT * FROM volunteers ORDER BY created"):
             given = self.q("SELECT at FROM given WHERE volunteer=? AND at>?", v["id"], now - 86400)
             fetching = self.q("SELECT kind, video_id, size, touched FROM tasks WHERE volunteer=? AND state='assigned'", v["id"], one=True)
+            waiting = registration.provisional(v)
             if v["revoked"]:
-                status = "revoked"
+                status = "denied" if v.get("status") == "denied" else "revoked"
+            elif waiting and not rules["provisional_work"]:
+                status = "awaiting approval"
             elif (v["refused_until"] or 0) > now:
                 status = "resting"
             elif fetching:
@@ -379,10 +445,12 @@ class Broker:
                 status = "waiting for work"
             else:
                 status = "not connected"
+            hour, day = ((rules["provisional_per_hour"], rules["provisional_per_day"]) if waiting else (rules["per_hour"], rules["per_day"]))
             vols.append({"id": v["id"], "name": v["name"], "status": status, "last_seen": v["last_seen"], "address": v["last_ip"],
                          "client": v["client"], "refused_until": v["refused_until"] if (v["refused_until"] or 0) > now else None,
-                         "per_hour": v["per_hour"], "per_day": v["per_day"], "done": v["done"], "fetching": fetching,
-                         "last_hour": sum(g["at"] > now - 3600 for g in given), "last_day": len(given)})
+                         "per_hour": min(v["per_hour"] or PER_HOUR, hour), "per_day": min(v["per_day"] or PER_DAY, day), "done": v["done"],
+                         "fetching": fetching, "provisional": waiting, "registered": v.get("registered_ip") is not None,
+                         "created": v["created"], "last_hour": sum(g["at"] > now - 3600 for g in given), "last_day": len(given)})
         counts = {f"{r['state']}_{r['kind']}": r["n"] for r in self.q("SELECT state, kind, count(*) AS n FROM tasks GROUP BY state, kind")}
         wanted = {r["purpose"]: r["n"] for r in self.q("SELECT w.purpose, count(DISTINCT w.task) AS n FROM wants w JOIN tasks t "
                                                          "ON t.id=w.task WHERE t.state IN ('queued','assigned') GROUP BY w.purpose")}
@@ -445,7 +513,8 @@ ul{padding-left:1.2em} li{margin:.2em 0}
 </style>
 <h1>Volunteer for BoulderMesh</h1>
 <p>BoulderMesh makes 3D models of boulders from photos and climbing videos. You can help in two ways, from your own
-computer, with a token from whoever runs this site:</p>
+computer. Either script makes a token for you, asks your name (you can leave it out), and registers itself with this
+site; whoever runs it then approves it.</p>
 <div class="choose">
   <a href="#videos" data-show="videos">Help collect videos<small>Fetch YouTube videos of climbs from your address, slowly. Python is all it needs.</small></a>
   <a href="#compute" data-show="compute">Help compute meshes<small>(GPU required) Turn climbs' photos into 3D models on your computer, in Docker.</small></a>
@@ -459,11 +528,12 @@ computer, with a token from whoever runs this site:</p>
 <div class="box"><pre>curl -O {base}/volunteer/bouldermesh_volunteer.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
 <p><a href="/volunteer/bouldermesh_volunteer.py" download="bouldermesh_volunteer.py">Or download it here</a>. On Windows,
 <code>curl.exe</code> in place of <code>curl</code>.</p>
-<h3>2. Run it with your token</h3>
-<div class="box"><pre>python3 bouldermesh_volunteer.py --server {base} --token YOUR_TOKEN</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
-<p>On Windows, <code>py</code> in place of <code>python3</code>. It remembers the server and your token (in
-<code>.bouldermesh-volunteer</code> in your home folder, readable only by you), so after the first time it's only
-<code>python3 bouldermesh_volunteer.py</code>.</p>
+<h3>2. Run it</h3>
+<div class="box"><pre>python3 bouldermesh_volunteer.py --server {base}</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p>On Windows, <code>py</code> in place of <code>python3</code>. The first time, it makes your token and asks your name
+(optional). It remembers the server and the token (in <code>.bouldermesh-volunteer</code> in your home folder, readable
+only by you), so after that it's only <code>python3 bouldermesh_volunteer.py</code>. Until whoever runs this site
+approves you, it fetches only a few videos a day, or none.</p>
 <p>The first time, it explains what it does and asks you to agree. Among other things: YouTube's terms don't allow
 downloading videos except through YouTube itself, and if YouTube decides your address is fetching too much, everyone on
 your network may be asked to sign in or prove they're not a bot for a while.</p>
@@ -491,9 +561,10 @@ script keeps its jobs and the models they download, which <code>--data</code> ca
 <div class="box"><pre>curl -O {base}/worker/bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
 <p><a href="/worker/bouldermesh_worker.py" download="bouldermesh_worker.py">Or download it here</a>.</p>
 <h3>2. Check it can work</h3>
-<div class="box"><pre>python3 bouldermesh_worker.py --server {base} --token YOUR_TOKEN --check</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
-<p>It says whether this site knows your token, and whether there's room for jobs and the image; short of room, it says
-what's short. Add <code>--cpus N</code> to limit the cores jobs use, and <code>--data DIR</code> to keep jobs and models
+<div class="box"><pre>python3 bouldermesh_worker.py --server {base} --check</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p>The first time, it makes this machine's token, asks your name (optional) and registers with this site, which then
+waits for whoever runs it to approve the machine before giving it climbs. It says whether it's approved yet, and whether
+there's room for jobs and the image; short of room, it says what's short. Add <code>--cpus N</code> to limit the cores jobs use, and <code>--data DIR</code> to keep jobs and models
 on another disk. It remembers them all, with the server and the token (in <code>.bouldermesh-worker</code> in your home
 folder, readable only by you).</p>
 <h3>3. Run it</h3>
@@ -567,10 +638,11 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
             auth = self.headers.get("Authorization", "")
             v = broker.volunteer(auth[7:].strip()) if auth.startswith("Bearer ") else None
             if not v:
-                self.json({"error": "unknown token: ask whoever runs this site for one"}, 401)
+                self.json({"error": "unknown token: run the script without --token, and it makes one and registers it"}, 401)
                 return None
             if v["revoked"]:
-                self.json({"error": "this token no longer works"}, 403)
+                self.json({"error": "this token was turned down by whoever runs this site" if v.get("status") == "denied" else
+                           "this token no longer works"}, 403)
                 return None
             return v
 
@@ -597,9 +669,34 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
             if not m:
                 self.json({"error": "not found"}, 404)
 
+        def register(self) -> None:
+            """A script registering the token it made (the Authorization header's), with its name if it gave one."""
+            auth = self.headers.get("Authorization", "")
+            try:
+                body = json.loads(self.body(2**16) or b"{}")
+                if int(body.get("version") or 0) < CLIENT_VERSION:
+                    return self.json({"error": "this script is too old: download it again from /volunteer/"}, 426)
+                v = broker.register(auth[7:].strip() if auth.startswith("Bearer ") else "", body.get("name"), _client_ip(self),
+                                    str(body.get("client") or ""))
+            except registration.Refused as e:
+                return self.json({"error": str(e)}, e.code)
+            except ValueError as e:
+                return self.json({"error": str(e)}, 400)
+            if v["revoked"]:
+                return self.json({"error": "this token no longer works"}, 403)
+            rules = {**RULES, **broker.rules()}
+            waiting = registration.provisional(v)
+            log(f"volunteers: {v['name']} registered from {_client_ip(self)}" if waiting else f"volunteers: {v['name']} registered again")
+            self.json({"id": v["id"], "name": v["name"], "status": "provisional" if waiting else "approved",
+                       "may_work": not waiting or rules["provisional_work"],
+                       "per_hour": rules["provisional_per_hour" if waiting else "per_hour"],
+                       "per_day": rules["provisional_per_day" if waiting else "per_day"]})
+
         def do_POST(self):
             u = urlparse(self.path)
             qs = parse_qs(u.query)
+            if u.path == "/volunteer/api/register":
+                return self.register()
             v = self.who()
             if not v:
                 return

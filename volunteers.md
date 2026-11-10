@@ -28,7 +28,6 @@ The script explains this again the first time it runs, and asks you to agree.
 
 ### What you need
 
-- **A token** from whoever runs the site: one for each person or computer.
 - **Python 3.9 or newer.** Check with `python3 --version` (on Windows, `py --version`).
   - macOS: install it from [python.org](https://www.python.org/downloads/), or with Homebrew: `brew install python`.
   - Windows: install it from [python.org](https://www.python.org/downloads/), and tick *Add python.exe to PATH*.
@@ -45,13 +44,16 @@ The script explains this again the first time it runs, and asks you to agree.
    On Windows, use `curl.exe` in place of `curl`. Or open `https://boulderme.sh/volunteer/` in a browser and save the
    script from there. It's the same as `volunteer/bouldermesh_volunteer.py` in this repository, if you'd like to read it.
 
-2. Run it with your token:
+2. Run it:
 
-       python3 bouldermesh_volunteer.py --server https://boulderme.sh --token YOUR_TOKEN
+       python3 bouldermesh_volunteer.py --server https://boulderme.sh
 
-   On Windows: `py bouldermesh_volunteer.py --server https://boulderme.sh --token YOUR_TOKEN`.
+   On Windows: `py bouldermesh_volunteer.py --server https://boulderme.sh`.
 
-3. Read what it says, and type `yes`. The first time, it then takes a minute or two to install yt-dlp and Deno.
+3. Read what it says, and type `yes`. It then makes your token and asks your name or a nickname, for whoever runs the
+   site (Enter leaves it out; `--name` gives it beforehand). It registers the token, which waits for their approval:
+   until then, it fetches only a few videos a day, or none. The first time, it then takes a minute or two to install
+   yt-dlp and Deno. If whoever runs the site gave you a token instead, add `--token YOUR_TOKEN`: that works at once.
 
 4. Leave it running. It prints what it's doing: fetching a video, sending it, or waiting. Stop it at any time with Ctrl-C.
    Whatever it was fetching goes back to the site for someone else.
@@ -85,10 +87,12 @@ and rests whatever the site says.
 | Message | What it means |
 |---|---|
 | `nothing to fetch now (...): asking again in N min` | Normal: nothing is wanted, or you've reached a limit. |
+| `nothing to fetch now (waiting for approval ...)` | Whoever runs the site hasn't approved you yet. It keeps asking. |
+| `N a day is the most that may register from one address` | Others at your address registered today: try again tomorrow. |
 | `YouTube refused: resting 1 h` | YouTube's bot check. It rests, longer each time it happens again. |
 | `couldn't fetch it: ...` | That video is private, removed, or too big. The site won't ask anyone for it again. |
 | `can't reach https://...` | The site is down. It keeps trying. |
-| `unknown token` or `this token no longer works` | Ask for a new token, and run it once with `--token`. |
+| `unknown token`, `this token no longer works` or `turned down` | Delete `~/.bouldermesh-volunteer/config.json` and run it again with `--server`, to register anew, or ask whoever runs the site. |
 | `this script is too old` | Download it again (step 1). |
 
 If installing fails with a message about `venv` or `ensurepip`, install `python3-venv` (Debian or Ubuntu, above).
@@ -98,16 +102,27 @@ If installing fails with a message about `venv` or `ensurepip`, install `python3
 Stop it with Ctrl-C (or `pkill -f bouldermesh_volunteer.py`), then delete `~/.bouldermesh-volunteer` and the script.
 Tell whoever runs the site, so they can revoke your token.
 
+### Lending a computer for meshes, too
+
+The site's volunteer page (`https://boulderme.sh/volunteer/`) has a second script, for computers with an NVIDIA GPU: it
+meshes climbs. It registers itself the same way, `--check` says whether it's approved yet, and the page has the rest.
+
 ## For whoever runs the site
 
 ### Adding and removing volunteers
 
-Volunteers are added on the admin page of the server that harvests: the public server's (below), or hal's if hal
-harvests through a tunnel (the other way, further below). Under *Volunteers*:
+Volunteers register themselves, on the server that harvests: the public server (below), or hal if hal harvests through
+a tunnel (the other way, further below). On its admin page, under *Volunteers*:
 
-1. Type the volunteer's name, choose how many videos an hour they may fetch (15 at most), and press *Add volunteer*.
-2. Send them the command it shows, privately. It contains their token, which is shown only this once.
-3. To stop one, press *Revoke*: their token stops working at once, and whatever they were fetching goes to someone else.
+1. Each new one shows *waiting for approval*, with the name they gave, numbered if it was taken. Press *Approve*, or
+   *Deny* to turn their token down. With notifications on (README, "Approving volunteers and machines"), your phone
+   shows the same two buttons.
+2. Until approved, *Volunteers and machines that register themselves* says what they may do: by default, fetch at most
+   3 an hour and 10 a day. Untick it to give them nothing until you approve them.
+3. To add someone yourself, type their name, choose how many videos an hour they may fetch (15 at most), and press *Add
+   volunteer*. Send them the command it shows, privately: it contains their token, approved from the start, and shown
+   only this once.
+4. To stop one, press *Revoke*: their token stops working at once, and whatever they were fetching goes to someone else.
 
 The table shows each volunteer's state (fetching, waiting for work, resting after a refusal, or not connected), when they
 were last seen, their address and how many they've fetched.

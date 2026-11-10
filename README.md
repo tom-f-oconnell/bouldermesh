@@ -562,17 +562,20 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   after a while with no job running, in case this server has gone, and any left running from before a
   restart are ended. Its credentials need EC2 (run, describe and terminate instances, security groups)
   and SSM's GetParameter. *Test the connection* checks them without starting anything.
-- **Machines that connect here for work**: for any this server can't reach, such as one behind a lab's firewall. Add one
-  under *Machines* (shown with this choice), which shows the command to run on it with its token (clicking the
-  machine in the list shows it again), and on the machine, which needs Python 3.9,
-  Docker you may use, and NVIDIA's container toolkit for the GPU, run:
+- **Machines that connect here for work**: for any this server can't reach, such as one behind a lab's firewall. On the
+  machine, which needs Python 3.9, Docker you may use, and NVIDIA's container toolkit for the GPU, run:
 
       curl -O https://<site>/worker/bouldermesh_worker.py      # or worker/bouldermesh_worker.py in this repository
-      python3 bouldermesh_worker.py --server https://<site> --token bmw_... --cpus 12
+      python3 bouldermesh_worker.py --server https://<site> --cpus 12 --check
+
+  The first time, it makes the machine's token, asks a name (optional) and registers it; the machine then waits under
+  *Machines* (shown with this choice) for *Approve*, here or from a notification on your phone (see "Approving
+  volunteers and machines" below). Or *Add machine* there shows a command with a token of the admin page's, approved
+  from the start (clicking the machine in the list shows it again).
 
   It asks this server for a climb every 15 s over HTTPS, fetches its photos, runs the job in Docker as you, with no
   capabilities, at niceness 10, and sends the log as it goes and then the mesh. Ctrl-C gives the climb back. The
-  server, token and options are remembered (in `~/.bouldermesh-worker`); `--check` only checks the token, after which
+  server, token and options are remembered (in `~/.bouldermesh-worker`); `--check` only registers or checks the token, after which
   `deploy/bouldermesh-worker.service` runs it under systemd. Jobs' photos and results, and the models they download (a
   few GB), go there too, or in `--data DIR`, such as on a bigger disk. Before starting, and before each job, it checks
   there's room there for two climbs (3 GB each) and the models still to download (5.5 GB the first time; `--need-gb`
@@ -603,8 +606,9 @@ The AWS side has been tested against stand-ins for AWS, not against AWS itself.
 ## Volunteers fetching YouTube videos
 
 YouTube refuses a server's downloads after a while (a cloud server's at once), so people can lend their computers to
-fetch videos from their own addresses, slowly. Add one on the admin page under *Volunteers*, which shows the token once
-and the command to give them. `https://<site>/volunteer/`, which the main page's *Volunteer* button opens wherever this
+fetch videos from their own addresses, slowly. Their script makes its own token, asks their name (optional), and
+registers it; they then wait under *Volunteers* on the admin page for *Approve* (see "Approving volunteers and machines"
+below). Or *Add volunteer* there shows a token, approved from the start, and the command to give them. `https://<site>/volunteer/`, which the main page's *Volunteer* button opens wherever this
 server answers volunteers, has two ways to help: *Help collect videos* has the script and says what it does, and *Help
 compute meshes* has the machines' script (above), what a computer needs for it (an NVIDIA GPU, as Docker can't use a
 Mac's), and how to run it as the user's own systemd service, which starts with the computer. The video script needs Python 3.9 and
@@ -613,9 +617,10 @@ bot check their whole network may get) and asks them to agree. [volunteers.md](v
 volunteers and for connecting the public site to whichever server harvests.
 
 - **What they fetch:** only YouTube ids and search words this server gives them, one thing at a time, 8-15 s apart, at
-  most 15 an hour and 100 a day for each volunteer and each address, resting 1, 2, 4 then 8 hours when YouTube refuses
-  them. A video comes back whole (up to 1080p, no sound, 500 MB), checked against its length, with its details but
-  nothing of theirs; a search, its results (kept 30 days); a channel, its description, for climbers' heights.
+  most 15 an hour and 100 a day for each volunteer and each address (less, on the admin page), resting 1, 2, 4 then 8
+  hours when YouTube refuses them. A video comes back whole (up to 1080p, no sound, 500 MB), with its details but
+  nothing of theirs. It must be as long as they say, and as long as another volunteer's search listed it, if one did:
+  their own word alone only catches a file gone wrong; a search, its results (kept 30 days); a channel, its description, for climbers' heights.
 - **An area's climbs wait for them:** a climb whose harvest asked volunteers for a search or videos is harvested again
   when they've come, and meshed once, rather than meshed without them first; after 24 h (`VOLUNTEER_WAIT_HOURS`) it's
   meshed with what's come.
@@ -645,6 +650,29 @@ Then install the unit (its first lines say how), put `VOLUNTEER_UPSTREAM=unix//r
 server's `.env` and restart it, and put `VOLUNTEER_URL=https://<site>` in the harvesting machine's `.env`, for the command
 the admin page gives. Each server keeps its volunteers in `data/volunteers.sqlite`, which `deploy/ship.sh` doesn't send.
 
+## Approving volunteers and machines
+
+Both scripts register the token they make, and each one waits for *Approve* on the admin page (beside it in its list)
+or on your phone. Until then, under *Volunteers and machines that register themselves*:
+- **Volunteers waiting** may fetch, at most 3 an hour and 10 a day by default, or nothing if unticked.
+- **Machines waiting** get nothing by default. Ticked, they may mesh (only that), and a climb keeps the mesh one made
+  for when you approve the machine; turned down, the climb is meshed again elsewhere.
+- **Approved volunteers'** limits are set there too (15 an hour and 100 a day at most).
+- **Registering:** at most 5 a day from one address, and 30 waiting at once, of each kind; ones never approved go after
+  14 days without being heard from.
+
+**On your phone:** install the free ntfy app (Android or iOS). On the admin page, *Make new topics*, then subscribe to
+the topic it shows in the app (on ntfy.sh unless you name another server) and *Send a test*: its *Reply* button checks
+the phone's taps reach this server, which says so in a second notification. Each registration then comes with *Approve*
+and *Deny*, or after three in ten minutes, one summary of the rest. The taps go through ntfy to a second topic this
+server follows, signed so that no one else can make them; but anyone who learns the first topic's name can read the
+notifications, and so tap them, so keep it private, and *Make new topics* if it gets out. design.md has why.
+
+**Cloudflare, in front:** a rate-limiting rule (Security, then WAF, then *Rate limiting rules*; the free plan has one)
+catches floods before they reach the server: *Custom expression*
+`(http.request.uri.path in {"/volunteer/api/register" "/worker/api/register"})`, by IP, more than 5 requests in 10
+seconds, *Block* for 10 seconds (the free plan's only period and duration).
+
 ## Layout
 
     backend/server.py              HTTP server, SQLite, uploads, job worker (reconstruct + harvest)
@@ -670,6 +698,8 @@ the admin page gives. Each server keeps its volunteers in `data/volunteers.sqlit
     backend/retexture.py           colouring a mesh from only the photos free to copy
     backend/compute.py             running reconstructions on other machines, and starting and ending them
     backend/pullwork.py            machines that connect here for work: their tokens, the jobs, and their port
+    backend/registration.py        volunteers and machines registering their own tokens: names, limits, approval
+    backend/notify.py              notifications on a phone through ntfy, with Approve and Deny buttons that reach back
     backend/remote_job.py          what such a machine runs
     worker/bouldermesh_worker.py   the script a machine that connects here runs
     backend/climbs/relevance.py    filter for photos substantially of the boulder
@@ -717,7 +747,9 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     GET|POST|DELETE /api/meshes/{id}/cleanup · PATCH /api/meshes/{id}/cleanup {removed} · GET /meshes/{id}/mesh.glb?cleaned=1
     GET  /api/meshes/{id}/sources                       each photo in the mesh: source, URL, page, credit, licence
     On the admin page's port: GET /api/admin/state · POST /api/admin/settings · POST /api/admin/secrets
-    POST /api/admin/actions/{test,end-nodes,retexture,machine-add,machine-revoke,volunteer-add,volunteer-revoke,...}
+    POST /api/admin/actions/{test,end-nodes,retexture,machine-add,machine-revoke,volunteer-add,volunteer-revoke,
+         volunteer-approve,volunteer-deny,machine-approve,machine-deny,notify-topics,notify-test,...}
+    On VOLUNTEER_PORT and WORKER_PORT, with the token a script made: POST /volunteer/api/register · POST /worker/api/register {name, version, client}
     On WORKER_PORT, with a machine's token: POST /worker/api/work · GET /worker/api/jobs/{id}/input?offset=
     POST /worker/api/jobs/{id}/{log,output,done} · GET /worker/api/jobs/{id}/output (how much has come)
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
@@ -749,7 +781,8 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_beta.py        # offline: cameras, rays, contacts and roles for beta; waiting out YouTube and carrying on
     python3 tests/test_provenance.py  # offline: where each mesh's photos came from
     python3 tests/test_compute.py     # offline: running reconstructions on other machines, through stand-ins for ssh and AWS
-    python3 tests/test_pullwork.py    # offline: machines that connect here for work, through the script and a stand-in for docker
+    python3 tests/test_pullwork.py    # offline: machines that connect here for work, through the script and a stand-in for docker; registering, approval, held meshes
+    python3 tests/test_notify.py      # offline: ntfy notifications, their signed Approve and Deny, following the replies
     python3 tests/test_backup.py      # offline: the server's database snapshots, and deploy/backup.sh copying a stand-in server
     python3 tests/test_admin.py       # offline: the admin page's settings, credentials and photo permissions
     python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job

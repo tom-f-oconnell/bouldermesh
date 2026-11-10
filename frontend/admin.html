@@ -31,6 +31,9 @@
   code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}
   a{color:var(--acc);overflow-wrap:anywhere}
   tr.mach{cursor:pointer} tr.mach:hover td{background:var(--line)}
+  .tag{font-size:11px;padding:1px 6px;border-radius:999px;border:1px solid var(--warn);color:var(--warn);margin-left:4px}
+  td button{margin:2px 0}
+  .inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px} .inline input[type=number]{width:80px}
   #msg{position:fixed;bottom:14px;right:14px;background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:8px;display:none;max-width:420px}
   .aws,.ssh,.pull{display:none}
   body.p-aws .aws, body.p-ssh .ssh, body.p-pull .pull{display:block}
@@ -121,6 +124,26 @@
     <div class="note" id="vol-queue"></div>
   </section>
 
+  <section id="reg">
+    <h2>Volunteers and machines that register themselves</h2>
+    <div class="note">The volunteer and worker scripts make their own tokens and register them here, with a name if their user
+      gave one. Each waits for your approval, in the lists above or from a notification on your phone.</div>
+    <label class="choice"><input type="checkbox" id="reg-vol"> Volunteers waiting for approval may fetch videos, at most
+      <input type="number" id="reg-vol-hour" min="1" max="15" style="width:64px"> an hour and
+      <input type="number" id="reg-vol-day" min="1" max="100" style="width:64px"> a day</label>
+    <label class="choice"><input type="checkbox" id="reg-mach"> Machines waiting for approval may mesh climbs <small>(only meshing,
+      and their meshes wait for your approval before a climb takes them)</small></label>
+    <div class="inline" style="margin-top:8px">Approved volunteers: at most <input type="number" id="vol-per-hour" min="1" max="15"> an hour and
+      <input type="number" id="vol-per-day" min="1" max="100"> a day <small class="note">(the script's own limits are 15 and 100)</small></div>
+    <div class="inline" style="margin-top:8px">From one address, at most <input type="number" id="reg-addr" min="1" max="100"> registrations a day,
+      and <input type="number" id="reg-wait" min="1" max="1000"> waiting at once, of each kind</div>
+    <div style="margin-top:14px"><b>Notifications on your phone</b> <span class="note" id="ntfy-note"></span></div>
+    <label class="choice"><input type="checkbox" id="ntfy-on"> Notify me of registrations through ntfy, with Approve and Deny buttons</label>
+    <div class="grid"><div><label>ntfy server</label><input type="text" id="ntfy-server" placeholder="https://ntfy.sh"></div>
+      <div class="row" style="margin-top:22px"><button class="sec" id="ntfy-topics">Make new topics</button><button class="sec" id="ntfy-test">Send a test</button></div></div>
+    <div id="ntfy-body" class="note"></div>
+  </section>
+
   <section id="room">
     <h2>Room for data</h2>
     <div id="room-body" class="note"></div>
@@ -186,9 +209,11 @@ function render(s){
     : '<span class="warn">Not taking machines here: WORKER_PORT isn\'t set (README, "Running reconstructions elsewhere").</span>')
     + (s.compute.local_meshing ? '' : ' This server meshes nothing itself: climbs wait for a machine.');
   $('#mach-list').innerHTML = ms.machines.length ? `<table><tr><th>Machine</th><th>Now</th><th>Last seen</th><th>Address</th><th>Done / failed</th><th></th></tr>${
-    ms.machines.map(m => `<tr class="mach" data-mshow="${esc(m.id)}" title="Shows the command to run on it again"><td>${esc(m.name)}${m.client ? `<div class="note">${esc(m.client)}${m.gpu ? ', GPU' : ''}${m.cpus ? `, ${m.cpus} cores` : ''}</div>` : ''}</td>
-      <td class="${m.status === 'working' ? 'ok' : m.status === 'revoked' ? 'bad' : ''}">${esc(m.status)}${m.job ? ` (${esc(m.job.project)}, ${m.job.minutes} min)` : ''}</td>
-      <td>${seen(m.last_seen)}</td><td>${esc(m.address || '')}</td><td>${m.done} / ${m.failed}</td><td>${m.status === 'revoked' ? '' : `<button class="danger" data-mrevoke="${esc(m.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
+    ms.machines.map(m => `<tr class="mach" data-mshow="${esc(m.id)}" title="Shows the command to run on it again"><td>${esc(m.name)}${m.provisional ? '<span class="tag">waiting for approval</span>' : ''}${m.client ? `<div class="note">${esc(m.client)}${m.gpu ? ', GPU' : ''}${m.cpus ? `, ${m.cpus} cores` : ''}</div>` : ''}${m.held ? `<div class="note warn">${m.held} mesh(es) made, waiting for its approval</div>` : ''}</td>
+      <td class="${m.status === 'working' ? 'ok' : m.status === 'revoked' || m.status === 'denied' ? 'bad' : m.status === 'awaiting approval' ? 'warn' : ''}">${esc(m.status)}${m.job ? ` (${esc(m.job.project)}, ${m.job.minutes} min)` : ''}</td>
+      <td>${seen(m.last_seen)}</td><td>${esc(m.address || '')}</td><td>${m.done} / ${m.failed}</td><td>${m.status === 'revoked' || m.status === 'denied' ? '' : m.provisional
+        ? `<button data-mapprove="${esc(m.id)}">Approve</button> <button class="danger" data-mdeny="${esc(m.id)}">Deny</button>`
+        : `<button class="danger" data-mrevoke="${esc(m.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
     : '<div class="note">No machines yet.</div>';
   const waiting = ms.jobs.filter(j => j.state === 'queued');
   if (waiting.length) $('#mach-list').innerHTML += `<div class="note">${waiting.length} climb(s) waiting for a machine.</div>`;
@@ -221,10 +246,13 @@ function render(s){
   $('#vol-note').innerHTML = vs.served ? (vs.url ? `Volunteers reach this server at <a href="${esc(vs.url)}/volunteer/" target="_blank" rel="noopener">${esc(vs.url)}/volunteer/</a>, which has the script and what to do.` : 'Volunteers reach this server at (VOLUNTEER_URL not set)/volunteer/, which has the script and what to do.')
     : 'Not taking volunteers here: VOLUNTEER_PORT isn\'t set (README, "Volunteers").';
   if (document.activeElement !== $('#via')) $('#via').value = v['youtube.via'];
+  const gone = st => st === 'revoked' || st === 'denied';
   $('#vol-list').innerHTML = vs.volunteers.length ? `<table><tr><th>Volunteer</th><th>Now</th><th>Last seen</th><th>Address</th><th>Last hour / day</th><th>Fetched</th><th></th></tr>${
-    vs.volunteers.map(x => `<tr><td>${esc(x.name)}</td><td class="${x.status === 'resting' ? 'warn' : x.status === 'revoked' ? 'bad' : x.status === 'fetching' ? 'ok' : ''}">${esc(x.status)}${
+    vs.volunteers.map(x => `<tr><td>${esc(x.name)}${x.provisional ? '<span class="tag">waiting for approval</span>' : ''}${x.registered ? `<div class="note">registered itself ${when(x.created)}</div>` : ''}</td><td class="${x.status === 'resting' || x.status === 'awaiting approval' ? 'warn' : gone(x.status) ? 'bad' : x.status === 'fetching' ? 'ok' : ''}">${esc(x.status)}${
       x.refused_until ? ` until ${when(x.refused_until)}` : ''}${x.fetching ? `: ${esc(x.fetching.kind)} ${esc(x.fetching.video_id)}` : ''}</td><td>${when(x.last_seen)}</td><td>${esc(x.address || '')}</td>
-      <td>${x.last_hour} / ${x.last_day} (of ${x.per_hour} / ${x.per_day})</td><td>${x.done}</td><td>${x.status === 'revoked' ? '' : `<button class="danger" data-revoke="${esc(x.id)}">Revoke</button>`}</td></tr>`).join('')}</table>` : '<div class="note">No volunteers yet.</div>';
+      <td>${x.last_hour} / ${x.last_day} (of ${x.per_hour} / ${x.per_day})</td><td>${x.done}</td><td>${gone(x.status) ? '' : x.provisional
+        ? `<button data-vapprove="${esc(x.id)}">Approve</button> <button class="danger" data-vdeny="${esc(x.id)}">Deny</button>`
+        : `<button class="danger" data-revoke="${esc(x.id)}">Revoke</button>`}</td></tr>`).join('')}</table>` : '<div class="note">No volunteers yet.</div>';
   const vc = vs.counts, n = k => vc[k] || 0, active = vs.volunteers.some(x => x.status !== 'revoked');
   $('#vol-queue').innerHTML = `Wanted: ${n('queued_video') + n('assigned_video')} video(s)${vs.wanted.harvest ? `, ${vs.wanted.harvest} for harvests` : ''}${vs.wanted.beta ? `, ${vs.wanted.beta} for finding beta` : ''}; `
     + `${n('queued_search') + n('assigned_search')} search(es); ${n('queued_details') + n('assigned_details')} video(s)' details; ${n('queued_channel') + n('assigned_channel')} channel(s). `
@@ -232,6 +260,20 @@ function render(s){
     + `failed: ${['video', 'search', 'details', 'channel'].reduce((t, k) => t + n('failed_' + k), 0)}. `
     + `${vs.connected} volunteer(s) connected.` + (vs.recent.length ? '<br>Lately: ' + vs.recent.map(r => `${esc(r.kind)} ${esc(r.video_id)} <span class="${r.state === 'done' ? 'ok' : 'bad'}">${esc(r.state)}</span>${r.error ? ` (${esc(r.error)})` : ''}`).join(', ') : '');
   for (const b of ['#vol-skipped', '#vol-details']) $(b).disabled = !active;
+  const keep = (id, val) => { if (document.activeElement !== $(id)) $(id).value = val; };
+  $('#reg-vol').checked = v['volunteers.provisional_work']; $('#reg-mach').checked = v['machines.provisional_work'];
+  keep('#reg-vol-hour', v['volunteers.provisional_per_hour']); keep('#reg-vol-day', v['volunteers.provisional_per_day']);
+  keep('#vol-per-hour', v['volunteers.per_hour']); keep('#vol-per-day', v['volunteers.per_day']);
+  keep('#reg-addr', v['registration.per_address_day']); keep('#reg-wait', v['registration.max_waiting']);
+  const nt = s.notify;
+  $('#ntfy-on').checked = v['notify.enabled']; keep('#ntfy-server', v['notify.server']);
+  $('#ntfy-test').disabled = !nt.enabled;
+  $('#ntfy-note').innerHTML = nt.enabled ? (nt.listening ? '<span class="ok">on, and following replies</span>' : '<span class="warn">on, but not following replies yet</span>') : 'off';
+  $('#ntfy-body').innerHTML = (nt.subscribe
+      ? `In the ntfy app (free, for Android and iOS), subscribe to the topic <code>${esc(nt.topic)}</code>${nt.server !== 'https://ntfy.sh' ? ` on the server ${esc(nt.server)}` : ''}, or open <a href="${esc(nt.subscribe)}" target="_blank" rel="noopener">${esc(nt.subscribe)}</a> on the phone.
+         Keep the topic's name private: on ntfy.sh, anyone who knows it can read the notifications, and use their buttons. Make new topics if it gets out.`
+      : 'Make new topics first: two long random names, one for notifications and one for the buttons\' replies.')
+    + (nt.last_error ? `<div class="bad">${esc(nt.last_error)}</div>` : '') + (nt.waiting_summary ? `<div>${nt.waiting_summary} registration(s) waiting for the next summary.</div>` : '');
   const cr = s.secrets;
   $('#cred-note').innerHTML = cr.can_save ? 'Credentials can be saved here, encrypted with BOULDERMESH_SECRETS_KEY.'
     : '<span class="warn">Credentials can\'t be saved here until BOULDERMESH_SECRETS_KEY is set (in .env, outside the data directory). Until then, give them as environment variables, such as AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.</span>'
@@ -279,13 +321,15 @@ $('#mach-add').onclick = async () => {
 };
 $('#mach-list').addEventListener('click', async ev => {
   const row = ev.target.closest('tr[data-mshow]');
-  if (row && !ev.target.dataset.mrevoke) {
+  if (row && ev.target.tagName !== 'BUTTON') {
     try { showMachine(await call('/api/admin/actions/machine-show', { id: row.dataset.mshow })); } catch (e) { msg(e.message, 8000); }
     return;
   }
-  const id = ev.target.dataset.mrevoke;
-  if (!id || !confirm('Revoke this machine? Its token stops working at once, and a climb it was meshing waits for another.')) return;
-  try { msg((await call('/api/admin/actions/machine-revoke', { id })).result); refresh(); } catch (e) { msg(e.message, 8000); }
+  const d = ev.target.dataset;
+  const [action, id, ask] = d.mapprove ? ['machine-approve', d.mapprove] : d.mdeny ? ['machine-deny', d.mdeny, 'Turn down this machine? Its token stops working, and what it made while waiting is dropped.']
+    : d.mrevoke ? ['machine-revoke', d.mrevoke, 'Revoke this machine? Its token stops working at once, and a climb it was meshing waits for another.'] : [];
+  if (!action || (ask && !confirm(ask))) return;
+  try { msg((await call(`/api/admin/actions/${action}`, { id })).result); refresh(); } catch (e) { msg(e.message, 8000); }
 });
 $('#room-save').onclick = async () => { await save({ 'storage.cap_gb': +$('#room-cap').value }); try { await call('/api/admin/actions/measure', {}); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#room-measure').onclick = async () => { msg('Measuring…', 60000); try { msg((await call('/api/admin/actions/measure', {})).result); refresh(); } catch (e) { msg(e.message, 8000); } };
@@ -303,10 +347,24 @@ $('#vol-add').onclick = async () => {
   } catch (e) { msg(e.message, 8000); }
 };
 $('#vol-list').addEventListener('click', async ev => {
-  const id = ev.target.dataset.revoke;
-  if (!id || !confirm('Revoke this volunteer? Their token stops working at once.')) return;
-  try { msg((await call('/api/admin/actions/volunteer-revoke', { id })).result); refresh(); } catch (e) { msg(e.message, 8000); }
+  const d = ev.target.dataset;
+  const [action, id, ask] = d.vapprove ? ['volunteer-approve', d.vapprove] : d.vdeny ? ['volunteer-deny', d.vdeny, 'Turn down this volunteer? Their token stops working.']
+    : d.revoke ? ['volunteer-revoke', d.revoke, 'Revoke this volunteer? Their token stops working at once.'] : [];
+  if (!action || (ask && !confirm(ask))) return;
+  try { msg((await call(`/api/admin/actions/${action}`, { id })).result); refresh(); } catch (e) { msg(e.message, 8000); }
 });
+const regSave = () => save({ 'volunteers.provisional_work': $('#reg-vol').checked, 'machines.provisional_work': $('#reg-mach').checked,
+  'volunteers.provisional_per_hour': +$('#reg-vol-hour').value, 'volunteers.provisional_per_day': +$('#reg-vol-day').value,
+  'volunteers.per_hour': +$('#vol-per-hour').value, 'volunteers.per_day': +$('#vol-per-day').value,
+  'registration.per_address_day': +$('#reg-addr').value, 'registration.max_waiting': +$('#reg-wait').value });
+for (const id of ['#reg-vol', '#reg-mach', '#reg-vol-hour', '#reg-vol-day', '#vol-per-hour', '#vol-per-day', '#reg-addr', '#reg-wait']) $(id).onchange = regSave;
+$('#ntfy-on').onchange = () => save({ 'notify.enabled': $('#ntfy-on').checked });
+$('#ntfy-server').onchange = () => save({ 'notify.server': $('#ntfy-server').value });
+$('#ntfy-topics').onclick = async () => {
+  if (state?.notify?.topic && !confirm('Make new topics? Your phone then has to subscribe to the new one, and buttons on notifications already sent stop working.')) return;
+  try { msg((await call('/api/admin/actions/notify-topics', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); }
+};
+$('#ntfy-test').onclick = async () => { try { msg((await call('/api/admin/actions/notify-test', {})).result, 10000); } catch (e) { msg(e.message, 8000); } };
 for (const [b, action, ask] of [['#vol-skipped', 'volunteers-skipped'], ['#vol-details', 'volunteers-details'], ['#vol-cancel', 'volunteers-cancel', 'Drop every video and detail still queued for volunteers?']])
   $(b).onclick = async () => { if (ask && !confirm(ask)) return; try { msg((await call(`/api/admin/actions/${action}`, {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
 refresh(); setInterval(refresh, 10000);

@@ -56,6 +56,7 @@ import proxy_ranges  # noqa: E402
 import pullwork  # noqa: E402
 import splat as splat_mod  # noqa: E402
 import viewpoints  # noqa: E402
+import notify as notify_mod  # noqa: E402
 import volunteers as volunteers_mod  # noqa: E402
 import climbs as climbs_mod  # noqa: E402
 from climbs import diversity as diversity_mod  # noqa: E402
@@ -2597,8 +2598,15 @@ def compute_state() -> dict:
 
 # ----------------------------------------------------------------- machines that connect here for work
 WORKER_URL = os.environ.get("WORKER_URL") or VOLUNTEER_URL     # the address they reach this at, for the admin page's command
+def machine_rules() -> dict:
+    """The admin page's settings for machines that register themselves (pullwork.RULES)."""
+    s = settings().all()
+    return {"provisional_work": s["machines.provisional_work"], "registrations_per_address": s["registration.per_address_day"],
+            "max_waiting": s["registration.max_waiting"]}
+
+
 MACHINES = pullwork.Board(DATA / "compute" / "machines.sqlite", DATA / "compute" / "jobs", lambda: compute_settings()["compute.image"],
-                          jobctl)
+                          jobctl, machine_rules, lambda m: NOTIFIER.registered("machine", m, f" ({m['client'] or 'a worker script'})"))
 
 
 def machine_command(m: dict, result: str) -> dict:
@@ -2626,6 +2634,18 @@ def admin_machine_show(body: dict) -> dict:
 def admin_machine_revoke(body: dict) -> dict:
     MACHINES.revoke(str(body.get("id") or ""))
     return {"result": "revoked: its token no longer works, and any climb it was meshing waits for another machine"}
+
+
+def admin_machine_approve(body: dict) -> dict:
+    m = MACHINES.approve(str(body.get("id") or ""))
+    if not m:
+        raise ValueError("no such machine waiting")
+    return {"result": f"approved {m['name']}: it gets climbs to mesh, and those it made while waiting take its meshes"}
+
+
+def admin_machine_deny(body: dict) -> dict:
+    MACHINES.revoke(str(body.get("id") or ""), "denied")
+    return {"result": "turned down: its token no longer works, and what it made while waiting is dropped"}
 
 
 # ----------------------------------------------------------------- errors in visitors' browsers
@@ -3672,8 +3692,42 @@ def reharvest_with_videos(pid: str) -> None:
     queue_job({"type": "harvest", "pid": pid, "sources": sorted(HARVEST_SOURCES), "reconstruct": False, "again": True})
 
 
+def volunteer_rules() -> dict:
+    """The admin page's limits for volunteers (volunteers.RULES)."""
+    s = settings().all()
+    return {"per_hour": s["volunteers.per_hour"], "per_day": s["volunteers.per_day"],
+            "provisional_per_hour": s["volunteers.provisional_per_hour"], "provisional_per_day": s["volunteers.provisional_per_day"],
+            "provisional_work": s["volunteers.provisional_work"], "registrations_per_address": s["registration.per_address_day"],
+            "max_waiting": s["registration.max_waiting"]}
+
+
 VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteers", volunteer_delivered, volunteer_ready,
-                                   paused=lambda: full())
+                                   paused=lambda: full(), rules=volunteer_rules,
+                                   registered=lambda v: NOTIFIER.registered("volunteer", v, f" ({v['client'] or 'a volunteer script'})"))
+
+
+def notify_act(verb: str, kind: str, rid: str) -> str:
+    """What a phone's reply to a notification asks (notify.py): approve or deny a volunteer or a machine, or the test's ping."""
+    if verb == "ping":
+        return "the button reached the server"
+    found = VOLUNTEERS.get(rid) if kind == "volunteer" else MACHINES.get(rid) if kind == "machine" else None
+    if not found:
+        return f"no {kind} {rid} here any more"
+    if verb == "approve":
+        if found.get("revoked"):
+            return f"{found['name']} was already turned down or revoked: approve it on the admin page instead, if anything"
+        (VOLUNTEERS if kind == "volunteer" else MACHINES).approve(rid)
+        return f"approved {found['name']}"
+    if verb == "deny":
+        if found.get("status") != "provisional" or found.get("revoked"):
+            return f"{found['name']} was already {found.get('status') or 'approved'}: revoke it on the admin page, if you mean to"
+        (VOLUNTEERS if kind == "volunteer" else MACHINES).revoke(rid, "denied")
+        return f"turned down {found['name']}"
+    return f"nothing to do for {verb}"
+
+
+NOTIFIER = notify_mod.Notifier(lambda: settings().all(), DATA / "notify.key", DATA / "notify.state", notify_act,
+                               lambda line: print(line, flush=True))
 
 
 def want_skipped() -> dict:
@@ -3712,6 +3766,28 @@ def admin_volunteer_revoke(body: dict) -> dict:
     return {"result": "revoked: its token no longer works, and what it was fetching goes to someone else"}
 
 
+def admin_volunteer_approve(body: dict) -> dict:
+    v = VOLUNTEERS.approve(str(body.get("id") or ""))
+    if not v:
+        raise ValueError("no such volunteer waiting")
+    return {"result": f"approved {v['name']}: their limits are everyone's now"}
+
+
+def admin_volunteer_deny(body: dict) -> dict:
+    VOLUNTEERS.revoke(str(body.get("id") or ""), "denied")
+    return {"result": "turned down: their token no longer works"}
+
+
+def admin_notify_topics(_: dict) -> dict:
+    """New topics for notifications (and a new signing key): the phone has to subscribe to the new one."""
+    settings().update({**NOTIFIER.new_topics(), "notify.enabled": True})
+    return {"result": "new topics made: subscribe to the one shown in the ntfy app (the old one gets nothing more)"}
+
+
+def admin_notify_test(_: dict) -> dict:
+    return {"result": NOTIFIER.test()}
+
+
 def admin_volunteers_skipped(_: dict) -> dict:
     n = want_skipped()
     return {"result": f"asked volunteers for {n['harvest']} video(s) and search(es) harvests went without and {n['beta']} video(s) for finding beta; "
@@ -3735,6 +3811,7 @@ def apply_settings() -> None:
     """What changing the admin page's settings changes at once."""
     youtube_mod.via = settings().get("youtube.via")
     configure_workers()
+    NOTIFIER.reconfigured()
 
 
 def admin_state() -> dict:
@@ -3757,6 +3834,7 @@ def admin_state() -> dict:
             "proxy_ranges": RANGES.state() if RANGES else None, "version": VERSION,
             "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE, "machines_image": MACHINES_IMAGE,
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
+            "notify": NOTIFIER.state(),
             "usage": {**_usage, "cap": data_cap() or None, "full": full()}}
 
 
@@ -3848,6 +3926,7 @@ def main() -> None:
             threading.Thread(target=splat_worker, daemon=True).start()
     if RANGES:
         threading.Thread(target=RANGES.run, daemon=True).start()
+    threading.Thread(target=NOTIFIER.follow, daemon=True).start()     # replies from the phone, while notifications are on
     host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))
     mode = "COLMAP + OpenMVS" if pipeline.real_pipeline_ready() else "DEMO (COLMAP/OpenMVS not found)"
     print(f"BoulderMesh {VERSION or '(no build recorded)'} on http://{host}:{port}  data={DATA}  pipeline={mode}", flush=True)
@@ -3860,6 +3939,9 @@ def main() -> None:
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
                                        "volunteers-cancel": admin_volunteers_cancel, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
                                        "machine-revoke": admin_machine_revoke, "clear-rejected": admin_clear_rejected,
+                                       "volunteer-approve": admin_volunteer_approve, "volunteer-deny": admin_volunteer_deny,
+                                       "machine-approve": admin_machine_approve, "machine-deny": admin_machine_deny,
+                                       "notify-topics": admin_notify_topics, "notify-test": admin_notify_test,
                                        "measure": admin_measure}),
                     os.environ.get("ADMIN_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), ADMIN_PORT)
     if VOLUNTEER_PORT:
