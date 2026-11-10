@@ -174,7 +174,7 @@
   <button class="sm sec" id="edit" style="display:none"></button>
   <button class="sm phone" id="tofull">Viewer</button>
   <button class="sm sec" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random mesh</button>
-  <span class="seg" id="bgmode" title="Behind a mesh: the plain page colour, or a scene: a sky over ground the colour of the rock's foot, and around a reconstructed mesh, where its photos show it, what's really there"><button data-bg="solid" class="on">Solid</button><button data-bg="scene">Scene</button></span>
+  <span class="seg" id="bgmode" title="Behind a mesh: the plain page colour, or a scene: a sky over ground the colour of the rock's foot, and around a reconstructed mesh, where its photos show it, what's really there"><button data-bg="solid">Solid</button><button data-bg="scene" class="on">Scene</button></span>
   <span class="seg" id="theme" title="Colours: the browser's setting, or light or dark here"><button data-theme="system" class="on">System</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span>
   <button class="sm sec" id="admin" style="display:none" title="The admin page: what the site shows, where reconstructions run, credentials. It's on a port of its own, which only the server itself (or its LAN) can reach.">Admin</button>
   <a id="code" href="https://github.com/tom-f-oconnell/bouldermesh" target="_blank" rel="noopener">Code</a>
@@ -864,7 +864,7 @@ $('#vwire').onclick = () => { wire = !wire; try { localStorage.setItem('bm_wire'
 // The background: the theme's plain colour, or a scene: a sky over ground the colour of the rock's foot, with a soft
 // shadow under the rock, and where a mesh has one, the splat of what its photos show around it (backend/splat.py),
 // which leaves out what too few photos saw, so that the sky and ground show there instead
-let bgMode = 'solid'; try { bgMode = localStorage.getItem('bm_bg') === 'scene' ? 'scene' : 'solid'; } catch {}
+let bgMode = 'scene'; try { bgMode = localStorage.getItem('bm_bg') === 'solid' ? 'solid' : 'scene'; } catch {}   // a scene unless Solid was chosen
 const SKY = { light: { top: 0x5b8fc7, horizon: 0xdfe7ee }, dark: { top: 0x0d1828, horizon: 0x3b4a5a } };
 const sky = new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, fog: false,

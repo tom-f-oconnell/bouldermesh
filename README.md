@@ -288,7 +288,7 @@ If a browser can't load a mesh's texture, the viewer tries it smaller, then says
 on a mesh means no photo shows that side, including the backs of surfaces.
 
 *Solid* and *Scene* in the header choose what's behind a mesh: the page's colour, or a sky over ground the colour of the
-rock's foot, with a soft shadow under it. Around a reconstructed mesh with a splat (`scene.splat`, from `backend/splat.py`),
+rock's foot, with a soft shadow under it (the default, until a browser chooses *Solid*). Around a reconstructed mesh with a splat (`scene.splat`, from `backend/splat.py`),
 *Scene* also shows what its photos saw around the rock, where enough of them saw it, and the plain sky and ground
 elsewhere. Fitting splats is off (`SPLATS=1` turns it on for new meshes, and `python3 cli.py splat <mesh_id>` fits one),
 as it needs CUDA builds of torch and gsplat, and the few photos most meshes are placed from make poor ones: design.md,
