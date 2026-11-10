@@ -248,6 +248,11 @@ def use_control(control: JobControl | None) -> None:
     _thread_control.control = control
 
 
+def current_control() -> JobControl | None:
+    """The calling thread's JobControl, for another thread doing part of the same job (use_control())."""
+    return getattr(_thread_control, "control", None)
+
+
 class _CurrentControl:
     """jobctl: the JobControl of the thread using it, so that stopping one worker's job leaves the
     others alone. Threads that haven't been given one (requests, the first worker) share one."""

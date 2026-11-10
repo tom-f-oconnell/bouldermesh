@@ -93,7 +93,9 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
 
 1. Open a climb → *Harvest photos* (*Harvest again* once it has one). Queries are built from
    the boulder name, area and problem name; geo sources use the coordinates. Everything lands
-   in `data/projects/<id>/photos/`, with provenance in `sources.json`.
+   in `data/projects/<id>/photos/`, with provenance in `sources.json`. YouTube is searched, and its videos fetched
+   (or volunteers asked for both), alongside the photos rather than after them, each with its own progress bar, as
+   Mountain Project's minute between requests makes its photos slow.
 2. Only photos found for the climb are kept, so that its mesh shows it. The page photos and video
    frames that other harvests of its boulder kept still count as known photos of the rock for the
    filter below.

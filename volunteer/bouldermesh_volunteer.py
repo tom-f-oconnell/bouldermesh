@@ -453,6 +453,7 @@ class Volunteer:
                 time.sleep(600)
                 continue
             if "task" in r:
+                self.idle_why = None
                 try:
                     self.do(r["task"])
                 except urllib.error.HTTPError as e:
@@ -471,8 +472,11 @@ class Volunteer:
             if self.args.once:
                 log(f"nothing to do: {r.get('why')}")
                 return
-            log(f"nothing to fetch now ({r.get('why')}): asking again in {max(60, min(r['wait'], 3600)) / 60:.0f} min")
-            time.sleep(max(60, min(r["wait"], 3600)))
+            wait = max(60, min(r["wait"], 3600))
+            if r.get("why") != getattr(self, "idle_why", None):      # said once, not every minute
+                log(f"nothing to fetch now ({r.get('why')}): asking again every {wait / 60:.0f} min")
+            self.idle_why = r.get("why")
+            time.sleep(wait)
             if time.time() - self.state.get("updated", 0) > 86400:
                 self.tools()
 

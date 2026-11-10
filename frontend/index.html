@@ -1711,9 +1711,13 @@ function currentHtml(c){
   const running = c.running || (c.current ? [c.current] : []);
   if (!running.length) return machineWaitHtml(c) || (c.status === 'running' ? '<div class="status" style="margin-top:6px">Waiting for the next climb to start…</div>' : '');
   return machineWaitHtml(c) + running.map(cur => {
-    const pr = cur.progress, step = pr?.steps.find(s => s.state === 'running');
+    const pr = cur.progress, now = (pr?.steps || []).filter(s => s.state === 'running'), pct = v => (100 * v).toFixed(0) + '%';
+    const said = s => esc(s.label) + (s.detail ? ' · ' + esc(s.detail) : '');
+    // steps at once, as a harvest's photos and its YouTube videos: a bar each, under the whole job's
     return `<div class="meta" style="margin-top:8px">Now: <b>${esc(cur.name)}</b> ${esc(cur.grade||'')} <small>#${cur.rank}</small></div>
-      ${pr ? `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% · ${esc(step?.label || '')}${step?.detail ? ' · ' + esc(step.detail) : ''}</small>` : ''}`;
+      ${!pr ? '' : now.length < 2 ? `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% · ${now[0] ? said(now[0]) : ''}</small>`
+        : `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall</small>
+          ${now.map(s => `<div class="bar running" title="${pct(s.frac)}" style="margin-top:4px"><i style="width:${pct(s.frac)}"></i></div><small>${said(s)}</small>`).join('')}`}`;
   }).join('');
 }
 async function refreshCampaigns(){

@@ -28,13 +28,14 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Callable
 from urllib.parse import quote_plus, urlencode
 
 from . import youtube
-from .common import ApiError, Climb, HttpError, Media, http, jobctl
+from .common import ApiError, Climb, HttpError, Media, current_control, http, jobctl, use_control
 
 Log = Callable[[str], None]
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp"}
@@ -468,12 +469,35 @@ def anchors_of(others: list[Path]) -> list[Path]:
 def steps(sources: set[str], relevance_filter: bool = True) -> list[tuple[str, str, float]]:
     """The progress steps of harvest(), weighted roughly by duration."""
     out = [("find", "Find photos", 1), ("download", "Download photos", 5)]
-    if "youtube" in sources:
-        out.append(("video", "Extract video frames", 5))
+    if "youtube" in sources:     # alongside the photos, so that volunteers are asked at once
+        out.append(("video", "YouTube videos and their frames", 5, True))
     out.append(("dedupe", "Remove duplicates", 1))
     if relevance_filter:
         out.append(("filter", "Filter off-topic photos", 3))
     return out + [("diversity", "Check viewpoint diversity", 3)]
+
+
+def photos_part(c: Climb, sources: set[str], queries: list[str], photos_dir: Path, log: Log,
+                progress: Callable[[str], Callable[..., None] | None]) -> list[dict]:
+    """harvest()'s photos: found in each of its sources, then downloaded into photos_dir; their manifest."""
+    media: list[Media] = []
+    finding = [s for s in ("climb", "google", "ddg", "commons", "flickr") if s in sources]
+    report_find = progress("find") or (lambda frac=0.0, detail=None: None)
+    for i, s in enumerate(finding):
+        report_find(i / len(finding), s)
+        if s == "climb":
+            media += from_climb(c, log, progress=lambda f=0.0, d=None, i=i: report_find((i + f) / len(finding), d))
+        elif s == "google":
+            media += google_images(queries, log)
+        elif s == "ddg":
+            media += ddg_images(queries, log)
+        elif c.lat is None or c.lng is None:
+            log(f"no coordinates -> skipping {s}")
+        elif s == "commons":
+            media += commons_geosearch(c.lat, c.lng, log)
+        else:
+            media += flickr_search(c.lat, c.lng, queries, log)
+    return download_all(media, photos_dir, log, progress=progress("download"))
 
 
 def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = None, relevance_filter: bool = True,
@@ -505,33 +529,40 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
     queries = search_terms(c)
     log(f"harvest for {c.name!r} (boulder: {c.boulder_name or '?'}, coords: {c.lat}, {c.lng})")
     log("queries: " + " | ".join(queries))
-    media: list[Media] = []
-    finding = [s for s in ("climb", "google", "ddg", "commons", "flickr") if s in sources]
-    report_find = progress("find") or (lambda frac=0.0, detail=None: None)
-    for i, s in enumerate(finding):
-        report_find(i / len(finding), s)
-        if s == "climb":
-            media += from_climb(c, log, progress=lambda f=0.0, d=None, i=i: report_find((i + f) / len(finding), d))
-        elif s == "google":
-            media += google_images(queries, log)
-        elif s == "ddg":
-            media += ddg_images(queries, log)
-        elif c.lat is None or c.lng is None:
-            log(f"no coordinates -> skipping {s}")
-        elif s == "commons":
-            media += commons_geosearch(c.lat, c.lng, log)
-        else:
-            media += flickr_search(c.lat, c.lng, queries, log)
-    manifest = download_all(media, photos_dir, log, progress=progress("download"))
-    frames, videos, infos, asked, yt = [], [], {}, {"searches": [], "videos": []}, {"checked": True}
-    if "youtube" in sources:
+    # YouTube alongside the photos, on a thread of its own: searching it (or asking volunteers to) and fetching the videos
+    # needn't wait for the photos, which Mountain Project's minute between requests makes slow
+    frames, videos, infos, asked, yt, failed = [], [], {}, {"searches": [], "videos": []}, {"checked": True}, []
+
+    def youtube_part(control):
+        use_control(control)    # stopping the job stops this part too, and the tools it runs
         report_video = progress("video") or (lambda frac=0.0, detail=None: None)
-        report_video(0, "searching YouTube")
-        seen = {youtube.video_id(v.url) or v.url for v in c.videos}    # the page's links, in any of YouTube's URL forms
-        found = youtube.search(c, log, want=want_search, asked=asked["searches"], state=yt)
-        videos = list(c.videos) + [v for v in found if (youtube.video_id(v.url) or v.url) not in seen]
+        try:
+            report_video(0, "searching YouTube")
+            seen = {youtube.video_id(v.url) or v.url for v in c.videos}    # the page's links, in any of YouTube's URL forms
+            found = youtube.search(c, log, want=want_search, asked=asked["searches"], state=yt)
+            videos.extend(list(c.videos) + [v for v in found if (youtube.video_id(v.url) or v.url) not in seen])
+            if videos:
+                frames.extend(video_frames(videos, photos_dir, log, progress=progress("video"), infos=infos, want=want,
+                                           asked=asked["videos"]))
+            if tracker:
+                tracker.end("video", detail=f"{len(frames)} frame(s) from {len(videos)} video(s)"
+                            + (f"; volunteers asked for {len(asked['searches'])} search(es) and {len(asked['videos'])} video(s)"
+                               if asked["searches"] or asked["videos"] else ""))
+        except BaseException as e:      # raised again on the harvest's own thread
+            failed.append(e)
+
+    alongside = None
+    if "youtube" in sources:
+        alongside = threading.Thread(target=youtube_part, args=(current_control(),), name="harvest-youtube", daemon=True)
+        alongside.start()
+    try:
+        manifest = photos_part(c, sources, queries, photos_dir, log, progress)
+    finally:
+        if alongside:
+            alongside.join()
+    if failed:
+        raise failed[0]
     if videos:
-        frames = video_frames(videos, photos_dir, log, progress=progress("video"), infos=infos, want=want, asked=asked["videos"])
         by_tag = {hashlib.sha1(v.url.encode()).hexdigest()[:8]: v for v in videos}   # as video_frames names them
         for f in frames:
             v = by_tag[f.name.split("_")[1]]

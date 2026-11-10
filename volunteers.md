@@ -88,7 +88,7 @@ and rests whatever the site says.
 
 | Message | What it means |
 |---|---|
-| `nothing to fetch now (...): asking again in N min` | Normal: nothing is wanted, or you've reached a limit. |
+| `nothing to fetch now (...): asking again every N min` | Normal: nothing is wanted, or you've reached a limit. It says so once, and again when the reason changes. |
 | `nothing to fetch now (waiting for approval ...)` | Whoever runs the site hasn't approved you yet. It keeps asking. |
 | `N a day is the most that may register from one address` | Others at your address registered today: try again tomorrow. |
 | `YouTube refused: resting 1 h` | YouTube's bot check. It rests, longer each time it happens again. |

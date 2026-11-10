@@ -44,6 +44,7 @@ PAUSE_WAIT = 1800           # seconds a volunteer waits before asking again, whi
 MAX_TRIES = 3               # a video that fails this often, for reasons that might pass, isn't asked for again
 PART_MAX = 64 * 2**20       # the largest part of a file, under Cloudflare's 100 MB per request
 MAX_VIDEO = 600 * 2**20     # the script asks yt-dlp for at most 500 MB
+IDLE_WAIT = 60              # seconds an idle volunteer waits before asking again, so that a harvest's asks start soon
 VIDEO_FORMAT = "bv*[height<=1080]/b"   # as the harvest downloads: video only, no audio
 VIDEO_EXT = {"mp4", "webm", "mkv", "mov", "m4v", "3gp"}
 FAILED_DAYS = 30            # a video that failed for good isn't asked for again for this long
@@ -272,7 +273,7 @@ class Broker:
             task = self.q(f"SELECT * FROM tasks WHERE state='queued' AND kind IN ({','.join('?' * len(kinds))}) "
                           "ORDER BY kind IN ('details','channel'), created LIMIT 1", *kinds, one=True)
             if not task:
-                return {"wait": 600, "why": "nothing wanted now"}
+                return {"wait": IDLE_WAIT, "why": "nothing wanted now"}
             self.q("UPDATE tasks SET state='assigned', volunteer=?, ip=?, assigned=?, touched=?, size=NULL, ext=NULL WHERE id=?",
                    v["id"], ip, now, now, task["id"])
             self.q("INSERT INTO given(volunteer,ip,at) VALUES(?,?,?)", v["id"], ip, now)

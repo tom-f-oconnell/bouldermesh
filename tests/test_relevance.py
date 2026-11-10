@@ -149,6 +149,16 @@ assert [x["state"] for x in t.snapshot()["steps"]] == ["failed", "skipped"], t.s
 t = Tracker([("a", "A", 1)])
 t.update("unknown", 0.5)   # jobs report steps that a given install may not have
 assert t.snapshot()["overall"] == 0
+# a step alongside the others: it neither ends those before it nor is ended by those after, only by end()
+t = Tracker([("a", "A", 1), ("b", "B", 1), ("v", "V", 1, True), ("c", "C", 1)])
+t.update("v", 0.1, "searching")
+t.update("a", 0.5)
+t.update("b", 0.5)
+state = lambda: {x["key"]: x["state"] for x in t.snapshot()["steps"]}  # noqa: E731
+assert state() == {"a": "done", "b": "running", "v": "running", "c": "pending"}, state()
+t.end("v", detail="2 frames")
+t.update("c", 0.5)
+assert state() == {"a": "done", "b": "done", "v": "done", "c": "running"}, state()
 print("progress OK")
 
 # --- pooling other harvests of the same boulder ---------------------------------------------------

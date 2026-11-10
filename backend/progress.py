@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Callable
 
@@ -12,17 +13,19 @@ class Tracker:
     """Named steps of one job, each with a 0-1 fraction that only ever goes up.
 
     Args:
-        steps: (key, label, weight) per step, in order. Weights are rough relative durations,
-            used only for the overall percentage.
+        steps: (key, label, weight) per step, in order, or (key, label, weight, True) for one that runs alongside
+            the others, on a thread of its own: it neither ends the steps before it nor is ended by those after, but
+            by end(). Weights are rough relative durations, used only for the overall percentage.
         save: called with the JSON snapshot when something changes, at most every 0.5 s
             except when a step starts or ends.
     """
 
-    def __init__(self, steps: list[tuple[str, str, float]], save: Callable[[str], None] | None = None):
-        self.steps = [{"key": k, "label": l, "weight": w, "frac": 0.0, "detail": "", "state": "pending"}
-                      for k, l, w in steps]
+    def __init__(self, steps: list[tuple], save: Callable[[str], None] | None = None):
+        self.steps = [{"key": k, "label": l, "weight": w, "frac": 0.0, "detail": "", "state": "pending", "parallel": bool(rest and rest[0])}
+                      for k, l, w, *rest in steps]
         self._save = save
         self._last = 0.0
+        self._lock = threading.RLock()     # steps alongside others report from their own threads
 
     def _step(self, key: str) -> dict | None:
         return next((s for s in self.steps if s["key"] == key), None)
@@ -31,20 +34,32 @@ class Tracker:
         """Report progress on a step, which also ends any step before it. Where the steps that
         don't run a tool get stopped: raises Cancelled if the job has been."""
         jobctl.check()
-        s = self._step(key)
-        if s is None:
-            return
-        changed = s["state"] != "running"
-        for other in self.steps:
-            if other is s:
-                break
-            if other["state"] in ("pending", "running"):
-                self._end(other, "done")
-        s["state"] = "running"
-        s["frac"] = max(s["frac"], min(float(frac), 1.0))
-        if detail is not None:
-            s["detail"] = detail
-        self._flush(changed)
+        with self._lock:
+            s = self._step(key)
+            if s is None:
+                return
+            changed = s["state"] != "running"
+            for other in [] if s["parallel"] else self.steps:
+                if other is s:
+                    break
+                if other["state"] in ("pending", "running") and not other["parallel"]:
+                    self._end(other, "done")
+            s["state"] = "running"
+            s["frac"] = max(s["frac"], min(float(frac), 1.0))
+            if detail is not None:
+                s["detail"] = detail
+            self._flush(changed)
+
+    def end(self, key: str, state: str = "done", detail: str | None = None) -> None:
+        """End a step, as one alongside the others is ended when its thread is done."""
+        with self._lock:
+            s = self._step(key)
+            if s is None or s["state"] not in ("pending", "running"):
+                return
+            if detail is not None:
+                s["detail"] = detail
+            self._end(s, state)
+            self._flush(True)
 
     def callback(self, key: str) -> Callable[..., None]:
         """A progress(frac, detail) function for code that doesn't need to know about steps."""
@@ -52,21 +67,23 @@ class Tracker:
 
     def finish(self, state: str = "done") -> None:
         """End the job: running steps get `state`; pending ones are done, or skipped if it failed."""
-        for s in self.steps:
-            if s["state"] == "running":
-                self._end(s, state)
-            elif s["state"] == "pending":
-                self._end(s, "done" if state == "done" else "skipped")
-        self._flush(True)
+        with self._lock:
+            for s in self.steps:
+                if s["state"] == "running":
+                    self._end(s, state)
+                elif s["state"] == "pending":
+                    self._end(s, "done" if state == "done" else "skipped")
+            self._flush(True)
 
     def skip_rest(self) -> None:
         """Later steps won't run (e.g. no reconstruction after a poor harvest)."""
-        for s in self.steps:
-            if s["state"] == "running":
-                self._end(s, "done")
-            elif s["state"] == "pending":
-                self._end(s, "skipped")
-        self._flush(True)
+        with self._lock:
+            for s in self.steps:
+                if s["state"] == "running":
+                    self._end(s, "done")
+                elif s["state"] == "pending":
+                    self._end(s, "skipped")
+            self._flush(True)
 
     @staticmethod
     def _end(s: dict, state: str) -> None:

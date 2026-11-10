@@ -170,4 +170,46 @@ echo '{{"entries": [], "title": "t"}}'
         shutil.which = saved
     assert got == [] and len(calls.read_text().splitlines()) == n + 1, lines
     assert any("skipping 4 video(s)" in x for x in lines), lines
+
+# --- a harvest asks for YouTube's videos alongside its photos, not after them -------------------------------------------
+import threading  # noqa: E402
+
+from climbs import harvest  # noqa: E402
+from progress import Tracker  # noqa: E402
+
+search_asked, photos_saw, wanted = threading.Event(), [], []
+real = (harvest.download_all, yt.search)
+
+
+def slow_photos(media, out_dir, log, progress=None, **kw):     # slow, as Mountain Project's minute a photo makes them
+    for i in range(50):
+        progress(i / 50, f"{i} of 50 photos")
+        if search_asked.wait(0.2):
+            break
+    photos_saw.append(search_asked.is_set())
+    return []
+
+
+def search_by_volunteer(c, log, want=None, asked=None, state=None, **kw):
+    want(f"{c.name} bouldering")
+    asked.append(f"{c.name} bouldering")
+    search_asked.set()
+    state["checked"] = False
+    return []
+
+
+harvest.download_all, yt.search = slow_photos, search_by_volunteer
+snapshots = []
+t = Tracker(harvest.steps({"climb", "youtube"}, relevance_filter=False), snapshots.append)
+try:
+    with tempfile.TemporaryDirectory() as d:
+        out = harvest.harvest(relic, pathlib.Path(d), lambda line: None, {"climb", "youtube"}, relevance_filter=False,
+                              tracker=t, want=lambda url: True, want_search=lambda words: wanted.append(words) or True)
+finally:
+    harvest.download_all, yt.search = real
+assert wanted == ["Relic bouldering"] and photos_saw == [True], "volunteers were asked while the photos were still coming"
+assert out["youtube_checked"] is False, out
+steps = {x["key"]: x for x in t.snapshot()["steps"]}
+assert steps["video"]["state"] == "done" and "volunteers asked for 1 search" in steps["video"]["detail"], steps["video"]
+print("YouTube alongside photos OK")
 print("ALL YOUTUBE TESTS PASSED")
