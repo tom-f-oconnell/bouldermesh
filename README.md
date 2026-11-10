@@ -581,8 +581,9 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   capabilities, at niceness 10, and sends the log as it goes and then the mesh. Ctrl-C gives the climb back. The
   server, token and options are remembered (in `~/.bouldermesh-worker`); `--check` only registers or checks the token, after which
   `deploy/bouldermesh-worker.service` runs it under systemd. If this server won't take its token (unknown, revoked or
-  turned down) or the script is too old, it says so and what to do, and exits with status 3, which the unit doesn't
-  restart; `--register` makes a new token in place of the remembered one, which waits for *Approve* again. Jobs' photos and results, and the models they download (a
+  turned down), it forgets it, warns, and registers a new one, as with none, which waits for *Approve* again; if the
+  script is too old, it says so and exits with status 3, which the unit doesn't restart. `--forget-token` forgets the
+  remembered token, and `--register` makes a new one in its place. Jobs' photos and results, and the models they download (a
   few GB), go there too, or in `--data DIR`, such as on a bigger disk. Before starting, and before each job, it checks
   there's room there for two climbs (3 GB each) and the models still to download (5.5 GB the first time; `--need-gb`
   changes that), and before pulling an image, room in Docker's storage for about four times its download (18 GB if the
@@ -616,8 +617,8 @@ The AWS side has been tested against stand-ins for AWS, not against AWS itself.
 YouTube refuses a server's downloads after a while (a cloud server's at once), so people can lend their computers to
 fetch videos from their own addresses, slowly. Their script makes its own token, asks their name (optional), and
 registers it; they then wait under *Volunteers* on the admin page for *Approve* (see "Approving volunteers and machines"
-below). A token this server won't take, as one revoked or turned down, stops the script saying so (status 3), and
-`--register` makes a new one. Or *Add volunteer* there shows a token, approved from the start, and the command to give them. `https://<site>/volunteer/`, which the main page's *Volunteer* button opens wherever this
+below). A token this server won't take, as one revoked or turned down, the script forgets, saying so, and registers a
+new one, which waits for approval again; `--forget-token` forgets it by hand. Or *Add volunteer* there shows a token, approved from the start, and the command to give them. `https://<site>/volunteer/`, which the main page's *Volunteer* button opens wherever this
 server answers volunteers, has three ways to help, as buttons. *Collect videos* has the script and says what it does.
 *Compute meshes* has the machines' script (above), what a computer needs for it (an NVIDIA GPU, as Docker can't use a
 Mac's), and how to run it as the user's own systemd service, which starts with the computer. *Data collection* says

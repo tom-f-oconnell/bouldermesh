@@ -409,13 +409,19 @@ assert nobody["name"] == "machine" and nobody["status"] == "provisional"
 board.revoke(nobody["id"], "denied")
 assert not list(held.glob("other.*"))
 assert "turned down" in call("/worker/api/work", {"version": 2}, "bmw_" + "z" * 40)[1]["error"]
-# the script says so, and what to do, rather than a traceback, and exits as systemd's units leave stopped
-for token, says in (("bmw_" + "z" * 40, "won't take this machine's token: this machine was turned down"),
-                    ("bmw_" + "u" * 40, "doesn't know this machine's token")):
+# the script forgets a token the server no longer takes, says so, and registers a new one as with none
+for token, says in (("bmw_" + "z" * 40, "this machine was turned down by whoever runs this site"), ("bmw_" + "u" * 40, "unknown token")):
     r = worker(token, "--check")
-    assert r.returncode == 3 and says in r.stdout and "--register" in r.stdout and "Traceback" not in r.stderr, r.stdout + r.stderr
+    new = json.loads((TMP / "home" / "config.json").read_text())["token"]
+    assert r.returncode == 0 and f"warning: {URL} no longer takes this machine's token ({says}" in r.stdout, r.stdout + r.stderr
+    assert "Forgot it, and registering a new one" in r.stdout and "knows this token as" in r.stdout and "Traceback" not in r.stderr
+    assert new != token and board.machine(new)["status"] == "provisional", (new, token)
 r = worker("bmw_" + "u" * 40, "--once")
-assert r.returncode == 3 and "doesn't know this machine's token" in r.stdout and "Traceback" not in r.stderr, r.stdout + r.stderr
+assert r.returncode == 0 and "no longer takes this machine's token" in r.stdout and "Traceback" not in r.stderr, r.stdout + r.stderr
+r = subprocess.run([sys.executable, str(SCRIPT), "--home", str(TMP / "home"), "--forget-token"], env=ENV, capture_output=True, text=True,
+                   timeout=60, stdin=subprocess.DEVNULL)
+conf = json.loads((TMP / "home" / "config.json").read_text())
+assert r.returncode == 0 and "forgot the token" in r.stdout and "token" not in conf and conf["server"] == URL, (r.stdout, conf)
 out = subprocess.run([sys.executable, str(SCRIPT), "--home", str(TMP / "home"), "--register", "--name", "again", "--check"], env=ENV,
                      capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
 again = json.loads((TMP / "home" / "config.json").read_text())["token"]

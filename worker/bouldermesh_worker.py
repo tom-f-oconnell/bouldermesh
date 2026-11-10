@@ -51,7 +51,7 @@ MODELS_GB = 5.5             # the models jobs download the first time they need 
 IMAGE_TIMES = 4             # an image takes about this many times its download (compressed layers, kept, and unpacked)
 IMAGE_GUESS_GB = 18         # what to allow for an image whose size the registry won't say (the GPU build's is about 16)
 IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}")
-TURNED_AWAY = 3             # the exit status when the server won't take this token or script: starting again won't help,
+TURNED_AWAY = 3             # the exit status when the server won't take this script: starting again won't help,
                             # so systemd units leave it stopped (RestartPreventExitStatus)
 
 
@@ -68,17 +68,9 @@ class NotHere(Exception):
 
 
 def turned_away(server: str, e: urllib.error.HTTPError) -> SystemExit:
-    """Says why the server won't take this machine's token (401, 403) or this script (426), and what to do, rather than
-    a traceback; returns the exit to raise."""
-    said = (getattr(e, "answer", None) or {}).get("error") or f"HTTP {e.code}"
-    if e.code == 401:
-        log(f"{server} doesn't know this machine's token. Run this script with --register to make a new one and register "
-            "it (it waits for approval), or give it a token from whoever runs the server with --token.")
-    elif e.code == 403:
-        log(f"{server} won't take this machine's token: {said}. If that's a mistake, ask whoever runs it; --register makes "
-            "a new token, which waits for their approval.")
-    else:
-        log(f"{server} says this script is too old. Download it again: curl -O {server}/worker/bouldermesh_worker.py")
+    """Says the server won't take this script, as too old (426), and what to do, rather than a traceback; returns the
+    exit to raise. (A token it won't take is forgotten, and another registered: Worker.renew().)"""
+    log(f"{server} says this script is too old. Download it again: curl -O {server}/worker/bouldermesh_worker.py")
     return SystemExit(TURNED_AWAY)
 
 
@@ -118,22 +110,54 @@ class Server:
         raise RuntimeError("unreachable")
 
 
-def register(server: str, name: str | None) -> str:
+def register(server: str, name: str | None, patient: bool = False) -> tuple[str, str]:
     """Make a token, register it with the server under name (asked for, if not given and there's someone to ask), and
-    return it; exits saying why if the server won't have it."""
+    return it and the name given. Exits saying why if the server won't have it; or, if patient, waits half an hour and
+    tries again while the server is out of reach or has too many registrations (429, 503)."""
     if name is None and os.isatty(0):
         name = input("Your name or a nickname, shown to whoever runs the server (optional; Enter to leave it out): ")
+    name = (name or "").strip()
     token = "bmw_" + secrets.token_urlsafe(32)
-    try:
-        r = Server(server, token).call("/worker/api/register", {"name": (name or "").strip(), "version": VERSION,
-                                                                 "client": f"script {VERSION} on {socket.gethostname()}"}, tries=1)
-    except urllib.error.HTTPError as e:
-        raise SystemExit(f"the server wouldn't register this machine: {e.answer.get('error') or e}") from None
-    except (urllib.error.URLError, OSError) as e:
-        raise SystemExit(f"can't reach {server}: {e}") from None
+    while True:
+        try:
+            r = Server(server, token).call("/worker/api/register", {"name": name, "version": VERSION,
+                                                                     "client": f"script {VERSION} on {socket.gethostname()}"}, tries=1)
+            break
+        except urllib.error.HTTPError as e:
+            if not (patient and e.code in (429, 503)):
+                raise SystemExit(f"the server wouldn't register this machine: {e.answer.get('error') or e}") from None
+            log(f"the server won't register a new token now ({e.answer.get('error') or e}): trying again in 30 min")
+        except (urllib.error.URLError, OSError) as e:
+            if not patient:
+                raise SystemExit(f"can't reach {server}: {e}") from None
+            log(f"can't reach {server} to register a new token ({e}): trying again in 30 min")
+        time.sleep(1800)
     log(f"registered with {server} as {r.get('name')!r}: it gives this machine climbs once whoever runs it approves it"
         + (" (meanwhile it may give it some, whose meshes wait for that approval)" if r.get("may_work") else ""))
-    return token
+    return token, name
+
+
+def load_conf(home) -> dict:
+    try:
+        return json.loads((Path(home).expanduser() / "config.json").read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def save_conf(home, conf: dict) -> None:
+    path = Path(home).expanduser() / "config.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(conf))
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+def forget_token(home) -> bool:
+    """Delete the remembered token; whether there was one."""
+    conf = load_conf(home)
+    had = conf.pop("token", None) is not None
+    save_conf(home, conf)
+    return had
 
 
 class Worker:
@@ -334,18 +358,35 @@ class Worker:
             raise
 
     # -- the loop -------------------------------------------------------------------------------------------------------
+    def renew(self, e: urllib.error.HTTPError) -> None:
+        """The server no longer takes this machine's token (401, 403): forget it, warn, and carry on as with none,
+        registering a new one."""
+        said = (getattr(e, "answer", None) or {}).get("error") or f"HTTP {e.code}"
+        log(f"warning: {self.server.url} no longer takes this machine's token ({said}). Forgot it, and registering a new one, "
+            "which waits for approval like any other.")
+        forget_token(self.args.home)
+        conf = load_conf(self.args.home)
+        token, name = register(self.server.url, conf["name"] if "name" in conf else self.args.name, patient=True)
+        save_conf(self.args.home, {**load_conf(self.args.home), "token": token, "name": name})
+        self.server.token = token
+
     def run(self) -> None:
         client = self.client()
         short = self.data_room()
         if self.args.check:
-            try:
-                r = self.server.call("/worker/api/work", {**client, "check": True}, tries=2)
-            except urllib.error.HTTPError as e:
-                if e.code in (401, 403, 426):
-                    raise turned_away(self.server.url, e) from None
-                raise SystemExit(f"the server said: {(getattr(e, 'answer', None) or {}).get('error') or e}") from None
-            except (urllib.error.URLError, OSError) as e:
-                raise SystemExit(f"can't reach {self.server.url}: {e}") from None
+            for attempt in range(2):
+                try:
+                    r = self.server.call("/worker/api/work", {**client, "check": True}, tries=2)
+                    break
+                except urllib.error.HTTPError as e:
+                    if e.code in (401, 403) and not attempt:
+                        self.renew(e)
+                        continue
+                    if e.code == 426:
+                        raise turned_away(self.server.url, e) from None
+                    raise SystemExit(f"the server said: {(getattr(e, 'answer', None) or {}).get('error') or e}") from None
+                except (urllib.error.URLError, OSError) as e:
+                    raise SystemExit(f"can't reach {self.server.url}: {e}") from None
             log(f"{self.server.url} knows this token as {r.get('name')!r}"
                 + (": approved" if r.get("status") != "provisional" else
                    ", waiting for approval" + ("; it may get climbs meanwhile" if r.get("may_work") else "; no climbs until then")))
@@ -362,7 +403,10 @@ class Worker:
             try:
                 r = self.server.call("/worker/api/work", client)
             except urllib.error.HTTPError as e:
-                if e.code in (401, 403, 426):
+                if e.code in (401, 403):
+                    self.renew(e)
+                    continue
+                if e.code == 426:
                     raise turned_away(self.server.url, e) from None
                 log(f"the server said: {e.answer.get('error') or e}; asking again in 5 min")
                 time.sleep(300)
@@ -376,7 +420,10 @@ class Worker:
                 try:
                     self.do(r["job"])
                 except urllib.error.HTTPError as e:
-                    if e.code in (401, 403, 426):       # its token stopped working partway through: the job went back
+                    if e.code in (401, 403):       # its token stopped working partway through: the job went back
+                        self.renew(e)
+                        continue
+                    if e.code == 426:
                         raise turned_away(self.server.url, e) from None
                     log(f"the server said: {(getattr(e, 'answer', None) or {}).get('error') or e}")
                 except (NotHere, OSError) as e:
@@ -464,8 +511,9 @@ def main() -> None:
     ap.add_argument("--token", help="a token from the server's admin page (remembered); without one, it makes its own the "
                     "first time, and registers it")
     ap.add_argument("--name", help="your name or a nickname for whoever runs the server, when registering (asked for if not given)")
-    ap.add_argument("--register", action="store_true", help="make a new token and register it, in place of the one remembered "
-                    "(for one the server no longer takes)")
+    ap.add_argument("--forget-token", action="store_true", help="delete the remembered token, and stop: the next run makes and "
+                    "registers a new one")
+    ap.add_argument("--register", action="store_true", help="make a new token and register it, in place of the one remembered")
     ap.add_argument("--cpus", type=float, help="at most this many cores for a job (docker run --cpus; remembered)")
     ap.add_argument("--gpu", choices=("auto", "all", "cdi", "none"), help="give jobs the GPU: auto (if nvidia-smi finds one, "
                     "the default), all (--gpus all), cdi (the CDI device nvidia.com/gpu=all) or none (remembered)")
@@ -487,11 +535,10 @@ def main() -> None:
     home = Path(args.home).expanduser()
     home.mkdir(parents=True, exist_ok=True)
     os.chmod(home, 0o700)
-    conf_file = home / "config.json"
-    try:
-        conf = json.loads(conf_file.read_text())
-    except (FileNotFoundError, ValueError):
-        conf = {}
+    conf = load_conf(home)
+    if args.forget_token:
+        log(f"forgot the token remembered for {conf.get('server')}" if forget_token(home) else "no token was remembered")
+        return
     if args.register and args.token:
         ap.error("--register makes a new token, so not with --token")
     if args.server and args.server != conf.get("server") and not args.token or args.register:
@@ -509,11 +556,9 @@ def main() -> None:
     if not args.server:
         ap.error("--server is needed the first time")
     if not args.token:
-        args.token = conf["token"] = register(args.server, args.name)
-    tmp = conf_file.with_suffix(".tmp")
-    tmp.write_text(json.dumps(conf))
-    os.chmod(tmp, 0o600)
-    tmp.replace(conf_file)
+        args.token, conf["name"] = register(args.server, args.name if args.name is not None else conf.get("name"))
+        conf["token"] = args.token
+    save_conf(home, conf)
     signal.signal(signal.SIGTERM, _stop)    # as Ctrl-C: the job goes back to the server
     try:
         Worker(args).run()

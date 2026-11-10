@@ -346,23 +346,35 @@ def registering() -> None:
         st = {v["name"]: v for v in b.state()["volunteers"]}
         assert not st["Jane-Q-Public"]["provisional"] and st["jane-q-public-2"]["provisional"] and st["volunteer"]["registered"]
 
-        # turned down: its token stops working, and says why
-        b.revoke(b.volunteer(token("r2"))["id"], "denied")
-        out = volunteer("r2", ok=False)
-        assert "won't take this token: this token was turned down by whoever runs this site" in out and "--register" in out, out
-        assert "Traceback" not in out, "a message, not a traceback"
+        # turned down: the script forgets that token, says so, and registers a new one, as with none
+        rules.update(registrations_per_address=100)
+        old = token("r2")
+        b.revoke(b.volunteer(old)["id"], "denied")
+        out = volunteer("r2")
+        assert "warning: " in out and "no longer takes this token (this token was turned down by whoever runs this site)" in out, out
+        assert "Forgot it, and registering a new one" in out and "as 'jane-q-public-3'" in out and "Traceback" not in out, out
+        assert token("r2") != old and b.volunteer(token("r2"))["status"] == "provisional", "the name given before, numbered"
         assert {v["name"]: v["status"] for v in b.state()["volunteers"]}["jane-q-public-2"] == "denied"
 
         # so many waiting that more must wait; and those never heard from again go
-        rules.update(registrations_per_address=100, max_waiting=1)
+        rules.update(max_waiting=1)
         assert "too many are waiting" in volunteer("r5", ok=False)
         b.q("UPDATE volunteers SET created=?, last_seen=NULL WHERE status='provisional'", time.time() - 15 * 86400)
         assert "as 'someone'" in volunteer("r5", "--name", "someone"), "the old one dropped, making room"
         assert b.volunteer(token("r3")) is None
+        rules.update(max_waiting=30)
+        old = token("r3")       # one the server no longer knows: forgotten, and another registered
         r = subprocess.run([sys.executable, str(SCRIPT), "--agree", "--once", "--yt-dlp", str(fake), "--home", str(TMP / "r3")],
                            env=env, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
-        assert r.returncode == 3 and "doesn't know this token" in r.stdout and "Traceback" not in r.stderr, r.stdout + r.stderr
-        rules.update(max_waiting=30)
+        assert r.returncode == 0 and "no longer takes this token (unknown token" in r.stdout and "Traceback" not in r.stderr, r.stdout + r.stderr
+        assert token("r3") != old and b.volunteer(token("r3"))["name"] == "volunteer", "no name given before: none now"
+        r = subprocess.run([sys.executable, str(SCRIPT), "--forget-token", "--home", str(TMP / "r3")], env=env, capture_output=True,
+                           text=True, timeout=60, stdin=subprocess.DEVNULL)
+        assert r.returncode == 0 and "forgot the token" in r.stdout and "token" not in json.loads((TMP / "r3" / "config.json").read_text())
+        assert "server" in json.loads((TMP / "r3" / "config.json").read_text()), "the rest remembered"
+        assert "no token was remembered" in subprocess.run([sys.executable, str(SCRIPT), "--forget-token", "--home", str(TMP / "r3")],
+                                                           env=env, capture_output=True, text=True, timeout=60).stdout
+        assert "registered with" in volunteer("r3"), "the next run registers a new one"
         out = volunteer("r2", "--register", "--name", "jane again")
         assert "as 'jane-again': waiting for approval" in out and b.volunteer(token("r2"))["status"] == "provisional", out
     finally:

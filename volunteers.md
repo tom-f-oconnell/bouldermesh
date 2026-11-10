@@ -92,7 +92,7 @@ and rests whatever the site says.
 | `YouTube refused: resting 1 h` | YouTube's bot check. It rests, longer each time it happens again. |
 | `couldn't fetch it: ...` | That video is private, removed, or too big. The site won't ask anyone for it again. |
 | `can't reach https://...` | The site is down. It keeps trying. |
-| `doesn't know this token` or `won't take this token` | Run it with `--register` to make a new token and register it (it waits for approval again), or ask whoever runs the site. |
+| `warning: ... no longer takes this token` | The site dropped or turned down your token. The script forgot it and registered a new one, which waits for approval again. If you think that's a mistake, ask whoever runs the site. |
 | `this script is too old` | Download it again (step 1). |
 
 If installing fails with a message about `venv` or `ensurepip`, install `python3-venv` (Debian or Ubuntu, above).
@@ -100,6 +100,7 @@ If installing fails with a message about `venv` or `ensurepip`, install `python3
 ### Stopping for good
 
 Stop it with Ctrl-C (or `pkill -f bouldermesh_volunteer.py`), then delete `~/.bouldermesh-volunteer` and the script.
+(`--forget-token` forgets only the token, keeping the rest: the next run registers a new one.)
 Tell whoever runs the site, so they can revoke your token.
 
 ### Lending a computer for meshes, too

@@ -40,7 +40,7 @@ GAP = (8.0, 15.0)           # seconds between one fetch from YouTube and the nex
 PER_HOUR, PER_DAY = 15, 100  # the most, whatever the server allows
 BLOCK_HOURS = (1, 2, 4, 8)  # rest after YouTube refuses, longer each time it still does
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
-TURNED_AWAY = 3             # the exit status when the server won't take this token or script: starting again won't help
+TURNED_AWAY = 3             # the exit status when the server won't take this script: starting again won't help
 CHANNEL_ID = re.compile(r"UC[A-Za-z0-9_-]{22}")
 WORDS = re.compile(r"[^\x00-\x1f\x7f]{3,200}")
 RESULT_KEYS = ("id", "title", "description", "duration", "channel", "channel_id", "uploader")
@@ -72,37 +72,61 @@ def log(msg: str) -> None:
     print(time.strftime("%Y-%m-%d %H:%M:%S ") + msg, flush=True)
 
 
-def register(server: str, name: str | None) -> str:
+def register(server: str, name: str | None, patient: bool = False) -> tuple[str, str]:
     """Make a token, register it with the server under name (asked for, if not given and there's someone to ask), and
-    return it; exits saying why if the server won't have it."""
+    return it and the name given. Exits saying why if the server won't have it; or, if patient, waits half an hour and
+    tries again while the server is out of reach or has too many registrations (429, 503)."""
     if name is None and sys.stdin.isatty():
         name = input("Your name or a nickname, shown to whoever runs the server (optional; Enter to leave it out): ")
+    name = (name or "").strip()
     token = "bmv_" + secrets.token_urlsafe(32)
-    try:
-        r = Server(server, token).call("/volunteer/api/register", {"name": (name or "").strip(), "version": VERSION,
-                                                                    "client": f"script {VERSION}"}, tries=1)
-    except urllib.error.HTTPError as e:
-        raise SystemExit(f"the server wouldn't register this: {e.answer.get('error') or e}") from None
-    except (urllib.error.URLError, OSError) as e:
-        raise SystemExit(f"can't reach {server}: {e}") from None
+    while True:
+        try:
+            r = Server(server, token).call("/volunteer/api/register", {"name": name, "version": VERSION,
+                                                                        "client": f"script {VERSION}"}, tries=1)
+            break
+        except urllib.error.HTTPError as e:
+            if not (patient and e.code in (429, 503)):
+                raise SystemExit(f"the server wouldn't register this: {e.answer.get('error') or e}") from None
+            log(f"the server won't register a new token now ({e.answer.get('error') or e}): trying again in 30 min")
+        except (urllib.error.URLError, OSError) as e:
+            if not patient:
+                raise SystemExit(f"can't reach {server}: {e}") from None
+            log(f"can't reach {server} to register a new token ({e}): trying again in 30 min")
+        time.sleep(1800)
     log(f"registered with {server} as {r.get('name')!r}: waiting for approval by whoever runs it. "
         + (f"Until then, it fetches at most {r.get('per_hour')} an hour and {r.get('per_day')} a day."
            if r.get("may_work") else "Until then, it waits."))
-    return token
+    return token, name
+
+
+def load_conf(home) -> dict:
+    try:
+        return json.loads((Path(home).expanduser() / "config.json").read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def save_conf(home, conf: dict) -> None:
+    path = Path(home).expanduser() / "config.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(conf))
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+def forget_token(home) -> bool:
+    """Delete the remembered token; whether there was one."""
+    conf = load_conf(home)
+    had = conf.pop("token", None) is not None
+    save_conf(home, conf)
+    return had
 
 
 def turned_away(server: str, e: urllib.error.HTTPError) -> SystemExit:
-    """Says why the server won't take this token (401, 403) or this script (426), and what to do, rather than a
-    traceback; returns the exit to raise."""
-    said = (getattr(e, "answer", None) or {}).get("error") or f"HTTP {e.code}"
-    if e.code == 401:
-        log(f"{server} doesn't know this token. Run this script with --register to make a new one and register it (it "
-            "waits for approval), or give it a token from whoever runs the site with --token.")
-    elif e.code == 403:
-        log(f"{server} won't take this token: {said}. If that's a mistake, ask whoever runs it; --register makes a new "
-            "token, which waits for their approval.")
-    else:
-        log(f"{server} says this script is too old. Download it again: curl -O {server}/volunteer/bouldermesh_volunteer.py")
+    """Says the server won't take this script, as too old (426), and what to do, rather than a traceback; returns the
+    exit to raise. (A token it won't take is forgotten, and another registered: Volunteer.renew().)"""
+    log(f"{server} says this script is too old. Download it again: curl -O {server}/volunteer/bouldermesh_volunteer.py")
     return SystemExit(TURNED_AWAY)
 
 
@@ -335,6 +359,18 @@ class Volunteer:
                     sent = e.answer["received"]
 
     # -- the loop -----------------------------------------------------------------------------------------------------
+    def renew(self, e: urllib.error.HTTPError) -> None:
+        """The server no longer takes this token (401, 403): forget it, warn, and carry on as with none, registering a
+        new one."""
+        said = (getattr(e, "answer", None) or {}).get("error") or f"HTTP {e.code}"
+        log(f"warning: {self.server.url} no longer takes this token ({said}). Forgot it, and registering a new one, which "
+            "waits for approval like any other.")
+        forget_token(self.args.home)
+        conf = load_conf(self.args.home)
+        token, name = register(self.server.url, conf["name"] if "name" in conf else self.args.name, patient=True)
+        save_conf(self.args.home, {**load_conf(self.args.home), "token": token, "name": name})
+        self.server.token = token
+
     def run(self) -> None:
         self.tools()
         version = self.run_ytdlp(["--version"], self.home).stdout.strip()
@@ -345,7 +381,10 @@ class Volunteer:
                 r = self.server.call("/volunteer/api/work", {"version": VERSION, "client": f"script {VERSION}, yt-dlp {version}",
                                                              "per_hour": self.per_hour, "per_day": self.per_day, "kinds": KINDS})
             except urllib.error.HTTPError as e:
-                if e.code in (401, 403, 426):
+                if e.code in (401, 403):
+                    self.renew(e)
+                    continue
+                if e.code == 426:
                     raise turned_away(self.server.url, e) from None
                 log(f"the server said: {e.answer.get('error') or e}; asking again in 10 min")
                 time.sleep(600)
@@ -358,7 +397,10 @@ class Volunteer:
                 try:
                     self.do(r["task"])
                 except urllib.error.HTTPError as e:
-                    if e.code in (401, 403, 426):       # its token stopped working partway through
+                    if e.code in (401, 403):       # its token stopped working partway through
+                        self.renew(e)
+                        continue
+                    if e.code == 426:
                         raise turned_away(self.server.url, e) from None
                     log(f"the server said: {(getattr(e, 'answer', None) or {}).get('error') or e}")
                 except (urllib.error.URLError, OSError) as e:      # as the server going, after trying again
@@ -382,8 +424,9 @@ def main() -> None:
     ap.add_argument("--token", help="a token whoever runs the server gave you (remembered); without one, it makes its own "
                     "the first time, and registers it")
     ap.add_argument("--name", help="your name or a nickname for whoever runs the server, when registering (asked for if not given)")
-    ap.add_argument("--register", action="store_true", help="make a new token and register it, in place of the one remembered "
-                    "(for one the server no longer takes)")
+    ap.add_argument("--register", action="store_true", help="make a new token and register it, in place of the one remembered")
+    ap.add_argument("--forget-token", action="store_true", help="delete the remembered token, and stop: the next run makes and "
+                    "registers a new one")
     ap.add_argument("--per-hour", type=int, default=PER_HOUR, help=f"at most this many videos an hour ({PER_HOUR} at most)")
     ap.add_argument("--per-day", type=int, default=PER_DAY, help=f"at most this many a day ({PER_DAY} at most)")
     ap.add_argument("--agree", action="store_true", help="agree to what's explained on the first run without being asked")
@@ -394,11 +437,10 @@ def main() -> None:
     args = ap.parse_args()
     home = Path(args.home).expanduser()
     home.mkdir(parents=True, exist_ok=True)
-    conf_file = home / "config.json"
-    try:
-        conf = json.loads(conf_file.read_text())
-    except (FileNotFoundError, ValueError):
-        conf = {}
+    conf = load_conf(home)
+    if args.forget_token:
+        log(f"forgot the token remembered for {conf.get('server')}" if forget_token(home) else "no token was remembered")
+        return
     server_changed = args.server and args.server != conf.get("server")
     args.server = args.server or conf.get("server")
     if args.register and args.token:
@@ -412,10 +454,9 @@ def main() -> None:
         if not args.agree and input("\nType yes to start: ").strip().lower() != "yes":
             raise SystemExit("not started")
     if not args.token:
-        args.token = register(args.server, args.name)
+        args.token, conf["name"] = register(args.server, args.name if args.name is not None else conf.get("name"))
     conf.update(server=args.server, token=args.token, agreed=args.server)
-    conf_file.write_text(json.dumps(conf))
-    os.chmod(conf_file, 0o600)
+    save_conf(home, conf)
     signal.signal(signal.SIGTERM, _stop)    # as Ctrl-C: what it was fetching goes back to the server
     try:
         Volunteer(args).run()
