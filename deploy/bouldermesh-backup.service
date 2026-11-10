@@ -1,0 +1,18 @@
+# Copies the public server's data to this machine (deploy/backup.sh), run each night by bouldermesh-backup.timer.
+# It needs a key of its own, with no passphrase, which the public server takes only for read-only rsync of its checkout
+# (README, "Backups"). Edit User, SCRIPT, SOURCE and BACKUP_DIR below, then:
+#     sudo cp deploy/bouldermesh-backup.service deploy/bouldermesh-backup.timer /etc/systemd/system/
+#     sudo systemctl daemon-reload && sudo systemctl enable --now bouldermesh-backup.timer
+# systemctl start bouldermesh-backup runs it now; journalctl -u bouldermesh-backup shows how it went.
+[Unit]
+Description=BoulderMesh: copy the public server's data here
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tom
+Environment=SCRIPT=/home/tom/src/bouldermesh/deploy/backup.sh SOURCE=tom@178.105.53.11: BACKUP_DIR=/data/tom/bouldermesh-backups
+ExecStart=/bin/sh ${SCRIPT} ${SOURCE}
+Nice=10
+IOSchedulingClass=idle

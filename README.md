@@ -425,6 +425,29 @@ public, as the Projects tab shows it, so it reveals where photos came from and t
 credentials. Back up `data/` yourself: a mesh is an hour of compute. Compute credentials are kept as before
 (encrypted on the admin page, or in `.env`), and cloud machines accept SSH only from this server's address.
 
+**Backups.** Once the public server harvests by itself, its data exists nowhere else. `deploy/backup.sh`, on another
+machine (hal), copies it each night over SSH, with nothing connecting to that machine, into `BACKUP_DIR`:
+
+- `current/`: the server's `data/` and `.env` as they are now, but not its caches of web pages and models, uploads in
+  progress or work folders. The `.env` holds the editing token and the key saved credentials are encrypted with, so the
+  folder is readable only by you.
+- `db/<date>/`: that night's databases. The server copies them every hour into `data/snapshots/` with SQLite's backup
+  API (`SNAPSHOT_MINUTES`), as copying a database in use isn't safe.
+- `changed/<date>/`: whatever that night's copy replaced or deleted in `current/`, so a mesh deleted on the server can be
+  had back. Both kept 30 days (`KEEP_DAYS`).
+
+It uses a key of its own with no passphrase, which the server takes only for reading its checkout with rsync. On hal:
+
+    ssh-keygen -t ed25519 -N '' -C 'bouldermesh backup' -f ~/.ssh/bouldermesh_backup
+    printf 'command="rrsync -ro /home/tom/bouldermesh",restrict %s\n' "$(cat ~/.ssh/bouldermesh_backup.pub)" | ssh bouldermesh 'cat >> ~/.ssh/authorized_keys'
+    BACKUP_DIR=/data/tom/bouldermesh-backups deploy/backup.sh tom@178.105.53.11:     # once by hand, then each night:
+    sudo cp deploy/bouldermesh-backup.service deploy/bouldermesh-backup.timer /etc/systemd/system/
+    sudo systemctl daemon-reload && sudo systemctl enable --now bouldermesh-backup.timer
+
+To restore onto a new server, put `current/data` in its checkout's `data/` and `current/.env` beside it, then copy a
+night's `db/<date>/bouldermesh.sqlite.backup` and `volunteers.sqlite.backup` into `data/`, and `machines.sqlite.backup`
+into `data/compute/`, each without its `.backup`.
+
 **Troubleshooting.** The commands in `cli.py` that read the data run inside the container, where it is (`/data`), from
 the checkout whose `.env` names the compose files. On the server:
 
@@ -669,6 +692,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_provenance.py  # offline: where each mesh's photos came from
     python3 tests/test_compute.py     # offline: running reconstructions on other machines, through stand-ins for ssh and AWS
     python3 tests/test_pullwork.py    # offline: machines that connect here for work, through the script and a stand-in for docker
+    python3 tests/test_backup.py      # offline: the server's database snapshots, and deploy/backup.sh copying a stand-in server
     python3 tests/test_admin.py       # offline: the admin page's settings, credentials and photo permissions
     python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job
     python3 tests/test_public.py      # the editing token and read-only modes, other sites' pages refused, the page's policy and headers, what's served how

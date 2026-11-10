@@ -123,6 +123,9 @@ CAMPAIGN_MIN_FREE = float(os.environ.get("CAMPAIGN_MIN_FREE_GB", "50")) * 2**30 
 # room is made (the admin page shows what takes it, and can delete photos the filter rejected)
 DATA_CAP = float(os.environ.get("DATA_CAP_GB") or 0) * 2**30
 USAGE_EVERY = 600       # seconds between measurings of DATA_DIR
+# copies of the databases made safely while they're in use, for deploy/backup.sh to copy (0: none)
+SNAPSHOTS = DATA / "snapshots"
+SNAPSHOT_EVERY = float(os.environ.get("SNAPSHOT_MINUTES", "60")) * 60
 # lowest areas named like these hold several rocks, so one mesh can't stand in for all their climbs
 GROUP_AREA = re.compile(r"\b(boulders|area|circuit|bouldering|rocks|blocks|cluster|complex)\b", re.I)
 
@@ -1369,6 +1372,40 @@ def watch_usage() -> None:
         except Exception as e:  # never let the thread die
             print(f"usage error: {e!r}", flush=True)
         time.sleep(USAGE_EVERY)
+
+
+def snapshot_databases() -> list[Path]:
+    """Copy each database into SNAPSHOTS as <name>.backup, by SQLite's backup API, which is safe while they're in use,
+    as copying the files isn't. Returns the copies."""
+    SNAPSHOTS.mkdir(parents=True, exist_ok=True)
+    made = []
+    for db_file in (DATA / "bouldermesh.sqlite", DATA / "volunteers.sqlite", DATA / "compute" / "machines.sqlite"):
+        if not db_file.exists():
+            continue
+        out = SNAPSHOTS / f"{db_file.name}.backup"
+        tmp = out.with_suffix(".tmp")
+        tmp.unlink(missing_ok=True)
+        src, dst = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True, timeout=60), sqlite3.connect(tmp)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, out)
+        made.append(out)
+    return made
+
+
+def snapshot_worker() -> None:
+    """Snapshot the databases a minute after starting, and every SNAPSHOT_EVERY after."""
+    time.sleep(60)
+    while SNAPSHOT_EVERY:
+        try:
+            snapshot_databases()
+        except Exception as e:  # never let the thread die
+            print(f"snapshot error: {e!r}", flush=True)
+        time.sleep(SNAPSHOT_EVERY)
 
 
 def _claim(w: Worker):
@@ -3653,6 +3690,7 @@ def main() -> None:
         scale_mod.interrupted(d)
     threading.Thread(target=beta_worker, daemon=True).start()
     threading.Thread(target=watch_usage, daemon=True).start()
+    threading.Thread(target=snapshot_worker, daemon=True).start()
     threading.Thread(target=frames_worker, daemon=True).start()
     if splat_mod.enabled():
         why = splat_mod.unavailable()

@@ -1,0 +1,11 @@
+# Runs bouldermesh-backup.service each night, and at the next start if the machine was off then.
+[Unit]
+Description=BoulderMesh: copy the public server's data here each night
+
+[Timer]
+OnCalendar=*-*-* 03:30
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
