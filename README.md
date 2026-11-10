@@ -407,13 +407,17 @@ the checkout whose `.env` names the compose files. On the server:
 
     cd bouldermesh
     docker compose exec -T bouldermesh python3 cli.py client-errors -n 50   # what failed in visitors' browsers, newest last
+    docker compose exec -T bouldermesh python3 cli.py mesh-views --hours 24  # the meshes they've looked at lately, and how often
     docker compose logs --since 2h bouldermesh | grep "browser error"         # the same, as they came, in the app's log
     docker compose exec -T bouldermesh python3 cli.py jobs                   # what a restart would interrupt now
     docker compose logs --since 2h bouldermesh                               # everything else the app logged (or journalctl -u bouldermesh)
 
 or from your own machine, `ssh you@server 'cd bouldermesh && docker compose exec -T bouldermesh python3 cli.py client-errors'`.
 A browser's report has its time, the build it was using, what failed (a mesh that wouldn't load, with its id, or an error in
-the page), and the browser, but not who sent it. The same commands work on any machine running it under Docker.
+the page), and the browser, but not who sent it. Each mesh shown is kept too (`data/mesh-views.jsonl`, and a "viewed mesh"
+line in the log): which, how it was opened (random, climb, meshes, map, area, project, beta), how long it took, and its note,
+such as a texture loaded smaller, but not who or with what. The requests for the mesh files don't tell you that, as browsers
+and Cloudflare keep copies for an hour. The same commands work on any machine running it under Docker.
 
 ## The admin page
 
@@ -586,6 +590,8 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     On the admin page's port: GET /api/admin/state · POST /api/admin/settings · POST /api/admin/secrets
     POST /api/admin/actions/{test,end-nodes,retexture}
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
+    POST /api/mesh-views {mesh, via, seconds, note?}    a mesh a visitor's browser showed, as client-errors are taken (120 in 10
+                                                        min an address): kept in data/mesh-views.jsonl; `cli.py mesh-views`
     POST /api/client-errors {kind, message, mesh?, file?, page?, source?}   what failed in a visitor's browser, from anyone
                                                         viewing the site (not other sites' pages; 8 KB, 20 in 10 min an address):
                                                         kept in data/client-errors.jsonl; `python3 cli.py client-errors` lists them

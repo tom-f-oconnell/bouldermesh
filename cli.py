@@ -22,6 +22,8 @@
                                                        (run it where the data is writable: in Docker, docker exec)
   python cli.py client-errors [-n N] [--data DIR]      the last N errors visitors' browsers reported (meshes that
                                                        wouldn't load, errors in the page), newest last
+  python cli.py mesh-views [-n N] [--hours H] [--data DIR]  the last N meshes visitors' browsers showed, and how often
+                                                       each was shown in the last H hours (default 24), and how
   python cli.py splat <mesh_id> [--steps N] [--out FILE] [--data DIR]
                                                        fit the splat of what's around a reconstructed mesh, for the
                                                        viewer's Scene background (needs CUDA torch and gsplat: splat.py)
@@ -85,6 +87,8 @@ def main():
     e.add_argument("--since"); e.add_argument("--data")
     i = sub.add_parser("import-bundle"); i.add_argument("bundle"); i.add_argument("--data")
     ce = sub.add_parser("client-errors"); ce.add_argument("-n", type=int, default=30); ce.add_argument("--data")
+    mv = sub.add_parser("mesh-views"); mv.add_argument("-n", type=int, default=20); mv.add_argument("--hours", type=float, default=24)
+    mv.add_argument("--data")
     sp = sub.add_parser("splat"); sp.add_argument("mesh_id"); sp.add_argument("--steps", type=int, default=7000)
     sp.add_argument("--out"); sp.add_argument("--data")
     a = ap.parse_args()
@@ -94,6 +98,8 @@ def main():
 
     if a.cmd == "client-errors":
         sys.exit(client_errors(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n))
+    if a.cmd == "mesh-views":
+        sys.exit(mesh_views(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n, a.hours))
 
     if a.cmd in ("export-boulders", "import-bundle"):
         if a.data:
@@ -140,17 +146,45 @@ def main():
                                                  anchors=anchors), indent=1))
 
 
-def client_errors(data: Path, n: int) -> int:
-    """Print the last n reports from visitors' browsers (server.record_client_error()), from the file and the one before."""
+def _reports(data: Path, name: str) -> list[dict]:
+    """A file of reports from visitors' browsers, and the one before it, oldest first."""
     lines = []
-    for f in (data / "client-errors.jsonl.1", data / "client-errors.jsonl"):
+    for f in (data / f"{name}.1", data / name):
         if f.exists():
             lines += f.read_text().splitlines()
-    if not lines:
+    return [json.loads(x) for x in lines if x.strip()]
+
+
+def mesh_views(data: Path, n: int, hours: float) -> int:
+    """Print the last n meshes visitors' browsers showed (server.record_mesh_view()), and how often each was shown in the
+    last `hours`, and how it was asked for."""
+    import collections
+    import datetime
+    views = _reports(data, "mesh-views.jsonl")
+    if not views:
+        print(f"no views reported (nothing in {data / 'mesh-views.jsonl'})")
+        return 0
+    for v in views[-n:]:
+        took = f" in {v['seconds']} s" if v.get("seconds") is not None else ""
+        print(f"{v['time']} {v.get('version') or '-'} {v['mesh']} {v.get('name', '')}"
+              f"{' from ' + v['via'] if v.get('via') else ''}{took}{' (editor)' if v.get('editor') else ''}"
+              + (f"\n    {v['note']}" if v.get("note") else ""))
+    since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    recent = [v for v in views if v["time"] >= since]
+    print(f"\nin the last {hours:g} h: {len(recent)} view(s) of {len({v['mesh'] for v in recent})} mesh(es); by how: "
+          + ", ".join(f"{k or 'other'} {c}" for k, c in collections.Counter(v.get("via") for v in recent).most_common()))
+    for (mid, name), c in collections.Counter((v["mesh"], v.get("name", "")) for v in recent).most_common(15):
+        print(f"  {c:4d}  {mid} {name}")
+    return 0
+
+
+def client_errors(data: Path, n: int) -> int:
+    """Print the last n reports from visitors' browsers (server.record_client_error()), from the file and the one before."""
+    reports = _reports(data, "client-errors.jsonl")
+    if not reports:
         print(f"no errors reported (nothing in {data / 'client-errors.jsonl'})")
         return 0
-    for line in lines[-n:]:
-        r = json.loads(line)
+    for r in reports[-n:]:
         where = " ".join(x for x in (f"mesh {r['mesh']}" if r.get("mesh") else "", r.get("source") or "", r.get("page") or "") if x)
         print(f"{r['time']} {r.get('version') or '-'} {r['kind']}: {r.get('message', '')[:300]}\n    {where} | {r.get('browser', '')[:120]}")
     return 0

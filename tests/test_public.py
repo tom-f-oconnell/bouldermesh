@@ -196,6 +196,19 @@ def with_token(tmp: Path) -> None:
                                                                        ("files", "tex.png", PNG), ("files", "run.svg", b"<svg onload=alert(1)>")])
         assert st == 201 and up["filename"] == "cube.ply" and sorted(up["skipped"]) == ["evil.html", "run.svg"], up
         mid = up["id"]
+        # each mesh a visitor's browser shows is kept, with how it was asked for; not one that isn't there
+        view = {"mesh": mid, "via": "random", "seconds": 2.345, "note": "Texture reduced to 4096 pixels"}
+        st, _, r = req(B, "POST", "/api/mesh-views", view, headers={"X-Real-IP": "198.51.100.20"})
+        assert st == 202, (st, r)
+        seen = [json.loads(x) for x in (tmp / "data" / "mesh-views.jsonl").read_text().splitlines()]
+        assert {k: seen[-1].get(k) for k in ("mesh", "via", "seconds", "note", "editor")} == \
+            {"mesh": mid, "via": "random", "seconds": 2.3, "note": "Texture reduced to 4096 pixels", "editor": False}, seen[-1]
+        assert seen[-1]["name"] and "198.51.100.20" not in json.dumps(seen), seen[-1]
+        assert req(B, "POST", "/api/mesh-views", {"mesh": "0123456789ab"})[0] == 404
+        assert req(B, "POST", "/api/mesh-views", view, headers={"Origin": "https://evil.example"})[0] == 403
+        out = subprocess.run([sys.executable, str(ROOT / "cli.py"), "mesh-views", "--data", str(tmp / "data")],
+                             capture_output=True, text=True, check=True).stdout
+        assert f"{mid} " in out and "from random in 2.3 s" in out and "1 view(s) of 1 mesh(es); by how: random 1" in out, out
         # a scene splat beside it is listed and served; the page's policy lets the splat viewer's worker run
         (tmp / "data" / "meshes" / mid / "scene.splat").write_bytes(b"\0" * 64)
         assert next(m for m in req(B, "GET", "/api/meshes")[2] if m["id"] == mid)["splat"] is True

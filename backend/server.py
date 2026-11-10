@@ -2196,34 +2196,69 @@ def compute_state() -> dict:
 CLIENT_ERRORS = DATA / "client-errors.jsonl"   # one report a line; the one before it, client-errors.jsonl.1, once it's full
 CLIENT_ERRORS_BYTES = 2 * 2**20                # how big the file gets before that
 CLIENT_REPORT_MAX = 8192                       # the largest report taken
-CLIENT_REPORTS = (20, 600)                     # at most this many from one address in this many seconds
-_client_reports: dict[str, list[float]] = {}
+CLIENT_REPORTS = {"error": (20, 600), "view": (120, 600)}   # at most this many of each from one address in this many seconds
+MESH_VIEWS = DATA / "mesh-views.jsonl"       # each mesh shown in a visitor's browser, and how it was asked for
+_client_reports: dict[tuple[str, str], list[float]] = {}
 _client_lock = threading.Lock()
+
+
+def _client_report(kind: str, sender: str, path: Path, line: dict) -> bool:
+    """Append a report from a visitor's browser to path, unless that address has sent too many of its kind lately
+    (CLIENT_REPORTS), starting a new file once it's over CLIENT_ERRORS_BYTES, the old one kept as <name>.1."""
+    now = time.time()
+    most, within = CLIENT_REPORTS[kind]
+    with _client_lock:
+        recent = [t for t in _client_reports.get((kind, sender), []) if now - t < within]
+        if len(recent) >= most:
+            _client_reports[(kind, sender)] = recent
+            return False
+        _client_reports[(kind, sender)] = recent + [now]
+        for k in [k for k, ts in _client_reports.items() if not ts or now - ts[-1] > max(w for _, w in CLIENT_REPORTS.values())]:
+            del _client_reports[k]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > CLIENT_ERRORS_BYTES:
+            path.replace(path.with_name(path.name + ".1"))
+        with open(path, "a") as f:
+            f.write(json.dumps({"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), "version": VERSION,
+                                **{k: v for k, v in line.items() if v is not None}}) + "\n")
+    return True
 
 
 def record_client_error(report: dict, sender: str, user_agent: str, editor: bool) -> bool:
     """Keep what a visitor's browser said went wrong (a mesh that wouldn't load, an error in the page), for looking at
     later: in CLIENT_ERRORS and the log. Who sent it isn't kept, only their browser. Returns False if that address has
     sent too many lately."""
-    now = time.time()
-    with _client_lock:
-        recent = [t for t in _client_reports.get(sender, []) if now - t < CLIENT_REPORTS[1]]
-        if len(recent) >= CLIENT_REPORTS[0]:
-            _client_reports[sender] = recent
-            return False
-        _client_reports[sender] = recent + [now]
-        for k in [k for k, ts in _client_reports.items() if not ts or now - ts[-1] > CLIENT_REPORTS[1]]:
-            del _client_reports[k]
-        text = lambda k, n: str(report.get(k) or "")[:n] or None  # noqa: E731
-        line = {"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), "version": VERSION, "kind": text("kind", 40),
-                "message": text("message", 1000), "mesh": text("mesh", 40), "file": text("file", 200), "page": text("page", 300),
-                "source": text("source", 300), "browser": user_agent[:300] or None, "editor": editor}
-        CLIENT_ERRORS.parent.mkdir(parents=True, exist_ok=True)
-        if CLIENT_ERRORS.exists() and CLIENT_ERRORS.stat().st_size > CLIENT_ERRORS_BYTES:
-            CLIENT_ERRORS.replace(CLIENT_ERRORS.with_name(CLIENT_ERRORS.name + ".1"))
-        with open(CLIENT_ERRORS, "a") as f:
-            f.write(json.dumps({k: v for k, v in line.items() if v is not None}) + "\n")
+    text = lambda k, n: str(report.get(k) or "")[:n] or None  # noqa: E731
+    line = {"kind": text("kind", 40), "message": text("message", 1000), "mesh": text("mesh", 40), "file": text("file", 200),
+            "page": text("page", 300), "source": text("source", 300), "browser": user_agent[:300] or None, "editor": editor}
+    if not _client_report("error", sender, CLIENT_ERRORS, line):
+        return False
     print(f"browser error ({line['kind']}){' in mesh ' + line['mesh'] if line['mesh'] else ''}: {(line['message'] or '')[:200]}", flush=True)
+    return True
+
+
+def record_mesh_view(report: dict, sender: str, editor: bool) -> bool | None:
+    """Keep that a visitor's browser showed a mesh, in MESH_VIEWS and the log: which, how it was asked for (via: random,
+    climb, meshes, map, area, project, beta), how long it took to load, and its note if it had one. Requests for the
+    files don't say, as browsers and Cloudflare keep copies. Not who, nor their browser.
+
+    Returns:
+        None if there's no such mesh; False if that address has sent too many lately.
+    """
+    mid = str(report.get("mesh") or "")
+    m = q("SELECT name FROM meshes WHERE id=?", mid, one=True) if re.fullmatch(r"[0-9a-f]{6,32}", mid) else None
+    if not m:
+        return None
+    try:
+        seconds = round(float(report.get("seconds")), 1)
+    except (TypeError, ValueError):
+        seconds = None
+    via = str(report.get("via") or "")[:20] or None
+    line = {"mesh": mid, "name": m["name"], "via": via, "seconds": seconds, "note": str(report.get("note") or "")[:300] or None,
+            "editor": editor}
+    if not _client_report("view", sender, MESH_VIEWS, line):
+        return False
+    print(f"viewed mesh {mid} ({m['name']}){' from ' + via if via else ''}" + (f" in {seconds} s" if seconds is not None else ""), flush=True)
     return True
 
 
@@ -2394,9 +2429,10 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         return (origin is not None and origin.split("//", 1)[-1].lower() not in hosts) or self.headers.get("Sec-Fetch-Site") == "cross-site"
 
-    def client_error(self) -> None:
-        """POST /api/client-errors: what went wrong in a visitor's browser (record_client_error()). Anyone viewing the site
-        may send one, even where nothing may be changed, but only from its own pages, small, and not too often."""
+    def client_report(self, kind: str) -> None:
+        """POST /api/client-errors: what went wrong in a visitor's browser (record_client_error()), or POST /api/mesh-views:
+        a mesh it showed (record_mesh_view()). Anyone viewing the site may send them, even where nothing may be changed,
+        but only from its own pages, small, and not too often."""
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -2411,8 +2447,12 @@ class Handler(BaseHTTPRequestHandler):
             assert isinstance(report, dict)
         except (ValueError, AssertionError):
             return self.send_json({"error": "a report is a JSON object"}, 400)
-        if not record_client_error(report, self.address_string(), self.headers.get("User-Agent") or "",
-                                   not READ_ONLY and (not EDIT_TOKEN or self.is_editor())):
+        editor = not READ_ONLY and (not EDIT_TOKEN or self.is_editor())
+        kept = (record_client_error(report, self.address_string(), self.headers.get("User-Agent") or "", editor) if kind == "error"
+                else record_mesh_view(report, self.address_string(), editor))
+        if kept is None:
+            return self.send_json({"error": "no such mesh"}, 404)
+        if not kept:
             return self.send_json({"error": "too many reports from here lately"}, 429)
         self.send_json({"kept": True}, 202)
 
@@ -2688,8 +2728,8 @@ class Handler(BaseHTTPRequestHandler):
     # -- POST --------------------------------------------------------------
     def do_POST(self):
         p = urlparse(self.path).path
-        if p == "/api/client-errors":    # from any visitor, not only editors
-            return self.client_error()
+        if p in ("/api/client-errors", "/api/mesh-views"):    # from any visitor, not only editors
+            return self.client_report("error" if p == "/api/client-errors" else "view")
         if self.refused():
             return
         try:

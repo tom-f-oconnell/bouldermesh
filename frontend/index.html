@@ -974,6 +974,8 @@ async function loadGltfWithTexture(url, base, label){
 let shownMesh = null;    // the id of the mesh in the viewer, if it's one of ours
 async function loadMeshUrl(url, filename, label, id){
   shownMesh = id || null;
+  const began = performance.now(), via = viewVia;
+  viewVia = '';
   $('#vfrom').style.display = 'none';
   closeBeta(id);
   showRight('3d');
@@ -1003,6 +1005,7 @@ async function loadMeshUrl(url, filename, label, id){
     shownId = id || null;
     showObject(obj, label, !!id && meshesById[id]?.source !== 'upload');
     toast(note ? 'Loaded, with a problem: see the note on the view' : 'Loaded ' + label, note ? 5000 : 1500);
+    if (id) reportView(id, via, (performance.now() - began) / 1000, note);
     viewNote(note, note ? again : null);
     renderPieces();
     renderOrientation(id ? meshesById[id] : null);
@@ -1036,7 +1039,7 @@ async function refreshMap(fit=false){
   if (fit && gj.features.length) { map.invalidateSize(); map.fitBounds(geoLayer.getBounds().pad(0.3), { maxZoom: 16 }); mapFitted = true; }
 }
 map.on('popupopen', e => {
-  e.popup.getElement().querySelectorAll('a[data-mesh]').forEach(a => a.onclick = ev => { ev.preventDefault(); viewMesh(a.dataset.mesh); });
+  e.popup.getElement().querySelectorAll('a[data-mesh]').forEach(a => a.onclick = ev => { ev.preventDefault(); viewMesh(a.dataset.mesh, null, 'map'); });
   e.popup.getElement().querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
 });
 function flyTo(lat, lng){ mapFitted = true; showRight('map'); refreshMap().then(()=>map.setView([lat, lng], 17)); }
@@ -1130,9 +1133,9 @@ const boulderMeshOf = id => (meshesCache || []).find(m => !m.replaced_by && (m.b
 async function viewClimbMesh(id){
   if (!climbMeshes(id).length && !boulderMeshOf(id) && !climbMeshes(id, true).length) await refreshMeshes();
   const own = climbMeshes(id)[0], boulder = boulderMeshOf(id), shared = climbMeshes(id, true)[0];
-  if (own) return viewMesh(own.id);
-  if (boulder) return viewMesh(boulder.id, id);
-  if (shared) return viewMesh(shared.id);
+  if (own) return viewMesh(own.id, null, 'climb');
+  if (boulder) return viewMesh(boulder.id, id, 'climb');
+  if (shared) return viewMesh(shared.id, null, 'climb');
   toast('No mesh is linked to this climb yet.');
 }
 const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', done: 'meshed', failed: 'failed', skipped: 'skipped' };
@@ -1208,8 +1211,8 @@ async function openClimb(id, focus=true){
     const ll = parseLL(v); if (!ll) return;
     await api('/api/climbs/' + id, { method: 'PATCH', json: { lat: ll[0], lng: ll[1] } }); toast('Coordinates saved'); d.remove(); openClimb(id); refreshClimbs();
   };
-  d.querySelectorAll('[data-mesh]').forEach(ch => ch.onclick = () => viewMesh(ch.dataset.mesh));
-  d.querySelectorAll('[data-bmesh]').forEach(ch => ch.onclick = async () => { if (!meshesById[ch.dataset.bmesh]) await refreshMeshes(); viewMesh(ch.dataset.bmesh, id); });
+  d.querySelectorAll('[data-mesh]').forEach(ch => ch.onclick = () => viewMesh(ch.dataset.mesh, null, 'climb'));
+  d.querySelectorAll('[data-bmesh]').forEach(ch => ch.onclick = async () => { if (!meshesById[ch.dataset.bmesh]) await refreshMeshes(); viewMesh(ch.dataset.bmesh, id, 'climb'); });
   d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
   d.querySelector('.meshboulder')?.addEventListener('click', async () => {
     const again = c.boulder.meshes.length ? ' again, as a new version' : '';
@@ -1330,7 +1333,7 @@ async function refreshProjects(){
       try { await api(`/api/projects/${p.id}/retry`, {method:'POST'}); toast('Queued to try again'); active = p.id; poll(); }
       catch(e){ toast(e.message); }
     });
-    d.querySelector('.view')?.addEventListener('click', () => viewMesh(p.mesh_id));
+    d.querySelector('.view')?.addEventListener('click', () => viewMesh(p.mesh_id, null, 'project'));
     d.querySelector('.climb')?.addEventListener('click', () => openClimb(p.climb_id));
     d.querySelector('.del').onclick = async () => { if (ask(`Delete project "${p.name}"?`)) { await api(`/api/projects/${p.id}`, {method:'DELETE'}); refreshProjects(); } };
     d.onclick = ev => { if (ev.target.tagName !== 'BUTTON') { active = p.id; loadDetail(p.id, d); } };
@@ -1536,7 +1539,7 @@ async function refreshCampaigns(){
       d.querySelector('.boulders')?.addEventListener('click', () => { if (ask(`Mesh the ${c.again.boulders} boulders in "${c.name}" with more than one climb, each from the photos of all its climbs, as meshes of their own? No climb's own mesh changes. Climbs on them never harvested are harvested first, at about a minute each for their pages; then pooling takes a few minutes per boulder, and meshing most of an hour for those with enough viewpoints. ${alone}`)) post('boulders'); });
       d.querySelector('.rebuildall')?.addEventListener('click', () => { if (ask(`Mesh every climb in "${c.name}" with enough viewpoints again? Each can take most of an hour. ${alone}`)) post('rebuild'); });
       d.querySelector('.del').onclick = async () => { if (ask(`Remove the list for "${c.name}"? Its meshes stay.`)) { await api('/api/campaigns/' + c.id, { method: 'DELETE' }); campaignLoop(); } };
-      d.querySelectorAll('[data-mesh]').forEach(b => b.onclick = async () => { if (!meshesById[b.dataset.mesh]) await refreshMeshes(); viewMesh(b.dataset.mesh); });
+      d.querySelectorAll('[data-mesh]').forEach(b => b.onclick = async () => { if (!meshesById[b.dataset.mesh]) await refreshMeshes(); viewMesh(b.dataset.mesh, null, 'area'); });
       d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
       d.querySelectorAll('details').forEach(x => { if (open.has(x.dataset.list)) x.open = true; });
       el.appendChild(d);
@@ -1686,14 +1689,14 @@ async function refreshMeshes(){
       b.onclick = async () => { await api(`/api/meshes/${m.id}/make-current`, { method: 'POST' }); await refreshMeshes(); refreshClimbs(); };
       d.querySelector('.chips').before(b);
     }
-    d.querySelector('.view').onclick = () => viewMesh(m.id);
+    d.querySelector('.view').onclick = () => viewMesh(m.id, null, 'meshes');
     d.querySelector('.fly')?.addEventListener('click', () => flyTo(m.lat, m.lng));
     d.querySelector('.setll')?.addEventListener('click', async () => { const ll = parseLL(prompt('lat, lng')); if (!ll) return; await api('/api/meshes/'+m.id, {method:'PATCH', json:{lat:ll[0], lng:ll[1]}}); refreshMeshes(); });
     d.querySelector('.del').onclick = async () => { if (ask(`Delete mesh "${m.name}"?`)) { await api('/api/meshes/' + m.id, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); } };
     d.querySelectorAll('[data-climb]').forEach(ch => ch.onclick = ev => { if (ev.target.dataset.unlink) return; openClimb(ch.dataset.climb); });
     d.querySelectorAll('[data-from]').forEach(ch => ch.onclick = () => {
       const c = m.boulder_climbs.find(x => x.id === ch.dataset.from);
-      c?.view ? viewMesh(m.id, c.id) : openClimb(ch.dataset.from);
+      c?.view ? viewMesh(m.id, c.id, 'meshes') : openClimb(ch.dataset.from);
     });
     d.querySelectorAll('[data-unlink]').forEach(x => x.onclick = async ev => { ev.stopPropagation(); await api(`/api/meshes/${m.id}/links/${x.dataset.unlink}`, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); });
     d.querySelector('.linksel').onchange = async ev => { if (!ev.target.value) return; await api(`/api/meshes/${m.id}/links`, {method:'POST', json:{climb_id: ev.target.value}}); toast('Linked'); refreshMeshes(); refreshClimbs(); };
@@ -1701,9 +1704,11 @@ async function refreshMeshes(){
   }
   renderBetaList();
 }
-function viewMesh(id, from){
+// via: how it was asked for, for the server's record of what's viewed (reportView())
+function viewMesh(id, from, via = ''){
   const m = meshesById[id];
   if (!m) return;
+  viewVia = via;
   const own = m.climbs.filter(c => !c.shared), on = m.boulder_climbs || [];
   const label = m.name + (own.length ? ` — ${own.map(c => c.name).join(', ')}` : on.length ? ` — ${plural(on.length, 'climb')}` : '');
   return loadMeshUrl(`/meshes/${id}/${m.filename}`, m.filename, label, id).then(() => { if (shownMesh === id) showFrom(m, from); });
@@ -1822,7 +1827,7 @@ function watchBeta(){
 }
 async function openBeta(mid){
   document.querySelector('.tabs button[data-tab=beta]').click();
-  await viewMesh(mid);
+  await viewMesh(mid, null, 'beta');
   if (!current) return;
   betaState = { mid, found: null, marked: [], shown: new Set(), marking: false };
   await loadBeta();
@@ -1992,6 +1997,14 @@ function reportError(kind, error, extra = {}){
 }
 addEventListener('error', ev => { if (!/^(chrome|moz|safari)-extension:/.test(ev.filename || '')) reportError('page', ev.error || ev.message, { source: `${ev.filename || ''}:${ev.lineno || ''}` }); });
 addEventListener('unhandledrejection', ev => reportError('page', ev.reason));
+// Each mesh shown, so the server knows what's looked at: requests for the files themselves don't say, as browsers and
+// Cloudflare keep copies for an hour. Its note, if it has one (a texture loaded smaller), goes too.
+let viewVia = '', viewsSent = 0;
+function reportView(mesh, via, seconds, note){
+  if (viewsSent++ >= 200) return;
+  fetch('/api/mesh-views', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ mesh, via, seconds: Math.round(seconds * 10) / 10, note: note || undefined }) }).catch(() => {});
+}
 
 // ---------------------------------------------------------------- a mesh picked at random
 // Weighted by how many faces it shows (the reconstruction's, less stray pieces hidden), by rank among the meshes: the most
@@ -2011,7 +2024,7 @@ async function randomMesh(){
   if (!current.length) return toast('No meshes yet.');
   const m = pickWeighted(current.length > 1 ? current.filter(m => m.id !== lastRandom) : current);   // not the same one twice running
   lastRandom = m.id;
-  viewMesh(m.id);
+  viewMesh(m.id, null, 'random');
 }
 $('#random').onclick = $('#vrandom').onclick = randomMesh;   // the viewer's, on a phone, where it hides the header
 
