@@ -23,6 +23,7 @@ Optional extras, each unlocks a feature and is detected at runtime:
 | COLMAP + OpenMVS (see Docker section) | real photogrammetry instead of demo relief meshes |
 | `GOOGLE_CSE_KEY` + `GOOGLE_CSE_CX` | Google Images via the Custom Search JSON API (100 free queries/day; existing keys only, see Known gaps) |
 | `FLICKR_KEY` | geotagged Flickr photos around the climb's coordinates |
+| `pip install segno` | QR codes of the notifications' topic on the admin page, for a phone to scan (in the Docker image) |
 
 Set `BOULDERMESH_UA="BoulderMesh/0.2 (you@example.com)"` so the sites you fetch from can reach you.
 
@@ -667,7 +668,9 @@ or on your phone. Until then, under *Volunteers and machines that register thems
   14 days without being heard from.
 
 **On your phone:** install the free ntfy app (Android or iOS). On the admin page, *Make new topics*, then subscribe to
-the topic it shows in the app (on ntfy.sh unless you name another server) and *Send a test*: its *Reply* button checks
+the topic it shows in the app (on ntfy.sh unless you name another server). Its QR codes save typing it: on Android,
+the camera's scan of the first subscribes the app; on an iPhone, the second opens the topic's page, whose address ends
+in the topic's name. Then *Send a test*: its *Reply* button checks
 the phone's taps reach this server, which says so in a second notification. Each registration then comes with *Approve*
 and *Deny*, or after three in ten minutes, one summary of the rest. The taps go through ntfy to a second topic this
 server follows, signed so that no one else can make them; but anyone who learns the first topic's name can read the

@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
 SIGNED_DAYS = 7         # how long a notification's buttons work
 BATCH = (3, 600)        # at most this many notifications with buttons in this many seconds; the rest in one summary after
@@ -229,6 +230,27 @@ class Notifier:
 
     def state(self) -> dict:
         c = self.conf()
+        link = f"{c['server']}/{c['topic']}" if c["topic"] else None
+        # the Android app subscribes from an ntfy:// link (docs.ntfy.sh, "Subscribe from your phone"); the https one opens
+        # the topic's page, from which an iPhone's app can be given the topic
+        app = f"ntfy://{urlparse(c['server']).netloc}/{c['topic']}?display=BoulderMesh" if c["topic"] else None
         return {"enabled": c["enabled"], "server": c["server"], "topic": c["topic"], "reply_topic": c["reply_topic"],
-                "subscribe": f"{c['server']}/{c['topic']}" if c["topic"] else None, "listening": self.listening,
+                "subscribe": link, "subscribe_app": app, "qr_link": qr_svg(link), "qr_app": qr_svg(app), "listening": self.listening,
                 "last_error": self.last_error, "last_sent": self.last_sent, "waiting_summary": len(self.held)}
+
+
+_qr: dict[str, str | None] = {}
+
+
+def qr_svg(text: str | None) -> str | None:
+    """A QR code of text, as SVG to put in a page, for a phone's camera; None without text, or without segno (pip)."""
+    if not text:
+        return None
+    if text not in _qr:
+        try:
+            import segno
+        except ImportError:
+            return None
+        _qr.clear()     # only the topics now are wanted
+        _qr[text] = segno.make(text, error="m").svg_inline(scale=4, border=3, dark="#000", light="#fff")
+    return _qr[text]

@@ -119,7 +119,14 @@ try:
     assert asked[0].endswith(f"since={now}") or asked[0].split("since=")[1].isdigit(), asked[0]
     assert any(a.endswith("since=r2") for a in asked[1:]), asked
     assert any(p["title"] == "Done" and "approved ab12cd34" in p["message"] for p in published), "and says what it did"
-    assert n.state()["listening"] and n.state()["subscribe"] == f"http://127.0.0.1:{port}/{conf['notify.topic']}"
+    st = n.state()
+    assert st["listening"] and st["subscribe"] == f"http://127.0.0.1:{port}/{conf['notify.topic']}"
+    assert st["subscribe_app"] == f"ntfy://127.0.0.1:{port}/{conf['notify.topic']}?display=BoulderMesh", "the Android app's link"
+    try:
+        import segno  # noqa: F401
+        assert st["qr_app"].startswith("<svg") and st["qr_link"].startswith("<svg") and st["qr_app"] != st["qr_link"], "QR codes of both"
+    except ImportError:
+        assert st["qr_app"] is None, "without segno, no QR codes"
 
     # the test, whose Reply button pings the server
     published.clear()

@@ -69,6 +69,8 @@ RUN pip install --no-cache-dir --break-system-packages einops safetensors huggin
  && pip install --no-cache-dir --break-system-packages --no-deps \
       https://github.com/facebookresearch/vggt/archive/a288dd0f14786c93483e45524328726ab7b1b4ce.zip \
  && python3 -c "import vggt.models.vggt"
+# segno: QR codes on the admin page, of the topic a phone subscribes to for notifications (notify.py)
+RUN pip install --no-cache-dir --break-system-packages segno
 # YouTube needs a JavaScript runtime and yt-dlp's challenge scripts (yt-dlp-ejs, in its "default" extras) for full
 # support: without them yt-dlp warns that formats may be missing. Deno is the runtime it looks for on PATH.
 RUN pip install --no-cache-dir --break-system-packages --upgrade "yt-dlp[default]" deno \

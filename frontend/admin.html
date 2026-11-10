@@ -34,6 +34,8 @@
   .tag{font-size:11px;padding:1px 6px;border-radius:999px;border:1px solid var(--warn);color:var(--warn);margin-left:4px}
   td button{margin:2px 0}
   .inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px} .inline input[type=number]{width:80px}
+  .qrs{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0} .qrs figure{margin:0;width:220px} .qrs svg{display:block;width:180px;height:auto}
+  .qrs figcaption{font-size:12px;color:var(--mute);margin-top:4px}
   #msg{position:fixed;bottom:14px;right:14px;background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:8px;display:none;max-width:420px}
   .aws,.ssh,.pull{display:none}
   body.p-aws .aws, body.p-ssh .ssh, body.p-pull .pull{display:block}
@@ -272,6 +274,8 @@ function render(s){
   $('#ntfy-body').innerHTML = (nt.subscribe
       ? `In the ntfy app (free, for Android and iOS), subscribe to the topic <code>${esc(nt.topic)}</code>${nt.server !== 'https://ntfy.sh' ? ` on the server ${esc(nt.server)}` : ''}, or open <a href="${esc(nt.subscribe)}" target="_blank" rel="noopener">${esc(nt.subscribe)}</a> on the phone.
          Keep the topic's name private: on ntfy.sh, anyone who knows it can read the notifications, and use their buttons. Make new topics if it gets out.`
+        + (nt.qr_app ? `<div class="qrs"><figure>${nt.qr_app}<figcaption><b>Android:</b> scan with the phone's camera, and the ntfy app subscribes to it</figcaption></figure>
+           <figure>${nt.qr_link}<figcaption><b>iPhone</b> (or a browser): opens the topic's page; in the ntfy app, subscribe to the topic named at the end of its address</figcaption></figure></div>` : '')
       : 'Make new topics first: two long random names, one for notifications and one for the buttons\' replies.')
     + (nt.last_error ? `<div class="bad">${esc(nt.last_error)}</div>` : '') + (nt.waiting_summary ? `<div>${nt.waiting_summary} registration(s) waiting for the next summary.</div>` : '');
   const cr = s.secrets;
