@@ -176,7 +176,8 @@
     header{padding:6px 10px;gap:8px} header h1,#mode{display:none} #random{margin-left:0}
     #volunteer{order:1;margin-left:auto} #edit,#viewonly,#forget{order:2}
     /* the view on its own: back, and a toggle between the mesh and the map; wireframe and notes live elsewhere or not at all */
-    #toctl{font-size:17px;line-height:1;padding:3px 10px} #v3d,#vwire,#vnotes{display:none!important}
+    #toctl{font-size:17px;line-height:1;padding:3px 10px} #v3d,#vwire,#vnotes,#viewing{display:none!important}
+    #vmap{order:1;margin-left:auto} #vfrom{flex:0 1 auto;min-width:0}
     #prefs .phone-only{display:revert!important}
     #caps,#code,#admin{display:none!important}
     /* the background and colour choices open from a button in either view, as a panel over it */
@@ -493,8 +494,12 @@ $('#vmap').onclick = () => {
   if (phone.matches && $('#map').classList.contains('on')) return showRight('3d');
   endSway(); showRight('map');
   const m = shownMesh && meshesById[shownMesh];
-  if (m && m.lat != null && mapCentredOn !== m.id) { mapCentredOn = m.id; refreshMap().then(() => mapAround(m.lat, m.lng)); }
-  else refreshMap(!mapFitted);
+  // opened around the mesh in view, the first time for it, and its climb's point opened as if clicked, unless it's been moved
+  if (m && m.lat != null && (mapCentredOn !== m.id || !mapMoved())) {
+    if (mapCentredOn !== m.id) mapAround(m.lat, m.lng);
+    mapCentredOn = m.id;
+    refreshMap().then(() => { if (!mapMoved()) popShown(m); });
+  } else refreshMap(!mapFitted);
 };
 
 // ---------------------------------------------------------------- 3D viewer
@@ -1065,7 +1070,9 @@ phone.addEventListener('change', placePrefs);
 document.querySelectorAll('.prefsbtn').forEach(b => b.onclick = () => setPrefs(b.getAttribute('aria-expanded') !== 'true', b));
 document.addEventListener('pointerdown', ev => { if (document.body.classList.contains('prefs-open') && !ev.target.closest('#prefs, .prefsbtn')) setPrefs(false); });
 addEventListener('keydown', ev => { if (ev.key === 'Escape') setPrefs(false); });
-renderer.domElement.addEventListener('webglcontextlost', ev => { ev.preventDefault(); $('#viewing').textContent = 'The view stopped working: reload the page'; viewNote('The graphics card dropped this view, usually because it ran out of memory. Close other tabs that use it and reload the page.'); });
+renderer.domElement.addEventListener('webglcontextlost', ev => { ev.preventDefault(); $('#viewing').textContent = 'The view stopped working: reload the page';
+  if (phone.matches) $('#vtitle').textContent = 'The view stopped working: reload the page';     // where a phone has room to say so
+  viewNote('The graphics card dropped this view, usually because it ran out of memory. Close other tabs that use it and reload the page.'); });
 function loadGltf(url, side){
   const manager = new THREE.LoadingManager();
   manager.setURLModifier(u => {
@@ -1201,7 +1208,8 @@ async function refreshMap(fit=false){
   for (const f of gj.features) { const k = f.geometry.coordinates.join(); atPoint.set(k, [...(atPoint.get(k)||[]), f]); }
   geoLayer = L.geoJSON(gj, {
     pointToLayer: (f, ll) => L.circleMarker(ll, { radius: f.properties.layer==='mesh' ? 8 : 6, color: f.properties.layer==='mesh' ? '#5cc8ff' : '#ff9f5c', fillOpacity: .8, weight: 1 }),
-    onEachFeature: (f, l) => l.bindPopup(atPoint.get(f.geometry.coordinates.join()).map(popupHtml).join('<hr>'))
+    // at most 40% of the window tall, scrolling, so that a boulder's many climbs fit above its point at the map's centre
+    onEachFeature: (f, l) => l.bindPopup(atPoint.get(f.geometry.coordinates.join()).map(popupHtml).join('<hr>'), { maxHeight: Math.round(innerHeight * .4) })
   }).addTo(map);
   if (fit && gj.features.length) { map.invalidateSize(); map.fitBounds(geoLayer.getBounds().pad(0.3), { maxZoom: 16 }); mapFitted = true; }
 }
@@ -1210,13 +1218,35 @@ map.on('popupopen', e => {
   e.popup.getElement().querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
 });
 let mapCentredOn = null;     // the mesh the map was last opened around, to leave it where it's been moved to after
+let mapHome = null;          // where it was put then, to tell whether it's been moved since
+const setHome = () => { mapHome = { c: map.getCenter(), z: map.getZoom() }; };
+const mapMoved = () => !mapHome || map.getZoom() !== mapHome.z || map.project(map.getCenter()).distanceTo(map.project(mapHome.c)) > 4;
 // The map opened around a boulder: its shorter side this many km across (the admin page's site.map_km)
 function mapAround(lat, lng){
   map.invalidateSize();
   const size = map.getSize(), side = Math.max(1, Math.min(size.x, size.y)), km = statusCache.map_km || 1;
   // 256-pixel tiles, and the equator 40075 km around: at zoom z a pixel is 40075 km * cos(lat) / (256 * 2^z)
   const z = Math.log2(40075.017 * Math.max(.1, Math.cos(lat * Math.PI / 180)) * side / (256 * km));
-  map.setView([lat, lng], Math.min(z, map.getMaxZoom()));
+  map.setView([lat, lng], Math.min(z, map.getMaxZoom()), { animate: false });
+  mapFitted = true;     // not fitted to every point after, which zooms right out
+  setHome();
+}
+// The point of the climb the mesh in view is shown for, opened as if clicked: the climb it was opened from or is seen
+// from, else its own climbs, else its boulder's, but only if they're all at one point
+function popShown(m){
+  const own = m.climbs.filter(c => !c.shared).map(c => c.id), on = (m.boulder_climbs || []).map(c => c.id);
+  for (const ids of [viewedClimb ? [viewedClimb] : [], own, on]) {
+    const at = [];
+    geoLayer?.eachLayer(l => { if (l.feature.properties.layer !== 'mesh' && ids.includes(l.feature.properties.id)) at.push(l); });
+    if (!at.length) continue;
+    if (new Set(at.map(l => l.feature.geometry.coordinates.join())).size > 1) return;
+    const l = at[0], pop = l.getPopup();
+    if (!map.getBounds().pad(-.2).contains(l.getLatLng())) { map.panTo(l.getLatLng(), { animate: false }); setHome(); }
+    pop.options.autoPan = false;     // it's in view, and a pan would count as the map moved
+    l.openPopup();
+    pop.options.autoPan = true;
+    return;
+  }
 }
 function flyTo(lat, lng){ mapFitted = true; showRight('map'); refreshMap().then(() => mapAround(lat, lng)); }
 

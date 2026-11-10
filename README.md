@@ -311,13 +311,16 @@ in view is blue. *Random* opens any mesh; it's blue until one is in view.
 On a phone, the page shows either the controls or the view. The controls' header holds *Viewer* (grey until a mesh is
 opened, then with the climb in view named under it), *Random*, a ⚙ button (the mesh as *Surface* or *Wireframe*, the
 background, and colours), *Volunteer*, and *Edit…* or *Editing*. The view's bar holds ← back to the controls, *Random*,
-⚙, *Map* (which swaps the mesh for the map, and then reads *3D*), and *Sway*. While a mesh loads, its progress shows over whichever is on screen, and the view takes over once it's ready. Over
+⚙, *Sway*, and at its right end *Map*, which swaps the mesh for the map, and then reads *3D*. While a mesh loads, its
+progress shows over whichever is on screen, and the view takes over once it's ready. Over
 the mesh it shows only the climb's name, small, at the top, so texture problems, stray-piece cleanup, *Hide notes* and
 the iPhone gravity comparison are only shown on wider screens (over 860 px). A long press on the view gives a link to the
 mesh, to copy or share.
 
 The map opens around the mesh in view, its narrower side 1 km across (the admin page's *The map opens around a boulder
-this many km across*).
+this many km across*), with the point of its climb open as if clicked: the climb whose *View* opened it, or the one a
+boulder's mesh is seen from, else its own climbs or its boulder's, if they're all at one point. Once the map has been
+moved, it's left where it is.
 
 The page's address follows the mesh in view (`#mesh=<id>`, and `&climb=<id>` for a boulder's mesh seen from one of its
 climbs), so it can be copied from there too, and opening such a link shows that mesh.
