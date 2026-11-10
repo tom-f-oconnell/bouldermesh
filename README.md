@@ -404,9 +404,13 @@ listens only on this machine's loopback address unless `.env` says otherwise, an
     BOULDERMESH_SECRETS_KEY=...                 # to save credentials on it (see below)
     ADMIN_PASSWORD=...                          # optional: then it asks for user "admin" and this password
 
-Then `docker compose up -d` and open `http://10.0.0.5:36184`. Anyone who can reach it can change settings,
-so keep it off public addresses (it refuses to start on one). It refuses changes sent by other sites'
-pages, and requests naming a host that isn't an address or a LAN name (`ADMIN_HOSTNAMES` adds names).
+Then `docker compose up -d` and open `http://10.0.0.5:36184`, or press *Admin* at the top of the main page,
+which editors see. Where the browser can't reach it, *Admin* shows how to forward its port over SSH instead:
+`ssh -N -L 36184:127.0.0.1:36184 you@server`, then `http://localhost:36184`. `ADMIN_SSH=you@203.0.113.7`
+in `.env` fills in the address (behind Cloudflare, the server's own, not the site's name). Anyone who can
+reach it can change settings, so keep it off public addresses (it refuses to start on one). It refuses
+changes sent by other sites' pages, and requests naming a host that isn't an address or a LAN name
+(`ADMIN_HOSTNAMES` adds names).
 
 **What the site shows.** "Free to copy" means public domain, CC0, or a Creative Commons licence without
 No Derivatives, or your own uploads ([license_considerations.md](license_considerations.md) has why).

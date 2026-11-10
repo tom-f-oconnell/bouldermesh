@@ -47,7 +47,8 @@ class Server:
         self.url = f"http://127.0.0.1:{self.port}"
         full = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(self.port), HOST="127.0.0.1", ADMIN_PORT=str(self.admin_port),
                     HTTP_MIN_INTERVAL="0", STOP_WAIT_MINUTES="0.1", **env)
-        for k in ("EDIT_TOKEN", "READ_ONLY", "CSP", "CLIENT_IP_HEADER", "BOULDERMESH_COMMIT", "BOULDERMESH_IMAGE"):
+        for k in ("EDIT_TOKEN", "READ_ONLY", "CSP", "CLIENT_IP_HEADER", "BOULDERMESH_COMMIT", "BOULDERMESH_IMAGE", "ADMIN_SSH",
+                  "ADMIN_BIND", "ADMIN_PUBLISHED_PORT", "ADMIN_URL", "ADMIN_PASSWORD", "ADMIN_HOST"):
             if k not in env:
                 full.pop(k, None)
         self.proc = subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=full,
@@ -131,11 +132,16 @@ def with_token(tmp: Path) -> None:
         since = h["Last-Modified"]
         st, h, _ = req(B, "GET", "/", headers={"If-Modified-Since": since})
         assert st == 304, st
+        assert f"connect-src 'self' http://localhost:{srv.admin_port}" in csp, "the Admin button may look for the admin page"
         st, h, s = req(B, "GET", "/api/status")
         assert st == 200 and s["editing"] == "token" and s["editor"] is False and h["Cache-Control"] == "no-cache", s
+        assert s["admin"] is None, "where the admin page is, and how to reach it, are for editors"
         assert "Content-Security-Policy" not in h, "the policy is for the page"
         st, _, s = req(B, "GET", "/api/status", headers=AUTH)
         assert s["editor"] is True, s
+        p = srv.admin_port
+        assert s["admin"] == {"url": f"http://localhost:{p}", "local": f"http://localhost:{p}", "lan": False, "password": False,
+                              "ssh": f"ssh -N -L {p}:127.0.0.1:{p} <you>@<this server>", "ssh_known": False}, s["admin"]
 
         # changes: refused without the token, before the body is read; with it, as before; never from another site's page
         st, h, e = req(B, "POST", "/api/projects", {"name": "x"})
@@ -218,10 +224,13 @@ def read_only(tmp: Path) -> None:
         finally:
             out = srv.stop()
         assert "editing: none" in out, out[-1000:]
-    srv = Server(tmp)     # as before: open
+    srv = Server(tmp, ADMIN_SSH="tom@203.0.113.7", ADMIN_HOST="10.1.2.3")     # as before: open
     try:
         st, _, s = req(srv.url, "GET", "/api/status")
         assert s["editing"] == "open" and s["editor"] is True, s
+        p = srv.admin_port
+        assert (s["admin"]["url"], s["admin"]["lan"], s["admin"]["ssh"]) == \
+            (f"http://10.1.2.3:{p}", True, f"ssh -N -L {p}:10.1.2.3:{p} tom@203.0.113.7"), "a LAN address, forwarded from elsewhere"
         assert req(srv.url, "POST", "/api/projects", {"name": "x"})[0] == 201
         assert req(srv.url, "POST", "/api/projects", {"name": "x"}, headers={"Origin": "https://evil.example"})[0] == 403
     finally:

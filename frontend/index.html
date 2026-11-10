@@ -23,6 +23,11 @@
   .seg{display:inline-flex;margin-left:auto;border:1px solid var(--line);border-radius:6px;overflow:hidden}
   .seg button{background:transparent;color:var(--mute);border:0;border-radius:0;padding:3px 8px;font-size:12px} .seg button.on{color:var(--fg);background:var(--line)}
   #code{color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;text-decoration:none}
+  #admindlg{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;max-width:600px;padding:16px}
+  #admindlg::backdrop{background:rgba(0,0,0,.5)}
+  #admindlg p{font-size:13px;margin:0 0 10px}
+  #admindlg pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;margin:0 0 10px;white-space:pre-wrap;word-break:break-all;font-size:12px;user-select:all}
+  #admindlg a{color:var(--acc)}
   #code:hover{border-color:var(--acc)}
   main{display:grid;grid-template-columns:400px 1fr;min-height:0}
   aside{border-right:1px solid var(--line);overflow:hidden;background:var(--panel);display:flex;flex-direction:column;min-height:0}
@@ -144,7 +149,7 @@
   @media (max-width:860px){
     body,main{grid-template-columns:minmax(0,1fr)} aside{border-right:0} #right{display:none} .phone{display:inline-block}
     body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
-    #tofull{margin-left:auto} #caps,#code{display:none}
+    #tofull{margin-left:auto} #caps,#code,#admin{display:none!important}
     #hud,#viewnote,#pieces,#orient{display:none!important}
     .viewbar{overflow-x:auto} .viewbar button{white-space:nowrap} .viewbar .status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   }
@@ -160,8 +165,10 @@
   <button class="sm sec" id="edit" style="display:none"></button>
   <button class="sm phone" id="tofull">Viewer</button>
   <span class="seg" id="theme" title="Colours: the browser's setting, or light or dark here"><button data-theme="system" class="on">System</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span>
+  <button class="sm sec" id="admin" style="display:none" title="The admin page: what the site shows, where reconstructions run, credentials. It's on a port of its own, which only the server itself (or its LAN) can reach.">Admin</button>
   <a id="code" href="https://github.com/tom-f-oconnell/bouldermesh" target="_blank" rel="noopener">Code</a>
 </header>
+<dialog id="admindlg"></dialog>
 <main>
   <aside>
     <div class="tabs">
@@ -1035,7 +1042,7 @@ function boulderHtml(c){
     ${b.meshes.length || b.shared.length ? `<div class="chips">${b.meshes.map(m => `<span class="chip" data-bmesh="${m.id}" title="${m.view ? 'Shows it from where this climb\'s own photos were taken' : 'Its photos of this climb weren\'t placed in it, so it opens as any mesh does'}">▣ ${esc(m.name)} <small>${esc(seen(m))}</small></span>`).join('')}
       ${b.shared.map(m => `<span class="chip" data-mesh="${m.id}" title="An area linked this climb to the mesh made for ${esc(m.made_for)}, as it's on the same boulder: it may not show this climb's side">▣ ${esc(m.name)} <small>made for ${esc(m.made_for)}</small></span>`).join('')}</div>` : ''}
     ${b.climbs.length ? `<div class="meta">Also on it: ${b.climbs.map(o => `<a href="#" data-climb="${o.id}">${esc(o.name)}</a>${o.meshes.length ? ' <span title="has a mesh of its own">▣</span>' : ''}`).join(', ')}</div>` : ''}
-    <div class="row w" style="margin-top:4px"><span class="grow meta">${busy ? `<a href="#" data-proj="${b.project.id}">being meshed now</a>` : b.project?.status === 'failed' ? `<a href="#" data-proj="${b.project.id}">meshing it failed</a>` : ''}</span>
+    <div class="row w" style="margin-top:4px"><span class="grow meta">${busy ? `<a href="#" data-proj="${b.project.id}">${b.project.status === 'queued' ? 'queued to be meshed' : 'being meshed now'}</a>` : b.project?.status === 'failed' ? `<a href="#" data-proj="${b.project.id}">meshing it failed</a>` : ''}</span>
       ${b.climbs.length ? `<button class="sm sec meshboulder" ${busy ? 'disabled' : ''} title="Makes a mesh of the whole boulder from every photo of its climbs, kept apart from each climb's own, and works out where each climb is seen from">${b.meshes.length ? 'Mesh the boulder again' : 'Mesh the boulder from all its climbs\' photos'}</button>` : ''}</div>`;
 }
 async function openClimb(id, focus=true){
@@ -1867,6 +1874,40 @@ vEl.addEventListener('dragover', ev => { ev.preventDefault(); vEl.classList.add(
 vEl.addEventListener('dragleave', () => vEl.classList.remove('dragging'));
 vEl.addEventListener('drop', ev => { ev.preventDefault(); vEl.classList.remove('dragging'); uploadMesh(ev.dataTransfer.files); });
 
+// ---------------------------------------------------------------- the admin page
+// It has a port of its own, which only the server itself, or its LAN, can reach. The button opens it if this browser
+// reaches it (any answer will do, even a refusal or a password prompt); otherwise it says how to forward it over SSH.
+async function reaches(url){
+  const stop = new AbortController(), t = setTimeout(() => stop.abort(), 1500);
+  try { await fetch(url + '/', { mode: 'no-cors', cache: 'no-store', credentials: 'omit', signal: stop.signal }); return true; }
+  catch { return false; }
+  finally { clearTimeout(t); }
+}
+async function openAdmin(){
+  const a = statusCache.admin, urls = [...new Set([a.url, a.local])];
+  const ok = await Promise.all(urls.map(reaches)), url = urls.find((u, i) => ok[i]);
+  const w = url && window.open(url, '_blank');
+  if (w) { w.opener = null; return; }
+  const dlg = $('#admindlg'), link = u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`;
+  dlg.innerHTML = url ? `<p>The admin page is at ${link(url)}.</p>` : `
+    <p><b>This browser can't reach the admin page</b> at ${link(a.url)}${a.local !== a.url ? ` or ${link(a.local)}` : ''}. It only listens
+      ${a.lan ? 'on the server\'s LAN address' : 'on the server itself'}, so from elsewhere, forward its port over SSH:</p>
+    <pre id="adminssh">${esc(a.ssh)}</pre>
+    ${a.ssh_known ? '' : `<p>Put in the address you reach the server by over SSH. If the site is behind a proxy such as Cloudflare, that's
+      the server's own address, not the site's name. Set it as <code>ADMIN_SSH</code> in the server's <code>.env</code>, and it's filled in here.</p>`}
+    <p>Leave that running, then open ${link(a.local)}${a.password ? ': it asks for user <code>admin</code> and the <code>ADMIN_PASSWORD</code> in the server\'s <code>.env</code>' : ''}.
+      If the browser asks whether this site may connect to devices on your network, or to apps on this device, allowing it lets this button open the page by itself.</p>`;
+  dlg.insertAdjacentHTML('beforeend', `<div class="row" style="justify-content:flex-end;gap:8px">
+    ${url ? '' : '<button class="sm sec copy">Copy command</button><button class="sm sec again">Try again</button>'}<button class="sm close">Close</button></div>`);
+  dlg.querySelector('.close').onclick = () => dlg.close();
+  dlg.querySelector('.again')?.addEventListener('click', () => { dlg.close(); openAdmin(); });
+  dlg.querySelector('.copy')?.addEventListener('click', async ev => {
+    try { await navigator.clipboard.writeText(a.ssh); ev.target.textContent = 'Copied'; }
+    catch { getSelection().selectAllChildren($('#adminssh')); ev.target.textContent = 'Selected: copy it'; }   // no clipboard over plain HTTP
+  });
+  dlg.showModal();
+}
+
 // ---------------------------------------------------------------- boot
 let statusCache = { env: {} };
 statusCache = await api('/api/status');
@@ -1888,6 +1929,7 @@ if (statusCache.editing === 'token') {
   };
   if (token && !editor) toast('The editing token kept in this browser wasn\'t accepted.', 6000);
 }
+if (statusCache.admin) { $('#admin').style.display = ''; $('#admin').onclick = openAdmin; }
 if (!editor) $('#hud').textContent = 'Pick a mesh. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan';
 const mode = $('#mode');
 mode.textContent = statusCache.real_pipeline ? 'COLMAP + OpenMVS' : 'demo pipeline — install COLMAP/OpenMVS';

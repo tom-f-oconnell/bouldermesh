@@ -17,6 +17,8 @@ services:
       ADMIN_PASSWORD:             # from .env, optional: a password for the admin page (user "admin")
       ADMIN_HOSTNAMES:            # from .env, optional: names the admin page is reached by besides addresses and LAN names
       ADMIN_BIND:                 # the address above, so that the server can refuse to publish the admin page on a public one
+      ADMIN_PUBLISHED_PORT: "${ADMIN_PORT:-36184}"   # and its port: the main page's Admin button opens it there
+      ADMIN_SSH:                  # from .env, optional: who@where to SSH to, for the Admin button's port-forwarding steps
       VOLUNTEER_PORT: "47613"
       VOLUNTEER_URL:              # from .env, optional: the address volunteers reach this at, as https://boulders.example.com
       YOUTUBE_VIA:                # from .env, optional: here | volunteers_when_refused (the default) | volunteers

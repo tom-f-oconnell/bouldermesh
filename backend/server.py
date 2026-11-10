@@ -2164,6 +2164,12 @@ def compute_state() -> dict:
 _csp: dict = {"mtime": None, "value": ""}
 
 
+def admin_origins() -> list[str]:
+    """Where the page may look for the admin page (admin_link()), to tell its Admin button whether this browser reaches it."""
+    a = admin_link()
+    return [re.match(r"[a-z]+://[^/]+", u)[0] for u in (a["url"], a["local"]) if re.match(r"[a-z]+://[^/]+", u)]
+
+
 def page_csp() -> str | None:
     """The page's Content-Security-Policy: its own inline scripts by their hashes, libraries from their CDNs, images from
     anywhere (climbs' photos are shown from their sites), and never framed. CSP=0 turns it off; CSP=<policy> replaces it."""
@@ -2179,7 +2185,8 @@ def page_csp() -> str | None:
                           for m in re.findall(rb"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", page.read_bytes(), re.S))
         _csp.update(mtime=mtime, value=(
             f"default-src 'self'; script-src 'self' {hashes} https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
-            "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: blob: https:; connect-src 'self'; "
+            "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: blob: https:; "
+            f"connect-src 'self' {' '.join(dict.fromkeys(admin_origins()))}; "
             "font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"))
     return _csp["value"]
 
@@ -2379,7 +2386,9 @@ class Handler(BaseHTTPRequestHandler):
                                        "policy": {"textures": settings().get("site.textures"), "sources": settings().get("site.sources")},
                                        "editing": "none" if READ_ONLY else "token" if EDIT_TOKEN else "open",
                                        "editor": not READ_ONLY and (not EDIT_TOKEN or self.is_editor()), "stopping": _stopping,
-                                       "version": VERSION})
+                                       "version": VERSION,
+                                       # where the admin page is, and how to reach it over SSH: for editors only
+                                       "admin": admin_link() if not READ_ONLY and (not EDIT_TOKEN or self.is_editor()) else None})
             if p == "/api/jobs":     # what a restart would interrupt now, and what it would only pause
                 return self.send_json(jobs_state())
             # ---- projects
@@ -2981,6 +2990,25 @@ def _has(mod: str) -> bool:
 
 
 ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "36184"))
+
+
+def admin_link() -> dict:
+    """Where an editor's browser may find the admin page, and how to reach it over SSH from elsewhere, for the main page's
+    Admin button: addresses and a command, nothing secret.
+
+    The address is where it's published: ADMIN_BIND and ADMIN_PUBLISHED_PORT, which docker-compose.yml passes on, or else
+    ADMIN_HOST and ADMIN_PORT; ADMIN_URL replaces it. ADMIN_SSH (as "you@203.0.113.7", or a name in ~/.ssh/config) goes in
+    the command, as a server behind a proxy such as Cloudflare can't be reached over SSH by its site's name.
+    """
+    in_docker = Path("/.dockerenv").exists()
+    host = (os.environ.get("ADMIN_BIND") if in_docker else os.environ.get("ADMIN_HOST")) or "127.0.0.1"
+    port = int(os.environ.get("ADMIN_PUBLISHED_PORT") or ADMIN_PORT)
+    loopback = host in ("127.0.0.1", "localhost", "::1", "0.0.0.0", "::")
+    remote = "127.0.0.1" if loopback else host
+    ssh = os.environ.get("ADMIN_SSH")
+    return {"url": os.environ.get("ADMIN_URL") or f"http://{'localhost' if loopback else host}:{port}",
+            "local": f"http://localhost:{port}", "lan": not loopback, "password": bool(os.environ.get("ADMIN_PASSWORD")),
+            "ssh": f"ssh -N -L {port}:{remote}:{port} {ssh or '<you>@<this server>'}", "ssh_known": bool(ssh)}
 
 
 # ----------------------------------------------------------------- volunteers
