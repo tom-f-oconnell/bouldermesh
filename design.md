@@ -565,7 +565,9 @@ meshed first without any videos, and again once the results and then their video
 that mesh, for a first mesh that's often poor. So an area's climb whose harvest asked volunteers for anything waits; the
 results coming have it harvested again, which may ask for the videos they found, and those coming have it harvested again
 and meshed. 24 hours of waiting (`VOLUNTEER_WAIT_HOURS`) is the most, as volunteers come and go: then it's meshed with
-what's there, and what comes later rebuilds it as before.
+what's there, and what comes later rebuilds it as before. Except its YouTube search: a climb isn't meshed before
+YouTube has been searched for it at all (the harvest records `youtube_checked`), as most of a climb's best photos are
+frames of its videos; with no volunteer, it's harvested again each day to try, unless its area is set to mesh without.
 
 **Room on the public server.** Its disk is 75 GB, with about 59 free. Of hal's 97 GB of projects on Nov 10, 2026, 92
 were photos the filter rejected (kept only to put one back by hand), 9.4 the photos themselves (3 for the projects of

@@ -159,7 +159,10 @@ Its boulder problems are then taken one at a time until you stop, or the list ru
 with others on the list is only harvested; once all of the list's climbs on that boulder are, the boulder is meshed from
 all their photos (below), and each climb is done with that mesh, seen from where its own photos were taken. A climb alone
 on its boulder, or on an area holding several (as "… Boulders"), is harvested and meshed on its own. A climb or boulder
-without enough photos is skipped, and the run moves on. The admin page's *Areas* setting meshes every climb on its own
+without enough photos is skipped, and the run moves on. A climb isn't meshed until YouTube has been searched for its
+videos, here or by a volunteer: without one to search, it waits, tried again each day, and *Fetch the videos and searches
+harvests went without* on the admin page asks a volunteer added since. *Mesh climbs without searching YouTube for their
+videos first*, when starting an area or on its card, meshes them anyway. The admin page's *Areas* setting meshes every climb on its own
 instead, as areas did from Nov 9 to 10, 2026, as a mesh made for a problem on one side of a rock may not show one on
 the other side.
 

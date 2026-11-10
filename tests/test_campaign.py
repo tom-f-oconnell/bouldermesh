@@ -423,7 +423,7 @@ c = server.create_campaign("", "popularity", CSV)
 real = server.run_harvest
 
 
-def stop_during(pid, sources, reconstruct, relevance_filter=True, resume=False, wait=False):
+def stop_during(pid, sources, reconstruct, relevance_filter=True, resume=False, wait=False, need_youtube=False):
     server.stop_campaign(c["id"], now=False)
     assert server.campaign_status(c["id"]) == "stopping"
     real(pid, sources, reconstruct, relevance_filter, resume)
@@ -1084,6 +1084,56 @@ it = items(c["id"])["Beta"]
 assert it["status"] == "done" and len(meshed) == 1 and harvested.count("Beta") == 2, (it, meshed)
 server.VOLUNTEERS.pending, server.harvest_mod.harvest, pipeline.reconstruct = real_pending, fake_harvest, fake_reconstruct
 print("waiting for volunteers OK")
+
+# --- a climb isn't meshed until YouTube has been searched for it, unless its area says to go without ---------------------
+fresh()
+meshed.clear()
+searched_yet = {"Alpha": False}
+
+
+def maybe_searched(c_, project_dir, *a, **k):
+    out = fake_harvest(c_, project_dir, *a, **k)
+    if not searched_yet.get(c_.name, True):
+        out.update(youtube_checked=False, unsearched=f"{c_.name} V1 Joshua Tree")
+    return out
+
+
+server.harvest_mod.harvest, pipeline.reconstruct = maybe_searched, counting
+c = server.create_campaign("", "popularity", only("Alpha"))
+assert server.q("SELECT without_youtube FROM campaigns WHERE id=?", c["id"], one=True)["without_youtube"] == 0, "off to start"
+run_all(c["id"])
+it = items(c["id"])["Alpha"]
+assert it["status"] == "waiting" and "waiting for its YouTube search" in it["note"] and not meshed, it
+assert server.campaign_status(c["id"]) == "running"
+server.q("UPDATE campaign_items SET waiting_since=?", time.time() - server.VOLUNTEER_WAIT - 60, write=True)
+run_all(c["id"])
+it = items(c["id"])["Alpha"]
+assert it["status"] == "waiting" and not meshed and it["waiting_since"] > time.time() - 60, "tried again, still waiting, a day more"
+assert server.want_skipped()["harvest"] == 1, "the admin page's button asks for the search that was never asked"
+server.VOLUNTEERS.cancel()
+searched_yet["Alpha"] = True        # a volunteer's search came
+server.volunteer_ready("harvest", it["project_id"])
+run_all(c["id"])
+it = items(c["id"])["Alpha"]
+assert it["status"] == "done" and meshed == [it["project_id"]], (it, meshed)
+# an area told to mesh without searching: a climb waiting only for that goes ahead
+fresh()
+meshed.clear()
+searched_yet["Beta"] = False
+c = server.create_campaign("", "popularity", only("Beta"))
+run_all(c["id"])
+assert items(c["id"])["Beta"]["status"] == "waiting" and not meshed
+camp = server.set_campaign_options(c["id"], {"without_youtube": True})
+assert camp["without_youtube"] == 1 and server.campaign_view(camp)["without_youtube"] == 1
+run_all(c["id"])
+it = items(c["id"])["Beta"]
+assert it["status"] == "done" and len(meshed) == 1, (it, meshed)
+c2 = server.create_campaign("", "popularity", only("Gamma"), without_youtube=True)
+searched_yet["Gamma"] = False
+run_all(c2["id"])
+assert items(c2["id"])["Gamma"]["status"] == "done" and len(meshed) == 2, "started that way"
+server.harvest_mod.harvest, pipeline.reconstruct = fake_harvest, fake_reconstruct
+print("searching YouTube before meshing OK")
 
 # --- over the cap on the data's size, areas take no new climb and volunteers get nothing, until there's room ----------
 fresh()

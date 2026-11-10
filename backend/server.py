@@ -211,6 +211,8 @@ def init_db() -> None:
         cols = {r[1] for r in con.execute("PRAGMA table_info(campaigns)")}
         if "only_retries" not in cols:
             con.execute("ALTER TABLE campaigns ADD COLUMN only_retries INTEGER DEFAULT 0")
+        if "without_youtube" not in cols:   # mesh climbs whose YouTube search hasn't been done (none to do it)
+            con.execute("ALTER TABLE campaigns ADD COLUMN without_youtube INTEGER DEFAULT 0")
         cols = {r[1] for r in con.execute("PRAGMA table_info(campaign_items)")}
         # redo: what it's queued to do again (REDO_NAMES); was: its status before; changed: its photos have
         # changed since it was last meshed or checked; redo_started: a rebuild that began, to carry on with
@@ -892,7 +894,7 @@ def boulder_projects(climb_id: str, but: str | None = None) -> list[Path]:
 
 
 def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter: bool = True, resume: bool = False,
-                again: bool = False, wait: bool = False) -> None:
+                again: bool = False, wait: bool = False, need_youtube: bool = False) -> None:
     """Gather a climb's photos into its project, and optionally make its mesh. Only photos found for it are kept,
     so that its mesh shows the climb; the other harvests of its boulder only help tell which web photos are of it.
 
@@ -902,6 +904,8 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
         again: harvest a project that was harvested before, from scratch, adding to its log.
         wait: rather than mesh it now, leave it "waiting" while volunteers still have YouTube searches or videos to
             fetch for it (an area's climb, which is meshed once they've come, so that it's meshed once).
+        need_youtube: rather than mesh it now, leave it "waiting" until YouTube has been searched for it (an area's
+            climb, unless its area meshes without that).
     """
     pdir = PROJECTS / pid
     finished = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)["harvest"] if resume else None
@@ -950,9 +954,11 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
         verdict = diversity_mod.judge(summary.get("diversity"))     # by the current rules, for a harvest finished earlier
         log(f"harvest complete: {summary['images']} image(s), verdict {verdict}")
         coming = VOLUNTEERS.pending("harvest", pid)
-        if reconstruct and wait and coming:
+        if reconstruct and ((wait and coming) or (need_youtube and not youtube_checked(summary))):
             log(f"waiting for volunteers' YouTube searches and videos ({coming} to come): it's harvested again and meshed "
-                f"once they have, or after {VOLUNTEER_WAIT / 3600:.0f} h without them")
+                f"once they have, or after {VOLUNTEER_WAIT / 3600:.0f} h without them" if coming else
+                "not meshed until YouTube has been searched for it, by a volunteer if this server won't: it's harvested again "
+                f"to try in {VOLUNTEER_WAIT / 3600:.0f} h, or once one has")
             q("UPDATE projects SET status='waiting' WHERE id=?", pid, write=True)
             tracker.skip_rest()
             return
@@ -1160,7 +1166,8 @@ def busy_campaigns() -> set[str]:
     return {w.campaign for w in _workers if w.campaign}
 
 
-def create_campaign(area: str, order: str = "popularity", csv_text: str | None = None, start: bool = True) -> dict:
+def create_campaign(area: str, order: str = "popularity", csv_text: str | None = None, start: bool = True,
+                    without_youtube: bool = False) -> dict:
     """List a Mountain Project area's boulder problems, in one request, and queue them for meshing.
 
     Args:
@@ -1169,6 +1176,8 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
             "rating" (average stars), or "data" (most photos and videos first).
         csv_text: a Route Finder export to use instead of fetching one.
         start: start meshing as soon as nothing else is queued.
+        without_youtube: mesh climbs whose YouTube search hasn't been done, as when no volunteer can do it; otherwise
+            they wait for it.
     """
     if order not in CAMPAIGN_ORDERS:
         raise ValueError(f"order must be one of {', '.join(CAMPAIGN_ORDERS)}")
@@ -1181,8 +1190,9 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
     common = os.path.commonprefix([c.area_path for c in recs])
     cid = new_id()
     note = "Mountain Project's export stops at 1000 climbs: these are the most popular 1000" if len(recs) >= 1000 else None
-    q("INSERT INTO campaigns(id,name,area_id,ord,created,note,status) VALUES(?,?,?,?,?,?,?)", cid,
-      common[-1].strip("* ") if common else f"area {aid}", aid, order, time.time(), note, "running" if start else "stopped", write=True)
+    q("INSERT INTO campaigns(id,name,area_id,ord,created,note,status,without_youtube) VALUES(?,?,?,?,?,?,?,?)", cid,
+      common[-1].strip("* ") if common else f"area {aid}", aid, order, time.time(), note, "running" if start else "stopped",
+      int(bool(without_youtube)), write=True)
     rows = [(cid, c.source_id, i + 1, c.name, c.grade, c.rating, c.url,
              "/".join(c.area_path) if c.area_path and not GROUP_AREA.search(c.area_path[-1]) else None,
              json.dumps(c.to_dict())) for i, c in enumerate(recs)]
@@ -1190,6 +1200,16 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
         con.executemany("INSERT OR IGNORE INTO campaign_items(campaign_id,source_id,rank,name,grade,stars,url,boulder,data) "
                         "VALUES(?,?,?,?,?,?,?,?,?)", rows)
     return q("SELECT * FROM campaigns WHERE id=?", cid, one=True)
+
+
+def set_campaign_options(camp_id: str, options: dict) -> dict:
+    """Change how an area meshes: {"without_youtube": whether a climb is meshed before YouTube has been searched for it}.
+    Turned on, its climbs waiting for volunteers are meshed with what they have, as after waiting too long."""
+    if "without_youtube" in options:
+        q("UPDATE campaigns SET without_youtube=? WHERE id=?", int(bool(options["without_youtube"])), camp_id, write=True)
+        if options["without_youtube"]:
+            q("UPDATE campaign_items SET waiting_since=0 WHERE campaign_id=? AND status='waiting'", camp_id, write=True)
+    return q("SELECT * FROM campaigns WHERE id=?", camp_id, one=True)
 
 
 def ordered_pending(camp: dict) -> list[dict]:
@@ -1276,7 +1296,8 @@ def run_campaign_item(camp: dict, item: dict) -> None:
                 append_log(pid, "-- trying again")
             pool = pooled(cid, item.get("boulder"))
             try:
-                run_harvest(pid, set(HARVEST_SOURCES), not pool, resume=resume, wait=may_wait(item))
+                run_harvest(pid, set(HARVEST_SOURCES), not pool, resume=resume, wait=may_wait(item),
+                            need_youtube=not camp.get("without_youtube"))
             except Cancelled:
                 q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
                 set_item(cid, sid, status="pending", note="stopped partway: carries on from where it got to when resumed")
@@ -1286,8 +1307,9 @@ def run_campaign_item(camp: dict, item: dict) -> None:
                 set_item(cid, sid, status="pending", note=f"waiting for a machine to mesh it on: {e}")
                 raise
             p = q("SELECT status,mesh_id,harvest FROM projects WHERE id=?", pid, one=True)
-            if p["status"] == "waiting" or (pool and p["status"] != "failed" and may_wait(item) and VOLUNTEERS.pending("harvest", pid)):
-                wait_for_volunteers(cid, sid, pid, item.get("waiting_since"))
+            if p["status"] == "waiting" or (pool and p["status"] != "failed" and (
+                    (may_wait(item) and VOLUNTEERS.pending("harvest", pid)) or unchecked(camp, pid))):
+                wait_for_volunteers(cid, sid, pid, item.get("waiting_since") if may_wait(item) else None)
                 return
             if pool and p["status"] != "failed":    # its boulder is meshed from it and its neighbours' (settle_boulder())
                 append_log(pid, "harvested for its boulder's mesh, made from every photo of the climbs on it once they're all harvested")
@@ -1369,12 +1391,29 @@ def may_wait(item: dict) -> bool:
     return not item.get("waiting_since") or time.time() - item["waiting_since"] < VOLUNTEER_WAIT
 
 
+def youtube_checked(summary: dict | None) -> bool:
+    """Whether a harvest searched YouTube for its climb, here or through a volunteer (harvests from before that was
+    recorded did)."""
+    return bool((summary or {}).get("youtube_checked", True))
+
+
+def unchecked(camp: dict, pid: str) -> bool:
+    """Whether an area's climb is still to be searched for on YouTube, which its area needs before meshing it."""
+    if camp.get("without_youtube"):
+        return False
+    p = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)
+    return bool(p and p["harvest"]) and not youtube_checked(json.loads(p["harvest"]))
+
+
 def wait_for_volunteers(cid: str, sid: str, pid: str, since: float | None) -> None:
     """Leave an area's climb waiting for what volunteers are fetching for it, rather than mesh it twice: once
-    without it, and again with it. volunteer_ready() queues it to harvest again and mesh once it has all come."""
+    without it, and again with it; or for its YouTube search, which its area needs before meshing it. volunteer_ready()
+    queues it to harvest again and mesh once it has all come, and settle_waiting() after VOLUNTEER_WAIT."""
     n = VOLUNTEERS.pending("harvest", pid)
-    set_item(cid, sid, status="waiting", waiting_since=since or time.time(), redo=None, retry=0, redo_started=0,
-             note=f"waiting for volunteers: {n} YouTube search(es) and video(s) to come")
+    note = (f"waiting for volunteers: {n} YouTube search(es) and video(s) to come" if n else
+            "waiting for its YouTube search, which no volunteer has been asked for (there are none): add one, or let its "
+            "area mesh without")
+    set_item(cid, sid, status="waiting", waiting_since=since or time.time(), redo=None, retry=0, redo_started=0, note=note)
 
 
 def settle_waiting(camp_id: str) -> None:
@@ -1813,6 +1852,9 @@ def run_redo(camp: dict, item: dict) -> None:
             if row["was"] == "waiting" and not row["mesh_id"] and may_wait(row) and VOLUNTEERS.pending("harvest", row["project_id"]):
                 log("waiting for more from volunteers: the YouTube videos their search found")
                 return wait_for_volunteers(cid, sid, row["project_id"], row["waiting_since"])
+            if row["was"] == "waiting" and not row["mesh_id"] and unchecked(camp, row["project_id"]):   # tried again later
+                log("still not searched for on YouTube: not meshed yet")
+                return wait_for_volunteers(cid, sid, row["project_id"], None)
             if pooled(cid, row["boulder"]) and (row["was"] in ("waiting", "harvested") or (then and end.get("changed"))):
                 end = {**end, "status": "harvested", "note": HARVESTED_NOTE}     # its boulder's mesh is made again with it
             elif then and (end.get("changed") or (row["was"] == "waiting" and not row["mesh_id"])):
@@ -3298,10 +3340,16 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/campaigns":
                 b = self.read_json()
                 try:
-                    camp = create_campaign(b.get("area") or "", b.get("order") or "popularity", b.get("csv"), bool(b.get("start", True)))
+                    camp = create_campaign(b.get("area") or "", b.get("order") or "popularity", b.get("csv"), bool(b.get("start", True)),
+                                           bool(b.get("without_youtube")))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
                 return self.send_json(campaign_view(camp), 201)
+            m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)/options", p)
+            if m:
+                if not campaign_status(m[1]):
+                    return self.send_json({"error": "not found"}, 404)
+                return self.send_json(campaign_view(set_campaign_options(m[1], self.read_json())))
             m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)/(start|stop)", p)
             if m:
                 if not campaign_status(m[1]):
@@ -3623,8 +3671,9 @@ def want_skipped() -> dict:
     find beta in is waiting for; how many of each are coming."""
     n = {"harvest": 0, "beta": 0}
     for r in q("SELECT id, harvest FROM projects WHERE harvest IS NOT NULL"):
-        for words in (json.loads(r["harvest"]).get("asked") or {}).get("searches") or []:   # searches asked for that never came
-            if not youtube_mod.cached_search(words):
+        summary = json.loads(r["harvest"])
+        for words in [*((summary.get("asked") or {}).get("searches") or []), *([summary["unsearched"]] if summary.get("unsearched") else [])]:
+            if not youtube_mod.cached_search(words):    # searches asked for that never came, or never asked, as with no volunteers
                 n["harvest"] += VOLUNTEERS.want("search", words, "harvest", r["id"])
         for v in (json.loads(r["harvest"]).get("videos") or [])[:6]:
             vid = youtube_mod.video_id(v.get("url") or "")

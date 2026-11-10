@@ -273,7 +273,7 @@ def save_search(q: str, results: list[dict], by: str) -> dict:
 
 
 def search(c: Climb, log: Log, known: set[str] = frozenset(), want: Callable[[str], bool] | None = None,
-           asked: list | None = None, days: float = SEARCH_DAYS) -> list[Media]:
+           asked: list | None = None, days: float = SEARCH_DAYS, state: dict | None = None) -> list[Media]:
     """Videos of a climb found by searching YouTube, best first: by what a search for its words found in the last
     `days`, here or by a volunteer, or else by searching now, unless YouTube is left to volunteers or refusing
     this server, when volunteers are asked to search instead (the harvest carries on without).
@@ -282,8 +282,11 @@ def search(c: Climb, log: Log, known: set[str] = frozenset(), want: Callable[[st
         known: URLs it already has, which aren't returned again.
         want: called with the search's words to ask volunteers for it; whether it's coming.
         asked: the words volunteers were asked to search for are added to it.
+        state: given {"checked": whether YouTube was searched for it, here or by a volunteer, "words": its search}.
     """
     q = query(c)
+    if state is not None:
+        state.update(checked=False, words=q)
     hit = cached_search(q, days)
     if hit:
         log(f"youtube search: {q!r}: as {'a volunteer' if hit.get('by') == 'volunteer' else 'this server'} searched "
@@ -311,6 +314,8 @@ def search(c: Climb, log: Log, known: set[str] = frozenset(), want: Callable[[st
             else:
                 log(f"youtube search: {q!r} skipped: {why}")
             return []
+    if state is not None:
+        state["checked"] = True
     found = hit["results"]
     out = []
     for e in found:

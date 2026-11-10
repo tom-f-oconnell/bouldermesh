@@ -348,13 +348,15 @@ def cache_and_harvest() -> None:
     try:
         relic = Climb(source="mountainproject", source_id="9", url="https://example.com/relic", name="Relic", kind="boulder", grade="V9",
                       area_path=["California", "Joshua Tree National Park", "Real Hidden Valley"])
-        lines, asked, words = [], [], []
-        assert youtube.search(relic, lines.append, want=lambda w: words.append(w) or True, asked=asked) == []
+        lines, asked, words, state = [], [], [], {}
+        assert youtube.search(relic, lines.append, want=lambda w: words.append(w) or True, asked=asked, state=state) == []
+        assert state == {"checked": False, "words": youtube.query(relic)}, state
         assert words == asked == [youtube.query(relic)] and "asked volunteers to search" in lines[-1], lines
         assert youtube.search(relic, lines.append) == [] and "skipped" in lines[-1], "without volunteers, none"
         youtube.save_search(youtube.query(relic), [{"id": "sssssssssss", "title": "Relic V9 Joshua Tree", "duration": 90},
                                                    {"id": "ttttttttttt", "title": "Another climb", "duration": 90}], "volunteer")
-        found = youtube.search(relic, lines.append, want=lambda w: words.append(w) or True)
+        found = youtube.search(relic, lines.append, want=lambda w: words.append(w) or True, state=state)
+        assert state["checked"], "searched, by a volunteer"
         assert [v.url for v in found] == ["https://www.youtube.com/watch?v=sssssssssss"] and len(words) == 1, (found, words)
         assert "as a volunteer searched 0 h ago" in lines[-2], lines
         assert youtube.cached_search(youtube.query(relic), days=0) is None, "and searched again once it's old"

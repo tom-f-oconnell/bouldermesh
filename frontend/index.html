@@ -268,7 +268,8 @@
             </select></label>
           <button id="ca-go">Start meshing</button>
         </div>
-        <div class="notice" style="margin-top:8px">Meshes its boulder problems one at a time until you stop it, and keeps every mesh finished before then. Each can take most of an hour. Problems on a boulder that already has a mesh are linked to it.</div>
+        <label class="row" style="margin-top:6px" title="Off: a climb waits until YouTube has been searched for its videos (by a volunteer, on a server YouTube refuses) before it's meshed. On: meshes it anyway, as when no volunteer is connected to search."><input type="checkbox" id="ca-noyt" autocomplete="off"> Mesh climbs without searching YouTube for their videos first</label>
+        <div class="notice" style="margin-top:8px">Meshes its boulder problems one at a time until you stop it, and keeps every mesh finished before then. Each can take most of an hour. Problems that share a boulder are harvested, and the boulder is meshed from all their photos.</div>
       </section>
       <section>
         <h2>Areas</h2>
@@ -1654,7 +1655,8 @@ async function refreshCampaigns(){
           <button class="sm sec rebuildall" title="Meshes every climb with enough viewpoints again, as after the pipeline changes. Older meshes stay, as older versions.">Rebuild all</button>` : ''}
           ${c.status !== 'stopping' && c.again.triable ? `<button class="sm sec tryskipped" title="Climbs skipped as their photos looked too few viewpoints, which the viewpoint check now lets COLMAP try: it decides within minutes if it can't place enough of them.">Try ${c.again.triable} skipped climb${c.again.triable === 1 ? '' : 's'} again</button>` : ''}
           ${c.status !== 'stopping' && c.again.boulders ? `<button class="sm sec boulders" title="Boulders with more than one climb on this list: each meshed from the photos of all its climbs, as a mesh of its own beside each climb's, with each climb placed where its own photos were taken. Its climbs never harvested are harvested first.">Mesh ${c.again.boulders} boulder${c.again.boulders === 1 ? '' : 's'} from all their climbs' photos</button>` : ''}
-          <span class="grow"></span><button class="danger sm del" title="Remove this list; its meshes stay">✕</button>
+          <span class="grow"></span><label class="meta" title="Off: a climb waits until YouTube has been searched for its videos before it's meshed. On: meshes it anyway, as when no volunteer is connected to search."><input type="checkbox" class="noyt" ${c.without_youtube ? 'checked' : ''}> mesh without searching YouTube</label>
+          <button class="danger sm del" title="Remove this list; its meshes stay">✕</button>
         </div>
         ${c.worked.length ? `<details data-list="${c.id}-done"><summary class="meta">Worked through (${c.worked.length}${c.worked.length === 300 ? ' most recent' : ''})</summary><div class="crows">${c.worked.map(row).join('')}</div></details>` : ''}
         ${c.next.length ? `<details data-list="${c.id}-next"><summary class="meta">Up next</summary><div class="crows">${c.next.map(row).join('')}</div></details>` : ''}`;
@@ -1669,6 +1671,7 @@ async function refreshCampaigns(){
       d.querySelector('.tryskipped')?.addEventListener('click', () => { if (ask(`Try meshing the ${c.again.triable} climbs in "${c.name}" that were skipped for too few viewpoints, which the check now lets COLMAP try? Those it can't place enough photos of take a few minutes each; those it can, most of an hour. ${alone}`)) post('rebuild', { skipped_only: true }); });
       d.querySelector('.boulders')?.addEventListener('click', () => { if (ask(`Mesh the ${c.again.boulders} boulders in "${c.name}" with more than one climb, each from the photos of all its climbs, as meshes of their own? No climb's own mesh changes. Climbs on them never harvested are harvested first, at about a minute each for their pages; then pooling takes a few minutes per boulder, and meshing most of an hour for those with enough viewpoints. ${alone}`)) post('boulders'); });
       d.querySelector('.rebuildall')?.addEventListener('click', () => { if (ask(`Mesh every climb in "${c.name}" with enough viewpoints again? Each can take most of an hour. ${alone}`)) post('rebuild'); });
+      d.querySelector('.noyt').onchange = ev => post('options', { without_youtube: ev.target.checked });
       d.querySelector('.del').onclick = async () => { if (ask(`Remove the list for "${c.name}"? Its meshes stay.`)) { await api('/api/campaigns/' + c.id, { method: 'DELETE' }); campaignLoop(); } };
       d.querySelectorAll('[data-mesh]').forEach(b => b.onclick = async () => { if (!meshesById[b.dataset.mesh]) await refreshMeshes(); viewMesh(b.dataset.mesh, null, 'area'); });
       d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
@@ -1706,7 +1709,7 @@ $('#ca-go').onclick = async () => {
   const go = $('#ca-go'); go.disabled = true;
   toast('Asking Mountain Project for the area\'s climbs (can take a minute)…', 90000);
   try {
-    const c = await api('/api/campaigns', { method: 'POST', json: { area, order: $('#ca-order').value } });
+    const c = await api('/api/campaigns', { method: 'POST', json: { area, order: $('#ca-order').value, without_youtube: $('#ca-noyt').checked } });
     toast(`${c.name}: ${c.counts.pending} climbs queued`); $('#ca-area').value = ''; campaignLoop();
   } catch (e) { toast(e.message, 8000); }
   go.disabled = false;

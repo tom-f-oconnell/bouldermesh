@@ -493,7 +493,9 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         want_search: given the words of a YouTube search this server won't do, to ask volunteers (youtube.search()).
 
     Returns:
-        A summary, whose "asked" says what volunteers were asked for: {"searches": [words], "videos": [URLs]}.
+        A summary, whose "asked" says what volunteers were asked for: {"searches": [words], "videos": [URLs]};
+        "youtube_checked" whether YouTube was searched for the climb (here or by a volunteer), and if it wasn't,
+        "unsearched" the words of the search it still needs.
     """
     from . import diversity, relevance
     sources = set(SOURCES) if sources is None else set(sources)
@@ -521,12 +523,12 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         else:
             media += flickr_search(c.lat, c.lng, queries, log)
     manifest = download_all(media, photos_dir, log, progress=progress("download"))
-    frames, videos, infos, asked = [], [], {}, {"searches": [], "videos": []}
+    frames, videos, infos, asked, yt = [], [], {}, {"searches": [], "videos": []}, {"checked": True}
     if "youtube" in sources:
         report_video = progress("video") or (lambda frac=0.0, detail=None: None)
         report_video(0, "searching YouTube")
         seen = {youtube.video_id(v.url) or v.url for v in c.videos}    # the page's links, in any of YouTube's URL forms
-        found = youtube.search(c, log, want=want_search, asked=asked["searches"])
+        found = youtube.search(c, log, want=want_search, asked=asked["searches"], state=yt)
         videos = list(c.videos) + [v for v in found if (youtube.video_id(v.url) or v.url) not in seen]
     if videos:
         frames = video_frames(videos, photos_dir, log, progress=progress("video"), infos=infos, want=want, asked=asked["videos"])
@@ -565,7 +567,8 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
             "video_frames": sum(f.exists() for f in frames), "queries": queries, "diversity": report,
             "videos": [{"url": v.url, "found_by": "search" if v.source == "youtube-search" else "page", "title": v.title,
                         "uploader": v.credit, "frames": 0, **infos.get(v.url, {})} for v in videos],
-            "relevance": {k: filtered[k] for k in ("methods", "counts")} if filtered else None, "asked": asked}
+            "relevance": {k: filtered[k] for k in ("methods", "counts")} if filtered else None, "asked": asked,
+            "youtube_checked": yt["checked"], **({} if yt["checked"] else {"unsearched": yt.get("words")})}
 
 
 def _normalise_images(photos_dir: Path, log: Log) -> None:

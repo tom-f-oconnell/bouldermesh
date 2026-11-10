@@ -294,6 +294,10 @@ the server sends and sends back the results, which the server keeps for 30 days.
 itself until YouTube refuses its searches, and asks volunteers while it does. Older copies of the script are only given
 videos and details: download it again for searches.
 
+An area's climb isn't meshed until YouTube has been searched for it, by the server or a volunteer: with no volunteer to
+ask, it waits, harvested again to try each day, unless its area's *mesh without searching YouTube* is ticked (when starting
+it, or on its card). *Fetch the videos and searches harvests went without* asks volunteers added since for those searches.
+
 An area's climb whose harvest asked volunteers for anything waits for it (*waiting for volunteers* on the Areas tab),
 rather than being meshed once without and again with it: once the search's results have come, it's harvested again,
 which may ask for the videos they found, and once those have come, it's harvested again and meshed. A climb that has
