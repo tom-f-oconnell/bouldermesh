@@ -295,8 +295,12 @@ as it needs CUDA builds of torch and gsplat, and the few photos most meshes are 
 "Scenes around meshes". A splat is learnt from all of a mesh's photos, so it's shown only where the site shows all its textures.
 
 On a phone, the page shows either the controls or the view. Viewing a mesh fills the screen, and
-*Controls* goes back. Nothing is shown over the mesh there, so texture problems, stray-piece cleanup
-and the iPhone gravity comparison are only shown on wider screens (over 860 px).
+*Controls* goes back. Over the mesh it shows only the climb's name, small, at the top, so texture problems, stray-piece
+cleanup and the iPhone gravity comparison are only shown on wider screens (over 860 px). A long press on the view gives a
+link to the mesh, to copy or share.
+
+The page's address follows the mesh in view (`#mesh=<id>`, and `&climb=<id>` for a boulder's mesh seen from one of its
+climbs), so it can be copied from there too, and opening such a link shows that mesh.
 
 Each mesh's card has a bar of where its photos came from, by source, in the same colour for each
 source everywhere. Hovering it, focusing it or tapping it shows each source's licence terms, and the

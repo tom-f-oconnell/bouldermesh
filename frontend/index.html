@@ -84,6 +84,11 @@
   #viewer.on,#map.on{display:block}
   #viewer canvas{display:block;width:100%;height:100%}
   #viewer.quiet #hud,#viewer.quiet #viewnote,#viewer.quiet #pieces,#viewer.quiet #orient{display:none!important}
+  #vtitle{display:none}
+  #linkmenu{position:absolute;z-index:4;display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:8px;
+    background:var(--overlay);border:1px solid var(--line);box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:calc(100% - 16px)}
+  #linkmenu[hidden]{display:none} #viewer canvas{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+  #linkmenu .url{font-size:11px;color:var(--mute);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:all}
   #hud{position:absolute;left:12px;top:12px;font-size:12px;color:var(--mute);background:var(--overlay-soft);padding:6px 10px;border-radius:6px;pointer-events:none;max-width:70%}
   #drop{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(92,200,255,.12);border:2px dashed var(--acc);font-size:18px}
   #viewer.dragging #drop{display:flex}
@@ -152,6 +157,9 @@
     body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
     #tofull{margin-left:auto} #random{margin-left:0} #caps,#code,#admin{display:none!important}
     #hud,#viewnote,#pieces,#orient{display:none!important}
+    #vtitle:not(:empty){display:block;position:absolute;top:6px;left:8px;max-width:calc(100% - 16px);font-size:12px;line-height:1.35;
+      padding:2px 8px;border-radius:10px;background:var(--overlay-soft);color:var(--fg);white-space:nowrap;overflow:hidden;
+      text-overflow:ellipsis;pointer-events:none;z-index:2}
     .viewbar{overflow-x:auto} .viewbar button{white-space:nowrap} .viewbar .status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   }
 </style>
@@ -302,6 +310,8 @@
       <span class="status" id="viewing"></span>
     </div>
     <div id="viewer" class="on">
+      <div id="vtitle"></div>
+      <div id="linkmenu" hidden></div>
       <div id="viewnote"></div>
       <div id="pieces"></div>
       <div id="orient"></div>
@@ -457,6 +467,46 @@ renderer.domElement.addEventListener('wheel', ev => {
   const hit = surfaceUnder(ev);
   if (hit) controls.target.copy(camera.position).addScaledVector(camera.getWorldDirection(new THREE.Vector3()), hit.distance);
 }, { capture: true, passive: true });   // capture: before OrbitControls handles the same event
+// A long press on the view (a phone has no address bar in sight): a link to the mesh, to copy or share
+let press = null, fingers = 0;     // a finger held still, and how many are down
+renderer.domElement.addEventListener('pointerdown', ev => {
+  if (ev.pointerType !== 'touch') return;
+  fingers++;
+  clearTimeout(press?.timer);
+  press = null;
+  if (fingers !== 1 || !shownMesh) return;
+  const { clientX: x, clientY: y } = ev;
+  press = { x, y, timer: setTimeout(() => linkMenu(x, y), 600) };
+});
+renderer.domElement.addEventListener('pointermove', ev => {
+  if (press && ev.pointerType === 'touch' && Math.hypot(ev.clientX - press.x, ev.clientY - press.y) > 10) clearTimeout(press.timer);
+});
+for (const t of ['pointerup', 'pointercancel']) renderer.domElement.addEventListener(t, ev => {
+  if (ev.pointerType !== 'touch') return;
+  fingers = Math.max(0, fingers - 1);
+  clearTimeout(press?.timer);
+});
+function linkMenu(x, y){
+  const m = meshesById[shownMesh];
+  if (!m) return;
+  const from = $('#vfrom').style.display !== 'none' ? $('#vfrom').value : '';
+  const url = location.origin + location.pathname + viewLink(m.id, from), menu = $('#linkmenu');
+  const r = vEl.getBoundingClientRect();
+  menu.innerHTML = `<button class="sm" data-act="copy">Copy link to ${esc(viewTitle(m, from))}</button>`
+    + (navigator.share ? '<button class="sm sec" data-act="share">Share…</button>' : '') + `<span class="url">${esc(url)}</span>`;
+  menu.hidden = false;
+  menu.style.left = Math.max(8, Math.min(x - r.left, r.width - menu.offsetWidth - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y - r.top, r.height - menu.offsetHeight - 8)) + 'px';
+  menu.onclick = async ev => {
+    const b = ev.target.closest('button');
+    if (!b) return;
+    if (b.dataset.act === 'share') { try { await navigator.share({ title: viewTitle(m, from), url }); } catch {} return closeLinkMenu(); }
+    try { await navigator.clipboard.writeText(url); b.textContent = 'Copied'; setTimeout(closeLinkMenu, 1200); }
+    catch { getSelection().selectAllChildren(menu.querySelector('.url')); b.textContent = 'Selected: copy it'; }   // no clipboard over plain HTTP
+  };
+}
+function closeLinkMenu(){ $('#linkmenu').hidden = true; }
+document.addEventListener('pointerdown', ev => { if (!$('#linkmenu').hidden && !ev.target.closest('#linkmenu')) closeLinkMenu(); });
 renderer.domElement.addEventListener('dblclick', ev => {
   const hit = pieces?.editing ? null : surfaceUnder(ev);
   if (!hit) return;
@@ -467,7 +517,6 @@ scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.1));
 const dir = new THREE.DirectionalLight(0xffffff, 1.2); dir.position.set(3, 5, 2); scene.add(dir);
 const grid = new THREE.GridHelper(4, 20, 0x334, 0x223); grid.position.y = -0.001; scene.add(grid);
 let current = null;
-let shownId = null;     // the mesh's id, or null for a file dropped here
 function resize(){ const w=vEl.clientWidth, h=vEl.clientHeight; if (!w||!h) return; renderer.setSize(w,h,false); renderer.setPixelRatio(devicePixelRatio); camera.aspect=w/h; camera.updateProjectionMatrix(); }
 new ResizeObserver(resize).observe(vEl); resize();
 // ---- swaying the view a few degrees around where it is, as if dragging it gently back and forth
@@ -883,11 +932,11 @@ function applyScene(){
       else ground.material.color.setHex(0x9a8f7e);
     }
   }
-  loadSplat();
+  if (current || splat) loadSplat();     // not before a mesh is shown, which is also before its id is known
 }
 let splat = null;     // {id, viewer}: the splat drawn behind the mesh now
 async function loadSplat(){
-  const id = shownId, want = bgMode === 'scene' && !!id && !!meshesById[id]?.splat;
+  const id = shownMesh, want = bgMode === 'scene' && !!id && !!meshesById[id]?.splat;
   if (splat && (!want || splat.id !== id)) { if (splat.viewer) { scene.remove(splat.viewer); splat.viewer.dispose?.(); } splat = null; }
   if (!want || splat) return;
   const mine = splat = { id, viewer: null };
@@ -1002,7 +1051,6 @@ async function loadMeshUrl(url, filename, label, id){
       catch { note = 'Showing plain grey: its .mtl materials file wouldn\'t load.'; }
       obj = await loader.loadAsync(url);
     } else throw new Error('unsupported format .' + ext);
-    shownId = id || null;
     showObject(obj, label, !!id && meshesById[id]?.source !== 'upload');
     toast(note ? 'Loaded, with a problem: see the note on the view' : 'Loaded ' + label, note ? 5000 : 1500);
     if (id) reportView(id, via, (performance.now() - began) / 1000, note);
@@ -1705,10 +1753,32 @@ async function refreshMeshes(){
   renderBetaList();
 }
 // via: how it was asked for, for the server's record of what's viewed (reportView())
+// The climb a phone names over the view, as it shows nothing else there: the one a boulder's mesh is seen from, or the
+// mesh's own climbs (the first, and how many more), or else the mesh's name
+function viewTitle(m, from){
+  const grade = c => c.grade ? ` ${c.grade.split(' ')[0]}` : '';
+  const seen = (m.boulder_climbs || []).find(c => c.id === from), own = m.climbs.filter(c => !c.shared);
+  if (seen) return seen.name + grade(seen);
+  if (own.length) return own[0].name + grade(own[0]) + (own.length > 1 ? ` +${own.length - 1}` : '');
+  return m.name.replace(/ \((harvest|boulder)\)$/, '');
+}
+// A link to the mesh in view (#mesh=<id>), and to the climb a boulder's mesh is seen from (&climb=<id>), kept in the
+// address as it changes, so that it can be copied from there too; opening one shows that
+function viewLink(id, from){
+  const m = meshesById[id];
+  return `#mesh=${id}` + (from && (m?.boulder_climbs || []).some(c => c.id === from) ? `&climb=${from}` : '');
+}
+function setLink(id, from){ try { history.replaceState(null, '', viewLink(id, from)); } catch {} }
+function openLinked(){
+  const h = new URLSearchParams(location.hash.slice(1)), id = h.get('mesh');
+  if (id && meshesById[id] && id !== shownMesh) viewMesh(id, h.get('climb') || undefined, 'link');
+}
 function viewMesh(id, from, via = ''){
   const m = meshesById[id];
   if (!m) return;
   viewVia = via;
+  $('#vtitle').textContent = viewTitle(m, from);
+  setLink(id, from);
   const own = m.climbs.filter(c => !c.shared), on = m.boulder_climbs || [];
   const label = m.name + (own.length ? ` — ${own.map(c => c.name).join(', ')}` : on.length ? ` — ${plural(on.length, 'climb')}` : '');
   return loadMeshUrl(`/meshes/${id}/${m.filename}`, m.filename, label, id).then(() => { if (shownMesh === id) showFrom(m, from); });
@@ -1721,7 +1791,11 @@ function showFrom(m, from){
   if (!seen.length) return;
   sel.innerHTML = '<option value="">Seen from: the whole boulder</option>' + seen.map(c => `<option value="${c.id}">Seen from ${esc(c.name)} ${esc(c.grade || '')}</option>`).join('');
   sel.value = seen.some(c => c.id === from) ? from : '';
-  sel.onchange = () => { const c = seen.find(x => x.id === sel.value); c ? lookFrom(c.view) : frameMain(); };
+  sel.onchange = () => {
+    const c = seen.find(x => x.id === sel.value);
+    $('#vtitle').textContent = viewTitle(m, c?.id); setLink(m.id, c?.id);
+    c ? lookFrom(c.view) : frameMain();
+  };
   if (sel.value) lookFrom(seen.find(c => c.id === from).view);
 }
 function lookFrom(view){
@@ -2091,6 +2165,8 @@ mode.className = 'pill ' + (statusCache.real_pipeline ? 'real' : 'demo');
 $('#caps').textContent = [statusCache.opencv?'opencv':'no opencv', statusCache.people_masks?'people masking':'no people masking', statusCache.gpu?'GPU matching':'CPU matching'].join(' · ');
 $('#caps').title = 'Photo matching: ' + statusCache.gpu_why;
 await refreshClimbs(); await refreshMeshes(); await refreshProjects(); poll(); campaignLoop();
+openLinked();
+addEventListener('hashchange', openLinked);
 </script>
 </body>
 </html>
