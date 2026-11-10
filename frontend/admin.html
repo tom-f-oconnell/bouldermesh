@@ -58,6 +58,14 @@
     <div class="note">"Free to copy" means public domain, CC0, or a Creative Commons licence without No Derivatives, or your own uploads. Mountain Project, OpenBeta and web images, and YouTube's standard licence, aren't. See license_considerations.md.</div>
   </section>
 
+  <section>
+    <h2>Areas</h2>
+    <label>An area's climbs that share a boulder with others it lists</label>
+    <select id="area-meshes"><option value="boulders">Harvested, then meshed together as their boulder, from all their photos</option>
+      <option value="climbs">Each meshed on its own, from its own photos</option></select>
+    <div class="note">A climb alone on its boulder, or on an area holding several (as "… Boulders"), is meshed on its own either way. A climb meshed with its boulder shows on its mesh from where its own photos were taken.</div>
+  </section>
+
   <section id="compute">
     <h2>Compute</h2>
     <div id="slots" class="note"></div>
@@ -182,6 +190,7 @@ function render(s){
     : '<div class="note">No machines yet.</div>';
   const waiting = ms.jobs.filter(j => j.state === 'queued');
   if (waiting.length) $('#mach-list').innerHTML += `<div class="note">${waiting.length} climb(s) waiting for a machine.</div>`;
+  $('#area-meshes').value = v['areas.meshes'];
   const u = s.usage || {}, gb = b => (b / 2 ** 30).toFixed(1) + ' GB';
   $('#room').classList.toggle('alert', !!u.full);
   if (document.activeElement !== $('#room-cap')) $('#room-cap').value = v['storage.cap_gb'];
@@ -271,6 +280,7 @@ $('#room-measure').onclick = async () => { msg('Measuring…', 60000); try { msg
 $('#room-rejected').onclick = async () => { if (!confirm('Delete every photo the filter rejected, from every project not being harvested or meshed now? They can\'t be put back after.')) return; msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#via').onchange = () => save({ 'youtube.via': $('#via').value });
+$('#area-meshes').onchange = () => save({ 'areas.meshes': $('#area-meshes').value });
 $('#vol-add').onclick = async () => {
   try {
     const r = await call('/api/admin/actions/volunteer-add', { name: $('#vol-name').value, per_hour: +$('#vol-hour').value });

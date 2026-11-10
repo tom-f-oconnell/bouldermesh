@@ -1274,8 +1274,9 @@ def run_campaign_item(camp: dict, item: dict) -> None:
             set_item(cid, sid, climb_id=climb_id, project_id=pid)
             if item.get("retry"):
                 append_log(pid, "-- trying again")
+            pool = pooled(cid, item.get("boulder"))
             try:
-                run_harvest(pid, set(HARVEST_SOURCES), True, resume=resume, wait=may_wait(item))
+                run_harvest(pid, set(HARVEST_SOURCES), not pool, resume=resume, wait=may_wait(item))
             except Cancelled:
                 q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
                 set_item(cid, sid, status="pending", note="stopped partway: carries on from where it got to when resumed")
@@ -1285,8 +1286,12 @@ def run_campaign_item(camp: dict, item: dict) -> None:
                 set_item(cid, sid, status="pending", note=f"waiting for a machine to mesh it on: {e}")
                 raise
             p = q("SELECT status,mesh_id,harvest FROM projects WHERE id=?", pid, one=True)
-            if p["status"] == "waiting":
+            if p["status"] == "waiting" or (pool and p["status"] != "failed" and may_wait(item) and VOLUNTEERS.pending("harvest", pid)):
                 wait_for_volunteers(cid, sid, pid, item.get("waiting_since"))
+                return
+            if pool and p["status"] != "failed":    # its boulder is meshed from it and its neighbours' (settle_boulder())
+                append_log(pid, "harvested for its boulder's mesh, made from every photo of the climbs on it once they're all harvested")
+                set_item(cid, sid, status="harvested", note=HARVESTED_NOTE)
                 return
             if p["status"] != "failed":     # kept if it failed, so that trying again starts from its last finished step
                 shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)   # most of a job's disk use, and only useful to itself
@@ -1310,6 +1315,53 @@ def run_campaign_item(camp: dict, item: dict) -> None:
         _outages.clear()
     finally:
         q("UPDATE campaign_items SET retry=0 WHERE campaign_id=? AND source_id=? AND status NOT IN ('pending','running')", cid, sid, write=True)
+
+
+HARVESTED_NOTE = "harvested for its boulder's mesh, made once the area's climbs on it are all harvested"
+
+
+def pooled(camp_id: str, boulder: str | None) -> bool:
+    """Whether an area's climb on this boulder is only harvested, for its boulder's mesh from every photo of the climbs on
+    it (areas.meshes "boulders"), rather than meshed on its own: when the area lists another climb on the boulder."""
+    if not boulder or settings().get("areas.meshes") != "boulders":
+        return False
+    return q("SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND boulder=?", camp_id, boulder, one=True)["n"] >= 2
+
+
+def settle_boulder(camp_id: str, boulder: str | None) -> bool:
+    """Once none of an area's climbs on a boulder is still to be harvested (pending, running or waiting for volunteers),
+    queue meshing the boulder from all their photos (run_boulder()), on the highest-ranked of them harvested for it.
+
+    Returns:
+        Whether it was queued.
+    """
+    if not boulder:
+        return False
+    items = q("SELECT source_id, status FROM campaign_items WHERE campaign_id=? AND boulder=? ORDER BY rank", camp_id, boulder)
+    if any(i["status"] in ("pending", "running", "waiting") for i in items):
+        return False
+    harvested = [i for i in items if i["status"] == "harvested"]
+    if not harvested:
+        return False
+    set_item(camp_id, harvested[0]["source_id"], status="pending", retry=1, redo="boulder", was="harvested", redo_started=0,
+             note=f"queued to {REDO_NAMES['boulder']}")
+    return True
+
+
+def boulder_meshed(camp_id: str, source_id: str, end: dict, failed: bool) -> dict:
+    """After meshing a boulder for an area's climbs harvested for it: each of them, this one too, is done with the
+    boulder's mesh, or skipped or failed with it, so that none waits for it any more."""
+    boulder = q("SELECT boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", camp_id, source_id, one=True)["boulder"]
+    proj = boulder_project(json.dumps(boulder.split("/"))) if boulder else None     # as boulder_of() has it, from boulder_key()'s
+    if not failed and proj and proj["status"] == "done" and proj["mesh_id"]:
+        status, mesh = "done", proj["mesh_id"]
+    else:
+        status, mesh = ("skipped" if not failed and proj and proj["status"] == "harvested" else "failed"), None
+    note = end["note"] if status != "done" else f"meshed with its boulder: {end['note'].removeprefix('its boulder meshed from ')}"
+    q("UPDATE campaign_items SET status=?, mesh_id=COALESCE(?, mesh_id), note=?, retry=0, updated=? "
+      "WHERE campaign_id=? AND boulder=? AND status='harvested' AND source_id!=?", status, mesh, note, time.time(), camp_id, boulder,
+      source_id, write=True)
+    return {**end, "status": status, "note": note, **({"mesh_id": mesh} if mesh else {})}
 
 
 def may_wait(item: dict) -> bool:
@@ -1445,6 +1497,8 @@ def _claim(w: Worker):
         if camp["ord"] == "data" and not camp["only_retries"] and not any(x.campaign for x in others):
             read_ahead(camp)
         settle_waiting(camp["id"])
+        for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND status='harvested'", camp["id"]):
+            settle_boulder(camp["id"], b["boulder"])     # as after a restart between its last harvest and queueing its mesh
         items = ordered_pending(camp)
         waiting = bool(items)
         if camp["only_retries"]:
@@ -1484,6 +1538,7 @@ def next_campaign_step() -> bool:
     try:
         run_campaign_item(camp, item)
         w.error = None
+        settle_boulder(camp["id"], item.get("boulder"))
     except compute.ComputeUnavailable as e:     # the climb waits; so does this worker, for a while
         w.error, w.wait_until = f"{time.strftime('%H:%M')}: {e}", time.time() + COMPUTE_WAIT
         set_item(camp["id"], item["source_id"], status="pending")
@@ -1722,6 +1777,8 @@ def _boulder_again(cid: str, row: dict) -> dict:
         return {"status": row["was"], "note": "its area holds several boulders, so it has none of its own to mesh"}
     proj = boulder_project(boulder)
     if proj and proj["status"] in ("queued", "running", "harvesting") and not row["redo_started"]:
+        if row["was"] == "harvested":   # its climbs wait for that mesh: this tries again in a while
+            raise compute.ComputeUnavailable("its boulder is being meshed by something else now")
         return {"status": row["was"], "note": "its boulder is being meshed already"}
     resume = bool(row["redo_started"] and proj and proj["status"] in ("stopped", "interrupted", "failed", "harvesting", "running"))
     pid = boulder_project_made(boulder)
@@ -1741,7 +1798,7 @@ def _boulder_again(cid: str, row: dict) -> dict:
 def run_redo(camp: dict, item: dict) -> None:
     """Harvest or rebuild again one of an area's climbs that has been through it before."""
     cid, sid = camp["id"], item["source_id"]
-    row = q("SELECT source_id,climb_id,project_id,mesh_id,redo,was,changed,redo_started,waiting_since FROM campaign_items "
+    row = q("SELECT source_id,climb_id,project_id,mesh_id,redo,was,changed,redo_started,waiting_since,boulder FROM campaign_items "
             "WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
     row["was"] = row["was"] or "done"
     log = lambda s: append_log(row["project_id"], s)  # noqa: E731
@@ -1756,7 +1813,9 @@ def run_redo(camp: dict, item: dict) -> None:
             if row["was"] == "waiting" and not row["mesh_id"] and may_wait(row) and VOLUNTEERS.pending("harvest", row["project_id"]):
                 log("waiting for more from volunteers: the YouTube videos their search found")
                 return wait_for_volunteers(cid, sid, row["project_id"], row["waiting_since"])
-            if then and (end.get("changed") or (row["was"] == "waiting" and not row["mesh_id"])):
+            if pooled(cid, row["boulder"]) and (row["was"] in ("waiting", "harvested") or (then and end.get("changed"))):
+                end = {**end, "status": "harvested", "note": HARVESTED_NOTE}     # its boulder's mesh is made again with it
+            elif then and (end.get("changed") or (row["was"] == "waiting" and not row["mesh_id"])):
                 set_item(cid, sid, changed=1)
                 harvested_note = end["note"].split("; ")[0]     # not "Rebuild changed will use them": it's being rebuilt
                 end = _rebuild(cid, {**row, "changed": 1}, log)
@@ -1780,6 +1839,7 @@ def _run_boulder_redo(camp: dict, row: dict) -> None:
     """run_redo() for meshing a climb's boulder, whose project is the boulder's, not the climb's."""
     cid, sid = camp["id"], row["source_id"]
     jobctl.begin(low_priority=True)
+    failed = False
     try:
         set_item(cid, sid, status="running", note=None)
         end = _boulder_again(cid, row)
@@ -1794,7 +1854,9 @@ def _run_boulder_redo(camp: dict, row: dict) -> None:
         set_item(cid, sid, status="pending", note=f"waiting for a machine to mesh its boulder on: {e}")
         raise
     except Exception as e:
-        end = {"status": row["was"], "note": f"{REDO_NAMES['boulder']}: {type(e).__name__}: {e}"}
+        end, failed = {"status": row["was"], "note": f"{REDO_NAMES['boulder']}: {type(e).__name__}: {e}"}, True
+    if row["was"] == "harvested":
+        end = boulder_meshed(cid, sid, end, failed)
     set_item(cid, sid, **end, redo=None, retry=0, redo_started=0)
 
 
@@ -3526,6 +3588,9 @@ def reharvest_with_videos(pid: str) -> None:
         if item["status"] == "waiting":
             set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="harvest+rebuild", was="waiting",
                      redo_started=0, note="volunteers have fetched what it waited for: harvesting it again, then meshing it")
+        elif item["status"] == "harvested":     # harvested for its boulder's mesh, which isn't made yet: again first
+            set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="harvest", was="harvested",
+                     redo_started=0, note="volunteers have fetched more for it: harvesting it again for its boulder's mesh")
         elif item["status"] in ("done", "skipped", "failed"):
             set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="harvest+rebuild", was=item["status"],
                      redo_started=0, note="queued to harvest again with the videos volunteers fetched")

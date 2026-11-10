@@ -87,6 +87,7 @@ server.harvest_mod.harvest = fake_harvest
 pipeline.reconstruct = fake_reconstruct
 server.pipeline.steps = lambda: []
 server.init_db()
+server.settings().update({"areas.meshes": "climbs"})    # each climb meshed on its own, but in "a boulder's climbs meshed together"
 
 
 def run_all(camp_id: str, limit: int = 20) -> None:
@@ -229,6 +230,68 @@ assert again["status"] == "done" and again["mesh_id"] != mesh["id"], again
 assert server.q("SELECT replaced_by FROM meshes WHERE id=?", mesh["id"], one=True)["replaced_by"] == again["mesh_id"]
 assert "pooling its climbs' photos again" in server.read_log(proj["id"])
 print("boulder meshes OK")
+
+# --- a boulder's climbs harvested, and meshed together as their boulder (areas.meshes "boulders", the default) ---------
+fresh()
+pools.clear()
+server.q("DELETE FROM projects", write=True)
+server.settings().update({"areas.meshes": "boulders"})
+reconstructed = []
+real_rec = pipeline.reconstruct
+
+
+def counting_rec(images, *a, **k):
+    reconstructed.append(server.q("SELECT name FROM projects WHERE id=?", pathlib.Path(images).parent.name, one=True)["name"])
+    return real_rec(images, *a, **k)
+
+
+pipeline.reconstruct = counting_rec
+c = server.create_campaign("", "popularity", CSV)
+run_all(c["id"], limit=30)
+got = items(c["id"])
+proj = server.q("SELECT * FROM projects WHERE kind='boulder'", one=True)
+assert proj and proj["name"] == "Alpha Boulder (boulder)" and proj["status"] == "done", proj
+assert sorted(reconstructed) == ["Alpha Boulder (boulder)", "Beta (harvest)", "Delta (harvest)", "Delta2 (harvest)", "Gamma (harvest)"], \
+    reconstructed     # Alpha and Alpha2 only harvested; Delta's area holds several boulders, so its climbs are meshed alone
+assert got["Alpha"]["status"] == got["Alpha2"]["status"] == "done" and got["Alpha"]["mesh_id"] == got["Alpha2"]["mesh_id"] == proj["mesh_id"], \
+    (got["Alpha"], got["Alpha2"])
+assert "meshed with its boulder" in got["Alpha"]["note"] and "meshed with its boulder" in got["Alpha2"]["note"], got["Alpha"]["note"]
+assert set(pools["Alpha Boulder"]) == {got["Alpha"]["project_id"], got["Alpha2"]["project_id"]}, pools
+assert server.q("SELECT status FROM projects WHERE id=?", got["Alpha"]["project_id"], one=True)["status"] == "harvested", "no mesh of its own"
+assert got["Beta"]["mesh_id"] and got["Beta"]["mesh_id"] != proj["mesh_id"] and server.campaign_status(c["id"]) == "done"
+assert server.climb_row(got["Alpha2"]["climb_id"])["n_boulder"] == 1
+# volunteers fetching more for one of them later: harvested again with new photos, and its boulder meshed again, as a
+# new version, not the climb on its own
+
+
+def with_a_frame(c_, project_dir, *a, **k):
+    (project_dir / "photos" / "yt_00000000_000.jpg").write_bytes(b"frame")
+    return fake_harvest(c_, project_dir, *a, **k)
+
+
+server.harvest_mod.harvest = with_a_frame
+server.reharvest_with_videos(got["Alpha2"]["project_id"])
+assert items(c["id"])["Alpha2"]["redo"] == "harvest+rebuild" and server.campaign_status(c["id"]) == "running"
+reconstructed.clear()
+run_all(c["id"], limit=10)
+server.harvest_mod.harvest = fake_harvest
+got = items(c["id"])
+again = server.q("SELECT * FROM projects WHERE kind='boulder'", one=True)
+assert reconstructed == ["Alpha Boulder (boulder)"] and again["mesh_id"] != proj["mesh_id"], reconstructed
+assert got["Alpha"]["mesh_id"] == got["Alpha2"]["mesh_id"] == again["mesh_id"] and got["Alpha2"]["status"] == "done", got["Alpha2"]
+# a boulder whose pooled photos aren't enough: its climbs are skipped with it
+fresh()
+server.q("DELETE FROM projects", write=True)
+outcome["pooled"] = "poor"
+c = server.create_campaign("", "popularity", HEAD + "".join(line for line in CSV.splitlines(True)[1:] if line.split(",")[0] in ("Alpha", "Alpha2")))
+run_all(c["id"], limit=10)
+got = items(c["id"])
+assert got["Alpha"]["status"] == got["Alpha2"]["status"] == "skipped" and not got["Alpha"]["mesh_id"], (got["Alpha"], got["Alpha2"])
+assert "not enough different viewpoints" in got["Alpha2"]["note"] and server.campaign_status(c["id"]) == "done"
+pipeline.reconstruct = real_rec
+outcome.clear()
+server.settings().update({"areas.meshes": "climbs"})
+print("a boulder's climbs meshed together OK")
 
 # --- a boulder's mesh harvests first its climbs an area hasn't reached; the area then meshes them from that ----
 fresh()

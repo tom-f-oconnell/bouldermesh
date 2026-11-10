@@ -42,9 +42,13 @@ DEFAULTS = {
     "youtube.via": "volunteers_when_refused",   # here | volunteers_when_refused | volunteers (never here: a cloud server)
     # the most the data may take, in GB (0: no limit): over it, volunteers and areas wait for room (DATA_CAP_GB starts it)
     "storage.cap_gb": 0.0,
+    # an area's climbs that share a boulder with others it lists: harvested, and meshed together as their boulder
+    # ("boulders"), or each meshed on its own ("climbs")
+    "areas.meshes": "boulders",
 }
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
-           "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers")}
+           "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
+           "areas.meshes": ("boulders", "climbs")}
 LIMITS = {"storage.cap_gb": (0, 100000), "compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000)}
 for _key in ("site.textures", "site.sources", "youtube.via"):    # a public copy's starting points, from its .env

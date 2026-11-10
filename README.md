@@ -155,10 +155,13 @@ On the *Areas* tab, paste a Mountain Project area URL, such as
 - **Highest rated**, by average stars.
 - **Most photos and videos**, judged from the pages of the next few popular climbs.
 
-Its boulder problems are then meshed one at a time until you stop, or the list runs out: each one
-harvested and meshed on its own, whatever else on its boulder has a mesh, as a mesh made for a problem
-on one side of a rock isn't one of a problem on the other side. A climb without enough photos is
-skipped, and the run moves on.
+Its boulder problems are then taken one at a time until you stop, or the list runs out. A climb that shares its boulder
+with others on the list is only harvested; once all of the list's climbs on that boulder are, the boulder is meshed from
+all their photos (below), and each climb is done with that mesh, seen from where its own photos were taken. A climb alone
+on its boulder, or on an area holding several (as "… Boulders"), is harvested and meshed on its own. A climb or boulder
+without enough photos is skipped, and the run moves on. The admin page's *Areas* setting meshes every climb on its own
+instead, as areas did from Nov 9 to 10, 2026, as a mesh made for a problem on one side of a rock may not show one on
+the other side.
 
 *Mesh N boulders from all their climbs' photos* makes each boulder with more than one climb on the
 list a mesh of its own (below), harvesting first its climbs the list hasn't reached. *Try N skipped

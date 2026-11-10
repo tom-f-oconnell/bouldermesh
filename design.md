@@ -430,6 +430,13 @@ crawl, so this reads the next 8 popular climbs' pages and takes the richest, cou
 photos, about what one gives after filtering. Each later climb then reads one new page, which it
 would have read anyway. It's a local ordering: the richest climb of the whole area may wait its turn.
 
+**A boulder's climbs meshed together (since Nov 10, 2026).** By default (the admin page's `areas.meshes`), an area's
+climbs that share a boulder are only harvested, and once they all are, the boulder is meshed from all their photos and
+each climb placed on it (run_boulder(), viewpoints.py): coverage before polish, with more photos to each mesh, and the
+cost of one reconstruction a boulder. Whether a boulder's mesh shows each climb as well as that climb's own mesh would
+hasn't been measured yet: if some are much worse, `areas.meshes` "climbs" meshes every climb on its own, as from Nov 9.
+A climb volunteers fetch more for later is harvested again, and its boulder meshed again as a new version.
+
 **One mesh per boulder.** The 1000 most popular Joshua Tree problems are on 364 lowest-level areas,
 nearly all single boulders, so linking problems to a mesh of their boulder saves about 60% of the work. Areas with
 group names (`GROUP_AREA`, e.g. "Manx Boulders - Northwest Face") hold several rocks, so don't
