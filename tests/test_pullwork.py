@@ -40,13 +40,21 @@ except ImportError:
 
 SCRIPT = ROOT / "worker" / "bouldermesh_worker.py"
 FAKE_DOCKER = f'''#!{sys.executable}
-import os, signal, sys
+import json, os, signal, sys
 args = sys.argv[1:]
 state = os.environ["FAKE_DOCKER_DIR"]
 with open(os.path.join(state, "calls"), "a") as f:
     f.write(" ".join(args) + "\\n")
 if args[:1] == ["version"]:
     print("99.0"); sys.exit(0)
+if args[:1] == ["info"]:
+    print(state); sys.exit(0)
+if args[:2] == ["manifest", "inspect"]:
+    size = int(os.environ.get("FAKE_IMAGE_BYTES", "1000"))
+    print(json.dumps({{"Descriptor": {{"platform": {{"architecture": "amd64", "os": "linux"}}}}, "SchemaV2Manifest": {{"layers": [{{"size": size}}]}}}}))
+    sys.exit(0)
+if args[:2] == ["image", "rm"]:
+    sys.exit(0)
 if args[:2] == ["image", "inspect"]:
     sys.exit(0 if os.path.exists(os.path.join(state, "have-image")) else 1)
 if args[:1] == ["pull"]:
@@ -301,6 +309,30 @@ assert f"-v {TMP / 'big-disk' / 'bm' / 'data'}:/data" in run and f"{TMP / 'big-d
 assert json.loads((TMP / "home" / "config.json").read_text())["data"] == str(TMP / "big-disk" / "bm"), "remembered"
 assert not list((TMP / "big-disk" / "bm" / "jobs").iterdir()), "and the job's folder gone after"
 print("--data OK")
+
+# --- room: for jobs under --data (or --home), and for the image in Docker's storage, before either is used -------------------
+fresh_home = ["--home", str(TMP / "home-room"), "--server", URL, "--token", hal["token"], "--gpu", "none"]
+r = subprocess.run([sys.executable, str(SCRIPT), *fresh_home, "--need-gb", "1e9", "--check"], env=ENV, capture_output=True, text=True, timeout=60)
+assert r.returncode and "isn't room for jobs" in r.stderr and "Give --data DIR" in r.stderr, r.stdout + r.stderr
+r = subprocess.run([sys.executable, str(SCRIPT), *fresh_home, "--need-gb", "1e9", "--once", "--data", str(TMP / "small-disk")], env=ENV,
+                   capture_output=True, text=True, timeout=60)
+assert r.returncode and "not starting" in r.stderr and "Give --data" not in r.stderr, "--data given: nothing to suggest"
+r = subprocess.run([sys.executable, str(SCRIPT), *fresh_home, "--need-gb", "0", "--check"], env=ENV, capture_output=True, text=True, timeout=60)
+assert r.returncode == 0 and "room for jobs in" in r.stdout and "Docker's images:" in r.stdout, r.stdout + r.stderr
+(fake / "have-image").unlink(missing_ok=True)
+got = in_thread(board.task, "beta", {"mesh/cameras.json": src / "cameras.json"}, {"why": "test"}, "beta: m3", print)
+time.sleep(0.5)
+r = worker(hal["token"], "--once", env={**ENV, "FAKE_IMAGE_BYTES": str(10**15)})
+assert r.returncode and "Docker keeps images in" in r.stderr and "docker image prune" in r.stderr, r.stdout + r.stderr
+assert [j["state"] for j in board.state()["jobs"]] == ["queued"], "the job given back"
+(TMP / "home" / "pulled.json").write_text(json.dumps(["ghcr.io/me/bouldermesh:older"]))
+r = worker(hal["token"], "--once", env={**ENV, "FAKE_JOB": made})
+got["thread"].join(30)
+assert "value" in got, (got, r.stdout, r.stderr)
+shutil.rmtree(got["value"][1])
+assert "image rm ghcr.io/me/bouldermesh:older" in (fake / "calls").read_text(), "the image it pulled before is deleted"
+assert json.loads((TMP / "home" / "pulled.json").read_text()) == ["ghcr.io/me/bouldermesh:abc123"]
+print("room OK")
 
 # --- a machine that won't run the image asked for gives the job back, and stops -------------------------------------------
 p = project("prefix")

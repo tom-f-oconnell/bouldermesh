@@ -10,7 +10,10 @@ its log as it goes, and then the mesh. Run it with a token from the server's adm
 
 Python 3.9 or newer and Docker (with NVIDIA's container toolkit, for a GPU), which whoever runs it may use. The server
 and token are remembered (in ~/.bouldermesh-worker), so after the first time it's only `python3 bouldermesh_worker.py`.
-Jobs' photos and results, and the models they download, go there too, or under --data, such as on a bigger disk.
+Jobs' photos and results, and the models they download, go there too, or under --data, such as on a bigger disk. It
+checks there's room for a couple of climbs there, and for the image in Docker's storage, before starting either, and
+stops saying what's short rather than filling a disk partway through a job. Each job's folder is deleted after it, and
+an image it pulled once it pulls a newer one.
 Stop it with Ctrl-C: the climb it was on goes back to the server, for this or another machine.
 """
 from __future__ import annotations
@@ -36,6 +39,12 @@ TASKS = ("reconstruct", "beta", "scale")     # remote_job.py's: meshing a climb,
 INPUTS = ("photos", "masks", "mesh", "videos", "task.json")   # what a job's folder may hold
 SEND_EVERY = 5              # seconds between reports of a job's log, which also tell the server it's alive
 JOB_ID = re.compile(r"[0-9a-f]{12}")
+GB = 2**30                  # as df -h counts them
+CLIMB_GB = 3.0              # a climb's job folder at its biggest: its photos, COLMAP's and OpenMVS's work, its results
+CLIMBS_AHEAD = 2            # room for this many climbs before taking one
+MODELS_GB = 5.5             # the models jobs download the first time they need them (VGGT's weights are 4.7 GB of it)
+IMAGE_TIMES = 4             # an image takes about this many times its download (compressed layers, kept, and unpacked)
+IMAGE_GUESS_GB = 18         # what to allow for an image whose size the registry won't say (the GPU build's is about 16)
 IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}")
 
 
@@ -91,6 +100,7 @@ class Worker:
     def __init__(self, args):
         self.args = args
         self.home = Path(args.data or args.home).expanduser().resolve()    # jobs/, and data/: the models jobs download
+        self.settings = Path(args.home).expanduser().resolve()              # config.json, and pulled.json
         self.server = Server(args.server, args.token)
         self.gpu = self.gpu_args(args.gpu)
         self.container: str | None = None
@@ -105,6 +115,48 @@ class Worker:
         if choice == "all" or shutil.which("nvidia-smi") and subprocess.run(["nvidia-smi", "-L"], capture_output=True).returncode == 0:
             return ["--gpus", "all"]
         return []
+
+    # -- room on disk --------------------------------------------------------------------------------------------------
+    def data_room(self) -> str | None:
+        """Why there isn't room under --data (or --home) for CLIMBS_AHEAD climbs and the models still to download,
+        or None if there is."""
+        have = tree_size(self.home / "data" / "cache" / "models") / GB
+        need = self.args.need_gb if self.args.need_gb is not None else CLIMBS_AHEAD * CLIMB_GB + max(0.0, MODELS_GB - have)
+        free = free_gb(self.home)
+        if free >= need:
+            return None
+        why = (f"{self.home} has {free:.1f} GB free, and jobs need about {need:.1f} GB there (room for {CLIMBS_AHEAD} climbs at "
+               f"{CLIMB_GB:g} GB" + (f", and {MODELS_GB - have:.1f} GB of models to download the first time" if have < MODELS_GB else "") + ")")
+        if not self.args.data:
+            why += (". Give --data DIR to put jobs and models on a disk with more room (it's remembered; this script's settings "
+                    "stay where they are)")
+        return why
+
+    def image_room(self, image: str) -> str | None:
+        """Why Docker's storage hasn't room to pull image, or None if it has (or can't be checked)."""
+        size = image_download(image)
+        need = size * IMAGE_TIMES / GB if size else IMAGE_GUESS_GB
+        for where in docker_storage():
+            free = free_gb(where)
+            if free < need:
+                return (f"Docker keeps images in {where}, which has {free:.1f} GB free, and {image} needs about {need:.1f} GB "
+                        f"({'its layers, kept and unpacked' if size else 'a guess, as the registry did not say its size'}). Make room "
+                        "there (docker image prune deletes images nothing uses), or move Docker's storage (data-root in "
+                        "/etc/docker/daemon.json)")
+        return None
+
+    def prune_pulled(self, keep: str) -> None:
+        """Delete the images this script pulled before, now that it has pulled keep, unless a container still uses one."""
+        state = self.settings / "pulled.json"
+        try:
+            pulled = json.loads(state.read_text())
+        except (FileNotFoundError, ValueError):
+            pulled = []
+        left = [keep]
+        for old in pulled:
+            if old != keep and subprocess.run(["docker", "image", "rm", old], capture_output=True).returncode:
+                left.append(old)    # in use, or gone already: tried again next time
+        state.write_text(json.dumps(left))
 
     def client(self) -> dict:
         docker = subprocess.run(["docker", "version", "--format", "{{.Server.Version}}"], capture_output=True, text=True)
@@ -122,6 +174,10 @@ class Worker:
         if self.args.image_prefix and not image.startswith(self.args.image_prefix):
             self.server.call(f"{api}/done", {"status": "released"})
             raise SystemExit(f"the server asked for {image}, and this machine only runs images starting {self.args.image_prefix}")
+        short = self.data_room() or (self.image_room(image) if not have_image(image) else None)
+        if short:
+            self.server.call(f"{api}/done", {"status": "released"})
+            raise SystemExit(f"not enough room for the job, so it's given back: {short}")
         work = self.home / "jobs" / jid
         shutil.rmtree(work, ignore_errors=True)
         (work / "job").mkdir(parents=True)
@@ -129,10 +185,11 @@ class Worker:
             self.fetch(api, int(job["size"]), work / "input.tar")
             extract(work / "input.tar", work / "job")
             (work / "input.tar").unlink()
-            if subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode:
+            if not have_image(image):
                 code, last = self.stream(api, ["docker", "pull", "-q", image], f"remote: pulling {image}")
                 if code:
                     raise NotHere(f"couldn't pull {image}: {last}")
+                self.prune_pulled(image)
             self.container = f"bmw-{jid}"
             cmd = ["docker", "run", "--rm", "--init", "--name", self.container, "--user", f"{os.getuid()}:{os.getgid()}",
                    "-e", "HOME=/tmp", "-e", "DATA_DIR=/data", "-v", f"{self.home / 'data'}:/data", "-v", f"{work / 'job'}:/job",
@@ -239,10 +296,17 @@ class Worker:
     # -- the loop -------------------------------------------------------------------------------------------------------
     def run(self) -> None:
         client = self.client()
+        short = self.data_room()
         if self.args.check:
             r = self.server.call("/worker/api/work", {**client, "check": True})
             log(f"{self.server.url} knows this token as {r.get('name')!r}")
+            if short:
+                raise SystemExit(f"but there isn't room for jobs: {short}")
+            log(f"room for jobs in {self.home}: {free_gb(self.home):.0f} GB free; Docker's images: "
+                + ", ".join(f"{w} {free_gb(w):.0f} GB free" for w in docker_storage()))
             return
+        if short:
+            raise SystemExit(f"not starting: {short}")
         log(f"working for {self.server.url}: {client['client']}" + (", with the GPU" if self.gpu else ", without a GPU")
             + (f", at most {self.args.cpus} cores" if self.args.cpus else ""))
         while True:
@@ -276,6 +340,59 @@ class Worker:
                 return
 
 
+def free_gb(path: Path) -> float:
+    st = os.statvfs(path)
+    return st.f_bavail * st.f_frsize / GB
+
+
+def tree_size(path: Path) -> int:
+    total = 0
+    for root, _, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.lstat(os.path.join(root, f)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def have_image(image: str) -> bool:
+    return subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0
+
+
+def image_download(image: str) -> int | None:
+    """How many bytes pulling an image downloads, its layers' compressed sizes for this machine, as its registry says
+    (docker manifest inspect); None if it won't say."""
+    try:
+        r = subprocess.run(["docker", "manifest", "inspect", "-v", image], capture_output=True, text=True, timeout=120)
+        found = json.loads(r.stdout) if r.returncode == 0 else None
+    except (subprocess.SubprocessError, ValueError):
+        return None
+    for m in found if isinstance(found, list) else [found] if found else []:
+        platform = (m.get("Descriptor") or {}).get("platform") or {}
+        layers = (m.get("SchemaV2Manifest") or m.get("OCIManifest") or {}).get("layers") or []
+        if layers and platform.get("os", "linux") == "linux" and platform.get("architecture", "amd64") in ("amd64", "x86_64"):
+            return sum(int(layer.get("size") or 0) for layer in layers)
+    return None
+
+
+def docker_storage() -> list[Path]:
+    """Where Docker keeps images here: its data root, and containerd's, which Docker's containerd image store uses."""
+    r = subprocess.run(["docker", "info", "--format", "{{.DockerRootDir}}"], capture_output=True, text=True)
+    out = [Path(r.stdout.strip())] if r.returncode == 0 and r.stdout.strip() else []
+    out += [Path("/var/lib/containerd")]
+    seen, keep = set(), []
+    for p in out:
+        try:
+            dev = os.stat(p).st_dev
+        except OSError:
+            continue
+        if dev not in seen:
+            seen.add(dev)
+            keep.append(p)
+    return keep
+
+
 def extract(tar_path: Path, dest: Path) -> None:
     """Unpack what the job needs (photos, masks, a mesh, videos, its task.json): only files and folders, under INPUTS."""
     with tarfile.open(tar_path) as tar:
@@ -303,7 +420,10 @@ def main() -> None:
                     help="where it keeps its settings, and unless --data says otherwise, its jobs and the models they download")
     ap.add_argument("--data", help="where jobs' photos and results, and the models they download, go: a few GB, such as on a "
                     "bigger disk (remembered; --home if not given)")
-    ap.add_argument("--check", action="store_true", help="only check the server knows the token, and remember it")
+    ap.add_argument("--need-gb", type=float, help=f"the room jobs need under --data before it takes one, in GB (by default "
+                    f"{CLIMBS_AHEAD * CLIMB_GB:g}, and {MODELS_GB:g} more until the models are downloaded)")
+    ap.add_argument("--check", action="store_true", help="only check the server knows the token, and remember it, and that "
+                    "there's room for jobs")
     ap.add_argument("--once", action="store_true", help="ask for one job, do it if there's one, and stop")
     args = ap.parse_args()
     home = Path(args.home).expanduser()

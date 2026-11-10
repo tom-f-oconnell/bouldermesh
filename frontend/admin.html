@@ -257,7 +257,7 @@ $('#mach-add').onclick = async () => {
     const r = await call('/api/admin/actions/machine-add', { name: $('#mach-name').value });
     $('#mach-name').value = '';
     $('#mach-new').innerHTML = `<div class="note ok">${esc(r.result)}</div><div class="note">Download the script from <a href="${esc(r.download)}" download="bouldermesh_worker.py">${esc(r.download)}</a> (or use worker/bouldermesh_worker.py in the repository), then run:</div><textarea readonly>${esc(r.command)}</textarea>`
-      + `<div class="note">Add <code>--cpus N</code> to limit the cores its jobs use, <code>--image-prefix ${esc(r.image_prefix || 'ghcr.io/you/bouldermesh:')}</code> to run only this server's images, and <code>--data DIR</code> to put its jobs' photos and results, and the models they download (a few GB), in DIR rather than in <code>~/.bouldermesh-worker</code>, such as on a bigger disk. It remembers them all, with the server and token. Run it once with <code>--check</code> to see the server knows it.</div>`;
+      + `<div class="note">Add <code>--cpus N</code> to limit the cores its jobs use, <code>--image-prefix ${esc(r.image_prefix || 'ghcr.io/you/bouldermesh:')}</code> to run only this server's images, and <code>--data DIR</code> to put its jobs' photos and results, and the models they download (a few GB), in DIR rather than in <code>~/.bouldermesh-worker</code>, such as on a bigger disk. It remembers them all, with the server and token. Run it once with <code>--check</code> to see the server knows it and there's room for jobs: it stops, saying what's short, rather than fill a disk partway through one.</div>`;
     msg('Added ' + r.name); refresh();
   } catch (e) { msg(e.message, 8000); }
 };

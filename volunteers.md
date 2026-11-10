@@ -189,7 +189,8 @@ Back on hal:
        python3 worker/bouldermesh_worker.py --server https://boulderme.sh --token bmw_... --cpus 12 \
            --image-prefix ghcr.io/tom-f-oconnell/bouldermesh: --data /data/tom/bouldermesh-worker --check
 
-   It should say the server knows the token as `hal`, and it remembers all of that. `--data` puts its jobs' photos and
+   It should say the server knows the token as `hal`, and how much room there is for jobs and for Docker's images
+   (short of room, it says what's short and stops), and it remembers all of that. `--data` puts its jobs' photos and
    results, and the models they download (a few GB), on the big disk rather than in `~/.bouldermesh-worker`, where its
    settings stay. Then run it whenever hal is up:
 
