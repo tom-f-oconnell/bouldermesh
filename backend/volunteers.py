@@ -512,12 +512,13 @@ section{display:none} section.on{display:block}
 ul{padding-left:1.2em} li{margin:.2em 0}
 </style>
 <h1>Volunteer for BoulderMesh</h1>
-<p>BoulderMesh makes 3D models of boulders from photos and climbing videos. You can help in two ways, from your own
-computer. Either script makes a token for you, asks your name (you can leave it out), and registers itself with this
-site; whoever runs it then approves it.</p>
+<p>BoulderMesh makes 3D models of boulders from photos and climbing videos. You can help from your own computer in two
+ways now: either script makes a token for you, asks your name (you can leave it out), and registers itself with this
+site, and whoever runs it then approves it. A third way, collecting data yourself, is coming soon.</p>
 <div class="choose">
-  <a href="#videos" data-show="videos">Help collect videos<small>Fetch YouTube videos of climbs from your address, slowly. Python is all it needs.</small></a>
-  <a href="#compute" data-show="compute">Help compute meshes<small>(GPU required) Turn climbs' photos into 3D models on your computer, in Docker.</small></a>
+  <a href="#videos" data-show="videos">Collect videos<small>Fetch YouTube videos of climbs from your address, slowly. Python is all it needs.</small></a>
+  <a href="#compute" data-show="compute">Compute meshes<small>(GPU required) Turn climbs' photos into 3D models on your computer, in Docker.</small></a>
+  <a href="#data" data-show="data">Data collection<small>Coming soon: your own photos and videos, and photos to scale and orient meshes.</small></a>
 </div>
 
 <section id="videos">
@@ -590,6 +591,17 @@ loginctl enable-linger "$USER"</pre><button class="copy" title="Copy" aria-label
 <p>The last line lets it run while you're logged out, and start with the computer (it may ask for your password).
 <code>journalctl --user -u bouldermesh-worker -f</code> shows what it's doing, and
 <code>systemctl --user disable --now bouldermesh-worker</code> stops it for good.</p>
+</section>
+
+<section id="data">
+<h2>Data collection</h2>
+<p>Coming soon:</p>
+<ul>
+<li><b>Your own photos and videos:</b> upload those you took of boulders and climbs, for meshes of climbs that have none
+yet, and better ones of those that do.</li>
+<li><b>Photos to scale and orient existing meshes:</b> a way to take photos of a boulder with a scale reference in them,
+something of known size, so that its mesh gets its true size and the right way up.</li>
+</ul>
 </section>
 
 <script>

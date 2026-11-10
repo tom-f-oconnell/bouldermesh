@@ -609,9 +609,11 @@ YouTube refuses a server's downloads after a while (a cloud server's at once), s
 fetch videos from their own addresses, slowly. Their script makes its own token, asks their name (optional), and
 registers it; they then wait under *Volunteers* on the admin page for *Approve* (see "Approving volunteers and machines"
 below). Or *Add volunteer* there shows a token, approved from the start, and the command to give them. `https://<site>/volunteer/`, which the main page's *Volunteer* button opens wherever this
-server answers volunteers, has two ways to help: *Help collect videos* has the script and says what it does, and *Help
-compute meshes* has the machines' script (above), what a computer needs for it (an NVIDIA GPU, as Docker can't use a
-Mac's), and how to run it as the user's own systemd service, which starts with the computer. The video script needs Python 3.9 and
+server answers volunteers, has three ways to help, as buttons. *Collect videos* has the script and says what it does.
+*Compute meshes* has the machines' script (above), what a computer needs for it (an NVIDIA GPU, as Docker can't use a
+Mac's), and how to run it as the user's own systemd service, which starts with the computer. *Data collection* says
+what's coming: uploading one's own photos and videos, and a way to take photos with a scale reference in them, to scale
+and orient existing meshes. The video script needs Python 3.9 and
 installs yt-dlp and Deno in `~/.bouldermesh-volunteer`, and on first run explains the costs (YouTube's terms, and the
 bot check their whole network may get) and asks them to agree. [volunteers.md](volunteers.md) has every step, for
 volunteers and for connecting the public site to whichever server harvests.
