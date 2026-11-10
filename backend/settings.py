@@ -39,6 +39,7 @@ DEFAULTS = {
     # what the main site shows
     "site.textures": "all",                # all | permitted (only from clearly licensed photos) | none
     "site.sources": "all",                 # all | link (non-permitted ones only as links) | permitted
+    "site.map_km": 1.0,                    # how many km across (its narrower side) the map opens around a boulder
     "youtube.via": "volunteers_when_refused",   # here | volunteers_when_refused | volunteers (never here: a cloud server)
     # the most the data may take, in GB (0: no limit): over it, volunteers and areas wait for room (DATA_CAP_GB starts it)
     "storage.cap_gb": 0.0,
@@ -49,7 +50,7 @@ DEFAULTS = {
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
            "areas.meshes": ("boulders", "climbs")}
-LIMITS = {"storage.cap_gb": (0, 100000), "compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
+LIMITS = {"site.map_km": (0.05, 2000), "storage.cap_gb": (0, 100000), "compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000)}
 for _key in ("site.textures", "site.sources", "youtube.via"):    # a public copy's starting points, from its .env
     _given = os.environ.get(_key.replace(".", "_").upper(), "").strip()

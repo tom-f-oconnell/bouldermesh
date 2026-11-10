@@ -62,12 +62,13 @@ with tempfile.TemporaryDirectory() as td:
     assert s.get("compute.remote_workers") == 3 and s.all()["site.sources"] == "link" and s.get("compute.ssh_hosts") == ["a@b", "c@d:2222"]
     for bad, text in (({"nope": 1}, "no setting"), ({"site.textures": "some"}, "one of"), ({"compute.local_workers": 9}, "from 0 to 4"),
                       ({"compute.aws.spot": "yes"}, "true or false"), ({"compute.remote_workers": 1.5}, "whole number"),
-                      ({"storage.cap_gb": "lots"}, "a number"), ({"storage.cap_gb": -2.5}, "from 0")):
+                      ({"storage.cap_gb": "lots"}, "a number"), ({"storage.cap_gb": -2.5}, "from 0"), ({"site.map_km": 0}, "from 0.05")):
         must_raise(lambda: s.update(bad), ValueError, text)
     assert s.get("compute.local_workers") == 1, "nothing saved from a bad update"
     assert s.get("storage.cap_gb") == settings_mod.DEFAULTS["storage.cap_gb"]
     s.update({"storage.cap_gb": 47.5})
     assert s.get("storage.cap_gb") == 47.5 and isinstance(s.update({"storage.cap_gb": 40})["storage.cap_gb"], float)
+    assert s.get("site.map_km") == 1 and s.update({"site.map_km": 2.5})["site.map_km"] == 2.5
 
     os.environ.pop("BOULDERMESH_SECRETS_KEY", None)
     os.environ.pop("AWS_ACCESS_KEY_ID", None)

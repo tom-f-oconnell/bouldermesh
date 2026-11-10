@@ -305,11 +305,19 @@ elsewhere. Fitting splats is off (`SPLATS=1` turns it on for new meshes, and `py
 as it needs CUDA builds of torch and gsplat, and the few photos most meshes are placed from make poor ones: design.md,
 "Scenes around meshes". A splat is learnt from all of a mesh's photos, so it's shown only where the site shows all its textures.
 
-On a phone, the page shows either the controls or the view, switched by the button at the top left of each (*Viewer*,
-*Controls*). The header then holds only that, *Random mesh*, and a ⚙ button for the background and colours. While a mesh
-loads, its progress shows over whichever is on screen, and the view takes over once it's ready. Over the mesh it shows
-only the climb's name, small, at the top, so texture problems, stray-piece cleanup and the iPhone gravity comparison are
-only shown on wider screens (over 860 px). A long press on the view gives a link to the mesh, to copy or share.
+The climbs list hides climbs without meshes until that box is unticked. Each climb's *View* opens its mesh, and the one
+in view is blue. *Random* opens any mesh; it's blue until one is in view.
+
+On a phone, the page shows either the controls or the view. The controls' header holds *Viewer* (grey until a mesh is
+opened, then with the climb in view named under it), *Random*, a ⚙ button (the mesh as *Surface* or *Wireframe*, the
+background, and colours), *Volunteer*, and *Edit…* or *Editing*. The view's bar holds ← back to the controls, *Random*,
+⚙, *Map* (which swaps the mesh for the map, and then reads *3D*), and *Sway*. While a mesh loads, its progress shows over whichever is on screen, and the view takes over once it's ready. Over
+the mesh it shows only the climb's name, small, at the top, so texture problems, stray-piece cleanup, *Hide notes* and
+the iPhone gravity comparison are only shown on wider screens (over 860 px). A long press on the view gives a link to the
+mesh, to copy or share.
+
+The map opens around the mesh in view, its narrower side 1 km across (the admin page's *The map opens around a boulder
+this many km across*).
 
 The page's address follows the mesh in view (`#mesh=<id>`, and `&climb=<id>` for a boulder's mesh seen from one of its
 climbs), so it can be copied from there too, and opening such a link shows that mesh.
@@ -528,6 +536,7 @@ No Derivatives, or your own uploads ([license_considerations.md](license_conside
   has made one (else plain grey); or none. Hidden textures aren't served at all, and meshes come without them.
 - *Source photos and video frames*: all; or those free to copy, with only links to the rest, whose copies
   here aren't served; or only those free to copy.
+- *The map opens around a boulder this many km across*: its narrower side, when it opens on a mesh (1 by default).
 
 The coloured versions are made per vertex from the photos free to copy, so they're less sharp than a
 texture, and grey where none of those photos sees the rock. Meshes built before Nov 3 need rebuilding
@@ -595,7 +604,10 @@ The AWS side has been tested against stand-ins for AWS, not against AWS itself.
 
 YouTube refuses a server's downloads after a while (a cloud server's at once), so people can lend their computers to
 fetch videos from their own addresses, slowly. Add one on the admin page under *Volunteers*, which shows the token once
-and the command to give them; `https://<site>/volunteer/` has the script and says what it does. It needs Python 3.9 and
+and the command to give them. `https://<site>/volunteer/`, which the main page's *Volunteer* button opens wherever this
+server answers volunteers, has two ways to help: *Help collect videos* has the script and says what it does, and *Help
+compute meshes* has the machines' script (above), what a computer needs for it (an NVIDIA GPU, as Docker can't use a
+Mac's), and how to run it as the user's own systemd service, which starts with the computer. The video script needs Python 3.9 and
 installs yt-dlp and Deno in `~/.bouldermesh-volunteer`, and on first run explains the costs (YouTube's terms, and the
 bot check their whole network may get) and asks them to agree. [volunteers.md](volunteers.md) has every step, for
 volunteers and for connecting the public site to whichever server harvests.

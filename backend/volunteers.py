@@ -424,27 +424,42 @@ COPY_ICON = ('<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke
 PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Volunteer for BoulderMesh</title>
 <style>
-:root{color-scheme:light dark;--code:#f2f2f2;--line:#ccc;--ok:#2a8a3a}
-@media (prefers-color-scheme:dark){:root{--code:#1e1e1e;--line:#444;--ok:#5fd68a}}
+:root{color-scheme:light dark;--code:#f2f2f2;--line:#ccc;--ok:#2a8a3a;--acc:#1a73c8;--acc-fg:#fff;--mute:#666}
+@media (prefers-color-scheme:dark){:root{--code:#1e1e1e;--line:#444;--ok:#5fd68a;--acc:#5cc8ff;--acc-fg:#001018;--mute:#999}}
 body{font:16px/1.5 system-ui,sans-serif;max-width:42em;margin:2em auto;padding:0 16px}
-h2{font-size:1.1em;margin:1.4em 0 .4em}
+h2{font-size:1.25em;margin:1.2em 0 .3em} h3{font-size:1.05em;margin:1.3em 0 .3em}
 code{background:var(--code);padding:1px 4px;border-radius:3px}
+.choose{display:grid;gap:12px;margin:1.2em 0}
+.choose a{display:block;padding:18px 20px;border-radius:10px;border:2px solid var(--acc);color:inherit;text-decoration:none;font-size:1.2em;
+  font-weight:600;line-height:1.3}
+.choose a small{display:block;font-weight:400;font-size:.8em;color:var(--mute);margin-top:4px}
+.choose a.on{background:var(--acc);color:var(--acc-fg)} .choose a.on small{color:inherit;opacity:.85}
+section{display:none} section.on{display:block}
 .box{position:relative;margin:6px 0 10px}
 .box pre{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:10px 46px 10px 12px;margin:0;
   white-space:pre-wrap;overflow-wrap:anywhere}
 .copy{position:absolute;top:6px;right:6px;background:transparent;color:inherit;border:1px solid var(--line);border-radius:5px;padding:5px;
   line-height:0;cursor:pointer}
 .copy.done{border-color:var(--ok);color:var(--ok)}
+ul{padding-left:1.2em} li{margin:.2em 0}
 </style>
-<h1>Volunteering for BoulderMesh</h1>
-<p>BoulderMesh makes 3D models of boulders from photos and climbing videos. YouTube stops one server from fetching many
-videos, so volunteers fetch some from their own computers, slowly: at most 15 an hour and 100 a day, one at a time.</p>
-<p>You need a token from whoever runs this site, and Python 3.9 or newer.</p>
-<h2>1. Get the script</h2>
+<h1>Volunteer for BoulderMesh</h1>
+<p>BoulderMesh makes 3D models of boulders from photos and climbing videos. You can help in two ways, from your own
+computer, with a token from whoever runs this site:</p>
+<div class="choose">
+  <a href="#videos" data-show="videos">Help collect videos<small>Fetch YouTube videos of climbs from your address, slowly. Python is all it needs.</small></a>
+  <a href="#compute" data-show="compute">Help compute meshes<small>(GPU required) Turn climbs' photos into 3D models on your computer, in Docker.</small></a>
+</div>
+
+<section id="videos">
+<h2>Help collect videos</h2>
+<p>YouTube stops one server from fetching many videos, so volunteers fetch some from their own computers, slowly: at most
+15 an hour and 100 a day, one at a time. You need Python 3.9 or newer.</p>
+<h3>1. Get the script</h3>
 <div class="box"><pre>curl -O {base}/volunteer/bouldermesh_volunteer.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
 <p><a href="/volunteer/bouldermesh_volunteer.py" download="bouldermesh_volunteer.py">Or download it here</a>. On Windows,
 <code>curl.exe</code> in place of <code>curl</code>.</p>
-<h2>2. Run it with your token</h2>
+<h3>2. Run it with your token</h3>
 <div class="box"><pre>python3 bouldermesh_volunteer.py --server {base} --token YOUR_TOKEN</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
 <p>On Windows, <code>py</code> in place of <code>python3</code>. It remembers the server and your token (in
 <code>.bouldermesh-volunteer</code> in your home folder, readable only by you), so after the first time it's only
@@ -452,6 +467,60 @@ videos, so volunteers fetch some from their own computers, slowly: at most 15 an
 <p>The first time, it explains what it does and asks you to agree. Among other things: YouTube's terms don't allow
 downloading videos except through YouTube itself, and if YouTube decides your address is fetching too much, everyone on
 your network may be asked to sign in or prove they're not a bot for a while.</p>
+</section>
+
+<section id="compute">
+<h2>Help compute meshes</h2>
+<p>A small script asks this site for a climb to mesh, fetches its photos, runs the reconstruction in this site's own
+Docker image on your computer's GPU, and sends back the mesh: one climb at a time, each most of an hour. Only your
+computer connects out, over HTTPS; nothing needs to reach it. Ctrl-C stops it, and the climb goes to another computer.</p>
+<h3>What it needs</h3>
+<ul>
+<li><b>An NVIDIA GPU</b>, with a current driver (535 or newer): GTX 900 series or newer (CUDA compute capability 5.0), and
+8 GB of its memory or more for the most help (less will still match photos; placing the hardest ones uses as much as is
+free).</li>
+<li><b>Linux on an x86-64 computer</b>, with Docker and NVIDIA's Container Toolkit, Docker usable without sudo (in the
+<code>docker</code> group), and Python 3.9 or newer. On Windows, use WSL 2 with Docker's GPU support, and run everything
+below inside it. A Mac won't do: it has no NVIDIA GPU, and Docker on a Mac can't use the one it has.</li>
+<li><b>16 GB of memory</b> or more (32 is better), and as many CPU cores as you'll give it: some steps use only the CPU.</li>
+<li><b>Disk:</b> about 18 GB where Docker keeps its images (it checks before downloading the image), and 12 GB where the
+script keeps its jobs and the models they download, which <code>--data</code> can put on another disk.</li>
+<li><b>Internet:</b> a climb's photos are 50 to 300 MB down, and its mesh 20 to 60 MB up.</li>
+</ul>
+<h3>1. Get the script</h3>
+<div class="box"><pre>curl -O {base}/worker/bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p><a href="/worker/bouldermesh_worker.py" download="bouldermesh_worker.py">Or download it here</a>.</p>
+<h3>2. Check it can work</h3>
+<div class="box"><pre>python3 bouldermesh_worker.py --server {base} --token YOUR_TOKEN --check</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p>It says whether this site knows your token, and whether there's room for jobs and the image; short of room, it says
+what's short. Add <code>--cpus N</code> to limit the cores jobs use, and <code>--data DIR</code> to keep jobs and models
+on another disk. It remembers them all, with the server and the token (in <code>.bouldermesh-worker</code> in your home
+folder, readable only by you).</p>
+<h3>3. Run it</h3>
+<div class="box"><pre>python3 bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<h3>Optional: start it by itself, whenever the computer starts</h3>
+<p>As a systemd service of your own, not root's. Put the script where it'll stay (here, your home folder), then:</p>
+<div class="box"><pre>mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/bouldermesh-worker.service &lt;&lt;'EOF'
+[Unit]
+Description=BoulderMesh: meshes for {base}
+
+[Service]
+ExecStart=/usr/bin/python3 %h/bouldermesh_worker.py
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now bouldermesh-worker
+loginctl enable-linger "$USER"</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p>The last line lets it run while you're logged out, and start with the computer (it may ask for your password).
+<code>journalctl --user -u bouldermesh-worker -f</code> shows what it's doing, and
+<code>systemctl --user disable --now bouldermesh-worker</code> stops it for good.</p>
+</section>
+
 <script>
 for (const b of document.querySelectorAll('.copy')) b.onclick = async () => {
   const pre = b.previousElementSibling;
@@ -460,6 +529,13 @@ for (const b of document.querySelectorAll('.copy')) b.onclick = async () => {
   b.classList.add('done'); b.title = 'Copied';
   setTimeout(() => { b.classList.remove('done'); b.title = 'Copy'; }, 1500);
 };
+// the two ways to help: one shows at a time, from the buttons or the address's #videos or #compute
+function show(which){
+  for (const s of document.querySelectorAll('section')) s.classList.toggle('on', s.id === which);
+  for (const a of document.querySelectorAll('.choose a')) a.classList.toggle('on', a.dataset.show === which);
+}
+addEventListener('hashchange', () => show(location.hash.slice(1)));
+show(location.hash.slice(1));
 </script>
 """
 

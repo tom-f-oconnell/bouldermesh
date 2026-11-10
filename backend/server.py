@@ -2952,6 +2952,9 @@ class Handler(BaseHTTPRequestHandler):
                                        "known_objects": {k: v[2] for k, v in scale_mod.KNOWN.items()},
                                        "opencv": _has("cv2"), "pillow": _has("PIL"),
                                        "policy": {"textures": settings().get("site.textures"), "sources": settings().get("site.sources")},
+                                       "map_km": settings().get("site.map_km"),
+                                       # the volunteers' page, for the header's Volunteer button, where this server takes them
+                                       "volunteer_url": VOLUNTEER_URL if VOLUNTEER_PORT else None,
                                        "editing": "none" if READ_ONLY else "token" if EDIT_TOKEN else "open",
                                        "editor": not READ_ONLY and (not EDIT_TOKEN or self.is_editor()), "stopping": _stopping,
                                        "version": VERSION,

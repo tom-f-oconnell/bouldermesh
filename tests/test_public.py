@@ -137,6 +137,7 @@ def with_token(tmp: Path) -> None:
         st, h, s = req(B, "GET", "/api/status")
         assert st == 200 and s["editing"] == "token" and s["editor"] is False and h["Cache-Control"] == "no-cache", s
         assert s["admin"] is None, "where the admin page is, and how to reach it, are for editors"
+        assert s["map_km"] == 1 and "volunteer_url" in s, "how far the map opens around a boulder, and the Volunteer button's page"
         assert "Content-Security-Policy" not in h, "the policy is for the page"
         st, _, s = req(B, "GET", "/api/status", headers=AUTH)
         assert s["editor"] is True, s

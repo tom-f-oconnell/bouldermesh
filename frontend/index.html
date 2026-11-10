@@ -22,15 +22,18 @@
   .pill.real{color:var(--ok);border-color:var(--ok)} .pill.demo,.pill.stopping{color:var(--warn);border-color:var(--warn)}
   .seg{display:inline-flex;margin-left:auto;border:1px solid var(--line);border-radius:6px;overflow:hidden}
   #random{margin-left:auto} header .seg{flex:none}
+  #tofull small{display:block;color:inherit;opacity:.9;font-size:10px;font-weight:400;line-height:1.1;max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #tofull:disabled{background:var(--line);color:var(--mute);opacity:1}
+  .phone-only{display:none!important}
   #prefs{display:inline-flex;gap:12px;align-items:center;flex:none} #prefs .seg{margin-left:0} .plabel{display:none}
   .seg button{background:transparent;color:var(--mute);border:0;border-radius:0;padding:3px 8px;font-size:12px} .seg button.on{color:var(--fg);background:var(--line)}
-  #code{color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;text-decoration:none}
+  #code,#volunteer{color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;text-decoration:none;white-space:nowrap}
   #admindlg{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;max-width:600px;padding:16px}
   #admindlg::backdrop{background:rgba(0,0,0,.5)}
   #admindlg p{font-size:13px;margin:0 0 10px}
   #admindlg pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;margin:0 0 10px;white-space:pre-wrap;word-break:break-all;font-size:12px;user-select:all}
   #admindlg a{color:var(--acc)}
-  #code:hover{border-color:var(--acc)}
+  #code:hover,#volunteer:hover{border-color:var(--acc)}
   main{display:grid;grid-template-columns:400px 1fr;min-height:0}
   aside{border-right:1px solid var(--line);overflow:hidden;background:var(--panel);display:flex;flex-direction:column;min-height:0}
   .tabs{display:flex;border-bottom:1px solid var(--line)}
@@ -170,7 +173,11 @@
   @media (max-width:860px){
     body,main{grid-template-columns:minmax(0,1fr)} aside{border-right:0} #right{display:none} .phone{display:inline-block}
     body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
-    header{padding:6px 10px;gap:8px} header h1,#mode{display:none} #random{margin-left:0} #edit,#viewonly{order:1;margin-left:auto} #forget{order:1}
+    header{padding:6px 10px;gap:8px} header h1,#mode{display:none} #random{margin-left:0}
+    #volunteer{order:1;margin-left:auto} #edit,#viewonly,#forget{order:2}
+    /* the view on its own: back, and a toggle between the mesh and the map; wireframe and notes live elsewhere or not at all */
+    #toctl{font-size:17px;line-height:1;padding:3px 10px} #v3d,#vwire,#vnotes{display:none!important}
+    #prefs .phone-only{display:revert!important}
     #caps,#code,#admin{display:none!important}
     /* the background and colour choices open from a button in either view, as a panel over it */
     #prefs{position:fixed;z-index:2600;display:none;grid-template-columns:auto auto;gap:10px 12px;align-items:center;padding:12px;
@@ -188,7 +195,7 @@
 </head>
 <body>
 <header>
-  <button class="sm phone" id="tofull">Viewer</button>
+  <button class="sm phone" id="tofull" disabled title="Pick a climb's mesh first">Viewer</button>
   <h1>BoulderMesh</h1>
   <span id="mode" class="pill">checking…</span>
   <span id="stopping" class="pill stopping" style="display:none"></span>
@@ -196,15 +203,18 @@
   <span id="viewonly" class="pill" style="display:none" title="This copy of the site can't be changed from a browser">view-only</span>
   <button class="sm sec" id="edit" style="display:none"></button>
   <button class="sm danger" id="forget" style="display:none" title="Forget the editing token kept in this browser: changing anything here then needs it again">Forget edit token</button>
-  <button class="sm sec" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random mesh</button>
+  <button class="sm" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random</button>
   <button class="sm sec phone prefsbtn" id="prefsbtn" title="Background and colours" aria-label="Settings" aria-expanded="false">⚙︎</button>
   <span id="prefs">
+    <span class="plabel phone-only">Mesh</span>
+    <span class="seg phone-only" id="wiremode" title="The mesh's surface, or only the edges of its triangles, to see how it's built"><button data-wire="0" class="on">Surface</button><button data-wire="1">Wireframe</button></span>
     <span class="plabel">Background</span>
     <span class="seg" id="bgmode" title="Behind a mesh: the plain page colour, or a scene: a sky over ground the colour of the rock's foot, and around a reconstructed mesh, where its photos show it, what's really there"><button data-bg="solid">Solid</button><button data-bg="scene" class="on">Scene</button></span>
     <span class="plabel">Colours</span>
     <span class="seg" id="theme" title="Colours: the browser's setting, or light or dark here"><button data-theme="system" class="on">System</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span>
   </span>
   <button class="sm sec" id="admin" style="display:none" title="The admin page: what the site shows, where reconstructions run, credentials. It's on a port of its own, which only the server itself (or its LAN) can reach.">Admin</button>
+  <a id="volunteer" style="display:none" href="/volunteer/" title="Lend this site your computer: to fetch YouTube videos of climbs, or to make meshes on its GPU">Volunteer</a>
   <a id="code" href="https://github.com/tom-f-oconnell/bouldermesh" target="_blank" rel="noopener">Code</a>
 </header>
 <dialog id="admindlg"></dialog>
@@ -247,7 +257,7 @@
       <section>
         <h2>Climbs <small id="c-count"></small></h2>
         <div class="row" style="margin-bottom:6px"><input type="text" id="c-filter" class="grow" placeholder="search every climb: name, boulder, area, grade"></div>
-        <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="c-meshed"> Hide climbs without meshes</label>
+        <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="c-meshed" checked autocomplete="off"> Hide climbs without meshes</label>
           <label class="doubtful" title="Their page's GPS is far from their area's, or they're far from the other climbs on their boulder: put them right where they came from, then import them again"><input type="checkbox" id="c-doubtful" autocomplete="off"> Only climbs whose coordinates look wrong <span id="c-doubtful-n"></span></label></div>
         <div id="climb-open"></div>
         <div id="climbs"></div>
@@ -327,13 +337,13 @@
 
   <div id="right">
     <div class="viewbar">
-      <button class="sm phone" id="toctl">Controls</button>
+      <button class="sm phone" id="toctl" title="Back to the climbs and the rest" aria-label="Back">←</button>
       <button class="sm sec phone" id="vrandom" title="Another mesh, picked at random">Random</button>
       <button class="sm sec phone prefsbtn" id="vprefs" title="Background and colours" aria-label="Settings" aria-expanded="false">⚙︎</button>
       <button class="sec sm" id="v3d">3D viewer</button>
       <button class="sec sm" id="vmap">Map</button>
       <button class="sec sm" id="vmark" style="display:none" title="Click the rock to add a start hold, and a hold again for hand, finish, foot, then none">Mark holds</button>
-      <button class="sec sm" id="vsway" disabled title="Rocks the view a few degrees either way from where it is now, to show off that it's 3D. Dragging or scrolling stops it.">Sway view</button>
+      <button class="sec sm" id="vsway" disabled title="Rocks the view a few degrees either way from where it is now, to show off that it's 3D. Dragging or scrolling stops it.">Sway</button>
       <button class="sec sm" id="vwire" disabled title="Shows only the edges of the mesh's triangles, to see how it's built: where it's dense, thin or patched. Click again for its surface.">Wireframe</button>
       <button class="sec sm" id="vnotes" title="Hides the notes over the view: about its texture, its stray pieces, and how it was framed and scaled. Click again to show them.">Hide notes</button>
       <select id="vfrom" style="display:none;width:auto" title="A boulder's own mesh is made from the photos of every climb on it: this looks at it from where one climb's own photos (its page's and its videos') were taken"></select>
@@ -471,8 +481,21 @@ function setFull(on){
   if ($('#map').classList.contains('on')) setTimeout(() => map.invalidateSize(), 50);
 }
 $('#tofull').onclick = () => setFull(true); $('#toctl').onclick = () => setFull(false);
-function showRight(which){ setFull(true); $('#viewer').classList.toggle('on', which==='3d'); $('#map').classList.toggle('on', which==='map'); if (which==='map') { setTimeout(()=>map.invalidateSize(), 50); } else resize(); }
-$('#v3d').onclick = () => showRight('3d'); $('#vmap').onclick = () => { endSway(); showRight('map'); refreshMap(!mapFitted); };
+function showRight(which){
+  setFull(true);
+  if (which !== 'map') map.stop();      // any pan or zoom still easing out, which would go on behind the view
+  $('#viewer').classList.toggle('on', which==='3d'); $('#map').classList.toggle('on', which==='map');
+  $('#vmap').textContent = phone.matches && which === 'map' ? '3D' : 'Map';    // on a phone, one button goes between them
+  if (which==='map') { setTimeout(()=>map.invalidateSize(), 50); } else resize();
+}
+$('#v3d').onclick = () => showRight('3d');
+$('#vmap').onclick = () => {
+  if (phone.matches && $('#map').classList.contains('on')) return showRight('3d');
+  endSway(); showRight('map');
+  const m = shownMesh && meshesById[shownMesh];
+  if (m && m.lat != null && mapCentredOn !== m.id) { mapCentredOn = m.id; refreshMap().then(() => mapAround(m.lat, m.lng)); }
+  else refreshMap(!mapFitted);
+};
 
 // ---------------------------------------------------------------- 3D viewer
 const vEl = $('#viewer');
@@ -549,7 +572,13 @@ scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.1));
 const dir = new THREE.DirectionalLight(0xffffff, 1.2); dir.position.set(3, 5, 2); scene.add(dir);
 const grid = new THREE.GridHelper(4, 20, 0x334, 0x223); grid.position.y = -0.001; scene.add(grid);
 let current = null;
-function resize(){ const w=vEl.clientWidth, h=vEl.clientHeight; if (!w||!h) return; renderer.setSize(w,h,false); renderer.setPixelRatio(devicePixelRatio); camera.aspect=w/h; camera.updateProjectionMatrix(); }
+let drawn = '';     // the size the view's drawing buffer was made at: making it again, when nothing changed, costs a frame
+function resize(){
+  const w=vEl.clientWidth, h=vEl.clientHeight;
+  if (!w||!h || drawn === `${w}x${h}x${devicePixelRatio}`) return;
+  drawn = `${w}x${h}x${devicePixelRatio}`;
+  renderer.setPixelRatio(devicePixelRatio); renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix();
+}
 new ResizeObserver(resize).observe(vEl); resize();
 // ---- swaying the view a few degrees around where it is, as if dragging it gently back and forth
 const SWAY = { sideways: 5 * Math.PI / 180, upDown: 2.5 * Math.PI / 180, seconds: 8, easeIn: 1.5, easeOut: .8 };
@@ -560,7 +589,7 @@ function startSway(){
   showSwayButton();
 }
 function endSway(){ sway = null; showSwayButton(); }
-function showSwayButton(){ $('#vsway').textContent = sway ? 'Stop swaying' : 'Sway view'; }
+function showSwayButton(){ $('#vsway').textContent = sway ? 'Stop swaying' : 'Sway'; }
 function applySway(now){
   if (!sway) return;
   const t = (now - sway.started) / 1000;
@@ -576,6 +605,7 @@ function applySway(now){
   camera.position.setFromSpherical(at).add(controls.target);
 }
 renderer.setAnimationLoop(now => {
+  if (!vEl.classList.contains('on') || document.hidden) return;    // nothing to draw while the map or the controls show
   applySway(now);
   controls.update();
   liftRings();
@@ -891,8 +921,12 @@ function applyWire(){
     else if (!wire && o.userData.surface) { o.material = o.userData.surface; delete o.userData.surface; }
   });
   $('#vwire').textContent = wire ? 'Show surface' : 'Wireframe';
+  document.querySelectorAll('#wiremode button').forEach(b => b.classList.toggle('on', (b.dataset.wire === '1') === wire));
 }
 $('#vwire').onclick = () => { wire = !wire; try { localStorage.setItem('bm_wire', wire ? '1' : '0'); } catch {} applyWire(); };
+document.querySelectorAll('#wiremode button').forEach(b => b.onclick = () => {
+  wire = b.dataset.wire === '1'; try { localStorage.setItem('bm_wire', wire ? '1' : '0'); } catch {} applyWire();
+});
 // The background: the theme's plain colour, or a scene: a sky over ground the colour of the rock's foot, with a soft
 // shadow under the rock, and where a mesh has one, the splat of what its photos show around it (backend/splat.py),
 // which leaves out what too few photos saw, so that the sky and ground show there instead
@@ -1150,7 +1184,8 @@ async function loadMeshUrl(url, filename, label, id){
 }
 
 // ---------------------------------------------------------------- map
-const map = L.map('map', { zoomControl: true }).setView([37.74, -119.60], 4);
+// zoomSnap: quarter steps, so the map can open around a boulder at close to the span asked for
+const map = L.map('map', { zoomControl: true, zoomSnap: .25 }).setView([37.74, -119.60], 4);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
 const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, attribution: '© OpenTopoMap' });
 L.control.layers({ 'OSM': map._layers[Object.keys(map._layers)[0]], 'OpenTopoMap': topo }).addTo(map);
@@ -1174,7 +1209,16 @@ map.on('popupopen', e => {
   e.popup.getElement().querySelectorAll('a[data-mesh]').forEach(a => a.onclick = ev => { ev.preventDefault(); viewMesh(a.dataset.mesh, null, 'map'); });
   e.popup.getElement().querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
 });
-function flyTo(lat, lng){ mapFitted = true; showRight('map'); refreshMap().then(()=>map.setView([lat, lng], 17)); }
+let mapCentredOn = null;     // the mesh the map was last opened around, to leave it where it's been moved to after
+// The map opened around a boulder: its shorter side this many km across (the admin page's site.map_km)
+function mapAround(lat, lng){
+  map.invalidateSize();
+  const size = map.getSize(), side = Math.max(1, Math.min(size.x, size.y)), km = statusCache.map_km || 1;
+  // 256-pixel tiles, and the equator 40075 km around: at zoom z a pixel is 40075 km * cos(lat) / (256 * 2^z)
+  const z = Math.log2(40075.017 * Math.max(.1, Math.cos(lat * Math.PI / 180)) * side / (256 * km));
+  map.setView([lat, lng], Math.min(z, map.getMaxZoom()));
+}
+function flyTo(lat, lng){ mapFitted = true; showRight('map'); refreshMap().then(() => mapAround(lat, lng)); }
 
 // ---------------------------------------------------------------- climbs
 let climbsCache = [];
@@ -1217,7 +1261,7 @@ function renderClimbs(){
   for (const c of list) {
     const d = document.createElement('div'); d.className = 'card' + (c.id === openClimbId ? ' open' : ''); d.dataset.id = c.id;
     d.innerHTML = `<div class="row"><span class="name grow">${esc(c.name)} <small>${esc(c.grade||'')}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${c.n_links?`<span class="tag ok">${c.n_links} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">via ${esc(c.shared_of)}</span>`:''}${c.n_boulder?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
-        <button class="sm sec viewmesh" ${c.n_links || c.n_boulder || c.n_shared ? '' : 'disabled'} title="${c.n_links ? 'Show its newest mesh' : c.n_boulder ? 'Show its boulder\'s mesh, from where its own photos were taken' : c.n_shared ? 'Show the mesh of another climb on its boulder' : 'No mesh is linked to it yet'}">Mesh</button></div>
+        <button class="sm ${shownClimbs().has(c.id) ? '' : 'sec '}viewmesh" ${c.n_links || c.n_boulder || c.n_shared ? '' : 'disabled'} title="${c.n_links ? 'Show its newest mesh' : c.n_boulder ? 'Show its boulder\'s mesh, from where its own photos were taken' : c.n_shared ? 'Show the mesh of another climb on its boulder' : 'No mesh is linked to it yet'}">View</button></div>
       <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
       <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
       ${c.coords_doubt ? `<div class="meta bad">Coordinates look wrong: ${esc(c.coords_doubt.why)}.${c.url ? ` <a href="${esc(c.url)}" target="_blank" rel="noopener">Put them right on ${esc(SOURCE_NAME[c.source] || c.source)} ↗</a>, then paste its link above to import it again.` : ''}</div>` : ''}`;
@@ -1265,9 +1309,9 @@ const boulderMeshOf = id => (meshesCache || []).find(m => !m.replaced_by && (m.b
 async function viewClimbMesh(id){
   if (!climbMeshes(id).length && !boulderMeshOf(id) && !climbMeshes(id, true).length) await refreshMeshes();
   const own = climbMeshes(id)[0], boulder = boulderMeshOf(id), shared = climbMeshes(id, true)[0];
-  if (own) return viewMesh(own.id, null, 'climb');
-  if (boulder) return viewMesh(boulder.id, id, 'climb');
-  if (shared) return viewMesh(shared.id, null, 'climb');
+  if (own) return viewMesh(own.id, null, 'climb', id);
+  if (boulder) return viewMesh(boulder.id, id, 'climb', id);
+  if (shared) return viewMesh(shared.id, null, 'climb', id);
   toast('No mesh is linked to this climb yet.');
 }
 const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', waiting: 'waiting for volunteers', harvested: 'harvested, for its boulder\'s mesh', done: 'meshed', failed: 'failed', skipped: 'skipped' };
@@ -1841,11 +1885,11 @@ async function refreshMeshes(){
 // via: how it was asked for, for the server's record of what's viewed (reportView())
 // The climb a phone names over the view, as it shows nothing else there: the one a boulder's mesh is seen from, or the
 // mesh's own climbs (the first, and how many more), or else the mesh's name
+const gradeTag = c => c.grade ? ` ${c.grade.split(' ')[0]}` : '';
 function viewTitle(m, from){
-  const grade = c => c.grade ? ` ${c.grade.split(' ')[0]}` : '';
   const seen = (m.boulder_climbs || []).find(c => c.id === from), own = m.climbs.filter(c => !c.shared);
-  if (seen) return seen.name + grade(seen);
-  if (own.length) return own[0].name + grade(own[0]) + (own.length > 1 ? ` +${own.length - 1}` : '');
+  if (seen) return seen.name + gradeTag(seen);
+  if (own.length) return own[0].name + gradeTag(own[0]) + (own.length > 1 ? ` +${own.length - 1}` : '');
   return m.name.replace(/ \((harvest|boulder)\)$/, '');
 }
 // A link to the mesh in view (#mesh=<id>), and to the climb a boulder's mesh is seen from (&climb=<id>), kept in the
@@ -1859,15 +1903,36 @@ function openLinked(){
   const h = new URLSearchParams(location.hash.slice(1)), id = h.get('mesh');
   if (id && meshesById[id] && id !== shownMesh) viewMesh(id, h.get('climb') || undefined, 'link');
 }
-function viewMesh(id, from, via = ''){
+// The climbs the mesh in view is shown for: the one it was opened from, or else its own
+let viewedClimb = null;
+function shownClimbs(){
+  const m = shownMesh && meshesById[shownMesh];
+  if (!m) return new Set();
+  return new Set(viewedClimb ? [viewedClimb] : m.climbs.filter(c => !c.shared).map(c => c.id));
+}
+// What shows which mesh is in view: on a phone, the Viewer button, with its climb under it (grey until there's one,
+// with Random blue meanwhile, as the way in), and the climbs' View buttons, the one shown blue
+function markShown(){
+  const m = shownMesh && meshesById[shownMesh], has = !!m, b = $('#tofull');
+  const picked = has && viewedClimb && [...m.climbs, ...(m.boulder_climbs || []), ...climbsCache].find(c => c.id === viewedClimb);
+  const name = picked ? picked.name + gradeTag(picked) : $('#vtitle').textContent || m?.name || '';
+  b.disabled = !has;
+  b.title = has ? 'Back to the mesh' : 'Pick a climb\'s mesh first';
+  b.innerHTML = 'Viewer' + (has && name ? `<small>${esc(name)}</small>` : '');
+  $('#random').classList.toggle('sec', has);
+  const on = shownClimbs();
+  document.querySelectorAll('#climbs .card').forEach(d => d.querySelector('.viewmesh')?.classList.toggle('sec', !on.has(d.dataset.id)));
+}
+function viewMesh(id, from, via = '', climb = null){
   const m = meshesById[id];
   if (!m) return;
   viewVia = via;
+  viewedClimb = climb;
   $('#vtitle').textContent = viewTitle(m, from);
   setLink(id, from);
   const own = m.climbs.filter(c => !c.shared), on = m.boulder_climbs || [];
   const label = m.name + (own.length ? ` — ${own.map(c => c.name).join(', ')}` : on.length ? ` — ${plural(on.length, 'climb')}` : '');
-  return loadMeshUrl(`/meshes/${id}/${m.filename}`, m.filename, label, id).then(() => { if (shownMesh === id) showFrom(m, from); });
+  return loadMeshUrl(`/meshes/${id}/${m.filename}`, m.filename, label, id).then(() => { if (shownMesh === id) showFrom(m, from); markShown(); });
 }
 // Where each climb on a boulder's own mesh is seen from: a point and where it looks, in the mesh's own coordinates
 // (viewpoints.py), as beta's holds are, so they're placed through the node the mesh is in
@@ -1879,7 +1944,8 @@ function showFrom(m, from){
   sel.value = seen.some(c => c.id === from) ? from : '';
   sel.onchange = () => {
     const c = seen.find(x => x.id === sel.value);
-    $('#vtitle').textContent = viewTitle(m, c?.id); setLink(m.id, c?.id);
+    if (c) viewedClimb = c.id;
+    $('#vtitle').textContent = viewTitle(m, c?.id); setLink(m.id, c?.id); markShown();
     c ? lookFrom(c.view) : frameMain();
   };
   if (sel.value) lookFrom(seen.find(c => c.id === from).view);
@@ -2252,6 +2318,7 @@ if (statusCache.editing === 'token') {
   if (token && !editor) toast('The editing token kept in this browser wasn\'t accepted.', 6000);
 }
 if (statusCache.admin) { $('#admin').style.display = ''; $('#admin').onclick = openAdmin; }
+if (statusCache.volunteer_url) { $('#volunteer').href = statusCache.volunteer_url + '/volunteer/'; $('#volunteer').style.display = ''; }
 if (!editor) $('#hud').textContent = 'Pick a mesh. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan';
 const mode = $('#mode');
 mode.textContent = statusCache.real_pipeline ? 'COLMAP + OpenMVS' : 'demo pipeline — install COLMAP/OpenMVS';

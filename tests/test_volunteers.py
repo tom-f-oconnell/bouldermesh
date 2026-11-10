@@ -225,6 +225,7 @@ def script_and_broker() -> None:
     try:
         st, page = call(base + "/volunteer/")
         assert st == 200 and b"bouldermesh_volunteer.py" in page
+        assert b"Help compute meshes" in page and b"/worker/bouldermesh_worker.py" in page, "both ways to help, on one page"
         st, script = call(base + "/volunteer/bouldermesh_volunteer.py")
         assert st == 200 and script == SCRIPT.read_bytes()
         assert call(base + "/volunteer/api/work", {"version": 1})[0] == 401

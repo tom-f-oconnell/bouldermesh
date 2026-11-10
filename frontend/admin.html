@@ -56,6 +56,7 @@
     <label class="choice"><input type="radio" name="src" value="all"> Show all <small>(as now)</small></label>
     <label class="choice"><input type="radio" name="src" value="link"> Show those free to copy, and only link to the rest <small>(their copies here aren't shown)</small></label>
     <label class="choice"><input type="radio" name="src" value="permitted"> Show only those free to copy <small>(the rest aren't shown or linked)</small></label>
+    <div class="grid" style="margin-top:14px"><div><label>The map opens around a boulder this many km across <small>(its narrower side)</small></label><input type="number" id="map-km" min="0.05" step="0.25"></div></div>
     <div class="note">"Free to copy" means public domain, CC0, or a Creative Commons licence without No Derivatives, or your own uploads. Mountain Project, OpenBeta and web images, and YouTube's standard licence, aren't. See license_considerations.md.</div>
   </section>
 
@@ -192,6 +193,7 @@ function render(s){
   const waiting = ms.jobs.filter(j => j.state === 'queued');
   if (waiting.length) $('#mach-list').innerHTML += `<div class="note">${waiting.length} climb(s) waiting for a machine.</div>`;
   $('#area-meshes').value = v['areas.meshes'];
+  if (document.activeElement !== $('#map-km')) $('#map-km').value = v['site.map_km'];
   const u = s.usage || {}, gb = b => (b / 2 ** 30).toFixed(1) + ' GB';
   $('#room').classList.toggle('alert', !!u.full);
   if (document.activeElement !== $('#room-cap')) $('#room-cap').value = v['storage.cap_gb'];
@@ -291,6 +293,7 @@ $('#room-rejected').onclick = async () => { if (!confirm('Delete every photo the
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#via').onchange = () => save({ 'youtube.via': $('#via').value });
 $('#area-meshes').onchange = () => save({ 'areas.meshes': $('#area-meshes').value });
+$('#map-km').onchange = () => save({ 'site.map_km': +$('#map-km').value });
 $('#vol-add').onclick = async () => {
   try {
     const r = await call('/api/admin/actions/volunteer-add', { name: $('#vol-name').value, per_hour: +$('#vol-hour').value });
