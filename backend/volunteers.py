@@ -491,9 +491,14 @@ COPY_ICON = ('<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke
              '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>')
 PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Volunteer for BoulderMesh</title>
+<script>/* light or dark as chosen on the main page: ?theme= from its Volunteer button, or what it keeps, if it's this address */
+try { const t = new URLSearchParams(location.search).get('theme') || localStorage.getItem('bm_theme');
+      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}</script>
 <style>
 :root{color-scheme:light dark;--code:#f2f2f2;--line:#ccc;--ok:#2a8a3a;--acc:#1a73c8;--acc-fg:#fff;--mute:#666}
-@media (prefers-color-scheme:dark){:root{--code:#1e1e1e;--line:#444;--ok:#5fd68a;--acc:#5cc8ff;--acc-fg:#001018;--mute:#999}}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--code:#1e1e1e;--line:#444;--ok:#5fd68a;--acc:#5cc8ff;--acc-fg:#001018;--mute:#999}}
+:root[data-theme=light]{color-scheme:light}
+:root[data-theme=dark]{color-scheme:dark;--code:#1e1e1e;--line:#444;--ok:#5fd68a;--acc:#5cc8ff;--acc-fg:#001018;--mute:#999}
 body{font:16px/1.5 system-ui,sans-serif;max-width:42em;margin:2em auto;padding:0 16px}
 h2{font-size:1.25em;margin:1.2em 0 .3em} h3{font-size:1.05em;margin:1.3em 0 .3em}
 code{background:var(--code);padding:1px 4px;border-radius:3px}

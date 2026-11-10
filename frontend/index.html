@@ -1036,8 +1036,11 @@ document.querySelectorAll('#bgmode button').forEach(b => b.onclick = () => {
 // ---------------------------------------------------------------- theme: the browser's, or chosen here
 const themeMedia = matchMedia('(prefers-color-scheme: light)');
 let themeChoice = 'system'; try { themeChoice = localStorage.getItem('bm_theme') || 'system'; } catch {}
+// The volunteers' page in the colours chosen here: told by its address, as it may be at another one, with other storage
+function volunteerLink(){ const a = $('#volunteer'); if (a.dataset.base) a.href = a.dataset.base + (themeChoice === 'system' ? '' : '?theme=' + themeChoice); }
 function applyTheme(){
   if (themeChoice === 'light' || themeChoice === 'dark') document.documentElement.dataset.theme = themeChoice; else delete document.documentElement.dataset.theme;
+  volunteerLink();
   document.querySelectorAll('#theme button').forEach(b => b.classList.toggle('on', b.dataset.theme === themeChoice));
   scene.background.set(getComputedStyle(document.documentElement).getPropertyValue('--bg').trim());
   applyWire();      // its colour follows the theme's accent
@@ -2359,7 +2362,7 @@ if (statusCache.editing === 'token') {
   if (token && !editor) toast('The editing token kept in this browser wasn\'t accepted.', 6000);
 }
 if (statusCache.admin) { $('#admin').style.display = ''; $('#admin').onclick = openAdmin; }
-if (statusCache.volunteer_url) { $('#volunteer').href = statusCache.volunteer_url + '/volunteer/'; $('#volunteer').style.display = ''; }
+if (statusCache.volunteer_url) { $('#volunteer').dataset.base = statusCache.volunteer_url + '/volunteer/'; volunteerLink(); $('#volunteer').style.display = ''; }
 if (!editor) $('#hud').textContent = 'Pick a mesh. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan';
 const mode = $('#mode');
 mode.textContent = statusCache.real_pipeline ? 'COLMAP + OpenMVS' : 'demo pipeline — install COLMAP/OpenMVS';
