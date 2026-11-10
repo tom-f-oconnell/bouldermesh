@@ -865,22 +865,28 @@ $('#vwire').onclick = () => { wire = !wire; try { localStorage.setItem('bm_wire'
 // shadow under the rock, and where a mesh has one, the splat of what its photos show around it (backend/splat.py),
 // which leaves out what too few photos saw, so that the sky and ground show there instead
 let bgMode = 'scene'; try { bgMode = localStorage.getItem('bm_bg') === 'solid' ? 'solid' : 'scene'; } catch {}   // a scene unless Solid was chosen
-const SKY = { light: { top: 0x5b8fc7, horizon: 0xdfe7ee }, dark: { top: 0x0d1828, horizon: 0x3b4a5a } };
+const SKY = { light: { top: 0x5b8fc7, horizon: 0xdfe7ee, below: 0xb9b2a6 }, dark: { top: 0x0d1828, horizon: 0x3b4a5a, below: 0x1f252c } };
 const sky = new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, fog: false,
-  uniforms: { top: { value: new THREE.Color() }, horizon: { value: new THREE.Color() } },
+  uniforms: { top: { value: new THREE.Color() }, horizon: { value: new THREE.Color() }, below: { value: new THREE.Color() } },
   vertexShader: 'varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-  fragmentShader: 'uniform vec3 top; uniform vec3 horizon; varying vec3 vDir;\nvoid main(){ gl_FragColor = vec4(mix(horizon, top, pow(clamp(vDir.y, 0.0, 1.0), 0.6)), 1.0);\n#include <colorspace_fragment>\n}',
+  // above the horizon, sky; below it, a haze, which only shows with no mesh, as the ground covers it otherwise
+  fragmentShader: 'uniform vec3 top; uniform vec3 horizon; uniform vec3 below; varying vec3 vDir;\nvoid main(){ gl_FragColor = vec4(vDir.y > 0.0 ? '
+    + 'mix(horizon, top, pow(vDir.y, 0.6)) : mix(horizon, below, pow(-vDir.y, 0.5)), 1.0);\n#include <colorspace_fragment>\n}',
 }));
 const ground = new THREE.Mesh(new THREE.CircleGeometry(150, 64), new THREE.MeshLambertMaterial({ color: 0x9a8f7e }));
 ground.rotation.x = -Math.PI / 2;
-const contact = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, map: (() => {
-  const c = document.createElement('canvas'); c.width = c.height = 128;
-  const g = c.getContext('2d'), r = g.createRadialGradient(64, 64, 0, 64, 64, 64);
-  r.addColorStop(0, 'rgba(0,0,0,.45)'); r.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = r; g.fillRect(0, 0, 128, 128);
+// a soft shadow under the rock, drawn just over the ground (polygonOffset, so the two don't flicker into each other)
+const contact = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false,
+  polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, map: (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d'), r = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+  for (const [at, a] of [[0, .45], [.35, .32], [.7, .1], [1, 0]]) r.addColorStop(at, `rgba(0,0,0,${a})`);
+  g.fillStyle = r; g.fillRect(0, 0, 256, 256);
   return new THREE.CanvasTexture(c);
 })() }));
 contact.rotation.x = -Math.PI / 2;
+contact.visible = false;
 const backdrop = new THREE.Group(); backdrop.add(sky, ground, contact); backdrop.visible = false; scene.add(backdrop);
 // Where the rock meets the ground, how wide it is there, and the colour of its foot, from its vertices
 function footing(obj){
@@ -918,19 +924,18 @@ function footing(obj){
 function applyScene(){
   const root = document.documentElement, dark = root.dataset.theme === 'dark' || (!root.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
   const s = SKY[dark ? 'dark' : 'light'], on = bgMode === 'scene';
-  sky.material.uniforms.top.value.setHex(s.top); sky.material.uniforms.horizon.value.setHex(s.horizon);
+  for (const k of ['top', 'horizon', 'below']) sky.material.uniforms[k].value.setHex(s[k]);
   backdrop.visible = on; grid.visible = !on;
   scene.fog = on ? new THREE.Fog(s.horizon, 8, 140) : null;
   scene.background = new THREE.Color(on ? s.horizon : getComputedStyle(root).getPropertyValue('--bg').trim());
   document.querySelectorAll('#bgmode button').forEach(b => b.classList.toggle('on', b.dataset.bg === bgMode));
-  if (on && current) {
-    const f = current.userData.footing ??= footing(current);
-    if (f) {
-      ground.position.y = f.y - .002;
-      contact.position.set(f.x, f.y, f.z); contact.scale.set(Math.max(f.w, .1) * 1.5, Math.max(f.d, .1) * 1.5, 1);
-      if (f.color) ground.material.color.setRGB(...f.color.map(x => x * .85), THREE.SRGBColorSpace);
-      else ground.material.color.setHex(0x9a8f7e);
-    }
+  const f = on && current ? current.userData.footing ??= footing(current) : null;
+  ground.visible = contact.visible = !!f;     // with no mesh, only the sky: no ground to look down at, or a shadow of nothing
+  if (f) {
+    ground.position.y = f.y - .002;
+    contact.position.set(f.x, f.y, f.z); contact.scale.set(Math.max(f.w, .1) * 1.5, Math.max(f.d, .1) * 1.5, 1);
+    if (f.color) ground.material.color.setRGB(...f.color.map(x => x * .85), THREE.SRGBColorSpace);
+    else ground.material.color.setHex(0x9a8f7e);
   }
   if (current || splat) loadSplat();     // not before a mesh is shown, which is also before its id is known
 }
