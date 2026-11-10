@@ -1750,7 +1750,7 @@ if (!editor) $('#hud').textContent = 'Pick a mesh. Drag to orbit · scroll to zo
 const mode = $('#mode');
 mode.textContent = statusCache.real_pipeline ? 'COLMAP + OpenMVS' : 'demo pipeline — install COLMAP/OpenMVS';
 mode.className = 'pill ' + (statusCache.real_pipeline ? 'real' : 'demo');
-$('#caps').textContent = [statusCache.opencv?'opencv':'no opencv', statusCache.ytdlp?'yt-dlp':'no yt-dlp', statusCache.env.GOOGLE_CSE_KEY?'google':'no google key', statusCache.people_masks?'people masking':'no people masking', statusCache.gpu?'GPU matching':'CPU matching'].join(' · ');
+$('#caps').textContent = [statusCache.opencv?'opencv':'no opencv', statusCache.people_masks?'people masking':'no people masking', statusCache.gpu?'GPU matching':'CPU matching'].join(' · ');
 $('#caps').title = 'Photo matching: ' + statusCache.gpu_why;
 await refreshClimbs(); await refreshMeshes(); await refreshProjects(); poll(); campaignLoop();
 </script>
