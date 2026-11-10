@@ -495,18 +495,27 @@ second of the first 150 s at 720p, and frames chosen there couldn't be chosen ag
 where a YouTube request is the scarce thing, not bandwidth. Kept in the cache, one download serves both, where before
 finding beta downloaded every video a second time.
 
-Searching could be refused too, but hasn't been. From Nov 1 to 9, 2026, 1,474 harvests on hal searched YouTube, through
-every spell of refused downloads, and one search failed, with an error fetching the results page rather than the bot
-check. A search is one request for a page of results; a download also asks YouTube's player for the video, which is where
-the bot check is. A cloud server's address is another matter: when the public server harvests, its searches
-may be refused from the start. A refused search pauses searching (and reading channels) the way a refused download
-pauses downloads, 1, 2, 4 then 8 hours, apart from them, so that each climb after doesn't ask again; until then a
-harvest goes on without searching. If that happens on either server (a harvest's log says `youtube search: ... failed:
-YouTube is refusing this machine's searches`, and `/api/status` has `youtube_searches_refusing`), searching moves to
-volunteers as a third kind of work: the server sends the search's words, never
-an address, the script runs `yt-dlp --flat-playlist ytsearch15:<words>` within the same limits, and sends back each
-result's id, title, channel and length; the harvest carries on without videos, and is harvested again once the results,
-and then their videos, have come, as for videos now.
+Searching could be refused too. From Nov 1 to 9, 2026, 1,474 harvests on hal searched YouTube, through every spell of
+refused downloads, and one search failed, with an error fetching the results page rather than the bot check: a search is
+one request for a page of results, and a download also asks YouTube's player for the video, which is where the bot check
+is. A cloud server's address is another matter, so when the public server harvests, its searches go to volunteers too,
+as a third kind of work, with channels' descriptions (for climbers' heights) as a fourth: the server sends a search's
+words, or a channel's id, never an address; the script runs `yt-dlp --flat-playlist ytsearch15:<words>` within the
+same limits, and sends back each result's id, title, description, length and channel, which the server keeps by the
+words for 30 days, its own searches too. On hal, a refused search pauses searching the way a refused download pauses
+downloads, 1, 2, 4 then 8 hours, apart from them, and asks volunteers meanwhile.
+
+**A climb waits for volunteers, to be meshed once.** With only volunteers searching, an area's every climb would be
+meshed first without any videos, and again once the results and then their videos came: twice the work for the machines
+that mesh, for a first mesh that's often poor. So an area's climb whose harvest asked volunteers for anything waits; the
+results coming have it harvested again, which may ask for the videos they found, and those coming have it harvested again
+and meshed. 24 hours of waiting (`VOLUNTEER_WAIT_HOURS`) is the most, as volunteers come and go: then it's meshed with
+what's there, and what comes later rebuilds it as before.
+
+Checked on Nov 10, 2026, from the public server's address (Hetzner's): Mountain Project's pages, its area export and its
+photos, OpenBeta, DuckDuckGo's image search and the photos it found, and Wikimedia Commons' search and photos all
+answered the first requests. If any of them starts refusing a cloud address, as YouTube does, its requests could go to
+volunteers the same way.
 
 The limits are hal's, halved: one video at a time, 8-15 s apart, at most 15 an hour (hal's refusals came after hours at
 20-30) and 100 a day, shared by everyone at one address so that two volunteers on one network don't double it. A

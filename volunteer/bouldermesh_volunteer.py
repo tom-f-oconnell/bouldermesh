@@ -4,7 +4,8 @@
 BoulderMesh makes 3D models of boulders from photos and climbing videos. YouTube stops one server from fetching many
 videos, so volunteers fetch some from their own addresses. This script asks the server for a video (only ever by its
 YouTube id: it makes the youtube.com address itself), fetches it with yt-dlp, sends it to the server, deletes its copy,
-and waits before the next. Run it with the token you were given:
+and waits before the next. It also searches YouTube for a climb's videos (the server sends only the words), and reads a
+channel's description (by its id), sending back what they say. Run it with the token you were given:
 
     python3 bouldermesh_volunteer.py --server https://boulders.example.com --token bmv_...
 
@@ -28,11 +29,15 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 1
+VERSION = 2
+KINDS = ["video", "details", "search", "channel"]   # what this version does
 GAP = (8.0, 15.0)           # seconds between one fetch from YouTube and the next, at random in this range
 PER_HOUR, PER_DAY = 15, 100  # the most, whatever the server allows
 BLOCK_HOURS = (1, 2, 4, 8)  # rest after YouTube refuses, longer each time it still does
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
+CHANNEL_ID = re.compile(r"UC[A-Za-z0-9_-]{22}")
+WORDS = re.compile(r"[^\x00-\x1f\x7f]{3,200}")
+RESULT_KEYS = ("id", "title", "description", "duration", "channel", "channel_id", "uploader")
 REFUSAL = re.compile(r"not a bot|HTTP Error 429|Too Many Requests|content isn.t available, try again later", re.I)
 FOR_GOOD = re.compile(r"Video unavailable|Private video|has been removed|members[- ]only|not available in your country|"
                       r"account associated with this video has been terminated|copyright|confirm your age|age[- ]restricted|"
@@ -44,7 +49,8 @@ Before you start: what this does, and what it may cost you.
 
 - It asks {server} for YouTube videos of climbs, fetches them from this computer, and sends them there:
   one at a time, {gap_lo:.0f}-{gap_hi:.0f} seconds apart, at most {per_hour} an hour and {per_day} a day.
-  Each is deleted here once it's sent. Only videos' YouTube ids come from the server.
+  Each is deleted here once it's sent. Only videos' YouTube ids come from the server. It also searches YouTube
+  for climbs' videos, and reads channels' descriptions, within the same limits, from the server's words and ids.
 - YouTube's terms of service don't allow downloading videos except through YouTube's own features. Using this
   breaks them, and the videos are their uploaders' copyright.
 - If YouTube decides your address is fetching too much, it may ask everyone on your network to sign in or prove
@@ -174,6 +180,17 @@ class Volunteer:
     # -- one task -----------------------------------------------------------------------------------------------------
     def do(self, task: dict) -> None:
         vid, kind = task.get("video_id") or "", task.get("kind")
+        if kind == "search":
+            words, n = str(task.get("query") or ""), int(task.get("max_results") or 15)
+            if not WORDS.fullmatch(words) or not 1 <= n <= 50:
+                raise RuntimeError(f"the server asked for something this script doesn't do: {task}")
+            return self.page(task, ["--flat-playlist", f"ytsearch{n}:{words}"], f"searching YouTube for {words!r}")
+        if kind == "channel":
+            cid = str(task.get("channel_id") or "")
+            if not CHANNEL_ID.fullmatch(cid):
+                raise RuntimeError(f"the server asked for something this script doesn't do: {task}")
+            return self.page(task, ["--flat-playlist", "--playlist-items", "0", f"https://www.youtube.com/channel/{cid}"],
+                             f"reading the description of https://www.youtube.com/channel/{cid}")
         if not VIDEO_ID.fullmatch(vid) or kind not in ("video", "details"):
             raise RuntimeError(f"the server asked for something this script doesn't do: {task}")
         url = f"https://www.youtube.com/watch?v={vid}"
@@ -219,6 +236,43 @@ class Volunteer:
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
+    def page(self, task: dict, args: list[str], what: str) -> None:
+        """A search's results, or a channel's name and description: one request to YouTube, paced like a video."""
+        done = f"/volunteer/api/tasks/{task['id']}/done"
+        try:
+            self.wait_turn()
+            log(what)
+            self.fetched_now()
+            r = self.run_ytdlp(["-J", *args], self.home)
+            err = (r.stderr or "").strip()
+            if r.returncode:
+                if REFUSAL.search(err):
+                    hours = self.refused()
+                    self.server.call(done, {"status": "refused", "error": err[-300:]})
+                    log(f"YouTube refused: resting {hours} h")
+                    return
+                why = err.splitlines()[-1] if err else f"yt-dlp exited with {r.returncode}"
+                self.server.call(done, {"status": "failed", "error": why[-300:], "permanent": bool(FOR_GOOD.search(err))})
+                log(f"couldn't do it: {why}")
+                return
+            self.state["refusal_level"] = -1
+            self.save()
+            info = json.loads(r.stdout or "{}")
+            if task["kind"] == "search":
+                results = [{k: e.get(k) for k in RESULT_KEYS} for e in info.get("entries") or [] if isinstance(e, dict)]
+                out = self.server.call(done, {"status": "ok", "results": results})
+                log(f"sent {len(results)} result(s)" if out.get("ok") else f"the server didn't take it: {out}")
+            else:
+                out = self.server.call(done, {"status": "ok", "info": {"name": info.get("channel") or info.get("uploader") or info.get("title"),
+                                                                        "description": info.get("description") or ""}})
+                log("sent" if out.get("ok") else f"the server didn't take it: {out}")
+        except KeyboardInterrupt:
+            try:
+                self.server.call(done, {"status": "released"}, tries=1)
+            except Exception:  # noqa: S110 - stopping anyway
+                pass
+            raise
+
     @staticmethod
     def video_file(work: Path) -> Path | None:
         return next((p for p in work.glob("video.*") if not p.name.endswith((".json", ".part", ".ytdl"))), None)
@@ -248,7 +302,7 @@ class Volunteer:
             self.wait_turn()
             try:
                 r = self.server.call("/volunteer/api/work", {"version": VERSION, "client": f"script {VERSION}, yt-dlp {version}",
-                                                             "per_hour": self.per_hour, "per_day": self.per_day})
+                                                             "per_hour": self.per_hour, "per_day": self.per_day, "kinds": KINDS})
             except urllib.error.HTTPError as e:
                 if e.code in (401, 403, 426):
                     raise SystemExit(f"the server said: {e.answer.get('error') or e}") from None

@@ -441,7 +441,7 @@ def handler_for(board: Board, log: Callable[[str], None]):
             base = f"https://{self.headers.get('X-Forwarded-Host') or self.headers.get('Host') or 'this-site'}"
             if u.path in ("/worker", "/worker/"):
                 return self.send(200, PAGE.replace("{base}", base).encode(), "text/plain; charset=utf-8")
-            if u.path == "/worker/bouldermesh_worker.py":
+            if u.path == "/worker/bouldermesh_worker.py" and SCRIPT.exists():
                 return self.send(200, SCRIPT.read_bytes(), "text/x-python; charset=utf-8",
                                  {"Content-Disposition": 'attachment; filename="bouldermesh_worker.py"'})
             m = re.fullmatch(r"/worker/api/jobs/([0-9a-f]{12})/(input|output)", u.path)

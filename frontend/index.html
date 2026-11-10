@@ -1267,7 +1267,7 @@ async function viewClimbMesh(id){
   if (shared) return viewMesh(shared.id, null, 'climb');
   toast('No mesh is linked to this climb yet.');
 }
-const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', done: 'meshed', failed: 'failed', skipped: 'skipped' };
+const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', waiting: 'waiting for volunteers', done: 'meshed', failed: 'failed', skipped: 'skipped' };
 // The boulder a climb is on: its own mesh, made from the photos of every climb on it, seen from where this climb's own
 // photos were taken; meshes an area linked this climb to that were made for another climb on it; and the other climbs.
 function boulderHtml(c){
@@ -1609,7 +1609,7 @@ $('#pname').addEventListener('keydown', e => { if (e.key === 'Enter') $('#create
 
 // ---------------------------------------------------------------- areas
 const ORDER_NAMES = { popularity: 'most popular first', rating: 'highest rated first', data: 'most photos and videos first' };
-const ITEM_NAMES = { done: 'meshed', skipped: 'skipped', failed: 'failed' };
+const ITEM_NAMES = { done: 'meshed', skipped: 'skipped', failed: 'failed', waiting: 'waiting for volunteers' };
 const stars = v => v == null ? '' : `★${(+v).toFixed(1)}`;
 let campaignShown = null, meshedShown = null;
 function currentHtml(c){
@@ -1639,7 +1639,7 @@ async function refreshCampaigns(){
       const row = i => `<span><small>#${i.rank}</small></span><span>${i.climb_id ? `<a href="#" data-climb="${i.climb_id}">${esc(i.name)}</a>` : `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.name)}</a>`} ${esc(i.grade||'')}</span><small>${stars(i.stars)}</small>
         <span>${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
       d.innerHTML = `<div class="row"><b class="grow">${esc(c.name)}</b><span class="status ${c.status === 'stopped' ? '' : c.status === 'done' ? 'done' : 'running'}">${esc(c.status)}</span></div>
-        <div class="meta">${ORDER_NAMES[c.ord] || ''} · <b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
+        <div class="meta">${ORDER_NAMES[c.ord] || ''} · <b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
         ${c.note ? `<div class="notice" style="margin-top:6px">${esc(c.note)}</div>` : ''}
         <div class="now">${currentHtml(c)}</div>
         <div class="row" style="margin-top:8px">

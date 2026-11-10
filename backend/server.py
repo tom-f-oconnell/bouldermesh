@@ -169,7 +169,7 @@ def init_db() -> None:
           campaign_id TEXT, source_id TEXT, rank INTEGER, name TEXT, grade TEXT, stars REAL, url TEXT,
           boulder TEXT, data TEXT, media INTEGER, climb_id TEXT, project_id TEXT, mesh_id TEXT,
           note TEXT, updated REAL, retry INTEGER DEFAULT 0,
-          status TEXT DEFAULT 'pending',   -- pending | running | done | skipped | failed
+          status TEXT DEFAULT 'pending',   -- pending | running | waiting (for volunteers) | done | skipped | failed
           PRIMARY KEY(campaign_id, source_id));
         CREATE INDEX IF NOT EXISTS campaign_items_boulder ON campaign_items(boulder);
         -- videos of climbs, found on their pages or by searching, and what their uploaders say about the
@@ -204,8 +204,9 @@ def init_db() -> None:
         cols = {r[1] for r in con.execute("PRAGMA table_info(campaign_items)")}
         # redo: what it's queued to do again (REDO_NAMES); was: its status before; changed: its photos have
         # changed since it was last meshed or checked; redo_started: a rebuild that began, to carry on with
+        # waiting_since: when it first waited for volunteers' YouTube searches and videos (status 'waiting')
         for c, t in (("retry", "INTEGER DEFAULT 0"), ("redo", "TEXT"), ("was", "TEXT"), ("changed", "INTEGER DEFAULT 0"),
-                     ("redo_started", "INTEGER DEFAULT 0")):
+                     ("redo_started", "INTEGER DEFAULT 0"), ("waiting_since", "REAL")):
             if c not in cols:
                 con.execute(f"ALTER TABLE campaign_items ADD COLUMN {c} {t}")
         if "replaced_by" not in {r[1] for r in con.execute("PRAGMA table_info(meshes)")}:
@@ -765,6 +766,8 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
 
 
 CHANNEL_TTL = 30 * 86400    # how long a channel's description is trusted before it's read again
+# how long an area's climb waits for volunteers' YouTube searches and videos before it's meshed without the rest
+VOLUNTEER_WAIT = float(os.environ.get("VOLUNTEER_WAIT_HOURS", "24")) * 3600
 
 
 def record_videos(climb_id: str, videos: list[dict], log) -> None:
@@ -813,11 +816,23 @@ def save_video(v: dict) -> dict:
 
 
 def record_channel(url: str) -> None:
-    """Read a channel's description for the climber's size, unless it was read in the last CHANNEL_TTL."""
+    """Read a channel's description for the climber's size, unless it was read in the last CHANNEL_TTL; while
+    YouTube is left to volunteers, or refusing this server, ask them for it instead."""
     seen = q("SELECT fetched FROM channels WHERE channel_url=?", url, one=True)
     if seen and time.time() - (seen["fetched"] or 0) < CHANNEL_TTL:
         return
-    ch = youtube_mod.channel(url)
+    try:
+        ch = youtube_mod.channel(url)
+    except youtube_mod.Refused:
+        row = q("SELECT channel_id FROM videos WHERE channel_url=? AND channel_id IS NOT NULL LIMIT 1", url, one=True)
+        if row and settings().get("youtube.via") != "here" and VOLUNTEERS.any():
+            VOLUNTEERS.want("channel", row["channel_id"], "channel", row["channel_id"])
+        return
+    save_channel(url, ch)
+
+
+def save_channel(url: str, ch: dict) -> None:
+    """Keep a channel's name and description (youtube.channel()), and what it says about the climber's size."""
     s = youtube_mod.stats(ch["description"])
     q("""INSERT OR REPLACE INTO channels(channel_url,channel_id,name,description,fetched,height_cm,wingspan_cm,ape_index_cm,
                                          first_person,quotes) VALUES(?,?,?,?,?,?,?,?,?,?)""",
@@ -840,7 +855,7 @@ def new_videos(climb_id: str, pid: str, log) -> list[str]:
     c = climb_obj(climb_id)
     used = {e["url"] for e in provenance.harvested(PROJECTS / pid).values() if e.get("source") == "youtube" and e.get("url")}
     have = {youtube_mod.video_id(u) or u for u in used | {v.url for v in c.videos}}
-    found = youtube_mod.search(c, log)
+    found = youtube_mod.search(c, log, want=search_wanter("harvest", pid), days=1)
     record_videos(climb_id, [{"url": v.url, "found_by": "search", "title": v.title, "uploader": v.credit} for v in found], log)
     known = {r["url"] for r in q("SELECT url FROM videos WHERE description IS NOT NULL")}
     for url in sorted(used - known):
@@ -865,7 +880,7 @@ def boulder_projects(climb_id: str, but: str | None = None) -> list[Path]:
 
 
 def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter: bool = True, resume: bool = False,
-                again: bool = False) -> None:
+                again: bool = False, wait: bool = False) -> None:
     """Gather a climb's photos into its project, and optionally make its mesh. Only photos found for it are kept,
     so that its mesh shows the climb; the other harvests of its boulder only help tell which web photos are of it.
 
@@ -873,6 +888,8 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
         resume: carry on after an interruption. A finished harvest isn't repeated. A partial one
             starts again, which is quick, as its downloads are cached.
         again: harvest a project that was harvested before, from scratch, adding to its log.
+        wait: rather than mesh it now, leave it "waiting" while volunteers still have YouTube searches or videos to
+            fetch for it (an area's climb, which is meshed once they've come, so that it's meshed once).
     """
     pdir = PROJECTS / pid
     finished = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)["harvest"] if resume else None
@@ -912,13 +929,21 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                 except Exception as e:
                     log(f"couldn't read the problem page again ({e}); using what was read before")
             summary = harvest_mod.harvest(c, pdir, log, sources, relevance_filter=relevance_filter, tracker=tracker,
-                                          anchors_from=boulder_projects(proj["climb_id"], pid), want=video_wanter("harvest", pid))
+                                          anchors_from=boulder_projects(proj["climb_id"], pid), want=video_wanter("harvest", pid),
+                                          want_search=search_wanter("harvest", pid))
             videos = summary.pop("videos", [])
             record_videos(proj["climb_id"], videos, log)
             summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license")} for v in videos]
             q("UPDATE projects SET harvest=?, status='harvested' WHERE id=?", json.dumps(summary), pid, write=True)
         verdict = diversity_mod.judge(summary.get("diversity"))     # by the current rules, for a harvest finished earlier
         log(f"harvest complete: {summary['images']} image(s), verdict {verdict}")
+        coming = VOLUNTEERS.pending("harvest", pid)
+        if reconstruct and wait and coming:
+            log(f"waiting for volunteers' YouTube searches and videos ({coming} to come): it's harvested again and meshed "
+                f"once they have, or after {VOLUNTEER_WAIT / 3600:.0f} h without them")
+            q("UPDATE projects SET status='waiting' WHERE id=?", pid, write=True)
+            tracker.skip_rest()
+            return
         if reconstruct and verdict != "poor":
             run_reconstruct(pid, internet=True, tracker=tracker, resume=resume)
             return
@@ -1157,7 +1182,7 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
 
 def ordered_pending(camp: dict) -> list[dict]:
     """A campaign's waiting climbs, next first."""
-    items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry,redo,boulder FROM campaign_items "
+    items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry,redo,boulder,waiting_since FROM campaign_items "
               "WHERE campaign_id=? AND status='pending' ORDER BY rank", camp["id"])
     if camp["ord"] == "rating":
         items.sort(key=lambda i: (-(i["stars"] or 0), i["rank"]))
@@ -1238,7 +1263,7 @@ def run_campaign_item(camp: dict, item: dict) -> None:
             if item.get("retry"):
                 append_log(pid, "-- trying again")
             try:
-                run_harvest(pid, set(HARVEST_SOURCES), True, resume=resume)
+                run_harvest(pid, set(HARVEST_SOURCES), True, resume=resume, wait=may_wait(item))
             except Cancelled:
                 q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
                 set_item(cid, sid, status="pending", note="stopped partway: carries on from where it got to when resumed")
@@ -1248,6 +1273,9 @@ def run_campaign_item(camp: dict, item: dict) -> None:
                 set_item(cid, sid, status="pending", note=f"waiting for a machine to mesh it on: {e}")
                 raise
             p = q("SELECT status,mesh_id,harvest FROM projects WHERE id=?", pid, one=True)
+            if p["status"] == "waiting":
+                wait_for_volunteers(cid, sid, pid, item.get("waiting_since"))
+                return
             if p["status"] != "failed":     # kept if it failed, so that trying again starts from its last finished step
                 shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)   # most of a job's disk use, and only useful to itself
             if p["status"] == "done":
@@ -1272,6 +1300,27 @@ def run_campaign_item(camp: dict, item: dict) -> None:
         q("UPDATE campaign_items SET retry=0 WHERE campaign_id=? AND source_id=? AND status NOT IN ('pending','running')", cid, sid, write=True)
 
 
+def may_wait(item: dict) -> bool:
+    """Whether an area's climb may wait for volunteers: until VOLUNTEER_WAIT after it first did."""
+    return not item.get("waiting_since") or time.time() - item["waiting_since"] < VOLUNTEER_WAIT
+
+
+def wait_for_volunteers(cid: str, sid: str, pid: str, since: float | None) -> None:
+    """Leave an area's climb waiting for what volunteers are fetching for it, rather than mesh it twice: once
+    without it, and again with it. volunteer_ready() queues it to harvest again and mesh once it has all come."""
+    n = VOLUNTEERS.pending("harvest", pid)
+    set_item(cid, sid, status="waiting", waiting_since=since or time.time(), redo=None, retry=0, redo_started=0,
+             note=f"waiting for volunteers: {n} YouTube search(es) and video(s) to come")
+
+
+def settle_waiting(camp_id: str) -> None:
+    """An area's climbs that have waited for volunteers for VOLUNTEER_WAIT: harvested again and meshed with what's come."""
+    q("UPDATE campaign_items SET status='pending', retry=1, redo='harvest+rebuild', was='waiting', redo_started=0, note=? "
+      "WHERE campaign_id=? AND status='waiting' AND waiting_since<?",
+      f"waited {VOLUNTEER_WAIT / 3600:.0f} h for volunteers: meshing it with what's come", camp_id, time.time() - VOLUNTEER_WAIT,
+      write=True)
+
+
 def _claim(w: Worker):
     """Choose this worker's next climb, and mark it as running, under _claim_lock: an area's next waiting
     climb, from the area fewest other workers are on, but not one on a boulder another worker is on, whose
@@ -1290,6 +1339,7 @@ def _claim(w: Worker):
             continue
         if camp["ord"] == "data" and not camp["only_retries"] and not any(x.campaign for x in others):
             read_ahead(camp)
+        settle_waiting(camp["id"])
         items = ordered_pending(camp)
         waiting = bool(items)
         if camp["only_retries"]:
@@ -1298,11 +1348,17 @@ def _claim(w: Worker):
         free = [i for i in items if not (i["boulder"] and i["boulder"] in taken)]
         if not free:
             if not items and not any(x.campaign == camp["id"] for x in others):
-                q("UPDATE campaigns SET status=?, only_retries=0, note=NULL WHERE id=? AND status='running'",
-                  "stopped" if waiting else "done", camp["id"], write=True)
+                held = q("SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND status='waiting'", camp["id"], one=True)["n"]
+                if held:    # it carries on once volunteers have fetched what those wait for
+                    note = f"{held} climb(s) waiting for volunteers' YouTube searches and videos"
+                    q("UPDATE campaigns SET note=? WHERE id=? AND COALESCE(note,'')!=?", note, camp["id"], note, write=True)
+                else:
+                    q("UPDATE campaigns SET status=?, only_retries=0, note=NULL WHERE id=? AND status='running'",
+                      "stopped" if waiting else "done", camp["id"], write=True)
             continue
         item = free[0]
         set_item(camp["id"], item["source_id"], status="running")
+        q("UPDATE campaigns SET note=NULL WHERE id=? AND note LIKE '%waiting for volunteers%'", camp["id"], write=True)
         w.campaign, w.boulder, w.doing = camp["id"], item["boulder"], item["name"]
         return camp, item
     return None
@@ -1580,7 +1636,7 @@ def _boulder_again(cid: str, row: dict) -> dict:
 def run_redo(camp: dict, item: dict) -> None:
     """Harvest or rebuild again one of an area's climbs that has been through it before."""
     cid, sid = camp["id"], item["source_id"]
-    row = q("SELECT source_id,climb_id,project_id,mesh_id,redo,was,changed,redo_started FROM campaign_items "
+    row = q("SELECT source_id,climb_id,project_id,mesh_id,redo,was,changed,redo_started,waiting_since FROM campaign_items "
             "WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
     row["was"] = row["was"] or "done"
     log = lambda s: append_log(row["project_id"], s)  # noqa: E731
@@ -1592,7 +1648,10 @@ def run_redo(camp: dict, item: dict) -> None:
         set_item(cid, sid, status="running", note=None)
         if first in ("harvest", "videos") and not row["redo_started"]:    # a rebuild that started was harvested already
             end = _harvest_again(row, log)
-            if then and end.get("changed"):
+            if row["was"] == "waiting" and not row["mesh_id"] and may_wait(row) and VOLUNTEERS.pending("harvest", row["project_id"]):
+                log("waiting for more from volunteers: the YouTube videos their search found")
+                return wait_for_volunteers(cid, sid, row["project_id"], row["waiting_since"])
+            if then and (end.get("changed") or (row["was"] == "waiting" and not row["mesh_id"])):
                 set_item(cid, sid, changed=1)
                 harvested_note = end["note"].split("; ")[0]     # not "Rebuild changed will use them": it's being rebuilt
                 end = _rebuild(cid, {**row, "changed": 1}, log)
@@ -3190,6 +3249,14 @@ def admin_link() -> dict:
 
 
 # ----------------------------------------------------------------- volunteers
+def search_wanter(purpose: str, ref: str):
+    """What to ask volunteers for a YouTube search with, for purpose and ref, when this server won't search itself;
+    None if there's no volunteer, or the admin page says to ask YouTube only here."""
+    if settings().get("youtube.via") == "here" or not VOLUNTEERS.any():
+        return None
+    return lambda words: VOLUNTEERS.want("search", words, purpose, ref)
+
+
 def video_wanter(purpose: str, ref: str):
     """What to ask volunteers for a video with, for purpose ("harvest" or "beta") and ref (its project or mesh), when
     YouTube won't let this server have it; None if there's no volunteer, or the admin page says to fetch only here."""
@@ -3199,8 +3266,18 @@ def video_wanter(purpose: str, ref: str):
 
 
 def volunteer_delivered(task: dict, path: Path | None, info: dict) -> None:
-    """A video, or its details, that a volunteer fetched: the video into youtube's cache, the details where the
-    harvest would have kept them (every URL of the videos table naming it)."""
+    """What a volunteer fetched: a video into youtube's cache, and its details where the harvest would have kept
+    them (every URL of the videos table naming it); a search's results into youtube's searches; a channel's
+    description for every URL the videos table has for it."""
+    if task["kind"] == "search":
+        youtube_mod.save_search(info["query"], info["results"], "volunteer")
+        return
+    if task["kind"] == "channel":
+        urls = {r["channel_url"] for r in q("SELECT DISTINCT channel_url FROM videos WHERE channel_id=? AND channel_url IS NOT NULL",
+                                              info["channel_id"])}
+        for url in urls or {info["url"]}:
+            save_channel(url, {"channel_id": info["channel_id"], "name": info["name"], "description": info["description"]})
+        return
     info = youtube_mod.details({**info, "webpage_url": info["url"], "extractor": "youtube"})
     if path:
         youtube_mod.cache_put(task["video_id"], path, info)
@@ -3227,7 +3304,10 @@ def reharvest_with_videos(pid: str) -> None:
         return
     item = q("SELECT campaign_id, source_id, status FROM campaign_items WHERE project_id=? LIMIT 1", pid, one=True)
     if item:
-        if item["status"] in ("done", "skipped", "failed"):
+        if item["status"] == "waiting":
+            set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="harvest+rebuild", was="waiting",
+                     redo_started=0, note="volunteers have fetched what it waited for: harvesting it again, then meshing it")
+        elif item["status"] in ("done", "skipped", "failed"):
             set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="harvest+rebuild", was=item["status"],
                      redo_started=0, note="queued to harvest again with the videos volunteers fetched")
             q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", item["campaign_id"], write=True)
@@ -3245,6 +3325,9 @@ def want_skipped() -> dict:
     find beta in is waiting for; how many of each are coming."""
     n = {"harvest": 0, "beta": 0}
     for r in q("SELECT id, harvest FROM projects WHERE harvest IS NOT NULL"):
+        for words in (json.loads(r["harvest"]).get("asked") or {}).get("searches") or []:   # searches asked for that never came
+            if not youtube_mod.cached_search(words):
+                n["harvest"] += VOLUNTEERS.want("search", words, "harvest", r["id"])
         for v in (json.loads(r["harvest"]).get("videos") or [])[:6]:
             vid = youtube_mod.video_id(v.get("url") or "")
             if vid and not v.get("frames") and not youtube_mod.cached(vid):
@@ -3274,7 +3357,7 @@ def admin_volunteer_revoke(body: dict) -> dict:
 
 def admin_volunteers_skipped(_: dict) -> dict:
     n = want_skipped()
-    return {"result": f"asked volunteers for {n['harvest']} video(s) harvests went without and {n['beta']} for finding beta; "
+    return {"result": f"asked volunteers for {n['harvest']} video(s) and search(es) harvests went without and {n['beta']} video(s) for finding beta; "
                       "each climb is harvested again once its videos have come"}
 
 

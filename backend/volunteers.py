@@ -1,10 +1,12 @@
-"""Volunteers: other people's computers fetching YouTube videos, and videos' details, for this server.
+"""Volunteers: other people's computers fetching YouTube videos, videos' details, searches and channels' pages for this server.
 
 YouTube refuses a server's downloads with its bot check after a few hours of harvesting, and a cloud server's almost
 at once (design.md, "When YouTube refuses"). A volunteer runs volunteer/bouldermesh_volunteer.py with a token from the
 admin page. It asks for work, fetches one video at a time from its own address, at least as cautiously as this server
-would, and sends each back in parts. Work names a video only by its YouTube id, which the script turns into a
-youtube.com address itself, so it can't be made to fetch anything else.
+would, and sends each back in parts. Work names a video only by its YouTube id, a search only by its words and a
+channel only by its id, which the script turns into a youtube.com address itself, so it can't be made to fetch
+anything else. A search sends back each result's id, title, description, length and channel; a channel its name and
+description.
 
 The broker keeps its own database (volunteers.sqlite), apart from the site's, which deploy/ship.sh replaces, and the
 files coming in under DATA_DIR/volunteers until they're whole. It's served on a port of its own (VOLUNTEER_PORT) that
@@ -39,6 +41,11 @@ VIDEO_FORMAT = "bv*[height<=1080]/b"   # as the harvest downloads: video only, n
 VIDEO_EXT = {"mp4", "webm", "mkv", "mov", "m4v", "3gp"}
 FAILED_DAYS = 30            # a video that failed for good isn't asked for again for this long
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
+CHANNEL_ID = re.compile(r"UC[A-Za-z0-9_-]{22}")
+WORDS = re.compile(r"[^\x00-\x1f\x7f]{3,200}")
+KEYS = {"video": VIDEO_ID, "details": VIDEO_ID, "search": WORDS, "channel": CHANNEL_ID}   # what names each kind of task
+OLD_KINDS = ("video", "details")    # what a script that doesn't say does
+SEARCH_RESULTS = 15         # results a search asks for, as the server's own (youtube.MAX_RESULTS)
 DETAILS = {"title": 500, "uploader": 200, "channel": 200, "channel_id": 100, "channel_url": 300, "uploader_url": 300,
            "upload_date": 20, "description": 20000, "license": 200}     # yt-dlp's names, as youtube.details() reads them
 SCRIPT = Path(__file__).resolve().parents[1] / "volunteer" / "bouldermesh_volunteer.py"
@@ -57,6 +64,22 @@ def clean_details(info: dict, video_id: str) -> dict:
     except (TypeError, ValueError):
         out["duration"] = None
     return out
+
+
+def clean_results(results) -> list[dict]:
+    """A volunteer's search results, cut to what youtube.result() keeps, with their addresses made here."""
+    out = []
+    for e in results if isinstance(results, list) else []:
+        if isinstance(e, dict) and VIDEO_ID.fullmatch(str(e.get("id") or "")):
+            out.append({k: e.get(k) for k in ("id", "title", "description", "duration", "channel", "channel_id", "uploader")})
+    return out[:50]
+
+
+def clean_channel(info: dict, channel_id: str) -> dict:
+    """A channel's name and description, as a volunteer read them."""
+    text = lambda k, n: str(info[k])[:n] if info.get(k) is not None else None  # noqa: E731
+    return {"channel_id": channel_id, "url": f"https://www.youtube.com/channel/{channel_id}", "name": text("name", 200),
+            "description": text("description", 20000) or ""}
 
 
 def probe_duration(path: Path) -> float | None:
@@ -141,9 +164,11 @@ class Broker:
 
     # -- what's wanted --------------------------------------------------------------------------------------------
     def want(self, kind: str, video_id: str, purpose: str, ref: str) -> bool:
-        """Ask volunteers for a video ("video") or its details ("details"), for purpose and ref (as ready() is
-        called with). Whether it's coming: false for a video that failed for good lately."""
-        if kind not in ("video", "details") or not VIDEO_ID.fullmatch(video_id or ""):
+        """Ask volunteers for a video ("video") or its details ("details") by its id, a search ("search") by its
+        words, or a channel's name and description ("channel") by its id, for purpose and ref (as ready() is called
+        with). Whether it's coming: false for one that failed for good lately. (The tasks table keeps the id or words
+        as video_id.)"""
+        if kind not in KEYS or not KEYS[kind].fullmatch(video_id or ""):
             return False
         with self.lock:
             task = self.q("SELECT id FROM tasks WHERE kind=? AND video_id=? AND state IN ('queued','assigned')", kind, video_id, one=True)
@@ -170,9 +195,17 @@ class Broker:
                "WHERE state='queued' AND tries>=?", time.time(), MAX_TRIES)
 
     # -- the volunteer's side ---------------------------------------------------------------------------------------
-    def work(self, v: dict, ip: str, client: str = "", per_hour: int | None = None, per_day: int | None = None) -> dict:
+    def pending(self, purpose: str, ref: str) -> int:
+        """How many things wanted for this purpose and ref are still coming."""
+        return self.q("SELECT count(DISTINCT t.id) AS n FROM wants w JOIN tasks t ON t.id=w.task WHERE w.purpose=? AND w.ref=? "
+                      "AND t.state IN ('queued','assigned')", purpose, ref, one=True)["n"]
+
+    def work(self, v: dict, ip: str, client: str = "", per_hour: int | None = None, per_day: int | None = None,
+             kinds: list | None = None) -> dict:
         """The next thing for a volunteer to fetch, {"task": ...}, or {"wait": seconds, "why": ...}: what it was
-        given and hasn't finished, then the oldest wanted, within its limits and its address's."""
+        given and hasn't finished, then the oldest wanted of the kinds its script does (videos and searches before
+        details and channels), within its limits and its address's."""
+        kinds = [k for k in (kinds or OLD_KINDS) if k in KEYS] or list(OLD_KINDS)
         now = time.time()
         with self.lock:
             self.requeue_stale()
@@ -189,7 +222,8 @@ class Broker:
                     if len(rows) >= cap:
                         return {"wait": rows[len(rows) - cap]["at"] + span - now + 1,
                                 "why": f"{cap} {what} is the most for {whose}"}
-            task = self.q("SELECT * FROM tasks WHERE state='queued' ORDER BY created LIMIT 1", one=True)
+            task = self.q(f"SELECT * FROM tasks WHERE state='queued' AND kind IN ({','.join('?' * len(kinds))}) "
+                          "ORDER BY kind IN ('details','channel'), created LIMIT 1", *kinds, one=True)
             if not task:
                 return {"wait": 600, "why": "nothing wanted now"}
             self.q("UPDATE tasks SET state='assigned', volunteer=?, ip=?, assigned=?, touched=?, size=NULL, ext=NULL WHERE id=?",
@@ -200,6 +234,10 @@ class Broker:
         return {"task": self._task_view(task)}
 
     def _task_view(self, t: dict) -> dict:
+        if t["kind"] == "search":
+            return {"id": t["id"], "kind": "search", "query": t["video_id"], "max_results": SEARCH_RESULTS}
+        if t["kind"] == "channel":
+            return {"id": t["id"], "kind": "channel", "channel_id": t["video_id"]}
         return {"id": t["id"], "kind": t["kind"], "video_id": t["video_id"], "format": VIDEO_FORMAT,
                 "max_filesize": "500m", "part": PART_MAX}
 
@@ -244,9 +282,10 @@ class Broker:
             return have + len(body)
 
     def finish(self, v: dict, task_id: str, report: dict) -> dict:
-        """What came of a task: {"status": "ok", "info": details} (a video sent in full first), "refused" (YouTube's
-        bot check, or a rate limit: the volunteer rests), "released" (the volunteer stopped), or "failed" with "error",
-        and "permanent" for a video that won't ever come (private, removed)."""
+        """What came of a task: {"status": "ok", "info": details} (a video sent in full first; for a search,
+        "results": [...] instead, and for a channel "info" is its name and description), "refused" (YouTube's bot
+        check, or a rate limit: the volunteer rests), "released" (the volunteer stopped), or "failed" with "error", and
+        "permanent" for a video that won't ever come (private, removed)."""
         status, now = report.get("status"), time.time()
         with self.lock:
             t = self._mine(v, task_id)
@@ -266,7 +305,12 @@ class Broker:
                 self._failed(t, str(report.get("error") or "failed")[:500], bool(report.get("permanent")))
                 f.unlink(missing_ok=True)
                 return {"ok": True}
-            info = clean_details(report.get("info") or {}, t["video_id"])
+            if t["kind"] == "search":
+                info = {"query": t["video_id"], "results": clean_results(report.get("results"))}
+            elif t["kind"] == "channel":
+                info = clean_channel(report.get("info") or {}, t["video_id"])
+            else:
+                info = clean_details(report.get("info") or {}, t["video_id"])
             path = None
             if t["kind"] == "video":
                 if not f.exists() or t["size"] is None or f.stat().st_size != t["size"]:
@@ -451,7 +495,7 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
                     if int(body.get("version") or 0) < CLIENT_VERSION:
                         return self.json({"error": "this script is too old: download it again from /volunteer/"}, 426)
                     return self.json(broker.work(v, _client_ip(self), str(body.get("client") or ""),
-                                                 body.get("per_hour"), body.get("per_day")))
+                                                 body.get("per_hour"), body.get("per_day"), body.get("kinds")))
                 m = re.fullmatch(r"/volunteer/api/tasks/([0-9a-f]{12})/(part|done)", u.path)
                 if m and m[2] == "part":
                     one = lambda k: (qs.get(k) or [""])[0]     # noqa: E731

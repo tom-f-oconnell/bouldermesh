@@ -516,9 +516,13 @@ installs yt-dlp and Deno in `~/.bouldermesh-volunteer`, and on first run explain
 bot check their whole network may get) and asks them to agree. [volunteers.md](volunteers.md) has every step, for
 volunteers and for connecting the public site to whichever server harvests.
 
-- **What they fetch:** only YouTube ids this server gives them, one video at a time, 8-15 s apart, at most 15 an hour and
-  100 a day for each volunteer and each address, resting 1, 2, 4 then 8 hours when YouTube refuses them. A video comes
-  back whole (up to 1080p, no sound, 500 MB), checked against its length, with its details but nothing of theirs.
+- **What they fetch:** only YouTube ids and search words this server gives them, one thing at a time, 8-15 s apart, at
+  most 15 an hour and 100 a day for each volunteer and each address, resting 1, 2, 4 then 8 hours when YouTube refuses
+  them. A video comes back whole (up to 1080p, no sound, 500 MB), checked against its length, with its details but
+  nothing of theirs; a search, its results (kept 30 days); a channel, its description, for climbers' heights.
+- **An area's climbs wait for them:** a climb whose harvest asked volunteers for a search or videos is harvested again
+  when they've come, and meshed once, rather than meshed without them first; after 24 h (`VOLUNTEER_WAIT_HOURS`) it's
+  meshed with what's come.
 - **What's asked of them:** with *Fetch videos from YouTube* at its default, videos a harvest or finding beta couldn't
   have because YouTube is refusing this server, once there's a volunteer. *Fetch the videos harvests went without* asks
   for earlier ones too, and *Fetch videos' missing details* for licences never read. A climb is harvested again once its

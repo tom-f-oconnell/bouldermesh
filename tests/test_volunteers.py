@@ -26,7 +26,7 @@ os.environ["DATA_DIR"] = str(TMP / "data")      # before the climbs package read
 sys.path.insert(0, str(ROOT / "backend"))
 import volunteers  # noqa: E402
 from climbs import harvest, youtube  # noqa: E402
-from climbs.common import Media  # noqa: E402
+from climbs.common import Climb, Media  # noqa: E402
 
 SCRIPT = ROOT / "volunteer" / "bouldermesh_volunteer.py"
 FAKE_YTDLP = '''#!/usr/bin/env python3
@@ -38,6 +38,12 @@ url = args[-1]
 vid = url.rsplit("=", 1)[-1]
 with open(os.environ["FAKE_LOG"], "a") as f:
     f.write(" ".join(args) + "\\n")
+if url.startswith("ytsearch"):
+    print(json.dumps({"entries": [{"id": "sssssssssss", "title": "Relic V9 Joshua Tree", "duration": 90.0, "channel": "a climber",
+                                   "channel_id": "UC" + "b" * 22, "url": "https://www.youtube.com/watch?v=sssssssssss", "extra": "x"}]}))
+    sys.exit(0)
+if "/channel/" in url:
+    print(json.dumps({"channel": "a climber", "description": "I'm 6 ft tall"})); sys.exit(0)
 if vid.startswith("refused"):
     sys.stderr.write("ERROR: [youtube] " + vid + ": Sign in to confirm you\\u2019re not a bot. This helps protect our community.\\n"); sys.exit(1)
 if vid.startswith("slow"):
@@ -166,6 +172,30 @@ def broker_alone() -> None:
     assert b.q("SELECT state FROM tasks WHERE id=?", t["id"], one=True)["state"] == "queued"
     st = b.state()
     assert {x["name"]: x["status"] for x in st["volunteers"]}["Carol2"] == "revoked" and st["counts"]["done_video"] == 1, st
+    # searches and channels: by their words and id, and only to a script that says it does them
+    assert not b.want("search", "x\nrm -rf /", "harvest", "p9") and not b.want("channel", "not-a-channel", "channel", "x")
+    b.q("UPDATE tasks SET state='cancelled' WHERE state IN ('queued','assigned')")
+    assert b.want("search", "Relic V9 Joshua Tree", "harvest", "p9") and b.pending("harvest", "p9") == 1
+    dave = b.volunteer(b.add("Dave")["token"])
+    kinds = ["video", "details", "search", "channel"]
+    assert b.work(dave, "203.0.113.20")["why"] == "nothing wanted now", "an old script gets no searches"
+    t = b.work(dave, "203.0.113.20", kinds=kinds)["task"]
+    assert t == {"id": t["id"], "kind": "search", "query": "Relic V9 Joshua Tree", "max_results": volunteers.SEARCH_RESULTS}, t
+    b.finish(dave, t["id"], {"status": "ok", "results": [{"id": "rrrrrrrrrrr", "title": "Relic V9", "duration": 60, "url": "https://x.example"},
+                                                          {"id": "../../etc"}, "nonsense"]})
+    task, path, info = got[-1]
+    assert task["kind"] == "search" and path is None and info["query"] == "Relic V9 Joshua Tree", info
+    assert info["results"] == [{"id": "rrrrrrrrrrr", "title": "Relic V9", "description": None, "duration": 60, "channel": None,
+                                "channel_id": None, "uploader": None}], "only results with a video's id, and no addresses"
+    assert ready[-1] == ("harvest", "p9") and b.pending("harvest", "p9") == 0
+    cid = "UC" + "a" * 22
+    assert b.want("channel", cid, "channel", cid)
+    t = b.work(dave, "203.0.113.20", kinds=kinds)["task"]
+    assert t == {"id": t["id"], "kind": "channel", "channel_id": cid}, t
+    b.finish(dave, t["id"], {"status": "ok", "info": {"name": "A climber", "description": "I'm 180 cm tall", "url": "https://x.example"}})
+    assert got[-1][2] == {"channel_id": cid, "url": f"https://www.youtube.com/channel/{cid}", "name": "A climber",
+                          "description": "I'm 180 cm tall"}, got[-1]
+    b.want("video", "fffffffffff", "harvest", "p10")
     assert b.cancel() >= 1 and not b.q("SELECT 1 FROM tasks WHERE state='queued'")
     print("broker OK")
 
@@ -221,6 +251,17 @@ def script_and_broker() -> None:
         state = json.loads((TMP / "home" / "state.json").read_text())
         gaps = sorted(state["fetched"])
         assert gaps[1] - gaps[0] >= 8, "8-15 s between fetches"
+
+        # a search, and a channel's description: only words and an id from the server, paced as videos are
+        b.want("search", "Relic V9 Joshua Tree", "harvest", "p4")
+        out = volunteer()
+        assert "sent 1 result(s)" in out, out
+        assert (TMP / "fake.log").read_text().splitlines()[-1].endswith("--flat-playlist ytsearch15:Relic V9 Joshua Tree")
+        assert got[-1][2]["results"][0]["id"] == "sssssssssss" and "extra" not in got[-1][2]["results"][0] and ready[-1] == ("harvest", "p4")
+        b.want("channel", "UC" + "b" * 22, "channel", "UC" + "b" * 22)
+        out = volunteer()
+        assert "sent" in out and got[-1][2]["description"] == "I'm 6 ft tall", out
+        assert (TMP / "fake.log").read_text().splitlines()[-1].endswith("https://www.youtube.com/channel/UC" + "b" * 22)
 
         b.want("video", "refused0000", "harvest", "p2")
         assert "YouTube refused: resting 1 h" in volunteer()
@@ -288,7 +329,11 @@ def cache_and_harvest() -> None:
             raise AssertionError("never here")
         except youtube.Refused as e:
             assert "volunteers" in str(e)
-        assert youtube.call(["true"], video=False, stdout=subprocess.DEVNULL) is None, "searches still go"
+        try:
+            youtube.call(["true"], video=False, stdout=subprocess.DEVNULL)
+            raise AssertionError("nor searches")
+        except youtube.Refused as e:
+            assert "volunteers" in str(e)
     finally:
         youtube.call, youtube.via = real_call, "volunteers_when_refused"
 
@@ -297,6 +342,24 @@ def cache_and_harvest() -> None:
     youtube.CACHE_BYTES = 2**20     # room for the new one only
     youtube.cache_put("OOOOOOOOOOO", Path(shutil.copy(big, TMP / "o.mp4")))
     assert youtube.cached("OOOOOOOOOOO") and not youtube.cached("CCCCCCCCCCC"), "the least recently used goes first"
+
+    # a search this server leaves to volunteers: asked of them, and their results used once they've come
+    youtube.via = "volunteers"
+    try:
+        relic = Climb(source="mountainproject", source_id="9", url="https://example.com/relic", name="Relic", kind="boulder", grade="V9",
+                      area_path=["California", "Joshua Tree National Park", "Real Hidden Valley"])
+        lines, asked, words = [], [], []
+        assert youtube.search(relic, lines.append, want=lambda w: words.append(w) or True, asked=asked) == []
+        assert words == asked == [youtube.query(relic)] and "asked volunteers to search" in lines[-1], lines
+        assert youtube.search(relic, lines.append) == [] and "skipped" in lines[-1], "without volunteers, none"
+        youtube.save_search(youtube.query(relic), [{"id": "sssssssssss", "title": "Relic V9 Joshua Tree", "duration": 90},
+                                                   {"id": "ttttttttttt", "title": "Another climb", "duration": 90}], "volunteer")
+        found = youtube.search(relic, lines.append, want=lambda w: words.append(w) or True)
+        assert [v.url for v in found] == ["https://www.youtube.com/watch?v=sssssssssss"] and len(words) == 1, (found, words)
+        assert "as a volunteer searched 0 h ago" in lines[-2], lines
+        assert youtube.cached_search(youtube.query(relic), days=0) is None, "and searched again once it's old"
+    finally:
+        youtube.via = "volunteers_when_refused"
     print("cache and harvest OK")
 
 
@@ -335,7 +398,7 @@ def through_the_server() -> None:
         r = call(admin + "/api/admin/actions/volunteer-add", {"name": "Dana", "per_hour": 5})[1]
         assert r["command"] == f"python3 bouldermesh_volunteer.py --server https://rocks.example --token {r['token']}", r
         r2 = call(admin + "/api/admin/actions/volunteers-skipped", {})[1]
-        assert "1 video(s) harvests went without" in r2["result"], r2
+        assert "1 video(s) and search(es) harvests went without" in r2["result"], r2
         assert "1 video(s)" in call(admin + "/api/admin/actions/volunteers-details", {})[1]["result"]
 
         fake = TMP / "fake-yt-dlp"
@@ -356,6 +419,25 @@ def through_the_server() -> None:
         assert "volunteers fetched" in log_file.read_text(), "harvested again with it"
         st = call(admin + "/api/admin/state")[1]["volunteers"]
         assert st["volunteers"][0]["name"] == "Dana" and st["volunteers"][0]["done"] == 1 and st["counts"]["queued_details"] == 1, st
+
+        # a search a harvest asked for that never came: asked again, done by the script, and kept for the harvest
+        con = sqlite3.connect(data / "bouldermesh.sqlite")
+        con.execute("INSERT INTO projects(id,name,created,kind,status,harvest) VALUES('bcdef0123456','Relic 2',?, 'harvest','harvested',?)",
+                    (time.time(), json.dumps({"images": 3, "videos": [], "asked": {"searches": ["Relic V9 Joshua Tree"], "videos": []}})))
+        con.commit()
+        con.close()
+        (data / "projects" / "bcdef0123456" / "photos").mkdir(parents=True)
+        assert "1 video(s) and search(es) harvests went without" in call(admin + "/api/admin/actions/volunteers-skipped", {})[1]["result"]
+        out = subprocess.run([sys.executable, str(SCRIPT), "--once", "--yt-dlp", str(fake), "--home", str(TMP / "home2")], env=renv,
+                             capture_output=True, text=True, timeout=120)
+        assert "sent 1 result(s)" in out.stdout, out.stdout + out.stderr
+        assert len(list((data / "cache" / "youtube-searches").glob("*.json"))) == 1
+        for _ in range(50):
+            log_file = data / "projects" / "bcdef0123456" / "job.log"
+            if log_file.exists() and "volunteers fetched" in log_file.read_text():
+                break
+            time.sleep(0.2)
+        assert "volunteers fetched" in log_file.read_text(), "harvested again with what it found"
         call(admin + "/api/admin/actions/volunteer-revoke", {"id": st["volunteers"][0]["id"]})
         assert call(vbase + "/volunteer/api/work", {"version": 1}, r["token"])[0] == 403
         assert call(admin + "/api/admin/settings", {"youtube.via": "nowhere"})[0] == 400

@@ -248,7 +248,7 @@ def extract_frames(video: Path, work: Path, keep: int, log: Log, fps: float | No
 
 def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0, max_frames: int = 150,
                  max_videos: int = 6, progress: Callable[..., None] | None = None, infos: dict | None = None,
-                 want: Callable[[str], None] | None = None) -> list[Path]:
+                 want: Callable[[str], bool] | None = None, asked: list | None = None) -> list[Path]:
     """Download videos and keep their sharpest frames, named yt_<start of the SHA-1 of the URL>_NNN.jpg. A YouTube
     video is kept in youtube's cache, so that finding beta, or harvesting again, needn't ask YouTube for it again,
     and one in the cache isn't asked for.
@@ -256,7 +256,8 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
     Args:
         infos: filled with each video's details (youtube.details) and how many frames it gave, by URL.
         want: called with the URL of each video not had because YouTube is refusing this server, to have it
-            fetched by volunteers; without it, they're skipped.
+            fetched by volunteers (whether it's coming); without it, they're skipped.
+        asked: the URLs of the videos volunteers were asked for are added to it.
     """
     ytdlp, ffmpeg = shutil.which("yt-dlp"), shutil.which("ffmpeg")
     if not ffmpeg:
@@ -311,9 +312,11 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
     if missed:
         why = refused or "no yt-dlp on PATH"
         if want:
-            for url in missed:
-                want(url)
-            log(f"youtube: {why}: {len(missed)} video(s) asked of volunteers; this climb is harvested again when they come")
+            coming = [url for url in missed if want(url)]
+            if asked is not None:
+                asked += coming
+            log(f"youtube: {why}: {len(coming)} of {len(missed)} video(s) asked of volunteers; this climb is harvested "
+                "again when they come")
         else:
             log(f"youtube: {why}: skipping {len(missed)} video(s). An area's \"look for new videos\" gets them later.")
     return saved
@@ -475,7 +478,7 @@ def steps(sources: set[str], relevance_filter: bool = True) -> list[tuple[str, s
 
 def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = None, relevance_filter: bool = True,
             tracker=None, pool_from: list[Path] | None = None, anchors_from: list[Path] | None = None,
-            want: Callable[[str], None] | None = None) -> dict:
+            want: Callable[[str], bool] | None = None, want_search: Callable[[str], bool] | None = None) -> dict:
     """Collect photos for climb `c` into project_dir/photos (provenance + reports are written
     next to it, never inside it, so the reconstruction only sees images).
 
@@ -487,6 +490,10 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         anchors_from: other harvests of the same boulder, whose own photos (anchors_of()) the relevance
             filter matches web photos against, without adding them.
         want: given the URL of each video YouTube wouldn't let this server have, to ask volunteers (video_frames()).
+        want_search: given the words of a YouTube search this server won't do, to ask volunteers (youtube.search()).
+
+    Returns:
+        A summary, whose "asked" says what volunteers were asked for: {"searches": [words], "videos": [URLs]}.
     """
     from . import diversity, relevance
     sources = set(SOURCES) if sources is None else set(sources)
@@ -514,14 +521,15 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         else:
             media += flickr_search(c.lat, c.lng, queries, log)
     manifest = download_all(media, photos_dir, log, progress=progress("download"))
-    frames, videos, infos = [], [], {}
+    frames, videos, infos, asked = [], [], {}, {"searches": [], "videos": []}
     if "youtube" in sources:
         report_video = progress("video") or (lambda frac=0.0, detail=None: None)
         report_video(0, "searching YouTube")
         seen = {youtube.video_id(v.url) or v.url for v in c.videos}    # the page's links, in any of YouTube's URL forms
-        videos = list(c.videos) + [v for v in youtube.search(c, log) if (youtube.video_id(v.url) or v.url) not in seen]
+        found = youtube.search(c, log, want=want_search, asked=asked["searches"])
+        videos = list(c.videos) + [v for v in found if (youtube.video_id(v.url) or v.url) not in seen]
     if videos:
-        frames = video_frames(videos, photos_dir, log, progress=progress("video"), infos=infos, want=want)
+        frames = video_frames(videos, photos_dir, log, progress=progress("video"), infos=infos, want=want, asked=asked["videos"])
         by_tag = {hashlib.sha1(v.url.encode()).hexdigest()[:8]: v for v in videos}   # as video_frames names them
         for f in frames:
             v = by_tag[f.name.split("_")[1]]
@@ -557,7 +565,7 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
             "video_frames": sum(f.exists() for f in frames), "queries": queries, "diversity": report,
             "videos": [{"url": v.url, "found_by": "search" if v.source == "youtube-search" else "page", "title": v.title,
                         "uploader": v.credit, "frames": 0, **infos.get(v.url, {})} for v in videos],
-            "relevance": {k: filtered[k] for k in ("methods", "counts")} if filtered else None}
+            "relevance": {k: filtered[k] for k in ("methods", "counts")} if filtered else None, "asked": asked}
 
 
 def _normalise_images(photos_dir: Path, log: Log) -> None:

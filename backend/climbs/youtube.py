@@ -16,10 +16,13 @@ downloads were refused, and never got the check on hal. design.md has what led t
 
 Videos fetched are kept in a cache by their id, with their details, so that finding beta and harvesting again don't
 ask YouTube a second time: those this server downloads, and those volunteers fetch from their own addresses
-(volunteers.py) when YouTube refuses this server, or always if `via` says so.
+(volunteers.py) when YouTube refuses this server, or always if `via` says so. Searches go the same way, and what each
+found is kept too, by its words, for SEARCH_DAYS: a harvest that asked volunteers to search finds their results there
+when it's harvested again.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
@@ -47,10 +50,13 @@ REFUSAL = re.compile(r"not a bot|HTTP Error 429|Too Many Requests|content isn.t 
 STATE_FILE = CACHE_DIR.parent / "youtube.json"
 PAGES_STATE_FILE = CACHE_DIR.parent / "youtube-pages.json"   # searches and channel pages, refused apart from videos
 VIDEO_CACHE = CACHE_DIR.parent / "videos"     # <id>.<ext> and <id>.json, its details
+SEARCHES = CACHE_DIR.parent / "youtube-searches"   # what each search found, here or by a volunteer, by its words
+SEARCH_DAYS = 30            # how long a search's results are used before searching again
 CACHE_BYTES = int(float(os.environ.get("VIDEO_CACHE_GB", "50")) * 2**30)   # the oldest used go beyond this
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
-# where videos come from, set by the server from its settings: "here"; "volunteers_when_refused", here unless YouTube is
-# refusing this server, when volunteers are asked; or "volunteers", never here (a cloud server, which YouTube refuses)
+# where videos, searches and channels' pages come from, set by the server from its settings: "here";
+# "volunteers_when_refused", here unless YouTube is refusing this server, when volunteers are asked; or "volunteers",
+# never here (a cloud server, which YouTube refuses)
 via = "volunteers_when_refused"
 _gate = threading.Lock()
 _last = 0.0
@@ -61,7 +67,7 @@ class Refused(RuntimeError):
 
     def __init__(self, state: dict):
         self.state = state
-        super().__init__("this server leaves fetching videos from YouTube to volunteers" if state.get("volunteers") else
+        super().__init__("this server leaves YouTube to volunteers" if state.get("volunteers") else
                          f"YouTube is refusing this machine's {state.get('what', 'downloads')} (its bot check) until "
                          f"{time.strftime('%H:%M UTC', time.gmtime(state['until']))}")
 
@@ -91,9 +97,9 @@ def call(cmd: list[str], video: bool = True, **kw) -> str:
         Refused: YouTube is refusing, or just did.
     """
     global _last
-    if video and via == "volunteers":
+    if via == "volunteers":
         raise Refused({"since": time.time(), "until": time.time() + 3600, "level": 0, "volunteers": True,
-                       "error": "this server doesn't fetch videos from YouTube itself"})
+                       "error": "this server doesn't ask YouTube for anything itself"})
     path, what = (STATE_FILE, "downloads") if video else (PAGES_STATE_FILE, "searches")
     while not _gate.acquire(timeout=1):
         jobctl.check()
@@ -226,21 +232,86 @@ def _ytdlp(args: list[str], timeout: int = 180, video: bool = True) -> dict:
     return json.loads(out or "{}")
 
 
-def search(c: Climb, log: Log, known: set[str] = frozenset()) -> list[Media]:
-    """Videos of a climb found by searching YouTube, best first.
+def _search_file(q: str) -> Path:
+    return SEARCHES / (hashlib.sha1(q.encode()).hexdigest()[:16] + ".json")
+
+
+def cached_search(q: str, days: float = SEARCH_DAYS) -> dict | None:
+    """What a search for these words found, if it was searched in the last `days`: {query, results, fetched, by}."""
+    try:
+        rec = json.loads(_search_file(q).read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    return rec if rec.get("query") == q and time.time() - rec.get("fetched", 0) < days * 86400 else None
+
+
+def result(e: dict) -> dict | None:
+    """What's kept of a search result (yt-dlp's flat entry, or a volunteer's), or None if it isn't a video."""
+    vid = str(e.get("id") or "")
+    if not VIDEO_ID.fullmatch(vid):
+        vid = video_id(str(e.get("url") or "")) or ""
+    if not VIDEO_ID.fullmatch(vid):
+        return None
+    try:
+        duration = float(e["duration"]) if e.get("duration") is not None else None
+    except (TypeError, ValueError):
+        duration = None
+    text = lambda k, n: str(e[k])[:n] if e.get(k) is not None else None  # noqa: E731
+    return {"id": vid, "url": f"https://www.youtube.com/watch?v={vid}", "title": text("title", 500),
+            "description": text("description", 2000), "duration": duration, "channel": text("channel", 200),
+            "channel_id": text("channel_id", 40), "uploader": text("uploader", 200)}
+
+
+def save_search(q: str, results: list[dict], by: str) -> dict:
+    """Keep what a search found ("here", or by a "volunteer"), for SEARCH_DAYS."""
+    rec = {"query": q, "results": [r for r in map(result, results) if r][:50], "fetched": time.time(), "by": by}
+    SEARCHES.mkdir(parents=True, exist_ok=True)
+    tmp = _search_file(q).with_suffix(".tmp")
+    tmp.write_text(json.dumps(rec))
+    tmp.replace(_search_file(q))
+    return rec
+
+
+def search(c: Climb, log: Log, known: set[str] = frozenset(), want: Callable[[str], bool] | None = None,
+           asked: list | None = None, days: float = SEARCH_DAYS) -> list[Media]:
+    """Videos of a climb found by searching YouTube, best first: by what a search for its words found in the last
+    `days`, here or by a volunteer, or else by searching now, unless YouTube is left to volunteers or refusing
+    this server, when volunteers are asked to search instead (the harvest carries on without).
 
     Args:
         known: URLs it already has, which aren't returned again.
+        want: called with the search's words to ask volunteers for it; whether it's coming.
+        asked: the words volunteers were asked to search for are added to it.
     """
-    if not available():
-        log("youtube search: skipped (needs yt-dlp)")
-        return []
     q = query(c)
-    try:
-        found = _ytdlp(["--flat-playlist", f"ytsearch{MAX_RESULTS}:{q}"], video=False).get("entries") or []
-    except Exception as e:
-        log(f"youtube search: {q!r} failed: {e}")
-        return []
+    hit = cached_search(q, days)
+    if hit:
+        log(f"youtube search: {q!r}: as {'a volunteer' if hit.get('by') == 'volunteer' else 'this server'} searched "
+            f"{(time.time() - hit['fetched']) / 3600:.0f} h ago")
+    else:
+        why = None
+        if via == "volunteers":
+            why = "this server leaves YouTube to volunteers"
+        elif not available():
+            log("youtube search: skipped (needs yt-dlp)")
+            return []
+        else:
+            try:
+                hit = save_search(q, _ytdlp(["--flat-playlist", f"ytsearch{MAX_RESULTS}:{q}"], video=False).get("entries") or [], "here")
+            except Refused as e:
+                why = str(e)
+            except Exception as e:
+                log(f"youtube search: {q!r} failed: {e}")
+                return []
+        if not hit:
+            if want and via != "here" and want(q):
+                if asked is not None:
+                    asked.append(q)
+                log(f"youtube search: {why}: asked volunteers to search for {q!r}; this climb is harvested again when they have")
+            else:
+                log(f"youtube search: {q!r} skipped: {why}")
+            return []
+    found = hit["results"]
     out = []
     for e in found:
         url = e.get("url") or (f"https://www.youtube.com/watch?v={e['id']}" if e.get("id") else None)

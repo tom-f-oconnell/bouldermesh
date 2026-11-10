@@ -53,7 +53,8 @@ def fake_fetch(url, include_children=False):
                   videos=[Media(url=f"http://y/{i}", kind="video") for i in range(videos.get(name, 0))])]
 
 
-def fake_harvest(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, anchors_from=None, want=None):
+def fake_harvest(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, anchors_from=None, want=None,
+                 want_search=None):
     harvested.append(c.name)
     pools[c.name] = [p.name for p in pool_from or []]
     anchors[c.name] = [p.name for p in anchors_from or []]
@@ -359,7 +360,7 @@ c = server.create_campaign("", "popularity", CSV)
 real = server.run_harvest
 
 
-def stop_during(pid, sources, reconstruct, relevance_filter=True, resume=False):
+def stop_during(pid, sources, reconstruct, relevance_filter=True, resume=False, wait=False):
     server.stop_campaign(c["id"], now=False)
     assert server.campaign_status(c["id"]) == "stopping"
     real(pid, sources, reconstruct, relevance_filter, resume)
@@ -828,7 +829,8 @@ photo_sets: dict[str, list[str]] = {}    # the photos each climb's harvest finds
 searched: dict[str, list[str]] = {}      # the videos a YouTube search finds of each climb
 
 
-def harvest_with_photos(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, anchors_from=None, want=None):
+def harvest_with_photos(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, anchors_from=None, want=None,
+                        want_search=None):
     harvested.append(c.name)
     for n in photo_sets.get(c.name, ["a.jpg", "b.jpg", "c.jpg"]):
         (project_dir / "photos" / n).write_bytes(b"x")
@@ -840,7 +842,7 @@ def harvest_with_photos(c, project_dir, log, sources, relevance_filter=True, tra
 
 
 server.harvest_mod.harvest = harvest_with_photos
-server.youtube_mod.search = lambda c, log, known=frozenset(): [Media(url=u, kind="video", title=c.name, source="youtube-search")
+server.youtube_mod.search = lambda c, log, known=frozenset(), **kw: [Media(url=u, kind="video", title=c.name, source="youtube-search")
                                                               for u in searched.get(c.name, [])]
 fresh()
 for t in ("videos", "climb_videos"):
@@ -961,6 +963,64 @@ pipeline.reconstruct = real
 assert True in seen_work, "the interrupted rebuild carried on from its work"
 assert items(c["id"])["Gamma"]["status"] == "done" and status(c["id"])[0] == "done"
 print("harvesting and rebuilding again OK")
+
+# --- a climb waiting for volunteers' YouTube searches and videos is meshed once, when they've come ---------
+fresh()
+coming: dict[str, int] = {}     # project -> what volunteers still have to fetch for it
+plan: list[int] = []            # what each harvest leaves them to fetch
+real_pending = server.VOLUNTEERS.pending
+server.VOLUNTEERS.pending = lambda purpose, ref: coming.get(ref, 0) if purpose == "harvest" else 0
+meshed: list[str] = []
+
+
+def asking(c_, project_dir, *a, **k):
+    coming[project_dir.name] = plan.pop(0) if plan else 0
+    return fake_harvest(c_, project_dir, *a, **k)
+
+
+def counting(images, *a, **k):
+    meshed.append(pathlib.Path(images).parent.name)
+    return fake_reconstruct(images, *a, **k)
+
+
+server.harvest_mod.harvest, pipeline.reconstruct = asking, counting
+plan[:] = [1, 2, 0]     # a search, then the two videos it found, then nothing
+only = lambda name: HEAD + "".join(line for line in CSV.splitlines(True)[1:] if line.startswith(name + ","))  # noqa: E731
+c = server.create_campaign("", "popularity", only("Alpha"))
+run_all(c["id"])
+it = items(c["id"])["Alpha"]
+pid = it["project_id"]
+assert it["status"] == "waiting" and it["waiting_since"] and "1 YouTube search" in it["note"] and not meshed, it
+assert server.q("SELECT status FROM projects WHERE id=?", pid, one=True)["status"] == "waiting"
+assert server.campaign_status(c["id"]) == "running", "an area isn't done while its climbs wait"
+assert "1 climb(s) waiting for volunteers" in server.q("SELECT note FROM campaigns WHERE id=?", c["id"], one=True)["note"]
+assert server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["counts"] == {"waiting": 1}
+coming[pid] = 0
+server.volunteer_ready("harvest", pid)      # the search's results came
+it = items(c["id"])["Alpha"]
+assert it["status"] == "pending" and it["redo"] == "harvest+rebuild" and it["retry"] == 1, it
+run_all(c["id"])
+it = items(c["id"])["Alpha"]
+assert it["status"] == "waiting" and "2 YouTube" in it["note"] and not meshed and harvested.count("Alpha") == 2, it
+coming[pid] = 0
+server.volunteer_ready("harvest", pid)      # and then its videos
+run_all(c["id"])
+it = items(c["id"])["Alpha"]
+assert it["status"] == "done" and it["mesh_id"] and meshed == [pid] and harvested.count("Alpha") == 3, (it, meshed)
+assert server.campaign_status(c["id"]) == "done" and not server.q("SELECT note FROM campaigns WHERE id=?", c["id"], one=True)["note"]
+# one that has waited long enough is meshed with what's come, and doesn't wait again
+fresh()
+meshed.clear()
+plan[:] = [1, 1]
+c = server.create_campaign("", "popularity", only("Beta"))
+run_all(c["id"])
+assert items(c["id"])["Beta"]["status"] == "waiting"
+server.q("UPDATE campaign_items SET waiting_since=?", time.time() - server.VOLUNTEER_WAIT - 60, write=True)
+run_all(c["id"])
+it = items(c["id"])["Beta"]
+assert it["status"] == "done" and len(meshed) == 1 and harvested.count("Beta") == 2, (it, meshed)
+server.VOLUNTEERS.pending, server.harvest_mod.harvest, pipeline.reconstruct = real_pending, fake_harvest, fake_reconstruct
+print("waiting for volunteers OK")
 
 # --- more than one worker at once -----------------------------------------------------------------------
 fresh()

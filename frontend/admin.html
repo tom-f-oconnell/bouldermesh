@@ -105,7 +105,7 @@
     </div>
     <div class="row"><button id="vol-add">Add volunteer</button></div>
     <div id="vol-new"></div>
-    <div class="row"><button class="sec" id="vol-skipped">Fetch the videos harvests went without</button>
+    <div class="row"><button class="sec" id="vol-skipped">Fetch the videos and searches harvests went without</button>
       <button class="sec" id="vol-details">Fetch videos' missing details (licences)</button><button class="danger" id="vol-cancel">Drop what's queued</button></div>
     <div class="note" id="vol-queue"></div>
   </section>
@@ -197,7 +197,9 @@ function render(s){
       <td>${x.last_hour} / ${x.last_day} (of ${x.per_hour} / ${x.per_day})</td><td>${x.done}</td><td>${x.status === 'revoked' ? '' : `<button class="danger" data-revoke="${esc(x.id)}">Revoke</button>`}</td></tr>`).join('')}</table>` : '<div class="note">No volunteers yet.</div>';
   const vc = vs.counts, n = k => vc[k] || 0, active = vs.volunteers.some(x => x.status !== 'revoked');
   $('#vol-queue').innerHTML = `Wanted: ${n('queued_video') + n('assigned_video')} video(s)${vs.wanted.harvest ? `, ${vs.wanted.harvest} for harvests` : ''}${vs.wanted.beta ? `, ${vs.wanted.beta} for finding beta` : ''}; `
-    + `${n('queued_details') + n('assigned_details')} video(s)' details. Fetched: ${n('done_video')} video(s), ${n('done_details')} details; failed: ${n('failed_video') + n('failed_details')}. `
+    + `${n('queued_search') + n('assigned_search')} search(es); ${n('queued_details') + n('assigned_details')} video(s)' details; ${n('queued_channel') + n('assigned_channel')} channel(s). `
+    + `Done: ${n('done_video')} video(s), ${n('done_search')} search(es), ${n('done_details')} details, ${n('done_channel')} channel(s); `
+    + `failed: ${['video', 'search', 'details', 'channel'].reduce((t, k) => t + n('failed_' + k), 0)}. `
     + `${vs.connected} volunteer(s) connected.` + (vs.recent.length ? '<br>Lately: ' + vs.recent.map(r => `${esc(r.kind)} ${esc(r.video_id)} <span class="${r.state === 'done' ? 'ok' : 'bad'}">${esc(r.state)}</span>${r.error ? ` (${esc(r.error)})` : ''}`).join(', ') : '');
   for (const b of ['#vol-skipped', '#vol-details']) $(b).disabled = !active;
   const cr = s.secrets;

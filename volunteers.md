@@ -9,9 +9,11 @@ that does the harvesting.
 
 ### What it does, and what it may cost you
 
-The script asks the site for a YouTube video of a climb, fetches it, sends it to the site, and deletes its own copy. It does
-one video at a time, 8 to 15 seconds apart, at most 15 an hour and 100 a day. The site only ever sends a video's YouTube
-id, and the script makes the youtube.com address itself, so it can't be pointed at anything else.
+The script asks the site for a YouTube video of a climb, fetches it, sends it to the site, and deletes its own copy. It
+also searches YouTube for a climb's videos, and reads a climber's channel description, sending back what they say. It
+does one thing at a time, 8 to 15 seconds apart, at most 15 an hour and 100 a day. The site only ever sends a video's or
+a channel's YouTube id, or a search's words, and the script makes the youtube.com address itself, so it can't be pointed
+at anything else.
 
 - **YouTube's terms** don't allow downloading videos except through YouTube's own features. Running this breaks them, and
   the videos are their uploaders' copyright.
@@ -19,7 +21,8 @@ id, and the script makes the youtube.com address itself, so it can't be pointed 
   or prove they're not a bot for a while. The script then stops for 1 hour, then 2, 4 or 8 if it happens again.
 - **What the site learns:** your IP address, which it keeps (the last one you connected from) only to share the limits
   above between everyone at one address. The video's title, uploader, length, date, description and licence go with it,
-  and nothing else about you.
+  a search's results' ids, titles, descriptions, lengths and channels, or a channel's name and description, and nothing
+  else about you.
 
 The script explains this again the first time it runs, and asks you to agree.
 
@@ -279,8 +282,16 @@ If `https://boulderme.sh/volunteer/` gives a 502, Caddy can't reach hal:
 Nothing in the firewall needs changing: the tunnel uses SSH, which is already open, and Caddy reaches the socket inside
 the public server.
 
-### If YouTube starts refusing searches
+### Searches, and climbs waiting for volunteers
 
-Searches stay with the server, as hal's were never refused. A refused search pauses searching for 1 to 8 hours, apart
-from downloads. If that starts happening, `/api/status` shows `youtube_searches_refusing`, and searching should move to
-volunteers too: design.md, "Volunteers fetching videos", says how.
+*Fetch videos from YouTube* covers searches and channels' descriptions too. With *Only through volunteers* (the public
+server), every YouTube search a harvest makes is asked of volunteers: the script, from version 2, searches by the words
+the server sends and sends back the results, which the server keeps for 30 days. With the default, the server searches
+itself until YouTube refuses its searches, and asks volunteers while it does. Older copies of the script are only given
+videos and details: download it again for searches.
+
+An area's climb whose harvest asked volunteers for anything waits for it (*waiting for volunteers* on the Areas tab),
+rather than being meshed once without and again with it: once the search's results have come, it's harvested again,
+which may ask for the videos they found, and once those have come, it's harvested again and meshed. A climb that has
+waited `VOLUNTEER_WAIT_HOURS` (24) is meshed with what has come, and what comes later rebuilds it, as before. An area
+with only waiting climbs left stays running, and says how many wait.
