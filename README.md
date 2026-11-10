@@ -668,10 +668,13 @@ and *Deny*, or after three in ten minutes, one summary of the rest. The taps go 
 server follows, signed so that no one else can make them; but anyone who learns the first topic's name can read the
 notifications, and so tap them, so keep it private, and *Make new topics* if it gets out. design.md has why.
 
-**Cloudflare, in front:** a rate-limiting rule (Security, then WAF, then *Rate limiting rules*; the free plan has one)
-catches floods before they reach the server: *Custom expression*
-`(http.request.uri.path in {"/volunteer/api/register" "/worker/api/register"})`, by IP, more than 5 requests in 10
-seconds, *Block* for 10 seconds (the free plan's only period and duration).
+**Cloudflare, in front:** a rate-limiting rule catches floods before they reach the server. The free plan has one, under
+Security, then WAF, then *Rate limiting rules* (or *Security rules*, then a rate limiting rule, in newer dashboards):
+- **If incoming requests match:** *URI Path* equals `/volunteer/api/register`, *Or* *URI Path* equals
+  `/worker/api/register`; that is, `(http.request.uri.path eq "/volunteer/api/register") or (http.request.uri.path eq "/worker/api/register")`.
+- **With the same characteristics:** IP.
+- **When rate exceeds:** 5 requests in 10 seconds. **Then:** *Block*, for 10 seconds (the free plan's only period and
+  duration). The server's own limits handle anything slower.
 
 ## Layout
 
