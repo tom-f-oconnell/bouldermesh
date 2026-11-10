@@ -2482,9 +2482,10 @@ MACHINES = pullwork.Board(DATA / "compute" / "machines.sqlite", DATA / "compute"
 def admin_machine_add(body: dict) -> dict:
     m = MACHINES.add(body.get("name") or "")
     url = WORKER_URL or "https://<this site>"
+    image = compute_settings()["compute.image"]
     return {**m, "result": f"added {m['name']}: run the command below on it, which has its token (shown only now)",
             "command": f"python3 bouldermesh_worker.py --server {url} --token {m['token']}",
-            "download": f"{url}/worker/bouldermesh_worker.py"}
+            "download": f"{url}/worker/bouldermesh_worker.py", "image_prefix": image.rsplit(":", 1)[0] + ":" if image else None}
 
 
 def admin_machine_revoke(body: dict) -> dict:

@@ -29,6 +29,7 @@
   td,th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
   section.alert{border-color:var(--warn)}
   code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}
+  a{color:var(--acc);overflow-wrap:anywhere}
   #msg{position:fixed;bottom:14px;right:14px;background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:8px;display:none;max-width:420px}
   .aws,.ssh,.pull{display:none}
   body.p-aws .aws, body.p-ssh .ssh, body.p-pull .pull{display:block}
@@ -251,7 +252,8 @@ $('#mach-add').onclick = async () => {
   try {
     const r = await call('/api/admin/actions/machine-add', { name: $('#mach-name').value });
     $('#mach-name').value = '';
-    $('#mach-new').innerHTML = `<div class="note ok">${esc(r.result)}</div><div class="note">Download the script from ${esc(r.download)} (or use worker/bouldermesh_worker.py in the repository), then run:</div><textarea readonly>${esc(r.command)}</textarea>`;
+    $('#mach-new').innerHTML = `<div class="note ok">${esc(r.result)}</div><div class="note">Download the script from <a href="${esc(r.download)}" download="bouldermesh_worker.py">${esc(r.download)}</a> (or use worker/bouldermesh_worker.py in the repository), then run:</div><textarea readonly>${esc(r.command)}</textarea>`
+      + `<div class="note">Add <code>--cpus N</code> to limit the cores its jobs use, <code>--image-prefix ${esc(r.image_prefix || 'ghcr.io/you/bouldermesh:')}</code> to run only this server's images, and <code>--data DIR</code> to put its jobs' photos and results, and the models they download (a few GB), in DIR rather than in <code>~/.bouldermesh-worker</code>, such as on a bigger disk. It remembers them all, with the server and token. Run it once with <code>--check</code> to see the server knows it.</div>`;
     msg('Added ' + r.name); refresh();
   } catch (e) { msg(e.message, 8000); }
 };

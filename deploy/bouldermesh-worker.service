@@ -1,7 +1,9 @@
 # Lends this machine to a BoulderMesh server for reconstructions, when the server can't reach it (README, "Running
 # reconstructions elsewhere"): worker/bouldermesh_worker.py asks the server for climbs to mesh over HTTPS, and runs them
 # in Docker. Run the script once by hand first, with the server and the token from its admin page, which it remembers:
-#     python3 worker/bouldermesh_worker.py --server https://boulders.example.com --token bmw_... --cpus 12 --check
+#     python3 worker/bouldermesh_worker.py --server https://boulders.example.com --token bmw_... --cpus 12 \
+#         --data /data/you/bouldermesh-worker --check
+# (--data: where jobs' photos and results, and the models they download, go, if not in ~/.bouldermesh-worker)
 # Then edit User and SCRIPT below, and:
 #     sudo cp deploy/bouldermesh-worker.service /etc/systemd/system/ && sudo systemctl enable --now bouldermesh-worker
 # journalctl -u bouldermesh-worker -f shows what it's doing. Stopping it gives the climb it was on back to the server.

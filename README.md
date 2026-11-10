@@ -524,7 +524,8 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   It asks this server for a climb every 15 s over HTTPS, fetches its photos, runs the job in Docker as you, with no
   capabilities, at niceness 10, and sends the log as it goes and then the mesh. Ctrl-C gives the climb back. The
   server, token and options are remembered (in `~/.bouldermesh-worker`); `--check` only checks the token, after which
-  `deploy/bouldermesh-worker.service` runs it under systemd. Its other options: `--gpu auto|all|cdi|none` (`cdi` for
+  `deploy/bouldermesh-worker.service` runs it under systemd. Jobs' photos and results, and the models they download (a
+  few GB), go there too, or in `--data DIR`, such as on a bigger disk. Its other options: `--gpu auto|all|cdi|none` (`cdi` for
   a host whose GPU is a CDI device), `--docker-arg=--memory=64g` (repeatable), and `--image-prefix ghcr.io/<owner>/`
   to refuse any other image, should the server be taken over. The public setup's Caddy passes `/worker/` to a port that
   answers only that (`WORKER_PORT`, 47614); elsewhere, publish that port to where the machines are. With

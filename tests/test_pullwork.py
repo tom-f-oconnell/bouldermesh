@@ -289,6 +289,19 @@ assert "remote_job.py /job --task beta" in run, run
 assert not board.jobs and not list((TMP / "data" / "compute" / "jobs").glob("*"))
 print("other jobs OK")
 
+# --- --data: jobs and the models they download somewhere other than --home, remembered -----------------------------------
+got = in_thread(board.task, "beta", {"mesh/cameras.json": src / "cameras.json"}, {"why": "test"}, "beta: m2", print)
+time.sleep(0.5)
+r = worker(hal["token"], "--once", "--data", str(TMP / "big-disk" / "bm"), env={**ENV, "FAKE_JOB": made})
+got["thread"].join(30)
+assert "value" in got, (got, r.stdout, r.stderr)
+shutil.rmtree(got["value"][1])
+run = [line for line in (fake / "calls").read_text().splitlines() if line.startswith("run ")][-1]
+assert f"-v {TMP / 'big-disk' / 'bm' / 'data'}:/data" in run and f"{TMP / 'big-disk' / 'bm' / 'jobs'}/" in run, run
+assert json.loads((TMP / "home" / "config.json").read_text())["data"] == str(TMP / "big-disk" / "bm"), "remembered"
+assert not list((TMP / "big-disk" / "bm" / "jobs").iterdir()), "and the job's folder gone after"
+print("--data OK")
+
 # --- a machine that won't run the image asked for gives the job back, and stops -------------------------------------------
 p = project("prefix")
 got = in_thread(board.reconstruct, p / "photos", p / "work", TMP / "out6", print)

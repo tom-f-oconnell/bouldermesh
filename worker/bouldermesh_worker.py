@@ -10,6 +10,7 @@ its log as it goes, and then the mesh. Run it with a token from the server's adm
 
 Python 3.9 or newer and Docker (with NVIDIA's container toolkit, for a GPU), which whoever runs it may use. The server
 and token are remembered (in ~/.bouldermesh-worker), so after the first time it's only `python3 bouldermesh_worker.py`.
+Jobs' photos and results, and the models they download, go there too, or under --data, such as on a bigger disk.
 Stop it with Ctrl-C: the climb it was on goes back to the server, for this or another machine.
 """
 from __future__ import annotations
@@ -88,7 +89,8 @@ class Server:
 
 class Worker:
     def __init__(self, args):
-        self.args, self.home = args, Path(args.home).expanduser().resolve()
+        self.args = args
+        self.home = Path(args.data or args.home).expanduser().resolve()    # jobs/, and data/: the models jobs download
         self.server = Server(args.server, args.token)
         self.gpu = self.gpu_args(args.gpu)
         self.container: str | None = None
@@ -298,7 +300,9 @@ def main() -> None:
     ap.add_argument("--image-prefix", help="run only images whose names start with this, such as ghcr.io/you/bouldermesh: "
                     "(remembered)")
     ap.add_argument("--home", default=os.environ.get("BOULDERMESH_WORKER_HOME", "~/.bouldermesh-worker"),
-                    help="where it keeps its settings, its jobs, and the models jobs download")
+                    help="where it keeps its settings, and unless --data says otherwise, its jobs and the models they download")
+    ap.add_argument("--data", help="where jobs' photos and results, and the models they download, go: a few GB, such as on a "
+                    "bigger disk (remembered; --home if not given)")
     ap.add_argument("--check", action="store_true", help="only check the server knows the token, and remember it")
     ap.add_argument("--once", action="store_true", help="ask for one job, do it if there's one, and stop")
     args = ap.parse_args()
@@ -310,12 +314,16 @@ def main() -> None:
         conf = json.loads(conf_file.read_text())
     except (FileNotFoundError, ValueError):
         conf = {}
-    for k in ("server", "token", "cpus", "gpu", "image_prefix"):
+    for k in ("server", "token", "cpus", "gpu", "image_prefix", "data"):
         if getattr(args, k) is None:
             setattr(args, k, conf.get(k))
         else:
             conf[k] = getattr(args, k)
     args.gpu = args.gpu or "auto"
+    if args.data:
+        args.data = conf["data"] = str(Path(args.data).expanduser().resolve())
+        Path(args.data).mkdir(parents=True, exist_ok=True)
+        os.chmod(args.data, 0o700)
     if not args.server or not args.token:
         ap.error("--server and --token are needed the first time")
     tmp = conf_file.with_suffix(".tmp")
