@@ -196,6 +196,12 @@ def with_token(tmp: Path) -> None:
                                                                        ("files", "tex.png", PNG), ("files", "run.svg", b"<svg onload=alert(1)>")])
         assert st == 201 and up["filename"] == "cube.ply" and sorted(up["skipped"]) == ["evil.html", "run.svg"], up
         mid = up["id"]
+        # a scene splat beside it is listed and served; the page's policy lets the splat viewer's worker run
+        (tmp / "data" / "meshes" / mid / "scene.splat").write_bytes(b"\0" * 64)
+        assert next(m for m in req(B, "GET", "/api/meshes")[2] if m["id"] == mid)["splat"] is True
+        st, h, body = req(B, "GET", f"/meshes/{mid}/scene.splat")
+        assert st == 200 and h["Content-Type"] == "application/octet-stream" and len(body) == 64 and "Content-Disposition" not in h, h
+        assert "worker-src 'self' blob:" in csp and "'wasm-unsafe-eval'" in csp and "'unsafe-eval'" not in csp.replace("'wasm-unsafe-eval'", ""), csp
         assert req(B, "GET", f"/meshes/{mid}/evil.html")[0] == 404
         st, h, body = req(B, "GET", f"/meshes/{mid}/tex.png")
         assert st == 200 and h["Content-Type"] == "image/png" and body == PNG and h["Cache-Control"].startswith("public") and "Content-Disposition" not in h, h
@@ -330,6 +336,21 @@ def in_parts(tmp: Path) -> None:
     print("uploads in parts OK")
 
 
+def scene_hidden(tmp: Path) -> None:
+    """A scene splat is learnt from all of a mesh's photos, so where textures aren't all shown, neither is it."""
+    srv = Server(tmp, SITE_TEXTURES="none")
+    try:
+        st, _, up = req(srv.url, "POST", "/api/meshes", files=[("files", "cube.ply", PLY)])
+        assert st == 201, up
+        (tmp / "data" / "meshes" / up["id"] / "scene.splat").write_bytes(b"\0" * 32)
+        assert next(m for m in req(srv.url, "GET", "/api/meshes")[2] if m["id"] == up["id"])["splat"] is False
+        st, _, e = req(srv.url, "GET", f"/meshes/{up['id']}/scene.splat")
+        assert st == 403 and "scene" in e["error"], (st, e)
+    finally:
+        srv.stop()
+    print("hidden scene OK")
+
+
 def fetcher() -> None:
     """Only http(s), and never a private, loopback or link-local address, however it's written."""
     def refused(url: str) -> bool:
@@ -359,6 +380,7 @@ def main() -> None:
         read_only(Path(td) / "b")
         build(Path(td) / "c")
         in_parts(Path(td) / "d")
+        scene_hidden(Path(td) / "e")
     print("ALL PUBLIC TESTS PASSED")
 
 

@@ -287,6 +287,13 @@ OpenMVS's 11-photo sample set takes 3-4 minutes, and a 100-photo harvest about a
 If a browser can't load a mesh's texture, the viewer tries it smaller, then says why on the view. Grey
 on a mesh means no photo shows that side, including the backs of surfaces.
 
+*Solid* and *Scene* in the header choose what's behind a mesh: the page's colour, or a sky over ground the colour of the
+rock's foot, with a soft shadow under it. Around a reconstructed mesh with a splat (`scene.splat`, from `backend/splat.py`),
+*Scene* also shows what its photos saw around the rock, where enough of them saw it, and the plain sky and ground
+elsewhere. Fitting splats is off (`SPLATS=1` turns it on for new meshes, and `python3 cli.py splat <mesh_id>` fits one),
+as it needs CUDA builds of torch and gsplat, and the few photos most meshes are placed from make poor ones: design.md,
+"Scenes around meshes". A splat is learnt from all of a mesh's photos, so it's shown only where the site shows all its textures.
+
 On a phone, the page shows either the controls or the view. Viewing a mesh fills the screen, and
 *Controls* goes back. Nothing is shown over the mesh there, so texture problems, stray-piece cleanup
 and the iPhone gravity comparison are only shown on wider screens (over 860 px).
@@ -525,6 +532,7 @@ the admin page gives. Each server keeps its volunteers in `data/volunteers.sqlit
     backend/admin.py               the admin page's server; frontend/admin.html is the page
     backend/settings.py            the admin page's settings, and credentials kept encrypted
     backend/volunteers.py          volunteers fetching YouTube videos: their tokens, the queue, and their port
+    backend/splat.py               splats of the scene around a mesh, for the viewer's Scene background (off: SPLATS=1)
     volunteer/bouldermesh_volunteer.py  the script volunteers run
     backend/proxy_ranges.py        whether the Caddyfile's trusted proxies are still Cloudflare's
     backend/policy.py              which photos are free to copy, and what the site may show

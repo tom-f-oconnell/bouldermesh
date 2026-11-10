@@ -52,6 +52,7 @@ import retexture  # noqa: E402
 import settings as settings_mod  # noqa: E402
 import pipeline  # noqa: E402
 import proxy_ranges  # noqa: E402
+import splat as splat_mod  # noqa: E402
 import viewpoints  # noqa: E402
 import volunteers as volunteers_mod  # noqa: E402
 import climbs as climbs_mod  # noqa: E402
@@ -105,7 +106,8 @@ MESH_EXTRA_EXT = {".png", ".jpg", ".jpeg", ".bin", ".mtl"}       # what may be u
 # how files under data/ are served; anything else is sent as bytes to save, so that nothing put there can run as a page of this site
 SERVED_TYPES = {".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                 ".json": "application/json", ".bin": "application/octet-stream", ".ply": "application/octet-stream",
-                ".obj": "application/octet-stream", ".stl": "application/octet-stream", ".mtl": "application/octet-stream"}
+                ".obj": "application/octet-stream", ".stl": "application/octet-stream", ".mtl": "application/octet-stream",
+                ".splat": "application/octet-stream"}
 HARVEST_SOURCES = harvest_mod.SOURCES
 CAMPAIGN_ORDERS = ("popularity", "rating", "data")
 CAMPAIGN_POLL = 2.0     # seconds the worker waits for a queued job before moving a campaign on
@@ -744,6 +746,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
           mid, time.time(), pid, write=True)   # made by hand since its area gave up on it
         if not demo:
             queue_scale(mid)
+            queue_splat(mid)
     except compute.ComputeUnavailable as e:    # not the climb's failure: it waits for a machine
         log(f"waiting for a machine to mesh it on: {e}")
         q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
@@ -1781,6 +1784,35 @@ def frames_from_video(pid: str, video: Path) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+_splats: "queue.Queue[str]" = queue.Queue()
+
+
+def queue_splat(mid: str) -> None:
+    """Fit a splat of what's around a new mesh (splat.py), if SPLATS=1 and it can be done here."""
+    if splat_mod.enabled() and not splat_mod.unavailable():
+        _splats.put(mid)
+
+
+def splat_worker() -> None:
+    """Fits splats one at a time on a thread of its own, at the lowest CPU priority: the GPU does the work. Each mesh's
+    goes in its own folder, with splat.log."""
+    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    while True:
+        mid = _splats.get()
+        m = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
+        if not m or not m["source"].startswith("project:") or not (MESHES / mid / orientation.CAMERAS_FILE).exists():
+            continue
+        pdir = PROJECTS / m["source"].split(":", 1)[1]
+
+        def log(line: str, mid=mid) -> None:
+            with open(MESHES / mid / "splat.log", "a") as f:
+                f.write(line + "\n")
+        try:
+            splat_mod.fit(MESHES / mid, pdir / "photos", pdir / "masks" if (pdir / "masks").is_dir() else None, log)
+        except Exception as e:  # never let the thread die
+            log(f"FAILED: {type(e).__name__}: {e}")
+
+
 def queue_scale(mid: str) -> bool:
     """Queue finding a reconstructed mesh's scale (scale.py), unless it's being found; whether it was queued."""
     if not (MESHES / mid / "cameras.json").exists() or (scale_mod.load(MESHES / mid) or {}).get("status") in ("queued", "running"):
@@ -2207,7 +2239,8 @@ def admin_origins() -> list[str]:
 
 def page_csp() -> str | None:
     """The page's Content-Security-Policy: its own inline scripts by their hashes, libraries from their CDNs, images from
-    anywhere (climbs' photos are shown from their sites), and never framed. It may fetch data: and blob: URLs, as the 3D
+    anywhere (climbs' photos are shown from their sites), and never framed. The splat viewer sorts in a worker made from
+    a blob: URL, with WebAssembly, which 'wasm-unsafe-eval' allows (it doesn't allow eval itself). It may fetch data: and blob: URLs, as the 3D
     viewer loads a mesh's buffers embedded in it that way (OpenMVS embeds a second one when a texture is split in two).
     CSP=0 turns it off; CSP=<policy> replaces it."""
     setting = os.environ.get("CSP")
@@ -2221,7 +2254,8 @@ def page_csp() -> str | None:
         hashes = " ".join(f"'sha256-{base64.b64encode(hashlib.sha256(m).digest()).decode()}'"
                           for m in re.findall(rb"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", page.read_bytes(), re.S))
         _csp.update(mtime=mtime, value=(
-            f"default-src 'self'; script-src 'self' {hashes} https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
+            f"default-src 'self'; script-src 'self' {hashes} 'wasm-unsafe-eval' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
+            "worker-src 'self' blob:; "
             "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: blob: https:; "
             f"connect-src 'self' data: blob: {' '.join(dict.fromkeys(admin_origins()))}; "
             "font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"))
@@ -2529,6 +2563,7 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as e:
                         print(f"error: listing mesh {r['id']}: {type(e).__name__}: {e}", flush=True)
                     r["cameras_kept"] = (MESHES / r["id"] / orientation.CAMERAS_FILE).exists()
+                    r["splat"] = r.get("texture") == "full" and (MESHES / r["id"] / splat_mod.FILE).exists()
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
             if m:   # what each video's climber did, and the holds marked by hand
@@ -2572,6 +2607,8 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send_json({"error": "not shown: it isn't clearly free to copy"}, 403)
                     return self.send_file(MESHES / mid / name)
                 mode = texture_mode(mid)
+                if name == splat_mod.FILE and mode != "full":     # what's around the rock, learnt from all its photos
+                    return self.send_json({"error": "not shown: the scene is made from photos that aren't all free to copy"}, 403)
                 base = served_dir(mid, mode)
                 f = base / name
                 is_image = f.suffix.lower() in (".png", ".jpg", ".jpeg")
@@ -3259,6 +3296,11 @@ def main() -> None:
         scale_mod.interrupted(d)
     threading.Thread(target=beta_worker, daemon=True).start()
     threading.Thread(target=frames_worker, daemon=True).start()
+    if splat_mod.enabled():
+        why = splat_mod.unavailable()
+        print(f"splats: {'not fitted, as ' + why if why else 'fitted for each new mesh'}", flush=True)
+        if not why:
+            threading.Thread(target=splat_worker, daemon=True).start()
     if RANGES:
         threading.Thread(target=RANGES.run, daemon=True).start()
     host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8470"))

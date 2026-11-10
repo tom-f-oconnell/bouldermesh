@@ -666,6 +666,30 @@ than the 4-core `g4dn.xlarge`. Building OpenMVS with CUDA for nodes would speed 
 What's specific to a provider is only starting and ending machines, so the rest works with any machine
 with Docker that SSH reaches. Adding GCP would be another class like `AWSProvider`.
 
+## Scenes around meshes (`backend/splat.py`)
+
+The viewer's *Scene* background is a sky over ground the colour of the rock's foot (the mean colour of its lowest 6% by
+height, from its vertex colours or texture), with a soft shadow under it and a little fog, all drawn in the browser. A
+Gaussian splat of what the photos saw around the rock can go in front of that sky and ground.
+
+The splat is fitted with gsplat to the photos a reconstruction placed, from `cameras.json`, as COLMAP's own points
+aren't kept: it starts from the mesh's vertices and a shell of points around the scene. People masks keep passers-by out,
+and each photo gets a colour correction of its own while fitting, for the light it was taken in. A random background
+each step keeps blobs only where photos show something. Afterwards it drops blobs fewer than 3 photos saw, blobs inside
+the rock's box (the mesh shows the rock, and blobs over it would hide it), blobs by the cameras, and big blobs near the
+scene. Where those were, the plain sky and ground show.
+
+Tried on hal's 3090 with gsplat 1.5.3 (torch 2.4.1 with CUDA 12.4, Python 3.10, in a scratch environment) on Monkey Gone
+to Heaven, whose 115 placed photos are the most of any mesh: 7,000 steps took 62 s, and kept 88,600 of 278,000 blobs
+(2.8 MB). From the framing it shows trees and nearby rock in place, with smears where only a photo or two looked.
+
+Most meshes are placed from far fewer photos: a median of 24, mostly frames of one or two videos. That's too few for
+much of a splat, and the frames kept for the mesh are the sharpest, not the ones that best cover the surroundings. So
+fitting is off until videos are kept again (the cache), when frames taken more densely for the splat could be placed
+against the mesh's model. The image's torch is the CPU build, so fitting would also need a CUDA build of torch and
+gsplat, or an image of its own. The viewer draws a splat with GaussianSplats3D, which sorts its blobs in a worker made
+from a blob: URL, using WebAssembly; the page's policy allows both (`worker-src blob:`, `'wasm-unsafe-eval'`).
+
 ## Textures from only photos free to copy (`backend/retexture.py`)
 
 Re-texturing with OpenMVS's TextureMesh from only the permitted photos, using the cameras kept in

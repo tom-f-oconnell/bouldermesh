@@ -22,6 +22,9 @@
                                                        (run it where the data is writable: in Docker, docker exec)
   python cli.py client-errors [-n N] [--data DIR]      the last N errors visitors' browsers reported (meshes that
                                                        wouldn't load, errors in the page), newest last
+  python cli.py splat <mesh_id> [--steps N] [--out FILE] [--data DIR]
+                                                       fit the splat of what's around a reconstructed mesh, for the
+                                                       viewer's Scene background (needs CUDA torch and gsplat: splat.py)
 
 Environment: GOOGLE_CSE_KEY/GOOGLE_CSE_CX, FLICKR_KEY, HARVEST_DDG=0 (no DuckDuckGo), DATA_DIR (cache location),
              BOULDERMESH_UA (please set a contact address), HTTP_MIN_INTERVAL (min. seconds between requests
@@ -44,6 +47,26 @@ from climbs import diversity, harvest, mountainproject, relevance  # noqa: E402
 IMAGE_EXT = {".jpg", ".jpeg", ".png"}
 
 
+def splat(data: Path, mesh_id: str, steps: int, out: str | None) -> int:
+    """Fit a reconstructed mesh's splat from its project's photos and masks (splat.py)."""
+    import sqlite3
+    import splat as splat_mod
+    row = sqlite3.connect(f"file:{data / 'bouldermesh.sqlite'}?mode=ro", uri=True).execute(
+        "SELECT source FROM meshes WHERE id=?", (mesh_id,)).fetchone()
+    if not row or not row[0].startswith("project:"):
+        print(f"{mesh_id}: no such reconstructed mesh in {data}", file=sys.stderr)
+        return 1
+    project = data / "projects" / row[0].split(":", 1)[1]
+    masks = project / "masks"
+    try:
+        splat_mod.fit(data / "meshes" / mesh_id, project / "photos", masks if masks.is_dir() else None, steps=steps,
+                      out=Path(out) if out else None)
+    except RuntimeError as e:
+        print(e, file=sys.stderr)
+        return 1
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -62,7 +85,12 @@ def main():
     e.add_argument("--since"); e.add_argument("--data")
     i = sub.add_parser("import-bundle"); i.add_argument("bundle"); i.add_argument("--data")
     ce = sub.add_parser("client-errors"); ce.add_argument("-n", type=int, default=30); ce.add_argument("--data")
+    sp = sub.add_parser("splat"); sp.add_argument("mesh_id"); sp.add_argument("--steps", type=int, default=7000)
+    sp.add_argument("--out"); sp.add_argument("--data")
     a = ap.parse_args()
+
+    if a.cmd == "splat":
+        sys.exit(splat(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.mesh_id, a.steps, a.out))
 
     if a.cmd == "client-errors":
         sys.exit(client_errors(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n))
