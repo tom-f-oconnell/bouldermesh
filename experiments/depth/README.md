@@ -45,6 +45,9 @@ rock's size. "Covered" is the share of the surface the subset's photos see that 
   As a fallback when COLMAP's mapper fails, this rescues some climbs. Where COLMAP works, it's about as good. VGGT-1B's
   weights are licensed for non-commercial use only.
 
+How the depth models could guide the viewer's scene splats, where few photos look, and how to test that, is in
+[design.md](../../design.md#depth-as-a-guide-where-few-photos-look-not-built). That hasn't been run yet.
+
 Shapes are compared after a similarity fitted to pixel correspondences between each method's geometry and the full
 mesh, as benchmarks align to the truth. Camera centres alone can't fix that similarity when a video's camera barely
 moves. Because of this, the shape scores flatter a broken reconstruction a little. Camera placement is scored separately.

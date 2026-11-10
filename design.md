@@ -706,6 +706,50 @@ against the mesh's model. The image's torch is the CPU build, so fitting would a
 gsplat, or an image of its own. The viewer draws a splat with GaussianSplats3D, which sorts its blobs in a worker made
 from a blob: URL, using WebAssembly; the page's policy allows both (`worker-src blob:`, `'wasm-unsafe-eval'`).
 
+### Depth as a guide where few photos look (not built)
+
+With few photos, a splat puts each blob at whatever depth reproduces the photos it was fitted to. Seen from anywhere
+else, those blobs are the smears. Depth estimated from each photo could give those parts a shape to settle on. The
+measurements behind this are in [experiments/depth](experiments/depth/README.md):
+- MoGe-2's depth for a single photo is about 9% off the mesh's (AbsRel), and Depth Anything V2 Large's about 10%.
+- VGGT's points, from all the photos together, are 0.4-1% of the rock's size off, and agree between photos.
+
+None of them comes in the mesh's units. Each photo's depth would be fitted to the mesh where the mesh covers it (a
+scale for MoGe-2; a scale and offset in inverse depth for Depth Anything), as those tests did. That fit can only be
+trusted so far past the rock, which is one thing to measure. Ways it could help, cheapest first:
+
+- **Starting points.** Points from each photo's fitted depth, outside what the mesh covers, would replace the shell. Each
+  would be a pixel's worth, thinned, coloured from its pixel. Blobs would then start on the ground, trees and nearby
+  rocks rather than on a sphere.
+- **A depth loss.** gsplat renders each blob's expected depth along with its colour (`render_mode="RGB+ED"`). That depth
+  would be compared with the photo's fitted depth where the mesh doesn't cover. The comparison would ignore any scale
+  and offset left over per photo, using a correlation such as Pearson's (as FSGS, SparseGS and DNGaussian do). It would
+  count less as the steps go on. Where the mesh covers, the mesh is better truth, and the rock's box is pruned anyway.
+- **Sky.** MoGe-2's mask marks sky. No blobs would go there, and the dome would show through.
+- **Floaters.** Blobs well in front of the fitted depth, in the photos that see them, would be dropped.
+- **More frames.** VGGT can place frames the mesh's model never had, such as video frames taken densely for the splat
+  (see above). Its weights are licensed for non-commercial use only.
+
+**How to test it.** On the four climbs of `experiments/depth`, and on a few with typical coverage (20-30 placed
+photos, from one or two videos):
+- **Held-out photos.** Leave out every 8th placed photo. Also fit on test 2's poor subsets, scoring them on photos near
+  them (within 30°) and beyond.
+- **Variants.** As now (the mesh and a shell); with depth starting points; with the depth loss too; with floaters
+  dropped; VGGT's points in place of MoGe-2's; sky masked or not. Each with 3 seeds, since densifying is random.
+- **Scores on the held-out photos.** Compare the viewer's own picture (mesh, splat and sky together) with each photo,
+  outside the rock (the mesh draws that) and away from people and sky, by PSNR, SSIM and LPIPS. Also compare the
+  splat's rendered depth from those cameras with the full mesh's, where the mesh covers (AbsRel, as test 1). That
+  catches blobs at the wrong depth that still colour the training views right.
+- **Costs.** Blob count and file size, as phones download it, and fitting time.
+- **By eye.** The viewer orbiting away from every photo, at a few angles per variant. The aim is a plausible backdrop,
+  and no score tells a smear from something plausible.
+
+A variant would become the default if it improves the held-out scores outside the rock on the typical climbs, without
+making the well-covered ones worse, and looks better. All of this can run on frames already harvested, except the dense
+frames, which need the video cache. It needs hal's GPU and two environments: gsplat's (torch 2.4.1, CUDA 12.4) and the
+depth models' (`experiments/depth`, a newer torch). The depth maps would be written to files in one environment, then
+fitted from in the other.
+
 ## Textures from only photos free to copy (`backend/retexture.py`)
 
 Re-texturing with OpenMVS's TextureMesh from only the permitted photos, using the cameras kept in
