@@ -393,7 +393,9 @@ If you change `frontend/index.html`, the hashes follow, but a new inline `onclic
 in `backend/server.py` (`CSP=0` in `.env` turns it off, and `CSP=<policy>` replaces it). Files under `data/` are served only
 as meshes, textures, JSON or bytes, so nothing uploaded there can run as a page of the site, and uploaded meshes keep only
 mesh, texture and material files. Meshes, photos and static files are sent with `Last-Modified`, and may be cached for an
-hour (`FILE_CACHE_SECONDS`). Harvests fetch only `http(s)` URLs, and never from private, loopback or link-local addresses,
+hour (`FILE_CACHE_SECONDS`). The page itself is sent with `Cache-Control: no-transform`, so that a proxy in front leaves
+it as it is: Cloudflare, for one, adds its Web Analytics script to free plans' pages unless that's turned off, and the
+page's policy would only block it. Harvests fetch only `http(s)` URLs, and never from private, loopback or link-local addresses,
 such as a cloud machine's metadata service (`HTTP_ALLOW_PRIVATE=1` lifts that, for tests).
 
 **What it doesn't do.** There's no rate limiting, and `GET /api/meshes` reads every mesh's records for each request, so a

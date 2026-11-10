@@ -2394,7 +2394,9 @@ class Handler(BaseHTTPRequestHandler):
             ctype = SERVED_TYPES.get(path.suffix.lower(), "application/octet-stream")
             download = download or path.suffix.lower() not in SERVED_TYPES
         modified = email.utils.formatdate(st.st_mtime, usegmt=True)
-        cache = "no-cache" if in_frontend and path.suffix == ".html" else f"public, max-age={FILE_CACHE}"
+        # no-transform: proxies in front leave the page as it is, so Cloudflare doesn't add its analytics beacon (which the
+        # page's policy would block anyway) or rewrite the page in any other way, whatever its dashboard settings
+        cache = "no-cache, no-transform" if in_frontend and path.suffix == ".html" else f"public, max-age={FILE_CACHE}"
         since = self.headers.get("If-Modified-Since")
         if since and not download:
             try:

@@ -120,7 +120,7 @@ def with_token(tmp: Path) -> None:
     try:
         # the page, with its policy: a hash for each inline script, nothing framed, and the other headers
         st, h, page = req(B, "GET", "/")
-        assert st == 200 and h["Content-Type"].startswith("text/html") and h["Cache-Control"] == "no-cache", (st, h)
+        assert st == 200 and h["Content-Type"].startswith("text/html") and h["Cache-Control"] == "no-cache, no-transform", (st, h)
         csp = h["Content-Security-Policy"]
         inline = re.findall(rb"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", (ROOT / "frontend" / "index.html").read_bytes(), re.S)
         want = {f"'sha256-{base64.b64encode(hashlib.sha256(m).digest()).decode()}'" for m in inline}
