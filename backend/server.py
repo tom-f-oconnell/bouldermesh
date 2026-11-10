@@ -473,7 +473,9 @@ def climb_row(cid: str, full=False) -> dict | None:
     # meshes of its whole boulder (run_boulder()), and those an area linked it to that were made for another climb on it
     boulder = boulder_of(r["area_path"])
     r["n_boulder"] = q("SELECT COUNT(*) n FROM meshes WHERE boulder=? AND replaced_by IS NULL", boulder, one=True)["n"] if boulder else 0
+    shared = q("SELECT note FROM mesh_links WHERE climb_id=? AND note LIKE ? ORDER BY created LIMIT 1", cid, SHARED + "%", one=True)
     r["n_shared"] = q("SELECT COUNT(*) n FROM mesh_links WHERE climb_id=? AND note LIKE ?", cid, SHARED + "%", one=True)["n"]
+    r["shared_of"] = shared["note"][len(SHARED):] if shared else None     # the climb that mesh was made for
     return r
 
 
