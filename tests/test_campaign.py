@@ -1214,6 +1214,7 @@ def no_machine(*a, **k):
 
 
 server.run_harvest = no_machine
+real_run_item = server.run_campaign_item
 w = server.Worker("remote 1", remote=True)
 server._workers.append(w)
 server._here.worker = w
@@ -1222,8 +1223,27 @@ got = items(c["id"])["Alpha"]
 assert got["status"] == "pending" and "waiting for a machine" in got["note"] and got["project_id"], got
 assert w.wait_until > time.time() and "no capacity" in w.error and w.campaign is None
 assert server.q("SELECT status FROM projects WHERE id=?", got["project_id"], one=True)["status"] == "stopped"
+# its card says what it waits for, the kind of machine, and when it tries again
+server.settings().update({"compute.provider": "aws"})
+mw = server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["machine_wait"]
+assert mw["climb"] == "Alpha" and not mw["boulder"] and mw["kind"] == "an AWS instance" and "no capacity" in mw["why"], mw
+assert mw["next"] == w.wait_until and mw["since"] <= time.time() and not mw["pull"], mw
+server.settings().update({"compute.provider": "pull"})
+mw = server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["machine_wait"]
+assert mw["kind"] == "a machine that connects here for work" and mw["pull"] and mw["last_seen"] is None and not mw["connected"], mw
+server.settings().update({"compute.provider": "none"})
+assert server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["machine_wait"]["kind"] is None
 server._here.worker = None
 server.run_harvest = real_harvest
+server._here.worker = w      # a climb meshed after it: the wait is over
+server.run_campaign_item = lambda camp, item: None
+w.wait_until = 0
+server.set_item(c["id"], server.q("SELECT source_id FROM campaign_items WHERE campaign_id=? AND name='Alpha'", c["id"], one=True)["source_id"],
+                status="pending")
+assert server.next_campaign_step() and w.waiting is None
+assert server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["machine_wait"] is None
+server.run_campaign_item = real_run_item
+server._here.worker = None
 server._workers[:] = [server._first]
 server.stop_campaign(c["id"])
 

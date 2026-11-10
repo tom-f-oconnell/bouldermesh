@@ -606,7 +606,9 @@ private: make it public in its settings on GitHub (*Change visibility*), or `doc
 an image on the admin page instead pins the machines to it, as for a private image on ECR, which works with an
 *Instance profile* that may pull it. Each climb's photos and people masks go to the machine, and the mesh, its cameras and
 the masks come back. Harvesting stays here. A climb whose machine can't be had or is lost waits, rather
-than failing, and that worker tries again in 5 minutes. design.md has what offloading costs and saves.
+than failing, and that worker tries again in 5 minutes. Its area's card says so: which kind of machine it waits for
+(one that connects here, one reached over SSH, or an AWS instance), to mesh which climb or boulder, since when, why,
+when it tries again, and for machines that connect here, when one last asked for work. design.md has what offloading costs and saves.
 The AWS side has been tested against stand-ins for AWS, not against AWS itself.
 
 ## Volunteers fetching YouTube videos

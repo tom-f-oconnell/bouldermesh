@@ -1689,10 +1689,21 @@ const ORDER_NAMES = { popularity: 'most popular first', rating: 'highest rated f
 const ITEM_NAMES = { done: 'meshed', skipped: 'skipped', failed: 'failed', waiting: 'waiting for volunteers', harvested: 'harvested, for its boulder' };
 const stars = v => v == null ? '' : `★${(+v).toFixed(1)}`;
 let campaignShown = null, meshedShown = null;
+// An area whose climbs found no machine to mesh on: what it waits for, which kind of machine, and when it tries again
+function machineWaitHtml(c){
+  const m = c.machine_wait;
+  if (c.status !== 'running' || !m) return '';
+  const at = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const when = t => new Date(t * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  const what = `${esc(m.climb)}${m.boulder ? '\'s boulder' : ''}`;
+  const why = m.connected ? `one has connected now, so it carries on by ${at(m.next)}`
+    : `${esc(m.why)}${m.pull ? (m.last_seen ? `; one last asked for work ${when(m.last_seen)}` : '; none ever has') : ''}. It tries again at ${at(m.next)}`;
+  return `<div class="notice" style="margin-top:6px">Waiting since ${at(m.since)} for ${esc(m.kind || 'a machine')} to mesh ${what}: ${why}.</div>`;
+}
 function currentHtml(c){
   const running = c.running || (c.current ? [c.current] : []);
-  if (!running.length) return c.status === 'running' ? '<div class="status" style="margin-top:6px">Waiting for the next climb to start…</div>' : '';
-  return running.map(cur => {
+  if (!running.length) return machineWaitHtml(c) || (c.status === 'running' ? '<div class="status" style="margin-top:6px">Waiting for the next climb to start…</div>' : '');
+  return machineWaitHtml(c) + running.map(cur => {
     const pr = cur.progress, step = pr?.steps.find(s => s.state === 'running');
     return `<div class="meta" style="margin-top:8px">Now: <b>${esc(cur.name)}</b> ${esc(cur.grade||'')} <small>#${cur.rank}</small></div>
       ${pr ? `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% · ${esc(step?.label || '')}${step?.detail ? ' · ' + esc(step.detail) : ''}</small>` : ''}`;

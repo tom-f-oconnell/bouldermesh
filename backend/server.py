@@ -1151,6 +1151,7 @@ class Worker:
         self.job: dict | None = None       # a job someone asked for that it's running: {job, started, from (% done)}
         self.error: str | None = None
         self.wait_until = 0.0
+        self.waiting: dict | None = None   # an area's climb it found no machine for: {campaign, climb, boulder, why, since}
         self.retired = False
 
 
@@ -1607,10 +1608,13 @@ def next_campaign_step() -> bool:
     camp, item = picked
     try:
         run_campaign_item(camp, item)
-        w.error = None
+        w.error = w.waiting = None
         settle_boulder(camp["id"], item.get("boulder"))
     except compute.ComputeUnavailable as e:     # the climb waits; so does this worker, for a while
         w.error, w.wait_until = f"{time.strftime('%H:%M')}: {e}", time.time() + COMPUTE_WAIT
+        since = min([x.waiting["since"] for x in _workers if x.waiting and x.waiting["campaign"] == camp["id"]] + [time.time()])
+        w.waiting = {"campaign": camp["id"], "climb": item["name"], "since": since, "why": str(e),
+                     "boulder": (item.get("redo") or "").split("+")[0] in ("boulder", "pool")}
         set_item(camp["id"], item["source_id"], status="pending")
     except Exception as e:
         set_item(camp["id"], item["source_id"], status="failed", note=f"{type(e).__name__}: {e}")
@@ -2375,7 +2379,31 @@ def campaign_view(camp: dict) -> dict:
         p = q("SELECT status,progress FROM projects WHERE id=?", r["project_id"], one=True) if r["project_id"] else None
         r["progress"] = json.loads(p["progress"]) if p and p["progress"] else None
     return {**camp, "counts": counts, "again": again, "worked": worked, "current": running[0] if running else None,
-            "running": running, "next": ordered_pending(camp)[:10]}
+            "running": running, "next": ordered_pending(camp)[:10], "machine_wait": machine_wait(cid)}
+
+
+def machine_kind() -> str | None:
+    """The kind of machine areas' climbs are meshed on besides this server, as the admin page sets it, for saying what
+    a climb waits for; None if there's no other kind."""
+    return {"pull": "a machine that connects here for work", "ssh": "one of the machines reached over SSH",
+            "aws": "an AWS instance"}.get(compute_settings()["compute.provider"])
+
+
+def machine_wait(cid: str) -> dict | None:
+    """What an area's climbs wait for, when its workers found no machine to mesh on (next_campaign_step()): {climb,
+    boulder (its boulder's mesh, not its own), kind (machine_kind()), why, since, next (when it's tried again), and for
+    machines that connect here (pull), last_seen (any's last word, or None) and connected (one is there now)}; None if
+    they don't."""
+    waits = [w for w in _workers if w.waiting and w.waiting["campaign"] == cid and not w.retired]
+    if not waits:
+        return None
+    first = min(waits, key=lambda w: w.waiting["since"])
+    out = {k: first.waiting[k] for k in ("climb", "boulder", "why", "since")}
+    out.update(kind=machine_kind(), next=min(w.wait_until for w in waits), last_seen=None, connected=False, pull=False)
+    if compute_settings()["compute.provider"] == "pull":
+        seen = [m["last_seen"] for m in MACHINES.state()["machines"] if m["status"] not in ("revoked", "denied") and m["last_seen"]]
+        out.update(last_seen=max(seen) if seen else None, connected=MACHINES.connected(), pull=True)
+    return out
 
 
 def run_job(job: dict) -> None:
