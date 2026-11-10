@@ -216,7 +216,7 @@ function render(s){
     $('#ranges-body').innerHTML = h + `<div class="note">Checked once a day${pr.checked ? `, last at ${when(pr.checked)}` : ''}. The firewall can't be seen from here, so keep it to the same list.</div>`;
   }
   const vs = s.volunteers, when = t => t ? new Date(t * 1000).toLocaleString() : 'never';
-  $('#vol-note').textContent = vs.served ? `Volunteers reach this server at ${vs.url || '(VOLUNTEER_URL not set)'}/volunteer/, which has the script and what to do.`
+  $('#vol-note').innerHTML = vs.served ? (vs.url ? `Volunteers reach this server at <a href="${esc(vs.url)}/volunteer/" target="_blank" rel="noopener">${esc(vs.url)}/volunteer/</a>, which has the script and what to do.` : 'Volunteers reach this server at (VOLUNTEER_URL not set)/volunteer/, which has the script and what to do.')
     : 'Not taking volunteers here: VOLUNTEER_PORT isn\'t set (README, "Volunteers").';
   if (document.activeElement !== $('#via')) $('#via').value = v['youtube.via'];
   $('#vol-list').innerHTML = vs.volunteers.length ? `<table><tr><th>Volunteer</th><th>Now</th><th>Last seen</th><th>Address</th><th>Last hour / day</th><th>Fetched</th><th></th></tr>${
@@ -295,7 +295,7 @@ $('#vol-add').onclick = async () => {
   try {
     const r = await call('/api/admin/actions/volunteer-add', { name: $('#vol-name').value, per_hour: +$('#vol-hour').value });
     $('#vol-name').value = '';
-    $('#vol-new').innerHTML = `<div class="note ok">${esc(r.result)}</div><div class="note">They download the script from ${esc(r.download)} and run:</div><textarea readonly id="vol-cmd">${esc(r.command)}</textarea>`;
+    $('#vol-new').innerHTML = `<div class="note ok">${esc(r.result)}</div><div class="note">They download the script from <a href="${esc(r.download)}" download="bouldermesh_volunteer.py">${esc(r.download)}</a> and run:</div><textarea readonly id="vol-cmd">${esc(r.command)}</textarea>`;
     msg('Added ' + r.name); refresh();
   } catch (e) { msg(e.message, 8000); }
 };

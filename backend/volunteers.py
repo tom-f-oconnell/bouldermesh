@@ -418,18 +418,49 @@ def _client_ip(handler: BaseHTTPRequestHandler) -> str:
     return (handler.headers.get("X-Real-IP") or peer) if local else peer
 
 
+COPY_ICON = ('<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+             'stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/>'
+             '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>')
 PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Volunteer for BoulderMesh</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;max-width:42em;margin:2em auto;padding:0 16px}code,pre{background:#eee;padding:2px 4px}</style>
+<style>
+:root{color-scheme:light dark;--code:#f2f2f2;--line:#ccc;--ok:#2a8a3a}
+@media (prefers-color-scheme:dark){:root{--code:#1e1e1e;--line:#444;--ok:#5fd68a}}
+body{font:16px/1.5 system-ui,sans-serif;max-width:42em;margin:2em auto;padding:0 16px}
+h2{font-size:1.1em;margin:1.4em 0 .4em}
+code{background:var(--code);padding:1px 4px;border-radius:3px}
+.box{position:relative;margin:6px 0 10px}
+.box pre{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:10px 46px 10px 12px;margin:0;
+  white-space:pre-wrap;overflow-wrap:anywhere}
+.copy{position:absolute;top:6px;right:6px;background:transparent;color:inherit;border:1px solid var(--line);border-radius:5px;padding:5px;
+  line-height:0;cursor:pointer}
+.copy.done{border-color:var(--ok);color:var(--ok)}
+</style>
 <h1>Volunteering for BoulderMesh</h1>
 <p>BoulderMesh makes 3D models of boulders from photos and climbing videos. YouTube stops one server from fetching many
 videos, so volunteers fetch some from their own computers, slowly: at most 15 an hour and 100 a day, one at a time.</p>
-<p>You need a token from whoever runs this site, and Python 3.9 or newer. Then:</p>
-<pre>curl -O {base}/volunteer/bouldermesh_volunteer.py
-python3 bouldermesh_volunteer.py --server {base} --token YOUR_TOKEN</pre>
-<p>Before it starts, it explains what it does and asks you to agree. Among other things: YouTube's terms don't allow
+<p>You need a token from whoever runs this site, and Python 3.9 or newer.</p>
+<h2>1. Get the script</h2>
+<div class="box"><pre>curl -O {base}/volunteer/bouldermesh_volunteer.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p><a href="/volunteer/bouldermesh_volunteer.py" download="bouldermesh_volunteer.py">Or download it here</a>. On Windows,
+<code>curl.exe</code> in place of <code>curl</code>.</p>
+<h2>2. Run it with your token</h2>
+<div class="box"><pre>python3 bouldermesh_volunteer.py --server {base} --token YOUR_TOKEN</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p>On Windows, <code>py</code> in place of <code>python3</code>. It remembers the server and your token (in
+<code>.bouldermesh-volunteer</code> in your home folder, readable only by you), so after the first time it's only
+<code>python3 bouldermesh_volunteer.py</code>.</p>
+<p>The first time, it explains what it does and asks you to agree. Among other things: YouTube's terms don't allow
 downloading videos except through YouTube itself, and if YouTube decides your address is fetching too much, everyone on
 your network may be asked to sign in or prove they're not a bot for a while.</p>
+<script>
+for (const b of document.querySelectorAll('.copy')) b.onclick = async () => {
+  const pre = b.previousElementSibling;
+  try { await navigator.clipboard.writeText(pre.textContent); }
+  catch { const r = document.createRange(); r.selectNodeContents(pre); getSelection().removeAllRanges(); getSelection().addRange(r); document.execCommand('copy'); }
+  b.classList.add('done'); b.title = 'Copied';
+  setTimeout(() => { b.classList.remove('done'); b.title = 'Copy'; }, 1500);
+};
+</script>
 """
 
 
@@ -477,7 +508,7 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
             u = urlparse(self.path)
             base = f"https://{self.headers.get('X-Forwarded-Host') or self.headers.get('Host') or 'this-site'}"
             if u.path in ("/volunteer", "/volunteer/"):
-                return self.send(200, PAGE.replace("{base}", base).encode(), "text/html; charset=utf-8")
+                return self.send(200, PAGE.replace("{base}", base).replace("{icon}", COPY_ICON).encode(), "text/html; charset=utf-8")
             if u.path == "/volunteer/bouldermesh_volunteer.py":
                 return self.send(200, SCRIPT.read_bytes(), "text/x-python; charset=utf-8",
                                  {"Content-Disposition": 'attachment; filename="bouldermesh_volunteer.py"'})
