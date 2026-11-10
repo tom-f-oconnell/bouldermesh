@@ -324,19 +324,21 @@ def area_id(text: str) -> str | None:
     return m[1] if m and "mountainproject.com" in text else None
 
 
-def export_area_csv(area_id: str | int, route_type: str = "boulder", sort: str = "area") -> list[Climb]:
+def export_area_csv(area_id: str | int, route_type: str = "boulder", sort: str = "area", fresh: bool = False) -> list[Climb]:
     """Mountain Project's Route Finder CSV export for everything under an area.
     Coordinates are the *area* lat/lng (MP's export doesn't include route-level GPS).
 
     Args:
         sort: "area", or "popularity" for MP's own ranking, most popular first. The export stops
             at 1000 rows, so in a bigger area this also decides which climbs you get.
+        fresh: ask Mountain Project again rather than use a copy cached in the last 30 days.
     """
     params = ("selectedIds={id}&type={t}&diffMinrock=800&diffMinboulder=20000&diffMinaid=70000&diffMinice=30000"
               "&diffMinmixed=50000&diffMaxrock=12400&diffMaxboulder=21700&diffMaxaid=75260&diffMaxice=38500"
               "&diffMaxmixed=60000&is_trad_climb=1&is_sport_climb=1&is_top_rope=1&stars=0&pitches=0&sort1={s}&sort2=rating")
     s = {"area": "area", "popularity": "popularity+desc"}[sort]
-    return parse_area_csv(http.get_text(f"{BASE}/route-finder-export?" + params.format(id=area_id, t=route_type, s=s)))
+    return parse_area_csv(http.get_text(f"{BASE}/route-finder-export?" + params.format(id=area_id, t=route_type, s=s),
+                                        **({"ttl": 0} if fresh else {})))
 
 
 def parse_area_csv(text: str) -> list[Climb]:

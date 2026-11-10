@@ -283,6 +283,7 @@
           <label class="limitopt" title="Off: a climb or boulder that fails, or is skipped for too few viewpoints, doesn't count, and the next is meshed in its place. On: it counts, as if meshed."><input type="checkbox" id="ca-countfail" autocomplete="off" disabled> Count failures towards limit</label>
         </div>
         <label class="row" style="margin-top:6px" title="Off: a climb waits until YouTube has been searched for its videos (by a volunteer, on a server YouTube refuses) before it's meshed. On: meshes it anyway, as when no volunteer is connected to search."><input type="checkbox" id="ca-noyt" autocomplete="off"> Mesh climbs without searching YouTube for their videos first</label>
+        <label class="row" style="margin-top:6px" title="An area listed already keeps the list Mountain Project gave when it was first entered. On: asks Mountain Project again (up to a minute each), and adds the problems posted since, without changing the order of those listed: by popularity, the new ones come after them."><input type="checkbox" id="ca-checknew" autocomplete="off"> For areas listed already, check Mountain Project for climbs added since</label>
         <div style="text-align:center;margin-top:10px"><button id="ca-go">Start meshing</button></div>
         <div class="notice" style="margin-top:8px">Meshes its boulder problems one at a time until you stop it, and keeps every mesh finished before then. Each can take most of an hour. Problems that share a boulder are harvested, and the boulder is meshed from all their photos. Several areas, one a line, go one after another, in the order given. With a limit, each stops at that many meshes, a boulder's counting once. An area listed already is taken up again with these settings, keeping what's done.</div>
       </section>
@@ -1823,8 +1824,10 @@ $('#ca-go').onclick = async () => {
     toast(`${areas.length > 1 ? `Area ${i + 1} of ${areas.length}: a` : 'A'}sking Mountain Project for its climbs (can take a minute)…`, 90000);
     try {
       const c = await api('/api/campaigns', { method: 'POST', json: { area, order: $('#ca-order').value, without_youtube: $('#ca-noyt').checked,
-                                                                    max_meshes: max ? +max : null, count_failures: !!max && $('#ca-countfail').checked } });
-      done.push(`${c.name}: ${c.again ? 'taken up again, ' : ''}${c.counts.pending} to go`);
+                                                                    max_meshes: max ? +max : null, count_failures: !!max && $('#ca-countfail').checked,
+                                                                    check_new: $('#ca-checknew').checked } });
+      const added = c.again && $('#ca-checknew').checked ? `${c.added} new climb${c.added === 1 ? '' : 's'} added, ` : '';
+      done.push(`${c.name}: ${c.again ? 'taken up again, ' : ''}${added}${c.counts.pending} to go`);
       campaignLoop();
     } catch (e) { failed.push(area); toast(`${area}: ${e.message}`, 8000); if (i < areas.length - 1) await pause(2500); }
   }

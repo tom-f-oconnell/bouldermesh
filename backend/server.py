@@ -528,6 +528,24 @@ def boulder_of(area_path: list[str] | str | None) -> str | None:
     return json.dumps(path) if boulder_key(path) else None
 
 
+def boulder_mesh_with(climb_id: str, area_path) -> str | None:
+    """The newest current mesh of a climb's boulder (run_boulder()) that pooled photos of the climb's own, if there is
+    one: as another area made it, whose climbs on the boulder this one's overlap."""
+    boulder = boulder_of(area_path)
+    if not boulder:
+        return None
+    for m in q("SELECT id, source FROM meshes WHERE boulder=? AND replaced_by IS NULL ORDER BY created DESC", boulder):
+        if not (m["source"] or "").startswith("project:"):
+            continue
+        try:
+            climbs = json.loads((PROJECTS / m["source"].split(":", 1)[1] / CLIMBS_FILE).read_text())["climbs"]
+        except (OSError, ValueError, KeyError):
+            continue
+        if any(c.get("id") == climb_id and c.get("projects") for c in climbs):
+            return m["id"]
+    return None
+
+
 def boulder_name(boulder: str) -> str:
     return json.loads(boulder)[-1].strip("* ")
 
@@ -1180,7 +1198,8 @@ def busy_campaigns() -> set[str]:
 
 
 def create_campaign(area: str, order: str = "popularity", csv_text: str | None = None, start: bool = True,
-                    without_youtube: bool = False, max_meshes: int | None = None, count_failures: bool = False) -> dict:
+                    without_youtube: bool = False, max_meshes: int | None = None, count_failures: bool = False,
+                    check_new: bool = False) -> dict:
     """List a Mountain Project area's boulder problems, in one request, and queue them for meshing.
 
     Args:
@@ -1194,9 +1213,11 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
         max_meshes: stop once this many meshes are made, of its climbs in its order, a boulder meshed from several of
             them counting once (in_scope()); None to mesh all of it.
         count_failures: with max_meshes, count its climbs and boulders that failed or were skipped toward it too.
+        check_new: for an area listed already, ask Mountain Project for its list again, and add the climbs added since.
 
     An area listed already is taken up again rather than listed twice, with these settings: what it has done stays
-    done, so that a larger max_meshes only goes on to the next ones. It's returned with "again" true.
+    done, so that a larger max_meshes only goes on to the next ones. Its list stays as it was, but for the climbs
+    check_new adds, after the rest, so that its order doesn't change. It's returned with "again" true, and "added".
     """
     if order not in CAMPAIGN_ORDERS:
         raise ValueError(f"order must be one of {', '.join(CAMPAIGN_ORDERS)}")
@@ -1206,11 +1227,12 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
         raise ValueError("enter a Mountain Project area URL, like https://www.mountainproject.com/area/105720495/joshua-tree-national-park")
     old = q("SELECT * FROM campaigns WHERE area_id=? ORDER BY created DESC LIMIT 1", aid, one=True) if aid and not csv_text else None
     if old:
+        added = add_new_climbs(old["id"], mp_mod.export_area_csv(aid, sort="popularity", fresh=True)) if check_new else 0
         q("UPDATE campaigns SET ord=?, max_meshes=?, count_failures=?, without_youtube=? WHERE id=?", order, max_meshes,
           int(bool(count_failures)), int(bool(without_youtube)), old["id"], write=True)
         if start and old["status"] in ("stopped", "done"):
             q("UPDATE campaigns SET status='running', note=NULL, only_retries=0 WHERE id=?", old["id"], write=True)
-        return {**q("SELECT * FROM campaigns WHERE id=?", old["id"], one=True), "again": True}
+        return {**q("SELECT * FROM campaigns WHERE id=?", old["id"], one=True), "again": True, "added": added}
     recs = mp_mod.parse_area_csv(csv_text) if csv_text else mp_mod.export_area_csv(aid, sort="popularity")
     if not recs:
         raise ValueError("Mountain Project lists no boulder problems under that area")
@@ -1220,13 +1242,26 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
     q("INSERT INTO campaigns(id,name,area_id,ord,created,note,status,without_youtube,max_meshes,count_failures) "
       "VALUES(?,?,?,?,?,?,?,?,?,?)", cid, common[-1].strip("* ") if common else f"area {aid}", aid, order, time.time(), note,
       "running" if start else "stopped", int(bool(without_youtube)), max_meshes, int(bool(count_failures)), write=True)
-    rows = [(cid, c.source_id, i + 1, c.name, c.grade, c.rating, c.url,
-             "/".join(c.area_path) if c.area_path and not GROUP_AREA.search(c.area_path[-1]) else None,
-             json.dumps(c.to_dict())) for i, c in enumerate(recs)]
+    add_new_climbs(cid, recs)
+    return q("SELECT * FROM campaigns WHERE id=?", cid, one=True)
+
+
+def add_new_climbs(cid: str, recs: list[Climb]) -> int:
+    """Add to an area's list the climbs of a Mountain Project list it doesn't have, ranked after those it has, in
+    that list's order. Returns how many."""
+    have = {r["source_id"] for r in q("SELECT source_id FROM campaign_items WHERE campaign_id=?", cid)}
+    last = q("SELECT COALESCE(MAX(rank), 0) n FROM campaign_items WHERE campaign_id=?", cid, one=True)["n"]
+    new = []
+    for c in recs:
+        if c.source_id not in have:
+            have.add(c.source_id)
+            new.append(c)
+    rows = [(cid, c.source_id, last + i + 1, c.name, c.grade, c.rating, c.url, boulder_key(c.area_path), json.dumps(c.to_dict()))
+            for i, c in enumerate(new)]
     with _db_lock, db() as con:
         con.executemany("INSERT OR IGNORE INTO campaign_items(campaign_id,source_id,rank,name,grade,stars,url,boulder,data) "
                         "VALUES(?,?,?,?,?,?,?,?,?)", rows)
-    return q("SELECT * FROM campaigns WHERE id=?", cid, one=True)
+    return len(rows)
 
 
 def clean_max_meshes(n) -> int | None:
@@ -1378,11 +1413,15 @@ def run_campaign_item(camp: dict, item: dict) -> None:
         climb_id = full["climb_id"] or upsert_climb(c)
         have = q("SELECT mesh_id FROM mesh_links WHERE climb_id=? AND COALESCE(note,'') NOT LIKE ? LIMIT 1", climb_id, SHARED + "%", one=True)
         made = q("SELECT id FROM meshes WHERE source=? LIMIT 1", f"project:{pid}", one=True) if resume else None
+        with_boulder = (boulder_mesh_with(climb_id, c.area_path) if not (made or have) and settings().get("areas.meshes") == "boulders"
+                        else None)
         if made:    # interrupted in the moment between saving its mesh and recording that
             q("UPDATE projects SET status='done', mesh_id=? WHERE id=?", made["id"], pid, write=True)
             set_item(cid, sid, status="done", climb_id=climb_id, mesh_id=made["id"])
         elif have:
             set_item(cid, sid, status="done", climb_id=climb_id, mesh_id=have["mesh_id"], note="already had a mesh")
+        elif with_boulder:
+            set_item(cid, sid, status="done", climb_id=climb_id, mesh_id=with_boulder, note="already meshed with its boulder")
         else:
             if not resume:
                 pid = new_id()
@@ -3520,7 +3559,8 @@ class Handler(BaseHTTPRequestHandler):
                 b = self.read_json()
                 try:
                     camp = create_campaign(b.get("area") or "", b.get("order") or "popularity", b.get("csv"), bool(b.get("start", True)),
-                                           bool(b.get("without_youtube")), b.get("max_meshes"), bool(b.get("count_failures")))
+                                           bool(b.get("without_youtube")), b.get("max_meshes"), bool(b.get("count_failures")),
+                                           bool(b.get("check_new")))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
                 return self.send_json(campaign_view(camp), 201)

@@ -1416,7 +1416,9 @@ print("beta and size on machines OK")
 fresh()
 server.settings().update({"areas.meshes": "climbs"})
 real_export = server.mp_mod.export_area_csv
-server.mp_mod.export_area_csv = lambda aid, sort="popularity": server.mp_mod.parse_area_csv(CSV)
+exports: list[bool] = []    # each export asked for: whether fresh, rather than from the cache
+export_csv = CSV
+server.mp_mod.export_area_csv = lambda aid, sort="popularity", fresh=False: exports.append(fresh) or server.mp_mod.parse_area_csv(export_csv)
 url = "https://www.mountainproject.com/area/105720495/joshua-tree-national-park"
 view = lambda cid: server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", cid, one=True))  # noqa: E731
 c = server.create_campaign(url, "rating", max_meshes=1)      # by stars: Beta, Alpha, Alpha2, Gamma, Delta, Delta2
@@ -1476,7 +1478,50 @@ run_all(c["id"], 30)
 got = items(c["id"])
 assert harvested.count("Alpha") == 1 and harvested[-1] == "Beta" and got["Beta"]["status"] == "done" and got["Gamma"]["status"] == "pending", harvested
 assert len(server.q("SELECT id FROM projects WHERE kind='boulder'")) == 1, "the boulder not meshed again"
+print("the first N meshes OK")
+
+# --- areas whose lists overlap (a subarea, before or after the area it's in): what one has meshed, the other doesn't again,
+# boulders' meshes too; and an area entered again asks Mountain Project for climbs added since only when asked to
+
+
+def sub(names: set[str]) -> str:
+    return HEAD + "".join(line for line in CSV.splitlines(True)[1:] if line.split(",")[0] in names)
+
+
+for first, then in ((CSV, sub({"Alpha", "Alpha2", "Beta", "Gamma"})), (sub({"Alpha", "Alpha2", "Beta", "Gamma"}), CSV)):
+    fresh()
+    outcome["Gamma"] = "poor"
+    a = server.create_campaign("", "popularity", first)
+    run_all(a["id"], 40)
+    meshes, before = server.q("SELECT COUNT(*) n FROM meshes", one=True)["n"], len(harvested)
+    b = server.create_campaign("", "popularity", then)
+    run_all(b["id"], 40)
+    got = items(b["id"])
+    assert harvested[before:] == ["Gamma"] + (["Delta", "Delta2"] if then == CSV else []), harvested[before:]   # only Gamma, skipped, tried again
+    assert got["Alpha"]["note"] == got["Alpha2"]["note"] == "already meshed with its boulder" and got["Beta"]["note"] == "already had a mesh", got
+    boulder_mesh = server.q("SELECT id FROM meshes WHERE boulder IS NOT NULL", one=True)["id"]
+    assert got["Alpha"]["mesh_id"] == got["Alpha2"]["mesh_id"] == boulder_mesh and got["Gamma"]["status"] == "skipped"
+    assert server.q("SELECT COUNT(*) n FROM meshes", one=True)["n"] - meshes == (2 if then == CSV else 0), "no boulder meshed again"
+# a boulder mesh that didn't pool a climb's photos (as one harvested since) isn't its
+assert not server.boulder_mesh_with("nonesuch", ["California", "Joshua Tree National Park", "* JT Bouldering", "Sector", "Alpha Boulder"])
+server.stop_campaign(b["id"])
+
+fresh()
+export_csv = sub({"Alpha", "Beta", "Gamma", "Alpha2", "Delta"})
+exports.clear()
+c = server.create_campaign(url, "popularity", max_meshes=1)
+assert exports == [False], "listed from the cache, if it has it"
+run_all(c["id"])
+assert server.create_campaign(url, "popularity", max_meshes=1)["added"] == 0 and exports == [False], "taken up again: not asked again"
+export_csv = CSV + 'Epsilon,"Epsilon Boulder > Sector > * JT Bouldering > Joshua Tree National Park > California",' \
+                   'https://www.mountainproject.com/route/7/epsilon,4.0,-1,Boulder,V7,,,34.0,-116.0\n'
+again = server.create_campaign(url, "popularity", max_meshes=1, check_new=True)
+got = items(c["id"])
+assert exports == [False, True] and again["added"] == 2 and len(got) == 7, (exports, again["added"])
+assert got["Delta2"]["rank"] == 6 and got["Epsilon"]["rank"] == 7 and got["Alpha"]["rank"] == 1, "after those listed, in its order"
+assert server.create_campaign(url, "popularity", check_new=True)["added"] == 0, "each once"
+server.stop_campaign(c["id"])
 server.mp_mod.export_area_csv = real_export
 server.settings().update({"areas.meshes": "climbs"})
-print("the first N meshes OK")
+print("overlapping areas OK")
 print("ALL CAMPAIGN TESTS PASSED")

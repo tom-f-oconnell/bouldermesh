@@ -164,7 +164,13 @@ most popular climb of each of several areas unattended. A boulder meshed from se
 once, and all of the area's climbs on it are harvested for it, wherever they come in the order. A climb or boulder that
 fails, or is skipped for too few viewpoints, brings in the next, unless *Count failures towards limit* is on. Empty means
 no limit. Entering an area again, or changing N on its card, takes it up again with the new settings: raising N goes on
-from where it got to, without meshing again what's done (as long as the order hasn't changed).
+from where it got to, without meshing again what's done (as long as the order hasn't changed). It keeps the list
+Mountain Project gave when it was first entered, unless *For areas listed already, check Mountain Project for climbs
+added since* is on, which adds those after the rest.
+
+Areas whose lists overlap, as a subarea entered before or after the area holding it, share what's been made: a climb
+meshed by one, on its own or with its boulder, is done in the other with that mesh. Those skipped or failed are tried
+again.
 
 Its boulder problems are then taken one at a time until you stop, or the list runs out. A climb that shares its boulder
 with others on the list is only harvested; once all of the list's climbs on that boulder are, the boulder is meshed from
@@ -761,7 +767,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/climbs/manual {...} · POST /api/climbs/kaya-export (multipart csv/json)
     POST /api/climbs/{id}/harvest {sources:[climb,google,ddg,commons,flickr,youtube], reconstruct, filter}
     POST /api/climbs/{id}/boulder                       mesh its boulder from every photo of its climbs, harvesting those never harvested
-    GET  /api/campaigns · POST /api/campaigns {area, order:popularity|rating|data, start, csv, without_youtube, max_meshes, count_failures}
+    GET  /api/campaigns · POST /api/campaigns {area, order:popularity|rating|data, start, csv, without_youtube, max_meshes, count_failures, check_new}
     POST /api/campaigns/{id}/options {without_youtube, max_meshes, count_failures}   an area listed again is taken up again
     POST /api/campaigns/{id}/start · POST /api/campaigns/{id}/stop {now} · DELETE /api/campaigns/{id}
     POST /api/campaigns/{id}/retry                      its failed climbs, ahead of the rest
