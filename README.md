@@ -395,6 +395,19 @@ public, as the Projects tab shows it, so it reveals where photos came from and t
 credentials. Back up `data/` yourself: a mesh is an hour of compute. Compute credentials are kept as before
 (encrypted on the admin page, or in `.env`), and cloud machines accept SSH only from this server's address.
 
+**Troubleshooting.** The commands in `cli.py` that read the data run inside the container, where it is (`/data`), from
+the checkout whose `.env` names the compose files. On the server:
+
+    cd bouldermesh
+    docker compose exec -T bouldermesh python3 cli.py client-errors -n 50   # what failed in visitors' browsers, newest last
+    docker compose logs --since 2h bouldermesh | grep "browser error"         # the same, as they came, in the app's log
+    docker compose exec -T bouldermesh python3 cli.py jobs                   # what a restart would interrupt now
+    docker compose logs --since 2h bouldermesh                               # everything else the app logged (or journalctl -u bouldermesh)
+
+or from your own machine, `ssh you@server 'cd bouldermesh && docker compose exec -T bouldermesh python3 cli.py client-errors'`.
+A browser's report has its time, the build it was using, what failed (a mesh that wouldn't load, with its id, or an error in
+the page), and the browser, but not who sent it. The same commands work on any machine running it under Docker.
+
 ## The admin page
 
 A separate page, on port 36184, sets what the main site shows and where its reconstructions run. It
