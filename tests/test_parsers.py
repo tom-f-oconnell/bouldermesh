@@ -240,4 +240,20 @@ assert http.get("https://u/x", use_cache=False) == b"ok" and 34 in slept, slept
 urllib.request.urlopen = urlopen
 time.sleep = sleep
 print("api errors OK")
+
+# a host that asks for a long gap gets it across processes sharing the cache, as a test copy beside the real server does
+import subprocess  # noqa: E402
+cache = pathlib.Path(tempfile.mkdtemp(prefix="bouldermesh-throttle-"))
+common.CACHE_DIR, saved = cache / "http", common.CACHE_DIR
+first = common.shared_slot("www.mountainproject.com", 100.0, 60.0)
+code = (f"import sys, pathlib; sys.path.insert(0, {str(pathlib.Path(__file__).resolve().parents[1] / 'backend')!r}); "
+        f"from climbs import common; common.CACHE_DIR = pathlib.Path({str(cache / 'http')!r}); "
+        "print(common.shared_slot('www.mountainproject.com', 100.0, 60.0))")
+other = float(subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout)
+assert (first, other, common.shared_slot("www.mountainproject.com", 0.0, 60.0)) == (100.0, 160.0, 220.0), (first, other)
+assert common.shared_slot("api.example.org", 5.0, 3.0) == 5.0 and not (cache / "throttle" / "api.example.org").exists(), "short gaps stay per process"
+common.CACHE_DIR = saved
+import shutil  # noqa: E402
+shutil.rmtree(cache)
+print("shared throttle OK")
 print("ALL PARSER TESTS PASSED")

@@ -38,6 +38,32 @@ USER_AGENT = os.environ.get(
 CACHE_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parents[2] / "data")) / "cache" / "http"
 CACHE_TTL = int(os.environ.get("HTTP_CACHE_TTL", str(30 * 86400)))
 MIN_INTERVAL = float(os.environ.get("HTTP_MIN_INTERVAL", "3.0"))  # seconds between requests to one host
+SHARED_GAP = 10.0   # hosts asking for this long between requests or longer are kept to it across processes too
+
+
+def shared_slot(host: str, slot: float, gap: float) -> float:
+    """The time a request to host may go, no earlier than slot, nor than gap after the last one any process sharing this
+    cache reserved: a test copy of the server, run beside the one it was copied from, comes from the same address.
+    Only for hosts that ask for a long gap (Mountain Project's Crawl-delay), and only where the cache can be written."""
+    if gap < SHARED_GAP:
+        return slot
+    try:
+        import fcntl
+        d = CACHE_DIR.parent / "throttle"
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / re.sub(r"[^A-Za-z0-9.-]", "_", host), "a+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.seek(0)
+            try:
+                slot = max(slot, float(f.read().strip() or 0) + gap)
+            except ValueError:
+                pass
+            f.seek(0)
+            f.truncate()
+            f.write(f"{slot:.3f}")
+    except OSError:
+        pass
+    return slot
 RESPECT_ROBOTS = os.environ.get("HTTP_IGNORE_ROBOTS", "0") != "1"
 ALLOW_PRIVATE = os.environ.get("HTTP_ALLOW_PRIVATE", "0") == "1"
 
@@ -274,7 +300,7 @@ class _Http:
         gap = self.interval(url)
         # reserve the next slot for this host, but sleep outside the lock so other hosts aren't held up
         with self._lock:
-            slot = max(time.time(), self._last.get(host, 0) + gap)
+            slot = shared_slot(host, max(time.time(), self._last.get(host, 0) + gap), gap)
             self._last[host] = slot
         time.sleep(max(0.0, slot - time.time()))
 
