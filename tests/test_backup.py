@@ -88,6 +88,11 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
         print("through rrsync OK")
     else:
         print("rrsync not installed: skipping the forced command")
+    # a source with no data/, as the home folder is when a key without the restriction logs in: a failure, not a backup
+    (TMP / "home").mkdir()
+    r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), str(TMP / "home")], env=env, capture_output=True, text=True)
+    assert r.returncode == 1 and "no data/ came" in r.stderr, r.stdout + r.stderr
+    print("nothing to copy OK")
     print("ALL BACKUP TESTS PASSED")
 finally:
     shutil.rmtree(TMP, ignore_errors=True)

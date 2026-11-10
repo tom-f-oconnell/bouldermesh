@@ -26,7 +26,9 @@ case "$src" in
     *:) from=$src ;;            # rrsync's folder itself
     *) from=${src%/}/ ;;        # a folder's contents
 esac
-ssh=${BACKUP_SSH:-ssh -i $key -o IdentitiesOnly=yes -o BatchMode=yes -o ServerAliveInterval=30}
+# Not through an SSH agent: one holding another key for the same host (as the bouldermesh alias's) offers that first,
+# which logs in without the read-only restriction, so "host:" is then the home folder, where there's nothing to copy
+ssh=${BACKUP_SSH:-ssh -i $key -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes -o ServerAliveInterval=30}
 # first match wins: what's left out, then data/ and .env, then nothing else of the checkout
 rsync -a --delete --delete-excluded --backup --backup-dir="$dest/changed/$day" --info=stats1 -e "$ssh" --filter='merge -' \
     "$from" "$dest/current/" <<'EOF'
@@ -44,6 +46,7 @@ rsync -a --delete --delete-excluded --backup --backup-dir="$dest/changed/$day" -
 + /data/***
 - *
 EOF
+[ -d "$dest/current/data" ] || { echo "no data/ came from $src: is that the server's checkout?" >&2; exit 1; }
 for snap in "$dest/current/data/snapshots/"*.backup; do
     [ -e "$snap" ] || continue
     mkdir -p "$dest/db/$day"
