@@ -475,9 +475,12 @@ def climb_row(cid: str, full=False) -> dict | None:
     # meshes of its whole boulder (run_boulder()), and those an area linked it to that were made for another climb on it
     boulder = boulder_of(r["area_path"])
     r["n_boulder"] = q("SELECT COUNT(*) n FROM meshes WHERE boulder=? AND replaced_by IS NULL", boulder, one=True)["n"] if boulder else 0
-    shared = q("SELECT note FROM mesh_links WHERE climb_id=? AND note LIKE ? ORDER BY created LIMIT 1", cid, SHARED + "%", one=True)
+    # the climb the mesh its View button opens was made for (the page picks a current one, the newest first)
+    shared = q(f"""SELECT l.note, ({MADE_FOR}) AS made_for FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
+                   WHERE l.climb_id=? AND l.note LIKE ? ORDER BY m.replaced_by IS NOT NULL, m.created DESC LIMIT 1""",
+               SHARED + "%", cid, SHARED + "%", one=True)
     r["n_shared"] = q("SELECT COUNT(*) n FROM mesh_links WHERE climb_id=? AND note LIKE ?", cid, SHARED + "%", one=True)["n"]
-    r["shared_of"] = shared["note"][len(SHARED):] if shared else None     # the climb that mesh was made for
+    r["shared_of"] = (shared["made_for"] or shared["note"][len(SHARED):]) if shared else None
     return r
 
 
@@ -507,6 +510,10 @@ def boulder_key(area_path: list[str] | None) -> str | None:
 
 SHARED = "same boulder as "   # how areas noted linking a climb to the mesh made for another climb on its boulder, before
                               # they meshed every climb on its own: shown as that other climb's, not this one's
+# The climb a shared link's mesh was made for, by the mesh's own link, as SQL beside a mesh_links l (binds SHARED + "%").
+# Not the note's name: an area could link a climb through another that only shared the mesh itself, and names change.
+MADE_FOR = ("SELECT c.name FROM mesh_links o JOIN climbs c ON c.id=o.climb_id "
+            "WHERE o.mesh_id=l.mesh_id AND COALESCE(o.note,'') NOT LIKE ? ORDER BY o.created LIMIT 1")
 
 
 def boulder_of(area_path: list[str] | str | None) -> str | None:
@@ -558,11 +565,11 @@ def boulder_info(climb: dict) -> dict | None:
         views = viewpoints.load(MESHES / m["id"]) or {}
         meshes.append({**m, "view": (views.get("climbs") or {}).get(climb["id"]), "placed": len(views.get("climbs") or {}),
                        "unplaced": (views.get("unplaced") or {}).get(climb["id"])})
-    shared = q("""SELECT m.id, m.name, l.note FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
-                  WHERE l.climb_id=? AND l.note LIKE ? AND m.replaced_by IS NULL""", climb["id"], SHARED + "%")
+    shared = q(f"""SELECT m.id, m.name, l.note, ({MADE_FOR}) AS made_for FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
+                   WHERE l.climb_id=? AND l.note LIKE ? AND m.replaced_by IS NULL""", SHARED + "%", climb["id"], SHARED + "%")
     proj = boulder_project(boulder)
     return {"key": boulder, "name": boulder_name(boulder), "meshes": meshes,
-            "shared": [{"id": s["id"], "name": s["name"], "made_for": s["note"][len(SHARED):]} for s in shared],
+            "shared": [{"id": s["id"], "name": s["name"], "made_for": s["made_for"] or s["note"][len(SHARED):]} for s in shared],
             "climbs": [{"id": c["id"], "name": c["name"], "grade": c["grade"], "meshes": own.get(c["id"], [])}
                        for c in climbs if c["id"] != climb["id"]],
             "project": {k: proj[k] for k in ("id", "status")} if proj else None}

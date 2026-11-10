@@ -229,6 +229,15 @@ again = server.q("SELECT * FROM projects WHERE id=?", proj["id"], one=True)
 assert again["status"] == "done" and again["mesh_id"] != mesh["id"], again
 assert server.q("SELECT replaced_by FROM meshes WHERE id=?", mesh["id"], one=True)["replaced_by"] == again["mesh_id"]
 assert "pooling its climbs' photos again" in server.read_log(proj["id"])
+# a climb that only shares a mesh is shown as via the climb it was made for, not whichever climb an area linked it
+# through, which may only have shared it too
+alpha, alpha2 = got["Alpha"]["climb_id"], got["Alpha2"]["climb_id"]
+server.link_mesh(again["mesh_id"], alpha, server.SHARED + "Gamma")
+assert server.climb_row(alpha)["shared_of"] == "Gamma", "with no climb of its own, the note's"
+server.link_mesh(again["mesh_id"], alpha2, "auto-linked from reconstruction project")
+assert server.climb_row(alpha)["shared_of"] == "Alpha2", server.climb_row(alpha)
+assert [x["made_for"] for x in server.climb_row(alpha, full=True)["boulder"]["shared"]] == ["Alpha2"]
+server.q("DELETE FROM mesh_links WHERE mesh_id=?", again["mesh_id"], write=True)
 print("boulder meshes OK")
 
 # --- a boulder's climbs harvested, and meshed together as their boulder (areas.meshes "boulders", the default) ---------
