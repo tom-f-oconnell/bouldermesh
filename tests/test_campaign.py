@@ -1321,7 +1321,7 @@ for i, mid in enumerate(("aaaaaaaaaaa1", "aaaaaaaaaaa2", "aaaaaaaaaaa3", "aaaaaa
     server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES(?,?,?,?,?)", mid, f"m{i}", "mesh.glb", f"project:p{i}", i,
              write=True)
     (server.MESHES / mid).mkdir(parents=True, exist_ok=True)
-videos, server.beta_mod.videos = server.beta_mod.videos, lambda d: {} if d.name == "aaaaaaaaaaa4" else {"u": {}}
+beta_videos, server.beta_mod.videos = server.beta_mod.videos, lambda d: {} if d.name == "aaaaaaaaaaa4" else {"u": {}}
 server.beta_mod.save(server.MESHES / "aaaaaaaaaaa3", {"status": "done", "videos": []})
 assert server.beta_findable() == ["aaaaaaaaaaa2", "aaaaaaaaaaa1"], "newest first; not one already done, nor one with no videos"
 assert [server.queue_beta(m) for m in server.beta_findable()] == [True, True]
@@ -1339,7 +1339,7 @@ server.run_beta("aaaaaaaaaaa3")
 assert server.beta_mod.load(server.MESHES / "aaaaaaaaaaa3")["status"] == "queued", "waiting, not failed"
 assert server.stop_beta() == 3 and server.beta_queue() == [], "stopping unqueues them all"
 assert {server.beta_mod.load(server.MESHES / m)["status"] for m in ("aaaaaaaaaaa1", "aaaaaaaaaaa2", "aaaaaaaaaaa3")} == {"stopped"}
-server.beta_mod.videos, server.beta_mod.find = videos, find
+server.beta_mod.videos, server.beta_mod.find = beta_videos, find
 print("beta queue OK")
 
 # --- finding beta and size on machines that connect here, when this server meshes nothing itself ------------------------
@@ -1411,4 +1411,72 @@ assert server.beta_mod.load(md)["machine_wait"] > time.time() and not server.bet
 (server.MACHINES.task, server.MACHINES.connected, server.beta_mod.videos, server._local_meshing, server._executor, server.queue_job) = saved
 shutil.rmtree(md)
 print("beta and size on machines OK")
+
+# --- the first N meshes of an area: only those; entering it again, or raising N, goes on without doing again what's done ---
+fresh()
+server.settings().update({"areas.meshes": "climbs"})
+real_export = server.mp_mod.export_area_csv
+server.mp_mod.export_area_csv = lambda aid, sort="popularity": server.mp_mod.parse_area_csv(CSV)
+url = "https://www.mountainproject.com/area/105720495/joshua-tree-national-park"
+view = lambda cid: server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", cid, one=True))  # noqa: E731
+c = server.create_campaign(url, "rating", max_meshes=1)      # by stars: Beta, Alpha, Alpha2, Gamma, Delta, Delta2
+v = view(c["id"])
+assert c["max_meshes"] == 1 and v["counts"]["pending"] == 1 and v["counts"]["beyond"] == 5 and [i["name"] for i in v["next"]] == ["Beta"], v
+run_all(c["id"])
+assert harvested == ["Beta"] and server.campaign_status(c["id"]) == "done" and view(c["id"])["made"] == 1, harvested
+c2 = server.create_campaign(url, "rating", max_meshes=2)
+assert c2["id"] == c["id"] and c2.get("again") and c2["status"] == "running" and len(server.q("SELECT id FROM campaigns")) == 1
+run_all(c["id"])
+assert harvested == ["Beta", "Alpha"], harvested     # the next by stars, and Beta not again
+# failures not counted (the default): one that fails brings in the next
+outcome["Alpha2"] = "boom"
+server.set_campaign_options(c["id"], {"max_meshes": 3})     # from its card: a done area given more carries on
+assert server.campaign_status(c["id"]) == "running"
+run_all(c["id"])
+got = items(c["id"])
+assert harvested == ["Beta", "Alpha", "Alpha2", "Gamma"] and got["Alpha2"]["status"] == "failed" and got["Gamma"]["status"] == "done", harvested
+v = view(c["id"])
+assert v["made"] == 3 and v["counts"]["beyond"] == 2 and server.campaign_status(c["id"]) == "done", v["counts"]
+# counted: Alpha2 takes Gamma's place, which, done, stays done; nothing more is meshed
+server.set_campaign_options(c["id"], {"count_failures": True})
+v = view(c["id"])
+assert v["made"] == 2 and not v["next"] and server.campaign_status(c["id"]) == "done", v
+for bad in (0, -2, "two", 1.5, True):
+    try:
+        server.set_campaign_options(c["id"], {"max_meshes": bad})
+        raise AssertionError(bad)
+    except ValueError as e:
+        assert "whole number above 0" in str(e), e
+server.set_campaign_options(c["id"], {"max_meshes": ""})
+assert server.q("SELECT max_meshes FROM campaigns WHERE id=?", c["id"], one=True)["max_meshes"] is None and "beyond" not in view(c["id"])["counts"]
+assert server.campaign_status(c["id"]) == "running", "no limit: on to the rest"
+server.stop_campaign(c["id"])
+fresh()
+outcome["Beta"] = "boom"
+c = server.create_campaign(url, "rating", max_meshes=1, count_failures=True)
+run_all(c["id"])
+assert harvested == ["Beta"] and server.campaign_status(c["id"]) == "done" and view(c["id"])["made"] == 0, harvested
+server.set_campaign_options(c["id"], {"count_failures": False})
+run_all(c["id"])
+assert harvested == ["Beta", "Alpha"] and view(c["id"])["made"] == 1, harvested
+# with boulders meshed from all their climbs' photos: a boulder's climbs are all harvested, wherever they come in the
+# order, and its one mesh counts once
+fresh()
+server.settings().update({"areas.meshes": "boulders"})
+c = server.create_campaign(url, "popularity", max_meshes=1)  # Alpha, Beta, Gamma, Alpha2 (on Alpha's boulder), Delta, Delta2
+assert [i["name"] for i in view(c["id"])["next"]] == ["Alpha", "Alpha2"]
+run_all(c["id"], 30)
+got = items(c["id"])
+proj = server.q("SELECT * FROM projects WHERE kind='boulder'", one=True)
+assert harvested[:2] == ["Alpha", "Alpha2"] and "Beta" not in harvested, harvested
+assert proj and proj["status"] == "done" and got["Alpha"]["mesh_id"] == got["Alpha2"]["mesh_id"] == proj["mesh_id"], (proj, got["Alpha"])
+assert got["Beta"]["status"] == "pending" and view(c["id"])["made"] == 1 and server.campaign_status(c["id"]) == "done"
+server.set_campaign_options(c["id"], {"max_meshes": 2})
+run_all(c["id"], 30)
+got = items(c["id"])
+assert harvested.count("Alpha") == 1 and harvested[-1] == "Beta" and got["Beta"]["status"] == "done" and got["Gamma"]["status"] == "pending", harvested
+assert len(server.q("SELECT id FROM projects WHERE kind='boulder'")) == 1, "the boulder not meshed again"
+server.mp_mod.export_area_csv = real_export
+server.settings().update({"areas.meshes": "climbs"})
+print("the first N meshes OK")
 print("ALL CAMPAIGN TESTS PASSED")

@@ -55,6 +55,7 @@
   button.danger{background:transparent;color:var(--bad);border:1px solid var(--line)}
   button.sm{padding:3px 8px;font-size:12px}
   button:disabled{opacity:.45;cursor:default}
+  .limitopt:has(input:disabled){opacity:.45;cursor:default}   /* "count failures", with no limit to count toward */
   #edit:disabled{opacity:1}   /* "Editing": a sign that this browser's token was accepted, not a button */
   /* a view-only copy of the site (no editing token): everything that would change something is hidden */
   body.readonly .w,body.readonly .del,body.readonly .editll,body.readonly .details,body.readonly .linksel,body.readonly .unlink,body.readonly .harvest,
@@ -269,18 +270,21 @@
     <div class="pane" id="pane-areas">
       <section class="w">
         <h2>Mesh a whole area</h2>
-        <input type="text" id="ca-area" placeholder="Mountain Project area URL, e.g. mountainproject.com/area/105720495/joshua-tree-national-park" style="width:100%">
+        <textarea id="ca-area" rows="3" style="width:100%" placeholder="Mountain Project area URLs, one a line, e.g. mountainproject.com/area/105720495/joshua-tree-national-park"></textarea>
         <div class="row" style="margin-top:8px">
-          <label class="grow">Order
+          <label>Order
             <select id="ca-order" style="width:auto">
               <option value="popularity">Most popular</option>
               <option value="rating">Highest rated</option>
               <option value="data">Most photos and videos</option>
             </select></label>
-          <button id="ca-go">Start meshing</button>
+          <label title="Stops each area once this many meshes are made, of its climbs in its order. Climbs that share a boulder are harvested together, wherever they come in the order, and the boulder meshed from all their photos counts as one. Empty for no limit. Raising it later goes on from there, without doing again what's done.">First
+            <input type="number" id="ca-max" min="1" step="1" placeholder="all" autocomplete="off" style="width:72px"> meshes of each</label>
+          <label class="limitopt" title="Off: a climb or boulder that fails, or is skipped for too few viewpoints, doesn't count, and the next is meshed in its place. On: it counts, as if meshed."><input type="checkbox" id="ca-countfail" autocomplete="off" disabled> Count failures towards limit</label>
         </div>
         <label class="row" style="margin-top:6px" title="Off: a climb waits until YouTube has been searched for its videos (by a volunteer, on a server YouTube refuses) before it's meshed. On: meshes it anyway, as when no volunteer is connected to search."><input type="checkbox" id="ca-noyt" autocomplete="off"> Mesh climbs without searching YouTube for their videos first</label>
-        <div class="notice" style="margin-top:8px">Meshes its boulder problems one at a time until you stop it, and keeps every mesh finished before then. Each can take most of an hour. Problems that share a boulder are harvested, and the boulder is meshed from all their photos.</div>
+        <div style="text-align:center;margin-top:10px"><button id="ca-go">Start meshing</button></div>
+        <div class="notice" style="margin-top:8px">Meshes its boulder problems one at a time until you stop it, and keeps every mesh finished before then. Each can take most of an hour. Problems that share a boulder are harvested, and the boulder is meshed from all their photos. Several areas, one a line, go one after another, in the order given. With a limit, each stops at that many meshes, a boulder's counting once. An area listed already is taken up again with these settings, keeping what's done.</div>
       </section>
       <section>
         <h2>Areas</h2>
@@ -1717,7 +1721,8 @@ async function refreshCampaigns(){
   const el = $('#campaigns');
   // progress moves constantly: only rebuild when something else changed, which would close open lists
   const key = JSON.stringify(list.map(c => ({ ...c, current: c.current && { ...c.current, progress: null }, running: (c.running || []).map(r => r.name) })));
-  if (key === campaignShown) {
+  const typing = el.contains(document.activeElement) && document.activeElement.matches('input[type=number]');
+  if (key === campaignShown || typing) {
     for (const c of list) { const n = el.querySelector(`[data-camp="${c.id}"] .now`); if (n) n.innerHTML = currentHtml(c); }
   } else {
     campaignShown = key;
@@ -1730,7 +1735,7 @@ async function refreshCampaigns(){
       const row = i => `<span><small>#${i.rank}</small></span><span>${i.climb_id ? `<a href="#" data-climb="${i.climb_id}">${esc(i.name)}</a>` : `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.name)}</a>`} ${esc(i.grade||'')}</span><small>${stars(i.stars)}</small>
         <span>${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
       d.innerHTML = `<div class="row"><b class="grow">${esc(c.name)}</b><span class="status ${c.status === 'stopped' ? '' : c.status === 'done' ? 'done' : 'running'}">${esc(c.status)}</span></div>
-        <div class="meta">${ORDER_NAMES[c.ord] || ''} · <b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
+        <div class="meta">${ORDER_NAMES[c.ord] || ''}${c.max_meshes ? `, up to ${c.max_meshes} mesh${c.max_meshes === 1 ? '' : 'es'}${c.count_failures ? ` or failure${c.max_meshes === 1 ? '' : 's'}` : ''} (${c.made} made)` : ''} · <b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${n.beyond ? ` · ${n.beyond} more past the limit` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
         ${c.note ? `<div class="notice" style="margin-top:6px">${esc(c.note)}</div>` : ''}
         <div class="now">${currentHtml(c)}</div>
         <div class="row" style="margin-top:8px">
@@ -1743,7 +1748,9 @@ async function refreshCampaigns(){
           <button class="sm sec rebuildall" title="Meshes every climb with enough viewpoints again, as after the pipeline changes. Older meshes stay, as older versions.">Rebuild all</button>` : ''}
           ${c.status !== 'stopping' && c.again.triable ? `<button class="sm sec tryskipped" title="Climbs skipped as their photos looked too few viewpoints, which the viewpoint check now lets COLMAP try: it decides within minutes if it can't place enough of them.">Try ${c.again.triable} skipped climb${c.again.triable === 1 ? '' : 's'} again</button>` : ''}
           ${c.status !== 'stopping' && c.again.boulders ? `<button class="sm sec boulders" title="Boulders with more than one climb on this list: each meshed from the photos of all its climbs, as a mesh of its own beside each climb's, with each climb placed where its own photos were taken. Its climbs never harvested are harvested first.">Mesh ${c.again.boulders} boulder${c.again.boulders === 1 ? '' : 's'} from all their climbs' photos</button>` : ''}
-          <span class="grow"></span><label class="meta" title="Off: a climb waits until YouTube has been searched for its videos before it's meshed. On: meshes it anyway, as when no volunteer is connected to search."><input type="checkbox" class="noyt" ${c.without_youtube ? 'checked' : ''}> mesh without searching YouTube</label>
+          <span class="grow"></span><label class="meta" title="Stops it once this many meshes are made, of its climbs in its order. Climbs that share a boulder are harvested together, wherever they come in the order, and the boulder meshed from all their photos counts as one. Empty for no limit. Raising it goes on from there, without doing again what's done.">up to <input type="number" class="maxmeshes" min="1" step="1" placeholder="all" value="${c.max_meshes || ''}" style="width:64px"> meshes</label>
+          <label class="meta limitopt" title="Off: a climb or boulder that fails, or is skipped for too few viewpoints, doesn't count, and the next is meshed in its place. On: it counts, as if meshed."><input type="checkbox" class="countfail" ${c.max_meshes ? '' : 'disabled'} ${c.max_meshes && c.count_failures ? 'checked' : ''}> count failures</label>
+          <label class="meta" title="Off: a climb waits until YouTube has been searched for its videos before it's meshed. On: meshes it anyway, as when no volunteer is connected to search."><input type="checkbox" class="noyt" ${c.without_youtube ? 'checked' : ''}> mesh without searching YouTube</label>
           <button class="danger sm del" title="Remove this list; its meshes stay">✕</button>
         </div>
         ${c.worked.length ? `<details data-list="${c.id}-done"><summary class="meta">Worked through (${c.worked.length}${c.worked.length === 300 ? ' most recent' : ''})</summary><div class="crows">${c.worked.map(row).join('')}</div></details>` : ''}
@@ -1760,6 +1767,12 @@ async function refreshCampaigns(){
       d.querySelector('.boulders')?.addEventListener('click', () => { if (ask(`Mesh the ${c.again.boulders} boulders in "${c.name}" with more than one climb, each from the photos of all its climbs, as meshes of their own? No climb's own mesh changes. Climbs on them never harvested are harvested first, at about a minute each for their pages; then pooling takes a few minutes per boulder, and meshing most of an hour for those with enough viewpoints. ${alone}`)) post('boulders'); });
       d.querySelector('.rebuildall')?.addEventListener('click', () => { if (ask(`Mesh every climb in "${c.name}" with enough viewpoints again? Each can take most of an hour. ${alone}`)) post('rebuild'); });
       d.querySelector('.noyt').onchange = ev => post('options', { without_youtube: ev.target.checked });
+      d.querySelector('.maxmeshes').onchange = ev => {
+        const v = ev.target.value.trim();
+        if (v && !(/^\d+$/.test(v) && +v > 0)) { toast('A whole number above 0, or empty for all', 6000); ev.target.value = c.max_meshes || ''; return; }
+        post('options', { max_meshes: v ? +v : null }).catch(e => toast(e.message, 6000));
+      };
+      d.querySelector('.countfail').onchange = ev => post('options', { count_failures: ev.target.checked }).catch(e => toast(e.message, 6000));
       d.querySelector('.del').onclick = async () => { if (ask(`Remove the list for "${c.name}"? Its meshes stay.`)) { await api('/api/campaigns/' + c.id, { method: 'DELETE' }); campaignLoop(); } };
       d.querySelectorAll('[data-mesh]').forEach(b => b.onclick = async () => { if (!meshesById[b.dataset.mesh]) await refreshMeshes(); viewMesh(b.dataset.mesh, null, 'area'); });
       d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
@@ -1792,14 +1805,28 @@ async function campaignLoop(){
   if (active && !polling) poll();
   campaignTimer = setTimeout(campaignLoop, active ? 5000 : 30000);
 }
+// "count failures" only means something with a limit to count toward
+$('#ca-max').oninput = () => { const f = $('#ca-countfail'); f.disabled = !$('#ca-max').value.trim(); if (f.disabled) f.checked = false; };
+// one area after another, in the order given; those that fail stay in the box, to try again
 $('#ca-go').onclick = async () => {
-  const area = $('#ca-area').value.trim(); if (!area) return $('#ca-area').focus();
+  const areas = $('#ca-area').value.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!areas.length) return $('#ca-area').focus();
+  const max = $('#ca-max').value.trim();
+  if (max && !(/^\d+$/.test(max) && +max > 0)) { toast('First how many meshes: a whole number above 0, or empty for all', 6000); return $('#ca-max').focus(); }
   const go = $('#ca-go'); go.disabled = true;
-  toast('Asking Mountain Project for the area\'s climbs (can take a minute)…', 90000);
-  try {
-    const c = await api('/api/campaigns', { method: 'POST', json: { area, order: $('#ca-order').value, without_youtube: $('#ca-noyt').checked } });
-    toast(`${c.name}: ${c.counts.pending} climbs queued`); $('#ca-area').value = ''; campaignLoop();
-  } catch (e) { toast(e.message, 8000); }
+  const failed = [], done = [];
+  for (const [i, area] of areas.entries()) {
+    toast(`${areas.length > 1 ? `Area ${i + 1} of ${areas.length}: a` : 'A'}sking Mountain Project for its climbs (can take a minute)…`, 90000);
+    try {
+      const c = await api('/api/campaigns', { method: 'POST', json: { area, order: $('#ca-order').value, without_youtube: $('#ca-noyt').checked,
+                                                                    max_meshes: max ? +max : null, count_failures: !!max && $('#ca-countfail').checked } });
+      done.push(`${c.name}: ${c.again ? 'taken up again, ' : ''}${c.counts.pending} to go`);
+      campaignLoop();
+    } catch (e) { failed.push(area); toast(`${area}: ${e.message}`, 8000); if (i < areas.length - 1) await pause(2500); }
+  }
+  $('#ca-area').value = failed.join('\n');
+  if (areas.length > 1 || done.length)
+    toast([...done, ...(failed.length ? [`${failed.length} couldn't be listed, and ${failed.length === 1 ? 'is' : 'are'} still in the box`] : [])].join(' · '), 10000);
   go.disabled = false;
 };
 

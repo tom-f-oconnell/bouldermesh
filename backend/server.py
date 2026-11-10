@@ -214,6 +214,10 @@ def init_db() -> None:
             con.execute("ALTER TABLE campaigns ADD COLUMN only_retries INTEGER DEFAULT 0")
         if "without_youtube" not in cols:   # mesh climbs whose YouTube search hasn't been done (none to do it)
             con.execute("ALTER TABLE campaigns ADD COLUMN without_youtube INTEGER DEFAULT 0")
+        if "max_meshes" not in cols:        # stop once so many meshes are made, in its order (NULL: mesh all of it)
+            con.execute("ALTER TABLE campaigns ADD COLUMN max_meshes INTEGER")
+        if "count_failures" not in cols:    # with max_meshes: its climbs and boulders that failed count toward it too
+            con.execute("ALTER TABLE campaigns ADD COLUMN count_failures INTEGER DEFAULT 0")
         cols = {r[1] for r in con.execute("PRAGMA table_info(campaign_items)")}
         # redo: what it's queued to do again (REDO_NAMES); was: its status before; changed: its photos have
         # changed since it was last meshed or checked; redo_started: a rebuild that began, to carry on with
@@ -1176,7 +1180,7 @@ def busy_campaigns() -> set[str]:
 
 
 def create_campaign(area: str, order: str = "popularity", csv_text: str | None = None, start: bool = True,
-                    without_youtube: bool = False) -> dict:
+                    without_youtube: bool = False, max_meshes: int | None = None, count_failures: bool = False) -> dict:
     """List a Mountain Project area's boulder problems, in one request, and queue them for meshing.
 
     Args:
@@ -1187,21 +1191,35 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
         start: start meshing as soon as nothing else is queued.
         without_youtube: mesh climbs whose YouTube search hasn't been done, as when no volunteer can do it; otherwise
             they wait for it.
+        max_meshes: stop once this many meshes are made, of its climbs in its order, a boulder meshed from several of
+            them counting once (in_scope()); None to mesh all of it.
+        count_failures: with max_meshes, count its climbs and boulders that failed or were skipped toward it too.
+
+    An area listed already is taken up again rather than listed twice, with these settings: what it has done stays
+    done, so that a larger max_meshes only goes on to the next ones. It's returned with "again" true.
     """
     if order not in CAMPAIGN_ORDERS:
         raise ValueError(f"order must be one of {', '.join(CAMPAIGN_ORDERS)}")
+    max_meshes = clean_max_meshes(max_meshes)
     aid = mp_mod.area_id(area or "")
     if not aid and not csv_text:
         raise ValueError("enter a Mountain Project area URL, like https://www.mountainproject.com/area/105720495/joshua-tree-national-park")
+    old = q("SELECT * FROM campaigns WHERE area_id=? ORDER BY created DESC LIMIT 1", aid, one=True) if aid and not csv_text else None
+    if old:
+        q("UPDATE campaigns SET ord=?, max_meshes=?, count_failures=?, without_youtube=? WHERE id=?", order, max_meshes,
+          int(bool(count_failures)), int(bool(without_youtube)), old["id"], write=True)
+        if start and old["status"] in ("stopped", "done"):
+            q("UPDATE campaigns SET status='running', note=NULL, only_retries=0 WHERE id=?", old["id"], write=True)
+        return {**q("SELECT * FROM campaigns WHERE id=?", old["id"], one=True), "again": True}
     recs = mp_mod.parse_area_csv(csv_text) if csv_text else mp_mod.export_area_csv(aid, sort="popularity")
     if not recs:
         raise ValueError("Mountain Project lists no boulder problems under that area")
     common = os.path.commonprefix([c.area_path for c in recs])
     cid = new_id()
     note = "Mountain Project's export stops at 1000 climbs: these are the most popular 1000" if len(recs) >= 1000 else None
-    q("INSERT INTO campaigns(id,name,area_id,ord,created,note,status,without_youtube) VALUES(?,?,?,?,?,?,?,?)", cid,
-      common[-1].strip("* ") if common else f"area {aid}", aid, order, time.time(), note, "running" if start else "stopped",
-      int(bool(without_youtube)), write=True)
+    q("INSERT INTO campaigns(id,name,area_id,ord,created,note,status,without_youtube,max_meshes,count_failures) "
+      "VALUES(?,?,?,?,?,?,?,?,?,?)", cid, common[-1].strip("* ") if common else f"area {aid}", aid, order, time.time(), note,
+      "running" if start else "stopped", int(bool(without_youtube)), max_meshes, int(bool(count_failures)), write=True)
     rows = [(cid, c.source_id, i + 1, c.name, c.grade, c.rating, c.url,
              "/".join(c.area_path) if c.area_path and not GROUP_AREA.search(c.area_path[-1]) else None,
              json.dumps(c.to_dict())) for i, c in enumerate(recs)]
@@ -1211,9 +1229,30 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
     return q("SELECT * FROM campaigns WHERE id=?", cid, one=True)
 
 
+def clean_max_meshes(n) -> int | None:
+    """An area's limit as given: a whole number above 0, or None (or empty) for none."""
+    if n is None or n == "":
+        return None
+    if isinstance(n, bool) or not isinstance(n, (int, float, str)) or not str(n).strip().isdigit() or int(n) < 1:
+        raise ValueError("how many meshes: a whole number above 0, or empty for all")
+    return int(n)
+
+
 def set_campaign_options(camp_id: str, options: dict) -> dict:
     """Change how an area meshes: {"without_youtube": whether a climb is meshed before YouTube has been searched for it}.
-    Turned on, its climbs waiting for volunteers are meshed with what they have, as after waiting too long."""
+    Turned on, its climbs waiting for volunteers are meshed with what they have, as after waiting too long.
+    {"max_meshes": how many meshes to stop at, or None for all; "count_failures": whether failures count toward it}:
+    an area done that these give more to carries on."""
+    limit = {}
+    if "max_meshes" in options:
+        limit["max_meshes"] = clean_max_meshes(options["max_meshes"])
+    if "count_failures" in options:
+        limit["count_failures"] = int(bool(options["count_failures"]))
+    if limit:
+        q(f"UPDATE campaigns SET {', '.join(f'{k}=?' for k in limit)} WHERE id=?", *limit.values(), camp_id, write=True)
+        camp = q("SELECT * FROM campaigns WHERE id=?", camp_id, one=True)
+        if camp["status"] == "done" and ordered_pending(camp):
+            q("UPDATE campaigns SET status='running', note=NULL WHERE id=?", camp_id, write=True)
     if "without_youtube" in options:
         q("UPDATE campaigns SET without_youtube=? WHERE id=?", int(bool(options["without_youtube"])), camp_id, write=True)
         if options["without_youtube"]:
@@ -1221,14 +1260,64 @@ def set_campaign_options(camp_id: str, options: dict) -> dict:
     return q("SELECT * FROM campaigns WHERE id=?", camp_id, one=True)
 
 
+def _in_order(camp: dict, items: list[dict]) -> list[dict]:
+    """An area's climbs in its order: Mountain Project's popularity (its rank), stars, or photos and videos."""
+    if camp["ord"] == "rating":
+        return sorted(items, key=lambda i: (-(i["stars"] or 0), i["rank"]))
+    if camp["ord"] == "data":
+        return sorted(items, key=lambda i: (i["media"] is None, -(i["media"] or 0), i["rank"]))
+    return sorted(items, key=lambda i: i["rank"])
+
+
+def _units(camp: dict, items: list[dict]) -> list[list[dict]]:
+    """An area's climbs in its order, grouped as each mesh is made of them: a boulder's together where it's meshed
+    from all their photos (pooled()), each other climb alone; each group where its first climb comes."""
+    together = settings().get("areas.meshes") == "boulders"
+    units: dict[str, list[dict]] = {}
+    for i in _in_order(camp, items):
+        units.setdefault(i["boulder"] if together and i["boulder"] else "\0" + i["source_id"], []).append(i)
+    return list(units.values())
+
+
+UNFINISHED = ("pending", "running", "waiting", "harvested")
+
+
+def limit_scope(camp: dict) -> tuple[set[str] | None, int]:
+    """What an area with a limit (max_meshes) works through: its climbs and boulders (_units()) in its order, until as
+    many as its limit have made a mesh or may yet, or failed too if it counts failures (count_failures). One that
+    fails otherwise brings in the next. What's done stays within it, so that raising the limit only goes on.
+
+    Returns:
+        (the climbs within it, by source_id, or None without a limit; how many meshes they've made).
+    """
+    if not camp.get("max_meshes"):
+        return None, 0
+    items = q("SELECT source_id, rank, stars, media, boulder, status FROM campaign_items WHERE campaign_id=?", camp["id"])
+    scope, n, made = set(), 0, 0
+    for unit in _units(camp, items):
+        if n >= camp["max_meshes"]:
+            break
+        scope |= {i["source_id"] for i in unit}
+        statuses = {i["status"] for i in unit}
+        made += "done" in statuses
+        n += bool("done" in statuses or statuses & set(UNFINISHED) or camp.get("count_failures"))
+    return scope, made
+
+
+def in_scope(camp: dict) -> set[str] | None:
+    """The climbs an area works through within its limit (limit_scope()), or None without one."""
+    return limit_scope(camp)[0]
+
+
 def ordered_pending(camp: dict) -> list[dict]:
-    """A campaign's waiting climbs, next first."""
+    """A campaign's waiting climbs, next first: within its limit, if it has one."""
     items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry,redo,boulder,waiting_since FROM campaign_items "
               "WHERE campaign_id=? AND status='pending' ORDER BY rank", camp["id"])
-    if camp["ord"] == "rating":
-        items.sort(key=lambda i: (-(i["stars"] or 0), i["rank"]))
-    elif camp["ord"] == "data":
-        items.sort(key=lambda i: (i["media"] is None, -(i["media"] or 0), i["rank"]))
+    scope = in_scope(camp)
+    if scope is None:
+        items = _in_order(camp, items)
+    else:       # a boulder's climbs one after another, so that its mesh is made before going on
+        items = [i for unit in _units(camp, [i for i in items if i["source_id"] in scope]) for i in unit]
     # retries were asked for, and a climb that was interrupted comes next, to finish what it started
     items.sort(key=lambda i: (not i["retry"], not i["project_id"]))
     return items
@@ -1369,6 +1458,9 @@ def settle_boulder(camp_id: str, boulder: str | None) -> bool:
     if not boulder:
         return False
     items = q("SELECT source_id, status FROM campaign_items WHERE campaign_id=? AND boulder=? ORDER BY rank", camp_id, boulder)
+    scope = in_scope(q("SELECT * FROM campaigns WHERE id=?", camp_id, one=True) or {})
+    if scope is not None:   # those past an area's limit (as after lowering it) aren't waited for
+        items = [i for i in items if i["source_id"] in scope or i["status"] in ("running", "waiting", "harvested")]
     if any(i["status"] in ("pending", "running", "waiting") for i in items):
         return False
     harvested = [i for i in items if i["status"] == "harvested"]
@@ -2378,8 +2470,14 @@ def campaign_view(camp: dict) -> dict:
     for r in running:
         p = q("SELECT status,progress FROM projects WHERE id=?", r["project_id"], one=True) if r["project_id"] else None
         r["progress"] = json.loads(p["progress"]) if p and p["progress"] else None
+    pending = ordered_pending(camp)
+    made = None
+    if camp.get("max_meshes"):      # those past its limit aren't to go
+        counts["beyond"] = counts.get("pending", 0) - len(pending)
+        counts["pending"] = len(pending)
+        made = limit_scope(camp)[1]
     return {**camp, "counts": counts, "again": again, "worked": worked, "current": running[0] if running else None,
-            "running": running, "next": ordered_pending(camp)[:10], "machine_wait": machine_wait(cid)}
+            "running": running, "next": pending[:10], "machine_wait": machine_wait(cid), "made": made}
 
 
 def machine_kind() -> str | None:
@@ -3422,7 +3520,7 @@ class Handler(BaseHTTPRequestHandler):
                 b = self.read_json()
                 try:
                     camp = create_campaign(b.get("area") or "", b.get("order") or "popularity", b.get("csv"), bool(b.get("start", True)),
-                                           bool(b.get("without_youtube")))
+                                           bool(b.get("without_youtube")), b.get("max_meshes"), bool(b.get("count_failures")))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
                 return self.send_json(campaign_view(camp), 201)
@@ -3430,7 +3528,10 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 if not campaign_status(m[1]):
                     return self.send_json({"error": "not found"}, 404)
-                return self.send_json(campaign_view(set_campaign_options(m[1], self.read_json())))
+                try:
+                    return self.send_json(campaign_view(set_campaign_options(m[1], self.read_json())))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)/(start|stop)", p)
             if m:
                 if not campaign_status(m[1]):

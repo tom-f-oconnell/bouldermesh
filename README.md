@@ -150,11 +150,19 @@ their photographers. `sources.json` lets you credit or remove any of them.
 ## Mesh a whole area
 
 On the *Areas* tab, paste a Mountain Project area URL, such as
-`https://www.mountainproject.com/area/105720495/joshua-tree-national-park`, and pick an order:
+`https://www.mountainproject.com/area/105720495/joshua-tree-national-park` (or several, one a line, which go one after
+another), and pick an order:
 
 - **Most popular**, Mountain Project's own ranking.
 - **Highest rated**, by average stars.
 - **Most photos and videos**, judged from the pages of the next few popular climbs.
+
+*First N meshes of each* stops each area once it has made that many meshes, in its order, so that, say, 1 meshes the
+most popular climb of each of several areas unattended. A boulder meshed from several of the area's climbs (below) counts
+once, and all of the area's climbs on it are harvested for it, wherever they come in the order. A climb or boulder that
+fails, or is skipped for too few viewpoints, brings in the next, unless *Count failures towards limit* is on. Empty means
+no limit. Entering an area again, or changing N on its card, takes it up again with the new settings: raising N goes on
+from where it got to, without meshing again what's done (as long as the order hasn't changed).
 
 Its boulder problems are then taken one at a time until you stop, or the list runs out. A climb that shares its boulder
 with others on the list is only harvested; once all of the list's climbs on that boulder are, the boulder is meshed from
@@ -750,7 +758,8 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/climbs/manual {...} · POST /api/climbs/kaya-export (multipart csv/json)
     POST /api/climbs/{id}/harvest {sources:[climb,google,ddg,commons,flickr,youtube], reconstruct, filter}
     POST /api/climbs/{id}/boulder                       mesh its boulder from every photo of its climbs, harvesting those never harvested
-    GET  /api/campaigns · POST /api/campaigns {area, order:popularity|rating|data, start, csv}
+    GET  /api/campaigns · POST /api/campaigns {area, order:popularity|rating|data, start, csv, without_youtube, max_meshes, count_failures}
+    POST /api/campaigns/{id}/options {without_youtube, max_meshes, count_failures}   an area listed again is taken up again
     POST /api/campaigns/{id}/start · POST /api/campaigns/{id}/stop {now} · DELETE /api/campaigns/{id}
     POST /api/campaigns/{id}/retry                      its failed climbs, ahead of the rest
     POST /api/campaigns/{id}/harvest-again {videos_only, then_rebuild} · POST /api/campaigns/{id}/rebuild {changed_only, skipped_only}
