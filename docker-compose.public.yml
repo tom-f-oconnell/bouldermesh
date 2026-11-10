@@ -15,6 +15,7 @@ services:
       - "127.0.0.1:${ADMIN_PORT:-36184}:36184"
     environment:
       READ_ONLY: "${READ_ONLY:-auto}"       # view-only unless EDIT_TOKEN is set in .env
+      CLIENT_IP_HEADER: X-Real-IP           # Caddy names the sender there, for the log
       SITE_SOURCES: "${SITE_SOURCES:-link}"  # photos and frames not clearly free to copy are linked to, not served (all | link | permitted)
       SITE_TEXTURES:                        # from .env, optional: all (the default) | permitted | none. The admin page can change
                                             # both, but deploy/ship.sh replaces its database, so lasting choices go in .env

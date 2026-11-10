@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """What the site does when exposed: the editing token and read-only modes, refusing other sites' pages, the page's
 Content-Security-Policy and the other headers, files served as what they are or as downloads, 304s, bad lengths, and
-the fetcher's refusal of private addresses. Starts the server three times on free ports; offline.
+the fetcher's refusal of private addresses, HEAD requests, and the sender's address from a proxy's header. Starts the server three times on free ports; offline.
 
     python3 tests/test_public.py
 """
@@ -45,7 +45,7 @@ class Server:
         self.url = f"http://127.0.0.1:{self.port}"
         full = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(self.port), HOST="127.0.0.1", ADMIN_PORT=str(free_port()),
                     HTTP_MIN_INTERVAL="0", STOP_WAIT_MINUTES="0.1", **env)
-        for k in ("EDIT_TOKEN", "READ_ONLY", "CSP"):
+        for k in ("EDIT_TOKEN", "READ_ONLY", "CSP", "CLIENT_IP_HEADER"):
             if k not in env:
                 full.pop(k, None)
         self.proc = subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=full,
@@ -106,8 +106,8 @@ PLY = b"ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty floa
 
 
 def with_token(tmp: Path) -> None:
-    """EDIT_TOKEN set, READ_ONLY=auto as the public setup has it: a token site."""
-    srv = Server(tmp, EDIT_TOKEN=TOKEN, READ_ONLY="auto")
+    """EDIT_TOKEN set, READ_ONLY=auto and CLIENT_IP_HEADER=X-Real-IP as the public setup has them: a token site."""
+    srv = Server(tmp, EDIT_TOKEN=TOKEN, READ_ONLY="auto", CLIENT_IP_HEADER="X-Real-IP")
     B, port = srv.url, srv.port
     try:
         # the page, with its policy: a hash for each inline script, nothing framed, and the other headers
@@ -137,7 +137,7 @@ def with_token(tmp: Path) -> None:
         assert st == 401, (st, e)
         st, _, e = req(B, "POST", "/api/projects", {"name": "x"}, headers={"Authorization": f"Bearer {TOKEN} "})
         assert st == 401, (st, e)
-        st, _, e = req(B, "PATCH", "/api/climbs/abc", {"name": "x"})
+        st, _, e = req(B, "PATCH", "/api/climbs/abc", {"name": "x"}, headers={"X-Real-IP": "203.0.113.7"})
         assert st == 401, (st, e)
         st, _, e = req(B, "DELETE", "/api/climbs/abc")
         assert st == 401, (st, e)
@@ -172,6 +172,14 @@ def with_token(tmp: Path) -> None:
         st, h, body = req(B, "GET", f"/meshes/{mid}/tex.png")
         assert st == 200 and h["Content-Type"] == "image/png" and body == PNG and h["Cache-Control"].startswith("public") and "Content-Disposition" not in h, h
         assert req(B, "GET", f"/meshes/{mid}/tex.png", headers={"If-Modified-Since": h["Last-Modified"]})[0] == 304
+        # HEAD: a GET's headers without its body; a method the server hasn't got is a 501, not a dropped connection
+        for path, length in ((f"/meshes/{mid}/tex.png", len(PNG)), ("/", None), ("/api/status", None)):
+            out = raw_request(port, f"HEAD {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
+            head, _, body = out.partition(b"\r\n\r\n")
+            got = int(re.search(rb"Content-Length: (\d+)", head)[1])
+            assert head.startswith(b"HTTP/1.0 200") and body == b"" and got == (length or got) > 0, out[:400]
+        out = raw_request(port, f"PUT / HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
+        assert out.startswith(b"HTTP/1.0 501"), out[:300]
         st, h, _ = req(B, "GET", f"/meshes/{mid}/cube.ply")
         assert st == 200 and h["Content-Type"] == "application/octet-stream" and "Content-Disposition" not in h, h
         (tmp / "data" / "meshes" / mid / "note.txt").write_text("hello")     # something else in the folder downloads as bytes
@@ -185,6 +193,7 @@ def with_token(tmp: Path) -> None:
     finally:
         out = srv.stop()
     assert "editing: with the token" in out and out.count("refused ") >= 7, out[-2000:]
+    assert "refused PATCH /api/climbs/abc from 203.0.113.7" in out and '"HEAD / HTTP/1.0" 200' in out, out[-2000:]
     print("token site OK")
 
 

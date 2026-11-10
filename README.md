@@ -348,7 +348,10 @@ such as a cloud machine's metadata service (`HTTP_ALLOW_PRIVATE=1` lifts that, f
 **What it doesn't do.** There's no rate limiting, and `GET /api/meshes` reads every mesh's records for each request, so a
 busy site wants a cache in front: Cloudflare's free plan, with the name proxied and SSL mode *Full (strict)*, caches the
 textures by itself and the meshes once a cache rule makes `/meshes/` eligible, limits requests, and hides the machine's
-address, and Caddy still gets its certificate through it; its proxy does cap an upload at 100 MB. Each project's log is
+address, and Caddy still gets its certificate through it; its proxy does cap an upload at 100 MB. Caddy's access log
+(`docker compose logs caddy`) still names each visitor, as `client_ip`, because `deploy/Caddyfile` believes Cloudflare's
+addresses when they say who it is, and so does the app's own log. A firewall can then let ports 80 and 443 in only from
+those addresses ([cloudflare.com/ips](https://www.cloudflare.com/ips/)), so that no one goes around the proxy. Each project's log is
 public, as the Projects tab shows it, so it reveals where photos came from and the names of compute machines, not
 credentials. Back up `data/` yourself: a mesh is an hour of compute. Compute credentials are kept as before
 (encrypted on the admin page, or in `.env`), and cloud machines accept SSH only from this server's address.

@@ -79,6 +79,9 @@ SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 EDIT_TOKEN = os.environ.get("EDIT_TOKEN") or None
 READ_ONLY = os.environ.get("READ_ONLY", "0") == "1" or (os.environ.get("READ_ONLY") == "auto" and not EDIT_TOKEN)
 FILE_CACHE = int(os.environ.get("FILE_CACHE_SECONDS", "3600"))   # how long browsers and proxies may keep meshes, photos and static files
+# the header in which a proxy in front names the sender, for the log (X-Real-IP behind deploy/Caddyfile); only for a port
+# nothing but that proxy can reach, as anyone else could write it
+CLIENT_IP_HEADER = os.environ.get("CLIENT_IP_HEADER") or None
 MESH_EXTRA_EXT = {".png", ".jpg", ".jpeg", ".bin", ".mtl"}       # what may be uploaded beside a mesh: its textures and material
 # how files under data/ are served; anything else is sent as bytes to save, so that nothing put there can run as a page of this site
 SERVED_TYPES = {".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -1783,10 +1786,21 @@ def page_csp() -> str | None:
     return _csp["value"]
 
 
+class _Discard(io.RawIOBase):
+    """Where the body of an answer to a HEAD request goes."""
+
+    def writable(self):
+        return True
+
+    def write(self, b):
+        return len(b)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "BoulderMesh/0.2"
     sys_version = ""        # not the Python version
     timeout = 120           # seconds a connection may sit idle, so that stalled clients don't hold threads for ever
+    head_only = False       # answering a HEAD request: once the headers have gone, nothing more is sent
 
     # -- helpers ----------------------------------------------------------
     def end_headers(self):
@@ -1795,6 +1809,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         super().end_headers()
+        if self.head_only:
+            self.wfile = _Discard()     # do_HEAD puts the connection's own back
+
+    def address_string(self) -> str:
+        """The sender's address, for the log: the one in CLIENT_IP_HEADER if that's set and the request has it."""
+        headers = getattr(self, "headers", None)
+        return (CLIENT_IP_HEADER and headers and headers.get(CLIENT_IP_HEADER)) or self.client_address[0]
 
     def send_json(self, obj, code=200, headers: dict | None = None):
         body = json.dumps(obj, default=str).encode()
@@ -1850,6 +1871,8 @@ class Handler(BaseHTTPRequestHandler):
         if download:
             self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
         self.end_headers()
+        if self.head_only:
+            return
         try:
             with open(path, "rb") as f:
                 shutil.copyfileobj(f, self.wfile)
@@ -1887,7 +1910,7 @@ class Handler(BaseHTTPRequestHandler):
         elif (origin is not None and origin.split("//", 1)[-1].lower() not in hosts) or self.headers.get("Sec-Fetch-Site") == "cross-site":
             why = "refused: sent from another site's page"
         if why:
-            print(f"refused {self.command} {self.path} from {self.client_address[0]}: {why}", flush=True)
+            print(f"refused {self.command} {self.path} from {self.address_string()}: {why}", flush=True)
             self.send_json({"error": why}, code, headers=headers)
         return bool(why)
 
@@ -1912,10 +1935,19 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(body or b"{}")
 
     def log_message(self, fmt, *args):  # quieter
-        if not any(x in (args[0] if args else "") for x in ("/api/projects", "/api/campaigns")):
+        # str(): send_error() logs its code first, and a TypeError there dropped the connection without an answer
+        if not any(x in str(args[0] if args else "") for x in ("/api/projects", "/api/campaigns")):
             super().log_message(fmt, *args)
 
     # -- GET ---------------------------------------------------------------
+    def do_HEAD(self):
+        """A GET's answer without its body, as uptime checks and some caches ask for."""
+        own, self.head_only = self.wfile, True
+        try:
+            self.do_GET()
+        finally:
+            self.wfile, self.head_only = own, False
+
     def do_GET(self):
         u = urlparse(self.path)
         p, qs = u.path, parse_qs(u.query)
