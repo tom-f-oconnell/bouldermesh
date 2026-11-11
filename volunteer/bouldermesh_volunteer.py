@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 6                 # 3: updates itself when the server says to; 4: then updates yt-dlp and Deno at once;
+VERSION = 7                 # 3: updates itself when the server says to; 4: then updates yt-dlp and Deno at once;
                             # 5: tells the server of signs YouTube is degrading or throttling it, and rests when throttled;
                             # 6: says it's still there while it waits (every 10 min), and goodbye when it stops;
                             # 7: updates itself when downloaded into another git repository's folder, says why if it
