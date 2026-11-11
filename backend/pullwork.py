@@ -140,6 +140,12 @@ class Board:
             """)
             if "token" not in {r[1] for r in con.execute("PRAGMA table_info(machines)")}:   # kept since 2026-11-10
                 con.execute("ALTER TABLE machines ADD COLUMN token TEXT")
+            # the GPU a machine has (its script's GpuWatch, from version 10), and each job's share of its use, in seconds
+            if "gpu_name" not in {r[1] for r in con.execute("PRAGMA table_info(machines)")}:
+                con.execute("ALTER TABLE machines ADD COLUMN gpu_name TEXT")
+            for col, kind in (("gpu_busy", "REAL"), ("gpu_name", "TEXT")):
+                if col not in {r[1] for r in con.execute("PRAGMA table_info(machine_jobs)")}:
+                    con.execute(f"ALTER TABLE machine_jobs ADD COLUMN {col} {kind}")
             registration.migrate(con, "machines")
             presence.migrate(con, "machines", GONE_AFTER)
         os.chmod(db_path, 0o600)
@@ -303,8 +309,9 @@ class Board:
             self.seen[m["id"]] = now
         active = None if (client or {}).get("check") else now
         if client is not None:
-            self.q("UPDATE machines SET last_seen=?, active_at=COALESCE(?, active_at), last_ip=?, client=?, gpu=?, cpus=? WHERE id=?",
-                   now, active, ip, str(client.get("client") or "")[:120], int(bool(client.get("gpu"))), _number(client.get("cpus")), m["id"])
+            self.q("UPDATE machines SET last_seen=?, active_at=COALESCE(?, active_at), last_ip=?, client=?, gpu=?, cpus=?, "
+                   "gpu_name=COALESCE(?, gpu_name) WHERE id=?", now, active, ip, str(client.get("client") or "")[:120], int(bool(client.get("gpu"))),
+                   _number(client.get("cpus")), str(client["gpu_name"])[:80] if client.get("gpu_name") else None, m["id"])
         else:
             self.q("UPDATE machines SET last_seen=?, active_at=? WHERE id=?", now, now, m["id"])
 
@@ -456,6 +463,10 @@ class Board:
                 j.state, j.error = "failed", str(report.get("error") or "failed on the machine")[:500]
             self.cond.notify_all()
             self._ended(j, j.state, j.error)
+            gpu = report.get("gpu") if isinstance(report.get("gpu"), dict) else {}
+            busy = _number(gpu.get("busy_seconds"))
+            if busy is not None:    # its share of the machine's GPU while it ran (the script's GpuWatch, from version 10)
+                self.q("UPDATE machine_jobs SET gpu_busy=?, gpu_name=? WHERE id=?", max(0.0, busy), str(gpu.get("name") or "")[:80] or None, j.id)
         col = "done" if status == "ok" else "failed"
         self.q(f"UPDATE machines SET {col}={col}+1 WHERE id=?", m["id"])
         return {"ok": True}

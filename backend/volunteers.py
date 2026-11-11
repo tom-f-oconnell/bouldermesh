@@ -819,11 +819,13 @@ td.gone{color:var(--mute)} .wrap{overflow-x:auto}
 </style>
 <h1>Leaderboard</h1>
 <p class="note">Thank you, all. Names are as each chose them when their script registered (or anonymous); see <a href="/volunteer/">Volunteer</a> to join.</p>
-<h2>Fetching videos</h2>
+<h2>Videos</h2>
+<p class="note">Videos fetched from YouTube for the server, which can't fetch them itself, and the searches that found them.</p>
 <div class="wrap"><table id="vols"><thead><tr><th>#</th><th>Volunteer</th><th>Videos</th><th>GB</th><th>Searches</th><th title="Videos' details and channels' descriptions">Details</th></tr></thead><tbody></tbody></table></div>
-<h2>Making meshes</h2>
+<h2>Compute</h2>
+<p class="note">Computers lent to make meshes, find climbers' beta and boulders' sizes.</p>
 <div class="wrap"><table id="workers"><thead><tr><th>#</th><th>Computer</th><th>Meshes</th><th title="Where climbers' hands and feet go, found in videos">Beta</th>
-<th title="How big a boulder is">Sizes</th><th title="Processor time, summed over its cores, in meshing">CPU core-hours</th><th title="Time the GPU was in use in meshing (matching photos, densifying, placing them with VGGT), roughly">GPU hours</th></tr></thead><tbody></tbody></table></div>
+<th title="How big a boulder is">Sizes</th><th title="Processor time, summed over its cores, in meshing">CPU core-hours</th><th title="The GPU's use by its jobs, measured as they ran (from worker script 10), in hours of an RTX 3090's: each GPU's hours weighed by its single-precision speed. ≈: partly estimated, from the time of the steps that use a GPU, or a GPU not known">GPU hours <small>(3090)</small></th></tr></thead><tbody></tbody></table></div>
 <p class="note" id="updated"></p>
 <script>
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
@@ -832,7 +834,8 @@ fetch('/volunteer/api/leaderboard').then(r => r.json()).then(b => {
   const row = (cells, gone) => `<tr>${cells.map((c, i) => `<td${i === 1 && gone ? ' class="gone" title="No longer helping"' : ''}>${c}</td>`).join('')}</tr>`;
   document.querySelector('#vols tbody').innerHTML = b.volunteers.map((v, i) => row([i + 1, esc(v.name), v.videos, num(v.gb, 1), v.searches, v.details], v.revoked)).join('')
     || '<tr><td colspan="6" class="note">No one yet.</td></tr>';
-  document.querySelector('#workers tbody').innerHTML = b.workers.map((w, i) => row([i + 1, esc(w.name), w.meshes, w.beta, w.sizes, num(w.cpu_hours, 1), num(w.gpu_hours, 1)], w.revoked)).join('')
+  document.querySelector('#workers tbody').innerHTML = b.workers.map((w, i) => row([i + 1, esc(w.name) + (w.gpu ? ` <small class="note">${esc(w.gpu.replace(/^NVIDIA (GeForce )?/, ''))}</small>` : ''),
+    w.meshes, w.beta, w.sizes, num(w.cpu_hours, 1), (w.gpu_rough && w.gpu_hours ? '≈' : '') + num(w.gpu_hours, 1)], w.revoked)).join('')
     || '<tr><td colspan="7" class="note">No one yet.</td></tr>';
   document.querySelector('#updated').textContent = b.since ? `Meshes counted since ${new Date(b.since * 1000).toLocaleDateString()}; beta and sizes since ${new Date(b.jobs_since * 1000).toLocaleDateString()}.` : '';
 }).catch(e => { document.querySelector('#updated').textContent = "Couldn't load it: " + e.message; });

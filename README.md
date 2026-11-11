@@ -864,11 +864,15 @@ Where it was fetched from is what Cloudflare says, nothing looked up: CF-IPCount
 city and a point on the map, turn on Cloudflare's *Add visitor location headers* (the site's Rules, then Settings, under
 Managed Transforms). Both are on by default, under Notifications on the admin page.
 
-**Leaderboard:** the volunteer page's *Leaderboard* (`/volunteer/leaderboard`, open to anyone) ranks volunteers by
-videos fetched (and GB, searches, details), and computers by meshes made, beta and sizes found, and their CPU
-core-hours (their tools' processor time over all cores) and GPU hours (the steps that use a GPU, where there is one,
-roughly), all worked out from what's already kept: the volunteers' finished tasks, each mesh's timings (meshes since
-timings were kept, Nov 10, 2026), and machines' jobs (beta and sizes since Nov 11). Names are shown as *Names on the public
+**Leaderboard:** the volunteer page's *Leaderboard* (`/volunteer/leaderboard`, open to anyone) has two tables: *Videos*,
+volunteers by videos fetched (and GB, searches, details), and *Compute*, computers by meshes made, beta and sizes found,
+their CPU core-hours (their tools' processor time over all cores) and GPU hours in an RTX 3090's (each GPU's hours
+weighed by its single-precision speed, `GPU_TFLOPS` in `backend/server.py`; a laptop's at 60% of the desktop card's).
+The worker script, from version 10, measures its jobs' share of the GPU's use as they run (the GPU's utilization, sampled
+every 5 s as it already was for holding back, times the job's share of the GPU memory in use, its processes found by
+their container, looked at every 15 s), and says which GPU it has; meshes from before that count the time of the steps
+that use a GPU, marked ≈. All from what's kept: the volunteers' finished tasks, each mesh's timings (meshes since Nov 10,
+2026), and machines' jobs (beta and sizes since Nov 11). Names are shown as *Names on the public
 leaderboard* on the admin page says: by default only those who registered once the scripts (from version 9) said the
 name is shown there; *everyone's* shows the rest too; the others appear as anonymous.
 

@@ -4336,6 +4336,28 @@ def script_downloaded(kind: str):
 # ------------------------------------------------------------------ the leaderboard: who fetched videos, whose computers meshed
 NAMES_SHOWN_SINCE = 1794441600.0    # 2026-11-12T00:00Z: from scripts version 9, registering says the name is shown on it
 GPU_STEPS = re.compile(r"matching|densify|VGGT|points from those placements|people", re.I)   # tools that use a GPU, where there is one
+# GPUs' single-precision (FP32) throughput, TFLOPS, from their makers' specifications: a GPU's hours count as this share of an
+# RTX 3090's (35.6) on the leaderboard. The longest name in a GPU's own name is it; one not here counts as a 3090, marked so
+GPU_TFLOPS = {"rtx 5090": 104.8, "rtx 5080": 56.3, "rtx 5070 ti": 43.9, "rtx 5070": 30.9,
+              "rtx 4090": 82.6, "rtx 4080 super": 52.2, "rtx 4080": 48.7, "rtx 4070 ti super": 44.1, "rtx 4070 ti": 40.1,
+              "rtx 4070 super": 35.5, "rtx 4070": 29.1, "rtx 4060 ti": 22.1, "rtx 4060": 15.1,
+              "rtx 3090 ti": 40.0, "rtx 3090": 35.6, "rtx 3080 ti": 34.1, "rtx 3080": 29.8, "rtx 3070 ti": 21.7, "rtx 3070": 20.3,
+              "rtx 3060 ti": 16.2, "rtx 3060": 12.7, "rtx 3050": 9.1, "rtx 2080 ti": 13.4, "rtx 2080 super": 11.2, "rtx 2080": 10.1,
+              "rtx 2070 super": 9.1, "rtx 2070": 7.5, "rtx 2060 super": 7.2, "rtx 2060": 6.5, "titan rtx": 16.3,
+              "gtx 1080 ti": 11.3, "gtx 1080": 8.9, "gtx 1070 ti": 8.2, "gtx 1070": 6.5, "gtx 1660 ti": 5.4, "gtx 1660 super": 5.0,
+              "gtx 1660": 5.0, "gtx 1650": 3.0, "a100": 19.5, "h100": 51.2, "v100": 15.7, "t4": 8.1, "a10": 31.2, "l4": 30.3,
+              "l40s": 91.6, "rtx a6000": 38.7, "rtx a5000": 27.8, "rtx a4000": 19.2, "rtx 6000 ada": 91.1}
+GPU_BASE = 35.6     # an RTX 3090's
+
+
+def gpu_factor(name: str | None) -> float | None:
+    """How many RTX 3090 hours an hour of this GPU counts as (GPU_TFLOPS), or None for one not known. A laptop's
+    version of a card counts as 60% of its desktop one, as they're held to lower power."""
+    low = re.sub(r"\s+", " ", (name or "").lower())
+    keys = [k for k in GPU_TFLOPS if re.search(r"(?<![\w])" + re.escape(k) + r"(?![\w])", low)]
+    if not keys:
+        return None
+    return GPU_TFLOPS[max(keys, key=len)] / GPU_BASE * (0.6 if "laptop" in low or "mobile" in low or "max-q" in low else 1.0)
 
 
 def shown_name(row: dict, kind: str, n: int, mode: str) -> str:
@@ -4345,12 +4367,13 @@ def shown_name(row: dict, kind: str, n: int, mode: str) -> str:
     return f"anonymous {kind} {n}"
 
 
-def machine_compute() -> tuple[dict[str, dict], float | None]:
+def machine_compute(measured_from: dict[str, float] | None = None) -> tuple[dict[str, dict], float | None]:
     """What each machine has made, by the meshes' timings (timings.json, which say where each was made): {its name: {meshes,
-    cpu_hours (its tools' processor time, over all cores), gpu_hours (its GPU steps' time, where it had one)}}, and when
-    the first of them was made."""
+    cpu_hours (its tools' processor time, over all cores), gpu_hours (its GPU steps' time, where it had one: for meshes
+    made before its script measured its GPU use, measured_from {name: when})}}, and when the first of them was made."""
     out: dict[str, dict] = {}
     first = None
+    measured_from = measured_from or {}
     for d in MESHES.iterdir() if MESHES.exists() else []:
         try:
             t = json.loads((d / timings_mod.FILE).read_text())
@@ -4361,7 +4384,7 @@ def machine_compute() -> tuple[dict[str, dict], float | None]:
         c = out.setdefault(t["where"], {"meshes": 0, "cpu_hours": 0.0, "gpu_hours": 0.0})
         c["meshes"] += 1
         c["cpu_hours"] += (t.get("cpu_seconds") or 0) / 3600
-        if t.get("gpu"):
+        if t.get("gpu") and (t.get("started") or 0) < measured_from.get(t["where"], float("inf")):
             c["gpu_hours"] += sum(x.get("seconds") or 0 for x in t.get("tools") or [] if GPU_STEPS.search(x.get("step") or "")) / 3600
         if t.get("started"):
             first = t["started"] if first is None else min(first, t["started"])
@@ -4375,20 +4398,32 @@ def leaderboard() -> dict:
     mode = settings().get("leaderboard.names")
     vols = [{**{k: v[k] for k in ("videos", "gb", "searches", "details")}, "revoked": bool(v["revoked"]),
              "name": shown_name(v, "volunteer", i + 1, mode)} for i, v in enumerate(VOLUNTEERS.contributions())]
-    made, since = machine_compute()
+    machines = MACHINES.q("SELECT id, name, created, revoked, gpu_name FROM machines ORDER BY created")
+    measured: dict[str, dict] = {}      # each machine's jobs' measured GPU use: from when, and in 3090 hours
+    for r in MACHINES.q("SELECT machine_id, gpu_name, MIN(taken) AS since, SUM(gpu_busy) AS busy FROM machine_jobs "
+                        "WHERE gpu_busy IS NOT NULL GROUP BY machine_id, gpu_name"):
+        k = gpu_factor(r["gpu_name"])
+        g = measured.setdefault(r["machine_id"], {"since": r["since"], "hours": 0.0, "known": True})
+        g["since"] = min(g["since"] or r["since"], r["since"] or g["since"])
+        g["hours"] += (r["busy"] or 0) / 3600 * (k if k is not None else 1.0)
+        g["known"] = g["known"] and k is not None
+    made, since = machine_compute({m["name"]: measured[m["id"]]["since"] for m in machines if m["id"] in measured and measured[m["id"]]["since"]})
     jobs: dict[str, dict] = {}
     for r in MACHINES.q("SELECT machine_id, task, COUNT(*) AS n FROM machine_jobs WHERE outcome='done' GROUP BY machine_id, task"):
         jobs.setdefault(r["machine_id"], {})[r["task"]] = r["n"]
     jobs_since = (MACHINES.q("SELECT MIN(created) AS t FROM machine_jobs", one=True) or {}).get("t")
     workers = []
-    for m in MACHINES.q("SELECT id, name, created, revoked FROM machines ORDER BY created"):
-        c, j = made.get(m["name"], {}), jobs.get(m["id"], {})
+    for m in machines:
+        c, j, g = made.get(m["name"], {}), jobs.get(m["id"], {}), measured.get(m["id"])
         meshes = max(c.get("meshes", 0), j.get("reconstruct", 0))
         if not (meshes or j.get("beta") or j.get("scale")):
             continue
+        k = gpu_factor(m["gpu_name"])
+        estimated = c.get("gpu_hours", 0.0) * (k if k is not None else 1.0)      # from the steps, before measuring
         workers.append({"m": m, "meshes": meshes, "beta": j.get("beta", 0), "sizes": j.get("scale", 0), "revoked": bool(m["revoked"]),
-                        "cpu_hours": round(c.get("cpu_hours", 0.0), 2), "gpu_hours": round(c.get("gpu_hours", 0.0), 2)})
-    workers.sort(key=lambda w: (-w["meshes"], -w["gpu_hours"] - w["cpu_hours"], -w["beta"]))
+                        "cpu_hours": round(c.get("cpu_hours", 0.0), 2), "gpu_hours": round(estimated + (g["hours"] if g else 0.0), 2),
+                        "gpu": m["gpu_name"], "gpu_rough": bool(estimated) or k is None or bool(g and not g["known"])})
+    workers.sort(key=lambda w: (-w["meshes"], -w["gpu_hours"] - w["cpu_hours"], -w["beta"]))     # the GPU in 3090 hours
     for i, w in enumerate(workers):
         w["name"] = shown_name(w.pop("m"), "computer", i + 1, mode)
     return {"volunteers": vols, "workers": workers, "since": since, "jobs_since": jobs_since, "names": mode}

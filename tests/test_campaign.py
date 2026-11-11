@@ -2258,9 +2258,21 @@ try:
     assert w["name"] == ("Jane's PC" if box.get("created", time.time()) >= server.NAMES_SHOWN_SINCE else "anonymous computer 1"), w
     assert (w["meshes"], w["beta"], w["sizes"], w["cpu_hours"], w["gpu_hours"]) == (1, 1, 0, 2.0, 1.0), w
     assert b["since"] == 1794400000.0 and b["jobs_since"] == 1, b
+    # GPU use measured by the script (from version 10), in 3090 hours by the GPU's speed; the steps' estimate only before
+    assert abs(server.gpu_factor("NVIDIA GeForce RTX 4090") - 82.6 / 35.6) < 1e-9 and server.gpu_factor("NVIDIA GeForce RTX 3090 Ti") == 40.0 / 35.6
+    assert server.gpu_factor("NVIDIA GeForce RTX 3060 Laptop GPU") == 12.7 / 35.6 * 0.6 and server.gpu_factor("Some GPU") is None
+    assert server.gpu_factor("Tesla T4") == 8.1 / 35.6 and server.gpu_factor("NVIDIA L40S") == 91.6 / 35.6
+    server.MACHINES.q("UPDATE machines SET gpu_name='NVIDIA GeForce RTX 4090' WHERE id=?", box["id"])
+    server.MACHINES.q("INSERT INTO machine_jobs(id, task, machine_id, machine, created, taken, ended, outcome, gpu_busy, gpu_name) "
+                      "VALUES('lbjob0000002','reconstruct',?,?,1794500000,1794500000,1794503600,'done',1800,'NVIDIA GeForce RTX 4090')", box["id"], "Jane's PC")
+    w = server.leaderboard()["workers"][0]
+    assert abs(w["gpu_hours"] - round((1.0 + 0.5) * 82.6 / 35.6, 2)) < 0.011 and w["gpu"] == "NVIDIA GeForce RTX 4090" and w["gpu_rough"], w
+    server.MACHINES.q("UPDATE machine_jobs SET taken=1 WHERE id='lbjob0000002'")      # measured from before that mesh: no estimate
+    w = server.leaderboard()["workers"][0]
+    assert abs(w["gpu_hours"] - round(0.5 * 82.6 / 35.6, 2)) < 0.011 and not w["gpu_rough"], w
 finally:
     server.settings().update({"leaderboard.names": "new"})
     server.VOLUNTEERS.q("DELETE FROM tasks WHERE id='lbtask000001'")
-    server.MACHINES.q("DELETE FROM machine_jobs WHERE id='lbjob0000001'")
+    server.MACHINES.q("DELETE FROM machine_jobs WHERE id IN ('lbjob0000001', 'lbjob0000002')")
 print("leaderboard OK")
 print("ALL CAMPAIGN TESTS PASSED")

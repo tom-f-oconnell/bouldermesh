@@ -62,8 +62,9 @@ from pathlib import Path
 # 6: updates itself when downloaded into another git repository's folder, and says why if not;
 # 7: keeps a record of its time (usage.jsonl), and says once an hour how the hour went;
 # 8: its version alone on its line, as updating needs (with a comment after it, the server never offered an update)
-# 9: says the name it asks for is shown on the site's public leaderboard
-VERSION = 9
+# 9: says the name it asks for is shown on the site's public leaderboard;
+# 10: measures its jobs' share of the GPU's use, and says which GPU it has, for the leaderboard's compute
+VERSION = 10
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale")     # remote_job.py's: meshing a climb, finding its beta, finding its size
@@ -84,10 +85,19 @@ BUSY_GPU_UTIL = 50          # others' GPU use (%), as a median, over which it ta
 NEED_RAM_GB = float(os.environ.get("BOULDERMESH_NEED_RAM_GB", "24"))
 # seconds between GPU samples, over which others' use makes it hold back, and over which it must be quiet again to stop
 GPU_EVERY, BUSY_WINDOW, QUIET_WINDOW = (float(x) for x in os.environ.get("BOULDERMESH_GPU_WINDOWS", "5,180,300").split(","))
+SHARE_EVERY = 15            # seconds between looks at which of the GPU's processes are a job's, for its share of the GPU's use
 
 
 def log(msg: str) -> None:
     print(time.strftime("%Y-%m-%d %H:%M:%S ") + msg, flush=True)
+
+
+def cgroup_of(pid: int) -> str:
+    """A process's cgroups (/proc/<pid>/cgroup), which name the container it's in, or "" if it can't be read."""
+    try:
+        return Path(f"/proc/{pid}/cgroup").read_text()
+    except OSError:
+        return ""
 
 
 class GpuWatch:
@@ -97,7 +107,63 @@ class GpuWatch:
     def __init__(self):
         self.samples: deque = deque(maxlen=int(QUIET_WINDOW / GPU_EVERY) + 10)     # (time, util %, used MB, total MB, ours)
         self.running, self.ours_until = False, 0.0
+        self.name = self.gpu_name()
+        self.lock = threading.Lock()
+        self.job: dict | None = None    # the job running: {container, id (its full id, once known), busy (s), last}
         threading.Thread(target=self._loop, daemon=True).start()
+
+    @staticmethod
+    def gpu_name() -> str | None:
+        """The first GPU's name ("NVIDIA GeForce RTX 3090"), for the leaderboard to weigh its time by."""
+        try:
+            r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True, timeout=30)
+            return r.stdout.splitlines()[0].strip()[:80] or None
+        except (OSError, subprocess.SubprocessError, IndexError):
+            return None
+
+    def job_start(self, container: str) -> None:
+        """A job's container starts: its share of the GPU's use is measured from now (job_end())."""
+        with self.lock:
+            self.job = {"container": container, "id": None, "busy": 0.0, "last": time.time()}
+
+    def job_end(self) -> dict | None:
+        """The job's GPU use: {name, busy_seconds}: the GPU's utilization while it ran, times the job's share of the
+        memory the processes using the GPU held (all of it when only the job's were), summed over the samples."""
+        with self.lock:
+            job, self.job = self.job, None
+        return {"name": self.name, "busy_seconds": round(job["busy"], 1)} if job else None
+
+    def _job_share(self, util: float) -> None:
+        """Add the running job's part of this sample: the GPU's utilization times the job's share, its processes found
+        by their cgroup (the container's id) among those nvidia-smi says use the GPU. That share is looked at again every
+        SHARE_EVERY seconds, only while a job runs: one more nvidia-smi call then."""
+        with self.lock:
+            job = self.job
+        if not job:
+            return
+        now = time.time()
+        dt, job["last"] = min(now - job["last"], 3 * GPU_EVERY), now
+        if now - job.get("share_at", 0) < SHARE_EVERY:
+            with self.lock:
+                job["busy"] += util / 100 * job.get("share", 0.0) * dt
+            return
+        job["share_at"] = now
+        if not job["id"]:
+            r = subprocess.run(["docker", "inspect", "-f", "{{.Id}}", job["container"]], capture_output=True, text=True, timeout=30)
+            job["id"] = r.stdout.strip() if r.returncode == 0 else None
+        if not job["id"]:
+            return
+        try:
+            r = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+                               capture_output=True, text=True, timeout=30)
+            apps = [(int(p), float(mb)) for p, mb in (line.split(",") for line in r.stdout.splitlines() if line.strip())]
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return
+        mine = sum(mb for pid, mb in apps if job["id"] in cgroup_of(pid))
+        total = sum(mb for _, mb in apps)
+        job["share"] = mine / total if mine and total else 0.0
+        with self.lock:
+            job["busy"] += util / 100 * job["share"] * dt
 
     @staticmethod
     def sample() -> tuple[float, float, float] | None:
@@ -115,6 +181,10 @@ class GpuWatch:
             s = self.sample()
             if s:
                 self.samples.append((time.time(), *s, self.running or time.time() < self.ours_until))
+                try:
+                    self._job_share(s[0])
+                except (OSError, subprocess.SubprocessError):
+                    pass
             time.sleep(GPU_EVERY)
 
     def ours(self, running: bool) -> None:
@@ -469,7 +539,7 @@ class Worker:
         blocked = update_blocked(self.server.url)
         return {"version": VERSION, "client": f"{socket.gethostname()}: docker {docker.stdout.strip()}, script {VERSION}"
                 + (f"; won't update itself: {blocked.split(',')[0]}" if blocked else ""),
-                "gpu": bool(self.gpu), "cpus": self.args.cpus}
+                "gpu": bool(self.gpu), "cpus": self.args.cpus, "gpu_name": self.watch.name if self.watch else None}
 
     # -- one job --------------------------------------------------------------------------------------------------------
     def do(self, job: dict) -> None:
@@ -504,10 +574,13 @@ class Worker:
                    "nice", "-n", str(self.args.nice), "python3", "/app/backend/remote_job.py", "/job",
                    *(["--task", task] if task != "reconstruct" else []), *(["--internet"] if job.get("internet") else []),
                    *(["--gpu"] if self.gpu else [])]
+            if self.watch:
+                self.watch.job_start(self.container)
             code, last = self.stream(api, cmd, f"remote: running on {socket.gethostname()}" + (" with its GPU" if self.gpu else ""))
+            used = {"gpu": self.watch.job_end()} if self.watch else {}
             self.container = None
             if code:
-                self.server.call(f"{api}/done", {"status": "failed", "error": last or f"the job exited with {code}"})
+                self.server.call(f"{api}/done", {"status": "failed", "error": last or f"the job exited with {code}", **used})
                 log(f"job {jid} failed: {last}")
                 self.outcome = "failed"
                 return
@@ -516,7 +589,7 @@ class Worker:
                     if (work / "job" / part).is_dir():
                         tar.add(work / "job" / part, arcname=part)
             self.send(api, work / "output.tar")
-            self.server.call(f"{api}/done", {"status": "ok"})
+            self.server.call(f"{api}/done", {"status": "ok", **used})
             log(f"job {jid} done")
             self.outcome = "done"
         except Gone as e:
@@ -534,6 +607,8 @@ class Worker:
             log(f"job {jid} failed here: {e}")
             self.outcome = "failed"
         finally:
+            if self.watch:
+                self.watch.job_end()
             self.stop_container()
             shutil.rmtree(work, ignore_errors=True)
 

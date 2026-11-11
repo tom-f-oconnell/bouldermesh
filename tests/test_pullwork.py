@@ -726,4 +726,38 @@ assert board.work(board.machine(order_box["token"]), "10.0.0.8", {"version": SCR
 board.jobs.pop(waiting_job.id, None)
 waiting_job.input.unlink(missing_ok=True)
 print("paused OK")
+
+# --- a job's share of the GPU's use, as the script measures it (from version 10): the GPU's utilization times the job's
+# share of the memory the processes using it hold, its processes found by their container; the GPU's name with each ask
+import importlib.util  # noqa: E402
+import types  # noqa: E402
+spec = importlib.util.spec_from_file_location("bouldermesh_worker_gpu", SCRIPT)
+wmod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(wmod)
+calls: list = []
+
+
+def fake_run(cmd, **kw):
+    calls.append(cmd[:2])
+    if cmd[:2] == ["docker", "inspect"]:
+        return types.SimpleNamespace(returncode=0, stdout="abc123def\n")
+    return types.SimpleNamespace(returncode=0, stdout="111, 3000\n222, 1000\n")
+
+
+wmod.subprocess = types.SimpleNamespace(run=fake_run, SubprocessError=Exception)
+wmod.cgroup_of = lambda pid: "0::/system.slice/docker-abc123def.scope" if pid == 111 else "0::/user.slice"
+watch = wmod.GpuWatch.__new__(wmod.GpuWatch)
+watch.lock, watch.job, watch.name = threading.Lock(), None, "NVIDIA GeForce RTX 3090"
+watch.job_start("bmw-abc")
+watch.job["last"] = time.time() - 10
+watch._job_share(80.0)                      # 80% busy for 10 s, three quarters of it the job's
+watch.job["last"] = time.time() - 5
+watch._job_share(40.0)                      # within SHARE_EVERY: the share as it was
+used = watch.job_end()
+assert used["name"] == "NVIDIA GeForce RTX 3090" and abs(used["busy_seconds"] - (6.0 + 1.5)) < 0.2, used
+assert calls.count(["nvidia-smi", "--query-compute-apps=pid,used_memory"]) == 1 and watch.job_end() is None
+pat2 = board.add("pat2")
+board.work(board.machine(pat2["token"]), "127.0.0.1", {"version": pullwork.CLIENT_VERSION, "gpu_name": "NVIDIA GeForce RTX 4090", "gpu": True})
+assert board.q("SELECT gpu_name FROM machines WHERE id=?", pat2["id"], one=True)["gpu_name"] == "NVIDIA GeForce RTX 4090"
+print("a job's share of the GPU OK")
 print("ALL MACHINES TESTS PASSED")
