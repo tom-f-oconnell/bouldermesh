@@ -140,13 +140,10 @@
   #pieces .list{max-height:260px;overflow:auto;margin-top:6px;display:grid;grid-template-columns:1fr auto;gap:3px 8px;align-items:center}
   #orient{display:none;position:absolute;left:12px;bottom:12px;max-width:430px;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.45;z-index:2}
   #rate{position:absolute;right:12px;bottom:12px;z-index:3;display:flex;flex-direction:column;align-items:flex-end;gap:6px}
-  #rate[hidden],#ratemenu[hidden],#ratebtn[hidden]{display:none}
+  #rate[hidden],#ratemenu[hidden]{display:none}
   #ratemenu{display:flex;flex-direction:column;gap:6px;width:min(300px,calc(100vw - 48px));padding:8px;border-radius:8px;
     background:var(--overlay);border:1px solid var(--line);box-shadow:0 4px 16px rgba(0,0,0,.3);font-size:12px}
   #ratemenu .seg{margin-left:0;align-self:flex-start} #ratemenu .seg button{padding:4px 12px}
-  #ratemenu .top{display:flex;align-items:flex-start;gap:6px}
-  #ratefold{margin-left:auto;padding:0 6px;font-size:14px;line-height:18px;border:0;background:transparent;color:var(--mute);cursor:pointer}
-  #ratefold:hover{color:var(--fg)}
   #ratemenu .ratefoot{display:flex;justify-content:space-between;gap:8px} #ratestate{text-align:right}
   #ratecomment{width:100%;box-sizing:border-box;resize:none;overflow-y:auto;min-height:32px;font:inherit;font-size:13px}
   #ratebtn.r1,#rateseg button.on[data-r="1"]{color:var(--bad)} #ratebtn.r3,#rateseg button.on[data-r="3"]{color:var(--ok)}
@@ -226,7 +223,6 @@
     .prefsbtn{font-size:15px;line-height:1.2;padding-top:2px;padding-bottom:2px} .prefsbtn[aria-expanded=true]{background:var(--line)}
     #hud,#viewnote,#pieces,#orient{display:none!important}
     #ratebtn{font-size:14px;padding:6px 12px} #ratemenu .seg button{padding:7px 14px;font-size:14px} #ratecomment{font-size:16px}
-    #ratefold{font-size:20px;line-height:32px;min-width:40px;padding:0 10px}    /* big enough to tap */
     #vtitle:not(:empty){display:block;position:absolute;top:6px;left:8px;max-width:calc(100% - 16px);font-size:12px;line-height:1.35;
       padding:2px 8px;border-radius:10px;background:var(--overlay-soft);color:var(--fg);white-space:nowrap;overflow:hidden;
       text-overflow:ellipsis;pointer-events:none;z-index:2}
@@ -426,8 +422,7 @@
       <div id="orient"></div>
       <div id="rate" hidden>
         <div id="ratemenu" hidden>
-          <div class="top"><span class="seg" id="rateseg" title="How good this mesh is. Click your choice again to take it back."><button data-r="1">Bad</button><button data-r="2">OK</button><button data-r="3">Good</button></span>
-            <button id="ratefold" title="Fold this away, on every mesh, leaving only its button, which opens it again" aria-label="Fold away">▾</button></div>
+          <span class="seg" id="rateseg" title="How good this mesh is. Click your choice again to take it back."><button data-r="1">Bad</button><button data-r="2">OK</button><button data-r="3">Good</button></span>
           <textarea id="ratecomment" rows="1" maxlength="2000" placeholder="A comment on this mesh (optional)" aria-label="A comment on this mesh"></textarea>
           <div class="meta ratefoot"><span id="rateavg" title="Everyone's ratings, on average: bad 1, OK 2, good 3"></span><span id="ratestate"></span></div>
         </div>
@@ -2184,7 +2179,7 @@ function growComment(){
   t.style.height = Math.min(t.scrollHeight + 2, innerHeight * 0.4) + 'px';
 }
 // the button, for a mesh of the site's (not a file opened here): what this browser said of it, and its menu
-// the box open, or folded away to its button: the same on every mesh until changed, and kept in this browser (bm_rate_open)
+// the box open or closed, as its button last left it: the same on every mesh until changed, and kept in this browser (bm_rate_open)
 let rateOpen = true;
 try { rateOpen = localStorage.getItem('bm_rate_open') !== 'no'; } catch {}
 function setRateOpen(open){
@@ -2202,7 +2197,6 @@ function showRate(changed = false){
   $('#rate').hidden = !id;
   if (!id) return;
   menu.hidden = !rateOpen;
-  btn.hidden = rateOpen;      // folded, only the button shows
   btn.setAttribute('aria-expanded', String(rateOpen));
   if (rateOpen) growComment();
   const r = myRating(id);
@@ -2214,8 +2208,7 @@ function showRate(changed = false){
   if (changed) { showAvg(meshesById[id]?.rating); $('#ratestate').textContent = ''; }
 }
 function flushRating(){ if (ratePending) sendRating(ratePending); }
-$('#ratebtn').onclick = () => setRateOpen(true);
-$('#ratefold').onclick = () => setRateOpen(false);
+$('#ratebtn').onclick = () => setRateOpen(!rateOpen);
 $('#rateseg').querySelectorAll('button').forEach(b => b.onclick = () => {
   const id = shownMesh, r = +b.dataset.r;
   if (!id) return;
