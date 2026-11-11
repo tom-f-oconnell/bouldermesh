@@ -82,6 +82,7 @@ cat "$tmp/protect" - > "$tmp/filter" <<'RULES'
 - /data/**.sqlite-*
 - /data/cache/http/
 - /data/cache/models/
+- /data/cache/terrain/
 - /data/uploads/
 - /data/compute/jobs/
 - /data/volunteers/

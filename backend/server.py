@@ -48,6 +48,7 @@ import compute  # noqa: E402
 import diagnostics  # noqa: E402
 import glbpack  # noqa: E402
 import heading as heading_mod  # noqa: E402
+import terrain as terrain_mod  # noqa: E402
 import meshclean  # noqa: E402
 import meshmetrics  # noqa: E402
 import meshopts  # noqa: E402
@@ -1238,6 +1239,7 @@ def pack_progress() -> dict:
 
 # ------------------------------------------------------------------ which way meshes face, and those nearby (heading.py)
 NEARBY_MOST = 40                  # the most meshes Nearby lists, nearest first
+TERRAIN = DATA / "cache" / "terrain"    # squares of elevation around meshes (terrain.py)
 NEARBY_RADIUS = (5.0, 1000.0)     # the radius it may be asked for, in metres
 
 
@@ -5335,6 +5337,28 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": f"radius: from {NEARBY_RADIUS[0]:g} to {NEARBY_RADIUS[1]:g} metres"}, 400)
                 found = nearby(m[1], radius)
                 return self.send_json(found) if found else self.send_json({"error": "not found"}, 404)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/terrain", p)
+            if m:   # the ground around it, for Nearby: where its heights are, and how they lie around the mesh
+                me = q("SELECT lat, lng FROM meshes WHERE id=?", m[1], one=True)
+                if not me:
+                    return self.send_json({"error": "not found"}, 404)
+                try:
+                    radius = float((qs.get("radius") or ["50"])[0])
+                except ValueError:
+                    return self.send_json({"error": "radius: a number of metres"}, 400)
+                if me["lat"] is None or me["lng"] is None:
+                    return self.send_json({"source": None, "why": "this mesh has no coordinates"})
+                try:
+                    found = terrain_mod.square(TERRAIN, me["lat"], me["lng"], 2 * (1.5 * min(max(radius, 5), 1000) + 40))
+                except Exception as e:
+                    print(f"terrain: {type(e).__name__}: {e}", flush=True)
+                    return self.send_json({"error": f"the elevation service failed: {type(e).__name__}"}, 502)
+                if not found:
+                    return self.send_json({"source": None, "why": "no free elevation data here: only the US's and France's"})
+                return self.send_json({**terrain_mod.placed(found, me["lat"], me["lng"]), "heights": f"/terrain/{found['key']}.bin"})
+            m = re.fullmatch(r"/terrain/([0-9a-f]{16})\.bin", p)
+            if m:   # a square's heights: what's at an address never changes
+                return self.send_file(TERRAIN / f"{m[1]}.bin", cache=f"public, max-age={MESH_CACHE}, immutable")
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/heading", p)
             if m:   # which way it faces: the best known, and each way it was worked out
                 if not (MESHES / m[1]).is_dir():

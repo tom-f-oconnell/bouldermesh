@@ -620,7 +620,7 @@ function surfaceUnder(ev, anySide = false){
   if (!current) return null;
   const r = renderer.domElement.getBoundingClientRect();
   raycaster.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, 1 - (ev.clientY - r.top) / r.height * 2), camera);
-  const cast = () => raycaster.intersectObjects(nearby?.group ? [current, nearby.group] : [current], true).filter(h => h.object.visible && !h.object.userData.beta);
+  const cast = () => raycaster.intersectObjects([current, nearby?.group, nearby?.terrain?.obj].filter(Boolean), true).filter(h => h.object.visible && !h.object.userData.beta);
   const fronts = anySide ? [] : cast().filter(h => !xrayed(h.point));
   if (fronts.length) return fronts[0];
   const sides = backs.map(b => [b.of.material, b.of.material.side]);     // backs are drawn by meshes of their own: these, both sides
@@ -1440,6 +1440,7 @@ document.querySelectorAll('#wiremode button').forEach(b => b.onclick = () => {
 // The background: the theme's plain colour, or a scene: a sky over ground the colour of the rock's foot, with a soft
 // shadow under the rock, and where a mesh has one, the splat of what its photos show around it (backend/splat.py),
 // which leaves out what too few photos saw, so that the sky and ground show there instead
+let terrainShown = false;     // Nearby's terrain is in view, in place of the flat ground and grid
 let bgMode = 'scene'; try { bgMode = localStorage.getItem('bm_bg') === 'solid' ? 'solid' : 'scene'; } catch {}   // a scene unless Solid was chosen
 const SKY = { light: { top: 0x5b8fc7, horizon: 0xdfe7ee, below: 0xb9b2a6 }, dark: { top: 0x0d1828, horizon: 0x3b4a5a, below: 0x1f252c } };
 const sky = new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), new THREE.ShaderMaterial({
@@ -1501,12 +1502,13 @@ function applyScene(){
   const root = document.documentElement, dark = root.dataset.theme === 'dark' || (!root.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
   const s = SKY[dark ? 'dark' : 'light'], on = bgMode === 'scene';
   for (const k of ['top', 'horizon', 'below']) sky.material.uniforms[k].value.setHex(s[k]);
-  backdrop.visible = on; grid.visible = !on;
+  backdrop.visible = on; grid.visible = !on && !terrainShown;
   scene.fog = on ? new THREE.Fog(s.horizon, 8, 140) : null;
   scene.background = new THREE.Color(on ? s.horizon : getComputedStyle(root).getPropertyValue('--bg').trim());
   document.querySelectorAll('#bgmode button').forEach(b => b.classList.toggle('on', b.dataset.bg === bgMode));
   const f = on && current ? current.userData.footing ??= footing(current) : null;
   ground.visible = contact.visible = !!f;     // with no mesh, only the sky: no ground to look down at, or a shadow of nothing
+  if (terrainShown) ground.visible = false;
   if (f) {
     ground.position.y = f.y - .002;
     contact.position.set(f.x, f.y, f.z); contact.scale.set(Math.max(f.w, .1) * 1.5, Math.max(f.d, .1) * 1.5, 1);
@@ -1877,6 +1879,7 @@ const NEARBY_GUESS_M = 8;       // a mesh whose size wasn't found is taken as th
 const FACING = { edited: 'facing as turned by hand', compass: "facing by its photos' compasses", text: "facing by Mountain Project's text, a guess" };
 let nearby = null;    // {id, radius, self: {h, saved, m}, items: [{n, wrap, local, h, saved, state}], group, arrow, picked, seq}
 let nearbyRadius = 50; try { nearbyRadius = +localStorage.getItem('bm_nearby_radius') || 50; } catch {}
+let nearbyTerrain = true; try { nearbyTerrain = localStorage.getItem('bm_nearby_terrain') !== '0'; } catch {}
 const facingText = f => f ? FACING[f.source] || `facing by ${f.source}` : 'facing unknown';
 function clearNearby(){
   if (nearby?.group) {
@@ -1884,7 +1887,9 @@ function clearNearby(){
     scene.remove(nearby.group);
   }
   if (nearby?.arrow) scene.remove(nearby.arrow);
+  if (nearby?.terrain?.obj) { scene.remove(nearby.terrain.obj); nearby.terrain.obj.geometry.dispose(); nearby.terrain.obj.material.dispose(); }
   nearby = null;
+  if (terrainShown) { terrainShown = false; applyScene(); }
   $('#nearby').hidden = true; $('#vnearby').setAttribute('aria-expanded', 'false'); $('#vnearby').textContent = 'Nearby';
 }
 // What a mesh shows of itself, in its own frame (no transform): the middle of where most of it is, and its lowest point
@@ -1937,6 +1942,75 @@ async function loadNeighbour(n){
   });
   return gltf.scene;
 }
+// The ground's height at a point (metres east and north of the mesh in view), above that under the mesh in view: the
+// lowest within a few metres, as the ground beside a rock where lidar kept the rock; null without terrain, or off it
+function groundAt(east, north, raw = false){
+  const t = nearby?.terrain;
+  if (!t?.heights || (!raw && !nearby.useTerrain)) return null;
+  const i = Math.floor((east - t.west_m) / t.dx), j = Math.floor((t.north_m - north) / t.dy), r = Math.max(1, Math.round(3 / t.dx));
+  if (i < 0 || j < 0 || i >= t.nx || j >= t.ny) return null;
+  let low = Infinity;
+  for (let y = Math.max(0, j - r); y <= Math.min(t.ny - 1, j + r); y++)
+    for (let x = Math.max(0, i - r); x <= Math.min(t.nx - 1, i + r); x++) low = Math.min(low, t.heights[y * t.nx + x]);
+  return raw ? low : low - t.ground0;
+}
+async function loadTerrain(nb){
+  try {
+    const t = await api(`/api/meshes/${nb.id}/terrain?radius=${nb.radius}`);
+    if (nearby !== nb) return;
+    if (!t.source) { nb.terrain = { why: t.why }; return renderNearby(); }
+    const res = await fetch(t.heights);
+    if (!res.ok) throw new Error(`the server answered ${res.status}`);
+    const heights = new Float32Array(await res.arrayBuffer());
+    if (nearby !== nb) return;
+    nb.terrain = { ...t, heights };
+    nb.terrain.ground0 = groundAt(0, 0, true) ?? heights[Math.floor(t.ny / 2) * t.nx + Math.floor(t.nx / 2)];
+    nb.terrain.base = new Float32Array(heights.length);
+    const pos = new Float32Array(t.nx * t.ny * 3), index = [];
+    let low = Infinity, high = -Infinity;
+    for (let j = 0; j < t.ny; j++) for (let i = 0; i < t.nx; i++) {
+      const k = j * t.nx + i, h = nb.terrain.base[k] = heights[k] - nb.terrain.ground0;
+      pos[3 * k] = t.west_m + (i + .5) * t.dx; pos[3 * k + 1] = h; pos[3 * k + 2] = -(t.north_m - (j + .5) * t.dy);
+      low = Math.min(low, h); high = Math.max(high, h);
+      if (i < t.nx - 1 && j < t.ny - 1) index.push(k, k + t.nx, k + 1, k + 1, k + t.nx, k + t.nx + 1);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setIndex(index); g.computeVertexNormals();
+    // contour lines every metre (or 2 or 5 where it's steeper), as untextured ground otherwise shows little of its shape
+    const step = high - low < 30 ? 1 : high - low < 80 ? 2 : 5;
+    const m = new THREE.MeshStandardMaterial({ color: 0xa39785, roughness: 1, side: THREE.DoubleSide });
+    m.onBeforeCompile = sh => {
+      sh.vertexShader = 'varying float vHeight;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vHeight = position.y;');
+      sh.fragmentShader = 'varying float vHeight;\n' + sh.fragmentShader.replace('#include <color_fragment>',
+        `#include <color_fragment>\n  float hc = vHeight / ${step.toFixed(1)}; float line = abs(fract(hc - .5) - .5) / max(fwidth(hc), 1e-4);\n  diffuseColor.rgb *= mix(.72, 1., clamp(line, 0., 1.));`);
+    };
+    nb.terrain.obj = new THREE.Mesh(g, m);
+    nb.terrain.obj.userData.terrain = true;
+    nb.terrain.step = step;
+    scene.add(nb.terrain.obj);
+    placeNearby(); renderNearby();
+  } catch (e) { if (nearby === nb) { nb.terrain = { why: `the ground couldn't be fetched (${e.message})` }; renderNearby(); } }
+}
+// The ground under each mesh shown, down to the ground beside it: lidar often keeps a big rock as ground, which would
+// bury the mesh of it (or, with coordinates off, stand beside it, showing where lidar has the rock)
+function flattenUnder(t){
+  const marks = [[0, 0, nearby.self.across / 2, 0], ...nearby.items.filter(it => it.wrap?.visible !== false && it.local)
+    .map(it => [it.n.east_m, it.n.north_m, it.local.extent * it.m / 2, groundAt(it.n.east_m, it.n.north_m) ?? 0])];
+  const sign = JSON.stringify(marks.map(m => m.map(x => Math.round(x * 10))));
+  if (sign === t.flattened) return;
+  t.flattened = sign;
+  const pos = t.obj.geometry.attributes.position;
+  for (let k = 0; k < t.base.length; k++) pos.array[3 * k + 1] = t.base[k];
+  for (const [e, n, r, g] of marks) {
+    const i0 = Math.max(0, Math.floor((e - r - t.west_m) / t.dx)), i1 = Math.min(t.nx - 1, Math.ceil((e + r - t.west_m) / t.dx));
+    const j0 = Math.max(0, Math.floor((t.north_m - n - r) / t.dy)), j1 = Math.min(t.ny - 1, Math.ceil((t.north_m - n + r) / t.dy));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const k = j * t.nx + i, de = t.west_m + (i + .5) * t.dx - e, dn = t.north_m - (j + .5) * t.dy - n;
+      if (de * de + dn * dn <= r * r) pos.array[3 * k + 1] = Math.min(pos.array[3 * k + 1], g);
+    }
+  }
+  pos.needsUpdate = true; t.obj.geometry.computeVertexNormals(); t.obj.geometry.computeBoundingSphere();
+}
 // Where everything goes: the mesh in view stays as it is, and the rest go around it, in its units
 function placeNearby(){
   if (!nearby || !current) return;
@@ -1949,8 +2023,15 @@ function placeNearby(){
     it.wrap.scale.setScalar(k); it.wrap.rotation.set(0, turn, 0);
     const at = new THREE.Vector3(it.n.east_m, 0, -it.n.north_m).applyMatrix4(turn0).multiplyScalar(perMetre).add(c0);
     const mid = it.local.centre.clone().multiplyScalar(k).applyAxisAngle(new THREE.Vector3(0, 1, 0), turn);
-    it.wrap.position.set(at.x - mid.x, -it.local.low * k, at.z - mid.z);
+    it.wrap.position.set(at.x - mid.x, -it.local.low * k + (groundAt(it.n.east_m, it.n.north_m) ?? 0) * perMetre, at.z - mid.z);
   }
+  const t = nearby.terrain;
+  if (t?.obj) flattenUnder(t);
+  if (t?.obj) {    // in metres east, up from this mesh's ground, and south; turned and scaled as the rest
+    t.obj.scale.setScalar(perMetre); t.obj.rotation.set(0, h0, 0); t.obj.position.set(c0.x, 0, c0.z);
+    t.obj.visible = nearby.useTerrain;
+  }
+  if (terrainShown !== !!(t?.obj && nearby.useTerrain)) { terrainShown = !terrainShown; applyScene(); }
   if (nearby.arrow) scene.remove(nearby.arrow);
   const north = new THREE.Vector3(0, 0, -1).applyMatrix4(turn0), length = Math.max(1.5, Math.min(nearby.radius * perMetre * .35, 12));
   nearby.arrow = new THREE.Group();
@@ -1971,7 +2052,7 @@ function northLabel(){
 }
 function seeAllNearby(){
   if (!nearby?.group || !current) return;
-  const box = new THREE.Box3().setFromObject(current).union(new THREE.Box3().setFromObject(nearby.group));
+  const box = new THREE.Box3().setFromObject(current).union(new THREE.Box3().setFromObject(nearby.group));     // the meshes, not all the ground
   const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() / 2;
   const away = camera.position.clone().sub(controls.target).normalize();
   endSway(); controls.target.copy(c);
@@ -1991,6 +2072,9 @@ async function showNearby(radius){
   if (nearby !== mine) return;
   const own = ownMeasure(current), s = current.scale.x;
   mine.self = { h: data.self.heading?.deg ?? 0, saved: data.self.heading, m: data.self.metres_per_unit || NEARBY_GUESS_M / (own.extent / s), guessed: !data.self.metres_per_unit };
+  mine.self.across = own.extent / s * mine.self.m;      // metres
+  mine.useTerrain = nearbyTerrain;
+  loadTerrain(mine);
   mine.more = data.more;
   mine.items = data.meshes.map(n => ({ n, h: n.heading?.deg ?? 0, saved: n.heading, state: n.filename.toLowerCase().endsWith('.glb') ? 'waiting' : 'not a GLB' }));
   scene.add(mine.group);
@@ -2041,9 +2125,11 @@ function renderNearby(){
     ${nb?.error ? `<div class="note">Couldn't find them: ${esc(nb.error)}</div>` : ''}
     ${nb?.self ? `<div class="note">${nb.items.length ? `${nb.items.length} within ${nb.radius} m${nb.more ? `, and ${nb.more} more not shown` : ''}.` : `No other meshes within ${nb.radius} m.`}
       This one is ${facingText(nb.self.saved)}${nb.self.guessed ? ', its size guessed' : ''}. <button class="sm sec" data-pick="${nb.id}">Turn it</button></div>` : nb?.loading ? '<div class="note">Looking…</div>' : ''}
+    ${nb?.self ? `<div class="row" style="margin-top:6px"><label><input type="checkbox" id="nb-terrain" ${nb.useTerrain ? 'checked' : ''}> Ground</label>
+      <small class="note" style="margin:0">${nb.terrain?.obj ? `${esc(nb.terrain.name)}, ${Math.round(nb.terrain.dx * 10) / 10} m apart; lines every ${nb.terrain.step} m` : nb.terrain ? esc(nb.terrain.why || '') : 'fetching…'}</small></div>` : ''}
     ${list ? `<div class="list">${list}</div>` : ''}
     ${turning}
-    <div class="note">Placed by Mountain Project's coordinates, which are often 5–20 m off, at real size where it was found, upright, on one level. The red arrow points north${nb?.self && !nb.self.saved ? ', as far as this mesh knows, which is not at all yet' : ''}.</div>`;
+    <div class="note">Placed by Mountain Project's coordinates, which are often 5–20 m off, at real size where it was found, upright, ${nb?.terrain?.obj && nb.useTerrain ? 'each on the ground at its point (bare earth: lidar has the rocks taken out, or not)' : 'on one level'}. The red arrow points north${nb?.self && !nb.self.saved ? ', as far as this mesh knows, which is not at all yet' : ''}.</div>`;
 }
 function setTurn(deg){
   const nb = nearby, it = nb && nearbyItem(nb.picked);
@@ -2072,6 +2158,11 @@ $('#vnearby').onclick = () => {
 $('#nearby').addEventListener('click', ev => {
   const b = ev.target.closest('button'), cb = ev.target.closest('input[type=checkbox]');
   if (cb?.dataset.show) { const it = nearbyItem(cb.dataset.show); if (it?.wrap) { it.wrap.visible = cb.checked; woke(); } return; }
+  if (cb?.id === 'nb-terrain') {
+    nearbyTerrain = cb.checked; try { localStorage.setItem('bm_nearby_terrain', cb.checked ? '1' : '0'); } catch {}
+    if (nearby) { nearby.useTerrain = cb.checked; placeNearby(); renderNearby(); }
+    return;
+  }
   if (!b) return;
   if (b.dataset.close !== undefined) { $('#nearby').hidden = true; $('#vnearby').setAttribute('aria-expanded', 'false'); }
   else if (b.dataset.go !== undefined) {

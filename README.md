@@ -386,12 +386,16 @@ design.md, "Loading meshes quickly"), and a mesh's own files stay as they were, 
 many it has made, which it's making, and about how long the rest will take.
 
 *Nearby* in the view's bar shows the meshes around the one in view: within 50 m to start (the box it opens changes the
-radius), each placed by its coordinates, at its real size where that was found, upright, on one level, with a red arrow
+radius), each placed by its coordinates, at its real size where that was found, upright, on the ground, with a red arrow
 pointing north. Which way each faces is the best known of: turned by hand, its photos' compass readings, Mountain
 Project's text naming its face ("the north face", or an area named "... - Southeast Face"), a guess the others replace,
 or unknown (as made). *Turn* (or clicking one in the view) turns a mesh; an editor's *Save facing* keeps it for everyone.
 Coordinates are often 5-20 m off, and several climbs often share one point, so it's a rough layout (design.md, "Placing
-meshes together").
+meshes together"). *Ground* (on to start) lays the terrain under them, untextured, with a line every metre of height
+(or 2 or 5 where steeper): USGS 3DEP's lidar elevation in the US (1 m apart where it has it, about 10 m elsewhere) and
+IGN's in France (1 m), nothing elsewhere. Each mesh then stands on the ground at its point. Lidar often keeps big rocks
+as ground, so the ground under each mesh shown is lowered to that beside it; a bump left near a mesh is often its rock,
+where lidar has it rather than where the coordinates say. The squares fetched are kept in `data/cache/terrain`.
 
 If a browser can't load a mesh's texture, the viewer tries it smaller, then says why on the view. Grey
 on a mesh means no photo shows that side, including the backs of surfaces.
@@ -949,6 +953,7 @@ Security, then WAF, then *Rate limiting rules* (or *Security rules*, then a rate
     backend/splat.py               splats of the scene around a mesh, for the viewer's Scene background (off: SPLATS=1)
     backend/glbpack.py, glbpack.mjs  compressed and simplified copies of meshes for the viewer (meshoptimizer, in vendor/)
     backend/heading.py             which way a mesh faces, for placing meshes around each other (the viewer's Nearby)
+    backend/terrain.py             the ground around a place, from USGS's and IGN's lidar elevation, for Nearby
     volunteer/bouldermesh_volunteer.py  the script volunteers run
     backend/proxy_ranges.py        whether the Caddyfile's trusted proxies are still Cloudflare's
     backend/policy.py              which photos are free to copy, and what the site may show
@@ -1024,6 +1029,9 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     GET  /meshes/{id}/cleanup_faces.bin?lod=full|preview  its cleanup's piece of each face, in that copy's order
     GET  /api/meshes/{id}/nearby?radius=50               the meshes within that many metres (5-1000), nearest first, 40 at
                                                         most: east_m, north_m, metres_per_unit, heading, pack, v each
+    GET  /api/meshes/{id}/terrain?radius=50              the ground around it: {source, nx, ny, west_m, north_m (its NW
+                                                        corner from the mesh), dx, dy, heights: /terrain/{key}.bin, float32
+                                                        metres row by row from the NW}, or {source: null, why}
     GET  /api/meshes/{id}/heading · PATCH {deg}          which way it faces ({deg, source, detail}: its -Z axis's compass
                                                         bearing), and each way it was worked out; PATCH turns it by hand,
                                                         {"deg": null} goes back to what's worked out
@@ -1056,6 +1064,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_glbpack.py     # offline: packed and simplified copies for the viewer, and their cleanups (needs node or deno)
     python3 tests/test_worker_setup.py # offline: the worker's --setup and Docker check, on machines described, not changed
     python3 tests/test_heading.py     # offline: which way a mesh faces, from photos' compasses and Mountain Project's text
+    python3 tests/test_terrain.py     # offline: elevation squares, with stand-ins for USGS's and IGN's services
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
     python3 tests/test_scale.py       # offline: sizing people, objects and the rock on scenes built with known sizes
     python3 tests/test_youtube.py     # offline: telling a climb's videos apart, climbers' sizes in text, leaving YouTube alone when it refuses

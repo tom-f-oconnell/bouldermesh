@@ -81,7 +81,7 @@ def main() -> None:
     admin_port = free_port()
     ADMIN = f"http://127.0.0.1:{admin_port}"
     env = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(port), HOST="127.0.0.1", HTTP_MIN_INTERVAL="0", ADMIN_PORT=str(admin_port),
-               STOP_WAIT_MINUTES="0.2", HTTP_ALLOW_PRIVATE="1")     # the "web photos" are fetched from this server itself
+               STOP_WAIT_MINUTES="0.2", HTTP_ALLOW_PRIVATE="1", TERRAIN_OFFLINE="1")     # the "web photos" are fetched from this server itself
     env.pop("HARVEST_DDG", None)
     srv =subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -434,6 +434,10 @@ def run(B: str, tmp: Path) -> None:
         assert req(B, "PATCH", f"/api/meshes/{mid}/heading", {"deg": "east"})[0] == 400
         st, h = req(B, "PATCH", f"/api/meshes/{mid}/heading", {"deg": None})
         assert st == 200 and h["heading"] is None and req(B, "GET", f"/api/meshes/{mid}/heading")[1]["heading"] is None, h
+        st, ground = req(B, "GET", f"/api/meshes/{um['id']}/terrain?radius=50")
+        assert st == 200 and ground["source"] is None and "no free elevation data" in ground["why"], ground   # TERRAIN_OFFLINE
+        assert req(B, "GET", f"/api/meshes/{um['id']}/terrain?radius=far")[0] == 400 and req(B, "GET", "/api/meshes/000000000000/terrain")[0] == 404
+        assert status_of(f"{B}/terrain/0123456789abcdef.bin") == 404
         print("nearby and facing OK")
         st, bad = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": [0, 1]})
         assert st == 400 and "at least one" in bad["error"], bad

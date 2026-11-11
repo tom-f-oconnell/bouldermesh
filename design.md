@@ -440,13 +440,24 @@ each mesh by the difference between its heading and the one in view's, and place
 in metres, turned by the one in view's heading, at the size scale.py found (else taken as 8 m across), with its
 lowest point on the ground. Nearby loads each mesh's preview copy, about 1 MB, and hides its stray pieces.
 
+**The ground** (`backend/terrain.py`) comes from lidar elevation: USGS 3DEP in the US, from its ImageServer, which
+answers with the best it has (1 m at Joshua Tree, the Buttermilks, Hueco Tanks, Red Rocks and Yosemite; 1/3 arc-second,
+about 10 m, the rest of the US), and IGN's RGE ALTI in France (1 m, from the Géoplateforme's WMS); nowhere else yet
+(Copernicus's 30 m would cover the world, but comes as tiled GeoTIFFs to read in parts). A square, 300 m across for 50 m
+of Nearby, up to 3000 m at 6 m apart, around a point snapped to 0.0005° (so meshes near each other share one), is
+fetched once and kept: at Joshua Tree, 300 x 300 heights in 3 s, with 65 m of relief over 300 m. USGS's service now and
+then answers 502, so it's asked up to three times. Both are bare earth, and in Joshua Tree lidar kept the boulders as
+ground: the Manx Boulders stand as bumps around their meshes. So the ground under each mesh shown is lowered to the
+lowest within 3 m of its point, and each mesh stands at that height; a bump left beside a mesh is usually its rock where
+lidar has it, which says how far its coordinates are off. Untextured ground shows its shape poorly in flat light, so it
+has a darker line every metre of height (2 or 5 where it rises more than 30 or 80 m).
+
 Other ways to tell, not built: the sun, fitted from how bright each part of the rock is against which way it faces in a
 photo of known time (perhaps 10-20 meshes: few photos have a time, fewer a time zone, camera clocks are often hours off,
 and video frames have no time of day); and the skyline in frames, matched against the horizon worked out from
 elevation data at the climb's coordinates (open terrain only). USGS 3DEP's 1 m lidar elevation covers Joshua Tree, the
 Buttermilks, Hueco Tanks, Red Rocks and Yosemite (its 1/3 arc-second, about 10 m, the whole US), from one request a
-square: 300 m at Joshua Tree came in 9 s as 360 KB of heights, 65 m of relief. It would also stand each mesh on the
-ground's height rather than one level, and show the terrain around.
+square: 300 m at Joshua Tree came in 9 s as 360 KB of heights, 65 m of relief (now shown under Nearby, above).
 
 ## Which way is down (`backend/orientation.py`)
 
