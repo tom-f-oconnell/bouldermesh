@@ -56,6 +56,11 @@ GONE_AFTER, GONE_AFTER_OLD = 30 * 60, 26 * 3600
 VIDEO_FORMAT = "bv*[height<=1080]/b"   # as the harvest downloads: video only, no audio
 VIDEO_EXT = {"mp4", "webm", "mkv", "mov", "m4v", "3gp"}
 FAILED_DAYS = 30            # a video that failed for good isn't asked for again for this long
+# what YouTube says of a video that won't come however often it's asked: removed, private, members-only, or its account
+# closed. Volunteer scripts say so themselves (their FOR_GOOD, with more), but before version 7 missed "This video is
+# unavailable", which was then asked for 3 times: this catches that from any script. Not "try again later" (a refusal).
+FOR_GOOD = re.compile(r"video unavailable|video is unavailable|video is no longer available|private video|video is private|"
+                      r"has been removed|members[- ]only|account associated with this video has been terminated", re.I)
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 CHANNEL_ID = re.compile(r"UC[A-Za-z0-9_-]{22}")
 WORDS = re.compile(r"[^\x00-\x1f\x7f]{3,200}")
@@ -399,7 +404,9 @@ class Broker:
                 until = max(v.get("refused_until") or 0, now + THROTTLE_REST)
                 self.q("UPDATE volunteers SET refused_until=?, rest_why='throttled' WHERE id=?", until, v["id"])
             if status != "ok":
-                self._failed(t, str(report.get("error") or "failed")[:500], bool(report.get("permanent")))
+                error = str(report.get("error") or "failed")[:500]
+                self._failed(t, error, bool(report.get("permanent"))
+                             or bool(FOR_GOOD.search(error) and not re.search(r"try again later", error, re.I)))
                 f.unlink(missing_ok=True)
                 return {"ok": True}
             if t["kind"] == "search":

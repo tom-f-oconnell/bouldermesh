@@ -51,9 +51,10 @@ import urllib.request
 from collections import deque
 from pathlib import Path
 
-VERSION = 5                 # 2: takes task.json for a reconstruction; 3: updates itself when the server says to;
+VERSION = 6                 # 2: takes task.json for a reconstruction; 3: updates itself when the server says to;
                             # 4: holds back while others keep its GPU busy or its memory is short, and says so;
-                            # 5: says goodbye when it stops, so that the server knows at once it's gone
+                            # 5: says goodbye when it stops, so that the server knows at once it's gone;
+                            # 6: updates itself when downloaded into another git repository's folder, and says why if not
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale")     # remote_job.py's: meshing a climb, finding its beta, finding its size
@@ -147,6 +148,19 @@ class NotHere(Exception):
 auto_update = True          # --no-auto-update turns it off
 
 
+def tracked_by_git(me: Path) -> bool:
+    """Whether this file is the one a git checkout of BoulderMesh has (a developer's, which git pull updates): one git
+    tracks there. A copy downloaded into another repository's folder isn't; without git to ask, the repository's layout
+    says (worker/ in a checkout)."""
+    if not any((d / ".git").exists() for d in me.parents):
+        return False
+    try:
+        return subprocess.run(["git", "-C", str(me.parent), "ls-files", "--error-unmatch", me.name],
+                              capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return me.parent.name == "worker" and (me.parent.parent / ".git").exists()
+
+
 def update_blocked(server: str) -> str | None:
     """Why this script can't update itself from the server, or None if it can: only when allowed, over HTTPS (or to
     this machine), where it may replace its own file, and not in a git checkout (as a developer's), which git updates."""
@@ -157,7 +171,7 @@ def update_blocked(server: str) -> str | None:
         return "--no-auto-update"
     if u.scheme != "https" and u.hostname not in ("localhost", "127.0.0.1", "::1"):
         return "only over HTTPS"
-    if any((d / ".git").exists() for d in me.parents):
+    if tracked_by_git(me):
         return "it's in a git checkout, which git pull updates"
     if not (os.access(me, os.W_OK) and os.access(me.parent, os.W_OK)):
         return f"it can't replace {me}"
@@ -390,7 +404,9 @@ class Worker:
         docker = subprocess.run(["docker", "version", "--format", "{{.Server.Version}}"], capture_output=True, text=True)
         if docker.returncode:
             raise SystemExit(f"can't use Docker: {(docker.stderr or docker.stdout).strip()[-300:]}")
-        return {"version": VERSION, "client": f"{socket.gethostname()}: docker {docker.stdout.strip()}, script {VERSION}",
+        blocked = update_blocked(self.server.url)
+        return {"version": VERSION, "client": f"{socket.gethostname()}: docker {docker.stdout.strip()}, script {VERSION}"
+                + (f"; won't update itself: {blocked.split(',')[0]}" if blocked else ""),
                 "gpu": bool(self.gpu), "cpus": self.args.cpus}
 
     # -- one job --------------------------------------------------------------------------------------------------------

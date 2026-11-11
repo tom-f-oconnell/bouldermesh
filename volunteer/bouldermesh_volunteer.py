@@ -40,7 +40,9 @@ from pathlib import Path
 
 VERSION = 6                 # 3: updates itself when the server says to; 4: then updates yt-dlp and Deno at once;
                             # 5: tells the server of signs YouTube is degrading or throttling it, and rests when throttled;
-                            # 6: says it's still there while it waits (every 10 min), and goodbye when it stops
+                            # 6: says it's still there while it waits (every 10 min), and goodbye when it stops;
+                            # 7: updates itself when downloaded into another git repository's folder, says why if it
+                            # doesn't, and takes "This video is unavailable" as for good
 SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
 AGENT = "bouldermesh-volunteer"
 TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
@@ -62,7 +64,8 @@ DEGRADED = re.compile(r"PO Token|po_token|SABR|Signature extraction failed|nsig 
 THROTTLED = re.compile(r"HTTP Error 403|unable to download video data|giving up after \d+ retries", re.I)
 SLOW_KBPS = 128             # a whole video arriving slower than this (and than a third of this computer's usual) is throttled
 THROTTLE_HOURS = 1          # rest after YouTube throttles
-FOR_GOOD = re.compile(r"Video unavailable|Private video|has been removed|members[- ]only|not available in your country|"
+FOR_GOOD = re.compile(r"Video unavailable|video is unavailable|video is no longer available|Private video|video is private|"
+                      r"has been removed|members[- ]only|not available in your country|"
                       r"account associated with this video has been terminated|copyright|confirm your age|age[- ]restricted|"
                       r"is not a valid URL|larger than max-filesize", re.I)
 KEEP = ("title", "uploader", "channel", "channel_id", "channel_url", "uploader_url", "duration", "upload_date",
@@ -181,6 +184,19 @@ def forget_token(home) -> bool:
 auto_update = True          # --no-auto-update turns it off
 
 
+def tracked_by_git(me: Path) -> bool:
+    """Whether this file is the one a git checkout of BoulderMesh has (a developer's, which git pull updates): one git
+    tracks there. A copy downloaded into another repository's folder isn't; without git to ask, the repository's layout
+    says (volunteer/ in a checkout)."""
+    if not any((d / ".git").exists() for d in me.parents):
+        return False
+    try:
+        return subprocess.run(["git", "-C", str(me.parent), "ls-files", "--error-unmatch", me.name],
+                              capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return me.parent.name == "volunteer" and (me.parent.parent / ".git").exists()
+
+
 def update_blocked(server: str) -> str | None:
     """Why this script can't update itself from the server, or None if it can: only when allowed, over HTTPS (or to
     this machine), where it may replace its own file, and not in a git checkout (as a developer's), which git updates."""
@@ -191,7 +207,7 @@ def update_blocked(server: str) -> str | None:
         return "--no-auto-update"
     if u.scheme != "https" and u.hostname not in ("localhost", "127.0.0.1", "::1"):
         return "only over HTTPS"
-    if any((d / ".git").exists() for d in me.parents):
+    if tracked_by_git(me):
         return "it's in a git checkout, which git pull updates"
     if not (os.access(me, os.W_OK) and os.access(me.parent, os.W_OK)):
         return f"it can't replace {me}"
@@ -600,7 +616,8 @@ class Volunteer:
         while True:
             self.wait_turn()
             try:
-                r = self.server.call("/volunteer/api/work", {"version": VERSION, "client": f"script {VERSION}, yt-dlp {version}",
+                r = self.server.call("/volunteer/api/work", {"version": VERSION, "client": f"script {VERSION}, yt-dlp {version}"
+                                                             + (f"; won't update itself: {blocked.split(',')[0]}" if blocked else ""),
                                                              "per_hour": self.per_hour, "per_day": self.per_day, "kinds": KINDS,
                                                              "updates": updates})
             except urllib.error.HTTPError as e:

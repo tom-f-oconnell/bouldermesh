@@ -323,9 +323,11 @@ From version 3, the script updates itself: each time it asks for work it says it
 newer version (its `VERSION` line is higher), the server answers with that version and its SHA-256 instead of work.
 The script downloads it from the same server, checks both, replaces its own file (keeping the one before as
 `previous.py` in its folder) and starts again with the same arguments. It only asks between one fetch and the next, so
-nothing is cut short. It doesn't over plain HTTP (except to this machine), where it can't write its own file, in a git
-checkout (git updates that), or with `--no-auto-update` or `--once` (or the worker's `--check`): then it says a
-newer one is there.
+nothing is cut short. It doesn't over plain HTTP (except to this machine), where it can't write its own file, as the
+file a git checkout of BoulderMesh tracks (git updates that; from version 7, a copy downloaded into some other
+repository's folder updates itself, which version 6 and before didn't), or with `--no-auto-update` or `--once` (or the
+worker's `--check`): then it says a newer one is there, and from version 7 (the worker's 6) tells the server why, which
+the admin page shows after the script's version.
 Scripts older than 3 never say they can, and get work as before. A script below `CLIENT_VERSION` gets 426 with the
 same update, which a script that can uses; otherwise it stops, as before. The worker script does the same, between jobs.
 This trusts the server with what the volunteer's computer runs, as downloading the script from it already did.

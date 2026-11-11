@@ -522,6 +522,15 @@ try:
     assert not board.jobs or all(j.machine != hal["id"] for j in board.jobs.values()), "given no job meanwhile"
     r = subprocess.run([sys.executable, str(SCRIPT), *args, "--once"], env=ENV, capture_output=True, text=True, timeout=120)
     assert "it doesn't update itself (it's in a git checkout" in r.stdout and SCRIPT.read_bytes() != NEWER.encode(), r.stdout
+    assert board.q("SELECT client FROM machines WHERE id=?", hal["id"], one=True)["client"].endswith(
+        "; won't update itself: it's in a git checkout"), "and the server's told why"
+    other = TMP / "their-repo" / "tools"     # downloaded into another repository's folder, untracked: it updates itself
+    other.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(other.parent)], check=True)
+    theirs = other / "bouldermesh_worker.py"
+    shutil.copy2(SCRIPT, theirs)
+    r = subprocess.run([sys.executable, str(theirs), *args], env=ENV, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0 and f"updated itself from version {SCRIPT_VERSION} to 99" in r.stdout and theirs.read_text() == NEWER, r.stdout + r.stderr
 finally:
     pullwork.SCRIPT = served
 print("updating itself OK")

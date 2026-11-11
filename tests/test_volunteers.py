@@ -54,6 +54,8 @@ if vid.startswith("slow"):
     import time; time.sleep(30)
 if vid.startswith("private"):
     sys.stderr.write("ERROR: [youtube] " + vid + ": Private video. Sign in if you've been granted access to this video\\n"); sys.exit(1)
+if vid.startswith("unavail"):
+    sys.stderr.write("ERROR: [youtube] " + vid + ": This video is unavailable\\n"); sys.exit(1)
 if vid.startswith("degraded"):
     sys.stderr.write("WARNING: [youtube] " + vid + ": nsig extraction failed: Some formats may be missing\\n"
                      "ERROR: [youtube] " + vid + ": Requested format is not available\\n"); sys.exit(1)
@@ -209,6 +211,16 @@ def broker_alone() -> None:
                           "description": "I'm 180 cm tall"}, got[-1]
     b.want("video", "fffffffffff", "harvest", "p10")
     assert b.cancel() >= 1 and not b.q("SELECT 1 FROM tasks WHERE state='queued'")
+    # what won't come however often it's asked fails at once, though a script before 7 didn't say so; "try again
+    # later" (a refusal, as the script takes it) might pass
+    for vid, error, state in (("ggggggggggg", "ERROR: [youtube] ggggggggggg: This video is unavailable", "failed"),
+                              ("hhhhhhhhhhh", "ERROR: [youtube] hhhhhhhhhhh: Video unavailable. This content isn't available, "
+                                              "try again later.", "queued")):
+        b.want("video", vid, "harvest", "p11")
+        t = b.work(dave, "203.0.113.20", kinds=kinds)["task"]
+        b.finish(dave, t["id"], {"status": "failed", "error": error})
+        assert b.q("SELECT state, tries FROM tasks WHERE id=?", t["id"], one=True) == {"state": state, "tries": 1}, vid
+    b.cancel()
     print("broker OK")
 
 
@@ -315,6 +327,18 @@ def script_and_broker() -> None:
         assert "resting 1 h" in out and health()["health"] == "throttled" and health()["rest_why"] == "throttled", out
         assert "throttling" in call(base + "/volunteer/api/work", {"version": 5}, token)[1]["why"]
         b.q("UPDATE volunteers SET refused_until=NULL")
+        # a video YouTube says is unavailable: the script says it won't ever come (with the server's own check off here)
+        real_for_good, volunteers.FOR_GOOD = volunteers.FOR_GOOD, re.compile(r"(?!)")
+        state = json.loads((TMP / "home" / "state.json").read_text())     # the throttling just above left it resting
+        (TMP / "home" / "state.json").write_text(json.dumps({**state, "rest_until": 0, "fetched": []}))
+        b.q("DELETE FROM tasks WHERE state='queued'")     # the throttled one, asked for again
+        try:
+            b.want("video", "unavailable", "harvest", "p4")
+            out = volunteer()
+            assert "This video is unavailable" in out, out
+            assert b.q("SELECT state, tries FROM tasks WHERE video_id='unavailable'", one=True) == {"state": "failed", "tries": 1}
+        finally:
+            volunteers.FOR_GOOD = real_for_good
         # joining and leaving (presence.py): each run above said goodbye as it stopped, and a wait keeps in touch
         row = b.q("SELECT active_at, bye_at FROM volunteers", one=True)
         assert row["bye_at"] and row["active_at"] - row["bye_at"] < 5, row     # since, only the ask for work just above
@@ -784,6 +808,18 @@ def updating() -> None:
         r = subprocess.run([sys.executable, str(SCRIPT), "--server", base, "--token", token, "--agree", "--once", "--yt-dlp", str(fake),
                             "--home", str(TMP / "hu")], env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
         assert "it doesn't update itself (it's in a git checkout" in r.stdout and "newer version of this script (99)" in r.stdout, r.stdout
+        assert b.q("SELECT client FROM volunteers", one=True)["client"].endswith("; won't update itself: it's in a git checkout"), \
+            "and the server's told why"
+        # downloaded into another repository's folder, where git doesn't track it: a volunteer's copy, which updates itself
+        other = TMP / "their-repo" / "tools"
+        other.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(other.parent)], check=True)
+        theirs = other / "bouldermesh_volunteer.py"
+        shutil.copy2(SCRIPT, theirs)
+        r = subprocess.run([sys.executable, str(theirs), "--server", base, "--token", token, "--agree", "--yt-dlp", str(fake),
+                            "--home", str(TMP / "hu")], env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        assert r.returncode == 0 and f"updated itself from version {SCRIPT_VERSION} to 99" in r.stdout and theirs.read_text() == NEWER, \
+            r.stdout + r.stderr
         # a script too old to be served at all is told how to update, and does
         shutil.copy2(SCRIPT, here)
         volunteers.CLIENT_VERSION, old_min = 50, volunteers.CLIENT_VERSION

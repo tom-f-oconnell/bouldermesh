@@ -668,8 +668,8 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   `deploy/bouldermesh-worker.service` runs it under systemd. If this server won't take its token (unknown, revoked or
   turned down), it forgets it, warns, and registers a new one, as with none, which waits for *Approve* again. When the
   server serves a newer version of the script, it replaces itself with that between jobs, never during one, and starts
-  again (`--no-auto-update` stops that; a copy in a git checkout, as `deploy/bouldermesh-worker.service` runs, is left
-  to git). If the script is too old and can't update itself, it says so and exits with status 3, which the unit doesn't
+  again (`--no-auto-update` stops that; the repository's own copy, which `deploy/bouldermesh-worker.service` runs, is
+  left to git, and the admin page shows why a machine doesn't update). If the script is too old and can't update itself, it says so and exits with status 3, which the unit doesn't
   restart. `--forget-token` forgets the
   remembered token, and `--register` makes a new one in its place. Jobs' photos and results, and the models they download (a
   few GB), go there too, or in `--data DIR`, such as on a bigger disk. Before starting, and before each job, it checks
