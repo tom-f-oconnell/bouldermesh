@@ -716,7 +716,16 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   machine, which needs Python 3.9, Docker you may use, and NVIDIA's container toolkit for the GPU, run:
 
       curl -O https://<site>/worker/bouldermesh_worker.py      # or worker/bouldermesh_worker.py in this repository
+      python3 bouldermesh_worker.py --setup                    # Debian or Ubuntu: Docker and NVIDIA's toolkit, if missing
       python3 bouldermesh_worker.py --server https://<site> --cpus 12 --check
+
+  `--setup` installs what's missing: Docker (Debian's or Ubuntu's own docker.io package), NVIDIA's container toolkit
+  (from NVIDIA's repository) if the machine has an NVIDIA GPU with its driver, and your place in the docker group, which
+  gives your account root on the machine in effect. It shows each step's commands and runs them only if you say so,
+  apt asking its own question as well. It never installs a GPU driver (that needs a reboot and can clash with a CUDA you
+  have: on Ubuntu, `sudo ubuntu-drivers install`), and asks before restarting Docker, saying how many containers that
+  stops. Elsewhere it says what to install by hand. Started without Docker, or without the toolkit on a machine with an
+  NVIDIA GPU, the script says so and stops, before registering.
 
   The first time, it makes the machine's token, asks a name (optional) and registers it; the machine then waits under
   *Machines* (shown with this choice) for *Approve*, here or from a notification on your phone (see "Approving
@@ -1008,6 +1017,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_diagnostics.py # offline: what's recorded when real processes fail or get killed
     python3 tests/test_meshclean.py   # offline: finding and hiding stray pieces on small GLBs, the cleaned download
     python3 tests/test_glbpack.py     # offline: packed and simplified copies for the viewer, and their cleanups (needs node or deno)
+    python3 tests/test_worker_setup.py # offline: the worker's --setup and Docker check, on machines described, not changed
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
     python3 tests/test_scale.py       # offline: sizing people, objects and the rock on scenes built with known sizes
     python3 tests/test_youtube.py     # offline: telling a climb's videos apart, climbers' sizes in text, leaving YouTube alone when it refuses

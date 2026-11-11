@@ -28,6 +28,10 @@ It takes no climbs while others keep the GPU busy (over 50% as a median over 3 m
 what's free; it tells the server why, which keeps a record of how often each machine works, waits or is held back. A
 climb it has started, it finishes. Its CPU use is held down by --nice and --cpus.
 
+On Debian or Ubuntu, `python3 bouldermesh_worker.py --setup` installs what's missing of Docker and, for an NVIDIA GPU
+with its driver, NVIDIA's container toolkit, and lets you use Docker, asking before each step. It never installs a GPU
+driver, and asks before restarting Docker, which stops containers running then.
+
 When the server has a newer version of this script, it says so when the script asks for a climb, and the script replaces
 itself with that (checked against what the server said of it) and starts again, between one job and the next, never
 during one; --no-auto-update stops that.
@@ -64,7 +68,8 @@ from pathlib import Path
 # 8: its version alone on its line, as updating needs (with a comment after it, the server never offered an update)
 # 9: says the name it asks for is shown on the site's public leaderboard;
 # 10: measures its jobs' share of the GPU's use, and says which GPU it has, for the leaderboard's compute
-VERSION = 10
+# 11: --setup installs Docker and NVIDIA's container toolkit where they're missing; says what's wrong with Docker at once
+VERSION = 11
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale")     # remote_job.py's: meshing a climb, finding its beta, finding its size
@@ -273,6 +278,188 @@ class Gone(Exception):
 
 class NotHere(Exception):
     """This machine can't do a job now, through no fault of the job's: it goes back for another machine."""
+
+
+# -- setting this machine up: Docker, and NVIDIA's container toolkit for its GPU (--setup) -------------------------
+NVIDIA_REPO = "https://nvidia.github.io/libnvidia-container"
+NVIDIA_KEYRING = "/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+INSTALL_DOCS = ("Docker: https://docs.docker.com/engine/install/ and, for an NVIDIA GPU, NVIDIA's container toolkit: "
+                "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html")
+
+
+def os_release() -> dict:
+    """/etc/os-release's fields, or {} where there's none (as on macOS)."""
+    try:
+        lines = Path("/etc/os-release").read_text().splitlines()
+    except OSError:
+        return {}
+    return {k.strip(): v.strip().strip("\"'") for k, sep, v in (line.partition("=") for line in lines) if sep}
+
+
+def machine_state() -> dict:
+    """What --setup, and starting, look at: the system; Docker (installed, and "ok", "denied" to this user or "stopped");
+    whether this user is in the docker group; the containers running; an NVIDIA GPU (with a working driver, or only the
+    hardware); and NVIDIA's container toolkit, and whether Docker has its runtime."""
+    import getpass
+    rel = os_release()
+    ids = {rel.get("ID", "")} | set(rel.get("ID_LIKE", "").split())
+    root = hasattr(os, "geteuid") and os.geteuid() == 0
+    st = {"linux": sys.platform.startswith("linux"), "debian": bool(ids & {"debian", "ubuntu"}),
+          "system": rel.get("PRETTY_NAME") or sys.platform, "root": root,
+          "user": os.environ.get("SUDO_USER") if root else getpass.getuser(),
+          "docker": bool(shutil.which("docker")), "docker_state": None, "runtimes": [], "running": None, "in_group": False,
+          "gpu": False, "gpu_hardware": False,
+          "toolkit": bool(shutil.which("nvidia-ctk") or shutil.which("nvidia-container-runtime-hook")),
+          "have": {tool: bool(shutil.which(tool)) for tool in ("curl", "gpg")}}
+    try:
+        import grp
+        group = grp.getgrnam("docker")
+        import pwd
+        st["in_group"] = bool(st["user"]) and (st["user"] in group.gr_mem or pwd.getpwnam(st["user"]).pw_gid == group.gr_gid)
+    except (ImportError, KeyError):
+        pass
+
+    def quiet(cmd: list[str]) -> subprocess.CompletedProcess | None:
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+    if st["docker"]:
+        r = quiet(["docker", "info", "--format", "{{json .Runtimes}}"])
+        if r and r.returncode == 0:
+            st["docker_state"] = "ok"
+            try:
+                st["runtimes"] = sorted(json.loads(r.stdout or "{}"))
+            except ValueError:
+                pass
+            ps = quiet(["docker", "ps", "-q"])
+            st["running"] = len(ps.stdout.split()) if ps and ps.returncode == 0 else None
+        else:
+            st["docker_state"] = "denied" if r and "permission denied" in r.stderr.lower() else "stopped"
+    smi = shutil.which("nvidia-smi") and quiet(["nvidia-smi", "-L"])
+    st["gpu"] = bool(smi and smi.returncode == 0)
+    lspci = not st["gpu"] and shutil.which("lspci") and quiet(["lspci"])
+    st["gpu_hardware"] = st["gpu"] or bool(lspci and re.search(r"(VGA|3D|Display).*NVIDIA", lspci.stdout, re.I))
+    return st
+
+
+def describe(st: dict) -> str:
+    docker = ("not installed" if not st["docker"] else {"ok": "installed, and you can use it", "denied": "installed, but you can't "
+              "use it yet", "stopped": "installed, but not running"}.get(st["docker_state"], "installed"))
+    gpu = ("an NVIDIA GPU, with its driver" if st["gpu"] else "an NVIDIA GPU, but no driver for it" if st["gpu_hardware"]
+           else "no NVIDIA GPU")
+    toolkit = ("" if not st["gpu"] else "; NVIDIA's container toolkit: " + ("installed" if st["toolkit"] else "not installed")
+               + (", and Docker has its runtime" if "nvidia" in st["runtimes"] else ""))
+    return f"{st['system']}; Docker: {docker}; {gpu}{toolkit}"
+
+
+def setup_steps(st: dict) -> tuple[list[dict], list[str]]:
+    """What --setup would do on a machine in state st (machine_state()), for Debian, Ubuntu and their kin: steps, each
+    {"why", "commands", "warn" (if any)}, in order, and notes on what it won't do. Every install asks apt's own question
+    (no -y), and no step installs a GPU driver, which needs a reboot and can clash with a CUDA already there."""
+    sudo = "" if st["root"] else "sudo "
+    steps, notes = [], []
+    if not st["docker"]:
+        steps.append({"why": "Install Docker: Debian's or Ubuntu's own package of it (docker.io), which every release has",
+                      "commands": [f"{sudo}apt-get update", f"{sudo}apt-get install docker.io"]})
+    elif st["docker_state"] == "stopped":
+        steps.append({"why": "Start Docker, and from now on with the machine", "commands": [f"{sudo}systemctl enable --now docker"]})
+    if not st["root"] and not st["in_group"]:
+        steps.append({"why": f"Let {st['user']} use Docker (the docker group), as jobs run in it as you",
+                      "warn": "anyone who can use Docker can make themselves root on this machine, so this gives your "
+                              "account that. It takes effect when you next log in (or in a shell started by newgrp docker).",
+                      "commands": [f"{sudo}usermod -aG docker {st['user']}"]})
+    elif st["docker_state"] == "denied":
+        notes.append("You're in the docker group, but this login began before you were: log in again (or run newgrp docker), "
+                     "and Docker will let you in.")
+    if st["gpu"]:
+        if not st["toolkit"]:
+            missing = [pkg for tool, pkg in (("curl", "curl"), ("gpg", "gnupg")) if not st["have"][tool]]
+            steps.append({"why": "Install NVIDIA's container toolkit, from NVIDIA's own repository, so that Docker can give jobs the GPU",
+                          "commands": ([f"{sudo}apt-get install {' '.join(missing)}"] if missing else []) + [
+                              f"curl -fsSL {NVIDIA_REPO}/gpgkey | {sudo}gpg --dearmor -o {NVIDIA_KEYRING}",
+                              f"curl -fsSL {NVIDIA_REPO}/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb "
+                              f"[signed-by={NVIDIA_KEYRING}] https://#g' | {sudo}tee /etc/apt/sources.list.d/nvidia-container-toolkit.list",
+                              f"{sudo}apt-get update", f"{sudo}apt-get install nvidia-container-toolkit"]})
+        if not st["toolkit"] or "nvidia" not in st["runtimes"]:
+            running = st["running"] if st["docker"] else 0      # a Docker installed just now has none
+            steps.append({"why": "Give Docker NVIDIA's runtime", "commands": [f"{sudo}nvidia-ctk runtime configure --runtime=docker"]})
+            steps.append({"why": "Restart Docker, for that to take effect",
+                          "warn": None if running == 0 else
+                          (f"this stops the {running} container(s) running now; those set to restart come back by themselves, "
+                           "the rest don't. Say no to do it yourself later (sudo systemctl restart docker)." if running else
+                           "this stops any containers running now; those set to restart come back by themselves, the rest don't. "
+                           "Say no to do it yourself later (sudo systemctl restart docker)."),
+                          "commands": [f"{sudo}systemctl restart docker"]})
+            steps.append({"why": "Check a container can use the GPU (this fetches Ubuntu's image, about 30 MB)",
+                          "commands": [f"{sudo}docker run --rm --gpus all ubuntu nvidia-smi -L"]})
+    elif st["gpu_hardware"]:
+        notes.append("This machine has an NVIDIA GPU, but no driver for it (nvidia-smi doesn't work), which --setup leaves to you, "
+                     "as it needs a reboot and can clash with a CUDA you have: on Ubuntu, sudo ubuntu-drivers install, then "
+                     "reboot, and run --setup again. Until then, jobs run on the CPU, several times slower.")
+    else:
+        notes.append("There's no NVIDIA GPU here, so jobs run on the CPU, several times slower than with one.")
+    return steps, notes
+
+
+def run_steps(steps: list[dict], ask=input, run=None, say=print) -> bool:
+    """Show each step's commands and run them if the answer is yes, stopping at a no or a failure; whether all ran."""
+    run = run or (lambda cmd: subprocess.run(["bash", "-o", "pipefail", "-c", cmd]).returncode)
+    for i, step in enumerate(steps, 1):
+        say(f"\n{i} of {len(steps)}: {step['why']}." + (f"\n  Note: {step['warn']}" if step.get("warn") else ""))
+        for cmd in step["commands"]:
+            say(f"    {cmd}")
+        if ask("Run that? [y/N] ").strip().lower() not in ("y", "yes"):
+            say("Stopped there. Run --setup again for the rest.")
+            return False
+        for cmd in step["commands"]:
+            code = run(cmd)
+            if code:
+                say(f"That failed (exit status {code}): {cmd}\nNothing after it ran.")
+                return False
+    return True
+
+
+def setup() -> int:
+    """--setup: installs what's missing of Docker and NVIDIA's container toolkit, and lets this user use Docker, asking
+    before each step. Never from a self-update or a service: only when its user asks, at a terminal."""
+    st = machine_state()
+    print(f"This machine: {describe(st)}.")
+    if not st["linux"] or not st["debian"]:
+        print(f"--setup installs only on Debian, Ubuntu and systems based on them. Here, install them yourself: {INSTALL_DOCS}")
+        return 1
+    steps, notes = setup_steps(st)
+    for note in notes:
+        print(note)
+    if not steps:
+        print("Nothing to install or change.")
+        return 0
+    if not sys.stdin.isatty():
+        print("--setup asks before each step, so it needs to be run at a terminal.")
+        return 1
+    print("Each step shows its commands first, and runs them only if you say so; sudo asks for your password.")
+    if not run_steps(steps):
+        return 1
+    print(f"\nDone. This machine now: {describe(machine_state())}.")
+    if any("usermod" in cmd for step in steps for cmd in step["commands"]):
+        print("Log in again (or run newgrp docker) before starting the worker, for the docker group to take effect.")
+    print(f"Then: python3 {Path(sys.argv[0]).name} --server https://<the site> --check")
+    return 0
+
+
+def docker_problem(st: dict, gpu: str) -> str | None:
+    """Why jobs can't run in Docker here (with the GPU, as --gpu asks), or None."""
+    if not st["docker"]:
+        return "Docker isn't installed"
+    if st["docker_state"] == "denied":
+        return "you can't use Docker" + (" yet: log in again (or run newgrp docker), as you joined the docker group since"
+                                         if st["in_group"] else " (you aren't in the docker group)")
+    if st["docker_state"] != "ok":
+        return "Docker isn't running"
+    if gpu in ("auto", "all") and st["gpu"] and not st["toolkit"]:
+        return ("this machine has an NVIDIA GPU, but Docker can't give it to jobs, as NVIDIA's container toolkit isn't "
+                "installed (or run with --gpu none, for the CPU only)")
+    return None
 
 
 # -- updating itself ------------------------------------------------------------------------------------------------
@@ -882,7 +1069,11 @@ def main() -> None:
     ap.add_argument("--once", action="store_true", help="ask for one job, do it if there's one, and stop")
     ap.add_argument("--no-auto-update", action="store_true", help="don't replace this script with a newer one when the server "
                     "has one (it says so instead)")
+    ap.add_argument("--setup", action="store_true", help="install what's missing of Docker and NVIDIA's container toolkit, "
+                    "on Debian or Ubuntu, asking before each step, and stop")
     args = ap.parse_args()
+    if args.setup:
+        raise SystemExit(setup())
     global auto_update
     auto_update = not args.no_auto_update
     home = Path(args.home).expanduser()
@@ -902,6 +1093,10 @@ def main() -> None:
         else:
             conf[k] = getattr(args, k)
     args.gpu = args.gpu or "auto"
+    problem = docker_problem(machine_state(), args.gpu)
+    if problem:     # before registering a machine that can't work
+        raise SystemExit(f"{problem}. On Debian or Ubuntu, python3 {Path(sys.argv[0]).name} --setup can fix that"
+                         + ("" if problem.startswith("you can't use Docker yet") else f"; elsewhere, see {INSTALL_DOCS}"))
     if args.data:
         args.data = conf["data"] = str(Path(args.data).expanduser().resolve())
         Path(args.data).mkdir(parents=True, exist_ok=True)
