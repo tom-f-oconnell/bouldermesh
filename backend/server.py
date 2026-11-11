@@ -2945,18 +2945,119 @@ def campaign_view(camp: dict) -> dict:
     again["triable"] = len(triable(cid))
     worked = q("SELECT rank,name,grade,stars,url,climb_id,mesh_id,project_id,status,note,updated FROM campaign_items "
                "WHERE campaign_id=? AND status NOT IN ('pending','running') ORDER BY updated DESC LIMIT 300", cid)
-    running = q("SELECT rank,name,grade,stars,project_id FROM campaign_items WHERE campaign_id=? AND status='running' ORDER BY updated", cid)
+    running = q("SELECT rank,name,grade,stars,project_id,source_id,boulder,redo,updated FROM campaign_items "
+                "WHERE campaign_id=? AND status='running' ORDER BY updated", cid)
     for r in running:
         p = q("SELECT status,progress FROM projects WHERE id=?", r["project_id"], one=True) if r["project_id"] else None
         r["progress"] = json.loads(p["progress"]) if p and p["progress"] else None
+        try:
+            r["boulder_panel"] = boulder_panel(camp, r)
+        except Exception as e:      # only the panel is lost
+            print(f"error: the boulder panel of {r['name']}: {type(e).__name__}: {e}", flush=True)
+            r["boulder_panel"] = None
     pending = ordered_pending(camp)
     made = None
     if camp.get("max_meshes"):      # those past its limit aren't to go
         counts["beyond"] = counts.get("pending", 0) - len(pending)
         counts["pending"] = len(pending)
         made = limit_scope(camp)[1]
+    last_mesh = q("SELECT MAX(updated) t FROM campaign_items WHERE campaign_id=? AND status='done' AND mesh_id IS NOT NULL",
+                  cid, one=True)["t"]
     return {**camp, "counts": counts, "again": again, "worked": worked, "current": running[0] if running else None,
-            "running": running, "next": pending[:10], "machine_wait": machine_wait(cid), "made": made}
+            "running": running, "next": pending[:10], "machine_wait": machine_wait(cid), "made": made, "last_mesh": last_mesh}
+
+
+def active_areas(camps: list[dict]) -> set[str]:
+    """The running areas being worked on: those a worker is on now, or waits on a machine for, and while fewer than
+    there are workers, the next a free worker would take (_claim(): the oldest with a climb to go). The rest of the
+    running ones wait their turn."""
+    workers = [w for w in _workers if not w.retired]
+    on = {w.campaign for w in workers if w.campaign} | {w.waiting["campaign"] for w in workers if w.waiting}
+    for c in sorted((c for c in camps if c["status"] == "running"), key=lambda c: c["created"]):
+        if len(on) >= len(workers):
+            break
+        if c["id"] not in on and ordered_pending(c):
+            on.add(c["id"])
+    return on
+
+
+def campaigns_listed() -> list[dict]:
+    """Every area for the Areas pane, each with "state": "running" for one being worked on (active_areas()), "queued"
+    for one running that waits its turn, otherwise its status. Those being worked on first, the one with the newest
+    mesh first; then those queued, the next to be taken first; then the rest, newest first."""
+    camps = q("SELECT * FROM campaigns ORDER BY created DESC")
+    active = active_areas(camps)
+    out = []
+    for c in camps:
+        v = campaign_view(c)
+        v["state"] = ("running" if c["id"] in active else "queued") if c["status"] == "running" else c["status"]
+        out.append(v)
+    rank = {"running": 0, "stopping": 0, "queued": 1}
+    out.sort(key=lambda v: (rank.get(v["state"], 2), -(v["last_mesh"] or 0) if rank.get(v["state"]) == 0 else
+                            v["created"] if v["state"] == "queued" else -v["created"]))
+    return out
+
+
+def _image_count(folder: Path) -> int:
+    return sum(1 for f in folder.iterdir() if f.suffix.lower() in (".jpg", ".jpeg", ".png")) if folder.is_dir() else 0
+
+
+def boulder_panel(camp: dict, item: dict) -> dict | None:
+    """For an area's climb being worked on that's harvested for its boulder's mesh, or the boulder's mesh itself
+    (pooled()): the boulder's name and climbs, each with what it gives the mesh. None for a climb meshed on its own.
+
+    Returns:
+        {name, pooled (whether these are the boulder's own photos, after its filter, by the harvest they came from,
+        rather than each climb's own harvest's), rows: [{name, grade, rank, listed (on the area's list), state
+        ("pending": not harvested yet, "in": gives photos, "out": none), photos (page photos and video frames too),
+        why (the climb that brought the boulder in: the first of them in the area's order)}], own (photos of the
+        boulder's own search, once pooled)}.
+    """
+    boulder = item.get("boulder")
+    if not boulder or not pooled(camp["id"], boulder):
+        return None
+    key = json.dumps(boulder.split("/"))       # as boulder_of() has it
+    listed = q("SELECT source_id, name, grade, rank, stars, media, status, climb_id, project_id FROM campaign_items "
+               "WHERE campaign_id=? AND boulder=? ORDER BY rank", camp["id"], boulder)
+    first = _in_order(camp, listed)[0]["source_id"] if listed else None
+    rows = []
+    for r in listed:
+        photos = _image_count(PROJECTS / r["project_id"] / "photos") if r["project_id"] else 0
+        harvested = r["status"] not in ("pending", "running", "waiting")
+        rows.append({"climb": r["climb_id"], "name": r["name"], "grade": r["grade"], "rank": r["rank"], "listed": True,
+                     "state": "pending" if not harvested else "in" if photos and r["status"] != "failed" else "out",
+                     "photos": photos if harvested or photos else None, "why": r["source_id"] == first,
+                     "projects": [r["project_id"]] if r["project_id"] else []})
+    known = {r["climb"] for r in rows}
+    for c in boulder_climbs(key):       # others on it the boulder's mesh harvests too (run_boulder())
+        if c["id"] in known:
+            continue
+        harvests = climb_harvests(c["id"])
+        photos = _image_count(PROJECTS / harvests[0] / "photos") if harvests else None
+        rows.append({"climb": c["id"], "name": c["name"], "grade": c["grade"], "rank": None, "listed": False,
+                     "state": "in" if photos else "pending", "photos": photos, "why": False, "projects": harvests})
+    out = {"name": boulder_name(key), "pooled": False, "rows": rows, "own": None}
+    proj = boulder_project(key) if (item.get("redo") or "").split("+")[0] in ("boulder", "pool") else None
+    sources = PROJECTS / proj["id"] / "sources.json" if proj else None
+    if sources and sources.exists() and sources.stat().st_mtime >= (item.get("updated") or 0) - 5:     # pooled this time
+        try:
+            files = {f["file"]: f.get("pooled_from") for f in json.loads(sources.read_text()).get("files", [])}
+            record = json.loads((PROJECTS / proj["id"] / CLIMBS_FILE).read_text())["climbs"]
+        except (OSError, ValueError, KeyError):
+            return out
+        whose = {pid: c["id"] for c in record for pid in c.get("projects") or []}
+        kept = [f.name for f in (PROJECTS / proj["id"] / "photos").iterdir() if f.suffix.lower() in (".jpg", ".jpeg", ".png")] \
+            if (PROJECTS / proj["id"] / "photos").is_dir() else []
+        by: dict[str | None, int] = {}
+        for name in kept:
+            src = files.get(name)
+            by[whose.get(src) if src else None] = by.get(whose.get(src) if src else None, 0) + 1
+        done = proj["status"] in ("harvested", "running", "done", "failed") or bool(proj.get("harvest"))
+        for r in rows:
+            n = by.get(r["climb"], 0) if r["climb"] else 0      # a climb never harvested has none: not the boulder's own
+            r.update(photos=n, state=("in" if n else "out") if done else ("in" if n else "pending"))
+        out.update(pooled=True, own=by.get(None, 0))
+    return out
 
 
 def machine_kind() -> str | None:
@@ -3767,7 +3868,7 @@ class Handler(BaseHTTPRequestHandler):
                         f = meshclean.strip_textures(f, base / f"{f.stem}.untextured.glb")
                 return self.send_file(f, download="download" in qs)
             if p == "/api/campaigns":
-                return self.send_json([campaign_view(c) for c in q("SELECT * FROM campaigns ORDER BY created DESC")])
+                return self.send_json(campaigns_listed())
             # ---- climbs
             if p == "/api/climbs":   # the newest 500, or with q those of every climb with each of its words
                 sql, args, order = "SELECT id FROM climbs", [], []

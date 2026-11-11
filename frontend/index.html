@@ -66,6 +66,14 @@
   body.readonly .tabs button[data-tab=areas],body.readonly .tabs button[data-tab=projects],body.readonly .projs,body.readonly .doubtful{display:none!important}
   label.file input{display:none}
   .status{font-size:12px;color:var(--mute)}
+  /* an area's climb harvested for its boulder's mesh: what each of the boulder's climbs gives it */
+  .bpanel{margin-top:6px;border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12px}
+  .bpanel .head{font-weight:600;margin-bottom:3px}
+  .bpanel .brow{display:grid;grid-template-columns:12px 1fr auto;gap:6px;align-items:center;color:var(--mute)}
+  .bpanel .brow i{width:8px;height:8px;border-radius:50%;background:var(--mute);display:inline-block}
+  .bpanel .brow.in{color:var(--ok)} .bpanel .brow.in i{background:var(--ok)}
+  .bpanel .brow.out{color:var(--bad)} .bpanel .brow.out i{background:var(--bad)}
+  .bpanel .brow.why b{text-decoration:underline dotted}
   .status.done,.status.harvested{color:var(--ok)} .status.failed{color:var(--bad)} .status.running,.status.queued,.status.harvesting,.status.interrupted{color:var(--warn)}
   .thumbs{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}
   .thumbs img{width:44px;height:44px;object-fit:cover;border-radius:4px;border:1px solid var(--line)}
@@ -1754,9 +1762,20 @@ function machineWaitHtml(c){
     : `${esc(m.why)}${m.pull ? (m.last_seen ? `; one last asked for work ${when(m.last_seen)}` : '; none ever has') : ''}. It tries again at ${at(m.next)}`;
   return `<div class="notice" style="margin-top:6px">Waiting since ${at(m.since)} for ${esc(m.kind || 'a machine')} to mesh ${what}: ${why}.</div>`;
 }
+// the boulder a climb is harvested for: its climbs, grey until each is known, then green with the photos (page photos and
+// video frames too) it gives the boulder's mesh, or red if none; underlined, the one that brought the boulder in
+function boulderPanelHtml(b, c){
+  if (!b || !b.rows.length) return '';
+  const what = r => r.state === 'pending' ? (r.listed ? 'not harvested yet' : 'to be harvested for it') : r.photos == null ? '' : plural(r.photos, 'photo');
+  const why = `brought its boulder in: the first of its climbs in the area's order${c.max_meshes ? `, within the first ${c.max_meshes} meshes` : ''}`;
+  return `<div class="bpanel"><div class="head">${esc(b.name)}: ${b.pooled ? 'photos each climb gives its mesh, after its filter' : 'its climbs\' photos, for its mesh'}</div>
+    ${b.rows.map(r => `<div class="brow ${r.state}${r.why ? ' why' : ''}"${r.why ? ` title="${esc(why)}"` : ''}><i></i><span><b>${esc(r.name)}</b> ${esc(r.grade || '')}${r.rank ? ` <small>#${r.rank}</small>` : ''}${r.listed ? '' : ' <small>(not on the list)</small>'}${r.why ? ' ★' : ''}</span><span>${what(r)}</span></div>`).join('')}
+    ${b.pooled && b.own ? `<div class="brow in"><i></i><span>the boulder's own search</span><span>${plural(b.own, 'photo')}</span></div>` : ''}</div>`;
+}
 function currentHtml(c){
   const running = c.running || (c.current ? [c.current] : []);
-  if (!running.length) return machineWaitHtml(c) || (c.status === 'running' ? '<div class="status" style="margin-top:6px">Waiting for the next climb to start…</div>' : '');
+  if (!running.length) return machineWaitHtml(c) || (c.state === 'queued' ? '<div class="status" style="margin-top:6px">Queued: it starts once an area ahead of it finishes, or has nothing to go for now.</div>'
+    : c.status === 'running' ? '<div class="status" style="margin-top:6px">Waiting for the next climb to start…</div>' : '');
   return machineWaitHtml(c) + running.map(cur => {
     const pr = cur.progress, now = (pr?.steps || []).filter(s => s.state === 'running'), pct = v => (100 * v).toFixed(0) + '%';
     const said = s => esc(s.label) + (s.detail ? ' · ' + esc(s.detail) : '');
@@ -1764,14 +1783,15 @@ function currentHtml(c){
     return `<div class="meta" style="margin-top:8px">Now: <b>${esc(cur.name)}</b> ${esc(cur.grade||'')} <small>#${cur.rank}</small></div>
       ${!pr ? '' : now.length < 2 ? `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% · ${now[0] ? said(now[0]) : ''}</small>`
         : `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall</small>
-          ${now.map(s => `<div class="bar running" title="${pct(s.frac)}" style="margin-top:4px"><i style="width:${pct(s.frac)}"></i></div><small>${said(s)}</small>`).join('')}`}`;
+          ${now.map(s => `<div class="bar running" title="${pct(s.frac)}" style="margin-top:4px"><i style="width:${pct(s.frac)}"></i></div><small>${said(s)}</small>`).join('')}`}
+      ${boulderPanelHtml(cur.boulder_panel, c)}`;
   }).join('');
 }
 async function refreshCampaigns(){
   const list = await api('/api/campaigns');
   const el = $('#campaigns');
   // progress moves constantly: only rebuild when something else changed, which would close open lists
-  const key = JSON.stringify(list.map(c => ({ ...c, current: c.current && { ...c.current, progress: null }, running: (c.running || []).map(r => r.name) })));
+  const key = JSON.stringify(list.map(c => ({ ...c, current: c.current && { ...c.current, progress: null, boulder_panel: null, updated: null }, running: (c.running || []).map(r => r.name) })));
   const typing = el.contains(document.activeElement) && document.activeElement.matches('input[type=number]');
   if (key === campaignShown || typing) {
     for (const c of list) { const n = el.querySelector(`[data-camp="${c.id}"] .now`); if (n) n.innerHTML = currentHtml(c); }
@@ -1785,7 +1805,8 @@ async function refreshCampaigns(){
       const d = document.createElement('div'); d.className = 'card'; d.dataset.camp = c.id;
       const row = i => `<span><small>#${i.rank}</small></span><span>${i.climb_id ? `<a href="#" data-climb="${i.climb_id}">${esc(i.name)}</a>` : `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.name)}</a>`} ${esc(i.grade||'')}</span><small>${stars(i.stars)}</small>
         <span>${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
-      d.innerHTML = `<div class="row"><b class="grow">${esc(c.name)}</b><span class="status ${c.status === 'stopped' ? '' : c.status === 'done' ? 'done' : 'running'}">${esc(c.status)}</span></div>
+      const state = c.state || c.status;
+      d.innerHTML = `<div class="row"><b class="grow">${esc(c.name)}</b><span class="status ${state === 'stopped' || state === 'queued' ? '' : state === 'done' ? 'done' : 'running'}"${state === 'queued' ? ' title="Running, but waiting its turn: no worker is free for it. Areas being worked on are listed first."' : ''}>${esc(state)}</span></div>
         <div class="meta">${ORDER_NAMES[c.ord] || ''}${c.max_meshes ? `, up to ${c.max_meshes} mesh${c.max_meshes === 1 ? '' : 'es'}${c.count_failures ? ` or failure${c.max_meshes === 1 ? '' : 's'}` : ''} (${c.made} made)` : ''} · <b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${n.beyond ? ` · ${n.beyond} more past the limit` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
         ${c.note ? `<div class="notice" style="margin-top:6px">${esc(c.note)}</div>` : ''}
         <div class="now">${currentHtml(c)}</div>

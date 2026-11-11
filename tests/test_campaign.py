@@ -1744,4 +1744,62 @@ server.offload_step()
 assert not server.q("SELECT 1 FROM offloads WHERE done IS NULL"), "nothing marked once there's room"
 server.settings().update({"storage.cap_gb": 0, "storage.offload_percent": 70.0})
 print("offloading OK")
+
+# --- areas being worked on, and those waiting their turn; a boulder's climbs, and the photos each gives its mesh --------
+fresh()
+server.settings().update({"areas.meshes": "boulders", "storage.cap_gb": 0})
+old, mid_, new = (server.create_campaign("", "popularity", CSV) for _ in range(3))
+for i, c in enumerate((old, mid_, new)):        # in this order, a second apart
+    server.q("UPDATE campaigns SET created=?, name=? WHERE id=?", 1000.0 + i, f"area {i}", c["id"], write=True)
+w2 = server.Worker("two")
+server._workers[:] = [server._first, w2]
+w2.campaign = mid_["id"]                         # a worker on the middle one; the other free
+listed = server.campaigns_listed()
+states = {v["name"]: v["state"] for v in listed}
+assert states == {"area 0": "running", "area 1": "running", "area 2": "queued"}, "two workers: the oldest free one, and the third waits"
+assert [v["name"] for v in listed][2] == "area 2", "queued after those being worked on"
+server.q("UPDATE campaign_items SET status='done', mesh_id='m1', updated=? WHERE campaign_id=? AND name='Beta'", time.time(), mid_["id"], write=True)
+assert [v["name"] for v in server.campaigns_listed()][:2] == ["area 1", "area 0"], "the one with the newest mesh first"
+server.stop_campaign(old["id"])
+w2.campaign = None
+assert {v["name"]: v["state"] for v in server.campaigns_listed()} == {"area 0": "stopped", "area 1": "running", "area 2": "running"}
+server._workers[:] = [server._first]
+# Alpha and Alpha2 share a boulder: while their climbs are harvested, what each harvest kept; then, pooled, what each gives
+camp = server.q("SELECT * FROM campaigns WHERE id=?", mid_["id"], one=True)
+item = lambda name: server.q("SELECT * FROM campaign_items WHERE campaign_id=? AND name=?", camp["id"], name, one=True)  # noqa: E731
+assert server.boulder_panel(camp, item("Beta")) is None, "a climb alone on its boulder: meshed on its own"
+alpha = item("Alpha")
+panel = server.boulder_panel(camp, alpha)
+assert panel["name"] == "Alpha Boulder" and [(r["name"], r["state"], r["why"]) for r in panel["rows"]] == \
+    [("Alpha", "pending", True), ("Alpha2", "pending", False)], panel
+apid = "a1" * 6
+(server.PROJECTS / apid / "photos").mkdir(parents=True)
+for i in range(3):
+    (server.PROJECTS / apid / "photos" / f"mountainproject_{i}.jpg").write_bytes(b"x")
+server.set_item(camp["id"], alpha["source_id"], status="harvested", project_id=apid)
+server.set_item(camp["id"], item("Alpha2")["source_id"], status="failed")
+rows = {r["name"]: r for r in server.boulder_panel(camp, item("Alpha"))["rows"]}
+assert (rows["Alpha"]["state"], rows["Alpha"]["photos"], rows["Alpha2"]["state"]) == ("in", 3, "out"), rows
+# the boulder's mesh pooling them: each counted by the harvest its kept photos came from, and its own search apart
+bkey = json.dumps(alpha["boulder"].split("/"))
+bpid = "b2" * 6
+(server.PROJECTS / bpid / "photos").mkdir(parents=True)
+server.q("INSERT INTO projects(id,name,created,kind,boulder,status) VALUES(?,?,?,?,?,?)", bpid, "Alpha Boulder (boulder)", time.time(), "boulder",
+         bkey, "harvested", write=True)
+server.set_item(camp["id"], alpha["source_id"], status="running", redo="boulder")
+for f in ("mountainproject_0.jpg", "mountainproject_1.jpg", "ddg_x.jpg"):
+    (server.PROJECTS / bpid / "photos" / f).write_bytes(b"x")
+(server.PROJECTS / bpid / server.CLIMBS_FILE).write_text(json.dumps({"climbs": [{"id": alpha["climb_id"] or "c-alpha", "projects": [apid]}]}))
+(server.PROJECTS / bpid / "sources.json").write_text(json.dumps({"files": [{"file": f"mountainproject_{i}.jpg", "pooled_from": apid} for i in range(3)]
+                                                                        + [{"file": "ddg_x.jpg"}]}))
+if not alpha["climb_id"]:
+    server.q("UPDATE campaign_items SET climb_id='c-alpha' WHERE campaign_id=? AND source_id=?", camp["id"], alpha["source_id"], write=True)
+panel = server.boulder_panel(camp, item("Alpha"))
+rows = {r["name"]: r for r in panel["rows"]}
+assert panel["pooled"] and panel["own"] == 1 and (rows["Alpha"]["photos"], rows["Alpha"]["state"]) == (2, "in"), panel
+assert (rows["Alpha2"]["photos"], rows["Alpha2"]["state"]) == (0, "out"), "kept none of its photos, or never harvested: none to give"
+v = next(v for v in server.campaigns_listed() if v["id"] == camp["id"])
+assert v["running"][0]["boulder_panel"]["name"] == "Alpha Boulder", "with the climb being worked on"
+server.settings().update({"areas.meshes": "climbs"})
+print("areas running and queued, and the boulder panel OK")
 print("ALL CAMPAIGN TESTS PASSED")

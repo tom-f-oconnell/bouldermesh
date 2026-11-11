@@ -200,7 +200,12 @@ again.
 
 Its boulder problems are then taken one at a time until you stop, or the list runs out. A climb that shares its boulder
 with others on the list is only harvested; once all of the list's climbs on that boulder are, the boulder is meshed from
-all their photos (below), and each climb is done with that mesh, seen from where its own photos were taken. A climb alone
+all their photos (below), and each climb is done with that mesh, seen from where its own photos were taken. While one
+of those climbs or its boulder is worked on, its card lists the boulder's climbs: grey until each is harvested, then green
+with the photos (page photos and video frames too) it gives, or red if none; once pooled, what each gives after the
+boulder's filter, and what the boulder's own search found. ★ marks the climb that brought the boulder in, the first of
+them in the area's order. With more areas running than workers, those being worked on are listed first, the one with
+the newest mesh first, and the rest say *queued* until a worker is free for them. A climb alone
 on its boulder, or on an area holding several (as "… Boulders"), is harvested and meshed on its own. A climb or boulder
 without enough photos is skipped, and the run moves on. A climb isn't meshed until YouTube has been searched for its
 videos, here or by a volunteer: without one to search, it waits, tried again each day, and *Fetch the videos and searches
