@@ -37,6 +37,8 @@ try:
 
     data = checkout / "data"
     for rel, body in (("meshes/m1/mesh.glb", b"glb"), ("meshes/m2/mesh.glb", b"glb2"), ("projects/aaaaaaaaaaaa/photos/p.jpg", b"jpg"),
+                      ("meshes/m1/packed/mesh.full.glb", b"packed"), ("meshes/m1/permitted/packed/mesh.json", b"{}"),
+                      ("meshes/m1/smaller/t-2048.jpg", b"jpg"),
                       ("projects/aaaaaaaaaaaa/rejected/r.jpg", b"rej"), ("projects/aaaaaaaaaaaa/work/big.bin", b"work"),
                       ("projects/aaaaaaaaaaaa/sources.json", b"{}"), ("cache/videos/vvvvvvvvvvv.mp4", b"video"),
                       ("cache/http/page", b"html"), ("cache/models/w.pt", b"weights"), ("uploads/u.part", b"up"),

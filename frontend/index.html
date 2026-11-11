@@ -26,6 +26,7 @@
   #tofull:disabled{background:var(--line);color:var(--mute);opacity:1}
   .phone-only{display:none!important}
   #prefs{display:inline-flex;gap:12px;align-items:center;flex:none} #prefs .seg{margin-left:0} .plabel{display:none}
+  .plabel.shown{display:inline;font-size:12px;color:var(--mute);margin-right:-6px}   /* Detail's choices say little without it */
   .seg button{background:transparent;color:var(--mute);border:0;border-radius:0;padding:3px 8px;font-size:12px} .seg button.on{color:var(--fg);background:var(--line)}
   #code,#volunteer{color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;text-decoration:none;white-space:nowrap}
   #admindlg{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;max-width:600px;padding:16px}
@@ -142,6 +143,7 @@
   #orient{display:none;position:absolute;left:12px;bottom:12px;max-width:430px;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.45;z-index:2}
   #rate{position:absolute;right:12px;bottom:12px;z-index:3;display:flex;flex-direction:column;align-items:flex-end;gap:6px}
   #rate[hidden],#ratemenu[hidden]{display:none}
+  #detail[hidden]{display:none} #detail.busy{pointer-events:none;opacity:.8}
   #ratemenu{display:flex;flex-direction:column;gap:6px;width:min(300px,calc(100vw - 48px));padding:8px;border-radius:8px;
     background:var(--overlay);border:1px solid var(--line);box-shadow:0 4px 16px rgba(0,0,0,.3);font-size:12px}
   #ratemenu .seg{margin-left:0;align-self:flex-start} #ratemenu .seg button{padding:4px 12px}
@@ -213,7 +215,7 @@
     /* the view on its own: back, and a toggle between the mesh and the map; wireframe and notes live elsewhere or not at all */
     #toctl{font-size:17px;line-height:1;padding:3px 10px} #v3d,#vwire,#vnotes,#viewing{display:none!important}
     /* back, Random, Sway and Map at the left (then what shows only now and then), and settings alone at the right */
-    #vsway{order:1} #vmap{order:2} #vmark,#vfrom{order:3} #vfrom{flex:0 1 auto;min-width:0} #vprefs{order:4;margin-left:auto}
+    #vsway{order:1} #vmap{order:2} #vmark,#vfrom,#detail{order:3} #vfrom{flex:0 1 auto;min-width:0} #vprefs{order:4;margin-left:auto}
     #prefs .phone-only{display:revert!important}
     #caps,#code,#admin{display:none!important}
     /* the background and colour choices open from a button in either view, as a panel over it */
@@ -248,6 +250,8 @@
     <span class="seg phone-only" id="wiremode" title="The mesh's surface, or only the edges of its triangles, to see how it's built"><button data-wire="0" class="on">Surface</button><button data-wire="1">Wireframe</button></span>
     <span class="plabel">Background</span>
     <span class="seg" id="bgmode" title="Behind a mesh: the plain page colour, or a scene: a sky over ground the colour of the rock's foot, and around a reconstructed mesh, where its photos show it, what's really there"><button data-bg="solid">Solid</button><button data-bg="scene" class="on">Scene</button></span>
+    <span class="plabel shown">Detail</span>
+    <span class="seg" id="detailmode" title="How much of each mesh to load. Auto: a simplified copy at once, then all of it, with its texture as sharp as this device can use, unless the connection looks too slow for that, when a button offers it. Full: all of it, always. Preview: the simplified copy only, with the button for the rest."><button data-detail="auto" class="on">Auto</button><button data-detail="full">Full</button><button data-detail="preview">Preview</button></span>
     <span class="plabel">Colours</span>
     <span class="seg" id="theme" title="Colours: the browser's setting, or light or dark here"><button data-theme="system" class="on">System</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span>
   </span>
@@ -413,6 +417,7 @@
       <button class="sec sm" id="vwire" disabled title="Shows only the edges of the mesh's triangles, to see how it's built: where it's dense, thin or patched. Click again for its surface.">Wireframe</button>
       <button class="sec sm" id="vnotes" title="Hides the notes over the view: about its texture, its stray pieces, and how it was framed and scaled. Click again to show them.">Hide notes</button>
       <select id="vfrom" style="display:none;width:auto" title="A boulder's own mesh is made from the photos of every climb on it: this looks at it from where one climb's own photos (its page's and its videos') were taken"></select>
+      <button class="sec sm" id="detail" hidden></button>
       <span class="status" id="viewing"></span>
     </div>
     <div id="viewer" class="on">
@@ -451,6 +456,7 @@ import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 
 // ---------------------------------------------------------------- helpers
@@ -764,21 +770,29 @@ function showObject(obj, label, plainBacks = false){
 let pieces = null;   // {id, deleted} or {id, record, parts: [{mesh, faces, labels, hidden}], editing}
 let indexEdits = 0;
 const hiddenMaterial = new THREE.MeshBasicMaterial({ color: 0xff5544, transparent: true, opacity: .4, side: THREE.DoubleSide, depthWrite: false });
-async function attachPieces(gltf, id){
+// lod: the mesh is a copy packed for viewing (backend/glbpack.py), whose faces are in another order, and fewer in a
+// preview: the server puts its pieces in that order, as many for each primitive as it has
+async function attachPieces(gltf, id, lod = null){
   const res = await fetch(`/api/meshes/${id}/cleanup`);
   if (res.status === 404) { pieces = { id, deleted: true, never: true }; return ''; }   // an upload, which is only cleaned up if asked
   if (!res.ok) return '';
   const record = await res.json();
   if (record.deleted) { pieces = { id, deleted: true }; return ''; }
   try {
-    const bin = await fetch(`/meshes/${id}/cleanup_faces.bin`);
+    const bin = await fetch(`/meshes/${id}/cleanup_faces.bin${lod ? `?lod=${lod}` : ''}`);
     if (!bin.ok) throw new Error(`the server answered ${bin.status}`);
     const buf = await bin.arrayBuffer(), all = record.label_bytes === 2 ? new Uint16Array(buf) : new Uint32Array(buf);
+    const meshes = new Map();
+    gltf.scene.traverse(o => { const at = o.isMesh && !o.userData.hiddenPieces && gltf.parser.associations.get(o); if (at) meshes.set(`${at.meshes}/${at.primitives}`, o); });
     let start = 0;
-    const slices = record.primitives.map(p => { const labels = all.subarray(start, start + p.faces); start += p.faces; return { ...p, labels }; });
+    const slices = record.primitives.map(p => {
+      const faces = lod ? (meshes.get(`${p.mesh}/${p.primitive}`)?.geometry.index?.count || 0) / 3 : p.faces;
+      const labels = all.subarray(start, start + faces); start += faces; return { ...p, faces, labels };
+    });
+    if (start !== all.length) throw new Error('it doesn\'t match this mesh');
     const parts = [];
     gltf.scene.traverse(o => {
-      if (!o.isMesh) return;
+      if (!o.isMesh || o.userData.hiddenPieces) return;
       const at = gltf.parser.associations.get(o), slice = at && slices.find(s => s.mesh === at.meshes && s.primitive === at.primitives);
       if (!slice || !o.geometry.index || o.geometry.index.count !== slice.faces * 3) throw new Error('it doesn\'t match this mesh');
       if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();   // while all of it is there, for a grey material
@@ -1174,15 +1188,19 @@ addEventListener('keydown', ev => { if (ev.key === 'Escape') setPrefs(false); })
 renderer.domElement.addEventListener('webglcontextlost', ev => { ev.preventDefault(); $('#viewing').textContent = 'The view stopped working: reload the page';
   if (phone.matches) $('#vtitle').textContent = 'The view stopped working: reload the page';     // where a phone has room to say so
   viewNote('The graphics card dropped this view, usually because it ran out of memory. Close other tabs that use it and reload the page.'); });
-function loadGltf(url, side){
+// A 1×1 image, for a GLB whose shape alone is wanted: the mesh in view has its textures already
+const NO_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+function gltfLoader(side, shapeOnly = false){
   const manager = new THREE.LoadingManager();
   manager.setURLModifier(u => {
     if (!/\.(png|jpe?g|webp)$/i.test(u)) return u;
+    if (shapeOnly) return NO_IMAGE;
     loadingUpdate?.({ texture: true });     // its texture files follow the model's
     return side ? `${u}?max=${side}` : u;
   });
-  return new GLTFLoader(manager).loadAsync(url, ev => loadingUpdate?.(ev));
+  return new GLTFLoader(manager).setMeshoptDecoder(MeshoptDecoder);    // for the copies packed for viewing
 }
+const loadGltf = (url, side) => gltfLoader(side).loadAsync(url, ev => loadingUpdate?.(ev));
 // GLTFLoader only logs a texture it can't load, and leaves it off the material
 function texturesLost(gltf){
   if (!gltf.parser.json.images?.length) return false;
@@ -1194,11 +1212,11 @@ function pngSize(bytes){   // from its header, which reads even when the image i
   const d = new DataView(bytes);
   return bytes.byteLength > 24 && d.getUint32(0) === 0x89504e47 ? [d.getUint32(16), d.getUint32(20)] : null;
 }
-async function whyNoTexture(gltf, base){
+async function whyNoTexture(gltf, base, side){
   for (const { uri } of gltf.parser.json.images) {
     if (!uri) return 'the image inside this file is damaged or a format this browser can\'t read.';
     let res;
-    try { res = await fetch(base + uri); } catch { return `the connection to the server failed while fetching ${uri}. It may have just restarted.`; }
+    try { res = await fetch(base + uri + (side ? `?max=${side}` : '')); } catch { return `the connection to the server failed while fetching ${uri}. It may have just restarted.`; }
     if (!res.ok) return res.status === 404 ? `${uri} is missing from the server.` : `the server answered ${res.status} for ${uri}.`;
     let blob;
     try { blob = await res.blob(); } catch { return `the connection to the server dropped while downloading ${uri}.`; }
@@ -1210,12 +1228,12 @@ async function whyNoTexture(gltf, base){
   }
   return 'it failed the first time but loads fine now, so that looks temporary: most likely this browser was short of memory, or the connection dropped.';
 }
-async function loadGltfWithTexture(url, base, label){
-  let gltf = await loadGltf(url), note = '';
+async function loadGltfWithTexture(url, base, label, first = 0){
+  let gltf = await loadGltf(url, first), note = '';
   if (texturesLost(gltf)) {
-    const why = await whyNoTexture(gltf, base);
+    const why = await whyNoTexture(gltf, base, first);
     note = `Showing plain grey, as its texture wouldn't load: ${why}`;
-    for (const side of [4096, 2048]) {
+    for (const side of [4096, 2048].filter(s => !first || s < first)) {
       toast(`Texture didn't load: trying it at ${side} pixels…`, 60000);
       const smaller = await loadGltf(url, side);
       if (!texturesLost(smaller)) { gltf = smaller; note = `Texture reduced to ${side} pixels, as the full one wouldn't load: ${why}`; break; }
@@ -1245,6 +1263,7 @@ function loading(label){
 }
 async function loadMeshUrl(url, filename, label, id){
   flushRating();
+  stopDetail();
   shownMesh = id || null;
   showRate(true);
   const began = performance.now(), via = viewVia;
@@ -1262,14 +1281,23 @@ async function loadMeshUrl(url, filename, label, id){
   if (!phone.matches) toast('Loading ' + filename + '…', 60000);
   $('#viewing').textContent = `Loading ${label}…`;
   try {
-    let obj, note = '';
+    let obj, note = '', detail = null;
     const progress = ev => loadingUpdate?.(ev);
     if (ext === 'ply') obj = new THREE.Mesh(await new PLYLoader().loadAsync(url, progress));
     else if (ext === 'stl') obj = new THREE.Mesh(await new STLLoader().loadAsync(url, progress));
     else if (ext === 'glb' || ext === 'gltf') {
-      const { gltf, note: textureNote } = await loadGltfWithTexture(url, base, label);
-      const piecesNote = id ? await attachPieces(gltf, id) : '';
+      // its copies packed for viewing, if it has them: a preview, or all of it, with its texture at 2048 pixels first
+      let pk = ext === 'glb' && id ? meshesById[id]?.pack : null, lod = pk ? (pk.preview ? 'preview' : 'full') : null, got;
+      const first = pk?.texture ? 2048 : 0;
+      try { got = await loadGltfWithTexture(lod ? `${url}?lod=${lod}` : url, base, label, first); }
+      catch (e) {
+        if (!lod || e?.response?.status !== 404) throw e;
+        pk = lod = null; got = await loadGltfWithTexture(url, base, label);   // packed again since the list came: its own file
+      }
+      const { gltf, note: textureNote } = got;
+      const piecesNote = id ? await attachPieces(gltf, id, lod) : '';
       obj = gltf.scene; note = [textureNote, piecesNote].filter(Boolean).join(' ');
+      if (pk) detail = { id, pk, gltf, base, url, lod, first, began, firstBytes: pk[lod] + (first && pk.texture.bytes[first] || 0) };
     }
     else if (ext === 'obj') {
       const loader = new OBJLoader();
@@ -1285,6 +1313,7 @@ async function loadMeshUrl(url, filename, label, id){
     viewNote(note, note ? again : null);
     renderPieces();
     renderOrientation(id ? meshesById[id] : null);
+    if (detail) moreDetail(detail);
     if (betaState?.mid === id) drawBeta();     // the same mesh opened again: its markers go on the new copy
     requestAnimationFrame(() => requestAnimationFrame(() => {   // a texture too big for the card's memory shows black, not grey
       const gl = renderer.getContext();
@@ -1292,6 +1321,155 @@ async function loadMeshUrl(url, filename, label, id){
     }));
   } catch (e) { loaded(); reportError('mesh', e, { mesh: id, file: filename }); toast('Could not load mesh: ' + e.message, 6000); $('#viewing').textContent = 'Could not load: ' + e.message; viewNote('Could not load this mesh: ' + e.message, again); }
 }
+
+// ---- the rest of a mesh shown from its copies packed for viewing (backend/glbpack.py): its texture as sharp as this device
+// can use, then every face in place of the preview's. Fetched at once if the setting says so, or if the preview came fast
+// enough that it would take under DETAIL_SECONDS; else a button offers it.
+const DETAIL_SIDES = [2048, 4096, 8192], DETAIL_SECONDS = 30;
+let detailChoice = 'auto'; try { detailChoice = localStorage.getItem('bm_detail') || 'auto'; } catch {}
+let detailLoad = null;    // {id, pk, gltf, base, url, lod, first, began, firstBytes, steps, abort, fetching}: what's to come of the mesh in view
+// a phone or tablet, or a device short of memory, gets no more than 4096: its screen shows no more, and an 8192 texture
+// takes 256 MB of its graphics memory
+function deviceSide(){
+  const small = phone.matches || matchMedia('(pointer:coarse)').matches || (navigator.deviceMemory || 8) <= 4;
+  return Math.min(renderer.capabilities.maxTextureSize, small ? 4096 : 8192);
+}
+// Chrome on Android says how it's connected, and whether data saving is on; elsewhere the preview's speed decides
+const slowLink = () => { const c = navigator.connection; return !!c && (c.saveData || ['slow-2g', '2g', '3g'].includes(c.effectiveType)); };
+// Bytes a second, as the preview's files came (the browser's timings of them), or if it didn't time them, as fast as
+// the whole of showing it went
+performance.addEventListener?.('resourcetimingbufferfull', () => performance.clearResourceTimings());
+function linkRate(d){
+  const dir = new URL(d.base, location.href).href, came = performance.getEntriesByType('resource').filter(e => e.name.startsWith(dir) && e.startTime >= d.began);
+  const bytes = came.reduce((n, e) => n + (e.encodedBodySize || 0), 0);
+  if (bytes > 1e5) return bytes / Math.max(.05, (Math.max(...came.map(e => e.responseEnd)) - Math.min(...came.map(e => e.requestStart || e.startTime))) / 1000);
+  return d.firstBytes / Math.max((performance.now() - d.began) / 1000, .05);
+}
+function showDetail(text, onclick){
+  const el = $('#detail');
+  el.hidden = !text; el.textContent = text || ''; el.onclick = onclick || null;
+  el.classList.toggle('busy', !onclick);
+}
+function stopDetail(){ detailLoad?.abort.abort(); detailLoad = null; showDetail(''); }
+function moreDetail(d){
+  const steps = [], t = d.pk.texture;
+  if (t && d.first) {
+    const side = Math.min(deviceSide(), DETAIL_SIDES.find(s => s >= t.side) || 8192);
+    if (side > d.first) steps.push({ kind: 'texture', side, bytes: t.bytes[side] || 0 });
+  }
+  if (d.lod === 'preview') steps.push({ kind: 'shape', bytes: d.pk.full });
+  Object.assign(d, { steps, abort: new AbortController() });
+  detailLoad = d;
+  if (!steps.length) return;
+  const bytes = steps.reduce((n, s) => n + s.bytes, 0), rate = linkRate(d);
+  if (detailChoice === 'full' || (detailChoice === 'auto' && !slowLink() && bytes / rate < DETAIL_SECONDS)) return fetchDetail(d);
+  showDetail(`Full detail (${mb(bytes)} MB)`, () => fetchDetail(d));
+}
+async function fetchDetail(d){
+  if (d.fetching) return;
+  d.fetching = true;
+  const total = Math.max(1, d.steps.reduce((n, s) => n + s.bytes, 0));
+  let before = 0;
+  const progress = n => { if (detailLoad === d) showDetail(`Loading detail… ${Math.min(99, Math.round(100 * (before + n) / total))}%`); };
+  for (const step of d.steps) {
+    progress(0);
+    try {
+      await (step.kind === 'texture' ? sharpenTexture : fullShape)(d, step, progress);
+    } catch (e) {
+      if (detailLoad !== d) return;
+      reportError('mesh-detail', e, { mesh: d.id });
+      viewNote(step.kind === 'texture' ? `Showing its texture at ${d.first} pixels, as a sharper one wouldn't load: ${e.message}`
+        : `Showing a simplified copy of it, as all of its faces wouldn't load: ${e.message}`);
+      return showDetail('');
+    }
+    if (detailLoad !== d) return;
+    before += step.bytes;
+  }
+  showDetail('');
+}
+async function fetchBlob(url, onBytes, signal){
+  const res = await fetch(url, { signal });
+  if (!res.ok) throw new Error(`the server answered ${res.status}`);
+  if (!res.body?.getReader) return res.blob();
+  const reader = res.body.getReader(), parts = [];
+  for (let n = 0; ;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value); onBytes(n += value.length);
+  }
+  return new Blob(parts, { type: res.headers.get('Content-Type') || '' });
+}
+// As GLTFLoader decodes them: an ImageBitmap where it uses those, else an image
+async function decodeImage(blob, like){
+  if (typeof ImageBitmap !== 'undefined' && like instanceof ImageBitmap) return { image: await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' }) };
+  const url = URL.createObjectURL(blob), image = new Image();
+  image.src = url;
+  try { await image.decode(); } catch (e) { URL.revokeObjectURL(url); throw e; }
+  return { image, url };
+}
+const clearGlErrors = gl => { for (let i = 0; i < 8 && gl.getError() !== gl.NO_ERROR; i++); };
+// Each texture on the mesh in view, fetched again at step.side pixels and put in its place, unless the graphics card
+// hasn't room for it, which leaves the one before
+async function sharpenTexture(d, step, progress){
+  const json = d.gltf.parser.json, maps = new Map();
+  current.traverse(o => { if (o.userData.model) for (const m of [o.userData.surface || o.material].flat()) if (m?.map) maps.set(m.map, [...(maps.get(m.map) || []), m]); });
+  let done = 0;
+  for (const [old, materials] of maps) {
+    const at = d.gltf.parser.associations.get(old), image = at?.textures != null ? json.images?.[json.textures[at.textures]?.source] : null;
+    if (!image?.uri) continue;
+    const blob = await fetchBlob(`${d.base}${image.uri}?max=${step.side}`, n => progress(done + n), d.abort.signal);
+    done += blob.size;
+    const { image: decoded, url } = await decodeImage(blob, old.image);
+    const t = old.clone();
+    t.source = new THREE.Source(decoded); t.needsUpdate = true;
+    t.addEventListener('dispose', () => { decoded.close?.(); if (url) URL.revokeObjectURL(url); });
+    if (detailLoad !== d) return t.dispose();
+    const gl = renderer.getContext();
+    clearGlErrors(gl);
+    renderer.initTexture(t);
+    if (gl.getError() === gl.OUT_OF_MEMORY) { t.dispose(); throw new Error(`this graphics card hasn't the memory for it at ${step.side} pixels`); }
+    for (const m of materials) m.map = t;
+    old.dispose(); old.image?.close?.();
+  }
+}
+// Every face, in place of the preview's: each of its meshes takes the new one's shape, keeping its material (and texture)
+async function fullShape(d, step, progress){
+  const buf = await (await fetchBlob(`${d.url}?lod=full`, progress, d.abort.signal)).arrayBuffer();
+  const full = await gltfLoader(0, true).parseAsync(buf, d.base), shapes = new Map();
+  full.scene.traverse(o => { const at = o.isMesh && full.parser.associations.get(o); if (at) shapes.set(`${at.meshes}/${at.primitives}`, o.geometry); });
+  const taken = new Set();
+  if (detailLoad === d) {
+    const editing = pieces?.id === d.id && pieces.editing, hidden = [];
+    current.traverse(o => { if (o.userData.hiddenPieces) hidden.push(o); });
+    for (const o of hidden) { o.parent.remove(o); o.geometry.dispose(); }
+    current.traverse(o => {
+      const at = o.userData.model && d.gltf.parser.associations.get(o), g = at && shapes.get(`${at.meshes}/${at.primitives}`);
+      if (!g) return;
+      o.geometry.dispose(); o.geometry = g; taken.add(g);
+      if (!g.attributes.normal) g.computeVertexNormals();
+      delete o.userData.faceList; delete o.userData.part;
+    });
+    d.lod = 'full';
+    if (pieces?.id === d.id && pieces.parts) {
+      const note = await attachPieces(d.gltf, d.id, 'full');
+      if (note) viewNote(note);
+      if (editing && pieces?.parts) { pieces.editing = true; applyPieces(); }
+      renderPieces();
+    }
+  }
+  full.scene.traverse(o => {
+    if (!o.isMesh) return;
+    if (!taken.has(o.geometry)) o.geometry.dispose();
+    for (const m of [o.material].flat()) { m?.map?.dispose(); m?.dispose(); }
+  });
+}
+document.querySelectorAll('#detailmode button').forEach(b => b.onclick = () => {
+  detailChoice = b.dataset.detail;
+  try { detailChoice === 'auto' ? localStorage.removeItem('bm_detail') : localStorage.setItem('bm_detail', detailChoice); } catch {}
+  document.querySelectorAll('#detailmode button').forEach(x => x.classList.toggle('on', x === b));
+  if (detailChoice === 'full' && detailLoad?.steps?.length) fetchDetail(detailLoad);
+});
+document.querySelectorAll('#detailmode button').forEach(x => x.classList.toggle('on', x.dataset.detail === detailChoice));
 
 // ---------------------------------------------------------------- map
 // zoomSnap: quarter steps, so the map can open around a boulder at close to the span asked for

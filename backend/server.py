@@ -45,6 +45,7 @@ import beta as beta_mod  # noqa: E402
 import scale as scale_mod  # noqa: E402
 import compute  # noqa: E402
 import diagnostics  # noqa: E402
+import glbpack  # noqa: E402
 import meshclean  # noqa: E402
 import meshmetrics  # noqa: E402
 import meshopts  # noqa: E402
@@ -79,7 +80,7 @@ DATA = Path(os.environ.get("DATA_DIR", ROOT / "data")).resolve()
 PROJECTS = DATA / "projects"
 MESHES = DATA / "meshes"
 USE_GPU = os.environ.get("USE_GPU", "1") != "0"   # used if it's there and has room
-SHRINK_SIDES = (2048, 4096)                      # sizes a texture can be asked for, if a browser can't manage the original
+SHRINK_SIDES = (2048, 4096, 8192)                # sizes a texture can be asked for, as a JPEG: the viewer shows 2048 first
 MAX_UPLOAD = int(os.environ.get("MAX_UPLOAD_MB", "512")) * 1024 * 1024
 PHOTO_EXT = {".jpg", ".jpeg", ".png"}
 VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}   # uploaded to a project, turned into photos
@@ -1028,23 +1029,135 @@ def source_existing_meshes() -> None:
             record_sources(m["id"], pid, lambda line, mid=m["id"]: print(f"{mid}: {line}", flush=True))
 
 
-def shrunk_texture(path: Path, side: int) -> Path:
-    """A copy of a texture at most side pixels wide and high, kept beside it, or itself if that small."""
+def shrink_texture(path: Path, sides=SHRINK_SIDES) -> tuple[int, dict[int, Path]]:
+    """JPEG copies of a texture at most each of sides pixels wide and high, kept in smaller/ beside it, made from one
+    reading of it. Where it's no larger than a side, that's a copy at its own size, named for the smallest of SHRINK_SIDES
+    it fits (so made once), or for a JPEG the texture itself.
+
+    Returns:
+        Its larger side, and the copy for each of sides.
+    """
     from PIL import Image
     Image.MAX_IMAGE_PIXELS = None    # these are our own files, and the large ones are why we're here
-    out = path.parent / "smaller" / f"{path.stem}-{side}.jpg"
-    if out.exists():
-        return out
-    with Image.open(path) as im:
-        if max(im.size) <= side:
-            return path
-        im = im.convert("RGB")
-    im.thumbnail((side, side), Image.LANCZOS)
-    out.parent.mkdir(exist_ok=True)
-    partial = out.with_suffix(".partial")
-    im.save(partial, "JPEG", quality=88)
-    partial.replace(out)
-    return out
+
+    def name(side: int) -> Path:
+        return path.parent / "smaller" / f"{path.stem}-{side}.jpg"
+    with Image.open(path) as im:     # only its header, until it's converted
+        size = max(im.size)
+        fit = next((s for s in SHRINK_SIDES if s >= size), None)
+        jpeg = path.suffix.lower() in (".jpg", ".jpeg")
+        copies = {s: path if size <= s and jpeg else name(s if size > s or fit is None else fit) for s in sides}
+        todo = sorted({c for c in copies.values() if c != path and not c.exists()}, reverse=True)
+        if not todo:
+            return size, copies
+        rgb = im.convert("RGB")
+    todo[0].parent.mkdir(exist_ok=True)
+    for out in todo:
+        side = int(out.stem.rsplit("-", 1)[1])
+        scale = min(1.0, side / size)
+        small = rgb if scale == 1 else rgb.resize((max(1, round(rgb.width * scale)), max(1, round(rgb.height * scale))),
+                                                  Image.LANCZOS, reducing_gap=3.0)
+        partial = out.with_suffix(".partial")
+        small.save(partial, "JPEG", quality=90)
+        partial.replace(out)
+    return size, copies
+
+
+def shrunk_texture(path: Path, side: int) -> Path:
+    """A JPEG copy of a texture at most side pixels wide and high (shrink_texture)."""
+    return shrink_texture(path, [side])[1][side]
+
+
+# ------------------------------------------------------------------ packed copies for the viewer (glbpack.py)
+_packs: "queue.PriorityQueue[tuple[int, float, str]]" = queue.PriorityQueue()
+_pack_lock = threading.Lock()
+_packing: dict[str, int] = {}          # meshes queued, and how soon: 0 asked for by a viewer or new, 1 catching up
+_pack_failed: dict[str, list] = {}     # meshes whose packing failed, and the version of the GLB that failed
+
+
+def viewer_glb(mid: str, mode: str, filename: str, make: bool = False) -> Path | None:
+    """The GLB the viewer is sent for a mesh, as its texture is shown (texture_mode); None if it has none. make: if
+    that's its untextured copy, made if it isn't yet."""
+    if not filename.lower().endswith(".glb"):
+        return None
+    f = served_dir(mid, mode) / filename
+    if not f.is_file():
+        return None
+    if mode == "hidden":
+        untextured = f.parent / f"{f.stem}.untextured.glb"
+        return meshclean.strip_textures(f, untextured) if make else untextured if untextured.is_file() else None
+    return f
+
+
+def queue_pack(mid: str, urgent: bool = False) -> None:
+    """Pack a mesh for the viewer: first, if urgent (a new one, or one a viewer asked for)."""
+    if not glbpack.available():
+        return
+    soon = 0 if urgent else 1
+    with _pack_lock:
+        if _packing.get(mid, 2) <= soon:
+            return
+        _packing[mid] = soon
+    _packs.put((soon, time.time(), mid))
+
+
+def pack_mesh(mid: str) -> None:
+    """A mesh's packed copies (glbpack.py) and its textures' JPEG copies (shrink_texture), as it's shown now, unless
+    they're made already, or it isn't a GLB."""
+    m = q("SELECT source, filename FROM meshes WHERE id=?", mid, one=True)
+    if not m:
+        return
+    mode = texture_mode(mid, m["source"])
+    src = viewer_glb(mid, mode, m["filename"], make=True)
+    if src is None or glbpack.record(src) or _pack_failed.get(mid) == glbpack.stamp(src):
+        return
+    textures = {}
+    if mode != "hidden" and _has("PIL"):
+        for uri in glbpack.image_files(src):
+            f = src.parent / uri
+            if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg"):
+                size, copies = shrink_texture(f)
+                textures[uri] = {"side": size, "bytes": {str(s): c.stat().st_size for s, c in copies.items()}}
+    glbpack.pack(src, lambda line: print(f"{mid}: {line}", flush=True), extra={"textures": textures})
+
+
+def pack_worker() -> None:
+    """Packs meshes one at a time, on a thread of its own at the lowest CPU priority (glbpack.mjs runs niced too)."""
+    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    while True:
+        _, _, mid = _packs.get()
+        with _pack_lock:
+            if _packing.pop(mid, None) is None:
+                continue     # queued again sooner, and done then
+        try:
+            pack_mesh(mid)
+        except Exception as e:  # never let the thread die
+            print(f"{mid}: packing for viewing failed: {type(e).__name__}: {e}", flush=True)
+            try:
+                m = q("SELECT source, filename FROM meshes WHERE id=?", mid, one=True)
+                src = m and viewer_glb(mid, texture_mode(mid, m["source"]), m["filename"])
+                if src:
+                    _pack_failed[mid] = glbpack.stamp(src)
+            except Exception:
+                pass
+
+
+def pack_info(r: dict) -> dict | None:
+    """What the viewer can fetch for a listed mesh instead of its own files: the sizes of its packed copies, and of
+    its textures' JPEG copies; None if it isn't packed (and then it's queued, if it's a GLB)."""
+    src = viewer_glb(r["id"], r["texture"], r["filename"])
+    rec = glbpack.record(src) if src else None
+    if not rec:
+        if r["filename"].lower().endswith(".glb") and r["id"] not in _pack_failed:
+            queue_pack(r["id"])
+        return None
+    sides: dict[str, int] = {}
+    for t in (rec.get("textures") or {}).values():
+        for s, n in t["bytes"].items():
+            sides[s] = sides.get(s, 0) + n
+    textures = rec.get("textures") or {}
+    return {"full": rec["full"]["bytes"], "preview": (rec.get("preview") or {}).get("bytes"),
+            "texture": {"side": max(t["side"] for t in textures.values()), "bytes": sides} if textures else None}
 
 
 # ------------------------------------------------------------------ worker
@@ -1174,6 +1287,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             log(f"this replaces mesh {before}, which stays as an older version")
         current = before if worse else mid
         clean_mesh(mid, log)
+        queue_pack(mid, urgent=True)
         record_sources(mid, pid, log)
         if proj["kind"] == "boulder" and not worse:
             place_climbs(mid, pid, log)
@@ -4546,6 +4660,16 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_bytes(self, data: bytes, ctype: str = "application/octet-stream"):
+        """Send bytes made for this request, to be kept as long as files are."""
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-File-Size", str(len(data)))
+        self.send_header("Cache-Control", f"public, max-age={FILE_CACHE}")
+        self.end_headers()
+        self.wfile.write(data)
+
     def send_error_json(self, e: Exception, code: int | None = None) -> None:
         """A failure as JSON: its message without this server's paths, and the whole of it in the log. A ValueError
         is the client's fault (400) unless a code is given."""
@@ -4584,6 +4708,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(st.st_size))
+        self.send_header("X-File-Size", str(st.st_size))    # for progress bars when a proxy compresses it (three.js reads it)
         self.send_header("Last-Modified", modified)
         self.send_header("Cache-Control", cache)
         for k, v in (headers or {}).items():
@@ -4857,6 +4982,11 @@ class Handler(BaseHTTPRequestHandler):
                         print(f"error: mesh {r['id']}'s metrics: {type(e).__name__}: {e}", flush=True)
                     r["areas"], r["area_path"] = areas(r)
                     r["splat"] = r.get("texture") == "full" and (MESHES / r["id"] / splat_mod.FILE).exists()
+                    try:
+                        r["pack"] = pack_info(r)
+                    except Exception as e:
+                        r["pack"] = None
+                        print(f"error: mesh {r['id']}'s packed copies: {type(e).__name__}: {e}", flush=True)
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
             if m:   # what each video's climber did, and the holds marked by hand
@@ -4912,11 +5042,28 @@ class Handler(BaseHTTPRequestHandler):
                     if not _has("PIL"):
                         return self.send_json({"error": "shrinking textures needs Pillow"}, 501)
                     f = shrunk_texture(f, side)
+                lod = (qs.get("lod") or [""])[0]
+                if lod and lod not in glbpack.LODS:
+                    return self.send_json({"error": f"lod: one of {', '.join(glbpack.LODS)}"}, 400)
                 if f.suffix.lower() == ".glb" and f.is_file():
                     if "cleaned" in qs and meshclean.available():
                         f = meshclean.write_cleaned(base) or f
                     if mode == "hidden":
                         f = meshclean.strip_textures(f, base / f"{f.stem}.untextured.glb")
+                    if lod:     # its packed copy, which the viewer only asks for when the list of meshes says it has one
+                        packed = glbpack.path(f, lod)
+                        if packed is None:
+                            queue_pack(mid, urgent=True)
+                            return self.send_json({"error": "this mesh isn't packed yet"}, 404)
+                        f = packed
+                if name == meshclean.FACES_FILE and lod and f.is_file():     # its cleanup, in a packed copy's order
+                    row = q("SELECT filename FROM meshes WHERE id=?", mid, one=True)
+                    record = meshclean.load(base)
+                    src = viewer_glb(mid, mode, row["filename"]) if row else None
+                    data = glbpack.labels(src, lod, f, record["label_bytes"]) if src and record and not record.get("deleted") else None
+                    if data is None:
+                        return self.send_json({"error": "this mesh isn't packed yet"}, 404)
+                    return self.send_bytes(data)
                 return self.send_file(f, download="download" in qs)
             if p == "/api/campaigns":
                 return self.send_json(campaigns_listed())
@@ -5763,6 +5910,7 @@ def main() -> None:
     threading.Thread(target=snapshot_worker, daemon=True).start()
     threading.Thread(target=frames_worker, daemon=True).start()
     threading.Thread(target=prune_worker, daemon=True).start()
+    threading.Thread(target=pack_worker, daemon=True).start()
     if splat_mod.enabled():
         why = splat_mod.unavailable()
         print(f"splats: {'not fitted, as ' + why if why else 'fitted for each new mesh'}", flush=True)

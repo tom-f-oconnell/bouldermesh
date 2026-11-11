@@ -366,6 +366,46 @@ So new textures are capped at 4096, with larger atlases split: that scene became
 made, the viewer retries at 4096 and 2048, which the server makes on request and keeps. Whatever
 happens, the view says what happened and why, having fetched the file again to find out.
 
+## Loading meshes quickly (`backend/glbpack.py`)
+
+Caveman took minutes to open on a phone: its GLB is 35 MB (1.47M faces as plain floats and ints) and its texture an
+8192 x 8192 PNG of 54 MB, 89 MB in all, and nothing showed until the last of it came. Now the server keeps copies made
+for viewing beside each GLB, in `packed/` and `smaller/`, and the viewer shows a simplified one first:
+
+| Caveman | before | now, first view | now, all of it (desktop) |
+|---|---|---|---|
+| shape | 35.3 MB | 1.1 MB (150k faces) | 6.9 MB |
+| texture | 54.1 MB PNG | 0.8 MB (2048 JPEG) | 8.7 MB (8192 JPEG; 2.9 MB at 4096 on a phone) |
+
+Over 233 meshes on hal, packed copies are a fifth the size of the GLBs (2.19 GB to 0.44 GB; median 1.4 MB, largest
+7.7 MB), and 109 large enough for one (300k faces or more) have a preview, median 1.0 MB. Packing took 1003 s of CPU
+in all on hal (median 1.6 s, the most 23 s, mostly simplifying); `smaller/` JPEGs at 2048, 4096 and 8192 add about
+0.7 GB. Over localhost in headless Chromium with hal's GPU, Caveman showed in 6-8 s rather than 16.5 s, with all of
+it in place by 15 s. The gap grows as the connection slows: throttled to 1 Mbit/s, The Man Who Smiled (27 MB of its
+own files) showed in 28 s, where its own files would take almost 4 minutes, and Caveman's 89 MB 12 minutes.
+
+- **Compression** is meshoptimizer's (`EXT_meshopt_compression`, which three.js decodes): faces put in the order its
+  index codec compresses best (vertex cache order: 8.9 MB of Caveman's faces became 1.7 MB, against 9.0 in their own
+  order), positions as floats with 16 bits of mantissa (its exponential filter, so in the same coordinates and no
+  node's transform changes: holds, viewpoints and orientation still fit), texture coordinates as 16-bit integers.
+  glTF's KHR_mesh_quantization would shrink positions further, but needs a transform on the node. gltfpack does all
+  this too, but reorders faces without saying how; the viewer's stray-piece cleanup needs each face's piece.
+- **Faces' order.** So each packed copy has `<lod>.faces.bin`: for each of its faces, the face of the GLB it came from,
+  and `cleanup_faces.bin?lod=` sends the cleanup's pieces in that order. A preview's faces come from merging corners
+  along edges, which never joins two pieces, so each takes the piece of a face at one of its corners.
+- **Checked.** glbpack.mjs decodes what it wrote, as a viewer would, and checks every face, position and texture
+  coordinate against the GLB before keeping it; three r170's decoder (meshoptimizer 0.18) reads the files identically.
+- **Textures** are JPEGs at quality 90. A phone, a tablet (a coarse pointer) or a device saying it has 4 GB or less gets
+  4096 at most: an 8192 texture takes 256 MB of graphics memory, and a phone's screen can't show it. A sharper texture
+  that the graphics card has no room for (an OUT_OF_MEMORY error when it's uploaded) leaves the one before.
+- **When.** Each new mesh is packed as it's made, and any mesh the list of meshes shows unpacked is queued, so old
+  meshes catch up once someone opens the site; one at a time, at the lowest CPU priority. node runs glbpack.mjs where
+  it's installed, deno (in the Docker image for yt-dlp) where not.
+- **Automatically, or on a button.** The rest comes at once unless it would take over 30 s at the speed the preview's
+  files came (the browser's own timings of them), or the browser says it's on 2G or 3G or saving data (Chrome on
+  Android). Partial display while a file downloads isn't possible with a GLB, as nothing can be drawn until its JSON
+  and buffers are all there; the preview is what stands in for that.
+
 ## Which way is down (`backend/orientation.py`)
 
 COLMAP's `IMAGE-ORIENTATION` assumes most photos were taken upright, and takes the typical direction of

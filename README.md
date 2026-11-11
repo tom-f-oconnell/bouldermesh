@@ -375,6 +375,14 @@ A reconstruction produces a textured `mesh.glb` (texture PNGs alongside), or an 
 levelled assuming most photos were taken upright. On CPU,
 OpenMVS's 11-photo sample set takes 3-4 minutes, and a 100-photo harvest about an hour.
 
+A large mesh shows within seconds, as a simplified copy (about 150,000 faces) with its texture at 2048 pixels; then its
+texture as sharp as the device can use (4096 on phones and tablets, up to 8192 elsewhere) and all its faces come in the
+background, and *Loading detail…* in the view's bar says how far that's got. ⚙ (or *Detail* in the header) chooses:
+*Auto* (the default) fetches the rest at once unless the connection is slow (data saving on, or the preview came too
+slowly for the rest to take under 30 s), when the bar offers *Full detail (N MB)* instead; *Full* always fetches it, and
+*Preview* only on that button. The server makes these copies itself for every GLB mesh, new or old (`backend/glbpack.py`,
+design.md, "Loading meshes quickly"), and a mesh's own files stay as they were, for downloads.
+
 If a browser can't load a mesh's texture, the viewer tries it smaller, then says why on the view. Grey
 on a mesh means no photo shows that side, including the backs of surfaces.
 
@@ -390,7 +398,7 @@ in view is blue. *Random* opens any mesh; it's blue until one is in view.
 
 On a phone, the page shows either the controls or the view. The controls' header holds *Viewer* (grey until a mesh is
 opened, then with the climb in view named under it), *Random*, a ⚙ button (the mesh as *Surface* or *Wireframe*, the
-background, and colours), *Volunteer*, and *Edit…* or *Editing*. The view's bar holds ← back to the controls, *Random*,
+background, how much detail to load, and colours), *Volunteer*, and *Edit…* or *Editing*. The view's bar holds ← back to the controls, *Random*,
 ⚙, *Sway*, and at its right end *Map*, which swaps the mesh for the map, and then reads *3D*. While a mesh loads, its
 progress shows over whichever is on screen, and the view takes over once it's ready. Over
 the mesh it shows only the climb's name, small, at the top, so texture problems, stray-piece cleanup, *Hide notes* and
@@ -546,7 +554,8 @@ If you change `frontend/index.html`, the hashes follow, but a new inline `onclic
 in `backend/server.py` (`CSP=0` in `.env` turns it off, and `CSP=<policy>` replaces it). Files under `data/` are served only
 as meshes, textures, JSON or bytes, so nothing uploaded there can run as a page of the site, and uploaded meshes keep only
 mesh, texture and material files. Meshes, photos and static files are sent with `Last-Modified`, and may be cached for an
-hour (`FILE_CACHE_SECONDS`). The page itself is sent with `Cache-Control: no-transform`, so that a proxy in front leaves
+hour (`FILE_CACHE_SECONDS`). Caddy compresses text, meshes and cleanups on the way (not photos, or what machines lent for
+meshing fetch), and the app says each file's own size in `X-File-Size`, which three.js reads for its progress. The page itself is sent with `Cache-Control: no-transform`, so that a proxy in front leaves
 it as it is: Cloudflare, for one, adds its Web Analytics script to free plans' pages unless that's turned off, and the
 page's policy would only block it. Harvests fetch only `http(s)` URLs, and never from private, loopback or link-local addresses,
 such as a cloud machine's metadata service (`HTTP_ALLOW_PRIVATE=1` lifts that, for tests).
@@ -890,6 +899,7 @@ Security, then WAF, then *Rate limiting rules* (or *Security rules*, then a rate
     backend/settings.py            the admin page's settings, and credentials kept encrypted
     backend/volunteers.py          volunteers fetching YouTube videos: their tokens, the queue, and their port
     backend/splat.py               splats of the scene around a mesh, for the viewer's Scene background (off: SPLATS=1)
+    backend/glbpack.py, glbpack.mjs  compressed and simplified copies of meshes for the viewer (meshoptimizer, in vendor/)
     volunteer/bouldermesh_volunteer.py  the script volunteers run
     backend/proxy_ranges.py        whether the Caddyfile's trusted proxies are still Cloudflare's
     backend/policy.py              which photos are free to copy, and what the site may show
@@ -954,6 +964,10 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     On WORKER_PORT, with a machine's token: POST /worker/api/work · GET /worker/api/jobs/{id}/input?offset=
     POST /worker/api/jobs/{id}/{log,output,done} · GET /worker/api/jobs/{id}/output (how much has come)
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
+    GET  /meshes/{id}/{texture}?max=2048|4096|8192       a texture as a JPEG at most that many pixels across
+    GET  /meshes/{id}/{glb}?lod=full|preview             its copy packed for viewing, all its faces or simplified (404 until
+                                                        made; GET /api/meshes says which there are, as "pack", with sizes)
+    GET  /meshes/{id}/cleanup_faces.bin?lod=full|preview  its cleanup's piece of each face, in that copy's order
     POST /api/meshes/{id}/rating {browser, rating, comment}   a visitor's rating (1 bad, 2 OK, 3 good, or null) and comment,
                                                         from anyone, as client-errors are taken (120 an hour an address): one
                                                         each per browser, replaced; mesh_ratings; `cli.py mesh-ratings`
@@ -980,6 +994,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_bundle.py      # offline: moving a boulder's mesh and its harvests to another copy of the data
     python3 tests/test_diagnostics.py # offline: what's recorded when real processes fail or get killed
     python3 tests/test_meshclean.py   # offline: finding and hiding stray pieces on small GLBs, the cleaned download
+    python3 tests/test_glbpack.py     # offline: packed and simplified copies for the viewer, and their cleanups (needs node or deno)
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
     python3 tests/test_scale.py       # offline: sizing people, objects and the rock on scenes built with known sizes
     python3 tests/test_youtube.py     # offline: telling a climb's videos apart, climbers' sizes in text, leaving YouTube alone when it refuses

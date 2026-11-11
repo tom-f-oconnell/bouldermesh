@@ -14,7 +14,24 @@
 }
 
 {$SITE_HOST} {$WWW_HOST:} {
-	encode zstd gzip
+	# compressed on the way: text, as by default, and meshes, splats and cleanups, which Caddy and Cloudflare leave alone
+	# unless told (a reconstruction's own GLB shrinks by about a third, a packed one by a fifth, a cleanup's piece of each
+	# face to almost nothing). Not what machines lent for meshing fetch: photos, which don't shrink, by the gigabyte.
+	@compressed not path /worker /worker/*
+	encode @compressed {
+		zstd
+		gzip
+		match {
+			header Content-Type text/*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type application/xml*
+			header Content-Type image/svg+xml*
+			header Content-Type model/gltf-binary*
+			header Content-Type model/gltf+json*
+			header Content-Type application/octet-stream*
+		}
+	}
 	log
 	header {
 		Strict-Transport-Security "max-age=31536000"

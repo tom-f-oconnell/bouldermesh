@@ -75,7 +75,8 @@ if rsync -a -e "$ssh" "${from}data/offload.list" "$tmp/offload.list" 2>/dev/null
         printf 'P /data/%s\nP /data/%s/***\n' "$p" "$p"
     done > "$tmp/protect" || true
 fi
-# first match wins: what's kept, what's left out, then data/ and .env, then nothing else of the checkout
+# first match wins: what's kept, what's left out (with copies of meshes and textures the server makes again by itself),
+# then data/ and .env, then nothing else of the checkout
 cat "$tmp/protect" - > "$tmp/filter" <<'RULES'
 - /data/**.sqlite
 - /data/**.sqlite-*
@@ -86,6 +87,8 @@ cat "$tmp/protect" - > "$tmp/filter" <<'RULES'
 - /data/volunteers/
 - /data/tunnel/
 - /data/projects/*/work/
+- /data/meshes/**/packed/
+- /data/meshes/**/smaller/
 - /data/restore-inbox/
 - *.tmp
 + /.env

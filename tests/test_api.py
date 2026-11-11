@@ -27,6 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
+import glbpack  # noqa: E402
 import pipeline  # noqa: E402
 
 try:
@@ -260,11 +261,13 @@ def run(B: str, tmp: Path) -> None:
     st, up = req(B, "POST", "/api/meshes", files=[("files", "cube.ply", ply.read_bytes()), ("files", "atlas.png", atlas.getvalue())],
                  fields={"name": "uploaded", "climb_id": cid})
     for ask, want, fmt in (("", (3000, 1000), "PNG"), ("?max=2048", (2048, 683), "JPEG"), ("?max=2048", (2048, 683), "JPEG"),   # again: from its copy
-                           ("?max=4096", (3000, 1000), "PNG"), ("?max=7", (3000, 1000), "PNG"), ("?max=x", (3000, 1000), "PNG")):
+                           ("?max=4096", (3000, 1000), "JPEG"), ("?max=8192", (3000, 1000), "JPEG"),     # as a JPEG, however large
+                           ("?max=7", (3000, 1000), "PNG"), ("?max=x", (3000, 1000), "PNG")):
         with urllib.request.urlopen(f"{B}/meshes/{up['id']}/atlas.png{ask}") as r:
             im = Image.open(io.BytesIO(r.read()))
         assert im.size == want and im.format == fmt, (ask, im.size, im.format)
-    assert (tmp / "data" / "meshes" / up["id"] / "smaller" / "atlas-2048.jpg").exists()
+    smaller = tmp / "data" / "meshes" / up["id"] / "smaller"
+    assert sorted(f.name for f in smaller.iterdir()) == ["atlas-2048.jpg", "atlas-4096.jpg"], "the copy at its own size made once"
     with urllib.request.urlopen(f"{B}/meshes/{up['id']}/cube.ply?max=2048") as r:
         assert r.read() == ply.read_bytes(), "only images get shrunk"
     assert st == 201, up
@@ -334,6 +337,24 @@ def run(B: str, tmp: Path) -> None:
             assert "mesh.cleaned.glb" in r.headers["Content-Disposition"] and len(cleaned) < len(glb), r.headers
         with urllib.request.urlopen(f"{B}/meshes/{mid}/my-rock.glb") as r:
             assert r.read() == glb, "the mesh's own file doesn't change"
+        if glbpack.available():     # its packed copy, which the list says it has once it's made
+            for _ in range(100):
+                packed = next(m for m in req(B, "GET", "/api/meshes")[1] if m["id"] == mid)["pack"]
+                if packed:
+                    break
+                time.sleep(0.1)
+            assert packed and packed["full"] and packed["preview"] is None and packed["texture"] is None, packed
+            with urllib.request.urlopen(f"{B}/meshes/{mid}/my-rock.glb?lod=full") as r:
+                small = r.read()
+            assert len(small) == packed["full"] and b"EXT_meshopt_compression" in small[:2000]
+            with urllib.request.urlopen(f"{B}/meshes/{mid}/cleanup_faces.bin?lod=full") as r:
+                order = np.frombuffer(r.read(), "<u2")
+            with urllib.request.urlopen(f"{B}/meshes/{mid}/cleanup_faces.bin") as r:
+                own = np.frombuffer(r.read(), "<u2")
+            assert len(order) == 402 and (order == 1).sum() == 2 and np.array_equal(np.sort(order), np.sort(own)), "its pieces, in its order"
+            assert status_of(f"{B}/meshes/{mid}/my-rock.glb?lod=preview") == 404, "too small for a preview"
+            assert status_of(f"{B}/meshes/{mid}/my-rock.glb?lod=huge") == 400
+            print("packed copies OK")
         st, bad = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": [0, 1]})
         assert st == 400 and "at least one" in bad["error"], bad
         st, rec = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": []})
