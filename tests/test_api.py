@@ -391,6 +391,10 @@ def run(B: str, tmp: Path) -> None:
             admin_set({"viewer.preview_faces": 0})
             packed_again(lambda now: now["preview"] is None)
             assert status_of(f"{B}/meshes/{mid}/my-rock.glb?lod=preview") == 404, "no previews at all"
+            with urllib.request.urlopen(ADMIN + "/api/admin/state") as r:
+                progress = json.load(r)["packing"]
+            assert progress["available"] and progress["total"] == progress["done"] >= 1 and progress["preview_faces"] == 0, progress
+            assert progress["left"] == 0 and progress["eta_seconds"] is None, progress
             print("packed copies OK")
         # --- a mesh's version: its files kept a year at an address with it, until anything it's sent changes
         version = lambda: next(m for m in req(B, "GET", "/api/meshes")[1] if m["id"] == mid)["v"]  # noqa: E731

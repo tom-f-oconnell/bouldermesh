@@ -1078,6 +1078,8 @@ _packs: "queue.PriorityQueue[tuple[int, float, str]]" = queue.PriorityQueue()
 _pack_lock = threading.Lock()
 _packing: dict[str, int] = {}          # meshes queued, and how soon: 0 asked for by a viewer or new, 1 catching up
 _pack_failed: dict[str, list] = {}     # meshes whose packing failed, and the version of the GLB that failed
+_pack_now: dict = {}                   # the mesh being packed now, and since when
+_pack_took: list[float] = []           # how long the last few meshes packed took, in seconds
 
 
 def viewer_glb(mid: str, mode: str, filename: str, make: bool = False) -> Path | None:
@@ -1106,18 +1108,18 @@ def queue_pack(mid: str, urgent: bool = False) -> None:
     _packs.put((soon, time.time(), mid))
 
 
-def pack_mesh(mid: str) -> None:
+def pack_mesh(mid: str) -> bool:
     """A mesh's packed copies (glbpack.py) and its textures' JPEG copies (shrink_texture), as it's shown now, unless
-    they're made already, or it isn't a GLB."""
+    they're made already, or it isn't a GLB. Whether it made them."""
     m = q("SELECT source, filename FROM meshes WHERE id=?", mid, one=True)
     if not m:
-        return
+        return False
     mode = texture_mode(mid, m["source"])
     src = viewer_glb(mid, mode, m["filename"], make=True)
     preview_faces = settings().get("viewer.preview_faces")
     rec = glbpack.record(src) if src else None
     if src is None or (rec and glbpack.made_for(rec, preview_faces)) or _pack_failed.get(mid) == glbpack.stamp(src):
-        return
+        return False
     textures = {}
     if mode != "hidden" and _has("PIL"):
         for uri in glbpack.image_files(src):
@@ -1126,6 +1128,7 @@ def pack_mesh(mid: str) -> None:
                 size, copies = shrink_texture(f)
                 textures[uri] = {"side": size, "bytes": {str(s): c.stat().st_size for s, c in copies.items()}}
     glbpack.pack(src, lambda line: print(f"{mid}: {line}", flush=True), extra={"textures": textures}, preview_faces=preview_faces)
+    return True
 
 
 def pack_worker() -> None:
@@ -1136,8 +1139,10 @@ def pack_worker() -> None:
         with _pack_lock:
             if _packing.pop(mid, None) is None:
                 continue     # queued again sooner, and done then
+        _pack_now.update(mid=mid, since=time.time())
         try:
-            pack_mesh(mid)
+            if pack_mesh(mid):
+                _pack_took[:] = [*_pack_took[-19:], time.time() - _pack_now["since"]]
         except Exception as e:  # never let the thread die
             print(f"{mid}: packing for viewing failed: {type(e).__name__}: {e}", flush=True)
             try:
@@ -1147,6 +1152,34 @@ def pack_worker() -> None:
                     _pack_failed[mid] = glbpack.stamp(src)
             except Exception:
                 pass
+        finally:
+            _pack_now.clear()
+
+
+def pack_progress() -> dict:
+    """How far packing meshes for the viewer has got, for the admin page: of every GLB mesh, how many are packed as the
+    admin page asks now, which is being packed, and roughly how long the rest will take. Those that aren't are queued,
+    as the meshes list does."""
+    want, total, done, todo = settings().get("viewer.preview_faces"), 0, 0, []
+    for m in q("SELECT id, source, filename FROM meshes ORDER BY created DESC"):
+        if not m["filename"].lower().endswith(".glb"):
+            continue
+        total += 1
+        src = viewer_glb(m["id"], texture_mode(m["id"], m["source"]), m["filename"])
+        rec = glbpack.record(src) if src else None
+        if rec and glbpack.made_for(rec, want):
+            done += 1
+        elif m["id"] not in _pack_failed:
+            todo.append(m["id"])
+    for mid in todo:
+        queue_pack(mid)
+    now = dict(_pack_now)
+    name = now and (q("SELECT name FROM meshes WHERE id=?", now["mid"], one=True) or {}).get("name")
+    going = time.time() - now["since"] if now else 0
+    each = sorted(_pack_took)[len(_pack_took) // 2] if _pack_took else None     # the median of the last 20
+    return {"available": glbpack.available(), "total": total, "done": done, "left": len(todo), "failed": len(_pack_failed),
+            "now": {"name": name, "seconds": round(going)} if now else None,
+            "eta_seconds": round(max(each, each * len(todo) - going)) if each and todo else None, "preview_faces": want}
 
 
 def mesh_version(mid: str, mode: str, filename: str) -> str:
@@ -5883,6 +5916,7 @@ def admin_state() -> dict:
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
             "notify": NOTIFIER.state(),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
+            "packing": pack_progress(),
             "offload": offload_mod.state(DATA, q)}
 
 

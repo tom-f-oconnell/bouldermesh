@@ -382,7 +382,8 @@ background, and *Loading detailâ€¦* in the view's bar says how far that's got. â
 *Auto* (the default) fetches the rest at once unless the connection is slow (data saving on, or the preview came too
 slowly for the rest to take under 30 s), when the bar offers *Full detail (N MB)* instead; *Full* always fetches it, and
 *Preview* only on that button. The server makes these copies itself for every GLB mesh, new or old (`backend/glbpack.py`,
-design.md, "Loading meshes quickly"), and a mesh's own files stay as they were, for downloads.
+design.md, "Loading meshes quickly"), and a mesh's own files stay as they were, for downloads. The admin page shows how
+many it has made, which it's making, and about how long the rest will take.
 
 If a browser can't load a mesh's texture, the viewer tries it smaller, then says why on the view. Grey
 on a mesh means no photo shows that side, including the backs of surfaces.
