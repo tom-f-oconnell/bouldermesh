@@ -44,6 +44,10 @@ DEFAULTS = {
     "youtube.via": "volunteers_when_refused",   # here | volunteers_when_refused | volunteers (never here: a cloud server)
     # the most the data may take, in GB (0: no limit): over it, volunteers and areas wait for room (DATA_CAP_GB starts it)
     "storage.cap_gb": 0.0,
+    # notify (notify.py) when less than this % of the cap is left, as about 5 climbs' or boulders' worth at 60 GB, or this
+    # many GB if set (0: the %)
+    "storage.warn_percent": 0.5,
+    "storage.warn_gb": 0.0,
     # an area's climbs that share a boulder with others it lists: harvested, and meshed together as their boulder
     # ("boulders"), or each meshed on its own ("climbs")
     "areas.meshes": "boulders",
@@ -67,7 +71,7 @@ DEFAULTS = {
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
            "areas.meshes": ("boulders", "climbs")}
-LIMITS = {"site.map_km": (0.05, 2000), "storage.cap_gb": (0, 100000), "compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
+LIMITS = {"site.map_km": (0.05, 2000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 100),
           "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 100),
           "registration.per_address_day": (1, 100), "registration.max_waiting": (1, 1000)}

@@ -163,6 +163,9 @@
     <div id="room-more" class="note"></div>
     <div class="grid"><div><label>The most the data may take (GB; 0 for no limit)</label><input type="number" id="room-cap" min="0" step="2.5"></div>
       <div class="row" style="margin-top:22px"><button id="room-save">Save</button></div></div>
+    <div class="grid"><div><label>Notify me when less than this % of the cap is left</label><input type="number" id="room-warn-pct" min="0" max="50" step="0.1"></div>
+      <div><label>Or when less than this many GB is (0: use the %)</label><input type="number" id="room-warn-gb" min="0" step="0.5"></div></div>
+    <div class="note" id="room-warn-note"></div>
     <div class="row"><button class="sec" id="room-measure">Measure now</button><button class="danger" id="room-rejected">Delete the photos the filter rejected</button></div>
   </section>
 
@@ -271,6 +274,13 @@ function render(s){
   const u = s.usage || {}, gb = b => (b / 2 ** 30).toFixed(1) + ' GB';
   $('#room').classList.toggle('alert', !!u.full);
   if (document.activeElement !== $('#room-cap')) $('#room-cap').value = v['storage.cap_gb'];
+  const worth = n => Math.round(n) === 1 ? "1 climb's worth" : `${Math.round(n).toLocaleString()} climbs' worth`;
+  const amount = b => b >= 2 ** 30 ? gb(b) : `${(b / 2 ** 20).toFixed(0)} MB`;
+  if (document.activeElement !== $('#room-warn-pct')) $('#room-warn-pct').value = v['storage.warn_percent'];
+  if (document.activeElement !== $('#room-warn-gb')) $('#room-warn-gb').value = v['storage.warn_gb'];
+  $('#room-warn-note').innerHTML = u.warn_at === undefined ? 'With a cap, and notifications on (below), your phone is told when the room left under it is less than this, and when it\'s reached.'
+    : `Told when less than <b>${amount(u.warn_at)}</b> is left${u.warn_climbs ? `, about ${worth(u.warn_climbs)} at their average (a climb's data and a mesh)` : ''}; `
+      + `${amount(Math.max(0, u.left))} is left now${u.climbs ? `, about ${worth(Math.max(0, u.climbs))}` : ''}. Needs notifications on (below).`;
   // ranked bars: each kind's share of what the data takes, largest first; under 1% each folds into "other"
   const parts = u.total ? Object.entries(u.by).filter(([, b]) => b > 0) : [];
   const small = parts.filter(([k, b]) => k !== 'other' && b / u.total < 0.01), rest = small.reduce((t, [, b]) => t + b, 0);
@@ -417,7 +427,7 @@ $('#mach-list').addEventListener('click', async ev => {
   if (!action || (ask && !confirm(ask))) return;
   try { msg((await call(`/api/admin/actions/${action}`, { id })).result); refresh(); } catch (e) { msg(e.message, 8000); }
 });
-$('#room-save').onclick = async () => { await save({ 'storage.cap_gb': +$('#room-cap').value }); try { await call('/api/admin/actions/measure', {}); refresh(); } catch (e) { msg(e.message, 8000); } };
+$('#room-save').onclick = async () => { await save({ 'storage.cap_gb': +$('#room-cap').value, 'storage.warn_percent': +$('#room-warn-pct').value, 'storage.warn_gb': +$('#room-warn-gb').value }); try { await call('/api/admin/actions/measure', {}); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#room-measure').onclick = async () => { msg('Measuring…', 60000); try { msg((await call('/api/admin/actions/measure', {})).result); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#room-rejected').onclick = async () => { if (!confirm('Delete every photo the filter rejected, from every project not being harvested or meshed now? They can\'t be put back after.')) return; msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };

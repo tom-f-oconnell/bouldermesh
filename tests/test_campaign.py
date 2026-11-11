@@ -1170,7 +1170,31 @@ with server._claim_lock:
     assert server._claim(w)[1]["name"] == "Alpha"
 assert not server.q("SELECT note FROM campaigns WHERE id=?", c["id"], one=True)["note"]
 assert "task" in server.VOLUNTEERS.work(v, "203.0.113.30")
-server.settings().update({"storage.cap_gb": 0})
+# your phone is told when the room left is under storage.warn_percent of the cap (or storage.warn_gb), and at the cap; once
+told, real_send = [], server.NOTIFIER.send
+server.NOTIFIER.send = lambda title, message, **kw: told.append((title, message)) or True
+try:
+    server.settings().update({"storage.cap_gb": 10.0, "storage.warn_percent": 1.0})
+    assert server.warn_room() == 0.1 * 2**30
+    server._usage.update(total=9.95 * 2**30, per_climb=20 * 2**20, per_mesh=30 * 2**20)
+    server.check_room()
+    server.check_room()
+    assert len(told) == 1 and told[0][0] == "BoulderMesh is nearly out of room" and "about 1 climb's worth" in told[0][1], told
+    assert server.room_left()["warn_climbs"] == 2.048
+    server._usage.update(total=11 * 2**30)
+    server.check_room()
+    assert len(told) == 1, "told once, until there's room again"
+    server._usage.update(total=9.8 * 2**30)    # more than half again as much as the warning's room
+    server.check_room()
+    server._usage.update(total=11 * 2**30)
+    server.check_room()
+    assert told[-1][0] == "BoulderMesh is out of room" and len(told) == 2
+    server.settings().update({"storage.warn_gb": 2.5})
+    assert server.warn_room() == 2.5 * 2**30, "the GB set overrides the %"
+    assert server.settings().get("storage.warn_percent") == 1.0
+finally:
+    server.NOTIFIER.send = real_send
+    server.settings().update({"storage.cap_gb": 0, "storage.warn_gb": 0, "storage.warn_percent": 0.5})
 server.VOLUNTEERS.revoke(erin["id"])
 server.VOLUNTEERS.cancel()
 server.stop_campaign(c["id"])

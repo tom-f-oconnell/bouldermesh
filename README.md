@@ -496,8 +496,11 @@ such as a cloud machine's metadata service (`HTTP_ALLOW_PRIVATE=1` lifts that, f
 changes it; no cap elsewhere): measured every 10 minutes, and over it, volunteers are given nothing and areas take no new
 climb (they say they're paused) until there's room again. *Room for data* also shows what takes it, and deletes the
 photos the filter rejected, which are only kept to put one back by hand and were 92 of hal's 97 GB of projects. Fetched
-videos have a cap of their own within it, `VIDEO_CACHE_GB`. ship.sh deletes the server's images no container uses
-before sending a new one, so that each ship leaves only the build before.
+videos have a cap of their own within it, `VIDEO_CACHE_GB`. With notifications on, your phone is told when less than
+0.5% of the cap is left (about 5 climbs' and boulders' worth at 60 GB), and when the cap is reached, each once until
+there's room again; *Room for data* changes the %, or sets a number of GB instead, and says how many climbs' worth both
+are. ship.sh deletes the server's images no container uses before sending a new one, so that each ship leaves only the
+build before.
 
 **What it doesn't do.** There's no rate limiting, and `GET /api/meshes` reads every mesh's records for each request, so a
 busy site wants a cache in front: Cloudflare's free plan, with the name proxied and SSL mode *Full (strict)*, caches the

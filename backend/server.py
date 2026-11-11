@@ -1828,12 +1828,55 @@ def full() -> str | None:
     return None
 
 
+def warn_room() -> float:
+    """How little room left under the cap is told of, in bytes: storage.warn_gb if set, else storage.warn_percent of the
+    cap (0 without a cap)."""
+    return (settings().get("storage.warn_gb") * 2**30) or data_cap() * settings().get("storage.warn_percent") / 100
+
+
+def room_left() -> dict:
+    """What the admin page says of the room left under the cap: {left, warn_at, climbs}, climbs being how many climbs'
+    worth (their data and a mesh each, on average) the room left, and the warning's, are."""
+    cap, at = data_cap(), warn_room()
+    if not cap or "total" not in _usage:
+        return {}
+    each = (_usage.get("per_climb") or 0) + (_usage.get("per_mesh") or 0)
+    return {"left": cap - _usage["total"], "warn_at": at, "climbs": (cap - _usage["total"]) / each if each else None,
+            "warn_climbs": at / each if each else None}
+
+
+_room_warned = False    # told of: not again until there's room again (half as much more than the warning's)
+
+
+def check_room() -> None:
+    """After measuring: tell your phone (notify.py) once the room left under the cap is under warn_room(), and once
+    the cap is reached, each once until there's room again."""
+    global _room_warned
+    room = room_left()
+    if not room:
+        return
+    left, at, gb = room["left"], room["warn_at"], lambda b: f"{b / 2**30:.1f} GB"
+    if left <= at and not _room_warned:
+        _room_warned = True
+        n = round(room["climbs"] or 0)
+        worth = (f", about {n} climb's worth" if n == 1 else f", about {n} climbs' worth") + " at their average" \
+            if room["climbs"] and left > 0 else ""
+        NOTIFIER.send("BoulderMesh is out of room" if left <= 0 else "BoulderMesh is nearly out of room",
+                      (f"{gb(_usage['total'])} of its {data_cap() / 2**30:g} GB cap: areas and volunteers wait until there's room."
+                       if left <= 0 else f"{gb(left)} left under its {data_cap() / 2**30:g} GB cap{worth}. At the cap, areas and "
+                       "volunteers wait until there's room.") + " The admin page's Room for data shows what takes it.",
+                      priority=4, tags=["floppy_disk"])
+    elif left > 1.5 * at:
+        _room_warned = False
+
+
 def watch_usage() -> None:
-    """Measure DATA_DIR now and every USAGE_EVERY seconds, while there's a cap."""
+    """Measure DATA_DIR now and every USAGE_EVERY seconds, while there's a cap, and say when it's nearly reached."""
     while True:
         try:
             if data_cap():
                 measure_usage()
+                check_room()
         except Exception as e:  # never let the thread die
             print(f"usage error: {e!r}", flush=True)
         time.sleep(USAGE_EVERY)
@@ -4272,7 +4315,7 @@ def admin_state() -> dict:
             "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE, "machines_image": MACHINES_IMAGE,
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
             "notify": NOTIFIER.state(),
-            "usage": {**_usage, "cap": data_cap() or None, "full": full()}, "timings": timings_summary()}
+            "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary()}
 
 
 def admin_test(_: dict) -> dict:
