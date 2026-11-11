@@ -123,6 +123,7 @@
     <label>Fetch videos from YouTube</label>
     <select id="via"><option value="volunteers_when_refused">Here, and through volunteers while YouTube refuses this server</option>
       <option value="here">Only here</option><option value="volunteers">Only through volunteers (for a cloud server, which YouTube refuses)</option></select>
+    <div id="vol-trouble"></div>
     <div id="vol-list"></div>
     <div class="grid">
       <div><label>New volunteer's name</label><input type="text" id="vol-name" placeholder="who it is, for you"></div>
@@ -318,9 +319,21 @@ function render(s){
     : 'Not taking volunteers here: VOLUNTEER_PORT isn\'t set (README, "Volunteers").';
   if (document.activeElement !== $('#via')) $('#via').value = v['youtube.via'];
   const gone = st => st === 'revoked' || st === 'denied';
-  $('#vol-list').innerHTML = vs.volunteers.length ? `<table><tr><th>Volunteer</th><th>Now</th><th>Last seen</th><th>Address</th><th>Last hour / day</th><th>Fetched</th><th></th></tr>${
+  // how YouTube treats each, as its script last said (version 5 on): ok, or refused, throttled or degraded, and why
+  const yt = x => {
+    if (!x.health) return `<span class="note" title="${x.yt_dlp ? 'yt-dlp ' + esc(x.yt_dlp) : 'Its script is older than version 5, which says how YouTube treats it'}">?</span>`;
+    const tip = [x.health_detail, x.kbps ? `last video at ${Math.round(x.kbps)} KB/s` : '', x.yt_dlp ? `yt-dlp ${x.yt_dlp}` : '', `said ${when(x.health_at)}`]
+      .filter(Boolean).join(' · ');
+    return `<span class="${x.health === 'ok' ? 'ok' : x.health === 'refused' ? 'bad' : 'warn'}" title="${esc(tip)}">${esc(x.health)}${
+      x.health === 'ok' && x.health_detail ? ' (warned)' : ''}</span>`;
+  };
+  const tr = vs.trouble;
+  $('#vol-trouble').innerHTML = tr ? `<div class="note warn">${tr.degraded} of the ${tr.of} volunteers heard from in the last few hours say YouTube is
+    degrading them, as: ${esc(tr.example || '')}. That's likely YouTube changing something, which a newer yt-dlp usually fixes (volunteers
+    update theirs daily), rather than one address's trouble.</div>` : '';
+  $('#vol-list').innerHTML = vs.volunteers.length ? `<table><tr><th>Volunteer</th><th>Now</th><th>YouTube</th><th>Last seen</th><th>Address</th><th>Last hour / day</th><th>Fetched</th><th></th></tr>${
     vs.volunteers.map(x => `<tr><td>${esc(x.name)}${x.provisional ? '<span class="tag">waiting for approval</span>' : ''}${x.registered ? `<div class="note">registered itself ${when(x.created)}</div>` : ''}</td><td class="${x.status === 'resting' || x.status === 'awaiting approval' ? 'warn' : gone(x.status) ? 'bad' : x.status === 'fetching' ? 'ok' : ''}">${esc(x.status)}${
-      x.refused_until ? ` until ${when(x.refused_until)}` : ''}${x.fetching ? `: ${esc(x.fetching.kind)} ${esc(x.fetching.video_id)}` : ''}</td><td>${when(x.last_seen)}</td><td>${esc(x.address || '')}</td>
+      x.refused_until ? `${x.rest_why === 'throttled' ? ' (throttled)' : ''} until ${when(x.refused_until)}` : ''}${x.fetching ? `: ${esc(x.fetching.kind)} ${esc(x.fetching.video_id)}` : ''}</td><td>${yt(x)}</td><td>${when(x.last_seen)}</td><td>${esc(x.address || '')}</td>
       <td>${x.last_hour} / ${x.last_day} (of ${x.per_hour} / ${x.per_day})</td><td>${x.done}</td><td>${gone(x.status) ? '' : x.provisional
         ? `<button data-vapprove="${esc(x.id)}">Approve</button> <button class="danger" data-vdeny="${esc(x.id)}">Deny</button>`
         : `<button class="danger" data-revoke="${esc(x.id)}">Revoke</button>`}</td></tr>`).join('')}</table>` : '<div class="note">No volunteers yet.</div>';

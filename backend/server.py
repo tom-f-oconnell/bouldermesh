@@ -4087,9 +4087,27 @@ def volunteer_rules() -> dict:
             "max_waiting": s["registration.max_waiting"]}
 
 
+def volunteer_troubled(v: dict, was: str | None, now: str, why: str) -> None:
+    """A volunteer's script said YouTube refuses, throttles or degrades it, and it didn't before: on your phone, if
+    notifications are on (notify.py), in the background."""
+    then = {"refused": "It rests 1, 2, 4, then 8 hours, while YouTube still refuses it.", "throttled": "It rests an hour.",
+            "degraded": "It carries on. A newer yt-dlp usually fixes this; volunteers update theirs daily."}[now]
+    threading.Thread(target=NOTIFIER.send, args=(f"Volunteer {v['name']}: YouTube {now} it", f"{why}. {then}"),
+                     kwargs={"priority": 3, "tags": ["warning"]}, daemon=True).start()
+
+
+def volunteers_widespread(n: int, of: int, example: str) -> None:
+    """Many volunteers say YouTube degrades them at once (volunteers.WIDESPREAD): likely YouTube changed something."""
+    threading.Thread(target=NOTIFIER.send, args=(
+        "YouTube is degrading several volunteers", f"{n} of the {of} volunteers heard from in the last few hours say so, as: "
+        f"{example}. That's likely YouTube changing something, which a newer yt-dlp usually fixes (volunteers update theirs "
+        "daily), rather than one address's trouble."), kwargs={"priority": 4, "tags": ["warning"]}, daemon=True).start()
+
+
 VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteers", volunteer_delivered, volunteer_ready,
                                    paused=lambda: full(), rules=volunteer_rules,
-                                   registered=lambda v: NOTIFIER.registered("volunteer", v, f" ({v['client'] or 'a volunteer script'})"))
+                                   registered=lambda v: NOTIFIER.registered("volunteer", v, f" ({v['client'] or 'a volunteer script'})"),
+                                   troubled=volunteer_troubled, widespread=volunteers_widespread)
 
 
 def notify_act(verb: str, kind: str, rid: str) -> str:

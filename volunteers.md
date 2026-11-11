@@ -92,6 +92,9 @@ and rests whatever the site says.
 | `nothing to fetch now (waiting for approval ...)` | Whoever runs the site hasn't approved you yet. It keeps asking. |
 | `N a day is the most that may register from one address` | Others at your address registered today: try again tomorrow. |
 | `YouTube refused: resting 1 h` | YouTube's bot check. It rests, longer each time it happens again. |
+| `YouTube seems to be throttling this computer (...): resting 1 h` | A video came far slower than this computer's usual, or YouTube stopped a download partway. It rests an hour. |
+| `YouTube degraded: ...` | yt-dlp couldn't get what it was asked for, as when YouTube has changed something: a newer yt-dlp usually fixes it, which the script installs daily. Whoever runs the site sees it too. |
+| `YouTube warning: ...` | yt-dlp warned, but got the video. Nothing to do. |
 | `couldn't fetch it: ...` | That video is private, removed, or too big. The site won't ask anyone for it again. |
 | `can't reach https://...` | The site is down. It keeps trying. |
 | `warning: ... no longer takes this token` | The site dropped or turned down your token. The script forgot it and registered a new one, which waits for approval again. If you think that's a mistake, ask whoever runs the site. |

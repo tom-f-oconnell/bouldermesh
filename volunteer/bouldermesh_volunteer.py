@@ -38,7 +38,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 4                 # 3: updates itself when the server says to; 4: then updates yt-dlp and Deno at once
+VERSION = 5                 # 3: updates itself when the server says to; 4: then updates yt-dlp and Deno at once;
+                            # 5: tells the server of signs YouTube is degrading or throttling it, and rests when throttled
 SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
 AGENT = "bouldermesh-volunteer"
 TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
@@ -53,6 +54,13 @@ CHANNEL_ID = re.compile(r"UC[A-Za-z0-9_-]{22}")
 WORDS = re.compile(r"[^\x00-\x1f\x7f]{3,200}")
 RESULT_KEYS = ("id", "title", "description", "duration", "channel", "channel_id", "uploader")
 REFUSAL = re.compile(r"not a bot|HTTP Error 429|Too Many Requests|content isn.t available, try again later", re.I)
+# what yt-dlp says when YouTube holds back (a fix for which is usually a newer yt-dlp), or throttles this address
+DEGRADED = re.compile(r"PO Token|po_token|SABR|Signature extraction failed|nsig extraction failed|n challenge|challenge solving|"
+                      r"Unable to extract|formats (have been skipped|may be missing)|Only images are available|"
+                      r"Requested format is not available|JavaScript runtime", re.I)
+THROTTLED = re.compile(r"HTTP Error 403|unable to download video data|giving up after \d+ retries", re.I)
+SLOW_KBPS = 128             # a whole video arriving slower than this (and than a third of this computer's usual) is throttled
+THROTTLE_HOURS = 1          # rest after YouTube throttles
 FOR_GOOD = re.compile(r"Video unavailable|Private video|has been removed|members[- ]only|not available in your country|"
                       r"account associated with this video has been terminated|copyright|confirm your age|age[- ]restricted|"
                       r"is not a valid URL|larger than max-filesize", re.I)
@@ -85,6 +93,27 @@ def log(msg: str) -> None:
 
 def why(e: Exception) -> str:
     return f"{Path(e.cmd[0]).name} exited with {e.returncode}" if isinstance(e, subprocess.CalledProcessError) else str(e)
+
+
+def last_error(err: str) -> str:
+    """The line that says why yt-dlp failed: its last ERROR, else its last line (now that its warnings are kept)."""
+    lines = [x for x in (err or "").strip().splitlines() if x.strip()]
+    return next((x for x in reversed(lines) if x.startswith("ERROR")), lines[-1] if lines else "")
+
+
+def signs(err: str, failed: bool) -> list[dict]:
+    """What yt-dlp printed that says YouTube is degrading (DEGRADED) or throttling (THROTTLED) this computer: {"kind",
+    "what": the line}, each line once, a few at most. Only when it failed: yt-dlp warns of such things often while still
+    getting what it was asked for, and then they're only a "note" (a slow download is caught by its speed)."""
+    out, seen = [], set()
+    for line in (err or "").splitlines():
+        kind = "throttled" if THROTTLED.search(line) else "degraded" if DEGRADED.search(line) else None
+        kind = kind if failed or not kind else "note"
+        what = re.sub(r"^(WARNING|ERROR):\s*", "", line.strip())[:200]
+        if kind and (kind, what) not in seen and len(out) < 6:
+            seen.add((kind, what))
+            out.append({"kind": kind, "what": what})
+    return out
 
 
 def python_version(exe) -> tuple[int, int]:
@@ -339,7 +368,7 @@ class Volunteer:
     def run_ytdlp(self, args: list[str], cwd: Path) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env["PATH"] = str(Path(self.ytdlp).parent) + os.pathsep + env.get("PATH", "")    # Deno, beside it
-        return subprocess.run([self.ytdlp, "--no-warnings", "--sleep-requests", "0.75", *args], cwd=cwd, env=env,
+        return subprocess.run([self.ytdlp, "--sleep-requests", "0.75", *args], cwd=cwd, env=env,     # warnings kept: signs()
                               capture_output=True, text=True, timeout=3600)
 
     # -- pacing -------------------------------------------------------------------------------------------------------
@@ -350,7 +379,7 @@ class Volunteer:
             now = time.time()
             self.state["fetched"] = [t for t in self.state["fetched"] if t > now - 86400]
             hour = [t for t in self.state["fetched"] if t > now - 3600]
-            waits = [(self.state.get("rest_until", 0) - now, "resting after YouTube refused")]
+            waits = [(self.state.get("rest_until", 0) - now, f"resting after YouTube {self.state.get('rest_why') or 'refused'}")]
             if self.state["fetched"]:
                 waits.append((max(self.state["fetched"]) + self.state.get("gap", GAP[0]) - now, None))
             if len(hour) >= self.per_hour:
@@ -371,9 +400,40 @@ class Volunteer:
 
     def refused(self) -> float:
         level = min(len(BLOCK_HOURS) - 1, self.state.get("refusal_level", -1) + 1)
-        self.state.update(refusal_level=level, rest_until=time.time() + BLOCK_HOURS[level] * 3600)
+        self.state.update(refusal_level=level, rest_until=time.time() + BLOCK_HOURS[level] * 3600, rest_why="refused")
         self.save()
         return BLOCK_HOURS[level]
+
+    def react(self, found: list[dict]) -> None:
+        """Say what YouTube's signs were, and rest when it throttles."""
+        for x in found:
+            log(f"YouTube {x['kind'] if x['kind'] != 'note' else 'warning'}: {x['what']}")
+        throttled = [x for x in found if x["kind"] == "throttled"]
+        if throttled:
+            self.throttled(throttled[0]["what"])
+
+    def throttled(self, why: str) -> None:
+        """YouTube throttles this computer: it rests THROTTLE_HOURS, without the refusals' growing rests."""
+        self.state.update(rest_until=max(self.state.get("rest_until", 0), time.time() + THROTTLE_HOURS * 3600), rest_why="throttled")
+        self.save()
+        log(f"YouTube seems to be throttling this computer ({why}): resting {THROTTLE_HOURS} h")
+
+    def speed(self, size: int, seconds: float) -> tuple[float | None, bool]:
+        """A whole video's speed, in KB/s (None if too small to tell), and whether that's throttled: under SLOW_KBPS, and
+        under a third of this computer's usual (the median of its last speeds that weren't), or before it has a usual,
+        under half SLOW_KBPS (so that a slow connection becomes its own usual, rather than always looking throttled)."""
+        if size < 3 * 2**20 or seconds <= 0:
+            return None, False
+        kbps = size / 1024 / seconds
+        usual = sorted(self.state.get("speeds") or [])
+        slow = kbps < SLOW_KBPS and (kbps < usual[len(usual) // 2] / 3 if len(usual) >= 3 else kbps < SLOW_KBPS / 2)
+        if not slow:
+            self.state["speeds"] = (self.state.get("speeds") or [])[-9:] + [round(kbps)]
+        return round(kbps), slow
+
+    def health(self, found: list[dict], kbps: float | None = None) -> dict:
+        """What's sent with each task's result: how YouTube treated this computer (signs()), and its speed and yt-dlp."""
+        return {"signs": found, "kbps": kbps, "yt_dlp": getattr(self, "ytdlp_version", None)}
 
     # -- one task -----------------------------------------------------------------------------------------------------
     def do(self, task: dict) -> None:
@@ -400,31 +460,41 @@ class Volunteer:
             self.wait_turn()
             log(f"fetching {'the video' if kind == 'video' else 'the details of'} {url}")
             self.fetched_now()
+            began = time.time()
             if kind == "details":
                 r = self.run_ytdlp(["-J", "--skip-download", "--no-playlist", url], work)
             else:
                 r = self.run_ytdlp(["-q", "--no-playlist", "-f", task["format"], "--max-filesize", task["max_filesize"],
                                     "--write-info-json", "-o", "video.%(ext)s", url], work)
-            err = (r.stderr or "").strip()
-            if r.returncode or (kind == "video" and not self.video_file(work)):
+            failed = bool(r.returncode or (kind == "video" and not self.video_file(work)))
+            err, found = (r.stderr or "").strip(), signs(r.stderr, failed)
+            if failed:
                 if REFUSAL.search(err):
                     hours = self.refused()
-                    self.server.call(done, {"status": "refused", "error": err[-300:]})
+                    self.server.call(done, {"status": "refused", "error": err[-300:], "health": self.health(found)})
                     log(f"YouTube refused: resting {hours} h")
                     return
-                why = err.splitlines()[-1] if err else ("larger than max-filesize" if r.returncode == 0 else f"yt-dlp exited with {r.returncode}")
-                self.server.call(done, {"status": "failed", "error": why[-300:], "permanent": bool(FOR_GOOD.search(why) or FOR_GOOD.search(err))})
+                why = last_error(err) or ("larger than max-filesize" if r.returncode == 0 else f"yt-dlp exited with {r.returncode}")
+                self.server.call(done, {"status": "failed", "error": why[-300:], "permanent": bool(FOR_GOOD.search(why) or FOR_GOOD.search(err)),
+                                        "health": self.health(found)})
                 log(f"couldn't fetch it: {why}")
+                self.react(found)
                 return
             self.state["refusal_level"] = -1
             self.save()
+            kbps = None
             if kind == "details":
                 info = json.loads(r.stdout)
             else:
                 info = json.loads((work / "video.info.json").read_text())
-                self.send(task, self.video_file(work))
-            out = self.server.call(done, {"status": "ok", "info": {k: info.get(k) for k in KEEP}})
+                video = self.video_file(work)
+                kbps, slow = self.speed(video.stat().st_size, time.time() - began)
+                if slow:
+                    found.append({"kind": "throttled", "what": f"the video came at {kbps:.0f} KB/s"})
+                self.send(task, video)
+            out = self.server.call(done, {"status": "ok", "info": {k: info.get(k) for k in KEEP}, "health": self.health(found, kbps)})
             log("sent" if out.get("ok") else f"the server didn't take it: {out}")
+            self.react(found)
         except KeyboardInterrupt:
             try:
                 self.server.call(done, {"status": "released"}, tries=1)
@@ -442,28 +512,31 @@ class Volunteer:
             log(what)
             self.fetched_now()
             r = self.run_ytdlp(["-J", *args], self.home)
-            err = (r.stderr or "").strip()
+            err, found = (r.stderr or "").strip(), signs(r.stderr, bool(r.returncode))
             if r.returncode:
                 if REFUSAL.search(err):
                     hours = self.refused()
-                    self.server.call(done, {"status": "refused", "error": err[-300:]})
+                    self.server.call(done, {"status": "refused", "error": err[-300:], "health": self.health(found)})
                     log(f"YouTube refused: resting {hours} h")
                     return
-                why = err.splitlines()[-1] if err else f"yt-dlp exited with {r.returncode}"
-                self.server.call(done, {"status": "failed", "error": why[-300:], "permanent": bool(FOR_GOOD.search(err))})
+                why = last_error(err) or f"yt-dlp exited with {r.returncode}"
+                self.server.call(done, {"status": "failed", "error": why[-300:], "permanent": bool(FOR_GOOD.search(err)),
+                                        "health": self.health(found)})
                 log(f"couldn't do it: {why}")
+                self.react(found)
                 return
             self.state["refusal_level"] = -1
             self.save()
             info = json.loads(r.stdout or "{}")
             if task["kind"] == "search":
                 results = [{k: e.get(k) for k in RESULT_KEYS} for e in info.get("entries") or [] if isinstance(e, dict)]
-                out = self.server.call(done, {"status": "ok", "results": results})
+                out = self.server.call(done, {"status": "ok", "results": results, "health": self.health(found)})
                 log(f"sent {len(results)} result(s)" if out.get("ok") else f"the server didn't take it: {out}")
             else:
                 out = self.server.call(done, {"status": "ok", "info": {"name": info.get("channel") or info.get("uploader") or info.get("title"),
-                                                                        "description": info.get("description") or ""}})
+                                                                        "description": info.get("description") or ""}, "health": self.health(found)})
                 log("sent" if out.get("ok") else f"the server didn't take it: {out}")
+            self.react(found)
         except KeyboardInterrupt:
             try:
                 self.server.call(done, {"status": "released"}, tries=1)
@@ -506,7 +579,7 @@ class Volunteer:
 
     def run(self) -> None:
         self.tools()
-        version = self.run_ytdlp(["--version"], self.home).stdout.strip()
+        version = self.ytdlp_version = self.run_ytdlp(["--version"], self.home).stdout.strip()
         blocked = update_blocked(self.server.url)
         log(f"volunteering for {self.server.url} with yt-dlp {version}: at most {self.per_hour} an hour, {self.per_day} a day; "
             + (f"it doesn't update itself ({blocked})" if blocked else "it updates itself when the server says to"))
@@ -564,6 +637,7 @@ class Volunteer:
             time.sleep(wait)
             if time.time() - self.state.get("updated", 0) > 86400:
                 self.tools()
+                version = self.ytdlp_version = self.run_ytdlp(["--version"], self.home).stdout.strip()
 
 
 def main() -> None:

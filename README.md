@@ -681,6 +681,12 @@ volunteers and for connecting the public site to whichever server harvests.
   hours when YouTube refuses them. A video comes back whole (up to 1080p, no sound, 500 MB), with its details but
   nothing of theirs. It must be as long as they say, and as long as another volunteer's search listed it, if one did:
   their own word alone only catches a file gone wrong; a search, its results (kept 30 days); a channel, its description, for climbers' heights.
+- **How YouTube treats them:** with each result, the script (version 5 on) says what yt-dlp warned of and how fast the
+  video came. A fetch that failed as YouTube holds back (PO tokens, SABR, signature and challenge failures, formats
+  missing) is *degraded*; one stopped partway (HTTP 403), or a video far slower than the volunteer's usual, *throttled*,
+  and it rests an hour. The admin page's Volunteers list shows each one's state, why, its last speed and yt-dlp; your
+  phone is told when one gets worse (with notifications on), and when several are degraded at once, which is likely
+  YouTube changing something that a newer yt-dlp fixes, the page says so. Warnings when a fetch worked are only noted.
 - **An area's climbs wait for them:** a climb whose harvest asked volunteers for a search or videos is harvested again
   when they've come, and meshed once, rather than meshed without them first; after 24 h (`VOLUNTEER_WAIT_HOURS`) it's
   meshed with what's come.

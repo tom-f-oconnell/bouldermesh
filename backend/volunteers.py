@@ -39,6 +39,10 @@ PER_DAY = 100
 RULES = {"per_hour": PER_HOUR, "per_day": PER_DAY, "provisional_per_hour": 3, "provisional_per_day": 10,
          "provisional_work": True, "registrations_per_address": 5, "max_waiting": 30}
 BLOCK_HOURS = (1, 2, 4, 8)  # a volunteer YouTube refused rests this long, longer each time it's still refused
+THROTTLE_REST = 3600        # a volunteer YouTube throttled rests this long (seconds), without the refusals' growing rests
+TROUBLE = ("refused", "throttled", "degraded")   # how YouTube treats a volunteer, as its script sees it, worst first
+WIDESPREAD = (6 * 3600, 2, 0.5)     # degraded for at least 2 volunteers, and half of those heard from, within 6 h: YouTube's
+                                    # change, which a newer yt-dlp is likely to fix, not one address's trouble
 STALE_MINUTES = 90          # work given out that nothing has come of for this long goes back to the queue
 PAUSE_WAIT = 1800           # seconds a volunteer waits before asking again, while the server says it can't take more
 MAX_TRIES = 3               # a video that fails this often, for reasons that might pass, isn't asked for again
@@ -118,14 +122,21 @@ class Broker:
         paused: why no volunteer is to be given work now (as when the server is out of room), or None.
         rules: the admin page's limits, as RULES.
         registered: called with a new volunteer's row when one registers itself.
+        troubled: called with (the volunteer's row, its health before, its health now, why) when its script says YouTube
+            refuses, throttles or degrades it, and it didn't before (or less so).
+        widespread: called with (how many, of how many, an example) when many volunteers say YouTube is degrading them at
+            once (WIDESPREAD), at most once in that span.
     """
 
     def __init__(self, db_path: Path, files: Path, delivered: Callable[[dict, Path | None, dict], None],
                  ready: Callable[[str, str], None], probe: Callable[[Path], float | None] = probe_duration,
                  paused: Callable[[], str | None] = lambda: None, rules: Callable[[], dict] = lambda: RULES,
-                 registered: Callable[[dict], None] = lambda v: None):
+                 registered: Callable[[dict], None] = lambda v: None,
+                 troubled: Callable[[dict, str | None, str, str], None] = lambda v, was, now, why: None,
+                 widespread: Callable[[int, int, str], None] = lambda n, of, example: None):
         self.db_path, self.files, self.delivered, self.ready, self.probe = db_path, files, delivered, ready, probe
-        self.paused, self.rules, self.registered = paused, rules, registered
+        self.paused, self.rules, self.registered, self.troubled, self.widespread = paused, rules, registered, troubled, widespread
+        self.widespread_said = 0.0      # when widespread() was last called
         self.lock = threading.RLock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with self.db() as con:
@@ -143,6 +154,13 @@ class Broker:
                 CREATE TABLE IF NOT EXISTS given(volunteer TEXT, ip TEXT, at REAL);
             """)
             registration.migrate(con, "volunteers")
+            have = {r[1] for r in con.execute("PRAGMA table_info(volunteers)")}
+            # how YouTube treats it, as its script last said (health: ok, or one of TROUBLE), and why; the speed of its
+            # last whole video, in KB/s; its yt-dlp; why it rests (rest_why: "refused" or "throttled")
+            for name, kind in (("health", "TEXT"), ("health_detail", "TEXT"), ("health_at", "REAL"), ("kbps", "REAL"),
+                               ("yt_dlp", "TEXT"), ("rest_why", "TEXT")):
+                if name not in have:
+                    con.execute(f"ALTER TABLE volunteers ADD COLUMN {name} {kind}")
 
     def db(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.db_path, timeout=30)
@@ -256,7 +274,8 @@ class Broker:
             if waiting and not rules["provisional_work"]:
                 return {"wait": PAUSE_WAIT, "why": "waiting for approval by whoever runs this site", "provisional": True}
             if (v.get("refused_until") or 0) > now:
-                return {"wait": v["refused_until"] - now, "why": "YouTube refused you lately: resting"}
+                return {"wait": v["refused_until"] - now, "why": "YouTube was throttling your downloads lately: resting"
+                        if v.get("rest_why") == "throttled" else "YouTube refused you lately: resting"}
             mine = self.q("SELECT * FROM tasks WHERE volunteer=? AND state='assigned'", v["id"], one=True)
             if mine:
                 return {"task": self._task_view(mine)}
@@ -342,13 +361,17 @@ class Broker:
                 self.q("UPDATE tasks SET state='queued', volunteer=NULL WHERE id=?", task_id)
                 f.unlink(missing_ok=True)
                 return {"ok": True}
+            health = self._health(v, status, report)
             if status == "refused":
                 level = min(len(BLOCK_HOURS) - 1, (v.get("refusal_level") if v.get("refusal_level") is not None else -1) + 1)
                 until = now + BLOCK_HOURS[level] * 3600
-                self.q("UPDATE volunteers SET refusal_level=?, refused_until=? WHERE id=?", level, until, v["id"])
+                self.q("UPDATE volunteers SET refusal_level=?, refused_until=?, rest_why='refused' WHERE id=?", level, until, v["id"])
                 self.q("UPDATE tasks SET state='queued', volunteer=NULL WHERE id=?", task_id)
                 f.unlink(missing_ok=True)
                 return {"rest_until": until}
+            if health == "throttled":   # it rests, without the refusals' growing rests; what it fetched still counts
+                until = max(v.get("refused_until") or 0, now + THROTTLE_REST)
+                self.q("UPDATE volunteers SET refused_until=?, rest_why='throttled' WHERE id=?", until, v["id"])
             if status != "ok":
                 self._failed(t, str(report.get("error") or "failed")[:500], bool(report.get("permanent")))
                 f.unlink(missing_ok=True)
@@ -375,7 +398,9 @@ class Broker:
                                  + (" by another's search" if off(listed) else ""), False)
                     return {"ok": False}
             self.q("UPDATE tasks SET state='done', finished=?, info=?, error=NULL WHERE id=?", now, json.dumps(info), task_id)
-            self.q("UPDATE volunteers SET refusal_level=-1, refused_until=NULL, done=done+1 WHERE id=?", v["id"])
+            self.q("UPDATE volunteers SET refusal_level=-1, done=done+1 WHERE id=?", v["id"])
+            if health != "throttled":   # a throttled one's rest stands, though what it sent came
+                self.q("UPDATE volunteers SET refused_until=NULL WHERE id=?", v["id"])
         try:
             self.delivered({**t, "state": "done"}, path, info)
         finally:
@@ -383,6 +408,68 @@ class Broker:
                 path.unlink(missing_ok=True)
             self._settle(task_id)
         return {"ok": True}
+
+    def _health(self, v: dict, status: str, report: dict) -> str | None:
+        """Record how YouTube treats a volunteer, from what its script reported with a task (its "health": {"signs":
+        [{"kind": one of TROUBLE, or "note" for a warning when it worked, "what": the line yt-dlp said}], "kbps",
+        "yt_dlp"}; scripts before version 5 send none): refused if the task was, else the worst sign, else ok if it
+        worked; a failure without signs (a private video) says nothing. Calls troubled() when that's worse than before, and widespread() when many are degraded.
+
+        Returns:
+            Its health now, or None if this said nothing of it.
+        """
+        h = report.get("health") if isinstance(report.get("health"), dict) else {}
+        given = [x for x in h.get("signs") or [] if isinstance(x, dict)][:10]
+        signs = [x for x in given if x.get("kind") in TROUBLE]
+        notes = [str(x.get("what") or "") for x in given if x.get("kind") == "note"]   # warnings, though it worked
+        worst = min(signs, key=lambda x: TROUBLE.index(x["kind"])) if signs else None
+        if status == "refused":
+            health, why = "refused", str(report.get("error") or "").strip().splitlines()[-1:] or ["refused"]
+            why = why[0]
+        elif worst:
+            health, why = worst["kind"], str(worst.get("what") or worst["kind"])
+        elif status == "ok":
+            health, why = "ok", f"yt-dlp warned: {notes[0]}" if notes else ""
+        else:
+            health, why = None, ""
+        kbps = h.get("kbps") if isinstance(h.get("kbps"), (int, float)) and not isinstance(h.get("kbps"), bool) else None
+        ytdlp = str(h.get("yt_dlp") or "")[:40] or None
+        now = time.time()
+        self.q("UPDATE volunteers SET kbps=COALESCE(?, kbps), yt_dlp=COALESCE(?, yt_dlp) WHERE id=?", kbps, ytdlp, v["id"])
+        if health is None:
+            return None
+        self.q("UPDATE volunteers SET health=?, health_detail=?, health_at=? WHERE id=?", health, why[:300], now, v["id"])
+        was = v.get("health")
+        if health in TROUBLE and (was not in TROUBLE or TROUBLE.index(health) < TROUBLE.index(was)):
+            try:
+                self.troubled(v, was, health, why[:300])
+            except Exception:  # noqa: S110 - telling someone mustn't stop the work
+                pass
+        if health == "degraded":
+            self._check_widespread(now, why)
+        return health
+
+    def _check_widespread(self, now: float, example: str) -> None:
+        span, least, share = WIDESPREAD
+        heard = self.q("SELECT id, health FROM volunteers WHERE health_at>? AND revoked IS NULL", now - span)
+        n = sum(r["health"] == "degraded" for r in heard)
+        if n >= least and n >= share * len(heard) and now - self.widespread_said > span:
+            self.widespread_said = now
+            try:
+                self.widespread(n, len(heard), example[:300])
+            except Exception:  # noqa: S110
+                pass
+
+    def trouble(self) -> dict | None:
+        """Whether many volunteers have said lately that YouTube degrades them (WIDESPREAD): {"degraded": n, "of": m,
+        "example": what one said}, or None."""
+        span, least, share = WIDESPREAD
+        heard = self.q("SELECT health, health_detail FROM volunteers WHERE health_at>? AND revoked IS NULL ORDER BY health_at DESC",
+                       time.time() - span)
+        bad = [r for r in heard if r["health"] == "degraded"]
+        if len(bad) >= least and len(bad) >= share * len(heard):
+            return {"degraded": len(bad), "of": len(heard), "example": bad[0]["health_detail"]}
+        return None
 
     def listed_duration(self, video_id: str, besides: str) -> float | None:
         """The video's length as someone other than this volunteer saw it: in a search's results, or its details,
@@ -451,14 +538,16 @@ class Broker:
                          "client": v["client"], "refused_until": v["refused_until"] if (v["refused_until"] or 0) > now else None,
                          "per_hour": min(v["per_hour"] or PER_HOUR, hour), "per_day": min(v["per_day"] or PER_DAY, day), "done": v["done"],
                          "fetching": fetching, "provisional": waiting, "registered": v.get("registered_ip") is not None,
-                         "created": v["created"], "last_hour": sum(g["at"] > now - 3600 for g in given), "last_day": len(given)})
+                         "created": v["created"], "last_hour": sum(g["at"] > now - 3600 for g in given), "last_day": len(given),
+                         "health": v.get("health"), "health_detail": v.get("health_detail"), "health_at": v.get("health_at"),
+                         "kbps": v.get("kbps"), "yt_dlp": v.get("yt_dlp"), "rest_why": v.get("rest_why")})
         counts = {f"{r['state']}_{r['kind']}": r["n"] for r in self.q("SELECT state, kind, count(*) AS n FROM tasks GROUP BY state, kind")}
         wanted = {r["purpose"]: r["n"] for r in self.q("SELECT w.purpose, count(DISTINCT w.task) AS n FROM wants w JOIN tasks t "
                                                          "ON t.id=w.task WHERE t.state IN ('queued','assigned') GROUP BY w.purpose")}
         recent = self.q("SELECT kind, video_id, state, error, finished FROM tasks WHERE state IN ('done','failed') "
                         "ORDER BY finished DESC LIMIT 8")
         return {"volunteers": vols, "counts": counts, "wanted": wanted, "recent": recent,
-                "connected": sum(v["status"] in ("fetching", "waiting for work") for v in vols)}
+                "connected": sum(v["status"] in ("fetching", "waiting for work") for v in vols), "trouble": self.trouble()}
 
 
 class OffsetError(Exception):

@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -53,6 +54,14 @@ if vid.startswith("slow"):
     import time; time.sleep(30)
 if vid.startswith("private"):
     sys.stderr.write("ERROR: [youtube] " + vid + ": Private video. Sign in if you've been granted access to this video\\n"); sys.exit(1)
+if vid.startswith("degraded"):
+    sys.stderr.write("WARNING: [youtube] " + vid + ": nsig extraction failed: Some formats may be missing\\n"
+                     "ERROR: [youtube] " + vid + ": Requested format is not available\\n"); sys.exit(1)
+if vid.startswith("forbidden"):
+    sys.stderr.write("ERROR: unable to download video data: HTTP Error 403: Forbidden\\n"); sys.exit(1)
+if vid.startswith("warned"):
+    sys.stderr.write("WARNING: [youtube] " + vid + ": Some web client https formats have been skipped as they are missing a url. "
+                     "YouTube is forcing SABR streaming for this client.\\n")
 info = {"id": vid, "title": "Relic V9 Joshua Tree", "uploader": "a climber", "duration": 4.0, "description": "I'm 180 cm tall",
         "webpage_url": url, "formats": [{"url": "https://rr1---sn.googlevideo.com/videoplayback?ip=203.0.113.9"}]}
 if "-J" in args:
@@ -286,6 +295,26 @@ def script_and_broker() -> None:
         out = proc.communicate(timeout=30)[0]
         assert "stopped" in out and b.q("SELECT state, volunteer FROM tasks WHERE video_id='slow0000000'", one=True) == \
             {"state": "queued", "volunteer": None}, out
+        b.q("DELETE FROM tasks WHERE state='queued'")
+        b.q("UPDATE volunteers SET refused_until=NULL")    # the run just stopped may have been refused again first
+        state = json.loads((TMP / "home" / "state.json").read_text())   # the refusal above left it resting, here too
+        (TMP / "home" / "state.json").write_text(json.dumps({**state, "rest_until": 0, "fetched": []}))
+        # how YouTube treats it, as the script says with each result: a warning when it worked, degraded, throttled
+        health = lambda: b.q("SELECT health, health_detail, yt_dlp, rest_why FROM volunteers", one=True)  # noqa: E731
+        b.want("video", "warnedaaaaa", "harvest", "p4")
+        out = volunteer()
+        assert "YouTube warning: [youtube] warnedaaaaa: Some web client" in out and "sent" in out, out
+        assert health()["health"] == "ok" and health()["health_detail"].startswith("yt-dlp warned:") and health()["yt_dlp"] == "2099.01.01"
+        b.want("video", "degradedaaa", "harvest", "p4")
+        out = volunteer()
+        assert "YouTube degraded: [youtube] degradedaaa: nsig extraction failed" in out, out
+        assert health()["health"] == "degraded" and "Some formats may be missing" in health()["health_detail"]
+        b.q("DELETE FROM tasks WHERE state='queued'")     # it's asked for again, as it may pass: not here
+        b.want("video", "forbiddenaa", "harvest", "p4")
+        out = volunteer()
+        assert "resting 1 h" in out and health()["health"] == "throttled" and health()["rest_why"] == "throttled", out
+        assert "throttling" in call(base + "/volunteer/api/work", {"version": 5}, token)[1]["why"]
+        b.q("UPDATE volunteers SET refused_until=NULL")
         print("script OK")
     finally:
         httpd.shutdown()
@@ -744,9 +773,71 @@ def updating() -> None:
     print("updating itself OK")
 
 
+def youtube_health():
+    """Volunteers telling the server how YouTube treats them (version 5): the script reading yt-dlp's warnings and its
+    download speeds, and the server keeping each volunteer's health, resting those throttled, and telling of trouble."""
+    sys.path.insert(0, str(SCRIPT.parent))
+    import bouldermesh_volunteer as bv
+    err = ("WARNING: [youtube] x: Some web client https formats have been skipped as they are missing a url. YouTube is forcing "
+           "SABR streaming for this client.\nWARNING: [youtube] x: nsig extraction failed: Some formats may be missing\n"
+           "ERROR: [youtube] x: Requested format is not available\n")
+    assert [x["kind"] for x in bv.signs(err, failed=True)] == ["degraded"] * 3
+    assert {x["kind"] for x in bv.signs(err, failed=False)} == {"note"}, "warnings, though it worked: only notes"
+    assert bv.signs("ERROR: unable to download video data: HTTP Error 403: Forbidden", True)[0]["kind"] == "throttled"
+    assert bv.signs("ERROR: [youtube] x: Private video", True) == [] and bv.last_error(err) == "ERROR: [youtube] x: Requested format is not available"
+    v = bv.Volunteer(type("Args", (), {"home": str(TMP / "health"), "yt_dlp": "x", "server": "https://x.example", "token": "t",
+                                       "per_hour": 1, "per_day": 1})())
+    assert v.speed(2 * 2**20, 1) == (None, False), "too small to tell"
+    assert v.speed(30 * 2**20, 60) == (512, False) and v.speed(30 * 2**20, 300) == (102, False), "under 128, but no usual yet"
+    assert v.speed(30 * 2**20, 400) == (77, False), "with no usual yet, 77 isn't throttled..."
+    v.state["speeds"] = [512, 102]
+    assert v.speed(30 * 2**20, 1200) == (26, True) and v.state["speeds"] == [512, 102], "...but under 64 is"
+    v.speed(30 * 2**20, 30)
+    assert v.speed(30 * 2**20, 300) == (102, True), "under 128, and under a third of its usual"
+    assert v.state["speeds"] == [512, 102, 1024], "a throttled speed isn't its usual"
+    v.react([{"kind": "throttled", "what": "HTTP Error 403"}])
+    assert v.state["rest_why"] == "throttled" and v.state["rest_until"] - time.time() > 3500
+
+    told, spread = [], []
+    b = volunteers.Broker(TMP / "b7" / "v.sqlite", TMP / "b7" / "files", lambda t, p, i: None, lambda purpose, ref: None,
+                          probe=lambda p: 4.0, troubled=lambda v, was, now, why: told.append((v["name"], was, now)),
+                          widespread=lambda n, of, example: spread.append((n, of)))
+    a, c = (b.volunteer(b.add(n)["token"]) for n in ("Ann", "Cat"))
+
+    def report(who, status, *found, **more):
+        b.want("details", secrets.token_hex(6)[:11], "details", "x")
+        t = b.work(who, "198.51.100.3")["task"]
+        b.finish(who, t["id"], {"status": status, "info": {"duration": 4.0}, "error": more.get("error"),
+                                "health": {"signs": [{"kind": k, "what": w} for k, w in found], "kbps": more.get("kbps"), "yt_dlp": "2099.01.01"}})
+        return b.get(who["id"])
+
+    a = report(a, "ok", ("note", "YouTube is forcing SABR streaming"), kbps=900)
+    assert (a["health"], a["health_detail"], a["kbps"], a["yt_dlp"]) == ("ok", "yt-dlp warned: YouTube is forcing SABR streaming", 900, "2099.01.01")
+    assert told == [], "warnings, when it worked, aren't trouble"
+    a = report(a, "failed", ("degraded", "nsig extraction failed"))
+    a = report(a, "failed", ("degraded", "nsig extraction failed"))
+    assert a["health"] == "degraded" and told == [("Ann", "ok", "degraded")], "told once, when it got worse"
+    assert spread == [], "one volunteer of two isn't many"
+    c = report(c, "failed", ("degraded", "Unable to extract"))
+    assert spread == [(2, 2)] and b.trouble() == {"degraded": 2, "of": 2, "example": "Unable to extract"}
+    report(c, "failed", ("degraded", "Unable to extract"))
+    assert spread == [(2, 2)], "once in its span"
+    a = report(a, "ok", ("throttled", "the video came at 40 KB/s"))
+    assert a["health"] == "throttled" and a["rest_why"] == "throttled" and a["refused_until"] - time.time() > 3500
+    assert told[-1] == ("Ann", "degraded", "throttled") and "throttling" in b.work(a, "198.51.100.3")["why"]
+    b.q("UPDATE volunteers SET refused_until=NULL WHERE id=?", a["id"])
+    a = report(b.get(a["id"]), "refused", error="ERROR: [youtube] x: Sign in to confirm you're not a bot")
+    assert a["health"] == "refused" and a["rest_why"] == "refused" and told[-1][2] == "refused"
+    st = {v["name"]: v for v in b.state()["volunteers"]}
+    assert st["Ann"]["health"] == "refused" and st["Cat"]["health"] == "degraded" and st["Cat"]["yt_dlp"] == "2099.01.01"
+    assert b.state()["trouble"] is None, "one degraded of the two heard from: no longer many"
+    print("YouTube's signs, unit OK")
+
+
 try:
     broker_alone()
     tools_python()
+    youtube_health()
     updating()
     if shutil.which("ffmpeg"):
         script_and_broker()
