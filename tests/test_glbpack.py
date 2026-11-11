@@ -100,9 +100,9 @@ with tempfile.TemporaryDirectory() as td:
     assert glbpack.record(src) is None and glbpack.path(src, "full") is None, "nothing packed yet"
 
     # --- the full copy: every face, in another order, which maps back to the mesh's own
-    glbpack.PREVIEW_FROM, glbpack.PREVIEW_FACES = 4000, 1000
     lines = []
-    rec = glbpack.pack(src, lines.append, extra={"textures": {"tex_0.png": {"side": 2048}}})
+    rec = glbpack.pack(src, lines.append, extra={"textures": {"tex_0.png": {"side": 2048}}}, preview_faces=1000)
+    assert glbpack.made_for(rec, 1000) and not glbpack.made_for(rec, 1500) and not glbpack.made_for(rec, 0)
     assert src.read_bytes() == original, "the mesh's own file doesn't change"
     assert rec["full"]["faces"] == FACES == rec["source_faces"] and rec["textures"] == {"tex_0.png": {"side": 2048}}, rec
     assert rec["full"]["bytes"] < len(original) / 2, (rec["full"]["bytes"], len(original))
@@ -149,12 +149,15 @@ with tempfile.TemporaryDirectory() as td:
         assert "doesn't fit" in str(e)
     print("cleanup OK")
 
-    # --- out of date, then packed again; a small mesh gets no preview, and its old one goes
+    # --- out of date, then packed again; a mesh under twice the preview's size gets none, and its old one goes
     os.utime(src, ns=(src.stat().st_atime_ns, src.stat().st_mtime_ns + 10**9))
     assert glbpack.record(src) is None and glbpack.path(src, "full") is None and glbpack.labels(src, "full", d / meshclean.FACES_FILE, 2) is None
-    glbpack.PREVIEW_FROM = 10_000
-    rec = glbpack.pack(src, lambda line: None)
+    rec = glbpack.pack(src, lambda line: None, preview_faces=FACES // 2 + 1)
     assert "preview" not in rec and glbpack.path(src, "preview") is None and not (d / glbpack.DIR / "mesh.preview.glb").exists()
+    rec = glbpack.pack(src, lambda line: None, preview_faces=FACES // 2)
+    assert 0.8 * FACES // 2 <= rec["preview"]["faces"] <= FACES // 2 and glbpack.path(src, "preview")
+    rec = glbpack.pack(src, lambda line: None, preview_faces=0)
+    assert "preview" not in rec and glbpack.made_for(rec, 0), "0: no previews"
     print("repacking OK")
 
     # --- the versions shown when the site doesn't show all textures: coloured per vertex, or untextured

@@ -1109,7 +1109,9 @@ def pack_mesh(mid: str) -> None:
         return
     mode = texture_mode(mid, m["source"])
     src = viewer_glb(mid, mode, m["filename"], make=True)
-    if src is None or glbpack.record(src) or _pack_failed.get(mid) == glbpack.stamp(src):
+    preview_faces = settings().get("viewer.preview_faces")
+    rec = glbpack.record(src) if src else None
+    if src is None or (rec and glbpack.made_for(rec, preview_faces)) or _pack_failed.get(mid) == glbpack.stamp(src):
         return
     textures = {}
     if mode != "hidden" and _has("PIL"):
@@ -1118,7 +1120,7 @@ def pack_mesh(mid: str) -> None:
             if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg"):
                 size, copies = shrink_texture(f)
                 textures[uri] = {"side": size, "bytes": {str(s): c.stat().st_size for s, c in copies.items()}}
-    glbpack.pack(src, lambda line: print(f"{mid}: {line}", flush=True), extra={"textures": textures})
+    glbpack.pack(src, lambda line: print(f"{mid}: {line}", flush=True), extra={"textures": textures}, preview_faces=preview_faces)
 
 
 def pack_worker() -> None:
@@ -1144,19 +1146,22 @@ def pack_worker() -> None:
 
 def pack_info(r: dict) -> dict | None:
     """What the viewer can fetch for a listed mesh instead of its own files: the sizes of its packed copies, and of
-    its textures' JPEG copies; None if it isn't packed (and then it's queued, if it's a GLB)."""
+    its textures' JPEG copies, and when they were made (v, which the viewer adds to their addresses, so that a copy
+    and its cleanup come from the same making, whatever caches hold); None if it isn't packed. One not packed, or
+    not for the previews the admin page asks for now, is queued (shown as it was meanwhile)."""
     src = viewer_glb(r["id"], r["texture"], r["filename"])
     rec = glbpack.record(src) if src else None
+    if (not rec or not glbpack.made_for(rec, settings().get("viewer.preview_faces"))) \
+            and r["filename"].lower().endswith(".glb") and r["id"] not in _pack_failed:
+        queue_pack(r["id"])
     if not rec:
-        if r["filename"].lower().endswith(".glb") and r["id"] not in _pack_failed:
-            queue_pack(r["id"])
         return None
     sides: dict[str, int] = {}
     for t in (rec.get("textures") or {}).values():
         for s, n in t["bytes"].items():
             sides[s] = sides.get(s, 0) + n
     textures = rec.get("textures") or {}
-    return {"full": rec["full"]["bytes"], "preview": (rec.get("preview") or {}).get("bytes"),
+    return {"v": int(rec["made"]), "full": rec["full"]["bytes"], "preview": (rec.get("preview") or {}).get("bytes"),
             "texture": {"side": max(t["side"] for t in textures.values()), "bytes": sides} if textures else None}
 
 

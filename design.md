@@ -399,7 +399,10 @@ own files) showed in 28 s, where its own files would take almost 4 minutes, and 
   4096 at most: an 8192 texture takes 256 MB of graphics memory, and a phone's screen can't show it. A sharper texture
   that the graphics card has no room for (an OUT_OF_MEMORY error when it's uploaded) leaves the one before.
 - **When.** Each new mesh is packed as it's made, and any mesh the list of meshes shows unpacked is queued, so old
-  meshes catch up once someone opens the site; one at a time, at the lowest CPU priority. node runs glbpack.mjs where
+  meshes catch up once someone opens the site; one at a time, at the lowest CPU priority. The admin page sets the
+  preview's size (`viewer.preview_faces`, 150,000 by default, 0 for none): a change queues every mesh again, and each
+  is shown from its old copies until its new ones are made. The viewer adds when a mesh's copies were made to their
+  addresses (`&v=`), so a preview and its cleanup always come from the same making, whatever Cloudflare still holds. node runs glbpack.mjs where
   it's installed, deno (in the Docker image for yt-dlp) where not.
 - **Automatically, or on a button.** The rest comes at once unless it would take over 30 s at the speed the preview's
   files came (the browser's own timings of them), or the browser says it's on 2G or 3G or saving data (Chrome on

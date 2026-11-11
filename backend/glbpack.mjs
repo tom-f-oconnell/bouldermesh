@@ -8,7 +8,8 @@
 //                        texture coordinates as 16-bit integers, faces in the order that compresses best (and each
 //                        may start at another of its corners, which keeps the way it faces)
 //   full.faces.bin       for each of its faces, in order, the source's face it is (a uint32 index over all primitives)
-//   preview.glb          if the source has at least <make a preview from> faces: simplified to about <preview faces>,
+//   preview.glb          if <preview faces> isn't 0 and the source has at least <make a preview from> faces: simplified to
+//                        about <preview faces>,
 //   preview.faces.bin    and for each of its faces a source face it shares a corner with, so in the same piece
 // and prints what it made as JSON. It decodes what it wrote and checks it against the source before it says so.
 import fs from 'node:fs';
@@ -233,7 +234,8 @@ async function main() {
     offset += faces.length / 3;
   }));
   if (!offset) throw new Error('no faces');
-  const made = {}, previewFaces = +previewArg || 150000, previewFrom = +previewFromArg || 300000;
+  const made = {}, previewFaces = previewArg === undefined ? 150000 : +previewArg;
+  const previewFrom = previewFromArg === undefined ? 2 * previewFaces : +previewFromArg;
   const write = (lod, r) => {
     fs.writeFileSync(`${outDir}/${lod}.glb`, r.glb);
     fs.writeFileSync(`${outDir}/${lod}.faces.bin`, new Uint8Array(r.origins.buffer));
@@ -242,7 +244,7 @@ async function main() {
   const full = pack(src, prim => ({ faces: prim.faces, origin: Uint32Array.from({ length: prim.faces.length / 3 }, (_, i) => i) }), 'full');
   check(full.glb, full.checks, true);
   write('full', full);
-  if (offset >= previewFrom) {
+  if (previewFaces > 0 && offset >= previewFrom) {
     const share = previewFaces / offset;
     const preview = pack(src, prim => {
       const target = Math.max(3, Math.floor(prim.faces.length * share / 3) * 3);

@@ -2,8 +2,9 @@
 everything else on the server. glbpack.mjs makes them with meshoptimizer, run by node or deno (the Docker image's):
 
   packed/<stem>.full.glb          the same faces, compressed (Caveman: 35 MB to 6.9 MB)
-  packed/<stem>.preview.glb       for a mesh of PREVIEW_FROM faces or more, simplified to about PREVIEW_FACES (Caveman:
-                                  1.1 MB), to show while the rest comes
+  packed/<stem>.preview.glb       for a mesh of at least twice the faces a preview is to have (the admin page's
+                                  viewer.preview_faces, PREVIEW_FACES by default), simplified to about that many
+                                  (Caveman, to 150,000: 1.1 MB), to show while the rest comes
   packed/<stem>.<lod>.faces.bin   which of the GLB's own faces each of a packed one's comes from, so its cleanup applies
   packed/<stem>.json              what was made, from which version of the GLB: written last, so it says the rest is there
 
@@ -24,8 +25,7 @@ Log = Callable[[str], None]
 VERSION = 1
 LODS = ("full", "preview")
 DIR = "packed"
-PREVIEW_FACES = 150_000
-PREVIEW_FROM = 300_000
+PREVIEW_FACES = 150_000     # about 1 MB; 0: no previews
 SCRIPT = Path(__file__).with_name("glbpack.mjs")
 
 
@@ -61,6 +61,11 @@ def record(src: Path) -> dict | None:
     return r if r.get("version") == VERSION and r.get("source") == now else None
 
 
+def made_for(rec: dict, preview_faces: int) -> bool:
+    """Whether a record's copies were made for previews of preview_faces faces (or for none, if 0)."""
+    return rec.get("preview_target", PREVIEW_FACES) == preview_faces
+
+
 def path(src: Path, lod: str, faces: bool = False) -> Path | None:
     """A packed copy of src (lod "full" or "preview"), or with faces its faces' origins; None if there's none for this
     version of src."""
@@ -81,11 +86,12 @@ def image_files(src: Path) -> list[str]:
     return [i["uri"] for i in j.get("images", []) if i.get("uri") and not i["uri"].startswith("data:") and "/" not in i["uri"]]
 
 
-def pack(src: Path, log: Log = print, extra: dict | None = None, timeout: float = 900) -> dict:
+def pack(src: Path, log: Log = print, extra: dict | None = None, timeout: float = 900, preview_faces: int = PREVIEW_FACES) -> dict:
     """Make src's packed copies, replacing any from before, at a low priority.
 
     Args:
         extra: kept in the record too (the server's sizes of its textures).
+        preview_faces: about how many faces a preview has, made only for a mesh of at least twice as many; 0: none.
 
     Returns:
         The record: {"full": {"bytes", "faces"}, "preview": the same or absent, "source_faces", "seconds", ...}.
@@ -101,7 +107,7 @@ def pack(src: Path, log: Log = print, extra: dict | None = None, timeout: float 
     made_from = stamp(src)
     try:
         nice = ["nice", "-n", "15"] if shutil.which("nice") else []
-        r = subprocess.run([*nice, *cmd, str(src), str(tmp), str(PREVIEW_FACES), str(PREVIEW_FROM)], capture_output=True,
+        r = subprocess.run([*nice, *cmd, str(src), str(tmp), str(preview_faces), str(2 * preview_faces)], capture_output=True,
                            text=True, timeout=timeout, env={**os.environ, "DENO_NO_UPDATE_CHECK": "1"})
         if r.returncode:
             raise RuntimeError((r.stderr.strip().splitlines() or [f"exit status {r.returncode}"])[-1])
@@ -114,7 +120,7 @@ def pack(src: Path, log: Log = print, extra: dict | None = None, timeout: float 
                     f.replace(dst)
                 else:
                     dst.unlink(missing_ok=True)
-        rec = {"version": VERSION, "source": made_from, "made": time.time(), **made, **(extra or {})}
+        rec = {"version": VERSION, "source": made_from, "made": time.time(), "preview_target": preview_faces, **made, **(extra or {})}
         partial = out / f"{src.stem}.json.partial"
         partial.write_text(json.dumps(rec))
         partial.replace(_record_file(src))

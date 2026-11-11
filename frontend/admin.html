@@ -70,7 +70,12 @@
     <label class="choice"><input type="radio" name="src" value="all"> Show all <small>(as now)</small></label>
     <label class="choice"><input type="radio" name="src" value="link"> Show those free to copy, and only link to the rest <small>(their copies here aren't shown)</small></label>
     <label class="choice"><input type="radio" name="src" value="permitted"> Show only those free to copy <small>(the rest aren't shown or linked)</small></label>
-    <div class="grid" style="margin-top:14px"><div><label>The map opens around a boulder this many km across <small>(its narrower side)</small></label><input type="number" id="map-km" min="0.05" step="0.25"></div></div>
+    <div class="grid" style="margin-top:14px"><div><label>The map opens around a boulder this many km across <small>(its narrower side)</small></label><input type="number" id="map-km" min="0.05" step="0.25"></div>
+      <div><label>A mesh opens first as a simplified copy of about this many faces <small>(0: none)</small></label><input type="number" id="preview-faces" min="0" max="5000000" step="10000"></div></div>
+    <div class="note">Then the rest of it comes, with a sharper texture. A copy is made only for a mesh with at least twice as
+      many faces. Fewer show sooner but coarser: about 7 bytes a face, so 150,000 (the default) is about 1 MB, and on
+      Caveman (1.5 million faces) looks the same at a phone's size. A change makes every mesh's copies again, one at a
+      time in the background (about an hour for 230 meshes on a 2-core server); until each is made, it opens as before.</div>
     <div class="note">"Free to copy" means public domain, CC0, or a Creative Commons licence without No Derivatives, or your own uploads. Mountain Project, OpenBeta and web images, and YouTube's standard licence, aren't. See license_considerations.md.</div>
   </section>
 
@@ -293,6 +298,7 @@ function render(s){
   $('#matcher').value = v['relevance.matcher'];
   $('#beta-auto').checked = v['beta.auto']; $('#prune-videos').checked = v['videos.prune_unplaced'];
   if (document.activeElement !== $('#map-km')) $('#map-km').value = v['site.map_km'];
+  if (document.activeElement !== $('#preview-faces')) $('#preview-faces').value = v['viewer.preview_faces'];
   const u = s.usage || {}, gb = b => (b / 2 ** 30).toFixed(1) + ' GB';
   $('#room').classList.toggle('alert', !!u.full);
   if (document.activeElement !== $('#room-cap')) $('#room-cap').value = v['storage.cap_gb'];
@@ -473,6 +479,7 @@ $('#matcher').onchange = () => save({ 'relevance.matcher': $('#matcher').value }
 $('#beta-auto').onchange = () => save({ 'beta.auto': $('#beta-auto').checked });
 $('#prune-videos').onchange = () => save({ 'videos.prune_unplaced': $('#prune-videos').checked });
 $('#map-km').onchange = () => save({ 'site.map_km': +$('#map-km').value });
+$('#preview-faces').onchange = () => save({ 'viewer.preview_faces': Math.round(+$('#preview-faces').value) });
 $('#vol-add').onclick = async () => {
   try {
     const r = await call('/api/admin/actions/volunteer-add', { name: $('#vol-name').value, per_hour: +$('#vol-hour').value });

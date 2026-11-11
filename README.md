@@ -375,7 +375,8 @@ A reconstruction produces a textured `mesh.glb` (texture PNGs alongside), or an 
 levelled assuming most photos were taken upright. On CPU,
 OpenMVS's 11-photo sample set takes 3-4 minutes, and a 100-photo harvest about an hour.
 
-A large mesh shows within seconds, as a simplified copy (about 150,000 faces) with its texture at 2048 pixels; then its
+A large mesh shows within seconds, as a simplified copy (about 150,000 faces, which the admin page changes, or turns off
+with 0) with its texture at 2048 pixels; then its
 texture as sharp as the device can use (4096 on phones and tablets, up to 8192 elsewhere) and all its faces come in the
 background, and *Loading detail…* in the view's bar says how far that's got. ⚙ (or *Detail* in the header) chooses:
 *Auto* (the default) fetches the rest at once unless the connection is slow (data saving on, or the preview came too
@@ -970,7 +971,8 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
     GET  /meshes/{id}/{texture}?max=2048|4096|8192       a texture as a JPEG at most that many pixels across
     GET  /meshes/{id}/{glb}?lod=full|preview             its copy packed for viewing, all its faces or simplified (404 until
-                                                        made; GET /api/meshes says which there are, as "pack", with sizes)
+                                                        made; GET /api/meshes says which there are, as "pack", with sizes
+                                                        and v, when they were made, which the viewer adds as &v=)
     GET  /meshes/{id}/cleanup_faces.bin?lod=full|preview  its cleanup's piece of each face, in that copy's order
     POST /api/meshes/{id}/rating {browser, rating, comment}   a visitor's rating (1 bad, 2 OK, 3 good, or null) and comment,
                                                         from anyone, as client-errors are taken (120 an hour an address): one

@@ -772,14 +772,14 @@ let indexEdits = 0;
 const hiddenMaterial = new THREE.MeshBasicMaterial({ color: 0xff5544, transparent: true, opacity: .4, side: THREE.DoubleSide, depthWrite: false });
 // lod: the mesh is a copy packed for viewing (backend/glbpack.py), whose faces are in another order, and fewer in a
 // preview: the server puts its pieces in that order, as many for each primitive as it has
-async function attachPieces(gltf, id, lod = null){
+async function attachPieces(gltf, id, lod = null, v = null){
   const res = await fetch(`/api/meshes/${id}/cleanup`);
   if (res.status === 404) { pieces = { id, deleted: true, never: true }; return ''; }   // an upload, which is only cleaned up if asked
   if (!res.ok) return '';
   const record = await res.json();
   if (record.deleted) { pieces = { id, deleted: true }; return ''; }
   try {
-    const bin = await fetch(`/meshes/${id}/cleanup_faces.bin${lod ? `?lod=${lod}` : ''}`);
+    const bin = await fetch(`/meshes/${id}/cleanup_faces.bin${lod ? `?lod=${lod}&v=${v}` : ''}`);
     if (!bin.ok) throw new Error(`the server answered ${bin.status}`);
     const buf = await bin.arrayBuffer(), all = record.label_bytes === 2 ? new Uint16Array(buf) : new Uint32Array(buf);
     const meshes = new Map();
@@ -1289,13 +1289,13 @@ async function loadMeshUrl(url, filename, label, id){
       // its copies packed for viewing, if it has them: a preview, or all of it, with its texture at 2048 pixels first
       let pk = ext === 'glb' && id ? meshesById[id]?.pack : null, lod = pk ? (pk.preview ? 'preview' : 'full') : null, got;
       const first = pk?.texture ? 2048 : 0;
-      try { got = await loadGltfWithTexture(lod ? `${url}?lod=${lod}` : url, base, label, first); }
+      try { got = await loadGltfWithTexture(lod ? `${url}?lod=${lod}&v=${pk.v}` : url, base, label, first); }
       catch (e) {
         if (!lod || e?.response?.status !== 404) throw e;
         pk = lod = null; got = await loadGltfWithTexture(url, base, label);   // packed again since the list came: its own file
       }
       const { gltf, note: textureNote } = got;
-      const piecesNote = id ? await attachPieces(gltf, id, lod) : '';
+      const piecesNote = id ? await attachPieces(gltf, id, lod, pk?.v) : '';
       obj = gltf.scene; note = [textureNote, piecesNote].filter(Boolean).join(' ');
       if (pk) detail = { id, pk, gltf, base, url, lod, first, began, firstBytes: pk[lod] + (first && pk.texture.bytes[first] || 0) };
     }
@@ -1434,7 +1434,7 @@ async function sharpenTexture(d, step, progress){
 }
 // Every face, in place of the preview's: each of its meshes takes the new one's shape, keeping its material (and texture)
 async function fullShape(d, step, progress){
-  const buf = await (await fetchBlob(`${d.url}?lod=full`, progress, d.abort.signal)).arrayBuffer();
+  const buf = await (await fetchBlob(`${d.url}?lod=full&v=${d.pk.v}`, progress, d.abort.signal)).arrayBuffer();
   const full = await gltfLoader(0, true).parseAsync(buf, d.base), shapes = new Map();
   full.scene.traverse(o => { const at = o.isMesh && full.parser.associations.get(o); if (at) shapes.set(`${at.meshes}/${at.primitives}`, o.geometry); });
   const taken = new Set();
@@ -1451,7 +1451,7 @@ async function fullShape(d, step, progress){
     });
     d.lod = 'full';
     if (pieces?.id === d.id && pieces.parts) {
-      const note = await attachPieces(d.gltf, d.id, 'full');
+      const note = await attachPieces(d.gltf, d.id, 'full', d.pk.v);
       if (note) viewNote(note);
       if (editing && pieces?.parts) { pieces.editing = true; applyPieces(); }
       renderPieces();

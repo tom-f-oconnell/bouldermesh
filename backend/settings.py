@@ -41,6 +41,9 @@ DEFAULTS = {
     "site.textures": "all",                # all | permitted (only from clearly licensed photos) | none
     "site.sources": "all",                 # all | link (non-permitted ones only as links) | permitted
     "site.map_km": 1.0,                    # how many km across (its narrower side) the map opens around a boulder
+    # the viewer opens a mesh with at least twice as many faces as a simplified copy of about this many first, then the
+    # rest (glbpack.py): 150,000 is about 1 MB, and on Caveman looks the same at a phone's size; 0: no previews
+    "viewer.preview_faces": 150_000,
     "youtube.via": "volunteers_when_refused",   # here | volunteers_when_refused | volunteers (never here: a cloud server)
     # the most the data may take, in GB (0: no limit): over it, volunteers and areas wait for room (DATA_CAP_GB starts it)
     "storage.cap_gb": 0.0,
@@ -85,7 +88,7 @@ DEFAULTS = {
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
            "areas.meshes": ("boulders", "climbs"), "relevance.matcher": ("brute", "flann"), "leaderboard.names": ("new", "all", "none")}
-LIMITS = {"site.map_km": (0.05, 2000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
+LIMITS = {"site.map_km": (0.05, 2000), "viewer.preview_faces": (0, 5_000_000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 100),
           "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 100),
           "registration.per_address_day": (1, 100), "registration.max_waiting": (1, 1000)}
