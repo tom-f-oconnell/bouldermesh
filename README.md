@@ -434,7 +434,7 @@ one built elsewhere. On a machine with the meshes to show:
     deploy/ship.sh you@boulders.example.com bouldermesh:public   # pushes both, the server pulls its own; meshes, database
 
 The server's image has torch's CPU build, as it meshes nothing itself. The GPU one, with the CUDA libraries VGGT needs, is
-for the machines that mesh (see "Running reconstructions elsewhere"), and for hal. The server pulls its image from the
+for the machines that mesh (see "Running reconstructions elsewhere"). The server pulls its image from the
 registry, so a ship moves only the layers that changed, usually a few MB. Its earlier builds' images go once nothing runs
 them. `NO_PUSH=1` sends the image whole instead. `GPU=0 deploy/build.sh` builds only the server's.
 
@@ -449,7 +449,8 @@ and `docker compose -f docker-compose.yml -f docker-compose.public.yml pull`. Po
 To run it under systemd as above, put `COMPOSE_FILE=docker-compose.yml:docker-compose.public.yml` in `.env` too (with
 `docker-compose.gpu.yml` between them on a machine with a GPU) and install the unit; its build step then has nothing to build.
 
-**Deploying, once the public server harvests by itself** (`HARVESTS_HERE=1` in its `.env`), from hal's checkout:
+**Deploying, once the public server harvests by itself** (`HARVESTS_HERE=1` in its `.env`), from hal's checkout, where
+the images are built (hal's own copy of the site was stopped on Nov 10, 2026: a deploy is only the public server's):
 
     deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public && ssh bouldermesh 'cd bouldermesh && git pull --ff-only && sudo systemctl restart bouldermesh'
 
@@ -749,7 +750,7 @@ volunteers and for connecting the public site to whichever server harvests.
 Volunteers reach the public site's `/volunteer/`, which Caddy passes to a port that answers nothing else (`VOLUNTEER_PORT`,
 47613 in Compose, on loopback only). By default that's the public server's own app, which harvests, with its meshes made
 by machines that connect to it for work (above; volunteers.md, "The public server harvests", has every step). The other
-way, while another machine harvests (hal), `deploy/volunteer-tunnel.service` there keeps an SSH connection to the public
+way, while another machine harvests (as hal did until Nov 10, 2026), `deploy/volunteer-tunnel.service` there keeps an SSH connection to the public
 server that brings `/volunteer/` back to it, through a socket in the public server's `data/tunnel/`. It runs with no one
 logged in, so it has a key of its own, with no passphrase, which the public server takes for forwarding only:
 
