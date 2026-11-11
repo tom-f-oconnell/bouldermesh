@@ -176,10 +176,11 @@ def init_db() -> None:
           UNIQUE(source, source_id));
         CREATE TABLE IF NOT EXISTS mesh_links(
           mesh_id TEXT, climb_id TEXT, note TEXT, created REAL, PRIMARY KEY(mesh_id, climb_id));
-        -- visitors' ratings of meshes (1 bad, 2 ok, 3 good) and comments: one each per address and browser (rate_mesh())
+        -- visitors' ratings of meshes (1 bad, 2 ok, 3 good) and comments: one each per browser, with the address it last
+        -- came from (rate_mesh())
         CREATE TABLE IF NOT EXISTS mesh_ratings(
-          mesh_id TEXT, address TEXT, browser TEXT, rating INTEGER, comment TEXT, created REAL, updated REAL,
-          PRIMARY KEY(mesh_id, address, browser));
+          mesh_id TEXT, browser TEXT, address TEXT, rating INTEGER, comment TEXT, created REAL, updated REAL,
+          PRIMARY KEY(mesh_id, browser));
         CREATE TABLE IF NOT EXISTS campaigns(
           id TEXT PRIMARY KEY, name TEXT, area_id TEXT, ord TEXT, created REAL, note TEXT,
           status TEXT,                 -- running | stopping | stopped | done
@@ -3513,7 +3514,8 @@ def mesh_ratings() -> dict[str, dict]:
 
 def rate_mesh(mid: str, report: dict, sender: str) -> dict | bool | None:
     """A visitor's rating of a mesh (1 bad, 2 ok, 3 good, or none) and comment, as their browser sends them each time
-    either changes: one each per address and browser (an id the page makes and keeps), replaced; with neither, it goes.
+    either changes: one each per browser (an id the page makes and keeps), replaced from wherever it's sent; with
+    neither, it goes. The address it came from is kept with it, and limits how often.
     Anyone viewing the site may, as for client reports.
 
     Returns:
@@ -3537,11 +3539,11 @@ def rate_mesh(mid: str, report: dict, sender: str) -> dict | bool | None:
             return False
     now = time.time()
     if rating is None and comment is None:
-        q("DELETE FROM mesh_ratings WHERE mesh_id=? AND address=? AND browser=?", mid, sender, browser, write=True)
+        q("DELETE FROM mesh_ratings WHERE mesh_id=? AND browser=?", mid, browser, write=True)
     else:
-        q("INSERT INTO mesh_ratings(mesh_id, address, browser, rating, comment, created, updated) VALUES(?,?,?,?,?,?,?) "
-          "ON CONFLICT(mesh_id, address, browser) DO UPDATE SET rating=excluded.rating, comment=excluded.comment, "
-          "updated=excluded.updated", mid, sender, browser, rating, comment, now, now, write=True)
+        q("INSERT INTO mesh_ratings(mesh_id, browser, address, rating, comment, created, updated) VALUES(?,?,?,?,?,?,?) "
+          "ON CONFLICT(mesh_id, browser) DO UPDATE SET address=excluded.address, rating=excluded.rating, "
+          "comment=excluded.comment, updated=excluded.updated", mid, browser, sender, rating, comment, now, now, write=True)
     print(f"rated mesh {mid} ({m['name']}): {RATINGS.get(rating, 'no rating')}{', with a comment' if comment else ''}", flush=True)
     return mesh_ratings().get(mid) or {"n": 0}
 

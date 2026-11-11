@@ -98,7 +98,7 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
   remembered in the browser.
 * **Rating a mesh:** *Rate*, at the 3D view's bottom right, takes bad, OK or good and a comment, which grows as it's
   typed. They're kept in the browser and sent to the site whenever either changes; the site keeps one of each per
-  address and browser (`cli.py mesh-ratings` lists them, with the comments). The Meshes tab sorts by everyone's average
+  browser, wherever it's sent from (`cli.py mesh-ratings` lists them, with the comments). The Meshes tab sorts by everyone's average
   or your own rating (unrated past the bad end), can hide those rated bad (1.5 or under on average, bad 1, OK 2, good
   3) or those you rated bad, and each card shows your rating and the average.
 * In the Areas tab, the boulder a climb is harvested for names its Mountain Project page, and each of its climbs opens
@@ -893,7 +893,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
     POST /api/meshes/{id}/rating {browser, rating, comment}   a visitor's rating (1 bad, 2 OK, 3 good, or null) and comment,
                                                         from anyone, as client-errors are taken (120 an hour an address): one
-                                                        each per address and browser, replaced; mesh_ratings; `cli.py mesh-ratings`
+                                                        each per browser, replaced; mesh_ratings; `cli.py mesh-ratings`
     POST /api/mesh-views {mesh, via, seconds, note?}    a mesh a visitor's browser showed, as client-errors are taken (120 in 10
                                                         min an address): kept in data/mesh-views.jsonl; `cli.py mesh-views`
     POST /api/client-errors {kind, message, mesh?, file?, page?, source?}   what failed in a visitor's browser, from anyone

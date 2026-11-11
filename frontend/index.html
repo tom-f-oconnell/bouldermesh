@@ -2119,7 +2119,7 @@ $('#m-nobad').onchange = () => { meshView.noBad = $('#m-nobad').checked; saveMes
 $('#m-nomine').onchange = () => { meshView.noMineBad = $('#m-nomine').checked; saveMeshView(); renderMeshes(); };
 $('#m-clear').onclick = () => { meshView.ranges = {}; meshView.hidden = []; saveMeshView(); renderMeshes(); };
 // ---- rating a mesh, from its 3D view: bad, OK or good, and a comment. Kept in this browser (bm_ratings), and sent to the
-// site each time either changes, which keeps one of each for every address and browser (an id made here, bm_browser)
+// site each time either changes, which keeps one of each for every browser (an id made here, bm_browser)
 const RATING_NAMES = { 1: 'bad', 2: 'OK', 3: 'good' };
 const BROWSER_ID = (() => {
   const made = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');

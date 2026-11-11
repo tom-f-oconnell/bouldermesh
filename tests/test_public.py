@@ -207,27 +207,27 @@ def with_token(tmp: Path) -> None:
             {"mesh": mid, "via": "random", "seconds": 2.3, "note": "Texture reduced to 4096 pixels", "editor": False}, seen[-1]
         assert seen[-1]["name"] and "198.51.100.20" not in json.dumps(seen), seen[-1]
         assert req(B, "POST", "/api/mesh-views", {"mesh": "0123456789ab"})[0] == 404
-        # a visitor's rating and comment: from anyone, as reports are; one each per address and browser, replaced as changed
+        # a visitor's rating and comment: from anyone, as reports are; one each per browser, wherever from, replaced as changed
         rate = lambda body, ip="198.51.100.30", **h: req(B, "POST", f"/api/meshes/{mid}/rating", body, headers={"X-Real-IP": ip, **h})  # noqa: E731
         st, _, r = rate({"browser": "a" * 32, "rating": 1, "comment": "holes all over"})
         assert st == 200 and r["rating"] == {"mean": 1.0, "n": 1}, (st, r)
         assert rate({"browser": "a" * 32, "rating": 3, "comment": " better now "})[2]["rating"] == {"mean": 3.0, "n": 1}, "replaced"
         assert rate({"browser": "b" * 32, "rating": 2})[2]["rating"] == {"mean": 2.5, "n": 2}, "another browser"
-        assert rate({"browser": "a" * 32, "rating": 1}, ip="198.51.100.31")[2]["rating"] == {"mean": 2.0, "n": 3}, "another address"
-        assert rate({"browser": "b" * 32, "rating": None, "comment": "  "})[2]["rating"] == {"mean": 2.0, "n": 2}, "taken back: gone"
-        assert rate({"browser": "c" * 32, "comment": "only a comment"})[2]["rating"] == {"mean": 2.0, "n": 2}, "a comment isn't a rating"
-        assert next(m for m in req(B, "GET", "/api/meshes")[2] if m["id"] == mid)["rating"] == {"mean": 2.0, "n": 2}
+        assert rate({"browser": "a" * 32, "rating": 1, "comment": "worse on my phone"}, ip="198.51.100.31")[2]["rating"] == \
+            {"mean": 1.5, "n": 2}, "the same browser from another address: still its one"
+        assert rate({"browser": "b" * 32, "rating": None, "comment": "  "})[2]["rating"] == {"mean": 1.0, "n": 1}, "taken back: gone"
+        assert rate({"browser": "c" * 32, "comment": "only a comment"})[2]["rating"] == {"mean": 1.0, "n": 1}, "a comment isn't a rating"
+        assert next(m for m in req(B, "GET", "/api/meshes")[2] if m["id"] == mid)["rating"] == {"mean": 1.0, "n": 1}
         with sqlite3.connect(tmp / "data" / "bouldermesh.sqlite") as con:
-            kept = con.execute("SELECT address, browser, rating, comment FROM mesh_ratings WHERE mesh_id=? ORDER BY address, browser", (mid,)).fetchall()
-        assert kept == [("198.51.100.30", "a" * 32, 3, "better now"), ("198.51.100.30", "c" * 32, None, "only a comment"),
-                        ("198.51.100.31", "a" * 32, 1, None)], kept
+            kept = con.execute("SELECT browser, address, rating, comment FROM mesh_ratings WHERE mesh_id=? ORDER BY browser", (mid,)).fetchall()
+        assert kept == [("a" * 32, "198.51.100.31", 1, "worse on my phone"), ("c" * 32, "198.51.100.30", None, "only a comment")], kept
         for bad in ({"browser": "a" * 32, "rating": 4}, {"browser": "a" * 32, "rating": True}, {"browser": "x", "rating": 1}, [1]):
             assert rate(bad)[0] == 400, bad
         assert req(B, "POST", "/api/meshes/0123456789ab/rating", {"browser": "a" * 32, "rating": 1})[0] == 404
         assert rate({"browser": "a" * 32, "rating": 1}, Origin="https://evil.example")[0] == 403
         out = subprocess.run([sys.executable, str(ROOT / "cli.py"), "mesh-ratings", "--data", str(tmp / "data")],
                              capture_output=True, text=True, check=True).stdout
-        assert f"2.00  {mid} " in out and ": 1 good, 0 OK, 1 bad" in out and "(good):\n    better now" in out and "only a comment" in out, out
+        assert f"1.00  {mid} " in out and ": 0 good, 0 OK, 1 bad" in out and "(bad):\n    worse on my phone" in out and "only a comment" in out, out
         assert "198.51.100" not in out and "a" * 32 not in out, "not who"
         codes = [rate({"browser": "d" * 32, "rating": 2}, ip="198.51.100.40")[0] for _ in range(121)]
         assert codes[:120] == [200] * 120 and codes[120] == 429, "not too often from one address"
