@@ -710,4 +710,16 @@ for j in (older, newer):
     board.jobs.pop(j.id, None)
     j.input.unlink(missing_ok=True)
 print("meshing first OK")
+
+# --- paused, as before a restart: no new job given out, though one is waiting ------------------------------------------
+waiting_job = board._new_job("reconstruct", {"photos": job / "photos"}, {"internet": True}, "paused", image[0])
+board.paused = "the server is about to restart, for a new version"
+r = board.work(board.machine(order_box["token"]), "10.0.0.8", {"version": SCRIPT_VERSION})
+assert "job" not in r and r["why"].endswith("about to restart, for a new version") and waiting_job.state == "queued", r
+assert [j["label"] for j in board.running() if j["state"] == "queued"] == ["paused"]
+board.paused = None
+assert board.work(board.machine(order_box["token"]), "10.0.0.8", {"version": SCRIPT_VERSION})["job"]["id"] == waiting_job.id
+board.jobs.pop(waiting_job.id, None)
+waiting_job.input.unlink(missing_ok=True)
+print("paused OK")
 print("ALL MACHINES TESTS PASSED")

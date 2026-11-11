@@ -2644,7 +2644,7 @@ def beta_worker() -> None:
             requeue_waiting_scale()
         except Exception as e:  # never let the thread die
             print(f"scale requeue error: {e!r}", flush=True)
-        while not _stopping:
+        while not _stopping and not _draining:
             queued = [mid for mid in beta_queue() if beta_ready(mid)]
             if not queued:
                 break
@@ -2755,7 +2755,7 @@ def frames_worker() -> None:
     while True:
         _frames_wake.wait(timeout=300)
         _frames_wake.clear()
-        while not _stopping:
+        while not _stopping and not _draining:
             waiting = sorted((f for f in PROJECTS.glob("*/videos/*") if f.is_file()), key=lambda f: f.stat().st_mtime)
             if not waiting:
                 break
@@ -3258,7 +3258,7 @@ def worker(w: Worker | None = None) -> None:
     _here.worker = w
     use_control(w.control)
     while not w.retired:
-        if _stopping or time.time() < w.wait_until:
+        if _stopping or _draining or time.time() < w.wait_until:
             time.sleep(2)
             continue
         if not w.remote:
@@ -3284,6 +3284,7 @@ def worker(w: Worker | None = None) -> None:
 # ------------------------------------------------------------------ stopping, and what it would interrupt
 STOP_WAIT = float(os.environ.get("STOP_WAIT_MINUTES", "10")) * 60   # docker-compose.yml's stop_grace_period is longer
 _stopping: dict | None = None    # once a stop has begun: {since, until, waiting_for}
+_draining: dict | None = None    # deploy.sh about to restart it: {since, now}: no new work taken; with now, no waiting on stop
 AGAIN = {"reconstruct": "Retry on its project", "harvest": "Retry on its project", "retry": "Retry on its project",
          "boulder": "Retry on its project",
          "retexture": "Make textures... on the admin page", "scale": "Find size in the viewer"}
@@ -3340,6 +3341,79 @@ def job_label(j: dict) -> str:
     return f"{j['name']} ({', '.join(bits)})"
 
 
+def drain(on: bool, now: bool = False) -> dict:
+    """For deploy.sh, before it restarts the server: with on, take no new work (areas' climbs, jobs people asked for,
+    beta, a video's frames, and machines' jobs), while what's in progress goes on; with now too, a stop doesn't wait
+    for jobs to finish either (stop_when_idle()). Off, carry on as before. A restart clears it anyway."""
+    global _draining
+    _draining = {"since": (_draining or {}).get("since") or time.time(), "now": now} if on else None
+    MACHINES.paused = "the server is about to restart, for a new version" if on else None
+    if not on:
+        _beta_wake.set()
+        _frames_wake.set()
+    return deploy_state()
+
+
+def _eta_from(progress: dict | None, keys: set[str]) -> float | None:
+    """Seconds left of the steps with these keys, from how long they've taken so far for how far they've got."""
+    steps = [s for s in (progress or {}).get("steps", []) if s["key"] in keys and s.get("state") != "skipped"]
+    began = [s["started"] for s in steps if s.get("started")]
+    if not steps or not began:
+        return None
+    done = sum(1.0 if s["state"] == "done" else s.get("frac", 0.0) for s in steps) / len(steps)
+    took = time.time() - min(began)
+    return took * (1 - done) / done if done >= 0.1 and took >= 30 else None
+
+
+def deploy_state() -> dict:
+    """What a restart would cost now, for deploy.sh (cli.py deploy-check): each piece of work in progress, whether a
+    restart loses much of it ("costly"), how long it's been going, and about how long it has left (eta, seconds, None
+    when there's no telling yet). Costly: jobs on machines, which end with a restart and start over; jobs people asked
+    for, which it interrupts; a climb meshed on this server, which starts its step again; beta found here. Not costly:
+    an area's climb being harvested (its downloads are kept, and it carries on), and a volunteer's upload (it carries
+    on from what came). Also whether it's draining (drain()), and "eta", the longest of the costly ones'."""
+    items, now = [], time.time()
+    mesh_keys = {k[0] for k in pipeline.steps()}
+    for j in MACHINES.running():
+        elapsed = now - (j["taken"] or j["created"])
+        typical = MACHINES.typical(j["task"])
+        items.append({"what": f"{j['task']} on {j['machine']}" if j["state"] == "running" else f"{j['task']}, waiting for a machine",
+                      "name": j["label"], "costly": j["state"] == "running", "elapsed": round(elapsed),
+                      "eta": round(max(0.0, typical - elapsed)) if typical and j["state"] == "running" else None,
+                      "lost": "ends, and starts again on a machine after" if j["state"] == "running" else "queued again after"})
+    for r in q("SELECT c.name area, i.name, i.project_id, i.updated FROM campaign_items i JOIN campaigns c ON c.id=i.campaign_id "
+               "WHERE i.status='running'"):
+        p = q("SELECT progress FROM projects WHERE id=?", r["project_id"], one=True) if r["project_id"] else None
+        prog = json.loads(p["progress"]) if p and p["progress"] else None
+        step = next((s for s in (prog or {}).get("steps", []) if s.get("state") == "running"), None)
+        meshing_here = bool(step and step["key"] in mesh_keys and _local_meshing and not _executor)
+        items.append({"what": f"{r['area']}: " + (step["label"].lower() if step else "starting"), "name": r["name"],
+                      "costly": meshing_here, "elapsed": round(now - (r["updated"] or now)),
+                      "eta": _eta_from(prog, mesh_keys if meshing_here else {s["key"] for s in (prog or {}).get("steps", [])}),
+                      "lost": "starts its step again after" if meshing_here else "pauses, and carries on after"})
+    for j in jobs_state()["running"]:
+        items.append({"what": f"{j['type']}, asked for", "name": j["name"], "costly": True, "elapsed": round(now - j.get("started", now)),
+                      "eta": j.get("eta"), "lost": "interrupted: runs again when asked again"})
+    if _beta_now:
+        name = (q("SELECT name FROM meshes WHERE id=?", _beta_now["mid"], one=True) or {}).get("name", _beta_now["mid"])
+        items.append({"what": "finding beta here", "name": name, "costly": True, "elapsed": round(now - _beta_now["started"]),
+                      "eta": None, "lost": "starts again after"})
+    try:
+        for t in VOLUNTEERS.q("SELECT t.id, t.video_id, t.size, v.name FROM tasks t LEFT JOIN volunteers v ON v.id=t.volunteer "
+                              "WHERE t.state='assigned' AND t.kind='video'"):
+            got = (VOLUNTEERS.files / f"{t['id']}.part").stat().st_size if (VOLUNTEERS.files / f"{t['id']}.part").exists() else 0
+            if got:
+                items.append({"what": f"a video coming from {t['name'] or 'a volunteer'}", "name": t["video_id"], "costly": False,
+                              "elapsed": None, "eta": None, "lost": "pauses: the volunteer carries on from what came",
+                              "progress": round(100 * got / t["size"]) if t["size"] else None})
+    except Exception:  # only the volunteers' part is lost
+        pass
+    costly = [i for i in items if i["costly"]]
+    etas = [i["eta"] for i in costly if i["eta"] is not None]
+    return {"draining": bool(_draining), "items": items, "costly": len(costly),
+            "eta": round(max(etas)) if etas and len(etas) == len(costly) else None}
+
+
 def stop_when_idle(server: ThreadingHTTPServer) -> None:
     """Stop the server (on SIGTERM) once the jobs people started outside areas have finished, as a restart
     interrupts them. Meanwhile it takes no more work, and serves the site as before. It waits at most
@@ -3347,8 +3421,8 @@ def stop_when_idle(server: ThreadingHTTPServer) -> None:
     restart only pauses them. A second SIGTERM stops it at once."""
     global _stopping
     say = lambda s: print(f"stopping: {s}", flush=True)  # noqa: E731
-    if _stopping:
-        say("now, as asked again")
+    if _stopping or (_draining or {}).get("now"):
+        say("now, as asked again" if _stopping else "now, as deploy.sh asked")
         return server.shutdown()
     _stopping = {"since": time.time(), "until": time.time() + STOP_WAIT, "waiting_for": []}
     passed, said = set(), 0.0     # jobs not waited for, as they'd take too long
@@ -3966,6 +4040,10 @@ class Handler(BaseHTTPRequestHandler):
                                        "admin": admin_link() if not READ_ONLY and (not EDIT_TOKEN or self.is_editor()) else None})
             if p == "/api/jobs":     # what a restart would interrupt now, and what it would only pause
                 return self.send_json(jobs_state())
+            if p == "/api/deploy":   # for deploy.sh, from this machine only
+                if self.client_address[0] not in ("127.0.0.1", "::1"):
+                    return self.send_json({"error": "only from the server itself"}, 403)
+                return self.send_json(deploy_state())
             # ---- projects
             if p == "/api/projects":
                 return self.send_json(q("SELECT id,name,created,status,mesh_id,demo,kind,climb_id FROM projects ORDER BY created DESC"))
@@ -4175,6 +4253,11 @@ class Handler(BaseHTTPRequestHandler):
     # -- POST --------------------------------------------------------------
     def do_POST(self):
         p = urlparse(self.path).path
+        if p == "/api/deploy/drain":    # deploy.sh, from this machine only: {"on": bool, "now": bool}
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                return self.send_json({"error": "only from the server itself"}, 403)
+            b = self.read_json()
+            return self.send_json(drain(bool(b.get("on", True)), bool(b.get("now"))))
         if p in ("/api/client-errors", "/api/mesh-views"):    # from any visitor, not only editors
             return self.client_report("error" if p == "/api/client-errors" else "view")
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/rating", p)

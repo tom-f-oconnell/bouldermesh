@@ -463,9 +463,16 @@ the images are built (hal's own copy of the site was stopped on Nov 10, 2026: a 
 
     ./deploy.sh
 
-which runs `deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public && ssh bouldermesh 'cd bouldermesh && git
-pull --ff-only && sudo systemctl restart bouldermesh'`, and then, if hal's worker runs here as a system service
-(`bouldermesh-worker`, loaded and active), restarts it with sudo, so that it runs the worker script as checked out.
+which builds and ships the images (`deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public`), asks the server
+what a restart would cost (`cli.py deploy-check`), and then pulls and restarts it there (`git pull --ff-only && sudo
+systemctl restart bouldermesh`), and if hal's worker runs here as a system service (`bouldermesh-worker`, loaded and
+active), restarts that with sudo, so that it runs the worker script as checked out. When a restart would lose work in
+progress, it lists it with about how long each has left (`!` for what it would lose: a mesh on a machine, which starts
+over; a job asked for; beta found here; harvests and volunteers' uploads only pause) and asks: restart **now**, or
+**after** what's in progress finishes, the server taking no new work meanwhile (`cli.py deploy-wait`, up to
+`WAIT_MINUTES`, 90), or cancel (the new image is pulled, and runs at the next restart). `./deploy.sh --now` and
+`--after` choose without asking, and without a terminal it waits. The server answers these only from itself
+(`GET /api/deploy`, `POST /api/deploy/drain`), through `docker compose exec`.
 
 - It builds what's committed, other sessions' commits too: `git log` first says what would go.
 - Changes to the database apply themselves when the server starts, and the Caddyfile and Compose files come with the

@@ -1914,4 +1914,40 @@ server.q("UPDATE projects SET status='done' WHERE id=?", "p2" * 6, write=True)
 os.utime(V / "ccccccccccc.mp4", (now - 7 * 3600, now - 7 * 3600))
 assert server.prune_videos()["deleted"] == 1 and not (V / "ccccccccccc.mp4").exists()
 print("beta with each new mesh, and pruning videos OK")
+
+# --- what a restart would cost, for deploy.sh: work in progress, what it would lose, about how long it has left -------
+fresh()
+assert server.deploy_state() == {"draining": False, "items": [], "costly": 0, "eta": None}
+c = server.create_campaign("", "popularity", CSV, start=False)
+pid = "e1" * 6
+server.q("INSERT INTO projects(id,name,created,kind,status,progress) VALUES(?,?,?,?,?,?)", pid, "Alpha (harvest)", time.time(), "harvest",
+         "harvesting", json.dumps({"overall": 30, "steps": [{"key": "download", "label": "Download photos", "frac": 0.5, "state": "running",
+                                                            "started": time.time() - 120}]}), write=True)
+server.q("UPDATE campaign_items SET status='running', project_id=?, updated=? WHERE campaign_id=? AND name='Alpha'", pid, time.time() - 120,
+         c["id"], write=True)
+st = server.deploy_state()
+(it,) = st["items"]
+assert it["name"] == "Alpha" and not it["costly"] and it["what"].endswith("download photos") and 100 < it["eta"] < 140, it
+assert st["costly"] == 0, "a harvest only pauses"
+# a mesh on a machine: ends with a restart; about as long left as its last jobs took, less what's gone
+board = server.MACHINES
+for i, took in enumerate((600, 900, 1200)):
+    board.q("INSERT INTO machine_jobs(id,task,label,created,taken,ended,outcome) VALUES(?,?,?,?,?,?,?)", f"old{i}", "reconstruct", "x",
+            1.0, 100.0, 100.0 + took, "done")
+assert board.typical("reconstruct") == 900
+(server.PROJECTS / pid / "photos").mkdir(parents=True, exist_ok=True)
+job = board._new_job("reconstruct", {"photos": server.PROJECTS / pid / "photos"}, {"internet": True}, "Alpha (harvest)", "img")
+job.state, job.machine_name, job.taken = "running", "hal-2", time.time() - 300
+st = server.deploy_state()
+mesh = next(i for i in st["items"] if i["what"].startswith("reconstruct on"))
+assert mesh["costly"] and mesh["what"] == "reconstruct on hal-2" and 590 <= mesh["eta"] <= 610 and st["eta"] == mesh["eta"], st
+# taking no new work while it waits, and carrying on after
+state = server.drain(True)
+assert state["draining"] and board.paused and server._draining and not server._draining["now"]
+assert server.drain(True, now=True) and server._draining["now"], "now too: a stop won't wait"
+assert not server.drain(False)["draining"] and board.paused is None and server._draining is None
+board.jobs.pop(job.id, None)
+job.input.unlink(missing_ok=True)
+server.stop_campaign(c["id"])
+print("what a restart would cost OK")
 print("ALL CAMPAIGN TESTS PASSED")

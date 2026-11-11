@@ -116,6 +116,7 @@ class Board:
         self.db_path, self.files, self.image, self.jobctl = db_path, files, image, jobctl
         self.rules, self.registered, self.came_went, self.idle_why = rules, registered, came_went, idle_why
         self._said: dict[str, tuple[str, float]] = {}   # each machine's reason for its state last logged, and when
+        self.paused: str | None = None      # why no new job is given out (the server about to restart); those running go on
         self._hour = int(time.time() // 3600)
         self.log = lambda line: log(line) if log is not print else print(line, flush=True)
         self.held = db_path.parent / "held"     # what provisional machines made, for climbs to take once they're approved
@@ -338,6 +339,9 @@ class Board:
                 mine.lines.append(f"remote: {m['name']} started the job again")
                 mine.out_size = None
                 mine.output.unlink(missing_ok=True)
+            elif self.paused:
+                self._state(m, "idle", self.paused)
+                return {"wait": POLL, "why": f"nothing for it: {self.paused}"}
             else:
                 version = int(_number(client.get("version")) or 1)
                 could = [j for j in self.jobs.values() if j.state == "queued" and j.version <= version
@@ -462,6 +466,19 @@ class Board:
         if j.taken:
             self.log(f"machines: {j.machine_name} {outcome} {j.task} {j.label} in {(now - j.taken) / 60:.1f} min, "
                      f"after waiting {j.taken - j.created:.0f} s for a machine")
+
+    def running(self) -> list[dict]:
+        """The jobs machines are on now, and those waiting for one: {id, task, label, state, machine, created, taken}."""
+        with self.cond:
+            return [{"id": j.id, "task": j.task, "label": j.label, "state": j.state, "machine": j.machine_name,
+                     "created": j.created, "taken": j.taken} for j in self.jobs.values() if j.state in ("queued", "running")]
+
+    def typical(self, task: str) -> float | None:
+        """How long, in seconds, a machine has taken over the last 20 jobs of this task it finished (the median)."""
+        rows = self.q("SELECT ended - taken AS s FROM machine_jobs WHERE task=? AND outcome='done' AND taken IS NOT NULL "
+                      "ORDER BY ended DESC LIMIT 20", task)
+        took = sorted(r["s"] for r in rows if r["s"] and r["s"] > 0)
+        return took[len(took) // 2] if took else None
 
     def jobs_since(self, since: float) -> list[dict]:
         """The jobs made since `since`, oldest first: {id, task, label, machine, created, taken, ended, outcome, error}."""

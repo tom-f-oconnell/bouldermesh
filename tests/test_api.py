@@ -221,6 +221,16 @@ def run(B: str, tmp: Path) -> None:
     assert req(B, "POST", "/api/meshes/beta-stop") == (200, {"unqueued": 0})
     cli = subprocess.run([sys.executable, str(ROOT / "cli.py"), "jobs", "--server", B], capture_output=True, text=True, timeout=60)
     assert cli.returncode in (0, 1) and "restart" in cli.stdout, cli    # 1 if a job is still going
+    # deploy.sh's questions: what a restart would cost, taking no new work meanwhile, and carrying on (from here only)
+    run_cli = lambda *args: subprocess.run([sys.executable, str(ROOT / "cli.py"), *args, "--server", B], capture_output=True,  # noqa: E731
+                                           text=True, timeout=120)
+    chk = run_cli("deploy-check")
+    assert chk.returncode in (0, 3) and ("restart" in chk.stdout), chk
+    st, dep = req(B, "GET", "/api/deploy")
+    assert st == 200 and dep["draining"] is False and isinstance(dep["items"], list), dep
+    assert run_cli("deploy-drain").returncode == 0 and req(B, "GET", "/api/deploy")[1]["draining"] is True
+    assert run_cli("deploy-wait", "--max-minutes", "1").returncode in (0, 1)
+    assert run_cli("deploy-drain", "--off").returncode == 0 and req(B, "GET", "/api/deploy")[1]["draining"] is False
     st, saved = req(B, "POST", f"/api/meshes/{m['id']}/holds", {"holds": [{"p": [0.1, 0.2, 0.3], "role": "start"}]})
     assert st == 200 and req(B, "GET", f"/api/meshes/{m['id']}/beta")[1]["marked"]["holds"] == saved["holds"], saved
     assert next(x for x in req(B, "GET", "/api/meshes")[1] if x["id"] == m["id"])["marked"] == 1, "counted in the list"
