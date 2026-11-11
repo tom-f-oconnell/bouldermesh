@@ -760,4 +760,18 @@ pat2 = board.add("pat2")
 board.work(board.machine(pat2["token"]), "127.0.0.1", {"version": pullwork.CLIENT_VERSION, "gpu_name": "NVIDIA GeForce RTX 4090", "gpu": True})
 assert board.q("SELECT gpu_name FROM machines WHERE id=?", pat2["id"], one=True)["gpu_name"] == "NVIDIA GeForce RTX 4090"
 print("a job's share of the GPU OK")
+
+# --- revoked and turned-down machines that never finished a job are forgotten after a day, with their record
+old, worked = board.add("old-box"), board.add("worked-box")
+board.q("UPDATE machines SET created=? WHERE id IN (?,?)", time.time() - 2 * 86400, old["id"], worked["id"])
+board.q("INSERT INTO machine_jobs(id, task, machine_id, outcome) VALUES('j-old', 'reconstruct', ?, 'failed')", old["id"])
+board.q("INSERT INTO machine_jobs(id, task, machine_id, outcome) VALUES('j-worked', 'reconstruct', ?, 'done')", worked["id"])
+board.q("INSERT INTO machine_states(machine_id, state, start) VALUES(?, 'idle', ?)", old["id"], time.time() - 86400)
+for m in (old, worked):
+    board.revoke(m["id"])
+assert board.forget_gone() == 1, "the one that never finished a job"
+assert not board.q("SELECT * FROM machines WHERE id=?", old["id"]) and not board.q("SELECT * FROM machine_jobs WHERE machine_id=?", old["id"])
+assert not board.q("SELECT * FROM machine_states WHERE machine_id=?", old["id"]) and board.q("SELECT * FROM machines WHERE id=?", worked["id"])
+assert board.q("SELECT * FROM machines WHERE id=?", pat2["id"]), "one not revoked stays"
+print("forgetting gone machines OK")
 print("ALL MACHINES TESTS PASSED")

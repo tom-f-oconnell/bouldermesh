@@ -989,6 +989,7 @@ def clean_existing_meshes() -> None:
     """Give reconstructions from before cleanups existed one. Skips any that has one or had it deleted."""
     if not meshclean.available():
         return
+    use_processing_cores()
     for m in q("SELECT id,name FROM meshes WHERE source LIKE 'project:%' AND filename='mesh.glb' ORDER BY created"):
         if meshclean.load(MESHES / m["id"]) is None:
             clean_mesh(m["id"], lambda line, name=m["name"]: print(f"{name}: {line}", flush=True))
@@ -1191,6 +1192,7 @@ def pack_worker() -> None:
         with _pack_lock:
             if _packing.pop(mid, None) is None:
                 continue     # queued again sooner, and done then
+        use_processing_cores()
         _pack_now.update(mid=mid, since=time.time())
         try:
             if pack_mesh(mid):
@@ -1290,6 +1292,7 @@ def mesh_heading(mid: str) -> dict | None:
 
 def heading_existing_meshes() -> None:
     """Work out which way meshes from before heading.py (or a change to it) face, newest first."""
+    use_processing_cores()
     for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL ORDER BY created DESC"):
         if (MESHES / m["id"]).is_dir() and not heading_mod.current(MESHES / m["id"]):
             keep_heading(m["id"])
@@ -1970,6 +1973,17 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
 # ------------------------------------------------------------------ campaigns: mesh a whole area
 _outages: list[tuple[str, str]] = []    # (campaign, climb) failing in a row before finishing a harvest
 COMPUTE_WAIT = 300      # seconds a worker whose machine couldn't be had waits before trying again
+
+
+def use_processing_cores() -> None:
+    """Keep the calling thread, and whatever it starts, to the cores the admin page gives this server's own processing
+    (compute.processing_cores): the last of them, so that fewer than all leaves the first for answering visitors."""
+    try:
+        allowed = sorted(os.sched_getaffinity(os.getpid()))
+        n = max(1, min(int(settings().get("compute.processing_cores") or len(allowed)), len(allowed)))
+        os.sched_setaffinity(threading.get_native_id(), allowed[-n:])
+    except (AttributeError, OSError, ValueError):
+        pass
 
 
 class Worker:
@@ -3537,6 +3551,7 @@ def beta_worker() -> None:
     while True:
         _beta_wake.wait(timeout=60)
         _beta_wake.clear()
+        use_processing_cores()
         try:
             requeue_waiting_scale()
         except Exception as e:  # never let the thread die
@@ -3652,6 +3667,7 @@ def frames_worker() -> None:
     while True:
         _frames_wake.wait(timeout=300)
         _frames_wake.clear()
+        use_processing_cores()
         while not _stopping and not _draining:
             waiting = sorted((f for f in PROJECTS.glob("*/videos/*") if f.is_file()), key=lambda f: f.stat().st_mtime)
             if not waiting:
@@ -3697,6 +3713,7 @@ def splat_worker() -> None:
     os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
     while True:
         mid = _splats.get()
+        use_processing_cores()
         m = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
         if not m or not m["source"].startswith("project:") or not (MESHES / mid / orientation.CAMERAS_FILE).exists():
             continue
@@ -4163,6 +4180,7 @@ def worker(w: Worker | None = None) -> None:
         if _stopping or _draining or time.time() < w.wait_until:
             time.sleep(2)
             continue
+        use_processing_cores()      # each time round, as the admin page may have changed it
         if not w.remote:
             try:
                 job = jobs.get(timeout=CAMPAIGN_POLL)
@@ -4447,9 +4465,25 @@ def reap_machines() -> None:
         _old_pools[:] = [p for p in _old_pools if p.nodes]
 
 
+def slot_doing(w: Worker) -> str | None:
+    """What a worker is doing, for the admin page: harvesting a climb here, meshing it (here, or on a machine), a job
+    someone asked for, or waiting for a machine; None if nothing."""
+    if w.doing:
+        row = q("SELECT p.status FROM campaign_items ci JOIN projects p ON p.id=ci.project_id WHERE ci.campaign_id=? AND "
+                "ci.status='running' AND ci.name=? LIMIT 1", w.campaign, w.doing, one=True) if w.campaign else None
+        status = (row or {}).get("status")
+        if status == "harvesting":
+            return f"harvesting {w.doing} here"
+        if status in ("queued", "waiting"):
+            return f"starting {w.doing}"
+        return f"meshing {w.doing}" + (" on a machine" if w.remote else " here")
+    if w.job:
+        return f"{w.job['job'].get('type', 'a job')} asked for"
+    return "waiting for a machine" if time.time() < w.wait_until else None
+
+
 def compute_state() -> dict:
-    return {"workers": [{"name": w.name, "remote": w.remote, "error": w.error,
-                         "busy": f"meshing {w.doing}" if w.doing else ("waiting for a machine" if time.time() < w.wait_until else None)}
+    return {"workers": [{"name": w.name, "remote": w.remote, "error": w.error, "busy": slot_doing(w)}
                         for w in _workers if not w.retired],
             "pool": _pool.status() if _pool else None, "local_meshing": _local_meshing,
             "machines": {**MACHINES.state(), "served": bool(WORKER_PORT), "url": WORKER_URL}}
@@ -6113,7 +6147,7 @@ def admin_state() -> dict:
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
             "notify": NOTIFIER.state(),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
-            "packing": pack_progress(),
+            "packing": pack_progress(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q)}
 
 
@@ -6231,6 +6265,8 @@ def main() -> None:
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
                                        "volunteers-cancel": admin_volunteers_cancel, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
                                        "machine-revoke": admin_machine_revoke, "clear-rejected": admin_clear_rejected,
+                                       "volunteers-forget": lambda _: {"result": f"forgot {VOLUNTEERS.forget_gone()} volunteer(s)"},
+                                       "machines-forget": lambda _: {"result": f"forgot {MACHINES.forget_gone()} machine(s)"},
                                        "volunteer-approve": admin_volunteer_approve, "volunteer-deny": admin_volunteer_deny,
                                        "machine-approve": admin_machine_approve, "machine-deny": admin_machine_deny,
                                        "notify-topics": admin_notify_topics, "notify-test": admin_notify_test,

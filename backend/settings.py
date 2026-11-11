@@ -23,6 +23,9 @@ DEFAULTS = {
     # compute: where reconstructions run. The server itself runs local_workers of them (0: none, as on a small server
     # that only harvests); with a provider, up to remote_workers more run on other machines at once.
     "compute.local_workers": 1,
+    # cores this server's own processing may use (harvests and their off-topic filter, packing meshes, finding beta
+    # here): the last of them, so that fewer than all leaves the first for answering visitors; all by default
+    "compute.processing_cores": os.cpu_count() or 1,
     "compute.provider": "none",            # none | ssh | aws | pull (machines that connect here for work: pullwork.py)
     "compute.remote_workers": 2,
     "compute.idle_minutes": 10,            # a cloud node with nothing to do is ended after this
@@ -88,7 +91,7 @@ DEFAULTS = {
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
            "areas.meshes": ("boulders", "climbs"), "relevance.matcher": ("brute", "flann"), "leaderboard.names": ("new", "all", "none")}
-LIMITS = {"site.map_km": (0.05, 2000), "viewer.preview_faces": (0, 5_000_000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
+LIMITS = {"site.map_km": (0.05, 2000), "viewer.preview_faces": (0, 5_000_000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.processing_cores": (1, os.cpu_count() or 1), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 100),
           "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 100),
           "registration.per_address_day": (1, 100), "registration.max_waiting": (1, 1000)}

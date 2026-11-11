@@ -518,12 +518,13 @@ which builds and ships the images (`deploy/build.sh && deploy/ship.sh bouldermes
 what a restart would cost (`cli.py deploy-check`), and then pulls and restarts it there (`git pull --ff-only && sudo
 systemctl restart bouldermesh`), and if hal's worker runs here as a system service (`bouldermesh-worker`, loaded and
 active), restarts that with sudo, so that it runs the worker script as checked out. When a restart would lose work in
-progress, it lists it with about how long each has left (`!` for what it would lose: a mesh on a machine, which starts
-over; a job asked for; beta found here; harvests and volunteers' uploads only pause) and asks: restart **now**, or
-**after** what's in progress finishes, the server taking no new work meanwhile (`cli.py deploy-wait`, up to
-`WAIT_MINUTES`, 90), or cancel (the new image is pulled, and runs at the next restart). `./deploy.sh --now` and
-`--after` choose without asking, and without a terminal it waits. The server answers these only from itself
-(`GET /api/deploy`, `POST /api/deploy/drain`), through `docker compose exec`.
+progress, it lists it with about how long each has left (`!` for what it would lose: a job on a machine, which starts
+over; a job asked for; beta or size found here; harvests, volunteers' uploads, and jobs no machine has taken yet only
+pause) and asks: restart **now**, or **after** what's in progress finishes, the server taking no new work meanwhile, or
+cancel (the new image is pulled, and runs at the next restart). While it waits, it says what for every 30 s
+(`cli.py deploy-check --brief`), stamped with hal's time, and `n` restarts now, `c` or Ctrl-C cancels. `./deploy.sh
+--now` and `--after` choose without asking; without a terminal it waits, for at most `WAIT_MINUTES` (90). The server
+answers these only from itself (`GET /api/deploy`, `POST /api/deploy/drain`), through `docker compose exec`.
 
 - It builds what's committed, other sessions' commits too: `git log` first says what would go.
 - Changes to the database apply themselves when the server starts, and the Caddyfile and Compose files come with the
@@ -719,7 +720,11 @@ They're never shown again. Without that key, give them as environment variables 
 
 By default this server does everything. *Reconstructions at once on this server* can be raised, which
 runs climbs side by side (two areas then share the workers), though most steps already use every core, or set to 0,
-for a small server that only harvests: then every climb waits for another machine to mesh it.
+for a small server that only harvests: then every climb waits for another machine to mesh it. *Cores for this server's
+own processing* (all by default) keeps harvests and their off-topic filter, packing meshes and finding beta here to
+that many of its cores, the last ones, leaving the first for answering visitors. The admin page's *Workers* line says
+what each worker is doing: each takes one area's climb at a time and harvests it here; *this server* meshes it here
+too, and *remote 1*, *remote 2*, ... each hand theirs to a machine, as many as *At most this many other machines at once*.
 On the admin page, *Run more on* adds up to *At most this many other machines at once* (2 by default):
 
 - **Machines reached over SSH**: any you keep running, with Docker (and NVIDIA's container toolkit for
@@ -872,6 +877,10 @@ or on your phone. Until then, under *Volunteers and machines that register thems
 - **Approved volunteers'** limits are set there too (15 an hour and 100 a day at most).
 - **Registering:** at most 5 a day from one address, and 30 waiting at once, of each kind; ones never approved go after
   14 days without being heard from.
+- **Revoked and turned down** volunteers and machines are hidden in their lists until *Show them*. *Forget* deletes
+  those that never did any work, a day after they registered (registrations from an address are counted by them for a
+  day); those that did stay, hidden, as the leaderboard credits them. A forgotten token's script is told it's unknown,
+  which it treats as revoked.
 
 **On your phone:** install the free ntfy app (Android or iOS). On the admin page, *Make new topics*, then subscribe to
 the topic it shows in the app (on ntfy.sh unless you name another server). Its QR codes save typing it: on Android,

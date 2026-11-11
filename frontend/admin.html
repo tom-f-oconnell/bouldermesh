@@ -101,8 +101,15 @@
   <section id="compute">
     <h2>Compute</h2>
     <div id="slots" class="note"></div>
+    <div class="note">Each worker takes one area's climb at a time, and harvests it here, off-topic filter and all. <i>this server</i>
+      then meshes it here (with reconstructions above 0), and also runs the jobs asked for on this page; each <i>remote</i> hands its
+      climbs to a machine, one at a time, up to <i>At most this many other machines at once</i>. One idle has no climb it can take
+      now: the rest are waiting for volunteers' videos, for others on their boulder, or for each other.
+      <i>Cores for this server's own processing</i> keeps harvests, the filter, packing meshes and finding beta here to that many
+      of its cores (the last ones), leaving the first for visitors: all by default.</div>
     <div class="grid">
       <div><label>Reconstructions at once on this server (0: none, it only harvests)</label><input type="number" id="local" min="0" max="4"></div>
+      <div><label>Cores for this server's own processing <small id="cores-of"></small></label><input type="number" id="cores" min="1"></div>
       <div><label>Run more on</label><select id="provider"><option value="none">Nothing else: this server only</option><option value="ssh">Machines reached over SSH</option><option value="aws">AWS EC2 instances, started when needed</option><option value="pull">Machines that connect here for work (behind a firewall)</option></select></div>
       <div><label>At most this many other machines at once</label><input type="number" id="remote" min="0" max="16"></div>
       <div><label>End an idle cloud machine after (minutes)</label><input type="number" id="idle" min="1" max="240"></div>
@@ -263,12 +270,14 @@ function render(s){
   if (!editing) {
     document.body.className = 'p-' + v['compute.provider'];
     $('#local').value = v['compute.local_workers']; $('#provider').value = v['compute.provider']; $('#remote').value = v['compute.remote_workers'];
+    $('#cores').value = Math.min(v['compute.processing_cores'], s.cpu_count || v['compute.processing_cores']); $('#cores').max = s.cpu_count || '';
     $('#idle').value = v['compute.idle_minutes']; $('#image').value = v['compute.image']; $('#hosts').value = v['compute.ssh_hosts'].join('\n');
     $('#region').value = v['compute.aws.region']; $('#itype').value = v['compute.aws.instance_type']; $('#ami').value = v['compute.aws.ami'];
     $('#sg').value = v['compute.aws.security_group']; $('#subnet').value = v['compute.aws.subnet']; $('#vol').value = v['compute.aws.volume_gb'];
     $('#profile').value = v['compute.aws.instance_profile']; $('#spot').checked = v['compute.aws.spot']; $('#command').value = v['compute.command'];
   }
   $('#unsaved').textContent = editing ? 'Not saved yet' : '';
+  $('#cores-of').textContent = s.cpu_count ? `(1 to ${s.cpu_count}, all by default)` : '';
   $('#slots').innerHTML = 'Workers: ' + s.compute.workers.map(w => `<b>${esc(w.name)}</b> ${w.busy ? esc(w.busy) : '<span class="ok">idle</span>'}${w.error ? ` <span class="bad">${esc(w.error)}</span>` : ''}`).join(' · ');
   const p = s.compute.pool;
   $('#nodes').innerHTML = p ? `<table><tr><th>Machine</th><th>Up (min)</th><th>State</th></tr>${p.nodes.map(n => `<tr><td>${esc(n.id || n.host)}${n.gpu ? ' (GPU)' : ''}</td><td>${n.up_minutes}</td><td>${n.busy ? 'working' : `idle ${n.idle_minutes} min`}</td></tr>`).join('') || '<tr><td colspan="3">none running</td></tr>'}</table>
@@ -281,15 +290,17 @@ function render(s){
   const SHARE = [['working', 'working'], ['idle', 'idle'], ['held back', 'held back'], ['offline', 'offline'], ['awaiting approval', 'awaiting approval']];
   const shares = d => !d || !d.hours ? '–' : SHARE.filter(([k]) => d[k]).map(([k, label]) => `${label} ${Math.round(100 * d[k])}%`).join(' · ')
     + ` <small class="note">(${d.hours} h recorded)</small>`;
-  $('#mach-list').innerHTML = ms.machines.length ? `<table><tr><th>Machine</th><th>Now</th><th>Last 24 h <small>(7 days)</small></th><th>Last seen</th><th>Address</th><th>Done / failed</th><th></th></tr>${
-    ms.machines.map(m => `<tr class="mach" data-mshow="${esc(m.id)}" title="Shows the command to run on it again"><td>${esc(m.name)}${m.provisional ? '<span class="tag">waiting for approval</span>' : ''}${m.client ? `<div class="note">${esc(m.client)}${m.gpu ? ', GPU' : ''}${m.cpus ? `, ${m.cpus} cores` : ''}</div>` : ''}${m.held ? `<div class="note warn">${m.held} mesh(es) made, waiting for its approval</div>` : ''}</td>
+  const gone = st => st === 'revoked' || st === 'denied', shownMach = ms.machines.filter(m => showGone.mach || !gone(m.status));
+  $('#mach-list').innerHTML = shownMach.length ? `<table><tr><th>Machine</th><th>Now</th><th>Last 24 h <small>(7 days)</small></th><th>Last seen</th><th>Address</th><th>Done / failed</th><th></th></tr>${
+    shownMach.map(m => `<tr class="mach" data-mshow="${esc(m.id)}" title="Shows the command to run on it again"><td>${esc(m.name)}${m.provisional ? '<span class="tag">waiting for approval</span>' : ''}${m.client ? `<div class="note">${esc(m.client)}${m.gpu ? ', GPU' : ''}${m.cpus ? `, ${m.cpus} cores` : ''}</div>` : ''}${m.held ? `<div class="note warn">${m.held} mesh(es) made, waiting for its approval</div>` : ''}</td>
       <td class="${m.status === 'working' ? 'ok' : m.status === 'revoked' || m.status === 'denied' ? 'bad' : m.status === 'awaiting approval' || m.status === 'held back' ? 'warn' : ''}">${esc(m.status)}${m.job ? ` (${esc(m.job.project)}, ${m.job.minutes} min)` : ''}${
         m.now && ['held back', 'idle', 'offline'].includes(m.now.state) ? `<div class="note">${esc(m.now.state)} for ${ago(m.now.start)}${m.now.why ? `: ${esc(m.now.why)}` : ''}</div>` : ''}</td>
       <td>${shares(m.day)}<div class="note">${shares(m.week).replace(/ <small.*/, '')}</div></td>
       <td>${seen(m.last_seen)}</td><td>${esc(m.address || '')}</td><td>${m.done} / ${m.failed}</td><td>${m.status === 'revoked' || m.status === 'denied' ? '' : m.provisional
         ? `<button data-mapprove="${esc(m.id)}">Approve</button> <button class="danger" data-mdeny="${esc(m.id)}">Deny</button>`
         : `<button class="danger" data-mrevoke="${esc(m.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
-    : '<div class="note">No machines yet.</div>';
+    : `<div class="note">${ms.machines.length ? 'No machines but revoked or turned-down ones.' : 'No machines yet.'}</div>`;
+  $('#mach-list').innerHTML += goneLine('mach', ms.machines.filter(m => gone(m.status)), 'machine');
   const waiting = ms.jobs.filter(j => j.state === 'queued');
   if (waiting.length) $('#mach-list').innerHTML += `<div class="note">${waiting.length} climb(s) waiting for a machine.</div>`;
   if ((ms.changes || []).length) $('#mach-list').innerHTML += `<details${machChangesOpen ? ' open' : ''} id="mach-changes"><summary class="note">Latest changes</summary><table>${
@@ -370,7 +381,6 @@ function render(s){
   $('#vol-note').innerHTML = vs.served ? (vs.url ? `Volunteers reach this server at <a href="${esc(vs.url)}/volunteer/" target="_blank" rel="noopener">${esc(vs.url)}/volunteer/</a>, which has the script and what to do.` : 'Volunteers reach this server at (VOLUNTEER_URL not set)/volunteer/, which has the script and what to do.')
     : 'Not taking volunteers here: VOLUNTEER_PORT isn\'t set (README, "Volunteers").';
   if (document.activeElement !== $('#via')) $('#via').value = v['youtube.via'];
-  const gone = st => st === 'revoked' || st === 'denied';
   // how YouTube treats each, as its script last said (version 5 on): ok, or refused, throttled or degraded, and why
   const yt = x => {
     if (!x.health) return `<span class="note" title="${x.yt_dlp ? 'yt-dlp ' + esc(x.yt_dlp) : 'Its script is older than version 5, which says how YouTube treats it'}">?</span>`;
@@ -383,12 +393,15 @@ function render(s){
   $('#vol-trouble').innerHTML = tr ? `<div class="note warn">${tr.degraded} of the ${tr.of} volunteers heard from in the last few hours say YouTube is
     degrading them, as: ${esc(tr.example || '')}. That's likely YouTube changing something, which a newer yt-dlp usually fixes (volunteers
     update theirs daily), rather than one address's trouble.</div>` : '';
-  $('#vol-list').innerHTML = vs.volunteers.length ? `<table><tr><th>Volunteer</th><th>Now</th><th>YouTube</th><th>Last seen</th><th>Address</th><th>Last hour / day</th><th>Fetched</th><th></th></tr>${
-    vs.volunteers.map(x => `<tr><td>${esc(x.name)}${x.provisional ? '<span class="tag">waiting for approval</span>' : ''}${x.registered ? `<div class="note">registered itself ${when(x.created)}</div>` : ''}</td><td class="${x.status === 'resting' || x.status === 'awaiting approval' ? 'warn' : gone(x.status) ? 'bad' : x.status === 'fetching' ? 'ok' : ''}">${esc(x.status)}${
+  const shownVol = vs.volunteers.filter(x => showGone.vol || !gone(x.status));
+  $('#vol-list').innerHTML = shownVol.length ? `<table><tr><th>Volunteer</th><th>Now</th><th>YouTube</th><th>Last seen</th><th>Address</th><th>Last hour / day</th><th>Fetched</th><th></th></tr>${
+    shownVol.map(x => `<tr><td>${esc(x.name)}${x.provisional ? '<span class="tag">waiting for approval</span>' : ''}${x.registered ? `<div class="note">registered itself ${when(x.created)}</div>` : ''}</td><td class="${x.status === 'resting' || x.status === 'awaiting approval' ? 'warn' : gone(x.status) ? 'bad' : x.status === 'fetching' ? 'ok' : ''}">${esc(x.status)}${
       x.refused_until ? `${x.rest_why === 'throttled' ? ' (throttled)' : ''} until ${when(x.refused_until)}` : ''}${x.fetching ? `: ${esc(x.fetching.kind)} ${esc(x.fetching.video_id)}` : ''}</td><td>${yt(x)}</td><td>${when(x.last_seen)}</td><td>${esc(x.address || '')}</td>
       <td>${x.last_hour} / ${x.last_day} (of ${x.per_hour} / ${x.per_day})</td><td>${x.done}</td><td>${gone(x.status) ? '' : x.provisional
         ? `<button data-vapprove="${esc(x.id)}">Approve</button> <button class="danger" data-vdeny="${esc(x.id)}">Deny</button>`
-        : `<button class="danger" data-revoke="${esc(x.id)}">Revoke</button>`}</td></tr>`).join('')}</table>` : '<div class="note">No volunteers yet.</div>';
+        : `<button class="danger" data-revoke="${esc(x.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
+    : `<div class="note">${vs.volunteers.length ? 'No volunteers but revoked or turned-down ones.' : 'No volunteers yet.'}</div>`;
+  $('#vol-list').innerHTML += goneLine('vol', vs.volunteers.filter(x => gone(x.status)), 'volunteer');
   const vc = vs.counts, n = k => vc[k] || 0, active = vs.volunteers.some(x => x.status !== 'revoked');
   $('#vol-queue').innerHTML = `Wanted: ${n('queued_video') + n('assigned_video')} video(s)${vs.wanted.harvest ? `, ${vs.wanted.harvest} for harvests` : ''}${vs.wanted.beta ? `, ${vs.wanted.beta} for finding beta` : ''}; `
     + `${n('queued_search') + n('assigned_search')} search(es); ${n('queued_details') + n('assigned_details')} video(s)' details; ${n('queued_channel') + n('assigned_channel')} channel(s). `
@@ -435,6 +448,27 @@ function packNote(p){
   if (p.failed) text += ` ${p.failed} couldn't be made (the server's log says why), and open as they are.`;
   return text;
 }
+// Revoked and turned-down machines and volunteers: hidden unless shown, and those that never did anything forgettable
+let showGone = { mach: false, vol: false }; try { showGone = { ...showGone, ...JSON.parse(localStorage.getItem('bm_admin_gone') || '{}') }; } catch {}
+function goneLine(list, rows, what){
+  if (!rows.length) return '';
+  const unused = rows.filter(r => !r.done && r.created < Date.now() / 1000 - 86400).length;     // as forget_gone() takes them
+  return `<div class="row note">${rows.length} revoked or turned down, ${showGone[list] ? 'shown' : 'hidden'}.
+    <button class="sec" data-gone-show="${list}">${showGone[list] ? 'Hide them' : 'Show them'}</button>
+    ${unused ? `<button class="sec" data-gone-forget="${list}" title="Deletes those that never did any work and registered over a day ago (a day, as registrations from an address are counted by these). Those that did stay, hidden, for the leaderboard.">Forget the ${unused} that never did any work</button>` : rows.some(r => !r.done) ? `<span>Those that never did any work can be forgotten a day after they registered.</span>` : ''}</div>`;
+}
+document.addEventListener('click', async ev => {
+  const b = ev.target.closest('[data-gone-show], [data-gone-forget]');
+  if (!b) return;
+  if (b.dataset.goneShow) {
+    showGone[b.dataset.goneShow] = !showGone[b.dataset.goneShow];
+    try { localStorage.setItem('bm_admin_gone', JSON.stringify(showGone)); } catch {}
+    return render(state);
+  }
+  const list = b.dataset.goneForget;
+  if (!confirm(`Forget the revoked and turned-down ${list === 'mach' ? 'machines' : 'volunteers'} that never did any work? They're deleted, and their tokens are then unknown rather than revoked, which their scripts treat the same.`)) return;
+  try { msg((await call(`/api/admin/actions/${list === 'mach' ? 'machines' : 'volunteers'}-forget`, {})).result); refresh(); } catch (e) { msg(e.message, 8000); }
+});
 async function refresh(){ try { render(await call('/api/admin/state')); } catch (e) { msg(e.message, 8000); } }
 async function save(changes, compute){
   try { const s = await call('/api/admin/settings', changes); if (compute) editing = false; render(s); msg('Saved'); }
@@ -446,6 +480,7 @@ document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => sav
 $('#provider').onchange = () => { document.body.className = 'p-' + $('#provider').value; };
 $('#save').onclick = () => save({
   'compute.local_workers': +$('#local').value, 'compute.provider': $('#provider').value, 'compute.remote_workers': +$('#remote').value,
+  'compute.processing_cores': +$('#cores').value,
   'compute.idle_minutes': +$('#idle').value, 'compute.image': $('#image').value, 'compute.command': $('#command').value,
   'compute.ssh_hosts': $('#hosts').value.split('\n'), 'compute.aws.region': $('#region').value, 'compute.aws.instance_type': $('#itype').value,
   'compute.aws.ami': $('#ami').value, 'compute.aws.security_group': $('#sg').value, 'compute.aws.subnet': $('#subnet').value,

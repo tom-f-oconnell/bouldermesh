@@ -224,6 +224,19 @@ class Broker:
         self.q("UPDATE volunteers SET revoked=?, status=COALESCE(?, status) WHERE id=?", time.time(), status, vid)
         self.q("UPDATE tasks SET state='queued', volunteer=NULL WHERE volunteer=? AND state='assigned'", vid)
 
+    def forget_gone(self, now: float | None = None) -> int:
+        """Forget volunteers revoked or denied that never fetched anything and registered over a day ago (registrations
+        from an address are counted for a day by their rows); those that fetched something stay, for the leaderboard.
+        How many went."""
+        now = now or time.time()
+        gone = [r["id"] for r in self.q("SELECT id FROM volunteers WHERE revoked IS NOT NULL AND COALESCE(done, 0)=0 AND "
+                                        "created<? AND id NOT IN (SELECT volunteer FROM tasks WHERE state='done' AND "
+                                        "volunteer IS NOT NULL)", now - 86400)]
+        for vid in gone:
+            self.q("DELETE FROM given WHERE volunteer=?", vid)
+            self.q("DELETE FROM volunteers WHERE id=?", vid)
+        return len(gone)
+
     def volunteer(self, token: str) -> dict | None:
         return self.q("SELECT * FROM volunteers WHERE token_hash=?", registration.token_hash(token), one=True)
 

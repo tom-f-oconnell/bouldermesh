@@ -201,6 +201,7 @@ def boulder_probability(paths: list[Path], log: Log, progress: Progress | None =
     todo = [p for p in paths if p not in out]
     if todo:
         model, prep, text, device = _load_clip(log)
+        torch.set_num_threads(cores())
     for i, p in enumerate(todo):
         if progress:
             progress(i / max(1, len(todo)), f"{i} of {len(todo)} photos")
@@ -265,8 +266,18 @@ def match(a, b) -> tuple[int, float]:
     return k, float(cv2.contourArea(hull) / (a[2][0] * a[2][1]))
 
 
+def cores() -> int:
+    """How many cores the calling thread may use (the server keeps its processing to compute.processing_cores)."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return os.cpu_count() or 2
+
+
 def _threads() -> int:
-    return min(12, max(1, (os.cpu_count() or 2) - 1))
+    """Threads for matching: with all the machine's cores, one fewer, for the rest of the server; else as many; 12 at most."""
+    n = cores()
+    return min(12, max(1, n - 1 if n >= (os.cpu_count() or n) else n))
 
 
 def _map(fn, items: list, progress: Progress | None, what: str) -> list:

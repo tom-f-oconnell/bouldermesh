@@ -196,6 +196,19 @@ class Board:
         m = self.q("SELECT id, name, token, revoked FROM machines WHERE id=?", mid, one=True)
         return m and {"id": m["id"], "name": m["name"], "token": None if m["revoked"] else m["token"]}
 
+    def forget_gone(self, now: float | None = None) -> int:
+        """Forget machines revoked or denied that never finished a job and registered over a day ago (registrations from
+        an address are counted for a day by their rows), with their record of states and jobs; those that finished one
+        stay, for the leaderboard and the record. How many went."""
+        now = now or time.time()
+        gone = [r["id"] for r in self.q("SELECT id FROM machines WHERE revoked IS NOT NULL AND COALESCE(done, 0)=0 AND "
+                                        "created<? AND id NOT IN (SELECT machine_id FROM machine_jobs WHERE outcome='done' "
+                                        "AND machine_id IS NOT NULL)", now - 86400)]
+        for mid in gone:
+            for table, column in (("machine_states", "machine_id"), ("machine_jobs", "machine_id"), ("machines", "id")):
+                self.q(f"DELETE FROM {table} WHERE {column}=?", mid)
+        return len(gone)
+
     def revoke(self, mid: str, status: str | None = None) -> None:
         """Its token stops working at once, and what it was doing goes to another machine; what it made and is held
         goes. status "denied" for one never approved."""

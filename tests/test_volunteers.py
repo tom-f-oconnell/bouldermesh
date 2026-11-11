@@ -947,6 +947,21 @@ def youtube_health():
     print("YouTube's signs, unit OK")
 
 
+def forgetting_gone() -> None:
+    """Revoked and turned-down volunteers that never fetched anything are forgotten, after a day; the rest stay."""
+    b = volunteers.Broker(TMP / "bf" / "v.sqlite", TMP / "bf" / "files", lambda *a: None, lambda *a: None)
+    old, worked, fresh, active = (b.add(n)["id"] for n in ("old", "worked", "fresh", "active"))
+    b.q("UPDATE volunteers SET created=? WHERE id IN (?,?,?)", time.time() - 2 * 86400, old, worked, active)
+    b.q("UPDATE volunteers SET done=3 WHERE id=?", worked)
+    b.q("INSERT INTO given(volunteer, ip, at) VALUES(?,?,?)", old, "127.0.0.1", time.time() - 2 * 86400)
+    for vid in (old, worked, fresh):
+        b.revoke(vid)
+    assert b.forget_gone() == 1 and b.get(old) is None and not b.q("SELECT * FROM given WHERE volunteer=?", old)
+    assert all(b.get(v) for v in (worked, fresh, active)), "it fetched, it's within the day, or it isn't revoked"
+    assert b.forget_gone(now=time.time() + 2 * 86400) == 1 and b.get(fresh) is None and b.get(worked), "a day later"
+    print("forgetting gone volunteers OK")
+
+
 def keeping_in_touch() -> None:
     """The script, waiting, tells the server it's still there at least every 10 minutes."""
     import importlib.util
@@ -971,6 +986,7 @@ try:
     tools_python()
     youtube_health()
     updating()
+    forgetting_gone()
     keeping_in_touch()
     if shutil.which("ffmpeg"):
         script_and_broker()

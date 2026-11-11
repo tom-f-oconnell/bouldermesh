@@ -65,6 +65,12 @@ with tempfile.TemporaryDirectory() as td:
                       ({"storage.cap_gb": "lots"}, "a number"), ({"storage.cap_gb": -2.5}, "from 0"), ({"site.map_km": 0}, "from 0.05")):
         must_raise(lambda: s.update(bad), ValueError, text)
     assert s.get("compute.local_workers") == 1, "nothing saved from a bad update"
+    cores = os.cpu_count() or 1
+    assert s.get("compute.processing_cores") == cores, "all of them, to start"
+    for bad in (0, cores + 1):
+        must_raise(lambda: s.update({"compute.processing_cores": bad}), ValueError, f"from 1 to {cores}")
+    s.update({"compute.processing_cores": 1})
+    assert s.get("compute.processing_cores") == 1
     assert s.get("storage.cap_gb") == settings_mod.DEFAULTS["storage.cap_gb"]
     s.update({"storage.cap_gb": 47.5})
     assert s.get("storage.cap_gb") == 47.5 and isinstance(s.update({"storage.cap_gb": 40})["storage.cap_gb"], float)
