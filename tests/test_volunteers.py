@@ -221,6 +221,21 @@ def broker_alone() -> None:
         b.finish(dave, t["id"], {"status": "failed", "error": error})
         assert b.q("SELECT state, tries FROM tasks WHERE id=?", t["id"], one=True) == {"state": state, "tries": 1}, vid
     b.cancel()
+    # what came when ready() said not now (a harvest still running) is kept, and resettle() gives it again, once nothing
+    # more is coming for it
+    answers = [False]
+    real_ready, b.ready = b.ready, lambda purpose, ref: (ready.append((purpose, ref)), answers.pop(0) if answers else None)[1]
+    b.want("search", "Bishop Boulder V0", "harvest", "p12")
+    t = b.work(dave, "203.0.113.20", kinds=kinds)["task"]
+    b.finish(dave, t["id"], {"status": "ok", "results": []})
+    assert ready[-1] == ("harvest", "p12") and not answers
+    b.want("search", "Bishop Boulder V1", "harvest", "p12")
+    assert not b.resettle("harvest", "p12"), "something more is coming"
+    b.cancel()
+    n = len(ready)
+    assert b.resettle("harvest", "p12") and ready[n:] == [("harvest", "p12")], ready
+    assert not b.resettle("harvest", "p12"), "given once"
+    b.ready = real_ready
     print("broker OK")
 
 

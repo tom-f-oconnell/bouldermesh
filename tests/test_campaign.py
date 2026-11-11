@@ -1091,6 +1091,33 @@ server.q("UPDATE campaign_items SET waiting_since=?", time.time() - server.VOLUN
 run_all(c["id"])
 it = items(c["id"])["Beta"]
 assert it["status"] == "done" and len(meshed) == 1 and harvested.count("Beta") == 2, (it, meshed)
+# what came while it was still being harvested, too late for that harvest: given again as it starts waiting, so it's
+# harvested again then, not a day later
+fresh()
+meshed.clear()
+calls: list[str] = []
+resettled: list[str] = []
+
+
+def came_during(c_, project_dir, *a, **k):
+    calls.append(project_dir.name)
+    out = asking(c_, project_dir, *a, **k)
+    if len(calls) == 1:     # its search came back from a volunteer while it was still being harvested
+        assert server.volunteer_ready("harvest", project_dir.name) is False, "being harvested: not now"
+        out.update(youtube_checked=False, unsearched=f"{c_.name} V1 Joshua Tree")
+    return out
+
+
+real_resettle = server.VOLUNTEERS.resettle
+server.VOLUNTEERS.resettle = lambda purpose, ref: (resettled.append(ref), not coming.get(ref) and server.volunteer_ready(purpose, ref))[1]
+server.harvest_mod.harvest = came_during
+try:
+    c = server.create_campaign("", "popularity", only("Beta"))
+    run_all(c["id"])
+    it = items(c["id"])["Beta"]
+    assert it["status"] == "done" and len(meshed) == 1 and len(calls) == 2 and resettled == [it["project_id"]], (it, meshed, calls)
+finally:
+    server.VOLUNTEERS.resettle = real_resettle
 server.VOLUNTEERS.pending, server.harvest_mod.harvest, pipeline.reconstruct = real_pending, fake_harvest, fake_reconstruct
 print("waiting for volunteers OK")
 

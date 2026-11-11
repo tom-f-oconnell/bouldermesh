@@ -126,7 +126,8 @@ class Broker:
         delivered: called with (task, path to the video or None, its details) when a task is done; the video is
             the callee's to move.
         ready: called with (purpose, ref) once every video wanted for that is done or has failed, at least one
-            having come: ("harvest", project id), ("beta", mesh id), ("details", url).
+            having come: ("harvest", project id), ("beta", mesh id), ("details", url). False back means not now, kept
+            for resettle().
         probe: a video file's length, to check it's the one asked for (probe_duration()).
         paused: why no volunteer is to be given work now (as when the server is out of room), or None.
         rules: the admin page's limits, as RULES.
@@ -140,7 +141,7 @@ class Broker:
     """
 
     def __init__(self, db_path: Path, files: Path, delivered: Callable[[dict, Path | None, dict], None],
-                 ready: Callable[[str, str], None], probe: Callable[[Path], float | None] = probe_duration,
+                 ready: Callable[[str, str], bool | None], probe: Callable[[Path], float | None] = probe_duration,
                  paused: Callable[[], str | None] = lambda: None, rules: Callable[[], dict] = lambda: RULES,
                  registered: Callable[[dict], None] = lambda v: None,
                  troubled: Callable[[dict, str | None, str, str], None] = lambda v, was, now, why: None,
@@ -543,7 +544,26 @@ class Broker:
                     continue
                 self.q("UPDATE wants SET applied=1 WHERE purpose=? AND ref=?", w["purpose"], w["ref"])
             if came:
-                self.ready(w["purpose"], w["ref"])
+                self._ready(w["purpose"], w["ref"])
+
+    def _ready(self, purpose: str, ref: str) -> bool:
+        """Call ready(); if it says not now (False: what it's for is busy, as a harvest still running), what came is kept
+        as not applied, for resettle() to give again."""
+        if self.ready(purpose, ref) is not False:
+            return True
+        self.q("UPDATE wants SET applied=0 WHERE purpose=? AND ref=?", purpose, ref)
+        return False
+
+    def resettle(self, purpose: str, ref: str) -> bool:
+        """Give again what came for a purpose and ref when ready() said not now, once nothing more is coming for it.
+        Returns whether ready() took it."""
+        with self.lock:
+            if self.pending(purpose, ref) or not self.q(
+                    "SELECT 1 FROM wants w JOIN tasks t ON t.id=w.task WHERE w.purpose=? AND w.ref=? AND w.applied=0 "
+                    "AND t.state='done' LIMIT 1", purpose, ref):
+                return False
+            self.q("UPDATE wants SET applied=1 WHERE purpose=? AND ref=?", purpose, ref)
+        return self._ready(purpose, ref)
 
     # -- for the admin page ---------------------------------------------------------------------------------------
     def state(self) -> dict:

@@ -1765,12 +1765,14 @@ def unchecked(camp: dict, pid: str) -> bool:
 def wait_for_volunteers(cid: str, sid: str, pid: str, since: float | None) -> None:
     """Leave an area's climb waiting for what volunteers are fetching for it, rather than mesh it twice: once
     without it, and again with it; or for its YouTube search, which its area needs before meshing it. volunteer_ready()
-    queues it to harvest again and mesh once it has all come, and settle_waiting() after VOLUNTEER_WAIT."""
+    queues it to harvest again and mesh once it has all come, and settle_waiting() after VOLUNTEER_WAIT. What came
+    while it was still being harvested, too late for that harvest, is given again now (the broker's resettle())."""
     n = VOLUNTEERS.pending("harvest", pid)
     note = (f"waiting for volunteers: {n} YouTube search(es) and video(s) to come" if n else
             "waiting for its YouTube search, which no volunteer has been asked for (there are none): add one, or let its "
             "area mesh without")
     set_item(cid, sid, status="waiting", waiting_since=since or time.time(), redo=None, retry=0, redo_started=0, note=note)
+    VOLUNTEERS.resettle("harvest", pid)
 
 
 def settle_waiting(camp_id: str) -> None:
@@ -4427,21 +4429,26 @@ def volunteer_delivered(task: dict, path: Path | None, info: dict) -> None:
         save_video({**info, "url": url})
 
 
-def volunteer_ready(purpose: str, ref: str) -> None:
-    """Everything a harvest or a mesh's beta wanted of volunteers has come or failed: carry on with it."""
+def volunteer_ready(purpose: str, ref: str) -> bool | None:
+    """Everything a harvest or a mesh's beta wanted of volunteers has come or failed: carry on with it. False if not now
+    (the harvest still running), which the broker keeps to give again once the climb waits (wait_for_volunteers())."""
     if purpose == "harvest":
-        reharvest_with_videos(ref)
-    elif purpose == "beta":
+        return reharvest_with_videos(ref)
+    if purpose == "beta":
         _beta_wake.set()
+    return None
 
 
-def reharvest_with_videos(pid: str) -> None:
+def reharvest_with_videos(pid: str) -> bool:
     """Harvest a project again with the videos volunteers fetched for it, now in the cache. An area's climb is queued
     to harvest again and rebuild (if its photos changed), and a finished area runs only that; a stopped one waits
-    to be started. Any other project is harvested again, to be rebuilt by hand."""
+    to be started. Any other project is harvested again, to be rebuilt by hand. False, doing nothing, while the
+    project is queued or running: what came may have been too late for the harvest under way."""
     proj = q("SELECT status FROM projects WHERE id=?", pid, one=True)
-    if not proj or proj["status"] in ("queued", "running", "harvesting"):
-        return
+    if not proj:
+        return True
+    if proj["status"] in ("queued", "running", "harvesting"):
+        return False
     item = q("SELECT campaign_id, source_id, status FROM campaign_items WHERE project_id=? LIMIT 1", pid, one=True)
     if item:
         if item["status"] == "waiting":
@@ -4454,10 +4461,11 @@ def reharvest_with_videos(pid: str) -> None:
             set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="harvest+rebuild", was=item["status"],
                      redo_started=0, note="queued to harvest again with the videos volunteers fetched")
             q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", item["campaign_id"], write=True)
-        return
+        return True
     append_log(pid, "volunteers fetched the videos this harvest couldn't have: harvesting it again (Reconstruct uses them)")
     q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
     queue_job({"type": "harvest", "pid": pid, "sources": sorted(HARVEST_SOURCES), "reconstruct": False, "again": True})
+    return True
 
 
 def volunteer_rules() -> dict:
