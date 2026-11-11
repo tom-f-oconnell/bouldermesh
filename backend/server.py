@@ -3080,6 +3080,42 @@ def boulder_panel(camp: dict, item: dict) -> dict | None:
     return out
 
 
+_idle_why: dict = {"at": 0.0, "why": None}
+
+
+def machines_idle_why() -> str | None:
+    """Why this server has no job for a machine asking for one: what its areas are doing instead (harvesting, climbs
+    harvested and waiting for the rest of their boulder's, or waiting for volunteers), and what finding beta waits for.
+    Worked out at most once a minute, as idle machines ask every 15 s."""
+    if time.time() - _idle_why["at"] < 60:
+        return _idle_why["why"]
+    parts = []
+    for w in _workers:
+        if w.campaign and w.doing and not w.retired:
+            name = (q("SELECT name FROM campaigns WHERE id=?", w.campaign, one=True) or {}).get("name", "an area")
+            parts.append(f"{name} is harvesting {w.doing}")
+    running = q("SELECT id FROM campaigns WHERE status='running'")
+    if running:
+        ids = [c["id"] for c in running]
+        marks = ",".join("?" * len(ids))
+        n = {r["status"]: r["n"] for r in q(f"SELECT status, COUNT(*) n FROM campaign_items WHERE campaign_id IN ({marks}) "
+                                              "AND status IN ('harvested','waiting','pending') GROUP BY status", *ids)}
+        if n.get("harvested"):
+            parts.append(f"{n['harvested']} climb(s) harvested, waiting for the rest of their boulder's before it's meshed")
+        if n.get("waiting"):
+            parts.append(f"{n['waiting']} waiting for volunteers")
+        if n.get("pending"):
+            parts.append(f"{n['pending']} still to harvest")
+    else:
+        parts.append("no area running")
+    beta = [beta_mod.load(MESHES / mid) or {} for mid in beta_queue()]
+    if beta:
+        videos = {u for r in beta for u in r.get("waiting_videos") or [] if not youtube_mod.cached(u)}
+        parts.append(f"finding beta: {len(beta)} mesh(es) queued" + (f", waiting for {len(videos)} video(s)" if videos else ""))
+    _idle_why.update(at=time.time(), why="; ".join(parts) or None)
+    return _idle_why["why"]
+
+
 def machine_kind() -> str | None:
     """The kind of machine areas' climbs are meshed on besides this server, as the admin page sets it, for saying what
     a climb waits for; None if there's no other kind."""
@@ -3333,6 +3369,7 @@ def reap_machines() -> None:
         time.sleep(60)
         try:
             MACHINES.sweep()    # machines that stopped asking: offline, in their record
+            MACHINES.hourly()   # and once an hour, each one's time working, idle, held back or offline
         except Exception as e:
             print(f"machines: sweep failed ({type(e).__name__}: {e})", flush=True)
         for board in (MACHINES, VOLUNTEERS):    # who joined or left (presence.py), told on your phone
@@ -3381,7 +3418,7 @@ def came_went(kind: str):
 
 MACHINES = pullwork.Board(DATA / "compute" / "machines.sqlite", DATA / "compute" / "jobs", lambda: compute_settings()["compute.image"],
                           jobctl, machine_rules, lambda m: NOTIFIER.registered("machine", m, f" ({m['client'] or 'a worker script'})"),
-                          came_went=came_went("machine"))
+                          came_went=came_went("machine"), idle_why=lambda: machines_idle_why())
 
 
 def machine_command(m: dict, result: str) -> dict:

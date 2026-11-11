@@ -640,4 +640,42 @@ board.q("UPDATE machines SET active_at=?, told_at=told_at-3600 WHERE id=?", time
 board.presence()
 assert came[-1][1] == "gone" and came[-1][2].startswith("not heard from since"), came
 print("joining and leaving OK")
+
+# --- how each machine's time goes: every job kept with its outcome, why one waits, the hour's line, and the script's own --
+said = []
+board.log = said.append
+jobs = board.jobs_since(0)
+assert jobs and any(j["outcome"] == "done" and j["machine"] == "hal" and j["taken"] and j["ended"] >= j["taken"] for j in jobs), jobs
+assert all(j["task"] in ("reconstruct", "beta", "scale") for j in jobs) and any(j["outcome"] in ("gone", "released", "failed") for j in jobs)
+idle_box = board.add("idle-box")
+board.idle_why = lambda: "Fontainebleau is harvesting La Marie-Rose; 5 climb(s) harvested, waiting for the rest of their boulder's"
+r = board.work(board.machine(idle_box["token"]), "10.0.0.7", {"version": SCRIPT_VERSION})
+assert r["why"].startswith("nothing for it: Fontainebleau is harvesting") and board.current(idle_box["id"])["why"].startswith("Fontainebleau"), r
+board.idle_why = lambda: 1 / 0
+assert board.work(board.machine(idle_box["token"]), "10.0.0.7", {"version": SCRIPT_VERSION})["why"].startswith("nothing for it: (couldn't say why")
+board.idle_why = lambda: None
+board.hourly(force=True)
+assert "machines: idle-box in the last hour: idle <1 min; no jobs" in said, said
+said.clear()
+board.hourly()
+assert not said, "not again within the hour"
+# the script's record: its jobs and states, and once an hour a line of how it went
+lines = [json.loads(x) for x in (TMP / "home" / "usage.jsonl").read_text().splitlines()]
+assert any(x["event"] == "job" and x["outcome"] == "done" and x["task"] == "reconstruct" and x["seconds"] >= 0 for x in lines), lines[-5:]
+assert any(x["event"] == "state" and x["state"] in ("idle", "working") for x in lines)
+sys.path.insert(0, str(SCRIPT.parent))
+import bouldermesh_worker as bw  # noqa: E402
+u = bw.Usage(TMP / "usage-test")
+(TMP / "usage-test").mkdir()
+u.to("idle", "nothing for it")
+u.to("working")
+u.job("abc", "reconstruct", 120.0, "done")
+printed = io.StringIO()
+with contextlib.redirect_stdout(printed):
+    u.hour_start -= 3601
+    u.to("idle")
+assert "the last hour: waiting for climbs 0 min, working 0 min; jobs: 1 done" in printed.getvalue(), printed.getvalue()
+events = [json.loads(x)["event"] for x in (TMP / "usage-test" / "usage.jsonl").read_text().splitlines()]
+assert events == ["state", "state", "job", "state", "hour"], events
+print("usage records OK")
 print("ALL MACHINES TESTS PASSED")

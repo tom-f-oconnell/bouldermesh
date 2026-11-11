@@ -20,6 +20,9 @@ stops saying what's short rather than filling a disk partway through a job. Each
 an image it pulled once it pulls a newer one.
 Stop it with Ctrl-C: the climb it was on goes back to the server, for this or another machine.
 
+It keeps a record of its time in usage.jsonl in ~/.bouldermesh-worker (each job, and each change between working, waiting
+for climbs and held back), and says once an hour how the hour went.
+
 It takes no climbs while others keep the GPU busy (over 50% as a median over 3 minutes, until it's quiet again for 5;
 --busy-gpu-util), or while less than 24 GB of memory is free (--need-ram-gb), and only those whose GPU memory fits in
 what's free; it tells the server why, which keeps a record of how often each machine works, waits or is held back. A
@@ -51,10 +54,11 @@ import urllib.request
 from collections import deque
 from pathlib import Path
 
-VERSION = 6                 # 2: takes task.json for a reconstruction; 3: updates itself when the server says to;
+VERSION = 7                 # 2: takes task.json for a reconstruction; 3: updates itself when the server says to;
                             # 4: holds back while others keep its GPU busy or its memory is short, and says so;
                             # 5: says goodbye when it stops, so that the server knows at once it's gone;
-                            # 6: updates itself when downloaded into another git repository's folder, and says why if not
+                            # 6: updates itself when downloaded into another git repository's folder, and says why if not;
+                            # 7: keeps a record of its time (usage.jsonl), and says once an hour how the hour went
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale")     # remote_job.py's: meshing a climb, finding its beta, finding its size
@@ -134,6 +138,58 @@ def mem_available_gb() -> float | None:
     except (OSError, ValueError, IndexError):
         pass
     return None
+
+
+class Usage:
+    """This machine's time for the server, kept as it goes: each job (its task, how long, how it ended) and each change
+    between working, waiting for a climb and held back, as JSON lines in usage.jsonl in its folder; and once an hour, a
+    line of how the hour went, there and in its log."""
+
+    NAMES = {"working": "working", "idle": "waiting for climbs", "held": "held back"}
+
+    def __init__(self, folder: Path):
+        self.path = folder / "usage.jsonl"
+        self.state, self.since, self.hour_start = None, time.time(), time.time()
+        self.spent: dict[str, float] = {}
+        self.jobs: list[str] = []
+
+    def write(self, rec: dict) -> None:
+        try:
+            if self.path.exists() and self.path.stat().st_size > 5 * 2**20:     # the newest 5-10 MB kept
+                self.path.replace(self.path.with_name(self.path.name + ".1"))
+            with open(self.path, "a") as f:
+                f.write(json.dumps({"t": round(time.time(), 1), **rec}) + "\n")
+        except OSError:
+            pass
+
+    def to(self, state: str, why: str | None = None) -> None:
+        """Now in this state ("working", "idle" or "held")."""
+        now = time.time()
+        if self.state:
+            self.spent[self.state] = self.spent.get(self.state, 0.0) + now - self.since
+        if state != self.state:
+            self.write({"event": "state", "state": state, **({"why": why} if why else {})})
+        self.state, self.since = state, now
+        self.tick()
+
+    def job(self, jid: str, task: str, seconds: float, outcome: str) -> None:
+        self.write({"event": "job", "id": jid, "task": task, "seconds": round(seconds, 1), "outcome": outcome})
+        self.jobs.append(outcome)
+
+    def tick(self) -> None:
+        """Once an hour has passed since the last: say how it went, and start the next."""
+        now = time.time()
+        if now - self.hour_start < 3600:
+            return
+        if self.state:
+            self.spent[self.state] = self.spent.get(self.state, 0.0) + now - self.since
+            self.since = now
+        minutes = {k: round(v / 60) for k, v in self.spent.items()}
+        ended = {o: self.jobs.count(o) for o in dict.fromkeys(self.jobs)}
+        self.write({"event": "hour", "minutes": minutes, "jobs": ended})
+        log(f"the last hour: " + ", ".join(f"{self.NAMES.get(k, k)} {v} min" for k, v in minutes.items())
+            + (f"; jobs: {', '.join(f'{n} {o}' for o, n in ended.items())}" if ended else "; no jobs"))
+        self.spent, self.jobs, self.hour_start = {}, [], now
 
 
 class Gone(Exception):
@@ -447,6 +503,7 @@ class Worker:
             if code:
                 self.server.call(f"{api}/done", {"status": "failed", "error": last or f"the job exited with {code}"})
                 log(f"job {jid} failed: {last}")
+                self.outcome = "failed"
                 return
             with tarfile.open(work / "output.tar", "w") as tar:
                 for part in ("out", "masks") if task == "reconstruct" else ("out",):
@@ -455,9 +512,12 @@ class Worker:
             self.send(api, work / "output.tar")
             self.server.call(f"{api}/done", {"status": "ok"})
             log(f"job {jid} done")
+            self.outcome = "done"
         except Gone as e:
             log(f"job {jid} is no longer wanted ({e}): leaving it")
+            self.outcome = "gone"
         except (KeyboardInterrupt, NotHere, OSError):     # this machine's trouble, not the job's: someone else's to do
+            self.outcome = "given back"
             try:
                 self.server.call(f"{api}/done", {"status": "released"}, tries=1)
             except Exception:  # noqa: S110 - giving it up anyway
@@ -466,6 +526,7 @@ class Worker:
         except (RuntimeError, tarfile.TarError, ValueError) as e:
             self.server.call(f"{api}/done", {"status": "failed", "error": f"on {socket.gethostname()}: {e}"})
             log(f"job {jid} failed here: {e}")
+            self.outcome = "failed"
         finally:
             self.stop_container()
             shutil.rmtree(work, ignore_errors=True)
@@ -582,6 +643,7 @@ class Worker:
             + (f", at most {self.args.cpus} cores" if self.args.cpus else "")
             + (f"; it doesn't update itself ({blocked})" if blocked else "; it updates itself when the server says to"))
         updates = not blocked and not self.args.once
+        usage = Usage(Path(self.args.home).expanduser())
         while True:
             held = self.held_back()
             asking = {**client, "updates": updates, "held": held,
@@ -608,8 +670,10 @@ class Worker:
             if r.get("newer") and r["newer"] != getattr(self, "newer", None):
                 log(f"the server has a newer version of this script ({r['newer']}): curl -O {self.server.url}{SCRIPT_PATH}")
                 self.newer = r["newer"]
+            usage.to("working" if "job" in r else "held" if r.get("held") else "idle", r.get("why"))
             if "job" in r:
                 log(f"job {r['job'].get('id')}: {r['job'].get('size', 0) / 1e6:.0f} MB of photos, in {r['job'].get('image')}")
+                began, self.outcome = time.time(), "stopped"
                 try:
                     if self.watch:
                         self.watch.ours(True)
@@ -628,6 +692,7 @@ class Worker:
                 finally:
                     if self.watch:
                         self.watch.ours(False)
+                    usage.job(str(r["job"].get("id")), str(r["job"].get("task") or "reconstruct"), time.time() - began, self.outcome)
             elif self.args.once:
                 log(f"nothing to do{': ' + r['why'] if r.get('why') else ''}")
             else:

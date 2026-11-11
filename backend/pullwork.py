@@ -111,9 +111,12 @@ class Board:
 
     def __init__(self, db_path: Path, files: Path, image: Callable[[], str], jobctl, rules: Callable[[], dict] = lambda: RULES,
                  registered: Callable[[dict], None] = lambda m: None, log: Callable[[str], None] = print,
-                 came_went: Callable[[dict, str, str], None] = lambda m, state, why: None):
+                 came_went: Callable[[dict, str, str], None] = lambda m, state, why: None,
+                 idle_why: Callable[[], str | None] = lambda: None):
         self.db_path, self.files, self.image, self.jobctl = db_path, files, image, jobctl
-        self.rules, self.registered, self.came_went = rules, registered, came_went
+        self.rules, self.registered, self.came_went, self.idle_why = rules, registered, came_went, idle_why
+        self._said: dict[str, tuple[str, float]] = {}   # each machine's reason for its state last logged, and when
+        self._hour = int(time.time() // 3600)
         self.log = lambda line: log(line) if log is not print else print(line, flush=True)
         self.held = db_path.parent / "held"     # what provisional machines made, for climbs to take once they're approved
         self.jobs: dict[str, Job] = {}
@@ -128,6 +131,9 @@ class Board:
                   failed INTEGER DEFAULT 0, token TEXT);
                 CREATE TABLE IF NOT EXISTS machine_states(machine_id TEXT, state TEXT, why TEXT, start REAL, end REAL);
                 CREATE INDEX IF NOT EXISTS machine_states_by ON machine_states(machine_id, start);
+                CREATE TABLE IF NOT EXISTS machine_jobs(id TEXT PRIMARY KEY, task TEXT, label TEXT, machine_id TEXT, machine TEXT,
+                  created REAL, taken REAL, ended REAL, outcome TEXT, error TEXT);
+                CREATE INDEX IF NOT EXISTS machine_jobs_by ON machine_jobs(created);
             """)
             if "token" not in {r[1] for r in con.execute("PRAGMA table_info(machines)")}:   # kept since 2026-11-10
                 con.execute("ALTER TABLE machines ADD COLUMN token TEXT")
@@ -217,7 +223,12 @@ class Board:
             if cur and cur["state"] == state:
                 if cur["rowid"]:
                     self.q("UPDATE machine_states SET why=? WHERE rowid=?", why, cur["rowid"])
+                kind, (said, at) = re.sub(r"[\d.]+", "#", why or ""), self._said.get(m["id"], ("", 0.0))
+                if why and kind != said and now - at > 600:
+                    self._said[m["id"]] = (kind, now)
+                    self.log(f"machines: {m['name']} still {state}: {why}")
                 return
+            self._said[m["id"]] = (re.sub(r"[\d.]+", "#", why or ""), now)
             self.q("UPDATE machine_states SET end=? WHERE machine_id=? AND end IS NULL", now, m["id"])
             self.q("INSERT INTO machine_states VALUES(?,?,?,?,?)", m["id"], state, why, now, None)
         self.log(f"machines: {m['name']} {state}" + (f": {why}" if why else ""))
@@ -237,7 +248,14 @@ class Board:
 
     def shares(self, mid: str, since: float) -> dict:
         """The share of the time since `since` a machine spent in each state, {state: fraction}, with "hours", how much of
-        it was recorded (from its first record on); an open record of a machine since gone quiet counts as offline."""
+        it was recorded (from its first record on)."""
+        took = self.spent(mid, since)
+        total = sum(took.values())
+        return {"hours": round(total / 3600, 1), **{k: round(v / total, 3) for k, v in took.items()}} if total else {"hours": 0}
+
+    def spent(self, mid: str, since: float) -> dict[str, float]:
+        """The seconds since `since` a machine spent in each state, as recorded; an open record of a machine since gone
+        quiet counts as offline from CONNECTED after it was last heard from."""
         now = time.time()
         last = (self.q("SELECT last_seen FROM machines WHERE id=?", mid, one=True) or {}).get("last_seen") or 0
         took: dict[str, float] = {}
@@ -247,8 +265,7 @@ class Board:
                 took["offline"] = took.get("offline", 0) + max(0.0, end - max(start, last + CONNECTED))
                 end = max(start, last + CONNECTED)
             took[r["state"]] = took.get(r["state"], 0) + max(0.0, end - start)
-        total = sum(took.values())
-        return {"hours": round(total / 3600, 1), **{k: round(v / total, 3) for k, v in took.items()}} if total else {"hours": 0}
+        return took
 
     def changes(self, limit: int = 30) -> list[dict]:
         """The latest state changes, of all machines, newest first."""
@@ -332,13 +349,18 @@ class Board:
                     self._state(m, "held back", why)
                     return {"wait": POLL, "why": f"held back: {why}", "held": True}
                 if not mine:
-                    self._state(m, "idle")
-                    return {"wait": POLL}
+                    try:
+                        why = self.idle_why()
+                    except Exception as e:      # only the reason is lost
+                        why = f"(couldn't say why: {type(e).__name__})"
+                    self._state(m, "idle", why)
+                    return {"wait": POLL, **({"why": f"nothing for it: {why}"} if why else {})}
                 gpu = " (GPU)" if client.get("gpu") else ""
                 mine.state, mine.machine, mine.machine_name, mine.taken = "running", m["id"], m["name"], now
                 mine.lines.append(f"remote: {m['name']}{gpu} took it after {now - mine.created:.0f} s")
             mine.touched = now
             self.cond.notify_all()
+            self.q("UPDATE machine_jobs SET machine_id=?, machine=?, taken=?, outcome=NULL WHERE id=?", m["id"], m["name"], now, mine.id)
             self._state(m, "working", mine.label)
             return {"job": {"id": mine.id, "image": mine.image, "internet": mine.internet, "size": mine.size, "part": PART_MAX,
                             "task": mine.task}}
@@ -416,6 +438,7 @@ class Board:
         with self.cond:
             j = self._mine(m, job_id)
             if status == "released":
+                self._ended(j, "released")
                 self._requeue(j, f"remote: {j.machine_name} stopped before finishing: waiting for another machine")
                 return {"ok": True}
             if status == "ok":
@@ -425,9 +448,40 @@ class Board:
             else:
                 j.state, j.error = "failed", str(report.get("error") or "failed on the machine")[:500]
             self.cond.notify_all()
+            self._ended(j, j.state, j.error)
         col = "done" if status == "ok" else "failed"
         self.q(f"UPDATE machines SET {col}={col}+1 WHERE id=?", m["id"])
         return {"ok": True}
+
+    def _ended(self, j: Job, outcome: str, error: str | None = None) -> None:
+        """Keep how a job ended (done, failed, released by its machine, or gone: stopped here, or its machine lost),
+        and log it with how long it took on its machine and how long it waited for one."""
+        now = time.time()
+        self.q("UPDATE machine_jobs SET ended=?, outcome=?, error=? WHERE id=? AND outcome IS NULL", now, outcome, error, j.id)
+        if j.taken:
+            self.log(f"machines: {j.machine_name} {outcome} {j.task} {j.label} in {(now - j.taken) / 60:.1f} min, "
+                     f"after waiting {j.taken - j.created:.0f} s for a machine")
+
+    def jobs_since(self, since: float) -> list[dict]:
+        """The jobs made since `since`, oldest first: {id, task, label, machine, created, taken, ended, outcome, error}."""
+        return self.q("SELECT * FROM machine_jobs WHERE created>? ORDER BY created", since)
+
+    def hourly(self, force: bool = False) -> None:
+        """Once an hour (or now, with force): a line for each machine heard from in it, of its time in each state and
+        the jobs it ended."""
+        hour = int(time.time() // 3600)
+        if hour == self._hour and not force:
+            return
+        self._hour, now = hour, time.time()
+        for m in self.q("SELECT id, name FROM machines WHERE revoked IS NULL AND COALESCE(last_seen, 0) > ?", now - 3600):
+            mins = {k: v / 60 for k, v in self.spent(m["id"], now - 3600).items() if v > 0}
+            if not mins:
+                continue
+            ended = self.q("SELECT outcome, COUNT(*) n FROM machine_jobs WHERE machine_id=? AND ended>? GROUP BY outcome", m["id"], now - 3600)
+            jobs = ", ".join(f"{r['n']} {r['outcome']}" for r in ended)
+            self.log(f"machines: {m['name']} in the last hour: " + ", ".join(f"{k} {v:.0f} min" if v >= 1 else f"{k} <1 min"
+                                                                                   for k, v in mins.items() if v > 0)
+                     + (f"; jobs {jobs}" if ended else "; no jobs"))
 
     def _requeue(self, j: Job, note: str) -> None:
         j.state, j.machine, j.machine_name, j.taken, j.out_size = "queued", None, None, None, None
@@ -583,6 +637,8 @@ class Board:
         finally:
             with self.cond:     # a machine still on it hears it's gone the next time it reports
                 self.jobs.pop(job.id, None)
+                if job.state not in ("done", "failed"):
+                    self._ended(job, "gone")
             job.input.unlink(missing_ok=True)
 
     def _new_job(self, kind: str, files: dict[str, Path], args: dict, label: str, image: str) -> Job:
@@ -604,6 +660,7 @@ class Board:
                   task=kind, version=2 if told else 1, gpu_mb=gpu_need_mb(kind, photos))
         with self.cond:
             self.jobs[jid] = job
+        self.q("INSERT OR REPLACE INTO machine_jobs(id, task, label, created) VALUES(?,?,?,?)", jid, kind, label, job.created)
         return job
 
     # -- for the admin page ---------------------------------------------------------------------------------------

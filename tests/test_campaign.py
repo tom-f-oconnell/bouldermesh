@@ -1844,6 +1844,12 @@ assert panel["pooled"] and panel["own"] == 1 and (rows["Alpha"]["photos"], rows[
 assert (rows["Alpha2"]["photos"], rows["Alpha2"]["state"]) == (0, "out"), "kept none of its photos, or never harvested: none to give"
 v = next(v for v in server.campaigns_listed() if v["id"] == camp["id"])
 assert v["running"][0]["boulder_panel"]["name"] == "Alpha Boulder", "with the climb being worked on"
+w2.campaign, w2.doing = camp["id"], "Alpha2"     # why a machine asking for work gets none: what the areas are doing
+server._workers[:] = [server._first, w2]
+server._idle_why["at"] = 0
+why = server.machines_idle_why()
+assert "area 1 is harvesting Alpha2" in why and "still to harvest" in why, why
+server._workers[:] = [server._first]
 server.settings().update({"areas.meshes": "climbs"})
 print("areas running and queued, and the boulder panel OK")
 print("ALL CAMPAIGN TESTS PASSED")

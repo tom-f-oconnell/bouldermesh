@@ -692,7 +692,12 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   held back, which keeps each machine's state as it changes (working, idle, held back, awaiting approval, offline once
   it stops asking for 2 min) and logs each change: *Machines* on the admin page shows each one's now and for how long,
   its share of the last day and week in each, and the latest changes, and a climb waiting for held-back machines says
-  why in its log. Its other options: `--gpu auto|all|cdi|none` (`cdi` for
+  why in its log. An idle machine's state says what this server is doing instead (areas harvesting, climbs harvested
+  and waiting for the rest of their boulder's, beta waiting for videos). Every job is kept in `machine_jobs` (its
+  machine, task, when it was made, taken and ended, and how: done, failed, released, or gone), each ending is logged
+  with how long it took and waited, and once an hour the server logs each machine's minutes in each state. The script
+  keeps its own record in `usage.jsonl` in `~/.bouldermesh-worker` (each job, and each change between working, waiting
+  for climbs and held back), and logs once an hour how the hour went. Its other options: `--gpu auto|all|cdi|none` (`cdi` for
   a host whose GPU is a CDI device), `--docker-arg=--memory=64g` (repeatable), and `--image-prefix ghcr.io/<owner>/`
   to refuse any other image, should the server be taken over. The public setup's Caddy passes `/worker/` to a port that
   answers only that (`WORKER_PORT`, 47614); elsewhere, publish that port to where the machines are. With
