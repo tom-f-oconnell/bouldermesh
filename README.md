@@ -424,6 +424,9 @@ ordinary user, and makes the site view-only for everyone but you:
     echo EDIT_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(24))") >> .env
     docker compose -f docker-compose.yml -f docker-compose.public.yml up -d
 
+Visitors see meshes, climbs, beta and areas (how far each has got, and what's done and next, without the controls that
+start or change one); *Edit…*, with the token, brings the rest.
+
 The image isn't built there: compiling COLMAP wants cores and memory a small server hasn't got, so the public setup runs
 one built elsewhere. On a machine with the meshes to show:
 
