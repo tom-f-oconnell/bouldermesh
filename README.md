@@ -115,7 +115,14 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
    junk anyway. Rejected photos stay in `rejected/`, with a reason in `relevance.json`, and the
    project card lists them by reason, those that look like bouldering first, to put any back.
    Untick *filter off-topic photos* to skip it. `python3 cli.py offtopic-split` sorts harvests
-   filtered before the CLIP check the same way.
+   filtered before the CLIP check the same way. Matching search photos against known ones is most
+   of a harvest's time on a small server (about 150 ms a pair on one core, nearly all of them junk
+   tried against every known photo), so what's worked out is kept in `data/cache/relevance.sqlite`,
+   by the photos' contents: each pair's matches and CLIP's verdict. A climb harvested again, or a
+   boulder pooling its climbs' photos, only works out what's new. The admin page's *Areas* section
+   chooses how pairs are matched: brute force (the original, and the default) or FLANN's approximate
+   nearest neighbours, 1.6 times as fast but missing about a tenth of the matches (design.md); each
+   keeps its own record.
 4. Diversity check (`climbs/diversity.py`): with OpenCV, ORB matching + fundamental-matrix
    RANSAC between every pair to build a view graph. Pairs explained by a 2-D similarity
    (crops, re-encodes, pan/zoom) are discounted because they carry no parallax. The largest

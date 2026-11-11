@@ -11,6 +11,8 @@ from PIL import Image, ImageDraw
 from climbs import relevance
 from progress import Tracker
 
+relevance.CACHE_FILE = pathlib.Path(tempfile.mkdtemp(prefix="bouldermesh-relevance-")) / "relevance.sqlite"   # not the real one
+
 
 
 def make_rock(seed: int) -> np.ndarray:
@@ -112,6 +114,37 @@ with tempfile.TemporaryDirectory() as td:
         r = relevance.filter_photos(lone, None, logs.append, methods=["same-rock"])
         assert not r["rejected"], r["rejected"]
         print("same-rock OK")
+
+        # again, as a harvest again does: every pair known from before, by the photos' contents, and the same verdicts
+        logs.clear()
+        first = relevance.filter_photos(paths, None, logs.append, methods=["cards", "same-rock"])
+        logs.clear()
+        again = relevance.filter_photos(paths, None, logs.append, methods=["cards", "same-rock"])
+        assert again == first and any("matched 0 pair(s) of photos (brute), the rest known from before" in x for x in logs), logs
+        copied = tmp / "copied"
+        copied.mkdir()
+        for q in paths:
+            (copied / q.name).write_bytes(q.read_bytes())
+        logs.clear()
+        moved = relevance.filter_photos(sorted(copied.iterdir()), None, logs.append, methods=["cards", "same-rock"])
+        assert moved["rejected"] == first["rejected"] and any("matched 0 pair(s)" in x for x in logs), "the same photos elsewhere"
+        # FLANN's approximate matching: the same verdicts, its own record of pairs
+        relevance.MATCHER = "flann"
+        try:
+            k, cov = relevance.match(relevance._features(same), relevance._features(a2))
+            assert k >= relevance.MIN_INLIERS and cov > relevance.MIN_COVERAGE, (k, cov)
+            assert relevance.match(relevance._features(other), relevance._features(a2))[0] < relevance.MIN_INLIERS
+            logs.clear()
+            fl = relevance.filter_photos(paths, None, logs.append, methods=["cards", "same-rock"])
+            assert fl["rejected"] == first["rejected"] and fl["kept"] == first["kept"], fl
+            assert any("(flann)" in x and "matched 0" not in x for x in logs), "worked out afresh, not brute force's"
+        finally:
+            relevance.MATCHER = "brute"
+        # without a cache, as before
+        saved_cache, relevance.CACHE_FILE = relevance.CACHE_FILE, None
+        assert relevance.filter_photos(paths, None, logs.append, methods=["cards", "same-rock"]) == first
+        relevance.CACHE_FILE = saved_cache
+        print("matches kept, and FLANN OK")
     else:
         assert "same-rock" not in relevance.filter_photos(paths, None, logs.append)["methods"]
         print("same-rock skipped: no OpenCV")
@@ -125,6 +158,11 @@ with tempfile.TemporaryDirectory() as td:
         try:
             probs = relevance.boulder_probability([a1, card], logs.append)
             assert probs[card] < relevance.BOULDER_MIN_P, probs
+            loaded, relevance._load_clip = relevance._load_clip, None    # kept: the model isn't needed again
+            try:
+                assert relevance.boulder_probability([card, a1], logs.append) == {card: probs[card], a1: probs[a1]}
+            finally:
+                relevance._load_clip = loaded
             print("boulder OK")
         except OSError as e:   # the weights couldn't be downloaded
             print("boulder skipped:", e)

@@ -79,6 +79,12 @@
     <label>An area's climbs that share a boulder with others it lists</label>
     <select id="area-meshes"><option value="boulders">Harvested, then meshed together as their boulder, from all their photos</option>
       <option value="climbs">Each meshed on its own, from its own photos</option></select>
+    <label>How the off-topic photo filter matches search photos against a climb's own</label>
+    <select id="matcher"><option value="brute">Brute force (the original)</option>
+      <option value="flann">FLANN's approximate nearest neighbours: 1.6 times as fast, but misses about a tenth of the matches</option></select>
+    <div class="note">Most of a harvest's time on a small server. Pairs matched before are kept, for each way, so a climb
+      harvested again only matches what's new. On 12 of hal's harvests FLANN kept 92 of the 101 search photos brute force
+      matched (and one it didn't), and more checks didn't close the gap, so brute force stays the default.</div>
     <div class="note">A climb alone on its boulder, or on an area holding several (as "… Boulders"), is meshed on its own either way. A climb meshed with its boulder shows on its mesh from where its own photos were taken.</div>
   </section>
 
@@ -273,6 +279,7 @@ function render(s){
     ms.changes.map(c => `<tr><td>${new Date(c.start * 1000).toLocaleString()}</td><td>${esc(c.name || c.machine)}</td><td>${esc(c.state)}${c.why ? `: ${esc(c.why)}` : ''}</td></tr>`).join('')}</table></details>`;
   $('#mach-changes')?.addEventListener('toggle', ev => { machChangesOpen = ev.target.open; });
   $('#area-meshes').value = v['areas.meshes'];
+  $('#matcher').value = v['relevance.matcher'];
   if (document.activeElement !== $('#map-km')) $('#map-km').value = v['site.map_km'];
   const u = s.usage || {}, gb = b => (b / 2 ** 30).toFixed(1) + ' GB';
   $('#room').classList.toggle('alert', !!u.full);
@@ -448,6 +455,7 @@ $('#room-rejected').onclick = async () => { if (!confirm('Delete every photo the
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#via').onchange = () => save({ 'youtube.via': $('#via').value });
 $('#area-meshes').onchange = () => save({ 'areas.meshes': $('#area-meshes').value });
+$('#matcher').onchange = () => save({ 'relevance.matcher': $('#matcher').value });
 $('#map-km').onchange = () => save({ 'site.map_km': +$('#map-km').value });
 $('#vol-add').onclick = async () => {
   try {

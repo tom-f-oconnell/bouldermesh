@@ -53,6 +53,9 @@ DEFAULTS = {
     # an area's climbs that share a boulder with others it lists: harvested, and meshed together as their boulder
     # ("boulders"), or each meshed on its own ("climbs")
     "areas.meshes": "boulders",
+    # how the off-topic photo filter matches a search photo against the climb's own (relevance.py): brute force (the
+    # original) or FLANN's approximate nearest neighbours (faster)
+    "relevance.matcher": "brute",
     # clients that register themselves (registration.py): provisional until approved here or from a phone. Volunteers
     # fetching videos: their limits (the script's own are 15 an hour, 100 a day), and while provisional, whether they
     # get work and how much. Machines meshing: whether provisional ones get work (then what they make waits for approval).
@@ -72,7 +75,7 @@ DEFAULTS = {
 }
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
-           "areas.meshes": ("boulders", "climbs")}
+           "areas.meshes": ("boulders", "climbs"), "relevance.matcher": ("brute", "flann")}
 LIMITS = {"site.map_km": (0.05, 2000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 100),
           "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 100),

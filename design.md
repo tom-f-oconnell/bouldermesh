@@ -73,6 +73,17 @@ of the 8,115 photos behind them). Areas now harvest and mesh every climb from it
 other harvests only anchor the filter), and a boulder gets a mesh of its own from all of them, apart from
 its climbs' meshes, with each climb placed on it by its own page photos and video frames.
 
+**Brute force or FLANN (Nov 10).** Same-rock matching is most of a harvest's time on the 2-vCPU public server (Dripper:
+565 s of filtering against ~40 s for the rest), at ~150 ms a pair on one core, nearly all of them junk tried against
+every anchor. FLANN's approximate nearest neighbours (4 trees, 32 checks), in place of brute force for both directions
+of the mutual check, was 1.6 times as fast over 12 of hal's harvests with both matches and junk (421 s against 262 s, 12
+threads), and agreed on 1149 of 1160 search photos, but rejected 10 of the 101 brute force kept (and kept one it
+rejected): photos just over the 16 inliers, which an approximate neighbour leaves just under. More checks didn't close
+the gap (128: 7 lost, as slow as brute force; 8 trees and 256 checks: 6 lost, twice as slow). The matched search photos
+are the ones that add viewpoints, so brute force stays the default; the bigger saving is keeping what's matched
+(relevance.sqlite), so that a harvest again only matches what's new. A cheaper first pass on 500 features was 16 times
+as fast but missed 3 of 4 real matches among a climb's own photos.
+
 ## Does filtering help the mesh?
 
 Not much: web photos do, but filtering them mostly saves time. Times are rough, as these runs

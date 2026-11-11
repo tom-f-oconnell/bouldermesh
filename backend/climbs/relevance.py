@@ -15,11 +15,21 @@ frames include title cards. Three methods, each used when its dependency is avai
 
 Rejected photos move to rejected/ like de-duplication's, and can be restored from there.
 design.md has the measurements. This mostly saves time: COLMAP ignores most junk by itself.
+
+Same-rock is most of the time this takes: each search photo against each anchor, ~150 ms a pair on one core by brute
+force, and nearly all of them junk that's tried against every anchor. So what's been worked out is kept, by the photos'
+contents (Cache, in the data's cache folder): a pair's matches, by matcher, and CLIP's probabilities. A harvest again,
+or a boulder pooling its climbs' photos, works out only what's new. MATCHER chooses brute-force matching (the
+original, and the default) or FLANN's approximate nearest neighbours, 1.6 times as fast but missing about a tenth of
+the search photos brute force matches (design.md), from the admin page's setting.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
+import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
@@ -42,6 +52,10 @@ MAX_ANCHORS = 120
 CHAIN_ROUNDS = 3          # how far confirmed photos pass that on to the photos they match
 SIFT_FEATURES = 2500
 SIFT_SIDE = 1024
+MATCHERS = ("brute", "flann")
+MATCHER = "brute"         # the admin page's relevance.matcher, set by the server
+FLANN_TREES, FLANN_CHECKS = 4, 32
+CACHE_FILE: Path | None = CACHE_DIR.parent / "relevance.sqlite"    # None: nothing kept
 
 CLIP_MODEL, CLIP_WEIGHTS = "ViT-B-32", "laion2b_s34b_b79k"
 BOULDER_PROMPTS = ["a photo of a large boulder", "a rock climber on a large boulder",
@@ -53,6 +67,73 @@ OTHER_PROMPTS = ["a photo of a car or truck", "a photo of a bird or wild animal"
                  "a climber on a high multi-pitch big wall with a rope", "a pile of many small rocks",
                  "a black screen with white title text"]
 _clip = None
+
+
+class Cache:
+    """What's been worked out for photos, by their contents (SHA-1), so that it isn't again: CLIP's probability of each,
+    how many SIFT keypoints each has (to know one has too few without reading it), and each pair's matches, by
+    matcher and SIFT settings. Thread-safe; a broken or missing file only means working everything out."""
+
+    def __init__(self, path: Path):
+        self.path, self.lock = path, threading.Lock()
+        self._digests: dict[tuple, str] = {}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self._db() as con:
+            con.executescript("""
+                CREATE TABLE IF NOT EXISTS clip(digest TEXT, model TEXT, p REAL, PRIMARY KEY(digest, model));
+                CREATE TABLE IF NOT EXISTS keypoints(digest TEXT, sift TEXT, n INTEGER, PRIMARY KEY(digest, sift));
+                CREATE TABLE IF NOT EXISTS pairs(a TEXT, b TEXT, how TEXT, inliers INTEGER, coverage REAL, PRIMARY KEY(a, b, how));
+            """)
+
+    def _db(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.path, timeout=30)
+
+    def digest(self, p: Path) -> str:
+        st = p.stat()
+        key = (str(p), st.st_size, st.st_mtime_ns)
+        if key not in self._digests:
+            self._digests[key] = hashlib.sha1(p.read_bytes()).hexdigest()
+        return self._digests[key]
+
+    def get(self, table: str, column: str, key: str, value: str, digests: list[str]) -> dict:
+        out = {}
+        with self._db() as con:
+            for i in range(0, len(digests), 500):
+                part = digests[i:i + 500]
+                out.update(con.execute(f"SELECT digest, {column} FROM {table} WHERE {key}=? AND digest IN ({','.join('?' * len(part))})",
+                                       [value, *part]).fetchall())
+        return out
+
+    def put(self, table: str, rows: list[tuple]) -> None:
+        if rows:
+            with self.lock, self._db() as con:
+                con.executemany(f"INSERT OR REPLACE INTO {table} VALUES({','.join('?' * len(rows[0]))})", rows)
+
+    def pairs(self, how: str, digests: list[str]) -> dict[tuple[str, str], tuple[int, float]]:
+        out = {}
+        with self._db() as con:
+            for i in range(0, len(digests), 500):
+                part = digests[i:i + 500]
+                for a, b, k, cov in con.execute(f"SELECT a, b, inliers, coverage FROM pairs WHERE how=? AND a IN ({','.join('?' * len(part))})",
+                                                [how, *part]):
+                    out[(a, b)] = (k, cov)
+        return out
+
+
+def cache() -> Cache | None:
+    try:
+        return Cache(CACHE_FILE) if CACHE_FILE else None
+    except (OSError, sqlite3.Error):
+        return None
+
+
+def _sift_key() -> str:
+    return f"{SIFT_FEATURES}@{SIFT_SIDE}"
+
+
+def _how() -> str:
+    """What a pair's matches depend on: the matcher and the SIFT settings (and FLANN's)."""
+    return (f"flann-{FLANN_TREES}-{FLANN_CHECKS}" if MATCHER == "flann" else "brute") + f"/{_sift_key()}"
 
 
 def available() -> list[str]:
@@ -112,16 +193,25 @@ def boulder_probability(paths: list[Path], log: Log, progress: Progress | None =
     """CLIP's probability, for each photo, that one of the boulder prompts fits it best."""
     import torch
     from PIL import Image
-    model, prep, text, device = _load_clip(log)
-    out = {}
-    for i, p in enumerate(paths):
+    store = cache()
+    model_key = f"{CLIP_MODEL}/{CLIP_WEIGHTS}/" + hashlib.sha1("|".join(BOULDER_PROMPTS + OTHER_PROMPTS).encode()).hexdigest()[:12]
+    digests = {p: store.digest(p) for p in paths} if store else {}
+    known = store.get("clip", "p", "model", model_key, list(digests.values())) if store else {}
+    out = {p: known[digests[p]] for p in paths if digests.get(p) in known}
+    todo = [p for p in paths if p not in out]
+    if todo:
+        model, prep, text, device = _load_clip(log)
+    for i, p in enumerate(todo):
         if progress:
-            progress(i / max(1, len(paths)), f"{i} of {len(paths)} photos")
+            progress(i / max(1, len(todo)), f"{i} of {len(todo)} photos")
         with torch.no_grad(), Image.open(p) as im:
             v = model.encode_image(prep(im.convert("RGB")).unsqueeze(0).to(device))
             v /= v.norm(dim=-1, keepdim=True)
             probs = (100 * v @ text.T).softmax(dim=-1)[0]
         out[p] = float(probs[:len(BOULDER_PROMPTS)].sum())
+    if store:
+        store.put("clip", [(digests[p], model_key, out[p]) for p in todo])
+    out = {p: out[p] for p in paths}
     return out
 
 
@@ -152,7 +242,10 @@ def match(a, b) -> tuple[int, float]:
     """
     import cv2
     import numpy as np
-    bf = cv2.BFMatcher(cv2.NORM_L2)
+    if MATCHER == "flann":     # approximate nearest neighbours: ~1.7 times as fast on one core
+        bf = cv2.FlannBasedMatcher(dict(algorithm=1, trees=FLANN_TREES), dict(checks=FLANN_CHECKS))
+    else:
+        bf = cv2.BFMatcher(cv2.NORM_L2)
     good = [x for x, y in (t for t in bf.knnMatch(a[1], b[1], k=2) if len(t) == 2) if x.distance < 0.8 * y.distance]
     back = {m.queryIdx: m.trainIdx for m in bf.match(b[1], a[1])}
     good = [g for g in good if back.get(g.trainIdx) == g.queryIdx]
@@ -204,11 +297,63 @@ def _spaced(items: list[Path], n: int) -> list[Path]:
     return stills + [frames[int(i * len(frames) / room)] for i in range(room)]
 
 
-def _self_anchors(paths: list[Path], feats: dict, log: Log, progress: Progress | None) -> list[Path]:
+class _Photos:
+    """A set of photos' SIFT features, read when first needed (once, though threads may ask at once), whether each has
+    enough keypoints to match (from the cache, where it's known, without reading it), and pairs' matches, from the
+    cache or worked out and kept for it (save())."""
+
+    def __init__(self, paths: list[Path], store: Cache | None):
+        self.store, how = store, _how()
+        self.digest = {p: store.digest(p) for p in paths} if store else {}
+        self.feats: dict[Path, object] = {}
+        self.locks = {p: threading.Lock() for p in paths}
+        self.n = store.get("keypoints", "n", "sift", _sift_key(), list(self.digest.values())) if store else {}
+        self.known = store.pairs(how, list(self.digest.values())) if store else {}
+        self.new_pairs: list[tuple] = []
+        self.new_n: list[tuple] = []
+        self.worked = 0     # pairs matched here, not found in the cache
+
+    def feat(self, p: Path):
+        with self.locks[p]:
+            if p not in self.feats:
+                f = self.feats[p] = _features(p)
+                if self.store:
+                    self.new_n.append((self.digest[p], _sift_key(), 0 if f is None else len(f[0])))
+            return self.feats[p]
+
+    def usable(self, p: Path) -> bool:
+        d = self.digest.get(p)
+        return self.n[d] >= 8 if d in self.n else self.feat(p) is not None
+
+    def match(self, p: Path, a: Path) -> tuple[int, float]:
+        key = (self.digest.get(p), self.digest.get(a))
+        if self.store and key in self.known:
+            return self.known[key]
+        fp, fa = self.feat(p), self.feat(a)
+        r = match(fp, fa) if fp is not None and fa is not None else (0, 0.0)
+        self.worked += 1
+        if self.store:
+            self.known[key] = r
+            self.new_pairs.append((*key, _how(), r[0], r[1]))
+        return r
+
+    def save(self) -> None:
+        if self.store:
+            pairs, self.new_pairs = self.new_pairs, []
+            n, self.new_n = self.new_n, []
+            try:
+                self.store.put("pairs", pairs)
+                self.store.put("keypoints", n)
+            except sqlite3.Error:
+                pass
+
+
+def _self_anchors(paths: list[Path], photos: _Photos, ok: dict, log: Log, progress: Progress | None) -> list[Path]:
     """With no trusted photos: the largest group of photos that match each other."""
-    usable = [p for p in paths if feats[p] is not None]
+    usable = [p for p in paths if ok[p]]
     pairs = [(i, j) for i in range(len(usable)) for j in range(i + 1, len(usable))]
-    link = _map(lambda ij: match(feats[usable[ij[0]]], feats[usable[ij[1]]])[0] >= SELF_MIN_INLIERS, pairs, progress, "pairs")
+    link = _map(lambda ij: photos.match(usable[ij[0]], usable[ij[1]])[0] >= SELF_MIN_INLIERS, pairs, progress, "pairs")
+    photos.save()
     parent = list(range(len(usable)))
 
     def root(i: int) -> int:
@@ -230,52 +375,60 @@ def same_rock(candidates: list[Path], anchors: list[Path], log: Log, progress: P
     """For each candidate, its best match found: {"inliers":, "coverage":, "match":}.
 
     Without anchors the candidates' own largest matching group stands in for them. Returns {}
-    if there is nothing to anchor on, as then nothing can be said.
+    if there is nothing to anchor on, as then nothing can be said. Pairs matched before (by their photos' contents,
+    with this MATCHER) come from the cache.
     """
     anchors = _spaced(anchors, MAX_ANCHORS)
     everything = list(dict.fromkeys(anchors + candidates))
-    done = _map(_features, everything, (lambda f, d=None: progress(0.2 * f, d)) if progress else None, "reading photos")
-    feats = dict(zip(everything, done))
-    pair_progress = (lambda f, d=None: progress(0.2 + 0.8 * f, d)) if progress else None
-    self_anchored = not anchors
-    if self_anchored:
-        anchors = _self_anchors(candidates, feats, log, pair_progress)
-        if not anchors:
-            log("relevance: no anchors, and no group of photos matches each other: can't tell which rock is which")
-            return {}
-        log(f"relevance: no photos from the climb's page or videos: using the {len(anchors)} that match each other")
-    min_inliers = SELF_MIN_INLIERS if self_anchored else MIN_INLIERS
+    photos = _Photos(everything, cache())
+    try:
+        ok = dict(zip(everything, _map(photos.usable, everything, (lambda f, d=None: progress(0.2 * f, d)) if progress else None,
+                                       "reading photos")))
+        pair_progress = (lambda f, d=None: progress(0.2 + 0.8 * f, d)) if progress else None
+        self_anchored = not anchors
+        if self_anchored:
+            anchors = _self_anchors(candidates, photos, ok, log, pair_progress)
+            if not anchors:
+                log("relevance: no anchors, and no group of photos matches each other: can't tell which rock is which")
+                return {}
+            log(f"relevance: no photos from the climb's page or videos: using the {len(anchors)} that match each other")
+        min_inliers = SELF_MIN_INLIERS if self_anchored else MIN_INLIERS
 
-    def passes(result: dict) -> bool:
-        return result["inliers"] >= min_inliers and result["coverage"] >= MIN_COVERAGE
+        def passes(result: dict) -> bool:
+            return result["inliers"] >= min_inliers and result["coverage"] >= MIN_COVERAGE
 
-    results = {p: {"inliers": 0, "coverage": 0.0, "match": None} for p in candidates}
-    frontier = [(a, feats[a]) for a in anchors if feats[a] is not None]
-    todo = [p for p in candidates if feats[p] is not None]
-    for p in todo:
-        if p in anchors:
-            results[p] = {"inliers": 10 ** 6, "coverage": 1.0, "match": p.name}
-    todo = [p for p in todo if p not in anchors]
+        results = {p: {"inliers": 0, "coverage": 0.0, "match": None} for p in candidates}
+        frontier = [a for a in anchors if ok[a]]
+        todo = [p for p in candidates if ok[p]]
+        for p in todo:
+            if p in anchors:
+                results[p] = {"inliers": 10 ** 6, "coverage": 1.0, "match": p.name}
+        todo = [p for p in todo if p not in anchors]
 
-    def best_for(p: Path) -> dict:
-        best = results[p]
-        for a, fa in frontier:
-            k, cov = match(feats[p], fa)
-            if k > best["inliers"]:
-                best = {"inliers": k, "coverage": cov, "match": a.name}
-            if passes(best):   # enough: no need for the rest
+        def best_for(p: Path) -> dict:
+            best = results[p]
+            for a in frontier:
+                k, cov = photos.match(p, a)
+                if k > best["inliers"]:
+                    best = {"inliers": k, "coverage": cov, "match": a.name}
+                if passes(best):   # enough: no need for the rest
+                    break
+            return best
+
+        # a photo often overlaps another web photo better than any anchor, so those confirmed so far
+        # become anchors in turn. Safe because noise stays well below MIN_INLIERS (see design.md).
+        for _ in range(CHAIN_ROUNDS):
+            results.update(zip(todo, _map(best_for, todo, pair_progress, "matching")))
+            photos.save()
+            frontier = [p for p in todo if passes(results[p])]
+            todo = [p for p in todo if not passes(results[p])]
+            if not frontier or not todo:
                 break
-        return best
-
-    # a photo often overlaps another web photo better than any anchor, so those confirmed so far
-    # become anchors in turn. Safe because noise stays well below MIN_INLIERS (see design.md).
-    for _ in range(CHAIN_ROUNDS):
-        results.update(zip(todo, _map(best_for, todo, pair_progress, "matching")))
-        frontier = [(p, feats[p]) for p in todo if passes(results[p])]
-        todo = [p for p in todo if not passes(results[p])]
-        if not frontier or not todo:
-            break
-    return results
+        if photos.store:
+            log(f"relevance: matched {photos.worked} pair(s) of photos" + (f" ({MATCHER}), the rest known from before" if photos.known else f" ({MATCHER})"))
+        return results
+    finally:
+        photos.save()
 
 
 def split_rejected(project_dir: Path, log: Log, progress: Progress | None = None) -> dict | None:

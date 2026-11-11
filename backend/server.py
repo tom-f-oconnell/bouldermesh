@@ -4473,6 +4473,7 @@ def admin_volunteers_cancel(_: dict) -> dict:
 def apply_settings() -> None:
     """What changing the admin page's settings changes at once."""
     youtube_mod.via = settings().get("youtube.via")
+    relevance_mod.MATCHER = settings().get("relevance.matcher")
     configure_workers()
     NOTIFIER.reconfigured()
 
