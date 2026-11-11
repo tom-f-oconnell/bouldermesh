@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -30,6 +31,7 @@ from climbs import harvest, youtube  # noqa: E402
 from climbs.common import Climb, Media  # noqa: E402
 
 SCRIPT = ROOT / "volunteer" / "bouldermesh_volunteer.py"
+SCRIPT_VERSION = int(re.search(r"^VERSION = (\d+)", SCRIPT.read_text(), re.M)[1])
 FAKE_YTDLP = '''#!/usr/bin/env python3
 import json, os, shutil, sys
 args = sys.argv[1:]
@@ -620,8 +622,18 @@ def tools_python():
             v.tools()
             return v, [" ".join(Path(c).name if i == 0 else c for i, c in enumerate(cmd)) for cmd in ran]
 
-        _, cmds = tools("t1", (3, 12))
+        v, cmds = tools("t1", (3, 12))
         assert cmds[0].startswith("python-here -m venv") and len(cmds) == 3, cmds
+        ran.clear()
+        v.tools()
+        assert ran == [], "updated today, by this version: not again"
+        v.state["updated_by"] = bv.VERSION - 1    # as when this script has just replaced an older one
+        v.tools()
+        assert len(ran) == 2 and "yt-dlp[default]" in ran[1] and not any("venv" in c for c in ran), ran
+        assert v.state["updated_by"] == bv.VERSION
+        ran.clear()
+        v.tools()
+        assert ran == [], "then daily again"
         _, cmds = tools("t2", (3, 8), {"python3.13": "/opt/py/python3.13"})
         assert cmds[0].startswith("python3.13 -m venv"), cmds
         _, cmds = tools("t3", (3, 8))
@@ -692,7 +704,7 @@ def updating() -> None:
         # between fetches, it replaces itself with the newer one, checked, and runs it with the same arguments
         r = run("--name", "Sam")
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "updated itself from version 3 to 99" in r.stdout and here.read_text() == NEWER, r.stdout
+        assert f"updated itself from version {SCRIPT_VERSION} to 99" in r.stdout and here.read_text() == NEWER, r.stdout
         assert json.loads((here.parent / "ran.json").read_text()) == ["--server", base, "--token", token, "--agree", "--yt-dlp",
                                                                       str(fake), "--home", str(TMP / "hu"), "--name", "Sam"], \
             "the same arguments"
@@ -725,7 +737,7 @@ def updating() -> None:
         volunteers.CLIENT_VERSION, old_min = 50, volunteers.CLIENT_VERSION
         r = run()
         volunteers.CLIENT_VERSION = old_min
-        assert r.returncode == 0 and "updated itself from version 3 to 99" in r.stdout and here.read_text() == NEWER, r.stdout + r.stderr
+        assert r.returncode == 0 and f"updated itself from version {SCRIPT_VERSION} to 99" in r.stdout and here.read_text() == NEWER, r.stdout + r.stderr
     finally:
         volunteers.SCRIPT = served
         httpd.shutdown()

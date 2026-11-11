@@ -14,9 +14,9 @@ token with the server, where it waits for approval: until then it fetches only a
 whoever runs the server gave you works too (--token), at once.
 
 Python 3.8 or newer, nothing else: it installs yt-dlp, and Deno (the JavaScript runtime yt-dlp needs for YouTube), into
-a folder of its own (~/.bouldermesh-volunteer), and updates them daily. yt-dlp needs Python 3.11 or newer: with an older
-one (as Ubuntu 22.04's and before), it installs uv there too, which fetches a newer Python for them. Stop it with Ctrl-C
-at any time; delete that folder to remove everything.
+a folder of its own (~/.bouldermesh-volunteer), and updates them daily, and when it updates itself. yt-dlp needs Python
+3.11 or newer: with an older one (as Ubuntu 22.04's and before), it installs uv there too, which fetches a newer Python
+for them. Stop it with Ctrl-C at any time; delete that folder to remove everything.
 
 When the server has a newer version of this script, it says so, and the script replaces itself with that (checked
 against what the server said of it) and starts again, between one fetch and the next; --no-auto-update stops that.
@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 3                 # 3: updates itself when the server says to
+VERSION = 4                 # 3: updates itself when the server says to; 4: then updates yt-dlp and Deno at once
 SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
 AGENT = "bouldermesh-volunteer"
 TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
@@ -275,8 +275,8 @@ class Volunteer:
     # -- yt-dlp ---------------------------------------------------------------------------------------------------
     def tools(self) -> None:
         """yt-dlp and Deno in a venv here, made the first time (again, if its Python is too old for them) and updated
-        daily, unless --yt-dlp names one. Exits saying why if they can't be installed; a failed update carries on with
-        those there are."""
+        daily, and at once when this script has been replaced by a newer one (as it updates itself), unless --yt-dlp names
+        one. Exits saying why if they can't be installed; a failed update carries on with those there are."""
         if self.args.yt_dlp:
             return
         venv = self.home / "venv"
@@ -284,7 +284,8 @@ class Volunteer:
         python = bindir / ("python.exe" if os.name == "nt" else "python")
         self.ytdlp = str(bindir / ("yt-dlp.exe" if os.name == "nt" else "yt-dlp"))
         fresh = not Path(self.ytdlp).exists() or python_version(python) < TOOLS_PYTHON
-        if not fresh and time.time() - self.state.get("updated", 0) < 86400:
+        newer = self.state.get("updated_by") != VERSION     # updated before by another version of this script (or one before 4)
+        if not fresh and not newer and time.time() - self.state.get("updated", 0) < 86400:
             return
         try:
             if fresh:
@@ -294,7 +295,7 @@ class Volunteer:
                 log(f"installing yt-dlp and Deno in {venv} (a minute or two)")
                 self.make_venv(venv)
             else:
-                log("updating yt-dlp and Deno")
+                log("updating yt-dlp and Deno" + (f", as this script is now version {VERSION}" if newer else ""))
             pip = [str(python), "-m", "pip", "install", "-q", "--upgrade"]
             subprocess.run([*pip, "pip"], check=True)
             subprocess.run([*pip, "yt-dlp[default]", "deno"], check=True)
@@ -304,7 +305,7 @@ class Volunteer:
                 raise SystemExit(f"couldn't install yt-dlp and Deno ({why(e)}): what's printed above says why. Or give "
                                  "--yt-dlp with one you have, version 2025.11 or newer, with Deno on the PATH.") from None
             log(f"couldn't update yt-dlp and Deno ({why(e)}): carrying on with those there are, and trying again tomorrow")
-        self.state["updated"] = time.time()
+        self.state["updated"], self.state["updated_by"] = time.time(), VERSION
         self.save()
 
     def make_venv(self, venv: Path) -> None:
