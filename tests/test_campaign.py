@@ -2231,4 +2231,36 @@ finally:
     server.NOTIFIER.send = real_send
     server.settings().update({"notify.downloads": True})
 print("back up, and scripts downloaded OK")
+
+# --- the public leaderboard: volunteers by what they fetched; machines by the meshes their timings say they made, beta
+# and sizes found, and their processor and GPU time; names shown only as leaderboard.names allows
+fresh()
+vol = server.VOLUNTEERS.add("Jane")
+server.VOLUNTEERS.q("INSERT INTO tasks(id, kind, video_id, state, volunteer, size, finished) VALUES('lbtask000001','video','lbvideo0001','done',?,?,?)",
+                    vol["id"], 2**30, time.time())
+box = server.MACHINES.add("Jane's PC")
+server.MACHINES.q("INSERT INTO machine_jobs(id, task, machine_id, machine, created, taken, ended, outcome) VALUES('lbjob0000001','beta',?,?,1,2,3,'done')",
+                  box["id"], "Jane's PC")
+(server.MESHES / "lbmesh000001").mkdir(parents=True, exist_ok=True)
+(server.MESHES / "lbmesh000001" / "timings.json").write_text(json.dumps({
+    "where": "Jane's PC", "remote": True, "gpu": True, "started": 1794400000.0, "cpu_seconds": 7200,
+    "tools": [{"step": "COLMAP: matching", "seconds": 1800, "cpu": 100}, {"step": "OpenMVS: densify", "seconds": 1800, "cpu": 100},
+              {"step": "COLMAP: sparse reconstruction (mapper)", "seconds": 3600, "cpu": 7000}]}))
+try:
+    for mode, name in (("all", "Jane"), ("none", "anonymous volunteer 1")):
+        server.settings().update({"leaderboard.names": mode})
+        b = server.leaderboard()
+        v = next(x for x in b["volunteers"] if x["videos"] == 1)
+        assert v["name"] == name and v["gb"] == 1.0, b["volunteers"]
+    server.settings().update({"leaderboard.names": "new"})
+    b = server.leaderboard()
+    w = b["workers"][0]
+    assert w["name"] == ("Jane's PC" if box.get("created", time.time()) >= server.NAMES_SHOWN_SINCE else "anonymous computer 1"), w
+    assert (w["meshes"], w["beta"], w["sizes"], w["cpu_hours"], w["gpu_hours"]) == (1, 1, 0, 2.0, 1.0), w
+    assert b["since"] == 1794400000.0 and b["jobs_since"] == 1, b
+finally:
+    server.settings().update({"leaderboard.names": "new"})
+    server.VOLUNTEERS.q("DELETE FROM tasks WHERE id='lbtask000001'")
+    server.MACHINES.q("DELETE FROM machine_jobs WHERE id='lbjob0000001'")
+print("leaderboard OK")
 print("ALL CAMPAIGN TESTS PASSED")

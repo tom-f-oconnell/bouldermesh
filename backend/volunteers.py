@@ -147,10 +147,12 @@ class Broker:
                  troubled: Callable[[dict, str | None, str, str], None] = lambda v, was, now, why: None,
                  widespread: Callable[[int, int, str], None] = lambda n, of, example: None,
                  came_went: Callable[[dict, str, str], None] = lambda v, state, why: None,
-                 downloaded: Callable[[dict], None] = lambda info: None):
+                 downloaded: Callable[[dict], None] = lambda info: None,
+                 leaderboard: Callable[[], dict] | None = None):
         self.db_path, self.files, self.delivered, self.ready, self.probe = db_path, files, delivered, ready, probe
         self.paused, self.rules, self.registered, self.troubled, self.widespread = paused, rules, registered, troubled, widespread
         self.came_went, self.downloaded = came_went, downloaded
+        self.leaderboard = leaderboard or (lambda: {"volunteers": self.contributions(), "workers": []})
         self.widespread_said = 0.0      # when widespread() was last called
         self.lock = threading.RLock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -567,6 +569,26 @@ class Broker:
         return self._ready(purpose, ref)
 
     # -- for the admin page ---------------------------------------------------------------------------------------
+    def contributions(self) -> list[dict]:
+        """What each volunteer has fetched, for the leaderboard: {id, name, created, revoked, registered (by its own
+        script), videos, gb (of video), searches, details (videos' details and channels' descriptions), last}, those that
+        fetched anything, most videos first."""
+        out: dict[str, dict] = {}
+        for r in self.q("SELECT t.volunteer, t.kind, COUNT(*) AS n, COALESCE(SUM(t.size), 0) AS bytes, MAX(t.finished) AS last "
+                        "FROM tasks t WHERE t.state='done' AND t.volunteer IS NOT NULL GROUP BY t.volunteer, t.kind"):
+            c = out.setdefault(r["volunteer"], {"videos": 0, "gb": 0.0, "searches": 0, "details": 0, "last": 0})
+            if r["kind"] == "video":
+                c["videos"], c["gb"] = r["n"], round(r["bytes"] / 2**30, 2)
+            elif r["kind"] == "search":
+                c["searches"] = r["n"]
+            else:
+                c["details"] += r["n"]
+            c["last"] = max(c["last"], r["last"] or 0)
+        rows = {v["id"]: v for v in self.q("SELECT id, name, created, revoked, registered_ip FROM volunteers")}
+        board = [{"id": vid, "name": rows[vid]["name"], "created": rows[vid]["created"], "revoked": rows[vid]["revoked"],
+                  "registered": rows[vid]["registered_ip"] is not None, **c} for vid, c in out.items() if vid in rows]
+        return sorted(board, key=lambda b: (-b["videos"], -b["searches"], -b["details"], b["created"] or 0))
+
     def state(self) -> dict:
         now = time.time()
         vols = []
@@ -666,10 +688,13 @@ section{display:none} section.on{display:block}
   line-height:0;cursor:pointer}
 .copy.done{border-color:var(--ok);color:var(--ok)}
 ul{padding-left:1.2em} li{margin:.2em 0}
+.lead{float:right;margin-top:.35em;font-size:.85em;padding:4px 10px;border:1px solid var(--acc);border-radius:6px;color:var(--acc);
+  text-decoration:none}
 </style>
+<a class="lead" href="/volunteer/leaderboard" title="Who has fetched the most videos, and whose computers have made the most meshes">Leaderboard</a>
 <h1>Volunteer for BoulderMesh</h1>
 <p>BoulderMesh makes 3D models of boulders from photos and climbing videos. You can help from your own computer in two
-ways now: either script makes a token for you, asks your name (you can leave it out), and registers itself with this
+ways now: either script makes a token for you, asks your name (shown on the leaderboard; you can leave it out), and registers itself with this
 site, and whoever runs it then approves it. A third way, collecting data yourself, is coming soon.</p>
 <div class="choose">
   <a href="#videos" data-show="videos">Collect videos<small>Fetch YouTube videos of climbs from your address, slowly. Python is all it needs.</small></a>
@@ -785,7 +810,40 @@ show(location.hash.slice(1));
 """
 
 
+LEADERBOARD_PAGE = PAGE.split("<h1>")[0].replace("<title>Volunteer for BoulderMesh</title>", "<title>BoulderMesh leaderboard</title>").replace(
+    '<a class="lead" href="/volunteer/leaderboard" title="Who has fetched the most videos, and whose computers have made the most meshes">Leaderboard</a>',
+    '<a class="lead" href="/volunteer/">Volunteer</a>') + """<style>
+table{border-collapse:collapse;width:100%;font-size:.92em;margin:.4em 0 1.4em} th,td{text-align:right;padding:4px 6px;border-bottom:1px solid var(--line)}
+th:nth-child(2),td:nth-child(2){text-align:left} th{font-weight:600;color:var(--mute);font-size:.85em} .note{color:var(--mute);font-size:.85em}
+td.gone{color:var(--mute)} .wrap{overflow-x:auto}
+</style>
+<h1>Leaderboard</h1>
+<p class="note">Thank you, all. Names are as each chose them when their script registered (or anonymous); see <a href="/volunteer/">Volunteer</a> to join.</p>
+<h2>Fetching videos</h2>
+<div class="wrap"><table id="vols"><thead><tr><th>#</th><th>Volunteer</th><th>Videos</th><th>GB</th><th>Searches</th><th title="Videos' details and channels' descriptions">Details</th></tr></thead><tbody></tbody></table></div>
+<h2>Making meshes</h2>
+<div class="wrap"><table id="workers"><thead><tr><th>#</th><th>Computer</th><th>Meshes</th><th title="Where climbers' hands and feet go, found in videos">Beta</th>
+<th title="How big a boulder is">Sizes</th><th title="Processor time, summed over its cores, in meshing">CPU core-hours</th><th title="Time the GPU was in use in meshing (matching photos, densifying, placing them with VGGT), roughly">GPU hours</th></tr></thead><tbody></tbody></table></div>
+<p class="note" id="updated"></p>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const num = (n, d = 0) => n ? Number(n).toFixed(d) : '–';
+fetch('/volunteer/api/leaderboard').then(r => r.json()).then(b => {
+  const row = (cells, gone) => `<tr>${cells.map((c, i) => `<td${i === 1 && gone ? ' class="gone" title="No longer helping"' : ''}>${c}</td>`).join('')}</tr>`;
+  document.querySelector('#vols tbody').innerHTML = b.volunteers.map((v, i) => row([i + 1, esc(v.name), v.videos, num(v.gb, 1), v.searches, v.details], v.revoked)).join('')
+    || '<tr><td colspan="6" class="note">No one yet.</td></tr>';
+  document.querySelector('#workers tbody').innerHTML = b.workers.map((w, i) => row([i + 1, esc(w.name), w.meshes, w.beta, w.sizes, num(w.cpu_hours, 1), num(w.gpu_hours, 1)], w.revoked)).join('')
+    || '<tr><td colspan="7" class="note">No one yet.</td></tr>';
+  document.querySelector('#updated').textContent = b.since ? `Meshes counted since ${new Date(b.since * 1000).toLocaleDateString()}; beta and sizes since ${new Date(b.jobs_since * 1000).toLocaleDateString()}.` : '';
+}).catch(e => { document.querySelector('#updated').textContent = "Couldn't load it: " + e.message; });
+</script>
+"""
+LEADERBOARD_CACHE = 60      # seconds the leaderboard is kept before it's worked out again
+
+
 def handler_for(broker: Broker, log: Callable[[str], None]):
+    cached: dict = {"at": 0.0, "board": None}
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "BoulderMeshVolunteers"
         sys_version = ""
@@ -831,6 +889,13 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
             base = f"https://{self.headers.get('X-Forwarded-Host') or self.headers.get('Host') or 'this-site'}"
             if u.path in ("/volunteer", "/volunteer/"):
                 return self.send(200, PAGE.replace("{base}", base).replace("{icon}", COPY_ICON).encode(), "text/html; charset=utf-8")
+            if u.path in ("/volunteer/leaderboard", "/volunteer/leaderboard/"):
+                return self.send(200, LEADERBOARD_PAGE.encode(), "text/html; charset=utf-8")
+            if u.path == "/volunteer/api/leaderboard":     # anyone's to see, worked out at most once a LEADERBOARD_CACHE
+                now = time.time()
+                if now - cached["at"] > LEADERBOARD_CACHE:
+                    cached.update(at=now, board=broker.leaderboard())
+                return self.json(cached["board"])
             if u.path == "/volunteer/bouldermesh_volunteer.py":
                 try:    # someone fetching the script (or a copy updating itself, which the server tells apart)
                     broker.downloaded(script_fetch(self))

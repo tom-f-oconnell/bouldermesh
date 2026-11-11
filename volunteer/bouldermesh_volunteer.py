@@ -46,7 +46,8 @@ from pathlib import Path
 # 7: updates itself when downloaded into another git repository's folder, says why if it doesn't, and takes "This video
 #    is unavailable" as for good;
 # 8: its version alone on its line, as updating needs (with a comment after it, the server never offered an update)
-VERSION = 8
+# 9: says the name it asks for is shown on the site's public leaderboard
+VERSION = 9
 SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
 AGENT = "bouldermesh-volunteer"
 TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
@@ -138,7 +139,8 @@ def register(server: str, name: str | None, patient: bool = False) -> tuple[str,
     return it and the name given. Exits saying why if the server won't have it; or, if patient, waits half an hour and
     tries again while the server is out of reach or has too many registrations (429, 503)."""
     if name is None and sys.stdin.isatty():
-        name = input("Your name or a nickname, shown to whoever runs the server (optional; Enter to leave it out): ")
+        name = input("Your name or a nickname, shown to whoever runs the server and on its public leaderboard "
+                     "(optional; Enter to leave it out): ")
     name = (name or "").strip()
     token = "bmv_" + secrets.token_urlsafe(32)
     while True:

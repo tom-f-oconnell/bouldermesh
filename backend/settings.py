@@ -78,10 +78,13 @@ DEFAULTS = {
     "notify.reply_topic": "",
     "notify.restarts": True,        # when the server is back up after a restart
     "notify.downloads": True,       # when someone downloads the worker or volunteer script, roughly from where
+    # whose names the public leaderboard shows (leaderboard()): those who registered since the scripts said it would
+    # ("new"), everyone's ("all"), or no one's ("none"); the rest as anonymous
+    "leaderboard.names": "new",
 }
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
-           "areas.meshes": ("boulders", "climbs"), "relevance.matcher": ("brute", "flann")}
+           "areas.meshes": ("boulders", "climbs"), "relevance.matcher": ("brute", "flann"), "leaderboard.names": ("new", "all", "none")}
 LIMITS = {"site.map_km": (0.05, 2000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 100),
           "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 100),

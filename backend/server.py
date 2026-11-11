@@ -4219,6 +4219,67 @@ def script_downloaded(kind: str):
     return downloaded
 
 
+# ------------------------------------------------------------------ the leaderboard: who fetched videos, whose computers meshed
+NAMES_SHOWN_SINCE = 1794441600.0    # 2026-11-12T00:00Z: from scripts version 9, registering says the name is shown on it
+GPU_STEPS = re.compile(r"matching|densify|VGGT|points from those placements|people", re.I)   # tools that use a GPU, where there is one
+
+
+def shown_name(row: dict, kind: str, n: int, mode: str) -> str:
+    """A contributor's name on the public leaderboard (leaderboard.names): theirs where it may be shown, else anonymous."""
+    if row.get("name") and (mode == "all" or (mode == "new" and (row.get("created") or 0) >= NAMES_SHOWN_SINCE)):
+        return row["name"]
+    return f"anonymous {kind} {n}"
+
+
+def machine_compute() -> tuple[dict[str, dict], float | None]:
+    """What each machine has made, by the meshes' timings (timings.json, which say where each was made): {its name: {meshes,
+    cpu_hours (its tools' processor time, over all cores), gpu_hours (its GPU steps' time, where it had one)}}, and when
+    the first of them was made."""
+    out: dict[str, dict] = {}
+    first = None
+    for d in MESHES.iterdir() if MESHES.exists() else []:
+        try:
+            t = json.loads((d / timings_mod.FILE).read_text())
+        except (OSError, ValueError):
+            continue
+        if not t.get("remote") or not t.get("where"):
+            continue
+        c = out.setdefault(t["where"], {"meshes": 0, "cpu_hours": 0.0, "gpu_hours": 0.0})
+        c["meshes"] += 1
+        c["cpu_hours"] += (t.get("cpu_seconds") or 0) / 3600
+        if t.get("gpu"):
+            c["gpu_hours"] += sum(x.get("seconds") or 0 for x in t.get("tools") or [] if GPU_STEPS.search(x.get("step") or "")) / 3600
+        if t.get("started"):
+            first = t["started"] if first is None else min(first, t["started"])
+    return out, first
+
+
+def leaderboard() -> dict:
+    """The public leaderboard (/volunteer/leaderboard): volunteers by what they fetched (Broker.contributions()), and
+    machines by meshes made (from the meshes' timings), beta and sizes found (machine_jobs), with their processor and GPU
+    time in meshing. Names as leaderboard.names says."""
+    mode = settings().get("leaderboard.names")
+    vols = [{**{k: v[k] for k in ("videos", "gb", "searches", "details")}, "revoked": bool(v["revoked"]),
+             "name": shown_name(v, "volunteer", i + 1, mode)} for i, v in enumerate(VOLUNTEERS.contributions())]
+    made, since = machine_compute()
+    jobs: dict[str, dict] = {}
+    for r in MACHINES.q("SELECT machine_id, task, COUNT(*) AS n FROM machine_jobs WHERE outcome='done' GROUP BY machine_id, task"):
+        jobs.setdefault(r["machine_id"], {})[r["task"]] = r["n"]
+    jobs_since = (MACHINES.q("SELECT MIN(created) AS t FROM machine_jobs", one=True) or {}).get("t")
+    workers = []
+    for m in MACHINES.q("SELECT id, name, created, revoked FROM machines ORDER BY created"):
+        c, j = made.get(m["name"], {}), jobs.get(m["id"], {})
+        meshes = max(c.get("meshes", 0), j.get("reconstruct", 0))
+        if not (meshes or j.get("beta") or j.get("scale")):
+            continue
+        workers.append({"m": m, "meshes": meshes, "beta": j.get("beta", 0), "sizes": j.get("scale", 0), "revoked": bool(m["revoked"]),
+                        "cpu_hours": round(c.get("cpu_hours", 0.0), 2), "gpu_hours": round(c.get("gpu_hours", 0.0), 2)})
+    workers.sort(key=lambda w: (-w["meshes"], -w["gpu_hours"] - w["cpu_hours"], -w["beta"]))
+    for i, w in enumerate(workers):
+        w["name"] = shown_name(w.pop("m"), "computer", i + 1, mode)
+    return {"volunteers": vols, "workers": workers, "since": since, "jobs_since": jobs_since, "names": mode}
+
+
 DOWNLOADS = notify_mod.Paced(lambda title, text, actions: threading.Thread(
     target=NOTIFIER.send, args=(title, text, actions, 2, ["inbox_tray"]), daemon=True).start(), DOWNLOAD_GAP)
 
@@ -5473,7 +5534,7 @@ VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteer
                                    paused=lambda: full(), rules=volunteer_rules,
                                    registered=lambda v: NOTIFIER.registered("volunteer", v, f" ({v['client'] or 'a volunteer script'})"),
                                    troubled=volunteer_troubled, widespread=volunteers_widespread, came_went=came_went("volunteer"),
-                                   downloaded=script_downloaded("volunteer"))
+                                   downloaded=script_downloaded("volunteer"), leaderboard=lambda: leaderboard())
 
 
 def notify_act(verb: str, kind: str, rid: str) -> str:

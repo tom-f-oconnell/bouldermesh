@@ -159,6 +159,9 @@
       <input type="number" id="vol-per-day" min="1" max="100"> a day <small class="note">(the script's own limits are 15 and 100)</small></div>
     <div class="inline" style="margin-top:8px">From one address, at most <input type="number" id="reg-addr" min="1" max="100"> registrations a day,
       and <input type="number" id="reg-wait" min="1" max="1000"> waiting at once, of each kind</div>
+    <div class="inline" style="margin-top:8px">Names on the public leaderboard (<a href="/volunteer/leaderboard" id="lb-link" target="_blank" rel="noopener">its page</a>):
+      <select id="lb-names" style="width:auto"><option value="new">of those who registered since the scripts say it shows them</option>
+      <option value="all">everyone's</option><option value="none">no one's</option></select> <small class="note">(the rest as anonymous)</small></div>
     <div style="margin-top:14px"><b>Notifications on your phone</b> <span class="note" id="ntfy-note"></span></div>
     <label class="choice"><input type="checkbox" id="ntfy-on"> Notify me of registrations through ntfy, with Approve and Deny buttons</label>
     <label class="choice"><input type="checkbox" id="ntfy-restarts"> and when the server is back up after a restart</label>
@@ -390,6 +393,7 @@ function render(s){
   keep('#reg-vol-hour', v['volunteers.provisional_per_hour']); keep('#reg-vol-day', v['volunteers.provisional_per_day']);
   keep('#vol-per-hour', v['volunteers.per_hour']); keep('#vol-per-day', v['volunteers.per_day']);
   keep('#reg-addr', v['registration.per_address_day']); keep('#reg-wait', v['registration.max_waiting']);
+  $('#lb-names').value = v['leaderboard.names'];
   const nt = s.notify;
   $('#ntfy-on').checked = v['notify.enabled']; keep('#ntfy-server', v['notify.server']);
   $('#ntfy-restarts').checked = v['notify.restarts']; $('#ntfy-downloads').checked = v['notify.downloads'];
@@ -489,6 +493,7 @@ const regSave = () => save({ 'volunteers.provisional_work': $('#reg-vol').checke
   'volunteers.per_hour': +$('#vol-per-hour').value, 'volunteers.per_day': +$('#vol-per-day').value,
   'registration.per_address_day': +$('#reg-addr').value, 'registration.max_waiting': +$('#reg-wait').value });
 for (const id of ['#reg-vol', '#reg-mach', '#reg-vol-hour', '#reg-vol-day', '#vol-per-hour', '#vol-per-day', '#reg-addr', '#reg-wait']) $(id).onchange = regSave;
+$('#lb-names').onchange = () => save({ 'leaderboard.names': $('#lb-names').value });
 $('#ntfy-on').onchange = () => save({ 'notify.enabled': $('#ntfy-on').checked });
 $('#ntfy-restarts').onchange = () => save({ 'notify.restarts': $('#ntfy-restarts').checked });
 $('#ntfy-downloads').onchange = () => save({ 'notify.downloads': $('#ntfy-downloads').checked });

@@ -275,6 +275,9 @@ def script_and_broker() -> None:
         assert fetched_by == [{"ip": "203.0.113.50", "ua": "curl/8.5.0", "headers": {"cf-ipcity": "Pasadena", "cf-ipcountry": "US"}}], fetched_by
         st, script = call(base + "/volunteer/bouldermesh_volunteer.py")
         assert st == 200 and script == SCRIPT.read_bytes()
+        st, page = call(base + "/volunteer/leaderboard")
+        assert st == 200 and b"<h1>Leaderboard</h1>" in page and b'href="/volunteer/">Volunteer</a>' in page
+        assert b'href="/volunteer/leaderboard"' in call(base + "/volunteer/")[1]
         assert call(base + "/volunteer/api/work", {"version": 1})[0] == 401
         assert call(base + "/volunteer/api/work", {"version": 0}, token)[0] == 426, "too old a script"
         assert call(base + "/api/status")[0] == 404, "only /volunteer/"
@@ -384,6 +387,16 @@ def script_and_broker() -> None:
         assert call(base + "/volunteer/api/bye", {}, token)[0] == 200
         assert b.q("SELECT state FROM tasks WHERE video_id='byebyebyeaa'", one=True)["state"] == "queued", "what it had goes back"
         b.q("DELETE FROM tasks WHERE state='queued'")
+        # what each has fetched, for the leaderboard: counted from the tasks it finished
+        other = b.add("other")
+        b.q("INSERT INTO tasks(id, kind, video_id, state, volunteer, size, finished) VALUES('aaaaaaaaaaa1','video','zzzzzzzzzzz','done',?,?,?)",
+            other["id"], 3 * 2**30, time.time())
+        board = b.contributions()
+        mine = next(x for x in board if x["name"] == "tester")
+        assert mine["videos"] >= 2 and mine["searches"] == 1 and mine["details"] >= 2 and mine["registered"] is False, mine
+        assert next(x for x in board if x["name"] == "other")["gb"] == 3.0
+        assert call(base + "/volunteer/api/leaderboard")[1]["volunteers"][0]["name"] in ("tester", "other")
+        b.q("DELETE FROM tasks WHERE id='aaaaaaaaaaa1'")
         print("script OK")
     finally:
         httpd.shutdown()
