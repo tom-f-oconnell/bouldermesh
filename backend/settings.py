@@ -56,6 +56,10 @@ DEFAULTS = {
     # how the off-topic photo filter matches a search photo against the climb's own (relevance.py): brute force (the
     # original) or FLANN's approximate nearest neighbours (faster)
     "relevance.matcher": "brute",
+    # find beta in each new mesh with video frames placed in it, while its videos are still in the cache; and delete
+    # cached videos none of whose frames is placed in any mesh, once the climbs that used them are settled
+    "beta.auto": True,
+    "videos.prune_unplaced": True,
     # clients that register themselves (registration.py): provisional until approved here or from a phone. Volunteers
     # fetching videos: their limits (the script's own are 15 an hour, 100 a day), and while provisional, whether they
     # get work and how much. Machines meshing: whether provisional ones get work (then what they make waits for approval).

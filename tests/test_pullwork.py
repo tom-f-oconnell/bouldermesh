@@ -678,4 +678,17 @@ assert "the last hour: waiting for climbs 0 min, working 0 min; jobs: 1 done" in
 events = [json.loads(x)["event"] for x in (TMP / "usage-test" / "usage.jsonl").read_text().splitlines()]
 assert events == ["state", "state", "job", "state", "hour"], events
 print("usage records OK")
+
+# --- meshing first: a reconstruction is handed out before a beta or size job queued earlier ----------------------------
+order_box = board.add("order-box")
+older = board._new_job("beta", {"photos": job / "photos"}, {"videos": []}, "beta first", image[0])
+newer = board._new_job("reconstruct", {"photos": job / "photos"}, {"internet": True}, "mesh second", image[0])
+r = board.work(board.machine(order_box["token"]), "10.0.0.8", {"version": SCRIPT_VERSION})
+assert r["job"]["id"] == newer.id and r["job"]["task"] == "reconstruct", r
+r = board.work(board.machine(board.add("order-box-2")["token"]), "10.0.0.8", {"version": SCRIPT_VERSION})
+assert r["job"]["id"] == older.id, "then the beta job"
+for j in (older, newer):
+    board.jobs.pop(j.id, None)
+    j.input.unlink(missing_ok=True)
+print("meshing first OK")
 print("ALL MACHINES TESTS PASSED")

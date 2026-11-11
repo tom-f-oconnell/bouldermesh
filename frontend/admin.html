@@ -86,6 +86,10 @@
       harvested again only matches what's new. On 12 of hal's harvests FLANN kept 92 of the 101 search photos brute force
       matched (and one it didn't), and more checks didn't close the gap, so brute force stays the default.</div>
     <div class="note">A climb alone on its boulder, or on an area holding several (as "… Boulders"), is meshed on its own either way. A climb meshed with its boulder shows on its mesh from where its own photos were taken.</div>
+    <label class="choice"><input type="checkbox" id="beta-auto"> Find beta in each new mesh with video frames placed in it
+      <small>(while its videos are still here; on a machine, after meshing)</small></label>
+    <label class="choice"><input type="checkbox" id="prune-videos"> Delete kept videos none of whose frames is placed in any mesh, once their climbs are done
+      <small>(beta can't use them; only harvesting again would, which fetches them again. Checked hourly; their details stay)</small></label>
   </section>
 
   <section id="compute">
@@ -280,6 +284,7 @@ function render(s){
   $('#mach-changes')?.addEventListener('toggle', ev => { machChangesOpen = ev.target.open; });
   $('#area-meshes').value = v['areas.meshes'];
   $('#matcher').value = v['relevance.matcher'];
+  $('#beta-auto').checked = v['beta.auto']; $('#prune-videos').checked = v['videos.prune_unplaced'];
   if (document.activeElement !== $('#map-km')) $('#map-km').value = v['site.map_km'];
   const u = s.usage || {}, gb = b => (b / 2 ** 30).toFixed(1) + ' GB';
   $('#room').classList.toggle('alert', !!u.full);
@@ -456,6 +461,8 @@ $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/re
 $('#via').onchange = () => save({ 'youtube.via': $('#via').value });
 $('#area-meshes').onchange = () => save({ 'areas.meshes': $('#area-meshes').value });
 $('#matcher').onchange = () => save({ 'relevance.matcher': $('#matcher').value });
+$('#beta-auto').onchange = () => save({ 'beta.auto': $('#beta-auto').checked });
+$('#prune-videos').onchange = () => save({ 'videos.prune_unplaced': $('#prune-videos').checked });
 $('#map-km').onchange = () => save({ 'site.map_km': +$('#map-km').value });
 $('#vol-add').onclick = async () => {
   try {

@@ -899,6 +899,8 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         if not demo and not worse:
             queue_scale(mid)
             queue_splat(mid)
+            if settings().get("beta.auto") and beta_mod.videos(MESHES / mid):
+                queue_beta(mid)     # while its videos are still in the cache
         return mid
     except compute.ComputeUnavailable as e:    # not the climb's failure: it waits for a machine
         log(f"waiting for a machine to mesh it on: {e}")
@@ -2658,6 +2660,90 @@ def beta_worker() -> None:
 
 _frames_wake = threading.Event()
 _frames_control = JobControl()
+
+
+PRUNE_IDLE_HOURS = 6        # a cached video used more lately than this is left alone
+
+
+def prune_videos() -> dict:
+    """Delete the cached videos beta can't use, as none of their frames is placed in any mesh (beta_mod.videos()),
+    once every project that took frames from them is settled: done, failed or skipped, with no area climb of it still
+    to harvest, waiting, or harvested for a boulder not yet meshed, and no boulder's mesh pooling it now. Only a harvest
+    again would use them, which can fetch them again. Their details (<id>.json) stay. Left alone: those no harvest has
+    used yet (a volunteer's, for a climb to harvest again), those a beta or a volunteer's request waits for, those used
+    in the last PRUNE_IDLE_HOURS, and any asked back from the backup. One offloaded to the backup is forgotten there
+    (offload.drop()), so that nothing asks for it back.
+
+    Returns:
+        {"deleted": videos, "bytes": freed here, "dropped": offloaded ones forgotten}.
+    """
+    out = {"deleted": 0, "bytes": 0, "dropped": 0}
+    cache = youtube_mod.VIDEO_CACHE
+    local = {f.stem: f for f in cache.iterdir() if f.suffix != ".json" and not f.name.endswith(".part")} if cache.is_dir() else {}
+    away = {Path(r["path"]).stem: r for r in q("SELECT path, done, wanted FROM offloads WHERE path LIKE 'cache/videos/%'")}
+    if not local and not away:
+        return out
+    used: dict[str, set[str]] = {}         # video id -> projects that took frames from it
+    for s in PROJECTS.glob("*/sources.json"):
+        try:
+            for f in json.loads(s.read_text()).get("files", []):
+                vid = youtube_mod.video_id(f.get("url") or "") if f.get("source") == "youtube" else None
+                if vid:
+                    used.setdefault(vid, set()).add(s.parent.name)
+        except (OSError, ValueError, AttributeError):
+            continue
+    placed = {youtube_mod.video_id(u) for d in MESHES.iterdir() if d.is_dir() for u in beta_mod.videos(d)} if MESHES.is_dir() else set()
+    waiting = {youtube_mod.video_id(u) for mid in beta_queue() for u in (beta_mod.load(MESHES / mid) or {}).get("waiting_videos") or []}
+    try:
+        wanted = {r["video_id"] for r in VOLUNTEERS.q("SELECT t.video_id FROM tasks t JOIN wants w ON w.task=t.id "
+                                                    "WHERE t.kind='video' AND w.applied=0")}
+    except Exception:
+        wanted = set()
+    unsettled = {r["id"] for r in q("SELECT id FROM projects WHERE status NOT IN ('done','failed','harvested')")}
+    for r in q("SELECT ci.project_id, ci.campaign_id, ci.boulder FROM campaign_items ci WHERE ci.project_id IS NOT NULL AND "
+               "(ci.status IN ('pending','running','waiting','harvested') OR (ci.boulder IS NOT NULL AND EXISTS (SELECT 1 FROM "
+               "campaign_items o WHERE o.campaign_id=ci.campaign_id AND o.boulder=ci.boulder AND o.status IN "
+               "('pending','running','waiting','harvested'))))"):
+        unsettled.add(r["project_id"])
+    now, dropped = time.time(), []
+    for vid in set(local) | set(away):
+        projects = used.get(vid)
+        if not projects or vid in placed or vid in waiting or vid in wanted or projects & unsettled:
+            continue
+        f = local.get(vid)
+        if f is not None:
+            try:
+                if now - f.stat().st_mtime < PRUNE_IDLE_HOURS * 3600:
+                    continue
+                size = f.stat().st_size
+                f.unlink()
+                out["deleted"] += 1
+                out["bytes"] += size
+            except OSError:
+                continue
+        row = away.get(vid)
+        if row and not (row["done"] and row["wanted"]):     # one asked back is left for its restore
+            dropped.append(row["path"])
+    if dropped:
+        offload_mod.drop(q, dropped)
+        offload_mod.write_lists(DATA, q)
+        out["dropped"] = sum(1 for p in dropped if away[Path(p).stem]["done"])
+    if out["deleted"] or out["dropped"]:
+        print(f"videos: deleted {out['deleted']} cached video(s) none of whose frames is placed in a mesh "
+              f"({out['bytes'] / 2**30:.2f} GB), and forgot {out['dropped']} offloaded to the backup", flush=True)
+    return out
+
+
+def prune_worker() -> None:
+    """prune_videos() an hour after starting and hourly after, at the lowest CPU priority, if the admin page says to."""
+    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    while True:
+        time.sleep(3600)
+        try:
+            if settings().get("videos.prune_unplaced"):
+                prune_videos()
+        except Exception as e:  # never let the thread die
+            print(f"videos: pruning failed ({type(e).__name__}: {e})", flush=True)
 
 
 def frames_worker() -> None:
@@ -4859,6 +4945,7 @@ def main() -> None:
     threading.Thread(target=watch_usage, daemon=True).start()
     threading.Thread(target=snapshot_worker, daemon=True).start()
     threading.Thread(target=frames_worker, daemon=True).start()
+    threading.Thread(target=prune_worker, daemon=True).start()
     if splat_mod.enabled():
         why = splat_mod.unavailable()
         print(f"splats: {'not fitted, as ' + why if why else 'fitted for each new mesh'}", flush=True)

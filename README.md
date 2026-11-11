@@ -284,7 +284,9 @@ least a second. The first holds the hands used are start holds, the last ones fi
 only feet touched are foot holds. Each video has its own holds and tracks, which can be shown or
 hidden, and a picture of its frame with the tracks and holds drawn on it. Expect a few minutes per
 video on a CPU. Meshes built before Nov 3 didn't keep their cameras' lenses, and those before Nov 1
-where their photos were placed, so they need rebuilding first.
+where their photos were placed, so they need rebuilding first. Each new mesh with video frames placed in it
+has its beta found straight after, while its videos are still kept (*Find beta in each new mesh* on the
+admin page's *Areas*); on machines that connect here, meshing comes first, then beta and size.
 
 *Mark holds* lets you set the holds yourself: clicking the rock adds a start hold, and clicking a hold
 again makes it a hand hold, then a finish hold, then a foot hold, then removes it, as setting a climb in
@@ -758,7 +760,11 @@ volunteers and for connecting the public site to whichever server harvests.
   videos have come: an area's as *harvest again and rebuild*, which a finished area runs by itself and a stopped one when
   it's started. *Only through volunteers* is for a cloud server, which shouldn't ask YouTube itself at all.
 - **Fetched videos** are kept (`data/cache/videos`, up to `VIDEO_CACHE_GB`, 50 by default and 10 in the public setup)
-  for finding beta and harvesting again, so YouTube isn't asked for one twice; this server's own downloads too.
+  for finding beta and harvesting again, so YouTube isn't asked for one twice; this server's own downloads too. Beta
+  can only use a video with a frame placed in a mesh, which was about half of those harvests used (387 of 739 on hal):
+  the rest are deleted (`prune_videos()`, hourly) once every climb that took frames from them, and its boulder's mesh,
+  is settled, and they haven't been used for 6 hours; their details stay, and only harvesting again would fetch them
+  again. One offloaded to hal's backup is forgotten there. The admin page's *Areas* turns this off.
 
 Volunteers reach the public site's `/volunteer/`, which Caddy passes to a port that answers nothing else (`VOLUNTEER_PORT`,
 47613 in Compose, on loopback only). By default that's the public server's own app, which harvests, with its meshes made

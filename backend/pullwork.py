@@ -342,7 +342,8 @@ class Board:
                 version = int(_number(client.get("version")) or 1)
                 could = [j for j in self.jobs.values() if j.state == "queued" and j.version <= version
                          and (not waiting or j.task == "reconstruct")]
-                mine = min((j for j in could if free is None or j.gpu_mb <= free), key=lambda j: j.created, default=None)
+                mine = min((j for j in could if free is None or j.gpu_mb <= free),        # meshing first, then beta and size
+                           key=lambda j: (j.task != "reconstruct", j.created), default=None)
                 if not mine and could:      # none fits in the GPU memory free there now
                     why = (f"its GPU has {free / 1024:.1f} GB free, and the next climb may need "
                            f"{min(j.gpu_mb for j in could) / 1024:.1f} GB")

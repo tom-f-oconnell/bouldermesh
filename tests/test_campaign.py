@@ -1852,4 +1852,66 @@ assert "area 1 is harvesting Alpha2" in why and "still to harvest" in why, why
 server._workers[:] = [server._first]
 server.settings().update({"areas.meshes": "climbs"})
 print("areas running and queued, and the boulder panel OK")
+
+# --- beta found in each new mesh with video frames placed in it; kept videos beta can't use, deleted once settled ------
+fresh()
+server.q("DELETE FROM offloads", write=True)
+real_videos = server.beta_mod.videos
+server.beta_mod.videos = lambda d: {"https://www.youtube.com/watch?v=aaaaaaaaaaa": {}} if (d / "mesh.ply").exists() else {}
+c = server.create_campaign("", "popularity", CSV)
+server.next_campaign_step()     # Alpha, meshed
+mid = items(c["id"])["Alpha"]["mesh_id"]
+assert mid and server.beta_mod.load(server.MESHES / mid)["status"] == "queued", "queued with its mesh"
+server.settings().update({"beta.auto": False})
+server.next_campaign_step()     # Beta, meshed: not queued now
+assert server.beta_mod.load(server.MESHES / items(c["id"])["Beta"]["mesh_id"]) is None
+server.settings().update({"beta.auto": True})
+server.stop_campaign(c["id"])
+server.beta_mod.videos = real_videos
+for m in server.MESHES.iterdir():
+    (m / server.beta_mod.FILE).unlink(missing_ok=True)
+
+fresh()
+server.q("DELETE FROM offloads", write=True)
+V = server.youtube_mod.VIDEO_CACHE
+url = lambda v: f"https://www.youtube.com/watch?v={v * 11}"  # noqa: E731
+for v, age in (("a", 7), ("b", 7), ("c", 7), ("d", 7), ("e", 1), ("h", 7)):
+    put(f"cache/videos/{v * 11}.mp4", 1000, age * 3600)
+    (V / f"{v * 11}.json").write_text("{}")
+
+
+def sources(pid: str, vids: str, status: str) -> None:
+    (server.PROJECTS / pid).mkdir(parents=True, exist_ok=True)
+    (server.PROJECTS / pid / "sources.json").write_text(json.dumps({"files": [
+        {"file": f"yt_{v}_000.jpg", "source": "youtube", "url": url(v)} for v in vids]}))
+    server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,?)", pid, pid, time.time(), "harvest", status, write=True)
+
+
+sources("p1" * 6, "abefgh", "done")
+sources("p2" * 6, "c", "harvested")
+cp = server.create_campaign("", "popularity", CSV, start=False)
+server.q("UPDATE campaign_items SET status='harvested', project_id=? WHERE campaign_id=? AND name='Alpha'", "p2" * 6, cp["id"], write=True)
+m1 = server.MESHES / ("m1" * 6)
+m1.mkdir(parents=True)
+(m1 / "photo_sources.json").write_text(json.dumps({"basis": "placed", "photos": [{"file": "yt_b_000.jpg", "source": "youtube", "url": url("b")}]}))
+(m1 / "cameras.json").write_text(json.dumps([{"name": "yt_b_000.jpg", "q": [1, 0, 0, 0], "t": [0, 0, 0]}]))
+m2 = server.MESHES / ("m2" * 6)
+m2.mkdir(parents=True)
+server.beta_mod.save(m2, {"status": "queued", "videos": [], "waiting_videos": [url("h")]})
+for v, done, wanted in (("f", now - day, None), ("g", now - day, now)):
+    server.q("INSERT INTO offloads(path,kind,ref,bytes,marked,done,wanted) VALUES(?,?,?,?,?,?,?)", f"cache/videos/{v * 11}.mp4", "video",
+             None, 1000, now - 2 * day, done, wanted, write=True)
+out = server.prune_videos()
+left = sorted(f.name for f in V.iterdir() if f.suffix == ".mp4" and len(set(f.stem)) == 1)     # not the offloading test's
+assert left == ["bbbbbbbbbbb.mp4", "ccccccccccc.mp4", "ddddddddddd.mp4", "eeeeeeeeeee.mp4", "hhhhhhhhhhh.mp4"], left
+assert out == {"deleted": 1, "bytes": 1000, "dropped": 1}, out
+assert (V / "aaaaaaaaaaa.json").exists(), "its details stay"
+assert [r["path"] for r in server.q("SELECT path FROM offloads")] == ["cache/videos/ggggggggggg.mp4"], "the one asked back stays"
+assert "fffffffffff" not in (D / "offload.list").read_text() and "ggggggggggg" in (D / "offload.list").read_text()
+# once its climb's boulder is meshed, and the video's frames not placed in it, Alpha's goes too
+server.q("UPDATE campaign_items SET status='skipped' WHERE campaign_id=?", cp["id"], write=True)
+server.q("UPDATE projects SET status='done' WHERE id=?", "p2" * 6, write=True)
+os.utime(V / "ccccccccccc.mp4", (now - 7 * 3600, now - 7 * 3600))
+assert server.prune_videos()["deleted"] == 1 and not (V / "ccccccccccc.mp4").exists()
+print("beta with each new mesh, and pruning videos OK")
 print("ALL CAMPAIGN TESTS PASSED")
