@@ -15,6 +15,7 @@ import os
 import socket
 import sqlite3
 import struct
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -64,6 +65,7 @@ def status_of(url: str) -> int:
 
 def main() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="bouldermesh-test-"))
+    passed = False
     port = free_port()
     B = f"http://127.0.0.1:{port}"
     global ADMIN
@@ -87,6 +89,7 @@ def main() -> None:
         out = srv.communicate(timeout=30)[0]
         assert srv.returncode == 0 and "stopping: " in out, (srv.returncode, out[-3000:])
         print("stopped:", [line for line in out.splitlines() if line.startswith("stopping: ")])
+        passed = True
     finally:
         if srv.poll() is None:
             srv.terminate()
@@ -96,6 +99,10 @@ def main() -> None:
                 srv.kill()
         if "Traceback" in (out or ""):
             print("SERVER OUTPUT:\n", out)
+        if passed:      # its data is half a GB, in /tmp (memory, on hal): kept only when it failed, to look at
+            shutil.rmtree(tmp, ignore_errors=True)
+        else:
+            print(f"its data is kept in {tmp}")
 
 
 def req(B, method, path, json_body=None, files=None, fields=None):
@@ -354,6 +361,25 @@ def run(B: str, tmp: Path) -> None:
             assert len(order) == 402 and (order == 1).sum() == 2 and np.array_equal(np.sort(order), np.sort(own)), "its pieces, in its order"
             assert status_of(f"{B}/meshes/{mid}/my-rock.glb?lod=preview") == 404, "too small for a preview"
             assert status_of(f"{B}/meshes/{mid}/my-rock.glb?lod=huge") == 400
+
+            def packed_again(test):     # the admin page's preview size changed: made again, and shown as before meanwhile
+                for _ in range(100):
+                    now = next(m for m in req(B, "GET", "/api/meshes")[1] if m["id"] == mid)["pack"]
+                    assert now, "still shown packed while it's made again"
+                    if test(now):
+                        return now
+                    time.sleep(0.1)
+                raise AssertionError(now)
+            admin_set({"viewer.preview_faces": 100})
+            again = packed_again(lambda now: now["preview"])
+            assert again["v"] >= packed["v"] and again["full"] == packed["full"], (again, packed)
+            with urllib.request.urlopen(f"{B}/meshes/{mid}/cleanup_faces.bin?lod=preview&v={again['v']}") as r:
+                preview = np.frombuffer(r.read(), "<u2")
+            assert 50 <= len(preview) < 402 and set(preview.tolist()) <= {0, 1}, len(preview)
+            assert status_of(f"{B}/meshes/{mid}/my-rock.glb?lod=preview&v={again['v']}") == 200
+            admin_set({"viewer.preview_faces": 0})
+            packed_again(lambda now: now["preview"] is None)
+            assert status_of(f"{B}/meshes/{mid}/my-rock.glb?lod=preview") == 404, "no previews at all"
             print("packed copies OK")
         st, bad = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": [0, 1]})
         assert st == 400 and "at least one" in bad["error"], bad

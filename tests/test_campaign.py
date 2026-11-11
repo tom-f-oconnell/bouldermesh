@@ -86,6 +86,9 @@ server.climbs_mod.fetch_climb_url = fake_fetch
 server.harvest_mod.harvest = fake_harvest
 pipeline.reconstruct = fake_reconstruct
 server.pipeline.steps = lambda: []
+# areas stop rather than fill the disk (CAMPAIGN_MIN_FREE, 50 GB): not here, where the data is in /tmp, which on a shared
+# machine (a tmpfs on hal) has more or less room as others use it, and stopped areas mid-test now and then
+server.CAMPAIGN_MIN_FREE = 0
 server.init_db()
 server.settings().update({"areas.meshes": "climbs"})    # each climb meshed on its own, but in "a boulder's climbs meshed together"
 
@@ -143,10 +146,10 @@ print("popularity OK")
 
 # --- stops before filling the disk ----------------------------------------------------------------
 fresh()
-server.CAMPAIGN_MIN_FREE, floor = float("inf"), server.CAMPAIGN_MIN_FREE
+server.CAMPAIGN_MIN_FREE = float("inf")
 c = server.create_campaign("", "popularity", CSV)
 server.next_campaign_step()
-server.CAMPAIGN_MIN_FREE = floor
+server.CAMPAIGN_MIN_FREE = 0
 camp = server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True)
 assert camp["status"] == "stopped" and "disk" in camp["note"] and not harvested, camp
 print("disk OK")
