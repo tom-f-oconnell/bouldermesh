@@ -266,4 +266,22 @@ assert diversity.judge(graph(diversity.TRY_VIEWS - 1, 200)) == "poor", "many pho
 assert diversity.judge({"verdict": "unknown-good", "view_graph": {"available": False}}) == "unknown-good", "nothing to judge again"
 assert diversity.judge(None) == "unknown"
 print("viewpoint verdict OK")
+
+# --- which climbs' photos are of the same rock: two climbs on one rock, one on another; each pair of climbs counted
+if "same-rock" in relevance.available():
+    with tempfile.TemporaryDirectory() as td:
+        d = pathlib.Path(td)
+        samples = {"left": [view_of(d, "mountainproject_l1.jpg", 100, 100), view_of(d, "yt_l2.jpg", 300, 200)],
+                   "right": [view_of(d, "mountainproject_r1.jpg", 600, 500), view_of(d, "yt_r2.jpg", 700, 400)],
+                   "else": [view_of(d, "mountainproject_e1.jpg", 200, 300, make_rock(6)), view_of(d, "yt_e2.jpg", 500, 400, make_rock(6))]}
+        assert relevance.link_sample(sorted(d.iterdir()), 3)[:2] == [d / "mountainproject_e1.jpg", d / "mountainproject_l1.jpg"], "stills first"
+        pairs = relevance.nearest(samples, ["left"], 8, print)
+        assert pairs == [("else", "left"), ("left", "right")], pairs
+        logs = []
+        got = relevance.link_climbs(samples, pairs, logs.append)
+        assert got[("left", "right")] >= relevance.LINK_MIN_PAIRS and got[("else", "left")] == 0, got
+        assert "1 of the same rock" in logs[-1], logs
+        print("climbs of one rock OK")
+else:
+    print("climbs of one rock skipped: no OpenCV")
 print("ALL RELEVANCE TESTS PASSED")

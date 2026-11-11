@@ -431,6 +431,83 @@ def same_rock(candidates: list[Path], anchors: list[Path], log: Log, progress: P
         photos.save()
 
 
+# ------------------------------------------------------------------------------ which climbs are of the same rock
+LINK_SAMPLE = 6         # of each climb's own photos, compared with another's to tell whether they're of the same rock
+LINK_MIN_PAIRS = 2      # pairs of two climbs' photos matching (as same_rock() takes a match) for them to count as linked
+LINK_NEAREST = 8        # with CLIP, a climb is compared with only this many others: those whose photos look most alike
+_embeddings: dict[str, object] = {}     # photo contents -> its CLIP embedding, while this runs
+
+
+def link_sample(photos: list[Path], n: int = LINK_SAMPLE) -> list[Path]:
+    """A climb's photos to compare with another's: its stills first, then frames spread across its videos."""
+    return _spaced(sorted(photos), n)
+
+
+def nearest(samples: dict[str, list[Path]], new: list[str], k: int, log: Log) -> list[tuple[str, str]]:
+    """The pairs of climbs worth comparing for each new one: with every other, or, among many and with CLIP, with the
+    k whose photos look most like its own (by their average CLIP embedding). Each pair once, (a, b) with a < b."""
+    others = list(samples)
+    pairs: set[tuple[str, str]] = set()
+    if len(others) - 1 > k and "boulder" in available():
+        try:
+            import numpy as np
+            import torch
+            from PIL import Image
+            store = cache()
+            mean = {}
+            for cid, paths in samples.items():
+                vecs = []
+                for p in paths:
+                    d = store.digest(p) if store else str(p)
+                    if d not in _embeddings:
+                        model, prep, _, device = _load_clip(log)
+                        with torch.no_grad(), Image.open(p) as im:
+                            v = model.encode_image(prep(im.convert("RGB")).unsqueeze(0).to(device))[0]
+                        _embeddings[d] = (v / v.norm()).cpu().numpy()
+                    vecs.append(_embeddings[d])
+                if vecs:
+                    m = np.mean(vecs, axis=0)
+                    mean[cid] = m / (np.linalg.norm(m) or 1.0)
+            for a in new:
+                if a not in mean:
+                    continue
+                near = sorted((float(mean[a] @ mean[b]), b) for b in mean if b != a)[-k:]
+                pairs |= {tuple(sorted((a, b))) for _, b in near}
+            return sorted(pairs)
+        except Exception as e:     # without CLIP's help, every pair
+            log(f"links: couldn't compare by CLIP ({type(e).__name__}: {e}): comparing every pair")
+    for a in new:
+        pairs |= {tuple(sorted((a, b))) for b in others if b != a}
+    return sorted(pairs)
+
+
+def link_climbs(samples: dict[str, list[Path]], pairs: list[tuple[str, str]], log: Log,
+                progress: Progress | None = None) -> dict[tuple[str, str], int]:
+    """For each pair of climbs, how many pairs of their photos match as same_rock() takes a match (enough consistent
+    SIFT matches, over enough of the photo): photos of the same rock match, others don't. Pairs of photos matched
+    before come from the cache."""
+    every = list(dict.fromkeys(p for a, b in pairs for p in samples.get(a, []) + samples.get(b, [])))
+    photos = _Photos(every, cache())
+    jobs = [(a, b, p, x) for a, b in pairs for p in samples.get(a, []) for x in samples.get(b, [])]
+
+    def one(job):
+        a, b, p, x = job
+        if not (photos.usable(p) and photos.usable(x)):
+            return a, b, False
+        k, c = photos.match(p, x)
+        return a, b, k >= MIN_INLIERS and c >= MIN_COVERAGE
+
+    out = {pair: 0 for pair in pairs}
+    try:
+        for a, b, ok in _map(one, jobs, progress, "matching climbs' photos"):
+            out[(a, b)] += int(ok)
+    finally:
+        photos.save()
+    log(f"links: {len(pairs)} pair(s) of climbs compared, {sum(n >= LINK_MIN_PAIRS for n in out.values())} of the same rock"
+        + (f" ({photos.worked} photo pair(s) matched, the rest known)" if photos.worked else ""))
+    return out
+
+
 def split_rejected(project_dir: Path, log: Log, progress: Progress | None = None) -> dict | None:
     """Re-sort a harvest's photos that didn't match known photos of the boulder, rejected before the boulder
     check was run: those that don't look like bouldering at all are rejected as such instead, which leaves

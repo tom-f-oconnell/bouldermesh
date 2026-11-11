@@ -2076,6 +2076,48 @@ assert got["Body"]["status"] == "done" and got["Body"]["mesh_id"] not in (None, 
 assert got["Arm"]["status"] == "done" and got["Arm"]["mesh_id"] == boulder_mesh and "its boulder's mesh stays" in got["Arm"]["note"], got["Arm"]
 assert got["Pea"]["mesh_id"] == boulder_mesh, "placed: its boulder's mesh is its own"
 assert server.own_attempts(c["id"], boulder_mesh) == [], "once"
+# a sector's climbs whose photos match (climb_links): meshed together as a pool once the sector's climbs are through,
+# each linked to its mesh; one that matches none stays on its own; not pooled again from the same climbs
+fresh()
+for t in ("climb_links", "pools"):
+    server.q(f"DELETE FROM {t}", write=True)
+MATCH = {("Fausse", "Marie"): 3, ("Marie", "Rose"): 2, ("Lone", "Rose"): 1}
+names_of = lambda: {r["id"]: r["name"] for r in server.q("SELECT id, name FROM climbs")}  # noqa: E731
+real_samples, real_nearest, real_link = server.climb_samples, server.relevance_mod.nearest, server.relevance_mod.link_climbs
+server.climb_samples = lambda ids: {c: [pathlib.Path(f"/x/{c}.jpg")] for c in ids if server.climb_harvests(c)}
+server.relevance_mod.nearest = lambda samples, new, k, log: sorted({tuple(sorted((a, b))) for a in new for b in samples if b != a})
+compared: list[tuple[str, str]] = []
+
+
+def fake_links(samples, pairs, log, progress=None):
+    n = names_of()
+    compared.extend(pairs)
+    return {(a, b): MATCH.get(tuple(sorted((n[a], n[b]))), 0) for a, b in pairs}
+
+
+server.relevance_mod.link_climbs = fake_links
+try:
+    c = server.create_campaign("", "popularity", HEAD + "".join([leaf_row(31, "Marie", 4.0, "Bas Cuvier"), leaf_row(32, "Rose", 3.9, "Bas Cuvier"),
+                                                                leaf_row(33, "Fausse", 3.8, "Bas Cuvier"), leaf_row(34, "Lone", 3.7, "Bas Cuvier")]))
+    run_all(c["id"], 30)
+    got = items(c["id"])
+    assert all(got[n]["status"] == "done" and got[n]["mesh_id"] for n in ("Marie", "Rose", "Fausse", "Lone")), got
+    assert len(set(compared)) == 6, "each pair once"
+    pool = server.q("SELECT * FROM pools", one=True)
+    proj = server.q("SELECT * FROM projects WHERE kind='boulder'", one=True)
+    members = sorted(names_of()[m] for m in json.loads(pool["members"]))
+    assert members == ["Fausse", "Marie", "Rose"] and proj["boulder"] == pool["key"] and proj["status"] == "done", (members, proj)
+    mesh = server.q("SELECT * FROM meshes WHERE id=?", proj["mesh_id"], one=True)
+    assert mesh["boulder"] == pool["key"] and mesh["name"].startswith("Fausse, Marie, Rose"), mesh
+    linked = {names_of()[r["climb_id"]] for r in server.q("SELECT climb_id FROM mesh_links WHERE mesh_id=? AND note=?", mesh["id"], server.POOLED_LINK)}
+    assert linked == {"Fausse", "Marie", "Rose"}, linked
+    assert got["Marie"]["mesh_id"] != mesh["id"] and "meshed with the 2 other climbs its photos match" in got["Marie"]["note"], got["Marie"]
+    assert pools[mesh["name"].split(" (")[0]] and len(pools[mesh["name"].split(" (")[0]]) == 3, pools
+    assert server.campaign_status(c["id"]) == "done"
+    server._settled.clear()
+    assert server.settle_clusters(c["id"], got["Marie"]["boulder"]) == 0, "not again from the same climbs"
+finally:
+    server.climb_samples, server.relevance_mod.nearest, server.relevance_mod.link_climbs = real_samples, real_nearest, real_link
 server.climbs_mod.fetch_climb_url = fake_fetch
 server.settings().update({"areas.meshes": "climbs"})
 print("boulders told from groups by their pages OK")

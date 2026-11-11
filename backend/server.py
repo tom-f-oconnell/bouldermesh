@@ -181,6 +181,14 @@ def init_db() -> None:
         -- ("group"), or it doesn't say ("unknown"); key as boulder_key() has it
         CREATE TABLE IF NOT EXISTS boulders(
           key TEXT PRIMARY KEY, name TEXT, url TEXT, kind TEXT, why TEXT, routes INTEGER, checked REAL);
+        -- whether two climbs' photos are of the same rock (link_climbs()): how many pairs of them match ("photos"), or
+        -- how many of each landed in one of COLMAP's models together ("colmap"); a < b
+        CREATE TABLE IF NOT EXISTS climb_links(
+          a TEXT, b TEXT, pairs INTEGER, how TEXT, checked REAL, PRIMARY KEY(a, b));
+        -- climbs of a lowest area, not one boulder, whose photos are of one rock: meshed together (pool_clusters());
+        -- key as a boulder's, with "#<a climb's id>" after its path
+        CREATE TABLE IF NOT EXISTS pools(
+          key TEXT PRIMARY KEY, leaf TEXT, members TEXT, created REAL, updated REAL);
         -- visitors' ratings of meshes (1 bad, 2 ok, 3 good) and comments: one each per browser, with the address it last
         -- came from (rate_mesh())
         CREATE TABLE IF NOT EXISTS mesh_ratings(
@@ -248,9 +256,10 @@ def init_db() -> None:
         # redo: what it's queued to do again (REDO_NAMES); was: its status before; changed: its photos have
         # changed since it was last meshed or checked; redo_started: a rebuild that began, to carry on with
         # waiting_since: when it first waited for volunteers' YouTube searches and videos (status 'waiting')
-        # own_tried: when it was meshed on its own after a pooled mesh hardly showed it (own_attempts()), once
+        # own_tried: when it was meshed on its own after a pooled mesh hardly showed it (own_attempts()), once;
+        # pool: for redo "cluster", the pool it meshes (pools.key)
         for c, t in (("retry", "INTEGER DEFAULT 0"), ("redo", "TEXT"), ("was", "TEXT"), ("changed", "INTEGER DEFAULT 0"),
-                     ("redo_started", "INTEGER DEFAULT 0"), ("waiting_since", "REAL"), ("own_tried", "REAL")):
+                     ("redo_started", "INTEGER DEFAULT 0"), ("waiting_since", "REAL"), ("own_tried", "REAL"), ("pool", "TEXT")):
             if c not in cols:
                 con.execute(f"ALTER TABLE campaign_items ADD COLUMN {c} {t}")
         if "replaced_by" not in {r[1] for r in con.execute("PRAGMA table_info(meshes)")}:
@@ -691,12 +700,130 @@ def boulder_unchanged(boulder: str) -> str | None:
 
 
 def boulder_name(boulder: str) -> str:
+    """A boulder's name; a pool's, its climbs' (pool_name())."""
+    if is_pool(boulder):
+        return pool_name(boulder)
     return json.loads(boulder)[-1].strip("* ")
 
 
 def boulder_climbs(boulder: str) -> list[dict]:
-    """The climbs known on a boulder, by name."""
+    """The climbs known on a boulder, by name; a pool's, its members."""
+    if is_pool(boulder):
+        members = pool_members(boulder)
+        return q(f"SELECT id, name, grade, lat, lng, data FROM climbs WHERE id IN ({','.join('?' * len(members)) or 'NULL'}) ORDER BY name",
+                 *members)
     return q("SELECT id, name, grade, lat, lng, data FROM climbs WHERE area_path=? ORDER BY name", boulder)
+
+
+# ------------------------------------------------------------------ pools: climbs of one rock, by their photos
+POOL_MARK = "#"     # the last of a pool's key: after its lowest area's path, a climb of it
+
+
+def is_pool(key: str | None) -> bool:
+    try:
+        return bool(key) and str(json.loads(key)[-1]).startswith(POOL_MARK)
+    except (TypeError, ValueError, IndexError):
+        return False
+
+
+def pool_members(key: str) -> list[str]:
+    r = q("SELECT members FROM pools WHERE key=?", key, one=True)
+    return json.loads(r["members"]) if r else []
+
+
+def pool_name(key: str) -> str:
+    """A pool's name: its climbs', the first three and how many more."""
+    names = [c["name"] for c in q(f"SELECT name FROM climbs WHERE id IN ({','.join('?' * len(pool_members(key))) or 'NULL'}) "
+                                  "ORDER BY name", *pool_members(key))]
+    return ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "") if names else json.loads(key)[-2].strip("* ")
+
+
+def pool_for(leaf: str, members: list[str]) -> str:
+    """The pool of these climbs of a lowest area: one there is whose climbs are among them (the one sharing most), now
+    with all of them, or a new one."""
+    best, share = None, 0
+    for r in q("SELECT key, members FROM pools WHERE leaf=?", leaf):
+        had = set(json.loads(r["members"]))
+        if had <= set(members) and len(had) > share:
+            best, share = r["key"], len(had)
+    key = best or json.dumps(json.loads(leaf) + [POOL_MARK + sorted(members)[0]])
+    q("INSERT INTO pools(key, leaf, members, created, updated) VALUES(?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET "
+      "members=excluded.members, updated=excluded.updated", key, leaf, json.dumps(sorted(members)), time.time(), time.time(), write=True)
+    return key
+
+
+def climb_samples(climb_ids: list[str]) -> dict[str, list[Path]]:
+    """Each climb's own photos (its page's and its videos' frames, from its harvests) to compare with another's."""
+    out = {}
+    for cid in climb_ids:
+        own = [PROJECTS / h / "photos" / n for h in climb_harvests(cid) for n in sorted(viewpoints.own_photos(PROJECTS / h))]
+        if own:
+            out[cid] = relevance_mod.link_sample(own)
+    return out
+
+
+def link(a: str, b: str, pairs: int, how: str) -> None:
+    a, b = sorted((a, b))
+    q("INSERT INTO climb_links(a, b, pairs, how, checked) VALUES(?,?,?,?,?) ON CONFLICT(a, b) DO UPDATE SET "
+      "pairs=MAX(pairs, excluded.pairs), how=CASE WHEN excluded.pairs > pairs THEN excluded.how ELSE how END, checked=excluded.checked",
+      a, b, pairs, how, time.time(), write=True)
+
+
+def link_climbs(climb_ids: list[str], log) -> None:
+    """Compare these climbs' photos, those pairs not compared before (relevance.link_climbs()); with many, each with
+    those whose photos look most like its own (relevance.nearest())."""
+    samples = climb_samples(climb_ids)
+    if len(samples) < 2:
+        return
+    known = {(r["a"], r["b"]) for r in q(f"SELECT a, b FROM climb_links WHERE a IN ({','.join('?' * len(samples))})", *samples)}
+    new = [c for c in samples if sum((min(c, o), max(c, o)) in known for o in samples if o != c) < min(relevance_mod.LINK_NEAREST, len(samples) - 1)]
+    pairs = [p for p in relevance_mod.nearest(samples, new, relevance_mod.LINK_NEAREST, log) if p not in known]
+    if pairs:
+        for (a, b), n in relevance_mod.link_climbs(samples, pairs, log).items():
+            link(a, b, n, "photos")
+
+
+def links_from_models(mid: str, pid: str) -> int:
+    """Climbs whose photos landed in one of COLMAP's models together (pipeline.write_models()), in a pooled mesh's
+    project: linked, as overlapping. Returns how many pairs."""
+    try:
+        models = json.loads((MESHES / mid / pipeline.MODELS_FILE).read_text())["models"]
+        files = {f["file"]: f.get("pooled_from") for f in json.loads((PROJECTS / pid / "sources.json").read_text()).get("files", [])}
+        whose = {h: c["id"] for c in json.loads((PROJECTS / pid / CLIMBS_FILE).read_text())["climbs"] for h in c.get("projects") or []}
+    except (OSError, ValueError, KeyError):
+        return 0
+    n = 0
+    for m in models:
+        count: dict[str, int] = {}
+        for name in m["photos"]:
+            cid = whose.get(files.get(name) or "")
+            if cid:
+                count[cid] = count.get(cid, 0) + 1
+        ids = sorted(c for c, k in count.items() if k >= relevance_mod.LINK_MIN_PAIRS)
+        for i, a in enumerate(ids):
+            for b in ids[i + 1:]:
+                link(a, b, min(count[a], count[b]), "colmap")
+                n += 1
+    return n
+
+
+def clusters(climb_ids: list[str]) -> list[list[str]]:
+    """These climbs, grouped by their links (link_climbs()): each group's photos are of one rock, or rocks seen together."""
+    parent = {c: c for c in climb_ids}
+
+    def root(c):
+        while parent[c] != c:
+            parent[c] = parent[parent[c]]
+            c = parent[c]
+        return c
+    for r in q(f"SELECT a, b FROM climb_links WHERE pairs >= ? AND a IN ({','.join('?' * len(climb_ids)) or 'NULL'})",
+               relevance_mod.LINK_MIN_PAIRS, *climb_ids):
+        if r["b"] in parent:
+            parent[root(r["a"])] = root(r["b"])
+    groups: dict[str, list[str]] = {}
+    for c in climb_ids:
+        groups.setdefault(root(c), []).append(c)
+    return sorted((sorted(g) for g in groups.values()), key=lambda g: (-len(g), g))
 
 
 def boulder_url(boulder: str) -> str | None:
@@ -1678,15 +1805,22 @@ def in_scope(camp: dict) -> set[str] | None:
     return limit_scope(camp)[0]
 
 
+def following(item: dict) -> bool:
+    """Whether an area's climb is queued for what follows from work done (ordered_pending())."""
+    return item.get("redo") in ("own", "cluster") or (item.get("redo") == "rebuild" and item.get("was") == "harvested")
+
+
 def ordered_pending(camp: dict) -> list[dict]:
     """A campaign's waiting climbs, next first: within its limit, if it has one."""
-    items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry,redo,boulder,waiting_since FROM campaign_items "
+    items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry,redo,was,boulder,waiting_since FROM campaign_items "
               "WHERE campaign_id=? AND status='pending' ORDER BY rank", camp["id"])
     scope = in_scope(camp)
     if scope is None:
         items = _in_order(camp, items)
-    else:       # a boulder's climbs one after another, so that its mesh is made before going on
-        items = [i for unit in _units(camp, [i for i in items if i["source_id"] in scope]) for i in unit]
+    else:       # a boulder's climbs one after another, so that its mesh is made before going on; and whatever the limit,
+                # what follows from work done: meshing on their own those harvested for a boulder's mesh that won't be
+                # (settle_groups()) or that it hardly showed (own_attempts()), and pools of climbs (settle_clusters())
+        items = [i for unit in _units(camp, [i for i in items if i["source_id"] in scope or following(i)]) for i in unit]
     # retries were asked for, and a climb that was interrupted comes next, to finish what it started
     items.sort(key=lambda i: (not i["retry"], not i["project_id"]))
     return items
@@ -1807,6 +1941,7 @@ def run_campaign_item(camp: dict, item: dict) -> None:
                           f"failed before finishing a harvest; last error: {last_failure(pid)}", cid, write=True)
                         _outages.clear()
                     return
+            link_after(cid, sid)
         _outages.clear()
     finally:
         q("UPDATE campaign_items SET retry=0 WHERE campaign_id=? AND source_id=? AND status NOT IN ('pending','running')", cid, sid, write=True)
@@ -2253,6 +2388,9 @@ def _claim(w: Worker):
         settle_waiting(camp["id"])
         for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND status='harvested'", camp["id"]):
             settle_boulder(camp["id"], b["boulder"])     # as after a restart between its last harvest and queueing its mesh
+        for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND boulder IS NOT NULL "
+                   "AND status IN ('done','skipped','failed')", camp["id"]):
+            settle_clusters(camp["id"], b["boulder"])
         items = ordered_pending(camp)
         waiting = bool(items)
         if camp["only_retries"]:
@@ -2375,7 +2513,8 @@ REDO_NAMES = {"harvest": "harvest again", "videos": "look for new videos", "rebu
               "harvest+rebuild": "harvest again and rebuild", "videos+rebuild": "look for new videos and rebuild",
               "boulder": "mesh its boulder from every climb's photos", "pool": "mesh its boulder from every climb's photos",
               "try-skipped": "try meshing, as the viewpoint check would let it now",
-              "own": "mesh it on its own, as its boulder's mesh hardly shows it"}
+              "own": "mesh it on its own, as its boulder's mesh hardly shows it",
+              "cluster": "mesh it with the climbs its photos match"}
 POOLED = " (pooled)"     # the name of a project made, before boulders had their own, from every harvest of a boulder for one of its climbs
 
 
@@ -2565,7 +2704,7 @@ def _boulder_again(cid: str, row: dict) -> dict:
 def run_redo(camp: dict, item: dict) -> None:
     """Harvest or rebuild again one of an area's climbs that has been through it before."""
     cid, sid = camp["id"], item["source_id"]
-    row = q("SELECT source_id,climb_id,project_id,mesh_id,redo,was,changed,redo_started,waiting_since,boulder FROM campaign_items "
+    row = q("SELECT source_id,climb_id,project_id,mesh_id,redo,was,changed,redo_started,waiting_since,boulder,pool FROM campaign_items "
             "WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
     row["was"] = row["was"] or "done"
     log = lambda s: append_log(row["project_id"], s)  # noqa: E731
@@ -2574,6 +2713,8 @@ def run_redo(camp: dict, item: dict) -> None:
         return _run_boulder_redo(camp, row)
     if first == "own":
         return _run_own_redo(camp, row)
+    if first == "cluster":
+        return _run_cluster_redo(camp, row)
     jobctl.begin(low_priority=True)
     try:
         set_item(cid, sid, status="running", note=None)
@@ -2605,6 +2746,8 @@ def run_redo(camp: dict, item: dict) -> None:
     except Exception as e:
         end = {"status": row["was"], "note": f"{REDO_NAMES[row['redo']]}: {type(e).__name__}: {e}"}
     set_item(cid, sid, **end, redo=None, retry=0, redo_started=0)
+    if end.get("status") != "harvested":
+        link_after(cid, sid)
 
 
 def own_attempts(camp_id: str, mesh_id: str | None) -> list[str]:
@@ -2626,6 +2769,123 @@ def own_attempts(camp_id: str, mesh_id: str | None) -> list[str]:
     if names:   # a finished area runs only these
         q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", camp_id, write=True)
     return names
+
+
+def plural(n: int, one: str) -> str:
+    return f"{n} {one}{'' if n == 1 else 's'}"
+
+
+_settled: dict[tuple[str, str], tuple] = {}     # (area, lowest area) -> its climbs' states when settle_clusters() last looked
+
+
+def settle_clusters(camp_id: str, leaf: str) -> int:
+    """Once an area's climbs of a lowest area that isn't one boulder are all through (none pending, running, waiting or
+    queued again), those whose photos are of one rock (clusters(), by the links worked out as each was harvested)
+    queued to mesh together as a pool, on the first of them in the area's order, unless they have been, these same
+    climbs. Of one boulder's, those its mesh hardly showed (viewpoints.poorly_placed()). Returns how many were queued."""
+    kind = boulder_kinds().get(leaf)
+    if kind is None:
+        return 0
+    items = q("SELECT source_id, climb_id, status, redo, was, rank, updated FROM campaign_items WHERE campaign_id=? AND boulder=? "
+              "ORDER BY rank", camp_id, leaf)
+    seen = tuple((i["source_id"], i["status"], i["redo"], i["updated"]) for i in items)
+    if _settled.get((camp_id, leaf)) == seen:
+        return 0
+    _settled[(camp_id, leaf)] = seen
+    camp = q("SELECT * FROM campaigns WHERE id=?", camp_id, one=True) or {}
+    scope = in_scope(camp)
+    due = items if scope is None else [i for i in items if i["source_id"] in scope or i["status"] in ("running", "waiting", "harvested")
+                                       or following(i)]
+    if any(i["status"] in ("pending", "running", "waiting", "harvested") or i["redo"] for i in due):
+        return 0
+    ids = [i["climb_id"] for i in items if i["status"] in ("done", "skipped", "failed") and i["climb_id"] and climb_harvests(i["climb_id"])]
+    if kind == "boulder":
+        proj = boulder_project(leaf)
+        if not proj or proj["status"] != "done" or not proj["mesh_id"]:
+            return 0
+        poor = viewpoints.poorly_placed(viewpoints.load(MESHES / proj["mesh_id"]) or {})
+        ids = [c for c in ids if c in poor]
+    queued = 0
+    for group in clusters(ids) if len(ids) >= 2 else []:
+        if len(group) < 2:
+            continue
+        key = pool_for(leaf, group)
+        proj = boulder_project(key)
+        if proj and proj["status"] in ("queued", "running", "harvesting"):
+            continue
+        try:
+            then = {c["id"] for c in json.loads((PROJECTS / proj["id"] / CLIMBS_FILE).read_text())["climbs"]} if proj else None
+        except (OSError, ValueError, KeyError):
+            then = None
+        if then == set(group):  # pooled from these climbs before, however it went
+            continue
+        first = next(i for i in items if i["climb_id"] in group)
+        set_item(camp_id, first["source_id"], status="pending", retry=1, redo="cluster", was=first["status"], redo_started=0, pool=key,
+                 note=f"its photos match those of {plural(len(group) - 1, 'other climb')}: meshing them together")
+        queued += 1
+    if queued:
+        q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", camp_id, write=True)
+    return queued
+
+
+def _run_cluster_redo(camp: dict, row: dict) -> None:
+    """run_redo() for meshing together the climbs of a pool (settle_clusters()), in the pool's own project, from their
+    harvests (run_boulder()); each of them is linked to its mesh. The climb that carries it keeps its status."""
+    cid, sid, key = camp["id"], row["source_id"], row["pool"]
+    jobctl.begin(low_priority=True)
+    pid = None
+    try:
+        set_item(cid, sid, status="running", note=None)
+        members = pool_members(key) if key else []
+        if len(members) < 2:
+            end = {"status": row["was"], "note": "the climbs its photos matched aren't to be pooled any more"}
+        else:
+            proj = boulder_project(key)
+            resume = bool(row["redo_started"] and proj and proj["status"] in ("stopped", "interrupted", "failed", "harvesting", "running"))
+            pid = boulder_project_made(key)
+            set_item(cid, sid, redo_started=1)
+            keep = (q("SELECT keep_better FROM campaigns WHERE id=?", cid, one=True) or {}).get("keep_better", 1) != 0
+            run_boulder(pid, resume=resume, fetch=False, keep_better=keep)
+            p = q("SELECT status, mesh_id, harvest FROM projects WHERE id=?", pid, one=True)
+            if p["status"] == "done" and p["mesh_id"]:
+                for m in members:
+                    link_mesh(p["mesh_id"], m, POOLED_LINK)
+                links_from_models(p["mesh_id"], pid)
+                images = (json.loads(p["harvest"]) if p["harvest"] else {}).get("images", "?")
+                end = {"status": row["was"], "note": f"meshed with the {plural(len(members) - 1, 'other climb')} its photos match, "
+                                                     f"from {images} photos"}
+            elif p["status"] == "harvested":
+                end = {"status": row["was"], "note": "with the climbs its photos match: still not enough different viewpoints"}
+            else:
+                end = {"status": row["was"], "note": "with the climbs its photos match: " + (too_few_placed(pid) or f"meshing failed: {last_failure(pid)}")}
+    except Cancelled:
+        if pid:
+            q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
+        set_item(cid, sid, status="pending", note=f"stopped partway: carries on with its {REDO_NAMES['cluster']} when resumed")
+        return
+    except compute.ComputeUnavailable as e:
+        set_item(cid, sid, status="pending", note=f"waiting for a machine to mesh it with the climbs its photos match on: {e}")
+        raise
+    except Exception as e:
+        end = {"status": row["was"], "note": f"{REDO_NAMES['cluster']}: {type(e).__name__}: {e}"}
+    set_item(cid, sid, **end, redo=None, retry=0, redo_started=0, pool=None)
+
+
+POOLED_LINK = "pooled with the climbs its photos match"     # a mesh_links note: a pool's mesh, linked to each of its climbs
+
+
+def link_after(camp_id: str, source_id: str) -> None:
+    """After an area's climb is through, if its lowest area isn't one boulder: its photos compared with its neighbours'
+    (link_climbs()), for settle_clusters() to pool those of one rock. Only costs that if it fails."""
+    it = q("SELECT climb_id, boulder, project_id FROM campaign_items WHERE campaign_id=? AND source_id=?", camp_id, source_id, one=True)
+    if not it or not it["boulder"] or not it["climb_id"] or boulder_kinds().get(it["boulder"]) not in ("group", "unknown"):
+        return
+    log = (lambda s: append_log(it["project_id"], s)) if it["project_id"] else print
+    try:
+        others = [c["id"] for c in q("SELECT id FROM climbs WHERE area_path=?", it["boulder"])]
+        link_climbs(list(dict.fromkeys([it["climb_id"]] + others)), log)
+    except Exception as e:
+        log(f"links: comparing its photos with its neighbours' failed ({type(e).__name__}: {e})")
 
 
 def _run_own_redo(camp: dict, row: dict) -> None:
@@ -2658,6 +2918,7 @@ def _run_own_redo(camp: dict, row: dict) -> None:
     except Exception as e:
         end = {"status": "done" if pooled_mesh else row["was"], "mesh_id": pooled_mesh, "note": f"{REDO_NAMES['own']}: {type(e).__name__}: {e}"}
     set_item(cid, sid, **end, redo=None, retry=0, redo_started=0, own_tried=time.time())
+    link_after(cid, sid)
 
 
 def _run_boulder_redo(camp: dict, row: dict) -> None:
@@ -2688,11 +2949,18 @@ def _run_boulder_redo(camp: dict, row: dict) -> None:
         if proj and proj["status"] == "done" and proj["mesh_id"]:
             boulder_meshed(cid, sid, end, failed)
     set_item(cid, sid, **end, redo=None, retry=0, redo_started=0)
-    if not failed:  # those it hardly shows: on their own too
+    if not failed:  # those it hardly shows: on their own too, and pooled together where their photos match
         b = q("SELECT boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)["boulder"]
         proj = boulder_project(b) if b else None
         if proj and proj["status"] == "done" and proj["mesh_id"]:
             own_attempts(cid, proj["mesh_id"])
+            try:
+                links_from_models(proj["mesh_id"], proj["id"])
+                poor = list(viewpoints.poorly_placed(viewpoints.load(MESHES / proj["mesh_id"]) or {}))
+                if len(poor) >= 2:
+                    link_climbs(poor, lambda s: append_log(proj["id"], s))
+            except Exception as e:
+                append_log(proj["id"], f"links: failed ({type(e).__name__}: {e})")
 
 
 def run_beta(mid: str) -> None:
