@@ -272,6 +272,9 @@ def init_db() -> None:
             except (TypeError, ValueError):
                 key = None
             con.execute("UPDATE campaign_items SET boulder=? WHERE campaign_id=? AND source_id=?", (key, r["campaign_id"], r["source_id"]))
+        # meshes were named as their projects, "(harvest)", "(boulder)" or "(pooled)" after: without, since 2026-11-11
+        for suffix in (" (harvest)", " (boulder)", " (pooled)"):
+            con.execute("UPDATE meshes SET name=substr(name, 1, length(name) - ?) WHERE name LIKE ?", (len(suffix), "%" + suffix))
         # and so those harvested for a boulder whose mesh was made were marked failed with it: done with that mesh
         for r in con.execute("SELECT campaign_id, source_id, boulder, note FROM campaign_items WHERE status IN ('failed','skipped') "
                              "AND note LIKE 'its boulder meshed from %' AND boulder IS NOT NULL").fetchall():
@@ -854,6 +857,18 @@ def boulder_project(boulder: str) -> dict | None:
     return q("SELECT * FROM projects WHERE kind='boulder' AND boulder=? ORDER BY created DESC LIMIT 1", boulder, one=True)
 
 
+def pooled_summary(key: str, climbs: list[dict], kinds: dict) -> dict:
+    """What a pooled mesh's card says of it: how many climbs' photos it's made from and how many of them it places, its
+    lowest area and what that is, and whether it's of the whole boulder: one Mountain Project says is one rock, every
+    climb known on it placed."""
+    leaf = json.dumps(json.loads(key)[:-1]) if is_pool(key) else key
+    placed = {c["id"] for c in climbs if c.get("view")}
+    kind = kinds.get(leaf)
+    on_leaf = {c["id"] for c in q("SELECT id FROM climbs WHERE area_path=?", leaf)} if kind == "boulder" else set()
+    return {"climbs": len(climbs), "placed": len(placed), "area": json.loads(leaf)[-1].strip("* "), "kind": kind,
+            "whole": bool(on_leaf) and on_leaf <= placed}
+
+
 def boulder_info(climb: dict) -> dict | None:
     """What a climb's card says of its boulder: the other climbs on it and their own meshes, the boulder's own
     meshes, with this climb's view of each, and meshes areas linked it to as made for another climb on it."""
@@ -874,7 +889,9 @@ def boulder_info(climb: dict) -> dict | None:
     shared = q(f"""SELECT m.id, m.name, l.note, ({MADE_FOR}) AS made_for FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
                    WHERE l.climb_id=? AND l.note LIKE ? AND m.replaced_by IS NULL""", SHARED + "%", climb["id"], SHARED + "%")
     proj = boulder_project(boulder)
-    return {"key": boulder, "name": boulder_name(boulder), "meshes": meshes,
+    kind = q("SELECT kind, why, url FROM boulders WHERE key=?", boulder, one=True)
+    return {"key": boulder, "name": boulder_name(boulder), "meshes": meshes, "kind": kind and kind["kind"],
+            "why": kind and kind["why"], "url": (kind and kind["url"]) or boulder_url(boulder),
             "shared": [{"id": s["id"], "name": s["name"], "made_for": s["made_for"] or s["note"][len(SHARED):]} for s in shared],
             "climbs": [{"id": c["id"], "name": c["name"], "grade": c["grade"], "meshes": own.get(c["id"], [])}
                        for c in climbs if c["id"] != climb["id"]],
@@ -1092,7 +1109,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         build = _executor.reconstruct if remote else pipeline.reconstruct
         mesh_path, demo = build(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker)
         proj = q("SELECT name, climb_id, mesh_id, kind, boulder FROM projects WHERE id=?", pid, one=True)
-        q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng,boulder) VALUES(?,?,?,?,?,?,?,?,?,?)", mid, proj["name"],
+        q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng,boulder) VALUES(?,?,?,?,?,?,?,?,?,?)", mid, mesh_name(proj["name"]),
           mesh_path.name, f"project:{pid}", time.time(), mesh_path.stat().st_size, int(demo), *boulder_place(proj["boulder"]),
           proj["boulder"] if proj["kind"] == "boulder" else None, write=True)
         if proj["climb_id"]:
@@ -1417,7 +1434,16 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
 
 
 # ------------------------------------------------------------------ a boulder's own mesh, from every climb on it
-BOULDER_SUFFIX = " (boulder)"   # the name of a boulder's project and mesh
+BOULDER_SUFFIX = " (boulder)"   # the name of a boulder's project
+PROJECT_SUFFIXES = (" (harvest)", BOULDER_SUFFIX, " (pooled)")     # what a project's name says of it, which its mesh's doesn't
+
+
+def mesh_name(project_name: str) -> str:
+    """A mesh's name, from its project's: the climbs or boulder it's of, not how it was made (the card says that)."""
+    for s in PROJECT_SUFFIXES:
+        if project_name.endswith(s):
+            return project_name[: -len(s)]
+    return project_name
 
 
 def climb_harvests(climb_id: str) -> list[str]:
@@ -1470,6 +1496,9 @@ def mesh_boulder(boulder: str) -> tuple[dict, int]:
     Returns:
         The response, and its HTTP status.
     """
+    if boulder_kinds().get(boulder) == "group":
+        return {"error": "its Mountain Project area holds several boulders, so it isn't meshed as one: an area's climbs there "
+                         "whose photos match are meshed together"}, 409
     proj = boulder_project(boulder)
     if proj and proj["status"] in ("queued", "running", "harvesting"):
         return {"error": "already being meshed", "project_id": proj["id"]}, 409
@@ -2872,6 +2901,49 @@ def _run_cluster_redo(camp: dict, row: dict) -> None:
 
 
 POOLED_LINK = "pooled with the climbs its photos match"     # a mesh_links note: a pool's mesh, linked to each of its climbs
+
+
+def adopt_old_pools(log=print) -> int:
+    """Meshes made before boulders had their own, from one climb's project that pooled the harvests of others on its
+    boulder (named "... (pooled)"): each made a pool of the climbs whose photos it has (pools, as settle_clusters()
+    makes them), with where each is seen from in it (viewpoints.py), so that its card says which it shows, and each of
+    them linked to it. Once each, at start. Returns how many."""
+    done = 0
+    for m in q("SELECT m.id, m.source FROM meshes m JOIN projects p ON m.source = 'project:' || p.id "
+               "WHERE m.boulder IS NULL AND p.kind='harvest' AND p.name LIKE ?", "%" + POOLED):
+        pid = m["source"].split(":", 1)[1]
+        try:
+            proj = q("SELECT climb_id FROM projects WHERE id=?", pid, one=True)
+            climb = climb_row(proj["climb_id"]) if proj and proj["climb_id"] else None
+            if not climb or not (PROJECTS / pid / "photos").is_dir():
+                continue
+            files = {f["file"]: f.get("pooled_from") for f in json.loads((PROJECTS / pid / "sources.json").read_text()).get("files", [])}
+            whose = {r["id"]: r["climb_id"] for r in q(
+                f"SELECT id, climb_id FROM projects WHERE id IN ({','.join('?' * len(set(files.values()) - {None})) or 'NULL'})",
+                *(set(files.values()) - {None}))}
+            own: dict[str, set[str]] = {}
+            for f in (PROJECTS / pid / "photos").iterdir():
+                cid = whose.get(files.get(f.name) or "") if files.get(f.name) else climb["id"]
+                if cid:
+                    own.setdefault(cid, set())
+                    if relevance_mod.is_trusted(f):
+                        own[cid].add(f.name)
+            if len(own) < 2:
+                continue
+            leaf = climb["area_path"] if isinstance(climb["area_path"], str) else json.dumps(list(climb["area_path"] or []))
+            key = pool_for(leaf, sorted(own))
+            if (MESHES / m["id"] / "cameras.json").exists():
+                viewpoints.compute(MESHES / m["id"], own, log)
+            q("UPDATE meshes SET boulder=? WHERE id=?", key, m["id"], write=True)
+            for cid in own:     # those linked as on the same boulder, or not at all, are in it
+                if not q("SELECT 1 FROM mesh_links WHERE mesh_id=? AND climb_id=? AND COALESCE(note,'') NOT LIKE ?", m["id"], cid, SHARED + "%"):
+                    link_mesh(m["id"], cid, POOLED_LINK)
+            done += 1
+        except Exception as e:     # one that can't be read stays as it was
+            log(f"pools: couldn't adopt mesh {m['id']} ({type(e).__name__}: {e})")
+    if done:
+        log(f"pools: {done} mesh(es) made by pooling a boulder's harvests, before boulders had their own, now say which climbs they show")
+    return done
 
 
 def link_after(camp_id: str, source_id: str) -> None:
@@ -4546,13 +4618,17 @@ class Handler(BaseHTTPRequestHandler):
                 for c in q("SELECT c.id, c.name, c.grade, c.area_path FROM climbs c WHERE c.area_path IN "
                            "(SELECT boulder FROM meshes WHERE boulder IS NOT NULL) ORDER BY c.name"):
                     on.setdefault(c.pop("area_path"), []).append(c)
+                kinds = boulder_kinds()
+                for key in {r["boulder"] for r in rows if is_pool(r["boulder"])}:     # a pool's: its climbs
+                    on[key] = [{k: c[k] for k in ("id", "name", "grade")} for c in boulder_climbs(key)]
                 areas, rated = mesh_areas(), mesh_ratings()
                 for r in rows:
                     r["climbs"] = by.get(r["id"], [])
                     r["rating"] = rated.get(r["id"])
-                    if r["boulder"]:    # a boulder's own mesh: the climbs on it, and where each is seen from
+                    if r["boulder"]:    # a pooled mesh (a boulder's, or a pool's): its climbs, and where each is seen from
                         views = viewpoints.load(MESHES / r["id"]) or {}
                         r["boulder_climbs"] = [{**c, "view": (views.get("climbs") or {}).get(c["id"])} for c in on.get(r["boulder"], [])]
+                        r["pooled"] = pooled_summary(r["boulder"], r["boulder_climbs"], kinds)
                     r["texture"] = texture_mode(r["id"], r["source"])
                     try:    # one mesh's unreadable file shouldn't empty the whole list
                         r["cleanup"] = meshclean.summary(meshclean.load(served_dir(r["id"], r["texture"])))
@@ -5463,6 +5539,7 @@ def main() -> None:
     threading.Thread(target=clean_existing_meshes, daemon=True).start()
     threading.Thread(target=orient_existing_meshes, daemon=True).start()
     threading.Thread(target=source_existing_meshes, daemon=True).start()
+    threading.Thread(target=adopt_old_pools, daemon=True).start()
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
     for d in MESHES.iterdir() if MESHES.exists() else []:
         beta_mod.carry_on(d)        # finding beta carries on after a restart, like areas

@@ -1459,17 +1459,31 @@ async function viewClimbMesh(id){
 const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', waiting: 'waiting for volunteers', harvested: 'harvested, for its boulder\'s mesh', done: 'meshed', failed: 'failed', skipped: 'skipped' };
 // The boulder a climb is on: its own mesh, made from the photos of every climb on it, seen from where this climb's own
 // photos were taken; meshes an area linked this climb to that were made for another climb on it; and the other climbs.
+// a pooled mesh (a boulder's, or a pool's: climbs whose photos match): how many of the climbs whose photos it's made from
+// it places, and, only when every climb Mountain Project lists on that one rock is placed, that it's the whole boulder
+function pooledTags(m){
+  const p = m.pooled;
+  if (!p) return '';
+  const of = p.kind === 'group' ? ` in ${esc(p.area)}, a Mountain Project area of several boulders, whose photos match`
+    : p.kind === 'boulder' ? ` on ${esc(p.area)}` : ` in ${esc(p.area)}`;
+  return `<span class="tag ok" title="Made from the photos of ${plural(p.climbs, 'climb')}${of}: ${p.placed} of them placed in it, by their own photos">pooled · ${p.placed}/${p.climbs} climbs</span>`
+    + (p.whole ? `<span class="tag ok" title="Every climb Mountain Project lists on ${esc(p.area)} is placed in it">whole boulder</span>` : '');
+}
 function boulderHtml(c){
   const b = c.boulder;
   if (!b) return '';
   const seen = m => m.view ? `from ${plural(m.view.photos, 'photo')} of its own` : m.unplaced ? `none of its ${m.unplaced} photos were placed` : 'none of its own photos in it';
   const busy = b.project && BUSY.includes(b.project.status);
-  return `<div class="meta" style="margin-top:8px">On the boulder <b>${esc(b.name)}</b></div>
+  const name = b.url ? `<a href="${esc(b.url)}" target="_blank" rel="noopener" title="Its page on Mountain Project">${esc(b.name)}</a>` : esc(b.name);
+  const group = b.kind === 'group';
+  const where = group ? `In <b>${name}</b>, a Mountain Project area of several boulders` : b.kind === 'unknown'
+    ? `In <b>${name}</b> <small title="${esc(b.why || '')}">(Mountain Project doesn't say it's one boulder)</small>` : `On the boulder <b>${name}</b>`;
+  return `<div class="meta" style="margin-top:8px">${where}</div>
     ${b.meshes.length || b.shared.length ? `<div class="chips">${b.meshes.map(m => `<span class="chip" data-bmesh="${m.id}" title="${m.view ? 'Shows it from where this climb\'s own photos were taken' : 'Its photos of this climb weren\'t placed in it, so it opens as any mesh does'}">▣ ${esc(m.name)} <small>${esc(seen(m))}</small></span>`).join('')}
       ${b.shared.map(m => `<span class="chip" data-mesh="${m.id}" title="An area linked this climb to the mesh made for ${esc(m.made_for)}, as it's on the same boulder: it may not show this climb's side">▣ ${esc(m.name)} <small>made for ${esc(m.made_for)}</small></span>`).join('')}</div>` : ''}
-    ${b.climbs.length ? `<div class="meta">Also on it: ${b.climbs.map(o => `<a href="#" data-climb="${o.id}">${esc(o.name)}</a>${o.meshes.length ? ' <span title="has a mesh of its own">▣</span>' : ''}`).join(', ')}</div>` : ''}
+    ${b.climbs.length ? `<div class="meta">${group ? 'Also in it' : 'Also on it'}: ${b.climbs.map(o => `<a href="#" data-climb="${o.id}">${esc(o.name)}</a>${o.meshes.length ? ' <span title="has a mesh of its own">▣</span>' : ''}`).join(', ')}</div>` : ''}
     <div class="row w" style="margin-top:4px"><span class="grow meta">${busy ? `<a href="#" data-proj="${b.project.id}">${b.project.status === 'queued' ? 'queued to be meshed' : 'being meshed now'}</a>` : b.project?.status === 'failed' ? `<a href="#" data-proj="${b.project.id}">meshing it failed</a>` : ''}</span>
-      ${b.climbs.length ? `<button class="sm sec meshboulder" ${busy ? 'disabled' : ''} title="Makes a mesh of the whole boulder from every photo of its climbs, kept apart from each climb's own, and works out where each climb is seen from">${b.meshes.length ? 'Mesh the boulder again' : 'Mesh the boulder from all its climbs\' photos'}</button>` : ''}</div>`;
+      ${b.climbs.length && !group ? `<button class="sm sec meshboulder" ${busy ? 'disabled' : ''} title="Makes a mesh of the whole boulder from every photo of its climbs, kept apart from each climb's own, and works out where each climb is seen from">${b.meshes.length ? 'Mesh the boulder again' : 'Mesh the boulder from all its climbs\' photos'}</button>` : ''}</div>`;
 }
 async function openClimb(id, focus=true){
   const c = await api('/api/climbs/' + id);
@@ -2289,7 +2303,7 @@ function renderMeshes(filter = true){
   if (meshesCache.length && !shown.length) el.innerHTML = '<div class="status">No mesh fits the filter.</div>';
   for (const m of shown) {
     const d = document.createElement('div'); d.className = 'card mesh';
-    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${m.boulder?'<span class="tag ok" title="Made from the photos of every climb on this boulder">boulder</span>':''}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
+    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
         <div class="chips">${(m.boulder_climbs || []).map(c => `<span class="chip" data-from="${c.id}" title="${c.view ? `Look at it from where ${esc(c.name)}'s own photos were taken (${plural(c.view.photos, 'photo')})` : `None of ${esc(c.name)}'s own photos were placed in it: opens the climb`}">${c.view ? '👁 ' : ''}${esc(c.name)} ${esc(c.grade||'')}</span>`).join('')}
           ${m.climbs.map(c=>`<span class="chip${c.shared ? ' shared' : ''}" data-climb="${c.id}" ${c.shared ? 'title="Linked by an area as on the same boulder as the climb this was made for: it may not show this climb\'s side"' : ''}>${esc(c.name)} ${esc(c.grade||'')}${c.shared ? ' <small>same boulder</small>' : ''} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('')}
           <select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option>${climbsCache.filter(c=>c.kind!=='area').map(c=>`<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('')}</select></div></div>

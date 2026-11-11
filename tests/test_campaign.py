@@ -2118,6 +2118,57 @@ try:
     assert server.settle_clusters(c["id"], got["Marie"]["boulder"]) == 0, "not again from the same climbs"
 finally:
     server.climb_samples, server.relevance_mod.nearest, server.relevance_mod.link_climbs = real_samples, real_nearest, real_link
+# what a pooled mesh's card says: how many of its climbs it places, and whether it's the whole boulder; a sector isn't
+# meshed as one from a climb's card; names without the project's kind
+summary = server.pooled_summary(pool["key"], [{"id": "a", "view": {"photos": 2}}, {"id": "b", "view": None}], server.boulder_kinds())
+assert summary == {"climbs": 2, "placed": 1, "area": "Bas Cuvier", "kind": "group", "whole": False}, summary
+pea = server.q("SELECT key FROM boulders WHERE name='Peabody'", one=True)["key"]
+for n, sid in (("Pea", "961"), ("Body", "962")):
+    server.upsert_climb(Climb(source="mountainproject", source_id=sid, url=f"https://x/{sid}", name=n, area_path=json.loads(pea)))
+on_pea = [{"id": r["id"], "view": {"photos": 3}} for r in server.q("SELECT id FROM climbs WHERE area_path=?", pea)]
+assert len(on_pea) == 2 and server.pooled_summary(pea, on_pea, server.boulder_kinds())["whole"] is True, "one rock, every climb placed"
+assert server.pooled_summary(pea, on_pea[:1] + [{"id": on_pea[1]["id"], "view": None}], server.boulder_kinds())["whole"] is False
+body, code = server.mesh_boulder(got["Marie"]["boulder"])
+assert code == 409 and "several boulders" in body["error"], body
+info = server.boulder_info(server.climb_row(got["Marie"]["climb_id"]))
+assert info["kind"] == "group" and "Main zone" in info["why"] and info["url"].endswith("/bas-cuvier"), info
+assert server.mesh_name("Alpha (harvest)") == "Alpha" and server.mesh_name("Peabody (boulder)") == "Peabody" and server.mesh_name("x") == "x"
+assert not server.q("SELECT 1 FROM meshes WHERE name LIKE '% (harvest)' OR name LIKE '% (boulder)'"), "new ones named without"
+server.q("INSERT INTO meshes(id,name,filename,source,created,size,demo) VALUES('oldname00000','Old One (harvest)','m.ply','upload',1,1,0)", write=True)
+server.init_db()
+assert server.q("SELECT name FROM meshes WHERE id='oldname00000'", one=True)["name"] == "Old One", "and old ones, as the server starts"
+# a mesh from before boulders had their own, one climb's project pooling its neighbours' harvests ("(pooled)"): a pool
+# of the climbs whose photos it has, each linked to it
+fresh()
+for t in ("climb_links", "pools"):
+    server.q(f"DELETE FROM {t}", write=True)
+leafp = ["California", "Joshua Tree", "Old Boulder"]
+ids = {n: server.upsert_climb(Climb(source="mountainproject", source_id=sid, url=f"https://x/{sid}", name=n, area_path=leafp))
+       for n, sid in (("Old A", "901"), ("Old B", "902"), ("Old C", "903"))}
+for n, pid in (("Old B", "b0b0b0b0b0b0"), ("Old C", "c0c0c0c0c0c0")):
+    (server.PROJECTS / pid / "photos").mkdir(parents=True)
+    server.q("INSERT INTO projects(id,name,created,kind,climb_id,status,harvest) VALUES(?,?,1,'harvest',?,'harvested','{}')",
+             pid, f"{n} (harvest)", ids[n], write=True)
+old_pid = "a0a0a0a0a0a0"
+(server.PROJECTS / old_pid / "photos").mkdir(parents=True)
+for f in ("mountainproject_a1.jpg", "yt_bbbbbbbbbbb_001.jpg", "ddg_b.jpg"):
+    (server.PROJECTS / old_pid / "photos" / f).write_bytes(b"x")
+(server.PROJECTS / old_pid / "sources.json").write_text(json.dumps({"files": [{"file": "mountainproject_a1.jpg"},
+                                                                          {"file": "yt_bbbbbbbbbbb_001.jpg", "pooled_from": "b0b0b0b0b0b0"},
+                                                                          {"file": "ddg_b.jpg", "pooled_from": "b0b0b0b0b0b0"}]}))
+server.q("INSERT INTO projects(id,name,created,kind,climb_id,status) VALUES(?,?,1,'harvest',?,'done')", old_pid, "Old Boulder (pooled)",
+         ids["Old A"], write=True)
+server.q("INSERT INTO meshes(id,name,filename,source,created,size,demo) VALUES('0ldp00l00000','Old Boulder','m.ply',?,1,1,0)",
+         f"project:{old_pid}", write=True)
+server.link_mesh("0ldp00l00000", ids["Old A"], "auto-linked from reconstruction project")
+server.link_mesh("0ldp00l00000", ids["Old B"], server.SHARED + "Old A")
+server.link_mesh("0ldp00l00000", ids["Old C"], server.SHARED + "Old A")
+assert server.adopt_old_pools(lambda s: None) == 1 and server.adopt_old_pools(lambda s: None) == 0, "once"
+key = server.q("SELECT boulder FROM meshes WHERE id='0ldp00l00000'", one=True)["boulder"]
+assert server.is_pool(key) and sorted(server.pool_members(key)) == sorted([ids["Old A"], ids["Old B"]]), key
+notes = {r["climb_id"]: r["note"] for r in server.q("SELECT climb_id, note FROM mesh_links WHERE mesh_id='0ldp00l00000'")}
+assert notes == {ids["Old A"]: "auto-linked from reconstruction project", ids["Old B"]: server.POOLED_LINK,
+                 ids["Old C"]: server.SHARED + "Old A"}, notes
 server.climbs_mod.fetch_climb_url = fake_fetch
 server.settings().update({"areas.meshes": "climbs"})
 print("boulders told from groups by their pages OK")

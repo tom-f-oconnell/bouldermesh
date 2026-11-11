@@ -252,7 +252,28 @@ stops at 1000 climbs: in a bigger area, these are its most popular 1000.
 
 ## A boulder's own mesh
 
-*Mesh the boulder from all its climbs' photos*, on a climb's card, makes a mesh of the whole rock from
+**What's a boulder.** A climb's lowest Mountain Project area is often its boulder ("Drifter/Smoking Boulder"), but
+sometimes a whole sector of them (Fontainebleau's "Bas Cuvier"). As an area reaches a climb, its lowest area's page is
+read once (`area_kind()` in `backend/climbs/mountainproject.py`, kept in the `boulders` table): its name, then its
+description, by how it speaks of itself ("this boulder", "main zone") and of how many rocks there are. Only one that says
+it's one rock has its climbs pooled into one mesh; a group, or one that doesn't say, has each climb meshed on its own, and
+those harvested for it as one before its page was read are meshed on their own too, whatever the area's limit.
+
+**Pools.** In a group, or one that doesn't say, each climb's own photos are compared with its neighbours' as it's
+done (a few of each, matched as the off-topic filter's same-rock check matches; with many neighbours, each with the 8
+whose photos CLIP finds most alike), and once the area's climbs there are through, those of one rock are meshed together
+(`settle_clusters()`), as a mesh of their own linked to each of them; not again from the same climbs. A climb a pooled
+mesh hardly shows (none of its own photos placed, or fewer than 3 and a quarter of them: a side the others' don't reach,
+or a rock that didn't join) is meshed on its own too, from its own harvest, once. Every model COLMAP makes is recorded
+beside the mesh (`models.json`), and climbs whose photos land in one together are linked by that as well.
+
+**On the cards.** Meshes are named for what they're of, not how they were made. A pooled mesh says how many of its
+climbs it places ("pooled · 7/9 climbs"), and *whole boulder* only when every climb Mountain Project lists on that one rock
+is placed in it. A climb's card says what its lowest area is, linked to its page. The meshes made before boulders had
+their own (from one climb's project pooling its neighbours') became pools as the server started, saying which climbs
+they show.
+
+*Mesh the boulder from all its climbs' photos*, on a climb's card (not for a group), makes a mesh of the whole rock from
 every photo its climbs' harvests kept, in a project and mesh of its own (`<boulder> (boulder)`), which
 leaves each climb's own mesh and harvest as they are. Climbs on it that have never been harvested are
 harvested first, each in a project of its own, as an area would, which an area then meshes from when it
