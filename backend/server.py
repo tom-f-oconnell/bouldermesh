@@ -133,8 +133,9 @@ USAGE_EVERY = 600       # seconds between measurings of DATA_DIR
 # copies of the databases made safely while they're in use, for deploy/backup.sh to copy (0: none)
 SNAPSHOTS = DATA / "snapshots"
 SNAPSHOT_EVERY = float(os.environ.get("SNAPSHOT_MINUTES", "60")) * 60
-# lowest areas named like these hold several rocks, so one mesh can't stand in for all their climbs
-GROUP_AREA = re.compile(r"\b(boulders|area|circuit|bouldering|rocks|blocks|cluster|complex)\b", re.I)
+# lowest areas named like these hold several rocks, so one mesh can't stand in for all their climbs; others are read
+# (their description too) once an area reaches their climbs (boulder_kind())
+GROUP_AREA = mp_mod.GROUP_NAME
 
 # ----------------------------------------------------------------- database
 _db_lock = threading.Lock()
@@ -176,6 +177,10 @@ def init_db() -> None:
           UNIQUE(source, source_id));
         CREATE TABLE IF NOT EXISTS mesh_links(
           mesh_id TEXT, climb_id TEXT, note TEXT, created REAL, PRIMARY KEY(mesh_id, climb_id));
+        -- what each lowest area of climbs is, as its page says (boulder_kind()): one boulder ("boulder"), several
+        -- ("group"), or it doesn't say ("unknown"); key as boulder_key() has it
+        CREATE TABLE IF NOT EXISTS boulders(
+          key TEXT PRIMARY KEY, name TEXT, url TEXT, kind TEXT, why TEXT, routes INTEGER, checked REAL);
         -- visitors' ratings of meshes (1 bad, 2 ok, 3 good) and comments: one each per browser, with the address it last
         -- came from (rate_mesh())
         CREATE TABLE IF NOT EXISTS mesh_ratings(
@@ -249,6 +254,23 @@ def init_db() -> None:
                 con.execute(f"ALTER TABLE campaign_items ADD COLUMN {c} {t}")
         if "replaced_by" not in {r[1] for r in con.execute("PRAGMA table_info(meshes)")}:
             con.execute("ALTER TABLE meshes ADD COLUMN replaced_by TEXT")   # a rebuild of the same photos' project
+        # an area's climbs' boulders were their area paths joined by "/", which a name with one in it ("Drifter/Smoking
+        # Boulder") broke when split again: JSON, as boulder_of() has them, since 2026-11-11
+        for r in con.execute("SELECT campaign_id, source_id, data FROM campaign_items WHERE boulder IS NOT NULL AND boulder NOT LIKE '[%'").fetchall():
+            try:
+                key = boulder_key(json.loads(r["data"]).get("area_path"))
+            except (TypeError, ValueError):
+                key = None
+            con.execute("UPDATE campaign_items SET boulder=? WHERE campaign_id=? AND source_id=?", (key, r["campaign_id"], r["source_id"]))
+        # and so those harvested for a boulder whose mesh was made were marked failed with it: done with that mesh
+        for r in con.execute("SELECT campaign_id, source_id, boulder, note FROM campaign_items WHERE status IN ('failed','skipped') "
+                             "AND note LIKE 'its boulder meshed from %' AND boulder IS NOT NULL").fetchall():
+            p = con.execute("SELECT status, mesh_id FROM projects WHERE kind='boulder' AND boulder=? ORDER BY created DESC LIMIT 1",
+                            (r["boulder"],)).fetchone()
+            if p and p["status"] == "done" and p["mesh_id"]:
+                con.execute("UPDATE campaign_items SET status='done', mesh_id=?, note=? WHERE campaign_id=? AND source_id=?",
+                            (p["mesh_id"], "meshed with its boulder: " + r["note"].removeprefix("its boulder meshed from "),
+                             r["campaign_id"], r["source_id"]))
         # A restart only pauses an area: its climb carries on from the last step it finished, and the
         # area carries on by itself unless someone stopped it. Other jobs are lost, as their queue is, so
         # they're marked interrupted, not failed: Retry carries on with one, or runs one that hadn't started.
@@ -529,9 +551,79 @@ def link_mesh(mid: str, cid: str, note: str | None) -> None:
 
 
 def boulder_key(area_path: list[str] | None) -> str | None:
-    """Which boulder a climb is on, as areas' lists record it: its area path, unless the last area holds
-    several boulders."""
-    return "/".join(area_path) if area_path and not GROUP_AREA.search(area_path[-1]) else None
+    """Which boulder a climb is on, as areas' lists record it: its area path, as JSON (as boulder_of() has it), unless
+    the last area's name says it holds several boulders."""
+    return json.dumps(list(area_path)) if area_path and not GROUP_AREA.search(area_path[-1]) else None
+
+
+def boulder_kinds() -> dict[str, str]:
+    """What each lowest area read so far is (boulder_kind()): {key: "boulder" | "group" | "unknown"}."""
+    return {r["key"]: r["kind"] for r in q("SELECT key, kind FROM boulders WHERE kind IS NOT NULL")}
+
+
+def pools_whole(boulder: str | None, kinds: dict | None = None) -> bool:
+    """Whether a lowest area's climbs are meshed together, as one boulder: unless its page says it holds several, or
+    doesn't say it's one rock (then photos say what pools: climb_clusters()). Not read yet (its page couldn't be had),
+    as before: by its name."""
+    if not boulder:
+        return False
+    kind = (kinds if kinds is not None else boulder_kinds()).get(boulder)
+    return kind in (None, "boulder")
+
+
+def boulder_kind(boulder: str | None, area_url: str | None, log=print) -> str | None:
+    """What a lowest area of climbs is, from its Mountain Project page (mp_mod.area_kind(): its name and description),
+    read once and kept (the boulders table). A group's, or one that doesn't say, climbs harvested for it as one boulder
+    are queued to mesh on their own (settle_groups()). None if it can't be read now.
+
+    Args:
+        area_url: its page, as its climbs' pages name it (Climb.area_urls[-1]).
+    """
+    if not boulder:
+        return None
+    row = q("SELECT kind FROM boulders WHERE key=?", boulder, one=True)
+    if row and row["kind"]:
+        return row["kind"]
+    if not area_url:
+        return None
+    try:
+        area = climbs_mod.fetch_climb_url(area_url, include_children=False)[0]
+    except Exception as e:
+        log(f"couldn't read its area's page, {area_url} ({type(e).__name__}: {e}): pooled by its name, as before")
+        return None
+    kind, why = mp_mod.area_kind(area.name, area.description)
+    for key in dict.fromkeys([boulder, json.dumps(list(area.area_path)) if area.area_path else boulder]):
+        q("INSERT OR REPLACE INTO boulders(key, name, url, kind, why, routes, checked) VALUES(?,?,?,?,?,?,?)", key,
+          (area.name or "").strip("* "), area_url, kind, why, len(area.raw.get("routes") or []), time.time(), write=True)
+    log(f"{(area.name or '').strip('* ')}: " + {"boulder": "one boulder", "group": "several boulders",
+                                                 "unknown": "not clearly one boulder"}[kind] + f", as {why}")
+    if kind != "boulder":
+        settle_groups(boulder)
+    return kind
+
+
+def climb_area_url(climb: Climb) -> str | None:
+    """A climb's lowest area's page: from its own page, read now if it hasn't been (and kept, so a harvest reads it
+    from there)."""
+    if climb.area_urls:
+        return climb.area_urls[-1]
+    if not climb.url:
+        return None
+    try:
+        got = climbs_mod.fetch_climb_url(climb.url, include_children=False)[0]
+    except Exception:
+        return None
+    return got.area_urls[-1] if got.area_urls else None
+
+
+def settle_groups(boulder: str) -> int:
+    """Climbs of a lowest area that isn't one boulder, harvested by areas only for its mesh: each queued to mesh on its
+    own, from its own photos. Returns how many."""
+    rows = q("SELECT campaign_id, source_id FROM campaign_items WHERE boulder=? AND status='harvested' AND redo IS NULL", boulder)
+    for r in rows:
+        set_item(r["campaign_id"], r["source_id"], status="pending", retry=1, redo="rebuild", was="harvested", redo_started=0,
+                 note="its Mountain Project area holds several boulders, or doesn't say it's one: meshed on its own")
+    return len(rows)
 
 
 SHARED = "same boulder as "   # how areas noted linking a climb to the mesh made for another climb on its boulder, before
@@ -622,8 +714,7 @@ def boulder_url(boulder: str) -> str | None:
 def adopt_listed_climbs(boulder: str) -> int:
     """Save the climbs an area lists on a boulder that it hasn't reached yet, from what its list says of them,
     so that a boulder's mesh can include them too. Returns how many."""
-    rows = q("SELECT source_id, data FROM campaign_items WHERE boulder=? AND climb_id IS NULL AND data IS NOT NULL",
-             boulder_key(json.loads(boulder)))
+    rows = q("SELECT source_id, data FROM campaign_items WHERE boulder=? AND climb_id IS NULL AND data IS NOT NULL", boulder)
     for r in rows:
         cid = upsert_climb(Climb.from_dict(json.loads(r["data"])))
         q("UPDATE campaign_items SET climb_id=? WHERE source_id=? AND climb_id IS NULL", cid, r["source_id"], write=True)
@@ -1101,6 +1192,10 @@ def boulder_projects(climb_id: str, but: str | None = None) -> list[Path]:
     c = q("SELECT area_path FROM climbs WHERE id=?", climb_id, one=True)
     if not c or not boulder_key(json.loads(c["area_path"] or "[]")):
         return []
+    if boulder_kinds().get(c["area_path"]) == "group":     # its other climbs are on other rocks
+        rows = q("SELECT id FROM projects WHERE climb_id=? AND kind='harvest' AND harvest IS NOT NULL AND id != ? AND name NOT LIKE ? "
+                 "ORDER BY created DESC", climb_id, but or "", "%" + POOLED)
+        return [PROJECTS / r["id"] for r in rows if (PROJECTS / r["id"] / "photos").is_dir()]
     rows = q("""SELECT p.id FROM projects p JOIN climbs c ON c.id=p.climb_id WHERE c.area_path=? AND p.kind='harvest'
                 AND p.harvest IS NOT NULL AND p.id != ? AND p.name NOT LIKE ? ORDER BY p.created DESC""",
              c["area_path"], but or "", "%" + POOLED)
@@ -1321,7 +1416,7 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
             if not others:
                 raise ValueError("none of its climbs has been harvested")
             lat, lng = boulder_place(boulder)
-            c0 = Climb(source="boulder", source_id=boulder_key(json.loads(boulder)), url="", name=boulder_name(boulder), kind="area",
+            c0 = Climb(source="boulder", source_id="/".join(json.loads(boulder)), url="", name=boulder_name(boulder), kind="area",
                        area_path=json.loads(boulder), boulder_name=boulder_name(boulder), lat=lat, lng=lng,
                        videos=[v for c in climbs for v in Climb.from_dict(json.loads(c["data"])).videos])
             summary = harvest_mod.harvest(c0, pdir, log, set(), tracker=tracker, pool_from=others)
@@ -1545,10 +1640,10 @@ def _in_order(camp: dict, items: list[dict]) -> list[dict]:
 def _units(camp: dict, items: list[dict]) -> list[list[dict]]:
     """An area's climbs in its order, grouped as each mesh is made of them: a boulder's together where it's meshed
     from all their photos (pooled()), each other climb alone; each group where its first climb comes."""
-    together = settings().get("areas.meshes") == "boulders"
+    together, kinds = settings().get("areas.meshes") == "boulders", boulder_kinds()
     units: dict[str, list[dict]] = {}
     for i in _in_order(camp, items):
-        units.setdefault(i["boulder"] if together and i["boulder"] else "\0" + i["source_id"], []).append(i)
+        units.setdefault(i["boulder"] if together and pools_whole(i["boulder"], kinds) else "\0" + i["source_id"], []).append(i)
     return list(units.values())
 
 
@@ -1669,7 +1764,9 @@ def run_campaign_item(camp: dict, item: dict) -> None:
             set_item(cid, sid, climb_id=climb_id, project_id=pid)
             if item.get("retry"):
                 append_log(pid, "-- trying again")
-            pool = pooled(cid, item.get("boulder"))
+            if full["boulder"] and settings().get("areas.meshes") == "boulders":
+                boulder_kind(full["boulder"], climb_area_url(c), lambda s: append_log(pid, s))
+            pool = pooled(cid, full["boulder"])
             try:
                 run_harvest(pid, set(HARVEST_SOURCES), not pool, resume=resume, wait=may_wait(item),
                             need_youtube=not camp.get("without_youtube"))
@@ -1720,7 +1817,7 @@ HARVESTED_NOTE = "harvested for its boulder's mesh, made once the area's climbs 
 def pooled(camp_id: str, boulder: str | None) -> bool:
     """Whether an area's climb on this boulder is only harvested, for its boulder's mesh from every photo of the climbs on
     it (areas.meshes "boulders"), rather than meshed on its own: when the area lists another climb on the boulder."""
-    if not boulder or settings().get("areas.meshes") != "boulders":
+    if not boulder or settings().get("areas.meshes") != "boulders" or not pools_whole(boulder):
         return False
     return q("SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND boulder=?", camp_id, boulder, one=True)["n"] >= 2
 
@@ -1732,7 +1829,7 @@ def settle_boulder(camp_id: str, boulder: str | None) -> bool:
     Returns:
         Whether it was queued.
     """
-    if not boulder:
+    if not boulder or not pools_whole(boulder):
         return False
     items = q("SELECT source_id, status FROM campaign_items WHERE campaign_id=? AND boulder=? ORDER BY rank", camp_id, boulder)
     camp = q("SELECT * FROM campaigns WHERE id=?", camp_id, one=True) or {}
@@ -1744,7 +1841,7 @@ def settle_boulder(camp_id: str, boulder: str | None) -> bool:
     harvested = [i for i in items if i["status"] == "harvested"]
     if not harvested:
         return False
-    mesh = boulder_unchanged(json.dumps(boulder.split("/"))) if camp.get("same_photos_once", 1) != 0 else None
+    mesh = boulder_unchanged(boulder) if camp.get("same_photos_once", 1) != 0 else None
     if mesh:    # as when a climb harvested for it resumes after its mesh was made: that mesh is theirs
         q("UPDATE campaign_items SET status='done', mesh_id=?, retry=0, note=?, updated=? WHERE campaign_id=? AND boulder=? "
           "AND status='harvested'", mesh, SAME_PHOTOS_NOTE, time.time(), camp_id, boulder, write=True)
@@ -1761,7 +1858,7 @@ def boulder_meshed(camp_id: str, source_id: str, end: dict, failed: bool) -> dic
     """After meshing a boulder for an area's climbs harvested for it: each of them, this one too, is done with the
     boulder's mesh, or skipped or failed with it, so that none waits for it any more."""
     boulder = q("SELECT boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", camp_id, source_id, one=True)["boulder"]
-    proj = boulder_project(json.dumps(boulder.split("/"))) if boulder else None     # as boulder_of() has it, from boulder_key()'s
+    proj = boulder_project(boulder) if boulder else None
     if not failed and proj and proj["status"] == "done" and proj["mesh_id"]:
         status, mesh = "done", proj["mesh_id"]
     else:
@@ -2291,7 +2388,7 @@ def boulders_to_mesh(camp_id: str) -> list[dict]:
     have = {r["boulder"] for r in q("SELECT boulder FROM projects WHERE kind='boulder'")}
     out, seen = [], set()
     for r in rows:
-        boulder = json.dumps(r["boulder"].split("/"))
+        boulder = r["boulder"]
         if r["boulder"] not in seen and boulder not in have:
             seen.add(r["boulder"])
             out.append(r)
@@ -2530,7 +2627,7 @@ def _run_boulder_redo(camp: dict, row: dict) -> None:
         end = boulder_meshed(cid, sid, end, failed)
     elif not failed:    # one done or skipped before carried it: its neighbours harvested for it are done with it too
         b = q("SELECT boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)["boulder"]
-        proj = boulder_project(json.dumps(b.split("/"))) if b else None
+        proj = boulder_project(b) if b else None
         if proj and proj["status"] == "done" and proj["mesh_id"]:
             boulder_meshed(cid, sid, end, failed)
     set_item(cid, sid, **end, redo=None, retry=0, redo_started=0)
@@ -3138,7 +3235,7 @@ def boulder_panel(camp: dict, item: dict) -> dict | None:
     boulder = item.get("boulder")
     if not boulder or not pooled(camp["id"], boulder):
         return None
-    key = json.dumps(boulder.split("/"))       # as boulder_of() has it
+    key = boulder
     listed = q("SELECT source_id, name, grade, rank, stars, media, status, climb_id, project_id FROM campaign_items "
                "WHERE campaign_id=? AND boulder=? ORDER BY rank", camp["id"], boulder)
     first = _in_order(camp, listed)[0]["source_id"] if listed else None

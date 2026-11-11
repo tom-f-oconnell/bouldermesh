@@ -1809,7 +1809,7 @@ panel = server.boulder_panel(camp, alpha)
 assert panel["name"] == "Alpha Boulder" and [(r["name"], r["state"], r["why"]) for r in panel["rows"]] == \
     [("Alpha", "pending", True), ("Alpha2", "pending", False)], panel
 assert panel["url"] is None, "no page of a climb on it names its page yet"
-on_it = json.dumps(alpha["boulder"].split("/"))     # a climb on it, whose page names its areas' pages: the last is the boulder's
+on_it = alpha["boulder"]     # a climb on it, whose page names its areas' pages: the last is the boulder's
 server.q("INSERT INTO climbs(id, source, source_id, url, name, area_path, data, created) VALUES(?,?,?,?,?,?,?,?)", "c-alpha3",
          "mountainproject", "999", "https://www.mountainproject.com/route/999/alpha3", "Alpha3", on_it,
          json.dumps({"area_urls": ["https://www.mountainproject.com/area/1/the-area", "https://www.mountainproject.com/area/2/alpha-boulder"]}),
@@ -1825,7 +1825,7 @@ server.set_item(camp["id"], item("Alpha2")["source_id"], status="failed")
 rows = {r["name"]: r for r in server.boulder_panel(camp, item("Alpha"))["rows"]}
 assert (rows["Alpha"]["state"], rows["Alpha"]["photos"], rows["Alpha2"]["state"]) == ("in", 3, "out"), rows
 # the boulder's mesh pooling them: each counted by the harvest its kept photos came from, and its own search apart
-bkey = json.dumps(alpha["boulder"].split("/"))
+bkey = alpha["boulder"]
 bpid = "b2" * 6
 (server.PROJECTS / bpid / "photos").mkdir(parents=True)
 server.q("INSERT INTO projects(id,name,created,kind,boulder,status) VALUES(?,?,?,?,?,?)", bpid, "Alpha Boulder (boulder)", time.time(), "boulder",
@@ -1980,4 +1980,82 @@ assert listed["second"] == "waiting", listed
 server._workers[:] = [server._first]
 server.mp_mod.export_area_csv = real_export
 print("areas in the order entered OK")
+
+# --- what a climb's lowest area is, from its page (name and description): a group's climbs mesh on their own, a
+# boulder's together; one harvested for an area thought a boulder, before its page could be read, meshes on its own -----
+fresh()
+server.q("DELETE FROM boulders", write=True)
+server.settings().update({"areas.meshes": "boulders"})
+PAGES = {"Bas Cuvier": "Main zone in the region, if im not mistaken this is the earliest development in Fontainebleau and has a "
+                       "large amount of high quality test pieces, the area",
+         "Peabody": "The Peabody is a huge boulder with classics on every side."}
+area_url = lambda leaf: f"https://www.mountainproject.com/area/9{len(leaf)}/{leaf.lower().replace(' ', '-')}"  # noqa: E731
+area_down: list[bool] = [False]
+
+
+def with_areas(url, include_children=False):
+    if "/area/" in url:
+        if area_down[0]:
+            raise OSError("Mountain Project is down")
+        fetched.append(url)
+        leaf = next(n for n in PAGES if area_url(n) == url)
+        path = [leaf, "Sector", "* JT Bouldering", "Joshua Tree National Park", "California"][::-1]
+        return [Climb(source="mountainproject", source_id=url.split("/")[-2], url=url, name=leaf, kind="area", area_path=path,
+                      description=PAGES[leaf], raw={"routes": [("r", "x", "V1")] * 2})]
+    out = fake_fetch(url, include_children)
+    for c_ in out:
+        if c_.area_path:
+            c_.area_urls = [area_url(c_.area_path[-1])]
+    return out
+
+
+def leaf_row(rid: int, name: str, stars: float, boulder: str) -> str:    # as row() was (that name is taken above)
+    return (f'{name},"{boulder} > Sector > * JT Bouldering > Joshua Tree National Park > California",'
+            f'https://www.mountainproject.com/route/{rid}/{name.lower()},{stars},-1,Boulder,V{rid},,,34.0,-116.0\n')
+
+
+server.climbs_mod.fetch_climb_url = with_areas
+LEAVES = HEAD + "".join([leaf_row(11, "Marie", 4.0, "Bas Cuvier"), leaf_row(12, "Rose", 3.9, "Bas Cuvier"),
+                         leaf_row(13, "Pea", 3.8, "Peabody"), leaf_row(14, "Body", 3.7, "Peabody")])
+c = server.create_campaign("", "popularity", LEAVES)
+run_all(c["id"])
+got = items(c["id"])
+assert got["Marie"]["status"] == got["Rose"]["status"] == "done" and got["Marie"]["mesh_id"] != got["Rose"]["mesh_id"], \
+    "a sector's climbs: each its own mesh"
+assert got["Pea"]["status"] == got["Body"]["status"] == "done" and got["Pea"]["mesh_id"] == got["Body"]["mesh_id"], "a boulder's: one"
+kinds = {r["name"]: (r["kind"], r["why"]) for r in server.q("SELECT name, kind, why FROM boulders")}
+assert kinds == {"Bas Cuvier": ("group", "its description says 'Main zone'"),
+                 "Peabody": ("boulder", "its description says 'is a huge boulder'")}, kinds
+assert sum("/area/" in u for u in fetched) == 2, "each area's page read once"
+marie = server.climb_row(got["Marie"]["climb_id"])
+assert [p.name for p in server.boulder_projects(marie["id"])] == [got["Marie"]["project_id"]], "a sector's other climbs aren't its anchors"
+assert server.boulder_key(["X", "Bas Cuvier"]) == '["X", "Bas Cuvier"]' and server.boulder_key(["X", "Hall of Horrors Area"]) is None
+# harvested for the sector as one boulder while its page couldn't be read: meshed on its own once it's read
+fresh()
+server.q("DELETE FROM boulders", write=True)
+area_down[0] = True
+c = server.create_campaign("", "popularity", LEAVES.splitlines(True)[0] + "".join(LEAVES.splitlines(True)[1:3]))
+server.next_campaign_step()
+assert items(c["id"])["Marie"]["status"] == "harvested", "not read: pooled by its name, as before"
+area_down[0] = False
+run_all(c["id"])
+got = items(c["id"])
+assert got["Marie"]["status"] == got["Rose"]["status"] == "done" and got["Marie"]["mesh_id"] and got["Marie"]["redo"] is None, got["Marie"]
+assert got["Marie"]["mesh_id"] != got["Rose"]["mesh_id"]
+# boulders kept as their path joined by "/", which a name with one in it broke: JSON once the server starts, and those
+# marked failed with a boulder whose mesh was made, done with it
+fresh()
+slash = ["California", "Bishop Area", "Drifter/Smoking Boulder"]
+c = server.create_campaign("", "popularity", LEAVES.splitlines(True)[0] + leaf_row(21, "Drifter", 4.0, "Drifter/Smoking Boulder"))
+server.q("UPDATE campaign_items SET boulder=?, data=?, status='failed', note=? WHERE campaign_id=?", "/".join(slash),
+         json.dumps({"area_path": slash, "name": "Drifter"}), "its boulder meshed from 234 photos of 9 of its 9 climbs", c["id"], write=True)
+server.q("INSERT INTO projects(id,name,created,kind,boulder,status,mesh_id) VALUES('dr1ft3r00000','x',1,'boulder',?,'done','m-drifter')",
+         json.dumps(slash), write=True)
+server.init_db()
+got = items(c["id"])["Drifter"]
+assert (got["boulder"], got["status"], got["mesh_id"]) == (json.dumps(slash), "done", "m-drifter"), got
+assert got["note"] == "meshed with its boulder: 234 photos of 9 of its 9 climbs", got["note"]
+server.climbs_mod.fetch_climb_url = fake_fetch
+server.settings().update({"areas.meshes": "climbs"})
+print("boulders told from groups by their pages OK")
 print("ALL CAMPAIGN TESTS PASSED")

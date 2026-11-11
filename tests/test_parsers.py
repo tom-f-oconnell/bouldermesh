@@ -256,4 +256,22 @@ common.CACHE_DIR = saved
 import shutil  # noqa: E402
 shutil.rmtree(cache)
 print("shared throttle OK")
+
+# --- one boulder or a group of them, as a lowest area's name or description says -------------------------------------
+for name, desc, kind, why in (
+        ("Bas Cuvier", "Main zone in the region, if im not mistaken this is the earliest development in Fontainebleau and has a "
+         "large amount of high quality test pieces, the area", "group", "'Main zone'"),
+        ("Drifter/Smoking Boulder", None, "boulder", "'Drifter/Smoking Boulder', is a rock's"),
+        ("Hall of Horrors Area", "", "group", "a group's"), ("Roof Rocks", "x", "group", "a group's"),
+        ("* Camp 4 Boulders", None, "group", "a group's"), ("The Egg", None, "boulder", "a rock's"),
+        ("Grandpa Peabody", "The Grandpa Peabody is a huge boulder with many classics.", "boulder", "'is a huge boulder'"),
+        ("Mandala", "The Mandala boulder sits at the top of the hill.", "boulder", "'The Mandala boulder'"),
+        ("Apremont", "Several sectors with dozens of boulders spread through the forest.", "group", "'dozens of boulders'"),
+        ("Cuvier Rempart", "The red circuit starts here.", "group", "'circuit'"),
+        ("Pancake House", "One of the best boulders in the area, with tall slabs.", "unknown", "neither"),
+        ("Pancake House", "", "unknown", "no description"),
+        ("Two Face", "This boulder sits in the main area of the canyon.", "unknown", "both")):
+    got = mp.area_kind(name, desc)
+    assert got[0] == kind and why in got[1], (name, got)
+print("boulders and groups of them OK")
 print("ALL PARSER TESTS PASSED")

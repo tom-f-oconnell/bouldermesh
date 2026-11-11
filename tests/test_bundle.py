@@ -48,7 +48,7 @@ b = {climb("Egg Timer", "2", STUB)}
 S.q("INSERT INTO campaigns(id,name,status) VALUES('c1','Outback','done')", write=True)
 for sid, cid in (("1", a), ("2", b)):
     S.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,boulder,climb_id,status) VALUES('c1',?,1,'x',?,?,'done')",
-        sid, "/".join({PATH!r}), cid, write=True)
+        sid, S.boulder_key({PATH!r}), cid, write=True)
 S.q("INSERT INTO meshes(id,name,filename,source,created,size,demo) VALUES('m0','West Face','mesh.glb','upload',1,1,0)", write=True)
 S.link_mesh("m0", a, "linked at upload")
 """)

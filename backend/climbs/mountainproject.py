@@ -221,6 +221,45 @@ def parse_route(html: str, url: str) -> Climb:
     return c
 
 
+# -- boulders, and areas holding several: Mountain Project's lowest area of a climb is often its boulder, but sometimes a
+# whole sector of them (Fontainebleau's "Bas Cuvier"), which its name or description usually says
+GROUP_NAME = re.compile(r"\b(boulders|areas?|circuits?|bouldering|rocks|blocks|cluster|complex|sectors?|secteurs?|zones?|massifs?)\b", re.I)
+ONE_NAME = re.compile(r"\b(boulder|rock|block|bloc|stone|egg|blob|pebble|monolith|erratic|cube)\b", re.I)
+# in a description: words for the area itself as a group, not "in the area" (its surroundings); quantities of boulders
+_GROUP_SELF = re.compile(r"(?<!\bin )(?<!\bof )(?<!\baround )(?<!\bnear )(?<!\bacross )\b(this|the|main|whole|entire|small|large|big|"
+                         r"popular|first|second|upper|lower|best|biggest|largest|oldest)\s+(area|zone|sector|secteur|circuit|cluster|"
+                         r"complex|crag|massif|boulder ?field|boulder ?garden|section)\b", re.I)
+_GROUP_MANY = re.compile(r"\b(many|several|numerous|lots of|a lot of|plenty of|dozens of|hundreds of|tons of|a handful of|a few|"
+                         r"\d+|two|three|four|five|six|seven|eight|nine|ten)\s+(\w+\s+){0,2}?(boulders|blocks|rocks|blocs|"
+                         r"formations|circuits)\b", re.I)
+_GROUP_WORD = re.compile(r"\b(circuits?|boulder ?fields?|secteurs?)\b", re.I)
+_ONE_SELF = re.compile(r"\b(?:(this|one|single|lone)\s+(\w+\s+){0,2}?(boulder|block|bloc|stone|rock|egg)|"
+                       r"(is|it's|it is)\s+an?\s+(\w+\s+){0,2}?(boulder|block|bloc|stone|egg)|"
+                       r"the\s+(\w+\s+){0,1}?(boulder|block|bloc)(?!\s*(field|garden|park|problems? in)))\b(?!s)", re.I)
+
+
+def area_kind(name: str | None, description: str | None) -> tuple[str, str]:
+    """Whether a lowest area is one boulder or a group of them, as its name or description says: ("boulder" | "group"
+    | "unknown", why). A name says it most plainly ("Drifter/Smoking Boulder", "Hall of Horrors Area"); otherwise
+    the description, by how it speaks of the area itself ("Main zone in the region", "this boulder"), or of how many
+    rocks there are. Unknown when neither says, or the description says both."""
+    name = (name or "").strip("* ")
+    if GROUP_NAME.search(name):
+        return "group", f"its name, {name!r}, is a group's"
+    if ONE_NAME.search(name):
+        return "boulder", f"its name, {name!r}, is a rock's"
+    text = re.sub(r"\s+", " ", description or "")
+    group = _GROUP_SELF.search(text) or _GROUP_MANY.search(text) or _GROUP_WORD.search(text)
+    one = _ONE_SELF.search(text)
+    if group and not one:
+        return "group", f"its description says {group[0]!r}"
+    if one and not group:
+        return "boulder", f"its description says {one[0]!r}"
+    if group and one:
+        return "unknown", f"its description says both {group[0]!r} and {one[0]!r}"
+    return "unknown", "neither its name nor its description says" if text else "its name doesn't say, and it has no description"
+
+
 def parse_area(html: str, url: str) -> tuple[Climb, list[tuple[str, str, str | None]], list[tuple[str, str]]]:
     """Returns (area record, [(route_url, name, grade)], [(child_area_url, name)])."""
     doc = htmlmini.parse(html)
@@ -300,7 +339,10 @@ def fetch(url: str, include_children: bool = True, **_) -> list[Climb]:
                 area, _, _ = parse_area(http.get_text(c.area_urls[-1]), c.area_urls[-1])
                 if area.lat is not None:
                     c.lat, c.lng, c.coord_source, c.elevation_m = area.lat, area.lng, "parent-area", area.elevation_m
-                c.images += [m for m in area.images if m.url not in {i.url for i in c.images}]
+                kind, why = area_kind(area.name, area.description)
+                c.raw["area_kind"] = [kind, why]
+                if kind != "group":     # a sector's photos are of its other rocks too
+                    c.images += [m for m in area.images if m.url not in {i.url for i in c.images}]
             except Exception as e:  # parent fetch is best-effort
                 c.raw["parent_error"] = str(e)
         return [c]
