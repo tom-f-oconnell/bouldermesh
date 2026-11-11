@@ -2029,7 +2029,7 @@ assert kinds == {"Bas Cuvier": ("group", "its description says 'Main zone'"),
 assert sum("/area/" in u for u in fetched) == 2, "each area's page read once"
 marie = server.climb_row(got["Marie"]["climb_id"])
 assert [p.name for p in server.boulder_projects(marie["id"])] == [got["Marie"]["project_id"]], "a sector's other climbs aren't its anchors"
-assert server.boulder_key(["X", "Bas Cuvier"]) == '["X", "Bas Cuvier"]' and server.boulder_key(["X", "Hall of Horrors Area"]) is None
+assert server.boulder_key(["X", "Bas Cuvier"]) == "[\"X\", \"Bas Cuvier\"]" and server.leaf_kind(server.boulder_key(["X", "Hall of Horrors Area"])) == "group"
 # harvested for the sector as one boulder while its page couldn't be read: meshed on its own once it's read
 fresh()
 server.q("DELETE FROM boulders", write=True)
