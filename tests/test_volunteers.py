@@ -841,6 +841,25 @@ def updating() -> None:
         r = run()
         volunteers.CLIENT_VERSION = old_min
         assert r.returncode == 0 and f"updated itself from version {SCRIPT_VERSION} to 99" in r.stdout and here.read_text() == NEWER, r.stdout + r.stderr
+        # the real script, served: the server reads its version, and a copy as version 4 had it (a comment after its
+        # number, and the stricter check of the one it downloads) takes it in place, and runs it
+        volunteers.SCRIPT = SCRIPT
+        assert registration.served_script(SCRIPT) == {"version": SCRIPT_VERSION, "sha256": hashlib.sha256(SCRIPT.read_bytes()).hexdigest()}
+        assert re.search(rb"^VERSION = (\d+)$", SCRIPT.read_bytes(), re.M), "alone on its line, as scripts before 8 read it"
+        old = re.sub(r"^VERSION = \d+$", "VERSION = 4                 # as 4 had it", SCRIPT.read_text(), count=1, flags=re.M)
+        assert old.count('rb"^VERSION = (\\d+)\\b"') == 1
+        here.write_text(old.replace('rb"^VERSION = (\\d+)\\b"', 'rb"^VERSION = (\\d+)$"'))
+        proc = subprocess.Popen([sys.executable, str(here), "--server", base, "--token", token, "--agree", "--yt-dlp", str(fake),
+                                 "--home", str(TMP / "hu4")], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        try:
+            for _ in range(300):
+                if here.read_bytes() == SCRIPT.read_bytes():
+                    break
+                time.sleep(0.1)
+        finally:
+            proc.terminate()
+            out = proc.communicate(timeout=30)[0]
+        assert here.read_bytes() == SCRIPT.read_bytes() and f"updated itself from version 4 to {SCRIPT_VERSION}" in out, out
     finally:
         volunteers.SCRIPT = served
         httpd.shutdown()

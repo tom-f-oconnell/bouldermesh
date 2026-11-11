@@ -118,7 +118,7 @@ def served_script(path: Path) -> dict | None:
         key = (st.st_mtime, st.st_size)
         if _served.get(str(path), (None,))[0] != key:
             data = path.read_bytes()
-            m = re.search(rb"^VERSION = (\d+)$", data, re.M)
+            m = re.search(rb"^VERSION = (\d+)\b", data, re.M)
             _served[str(path)] = (key, {"version": int(m[1]), "sha256": hashlib.sha256(data).hexdigest()} if m else None)
         return _served[str(path)][1]
     except OSError:

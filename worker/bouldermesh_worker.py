@@ -54,11 +54,15 @@ import urllib.request
 from collections import deque
 from pathlib import Path
 
-VERSION = 7                 # 2: takes task.json for a reconstruction; 3: updates itself when the server says to;
-                            # 4: holds back while others keep its GPU busy or its memory is short, and says so;
-                            # 5: says goodbye when it stops, so that the server knows at once it's gone;
-                            # 6: updates itself when downloaded into another git repository's folder, and says why if not;
-                            # 7: keeps a record of its time (usage.jsonl), and says once an hour how the hour went
+# The script's version, which the server compares with the one it serves to tell a running copy to update itself. Keep
+# it alone on its line, with nothing after the number: scripts before 8 find it in the newer one only as that.
+# 2: takes task.json for a reconstruction; 3: updates itself when the server says to;
+# 4: holds back while others keep its GPU busy or its memory is short, and says so;
+# 5: says goodbye when it stops, so that the server knows at once it's gone;
+# 6: updates itself when downloaded into another git repository's folder, and says why if not;
+# 7: keeps a record of its time (usage.jsonl), and says once an hour how the hour went;
+# 8: its version alone on its line, as updating needs (with a comment after it, the server never offered an update)
+VERSION = 8
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale")     # remote_job.py's: meshing a climb, finding its beta, finding its size
@@ -250,7 +254,7 @@ def update_itself(server: str, info: dict | None, keep: Path) -> bool:
         req = urllib.request.Request(server.rstrip("/") + SCRIPT_PATH, headers={"User-Agent": f"{AGENT}/{VERSION}"})
         with urllib.request.urlopen(req, timeout=120) as r:
             data = r.read(2**21 + 1)
-        found = re.search(rb"^VERSION = (\d+)$", data, re.M)
+        found = re.search(rb"^VERSION = (\d+)\b", data, re.M)
         if len(data) > 2**21 or hashlib.sha256(data).hexdigest() != sha or not found or int(found[1]) != version:
             log(f"the newer script from {server} wasn't what the server said it would be: carrying on with this one")
             return False

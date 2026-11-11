@@ -38,11 +38,15 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 7                 # 3: updates itself when the server says to; 4: then updates yt-dlp and Deno at once;
-                            # 5: tells the server of signs YouTube is degrading or throttling it, and rests when throttled;
-                            # 6: says it's still there while it waits (every 10 min), and goodbye when it stops;
-                            # 7: updates itself when downloaded into another git repository's folder, says why if it
-                            # doesn't, and takes "This video is unavailable" as for good
+# The script's version, which the server compares with the one it serves to tell a running copy to update itself. Keep
+# it alone on its line, with nothing after the number: scripts before 8 find it in the newer one only as that.
+# 3: updates itself when the server says to; 4: then updates yt-dlp and Deno at once;
+# 5: tells the server of signs YouTube is degrading or throttling it, and rests when throttled;
+# 6: says it's still there while it waits (every 10 min), and goodbye when it stops;
+# 7: updates itself when downloaded into another git repository's folder, says why if it doesn't, and takes "This video
+#    is unavailable" as for good;
+# 8: its version alone on its line, as updating needs (with a comment after it, the server never offered an update)
+VERSION = 8
 SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
 AGENT = "bouldermesh-volunteer"
 TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
@@ -230,7 +234,7 @@ def update_itself(server: str, info: dict | None, keep: Path) -> bool:
         req = urllib.request.Request(server.rstrip("/") + SCRIPT_PATH, headers={"User-Agent": f"{AGENT}/{VERSION}"})
         with urllib.request.urlopen(req, timeout=120) as r:
             data = r.read(2**21 + 1)
-        found = re.search(rb"^VERSION = (\d+)$", data, re.M)
+        found = re.search(rb"^VERSION = (\d+)\b", data, re.M)
         if len(data) > 2**21 or hashlib.sha256(data).hexdigest() != sha or not found or int(found[1]) != version:
             log(f"the newer script from {server} wasn't what the server said it would be: carrying on with this one")
             return False

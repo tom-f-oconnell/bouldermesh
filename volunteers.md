@@ -321,6 +321,8 @@ videos and details: download it again for searches.
 
 From version 3, the script updates itself: each time it asks for work it says it can, and when the server serves a
 newer version (its `VERSION` line is higher), the server answers with that version and its SHA-256 instead of work.
+(Until version 8 none ever did: the server read the version only from a `VERSION = <n>` line with nothing after the
+number, and the line had a comment after it. Copies from 3 on take 8 by themselves; keep that line alone.)
 The script downloads it from the same server, checks both, replaces its own file (keeping the one before as
 `previous.py` in its folder) and starts again with the same arguments. It only asks between one fetch and the next, so
 nothing is cut short. It doesn't over plain HTTP (except to this machine), where it can't write its own file, as the
