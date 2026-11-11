@@ -461,7 +461,11 @@ To run it under systemd as above, put `COMPOSE_FILE=docker-compose.yml:docker-co
 **Deploying, once the public server harvests by itself** (`HARVESTS_HERE=1` in its `.env`), from hal's checkout, where
 the images are built (hal's own copy of the site was stopped on Nov 10, 2026: a deploy is only the public server's):
 
-    deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public && ssh bouldermesh 'cd bouldermesh && git pull --ff-only && sudo systemctl restart bouldermesh'
+    ./deploy.sh
+
+which runs `deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public && ssh bouldermesh 'cd bouldermesh && git
+pull --ff-only && sudo systemctl restart bouldermesh'`, and then, if hal's worker runs here as a system service
+(`bouldermesh-worker`, loaded and active), restarts it with sudo, so that it runs the worker script as checked out.
 
 - It builds what's committed, other sessions' commits too: `git log` first says what would go.
 - Changes to the database apply themselves when the server starts, and the Caddyfile and Compose files come with the
