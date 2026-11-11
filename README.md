@@ -499,8 +499,9 @@ photos the filter rejected, which are only kept to put one back by hand and were
 videos have a cap of their own within it, `VIDEO_CACHE_GB`. With notifications on, your phone is told when less than
 0.5% of the cap is left (about 5 climbs' and boulders' worth at 60 GB), and when the cap is reached, each once until
 there's room again; *Room for data* changes the %, or sets a number of GB instead, and says how many climbs' worth both
-are. ship.sh deletes the server's images no container uses before sending a new one, so that each ship leaves only the
-build before.
+are. Above 70% of the cap, what the backup holds and nothing uses is offloaded to it ("Offloading to the backup", below).
+ship.sh deletes the server's images no container uses before sending a new one, so that each ship leaves only the build
+before.
 
 **What it doesn't do.** There's no rate limiting, and `GET /api/meshes` reads every mesh's records for each request, so a
 busy site wants a cache in front: Cloudflare's free plan, with the name proxied and SSL mode *Full (strict)*, caches the
@@ -539,6 +540,27 @@ It uses a key of its own with no passphrase, which the server takes only for rea
 To restore onto a new server, put `current/data` in its checkout's `data/` and `current/.env` beside it, then copy a
 night's `db/<date>/bouldermesh.sqlite.backup` and `volunteers.sqlite.backup` into `data/`, and `machines.sqlite.backup`
 into `data/compute/`, each without its `.backup`.
+
+**Offloading to the backup.** Above 70% of the cap (*Room for data*'s *offload* %, `storage.offload_percent`; 0 never),
+the server deletes, down to that %, what the backup holds and nothing uses any more, oldest first in each kind and in this
+order: photos the filter rejected, after 3 days; fetched videos, once every climb they're of has been meshed (or skipped
+or failed) and beta has been found in each of its meshes; the photos and people masks of climbs and boulders meshed 2
+weeks ago, or skipped a month ago, none of whose boulder's climbs is still to be harvested or meshed; and the big files of
+older versions of meshes replaced 2 weeks ago. The web cache's month-old pages go too (the backup keeps none). Meshes,
+the databases, and each climb's and mesh's records always stay. In two steps, so that nothing goes that the backup can't
+be shown to hold: what's to go is marked (`data/offload.list`, which the backup reads first, and keeps whatever the server
+does); it's deleted once the backup says a copy that began after the mark went well. A job that needs photos that went
+(rebuilding, a boulder's mesh pooling a climb's, finding beta or size) asks for them back and waits, as for a machine;
+the backup sends them back (into `data/restore-inbox/`, which the server puts in place). *Room for data* shows what's
+offloaded, marked, and asked back. That needs a second key on hal, which the server takes only for the handshake
+(`deploy/backup-handshake.py`: saying when a good copy began, what's wanted back, and sending it):
+
+    ssh-keygen -t ed25519 -N '' -C 'bouldermesh backup handshake' -f ~/.ssh/bouldermesh_handshake
+    printf 'command="python3 /home/tom/bouldermesh/deploy/backup-handshake.py",restrict %s\n' "$(cat ~/.ssh/bouldermesh_handshake.pub)" | ssh bouldermesh 'cat >> ~/.ssh/authorized_keys'
+    sudo cp deploy/bouldermesh-restore.service deploy/bouldermesh-restore.timer /etc/systemd/system/
+    sudo systemctl daemon-reload && sudo systemctl enable --now bouldermesh-restore.timer     # what's wanted back, half-hourly
+
+Without that key nothing is offloaded. backup.sh finds it as `~/.ssh/bouldermesh_handshake` (`BACKUP_HANDSHAKE_KEY`).
 
 **Troubleshooting.** The commands in `cli.py` that read the data run inside the container, where it is (`/data`), from
 the checkout whose `.env` names the compose files. On the server:

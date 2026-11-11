@@ -48,6 +48,7 @@ import diagnostics  # noqa: E402
 import meshclean  # noqa: E402
 import meshmetrics  # noqa: E402
 import meshopts  # noqa: E402
+import offload as offload_mod  # noqa: E402
 import orientation  # noqa: E402
 import policy  # noqa: E402
 import provenance  # noqa: E402
@@ -198,6 +199,7 @@ def init_db() -> None:
           channel_url TEXT PRIMARY KEY, channel_id TEXT, name TEXT, description TEXT, fetched REAL,
           height_cm REAL, wingspan_cm REAL, ape_index_cm REAL, first_person INTEGER, quotes TEXT);
         """)
+        con.execute(offload_mod.SCHEMA)     # what's been offloaded to the backup, or marked to be (offload.py)
         # migrations for databases created by v0.1
         cols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
         # job: the last job queued for it outside an area, to run again, as it was asked for, if a restart stops it;
@@ -577,6 +579,8 @@ def boulder_unchanged(boulder: str) -> str | None:
         return None
     for h in {h for hs in then.values() for h in hs}:
         photos = PROJECTS / h / "photos"
+        if photos_away(h):      # offloaded to the backup, as they were
+            continue
         try:
             if max([photos.stat().st_mtime] + [f.stat().st_mtime for f in photos.iterdir()]) > pooled_at:
                 return None     # harvested again since
@@ -829,6 +833,12 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
     q("UPDATE projects SET status='running' WHERE id=?", pid, write=True)
     started, log_from = time.time(), (pdir / "job.log").stat().st_size if (pdir / "job.log").exists() else 0
     log = lambda s: append_log(pid, s)  # noqa: E731
+    try:
+        need_back([pid], "meshing it")
+    except PhotosAway as e:     # it waits for them, as for a machine
+        log(str(e))
+        q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
+        raise
     tracker = tracker or tracker_for(pid, pipeline.steps())
     try:
         work = pdir / "work"
@@ -1114,6 +1124,7 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                 for partial in ("photos", "rejected"):
                     shutil.rmtree(pdir / partial, ignore_errors=True)
                 (pdir / "photos").mkdir()
+                offload_mod.drop(q, [f"projects/{pid}/{part}" for part in ("photos", "masks", "rejected")])     # made again
             if stub:
                 tracker.update("page", 0.1, "up to a minute on Mountain Project")
                 log(f"fetching the problem page for its photos/videos: {c.url}")
@@ -1237,6 +1248,12 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
     proj = q("SELECT boulder, harvest FROM projects WHERE id=?", pid, one=True)
     boulder, pdir = proj["boulder"], PROJECTS / pid
     finished = proj["harvest"] if resume else None
+    if not finished:    # the harvests it pools: back from the backup first, if any were offloaded
+        try:
+            need_back([h for c in boulder_climbs(boulder) for h in climb_harvests(c["id"])], f"pooling {boulder_name(boulder)}")
+        except PhotosAway as e:
+            append_log(pid, f"-- {e}")
+            raise
     if resume:
         append_log(pid, "-- carrying on after an interruption")
     elif proj["harvest"]:
@@ -1870,13 +1887,174 @@ def check_room() -> None:
         _room_warned = False
 
 
+# ------------------------------------------------------------------ offloading to the backup (offload.py)
+# Above storage.offload_percent of the cap, what the backup on another machine holds and nothing here uses any more is
+# deleted, oldest first in each kind, in this order, down to that %: photos the filter rejected (after REJECTED_DAYS);
+# fetched videos, once every climb they're of has been meshed (or skipped, or failed) and beta has been found in each of
+# its meshes; the photos and people masks of climbs and boulders meshed MESHED_DAYS ago, or skipped SKIPPED_DAYS ago,
+# none of whose boulder's climbs are still to be harvested or meshed; and the big files of older versions of meshes
+# replaced MESHED_DAYS ago. The web cache's pages older than CACHE_DAYS go too, without the backup (it keeps none).
+REJECTED_DAYS, MESHED_DAYS, SKIPPED_DAYS, CACHE_DAYS = 3, 14, 30, 30
+MESH_FILE_MIN = 2**20     # an older mesh's files this big or bigger (its mesh and textures, not its small records)
+OFFLOAD_KINDS = ("rejected photos", "videos", "photos", "older meshes")
+
+
+class PhotosAway(compute.ComputeUnavailable):
+    """What a job needs is in the backup: it's been asked for back, and the job waits for it, as for a machine."""
+
+
+def need_back(pids, what: str) -> None:
+    """Ask for the photos and masks of these projects back, if they're offloaded, and raise PhotosAway if any were."""
+    asked = offload_mod.want(DATA, q, [f"projects/{p}/{part}" for p in pids for part in ("photos", "masks")])
+    if asked:
+        raise PhotosAway(f"{what}: its photos are in the backup, and have been asked for back, which the backup's next "
+                         "run brings (half-hourly, with deploy/bouldermesh-restore.timer)")
+
+
+def photos_away(pid: str) -> bool:
+    return offload_mod.away(q, f"projects/{pid}/photos")
+
+
+def _in_play() -> tuple[set[str], set[str]]:
+    """Climbs still to be harvested or meshed, and the boulders (area paths) they're on, whose climbs' photos a
+    boulder's mesh may still pool."""
+    climbs = {r["climb_id"] for r in q("SELECT climb_id FROM campaign_items WHERE climb_id IS NOT NULL AND status IN "
+                                       "('pending','running','waiting','harvested')")}
+    climbs |= {r["climb_id"] for r in q("SELECT climb_id FROM projects WHERE climb_id IS NOT NULL AND status IN "
+                                         "('new','queued','harvesting','running','waiting','stopped','interrupted','failed')")}
+    boulders = {r["area_path"] for r in q(f"SELECT area_path FROM climbs WHERE id IN ({','.join('?' * len(climbs))})", *climbs)} if climbs else set()
+    boulders |= {r["boulder"] for r in q("SELECT boulder FROM projects WHERE kind='boulder' AND status IN "
+                                         "('queued','harvesting','running','stopped','interrupted')") if r["boulder"]}
+    return climbs, boulders
+
+
+def _beta_found(mid: str) -> bool:
+    return (beta_mod.load(MESHES / mid) or {}).get("status") == "done"
+
+
+def offload_candidates() -> list[tuple[str, str, str]]:
+    """What may be offloaded now, in the order it goes: (path under the data folder, kind, what it's of)."""
+    now, out = time.time(), []
+    busy, boulders = _in_play()
+    projects = {p["id"]: p for p in q("SELECT p.id, p.kind, p.status, p.created, p.mesh_id, p.climb_id, p.boulder, c.area_path, "
+                                      "m.created AS meshed FROM projects p LEFT JOIN climbs c ON c.id=p.climb_id "
+                                      "LEFT JOIN meshes m ON m.id=p.mesh_id")}
+    # photos the filter rejected
+    for d in sorted(PROJECTS.iterdir(), key=lambda d: d.name) if PROJECTS.exists() else []:
+        rej = d / "rejected"
+        files = [f for f in rej.iterdir() if f.is_file()] if rej.is_dir() else []
+        if files and max(f.stat().st_mtime for f in files) < now - REJECTED_DAYS * 86400:
+            out.append((f"projects/{d.name}/rejected", "rejected photos", d.name))
+    # fetched videos, once every climb they're of was meshed (or not) and beta found in each of its meshes
+    of: dict[str, set[str]] = {}
+    for r in q("SELECT climb_id, url FROM climb_videos"):
+        vid = youtube_mod.video_id(r["url"])
+        if vid:
+            of.setdefault(vid, set()).add(r["climb_id"])
+    tried = {r["climb_id"] for r in q("SELECT DISTINCT climb_id FROM projects WHERE kind='harvest' AND harvest IS NOT NULL AND climb_id IS NOT NULL")}
+    own: dict[str, list[str]] = {}
+    for r in q("SELECT l.climb_id, l.mesh_id FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE m.replaced_by IS NULL "
+               "AND COALESCE(l.note,'') NOT LIKE ?", SHARED + "%"):
+        own.setdefault(r["climb_id"], []).append(r["mesh_id"])
+    of_boulder = {r["boulder"]: r["id"] for r in q("SELECT id, boulder FROM meshes WHERE boulder IS NOT NULL AND replaced_by IS NULL")}
+    area = {r["id"]: r["area_path"] for r in q("SELECT id, area_path FROM climbs")}
+    vdir = youtube_mod.VIDEO_CACHE
+    for f in sorted((x for x in vdir.iterdir() if x.suffix not in (".json", ".part")), key=lambda x: x.stat().st_mtime) if vdir.is_dir() else []:
+        vid = f.name.split(".")[0]
+        climbs = of.get(vid, set())
+        if not climbs:
+            done = f.stat().st_mtime < now - CACHE_DAYS * 86400     # of no climb known: once it's sat a while
+        else:
+            done = all(c not in busy and c in tried and all(_beta_found(m) for m in own.get(c, []) + (
+                [of_boulder[area[c]]] if area.get(c) in of_boulder else [])) for c in climbs)
+        if done:
+            out.append((f"cache/videos/{f.name}", "videos", vid))
+    # photos and masks of climbs and boulders meshed a while ago, or skipped a while ago, that nothing still pools
+    for p in sorted(projects.values(), key=lambda p: p["created"] or 0):
+        boulder = p["boulder"] if p["kind"] == "boulder" else p["area_path"]
+        if p["kind"] not in ("harvest", "boulder") or p["climb_id"] in busy or boulder in boulders:
+            continue
+        meshed = p["status"] == "done" and p["meshed"] and p["meshed"] < now - MESHED_DAYS * 86400
+        skipped = p["status"] == "harvested" and p["kind"] == "harvest" and (p["created"] or now) < now - SKIPPED_DAYS * 86400
+        if meshed or skipped:
+            for part in ("photos", "masks"):
+                d = PROJECTS / p["id"] / part
+                if d.is_dir() and any(d.iterdir()):
+                    out.append((f"projects/{p['id']}/{part}", "photos", p["id"]))
+    # older versions of meshes, replaced a while ago: their big files
+    for m in q("SELECT m.id FROM meshes m JOIN meshes n ON n.id=m.replaced_by WHERE n.created < ? ORDER BY m.created",
+               now - MESHED_DAYS * 86400):
+        d = MESHES / m["id"]
+        for f in sorted(d.iterdir()) if d.is_dir() else []:
+            if f.is_file() and f.suffix != ".json" and f.stat().st_size >= MESH_FILE_MIN and offload_mod.PATH.fullmatch(f"meshes/{m['id']}/{f.name}"):
+                out.append((f"meshes/{m['id']}/{f.name}", "older meshes", m["id"]))
+    return out
+
+
+def prune_web_cache(need: float) -> int:
+    """Delete web cache files older than CACHE_DAYS, oldest first, until need bytes are freed: the backup keeps none,
+    and they're fetched again if wanted. Returns the bytes freed."""
+    root, freed = DATA / "cache" / "http", 0
+    old = sorted(((f.stat().st_mtime, f) for f in root.rglob("*") if f.is_file()), key=lambda x: x[0]) if root.is_dir() else []
+    for t, f in old:
+        if t >= time.time() - CACHE_DAYS * 86400 or freed >= need:
+            break
+        n = f.stat().st_size
+        f.unlink(missing_ok=True)
+        freed += n
+    return freed
+
+
+def offload_step() -> dict:
+    """What making room does after each measuring: put back what the backup sent back; and above storage.offload_percent
+    of the cap, delete what was marked before the backup's last good copy began and is still to go, the web cache's
+    old pages, and mark more to go, down to that %. Returns what it did."""
+    did = {"back": offload_mod.take_restores(DATA, q, log_server)}
+    cap, pct = data_cap(), settings().get("storage.offload_percent")
+    marked = q("SELECT path, bytes FROM offloads WHERE done IS NULL")
+    if not cap or not pct or "total" not in _usage:
+        if marked:      # nothing's to go: what was marked stays here
+            offload_mod.drop(q, [r["path"] for r in marked])
+            offload_mod.write_lists(DATA, q)
+        return did
+    for r in q("SELECT path FROM offloads WHERE done IS NOT NULL AND wanted IS NULL"):    # made again since (harvested anew)
+        p = DATA / r["path"]
+        if (p.is_file() and p.stat().st_size) or (p.is_dir() and any(p.iterdir())):
+            offload_mod.drop(q, [r["path"]])
+    need = _usage["total"] - cap * pct / 100
+    if need <= 0:
+        offload_mod.drop(q, [r["path"] for r in marked])
+        offload_mod.write_lists(DATA, q)
+        return did
+    eligible = {c[0]: c for c in offload_candidates()}
+    did["freed"] = offload_mod.finish(DATA, q, lambda row: row["path"] in eligible, log_server, need)
+    did["cache"] = prune_web_cache(need - did["freed"])
+    left = need - did["freed"] - did["cache"] - sum(r["bytes"] or 0 for r in q("SELECT bytes FROM offloads WHERE done IS NULL"))
+    have = {r["path"] for r in q("SELECT path FROM offloads")}
+    for path, kind, ref in eligible.values():
+        if left <= 0:
+            break
+        if path not in have:
+            left -= offload_mod.mark(DATA, q, path, kind, ref)
+    offload_mod.write_lists(DATA, q)
+    if did["freed"] or did["cache"]:
+        measure_usage()
+    return did
+
+
+def log_server(line: str) -> None:
+    print(line, flush=True)
+
+
 def watch_usage() -> None:
-    """Measure DATA_DIR now and every USAGE_EVERY seconds, while there's a cap, and say when it's nearly reached."""
+    """Measure DATA_DIR now and every USAGE_EVERY seconds, while there's a cap, say when it's nearly reached, and make room
+    by offloading to the backup; and put back what the backup sends back, cap or not."""
     while True:
         try:
             if data_cap():
                 measure_usage()
                 check_room()
+            offload_step()
         except Exception as e:  # never let the thread die
             print(f"usage error: {e!r}", flush=True)
         time.sleep(USAGE_EVERY)
@@ -2336,6 +2514,7 @@ def run_beta(mid: str) -> None:
         with open(mesh_dir / "beta.log", "a") as f:
             f.write(line.rstrip() + "\n")
     try:
+        need_back([pid], "finding its beta")
         if offloading():
             remote_beta(mid, pid, log)
         else:
@@ -2572,6 +2751,7 @@ def run_scale(mid: str) -> None:
     climbs = [json.loads(r["data"]) for r in q("SELECT c.data FROM mesh_links l JOIN climbs c ON c.id=l.climb_id WHERE l.mesh_id=?", mid)
               or q("SELECT c.data FROM meshes m JOIN climbs c ON c.area_path=m.boulder WHERE m.id=?", mid)]   # a boulder's: all on it
     try:
+        need_back([pid], "finding its size")
         if offloading():
             remote_scale(mid, pid, climbs, log)
         else:
@@ -2688,6 +2868,9 @@ def run_retexture(mid: str) -> None:
         with open(mesh_dir / "retexture.log", "a") as f:
             f.write(line.rstrip() + "\n")
     try:
+        if photos_away(m["source"].split(":", 1)[1]):
+            log("its photos are in the backup: not textured again (Make textures... once they're back)")
+            return
         retexture.retexture(mesh_dir, PROJECTS / m["source"].split(":", 1)[1] / "photos", log, video_info)
     except Exception as e:
         log(f"FAILED: {type(e).__name__}: {e}")
@@ -4315,7 +4498,8 @@ def admin_state() -> dict:
             "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE, "machines_image": MACHINES_IMAGE,
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
             "notify": NOTIFIER.state(),
-            "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary()}
+            "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
+            "offload": offload_mod.state(DATA, q)}
 
 
 def admin_test(_: dict) -> dict:
@@ -4366,16 +4550,20 @@ def admin_measure(_: dict) -> dict:
 
 def admin_retexture(_: dict) -> dict:
     """Queue every mesh that can be textured from only its photos that are free to copy."""
-    n = 0
+    n = away = 0
     for m in q("SELECT id, source FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%'"):
         d = MESHES / m["id"]
         if m["id"] in _retexturing or policy.mesh_permitted(mesh_record(d)):
+            continue
+        if photos_away(m["source"].split(":", 1)[1]):
+            away += 1
             continue
         if retexture.usable(d, PROJECTS / m["source"].split(":", 1)[1] / "photos", video_info)[0]:
             _retexturing.add(m["id"])
             queue_job({"type": "retexture", "mid": m["id"]})
             n += 1
-    return {"result": f"queued {n} mesh(es) to be textured from only the photos free to copy"}
+    return {"result": f"queued {n} mesh(es) to be textured from only the photos free to copy"
+                      + (f"; {away} whose photos are in the backup weren't" if away else "")}
 
 
 def main() -> None:

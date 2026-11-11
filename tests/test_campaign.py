@@ -1638,4 +1638,110 @@ d = server.create_campaign("", "popularity", sub({"Gamma"}))
 assert (d["mapper_below"], d["mapper_more"]) == (75, 1), "the defaults"
 pipeline.reconstruct = fake_reconstruct
 print("the mapper's settings OK")
+
+# --- offloading to the backup (offload.py): marked, deleted only once the backup's copy began after, wanted back, put back
+import offload  # noqa: E402
+
+fresh()
+server.q("DELETE FROM offloads", write=True)
+day, now = 86400, time.time()
+D = server.DATA
+
+
+def put(rel: str, n: int = 2**20, age: float = 0) -> Path:
+    f = D / rel
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"x" * n)
+    os.utime(f, (now - age, now - age))
+    return f
+
+
+def climb(cid: str, path: list) -> None:
+    server.q("INSERT INTO climbs(id,source,source_id,name,area_path,data) VALUES(?,?,?,?,?,?)", cid, "test", cid, cid, json.dumps(path), "{}",
+             write=True)
+
+
+def project(pid: str, cid: str | None, status: str, mesh: str | None = None, kind: str = "harvest", age: float = 20 * day) -> None:
+    server.q("INSERT INTO projects(id,name,created,kind,status,climb_id,mesh_id,harvest) VALUES(?,?,?,?,?,?,?,?)", pid, pid, now - age, kind,
+             status, cid, mesh, "{}", write=True)
+
+
+def mesh(mid: str, age: float, replaced_by: str | None = None, climb_id: str | None = None) -> None:
+    server.q("INSERT INTO meshes(id,name,filename,source,created,size,demo,replaced_by) VALUES(?,?,?,?,?,?,?,?)", mid, mid, "mesh.glb",
+             "upload", now - age, 1, 0, replaced_by, write=True)
+    (server.MESHES / mid).mkdir(parents=True, exist_ok=True)
+    if climb_id:
+        server.link_mesh(mid, climb_id, "auto-linked from reconstruction project")
+
+
+for cid, rock in (("c1", "Rock One"), ("c2", "Rock Two"), ("c4", "Rock Four"), ("c5", "Rock Five")):
+    climb(cid, ["Somewhere", rock])
+mesh("a1" * 6, 20 * day, climb_id="c1")
+mesh("a0" * 6, 30 * day, replaced_by="a1" * 6)
+put(f"meshes/{'a0' * 6}/mesh.glb", 2 * 2**20)
+put(f"meshes/{'a0' * 6}/sources.json", 10)
+mesh("a2" * 6, 2 * day, climb_id="c2")
+mesh("a5" * 6, 20 * day, climb_id="c5")
+project("d1" * 6, "c1", "done", "a1" * 6)                   # meshed 20 days ago: its photos may go
+project("d2" * 6, "c2", "done", "a2" * 6)                   # meshed 2 days ago: not yet
+project("d4" * 6, "c4", "done", "a1" * 6)                   # its climb is still to be meshed in an area
+c = server.create_campaign("", "popularity", sub({"Alpha"}), start=False)
+server.q("UPDATE campaign_items SET climb_id='c4', status='pending' WHERE campaign_id=?", c["id"], write=True)
+for pid in ("d1" * 6, "d2" * 6, "d4" * 6):
+    put(f"projects/{pid}/photos/a.jpg")
+put(f"projects/{'d1' * 6}/masks/a.png", 1000)
+put(f"projects/{'d2' * 6}/rejected/r.jpg", age=5 * day)     # rejected 5 days ago: may go
+for vid, cid in (("v1aaaaaaaaa", "c1"), ("v5aaaaaaaaa", "c5")):
+    put(f"cache/videos/{vid}.mp4")
+    server.q("INSERT INTO climb_videos(climb_id,url,found_by,created) VALUES(?,?,?,?)", cid, f"https://www.youtube.com/watch?v={vid}",
+             "search", now, write=True)
+project("d5" * 6, "c5", "done", "a5" * 6, age=2 * day)
+server.beta_mod.save(server.MESHES / ("a1" * 6), {"status": "done", "videos": []})      # c1's beta found; c5's never was
+put("cache/http/old", 1000, age=40 * day)
+got = {c[0]: c[1] for c in server.offload_candidates()}
+assert got == {f"projects/{'d2' * 6}/rejected": "rejected photos", "cache/videos/v1aaaaaaaaa.mp4": "videos",
+               f"projects/{'d1' * 6}/photos": "photos", f"projects/{'d1' * 6}/masks": "photos",
+               f"meshes/{'a0' * 6}/mesh.glb": "older meshes"}, got
+assert list(got)[0].endswith("rejected"), "rejected photos first"
+server.settings().update({"storage.cap_gb": 0.001, "storage.offload_percent": 1.0})
+server.measure_usage()
+did = server.offload_step()
+listed = (D / "offload.list").read_text().split()
+assert sorted(listed) == sorted(got) and not did.get("freed"), "marked, not deleted: the backup hasn't copied them"
+assert did["cache"] == 1000 and not (D / "cache/http/old").exists(), "the web cache's old pages go at once"
+(D / "backed-up").write_text(str(time.time() - 3600))         # a copy that began before they were marked: not enough
+assert not server.offload_step().get("freed") and (D / f"projects/{'d1' * 6}/photos/a.jpg").exists()
+(D / "backed-up").write_text(str(time.time() + 1))
+did = server.offload_step()
+assert did["freed"] >= 5 * 2**20 and not (D / f"projects/{'d1' * 6}/photos/a.jpg").exists() and (D / f"projects/{'d1' * 6}/photos").is_dir()
+assert not (D / "cache/videos/v1aaaaaaaaa.mp4").exists() and (D / "cache/videos/v5aaaaaaaaa.mp4").exists()
+assert (D / f"meshes/{'a0' * 6}/sources.json").exists() and not (D / f"meshes/{'a0' * 6}/mesh.glb").exists(), "an older mesh keeps its records"
+assert server.photos_away("d1" * 6) and sorted((D / "offload.list").read_text().split()) == sorted(got), "listed for the backup to keep"
+(D / "backed-up").write_text(str(time.time() - 3600))         # no copy since: nothing more goes
+st = offload.state(D, server.q)
+assert st["away"]["photos"]["n"] == 2 and st["away"]["videos"]["n"] == 1 and st["backed_up"]
+# a job that needs them asks for them back, and waits
+try:
+    server.need_back(["d1" * 6], "meshing it")
+    raise AssertionError("should wait")
+except server.PhotosAway as e:
+    assert "in the backup" in str(e) and isinstance(e, server.compute.ComputeUnavailable)
+assert (D / "offload-wanted.list").read_text().split() == [f"projects/{'d1' * 6}/masks", f"projects/{'d1' * 6}/photos"]
+pooled_at = time.time()
+f = put(f"restore-inbox/projects/{'d1' * 6}/photos/a.jpg", age=30 * day)
+put(f"restore-inbox/projects/{'d1' * 6}/masks/a.png", 1000, age=30 * day)
+assert sorted(server.offload_step()["back"]) == [f"projects/{'d1' * 6}/masks", f"projects/{'d1' * 6}/photos"]
+assert (D / f"projects/{'d1' * 6}/photos/a.jpg").exists() and not server.photos_away("d1" * 6)
+assert (D / f"projects/{'d1' * 6}/photos").stat().st_mtime < pooled_at - 29 * day, "its folder looks as it did"
+assert not (D / "offload-wanted.list").read_text().strip() and not list((D / "restore-inbox").rglob("*.jpg"))
+# a video fetched again is no longer offloaded; under the % nothing is marked, and what was is unmarked
+put("cache/videos/v1aaaaaaaaa.mp4")
+server.offload_step()
+assert not server.q("SELECT 1 FROM offloads WHERE path='cache/videos/v1aaaaaaaaa.mp4' AND done IS NOT NULL"), "here again"
+server.settings().update({"storage.cap_gb": 1000.0})
+server.measure_usage()
+server.offload_step()
+assert not server.q("SELECT 1 FROM offloads WHERE done IS NULL"), "nothing marked once there's room"
+server.settings().update({"storage.cap_gb": 0, "storage.offload_percent": 70.0})
+print("offloading OK")
 print("ALL CAMPAIGN TESTS PASSED")

@@ -93,6 +93,47 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
     r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), str(TMP / "home")], env=env, capture_output=True, text=True)
     assert r.returncode == 1 and "no data/ came" in r.stderr, r.stdout + r.stderr
     print("nothing to copy OK")
+
+    # offloading's handshake (deploy/backup-handshake.py, here run directly): what the server offloaded is kept here,
+    # whatever the server's copy does; a good copy says when it began; and what's wanted back is sent back
+    import time
+    shake = f"{sys.executable} {ROOT / 'deploy' / 'backup-handshake.py'}"
+    henv = {**env, "BACKUP_HANDSHAKE": shake, "BOULDERMESH_DATA": str(data)}
+    (data / "projects" / "aaaaaaaaaaaa" / "photos" / "p.jpg").write_bytes(b"jpg, kept")
+    r = run()
+    assert r.returncode == 0 and "no handshake key" in r.stdout, r.stdout + r.stderr
+    assert not (data / "backed-up").exists(), "no handshake, no word of the copy"
+    (data / "offload.list").write_text("projects/aaaaaaaaaaaa/photos\ncache/videos/vvvvvvvvvvv.mp4\n../../etc/passwd\n")
+    (data / "projects" / "aaaaaaaaaaaa" / "photos" / "p.jpg").unlink()     # offloaded on the server
+    (data / "cache" / "videos" / "vvvvvvvvvvv.mp4").unlink()
+    (data / "meshes" / "m1" / "mesh.glb").unlink()                          # deleted, not offloaded
+    began = time.time()
+    r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), str(checkout)], env=henv, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    cur = dest / "current" / "data"
+    assert (cur / "projects" / "aaaaaaaaaaaa" / "photos" / "p.jpg").read_bytes() == b"jpg, kept" and (cur / "cache" / "videos" / "vvvvvvvvvvv.mp4").exists()
+    assert not (cur / "meshes" / "m1" / "mesh.glb").exists(), "what wasn't offloaded follows the server, as before"
+    assert began - 2 <= float((data / "backed-up").read_text()) <= time.time(), "when the copy began"
+    (data / "offload-wanted.list").write_text("projects/aaaaaaaaaaaa/photos\nmeshes/m1/mesh.glb\n")
+    r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), "--restore-only", str(checkout)], env=henv, capture_output=True, text=True)
+    assert r.returncode == 0 and "restored 1 file(s)" in r.stdout, r.stdout + r.stderr
+    assert (data / "restore-inbox" / "projects" / "aaaaaaaaaaaa" / "photos" / "p.jpg").read_bytes() == b"jpg, kept"
+    hs = lambda *a, stdin=None: subprocess.run([sys.executable, str(ROOT / "deploy" / "backup-handshake.py"), *a],  # noqa: E731
+                                               env={**os.environ, "BOULDERMESH_DATA": str(data)}, input=stdin, capture_output=True)
+    assert hs("backed-up", "soon").returncode and hs("backed-up", str(int(time.time()) + 3600)).returncode, "nonsense refused"
+    assert hs("rm", "-rf", "/").returncode and hs("wanted").stdout.decode().split() == ["projects/aaaaaaaaaaaa/photos"], "only valid paths"
+    import io
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        for name in ("projects/aaaaaaaaaaaa/photos/q.jpg", "projects/bbbbbbbbbbbb/photos/x.jpg", "projects/aaaaaaaaaaaa/photos/../../../x"):
+            info = tarfile.TarInfo(name)
+            info.size = 3
+            t.addfile(info, io.BytesIO(b"abc"))
+    r = hs("restore", stdin=buf.getvalue())
+    assert r.returncode == 0 and b"restored 1 file(s)" in r.stdout, r
+    assert not (data / "restore-inbox" / "projects" / "bbbbbbbbbbbb").exists() and not (data / "x").exists(), "only what's wanted"
+    print("offloading's handshake OK")
     print("ALL BACKUP TESTS PASSED")
 finally:
     shutil.rmtree(TMP, ignore_errors=True)

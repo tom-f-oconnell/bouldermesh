@@ -166,6 +166,9 @@
     <div class="grid"><div><label>Notify me when less than this % of the cap is left</label><input type="number" id="room-warn-pct" min="0" max="50" step="0.1"></div>
       <div><label>Or when less than this many GB is (0: use the %)</label><input type="number" id="room-warn-gb" min="0" step="0.5"></div></div>
     <div class="note" id="room-warn-note"></div>
+    <div class="grid"><div><label>Above this % of the cap, offload to the backup what it holds and nothing uses (0: never)</label>
+      <input type="number" id="room-offload" min="0" max="100" step="5"></div></div>
+    <div class="note" id="room-offload-note"></div>
     <div class="row"><button class="sec" id="room-measure">Measure now</button><button class="danger" id="room-rejected">Delete the photos the filter rejected</button></div>
   </section>
 
@@ -278,6 +281,18 @@ function render(s){
   const amount = b => b >= 2 ** 30 ? gb(b) : `${(b / 2 ** 20).toFixed(0)} MB`;
   if (document.activeElement !== $('#room-warn-pct')) $('#room-warn-pct').value = v['storage.warn_percent'];
   if (document.activeElement !== $('#room-warn-gb')) $('#room-warn-gb').value = v['storage.warn_gb'];
+  if (document.activeElement !== $('#room-offload')) $('#room-offload').value = v['storage.offload_percent'];
+  const off = s.offload || {}, sum = o => Object.values(o || {}).reduce((t, k) => t + k.bytes, 0);
+  const KIND = { 'photos': ['photo folder', 'photo folders'], 'rejected photos': ['folder of rejected photos', 'folders of rejected photos'],
+                 'videos': ['video', 'videos'], 'older meshes': ['file of an older mesh', 'files of older meshes'] };
+  const kinds = o => Object.entries(o || {}).map(([k, x]) => `${x.n.toLocaleString()} ${(KIND[k] || [k, k])[x.n === 1 ? 0 : 1]}`).join(', ');
+  $('#room-offload-note').innerHTML = !off.backed_up
+    ? 'The backup hasn\'t confirmed a copy here yet, so nothing is offloaded: it needs the handshake\'s key (README, "Backups").'
+    : `The backup last confirmed a copy begun ${new Date(off.backed_up * 1000).toLocaleString()}. `
+      + (sum(off.away) ? `Offloaded to it: <b>${amount(sum(off.away))}</b> (${kinds(off.away)}). ` : 'Nothing is offloaded to it. ')
+      + (sum(off.marked) ? `Marked to go once its next copy is confirmed: ${amount(sum(off.marked))} (${kinds(off.marked)}). ` : '')
+      + (off.wanted ? `<span class="warn">${off.wanted} asked back by jobs that need them, which its next run sends.</span> ` : '')
+      + 'It goes: photos the filter rejected (after 3 days), videos once their climbs are meshed and beta found, photos of climbs meshed 2 weeks ago or skipped a month ago, then older meshes\' files; and the web cache\'s month-old pages.';
   $('#room-warn-note').innerHTML = u.warn_at === undefined ? 'With a cap, and notifications on (below), your phone is told when the room left under it is less than this, and when it\'s reached.'
     : `Told when less than <b>${amount(u.warn_at)}</b> is left${u.warn_climbs ? `, about ${worth(u.warn_climbs)} at their average (a climb's data and a mesh)` : ''}; `
       + `${amount(Math.max(0, u.left))} is left now${u.climbs ? `, about ${worth(Math.max(0, u.climbs))}` : ''}. Needs notifications on (below).`;
@@ -427,7 +442,7 @@ $('#mach-list').addEventListener('click', async ev => {
   if (!action || (ask && !confirm(ask))) return;
   try { msg((await call(`/api/admin/actions/${action}`, { id })).result); refresh(); } catch (e) { msg(e.message, 8000); }
 });
-$('#room-save').onclick = async () => { await save({ 'storage.cap_gb': +$('#room-cap').value, 'storage.warn_percent': +$('#room-warn-pct').value, 'storage.warn_gb': +$('#room-warn-gb').value }); try { await call('/api/admin/actions/measure', {}); refresh(); } catch (e) { msg(e.message, 8000); } };
+$('#room-save').onclick = async () => { await save({ 'storage.cap_gb': +$('#room-cap').value, 'storage.warn_percent': +$('#room-warn-pct').value, 'storage.warn_gb': +$('#room-warn-gb').value, 'storage.offload_percent': +$('#room-offload').value }); try { await call('/api/admin/actions/measure', {}); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#room-measure').onclick = async () => { msg('Measuring…', 60000); try { msg((await call('/api/admin/actions/measure', {})).result); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#room-rejected').onclick = async () => { if (!confirm('Delete every photo the filter rejected, from every project not being harvested or meshed now? They can\'t be put back after.')) return; msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
