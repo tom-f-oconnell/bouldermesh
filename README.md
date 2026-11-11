@@ -628,6 +628,7 @@ the checkout whose `.env` names the compose files. On the server:
     docker compose exec -T bouldermesh python3 cli.py client-errors -n 50   # what failed in visitors' browsers, newest last
     docker compose exec -T bouldermesh python3 cli.py mesh-views --hours 24  # the meshes they've looked at lately, and how often
     docker compose exec -T bouldermesh python3 cli.py mesh-ratings          # how they rated meshes, and their comments
+    docker compose exec -T bouldermesh python3 cli.py script-downloads      # who fetched the worker and volunteer scripts, from where
     docker compose logs --since 2h bouldermesh | grep "browser error"         # the same, as they came, in the app's log
     docker compose exec -T bouldermesh python3 cli.py jobs                   # what a restart would interrupt now
     docker compose logs --since 2h bouldermesh                               # everything else the app logged (or journalctl -u bouldermesh)
@@ -844,6 +845,15 @@ volunteer script 6) or it hasn't been heard from for 10 minutes (a worker) or 30
 there while it waits for its limits or rests; 26 hours for scripts before 6, which wait without a word). Not as it's
 busy, held back for the GPU or memory, or resting, nor when its script restarts (back within 2 minutes). Each one is told of at most once an hour, so one that drops out and
 back in is told of where it ended up, at the end of the hour; one that registered itself was told of by its registration.
+
+**Back up, and downloads:** your phone is told when the server is back up after a restart (once the site answers): its
+build, how long it took, and how long it was down if it was stopped as asked, otherwise that it wasn't (a crash or a
+reboot). And when someone downloads the worker or volunteer script (not a running copy updating itself, nor a crawler),
+roughly from where, with a map: at most one notification in 10 minutes (those meanwhile together after), and one a day
+for an address. Every download is kept, with its address, in `data/script-downloads.jsonl` (`cli.py script-downloads`).
+Where it was fetched from is what Cloudflare says, nothing looked up: CF-IPCountry alone gives the country; for the
+city and a point on the map, turn on Cloudflare's *Add visitor location headers* (the site's Rules, then Settings, under
+Managed Transforms). Both are on by default, under Notifications on the admin page.
 
 **Cloudflare, in front:** a rate-limiting rule catches floods before they reach the server. The free plan has one, under
 Security, then WAF, then *Rate limiting rules* (or *Security rules*, then a rate limiting rule, in newer dashboards):

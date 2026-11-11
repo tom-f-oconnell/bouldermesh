@@ -146,10 +146,11 @@ class Broker:
                  registered: Callable[[dict], None] = lambda v: None,
                  troubled: Callable[[dict, str | None, str, str], None] = lambda v, was, now, why: None,
                  widespread: Callable[[int, int, str], None] = lambda n, of, example: None,
-                 came_went: Callable[[dict, str, str], None] = lambda v, state, why: None):
+                 came_went: Callable[[dict, str, str], None] = lambda v, state, why: None,
+                 downloaded: Callable[[dict], None] = lambda info: None):
         self.db_path, self.files, self.delivered, self.ready, self.probe = db_path, files, delivered, ready, probe
         self.paused, self.rules, self.registered, self.troubled, self.widespread = paused, rules, registered, troubled, widespread
-        self.came_went = came_went
+        self.came_went, self.downloaded = came_went, downloaded
         self.widespread_said = 0.0      # when widespread() was last called
         self.lock = threading.RLock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -629,6 +630,13 @@ def _client_ip(handler: BaseHTTPRequestHandler) -> str:
     return (handler.headers.get("X-Real-IP") or peer) if local else peer
 
 
+def script_fetch(handler: BaseHTTPRequestHandler) -> dict:
+    """Who fetched a script, for telling of it: {ip, ua, headers}: the sender (_client_ip()), its User-Agent, and
+    Cloudflare's headers about where it is (CF-IPCountry and the like)."""
+    return {"ip": _client_ip(handler), "ua": handler.headers.get("User-Agent") or "",
+            "headers": {k.lower(): v for k, v in handler.headers.items() if k.lower().startswith("cf-ip") or k.lower().startswith("cf-region")}}
+
+
 COPY_ICON = ('<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" '
              'stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/>'
              '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>')
@@ -824,6 +832,10 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
             if u.path in ("/volunteer", "/volunteer/"):
                 return self.send(200, PAGE.replace("{base}", base).replace("{icon}", COPY_ICON).encode(), "text/html; charset=utf-8")
             if u.path == "/volunteer/bouldermesh_volunteer.py":
+                try:    # someone fetching the script (or a copy updating itself, which the server tells apart)
+                    broker.downloaded(script_fetch(self))
+                except Exception as e:  # noqa: BLE001 - telling of it mustn't stop the download
+                    log(f"volunteers: telling of a download failed: {type(e).__name__}: {e}")
                 return self.send(200, SCRIPT.read_bytes(), "text/x-python; charset=utf-8",
                                  {"Content-Disposition": 'attachment; filename="bouldermesh_volunteer.py"'})
             m = re.fullmatch(r"/volunteer/api/tasks/([0-9a-f]{12})/part", u.path)

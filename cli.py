@@ -24,6 +24,8 @@
                                                        wouldn't load, errors in the page), newest last
   python cli.py mesh-views [-n N] [--hours H] [--data DIR]  the last N meshes visitors' browsers showed, and how often
                                                        each was shown in the last H hours (default 24), and how
+  python cli.py script-downloads [-n N] [--data DIR]   the last N downloads of the worker and volunteer scripts: when, which,
+                                                       the address, roughly where (and a map), and with what
   python cli.py mesh-ratings [-n N] [--data DIR]       visitors' ratings of meshes (bad, OK, good), each mesh's, and
                                                        the last N comments on them, newest last
   python cli.py splat <mesh_id> [--steps N] [--out FILE] [--data DIR]
@@ -100,6 +102,7 @@ def main():
     mv = sub.add_parser("mesh-views"); mv.add_argument("-n", type=int, default=20); mv.add_argument("--hours", type=float, default=24)
     mv.add_argument("--data")
     mr = sub.add_parser("mesh-ratings"); mr.add_argument("-n", type=int, default=30); mr.add_argument("--data")
+    sd = sub.add_parser("script-downloads"); sd.add_argument("-n", type=int, default=30); sd.add_argument("--data")
     sp = sub.add_parser("splat"); sp.add_argument("mesh_id"); sp.add_argument("--steps", type=int, default=7000)
     sp.add_argument("--out"); sp.add_argument("--data")
     a = ap.parse_args()
@@ -111,6 +114,8 @@ def main():
         sys.exit(client_errors(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n))
     if a.cmd == "mesh-views":
         sys.exit(mesh_views(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n, a.hours))
+    if a.cmd == "script-downloads":
+        sys.exit(script_downloads(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n))
     if a.cmd == "mesh-ratings":
         sys.exit(mesh_ratings(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n))
 
@@ -196,6 +201,18 @@ def mesh_views(data: Path, n: int, hours: float) -> int:
           + ", ".join(f"{k or 'other'} {c}" for k, c in collections.Counter(v.get("via") for v in recent).most_common()))
     for (mid, name), c in collections.Counter((v["mesh"], v.get("name", "")) for v in recent).most_common(15):
         print(f"  {c:4d}  {mid} {name}")
+    return 0
+
+
+def script_downloads(data: Path, n: int) -> int:
+    """Print the last n downloads of the worker and volunteer scripts (server.script_downloaded()), newest last."""
+    lines = _reports(data, "script-downloads.jsonl")
+    if not lines:
+        print(f"no downloads yet (nothing in {data / 'script-downloads.jsonl'})")
+        return 0
+    for d in lines[-n:]:
+        print(f"{d['time']} {d.get('script', '?'):9} {d.get('ip') or '?':39} {d.get('place') or '(no place)'}"
+              + (f"  {d['map']}" if d.get("map") else "") + f"\n    {(d.get('ua') or '')[:140]}")
     return 0
 
 

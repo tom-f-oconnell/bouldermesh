@@ -2191,4 +2191,44 @@ assert server.catch_up_own_attempts() == 1 and items(c["id"])["Body"]["redo"] ==
 server.climbs_mod.fetch_climb_url = fake_fetch
 server.settings().update({"areas.meshes": "climbs"})
 print("boulders told from groups by their pages OK")
+
+# --- your phone told the server is back up after a restart, and of the scripts being downloaded, roughly from where ----
+fresh()
+began = time.time() - 12
+server.STOPPED_AT.write_text(f"{began - 125}\n")
+title, text = server.back_up_note(began)
+assert title == "BoulderMesh is back up" and ", up in 12 s, after 2 min down." in text and not server.STOPPED_AT.exists(), text
+assert "without saying so" in server.back_up_note(time.time())[1], "no stop recorded: a crash or a reboot"
+told, real_send = [], server.NOTIFIER.send
+server.NOTIFIER.send = lambda title, message, actions=None, priority=3, tags=None: told.append((title, message, actions)) or True
+server.DOWNLOADS.last, server.DOWNLOADS.gap = 0.0, 0.3
+server._fetched.clear()
+try:
+    got = server.script_downloaded("volunteer")
+    where = {"cf-ipcity": "Pasadena", "cf-region": "California", "cf-ipcountry": "US", "cf-iplatitude": "34.1", "cf-iplongitude": "-118.1"}
+    got({"ip": "203.0.113.60", "ua": "Mozilla/5.0 (Windows NT 10.0) Chrome/130.0 Safari/537.36", "headers": where})
+    got({"ip": "203.0.113.60", "ua": "curl/8.5.0", "headers": where})                 # the same address again today
+    got({"ip": "203.0.113.61", "ua": "bouldermesh-volunteer/8", "headers": {}})         # a running copy updating itself
+    got({"ip": "203.0.113.62", "ua": "Googlebot/2.1", "headers": {}})
+    server.script_downloaded("worker")({"ip": "203.0.113.63", "ua": "curl/8.5.0", "headers": {"cf-ipcountry": "FR"}})
+    for _ in range(50):
+        if len(told) >= 2:
+            break
+        time.sleep(0.05)
+    assert told[0] == ("Someone downloaded the volunteer script", "From Pasadena, California, US, with Chrome on Windows.",
+                       [{"action": "view", "label": "Map", "url": "https://www.google.com/maps/search/?api=1&query=34.1000%2C-118.1000"}]), told
+    time.sleep(0.5)
+    assert told[1] == ("Someone downloaded the worker script", "From FR, with curl 8.5.0.", None) and len(told) == 2, told
+    kept = [json.loads(x) for x in server.SCRIPT_DOWNLOADS.read_text().splitlines()]
+    assert [(k["script"], k["ip"]) for k in kept] == [("volunteer", "203.0.113.60"), ("volunteer", "203.0.113.60"), ("worker", "203.0.113.63")], kept
+    assert kept[0]["place"] == "Pasadena, California, US" and kept[0]["map"].endswith("34.1000%2C-118.1000")
+    server.settings().update({"notify.downloads": False})
+    server._fetched.clear()
+    server.script_downloaded("worker")({"ip": "203.0.113.64", "ua": "curl/8.5.0", "headers": {}})
+    time.sleep(0.5)
+    assert len(told) == 2 and len(server.SCRIPT_DOWNLOADS.read_text().splitlines()) == 4, "off: kept, not told"
+finally:
+    server.NOTIFIER.send = real_send
+    server.settings().update({"notify.downloads": True})
+print("back up, and scripts downloaded OK")
 print("ALL CAMPAIGN TESTS PASSED")

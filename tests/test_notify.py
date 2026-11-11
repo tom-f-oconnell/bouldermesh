@@ -163,6 +163,28 @@ try:
         except ValueError:
             pass
     assert s.update({"notify.server": "https://ntfy.example.org", "notify.topic": "bm-abc"})["notify.topic"] == "bm-abc"
+    # a visitor's rough place, from Cloudflare's headers only; what it used, in a few words
+    full = {"cf-ipcity": "Pasadena", "cf-region": "California", "cf-ipcountry": "US", "cf-iplatitude": "34.1478", "cf-iplongitude": "-118.1445"}
+    assert notify.visitor_place(full) == {"place": "Pasadena, California, US",
+                                          "map": "https://www.google.com/maps/search/?api=1&query=34.1478%2C-118.1445"}
+    assert notify.visitor_place({"cf-ipcountry": "FR"}) == {"place": "FR", "map": None}
+    assert notify.visitor_place({"cf-ipcountry": "XX"}) == {"place": None, "map": None} == notify.visitor_place({})
+    assert notify.browser_of("curl/8.5.0") == "curl 8.5.0" and notify.browser_of("Wget/1.21") == "Wget 1.21"
+    assert notify.browser_of("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36") == "Chrome on Windows"
+    assert notify.browser_of("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit Version/17.0 Safari/604.1") == "Safari on iPhone"
+    # bursts paced: the first at once, the rest together once the gap is over, then at once again
+    paced_out: list = []
+    paced = notify.Paced(lambda t, m, a: paced_out.append((t, m, a)), 0.5)
+    paced.add("one", "a", [{"url": "m1"}])
+    paced.add("two", "b", [{"url": "m2"}])
+    paced.add("three", "c")
+    assert [x[0] for x in paced_out] == ["one"]
+    time.sleep(0.8)
+    assert paced_out[1] == ("2 more", "• two: b\n• three: c", [{"url": "m2"}]), paced_out
+    time.sleep(0.6)
+    paced.add("four", "d")
+    assert paced_out[-1] == ("four", "d", None), "after the gap, at once"
+    print("visitors' places and paced notifications OK")
     print("ALL NOTIFY TESTS PASSED")
 finally:
     shutil.rmtree(TMP, ignore_errors=True)

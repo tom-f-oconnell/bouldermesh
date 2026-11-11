@@ -161,6 +161,10 @@
       and <input type="number" id="reg-wait" min="1" max="1000"> waiting at once, of each kind</div>
     <div style="margin-top:14px"><b>Notifications on your phone</b> <span class="note" id="ntfy-note"></span></div>
     <label class="choice"><input type="checkbox" id="ntfy-on"> Notify me of registrations through ntfy, with Approve and Deny buttons</label>
+    <label class="choice"><input type="checkbox" id="ntfy-restarts"> and when the server is back up after a restart</label>
+    <label class="choice"><input type="checkbox" id="ntfy-downloads"> and when someone downloads the worker or volunteer script, roughly from
+      where <small>(the city Cloudflare's visitor location headers give, with a map; at most one notification in 10 minutes, and one a day for an
+      address; every download is kept in data/script-downloads.jsonl)</small></label>
     <div class="grid"><div><label>ntfy server</label><input type="text" id="ntfy-server" placeholder="https://ntfy.sh"></div>
       <div class="row" style="margin-top:22px"><button class="sec" id="ntfy-topics">Make new topics</button><button class="sec" id="ntfy-test">Send a test</button></div></div>
     <div id="ntfy-body" class="note"></div>
@@ -388,6 +392,7 @@ function render(s){
   keep('#reg-addr', v['registration.per_address_day']); keep('#reg-wait', v['registration.max_waiting']);
   const nt = s.notify;
   $('#ntfy-on').checked = v['notify.enabled']; keep('#ntfy-server', v['notify.server']);
+  $('#ntfy-restarts').checked = v['notify.restarts']; $('#ntfy-downloads').checked = v['notify.downloads'];
   $('#ntfy-test').disabled = !nt.enabled;
   $('#ntfy-note').innerHTML = nt.enabled ? (nt.listening ? '<span class="ok">on, and following replies</span>' : '<span class="warn">on, but not following replies yet</span>') : 'off';
   $('#ntfy-body').innerHTML = (nt.subscribe
@@ -485,6 +490,8 @@ const regSave = () => save({ 'volunteers.provisional_work': $('#reg-vol').checke
   'registration.per_address_day': +$('#reg-addr').value, 'registration.max_waiting': +$('#reg-wait').value });
 for (const id of ['#reg-vol', '#reg-mach', '#reg-vol-hour', '#reg-vol-day', '#vol-per-hour', '#vol-per-day', '#reg-addr', '#reg-wait']) $(id).onchange = regSave;
 $('#ntfy-on').onchange = () => save({ 'notify.enabled': $('#ntfy-on').checked });
+$('#ntfy-restarts').onchange = () => save({ 'notify.restarts': $('#ntfy-restarts').checked });
+$('#ntfy-downloads').onchange = () => save({ 'notify.downloads': $('#ntfy-downloads').checked });
 $('#ntfy-server').onchange = () => save({ 'notify.server': $('#ntfy-server').value });
 $('#ntfy-topics').onclick = async () => {
   if (state?.notify?.topic && !confirm('Make new topics? Your phone then has to subscribe to the new one, and buttons on notifications already sent stop working.')) return;

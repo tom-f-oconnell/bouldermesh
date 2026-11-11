@@ -48,7 +48,7 @@ import meshopts
 import presence
 import registration
 import vggt_place
-from volunteers import OffsetError, _client_ip
+from volunteers import OffsetError, _client_ip, script_fetch
 
 PART_MAX = 64 * 2**20       # the largest part of a file either way, under Cloudflare's 100 MB a request
 MAX_OUTPUT = 4 * 2**30      # what a job may send back: a mesh, its textures, cameras and masks
@@ -112,9 +112,11 @@ class Board:
     def __init__(self, db_path: Path, files: Path, image: Callable[[], str], jobctl, rules: Callable[[], dict] = lambda: RULES,
                  registered: Callable[[dict], None] = lambda m: None, log: Callable[[str], None] = print,
                  came_went: Callable[[dict, str, str], None] = lambda m, state, why: None,
+                 downloaded: Callable[[dict], None] = lambda info: None,
                  idle_why: Callable[[], str | None] = lambda: None):
         self.db_path, self.files, self.image, self.jobctl = db_path, files, image, jobctl
         self.rules, self.registered, self.came_went, self.idle_why = rules, registered, came_went, idle_why
+        self.downloaded = downloaded
         self._said: dict[str, tuple[str, float]] = {}   # each machine's reason for its state last logged, and when
         self.paused: str | None = None      # why no new job is given out (the server about to restart); those running go on
         self._hour = int(time.time() // 3600)
@@ -822,6 +824,10 @@ def handler_for(board: Board, log: Callable[[str], None]):
             if u.path in ("/worker", "/worker/"):
                 return self.send(200, PAGE.replace("{base}", base).encode(), "text/plain; charset=utf-8")
             if u.path == "/worker/bouldermesh_worker.py" and SCRIPT.exists():
+                try:    # someone fetching the script (or a copy updating itself, which the server tells apart)
+                    board.downloaded(script_fetch(self))
+                except Exception as e:  # noqa: BLE001 - telling of it mustn't stop the download
+                    log(f"machines: telling of a download failed: {type(e).__name__}: {e}")
                 return self.send(200, SCRIPT.read_bytes(), "text/x-python; charset=utf-8",
                                  {"Content-Disposition": 'attachment; filename="bouldermesh_worker.py"'})
             m = re.fullmatch(r"/worker/api/jobs/([0-9a-f]{12})/(input|output)", u.path)

@@ -4004,6 +4004,7 @@ def stop_when_idle(server: ThreadingHTTPServer) -> None:
     say = lambda s: print(f"stopping: {s}", flush=True)  # noqa: E731
     if _stopping or (_draining or {}).get("now"):
         say("now, as asked again" if _stopping else "now, as deploy.sh asked")
+        mark_stopped()
         return server.shutdown()
     _stopping = {"since": time.time(), "until": time.time() + STOP_WAIT, "waiting_for": []}
     passed, said = set(), 0.0     # jobs not waited for, as they'd take too long
@@ -4036,6 +4037,7 @@ def stop_when_idle(server: ThreadingHTTPServer) -> None:
             f"{state['beta']['queued']} queued")
     say("now" if state["running"] or state["queued"] or state["area_climbs"] else
         "now, as what it waited for has finished" if said else "now: nothing was running")
+    mark_stopped()
     server.shutdown()
 
 
@@ -4141,6 +4143,86 @@ def machine_rules() -> dict:
             "max_waiting": s["registration.max_waiting"]}
 
 
+# ------------------------------------------------------------------ telling your phone the server is back, and of downloads
+STOPPED_AT = DATA / "stopped-at"    # when it last stopped as asked (SIGTERM), for saying how long it was down
+SCRIPT_DOWNLOADS = DATA / "script-downloads.jsonl"  # each time someone (not a running copy) fetched a script, and where from
+DOWNLOAD_GAP = 600      # seconds: at most one notification of downloads in this many; those meanwhile together after
+DOWNLOAD_AGAIN = 86400  # the same address fetching the same script again within this many isn't told of again
+BOTS = re.compile(r"bot|crawl|spider|slurp|preview|facebookexternalhit|monitor|uptime|headless", re.I)
+_fetched: dict[tuple[str, str], float] = {}     # (script, address) -> when it was last told of
+
+
+def mark_stopped() -> None:
+    try:
+        STOPPED_AT.write_text(f"{time.time()}\n")
+    except OSError:
+        pass
+
+
+def back_up_note(began: float) -> tuple[str, str]:
+    """What tells your phone the server is back after a restart: its build, how long it took to start and, if it was
+    stopped as asked, how long it was down; the areas carrying on."""
+    def took(s: float) -> str:
+        return f"{s:.0f} s" if s < 90 else f"{s / 60:.0f} min" if s < 5400 else f"{s / 3600:.1f} h"
+    try:
+        down = began - float(STOPPED_AT.read_text().strip())
+        STOPPED_AT.unlink(missing_ok=True)
+    except (OSError, ValueError):
+        down = None
+    areas = [r["name"] for r in q("SELECT name FROM campaigns WHERE status='running' ORDER BY priority")]
+    text = (f"Running {VERSION or 'a build not recorded'}, up in {took(time.time() - began)}"
+            + (f", after {took(down)} down" if down is not None and down >= 0 else ", after stopping without saying so (a crash, or a reboot)")
+            + "." + (f" Carrying on with {', '.join(areas[:4])}{f' and {len(areas) - 4} more' if len(areas) > 4 else ''}." if areas else ""))
+    return "BoulderMesh is back up", text
+
+
+def tell_back_up(began: float, port: int) -> None:
+    """Once the site answers after a restart (notify.restarts), tell your phone."""
+    import urllib.request
+    for _ in range(120):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=5).read()
+            break
+        except Exception:
+            time.sleep(1)
+    else:
+        return
+    if settings().get("notify.restarts"):
+        NOTIFIER.send(*back_up_note(began), priority=2, tags=["arrows_counterclockwise"])
+
+
+def script_downloaded(kind: str):
+    """What a script being fetched does (volunteers.script_fetch()'s {ip, ua, headers}): kept in SCRIPT_DOWNLOADS, with
+    roughly where from (notify.visitor_place(), from Cloudflare's headers), and your phone told (notify.downloads) at
+    most once a DOWNLOAD_GAP, once a day for one address, with a map. Not a running copy updating itself (its
+    User-Agent is the script's), nor a crawler."""
+    def downloaded(info: dict) -> None:
+        ua = str(info.get("ua") or "")
+        if ua.startswith(("bouldermesh-volunteer", "bouldermesh-worker")) or BOTS.search(ua):
+            return
+        where = notify_mod.visitor_place(info.get("headers") or {})
+        line = {"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "script": kind, "ip": info.get("ip"), "ua": ua[:300],
+                "place": where["place"], "map": where["map"]}
+        with _client_lock:
+            with open(SCRIPT_DOWNLOADS, "a") as f:
+                f.write(json.dumps(line) + "\n")
+            now, key = time.time(), (kind, str(info.get("ip")))
+            if now - _fetched.get(key, 0) < DOWNLOAD_AGAIN:
+                return
+            _fetched[key] = now
+        print(f"script downloaded: the {kind} script, from {where['place'] or 'somewhere'} ({notify_mod.browser_of(ua)})", flush=True)
+        if settings().get("notify.downloads"):
+            title = f"Someone downloaded the {kind} script"
+            place = where["place"] or "somewhere Cloudflare didn't say"
+            text = f"From {place}, with {notify_mod.browser_of(ua)}."
+            DOWNLOADS.add(title, text, [{"action": "view", "label": "Map", "url": where["map"]}] if where["map"] else None)
+    return downloaded
+
+
+DOWNLOADS = notify_mod.Paced(lambda title, text, actions: threading.Thread(
+    target=NOTIFIER.send, args=(title, text, actions, 2, ["inbox_tray"]), daemon=True).start(), DOWNLOAD_GAP)
+
+
 def came_went(kind: str):
     """What tells your phone a machine (a worker) or a volunteer (a downloader) joined or left (presence.py), in the
     background."""
@@ -4159,7 +4241,7 @@ def came_went(kind: str):
 
 MACHINES = pullwork.Board(DATA / "compute" / "machines.sqlite", DATA / "compute" / "jobs", lambda: compute_settings()["compute.image"],
                           jobctl, machine_rules, lambda m: NOTIFIER.registered("machine", m, f" ({m['client'] or 'a worker script'})"),
-                          came_went=came_went("machine"), idle_why=lambda: machines_idle_why())
+                          came_went=came_went("machine"), idle_why=lambda: machines_idle_why(), downloaded=script_downloaded("worker"))
 
 
 def machine_command(m: dict, result: str) -> dict:
@@ -5390,7 +5472,8 @@ def volunteers_widespread(n: int, of: int, example: str) -> None:
 VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteers", volunteer_delivered, volunteer_ready,
                                    paused=lambda: full(), rules=volunteer_rules,
                                    registered=lambda v: NOTIFIER.registered("volunteer", v, f" ({v['client'] or 'a volunteer script'})"),
-                                   troubled=volunteer_troubled, widespread=volunteers_widespread, came_went=came_went("volunteer"))
+                                   troubled=volunteer_troubled, widespread=volunteers_widespread, came_went=came_went("volunteer"),
+                                   downloaded=script_downloaded("volunteer"))
 
 
 def notify_act(verb: str, kind: str, rid: str) -> str:
@@ -5592,6 +5675,7 @@ def admin_retexture(_: dict) -> dict:
 
 
 def main() -> None:
+    began = time.time()
     init_db()
     moved = settle_far_coordinates()
     if moved:
@@ -5651,6 +5735,7 @@ def main() -> None:
                        lambda line: print(line, flush=True))
     server = ThreadingHTTPServer((host, port), Handler)
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=stop_when_idle, args=(server,), daemon=True).start())
+    threading.Thread(target=tell_back_up, args=(began, port), daemon=True).start()
     server.serve_forever()
     sys.stdout.flush()
     os._exit(0)     # without waiting on workers' threads, whose jobs the next start marks interrupted

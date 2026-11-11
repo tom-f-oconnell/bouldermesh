@@ -32,6 +32,72 @@ RECONNECT = (5, 300)    # seconds before following the reply topic again after i
 USER_AGENT = "BoulderMesh"
 
 
+def visitor_place(headers) -> dict:
+    """Roughly where a visitor is, as Cloudflare's headers say (in front of the public site, from the address it saw;
+    its "Add visitor location headers" managed transform gives the city and coordinates, CF-IPCountry alone the
+    country): {place (words, or None), map (a Google Maps link to the point, or None)}. Nothing is looked up."""
+    get = lambda k: (headers.get(k) or "").strip()  # noqa: E731
+    words = ", ".join(x for x in (get("cf-ipcity"), get("cf-region"), get("cf-ipcountry")) if x and x != "XX") or None
+    try:
+        lat, lng = float(get("cf-iplatitude")), float(get("cf-iplongitude"))
+        link = f"https://www.google.com/maps/search/?api=1&query={lat:.4f}%2C{lng:.4f}"
+    except ValueError:
+        link = None
+    return {"place": words, "map": link}
+
+
+def browser_of(ua: str) -> str:
+    """A User-Agent in a few words: "curl 8.5", "Chrome on Windows"."""
+    import re
+    tool = re.match(r"(curl|Wget|python-requests|Python-urllib|PowerShell)/?([\d.]*)", ua or "", re.I)
+    if tool:
+        return f"{tool[1]} {tool[2]}".strip()
+    name = next((n for k, n in (("Edg/", "Edge"), ("OPR/", "Opera"), ("Firefox/", "Firefox"), ("Chrome/", "Chrome"), ("Safari/", "Safari"))
+                 if k in (ua or "")), "a browser")
+    system = next((n for k, n in (("Windows", "Windows"), ("Android", "Android"), ("iPhone", "iPhone"), ("iPad", "iPad"),
+                                  ("Mac OS X", "a Mac"), ("CrOS", "ChromeOS"), ("Linux", "Linux")) if k in (ua or "")), None)
+    return f"{name} on {system}" if system else name
+
+
+class Paced:
+    """Notifications of things that may come in bursts, at most one in each `gap` seconds: the first at once, those
+    within the gap after it together in one, when the gap is over. send(title, message, actions) does the sending."""
+
+    def __init__(self, send: Callable[[str, str, list | None], object], gap: float):
+        self.send, self.gap = send, gap
+        self.lock = threading.Lock()
+        self.last = 0.0
+        self.held: list[tuple[str, str, list | None]] = []
+        self.timer: threading.Timer | None = None
+
+    def add(self, title: str, message: str, actions: list | None = None) -> None:
+        now = time.time()
+        with self.lock:
+            if not self.held and now - self.last >= self.gap:
+                self.last = now
+                go = (title, message, actions)
+            else:
+                self.held.append((title, message, actions))
+                if self.timer is None:
+                    self.timer = threading.Timer(max(0.0, self.last + self.gap - now), self.flush)
+                    self.timer.daemon = True
+                    self.timer.start()
+                return
+        self.send(*go)
+
+    def flush(self) -> None:
+        with self.lock:
+            held, self.held, self.timer = self.held, [], None
+            if not held:
+                return
+            self.last = time.time()
+        if len(held) == 1:
+            return self.send(*held[0])
+        lines = "\n".join(f"• {t}: {m}" for t, m, _ in held)
+        maps = [a for _, _, acts in held for a in acts or []][:3]      # ntfy shows up to three buttons
+        self.send(f"{len(held)} more", lines, maps or None)
+
+
 class Notifier:
     """Sends notifications, and acts on the replies their buttons send.
 

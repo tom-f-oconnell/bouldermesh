@@ -176,7 +176,11 @@ assert call("/worker/api/work", {"version": 1}, "bmw_nope")[0] == 401
 assert call("/worker/api/work", {"version": 0}, hal["token"])[0] == 426, "too old a script"
 status, page = call("/worker/")
 assert status == 200 and b"bouldermesh_worker.py" in page
+fetched_by: list = []
+board.downloaded = fetched_by.append
 assert call("/worker/bouldermesh_worker.py")[1] == SCRIPT.read_bytes()
+assert len(fetched_by) == 1 and fetched_by[0]["ip"] == "127.0.0.1" and fetched_by[0]["ua"].startswith("Python-urllib"), fetched_by
+board.downloaded = lambda info: None
 assert not board.connected(), "a script too old doesn't count as there"
 try:
     board.reconstruct(project("none") / "photos", TMP / "none" / "work", TMP / "out-none", print)

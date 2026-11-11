@@ -266,6 +266,13 @@ def script_and_broker() -> None:
         assert st == 200 and b"bouldermesh_volunteer.py" in page
         assert b"Help compute meshes" in page and b"/worker/bouldermesh_worker.py" in page, "both ways to help, on one page"
         assert b'data-show="data">Data collection' in page and b"Coming soon" in page and b">Help collect videos<" not in page.split(b"<section")[0]
+        fetched_by = []
+        b.downloaded = fetched_by.append
+        req = urllib.request.Request(base + "/volunteer/bouldermesh_volunteer.py", headers={"User-Agent": "curl/8.5.0", "X-Real-IP": "203.0.113.50",
+                                                                                          "CF-IPCity": "Pasadena", "CF-IPCountry": "US", "Cookie": "x"})
+        with urllib.request.urlopen(req) as r:
+            assert r.read() == SCRIPT.read_bytes()
+        assert fetched_by == [{"ip": "203.0.113.50", "ua": "curl/8.5.0", "headers": {"cf-ipcity": "Pasadena", "cf-ipcountry": "US"}}], fetched_by
         st, script = call(base + "/volunteer/bouldermesh_volunteer.py")
         assert st == 200 and script == SCRIPT.read_bytes()
         assert call(base + "/volunteer/api/work", {"version": 1})[0] == 401

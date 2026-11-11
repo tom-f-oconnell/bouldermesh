@@ -76,6 +76,8 @@ DEFAULTS = {
     "notify.server": "https://ntfy.sh",
     "notify.topic": "",
     "notify.reply_topic": "",
+    "notify.restarts": True,        # when the server is back up after a restart
+    "notify.downloads": True,       # when someone downloads the worker or volunteer script, roughly from where
 }
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
