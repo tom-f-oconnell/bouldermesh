@@ -97,6 +97,11 @@ SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 EDIT_TOKEN = os.environ.get("EDIT_TOKEN") or None
 READ_ONLY = os.environ.get("READ_ONLY", "0") == "1" or (os.environ.get("READ_ONLY") == "auto" and not EDIT_TOKEN)
 FILE_CACHE = int(os.environ.get("FILE_CACHE_SECONDS", "3600"))   # how long browsers and proxies may keep meshes, photos and static files
+# The viewer adds a mesh's version (mesh_version) to the addresses of its files, which are then kept a year, as what's at
+# them never changes; but textures and splats, which carry its photos, a day at most, so that one the site stops showing
+# (as its photos' licences come to light) is gone from caches by then. Textures are kept that long without it too.
+MESH_CACHE = int(os.environ.get("MESH_CACHE_SECONDS", str(365 * 86400)))
+TEXTURE_CACHE = int(os.environ.get("TEXTURE_CACHE_SECONDS", "86400"))
 # the header in which a proxy in front names the sender, for the log (X-Real-IP behind deploy/Caddyfile); only for a port
 # nothing but that proxy can reach, as anyone else could write it
 CLIENT_IP_HEADER = os.environ.get("CLIENT_IP_HEADER") or None
@@ -1144,11 +1149,26 @@ def pack_worker() -> None:
                 pass
 
 
+def mesh_version(mid: str, mode: str, filename: str) -> str:
+    """A token for what the viewer is sent for a mesh now, which changes whenever any of it would: how its texture is
+    shown, the file it's sent, its packed copies, its cleanup's pieces of each face, its splat."""
+    src = viewer_glb(mid, mode, filename) or served_dir(mid, mode) / filename
+    parts = [mode]
+    for f in (src, src.parent / meshclean.FACES_FILE, MESHES / mid / splat_mod.FILE):
+        try:
+            st = f.stat()
+            parts.append(f"{st.st_size}.{st.st_mtime_ns}")
+        except OSError:
+            parts.append("-")
+    rec = glbpack.record(src) if src.suffix.lower() == ".glb" else None
+    parts.append(str(rec["made"]) if rec else "-")
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()[:12]
+
+
 def pack_info(r: dict) -> dict | None:
     """What the viewer can fetch for a listed mesh instead of its own files: the sizes of its packed copies, and of
-    its textures' JPEG copies, and when they were made (v, which the viewer adds to their addresses, so that a copy
-    and its cleanup come from the same making, whatever caches hold); None if it isn't packed. One not packed, or
-    not for the previews the admin page asks for now, is queued (shown as it was meanwhile)."""
+    its textures' JPEG copies; None if it isn't packed. One not packed, or not for the previews the admin page asks
+    for now, is queued (shown as it was meanwhile)."""
     src = viewer_glb(r["id"], r["texture"], r["filename"])
     rec = glbpack.record(src) if src else None
     if (not rec or not glbpack.made_for(rec, settings().get("viewer.preview_faces"))) \
@@ -1161,7 +1181,7 @@ def pack_info(r: dict) -> dict | None:
         for s, n in t["bytes"].items():
             sides[s] = sides.get(s, 0) + n
     textures = rec.get("textures") or {}
-    return {"v": int(rec["made"]), "full": rec["full"]["bytes"], "preview": (rec.get("preview") or {}).get("bytes"),
+    return {"full": rec["full"]["bytes"], "preview": (rec.get("preview") or {}).get("bytes"),
             "texture": {"side": max(t["side"] for t in textures.values()), "bytes": sides} if textures else None}
 
 
@@ -4700,13 +4720,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def send_bytes(self, data: bytes, ctype: str = "application/octet-stream"):
-        """Send bytes made for this request, to be kept as long as files are."""
+    def send_bytes(self, data: bytes, ctype: str = "application/octet-stream", cache: str | None = None):
+        """Send bytes made for this request, to be kept as long as files are, or as cache says (a Cache-Control)."""
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-File-Size", str(len(data)))
-        self.send_header("Cache-Control", f"public, max-age={FILE_CACHE}")
+        self.send_header("Cache-Control", cache or f"public, max-age={FILE_CACHE}")
         self.end_headers()
         self.wfile.write(data)
 
@@ -4718,9 +4738,10 @@ class Handler(BaseHTTPRequestHandler):
             print(f"error: {self.command} {self.path}: {type(e).__name__}: {e}", flush=True)
         self.send_json({"error": str(e).replace(str(DATA), "data").replace(str(ROOT), ".")}, code)
 
-    def send_file(self, path: Path, download=False, headers: dict | None = None):
+    def send_file(self, path: Path, download=False, headers: dict | None = None, cache: str | None = None):
         """Send a file, as its type if it's one the site serves (SERVED_TYPES; anything under frontend/), else as bytes to
-        save; with Last-Modified, so that a browser asking If-Modified-Since gets a 304 instead of the file again."""
+        save; with Last-Modified, so that a browser asking If-Modified-Since gets a 304 instead of the file again. cache:
+        its Cache-Control, if not the usual."""
         if not path.is_file():
             return self.send_json({"error": "not found"}, 404)
         st = path.stat()
@@ -4733,7 +4754,7 @@ class Handler(BaseHTTPRequestHandler):
         modified = email.utils.formatdate(st.st_mtime, usegmt=True)
         # no-transform: proxies in front leave the page as it is, so Cloudflare doesn't add its analytics beacon (which the
         # page's policy would block anyway) or rewrite the page in any other way, whatever its dashboard settings
-        cache = "no-cache, no-transform" if in_frontend and path.suffix == ".html" else f"public, max-age={FILE_CACHE}"
+        cache = cache or ("no-cache, no-transform" if in_frontend and path.suffix == ".html" else f"public, max-age={FILE_CACHE}")
         since = self.headers.get("If-Modified-Since")
         if since and not download:
             try:
@@ -5024,8 +5045,9 @@ class Handler(BaseHTTPRequestHandler):
                     r["splat"] = r.get("texture") == "full" and (MESHES / r["id"] / splat_mod.FILE).exists()
                     try:
                         r["pack"] = pack_info(r)
+                        r["v"] = mesh_version(r["id"], r["texture"], r["filename"])     # for its files' addresses
                     except Exception as e:
-                        r["pack"] = None
+                        r["pack"] = r["v"] = None
                         print(f"error: mesh {r['id']}'s packed copies: {type(e).__name__}: {e}", flush=True)
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
@@ -5077,6 +5099,13 @@ class Handler(BaseHTTPRequestHandler):
                 is_image = f.suffix.lower() in (".png", ".jpg", ".jpeg")
                 if mode == "hidden" and is_image:
                     return self.send_json({"error": "textures aren't shown"}, 403)
+                row = q("SELECT filename FROM meshes WHERE id=?", mid, one=True)
+                cache = f"public, max-age={TEXTURE_CACHE}" if is_image else None
+                if qs.get("v"):     # the mesh's version, from the list: kept long if it's still this one's, else not at all
+                    if row and qs["v"][0] == mesh_version(mid, mode, row["filename"]):
+                        cache = f"public, max-age={TEXTURE_CACHE}" if is_image or name == splat_mod.FILE else f"public, max-age={MESH_CACHE}, immutable"
+                    else:
+                        cache = "no-cache"
                 side = int(qs["max"][0]) if qs.get("max", [""])[0].isdigit() else 0
                 if side in SHRINK_SIDES and is_image and f.is_file():
                     if not _has("PIL"):
@@ -5097,14 +5126,13 @@ class Handler(BaseHTTPRequestHandler):
                             return self.send_json({"error": "this mesh isn't packed yet"}, 404)
                         f = packed
                 if name == meshclean.FACES_FILE and lod and f.is_file():     # its cleanup, in a packed copy's order
-                    row = q("SELECT filename FROM meshes WHERE id=?", mid, one=True)
                     record = meshclean.load(base)
                     src = viewer_glb(mid, mode, row["filename"]) if row else None
                     data = glbpack.labels(src, lod, f, record["label_bytes"]) if src and record and not record.get("deleted") else None
                     if data is None:
                         return self.send_json({"error": "this mesh isn't packed yet"}, 404)
-                    return self.send_bytes(data)
-                return self.send_file(f, download="download" in qs)
+                    return self.send_bytes(data, cache=cache)
+                return self.send_file(f, download="download" in qs, cache=None if "download" in qs else cache)
             if p == "/api/campaigns":
                 return self.send_json(campaigns_listed())
             # ---- climbs

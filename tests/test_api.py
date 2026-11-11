@@ -63,6 +63,13 @@ def status_of(url: str) -> int:
         return e.code
 
 
+def cache_of(url: str) -> str:
+    """The Cache-Control a file is sent with."""
+    with urllib.request.urlopen(url) as r:
+        r.read()
+        return r.headers["Cache-Control"]
+
+
 def main() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="bouldermesh-test-"))
     passed = False
@@ -275,6 +282,7 @@ def run(B: str, tmp: Path) -> None:
         assert im.size == want and im.format == fmt, (ask, im.size, im.format)
     smaller = tmp / "data" / "meshes" / up["id"] / "smaller"
     assert sorted(f.name for f in smaller.iterdir()) == ["atlas-2048.jpg", "atlas-4096.jpg"], "the copy at its own size made once"
+    assert cache_of(f"{B}/meshes/{up['id']}/atlas.png?max=2048") == cache_of(f"{B}/meshes/{up['id']}/atlas.png") == "public, max-age=86400"
     with urllib.request.urlopen(f"{B}/meshes/{up['id']}/cube.ply?max=2048") as r:
         assert r.read() == ply.read_bytes(), "only images get shrunk"
     assert st == 201, up
@@ -364,23 +372,42 @@ def run(B: str, tmp: Path) -> None:
 
             def packed_again(test):     # the admin page's preview size changed: made again, and shown as before meanwhile
                 for _ in range(100):
-                    now = next(m for m in req(B, "GET", "/api/meshes")[1] if m["id"] == mid)["pack"]
-                    assert now, "still shown packed while it's made again"
-                    if test(now):
+                    now = next(m for m in req(B, "GET", "/api/meshes")[1] if m["id"] == mid)
+                    assert now["pack"], "still shown packed while it's made again"
+                    if test(now["pack"]):
                         return now
                     time.sleep(0.1)
                 raise AssertionError(now)
+            before = next(m for m in req(B, "GET", "/api/meshes")[1] if m["id"] == mid)["v"]
             admin_set({"viewer.preview_faces": 100})
             again = packed_again(lambda now: now["preview"])
-            assert again["v"] >= packed["v"] and again["full"] == packed["full"], (again, packed)
+            assert again["v"] != before and again["pack"]["full"] == packed["full"], (again, packed)
+            assert cache_of(f"{B}/meshes/{mid}/cleanup_faces.bin?lod=preview&v={before}") == "no-cache", "not this version's"
             with urllib.request.urlopen(f"{B}/meshes/{mid}/cleanup_faces.bin?lod=preview&v={again['v']}") as r:
                 preview = np.frombuffer(r.read(), "<u2")
+                assert r.headers["Cache-Control"] == "public, max-age=31536000, immutable", r.headers["Cache-Control"]
             assert 50 <= len(preview) < 402 and set(preview.tolist()) <= {0, 1}, len(preview)
             assert status_of(f"{B}/meshes/{mid}/my-rock.glb?lod=preview&v={again['v']}") == 200
             admin_set({"viewer.preview_faces": 0})
             packed_again(lambda now: now["preview"] is None)
             assert status_of(f"{B}/meshes/{mid}/my-rock.glb?lod=preview") == 404, "no previews at all"
             print("packed copies OK")
+        # --- a mesh's version: its files kept a year at an address with it, until anything it's sent changes
+        version = lambda: next(m for m in req(B, "GET", "/api/meshes")[1] if m["id"] == mid)["v"]  # noqa: E731
+        v1 = version()
+        assert cache_of(f"{B}/meshes/{mid}/my-rock.glb?v={v1}") == "public, max-age=31536000, immutable"
+        assert cache_of(f"{B}/meshes/{mid}/cleanup_faces.bin?v={v1}") == "public, max-age=31536000, immutable"
+        assert cache_of(f"{B}/meshes/{mid}/my-rock.glb") == "public, max-age=3600", "without it, an hour"
+        assert cache_of(f"{B}/meshes/{mid}/my-rock.glb?v=0123456789ab") == "no-cache", "another version's: not kept"
+        assert cache_of(f"{B}/meshes/{mid}/my-rock.glb?download=1&v={v1}") == "public, max-age=3600"
+        st, _ = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": []})
+        assert version() == v1, "which pieces are hidden comes from the API: its files stay as they were"
+        st, _ = req(B, "DELETE", f"/api/meshes/{mid}/cleanup")
+        v2 = version()
+        assert v2 != v1 and cache_of(f"{B}/meshes/{mid}/my-rock.glb?v={v1}") == "no-cache", "its cleanup went"
+        st, _ = req(B, "POST", f"/api/meshes/{mid}/cleanup", {})
+        assert version() not in (v1, v2), "its pieces found again"
+        print("mesh versions OK")
         st, bad = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": [0, 1]})
         assert st == 400 and "at least one" in bad["error"], bad
         st, rec = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": []})

@@ -401,8 +401,15 @@ own files) showed in 28 s, where its own files would take almost 4 minutes, and 
 - **When.** Each new mesh is packed as it's made, and any mesh the list of meshes shows unpacked is queued, so old
   meshes catch up once someone opens the site; one at a time, at the lowest CPU priority. The admin page sets the
   preview's size (`viewer.preview_faces`, 150,000 by default, 0 for none): a change queues every mesh again, and each
-  is shown from its old copies until its new ones are made. The viewer adds when a mesh's copies were made to their
-  addresses (`&v=`), so a preview and its cleanup always come from the same making, whatever Cloudflare still holds. node runs glbpack.mjs where
+  is shown from its old copies until its new ones are made.
+- **Caching.** The viewer adds the mesh's version (`?v=`) to its files' addresses: a hash of how its texture is shown
+  and of its served GLB's, cleanup's, splat's and packed copies' sizes and times, so it changes whenever any of what's
+  sent would, and a preview and its cleanup always come from the same making. What's at such an address never changes,
+  so it's kept a year, by Cloudflare and browsers alike, and Cloudflare's copies need no purging. Textures and splats
+  are kept only a day (and need no version, as a texture's own bytes never change): they carry photos, and a mesh
+  whose photos turn out not to be free to copy must stop being shown, which a year in caches would defeat. An
+  address with a version that isn't current any more is answered with what's there now, marked not to be kept, so a
+  page loaded before a change can't fill caches with a mix. node runs glbpack.mjs where
   it's installed, deno (in the Docker image for yt-dlp) where not.
 - **Automatically, or on a button.** The rest comes at once unless it would take over 30 s at the speed the preview's
   files came (the browser's own timings of them), or the browser says it's on 2G or 3G or saving data (Chrome on

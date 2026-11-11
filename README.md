@@ -555,7 +555,12 @@ If you change `frontend/index.html`, the hashes follow, but a new inline `onclic
 in `backend/server.py` (`CSP=0` in `.env` turns it off, and `CSP=<policy>` replaces it). Files under `data/` are served only
 as meshes, textures, JSON or bytes, so nothing uploaded there can run as a page of the site, and uploaded meshes keep only
 mesh, texture and material files. Meshes, photos and static files are sent with `Last-Modified`, and may be cached for an
-hour (`FILE_CACHE_SECONDS`). Caddy compresses text, meshes and cleanups on the way (not photos, or what machines lent for
+hour (`FILE_CACHE_SECONDS`). The viewer asks for a mesh's files with its version (`?v=`, from `GET /api/meshes`), which
+changes whenever anything sent for it would (how its texture is shown, its packed copies, its cleanup, its splat): at
+such an address, files are kept a year (`MESH_CACHE_SECONDS`), as nothing there ever changes, though textures and splats,
+which carry photos, only a day (`TEXTURE_CACHE_SECONDS`, also for textures without it), so that one the site stops
+showing is gone from caches by then. A request with an old version gets what's there now, kept by no one. Cloudflare's
+rule for `/meshes/` takes these times as they are, for its own copies and browsers'. Caddy compresses text, meshes and cleanups on the way (not photos, or what machines lent for
 meshing fetch), and the app says each file's own size in `X-File-Size`, which three.js reads for its progress. The page itself is sent with `Cache-Control: no-transform`, so that a proxy in front leaves
 it as it is: Cloudflare, for one, adds its Web Analytics script to free plans' pages unless that's turned off, and the
 page's policy would only block it. Harvests fetch only `http(s)` URLs, and never from private, loopback or link-local addresses,
@@ -971,8 +976,9 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
     GET  /meshes/{id}/{texture}?max=2048|4096|8192       a texture as a JPEG at most that many pixels across
     GET  /meshes/{id}/{glb}?lod=full|preview             its copy packed for viewing, all its faces or simplified (404 until
-                                                        made; GET /api/meshes says which there are, as "pack", with sizes
-                                                        and v, when they were made, which the viewer adds as &v=)
+                                                        made; GET /api/meshes says which there are, as "pack", with sizes)
+    GET  /meshes/{id}/{file}?v=<version>                 kept a year (textures and splats a day) if that's the mesh's version
+                                                        now (its "v" in GET /api/meshes), else not kept
     GET  /meshes/{id}/cleanup_faces.bin?lod=full|preview  its cleanup's piece of each face, in that copy's order
     POST /api/meshes/{id}/rating {browser, rating, comment}   a visitor's rating (1 bad, 2 OK, 3 good, or null) and comment,
                                                         from anyone, as client-errors are taken (120 an hour an address): one
