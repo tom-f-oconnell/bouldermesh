@@ -138,6 +138,14 @@
   #pieces .row{margin-top:6px;gap:6px;flex-wrap:wrap}
   #pieces .list{max-height:260px;overflow:auto;margin-top:6px;display:grid;grid-template-columns:1fr auto;gap:3px 8px;align-items:center}
   #orient{display:none;position:absolute;left:12px;bottom:12px;max-width:430px;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.45;z-index:2}
+  #rate{position:absolute;right:12px;bottom:12px;z-index:3;display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+  #rate[hidden],#ratemenu[hidden]{display:none}
+  #ratemenu{display:flex;flex-direction:column;gap:6px;width:min(300px,calc(100vw - 48px));padding:8px;border-radius:8px;
+    background:var(--overlay);border:1px solid var(--line);box-shadow:0 4px 16px rgba(0,0,0,.3);font-size:12px}
+  #ratemenu .seg{margin-left:0;align-self:flex-start} #ratemenu .seg button{padding:4px 12px}
+  #ratecomment{width:100%;box-sizing:border-box;resize:none;overflow-y:auto;min-height:32px;font:inherit;font-size:13px}
+  #ratebtn.r1,#rateseg button.on[data-r="1"]{color:var(--bad)} #ratebtn.r3,#rateseg button.on[data-r="3"]{color:var(--ok)}
+  .bpanel .head a,.bpanel .brow a{color:inherit;text-decoration:underline dotted;text-underline-offset:2px}
   #orient b{font-weight:600} #orient .key{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
   #orient div+div{margin-top:5px} #orient button{margin-left:6px}
   .notice{font-size:12px;color:var(--mute);border-left:3px solid var(--line);padding:4px 8px}
@@ -211,6 +219,7 @@
     #prefs .seg{justify-self:start} #prefs .seg button{padding:6px 10px;font-size:13px}
     .prefsbtn{font-size:15px;line-height:1.2;padding-top:2px;padding-bottom:2px} .prefsbtn[aria-expanded=true]{background:var(--line)}
     #hud,#viewnote,#pieces,#orient{display:none!important}
+    #ratebtn{font-size:14px;padding:6px 12px} #ratemenu .seg button{padding:7px 14px;font-size:14px} #ratecomment{font-size:16px}
     #vtitle:not(:empty){display:block;position:absolute;top:6px;left:8px;max-width:calc(100% - 16px);font-size:12px;line-height:1.35;
       padding:2px 8px;border-radius:10px;background:var(--overlay-soft);color:var(--fg);white-space:nowrap;overflow:hidden;
       text-overflow:ellipsis;pointer-events:none;z-index:2}
@@ -349,12 +358,15 @@
             <input type="file" id="meshfile" multiple accept=".ply,.obj,.mtl,.glb,.gltf,.stl,.png,.jpg"></label>
           <select id="upclimb" style="width:170px"><option value="">link to climb (optional)</option></select>
         </div>
-        <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="m-older"> Show older versions of rebuilt meshes</label></div>
+        <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="m-older"> Show older versions of rebuilt meshes</label>
+          <label title="Rated 1.5 or under on average, with bad 1, OK 2 and good 3"><input type="checkbox" id="m-nobad"> Hide those rated bad</label>
+          <label title="Those you rated bad in their 3D view, in this browser"><input type="checkbox" id="m-nomine"> Hide those I rated bad</label></div>
         <div class="row" style="margin-bottom:6px">
           <label>Sort by <select id="m-sort" style="width:auto">
             <option value="created">Newest</option><option value="faces">Faces</option><option value="placed">Photos placed</option>
             <option value="views">Distinct viewpoints</option><option value="around">Coverage around the rock</option>
-            <option value="share">Share of its photos placed</option></select></label>
+            <option value="share">Share of its photos placed</option><option value="rating">Rating (everyone's)</option>
+            <option value="mine">My rating</option></select></label>
           <button class="sm sec" id="m-dir" title="Reverse the order">↓</button>
         </div>
         <details id="m-filter" style="margin-bottom:8px"><summary>Filter <small id="m-filter-note"></small></summary>
@@ -404,6 +416,14 @@
       <div id="viewnote"></div>
       <div id="pieces"></div>
       <div id="orient"></div>
+      <div id="rate" hidden>
+        <div id="ratemenu" hidden>
+          <span class="seg" id="rateseg" title="How good this mesh is. Click your choice again to take it back."><button data-r="1">Bad</button><button data-r="2">OK</button><button data-r="3">Good</button></span>
+          <textarea id="ratecomment" rows="1" maxlength="2000" placeholder="A comment on this mesh (optional)" aria-label="A comment on this mesh"></textarea>
+          <div class="meta" id="ratestate"></div>
+        </div>
+        <button class="sm sec" id="ratebtn" title="Rate this mesh: bad, OK or good, with a comment if you like. Kept in this browser, and sent to the site." aria-expanded="false">Rate</button>
+      </div>
       <div id="hud">Pick a mesh, or drop a mesh file here. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan</div>
       <div id="drop">Drop mesh file to upload &amp; view</div>
     </div>
@@ -1206,7 +1226,9 @@ function loading(label){
   return () => { if (seq === loadSeq) { el.hidden = true; loadingUpdate = null; } };
 }
 async function loadMeshUrl(url, filename, label, id){
+  flushRating();
   shownMesh = id || null;
+  showRate(true);
   const began = performance.now(), via = viewVia;
   viewVia = '';
   $('#vfrom').style.display = 'none';
@@ -1769,8 +1791,9 @@ function boulderPanelHtml(b, c){
   if (!b || !b.rows.length) return '';
   const what = r => r.state === 'pending' ? (r.listed ? 'not harvested yet' : 'to be harvested for it') : r.photos == null ? '' : plural(r.photos, 'photo');
   const why = `brought its boulder in: the first of its climbs in the area's order${c.max_meshes ? `, within the first ${c.max_meshes} meshes` : ''}`;
-  return `<div class="bpanel"><div class="head">${esc(b.name)}: ${b.pooled ? 'photos each climb gives its mesh, after its filter' : 'its climbs\' photos, for its mesh'}</div>
-    ${b.rows.map(r => `<div class="brow ${r.state}${r.why ? ' why' : ''}"${r.why ? ` title="${esc(why)}"` : ''}><i></i><span><b>${esc(r.name)}</b> ${esc(r.grade || '')}${r.rank ? ` <small>#${r.rank}</small>` : ''}${r.listed ? '' : ' <small>(not on the list)</small>'}${r.why ? ' ★' : ''}</span><span>${what(r)}</span></div>`).join('')}
+  const name = b.url ? `<a href="${esc(b.url)}" target="_blank" rel="noopener" title="Its page on Mountain Project">${esc(b.name)}</a>` : esc(b.name);
+  return `<div class="bpanel"><div class="head">${name}: ${b.pooled ? 'photos each climb gives its mesh, after its filter' : 'its climbs\' photos, for its mesh'}</div>
+    ${b.rows.map(r => `<div class="brow ${r.state}${r.why ? ' why' : ''}"${r.why ? ` title="${esc(why)}"` : ''}><i></i><span><b>${r.climb ? `<a href="#" data-bclimb="${esc(r.climb)}" title="Its photos, under Climbs">${esc(r.name)}</a>` : esc(r.name)}</b> ${esc(r.grade || '')}${r.rank ? ` <small>#${r.rank}</small>` : ''}${r.listed ? '' : ' <small>(not on the list)</small>'}${r.why ? ' ★' : ''}</span><span>${what(r)}</span></div>`).join('')}
     ${b.pooled && b.own ? `<div class="brow in"><i></i><span>the boulder's own search</span><span>${plural(b.own, 'photo')}</span></div>` : ''}</div>`;
 }
 function currentHtml(c){
@@ -1872,6 +1895,13 @@ async function refreshCampaigns(){
   meshedShown = meshed;
   return list;
 }
+// the boulder panel's climbs (redrawn as the area's progress moves): each opens under Climbs, with its photos
+$('#campaigns').addEventListener('click', ev => {
+  const a = ev.target.closest('a[data-bclimb]');
+  if (!a) return;
+  ev.preventDefault();
+  openClimb(a.dataset.bclimb);
+});
 let campaignTimer = null;
 // while the server waits for jobs to finish before it restarts, say so, as nothing new starts meanwhile
 let betaJobs = null;   // /api/jobs' beta: {running, queued, youtube}
@@ -2017,10 +2047,12 @@ function meshMetric(m, key){
   const x = m.metrics || {};
   if (key === 'share') return x.placed && x.photos_in ? Math.min(1, x.placed / x.photos_in) : null;
   if (key === 'created') return m.created;
+  if (key === 'rating') return m.rating?.n ? m.rating.mean : 0;     // unrated: past the bad end
+  if (key === 'mine') return myRating(m.id) ?? 0;
   return x[key] ?? null;
 }
 const meshAreas = m => (m.areas && m.areas.length ? m.areas : [NO_AREA]);
-let meshView = { sort: 'created', desc: true, ranges: {}, hidden: [] };    // hidden: areas left out
+let meshView = { sort: 'created', desc: true, ranges: {}, hidden: [], noBad: false, noMineBad: false };    // hidden: areas left out
 try { Object.assign(meshView, JSON.parse(localStorage.getItem('bm_mesh_view') || '{}')); } catch {}
 function saveMeshView(){ try { localStorage.setItem('bm_mesh_view', JSON.stringify(meshView)); } catch {} }
 // a slider's 0..1000 to a value between the least and most there are, and back: faces on a log scale
@@ -2060,6 +2092,8 @@ function renderMeshFilter(all){
 }
 function meshShown(m){
   if (meshAreas(m).every(a => meshView.hidden.includes(a))) return false;
+  if (meshView.noBad && m.rating?.n && m.rating.mean <= 1.5) return false;
+  if (meshView.noMineBad && myRating(m.id) === 1) return false;
   for (const def of MESH_METRICS) {
     const [a, b] = meshView.ranges[def.key] || [null, null];
     if (a == null && b == null) continue;
@@ -2080,7 +2114,102 @@ function metricsLine(m){
 }
 $('#m-sort').onchange = () => { meshView.sort = $('#m-sort').value; saveMeshView(); renderMeshes(); };
 $('#m-dir').onclick = () => { meshView.desc = !meshView.desc; saveMeshView(); renderMeshes(); };
+$('#m-nobad').onchange = () => { meshView.noBad = $('#m-nobad').checked; saveMeshView(); renderMeshes(); };
+$('#m-nomine').onchange = () => { meshView.noMineBad = $('#m-nomine').checked; saveMeshView(); renderMeshes(); };
 $('#m-clear').onclick = () => { meshView.ranges = {}; meshView.hidden = []; saveMeshView(); renderMeshes(); };
+// ---- rating a mesh, from its 3D view: bad, OK or good, and a comment. Kept in this browser (bm_ratings), and sent to the
+// site each time either changes, which keeps one of each for every address and browser (an id made here, bm_browser)
+const RATING_NAMES = { 1: 'bad', 2: 'OK', 3: 'good' };
+const BROWSER_ID = (() => {
+  const made = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+  try {
+    let id = localStorage.getItem('bm_browser');
+    if (!/^[0-9a-f]{32}$/.test(id || '')) { id = made(); localStorage.setItem('bm_browser', id); }
+    return id;
+  } catch { return made(); }      // nothing can be kept here: for this visit only
+})();
+let myRatings = {};
+try { myRatings = JSON.parse(localStorage.getItem('bm_ratings') || '{}') || {}; } catch {}
+const myRating = id => myRatings[id]?.rating ?? null;
+const ratingAvg = r => `${r.mean.toFixed(1)} from ${plural(r.n, 'rating')}`;
+function ratingTags(m){
+  const r = myRating(m.id);
+  return (r ? `<span class="tag ${r === 1 ? 'bad' : r === 3 ? 'ok' : ''}" title="How you rated it, in its 3D view">you: ${RATING_NAMES[r]}</span>` : '')
+    + (m.rating?.n ? `<span class="tag src" title="Everyone's ratings, on average: bad 1, OK 2, good 3">★ ${m.rating.mean.toFixed(1)} (${m.rating.n})</span>` : '');
+}
+let rateTimer = null, ratePending = null, rateQueue = Promise.resolve();
+function saveMyRatings(){ try { localStorage.setItem('bm_ratings', JSON.stringify(myRatings)); } catch {} }
+function sendRating(id){
+  clearTimeout(rateTimer); rateTimer = ratePending = null;
+  const mine = myRatings[id] || {}, body = JSON.stringify({ browser: BROWSER_ID, rating: mine.rating ?? null, comment: mine.comment || '' });
+  if (shownMesh === id) $('#ratestate').textContent = 'Saving…';
+  rateQueue = rateQueue.then(async () => {   // in the order made, so the last change is the one kept
+    try {
+      const r = await fetch(`/api/meshes/${id}/rating`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true, body });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || r.statusText);
+      if (meshesById[id]) meshesById[id].rating = j.rating?.n ? j.rating : null;
+      if (shownMesh === id) $('#ratestate').textContent = 'Saved' + (j.rating?.n ? `. Everyone's: ${ratingAvg(j.rating)}` : '');
+    } catch (e) {
+      if (shownMesh === id) $('#ratestate').textContent = `Kept in this browser, but not sent: ${e.message}`;
+    }
+    if (meshesCache.length) renderMeshes(false);
+  });
+}
+function setRating(id, changes){
+  const now = { ...(myRatings[id] || {}), ...changes };
+  if (now.rating == null && !now.comment) delete myRatings[id];
+  else myRatings[id] = now;
+  saveMyRatings();
+  showRate();
+}
+function growComment(){
+  const t = $('#ratecomment');
+  t.style.height = 'auto';
+  t.style.height = Math.min(t.scrollHeight + 2, innerHeight * 0.4) + 'px';
+}
+// the button, for a mesh of the site's (not a file opened here): what this browser said of it, and its menu
+function showRate(changed = false){
+  const id = shownMesh, menu = $('#ratemenu'), btn = $('#ratebtn');
+  $('#rate').hidden = !id;
+  if (changed || !id) { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
+  if (!id) return;
+  const r = myRating(id);
+  btn.textContent = r ? `Rated ${RATING_NAMES[r]}` : 'Rate';
+  btn.classList.toggle('r1', r === 1); btn.classList.toggle('r3', r === 3);
+  $('#rateseg').querySelectorAll('button').forEach(b => b.classList.toggle('on', +b.dataset.r === r));
+  const t = $('#ratecomment');
+  if (document.activeElement !== t) { t.value = myRatings[id]?.comment || ''; if (!menu.hidden) growComment(); }
+  if (changed) $('#ratestate').textContent = '';
+}
+function flushRating(){ if (ratePending) sendRating(ratePending); }
+$('#ratebtn').onclick = () => {
+  const menu = $('#ratemenu');
+  menu.hidden = !menu.hidden;
+  $('#ratebtn').setAttribute('aria-expanded', String(!menu.hidden));
+  if (menu.hidden) return flushRating();
+  const all = meshesById[shownMesh]?.rating;
+  $('#ratestate').textContent = all?.n ? `Everyone's: ${ratingAvg(all)}` : '';
+  growComment();
+};
+$('#rateseg').querySelectorAll('button').forEach(b => b.onclick = () => {
+  const id = shownMesh, r = +b.dataset.r;
+  if (!id) return;
+  setRating(id, { rating: myRating(id) === r ? null : r });     // the one chosen again: none
+  sendRating(id);
+});
+$('#ratecomment').oninput = () => {
+  const id = shownMesh;
+  if (!id) return;
+  growComment();
+  setRating(id, { comment: $('#ratecomment').value.slice(0, 2000) });
+  clearTimeout(rateTimer);
+  ratePending = id;
+  rateTimer = setTimeout(() => sendRating(id), 1000);
+  $('#ratestate').textContent = '';
+};
+$('#ratecomment').onblur = flushRating;
+addEventListener('pagehide', flushRating);
 async function refreshMeshes(){
   hideSourceTip();
   meshesCache = await api('/api/meshes'); meshesById = Object.fromEntries(meshesCache.map(m => [m.id, m]));
@@ -2093,6 +2222,7 @@ function renderMeshes(filter = true){
   const all = meshesCache.filter(m => $('#m-older').checked || !m.replaced_by);
   if (filter) renderMeshFilter(all);
   $('#m-sort').value = meshView.sort; $('#m-dir').textContent = meshView.desc ? '↓' : '↑';
+  $('#m-nobad').checked = !!meshView.noBad; $('#m-nomine').checked = !!meshView.noMineBad;
   $('#m-dir').title = meshView.desc ? 'Largest (or newest) first: click for the other way' : 'Smallest (or oldest) first: click for the other way';
   const shown = all.filter(meshShown);
   const key = meshView.sort, sign = meshView.desc ? -1 : 1;
@@ -2105,7 +2235,7 @@ function renderMeshes(filter = true){
   if (meshesCache.length && !shown.length) el.innerHTML = '<div class="status">No mesh fits the filter.</div>';
   for (const m of shown) {
     const d = document.createElement('div'); d.className = 'card mesh';
-    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${m.boulder?'<span class="tag ok" title="Made from the photos of every climb on this boulder">boulder</span>':''}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
+    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${m.boulder?'<span class="tag ok" title="Made from the photos of every climb on this boulder">boulder</span>':''}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
         <div class="chips">${(m.boulder_climbs || []).map(c => `<span class="chip" data-from="${c.id}" title="${c.view ? `Look at it from where ${esc(c.name)}'s own photos were taken (${plural(c.view.photos, 'photo')})` : `None of ${esc(c.name)}'s own photos were placed in it: opens the climb`}">${c.view ? '👁 ' : ''}${esc(c.name)} ${esc(c.grade||'')}</span>`).join('')}
           ${m.climbs.map(c=>`<span class="chip${c.shared ? ' shared' : ''}" data-climb="${c.id}" ${c.shared ? 'title="Linked by an area as on the same boulder as the climb this was made for: it may not show this climb\'s side"' : ''}>${esc(c.name)} ${esc(c.grade||'')}${c.shared ? ' <small>same boulder</small>' : ''} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('')}
           <select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option>${climbsCache.filter(c=>c.kind!=='area').map(c=>`<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('')}</select></div></div>

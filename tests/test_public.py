@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -206,6 +207,30 @@ def with_token(tmp: Path) -> None:
             {"mesh": mid, "via": "random", "seconds": 2.3, "note": "Texture reduced to 4096 pixels", "editor": False}, seen[-1]
         assert seen[-1]["name"] and "198.51.100.20" not in json.dumps(seen), seen[-1]
         assert req(B, "POST", "/api/mesh-views", {"mesh": "0123456789ab"})[0] == 404
+        # a visitor's rating and comment: from anyone, as reports are; one each per address and browser, replaced as changed
+        rate = lambda body, ip="198.51.100.30", **h: req(B, "POST", f"/api/meshes/{mid}/rating", body, headers={"X-Real-IP": ip, **h})  # noqa: E731
+        st, _, r = rate({"browser": "a" * 32, "rating": 1, "comment": "holes all over"})
+        assert st == 200 and r["rating"] == {"mean": 1.0, "n": 1}, (st, r)
+        assert rate({"browser": "a" * 32, "rating": 3, "comment": " better now "})[2]["rating"] == {"mean": 3.0, "n": 1}, "replaced"
+        assert rate({"browser": "b" * 32, "rating": 2})[2]["rating"] == {"mean": 2.5, "n": 2}, "another browser"
+        assert rate({"browser": "a" * 32, "rating": 1}, ip="198.51.100.31")[2]["rating"] == {"mean": 2.0, "n": 3}, "another address"
+        assert rate({"browser": "b" * 32, "rating": None, "comment": "  "})[2]["rating"] == {"mean": 2.0, "n": 2}, "taken back: gone"
+        assert rate({"browser": "c" * 32, "comment": "only a comment"})[2]["rating"] == {"mean": 2.0, "n": 2}, "a comment isn't a rating"
+        assert next(m for m in req(B, "GET", "/api/meshes")[2] if m["id"] == mid)["rating"] == {"mean": 2.0, "n": 2}
+        with sqlite3.connect(tmp / "data" / "bouldermesh.sqlite") as con:
+            kept = con.execute("SELECT address, browser, rating, comment FROM mesh_ratings WHERE mesh_id=? ORDER BY address, browser", (mid,)).fetchall()
+        assert kept == [("198.51.100.30", "a" * 32, 3, "better now"), ("198.51.100.30", "c" * 32, None, "only a comment"),
+                        ("198.51.100.31", "a" * 32, 1, None)], kept
+        for bad in ({"browser": "a" * 32, "rating": 4}, {"browser": "a" * 32, "rating": True}, {"browser": "x", "rating": 1}, [1]):
+            assert rate(bad)[0] == 400, bad
+        assert req(B, "POST", "/api/meshes/0123456789ab/rating", {"browser": "a" * 32, "rating": 1})[0] == 404
+        assert rate({"browser": "a" * 32, "rating": 1}, Origin="https://evil.example")[0] == 403
+        out = subprocess.run([sys.executable, str(ROOT / "cli.py"), "mesh-ratings", "--data", str(tmp / "data")],
+                             capture_output=True, text=True, check=True).stdout
+        assert f"2.00  {mid} " in out and ": 1 good, 0 OK, 1 bad" in out and "(good):\n    better now" in out and "only a comment" in out, out
+        assert "198.51.100" not in out and "a" * 32 not in out, "not who"
+        codes = [rate({"browser": "d" * 32, "rating": 2}, ip="198.51.100.40")[0] for _ in range(121)]
+        assert codes[:120] == [200] * 120 and codes[120] == 429, "not too often from one address"
         assert req(B, "POST", "/api/mesh-views", view, headers={"Origin": "https://evil.example"})[0] == 403
         out = subprocess.run([sys.executable, str(ROOT / "cli.py"), "mesh-views", "--data", str(tmp / "data")],
                              capture_output=True, text=True, check=True).stdout
@@ -238,6 +263,8 @@ def with_token(tmp: Path) -> None:
         assert st == 200 and h["Content-Type"].startswith("text/html"), h      # the site's own files, as themselves
         assert req(B, "GET", "/static/../backend/server.py")[0] in (403, 404)
         assert req(B, "DELETE", f"/api/meshes/{mid}", headers=AUTH)[0] == 200
+        with sqlite3.connect(tmp / "data" / "bouldermesh.sqlite") as con:
+            assert not con.execute("SELECT 1 FROM mesh_ratings WHERE mesh_id=?", (mid,)).fetchall(), "its ratings go with it"
     finally:
         out = srv.stop()
     assert "editing: with the token" in out and out.count("refused ") >= 7, out[-2000:]
@@ -255,6 +282,8 @@ def read_only(tmp: Path) -> None:
             st, _, e = req(srv.url, "POST", "/api/projects", {"name": "x"}, headers=AUTH)
             assert st == 403 and "view-only" in e["error"], (st, e)
             assert req(srv.url, "DELETE", "/api/climbs/abc", headers=AUTH)[0] == 403
+            assert req(srv.url, "POST", "/api/meshes/0123456789ab/rating", {"browser": "a" * 32, "rating": 1})[0] == 404, \
+                "rating isn't changing the site: taken, here as there's no such mesh"
             assert req(srv.url, "GET", "/api/meshes")[0] == 200
         finally:
             out = srv.stop()

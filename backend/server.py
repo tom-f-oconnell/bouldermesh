@@ -176,6 +176,10 @@ def init_db() -> None:
           UNIQUE(source, source_id));
         CREATE TABLE IF NOT EXISTS mesh_links(
           mesh_id TEXT, climb_id TEXT, note TEXT, created REAL, PRIMARY KEY(mesh_id, climb_id));
+        -- visitors' ratings of meshes (1 bad, 2 ok, 3 good) and comments: one each per address and browser (rate_mesh())
+        CREATE TABLE IF NOT EXISTS mesh_ratings(
+          mesh_id TEXT, address TEXT, browser TEXT, rating INTEGER, comment TEXT, created REAL, updated REAL,
+          PRIMARY KEY(mesh_id, address, browser));
         CREATE TABLE IF NOT EXISTS campaigns(
           id TEXT PRIMARY KEY, name TEXT, area_id TEXT, ord TEXT, created REAL, note TEXT,
           status TEXT,                 -- running | stopping | stopped | done
@@ -596,6 +600,19 @@ def boulder_name(boulder: str) -> str:
 def boulder_climbs(boulder: str) -> list[dict]:
     """The climbs known on a boulder, by name."""
     return q("SELECT id, name, grade, lat, lng, data FROM climbs WHERE area_path=? ORDER BY name", boulder)
+
+
+def boulder_url(boulder: str) -> str | None:
+    """A boulder's own page (Mountain Project's area for it: the last of its climbs' areas), as its climbs' pages name
+    it, or None if none says."""
+    for c in boulder_climbs(boulder):
+        try:
+            urls = json.loads(c["data"] or "{}").get("area_urls") or []
+        except ValueError:
+            continue
+        if urls and str(urls[-1]).startswith("https://"):
+            return urls[-1]
+    return None
 
 
 def adopt_listed_climbs(boulder: str) -> int:
@@ -3009,7 +3026,7 @@ def boulder_panel(camp: dict, item: dict) -> dict | None:
     (pooled()): the boulder's name and climbs, each with what it gives the mesh. None for a climb meshed on its own.
 
     Returns:
-        {name, pooled (whether these are the boulder's own photos, after its filter, by the harvest they came from,
+        {name, url (its page), pooled (whether these are the boulder's own photos, after its filter, by the harvest they came from,
         rather than each climb's own harvest's), rows: [{name, grade, rank, listed (on the area's list), state
         ("pending": not harvested yet, "in": gives photos, "out": none), photos (page photos and video frames too),
         why (the climb that brought the boulder in: the first of them in the area's order)}], own (photos of the
@@ -3038,7 +3055,7 @@ def boulder_panel(camp: dict, item: dict) -> dict | None:
         photos = _image_count(PROJECTS / harvests[0] / "photos") if harvests else None
         rows.append({"climb": c["id"], "name": c["name"], "grade": c["grade"], "rank": None, "listed": False,
                      "state": "in" if photos else "pending", "photos": photos, "why": False, "projects": harvests})
-    out = {"name": boulder_name(key), "pooled": False, "rows": rows, "own": None}
+    out = {"name": boulder_name(key), "url": boulder_url(key), "pooled": False, "rows": rows, "own": None}
     proj = boulder_project(key) if (item.get("redo") or "").split("+")[0] in ("boulder", "pool") else None
     sources = PROJECTS / proj["id"] / "sources.json" if proj else None
     if sources and sources.exists() and sources.stat().st_mtime >= (item.get("updated") or 0) - 5:     # pooled this time
@@ -3409,25 +3426,34 @@ def admin_machine_deny(body: dict) -> dict:
 CLIENT_ERRORS = DATA / "client-errors.jsonl"   # one report a line; the one before it, client-errors.jsonl.1, once it's full
 CLIENT_ERRORS_BYTES = 2 * 2**20                # how big the file gets before that
 CLIENT_REPORT_MAX = 8192                       # the largest report taken
-CLIENT_REPORTS = {"error": (20, 600), "view": (120, 600)}   # at most this many of each from one address in this many seconds
+CLIENT_REPORTS = {"error": (20, 600), "view": (120, 600), "rating": (120, 3600)}  # at most this many of each from one address in this many seconds
 MESH_VIEWS = DATA / "mesh-views.jsonl"       # each mesh shown in a visitor's browser, and how it was asked for
 _client_reports: dict[tuple[str, str], list[float]] = {}
 _client_lock = threading.Lock()
+
+
+def _client_allowed(kind: str, sender: str) -> bool:
+    """Count a report of a kind from a visitor's address, unless it has sent too many lately (CLIENT_REPORTS). Call with
+    _client_lock held."""
+    now = time.time()
+    most, within = CLIENT_REPORTS[kind]
+    recent = [t for t in _client_reports.get((kind, sender), []) if now - t < within]
+    if len(recent) >= most:
+        _client_reports[(kind, sender)] = recent
+        return False
+    _client_reports[(kind, sender)] = recent + [now]
+    for k in [k for k, ts in _client_reports.items() if not ts or now - ts[-1] > max(w for _, w in CLIENT_REPORTS.values())]:
+        del _client_reports[k]
+    return True
 
 
 def _client_report(kind: str, sender: str, path: Path, line: dict) -> bool:
     """Append a report from a visitor's browser to path, unless that address has sent too many of its kind lately
     (CLIENT_REPORTS), starting a new file once it's over CLIENT_ERRORS_BYTES, the old one kept as <name>.1."""
     now = time.time()
-    most, within = CLIENT_REPORTS[kind]
     with _client_lock:
-        recent = [t for t in _client_reports.get((kind, sender), []) if now - t < within]
-        if len(recent) >= most:
-            _client_reports[(kind, sender)] = recent
+        if not _client_allowed(kind, sender):
             return False
-        _client_reports[(kind, sender)] = recent + [now]
-        for k in [k for k, ts in _client_reports.items() if not ts or now - ts[-1] > max(w for _, w in CLIENT_REPORTS.values())]:
-            del _client_reports[k]
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists() and path.stat().st_size > CLIENT_ERRORS_BYTES:
             path.replace(path.with_name(path.name + ".1"))
@@ -3473,6 +3499,51 @@ def record_mesh_view(report: dict, sender: str, editor: bool) -> bool | None:
         return False
     print(f"viewed mesh {mid} ({m['name']}){' from ' + via if via else ''}" + (f" in {seconds} s" if seconds is not None else ""), flush=True)
     return True
+
+
+RATINGS = {1: "bad", 2: "ok", 3: "good"}
+RATING_COMMENT_MAX = 2000       # characters of a comment on a mesh kept
+
+
+def mesh_ratings() -> dict[str, dict]:
+    """Each rated mesh's ratings: {mesh id: {mean, n}}, of those with a rating (not only a comment)."""
+    return {r["mesh_id"]: {"mean": round(r["mean"], 3), "n": r["n"]} for r in
+            q("SELECT mesh_id, AVG(rating) AS mean, COUNT(rating) AS n FROM mesh_ratings WHERE rating IS NOT NULL GROUP BY mesh_id")}
+
+
+def rate_mesh(mid: str, report: dict, sender: str) -> dict | bool | None:
+    """A visitor's rating of a mesh (1 bad, 2 ok, 3 good, or none) and comment, as their browser sends them each time
+    either changes: one each per address and browser (an id the page makes and keeps), replaced; with neither, it goes.
+    Anyone viewing the site may, as for client reports.
+
+    Returns:
+        The mesh's ratings after ({mean, n}, or {"n": 0}); None if there's no such mesh; False if that address has
+        sent too many lately.
+
+    Raises:
+        ValueError: not a rating.
+    """
+    m = q("SELECT name FROM meshes WHERE id=?", mid, one=True) if re.fullmatch(r"[0-9a-f]{6,32}", mid) else None
+    if not m:
+        return None
+    browser, rating = str(report.get("browser") or ""), report.get("rating")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", browser):
+        raise ValueError("browser: the id this browser keeps")
+    if isinstance(rating, bool) or rating not in (None, *RATINGS):
+        raise ValueError("rating: 1 (bad), 2 (ok), 3 (good) or null")
+    comment = str(report.get("comment") or "").strip()[:RATING_COMMENT_MAX] or None
+    with _client_lock:
+        if not _client_allowed("rating", sender):
+            return False
+    now = time.time()
+    if rating is None and comment is None:
+        q("DELETE FROM mesh_ratings WHERE mesh_id=? AND address=? AND browser=?", mid, sender, browser, write=True)
+    else:
+        q("INSERT INTO mesh_ratings(mesh_id, address, browser, rating, comment, created, updated) VALUES(?,?,?,?,?,?,?) "
+          "ON CONFLICT(mesh_id, address, browser) DO UPDATE SET rating=excluded.rating, comment=excluded.comment, "
+          "updated=excluded.updated", mid, sender, browser, rating, comment, now, now, write=True)
+    print(f"rated mesh {mid} ({m['name']}): {RATINGS.get(rating, 'no rating')}{', with a comment' if comment else ''}", flush=True)
+    return mesh_ratings().get(mid) or {"n": 0}
 
 
 # ----------------------------------------------------------------- handler
@@ -3671,6 +3742,30 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "too many reports from here lately"}, 429)
         self.send_json({"kept": True}, 202)
 
+    def rate(self, mid: str) -> None:
+        """POST /api/meshes/<id>/rating: a visitor's rating and comment (rate_mesh()), from any visitor, as client_report()
+        takes reports: only from the site's own pages, and small."""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if self.cross_site():
+            return self.send_json({"error": "refused: sent from another site's page"}, 403)
+        if not 0 < n <= CLIENT_REPORT_MAX:
+            self.close_connection = True
+            return self.send_json({"error": f"a rating is 1 byte to {CLIENT_REPORT_MAX // 1024} KB of JSON"}, 413 if n > 0 else 400)
+        try:
+            report = json.loads(self.rfile.read(n))
+            assert isinstance(report, dict)
+            got = rate_mesh(mid, report, self.address_string())
+        except (ValueError, AssertionError) as e:
+            return self.send_json({"error": str(e) if isinstance(e, ValueError) and str(e) else "a rating is a JSON object"}, 400)
+        if got is None:
+            return self.send_json({"error": "no such mesh"}, 404)
+        if got is False:
+            return self.send_json({"error": "too many ratings from here lately"}, 429)
+        self.send_json({"rating": got})
+
     def read_multipart(self) -> tuple[dict, list[tuple[str, bytes]]]:
         ctype = self.headers.get("Content-Type", "")
         if not ctype.startswith("multipart/form-data"):
@@ -3805,9 +3900,10 @@ class Handler(BaseHTTPRequestHandler):
                 for c in q("SELECT c.id, c.name, c.grade, c.area_path FROM climbs c WHERE c.area_path IN "
                            "(SELECT boulder FROM meshes WHERE boulder IS NOT NULL) ORDER BY c.name"):
                     on.setdefault(c.pop("area_path"), []).append(c)
-                areas = mesh_areas()
+                areas, rated = mesh_areas(), mesh_ratings()
                 for r in rows:
                     r["climbs"] = by.get(r["id"], [])
+                    r["rating"] = rated.get(r["id"])
                     if r["boulder"]:    # a boulder's own mesh: the climbs on it, and where each is seen from
                         views = viewpoints.load(MESHES / r["id"]) or {}
                         r["boulder_climbs"] = [{**c, "view": (views.get("climbs") or {}).get(c["id"])} for c in on.get(r["boulder"], [])]
@@ -3956,6 +4052,9 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         if p in ("/api/client-errors", "/api/mesh-views"):    # from any visitor, not only editors
             return self.client_report("error" if p == "/api/client-errors" else "view")
+        m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/rating", p)
+        if m:   # also from any visitor
+            return self.rate(m[1])
         if self.refused():
             return
         try:
@@ -4344,6 +4443,7 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             q("DELETE FROM meshes WHERE id=?", m[1], write=True)
             q("DELETE FROM mesh_links WHERE mesh_id=?", m[1], write=True)
+            q("DELETE FROM mesh_ratings WHERE mesh_id=?", m[1], write=True)
             shutil.rmtree(MESHES / m[1], ignore_errors=True)
             return self.send_json({"deleted": m[1]})
         m = re.fullmatch(r"/api/projects/([0-9a-f]+)", p)

@@ -1808,6 +1808,14 @@ alpha = item("Alpha")
 panel = server.boulder_panel(camp, alpha)
 assert panel["name"] == "Alpha Boulder" and [(r["name"], r["state"], r["why"]) for r in panel["rows"]] == \
     [("Alpha", "pending", True), ("Alpha2", "pending", False)], panel
+assert panel["url"] is None, "no page of a climb on it names its page yet"
+on_it = json.dumps(alpha["boulder"].split("/"))     # a climb on it, whose page names its areas' pages: the last is the boulder's
+server.q("INSERT INTO climbs(id, source, source_id, url, name, area_path, data, created) VALUES(?,?,?,?,?,?,?,?)", "c-alpha3",
+         "mountainproject", "999", "https://www.mountainproject.com/route/999/alpha3", "Alpha3", on_it,
+         json.dumps({"area_urls": ["https://www.mountainproject.com/area/1/the-area", "https://www.mountainproject.com/area/2/alpha-boulder"]}),
+         time.time(), write=True)
+assert server.boulder_panel(camp, alpha)["url"] == "https://www.mountainproject.com/area/2/alpha-boulder"
+server.q("DELETE FROM climbs WHERE id='c-alpha3'", write=True)
 apid = "a1" * 6
 (server.PROJECTS / apid / "photos").mkdir(parents=True)
 for i in range(3):

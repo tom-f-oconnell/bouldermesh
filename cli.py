@@ -24,6 +24,8 @@
                                                        wouldn't load, errors in the page), newest last
   python cli.py mesh-views [-n N] [--hours H] [--data DIR]  the last N meshes visitors' browsers showed, and how often
                                                        each was shown in the last H hours (default 24), and how
+  python cli.py mesh-ratings [-n N] [--data DIR]       visitors' ratings of meshes (bad, OK, good), each mesh's, and
+                                                       the last N comments on them, newest last
   python cli.py splat <mesh_id> [--steps N] [--out FILE] [--data DIR]
                                                        fit the splat of what's around a reconstructed mesh, for the
                                                        viewer's Scene background (needs CUDA torch and gsplat: splat.py)
@@ -89,6 +91,7 @@ def main():
     ce = sub.add_parser("client-errors"); ce.add_argument("-n", type=int, default=30); ce.add_argument("--data")
     mv = sub.add_parser("mesh-views"); mv.add_argument("-n", type=int, default=20); mv.add_argument("--hours", type=float, default=24)
     mv.add_argument("--data")
+    mr = sub.add_parser("mesh-ratings"); mr.add_argument("-n", type=int, default=30); mr.add_argument("--data")
     sp = sub.add_parser("splat"); sp.add_argument("mesh_id"); sp.add_argument("--steps", type=int, default=7000)
     sp.add_argument("--out"); sp.add_argument("--data")
     a = ap.parse_args()
@@ -100,6 +103,8 @@ def main():
         sys.exit(client_errors(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n))
     if a.cmd == "mesh-views":
         sys.exit(mesh_views(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n, a.hours))
+    if a.cmd == "mesh-ratings":
+        sys.exit(mesh_ratings(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n))
 
     if a.cmd in ("export-boulders", "import-bundle"):
         if a.data:
@@ -175,6 +180,34 @@ def mesh_views(data: Path, n: int, hours: float) -> int:
           + ", ".join(f"{k or 'other'} {c}" for k, c in collections.Counter(v.get("via") for v in recent).most_common()))
     for (mid, name), c in collections.Counter((v["mesh"], v.get("name", "")) for v in recent).most_common(15):
         print(f"  {c:4d}  {mid} {name}")
+    return 0
+
+
+def mesh_ratings(data: Path, n: int) -> int:
+    """Print visitors' ratings of meshes (server.rate_mesh()): each rated mesh's average and how many of each, best
+    first, and the last n comments, newest last. Not who: neither address nor browser."""
+    import sqlite3
+    import time
+    con = sqlite3.connect(f"file:{data / 'bouldermesh.sqlite'}?mode=ro", uri=True)
+    try:
+        rows = con.execute("SELECT r.mesh_id, m.name, AVG(r.rating), SUM(r.rating=1), SUM(r.rating=2), SUM(r.rating=3) "
+                           "FROM mesh_ratings r LEFT JOIN meshes m ON m.id=r.mesh_id WHERE r.rating IS NOT NULL "
+                           "GROUP BY r.mesh_id ORDER BY AVG(r.rating) DESC, COUNT(*) DESC").fetchall()
+        said = con.execute("SELECT r.updated, r.mesh_id, m.name, r.rating, r.comment FROM mesh_ratings r LEFT JOIN meshes m "
+                           "ON m.id=r.mesh_id WHERE r.comment IS NOT NULL ORDER BY r.updated DESC LIMIT ?", (n,)).fetchall()
+    except sqlite3.OperationalError:
+        rows, said = [], []
+    if not rows and not said:
+        print("no ratings yet")
+        return 0
+    for mid, name, mean, bad, ok, good in rows:
+        print(f"{mean:.2f}  {mid} {name or '(deleted)'}: {good} good, {ok} OK, {bad} bad")
+    if said:
+        print(f"\nthe last {len(said)} comment(s):")
+    for updated, mid, name, rating, comment in reversed(said):
+        what = {1: "bad", 2: "OK", 3: "good"}.get(rating, "no rating")
+        print(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(updated))} {mid} {name or '(deleted)'} ({what}):\n    "
+              + comment.replace("\n", "\n    "))
     return 0
 
 
