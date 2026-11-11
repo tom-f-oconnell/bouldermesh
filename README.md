@@ -823,8 +823,9 @@ installs yt-dlp and Deno in `~/.bouldermesh-volunteer` (with uv's Python 3.12 th
 bot check their whole network may get) and asks them to agree. [volunteers.md](volunteers.md) has every step, for
 volunteers and for connecting the public site to whichever server harvests.
 
-- **What they fetch:** only YouTube ids and search words this server gives them, one thing at a time, 8-15 s apart, at
-  most 15 an hour and 100 a day for each volunteer and each address (less, on the admin page), resting 1, 2, 4 then 8
+- **What they fetch:** only YouTube ids and search words this server gives them, one thing at a time: at most 15 videos
+  an hour, spread over it, and 200 a day for each volunteer and each address (less, on the admin page), and apart from
+  those 30 searches or channels an hour and 200 a day, each at least 8-15 s after the last; resting 1, 2, 4 then 8
   hours when YouTube refuses them. A video comes back whole (up to 1080p, no sound, 500 MB), with its details but
   nothing of theirs. It must be as long as they say, and as long as another volunteer's search listed it, if one did:
   their own word alone only catches a file gone wrong; a search, its results (kept 30 days); a channel, its description, for climbers' heights.
@@ -874,7 +875,7 @@ or on your phone. Until then, under *Volunteers and machines that register thems
 - **Volunteers waiting** may fetch, at most 3 an hour and 10 a day by default, or nothing if unticked.
 - **Machines waiting** get nothing by default. Ticked, they may mesh (only that), and a climb keeps the mesh one made
   for when you approve the machine; turned down, the climb is meshed again elsewhere.
-- **Approved volunteers'** limits are set there too (15 an hour and 100 a day at most).
+- **Approved volunteers'** limits are set there too (15 videos an hour and 200 a day at most).
 - **Registering:** at most 5 a day from one address, and 30 waiting at once, of each kind; ones never approved go after
   14 days without being heard from.
 - **Revoked and turned down** volunteers and machines are hidden in their lists until *Show them*. *Forget* deletes

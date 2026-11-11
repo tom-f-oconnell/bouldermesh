@@ -11,7 +11,9 @@ that does the harvesting.
 
 The script asks the site for a YouTube video of a climb, fetches it, sends it to the site, and deletes its own copy. It
 also searches YouTube for a climb's videos, and reads a climber's channel description, sending back what they say. It
-does one thing at a time, 8 to 15 seconds apart, at most 15 an hour and 100 a day. The site only ever sends a video's or
+does one thing at a time: at most 15 videos an hour, spread over it (about 4 minutes apart), and 200 a day; and apart
+from those, at most 30 searches or channels an hour and 200 a day, never less than 8 to 15 seconds after the last thing
+it asked YouTube for. The site only ever sends a video's or
 a channel's YouTube id, or a search's words, and the script makes the youtube.com address itself, so it can't be pointed
 at anything else.
 
@@ -74,8 +76,8 @@ To keep it running after you close the terminal, on macOS or Linux, once you've 
 
 | Option | What it does |
 |---|---|
-| `--per-hour N` | at most N videos an hour (15 at most, which is also the default) |
-| `--per-day N` | at most N a day (100 at most, the default) |
+| `--per-hour N` | at most N videos an hour (15 at most, which is also the default), spread evenly over it |
+| `--per-day N` | at most N videos a day (200 at most, the default); searches have their own limits, 30 an hour and 200 a day |
 | `--home DIR` | keep its settings, yt-dlp and work in DIR instead of `~/.bouldermesh-volunteer` (or set `BOULDERMESH_VOLUNTEER_HOME`) |
 | `--yt-dlp PATH` | use a yt-dlp you already have, instead of installing one (it must find Deno itself) |
 | `--agree` | agree on the first run without being asked |

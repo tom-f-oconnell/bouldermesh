@@ -92,6 +92,14 @@ def call(url: str, body=None, token: str | None = None, method: str | None = Non
         return e.code, json.loads(e.read() or b"{}")
 
 
+def due(home: Path) -> None:
+    """A volunteer's next video due now, as if its share of the hour had passed since its last (pacing() checks that
+    spacing): so that each run of the script here needn't wait minutes."""
+    f = home / "state.json"
+    if f.exists():
+        f.write_text(json.dumps({**json.loads(f.read_text()), "video_gap": 0}))
+
+
 def make_video(path: Path, seconds: int = 4) -> Path:
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"testsrc=duration={seconds}:size=320x240:rate=10",
                     "-pix_fmt", "yuv420p", str(path)], check=True)
@@ -176,6 +184,27 @@ def broker_alone() -> None:
     carol = b.volunteer(b.add("Carol2", per_hour=2)["token"])
     assert "your address" in b.work(carol, "198.51.100.1")["why"]
     assert "task" in b.work(carol, "198.51.100.9")
+    # searches and channels' pages have their own allowance: Alice, out of videos, still searches
+    every = list(volunteers.KEYS)
+    w = b.work(alice, "198.51.100.1", kinds=["video", "details"])
+    assert "3 videos an hour is the most for you" in w["why"] and w["wait"] > 3500, w
+    w = b.work(alice, "198.51.100.1", kinds=every)
+    assert "videos an hour" in w["why"] and w["wait"] <= volunteers.IDLE_WAIT, "searches may come meanwhile: asks again soon"
+    b.want("search", "Relic V9 Joshua Tree", "harvest", "p3")
+    t = b.work(alice, "198.51.100.1", kinds=every)["task"]
+    assert t["kind"] == "search" and b.finish(alice, t["id"], {"status": "ok", "results": []})["ok"]
+    w = b.work(alice, "198.51.100.1", kinds=every)
+    assert "videos an hour" in w["why"] and w["wait"] <= volunteers.IDLE_WAIT, "searches may come meanwhile: asks again soon"
+    assert "nothing wanted" in b.work(alice, "198.51.100.1", kinds=["search", "channel"])["why"]
+    now = time.time()
+    for i in range(volunteers.PAGES_PER_HOUR - 1):
+        b.q("INSERT INTO given(volunteer, ip, at, kind) VALUES(?,?,?,?)", alice["id"], "198.51.100.1", now - 600 - i, "channel")
+    b.want("search", "Pope's Crack Joshua Tree", "harvest", "p3")
+    w = b.work(alice, "198.51.100.1", kinds=every)
+    assert f"{volunteers.PAGES_PER_HOUR} searches an hour is the most for you" in w["why"] and 2900 < w["wait"] < 3100, "the sooner of the two"
+    assert b.state()["volunteers"][0]["pages_last_hour"] == volunteers.PAGES_PER_HOUR
+    b.q("DELETE FROM given WHERE kind IN ('search','channel')")
+    b.q("DELETE FROM tasks WHERE kind='search'")
 
     # work given out that never came back goes to someone else; revoking hands back what it had
     b.q("UPDATE tasks SET touched=?, assigned=? WHERE state='assigned'", time.time() - 7200, time.time() - 7200)
@@ -256,6 +285,7 @@ def script_and_broker() -> None:
     env = {**os.environ, "FAKE_VIDEO": str(video), "FAKE_LOG": str(TMP / "fake.log")}
 
     def volunteer(*extra) -> str:
+        due(TMP / "home")
         r = subprocess.run([sys.executable, str(SCRIPT), "--server", base, "--token", token, "--agree", "--once",
                             "--yt-dlp", str(fake), "--home", str(TMP / "home"), *extra], env=env, capture_output=True, text=True, timeout=120)
         assert r.returncode == 0, r.stdout + r.stderr
@@ -296,14 +326,17 @@ def script_and_broker() -> None:
 
         conf = json.loads((TMP / "home" / "config.json").read_text())
         assert conf["token"] == token and oct((TMP / "home" / "config.json").stat().st_mode)[-3:] == "600"
+        state = json.loads((TMP / "home" / "state.json").read_text())
+        assert 0.9 * 240 <= state["video_gap"] <= 1.25 * 240, "the next video an hour's share after this one, at 15 an hour"
+        due(TMP / "home")
         r = subprocess.run([sys.executable, str(SCRIPT), "--once", "--yt-dlp", str(fake), "--home", str(TMP / "home")],
                            env=env, capture_output=True, text=True, timeout=120)    # remembered, and the gap kept
         assert r.returncode == 0 and "sent" in r.stdout and got[1][0] == "ddddddddddd" and got[1][1] is None, r.stdout + r.stderr
         state = json.loads((TMP / "home" / "state.json").read_text())
         gaps = sorted(state["fetched"])
-        assert gaps[1] - gaps[0] >= 8, "8-15 s between fetches"
+        assert gaps[1] - gaps[0] >= 8 and not state["paged"], "8-15 s between fetches, and details count as videos"
 
-        # a search, and a channel's description: only words and an id from the server, paced as videos are
+        # a search, and a channel's description: only words and an id from the server, counted apart from videos
         b.want("search", "Relic V9 Joshua Tree", "harvest", "p4")
         out = volunteer()
         assert "sent 1 result(s)" in out, out
@@ -313,6 +346,9 @@ def script_and_broker() -> None:
         out = volunteer()
         assert "sent" in out and got[-1][2]["description"] == "I'm 6 ft tall", out
         assert (TMP / "fake.log").read_text().splitlines()[-1].endswith("https://www.youtube.com/channel/UC" + "b" * 22)
+        state = json.loads((TMP / "home" / "state.json").read_text())
+        assert len(state["paged"]) == 2 and len(state["fetched"]) == 2, state
+        assert [r["kind"] for r in b.q("SELECT kind FROM given ORDER BY at")][-4:] == ["video", "details", "search", "channel"]
 
         b.want("video", "refused0000", "harvest", "p2")
         assert "YouTube refused: resting 1 h" in volunteer()
@@ -421,6 +457,7 @@ def registering() -> None:
     env = {**os.environ, "FAKE_VIDEO": str(video), "FAKE_LOG": str(TMP / "fake-r.log")}
 
     def volunteer(home: str, *extra, ok: bool = True) -> str:
+        due(TMP / home)
         r = subprocess.run([sys.executable, str(SCRIPT), "--server", base, "--agree", "--once", "--yt-dlp", str(fake),
                             "--home", str(TMP / home), *extra], env=env, capture_output=True, text=True, timeout=120,
                            stdin=subprocess.DEVNULL)
@@ -453,7 +490,7 @@ def registering() -> None:
         assert b.any()
         assert "sent" in volunteer("r1") and got == ["vvvvvvvvvvv"]
         b.want("video", "wwwwwwwwwww", "harvest", "p1")
-        assert "1 an hour is the most for you until you're approved" in volunteer("r1")
+        assert "1 video an hour is the most for you until you're approved" in volunteer("r1")
         assert b.approve(v1["id"])["status"] == "approved" and b.get(v1["id"])["approved"]
         b.q("UPDATE volunteers SET refused_until=NULL")
         assert "sent" in volunteer("r1") and got[-1] == "wwwwwwwwwww", "approved: everyone's limits"
@@ -478,6 +515,7 @@ def registering() -> None:
         assert b.volunteer(token("r3")) is None
         rules.update(max_waiting=30)
         old = token("r3")       # one the server no longer knows: forgotten, and another registered
+        due(TMP / "r3")
         r = subprocess.run([sys.executable, str(SCRIPT), "--agree", "--once", "--yt-dlp", str(fake), "--home", str(TMP / "r3")],
                            env=env, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
         assert r.returncode == 0 and "no longer takes this token (unknown token" in r.stdout and "Traceback" not in r.stderr, r.stdout + r.stderr
@@ -655,6 +693,7 @@ def through_the_server() -> None:
         con.close()
         (data / "projects" / "bcdef0123456" / "photos").mkdir(parents=True)
         assert "1 video(s) and search(es) harvests went without" in call(admin + "/api/admin/actions/volunteers-skipped", {})[1]["result"]
+        due(TMP / "home2")
         out = subprocess.run([sys.executable, str(SCRIPT), "--once", "--yt-dlp", str(fake), "--home", str(TMP / "home2")], env=renv,
                              capture_output=True, text=True, timeout=120)
         assert "sent 1 result(s)" in out.stdout, out.stdout + out.stderr
@@ -765,6 +804,37 @@ def tools_python():
     finally:
         bv.subprocess.run, bv.shutil.which, bv.python_version, bv.sys.executable = real
     print("tools' Python OK")
+
+
+def pacing() -> None:
+    """The script's own pacing: videos (and videos' details) an hour's share apart, give or take, within 15 an hour and 200
+    a day; searches and channels' pages on their own allowance; any request at least the short gap after the last."""
+    sys.path.insert(0, str(SCRIPT.parent))
+    import bouldermesh_volunteer as bv
+    args = type("Args", (), {"home": str(TMP / "pace"), "yt_dlp": None, "server": "https://x.example", "token": "t",
+                             "per_hour": 99, "per_day": 999})()
+    v = bv.Volunteer(args)
+    assert (v.per_hour, v.per_day) == (bv.PER_HOUR, bv.PER_DAY) == (15, 200), "the script's own limits, whatever's asked"
+    assert v.ready_in("video")[0] <= 0 and v.ready_in("page")[0] <= 0
+    v.fetched_now("video")
+    gap, spread = v.state["gap"], v.state["video_gap"]
+    assert bv.GAP[0] <= gap <= bv.GAP[1] and 0.9 * 240 <= spread <= 1.25 * 240, (gap, spread)
+    wait, why = v.ready_in("video")
+    assert spread - 1 < wait <= spread and why is None, "the next video an hour's share later"
+    wait, why = v.ready_in("page")
+    assert gap - 1 < wait <= gap and why is None, "a search only the short gap later"
+    now = time.time()
+    v.state.update(fetched=[now - 3500 + i * 60 for i in range(15)], video_gap=0, gap=0)
+    wait, why = v.ready_in("video")
+    assert why == "15 videos this hour" and 90 < wait <= 100, (wait, why)
+    assert v.ready_in("page")[0] <= 0, "searches aren't held by videos' limits"
+    v.state.update(fetched=[now - 86000 + i for i in range(200)], paged=[now - 7200 + i for i in range(200)])
+    assert v.ready_in("video")[1] == "200 videos today" and v.ready_in("page")[1] == "200 searches today"
+    v.state.update(fetched=[], paged=[now - 100 + i for i in range(30)])
+    assert v.ready_in("page")[1] == "30 searches this hour" and v.ready_in("video")[0] <= 0
+    v.state.update(paged=[], rest_until=now + 600, rest_why="refused")
+    assert all(v.ready_in(c)[1] == "resting after YouTube refused" for c in ("video", "page")), "a rest holds both"
+    print("pacing OK")
 
 
 # --- the script updating itself when the server serves a newer one -----------------------------------------------------
@@ -984,6 +1054,7 @@ def keeping_in_touch() -> None:
 try:
     broker_alone()
     tools_python()
+    pacing()
     youtube_health()
     updating()
     forgetting_gone()

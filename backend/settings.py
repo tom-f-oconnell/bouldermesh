@@ -67,10 +67,10 @@ DEFAULTS = {
     "beta.auto": True,
     "videos.prune_unplaced": True,
     # clients that register themselves (registration.py): provisional until approved here or from a phone. Volunteers
-    # fetching videos: their limits (the script's own are 15 an hour, 100 a day), and while provisional, whether they
+    # fetching videos: their limits (the script's own are 15 an hour, 200 a day; searches have their own), and while provisional, whether they
     # get work and how much. Machines meshing: whether provisional ones get work (then what they make waits for approval).
     "volunteers.per_hour": 15,
-    "volunteers.per_day": 100,
+    "volunteers.per_day": 200,
     "volunteers.provisional_work": True,
     "volunteers.provisional_per_hour": 3,
     "volunteers.provisional_per_day": 10,
@@ -92,8 +92,8 @@ CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": 
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
            "areas.meshes": ("boulders", "climbs"), "relevance.matcher": ("brute", "flann"), "leaderboard.names": ("new", "all", "none")}
 LIMITS = {"site.map_km": (0.05, 2000), "viewer.preview_faces": (0, 5_000_000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.processing_cores": (1, os.cpu_count() or 1), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
-          "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 100),
-          "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 100),
+          "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 200),
+          "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 200),
           "registration.per_address_day": (1, 100), "registration.max_waiting": (1, 1000)}
 for _key in ("site.textures", "site.sources", "youtube.via"):    # a public copy's starting points, from its .env
     _given = os.environ.get(_key.replace(".", "_").upper(), "").strip()

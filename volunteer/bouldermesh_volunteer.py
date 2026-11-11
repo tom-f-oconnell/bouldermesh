@@ -47,14 +47,22 @@ from pathlib import Path
 #    is unavailable" as for good;
 # 8: its version alone on its line, as updating needs (with a comment after it, the server never offered an update)
 # 9: says the name it asks for is shown on the site's public leaderboard
-VERSION = 9
+# 10: videos spread over each hour (about 4 min apart at 15 an hour), 200 a day; searches and channels' pages counted
+#     apart from videos, 30 an hour and 200 a day, and fetched while a video's turn is still to come
+VERSION = 10
 SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
 AGENT = "bouldermesh-volunteer"
 TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
 FETCHED_PYTHON = "3.12"     # what uv fetches for them when this computer has none as new
 KINDS = ["video", "details", "search", "channel"]   # what this version does
-GAP = (8.0, 15.0)           # seconds between one fetch from YouTube and the next, at random in this range
-PER_HOUR, PER_DAY = 15, 100  # the most, whatever the server allows
+# Videos and their details go through YouTube's player, where its bot check is (it refused hal after hours at 20-30 an
+# hour, fetched in bursts): spread over each hour, an hour's share apart (3600 / per hour seconds) times a random number
+# in SPREAD. Searches and channels' pages never met it there, so they have their own allowance, PAGES_*.
+CLASS = {"video": "video", "details": "video", "search": "page", "channel": "page"}
+GAP = (8.0, 15.0)           # seconds between one request to YouTube and the next, of any kind, at random in this range
+SPREAD = (0.9, 1.25)
+PER_HOUR, PER_DAY = 15, 200  # videos (and videos' details): the most, whatever the server allows
+PAGES_PER_HOUR, PAGES_PER_DAY = 30, 200     # searches and channels' pages
 BLOCK_HOURS = (1, 2, 4, 8)  # rest after YouTube refuses, longer each time it still does
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 TURNED_AWAY = 3             # the exit status when the server won't take this script: starting again won't help
@@ -79,9 +87,10 @@ AGREEMENT = """\
 Before you start: what this does, and what it may cost you.
 
 - It asks {server} for YouTube videos of climbs, fetches them from this computer, and sends them there:
-  one at a time, {gap_lo:.0f}-{gap_hi:.0f} seconds apart, at most {per_hour} an hour and {per_day} a day.
+  one at a time, spread over each hour (about {spread:.0f} minutes apart), at most {per_hour} an hour and {per_day} a day.
   Each is deleted here once it's sent. Only videos' YouTube ids come from the server. It also searches YouTube
-  for climbs' videos, and reads channels' descriptions, within the same limits, from the server's words and ids.
+  for climbs' videos, and reads channels' descriptions, from the server's words and ids: at most {pages_hour} an
+  hour and {pages_day} a day, and nothing from YouTube comes less than {gap_lo:.0f}-{gap_hi:.0f} seconds after the last.
 - YouTube's terms of service don't allow downloading videos except through YouTube's own features. Using this
   breaks them, and the videos are their uploaders' copyright.
 - If YouTube decides your address is fetching too much, it may ask everyone on your network to sign in or prove
@@ -314,9 +323,10 @@ class Volunteer:
             self.state = json.loads(self.state_file.read_text())
         except (FileNotFoundError, ValueError):
             self.state = {}
-        self.state.setdefault("fetched", [])
+        self.state.setdefault("fetched", [])     # when videos (and videos' details) were fetched, over the last day
+        self.state.setdefault("paged", [])       # when searches and channels' pages were
         self.server = Server(args.server, args.token)
-        self.per_hour, self.per_day = min(args.per_hour, PER_HOUR), min(args.per_day, PER_DAY)
+        self.per_hour, self.per_day = max(1, min(args.per_hour, PER_HOUR)), max(1, min(args.per_day, PER_DAY))
         self.ytdlp = args.yt_dlp
 
     def save(self) -> None:
@@ -395,21 +405,32 @@ class Volunteer:
                               capture_output=True, text=True, timeout=3600)
 
     # -- pacing -------------------------------------------------------------------------------------------------------
-    def wait_turn(self) -> None:
-        """Until YouTube may be asked again here: after any rest it imposed, the gap since the last fetch, and
-        within this computer's own hourly and daily limits."""
+    def ready_in(self, cls: str) -> tuple[float, str | None]:
+        """How long until YouTube may be asked for something of a class ("video" or "page") here, and why, if it's a
+        limit or a rest rather than the gap since the last request: after any rest YouTube imposed, the gap since any
+        request, for a video an hour's share since the last video, and within this computer's own limits."""
+        now = time.time()
+        for k in ("fetched", "paged"):
+            self.state[k] = [t for t in self.state[k] if t > now - 86400]
+        times, hourly, daily, what = ((self.state["fetched"], self.per_hour, self.per_day, "videos") if cls == "video" else
+                                      (self.state["paged"], PAGES_PER_HOUR, PAGES_PER_DAY, "searches"))
+        hour = [t for t in times if t > now - 3600]
+        waits = [(self.state.get("rest_until", 0) - now, f"resting after YouTube {self.state.get('rest_why') or 'refused'}")]
+        last = max(self.state["fetched"] + self.state["paged"], default=None)
+        if last:
+            waits.append((last + self.state.get("gap", GAP[0]) - now, None))
+        if cls == "video" and times:
+            waits.append((max(times) + self.state.get("video_gap", 3600 / self.per_hour) - now, None))
+        if len(hour) >= hourly:
+            waits.append((min(hour) + 3600 - now, f"{hourly} {what} this hour"))
+        if len(times) >= daily:
+            waits.append((min(times) + 86400 - now, f"{daily} {what} today"))
+        return max(waits, key=lambda w: w[0])
+
+    def wait_turn(self, cls: str) -> None:
+        """Until YouTube may be asked for something of a class here (ready_in())."""
         while True:
-            now = time.time()
-            self.state["fetched"] = [t for t in self.state["fetched"] if t > now - 86400]
-            hour = [t for t in self.state["fetched"] if t > now - 3600]
-            waits = [(self.state.get("rest_until", 0) - now, f"resting after YouTube {self.state.get('rest_why') or 'refused'}")]
-            if self.state["fetched"]:
-                waits.append((max(self.state["fetched"]) + self.state.get("gap", GAP[0]) - now, None))
-            if len(hour) >= self.per_hour:
-                waits.append((min(hour) + 3600 - now, f"{self.per_hour} this hour"))
-            if len(self.state["fetched"]) >= self.per_day:
-                waits.append((min(self.state["fetched"]) + 86400 - now, f"{self.per_day} today"))
-            wait, why = max(waits, key=lambda w: w[0])
+            wait, why = self.ready_in(cls)
             if wait <= 0:
                 return
             if why:
@@ -428,9 +449,11 @@ class Volunteer:
                 except Exception:  # noqa: S110 - the next ask for work says so too
                     pass
 
-    def fetched_now(self) -> None:
-        self.state["fetched"].append(time.time())
+    def fetched_now(self, cls: str) -> None:
+        self.state["fetched" if cls == "video" else "paged"].append(time.time())
         self.state["gap"] = random.uniform(*GAP)
+        if cls == "video":
+            self.state["video_gap"] = random.uniform(*SPREAD) * 3600 / self.per_hour
         self.save()
 
     def refused(self) -> float:
@@ -492,9 +515,9 @@ class Volunteer:
         work.mkdir()
         done = f"/volunteer/api/tasks/{task['id']}/done"
         try:
-            self.wait_turn()
+            self.wait_turn("video")
             log(f"fetching {'the video' if kind == 'video' else 'the details of'} {url}")
-            self.fetched_now()
+            self.fetched_now("video")
             began = time.time()
             if kind == "details":
                 r = self.run_ytdlp(["-J", "--skip-download", "--no-playlist", url], work)
@@ -540,12 +563,12 @@ class Volunteer:
             shutil.rmtree(work, ignore_errors=True)
 
     def page(self, task: dict, args: list[str], what: str) -> None:
-        """A search's results, or a channel's name and description: one request to YouTube, paced like a video."""
+        """A search's results, or a channel's name and description: one request to YouTube, within the pages' own limits."""
         done = f"/volunteer/api/tasks/{task['id']}/done"
         try:
-            self.wait_turn()
+            self.wait_turn("page")
             log(what)
-            self.fetched_now()
+            self.fetched_now("page")
             r = self.run_ytdlp(["-J", *args], self.home)
             err, found = (r.stderr or "").strip(), signs(r.stderr, bool(r.returncode))
             if r.returncode:
@@ -616,15 +639,24 @@ class Volunteer:
         self.tools()
         version = self.ytdlp_version = self.run_ytdlp(["--version"], self.home).stdout.strip()
         blocked = update_blocked(self.server.url)
-        log(f"volunteering for {self.server.url} with yt-dlp {version}: at most {self.per_hour} an hour, {self.per_day} a day; "
+        log(f"volunteering for {self.server.url} with yt-dlp {version}: at most {self.per_hour} videos an hour, {self.per_day} a day, "
+            f"and {PAGES_PER_HOUR} searches an hour, {PAGES_PER_DAY} a day; "
             + (f"it doesn't update itself ({blocked})" if blocked else "it updates itself when the server says to"))
         updates = not blocked and not self.args.once
         while True:
-            self.wait_turn()
+            ready = {cls: self.ready_in(cls) for cls in set(CLASS.values())}
+            kinds = [k for k in KINDS if ready[CLASS[k]][0] <= 0]   # asking only for what may be fetched now
+            if not kinds:
+                wait, why = min(ready.values(), key=lambda w: w[0])
+                if why and why != getattr(self, "idle_why", None):
+                    log(f"waiting {wait / 60:.0f} min: {why}")
+                self.idle_why = why
+                self.nap(min(wait, 600))
+                continue
             try:
                 r = self.server.call("/volunteer/api/work", {"version": VERSION, "client": f"script {VERSION}, yt-dlp {version}"
                                                              + (f"; won't update itself: {blocked.split(',')[0]}" if blocked else ""),
-                                                             "per_hour": self.per_hour, "per_day": self.per_day, "kinds": KINDS,
+                                                             "per_hour": self.per_hour, "per_day": self.per_day, "kinds": kinds,
                                                              "updates": updates})
             except urllib.error.HTTPError as e:
                 if e.code in (401, 403):
@@ -666,9 +698,10 @@ class Volunteer:
             if self.args.once:
                 log(f"nothing to do: {r.get('why')}")
                 return
-            wait = max(60, min(r["wait"], 3600))
+            later = [w for w, _ in ready.values() if w > 0]     # a kind not asked for, whose turn comes sooner
+            wait = max(60, min([r["wait"], 3600, *later]))
             if r.get("why") != getattr(self, "idle_why", None):      # said once, not every minute
-                log(f"nothing to fetch now ({r.get('why')}): asking again every {wait / 60:.0f} min")
+                log(f"nothing to fetch now ({r.get('why')}): asking again in {wait / 60:.0f} min")
             self.idle_why = r.get("why")
             self.nap(wait)
             if time.time() - self.state.get("updated", 0) > 86400:
@@ -685,8 +718,10 @@ def main() -> None:
     ap.add_argument("--register", action="store_true", help="make a new token and register it, in place of the one remembered")
     ap.add_argument("--forget-token", action="store_true", help="delete the remembered token, and stop: the next run makes and "
                     "registers a new one")
-    ap.add_argument("--per-hour", type=int, default=PER_HOUR, help=f"at most this many videos an hour ({PER_HOUR} at most)")
-    ap.add_argument("--per-day", type=int, default=PER_DAY, help=f"at most this many a day ({PER_DAY} at most)")
+    ap.add_argument("--per-hour", type=int, default=PER_HOUR, help=f"at most this many videos an hour ({PER_HOUR} at most), spread "
+                    "evenly over it")
+    ap.add_argument("--per-day", type=int, default=PER_DAY, help=f"at most this many videos a day ({PER_DAY} at most); searches "
+                    f"have their own limits, {PAGES_PER_HOUR} an hour and {PAGES_PER_DAY} a day")
     ap.add_argument("--agree", action="store_true", help="agree to what's explained on the first run without being asked")
     ap.add_argument("--home", default=os.environ.get("BOULDERMESH_VOLUNTEER_HOME", "~/.bouldermesh-volunteer"),
                     help="where it keeps its settings, yt-dlp and its work")
@@ -711,8 +746,9 @@ def main() -> None:
     if not args.server:
         ap.error("--server is needed the first time")
     if conf.get("agreed") != args.server:
-        print(AGREEMENT.format(server=args.server, gap_lo=GAP[0], gap_hi=GAP[1], per_hour=min(args.per_hour, PER_HOUR),
-                               per_day=min(args.per_day, PER_DAY), home=home))
+        per_hour = max(1, min(args.per_hour, PER_HOUR))
+        print(AGREEMENT.format(server=args.server, gap_lo=GAP[0], gap_hi=GAP[1], per_hour=per_hour, spread=60 / per_hour,
+                               per_day=min(args.per_day, PER_DAY), pages_hour=PAGES_PER_HOUR, pages_day=PAGES_PER_DAY, home=home))
         if not args.agree and input("\nType yes to start: ").strip().lower() != "yes":
             raise SystemExit("not started")
     signal.signal(signal.SIGTERM, _stop)    # as Ctrl-C: what it was fetching goes back to the server

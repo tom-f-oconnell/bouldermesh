@@ -150,7 +150,7 @@
     <div id="vol-list"></div>
     <div class="grid">
       <div><label>New volunteer's name</label><input type="text" id="vol-name" placeholder="who it is, for you"></div>
-      <div><label>At most this many videos an hour (15 at most; 100 a day)</label><input type="number" id="vol-hour" min="1" max="15" value="15"></div>
+      <div><label>At most this many videos an hour (15 at most; 200 a day)</label><input type="number" id="vol-hour" min="1" max="15" value="15"></div>
     </div>
     <div class="row"><button id="vol-add">Add volunteer</button></div>
     <div id="vol-new"></div>
@@ -165,11 +165,12 @@
       gave one. Each waits for your approval, in the lists above or from a notification on your phone.</div>
     <label class="choice"><input type="checkbox" id="reg-vol"> Volunteers waiting for approval may fetch videos, at most
       <input type="number" id="reg-vol-hour" min="1" max="15" style="width:64px"> an hour and
-      <input type="number" id="reg-vol-day" min="1" max="100" style="width:64px"> a day</label>
+      <input type="number" id="reg-vol-day" min="1" max="200" style="width:64px"> a day <small>(and as many searches)</small></label>
     <label class="choice"><input type="checkbox" id="reg-mach"> Machines waiting for approval may mesh climbs <small>(only meshing,
       and their meshes wait for your approval before a climb takes them)</small></label>
     <div class="inline" style="margin-top:8px">Approved volunteers: at most <input type="number" id="vol-per-hour" min="1" max="15"> an hour and
-      <input type="number" id="vol-per-day" min="1" max="100"> a day <small class="note">(the script's own limits are 15 and 100)</small></div>
+      <input type="number" id="vol-per-day" min="1" max="200"> a day <small class="note">(the script's own limits are 15 and 200, its videos
+      spread over each hour; searches and channels' pages count apart, 30 an hour and 200 a day)</small></div>
     <div class="inline" style="margin-top:8px">From one address, at most <input type="number" id="reg-addr" min="1" max="100"> registrations a day,
       and <input type="number" id="reg-wait" min="1" max="1000"> waiting at once, of each kind</div>
     <div class="inline" style="margin-top:8px">Names on the public leaderboard (<a href="/volunteer/leaderboard" id="lb-link" target="_blank" rel="noopener">its page</a>):
@@ -394,10 +395,10 @@ function render(s){
     degrading them, as: ${esc(tr.example || '')}. That's likely YouTube changing something, which a newer yt-dlp usually fixes (volunteers
     update theirs daily), rather than one address's trouble.</div>` : '';
   const shownVol = vs.volunteers.filter(x => showGone.vol || !gone(x.status));
-  $('#vol-list').innerHTML = shownVol.length ? `<table><tr><th>Volunteer</th><th>Now</th><th>YouTube</th><th>Last seen</th><th>Address</th><th>Last hour / day</th><th>Fetched</th><th></th></tr>${
+  $('#vol-list').innerHTML = shownVol.length ? `<table><tr><th>Volunteer</th><th>Now</th><th>YouTube</th><th>Last seen</th><th>Address</th><th title="Videos (with videos' details), and searches (with channels' pages)">Last hour / day</th><th>Fetched</th><th></th></tr>${
     shownVol.map(x => `<tr><td>${esc(x.name)}${x.provisional ? '<span class="tag">waiting for approval</span>' : ''}${x.registered ? `<div class="note">registered itself ${when(x.created)}</div>` : ''}</td><td class="${x.status === 'resting' || x.status === 'awaiting approval' ? 'warn' : gone(x.status) ? 'bad' : x.status === 'fetching' ? 'ok' : ''}">${esc(x.status)}${
       x.refused_until ? `${x.rest_why === 'throttled' ? ' (throttled)' : ''} until ${when(x.refused_until)}` : ''}${x.fetching ? `: ${esc(x.fetching.kind)} ${esc(x.fetching.video_id)}` : ''}</td><td>${yt(x)}</td><td>${when(x.last_seen)}</td><td>${esc(x.address || '')}</td>
-      <td>${x.last_hour} / ${x.last_day} (of ${x.per_hour} / ${x.per_day})</td><td>${x.done}</td><td>${gone(x.status) ? '' : x.provisional
+      <td>${x.last_hour} / ${x.last_day} (of ${x.per_hour} / ${x.per_day})${x.pages_last_day ? `<div class="note">searches ${x.pages_last_hour} / ${x.pages_last_day}</div>` : ''}</td><td>${x.done}</td><td>${gone(x.status) ? '' : x.provisional
         ? `<button data-vapprove="${esc(x.id)}">Approve</button> <button class="danger" data-vdeny="${esc(x.id)}">Deny</button>`
         : `<button class="danger" data-revoke="${esc(x.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
     : `<div class="note">${vs.volunteers.length ? 'No volunteers but revoked or turned-down ones.' : 'No volunteers yet.'}</div>`;

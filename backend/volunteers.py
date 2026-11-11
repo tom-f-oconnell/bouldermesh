@@ -34,7 +34,12 @@ import presence
 import registration
 
 PER_HOUR = 15               # videos a volunteer, or an address, may be given in an hour (hal's refusals came after 20-30)
-PER_DAY = 100
+PER_DAY = 200
+# Searches and channels' pages: an allowance of their own, apart from videos and videos' details, which go through
+# YouTube's player, where its bot check is. hal's searches went on through every spell of its refusals.
+PAGES_PER_HOUR, PAGES_PER_DAY = 30, 200
+PAGE_KINDS = ("search", "channel")
+ONE = {"videos": "video", "searches": "search"}
 # what the admin page's settings say by default (volunteers.* there): a provisional volunteer's limits, whether one gets
 # work at all before it's approved, and how many may register
 RULES = {"per_hour": PER_HOUR, "per_day": PER_DAY, "provisional_per_hour": 3, "provisional_per_day": 10,
@@ -170,6 +175,8 @@ class Broker:
                   PRIMARY KEY(task, purpose, ref));
                 CREATE TABLE IF NOT EXISTS given(volunteer TEXT, ip TEXT, at REAL);
             """)
+            if "kind" not in {r[1] for r in con.execute("PRAGMA table_info(given)")}:   # rows from before count as videos
+                con.execute("ALTER TABLE given ADD COLUMN kind TEXT")
             registration.migrate(con, "volunteers")
             have = {r[1] for r in con.execute("PRAGMA table_info(volunteers)")}
             # how YouTube treats it, as its script last said (health: ok, or one of TROUBLE), and why; the speed of its
@@ -290,8 +297,9 @@ class Broker:
     def work(self, v: dict, ip: str, client: str = "", per_hour: int | None = None, per_day: int | None = None,
              kinds: list | None = None) -> dict:
         """The next thing for a volunteer to fetch, {"task": ...}, or {"wait": seconds, "why": ...}: what it was
-        given and hasn't finished, then the oldest wanted of the kinds its script does (videos and searches before
-        details and channels), within its limits and its address's."""
+        given and hasn't finished, then the oldest wanted of the kinds its script does or asks for now (videos and
+        searches before details and channels), within its limits and its address's: videos' (with videos' details) and,
+        apart, searches' (with channels' pages)."""
         kinds = [k for k in (kinds or OLD_KINDS) if k in KEYS] or list(OLD_KINDS)
         now = time.time()
         with self.lock:
@@ -312,21 +320,34 @@ class Broker:
                 return {"task": self._task_view(mine)}
             most_hour, most_day = ((rules["provisional_per_hour"], rules["provisional_per_day"]) if waiting else
                                    (rules["per_hour"], rules["per_day"]))
-            hour = min(_limit(per_hour, v["per_hour"] or PER_HOUR), _limit(most_hour, PER_HOUR))
-            day = min(_limit(per_day, v["per_day"] or PER_DAY), _limit(most_day, PER_DAY))
-            for span, cap, what in ((3600, hour, "an hour"), (86400, day, "a day")):
-                for field, value, whose in (("volunteer", v["id"], "you"), ("ip", ip, "your address")):
-                    rows = self.q(f"SELECT at FROM given WHERE {field}=? AND at>? ORDER BY at", value, now - span)
-                    if len(rows) >= cap:
-                        return {"wait": rows[len(rows) - cap]["at"] + span - now + 1,
-                                "why": f"{cap} {what} is the most for {whose}" + (" until you're approved" if waiting else "")}
-            task = self.q(f"SELECT * FROM tasks WHERE state='queued' AND kind IN ({','.join('?' * len(kinds))}) "
-                          "ORDER BY kind IN ('details','channel'), created LIMIT 1", *kinds, one=True)
+            caps = {"videos": (min(_limit(per_hour, v["per_hour"] or PER_HOUR), _limit(most_hour, PER_HOUR)),
+                               min(_limit(per_day, v["per_day"] or PER_DAY), _limit(most_day, PER_DAY))),
+                    "searches": (_limit(most_hour, PER_HOUR), _limit(most_day, PER_DAY)) if waiting else (PAGES_PER_HOUR, PAGES_PER_DAY)}
+            held = {}       # what's held back by its limits: {"videos" or "searches": the answer to wait for it}
+            for what, (hour, day) in caps.items():
+                pages = "IN" if what == "searches" else "NOT IN"
+                for span, cap, per in ((3600, hour, "an hour"), (86400, day, "a day")):
+                    for field, value, whose in (("volunteer", v["id"], "you"), ("ip", ip, "your address")):
+                        rows = self.q(f"SELECT at FROM given WHERE {field}=? AND at>? AND COALESCE(kind,'video') {pages} "
+                                      f"('search','channel') ORDER BY at", value, now - span)
+                        if len(rows) >= cap and what not in held:
+                            held[what] = {"wait": rows[len(rows) - cap]["at"] + span - now + 1,
+                                          "why": f"{cap} {what if cap != 1 else ONE[what]} {per} is the most for {whose}"
+                                                 + (" until you're approved" if waiting else "")}
+            open_kinds = [k for k in kinds if ("searches" if k in PAGE_KINDS else "videos") not in held]
+            task = self.q(f"SELECT * FROM tasks WHERE state='queued' AND kind IN ({','.join('?' * len(open_kinds))}) "
+                          "ORDER BY kind IN ('details','channel'), created LIMIT 1", *open_kinds, one=True) if open_kinds else None
             if not task:
-                return {"wait": IDLE_WAIT, "why": "nothing wanted now"}
+                waiting_for = [h for what, h in held.items() if self.q(
+                    f"SELECT 1 FROM tasks WHERE state='queued' AND kind IN ({','.join('?' * len(kinds))}) AND kind {'IN' if what == 'searches' else 'NOT IN'} "
+                    "('search','channel') LIMIT 1", *kinds, one=True)]
+                if not waiting_for:
+                    return {"wait": IDLE_WAIT, "why": "nothing wanted now"}
+                soonest = min(waiting_for, key=lambda h: h["wait"])
+                return {**soonest, "wait": min(soonest["wait"], IDLE_WAIT)} if open_kinds else soonest     # others may come meanwhile
             self.q("UPDATE tasks SET state='assigned', volunteer=?, ip=?, assigned=?, touched=?, size=NULL, ext=NULL WHERE id=?",
                    v["id"], ip, now, now, task["id"])
-            self.q("INSERT INTO given(volunteer,ip,at) VALUES(?,?,?)", v["id"], ip, now)
+            self.q("INSERT INTO given(volunteer,ip,at,kind) VALUES(?,?,?,?)", v["id"], ip, now, task["kind"])
             self.q("DELETE FROM given WHERE at<?", now - 2 * 86400)
             (self.files / f"{task['id']}.part").unlink(missing_ok=True)
         return {"task": self._task_view(task)}
@@ -607,7 +628,9 @@ class Broker:
         vols = []
         rules = {**RULES, **self.rules()}
         for v in self.q("SELECT * FROM volunteers ORDER BY created"):
-            given = self.q("SELECT at FROM given WHERE volunteer=? AND at>?", v["id"], now - 86400)
+            given = self.q("SELECT at, kind FROM given WHERE volunteer=? AND at>?", v["id"], now - 86400)
+            pages = [g for g in given if g["kind"] in PAGE_KINDS]
+            given = [g for g in given if g["kind"] not in PAGE_KINDS]
             fetching = self.q("SELECT kind, video_id, size, touched FROM tasks WHERE volunteer=? AND state='assigned'", v["id"], one=True)
             waiting = registration.provisional(v)
             if v["revoked"]:
@@ -628,6 +651,7 @@ class Broker:
                          "per_hour": min(v["per_hour"] or PER_HOUR, hour), "per_day": min(v["per_day"] or PER_DAY, day), "done": v["done"],
                          "fetching": fetching, "provisional": waiting, "registered": v.get("registered_ip") is not None,
                          "created": v["created"], "last_hour": sum(g["at"] > now - 3600 for g in given), "last_day": len(given),
+                         "pages_last_hour": sum(g["at"] > now - 3600 for g in pages), "pages_last_day": len(pages),
                          "health": v.get("health"), "health_detail": v.get("health_detail"), "health_at": v.get("health_at"),
                          "kbps": v.get("kbps"), "yt_dlp": v.get("yt_dlp"), "rest_why": v.get("rest_why")})
         counts = {f"{r['state']}_{r['kind']}": r["n"] for r in self.q("SELECT state, kind, count(*) AS n FROM tasks GROUP BY state, kind")}
@@ -718,7 +742,7 @@ site, and whoever runs it then approves it. A third way, collecting data yoursel
 <section id="videos">
 <h2>Help collect videos</h2>
 <p>YouTube stops one server from fetching many videos, so volunteers fetch some from their own computers, slowly: at most
-15 an hour and 100 a day, one at a time. You need Python 3.8 or newer (with one older than 3.11, it fetches a newer one
+15 an hour, spread over it, and 200 a day, one at a time. You need Python 3.8 or newer (with one older than 3.11, it fetches a newer one
 for yt-dlp by itself).</p>
 <h3>1. Get the script</h3>
 <div class="box"><pre>curl -O {base}/volunteer/bouldermesh_volunteer.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>

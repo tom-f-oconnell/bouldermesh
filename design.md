@@ -715,8 +715,13 @@ photos, OpenBeta, DuckDuckGo's image search and the photos it found, and Wikimed
 answered the first requests. If any of them starts refusing a cloud address, as YouTube does, its requests could go to
 volunteers the same way.
 
-The limits are hal's, halved: one video at a time, 8-15 s apart, at most 15 an hour (hal's refusals came after hours at
-20-30) and 100 a day, shared by everyone at one address so that two volunteers on one network don't double it. A
+The limits are hal's, halved, and spread out: one video at a time, at most 15 an hour (hal's refusals came after hours
+at 20-30, fetched in bursts), about 4 minutes apart with some randomness rather than in bursts, and 200 a day, shared by
+everyone at one address so that two volunteers on one network don't double it. Videos' details count as videos, as
+they go through YouTube's player too, where its bot check is. Searches and channels' pages have an allowance of their
+own, 30 an hour and 200 a day, at least 8-15 s after any request: hal's searches went on through every spell of its
+refusals (1,474 harvests; one failure, not the check), and on 2026-11-11 they took 53 of the one active volunteer's 96
+tasks, which then hit the day's limit of 100 by early morning with videos still queued. A
 refused volunteer rests as the server would, 1, 2, 4, then 8 hours, and the script enforces all of it itself as well,
 so a misconfigured server can't make it go faster. A video is sent in parts of 64 MB, under Cloudflare's 100 MB a
 request, resuming after a dropped connection. The server checks the file's length against the video's, which catches
