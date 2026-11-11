@@ -328,11 +328,13 @@ def deploy_check(server: str) -> int:
     if not st["items"]:
         print("nothing in progress: a restart loses nothing")
         return 0
-    print("in progress (! loses much of it if restarted now):")
-    _show(st)
     if not st["costly"]:
-        print("a restart loses nothing much")
+        print("in progress, which a restart only pauses:")
+        _show(st)
+        print("so a restart loses nothing much, and there's nothing to wait for")
         return 0
+    print("in progress (marked !: a restart now loses much of it):")
+    _show(st)
     print(f"waiting for the ! ones would take about {_mins(st['eta'])}" if st["eta"] is not None
           else "how long the ! ones have left isn't clear yet")
     return 3
