@@ -165,6 +165,18 @@
     <div class="row"><button class="sec" id="room-measure">Measure now</button><button class="danger" id="room-rejected">Delete the photos the filter rejected</button></div>
   </section>
 
+  <section id="times">
+    <h2>How long meshes take</h2>
+    <div class="row" style="margin-top:0"><select id="times-since" style="width:auto" aria-label="Which meshes">
+      <option value="week">Made in the last 7 days</option><option value="all">All meshes</option></select></div>
+    <div id="times-body"></div>
+    <div class="note">Medians, by what made them and how many photos went in. <b>Meshing</b>: the reconstruction's tools, as long
+      as they ran; <b>CPU</b>: the CPU time they used; <b>start to finish</b>: from starting it to the mesh saved, with any wait
+      for a machine and sending photos and results; <b>waited</b>: for a machine to take it. <b>VGGT</b>: how many it placed
+      when COLMAP couldn't, and the time that added. Meshes made before this was kept have only their tools' times, from
+      their logs (counted as "from logs").</div>
+  </section>
+
   <section>
     <h2>Credentials</h2>
     <div class="note" id="cred-note"></div>
@@ -191,7 +203,21 @@ async function call(path, body){
   return j;
 }
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+let timings = null;
+function renderTimings(){
+  const t = timings, rows = t ? t[$('#times-since').value] : null;
+  const fmt = (x, unit = '') => x == null ? '–' : `${x}${unit}`;
+  $('#times-body').innerHTML = !t ? '' : !t.meshes ? '<div class="note">No mesh has its timings yet.</div>'
+    : !rows.length ? '<div class="note">No mesh made in the last 7 days.</div>'
+    : `<table><tr><th>Made by</th><th>Photos in</th><th>Meshes</th><th>Meshing (min)</th><th>CPU (min)</th><th>Start to finish (min)</th><th>Waited (s)</th><th>VGGT</th></tr>${
+        rows.map(r => `<tr><td>${esc(r.where)}</td><td>${esc(r.photos)}</td><td>${r.n}${r.from_log ? ` <small class="note">(${r.from_log} from logs)</small>` : ''}</td>
+          <td>${fmt(r.minutes)}</td><td>${fmt(r.cpu_minutes)}</td><td>${fmt(r.wall_minutes)}</td><td>${fmt(r.waited)}</td>
+          <td>${r.vggt ? `${r.vggt}, +${fmt(r.vggt_seconds)} s` : '–'}</td></tr>`).join('')}</table>`;
+}
+$('#times-since').onchange = renderTimings;
 function render(s){
+  timings = s.timings || null;
+  renderTimings();
   state = s;
   const v = s.settings;
   $('#where').textContent = `the main site is on port ${s.site_port} · ${s.version ? `build ${s.version}` : 'no build recorded'}`;

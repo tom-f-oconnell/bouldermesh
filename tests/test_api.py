@@ -198,6 +198,9 @@ def run(B: str, tmp: Path) -> None:
     assert m["lat"] == 37.74172 and m["climbs"][0]["id"] == cid, m
     assert abs(time.time() - m["created"]) < 600, m
     print("reconstructed mesh auto-linked:", m["name"], m["lat"], m["lng"])
+    t = m["timings"]      # how long it took, and where, kept with it
+    assert t["where"] == "this server" and not t["remote"] and 0 <= t["wall"] < 600 and not t["from_log"], t
+    assert (tmp / "data" / "meshes" / m["id"] / "timings.json").exists()
     assert m["sources"]["total"] == 3 and [s["source"] for s in m["sources"]["sources"]] == ["upload"], m["sources"]
     st, rec = req(B, "GET", f"/api/meshes/{m['id']}/sources")
     assert st == 200 and {p["file"] for p in rec["photos"]} == {f"p{i}.jpg" for i in range(3)}, rec

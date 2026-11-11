@@ -570,6 +570,12 @@ The coloured versions are made per vertex from the photos free to copy, so they'
 texture, and grey where none of those photos sees the rock. Meshes built before Nov 3 need rebuilding
 first, as they didn't keep their cameras' lenses.
 
+**How long meshes take.** Each mesh keeps how long it took (`timings.json` in its folder): where it was made (this
+server, or which machine), each tool's time, CPU time and memory, how many photos were placed and whether VGGT placed
+them, and for one another machine made, the wait for it and the time from start to finish. Its details on the main
+page say so (*Made:*), and the admin page gives medians by what made them and how many photos went in, over the last
+week or all. Meshes made before Nov 10 get theirs from their job logs at startup: only their tools' times.
+
 **Credentials** are saved encrypted with `BOULDERMESH_SECRETS_KEY`, which stays in `.env`, outside
 `data/`. Make one with `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
 They're never shown again. Without that key, give them as environment variables instead

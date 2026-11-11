@@ -55,6 +55,7 @@ import pipeline  # noqa: E402
 import proxy_ranges  # noqa: E402
 import pullwork  # noqa: E402
 import splat as splat_mod  # noqa: E402
+import timings as timings_mod  # noqa: E402
 import viewpoints  # noqa: E402
 import notify as notify_mod  # noqa: E402
 import volunteers as volunteers_mod  # noqa: E402
@@ -820,6 +821,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
     """
     pdir = PROJECTS / pid
     q("UPDATE projects SET status='running' WHERE id=?", pid, write=True)
+    started, log_from = time.time(), (pdir / "job.log").stat().st_size if (pdir / "job.log").exists() else 0
     log = lambda s: append_log(pid, s)  # noqa: E731
     tracker = tracker or tracker_for(pid, pipeline.steps())
     try:
@@ -855,6 +857,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         if proj["kind"] == "boulder" and not worse:
             place_climbs(mid, pid, log)
         tracker.finish()     # before it's marked done, so that anything waiting for that sees it all finished
+        keep_timings(mid, pid, started, log_from, tracker, remote)
         log("done")
         q("UPDATE projects SET status='done', mesh_id=?, demo=? WHERE id=?", current, int(demo), pid, write=True)
         q("UPDATE campaign_items SET status='done', mesh_id=?, retry=0, note=NULL, updated=? WHERE project_id=? AND status='failed'",
@@ -871,6 +874,59 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         diagnostics.log_failure(log, e, DATA)
         tracker.finish("failed")
         q("UPDATE projects SET status='failed' WHERE id=?", pid, write=True)
+
+
+def keep_timings(mid: str, pid: str, started: float, log_from: int, tracker: Tracker, remote: bool) -> None:
+    """Keep with a new mesh how long it took to make, and where (timings.py), from its job's log since log_from and its
+    tracker. Only costs that if it fails."""
+    try:
+        with open(PROJECTS / pid / "job.log", errors="replace") as f:
+            f.seek(log_from)
+            text = f.read()
+        rec = timings_mod.record(text, tracker.snapshot(), started, time.time(), current_worker().name if remote else "this server",
+                                 VERSION, remote, {s[0] for s in pipeline.steps()})
+        timings_mod.save(MESHES / mid, rec)
+        _timings[mid] = rec
+    except Exception as e:
+        append_log(pid, f"timings: not kept ({type(e).__name__}: {e})")
+
+
+_timings: dict[str, dict | None] = {}     # meshes' timings.json, as read
+
+
+def mesh_timings(mid: str) -> dict | None:
+    if mid not in _timings:
+        _timings[mid] = timings_mod.load(MESHES / mid)
+    return _timings[mid]
+
+
+def timings_brief(rec: dict | None) -> dict | None:
+    """What the mesh's details show of its timings."""
+    if not rec:
+        return None
+    keys = ("where", "remote", "wall", "tools_seconds", "cpu_seconds", "harvest_seconds", "photos_in", "placed", "vggt_seconds",
+            "waited", "from_log", "version", "ended")
+    return {k: rec.get(k) for k in keys}
+
+
+def timings_existing_meshes() -> None:
+    """Timings for meshes made before they were kept, from their projects' job logs (timings.backfill()): the newest of
+    each project's, as its log's last run is the one that made it."""
+    try:
+        # each project's newest mesh only: its log's last run is that one's
+        n = timings_mod.backfill(q("SELECT id, source, created FROM meshes m WHERE source LIKE 'project:%' AND created = "
+                                   "(SELECT MAX(created) FROM meshes x WHERE x.source = m.source)"), PROJECTS, MESHES, None)
+        if n:
+            _timings.clear()
+            print(f"timings: {n} older mesh(es) given theirs from their job logs", flush=True)
+    except Exception as e:
+        print(f"timings: backfill failed ({type(e).__name__}: {e})", flush=True)
+
+
+def timings_summary() -> dict:
+    """The admin page's medians of how long meshes took (timings.summarize()): over the last week, and all."""
+    recs = [r for m in q("SELECT id FROM meshes WHERE source LIKE 'project:%'") if (r := mesh_timings(m["id"]))]
+    return {"week": timings_mod.summarize(recs, since=time.time() - 7 * 86400), "all": timings_mod.summarize(recs), "meshes": len(recs)}
 
 
 CHANNEL_TTL = 30 * 86400    # how long a channel's description is trusted before it's read again
@@ -3348,6 +3404,7 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as e:
                         print(f"error: listing mesh {r['id']}: {type(e).__name__}: {e}", flush=True)
                     r["cameras_kept"] = (MESHES / r["id"] / orientation.CAMERAS_FILE).exists()
+                    r["timings"] = timings_brief(mesh_timings(r["id"]))
                     r["splat"] = r.get("texture") == "full" and (MESHES / r["id"] / splat_mod.FILE).exists()
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
@@ -4123,7 +4180,7 @@ def admin_state() -> dict:
             "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE, "machines_image": MACHINES_IMAGE,
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
             "notify": NOTIFIER.state(),
-            "usage": {**_usage, "cap": data_cap() or None, "full": full()}}
+            "usage": {**_usage, "cap": data_cap() or None, "full": full()}, "timings": timings_summary()}
 
 
 def admin_test(_: dict) -> dict:
@@ -4200,6 +4257,7 @@ def main() -> None:
     threading.Thread(target=clean_existing_meshes, daemon=True).start()
     threading.Thread(target=orient_existing_meshes, daemon=True).start()
     threading.Thread(target=source_existing_meshes, daemon=True).start()
+    threading.Thread(target=timings_existing_meshes, daemon=True).start()
     for d in MESHES.iterdir() if MESHES.exists() else []:
         beta_mod.carry_on(d)        # finding beta carries on after a restart, like areas
         scale_mod.interrupted(d)

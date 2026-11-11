@@ -10,7 +10,8 @@ from climbs.common import jobctl
 
 
 class Tracker:
-    """Named steps of one job, each with a 0-1 fraction that only ever goes up.
+    """Named steps of one job, each with a 0-1 fraction that only ever goes up, and once begun, when it began
+    ("started") and once ended, how long it ran ("seconds"), for timings.py.
 
     Args:
         steps: (key, label, weight) per step, in order, or (key, label, weight, True) for one that runs alongside
@@ -39,6 +40,8 @@ class Tracker:
             if s is None:
                 return
             changed = s["state"] != "running"
+            if changed and "started" not in s:
+                s["started"] = time.time()
             for other in [] if s["parallel"] else self.steps:
                 if other is s:
                     break
@@ -90,12 +93,16 @@ class Tracker:
         s["state"] = state
         if state == "done":
             s["frac"] = 1.0
+        if "started" in s:
+            s["ended"] = time.time()
 
     def snapshot(self) -> dict:
         counted = [s for s in self.steps if s["state"] != "skipped"]
         total = sum(s["weight"] for s in counted) or 1
         return {"overall": round(100 * sum(s["weight"] * s["frac"] for s in counted) / total, 1),
-                "steps": [{k: s[k] for k in ("key", "label", "frac", "detail", "state")} for s in self.steps]}
+                "steps": [{**{k: s[k] for k in ("key", "label", "frac", "detail", "state")},
+                           **({"started": round(s["started"], 1)} if "started" in s else {}),
+                           **({"seconds": round(s["ended"] - s["started"], 1)} if "ended" in s else {})} for s in self.steps]}
 
     def _flush(self, force: bool) -> None:
         if self._save and (force or time.time() - self._last >= 0.5):
