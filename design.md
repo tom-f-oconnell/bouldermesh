@@ -416,6 +416,38 @@ own files) showed in 28 s, where its own files would take almost 4 minutes, and 
   Android). Partial display while a file downloads isn't possible with a GLB, as nothing can be drawn until its JSON
   and buffers are all there; the preview is what stands in for that.
 
+## Placing meshes together (`backend/heading.py`, the viewer's Nearby)
+
+Placing meshes around each other needs each one's place, size, which way is up, and which way it faces. On hal's 208
+current meshes (Nov 11, 2026), all have Mountain Project's coordinates (hand-entered, often 5-20 m off, and 30 share a
+point with another), 183 a size (`scale.py`), and all an up (`orientation.py`). Which way they face, almost none know:
+81% of the 6,518 photos placed in them are video frames, with no metadata at all, and of the rest only 12 photos (11
+meshes, two at most in one) recorded a compass heading, 16 meshes have a GPS-tagged photo, 58 a timestamped one (16 three
+or more), and 17 a time zone. Within 100 m, 147 meshes have another (median 2, at most 12); within 50 m, 119.
+
+So `heading.json` keeps each way of telling, and the viewer uses the best: turned by hand and saved (`edited`), then
+the compass readings of its placed photos (`compass`: GPSImgDirection, against where cameras.json puts each photo's
+axis), then Mountain Project's text (`text`). The text is the climb's description and location, then the last area
+it's in, which Mountain Project often names by a face ("Manx Boulders - Southeast Face"): the first face named outside
+sentences about getting there or off. A climb's face, so named, points where its photos were taken from: on a
+boulder's mesh, its view (views.json); on its own mesh, the side all the photos look from (from the point nearest all
+their axes). It's a guess, to start from: on hal, 75 meshes get one from text and 11 from compasses, 84 of 208 in all.
+Where both exist, The Boxer Problem's two compass readings and its text agree within 5°, and Monkey Gone to Heaven's
+one reading and its text are 69° apart.
+
+The bearing kept is that of the mesh's own -Z axis, with it upright (+Y up, as the viewer stands it): the viewer turns
+each mesh by the difference between its heading and the one in view's, and places it by its offset east and north,
+in metres, turned by the one in view's heading, at the size scale.py found (else taken as 8 m across), with its
+lowest point on the ground. Nearby loads each mesh's preview copy, about 1 MB, and hides its stray pieces.
+
+Other ways to tell, not built: the sun, fitted from how bright each part of the rock is against which way it faces in a
+photo of known time (perhaps 10-20 meshes: few photos have a time, fewer a time zone, camera clocks are often hours off,
+and video frames have no time of day); and the skyline in frames, matched against the horizon worked out from
+elevation data at the climb's coordinates (open terrain only). USGS 3DEP's 1 m lidar elevation covers Joshua Tree, the
+Buttermilks, Hueco Tanks, Red Rocks and Yosemite (its 1/3 arc-second, about 10 m, the whole US), from one request a
+square: 300 m at Joshua Tree came in 9 s as 360 KB of heights, 65 m of relief. It would also stand each mesh on the
+ground's height rather than one level, and show the terrain around.
+
 ## Which way is down (`backend/orientation.py`)
 
 COLMAP's `IMAGE-ORIENTATION` assumes most photos were taken upright, and takes the typical direction of

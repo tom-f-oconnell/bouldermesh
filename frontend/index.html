@@ -139,6 +139,16 @@
   #viewnote button{margin-left:8px}
   #pieces{display:none;position:absolute;top:12px;right:12px;max-width:340px;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;z-index:2}
   #pieces .row{margin-top:6px;gap:6px;flex-wrap:wrap}
+  #nearby{position:absolute;top:12px;right:12px;z-index:4;width:min(370px,calc(100% - 24px));max-height:calc(100% - 70px);overflow:auto;
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12px;box-shadow:0 4px 16px rgba(0,0,0,.3)}
+  #nearby[hidden]{display:none} #nearby .row{gap:6px;flex-wrap:wrap;align-items:center} #nearby .head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+  #nearby .head b{flex:1;font-size:13px} #nearby input[type=number]{width:72px}
+  #nearby .list{display:grid;grid-template-columns:auto 1fr auto;gap:4px 8px;margin-top:8px;align-items:center}
+  #nearby .list .name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap} #nearby .list .name.picked{color:var(--acc);font-weight:600}
+  #nearby .list small{grid-column:2/-1;color:var(--mute);margin-top:-3px}
+  #nearby .turn{margin-top:8px;padding-top:8px;border-top:1px solid var(--line);display:grid;gap:6px}
+  #nearby .turn input[type=range]{flex:1;min-width:120px}
+  #nearby .note{color:var(--mute);margin-top:8px;line-height:1.4}
   #pieces .list{max-height:260px;overflow:auto;margin-top:6px;display:grid;grid-template-columns:1fr auto;gap:3px 8px;align-items:center}
   #orient{display:none;position:absolute;left:12px;bottom:12px;max-width:430px;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.45;z-index:2}
   #rate{position:absolute;right:12px;bottom:12px;z-index:3;display:flex;flex-direction:column;align-items:flex-end;gap:6px}
@@ -215,7 +225,9 @@
     /* the view on its own: back, and a toggle between the mesh and the map; wireframe and notes live elsewhere or not at all */
     #toctl{font-size:17px;line-height:1;padding:3px 10px} #v3d,#vwire,#vnotes,#viewing{display:none!important}
     /* back, Random, Sway and Map at the left (then what shows only now and then), and settings alone at the right */
-    #vsway{order:1} #vmap{order:2} #vmark,#vfrom,#detail{order:3} #vfrom{flex:0 1 auto;min-width:0} #vprefs{order:4;margin-left:auto}
+    #vsway{order:1} #vmap{order:2} #vnearby,#vmark,#vfrom,#detail{order:3}
+    #nearby.turning .list,#nearby.turning .note{display:none}     /* turning one: only that, so the view shows */
+    #nearby.turning{top:auto;bottom:12px;max-height:45%} #vfrom{flex:0 1 auto;min-width:0} #vprefs{order:4;margin-left:auto}
     #prefs .phone-only{display:revert!important}
     #caps,#code,#admin{display:none!important}
     /* the background and colour choices open from a button in either view, as a panel over it */
@@ -414,6 +426,7 @@
       <button class="sec sm" id="vmap">Map</button>
       <button class="sec sm" id="vmark" style="display:none" title="Click the rock to add a start hold, and a hold again for hand, finish, foot, then none">Mark holds</button>
       <button class="sec sm" id="vsway" disabled title="Rocks the view a few degrees either way from where it is now, to show off that it's 3D. Dragging or scrolling stops it.">Sway</button>
+      <button class="sec sm" id="vnearby" disabled title="Shows the meshes near this one around it, placed by their coordinates, at their real size and facing as best known" aria-expanded="false">Nearby</button>
       <button class="sec sm" id="vwire" disabled title="Shows only the edges of the mesh's triangles, to see how it's built: where it's dense, thin or patched. Click again for its surface.">Wireframe</button>
       <button class="sec sm" id="vnotes" title="Hides the notes over the view: about its texture, its stray pieces, and how it was framed and scaled. Click again to show them.">Hide notes</button>
       <select id="vfrom" style="display:none;width:auto" title="A boulder's own mesh is made from the photos of every climb on it: this looks at it from where one climb's own photos (its page's and its videos') were taken"></select>
@@ -425,6 +438,7 @@
       <div id="linkmenu" hidden></div>
       <div id="viewnote"></div>
       <div id="pieces"></div>
+      <div id="nearby" hidden></div>
       <div id="orient"></div>
       <div id="rate" hidden>
         <div id="ratemenu" hidden>
@@ -598,7 +612,7 @@ function surfaceUnder(ev){
   if (!current) return null;
   const r = renderer.domElement.getBoundingClientRect();
   raycaster.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, 1 - (ev.clientY - r.top) / r.height * 2), camera);
-  return raycaster.intersectObject(current, true).find(h => h.object.visible && !h.object.userData.beta) || null;
+  return raycaster.intersectObjects(nearby?.group ? [current, nearby.group] : [current], true).find(h => h.object.visible && !h.object.userData.beta) || null;
 }
 let lastWheel = 0;
 renderer.domElement.addEventListener('wheel', ev => {
@@ -1264,6 +1278,7 @@ function loading(label){
 async function loadMeshUrl(url, filename, label, id){
   flushRating();
   stopDetail();
+  clearNearby();
   shownMesh = id || null;
   showRate(true);
   const began = performance.now(), via = viewVia;
@@ -1316,6 +1331,7 @@ async function loadMeshUrl(url, filename, label, id){
     renderPieces();
     renderOrientation(id ? meshesById[id] : null);
     if (detail) moreDetail(detail);
+    $('#vnearby').disabled = !(id && meshesById[id]?.lat != null);
     if (betaState?.mid === id) drawBeta();     // the same mesh opened again: its markers go on the new copy
     requestAnimationFrame(() => requestAnimationFrame(() => {   // a texture too big for the card's memory shows black, not grey
       const gl = renderer.getContext();
@@ -1472,6 +1488,246 @@ document.querySelectorAll('#detailmode button').forEach(b => b.onclick = () => {
   if (detailChoice === 'full' && detailLoad?.steps?.length) fetchDetail(detailLoad);
 });
 document.querySelectorAll('#detailmode button').forEach(x => x.classList.toggle('on', x.dataset.detail === detailChoice));
+
+// ---------------------------------------------------------------- nearby meshes, placed around the one in view
+// Each by its coordinates (Mountain Project's, often 5-20 m off), at its real size where that was found (scale.py), else
+// guessed, upright, and facing as best known (heading.py): turned by hand, by its photos' compasses, by Mountain Project's
+// text, or as it was made. Its -Z axis points at its heading's bearing; here north is -Z and east +X, in metres, which
+// the mesh in view's own size and placement turn into the view's units around it.
+const NEARBY_GUESS_M = 8;       // a mesh whose size wasn't found is taken as this many metres across
+const FACING = { edited: 'facing as turned by hand', compass: "facing by its photos' compasses", text: "facing by Mountain Project's text, a guess" };
+let nearby = null;    // {id, radius, self: {h, saved, m}, items: [{n, wrap, local, h, saved, state}], group, arrow, picked, seq}
+let nearbyRadius = 50; try { nearbyRadius = +localStorage.getItem('bm_nearby_radius') || 50; } catch {}
+const facingText = f => f ? FACING[f.source] || `facing by ${f.source}` : 'facing unknown';
+function clearNearby(){
+  if (nearby?.group) {
+    nearby.group.traverse(o => { if (o.isMesh) { o.geometry.dispose(); for (const m of [o.material].flat()) { m?.map?.dispose(); m?.dispose(); } } });
+    scene.remove(nearby.group);
+  }
+  if (nearby?.arrow) scene.remove(nearby.arrow);
+  nearby = null;
+  $('#nearby').hidden = true; $('#vnearby').setAttribute('aria-expanded', 'false'); $('#vnearby').textContent = 'Nearby';
+}
+// What a mesh shows of itself, in its own frame (no transform): the middle of where most of it is, and its lowest point
+function ownMeasure(obj){
+  obj.updateMatrixWorld(true);
+  const box = mainBox(obj), size = box.getSize(new THREE.Vector3());
+  let low = Infinity;
+  obj.traverse(o => {
+    if (!o.isMesh) return;
+    const p = o.geometry.attributes.position, idx = o.geometry.index?.array, n = idx ? idx.length : p.count, e = o.matrixWorld.elements;
+    for (let i = 0; i < n; i++) { const v = idx ? idx[i] : i, y = e[1] * p.getX(v) + e[5] * p.getY(v) + e[9] * p.getZ(v) + e[13]; if (y < low) low = y; }
+  });
+  return { centre: box.getCenter(new THREE.Vector3()), extent: Math.max(size.x, size.y, size.z, 1e-6), low };
+}
+// The faces of its stray pieces (its cleanup) left out, as the mesh in view leaves them hidden
+async function trimPieces(gltf, id, lod, v){
+  try {
+    const record = await (await fetch(`/api/meshes/${id}/cleanup`)).json();
+    if (!record?.removed?.length || record.deleted) return;
+    const res = await fetch(`/meshes/${id}/cleanup_faces.bin?${[lod ? `lod=${lod}` : '', v ? `v=${v}` : ''].filter(Boolean).join('&')}`);
+    if (!res.ok) return;
+    const buf = await res.arrayBuffer(), all = record.label_bytes === 2 ? new Uint16Array(buf) : new Uint32Array(buf), hide = new Set(record.removed);
+    const meshes = new Map();
+    gltf.scene.traverse(o => { const at = o.isMesh && gltf.parser.associations.get(o); if (at) meshes.set(`${at.meshes}/${at.primitives}`, o); });
+    let start = 0;
+    for (const p of record.primitives) {
+      const o = meshes.get(`${p.mesh}/${p.primitive}`), idx = o?.geometry.index;
+      const faces = lod ? (idx?.count || 0) / 3 : p.faces;
+      if (idx && idx.count === faces * 3) {
+        const keep = [];
+        for (let f = 0; f < faces; f++) if (!hide.has(all[start + f])) keep.push(idx.array[3 * f], idx.array[3 * f + 1], idx.array[3 * f + 2]);
+        o.geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(keep), 1));
+      }
+      start += faces;
+    }
+  } catch { /* shown whole */ }
+}
+async function loadNeighbour(n){
+  const pk = n.pack, lod = pk ? (pk.preview ? 'preview' : 'full') : null, v = n.v;
+  const url = `/meshes/${n.id}/${n.filename}?${[lod ? `lod=${lod}` : '', v ? `v=${v}` : ''].filter(Boolean).join('&')}`;
+  const gltf = await gltfLoader(pk?.texture ? 2048 : 0).loadAsync(url);
+  await trimPieces(gltf, n.id, lod, v);
+  gltf.scene.traverse(o => {
+    if (!o.isMesh) return;
+    if (!o.material?.map && (!o.material || o.material.type === 'MeshBasicMaterial'))
+      o.material = new THREE.MeshStandardMaterial({ vertexColors: !!o.geometry.attributes.color, color: o.geometry.attributes.color ? 0xffffff : 0xb8c4d6, side: THREE.DoubleSide, roughness: .8 });
+    else { o.material.side = THREE.DoubleSide; if (o.material.map) plainBack(o.material); }
+    if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();
+    o.userData.nearby = n.id;
+  });
+  return gltf.scene;
+}
+// Where everything goes: the mesh in view stays as it is, and the rest go around it, in its units
+function placeNearby(){
+  if (!nearby || !current) return;
+  const s = current.scale.x, self = nearby.self, perMetre = s / self.m;     // view units a metre
+  const h0 = THREE.MathUtils.degToRad(self.h), turn0 = new THREE.Matrix4().makeRotationY(h0);
+  const c0 = mainBox(current).getCenter(new THREE.Vector3());
+  for (const it of nearby.items) {
+    if (!it.wrap) continue;
+    const k = s * it.m / self.m, turn = THREE.MathUtils.degToRad(self.h - it.h);
+    it.wrap.scale.setScalar(k); it.wrap.rotation.set(0, turn, 0);
+    const at = new THREE.Vector3(it.n.east_m, 0, -it.n.north_m).applyMatrix4(turn0).multiplyScalar(perMetre).add(c0);
+    const mid = it.local.centre.clone().multiplyScalar(k).applyAxisAngle(new THREE.Vector3(0, 1, 0), turn);
+    it.wrap.position.set(at.x - mid.x, -it.local.low * k, at.z - mid.z);
+  }
+  if (nearby.arrow) scene.remove(nearby.arrow);
+  const north = new THREE.Vector3(0, 0, -1).applyMatrix4(turn0), length = Math.max(1.5, Math.min(nearby.radius * perMetre * .35, 12));
+  nearby.arrow = new THREE.Group();
+  nearby.arrow.add(new THREE.ArrowHelper(north, new THREE.Vector3(c0.x, .02, c0.z), length, 0xe0564f, length * .12, length * .06));
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: northLabel(), depthTest: false, transparent: true }));
+  label.position.copy(north).multiplyScalar(length * 1.12).add(new THREE.Vector3(c0.x, length * .08, c0.z)); label.scale.setScalar(length * .14);
+  nearby.arrow.add(label);
+  scene.add(nearby.arrow);
+  woke();
+}
+let northTexture = null;
+function northLabel(){
+  if (northTexture) return northTexture;
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'); g.fillStyle = '#e0564f'; g.font = 'bold 48px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('N', 32, 34);
+  northTexture = new THREE.CanvasTexture(c); northTexture.colorSpace = THREE.SRGBColorSpace;
+  return northTexture;
+}
+function seeAllNearby(){
+  if (!nearby?.group || !current) return;
+  const box = new THREE.Box3().setFromObject(current).union(new THREE.Box3().setFromObject(nearby.group));
+  const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() / 2;
+  const away = camera.position.clone().sub(controls.target).normalize();
+  endSway(); controls.target.copy(c);
+  camera.position.copy(c).addScaledVector(away, Math.max(r, .5) / Math.sin(camera.fov * Math.PI / 360) * 1.05); controls.update();
+}
+async function showNearby(radius){
+  const id = shownMesh, m = meshesById[id];
+  if (!id || !m || !current) return;
+  const keep = nearby?.id === id ? nearby.picked : null;
+  if (nearby) clearNearby();
+  nearbyRadius = radius; try { localStorage.setItem('bm_nearby_radius', String(radius)); } catch {}
+  const mine = nearby = { id, radius, items: [], group: new THREE.Group(), picked: keep, loading: true };
+  renderNearby();
+  let data;
+  try { data = await api(`/api/meshes/${id}/nearby?radius=${radius}`); }
+  catch (e) { if (nearby === mine) { mine.error = e.message; mine.loading = false; renderNearby(); } return; }
+  if (nearby !== mine) return;
+  const own = ownMeasure(current), s = current.scale.x;
+  mine.self = { h: data.self.heading?.deg ?? 0, saved: data.self.heading, m: data.self.metres_per_unit || NEARBY_GUESS_M / (own.extent / s), guessed: !data.self.metres_per_unit };
+  mine.more = data.more;
+  mine.items = data.meshes.map(n => ({ n, h: n.heading?.deg ?? 0, saved: n.heading, state: n.filename.toLowerCase().endsWith('.glb') ? 'waiting' : 'not a GLB' }));
+  scene.add(mine.group);
+  placeNearby(); renderNearby();
+  for (const it of mine.items) {
+    if (nearby !== mine) return;
+    if (it.state !== 'waiting') continue;
+    it.state = 'loading'; renderNearby();
+    try {
+      const obj = await loadNeighbour(it.n);
+      if (nearby !== mine) { obj.traverse(o => { if (o.isMesh) { o.geometry.dispose(); o.material?.map?.dispose(); o.material?.dispose(); } }); return; }
+      it.local = ownMeasure(obj);
+      it.m = it.n.metres_per_unit || NEARBY_GUESS_M / it.local.extent;
+      it.wrap = new THREE.Group(); it.wrap.add(obj); it.wrap.userData.nearby = it.n.id;
+      mine.group.add(it.wrap); it.state = 'shown';
+      placeNearby();
+      if (mine.items.filter(x => x.state === 'shown').length === 1) seeAllNearby();
+    } catch (e) { it.state = 'failed'; it.error = e.message; }
+    renderNearby();
+  }
+  mine.loading = false; renderNearby();
+}
+function nearbyItem(id){ return id === nearby?.id ? null : nearby?.items.find(it => it.n.id === id); }
+function renderNearby(){
+  const el = $('#nearby');
+  if (el.hidden) return;
+  const nb = nearby?.id === shownMesh ? nearby : null, m = meshesById[shownMesh];
+  const list = (nb?.items || []).map(it => {
+    const n = it.n, same = n.distance_m < .5;
+    return `<input type="checkbox" data-show="${n.id}" ${it.wrap?.visible === false ? '' : 'checked'} ${it.wrap ? '' : 'disabled'} aria-label="Show ${esc(n.name)}">
+      <span class="name${nb.picked === n.id ? ' picked' : ''}" title="${esc(n.name)}">${esc(n.name)}</span>
+      <span class="row"><button class="sm sec" data-pick="${n.id}" ${it.wrap ? '' : 'disabled'}>Turn</button><button class="sm sec" data-open="${n.id}">Open</button></span>
+      <small>${same ? 'at the same point (shared coordinates)' : `${Math.round(n.distance_m)} m away`} · ${it.state === 'shown' ? facingText(it.saved) : it.state === 'failed' ? `failed to load: ${esc(it.error || '')}` : it.state}${n.metres_per_unit ? '' : ' · size guessed'}</small>`;
+  }).join('');
+  const picked = nb?.picked, it = picked && picked !== nb.id ? nearbyItem(picked) : null, isSelf = picked && picked === nb?.id;
+  const turning = nb?.self && (it || isSelf) ? (() => {
+    const name = isSelf ? (m?.name || 'this mesh') : it.n.name, h = isSelf ? nb.self.h : it.h, saved = isSelf ? nb.self.saved : it.saved;
+    return `<div class="turn"><div>Turning <b>${esc(name)}</b>: ${facingText(saved)}${saved?.detail && saved.source !== 'edited' ? ` (${esc(saved.detail)})` : ''}.</div>
+      <div class="row"><button class="sm sec" data-turn="-15">⟲ 15°</button><input type="range" id="nb-turn" min="0" max="359" step="1" value="${Math.round(((h % 360) + 360) % 360)}" aria-label="Facing, degrees">
+      <button class="sm sec" data-turn="15">15° ⟳</button><span id="nb-deg">${Math.round(((h % 360) + 360) % 360)}°</span></div>
+      <div class="row"><button class="sm" data-save ${editor ? '' : 'disabled title="Only an editor can save it"'}>Save facing</button><button class="sm sec" data-undo>Undo</button><button class="sm sec" data-done>Done</button>
+      ${saved?.source === 'edited' ? `<button class="sm sec" data-unedit ${editor ? '' : 'disabled'}>Back to worked out</button>` : ''}</div></div>`;
+  })() : '';
+  el.classList.toggle('turning', !!turning);
+  el.innerHTML = `<div class="head"><b>Nearby</b><button class="sm sec" data-close aria-label="Close">✕</button></div>
+    <div class="row"><label for="nb-radius">Within</label><input type="number" id="nb-radius" min="5" max="1000" step="5" value="${nb?.radius || nearbyRadius}"> m
+      <button class="sm" data-go>${nb ? 'Again' : 'Show'}</button>${nb ? '<button class="sm sec" data-all>See all</button><button class="sm sec" data-hide>Hide</button>' : ''}</div>
+    ${nb?.error ? `<div class="note">Couldn't find them: ${esc(nb.error)}</div>` : ''}
+    ${nb?.self ? `<div class="note">${nb.items.length ? `${nb.items.length} within ${nb.radius} m${nb.more ? `, and ${nb.more} more not shown` : ''}.` : `No other meshes within ${nb.radius} m.`}
+      This one is ${facingText(nb.self.saved)}${nb.self.guessed ? ', its size guessed' : ''}. <button class="sm sec" data-pick="${nb.id}">Turn it</button></div>` : nb?.loading ? '<div class="note">Looking…</div>' : ''}
+    ${list ? `<div class="list">${list}</div>` : ''}
+    ${turning}
+    <div class="note">Placed by Mountain Project's coordinates, which are often 5–20 m off, at real size where it was found, upright, on one level. The red arrow points north${nb?.self && !nb.self.saved ? ', as far as this mesh knows, which is not at all yet' : ''}.</div>`;
+}
+function setTurn(deg){
+  const nb = nearby, it = nb && nearbyItem(nb.picked);
+  if (!nb?.self) return;
+  deg = ((deg % 360) + 360) % 360;
+  if (nb.picked === nb.id) nb.self.h = deg; else if (it) it.h = deg; else return;
+  placeNearby();
+  const r = $('#nb-turn'), d = $('#nb-deg');
+  if (r) r.value = Math.round(deg); if (d) d.textContent = `${Math.round(deg)}°`;
+}
+async function saveTurn(clear = false){
+  const nb = nearby, isSelf = nb?.picked === nb?.id, it = nb && nearbyItem(nb.picked);
+  if (!nb || (!isSelf && !it)) return;
+  try {
+    const r = await api(`/api/meshes/${nb.picked}/heading`, { method: 'PATCH', json: { deg: clear ? null : Math.round(isSelf ? nb.self.h : it.h) } });
+    if (isSelf) { nb.self.saved = r.heading; if (clear) nb.self.h = r.heading?.deg ?? 0; }
+    else { it.saved = r.heading; if (clear) it.h = r.heading?.deg ?? 0; }
+    placeNearby(); renderNearby(); toast(clear ? 'Facing back to what was worked out' : 'Facing saved', 2500);
+  } catch (e) { toast(e.message, 5000); }
+}
+$('#vnearby').onclick = () => {
+  const el = $('#nearby'), open = el.hidden;
+  el.hidden = !open; $('#vnearby').setAttribute('aria-expanded', String(open));
+  if (open) { if (phone.matches) setPrefs(false); renderNearby(); }
+};
+$('#nearby').addEventListener('click', ev => {
+  const b = ev.target.closest('button'), cb = ev.target.closest('input[type=checkbox]');
+  if (cb?.dataset.show) { const it = nearbyItem(cb.dataset.show); if (it?.wrap) { it.wrap.visible = cb.checked; woke(); } return; }
+  if (!b) return;
+  if (b.dataset.close !== undefined) { $('#nearby').hidden = true; $('#vnearby').setAttribute('aria-expanded', 'false'); }
+  else if (b.dataset.go !== undefined) {
+    const r = +$('#nb-radius').value;
+    if (!(r >= 5 && r <= 1000)) return toast('A radius from 5 to 1000 m', 3000);
+    showNearby(r); $('#vnearby').textContent = 'Nearby ✓';
+  }
+  else if (b.dataset.hide !== undefined) clearNearby();
+  else if (b.dataset.all !== undefined) seeAllNearby();
+  else if (b.dataset.open) viewMesh(b.dataset.open, null, 'nearby');
+  else if (b.dataset.pick) { nearby.picked = nearby.picked === b.dataset.pick ? null : b.dataset.pick; renderNearby(); }
+  else if (b.dataset.turn) { const nb = nearby, it = nearbyItem(nb.picked); setTurn((nb.picked === nb.id ? nb.self.h : it.h) + +b.dataset.turn); }
+  else if (b.dataset.save !== undefined) saveTurn();
+  else if (b.dataset.done !== undefined) { nearby.picked = null; renderNearby(); }
+  else if (b.dataset.unedit !== undefined) saveTurn(true);
+  else if (b.dataset.undo !== undefined) {
+    const nb = nearby, it = nearbyItem(nb.picked);
+    setTurn((nb.picked === nb.id ? nb.self.saved : it?.saved)?.deg ?? 0);
+  }
+});
+$('#nearby').addEventListener('input', ev => { if (ev.target.id === 'nb-turn') setTurn(+ev.target.value); });
+$('#nearby').addEventListener('keydown', ev => { if (ev.target.id === 'nb-radius' && ev.key === 'Enter') $('#nearby [data-go]')?.click(); });
+// a click (not a drag) on a nearby mesh picks it for turning
+let nearbyPress = null;
+renderer.domElement.addEventListener('pointerdown', ev => { nearbyPress = [ev.clientX, ev.clientY]; });
+renderer.domElement.addEventListener('click', ev => {
+  if (!nearby?.group || !nearbyPress || Math.hypot(ev.clientX - nearbyPress[0], ev.clientY - nearbyPress[1]) > 5 || pieces?.editing) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  raycaster.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, 1 - (ev.clientY - r.top) / r.height * 2), camera);
+  const hit = raycaster.intersectObject(nearby.group, true).find(h => h.object.visible);
+  let o = hit?.object; while (o && !o.userData.nearby) o = o.parent;
+  if (!o) return;
+  nearby.picked = o.userData.nearby;
+  $('#nearby').hidden = false; $('#vnearby').setAttribute('aria-expanded', 'true'); renderNearby();
+});
 
 // ---------------------------------------------------------------- map
 // zoomSnap: quarter steps, so the map can open around a boulder at close to the span asked for

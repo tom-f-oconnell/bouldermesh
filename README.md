@@ -385,6 +385,14 @@ slowly for the rest to take under 30 s), when the bar offers *Full detail (N MB)
 design.md, "Loading meshes quickly"), and a mesh's own files stay as they were, for downloads. The admin page shows how
 many it has made, which it's making, and about how long the rest will take.
 
+*Nearby* in the view's bar shows the meshes around the one in view: within 50 m to start (the box it opens changes the
+radius), each placed by its coordinates, at its real size where that was found, upright, on one level, with a red arrow
+pointing north. Which way each faces is the best known of: turned by hand, its photos' compass readings, Mountain
+Project's text naming its face ("the north face", or an area named "... - Southeast Face"), a guess the others replace,
+or unknown (as made). *Turn* (or clicking one in the view) turns a mesh; an editor's *Save facing* keeps it for everyone.
+Coordinates are often 5-20 m off, and several climbs often share one point, so it's a rough layout (design.md, "Placing
+meshes together").
+
 If a browser can't load a mesh's texture, the viewer tries it smaller, then says why on the view. Grey
 on a mesh means no photo shows that side, including the backs of surfaces.
 
@@ -920,6 +928,7 @@ Security, then WAF, then *Rate limiting rules* (or *Security rules*, then a rate
     backend/volunteers.py          volunteers fetching YouTube videos: their tokens, the queue, and their port
     backend/splat.py               splats of the scene around a mesh, for the viewer's Scene background (off: SPLATS=1)
     backend/glbpack.py, glbpack.mjs  compressed and simplified copies of meshes for the viewer (meshoptimizer, in vendor/)
+    backend/heading.py             which way a mesh faces, for placing meshes around each other (the viewer's Nearby)
     volunteer/bouldermesh_volunteer.py  the script volunteers run
     backend/proxy_ranges.py        whether the Caddyfile's trusted proxies are still Cloudflare's
     backend/policy.py              which photos are free to copy, and what the site may show
@@ -990,6 +999,11 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     GET  /meshes/{id}/{file}?v=<version>                 kept a year (textures and splats a day) if that's the mesh's version
                                                         now (its "v" in GET /api/meshes), else not kept
     GET  /meshes/{id}/cleanup_faces.bin?lod=full|preview  its cleanup's piece of each face, in that copy's order
+    GET  /api/meshes/{id}/nearby?radius=50               the meshes within that many metres (5-1000), nearest first, 40 at
+                                                        most: east_m, north_m, metres_per_unit, heading, pack, v each
+    GET  /api/meshes/{id}/heading · PATCH {deg}          which way it faces ({deg, source, detail}: its -Z axis's compass
+                                                        bearing), and each way it was worked out; PATCH turns it by hand,
+                                                        {"deg": null} goes back to what's worked out
     POST /api/meshes/{id}/rating {browser, rating, comment}   a visitor's rating (1 bad, 2 OK, 3 good, or null) and comment,
                                                         from anyone, as client-errors are taken (120 an hour an address): one
                                                         each per browser, replaced; mesh_ratings; `cli.py mesh-ratings`
@@ -1018,6 +1032,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_meshclean.py   # offline: finding and hiding stray pieces on small GLBs, the cleaned download
     python3 tests/test_glbpack.py     # offline: packed and simplified copies for the viewer, and their cleanups (needs node or deno)
     python3 tests/test_worker_setup.py # offline: the worker's --setup and Docker check, on machines described, not changed
+    python3 tests/test_heading.py     # offline: which way a mesh faces, from photos' compasses and Mountain Project's text
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
     python3 tests/test_scale.py       # offline: sizing people, objects and the rock on scenes built with known sizes
     python3 tests/test_youtube.py     # offline: telling a climb's videos apart, climbers' sizes in text, leaving YouTube alone when it refuses

@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import io
 import json
+import math
 import mimetypes
 import os
 import queue
@@ -46,6 +47,7 @@ import scale as scale_mod  # noqa: E402
 import compute  # noqa: E402
 import diagnostics  # noqa: E402
 import glbpack  # noqa: E402
+import heading as heading_mod  # noqa: E402
 import meshclean  # noqa: E402
 import meshmetrics  # noqa: E402
 import meshopts  # noqa: E402
@@ -1182,6 +1184,102 @@ def pack_progress() -> dict:
             "eta_seconds": round(max(each, each * len(todo) - going)) if each and todo else None, "preview_faces": want}
 
 
+# ------------------------------------------------------------------ which way meshes face, and those nearby (heading.py)
+NEARBY_MOST = 40                  # the most meshes Nearby lists, nearest first
+NEARBY_RADIUS = (5.0, 1000.0)     # the radius it may be asked for, in metres
+
+
+def heading_inputs(mid: str) -> tuple[Path | None, list[dict]]:
+    """What a mesh's heading is worked out from: its project's photos, and its climbs with their text, each with
+    whether the mesh is that climb's own (made from its photos alone, as a climb's harvest's mesh is)."""
+    m = q("SELECT source, boulder FROM meshes WHERE id=?", mid, one=True)
+    if not m:
+        return None, []
+    photos = PROJECTS / m["source"].split(":", 1)[1] / "photos" if m["source"].startswith("project:") else None
+    if m["boulder"]:
+        rows, own = boulder_climbs(m["boulder"]), False
+    else:
+        rows = q("SELECT c.id, c.name, c.data FROM mesh_links l JOIN climbs c ON c.id=l.climb_id WHERE l.mesh_id=? "
+                 "AND (l.note IS NULL OR l.note NOT LIKE ?)", mid, SHARED + "%")
+        own = len(rows) == 1
+    climbs = []
+    for r in rows:
+        try:
+            data = json.loads(r.get("data") or "{}")
+        except ValueError:
+            data = {}
+        # its own words first, then the area it's in, which Mountain Project often names by a face ("... - Southeast Face")
+        area = (data.get("area_path") or [""])[-1] if isinstance(data.get("area_path"), list) else ""
+        parts = [str(data[k]) for k in ("description", "location") if data.get(k) not in (None, "", "None")]
+        climbs.append({"id": r["id"], "name": r["name"], "text": "\n".join(parts + ([f"In {area}."] if area else [])), "own": own})
+    return photos, climbs
+
+
+def keep_heading(mid: str, log=None) -> dict | None:
+    """Work out which way a mesh faces (heading.py), keeping any edit by hand; the best of it. Only costs that if
+    it fails."""
+    try:
+        photos, climbs = heading_inputs(mid)
+        found = heading_mod.best(heading_mod.compute(MESHES / mid, photos, climbs))
+        if log and found:
+            log(f"facing: its -Z axis {found['deg']:.0f}° from north, from {found['detail']}")
+        return found
+    except Exception as e:
+        (log or print)(f"{mid}: working out which way it faces failed ({type(e).__name__}: {e})")
+        return None
+
+
+def mesh_heading(mid: str) -> dict | None:
+    """Which way a mesh faces, as best known ({deg, source, detail}), worked out first if it hasn't been since
+    heading.py last changed; None if not known."""
+    d = MESHES / mid
+    if not d.is_dir():
+        return None
+    return heading_mod.best(heading_mod.load(d)) if heading_mod.current(d) else keep_heading(mid)
+
+
+def heading_existing_meshes() -> None:
+    """Work out which way meshes from before heading.py (or a change to it) face, newest first."""
+    for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL ORDER BY created DESC"):
+        if (MESHES / m["id"]).is_dir() and not heading_mod.current(MESHES / m["id"]):
+            keep_heading(m["id"])
+            time.sleep(0.05)
+
+
+def metres_per_unit(mid: str) -> float | None:
+    """How many metres one of a mesh's units is, if its size was found (scale.py)."""
+    v = (scale_mod.load(MESHES / mid) or {}).get("metres_per_unit")
+    return float(v) if isinstance(v, (int, float)) and v > 0 else None
+
+
+def nearby(mid: str, radius: float) -> dict | None:
+    """The meshes within radius metres of one, by their coordinates, nearest first, each with what the viewer needs
+    to place it around this one: how far east and north, its size in metres, which way it faces, and its files.
+    None if there's no such mesh."""
+    me = q("SELECT * FROM meshes WHERE id=?", mid, one=True)
+    if not me:
+        return None
+    out = {"radius": radius, "self": {"id": mid, "lat": me["lat"], "lng": me["lng"], "heading": mesh_heading(mid),
+                                      "metres_per_unit": metres_per_unit(mid)}, "meshes": [], "more": 0}
+    if me["lat"] is None or me["lng"] is None:
+        return out
+    kx, ky = 111320.0 * math.cos(math.radians(me["lat"])), 110574.0     # metres a degree, east and north, here
+    found = []
+    for r in q("SELECT * FROM meshes WHERE replaced_by IS NULL AND id != ? AND lat IS NOT NULL AND lng IS NOT NULL", mid):
+        east, north = (r["lng"] - me["lng"]) * kx, (r["lat"] - me["lat"]) * ky
+        if math.hypot(east, north) <= radius:
+            found.append((math.hypot(east, north), east, north, r))
+    found.sort(key=lambda f: f[0])
+    for d, east, north, r in found[:NEARBY_MOST]:
+        r["texture"] = texture_mode(r["id"], r["source"])
+        out["meshes"].append({"id": r["id"], "name": r["name"], "filename": r["filename"], "texture": r["texture"],
+                              "distance_m": round(d, 1), "east_m": round(east, 2), "north_m": round(north, 2),
+                              "metres_per_unit": metres_per_unit(r["id"]), "heading": mesh_heading(r["id"]),
+                              "pack": pack_info(r), "v": mesh_version(r["id"], r["texture"], r["filename"])})
+    out["more"] = max(0, len(found) - NEARBY_MOST)
+    return out
+
+
 def mesh_version(mid: str, mode: str, filename: str) -> str:
     """A token for what the viewer is sent for a mesh now, which changes whenever any of it would: how its texture is
     shown, the file it's sent, its packed copies, its cleanup's pieces of each face, its splat."""
@@ -1349,6 +1447,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         record_sources(mid, pid, log)
         if proj["kind"] == "boulder" and not worse:
             place_climbs(mid, pid, log)
+        keep_heading(mid, log)
         tracker.finish()     # before it's marked done, so that anything waiting for that sees it all finished
         keep_timings(mid, pid, started, log_from, tracker, remote)
         log("done")
@@ -5112,6 +5211,21 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 record = meshclean.load(served_dir(m[1]))
                 return self.send_json(record) if record else self.send_json({"error": "no cleanup"}, 404)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/nearby", p)
+            if m:   # the meshes around one, to show around it
+                try:
+                    radius = float((qs.get("radius") or ["50"])[0])
+                except ValueError:
+                    return self.send_json({"error": "radius: a number of metres"}, 400)
+                if not NEARBY_RADIUS[0] <= radius <= NEARBY_RADIUS[1]:
+                    return self.send_json({"error": f"radius: from {NEARBY_RADIUS[0]:g} to {NEARBY_RADIUS[1]:g} metres"}, 400)
+                found = nearby(m[1], radius)
+                return self.send_json(found) if found else self.send_json({"error": "not found"}, 404)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/heading", p)
+            if m:   # which way it faces: the best known, and each way it was worked out
+                if not (MESHES / m[1]).is_dir():
+                    return self.send_json({"error": "not found"}, 404)
+                return self.send_json({"heading": mesh_heading(m[1]), "record": heading_mod.load(MESHES / m[1])})
             m = re.fullmatch(r"/api/uploads/([0-9a-f]{12})", p)
             if m:   # how much of a file sent in parts has come, to carry on from there
                 state = upload_state(m[1])
@@ -5593,6 +5707,17 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(meshclean.set_removed(served_dir(m[1]), body.get("removed", [])))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/heading", p)
+            if m:   # turned by hand ({"deg": its -Z axis's compass bearing}), or {"deg": null} for what's worked out
+                if not (MESHES / m[1]).is_dir():
+                    return self.send_json({"error": "not found"}, 404)
+                try:
+                    record = heading_mod.set_edited(MESHES / m[1], body.get("deg"))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 400)
+                if record.get("version") != heading_mod.VERSION:
+                    keep_heading(m[1])
+                return self.send_json({"heading": mesh_heading(m[1]), "record": heading_mod.load(MESHES / m[1])})
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)", p)
             if m:
                 sets = {k: body[k] for k in ("name", "lat", "lng") if k in body}
@@ -5999,6 +6124,7 @@ def main() -> None:
     threading.Thread(target=clean_existing_meshes, daemon=True).start()
     threading.Thread(target=orient_existing_meshes, daemon=True).start()
     threading.Thread(target=source_existing_meshes, daemon=True).start()
+    threading.Thread(target=heading_existing_meshes, daemon=True).start()
     threading.Thread(target=adopt_old_pools, daemon=True).start()
     caught = catch_up_own_attempts()
     if caught:

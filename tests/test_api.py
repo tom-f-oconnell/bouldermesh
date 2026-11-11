@@ -412,6 +412,25 @@ def run(B: str, tmp: Path) -> None:
         st, _ = req(B, "POST", f"/api/meshes/{mid}/cleanup", {})
         assert version() not in (v1, v2), "its pieces found again"
         print("mesh versions OK")
+        # --- the meshes around one: this one 20 m north and 10 m east of the uploaded PLY's point
+        assert req(B, "PATCH", f"/api/meshes/{um['id']}", {"lat": 34.0, "lng": -116.0})[0] == 200
+        assert req(B, "PATCH", f"/api/meshes/{mid}", {"lat": 34.0 + 20 / 110574, "lng": -116.0 + 10 / (111320 * 0.8290376)})[0] == 200
+        st, near = req(B, "GET", f"/api/meshes/{um['id']}/nearby?radius=50")
+        assert st == 200 and [n["id"] for n in near["meshes"]] == [mid] and near["self"]["heading"] is None, near
+        n = near["meshes"][0]
+        assert abs(n["north_m"] - 20) < .1 and abs(n["east_m"] - 10) < .1 and abs(n["distance_m"] - 22.4) < .1 and n["v"], n
+        assert req(B, "GET", f"/api/meshes/{um['id']}/nearby?radius=15")[1]["meshes"] == []
+        for bad in ("2", "5000", "far"):
+            assert req(B, "GET", f"/api/meshes/{um['id']}/nearby?radius={bad}")[0] == 400, bad
+        assert req(B, "GET", "/api/meshes/000000000000/nearby")[0] == 404
+        # which way it faces: turned by hand, and back
+        st, h = req(B, "PATCH", f"/api/meshes/{mid}/heading", {"deg": 400})
+        assert st == 200 and h["heading"] == {"deg": 40.0, "source": "edited", "detail": "turned by hand"}, h
+        assert req(B, "GET", f"/api/meshes/{um['id']}/nearby?radius=50")[1]["meshes"][0]["heading"]["deg"] == 40.0
+        assert req(B, "PATCH", f"/api/meshes/{mid}/heading", {"deg": "east"})[0] == 400
+        st, h = req(B, "PATCH", f"/api/meshes/{mid}/heading", {"deg": None})
+        assert st == 200 and h["heading"] is None and req(B, "GET", f"/api/meshes/{mid}/heading")[1]["heading"] is None, h
+        print("nearby and facing OK")
         st, bad = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": [0, 1]})
         assert st == 400 and "at least one" in bad["error"], bad
         st, rec = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": []})
