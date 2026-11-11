@@ -81,6 +81,20 @@
   .chip{font-size:11px;padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--fg);cursor:pointer}
   .chip:hover{border-color:var(--acc)}
   .meta{font-size:12px;color:var(--mute);margin-top:4px}
+  /* the Meshes tab's filter: a slider with two thumbs, its least and most, over one track */
+  #m-filter summary{cursor:pointer;color:var(--mute);font-size:13px}
+  .mrange{display:grid;grid-template-columns:150px 1fr 120px;gap:8px;align-items:center;margin:6px 0;font-size:12px}
+  .mrange .val{color:var(--mute);font-variant-numeric:tabular-nums;text-align:right}
+  .dual{position:relative;height:22px}
+  .dual .track,.dual .fill{position:absolute;top:9px;height:4px;border-radius:2px}
+  .dual .track{left:0;right:0;background:var(--line)} .dual .fill{background:var(--acc)}
+  .dual input[type=range]{position:absolute;left:0;top:0;width:100%;height:22px;margin:0;background:none;pointer-events:none;-webkit-appearance:none;appearance:none}
+  .dual input[type=range]::-webkit-slider-runnable-track{background:none;height:22px}
+  .dual input[type=range]::-moz-range-track{background:none}
+  .dual input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;pointer-events:auto;width:14px;height:14px;margin-top:4px;border-radius:50%;background:var(--acc);border:2px solid var(--panel);cursor:pointer}
+  .dual input[type=range]::-moz-range-thumb{pointer-events:auto;width:12px;height:12px;border-radius:50%;background:var(--acc);border:2px solid var(--panel);cursor:pointer}
+  #m-areas label{display:inline-flex;gap:4px;align-items:center;margin:2px 10px 2px 0;font-size:12px}
+  @media (max-width:860px){ .mrange{grid-template-columns:1fr 2fr} .mrange .val{grid-column:1 / -1;text-align:left} }
   .meta b{color:var(--fg);font-weight:500}
   .checks{display:flex;gap:10px;flex-wrap:wrap;font-size:12px}
   .checks label{display:flex;gap:4px;align-items:center}
@@ -327,6 +341,19 @@
           <select id="upclimb" style="width:170px"><option value="">link to climb (optional)</option></select>
         </div>
         <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="m-older"> Show older versions of rebuilt meshes</label></div>
+        <div class="row" style="margin-bottom:6px">
+          <label>Sort by <select id="m-sort" style="width:auto">
+            <option value="created">Newest</option><option value="faces">Faces</option><option value="placed">Photos placed</option>
+            <option value="views">Distinct viewpoints</option><option value="around">Coverage around the rock</option>
+            <option value="share">Share of its photos placed</option></select></label>
+          <button class="sm sec" id="m-dir" title="Reverse the order">↓</button>
+        </div>
+        <details id="m-filter" style="margin-bottom:8px"><summary>Filter <small id="m-filter-note"></small></summary>
+          <div class="meta" style="margin-bottom:4px" title="Each placed photo counts once among those taken within 15° of the same direction from the rock, so many frames of one video count about once. Coverage: how much of a full circle round the rock its photos see, from above.">Distinct viewpoints count photos taken from nearly the same spot once; coverage is how far round the rock its photos go. A filter left at its ends leaves out nothing, and meshes without that number stay.</div>
+          <div id="m-areas"></div>
+          <div id="m-ranges"></div>
+          <button class="sm sec" id="m-clear">Clear the filter</button>
+        </details>
         <div id="meshes"></div>
       </section>
     </div>
@@ -1955,15 +1982,106 @@ function sourceBar(m){
 document.addEventListener('click', ev => { if (tipPinned && !ev.target.closest('#srctip')) hideSourceTip(); });
 document.addEventListener('scroll', () => { if (tipFor) hideSourceTip(); }, true);
 
+// ---- the Meshes tab's sorting and filter: by numbers about each mesh (meshmetrics.py), and the areas it came from
+const MESH_METRICS = [
+  { key: 'faces', label: 'Faces', log: true, fmt: n => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n) },
+  { key: 'placed', label: 'Photos placed', fmt: n => String(Math.round(n)) },
+  { key: 'views', label: 'Distinct viewpoints', fmt: n => n.toFixed(1).replace(/\.0$/, '') },
+  { key: 'around', label: 'Coverage around (°)', fmt: n => Math.round(n) + '°' },
+  { key: 'share', label: 'Share of photos placed', fmt: n => Math.round(100 * n) + '%' },
+];
+const NO_AREA = '(no area)';
+function meshMetric(m, key){
+  const x = m.metrics || {};
+  if (key === 'share') return x.placed && x.photos_in ? Math.min(1, x.placed / x.photos_in) : null;
+  if (key === 'created') return m.created;
+  return x[key] ?? null;
+}
+const meshAreas = m => (m.areas && m.areas.length ? m.areas : [NO_AREA]);
+let meshView = { sort: 'created', desc: true, ranges: {}, hidden: [] };    // hidden: areas left out
+try { Object.assign(meshView, JSON.parse(localStorage.getItem('bm_mesh_view') || '{}')); } catch {}
+function saveMeshView(){ try { localStorage.setItem('bm_mesh_view', JSON.stringify(meshView)); } catch {} }
+// a slider's 0..1000 to a value between the least and most there are, and back: faces on a log scale
+function toValue(t, lo, hi, log){ return log && lo > 0 ? Math.exp(Math.log(lo) + (Math.log(hi) - Math.log(lo)) * t / 1000) : lo + (hi - lo) * t / 1000; }
+function toSlider(v, lo, hi, log){ if (hi <= lo) return 0; return Math.round(1000 * (log && lo > 0 ? (Math.log(v) - Math.log(lo)) / (Math.log(hi) - Math.log(lo)) : (v - lo) / (hi - lo))); }
+function renderMeshFilter(all){
+  const areas = [...new Set(all.flatMap(meshAreas))].sort((a, b) => (a === NO_AREA) - (b === NO_AREA) || a.localeCompare(b));
+  $('#m-areas').innerHTML = areas.length > 1 ? '<span class="meta">Areas: </span>' + areas.map(a =>
+    `<label><input type="checkbox" data-area="${esc(a)}" ${meshView.hidden.includes(a) ? '' : 'checked'}>${esc(a)}</label>`).join('') : '';
+  $('#m-areas').querySelectorAll('[data-area]').forEach(b => b.onchange = () => {
+    meshView.hidden = [...$('#m-areas').querySelectorAll('[data-area]')].filter(x => !x.checked).map(x => x.dataset.area);
+    saveMeshView(); renderMeshes();
+  });
+  const box = $('#m-ranges'); box.innerHTML = '';
+  for (const def of MESH_METRICS) {
+    const vals = all.map(m => meshMetric(m, def.key)).filter(v => v != null);
+    if (!vals.length) continue;
+    const lo = Math.min(...vals), hi = Math.max(...vals), [a, b] = meshView.ranges[def.key] || [null, null];
+    const row = document.createElement('div'); row.className = 'mrange';
+    row.innerHTML = `<span>${def.label}</span><div class="dual"><div class="track"></div><div class="fill"></div>
+      <input type="range" min="0" max="1000" class="lo" aria-label="${def.label}: at least"><input type="range" min="0" max="1000" class="hi" aria-label="${def.label}: at most"></div><span class="val"></span>`;
+    const [rlo, rhi] = row.querySelectorAll('input'), fill = row.querySelector('.fill'), val = row.querySelector('.val');
+    rlo.value = a == null ? 0 : toSlider(Math.max(lo, a), lo, hi, def.log);
+    rhi.value = b == null ? 1000 : toSlider(Math.min(hi, b), lo, hi, def.log);
+    const show = () => {
+      fill.style.left = (rlo.value / 10) + '%'; fill.style.width = ((rhi.value - rlo.value) / 10) + '%';
+      val.textContent = `${def.fmt(toValue(+rlo.value, lo, hi, def.log))} – ${def.fmt(toValue(+rhi.value, lo, hi, def.log))}`;
+    };
+    const moved = which => {
+      if (+rlo.value > +rhi.value) (which === rlo ? rhi : rlo).value = which.value;
+      meshView.ranges[def.key] = [+rlo.value > 0 ? toValue(+rlo.value, lo, hi, def.log) : null, +rhi.value < 1000 ? toValue(+rhi.value, lo, hi, def.log) : null];
+      show(); saveMeshView(); renderMeshes(false);
+    };
+    rlo.oninput = () => moved(rlo); rhi.oninput = () => moved(rhi);
+    show(); box.appendChild(row);
+  }
+}
+function meshShown(m){
+  if (meshAreas(m).every(a => meshView.hidden.includes(a))) return false;
+  for (const def of MESH_METRICS) {
+    const [a, b] = meshView.ranges[def.key] || [null, null];
+    if (a == null && b == null) continue;
+    const v = meshMetric(m, def.key);
+    if (v == null || (a != null && v < a * (1 - 1e-9)) || (b != null && v > b * (1 + 1e-9))) return false;
+  }
+  return true;
+}
+function metricsLine(m){
+  const x = m.metrics || {}, parts = [];
+  if (x.faces != null) parts.push(`${MESH_METRICS[0].fmt(x.faces)} faces`);
+  if (x.placed != null) parts.push(`${x.placed}${x.photos_in ? ` of ${x.photos_in}` : ''} photos placed`);
+  if (x.views != null) parts.push(`${MESH_METRICS[2].fmt(x.views)} distinct viewpoints`);
+  if (x.around != null) parts.push(`${Math.round(x.around)}° around`);
+  const where = m.areas && m.areas.length ? m.areas.join(', ') : '';
+  const path = (m.area_path || []).map(s => s.replace(/^\* /, '')).join(' › ');
+  return (where || parts.length) ? `<div class="meta"${path ? ` title="Mountain Project: ${esc(path)}"` : ''}>${where ? `<b>${esc(where)}</b>${parts.length ? ' · ' : ''}` : ''}${parts.join(' · ')}</div>` : '';
+}
+$('#m-sort').onchange = () => { meshView.sort = $('#m-sort').value; saveMeshView(); renderMeshes(); };
+$('#m-dir').onclick = () => { meshView.desc = !meshView.desc; saveMeshView(); renderMeshes(); };
+$('#m-clear').onclick = () => { meshView.ranges = {}; meshView.hidden = []; saveMeshView(); renderMeshes(); };
 async function refreshMeshes(){
   hideSourceTip();
   meshesCache = await api('/api/meshes'); meshesById = Object.fromEntries(meshesCache.map(m => [m.id, m]));
+  renderMeshes();
+}
+// the list as fetched, sorted and filtered; with filter false, the filter's own controls aren't drawn again (a slider being moved)
+function renderMeshes(filter = true){
   const el = $('#meshes'); el.innerHTML = meshesCache.length ? '' : '<div class="status">No meshes yet.</div>';
   const older = meshesCache.filter(m => m.replaced_by).length;
+  const all = meshesCache.filter(m => $('#m-older').checked || !m.replaced_by);
+  if (filter) renderMeshFilter(all);
+  $('#m-sort').value = meshView.sort; $('#m-dir').textContent = meshView.desc ? '↓' : '↑';
+  $('#m-dir').title = meshView.desc ? 'Largest (or newest) first: click for the other way' : 'Smallest (or oldest) first: click for the other way';
+  const shown = all.filter(meshShown);
+  const key = meshView.sort, sign = meshView.desc ? -1 : 1;
+  shown.sort((a, b) => { const x = meshMetric(a, key), y = meshMetric(b, key); return (x == null) - (y == null) || sign * ((x ?? 0) - (y ?? 0)); });
+  const narrowed = shown.length < all.length;
+  $('#m-filter-note').textContent = narrowed ? `(showing ${shown.length} of ${all.length})` : '';
   // each mesh once, however many climbs link to it; a boulder's own mesh and its climbs' own are each one
-  $('#m-count').textContent = meshesCache.length ? `(${meshesCache.length - older}${$('#m-older').checked && older ? `, and ${older} older` : ''})` : '';
+  $('#m-count').textContent = meshesCache.length ? `(${narrowed ? `${shown.length} shown of ` : ''}${meshesCache.length - older}${$('#m-older').checked && older ? `, and ${older} older` : ''})` : '';
   $('#m-older').parentNode.lastChild.textContent = ` Show older versions of rebuilt meshes (${older})`;
-  for (const m of meshesCache.filter(m => $('#m-older').checked || !m.replaced_by)) {
+  if (meshesCache.length && !shown.length) el.innerHTML = '<div class="status">No mesh fits the filter.</div>';
+  for (const m of shown) {
     const d = document.createElement('div'); d.className = 'card mesh';
     d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${m.boulder?'<span class="tag ok" title="Made from the photos of every climb on this boulder">boulder</span>':''}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
         <div class="chips">${(m.boulder_climbs || []).map(c => `<span class="chip" data-from="${c.id}" title="${c.view ? `Look at it from where ${esc(c.name)}'s own photos were taken (${plural(c.view.photos, 'photo')})` : `None of ${esc(c.name)}'s own photos were placed in it: opens the climb`}">${c.view ? '👁 ' : ''}${esc(c.name)} ${esc(c.grade||'')}</span>`).join('')}
@@ -1976,6 +2094,7 @@ async function refreshMeshes(){
         <button class="sm danger del">✕</button></div>`;
     const bar = sourceBar(m);
     if (bar) d.querySelector('.chips').before(bar);
+    d.querySelector('.chips').insertAdjacentHTML('beforebegin', metricsLine(m));
     if (m.replaced_by) {
       const b = document.createElement('button'); b.className = 'sm sec w'; b.textContent = 'Use this version';
       b.title = 'Makes this the mesh its climbs link to again, instead of the rebuild that replaced it';

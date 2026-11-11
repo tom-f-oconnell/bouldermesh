@@ -46,6 +46,7 @@ import scale as scale_mod  # noqa: E402
 import compute  # noqa: E402
 import diagnostics  # noqa: E402
 import meshclean  # noqa: E402
+import meshmetrics  # noqa: E402
 import meshopts  # noqa: E402
 import orientation  # noqa: E402
 import policy  # noqa: E402
@@ -912,6 +913,31 @@ def timings_brief(rec: dict | None) -> dict | None:
     keys = ("where", "remote", "wall", "tools_seconds", "cpu_seconds", "harvest_seconds", "photos_in", "placed", "vggt_seconds",
             "waited", "from_log", "version", "ended")
     return {k: rec.get(k) for k in keys}
+
+
+def mesh_areas():
+    """A function giving a mesh row (with its climbs, and boulder_climbs for a boulder's own) the names of the areas it
+    was made for (those whose list holds it as a climb's mesh, or else lists its climbs), and the Mountain Project
+    path of its first climb's area, top first."""
+    made_for: dict[str, set] = {}
+    by_climb: dict[str, set] = {}
+    for r in q("SELECT ci.mesh_id, ci.climb_id, c.name FROM campaign_items ci JOIN campaigns c ON c.id=ci.campaign_id"):
+        if r["mesh_id"]:
+            made_for.setdefault(r["mesh_id"], set()).add(r["name"])
+        if r["climb_id"]:
+            by_climb.setdefault(r["climb_id"], set()).add(r["name"])
+    paths = {c["id"]: c["area_path"] for c in q("SELECT id, area_path FROM climbs WHERE area_path IS NOT NULL")}
+
+    def of(m: dict) -> tuple[list[str], list[str] | None]:
+        climbs = [c["id"] for c in m.get("climbs") or [] if not c.get("shared")] + [c["id"] for c in m.get("boulder_climbs") or []]
+        names = made_for.get(m["id"]) or set().union(*(by_climb.get(c, set()) for c in climbs))
+        path = next((paths[c] for c in climbs if c in paths), None)
+        try:
+            path = json.loads(path) if path else None
+        except ValueError:
+            path = None
+        return sorted(names), path
+    return of
 
 
 def timings_existing_meshes() -> None:
@@ -3428,6 +3454,7 @@ class Handler(BaseHTTPRequestHandler):
                 for c in q("SELECT c.id, c.name, c.grade, c.area_path FROM climbs c WHERE c.area_path IN "
                            "(SELECT boulder FROM meshes WHERE boulder IS NOT NULL) ORDER BY c.name"):
                     on.setdefault(c.pop("area_path"), []).append(c)
+                areas = mesh_areas()
                 for r in rows:
                     r["climbs"] = by.get(r["id"], [])
                     if r["boulder"]:    # a boulder's own mesh: the climbs on it, and where each is seen from
@@ -3445,6 +3472,12 @@ class Handler(BaseHTTPRequestHandler):
                         print(f"error: listing mesh {r['id']}: {type(e).__name__}: {e}", flush=True)
                     r["cameras_kept"] = (MESHES / r["id"] / orientation.CAMERAS_FILE).exists()
                     r["timings"] = timings_brief(mesh_timings(r["id"]))
+                    try:
+                        r["metrics"] = meshmetrics.load(MESHES / r["id"])
+                    except Exception as e:
+                        r["metrics"] = None
+                        print(f"error: mesh {r['id']}'s metrics: {type(e).__name__}: {e}", flush=True)
+                    r["areas"], r["area_path"] = areas(r)
                     r["splat"] = r.get("texture") == "full" and (MESHES / r["id"] / splat_mod.FILE).exists()
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)

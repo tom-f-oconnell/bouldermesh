@@ -88,6 +88,14 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
   boulder rather than mesh it; those links show as "made for" that climb, as such a mesh may not
   show the other side of the rock.
 * `GET /api/geojson` serves climbs + meshes for the map tab (Leaflet, OSM/OpenTopoMap).
+* The *Meshes* tab sorts by newest, faces, photos placed, distinct viewpoints, coverage around the
+  rock, or the share of its photos placed, either way, and *Filter* narrows it to the areas ticked
+  and, for each of those numbers, between a least and a most. Distinct viewpoints count photos taken
+  within 15° of the same direction from the rock once, so many frames of one video count about once;
+  coverage is how much of a full circle round the rock its photos see from above (`meshmetrics.py`,
+  from where its photos were placed, kept in each mesh's `metrics.json`). Each card names the areas
+  it was made for, with its first climb's Mountain Project path on hovering. The choices are
+  remembered in the browser.
 
 ## Harvest → rough photogrammetry
 
@@ -840,6 +848,7 @@ gets every optional check; the tests also pass without them.
 
     python3 tests/test_parsers.py     # offline: MP/OpenBeta/Kaya parsers on fixtures
     python3 tests/test_relevance.py   # offline: relevance filter on synthetic photos, progress tracking (CLIP downloads its model)
+    python3 tests/test_meshmetrics.py # offline: the Meshes tab's numbers: distinct viewpoints, coverage round the rock
     python3 tests/test_pipeline.py    # offline: reconstruction steps with COLMAP/OpenMVS stubbed, progress parsing
     python3 tests/test_vggt_place.py  # offline: which photos VGGT places, its cameras as a COLMAP model, the rounds after
     python3 tests/test_splat.py       # offline: splats' cameras and lenses, their file, the rock's box, photos for fitting
