@@ -7,6 +7,7 @@ through the server, from the admin page's buttons to a project harvested again. 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -643,9 +644,98 @@ def tools_python():
     print("tools' Python OK")
 
 
+# --- the script updating itself when the server serves a newer one -----------------------------------------------------
+NEWER = """#!/usr/bin/env python3
+VERSION = 99
+import sys, pathlib
+pathlib.Path(__file__).with_name("ran.json").write_text(__import__("json").dumps(sys.argv[1:]))
+"""
+
+
+def updating() -> None:
+    import registration
+    fake = TMP / "fake-yt-dlp-u"
+    fake.write_text(FAKE_YTDLP)
+    fake.chmod(0o755)
+    newer = TMP / "served" / "bouldermesh_volunteer.py"
+    newer.parent.mkdir()
+    newer.write_text(NEWER)
+    served = volunteers.SCRIPT
+    volunteers.SCRIPT = newer       # what the server serves: a newer one
+    b = volunteers.Broker(TMP / "bu" / "v.sqlite", TMP / "bu" / "files", lambda *a: None, lambda *a: None)
+    port = free_port()
+    httpd = volunteers.serve(b, "127.0.0.1", port, log=lambda line: None)
+    base = f"http://127.0.0.1:{port}"
+    token = b.add("tester")["token"]
+    env = {**os.environ, "FAKE_LOG": str(TMP / "fake-u.log")}
+    here = TMP / "run" / "bouldermesh_volunteer.py"     # a copy, outside a git checkout, as a volunteer has it
+    here.parent.mkdir()
+    shutil.copy2(SCRIPT, here)
+
+    def run(*extra, timeout=60):
+        return subprocess.run([sys.executable, str(here), "--server", base, "--token", token, "--agree", "--yt-dlp", str(fake),
+                               "--home", str(TMP / "hu"), *extra], env=env, capture_output=True, text=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL)
+
+    try:
+        # what the server tells a script asking for work: an update only to one that does them, and not to one as new
+        assert registration.served_script(newer) == {"version": 99, "sha256": hashlib.sha256(newer.read_bytes()).hexdigest()}
+        assert registration.script_news(newer, {"version": 3, "updates": True}) == {"update": registration.served_script(newer)}
+        assert registration.script_news(newer, {"version": 2}) == {"newer": 99}, "one from before updates: told, and given work"
+        assert registration.script_news(newer, {"version": 99, "updates": True}) == {}
+        assert registration.script_news(TMP / "nonesuch.py", {"version": 1, "updates": True}) == {}
+        # told not to, or only once: it says so, and carries on as it is
+        for extra in (["--once"], ["--once", "--no-auto-update"]):
+            r = run(*extra)
+            assert r.returncode == 0 and "the server has a newer version of this script (99)" in r.stdout, r.stdout + r.stderr
+            assert here.read_bytes() == SCRIPT.read_bytes()
+        # between fetches, it replaces itself with the newer one, checked, and runs it with the same arguments
+        r = run("--name", "Sam")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "updated itself from version 3 to 99" in r.stdout and here.read_text() == NEWER, r.stdout
+        assert json.loads((here.parent / "ran.json").read_text()) == ["--server", base, "--token", token, "--agree", "--yt-dlp",
+                                                                      str(fake), "--home", str(TMP / "hu"), "--name", "Sam"], \
+            "the same arguments"
+        assert (TMP / "hu" / "previous.py").read_bytes() == SCRIPT.read_bytes(), "the one before kept"
+        assert oct(here.stat().st_mode & 0o777) == oct(SCRIPT.stat().st_mode & 0o777)
+        # one that isn't what the server said: kept as it is, and it carries on, given work again
+        shutil.copy2(SCRIPT, here)
+        real = registration.served_script
+        registration.served_script = lambda path: {**real(path), "sha256": "0" * 64}
+        b.want("details", "aaaaaaaaaaa", "harvest", "p1")
+        proc = subprocess.Popen([sys.executable, str(here), "--server", base, "--token", token, "--agree", "--yt-dlp", str(fake),
+                                 "--home", str(TMP / "hu")], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        try:
+            for _ in range(300):
+                if b.q("SELECT 1 FROM tasks WHERE state='done'"):
+                    break
+                time.sleep(0.1)
+            assert b.q("SELECT 1 FROM tasks WHERE state='done'"), "given work after all"
+        finally:
+            proc.terminate()
+            out = proc.communicate(timeout=30)[0]
+            registration.served_script = real
+        assert "wasn't what the server said it would be: carrying on with this one" in out and here.read_bytes() == SCRIPT.read_bytes(), out
+        # in a git checkout, as the repository's own: never replaced, but told
+        r = subprocess.run([sys.executable, str(SCRIPT), "--server", base, "--token", token, "--agree", "--once", "--yt-dlp", str(fake),
+                            "--home", str(TMP / "hu")], env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        assert "it doesn't update itself (it's in a git checkout" in r.stdout and "newer version of this script (99)" in r.stdout, r.stdout
+        # a script too old to be served at all is told how to update, and does
+        shutil.copy2(SCRIPT, here)
+        volunteers.CLIENT_VERSION, old_min = 50, volunteers.CLIENT_VERSION
+        r = run()
+        volunteers.CLIENT_VERSION = old_min
+        assert r.returncode == 0 and "updated itself from version 3 to 99" in r.stdout and here.read_text() == NEWER, r.stdout + r.stderr
+    finally:
+        volunteers.SCRIPT = served
+        httpd.shutdown()
+    print("updating itself OK")
+
+
 try:
     broker_alone()
     tools_python()
+    updating()
     if shutil.which("ffmpeg"):
         script_and_broker()
         registering()

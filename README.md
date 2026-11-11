@@ -439,7 +439,10 @@ To run it under systemd as above, put `COMPOSE_FILE=docker-compose.yml:docker-co
 - Changes only to what runs on hal (the worker script, `deploy/backup.sh`, the systemd units) need no deploy: restart the
   worker (`sudo systemctl restart bouldermesh-worker`), or copy a changed unit into `/etc/systemd/system/` and
   `sudo systemctl daemon-reload`.
-- Volunteers keep their copy of the script until they download it again; older ones still fetch videos, not searches.
+- Volunteers' and machines' scripts from version 3 update themselves from the server once it serves a newer one (a
+  higher `VERSION` in `volunteer/bouldermesh_volunteer.py` or `worker/bouldermesh_worker.py`), between fetches or jobs.
+  Bump `VERSION` when a change should reach them. Older copies stay as they are until downloaded again, and older
+  volunteer scripts still fetch videos, not searches.
 - `PHOTOS=1` isn't needed again. Never take `HARVESTS_HERE=1` out: the next ship would replace the server's database
   with hal's.
 - Room for images: each build shares all but its last few layers (the code, under a MB) with the one before, and Docker
@@ -614,8 +617,11 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   capabilities, at niceness 10, and sends the log as it goes and then the mesh. Ctrl-C gives the climb back. The
   server, token and options are remembered (in `~/.bouldermesh-worker`); `--check` only registers or checks the token, after which
   `deploy/bouldermesh-worker.service` runs it under systemd. If this server won't take its token (unknown, revoked or
-  turned down), it forgets it, warns, and registers a new one, as with none, which waits for *Approve* again; if the
-  script is too old, it says so and exits with status 3, which the unit doesn't restart. `--forget-token` forgets the
+  turned down), it forgets it, warns, and registers a new one, as with none, which waits for *Approve* again. When the
+  server serves a newer version of the script, it replaces itself with that between jobs, never during one, and starts
+  again (`--no-auto-update` stops that; a copy in a git checkout, as `deploy/bouldermesh-worker.service` runs, is left
+  to git). If the script is too old and can't update itself, it says so and exits with status 3, which the unit doesn't
+  restart. `--forget-token` forgets the
   remembered token, and `--register` makes a new one in its place. Jobs' photos and results, and the models they download (a
   few GB), go there too, or in `--data DIR`, such as on a bigger disk. Before starting, and before each job, it checks
   there's room there for two climbs (3 GB each) and the models still to download (5.5 GB the first time; `--need-gb`

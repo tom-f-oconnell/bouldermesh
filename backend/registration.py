@@ -16,6 +16,7 @@ import re
 import secrets
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 
 WAITING_DAYS = 14       # a provisional client not heard from for this long is dropped
@@ -104,6 +105,44 @@ def register(q: Callable, table: str, token: str, name, ip: str, default: str, p
                 "token_hash": h, "created": now, "status": "provisional", "registered_ip": ip, "last_ip": ip, **(extra or {})}
         q(f"INSERT INTO {table}({','.join(cols)}) VALUES({','.join('?' * len(cols))})", *cols.values())
         return q(f"SELECT * FROM {table} WHERE id=?", rid, one=True)
+
+
+_served: dict[str, tuple] = {}
+
+
+def served_script(path: Path) -> dict | None:
+    """The client script this serves, as one updating itself checks it: {version (its VERSION line), sha256}; None if
+    it can't be read."""
+    try:
+        st = path.stat()
+        key = (st.st_mtime, st.st_size)
+        if _served.get(str(path), (None,))[0] != key:
+            data = path.read_bytes()
+            m = re.search(rb"^VERSION = (\d+)$", data, re.M)
+            _served[str(path)] = (key, {"version": int(m[1]), "sha256": hashlib.sha256(data).hexdigest()} if m else None)
+        return _served[str(path)][1]
+    except OSError:
+        return None
+
+
+def script_news(path: Path, body: dict) -> dict:
+    """What a client script asking for work is told of the one this serves, if that's newer: {"update": {version,
+    sha256}} when it said it updates itself ("updates"), to do now, instead of any work; or else {"newer": version}, for
+    it to mention. Scripts from before updates don't ask, and get work as they always did."""
+    served = served_script(path)
+    try:
+        theirs = int(body.get("version") or 0)
+    except (TypeError, ValueError):
+        theirs = 0
+    if not served or theirs >= served["version"]:
+        return {}
+    return {"update": served} if body.get("updates") is True else {"newer": served["version"]}
+
+
+def too_old(path: Path, where: str) -> dict:
+    """The 426 answer for a script older than the server speaks to: with how to update, for one that updates itself."""
+    served = served_script(path)
+    return {"error": f"this script is too old: download it again from {where}", **({"update": served} if served else {})}
 
 
 def approve(q: Callable, table: str, rid: str) -> dict | None:

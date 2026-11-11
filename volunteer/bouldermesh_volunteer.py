@@ -17,6 +17,9 @@ Python 3.8 or newer, nothing else: it installs yt-dlp, and Deno (the JavaScript 
 a folder of its own (~/.bouldermesh-volunteer), and updates them daily. yt-dlp needs Python 3.11 or newer: with an older
 one (as Ubuntu 22.04's and before), it installs uv there too, which fetches a newer Python for them. Stop it with Ctrl-C
 at any time; delete that folder to remove everything.
+
+When the server has a newer version of this script, it says so, and the script replaces itself with that (checked
+against what the server said of it) and starts again, between one fetch and the next; --no-auto-update stops that.
 """
 from __future__ import annotations
 
@@ -35,7 +38,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 2
+VERSION = 3                 # 3: updates itself when the server says to
+SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
+AGENT = "bouldermesh-volunteer"
 TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
 FETCHED_PYTHON = "3.12"     # what uv fetches for them when this computer has none as new
 KINDS = ["video", "details", "search", "channel"]   # what this version does
@@ -67,6 +72,9 @@ Before you start: what this does, and what it may cost you.
 - YouTube and {server} see your IP address. The server keeps the address you last connected from, to share the
   limits above between everyone at that address, and doesn't keep it with the videos. It also keeps the name you
   give it next, if any, to show whoever runs it.
+
+- When {server} has a newer version of this script, this replaces itself with it, as you'd download it from there
+  yourself; --no-auto-update stops that.
 
 Stop it with Ctrl-C at any time. Everything it installs is in {home}."""
 
@@ -139,10 +147,75 @@ def forget_token(home) -> bool:
     return had
 
 
-def turned_away(server: str, e: urllib.error.HTTPError) -> SystemExit:
+# -- updating itself ------------------------------------------------------------------------------------------------
+auto_update = True          # --no-auto-update turns it off
+
+
+def update_blocked(server: str) -> str | None:
+    """Why this script can't update itself from the server, or None if it can: only when allowed, over HTTPS (or to
+    this machine), where it may replace its own file, and not in a git checkout (as a developer's), which git updates."""
+    from urllib.parse import urlparse
+    u = urlparse(server)
+    me = Path(__file__).resolve()
+    if not auto_update:
+        return "--no-auto-update"
+    if u.scheme != "https" and u.hostname not in ("localhost", "127.0.0.1", "::1"):
+        return "only over HTTPS"
+    if any((d / ".git").exists() for d in me.parents):
+        return "it's in a git checkout, which git pull updates"
+    if not (os.access(me, os.W_OK) and os.access(me.parent, os.W_OK)):
+        return f"it can't replace {me}"
+    return None
+
+
+def update_itself(server: str, info: dict | None, keep: Path) -> bool:
+    """Replace this script with the newer one the server says it serves (info: {version, sha256}), checked against
+    those, and run that in its place with the same arguments: at a moment when nothing's in progress, as only asking
+    for work brings it. Returns False, having said why, if it didn't (so the caller carries on as it is); otherwise it
+    doesn't return. The one before is kept in keep/previous.py."""
+    import hashlib
+    try:
+        version, sha = int((info or {}).get("version") or 0), str((info or {}).get("sha256") or "")
+        blocked = update_blocked(server)
+        if blocked or version <= VERSION:
+            log(f"the server has a newer script (version {version}), but this one can't update itself ({blocked or 'not newer'}): "
+                f"download it again with curl -O {server.rstrip('/')}{SCRIPT_PATH}")
+            return False
+        req = urllib.request.Request(server.rstrip("/") + SCRIPT_PATH, headers={"User-Agent": f"{AGENT}/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = r.read(2**21 + 1)
+        found = re.search(rb"^VERSION = (\d+)$", data, re.M)
+        if len(data) > 2**21 or hashlib.sha256(data).hexdigest() != sha or not found or int(found[1]) != version:
+            log(f"the newer script from {server} wasn't what the server said it would be: carrying on with this one")
+            return False
+        compile(data, SCRIPT_PATH, "exec")
+        me = Path(__file__).resolve()
+        keep.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(me, keep / "previous.py")
+        tmp = me.with_name(me.name + ".new")
+        tmp.write_bytes(data)
+        os.chmod(tmp, os.stat(me).st_mode & 0o7777)
+        os.replace(tmp, me)
+    except Exception as e:      # whatever went wrong, the script as it is still runs
+        log(f"couldn't update itself ({type(e).__name__}: {e}): carrying on with this one")
+        return False
+    log(f"updated itself from version {VERSION} to {version}, as {server} said to (the one before is in {keep / 'previous.py'}); "
+        "starting it")
+    argv = [sys.executable, str(me)] + [a for a in sys.argv[1:] if a != "--register"]     # registered: its token is remembered
+    sys.stdout.flush()
+    if os.name == "nt":     # Windows has no exec: run it, and end with it
+        raise SystemExit(subprocess.call(argv))
+    os.execv(sys.executable, argv)
+    return True
+
+
+def turned_away(server: str, e: urllib.error.HTTPError, keep: Path | None = None) -> SystemExit:
     """Says the server won't take this script, as too old (426), and what to do, rather than a traceback; returns the
-    exit to raise. (A token it won't take is forgotten, and another registered: Volunteer.renew().)"""
-    log(f"{server} says this script is too old. Download it again: curl -O {server}/volunteer/bouldermesh_volunteer.py")
+    exit to raise. With keep (its folder), it first updates itself, if the server said how and it can (update_itself()),
+    and then doesn't return. (A token it won't take is forgotten, and another registered: Volunteer.renew().)"""
+    if keep and (getattr(e, "answer", None) or {}).get("update"):
+        update_itself(server, e.answer["update"], keep)
+    log(f"{server} says this script is too old. Download it again: curl -O {server}{SCRIPT_PATH}")
     return SystemExit(TURNED_AWAY)
 
 
@@ -433,18 +506,22 @@ class Volunteer:
     def run(self) -> None:
         self.tools()
         version = self.run_ytdlp(["--version"], self.home).stdout.strip()
-        log(f"volunteering for {self.server.url} with yt-dlp {version}: at most {self.per_hour} an hour, {self.per_day} a day")
+        blocked = update_blocked(self.server.url)
+        log(f"volunteering for {self.server.url} with yt-dlp {version}: at most {self.per_hour} an hour, {self.per_day} a day; "
+            + (f"it doesn't update itself ({blocked})" if blocked else "it updates itself when the server says to"))
+        updates = not blocked and not self.args.once
         while True:
             self.wait_turn()
             try:
                 r = self.server.call("/volunteer/api/work", {"version": VERSION, "client": f"script {VERSION}, yt-dlp {version}",
-                                                             "per_hour": self.per_hour, "per_day": self.per_day, "kinds": KINDS})
+                                                             "per_hour": self.per_hour, "per_day": self.per_day, "kinds": KINDS,
+                                                             "updates": updates})
             except urllib.error.HTTPError as e:
                 if e.code in (401, 403):
                     self.renew(e)
                     continue
                 if e.code == 426:
-                    raise turned_away(self.server.url, e) from None
+                    raise turned_away(self.server.url, e, self.home if updates else None) from None
                 log(f"the server said: {e.answer.get('error') or e}; asking again in 10 min")
                 time.sleep(600)
                 continue
@@ -452,6 +529,13 @@ class Volunteer:
                 log(f"can't reach {self.server.url} ({e}); asking again in 10 min")
                 time.sleep(600)
                 continue
+            if "update" in r:       # between one fetch and the next: nothing's lost
+                if not update_itself(self.server.url, r["update"], self.home):
+                    updates = False     # it carries on as it is, and the server gives it work again
+                continue
+            if r.get("newer") and r["newer"] != getattr(self, "newer", None):
+                log(f"the server has a newer version of this script ({r['newer']}): curl -O {self.server.url}{SCRIPT_PATH}")
+                self.newer = r["newer"]
             if "task" in r:
                 self.idle_why = None
                 try:
@@ -461,7 +545,7 @@ class Volunteer:
                         self.renew(e)
                         continue
                     if e.code == 426:
-                        raise turned_away(self.server.url, e) from None
+                        raise turned_away(self.server.url, e, self.home if updates else None) from None
                     log(f"the server said: {(getattr(e, 'answer', None) or {}).get('error') or e}")
                 except (urllib.error.URLError, OSError) as e:      # as the server going, after trying again
                     log(f"stopped partway ({e}); asking again in 10 min")
@@ -497,7 +581,11 @@ def main() -> None:
                     help="where it keeps its settings, yt-dlp and its work")
     ap.add_argument("--yt-dlp", help="use this yt-dlp instead of installing one (it must find Deno itself)")
     ap.add_argument("--once", action="store_true", help="do one thing and stop")
+    ap.add_argument("--no-auto-update", action="store_true", help="don't replace this script with a newer one when the server "
+                    "has one (it says so instead)")
     args = ap.parse_args()
+    global auto_update
+    auto_update = not args.no_auto_update
     home = Path(args.home).expanduser()
     home.mkdir(parents=True, exist_ok=True)
     conf = load_conf(home)

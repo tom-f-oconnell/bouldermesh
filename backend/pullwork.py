@@ -636,7 +636,7 @@ def handler_for(board: Board, log: Callable[[str], None]):
             try:
                 body = json.loads(self.body(2**16) or b"{}")
                 if int(body.get("version") or 0) < CLIENT_VERSION:
-                    return self.json({"error": "this script is too old: download it again from /worker/"}, 426)
+                    return self.json(registration.too_old(SCRIPT, "/worker/"), 426)
                 m = board.register(auth[7:].strip() if auth.startswith("Bearer ") else "", body.get("name"), _client_ip(self),
                                    str(body.get("client") or ""))
             except registration.Refused as e:
@@ -663,8 +663,12 @@ def handler_for(board: Board, log: Callable[[str], None]):
                 if u.path == "/worker/api/work":
                     body = json.loads(self.body(2**20) or b"{}")
                     if int(body.get("version") or 0) < CLIENT_VERSION:
-                        return self.json({"error": "this script is too old: download it again from /worker/"}, 426)
-                    out = board.work(who, _client_ip(self), body)
+                        return self.json(registration.too_old(SCRIPT, "/worker/"), 426)
+                    news = registration.script_news(SCRIPT, body) if not body.get("check") else {}
+                    if "update" in news:    # asked between jobs: it updates itself and asks again
+                        log(f"machines: {who['name']} told to update its script to version {news['update']['version']}")
+                        return self.json(news)
+                    out = {**board.work(who, _client_ip(self), body), **news}
                     if "job" in out:
                         log(f"machines: {who['name']} took job {out['job']['id']}")
                     return self.json(out)

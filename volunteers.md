@@ -95,7 +95,9 @@ and rests whatever the site says.
 | `couldn't fetch it: ...` | That video is private, removed, or too big. The site won't ask anyone for it again. |
 | `can't reach https://...` | The site is down. It keeps trying. |
 | `warning: ... no longer takes this token` | The site dropped or turned down your token. The script forgot it and registered a new one, which waits for approval again. If you think that's a mistake, ask whoever runs the site. |
-| `this script is too old` | Download it again (step 1). |
+| `updated itself from version N to M` | The site has a newer version of the script: it replaced itself with that, between one video and the next, and carries on. The one before is kept as `previous.py` in `~/.bouldermesh-volunteer`. |
+| `the server has a newer version of this script` | With `--no-auto-update` (or `--once`, or a copy it can't replace), it only says so: download it again (step 1) when you like. |
+| `this script is too old` | The site no longer takes this version, and it couldn't update itself: download it again (step 1). |
 
 If installing fails with a message about `venv` or `ensurepip`, install `python3-venv` (Debian or Ubuntu, above), or
 for another Python than the default, its own, such as `python3.9-venv`. It installs before registering, so a failed
@@ -313,6 +315,17 @@ server), every YouTube search a harvest makes is asked of volunteers: the script
 the server sends and sends back the results, which the server keeps for 30 days. With the default, the server searches
 itself until YouTube refuses its searches, and asks volunteers while it does. Older copies of the script are only given
 videos and details: download it again for searches.
+
+From version 3, the script updates itself: each time it asks for work it says it can, and when the server serves a
+newer version (its `VERSION` line is higher), the server answers with that version and its SHA-256 instead of work.
+The script downloads it from the same server, checks both, replaces its own file (keeping the one before as
+`previous.py` in its folder) and starts again with the same arguments. It only asks between one fetch and the next, so
+nothing is cut short. It doesn't over plain HTTP (except to this machine), where it can't write its own file, in a git
+checkout (git updates that), or with `--no-auto-update` or `--once` (or the worker's `--check`): then it says a
+newer one is there.
+Scripts older than 3 never say they can, and get work as before. A script below `CLIENT_VERSION` gets 426 with the
+same update, which a script that can uses; otherwise it stops, as before. The worker script does the same, between jobs.
+This trusts the server with what the volunteer's computer runs, as downloading the script from it already did.
 
 An area's climb isn't meshed until YouTube has been searched for it, by the server or a volunteer: with no volunteer to
 ask, it waits, harvested again to try each day, unless its area's *mesh without searching YouTube* is ticked (when starting

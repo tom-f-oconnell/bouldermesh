@@ -486,4 +486,34 @@ try:
 finally:
     remote_job.pipeline.reconstruct, sys.argv = real_reconstruct, argv
 print("the mapper's settings OK")
+
+# --- the script updating itself when the server serves a newer one: between jobs, never during one ---------------------
+NEWER = """#!/usr/bin/env python3
+VERSION = 99
+import sys, pathlib
+pathlib.Path(__file__).with_name("ran.json").write_text(__import__("json").dumps(sys.argv[1:]))
+"""
+newer = TMP / "served" / "bouldermesh_worker.py"
+newer.parent.mkdir()
+newer.write_text(NEWER)
+served, pullwork.SCRIPT = pullwork.SCRIPT, newer
+here = TMP / "wrun" / "bouldermesh_worker.py"       # a copy, outside a git checkout, as a machine has it
+here.parent.mkdir()
+shutil.copy2(SCRIPT, here)
+args = ["--server", URL, "--token", hal["token"], "--home", str(TMP / "home"), "--gpu", "none"]
+try:
+    for extra in (["--check"], ["--once"], ["--once", "--no-auto-update"]):
+        r = subprocess.run([sys.executable, str(here), *args, *extra], env=ENV, capture_output=True, text=True, timeout=120)
+        assert r.returncode == 0 and here.read_bytes() == SCRIPT.read_bytes(), r.stdout + r.stderr
+        assert ("newer version of this script (99)" in r.stdout) == (extra != ["--check"]), r.stdout
+    r = subprocess.run([sys.executable, str(here), *args, "--register"][:-1], env=ENV, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0 and "updated itself from version 3 to 99" in r.stdout and here.read_text() == NEWER, r.stdout + r.stderr
+    assert json.loads((here.parent / "ran.json").read_text()) == args, "started again with the same arguments"
+    assert (TMP / "home" / "previous.py").read_bytes() == SCRIPT.read_bytes(), "the one before kept"
+    assert not board.jobs or all(j.machine != hal["id"] for j in board.jobs.values()), "given no job meanwhile"
+    r = subprocess.run([sys.executable, str(SCRIPT), *args, "--once"], env=ENV, capture_output=True, text=True, timeout=120)
+    assert "it doesn't update itself (it's in a git checkout" in r.stdout and SCRIPT.read_bytes() != NEWER.encode(), r.stdout
+finally:
+    pullwork.SCRIPT = served
+print("updating itself OK")
 print("ALL MACHINES TESTS PASSED")

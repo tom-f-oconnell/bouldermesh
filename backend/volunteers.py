@@ -541,7 +541,8 @@ for yt-dlp by itself).</p>
 <p>On Windows, <code>py</code> in place of <code>python3</code>. The first time, it makes your token and asks your name
 (optional). It remembers the server and the token (in <code>.bouldermesh-volunteer</code> in your home folder, readable
 only by you), so after that it's only <code>python3 bouldermesh_volunteer.py</code>. Until whoever runs this site
-approves you, it fetches only a few videos a day, or none.</p>
+approves you, it fetches only a few videos a day, or none. When this site has a newer version of the script, it
+replaces itself with that between one video and the next (<code>--no-auto-update</code> stops that).</p>
 <p>The first time, it explains what it does and asks you to agree. Among other things: YouTube's terms don't allow
 downloading videos except through YouTube itself, and if YouTube decides your address is fetching too much, everyone on
 your network may be asked to sign in or prove they're not a bot for a while.</p>
@@ -574,7 +575,8 @@ script keeps its jobs and the models they download, which <code>--data</code> ca
 waits for whoever runs it to approve the machine before giving it climbs. It says whether it's approved yet, and whether
 there's room for jobs and the image; short of room, it says what's short. Add <code>--cpus N</code> to limit the cores jobs use, and <code>--data DIR</code> to keep jobs and models
 on another disk. It remembers them all, with the server and the token (in <code>.bouldermesh-worker</code> in your home
-folder, readable only by you).</p>
+folder, readable only by you). When this site has a newer version of the script, it replaces itself with that between
+one climb and the next, never during one (<code>--no-auto-update</code> stops that).</p>
 <h3>3. Run it</h3>
 <div class="box"><pre>python3 bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
 <h3>Optional: start it by itself, whenever the computer starts</h3>
@@ -695,7 +697,7 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
             try:
                 body = json.loads(self.body(2**16) or b"{}")
                 if int(body.get("version") or 0) < CLIENT_VERSION:
-                    return self.json({"error": "this script is too old: download it again from /volunteer/"}, 426)
+                    return self.json(registration.too_old(SCRIPT, "/volunteer/"), 426)
                 v = broker.register(auth[7:].strip() if auth.startswith("Bearer ") else "", body.get("name"), _client_ip(self),
                                     str(body.get("client") or ""))
             except registration.Refused as e:
@@ -724,9 +726,13 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
                 if u.path == "/volunteer/api/work":
                     body = json.loads(self.body(2**20) or b"{}")
                     if int(body.get("version") or 0) < CLIENT_VERSION:
-                        return self.json({"error": "this script is too old: download it again from /volunteer/"}, 426)
-                    return self.json(broker.work(v, _client_ip(self), str(body.get("client") or ""),
-                                                 body.get("per_hour"), body.get("per_day"), body.get("kinds")))
+                        return self.json(registration.too_old(SCRIPT, "/volunteer/"), 426)
+                    news = registration.script_news(SCRIPT, body)
+                    if "update" in news:    # asked between fetches: it updates itself and asks again
+                        log(f"volunteers: {v['name']} told to update its script to version {news['update']['version']}")
+                        return self.json(news)
+                    return self.json({**broker.work(v, _client_ip(self), str(body.get("client") or ""),
+                                                    body.get("per_hour"), body.get("per_day"), body.get("kinds")), **news})
                 m = re.fullmatch(r"/volunteer/api/tasks/([0-9a-f]{12})/(part|done)", u.path)
                 if m and m[2] == "part":
                     one = lambda k: (qs.get(k) or [""])[0]     # noqa: E731
