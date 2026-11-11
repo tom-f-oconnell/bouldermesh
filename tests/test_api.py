@@ -246,7 +246,9 @@ def run(B: str, tmp: Path) -> None:
     st, dep = req(B, "GET", "/api/deploy")
     assert st == 200 and dep["draining"] is False and isinstance(dep["items"], list), dep
     assert run_cli("deploy-drain").returncode == 0 and req(B, "GET", "/api/deploy")[1]["draining"] is True
-    assert run_cli("deploy-wait", "--max-minutes", "1").returncode in (0, 1)
+    brief = run_cli("deploy-check", "--brief")
+    assert (brief.returncode, brief.stdout) == (0, "nothing a restart would lose is in progress\n") or \
+        (brief.returncode == 3 and brief.stdout.startswith("waiting for: ") and brief.stdout.count("\n") == 1), brief
     assert run_cli("deploy-drain", "--off").returncode == 0 and req(B, "GET", "/api/deploy")[1]["draining"] is False
     st, saved = req(B, "POST", f"/api/meshes/{m['id']}/holds", {"holds": [{"p": [0.1, 0.2, 0.3], "role": "start"}]})
     assert st == 200 and req(B, "GET", f"/api/meshes/{m['id']}/beta")[1]["marked"]["holds"] == saved["holds"], saved

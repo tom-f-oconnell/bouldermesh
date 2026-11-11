@@ -612,6 +612,21 @@ assert fake.stopped.is_set() and not stopper.is_alive(), "it didn't wait for it"
 assert any("not waiting for mine running (retry, 50%, about 2 min left)" in x for x in said), said
 assert server._stopping["waiting_for"] == []
 
+# nor for one whose work waits for a machine that connects here, which none has taken: nothing's done yet
+server._stopping, said[:] = None, []
+w.job = {"job": {"type": "retry", "pid": ran}, "started": time.time(), "from": 0.0, "thread": -2}
+mj = server.MACHINES._new_job("reconstruct", {}, {}, ran, "img")
+mj.owner = -2
+fake = FakeServer()
+stopper = threading.Thread(target=server.stop_when_idle, args=(fake,))
+stopper.start()
+stopper.join(5)
+assert fake.stopped.is_set() and any("as no machine has taken it yet: after the restart, Retry on its project runs it" in x
+                                     for x in said), said
+server.MACHINES.jobs.pop(mj.id)
+mj.input.unlink(missing_ok=True)
+w.job = {"job": {"type": "retry", "pid": ran}, "started": time.time() - 120, "from": 0.0}
+
 server._stopping, said[:] = None, []
 fake = FakeServer()
 w.job["started"] = time.time() - 10     # half done in 10 s: about 10 s to go
@@ -1939,11 +1954,37 @@ for i, took in enumerate((600, 900, 1200)):
             1.0, 100.0, 100.0 + took, "done")
 assert board.typical("reconstruct") == 900
 (server.PROJECTS / pid / "photos").mkdir(parents=True, exist_ok=True)
-job = board._new_job("reconstruct", {"photos": server.PROJECTS / pid / "photos"}, {"internet": True}, "Alpha (harvest)", "img")
+job = board._new_job("reconstruct", {"photos": server.PROJECTS / pid / "photos"}, {"internet": True}, pid, "img")
 job.state, job.machine_name, job.taken = "running", "hal-2", time.time() - 300
 st = server.deploy_state()
-mesh = next(i for i in st["items"] if i["what"].startswith("reconstruct on"))
-assert mesh["costly"] and mesh["what"] == "reconstruct on hal-2" and 590 <= mesh["eta"] <= 610 and st["eta"] == mesh["eta"], st
+mesh = next(i for i in st["items"] if i["what"].startswith("meshing on"))
+assert mesh["costly"] and mesh["what"] == "meshing on hal-2" and 590 <= mesh["eta"] <= 610 and st["eta"] == mesh["eta"], st
+assert mesh["name"] == "Alpha (harvest)", "its project's name, not its id"
+# a size found on a machine, from a job here: told once, as the machine's job, under its mesh's name; not costly while
+# it waits for a machine, as nothing's done yet, and while draining none takes it (Nov 11, 2026: it waited 90 min for that)
+mid = "5c" * 6
+server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES(?,?,?,?,?)", mid, "East Face", "m.glb", "project:x",
+         time.time(), write=True)
+w = server.Worker("this server 2")
+server._workers.append(w)
+w.job = {"job": {"type": "scale", "mid": mid}, "started": time.time() - 60, "from": 0.0, "thread": -1}
+sj = board._new_job("scale", {}, {}, f"size: {mid}", "img")
+sj.owner = -1   # the worker's thread, which waits for it
+st = server.deploy_state()
+sizes = [i for i in st["items"] if "size" in i["what"]]
+assert [(i["what"], i["name"], i["costly"]) for i in sizes] == [("finding size, waiting for a machine", "East Face", False)], sizes
+assert st["costly"] == 1, "only the mesh on hal-2"
+sj.state, sj.machine_name, sj.taken = "running", "hal-2", time.time()
+sizes = [i for i in server.deploy_state()["items"] if "size" in i["what"]]
+assert [(i["what"], i["costly"]) for i in sizes] == [("finding size on hal-2", True)], "once taken, costly"
+# with no machine's job, it's found here, and starts again after a restart (sizes carry on: scale.carry_on())
+board.jobs.pop(sj.id)
+sizes = [i for i in server.deploy_state()["items"] if "size" in i["what"]]
+assert [(i["what"], i["name"], i["costly"], i["lost"]) for i in sizes] == [("finding size here", "East Face", True, "starts again after")], sizes
+assert server.jobs_state()["running"][0]["machine_job"] is None
+w.job = None
+server._workers[:] = [server._first]
+sj.input.unlink(missing_ok=True)
 # taking no new work while it waits, and carrying on after
 state = server.drain(True)
 assert state["draining"] and board.paused and server._draining and not server._draining["now"]

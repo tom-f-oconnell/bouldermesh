@@ -289,7 +289,7 @@ with tempfile.TemporaryDirectory() as tmp:
     s = scale.summary(scale.load(d))
     assert s["videos"] == 1 and s["stated"]["m"] == round(20 * 0.3048, 2) and s["method"] == "video", s
     scale.save(d, {"status": "running", "progress": "x"})
-    scale.interrupted(d)
-    assert scale.load(d)["status"] == "interrupted"
+    assert scale.carry_on(d) and scale.load(d)["status"] == "queued" and scale.load(d)["progress"] is None
+    assert not scale.carry_on(d / "nothing"), "nothing to carry on"
 
 print("ALL SCALE TESTS PASSED")

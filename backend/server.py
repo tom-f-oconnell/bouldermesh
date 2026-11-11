@@ -3479,7 +3479,7 @@ def run_beta(mid: str) -> None:
 BETA_NICE = 19
 _beta_control = JobControl()
 _beta_wake = threading.Event()
-_beta_now: dict | None = None    # the mesh it's finding beta in: {mid, started}
+_beta_now: dict | None = None    # the mesh it's finding beta in: {mid, started, thread}
 
 
 def queue_beta(mid: str, ahead: bool = False) -> bool:
@@ -3560,7 +3560,7 @@ def beta_worker() -> None:
             queued = [mid for mid in beta_queue() if beta_ready(mid)]
             if not queued:
                 break
-            _beta_now = {"mid": queued[0], "started": time.time()}
+            _beta_now = {"mid": queued[0], "started": time.time(), "thread": threading.get_ident()}
             jobctl.begin(low_priority=True)
             try:
                 run_beta(queued[0])
@@ -4148,7 +4148,7 @@ def machine_wait(cid: str) -> dict | None:
 def run_job(job: dict) -> None:
     """A job someone asked for, on this thread's worker."""
     w = current_worker()
-    w.job = {"job": job, "started": time.time(), "from": job_progress(job) or 0.0}
+    w.job = {"job": job, "started": time.time(), "from": job_progress(job) or 0.0, "thread": threading.get_ident()}
     jobctl.begin(low_priority=job["type"] in ("retexture", "scale", "boulder"))
     try:
         if job["type"] == "scale":
@@ -4205,9 +4205,9 @@ def worker(w: Worker | None = None) -> None:
 STOP_WAIT = float(os.environ.get("STOP_WAIT_MINUTES", "10")) * 60   # docker-compose.yml's stop_grace_period is longer
 _stopping: dict | None = None    # once a stop has begun: {since, until, waiting_for}
 _draining: dict | None = None    # deploy.sh about to restart it: {since, now}: no new work taken; with now, no waiting on stop
-AGAIN = {"reconstruct": "Retry on its project", "harvest": "Retry on its project", "retry": "Retry on its project",
-         "boulder": "Retry on its project",
-         "retexture": "Make textures... on the admin page", "scale": "Find size in the viewer"}
+AGAIN = {"reconstruct": "Retry on its project runs it", "harvest": "Retry on its project runs it", "retry": "Retry on its project runs it",
+         "boulder": "Retry on its project runs it", "retexture": "Make textures... on the admin page runs it",
+         "scale": "it's queued again by itself"}     # what runs a job after a restart interrupted it
 
 
 def job_progress(job: dict) -> float | None:
@@ -4237,14 +4237,20 @@ def job_info(job: dict, run: dict | None = None) -> dict:
     return out
 
 
-def jobs_state() -> dict:
+def jobs_state(board: list[dict] | None = None) -> dict:
     """What a restart would stop now: jobs people started outside areas, which it interrupts (running and
-    queued), and areas' climbs, which it only pauses."""
+    queued), and areas' climbs, which it only pauses. A running job's "machine_job" is the job on a machine that
+    connects here that it's waiting for, if it is: {id, state, machine}, from board (MACHINES.running()) if given."""
     with jobs.mutex:
         waiting = list(jobs.queue)
     runs = [w.job for w in list(_workers)]
+    by_thread = {j["owner"]: j for j in (MACHINES.running() if board is None else board)}
     now = _beta_now and q("SELECT name FROM meshes WHERE id=?", _beta_now["mid"], one=True)
-    return {"running": [job_info(r["job"], r) for r in runs if r], "queued": [job_info(j) for j in waiting],
+
+    def running(r: dict) -> dict:
+        mj = by_thread.get(r.get("thread"))
+        return {**job_info(r["job"], r), "machine_job": {k: mj[k] for k in ("id", "state", "machine")} if mj else None}
+    return {"running": [running(r) for r in runs if r], "queued": [job_info(j) for j in waiting],
             "area_climbs": q("SELECT c.name AS area, i.name, i.project_id FROM campaign_items i JOIN campaigns c ON c.id=i.campaign_id "
                              "WHERE i.status='running' ORDER BY i.updated"),
             "beta": {"running": now["name"] if now else None, "queued": len(beta_queue()), "youtube": youtube_mod.refused()},
@@ -4285,22 +4291,40 @@ def _eta_from(progress: dict | None, keys: set[str]) -> float | None:
     return took * (1 - done) / done if done >= 0.1 and took >= 30 else None
 
 
+MACHINE_TASKS = {"reconstruct": "meshing", "beta": "finding beta", "scale": "finding size"}   # as deploy_state() tells them
+
+
 def deploy_state() -> dict:
     """What a restart would cost now, for deploy.sh (cli.py deploy-check): each piece of work in progress, whether a
     restart loses much of it ("costly"), how long it's been going, and about how long it has left (eta, seconds, None
     when there's no telling yet). Costly: jobs on machines, which end with a restart and start over; jobs people asked
     for, which it interrupts; a climb meshed on this server, which starts its step again; beta found here. Not costly:
     an area's climb being harvested (its downloads are kept, and it carries on), and a volunteer's upload (it carries
-    on from what came). Also whether it's draining (drain()), and "eta", the longest of the costly ones'."""
+    on from what came). A job here that's handed its work to a machine is told as the machine's job: costly once a
+    machine has taken it, and not while it waits for one, as nothing's done yet (and while draining, none takes it).
+    Also whether it's draining (drain()), and "eta", the longest of the costly ones'."""
     items, now = [], time.time()
     mesh_keys = {k[0] for k in pipeline.steps()}
-    for j in MACHINES.running():
+    board = MACHINES.running()
+    asked = jobs_state(board)["running"]
+    for_job = {j["machine_job"]["id"]: j for j in asked if j["machine_job"]}    # a machine's job -> the job here waiting for it
+    beta_name = beta_job = None
+    if _beta_now:
+        beta_name = (q("SELECT name FROM meshes WHERE id=?", _beta_now["mid"], one=True) or {}).get("name", _beta_now["mid"])
+        beta_job = next((j["id"] for j in board if j["owner"] == _beta_now.get("thread")), None)
+    for j in board:
         elapsed = now - (j["taken"] or j["created"])
         typical = MACHINES.typical(j["task"])
-        items.append({"what": f"{j['task']} on {j['machine']}" if j["state"] == "running" else f"{j['task']}, waiting for a machine",
-                      "name": j["label"], "costly": j["state"] == "running", "elapsed": round(elapsed),
-                      "eta": round(max(0.0, typical - elapsed)) if typical and j["state"] == "running" else None,
-                      "lost": "ends, and starts again on a machine after" if j["state"] == "running" else "queued again after"})
+        task = MACHINE_TASKS.get(j["task"], j["task"])
+        mine = for_job.get(j["id"])
+        project = q("SELECT name FROM projects WHERE id=?", j["label"], one=True) if j["task"] == "reconstruct" else None
+        lost = "ends, and starts again on a machine after" if j["state"] == "running" else "queued again after"
+        if mine and mine["type"] != "scale":
+            lost = "interrupted: runs again when asked again"
+        items.append({"what": f"{task} on {j['machine']}" if j["state"] == "running" else f"{task}, waiting for a machine",
+                      "name": mine["name"] if mine else beta_name if j["id"] == beta_job else project["name"] if project else j["label"],
+                      "costly": j["state"] == "running", "elapsed": round(elapsed),
+                      "eta": round(max(0.0, typical - elapsed)) if typical and j["state"] == "running" else None, "lost": lost})
     for r in q("SELECT c.name area, i.name, i.project_id, i.updated FROM campaign_items i JOIN campaigns c ON c.id=i.campaign_id "
                "WHERE i.status='running'"):
         p = q("SELECT progress FROM projects WHERE id=?", r["project_id"], one=True) if r["project_id"] else None
@@ -4311,12 +4335,15 @@ def deploy_state() -> dict:
                       "costly": meshing_here, "elapsed": round(now - (r["updated"] or now)),
                       "eta": _eta_from(prog, mesh_keys if meshing_here else {s["key"] for s in (prog or {}).get("steps", [])}),
                       "lost": "starts its step again after" if meshing_here else "pauses, and carries on after"})
-    for j in jobs_state()["running"]:
-        items.append({"what": f"{j['type']}, asked for", "name": j["name"], "costly": True, "elapsed": round(now - j.get("started", now)),
-                      "eta": j.get("eta"), "lost": "interrupted: runs again when asked again"})
-    if _beta_now:
-        name = (q("SELECT name FROM meshes WHERE id=?", _beta_now["mid"], one=True) or {}).get("name", _beta_now["mid"])
-        items.append({"what": "finding beta here", "name": name, "costly": True, "elapsed": round(now - _beta_now["started"]),
+    for j in asked:
+        if j["machine_job"]:
+            continue    # told as its machine's job, above
+        sizing = j["type"] == "scale"
+        items.append({"what": "finding size here" if sizing else f"{j['type']}, asked for", "name": j["name"], "costly": True,
+                      "elapsed": round(now - j.get("started", now)), "eta": j.get("eta"),
+                      "lost": "starts again after" if sizing else "interrupted: runs again when asked again"})
+    if _beta_now and not beta_job:
+        items.append({"what": "finding beta here", "name": beta_name, "costly": True, "elapsed": round(now - _beta_now["started"]),
                       "eta": None, "lost": "starts again after"})
     try:
         for t in VOLUNTEERS.q("SELECT t.id, t.video_id, t.size, v.name FROM tasks t LEFT JOIN volunteers v ON v.id=t.volunteer "
@@ -4353,7 +4380,10 @@ def stop_when_idle(server: ThreadingHTTPServer) -> None:
         for j in state["running"]:
             if j["eta"] is not None and time.time() + j["eta"] > _stopping["until"] and ident(j) not in passed:
                 passed.add(ident(j))
-                say(f"not waiting for {job_label(j)}, as it won't finish in time: after the restart, {AGAIN[j['type']]} runs it again")
+                say(f"not waiting for {job_label(j)}, as it won't finish in time: after the restart, {AGAIN[j['type']]}")
+            elif j["machine_job"] and j["machine_job"]["state"] == "queued" and ident(j) not in passed:
+                passed.add(ident(j))    # nothing's done yet, and no machine takes it while deploy.sh drains
+                say(f"not waiting for {job_label(j)}, as no machine has taken it yet: after the restart, {AGAIN[j['type']]}")
         waiting = [j for j in state["running"] if ident(j) not in passed]
         _stopping["waiting_for"] = [job_label(j) for j in waiting]
         left = _stopping["until"] - time.time()
@@ -4365,10 +4395,10 @@ def stop_when_idle(server: ThreadingHTTPServer) -> None:
             said = time.time()
         time.sleep(2)
     for j in waiting:
-        say(f"{job_label(j)} didn't finish in time: after the restart, {AGAIN[j['type']]} runs it again")
+        say(f"{job_label(j)} didn't finish in time: after the restart, {AGAIN[j['type']]}")
     if state["queued"]:
         say(f"{len(state['queued'])} queued job(s) won't start before the restart: " +
-            "; ".join(f"{j['name']} ({j['type']}): {AGAIN[j['type']]} runs it" for j in state["queued"]))
+            "; ".join(f"{j['name']} ({j['type']}): {AGAIN[j['type']]}" for j in state["queued"]))
     if state["area_climbs"]:
         say("areas' climbs pause, and carry on after the restart: " + "; ".join(f"{c['name']} ({c['area']})" for c in state["area_climbs"]))
     if state["beta"]["running"] or state["beta"]["queued"]:
@@ -6237,8 +6267,9 @@ def main() -> None:
         print(f"{caught} running area climb(s) its boulder's mesh hardly shows queued to mesh on their own", flush=True)
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
     for d in MESHES.iterdir() if MESHES.exists() else []:
-        beta_mod.carry_on(d)        # finding beta carries on after a restart, like areas
-        scale_mod.interrupted(d)
+        beta_mod.carry_on(d)        # finding beta and size carry on after a restart, like areas
+        if scale_mod.carry_on(d):
+            queue_job({"type": "scale", "mid": d.name})
     threading.Thread(target=beta_worker, daemon=True).start()
     threading.Thread(target=watch_usage, daemon=True).start()
     threading.Thread(target=snapshot_worker, daemon=True).start()

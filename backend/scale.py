@@ -840,8 +840,11 @@ def summary(record: dict | None) -> dict | None:
     return out
 
 
-def interrupted(mesh_dir: Path) -> None:
-    """Mark a search that a restart stopped, as jobs aren't carried on after one."""
+def carry_on(mesh_dir: Path) -> bool:
+    """Mark a search that a restart stopped (queued, or under way) as queued again; whether it was one, for the caller
+    to queue it (server.queue_scale() won't, as it's queued)."""
     record = load(mesh_dir)
     if record and record["status"] in ("queued", "running"):
-        save(mesh_dir, {**record, "status": "interrupted", "progress": None})
+        save(mesh_dir, {**record, "status": "queued", "progress": None})
+        return True
+    return False

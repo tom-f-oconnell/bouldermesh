@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import time
 import os
 import sys
 import urllib.error
@@ -89,8 +88,7 @@ def main():
     here = f"http://localhost:{os.environ.get('PORT', '8470')}"
     dc = sub.add_parser("deploy-check", help="what a restart would cost now (exit 3 if it would lose work in progress)")
     dc.add_argument("--server", default=here)
-    dw = sub.add_parser("deploy-wait", help="take no new work, and wait for what a restart would lose to finish")
-    dw.add_argument("--server", default=here); dw.add_argument("--max-minutes", type=float, default=90)
+    dc.add_argument("--brief", action="store_true", help="one line: only what a restart would lose, as deploy.sh waits for it")
     dd = sub.add_parser("deploy-drain", help="take no new work (--off: carry on as before; --now: a stop won't wait either)")
     dd.add_argument("--server", default=here); dd.add_argument("--off", action="store_true"); dd.add_argument("--now", action="store_true")
     o = sub.add_parser("offtopic-split"); o.add_argument("--limit", type=int, default=0)
@@ -136,9 +134,7 @@ def main():
     if a.cmd == "jobs":
         sys.exit(jobs(a.server))
     if a.cmd == "deploy-check":
-        sys.exit(deploy_check(a.server))
-    if a.cmd == "deploy-wait":
-        sys.exit(deploy_wait(a.server, a.max_minutes))
+        sys.exit(deploy_check(a.server, a.brief))
     if a.cmd == "deploy-drain":
         _deploy(a.server, {"on": not a.off, "now": a.now})
         print("carrying on as before" if a.off else "taking no new work" + ("; a stop won't wait for jobs either" if a.now else ""))
@@ -306,25 +302,36 @@ def _mins(s) -> str:
     return "?" if s is None else f"{max(1, round(s / 60))} min"
 
 
+def _item(i: dict) -> str:
+    bits = ([f"{i['progress']}%"] if i.get("progress") is not None else []) + \
+        ([f"going {_mins(i['elapsed'])}"] if i.get("elapsed") else []) + ([f"about {_mins(i['eta'])} left"] if i.get("eta") is not None else [])
+    return f"{i['what']}: {i['name']}" + (f" ({', '.join(bits)})" if bits else "")
+
+
 def _show(st: dict) -> None:
     for i in st["items"]:
-        bits = ([f"{i['progress']}%"] if i.get("progress") is not None else []) + \
-            ([f"going {_mins(i['elapsed'])}"] if i.get("elapsed") else []) + ([f"about {_mins(i['eta'])} left"] if i.get("eta") is not None else [])
-        print(f"  {'!' if i['costly'] else ' '} {i['what']}: {i['name']}" + (f" ({', '.join(bits)})" if bits else "") + f"; a restart: {i['lost']}")
+        print(f"  {'!' if i['costly'] else ' '} {_item(i)}; a restart: {i['lost']}")
 
 
-def deploy_check(server: str) -> int:
+def deploy_check(server: str, brief: bool = False) -> int:
     """Print what a restart would cost now, each piece of work in progress marked ! if it would lose much of it.
+
+    Args:
+        brief: print only a line of what a restart would lose, for deploy.sh to print as it waits.
 
     Returns:
         3 if a restart would lose work in progress, else 0 (1 if the server can't be asked; 2 is argparse's, as from an
-        older cli.py without this command).
+        older cli.py without this command, or without --brief).
     """
     try:
         st = _deploy(server)
     except (urllib.error.URLError, OSError, ValueError) as e:
         print(f"can't ask the server what's running: {e}")
         return 1
+    if brief:
+        costly = [i for i in st["items"] if i["costly"]]
+        print("waiting for: " + "; ".join(map(_item, costly)) if costly else "nothing a restart would lose is in progress")
+        return 3 if costly else 0
     if not st["items"]:
         print("nothing in progress: a restart loses nothing")
         return 0
@@ -338,29 +345,6 @@ def deploy_check(server: str) -> int:
     print(f"waiting for the ! ones would take about {_mins(st['eta'])}" if st["eta"] is not None
           else "how long the ! ones have left isn't clear yet")
     return 3
-
-
-def deploy_wait(server: str, max_minutes: float) -> int:
-    """Take no new work, and wait until nothing a restart would lose is in progress, saying what's left as it changes.
-
-    Returns:
-        0 once nothing costly is left, 1 if some still is after max_minutes (the server still takes no new work).
-    """
-    st = _deploy(server, {"on": True})
-    until, said = time.time() + max_minutes * 60, None
-    print("taking no new work, and waiting for what's in progress")
-    while st["costly"]:
-        left = [f"{i['what']}: {i['name']}" + (f" (about {_mins(i['eta'])})" if i.get("eta") is not None else "") for i in st["items"] if i["costly"]]
-        if left != said:
-            print(f"{time.strftime('%H:%M')} waiting for: " + "; ".join(left), flush=True)
-            said = left
-        if time.time() > until:
-            print(f"still going after {max_minutes:g} min")
-            return 1
-        time.sleep(20)
-        st = _deploy(server)
-    print(f"{time.strftime('%H:%M')} nothing a restart would lose is in progress")
-    return 0
 
 
 def offtopic_split(limit: int = 0) -> int:

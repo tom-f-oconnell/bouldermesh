@@ -88,6 +88,7 @@ class Job:
     task: str = "reconstruct"       # or one of remote_job.py's other tasks: "beta", "scale"
     version: int = 1                # the oldest script that does it
     gpu_mb: int = 0                 # the GPU memory it may need (gpu_need_mb())
+    owner: int = field(default_factory=threading.get_ident)   # the thread that made it, which waits for it
 
     @property
     def output(self) -> Path:
@@ -494,10 +495,11 @@ class Board:
                      f"after waiting {j.taken - j.created:.0f} s for a machine")
 
     def running(self) -> list[dict]:
-        """The jobs machines are on now, and those waiting for one: {id, task, label, state, machine, created, taken}."""
+        """The jobs machines are on now, and those waiting for one: {id, task, label, state, machine, created, taken,
+        owner (the thread waiting for it)}."""
         with self.cond:
             return [{"id": j.id, "task": j.task, "label": j.label, "state": j.state, "machine": j.machine_name,
-                     "created": j.created, "taken": j.taken} for j in self.jobs.values() if j.state in ("queued", "running")]
+                     "created": j.created, "taken": j.taken, "owner": j.owner} for j in self.jobs.values() if j.state in ("queued", "running")]
 
     def typical(self, task: str) -> float | None:
         """How long, in seconds, a machine has taken over the last 20 jobs of this task it finished (the median)."""

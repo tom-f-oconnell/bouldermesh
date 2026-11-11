@@ -6,7 +6,8 @@
 #     ./deploy.sh --now      restarts at once, whatever's in progress
 #     ./deploy.sh --after    waits for what's in progress to finish (taking no new work meanwhile), then restarts
 #
-# Without a terminal to ask at, it does --after. It waits at most WAIT_MINUTES (90), then asks again, or restarts.
+# While it waits, it says what for every 30 s, in this machine's time. At a terminal, n restarts now, c (or Ctrl-C)
+# cancels, and it waits for as long as it takes. Without one to ask at, it does --after, for at most WAIT_MINUTES (90).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -20,6 +21,12 @@ esac
 [ "$mode" = ask ] && [ ! -t 0 ] && mode=after
 on_server() { ssh bouldermesh "cd bouldermesh && $1"; }
 cli() { on_server "docker compose exec -T bouldermesh python3 cli.py $*"; }
+if [ -t 1 ]; then ask=$'\e[1;33m' plain=$'\e[0m'; else ask='' plain=''; fi    # what asks you, in bold yellow
+cancel() {
+    cli deploy-drain --off >/dev/null || true
+    echo "not restarted: the new image is pulled, and runs at the next restart"
+    exit "${1:-0}"
+}
 
 # the images first: the server pulls its own, which changes nothing until the restart
 # (set -e doesn't stop at a failure partway through a && list, hence the || exit)
@@ -31,25 +38,52 @@ cli deploy-check
 check=$?
 set -e
 if [ "$check" -eq 3 ]; then
-    while true; do
-        if [ "$mode" = ask ]; then
-            read -r -p "Restart [n]ow, [a]fter what's in progress finishes (taking no new work meanwhile), or [c]ancel? " answer
-            case "$answer" in
-                n*|N*) mode=now ;;
-                a*|A*) mode=after ;;
-                *) cli deploy-drain --off >/dev/null || true
-                   echo "not restarted: the new image is pulled, and runs at the next restart"; exit 0 ;;
-            esac
-        fi
-        if [ "$mode" = now ]; then
-            cli deploy-drain --now >/dev/null       # the stop then doesn't wait for jobs either
-            break
-        fi
-        if cli deploy-wait --max-minutes "${WAIT_MINUTES:-90}"; then
-            break
-        fi
-        if [ -t 0 ]; then mode=ask; else echo "restarting anyway"; break; fi
-    done
+    if [ "$mode" = ask ]; then
+        read -r -p "${ask}Restart [n]ow, [a]fter what's in progress finishes (taking no new work meanwhile), or [c]ancel?${plain} " answer
+        case "$answer" in
+            n*|N*) mode=now ;;
+            a*|A*) mode=after ;;
+            *) cancel ;;
+        esac
+    fi
+    if [ "$mode" = after ]; then
+        cli deploy-drain >/dev/null || true
+        trap 'echo; cancel 130' INT
+        echo "taking no new work, and waiting for what's in progress"
+        deadline=$((SECONDS + ${WAIT_MINUTES:-90} * 60)) late=''
+        while true; do
+            set +e
+            left=$(cli deploy-check --brief 2>&1)
+            st=$?
+            set -e
+            if [ "$st" -eq 2 ]; then    # a server from before deploy-check --brief (Nov 11, 2026), which waits by itself
+                cli deploy-wait --max-minutes "${WAIT_MINUTES:-90}" || echo "restarting anyway"
+                break
+            fi
+            echo "$(date +%H:%M:%S) $left"
+            [ "$st" -eq 0 ] && break    # otherwise, something's left, or the server couldn't be asked just now
+            if [ "$SECONDS" -ge "$deadline" ] && [ -z "$late" ]; then
+                [ -t 0 ] || { echo "still going after ${WAIT_MINUTES:-90} min: restarting anyway"; break; }
+                echo "${ask}still going after ${WAIT_MINUTES:-90} min${plain}"$'\a'
+                late=1
+            fi
+            if [ -t 0 ]; then
+                key=''
+                read -r -s -n 1 -t 30 -p "${ask}[n] restart now, [c] cancel, any other key: look again now${plain} " key || true
+                printf '\r\e[K' >&2     # the next line takes its place, and it comes again below that
+                case "$key" in
+                    n|N) echo "$(date +%H:%M:%S) restarting now, as you said"; mode=now; break ;;
+                    c|C) cancel ;;
+                esac
+            else
+                sleep 30
+            fi
+        done
+        trap - INT
+    fi
+    if [ "$mode" = now ]; then
+        cli deploy-drain --now >/dev/null       # the stop then doesn't wait for jobs either
+    fi
 elif [ "$check" -ne 0 ]; then
     echo "couldn't ask the server what's in progress (it may be down): restarting anyway"
 fi
