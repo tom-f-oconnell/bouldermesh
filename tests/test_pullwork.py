@@ -458,4 +458,32 @@ assert '"files": ["beta.json", "beta_0123abcd.jpg"]' in printed.getvalue() and '
 assert seen == {"via": "volunteers", "cache": job / "videos", "climbs": [{"name": "Alpha"}], "masks": None}, "never YouTube from there"
 youtube.via = "volunteers_when_refused"
 print("remote_job's other jobs OK")
+
+# --- an area's settings for COLMAP's mapper go with its reconstructions, as task.json, only to scripts that take one ------
+import meshopts  # noqa: E402
+
+photos_only = {"photos": job / "photos"}
+plain = board._new_job("reconstruct", photos_only, {"internet": True}, "plain", image[0])
+told = board._new_job("reconstruct", photos_only, {"internet": True, "mapper": {"retry_below": 0.6, "more": 2}}, "told", image[0])
+with tarfile.open(plain.input) as t:
+    assert "task.json" not in t.getnames() and plain.version == 1
+with tarfile.open(told.input) as t:
+    assert json.loads(t.extractfile("task.json").read())["mapper"] == {"retry_below": 0.6, "more": 2} and told.version == 2
+for j in (plain, told):
+    del board.jobs[j.id]
+    j.input.unlink()
+got = {}
+real_reconstruct = remote_job.pipeline.reconstruct
+remote_job.pipeline.reconstruct = lambda *a, **k: (got.update(mapper=meshopts.mapper()), (job / "out" / "mesh.glb", False))[1]
+argv = sys.argv
+try:
+    for told_it, want in ((None, meshopts.MAPPER), ({"retry_below": 0.6, "more": 2}, {"retry_below": 0.6, "more": 2})):
+        (job / "task.json").write_text(json.dumps({"mapper": told_it} if told_it else {}))
+        sys.argv = ["remote_job.py", str(job), "--internet"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert remote_job.main() == 0
+        assert got["mapper"] == want, got
+finally:
+    remote_job.pipeline.reconstruct, sys.argv = real_reconstruct, argv
+print("the mapper's settings OK")
 print("ALL MACHINES TESTS PASSED")

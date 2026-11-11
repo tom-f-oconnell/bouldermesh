@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+import meshopts
+
 Log = Callable[[str], None]
 REMOTE_BASE = "/tmp/bouldermesh"
 DEFAULT_COMMAND = "docker run --rm --name bm-{job} {gpus} -v {dir}:/job {image} python3 /app/backend/remote_job.py /job {flags}"
@@ -109,10 +111,15 @@ def run_remote(node: Node, images: Path, out_dir: Path, log: Log, internet: bool
             node.gpu = False
     log(f"remote: {node.host}{' (GPU)' if node.gpu else ''}, job {job}")
     ssh(node, f"mkdir -p {base}")
+    told = tempfile.mkdtemp(prefix="bm-task-")
     try:
         parts = [p for p in ("photos", "masks") if (project / p).is_dir()]
+        mapper = meshopts.given()     # an area's settings for COLMAP's mapper, sent as task.json
+        if mapper:
+            Path(told, "task.json").write_text(json.dumps({"mapper": mapper}))
         t0 = time.time()
-        _pipe(["tar", "-C", str(project), "-cf", "-", *parts], ssh_args(node) + [f"tar -C {base} -xf -"], jobctl)
+        _pipe(["tar", "-C", str(project), "-cf", "-", *parts, *(["-C", told, "task.json"] if mapper else [])],
+              ssh_args(node) + [f"tar -C {base} -xf -"], jobctl)
         size = sum(f.stat().st_size for p in parts for f in (project / p).iterdir())
         log(f"remote: sent {size / 1e6:.0f} MB in {time.time() - t0:.0f} s")
         cmd = (command or DEFAULT_COMMAND).format(dir=base, image=shlex.quote(image), job=job,
@@ -141,6 +148,7 @@ def run_remote(node: Node, images: Path, out_dir: Path, log: Log, internet: bool
         log(f"remote: results back in {time.time() - t0:.0f} s")
         return mesh, bool(result.get("demo"))
     finally:
+        shutil.rmtree(told, ignore_errors=True)
         try:   # not stoppable: this is the tidying up after a stop
             subprocess.run(ssh_args(node) + [f"docker rm -f bm-{job} >/dev/null 2>&1; rm -rf {base}"], capture_output=True, timeout=60)
         except Exception:

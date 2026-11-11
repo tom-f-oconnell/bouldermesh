@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""One reconstruction on a compute node (compute.py, pullwork.py): a job directory's photos/ and masks/ in, its
-out/ (the mesh, its textures, cameras.json, orientation.json) and new masks out. Or, with --task, another job on a
+"""One reconstruction on a compute node (compute.py, pullwork.py): a job directory's photos/ and masks/ in, and its
+task.json's {mapper} if an area sent one (meshopts.py), its out/ (the mesh, its textures, cameras.json, orientation.json)
+and new masks out. Or, with --task, another job on a
 mesh/ (its files) and the photos placed in it: finding its beta (beta.py), from videos/ (its videos, as youtube's
 cache keeps them), or its size (scale.py), with task.json's {climbs, videos, known}; what that makes goes in out/.
 
@@ -19,6 +20,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import meshopts  # noqa: E402
 import pipeline  # noqa: E402
 from progress import Tracker  # noqa: E402
 
@@ -72,8 +74,10 @@ def main() -> int:
     if a.task:
         return task(a.job, a.task, log)
     try:
-        mesh, demo = pipeline.reconstruct(a.job / "photos", a.job / "work", a.job / "out", log, a.gpu, internet=a.internet,
-                                          tracker=PrintedTracker(pipeline.steps()))
+        given = json.loads((a.job / "task.json").read_text()) if (a.job / "task.json").exists() else {}
+        with meshopts.using(given.get("mapper")):    # an area's settings for the mapper, if it sent any
+            mesh, demo = pipeline.reconstruct(a.job / "photos", a.job / "work", a.job / "out", log, a.gpu, internet=a.internet,
+                                              tracker=PrintedTracker(pipeline.steps()))
     except Exception as e:
         print(f"FAILED: {e}", flush=True)
         return 1

@@ -287,6 +287,9 @@
         <details style="margin-top:6px"><summary>More options</summary>
           <label class="row" style="margin-top:6px" title="On: a boulder whose mesh was made from the photos its climbs have now isn't meshed again, as when one of its climbs comes round again after it was. Off: it's meshed again, which can come out different. Rebuild still rebuilds."><input type="checkbox" id="ca-samephotos" checked autocomplete="off"> Don't mesh a boulder again from the same photos</label>
           <label class="row" style="margin-top:6px" title="On: when a mesh is rebuilt from photos that include every one the mesh before placed, and places fewer of them, the mesh before stays the current one, and the new one is kept as an older version. Off: the newest is always current."><input type="checkbox" id="ca-keepbetter" checked autocomplete="off"> Keep the mesh before when a rebuild from the same photos places fewer</label>
+          <label class="row" style="margin-top:6px" title="COLMAP can place many fewer photos of the same set from one run to the next (19 of 19, then 13, for one boulder). When the model it keeps places under this share of a climb's or boulder's photos, it tries this many more random seeds, a minute or so each, and keeps the model placing most. 0 in either turns it off.">When COLMAP places under
+            <input type="number" id="ca-mapbelow" min="0" max="100" step="5" value="75" autocomplete="off" style="width:64px">% of the photos, try
+            <input type="number" id="ca-mapmore" min="0" max="5" step="1" value="1" autocomplete="off" style="width:52px"> more seed(s), keeping the best</label>
         </details>
         <div style="text-align:center;margin-top:10px"><button id="ca-go">Start meshing</button></div>
         <div class="notice" style="margin-top:8px">Meshes its boulder problems one at a time until you stop it, and keeps every mesh finished before then. Each can take most of an hour. Problems that share a boulder are harvested, and the boulder is meshed from all their photos. Several areas, one a line, go one after another, in the order given. With a limit, each stops at that many meshes, a boulder's counting once. An area listed already is taken up again with these settings, keeping what's done.</div>
@@ -1777,6 +1780,8 @@ async function refreshCampaigns(){
         <details data-list="${c.id}-more"><summary class="meta">More options</summary>
           <label class="meta row" title="On: a boulder whose mesh was made from the photos its climbs have now isn't meshed again, as when one of its climbs comes round again after it was. Off: it's meshed again, which can come out different. Rebuild still rebuilds."><input type="checkbox" class="samephotos" ${c.same_photos_once !== 0 ? 'checked' : ''}> don't mesh a boulder again from the same photos</label>
           <label class="meta row" title="On: when a mesh is rebuilt from photos that include every one the mesh before placed, and places fewer of them, the mesh before stays the current one, and the new one is kept as an older version. Off: the newest is always current."><input type="checkbox" class="keepbetter" ${c.keep_better !== 0 ? 'checked' : ''}> keep the mesh before when a rebuild from the same photos places fewer</label>
+          <label class="meta row" title="COLMAP can place many fewer photos of the same set from one run to the next (19 of 19, then 13, for one boulder). When the model it keeps places under this share of a climb's or boulder's photos, it tries this many more random seeds, a minute or so each, and keeps the model placing most. 0 in either turns it off.">when COLMAP places under <input type="number" class="mapbelow" min="0" max="100" step="5" value="${c.mapper_below ?? 75}" style="width:60px">% of the photos, try
+            <input type="number" class="mapmore" min="0" max="5" step="1" value="${c.mapper_more ?? 1}" style="width:48px"> more seed(s), keeping the best</label>
         </details>
         ${c.worked.length ? `<details data-list="${c.id}-done"><summary class="meta">Worked through (${c.worked.length}${c.worked.length === 300 ? ' most recent' : ''})</summary><div class="crows">${c.worked.map(row).join('')}</div></details>` : ''}
         ${c.next.length ? `<details data-list="${c.id}-next"><summary class="meta">Up next</summary><div class="crows">${c.next.map(row).join('')}</div></details>` : ''}`;
@@ -1800,6 +1805,12 @@ async function refreshCampaigns(){
       d.querySelector('.countfail').onchange = ev => post('options', { count_failures: ev.target.checked }).catch(e => toast(e.message, 6000));
       d.querySelector('.samephotos').onchange = ev => post('options', { same_photos_once: ev.target.checked }).catch(e => toast(e.message, 6000));
       d.querySelector('.keepbetter').onchange = ev => post('options', { keep_better: ev.target.checked }).catch(e => toast(e.message, 6000));
+      for (const [cls, key, top, was] of [['.mapbelow', 'mapper_below', 100, c.mapper_below], ['.mapmore', 'mapper_more', 5, c.mapper_more]])
+        d.querySelector(cls).onchange = ev => {
+          const v = ev.target.value.trim();
+          if (!/^\d+$/.test(v) || +v > top) { toast(`A whole number from 0 to ${top}`, 6000); ev.target.value = was ?? ''; return; }
+          post('options', { [key]: +v }).catch(e => toast(e.message, 6000));
+        };
       d.querySelector('.del').onclick = async () => { if (ask(`Remove the list for "${c.name}"? Its meshes stay.`)) { await api('/api/campaigns/' + c.id, { method: 'DELETE' }); campaignLoop(); } };
       d.querySelectorAll('[data-mesh]').forEach(b => b.onclick = async () => { if (!meshesById[b.dataset.mesh]) await refreshMeshes(); viewMesh(b.dataset.mesh, null, 'area'); });
       d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
@@ -1848,7 +1859,8 @@ $('#ca-go').onclick = async () => {
       const c = await api('/api/campaigns', { method: 'POST', json: { area, order: $('#ca-order').value, without_youtube: $('#ca-noyt').checked,
                                                                     max_meshes: max ? +max : null, count_failures: !!max && $('#ca-countfail').checked,
                                                                     check_new: $('#ca-checknew').checked, same_photos_once: $('#ca-samephotos').checked,
-                                                                    keep_better: $('#ca-keepbetter').checked } });
+                                                                    keep_better: $('#ca-keepbetter').checked, mapper_below: $('#ca-mapbelow').value,
+                                                                    mapper_more: $('#ca-mapmore').value } });
       const added = c.again && $('#ca-checknew').checked ? `${c.added} new climb${c.added === 1 ? '' : 's'} added, ` : '';
       done.push(`${c.name}: ${c.again ? 'taken up again, ' : ''}${added}${c.counts.pending} to go`);
       campaignLoop();

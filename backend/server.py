@@ -46,6 +46,7 @@ import scale as scale_mod  # noqa: E402
 import compute  # noqa: E402
 import diagnostics  # noqa: E402
 import meshclean  # noqa: E402
+import meshopts  # noqa: E402
 import orientation  # noqa: E402
 import policy  # noqa: E402
 import provenance  # noqa: E402
@@ -223,6 +224,10 @@ def init_db() -> None:
             con.execute("ALTER TABLE campaigns ADD COLUMN same_photos_once INTEGER DEFAULT 1")
         if "keep_better" not in cols:       # a rebuild from the same photos that places fewer leaves the mesh before current
             con.execute("ALTER TABLE campaigns ADD COLUMN keep_better INTEGER DEFAULT 1")
+        if "mapper_below" not in cols:      # COLMAP's mapper placing under this % of the photos tries more seeds (meshopts.py)
+            con.execute(f"ALTER TABLE campaigns ADD COLUMN mapper_below INTEGER DEFAULT {round(meshopts.MAPPER['retry_below'] * 100)}")
+        if "mapper_more" not in cols:       # how many more
+            con.execute(f"ALTER TABLE campaigns ADD COLUMN mapper_more INTEGER DEFAULT {meshopts.MAPPER['more']}")
         cols = {r[1] for r in con.execute("PRAGMA table_info(campaign_items)")}
         # redo: what it's queued to do again (REDO_NAMES); was: its status before; changed: its photos have
         # changed since it was last meshed or checked; redo_started: a rebuild that began, to carry on with
@@ -1320,7 +1325,8 @@ def busy_campaigns() -> set[str]:
 
 def create_campaign(area: str, order: str = "popularity", csv_text: str | None = None, start: bool = True,
                     without_youtube: bool = False, max_meshes: int | None = None, count_failures: bool = False,
-                    check_new: bool = False, same_photos_once: bool = True, keep_better: bool = True) -> dict:
+                    check_new: bool = False, same_photos_once: bool = True, keep_better: bool = True,
+                    mapper_below: int | None = None, mapper_more: int | None = None) -> dict:
     """List a Mountain Project area's boulder problems, in one request, and queue them for meshing.
 
     Args:
@@ -1338,6 +1344,8 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
         same_photos_once: don't mesh a boulder again from the photos its current mesh was made from (boulder_unchanged()).
         keep_better: when a rebuild from the photos the mesh before was made from places fewer of them, that mesh stays
             the current one (run_reconstruct()).
+        mapper_below, mapper_more: when COLMAP's mapper places under mapper_below % of a climb's or boulder's photos, it
+            tries mapper_more more seeds, and the model placing most is kept (meshopts.py); None for the defaults, 0 for never.
 
     An area listed already is taken up again rather than listed twice, with these settings: what it has done stays
     done, so that a larger max_meshes only goes on to the next ones. Its list stays as it was, but for the climbs
@@ -1346,15 +1354,16 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
     if order not in CAMPAIGN_ORDERS:
         raise ValueError(f"order must be one of {', '.join(CAMPAIGN_ORDERS)}")
     max_meshes = clean_max_meshes(max_meshes)
+    mapper = clean_mapper({"mapper_below": mapper_below, "mapper_more": mapper_more})
     aid = mp_mod.area_id(area or "")
     if not aid and not csv_text:
         raise ValueError("enter a Mountain Project area URL, like https://www.mountainproject.com/area/105720495/joshua-tree-national-park")
     old = q("SELECT * FROM campaigns WHERE area_id=? ORDER BY created DESC LIMIT 1", aid, one=True) if aid and not csv_text else None
     if old:
         added = add_new_climbs(old["id"], mp_mod.export_area_csv(aid, sort="popularity", fresh=True)) if check_new else 0
-        q("UPDATE campaigns SET ord=?, max_meshes=?, count_failures=?, without_youtube=?, same_photos_once=?, keep_better=? WHERE id=?",
-          order, max_meshes, int(bool(count_failures)), int(bool(without_youtube)), int(bool(same_photos_once)), int(bool(keep_better)),
-          old["id"], write=True)
+        q("UPDATE campaigns SET ord=?, max_meshes=?, count_failures=?, without_youtube=?, same_photos_once=?, keep_better=?, "
+          "mapper_below=?, mapper_more=? WHERE id=?", order, max_meshes, int(bool(count_failures)), int(bool(without_youtube)),
+          int(bool(same_photos_once)), int(bool(keep_better)), mapper["mapper_below"], mapper["mapper_more"], old["id"], write=True)
         if start and old["status"] in ("stopped", "done"):
             q("UPDATE campaigns SET status='running', note=NULL, only_retries=0 WHERE id=?", old["id"], write=True)
         return {**q("SELECT * FROM campaigns WHERE id=?", old["id"], one=True), "again": True, "added": added}
@@ -1365,9 +1374,9 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
     cid = new_id()
     note = "Mountain Project's export stops at 1000 climbs: these are the most popular 1000" if len(recs) >= 1000 else None
     q("INSERT INTO campaigns(id,name,area_id,ord,created,note,status,without_youtube,max_meshes,count_failures,same_photos_once,"
-      "keep_better) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", cid, common[-1].strip("* ") if common else f"area {aid}", aid, order, time.time(),
-      note, "running" if start else "stopped", int(bool(without_youtube)), max_meshes, int(bool(count_failures)),
-      int(bool(same_photos_once)), int(bool(keep_better)), write=True)
+      "keep_better,mapper_below,mapper_more) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", cid, common[-1].strip("* ") if common else f"area {aid}",
+      aid, order, time.time(), note, "running" if start else "stopped", int(bool(without_youtube)), max_meshes, int(bool(count_failures)),
+      int(bool(same_photos_once)), int(bool(keep_better)), mapper["mapper_below"], mapper["mapper_more"], write=True)
     add_new_climbs(cid, recs)
     return q("SELECT * FROM campaigns WHERE id=?", cid, one=True)
 
@@ -1399,11 +1408,33 @@ def clean_max_meshes(n) -> int | None:
     return int(n)
 
 
+def clean_mapper(options: dict) -> dict:
+    """An area's settings for COLMAP's mapper as given (mapper_below: a whole % from 0 to 100; mapper_more: seeds, 0 to
+    5), the defaults (meshopts.py) for those None or missing."""
+    out = {"mapper_below": round(meshopts.MAPPER["retry_below"] * 100), "mapper_more": meshopts.MAPPER["more"]}
+    for key, top in (("mapper_below", 100), ("mapper_more", 5)):
+        v = options.get(key)
+        if v is None or v == "":
+            continue
+        if isinstance(v, bool) or not str(v).strip().isdigit() or not 0 <= int(v) <= top:
+            raise ValueError(f"{key}: a whole number from 0 to {top}")
+        out[key] = int(v)
+    return out
+
+
+def mapper_of(camp: dict) -> dict:
+    """An area's settings for COLMAP's mapper, as meshopts.using() takes them."""
+    below, more = camp.get("mapper_below"), camp.get("mapper_more")
+    return {"retry_below": (meshopts.MAPPER["retry_below"] if below is None else below / 100),
+            "more": meshopts.MAPPER["more"] if more is None else more}
+
+
 def set_campaign_options(camp_id: str, options: dict) -> dict:
     """Change how an area meshes: {"without_youtube": whether a climb is meshed before YouTube has been searched for it}.
     Turned on, its climbs waiting for volunteers are meshed with what they have, as after waiting too long.
     {"max_meshes": how many meshes to stop at, or None for all; "count_failures": whether failures count toward it}:
-    an area done that these give more to carries on. {"same_photos_once", "keep_better"}: as create_campaign() has them."""
+    an area done that these give more to carries on. {"same_photos_once", "keep_better", "mapper_below", "mapper_more"}: as
+    create_campaign() has them."""
     limit = {}
     if "max_meshes" in options:
         limit["max_meshes"] = clean_max_meshes(options["max_meshes"])
@@ -1417,6 +1448,10 @@ def set_campaign_options(camp_id: str, options: dict) -> dict:
     for key in ("same_photos_once", "keep_better"):
         if key in options:
             q(f"UPDATE campaigns SET {key}=? WHERE id=?", int(bool(options[key])), camp_id, write=True)
+    mapper = {k: options[k] for k in ("mapper_below", "mapper_more") if k in options and options[k] not in (None, "")}
+    if mapper:
+        clean = clean_mapper(mapper)
+        q(f"UPDATE campaigns SET {', '.join(f'{k}=?' for k in mapper)} WHERE id=?", *(clean[k] for k in mapper), camp_id, write=True)
     if "without_youtube" in options:
         q("UPDATE campaigns SET without_youtube=? WHERE id=?", int(bool(options["without_youtube"])), camp_id, write=True)
         if options["without_youtube"]:
@@ -1877,7 +1912,8 @@ def next_campaign_step() -> bool:
         return False
     camp, item = picked
     try:
-        run_campaign_item(camp, item)
+        with meshopts.using(mapper_of(camp)):    # for its meshes, here or on a machine elsewhere
+            run_campaign_item(camp, item)
         w.error = w.waiting = None
         settle_boulder(camp["id"], item.get("boulder"))
     except compute.ComputeUnavailable as e:     # the climb waits; so does this worker, for a while
@@ -3713,7 +3749,8 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     camp = create_campaign(b.get("area") or "", b.get("order") or "popularity", b.get("csv"), bool(b.get("start", True)),
                                            bool(b.get("without_youtube")), b.get("max_meshes"), bool(b.get("count_failures")),
-                                           bool(b.get("check_new")), bool(b.get("same_photos_once", True)), bool(b.get("keep_better", True)))
+                                           bool(b.get("check_new")), bool(b.get("same_photos_once", True)), bool(b.get("keep_better", True)),
+                                           b.get("mapper_below"), b.get("mapper_more"))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
                 return self.send_json(campaign_view(camp), 201)

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 import diagnostics
+import meshopts
 import occlusion
 import orientation
 import vggt_place
@@ -381,23 +382,35 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         if internet:
             cmd += ["--Mapper.ba_refine_principal_point", "1", "--Mapper.min_num_matches", "20"]
         # COLMAP 3.9's mapper can abort on one failing model ("NumRegImages() >= 2"; 2 of 25 runs when
-        # tried), or throw away a whole model it had grown, leaving too little (design.md). It works from
-        # the database, so another seed doesn't redo the matching, and the models an earlier attempt
-        # finished stay on disk as candidates.
-        for attempt in range(MAPPER_ATTEMPTS):
+        # tried), or throw away a whole model it had grown, leaving too little (design.md), or place many fewer
+        # photos of the same set from one run to the next (meshopts.py). It works from the database, so another seed
+        # doesn't redo the matching, and the models an earlier attempt finished stay on disk as candidates.
+        opts = meshopts.mapper()
+        below, more = float(opts["retry_below"] or 0), int(opts["more"] or 0)
+        attempt = failed = fewer = 0
+        while True:
             try:
                 _run(cmd + ["--random_seed", str(attempt)], work, log, _mapper(tracker, n_images))
-                registered = _largest_model(sparse)[1]
-                if registered >= min_registered:
-                    break
-                problem = f"only {registered} of {n_images} photos placed"
+                ran = True
             except RuntimeError as e:
-                problem = str(e)
-            log(f"mapper failed ({problem}), attempt {attempt + 1} of {MAPPER_ATTEMPTS}")
-            if attempt + 1 < MAPPER_ATTEMPTS:
-                for m in list(sparse.iterdir()):
-                    if not m.name.startswith("aborted"):
-                        m.rename(sparse / f"aborted{attempt}-{m.name}")
+                ran, problem = False, str(e)
+            best = _largest_model(sparse)[1]
+            if best >= min_registered and (ran or fewer):     # enough, from this seed or one before tried for more
+                if not (ran and below > 0 and best < below * n_images and fewer < more):
+                    break
+                fewer += 1
+                log(f"mapper placed {best} of {n_images} photos, under {below:.0%} of them: trying another seed ({fewer} of "
+                    f"{more}), keeping the model that places most")
+            else:
+                failed += 1
+                log(f"mapper failed ({problem if not ran else f'only {best} of {n_images} photos placed'}), attempt {failed} of "
+                    f"{MAPPER_ATTEMPTS}")
+                if failed >= MAPPER_ATTEMPTS:
+                    break
+            for m in list(sparse.iterdir()):
+                if not m.name.startswith("aborted"):
+                    m.rename(sparse / f"aborted{attempt}-{m.name}")
+            attempt += 1
         registered = _largest_model(sparse)[1]
         if registered < min_registered:
             _place_with_vggt(db, images, sparse, work, log, tracker, registered)

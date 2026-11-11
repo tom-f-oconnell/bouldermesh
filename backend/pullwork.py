@@ -39,6 +39,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 import compute
+import meshopts
 import registration
 from volunteers import OffsetError, _client_ip
 
@@ -348,7 +349,9 @@ class Board:
                 tar.unlink(missing_ok=True)
                 tar.with_suffix(".json").unlink(missing_ok=True)
             return mesh, bool(result.get("demo"))
-        result, back, job = self._run("reconstruct", files, {"internet": internet}, project.name, project, log, tracker)
+        mapper = meshopts.given()     # an area's settings for COLMAP's mapper, sent as task.json
+        result, back, job = self._run("reconstruct", files, {"internet": internet, **({"mapper": mapper} if mapper else {})},
+                                      project.name, project, log, tracker)
         m = self.get(job.machine or "")
         if registration.provisional(m):     # held until its machine is approved
             shutil.rmtree(back, ignore_errors=True)
@@ -470,13 +473,15 @@ class Board:
         with tarfile.open(path, "w") as tar:
             for name, src in files.items():
                 tar.add(src, arcname=name)
-            if kind != "reconstruct":
+            told = kind != "reconstruct" or bool(args.get("mapper"))
+            if told:
                 data = json.dumps(args).encode()
                 info = tarfile.TarInfo("task.json")
                 info.size, info.mtime = len(data), time.time()
                 tar.addfile(info, io.BytesIO(data))
+        # a reconstruction sent task.json only goes to scripts that take one (version 2)
         job = Job(id=jid, label=label, input=path, size=path.stat().st_size, internet=bool(args.get("internet")), image=image,
-                  task=kind, version=1 if kind == "reconstruct" else 2)
+                  task=kind, version=2 if told else 1)
         with self.cond:
             self.jobs[jid] = job
         return job

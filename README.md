@@ -179,6 +179,9 @@ again.
 - *Keep the mesh before when a rebuild from the same photos places fewer*: COLMAP can place fewer photos of the same set
   from one run to the next. When a rebuild had every photo the mesh before placed and places fewer, the mesh before stays
   the current one, and the new one is kept as an older version of it.
+- *When COLMAP places under 75% of the photos, try 1 more seed, keeping the best*: within one meshing, COLMAP's placing of
+  the photos is tried again with another random seed (a minute or so for most) while the model it keeps places under that
+  share of them, and the model placing most is used. 0 in either turns it off. Meshes made outside areas use 75% and 1.
 
 Its boulder problems are then taken one at a time until you stop, or the list runs out. A climb that shares its boulder
 with others on the list is only harvested; once all of the list's climbs on that boulder are, the boulder is meshed from
@@ -782,8 +785,8 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/climbs/{id}/harvest {sources:[climb,google,ddg,commons,flickr,youtube], reconstruct, filter}
     POST /api/climbs/{id}/boulder                       mesh its boulder from every photo of its climbs, harvesting those never harvested
     GET  /api/campaigns · POST /api/campaigns {area, order:popularity|rating|data, start, csv, without_youtube, max_meshes, count_failures, check_new,
-                                               same_photos_once, keep_better}
-    POST /api/campaigns/{id}/options {without_youtube, max_meshes, count_failures, same_photos_once, keep_better}   an area listed again is taken up again
+                                               same_photos_once, keep_better, mapper_below, mapper_more}
+    POST /api/campaigns/{id}/options {without_youtube, max_meshes, count_failures, same_photos_once, keep_better, mapper_below, mapper_more}   an area listed again is taken up again
     POST /api/campaigns/{id}/start · POST /api/campaigns/{id}/stop {now} · DELETE /api/campaigns/{id}
     POST /api/campaigns/{id}/retry                      its failed climbs, ahead of the rest
     POST /api/campaigns/{id}/harvest-again {videos_only, then_rebuild} · POST /api/campaigns/{id}/rebuild {changed_only, skipped_only}

@@ -1591,4 +1591,27 @@ m4 = server.run_reconstruct(kept)
 assert current() == m4, "without keep_better, the newest is current"
 pipeline.reconstruct = fake_reconstruct
 print("the same photos once, and keeping the better mesh OK")
+
+# --- an area's settings for COLMAP's mapper are what its meshes are made with, here or sent elsewhere ---------------------
+import meshopts  # noqa: E402
+
+fresh()
+c = server.create_campaign("", "popularity", sub({"Beta"}), mapper_below=60, mapper_more=2)
+assert (c["mapper_below"], c["mapper_more"]) == (60, 2)
+seen_mapper = []
+pipeline.reconstruct = lambda *a, **k: (seen_mapper.append(meshopts.given()), fake_reconstruct(*a, **k))[1]
+run_all(c["id"], 10)
+assert seen_mapper == [{"retry_below": 0.6, "more": 2}] and meshopts.given() is None, seen_mapper
+server.set_campaign_options(c["id"], {"mapper_below": 0})
+assert server.q("SELECT mapper_below, mapper_more FROM campaigns WHERE id=?", c["id"], one=True) == {"mapper_below": 0, "mapper_more": 2}
+for bad in ({"mapper_below": 101}, {"mapper_more": 6}, {"mapper_more": "x"}, {"mapper_below": True}):
+    try:
+        server.set_campaign_options(c["id"], bad)
+        raise AssertionError(bad)
+    except ValueError as e:
+        assert "a whole number from 0 to" in str(e), e
+d = server.create_campaign("", "popularity", sub({"Gamma"}))
+assert (d["mapper_below"], d["mapper_more"]) == (75, 1), "the defaults"
+pipeline.reconstruct = fake_reconstruct
+print("the mapper's settings OK")
 print("ALL CAMPAIGN TESTS PASSED")

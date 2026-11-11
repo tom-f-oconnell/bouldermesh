@@ -65,7 +65,7 @@ def model(sparse: pathlib.Path, name: str, n: int) -> None:
     (d / "images.bin").write_bytes(struct.pack("<Q", n))
 
 
-def run_with_mapper(attempts: list, tmp: pathlib.Path) -> tuple[list[str], list[list[str]]]:
+def run_with_mapper(attempts: list, tmp: pathlib.Path, n: int = 8) -> tuple[list[str], list[list[str]]]:
     """reconstruct_colmap_openmvs(), with each mapper attempt leaving models {name: n} behind.
 
     An attempt fails if it says "abort": True. Stops at levelling the model, raising Stop with the
@@ -73,7 +73,7 @@ def run_with_mapper(attempts: list, tmp: pathlib.Path) -> tuple[list[str], list[
     """
     images, work, logged, seen = tmp / "images", tmp / "work", [], []
     images.mkdir()
-    for i in range(8):
+    for i in range(n):
         (images / f"{i}.jpg").write_bytes(b"x")
     attempts = list(attempts)
 
@@ -95,10 +95,10 @@ def run_with_mapper(attempts: list, tmp: pathlib.Path) -> tuple[list[str], list[
     return logged, seen
 
 
-def stops_at(attempts: list) -> str:
+def stops_at(attempts: list, n: int = 8) -> str:
     with tempfile.TemporaryDirectory() as td:
         try:
-            run_with_mapper(attempts, pathlib.Path(td))
+            run_with_mapper(attempts, pathlib.Path(td), n)
         except Stop as e:
             return str(e)
     raise AssertionError("should have carried on to levelling the model")
@@ -134,6 +134,22 @@ with tempfile.TemporaryDirectory() as td:
     except RuntimeError as e:
         assert "only 3 image(s)" in str(e), e
 print("mapper abort OK")
+
+# placing many fewer than it was given, another seed is tried too (meshopts.MAPPER: under 75%, one more), and the model
+# placing most is kept; an area can change both, or turn it off
+import meshopts  # noqa: E402
+
+assert stops_at([{"models": {"0": 13}}, {"models": {"0": 19}}], 20).endswith("sparse/0"), "13 of 20: another seed, which placed 19"
+assert stops_at([{"models": {"0": 13}}, {"models": {"0": 9}}], 20).endswith("aborted0-0"), "the first placed more: it's kept"
+assert stops_at([{"models": {"0": 13}}, {**ABORT, "models": {"0": 4}}], 20).endswith("aborted0-0"), "an abort then isn't a failure"
+assert stops_at([{"models": {"0": 16}}], 20).endswith("sparse/0"), "16 of 20 is enough"
+with meshopts.using({"retry_below": 0, "more": 3}):
+    assert stops_at([{"models": {"0": 13}}], 20).endswith("sparse/0"), "off"
+with meshopts.using({"retry_below": 0.9, "more": 2}):
+    assert stops_at([{"models": {"0": 13}}, {"models": {"0": 17}}, {"models": {"0": 15}}], 20).endswith("aborted1-0"), \
+        "two more seeds under 90%, the best of three kept"
+assert meshopts.given() is None, "only inside using()"
+print("mapper's other seeds OK")
 
 
 # ---- when the mapper places too few, VGGT's placements (refined by COLMAP) are another model to choose from
