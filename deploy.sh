@@ -6,8 +6,9 @@
 #     ./deploy.sh --now      restarts at once, whatever's in progress
 #     ./deploy.sh --after    waits for what's in progress to finish (taking no new work meanwhile), then restarts
 #
-# While it waits, it says what for every 30 s, in this machine's time. At a terminal, n restarts now, c (or Ctrl-C)
-# cancels, and it waits for as long as it takes. Without one to ask at, it does --after, for at most WAIT_MINUTES (90).
+# While it waits, it says what for every 30 s, in this machine's time, and restarts by itself once nothing's left. At a
+# terminal, n restarts now instead, c (or Ctrl-C) cancels, and it waits for as long as it takes. Without one to ask at,
+# it does --after, for at most WAIT_MINUTES (90).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -49,7 +50,7 @@ if [ "$check" -eq 3 ]; then
     if [ "$mode" = after ]; then
         cli deploy-drain >/dev/null || true
         trap 'echo; cancel 130' INT
-        echo "taking no new work, and waiting for what's in progress"
+        echo "taking no new work, and restarting once what's in progress has finished"
         deadline=$((SECONDS + ${WAIT_MINUTES:-90} * 60)) late=''
         while true; do
             set +e
@@ -64,12 +65,12 @@ if [ "$check" -eq 3 ]; then
             [ "$st" -eq 0 ] && break    # otherwise, something's left, or the server couldn't be asked just now
             if [ "$SECONDS" -ge "$deadline" ] && [ -z "$late" ]; then
                 [ -t 0 ] || { echo "still going after ${WAIT_MINUTES:-90} min: restarting anyway"; break; }
-                echo "${ask}still going after ${WAIT_MINUTES:-90} min${plain}"$'\a'
+                echo "${ask}still going after ${WAIT_MINUTES:-90} min: still waiting, to restart once it's done${plain}"$'\a'
                 late=1
             fi
             if [ -t 0 ]; then
                 key=''
-                read -r -s -n 1 -t 30 -p "${ask}[n] restart now, [c] cancel, any other key: look again now${plain} " key || true
+                read -r -s -n 1 -t 30 -p "${ask}restarting once it's done; or [n] now, [c] cancel, any other key: look again${plain} " key || true
                 printf '\r\e[K' >&2     # the next line takes its place, and it comes again below that
                 case "$key" in
                     n|N) echo "$(date +%H:%M:%S) restarting now, as you said"; mode=now; break ;;
