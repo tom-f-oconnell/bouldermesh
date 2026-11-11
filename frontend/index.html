@@ -45,6 +45,7 @@
   .card{border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--bg);margin-bottom:8px}
   .card.active{border-color:var(--acc)}
   #climbs>.card{cursor:pointer}
+  #climbs>.card,#meshes>.card{content-visibility:auto;contain-intrinsic-size:auto 110px}   /* off screen: not laid out until near */
   #climbs>.card.open{border-color:var(--acc);border-bottom-left-radius:0;border-bottom-right-radius:0;margin-bottom:0}
   .card.active.under{border-top-left-radius:0;border-top-right-radius:0;border-top-color:var(--line);cursor:default}
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -545,6 +546,8 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x===b));
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + b.dataset.tab));
   if (b.dataset.tab === 'beta') renderBetaList();
+  if (b.dataset.tab === 'projects') poll();          // followed while it shows
+  if (b.dataset.tab === 'areas') campaignLoop();     // every 5 s while it shows
 });
 // on a phone, the view on its own, or the controls on their own
 function setFull(on){
@@ -681,10 +684,21 @@ function applySway(now){
   at.phi = THREE.MathUtils.clamp(at.phi + amount * SWAY.upDown * Math.sin(2 * phase), .05, Math.PI - .05);   // a figure of eight, not just side to side
   camera.position.setFromSpherical(at).add(controls.target);
 }
+// Drawn only while the 3D view can be seen: not behind a phone's controls (where it went on drawing a big mesh every frame,
+// slowing scrolling there), nor the map, nor a hidden tab. Once nothing has moved for STILL_MS, a few times a second
+// rather than every frame, which still catches what changes the scene by other ways (holds shown, a texture loaded).
+const STILL_MS = 2000, STILL_EVERY_MS = 250;
+let viewSeen = true, lastMove = 0, lastDraw = 0;
+const woke = () => { lastMove = performance.now(); };
+new IntersectionObserver(es => { viewSeen = es[es.length - 1].isIntersecting; if (viewSeen) woke(); }).observe(renderer.domElement);
+controls.addEventListener('change', woke);
+for (const ev of ['pointerdown', 'pointermove', 'wheel']) renderer.domElement.addEventListener(ev, woke, { passive: true });
 renderer.setAnimationLoop(now => {
-  if (!vEl.classList.contains('on') || document.hidden) return;    // nothing to draw while the map or the controls show
+  if (!vEl.classList.contains('on') || document.hidden || !viewSeen) return;    // nothing to draw while it can't be seen
   applySway(now);
-  controls.update();
+  if (controls.update() || sway || splat?.viewer) lastMove = now;     // moving, easing, swaying, or a splat to sort
+  if (now - lastMove > STILL_MS && now - lastDraw < STILL_EVERY_MS) return;
+  lastDraw = now;
   liftRings();
   if (splat?.viewer && current) splat.viewer.matrix.copy(current.matrixWorld);   // the splat is in the mesh's own frame
   const near = THREE.MathUtils.clamp(camera.position.distanceTo(controls.target) / 50, 1e-4, .01);   // so a close surface isn't clipped
@@ -923,7 +937,7 @@ function renderOrientation(m){
   bindSize(el, m);
   el.querySelector('.rebuild')?.addEventListener('click', async ev => {
     ev.target.disabled = true;
-    try { await api(`/api/projects/${m.source.split(':')[1]}/reconstruct`, { method: 'POST' }); toast('Rebuilding as a new mesh: this one stays', 5000); poll(); }
+    try { await api(`/api/projects/${m.source.split(':')[1]}/reconstruct`, { method: 'POST' }); toast('Rebuilding as a new mesh: this one stays', 5000); active = m.source.split(':')[1]; poll(); }
     catch (e) { toast(e.message, 6000); ev.target.disabled = false; }
   });
   if (!hasBoth) return;
@@ -1343,11 +1357,20 @@ function flyTo(lat, lng){ mapFitted = true; showRight('map'); refreshMap().then(
 let climbsCache = [];
 let climbsTotal = null, climbsDoubtful = null;   // every climb there is, of which the list has the newest 500
 let climbsFound = null;       // with a search or a box ticked: the server's matches among every climb
+// a list redrawn while someone scrolls it jumps, and on a phone stalls the scroll: wait until it's been still a moment
+let lastScroll = 0;
+addEventListener('scroll', () => { lastScroll = performance.now(); }, { capture: true, passive: true });
+async function scrollStill(ms = 800, most = 10000){
+  const began = performance.now();
+  while (performance.now() - lastScroll < ms && performance.now() - began < most) await pause(200);
+}
 async function refreshClimbs(){
   const [list, count] = await Promise.all([api('/api/climbs'), api('/api/climbs/count').catch(() => ({}))]);
+  await scrollStill();
   climbsCache = list; climbsTotal = count.climbs ?? null; climbsDoubtful = count.doubtful ?? null;
   await searchClimbs();
-  // fill selects
+  // fill selects (editors only: thousands of options to make)
+  if (document.body.classList.contains('readonly')) return;
   for (const sel of [$('#pclimb'), $('#upclimb')]) {
     const first = sel.options[0].outerHTML;
     sel.innerHTML = first + climbsCache.filter(c=>c.kind!=='area').map(c => `<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('');
@@ -1742,6 +1765,8 @@ async function loadDetail(id, card){
   const st = card.querySelector('.status'); st.textContent = p.status + (p.demo?' (demo)':''); st.className = 'status ' + p.status;
 }
 let polling = false;
+let pollMeshes = null;      // the projects' meshes when the lists were last fetched for them
+document.addEventListener('visibilitychange', () => { if (!document.hidden) campaignLoop(); });     // back from another tab
 async function poll(){
   if (polling) return; polling = true;
   let shown = null;
@@ -1749,13 +1774,21 @@ async function poll(){
     while (true) {
       const list = await api('/api/projects');
       const busy = list.some(p => BUSY.includes(p.status));
+      // followed every 2.5 s only on the Projects tab, or while a job asked for here runs: otherwise an area's harvest,
+      // always busy, kept every page fetching its projects (over 300 KB) every 2.5 s; the areas' own loop notices new meshes
+      const followed = !document.hidden && ($('#pane-projects').classList.contains('on') || list.some(p => p.id === active && BUSY.includes(p.status)));
+      if (busy && !followed) break;
       const now = list.map(p => [p.id, p.status, p.mesh_id].join()).join(';');
       if (now !== shown || !list.every(p => projectCards.has(p.id))) await refreshProjects();
       else await Promise.all(list.filter(p => BUSY.includes(p.status)).map(p => loadDetail(p.id, projectCards.get(p.id))));
       shown = now;
       if (!busy) {
-        await refreshMeshes(); await refreshClimbs();
-        if (openClimbId) openClimb(openClimbId, false);   // the job may have changed what it shows
+        const made = list.map(p => p.mesh_id || '').join();
+        if (made !== pollMeshes) {      // only when one has a new mesh: the lists are big to fetch and draw again
+          pollMeshes = made;
+          await refreshMeshes(); await refreshClimbs();
+          if (openClimbId) openClimb(openClimbId, false);   // the job may have changed what it shows
+        }
         break;
       }
       await new Promise(r => setTimeout(r, 2500));
@@ -1925,8 +1958,11 @@ async function campaignLoop(){
   showStopping();
   const list = await refreshCampaigns().catch(() => []);
   const active = list.some(c => c.current || c.status === 'running' || c.status === 'stopping');
-  if (active && !polling) poll();
-  campaignTimer = setTimeout(campaignLoop, active ? 5000 : 30000);
+  const shown = id => $('#pane-' + id).classList.contains('on') && !document.hidden;
+  if (active && !polling && shown('projects')) poll();     // its jobs' progress, for the Projects tab only
+  // every 5 s while the Areas tab shows them working; otherwise each minute, to notice new meshes (a phone's lists
+  // were refetched and rebuilt every 5 s, over a MB, while areas ran)
+  campaignTimer = setTimeout(campaignLoop, active && shown('areas') ? 5000 : 60000);
 }
 // "count failures" only means something with a limit to count toward
 $('#ca-max').oninput = () => { const f = $('#ca-countfail'); f.disabled = !$('#ca-max').value.trim(); if (f.disabled) f.checked = false; };
@@ -2230,6 +2266,7 @@ addEventListener('pagehide', flushRating);
 async function refreshMeshes(){
   hideSourceTip();
   meshesCache = await api('/api/meshes'); meshesById = Object.fromEntries(meshesCache.map(m => [m.id, m]));
+  await scrollStill();
   renderMeshes();
 }
 // the list as fetched, sorted and filtered; with filter false, the filter's own controls aren't drawn again (a slider being moved)
