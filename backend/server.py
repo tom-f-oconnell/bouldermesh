@@ -2788,6 +2788,10 @@ def run_redo(camp: dict, item: dict) -> None:
     row["was"] = row["was"] or "done"
     log = lambda s: append_log(row["project_id"], s)  # noqa: E731
     first, *then = row["redo"].split("+")
+    if row["boulder"] and leaf_kind(row["boulder"]) is None and row["climb_id"] and settings().get("areas.meshes") == "boulders":
+        data = q("SELECT data FROM climbs WHERE id=?", row["climb_id"], one=True)     # what its lowest area is, before pooling it
+        if data and data["data"]:                                                       # again (as run_campaign_item())
+            boulder_kind(row["boulder"], climb_area_url(Climb.from_dict(json.loads(data["data"]))), log if row["project_id"] else print)
     if first in ("boulder", "pool"):    # pool: queued before boulders had their own meshes
         return _run_boulder_redo(camp, row)
     if first == "own":
