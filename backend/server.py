@@ -224,6 +224,9 @@ def init_db() -> None:
             con.execute("ALTER TABLE campaigns ADD COLUMN only_retries INTEGER DEFAULT 0")
         if "without_youtube" not in cols:   # mesh climbs whose YouTube search hasn't been done (none to do it)
             con.execute("ALTER TABLE campaigns ADD COLUMN without_youtube INTEGER DEFAULT 0")
+        if "priority" not in cols:          # areas are taken in this order, lowest first: as entered (next_priority())
+            con.execute("ALTER TABLE campaigns ADD COLUMN priority REAL")
+            con.execute("UPDATE campaigns SET priority=created")
         if "max_meshes" not in cols:        # stop once so many meshes are made, in its order (NULL: mesh all of it)
             con.execute("ALTER TABLE campaigns ADD COLUMN max_meshes INTEGER")
         if "count_failures" not in cols:    # with max_meshes: its climbs and boulders that failed count toward it too
@@ -1425,8 +1428,9 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
     if old:
         added = add_new_climbs(old["id"], mp_mod.export_area_csv(aid, sort="popularity", fresh=True)) if check_new else 0
         q("UPDATE campaigns SET ord=?, max_meshes=?, count_failures=?, without_youtube=?, same_photos_once=?, keep_better=?, "
-          "mapper_below=?, mapper_more=? WHERE id=?", order, max_meshes, int(bool(count_failures)), int(bool(without_youtube)),
-          int(bool(same_photos_once)), int(bool(keep_better)), mapper["mapper_below"], mapper["mapper_more"], old["id"], write=True)
+          "mapper_below=?, mapper_more=?, priority=? WHERE id=?", order, max_meshes, int(bool(count_failures)), int(bool(without_youtube)),
+          int(bool(same_photos_once)), int(bool(keep_better)), mapper["mapper_below"], mapper["mapper_more"], next_priority(),
+          old["id"], write=True)
         if start and old["status"] in ("stopped", "done"):
             q("UPDATE campaigns SET status='running', note=NULL, only_retries=0 WHERE id=?", old["id"], write=True)
         return {**q("SELECT * FROM campaigns WHERE id=?", old["id"], one=True), "again": True, "added": added}
@@ -1437,9 +1441,10 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
     cid = new_id()
     note = "Mountain Project's export stops at 1000 climbs: these are the most popular 1000" if len(recs) >= 1000 else None
     q("INSERT INTO campaigns(id,name,area_id,ord,created,note,status,without_youtube,max_meshes,count_failures,same_photos_once,"
-      "keep_better,mapper_below,mapper_more) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", cid, common[-1].strip("* ") if common else f"area {aid}",
-      aid, order, time.time(), note, "running" if start else "stopped", int(bool(without_youtube)), max_meshes, int(bool(count_failures)),
-      int(bool(same_photos_once)), int(bool(keep_better)), mapper["mapper_below"], mapper["mapper_more"], write=True)
+      "keep_better,mapper_below,mapper_more,priority) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", cid,
+      common[-1].strip("* ") if common else f"area {aid}", aid, order, time.time(), note, "running" if start else "stopped",
+      int(bool(without_youtube)), max_meshes, int(bool(count_failures)), int(bool(same_photos_once)), int(bool(keep_better)),
+      mapper["mapper_below"], mapper["mapper_more"], next_priority(), write=True)
     add_new_climbs(cid, recs)
     return q("SELECT * FROM campaigns WHERE id=?", cid, one=True)
 
@@ -1460,6 +1465,12 @@ def add_new_climbs(cid: str, recs: list[Climb]) -> int:
         con.executemany("INSERT OR IGNORE INTO campaign_items(campaign_id,source_id,rank,name,grade,stars,url,boulder,data) "
                         "VALUES(?,?,?,?,?,?,?,?,?)", rows)
     return len(rows)
+
+
+def next_priority() -> float:
+    """The priority after every area's: an area entered, or entered again, goes after those there are, so that a list of
+    them entered at once is taken in its order, top first (_claim())."""
+    return (q("SELECT MAX(priority) p FROM campaigns", one=True)["p"] or 0.0) + 1.0
 
 
 def clean_max_meshes(n) -> int | None:
@@ -2125,7 +2136,7 @@ def _claim(w: Worker):
         (area, climb), or None.
     """
     others = [x for x in _workers if x is not w]
-    camps = q("SELECT * FROM campaigns WHERE status='running' ORDER BY created")
+    camps = q("SELECT * FROM campaigns WHERE status='running' ORDER BY priority, created")     # as entered, top first
     why = full()
     for camp in camps:      # paused, not stopped: they carry on once there's room
         note = f"paused: {why}" if why else None
@@ -3079,7 +3090,7 @@ def active_areas(camps: list[dict]) -> set[str]:
     running ones wait their turn."""
     workers = [w for w in _workers if not w.retired]
     on = {w.campaign for w in workers if w.campaign} | {w.waiting["campaign"] for w in workers if w.waiting}
-    for c in sorted((c for c in camps if c["status"] == "running"), key=lambda c: c["created"]):
+    for c in sorted((c for c in camps if c["status"] == "running"), key=lambda c: (c.get("priority") or 0, c["created"])):
         if len(on) >= len(workers):
             break
         if c["id"] not in on and ordered_pending(c):
@@ -3089,18 +3100,23 @@ def active_areas(camps: list[dict]) -> set[str]:
 
 def campaigns_listed() -> list[dict]:
     """Every area for the Areas pane, each with "state": "running" for one being worked on (active_areas()), "queued"
-    for one running that waits its turn, otherwise its status. Those being worked on first, the one with the newest
-    mesh first; then those queued, the next to be taken first; then the rest, newest first."""
+    for one running that waits its turn, "waiting" for one running with no climb to take now (they wait for volunteers,
+    or for the rest of their boulder's), otherwise its status; and "place", its place in the order areas are taken.
+    Those being worked on first, the one with the newest mesh first; then those queued and waiting, in the order they're
+    taken; then the rest, newest first."""
     camps = q("SELECT * FROM campaigns ORDER BY created DESC")
     active = active_areas(camps)
+    order = [c["id"] for c in sorted((c for c in camps if c["status"] == "running"), key=lambda c: (c.get("priority") or 0, c["created"]))]
     out = []
     for c in camps:
         v = campaign_view(c)
-        v["state"] = ("running" if c["id"] in active else "queued") if c["status"] == "running" else c["status"]
+        v["state"] = (("running" if c["id"] in active else "queued" if v["next"] else "waiting") if c["status"] == "running"
+                      else c["status"])
+        v["place"] = order.index(c["id"]) + 1 if c["id"] in order else None
         out.append(v)
-    rank = {"running": 0, "stopping": 0, "queued": 1}
+    rank = {"running": 0, "stopping": 0, "queued": 1, "waiting": 1}
     out.sort(key=lambda v: (rank.get(v["state"], 2), -(v["last_mesh"] or 0) if rank.get(v["state"]) == 0 else
-                            v["created"] if v["state"] == "queued" else -v["created"]))
+                            v["place"] if rank.get(v["state"]) == 1 else -v["created"]))
     return out
 
 

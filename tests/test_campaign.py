@@ -1950,4 +1950,34 @@ board.jobs.pop(job.id, None)
 job.input.unlink(missing_ok=True)
 server.stop_campaign(c["id"])
 print("what a restart would cost OK")
+
+# --- areas taken in the order entered, top first, kept in the database; entered again, they move to the end ----------
+fresh()
+url_of = lambda n: f"https://www.mountainproject.com/area/1000{n}/area-{n}"  # noqa: E731
+real_export = server.mp_mod.export_area_csv
+server.mp_mod.export_area_csv = lambda aid, sort="popularity", fresh=False: server.mp_mod.parse_area_csv(CSV)
+first, second, third = (server.create_campaign(url_of(n), "popularity") for n in (1, 2, 3))
+assert first["priority"] < second["priority"] < third["priority"]
+for c, name in ((first, "first"), (second, "second"), (third, "third")):
+    server.q("UPDATE campaigns SET name=?, created=? WHERE id=?", name, 3000.0 - c["priority"], c["id"], write=True)   # created the other way round
+w2 = server.Worker("two")
+server._workers[:] = [server._first, w2]
+with server._claim_lock:
+    picked = server._claim(w2)
+assert picked[0]["name"] == "first", "by the order entered, not by when created"
+w2.campaign = None
+listed = {v["name"]: v for v in server.campaigns_listed()}
+assert (listed["first"]["place"], listed["second"]["place"], listed["third"]["place"]) == (1, 2, 3)
+server.create_campaign(url_of(1), "popularity")      # entered again: after the others now
+assert [v["name"] for v in sorted(server.campaigns_listed(), key=lambda v: v["place"] or 99)][:3] == ["second", "third", "first"]
+# one with no climb to take for now: waiting, and passed over
+server.q("UPDATE campaign_items SET status='waiting' WHERE campaign_id=?", second["id"], write=True)
+with server._claim_lock:
+    picked = server._claim(w2)
+assert picked[0]["name"] == "third", "the next with a climb to take"
+listed = {v["name"]: v["state"] for v in server.campaigns_listed()}
+assert listed["second"] == "waiting", listed
+server._workers[:] = [server._first]
+server.mp_mod.export_area_csv = real_export
+print("areas in the order entered OK")
 print("ALL CAMPAIGN TESTS PASSED")

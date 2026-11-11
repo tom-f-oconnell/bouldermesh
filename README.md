@@ -174,8 +174,9 @@ their photographers. `sources.json` lets you credit or remove any of them.
 ## Mesh a whole area
 
 On the *Areas* tab, paste a Mountain Project area URL, such as
-`https://www.mountainproject.com/area/105720495/joshua-tree-national-park` (or several, one a line, which go one after
-another), and pick an order:
+`https://www.mountainproject.com/area/105720495/joshua-tree-national-park` (or several, one a line, which are taken in
+the order given, top first, after any running already; an area entered again moves to its place in the new list; the
+order is kept in the database, and each card shows its place, #1 first), and pick an order:
 
 - **Most popular**, Mountain Project's own ranking.
 - **Highest rated**, by average stars.
@@ -212,7 +213,8 @@ of those climbs or its boulder is worked on, its card lists the boulder's climbs
 with the photos (page photos and video frames too) it gives, or red if none; once pooled, what each gives after the
 boulder's filter, and what the boulder's own search found. ★ marks the climb that brought the boulder in, the first of
 them in the area's order. With more areas running than workers, those being worked on are listed first, the one with
-the newest mesh first, and the rest say *queued* until a worker is free for them. A climb alone
+the newest mesh first, and the rest say *queued* until a worker is free for them, or *waiting* while they have no
+climb to take (waiting for volunteers, or for the rest of a boulder's climbs), when workers go on to the next area. A climb alone
 on its boulder, or on an area holding several (as "… Boulders"), is harvested and meshed on its own. A climb or boulder
 without enough photos is skipped, and the run moves on. A climb isn't meshed until YouTube has been searched for its
 videos, here or by a volunteer: without one to search, it waits, tried again each day, and *Fetch the videos and searches
