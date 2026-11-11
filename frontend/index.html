@@ -284,6 +284,10 @@
         </div>
         <label class="row" style="margin-top:6px" title="Off: a climb waits until YouTube has been searched for its videos (by a volunteer, on a server YouTube refuses) before it's meshed. On: meshes it anyway, as when no volunteer is connected to search."><input type="checkbox" id="ca-noyt" autocomplete="off"> Mesh climbs without searching YouTube for their videos first</label>
         <label class="row" style="margin-top:6px" title="An area listed already keeps the list Mountain Project gave when it was first entered. On: asks Mountain Project again (up to a minute each), and adds the problems posted since, without changing the order of those listed: by popularity, the new ones come after them."><input type="checkbox" id="ca-checknew" autocomplete="off"> For areas listed already, check Mountain Project for climbs added since</label>
+        <details style="margin-top:6px"><summary>More options</summary>
+          <label class="row" style="margin-top:6px" title="On: a boulder whose mesh was made from the photos its climbs have now isn't meshed again, as when one of its climbs comes round again after it was. Off: it's meshed again, which can come out different. Rebuild still rebuilds."><input type="checkbox" id="ca-samephotos" checked autocomplete="off"> Don't mesh a boulder again from the same photos</label>
+          <label class="row" style="margin-top:6px" title="On: when a mesh is rebuilt from photos that include every one the mesh before placed, and places fewer of them, the mesh before stays the current one, and the new one is kept as an older version. Off: the newest is always current."><input type="checkbox" id="ca-keepbetter" checked autocomplete="off"> Keep the mesh before when a rebuild from the same photos places fewer</label>
+        </details>
         <div style="text-align:center;margin-top:10px"><button id="ca-go">Start meshing</button></div>
         <div class="notice" style="margin-top:8px">Meshes its boulder problems one at a time until you stop it, and keeps every mesh finished before then. Each can take most of an hour. Problems that share a boulder are harvested, and the boulder is meshed from all their photos. Several areas, one a line, go one after another, in the order given. With a limit, each stops at that many meshes, a boulder's counting once. An area listed already is taken up again with these settings, keeping what's done.</div>
       </section>
@@ -1758,6 +1762,10 @@ async function refreshCampaigns(){
           <label class="meta" title="Off: a climb waits until YouTube has been searched for its videos before it's meshed. On: meshes it anyway, as when no volunteer is connected to search."><input type="checkbox" class="noyt" ${c.without_youtube ? 'checked' : ''}> mesh without searching YouTube</label>
           <button class="danger sm del" title="Remove this list; its meshes stay">✕</button>
         </div>
+        <details data-list="${c.id}-more"><summary class="meta">More options</summary>
+          <label class="meta row" title="On: a boulder whose mesh was made from the photos its climbs have now isn't meshed again, as when one of its climbs comes round again after it was. Off: it's meshed again, which can come out different. Rebuild still rebuilds."><input type="checkbox" class="samephotos" ${c.same_photos_once !== 0 ? 'checked' : ''}> don't mesh a boulder again from the same photos</label>
+          <label class="meta row" title="On: when a mesh is rebuilt from photos that include every one the mesh before placed, and places fewer of them, the mesh before stays the current one, and the new one is kept as an older version. Off: the newest is always current."><input type="checkbox" class="keepbetter" ${c.keep_better !== 0 ? 'checked' : ''}> keep the mesh before when a rebuild from the same photos places fewer</label>
+        </details>
         ${c.worked.length ? `<details data-list="${c.id}-done"><summary class="meta">Worked through (${c.worked.length}${c.worked.length === 300 ? ' most recent' : ''})</summary><div class="crows">${c.worked.map(row).join('')}</div></details>` : ''}
         ${c.next.length ? `<details data-list="${c.id}-next"><summary class="meta">Up next</summary><div class="crows">${c.next.map(row).join('')}</div></details>` : ''}`;
       const post = async (what, json) => { await api(`/api/campaigns/${c.id}/${what}`, { method: 'POST', json: json || {} }); campaignLoop(); };
@@ -1778,6 +1786,8 @@ async function refreshCampaigns(){
         post('options', { max_meshes: v ? +v : null }).catch(e => toast(e.message, 6000));
       };
       d.querySelector('.countfail').onchange = ev => post('options', { count_failures: ev.target.checked }).catch(e => toast(e.message, 6000));
+      d.querySelector('.samephotos').onchange = ev => post('options', { same_photos_once: ev.target.checked }).catch(e => toast(e.message, 6000));
+      d.querySelector('.keepbetter').onchange = ev => post('options', { keep_better: ev.target.checked }).catch(e => toast(e.message, 6000));
       d.querySelector('.del').onclick = async () => { if (ask(`Remove the list for "${c.name}"? Its meshes stay.`)) { await api('/api/campaigns/' + c.id, { method: 'DELETE' }); campaignLoop(); } };
       d.querySelectorAll('[data-mesh]').forEach(b => b.onclick = async () => { if (!meshesById[b.dataset.mesh]) await refreshMeshes(); viewMesh(b.dataset.mesh, null, 'area'); });
       d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
@@ -1825,7 +1835,8 @@ $('#ca-go').onclick = async () => {
     try {
       const c = await api('/api/campaigns', { method: 'POST', json: { area, order: $('#ca-order').value, without_youtube: $('#ca-noyt').checked,
                                                                     max_meshes: max ? +max : null, count_failures: !!max && $('#ca-countfail').checked,
-                                                                    check_new: $('#ca-checknew').checked } });
+                                                                    check_new: $('#ca-checknew').checked, same_photos_once: $('#ca-samephotos').checked,
+                                                                    keep_better: $('#ca-keepbetter').checked } });
       const added = c.again && $('#ca-checknew').checked ? `${c.added} new climb${c.added === 1 ? '' : 's'} added, ` : '';
       done.push(`${c.name}: ${c.again ? 'taken up again, ' : ''}${added}${c.counts.pending} to go`);
       campaignLoop();

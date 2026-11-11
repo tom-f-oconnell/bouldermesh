@@ -172,6 +172,14 @@ Areas whose lists overlap, as a subarea entered before or after the area holding
 meshed by one, on its own or with its boulder, is done in the other with that mesh. Those skipped or failed are tried
 again.
 
+*More options*, when starting an area or on its card, both on by default:
+- *Don't mesh a boulder again from the same photos*: a boulder whose current mesh was made from the photos its climbs'
+  harvests hold now isn't meshed again when one of its climbs comes round again (as after a restart interrupted it); that
+  climb is done with the boulder's mesh. New photos, or a new climb on it, still mesh it again, as does *Rebuild*.
+- *Keep the mesh before when a rebuild from the same photos places fewer*: COLMAP can place fewer photos of the same set
+  from one run to the next. When a rebuild had every photo the mesh before placed and places fewer, the mesh before stays
+  the current one, and the new one is kept as an older version of it.
+
 Its boulder problems are then taken one at a time until you stop, or the list runs out. A climb that shares its boulder
 with others on the list is only harvested; once all of the list's climbs on that boulder are, the boulder is meshed from
 all their photos (below), and each climb is done with that mesh, seen from where its own photos were taken. A climb alone
@@ -767,8 +775,9 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/climbs/manual {...} · POST /api/climbs/kaya-export (multipart csv/json)
     POST /api/climbs/{id}/harvest {sources:[climb,google,ddg,commons,flickr,youtube], reconstruct, filter}
     POST /api/climbs/{id}/boulder                       mesh its boulder from every photo of its climbs, harvesting those never harvested
-    GET  /api/campaigns · POST /api/campaigns {area, order:popularity|rating|data, start, csv, without_youtube, max_meshes, count_failures, check_new}
-    POST /api/campaigns/{id}/options {without_youtube, max_meshes, count_failures}   an area listed again is taken up again
+    GET  /api/campaigns · POST /api/campaigns {area, order:popularity|rating|data, start, csv, without_youtube, max_meshes, count_failures, check_new,
+                                               same_photos_once, keep_better}
+    POST /api/campaigns/{id}/options {without_youtube, max_meshes, count_failures, same_photos_once, keep_better}   an area listed again is taken up again
     POST /api/campaigns/{id}/start · POST /api/campaigns/{id}/stop {now} · DELETE /api/campaigns/{id}
     POST /api/campaigns/{id}/retry                      its failed climbs, ahead of the rest
     POST /api/campaigns/{id}/harvest-again {videos_only, then_rebuild} · POST /api/campaigns/{id}/rebuild {changed_only, skipped_only}

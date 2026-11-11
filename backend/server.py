@@ -218,6 +218,10 @@ def init_db() -> None:
             con.execute("ALTER TABLE campaigns ADD COLUMN max_meshes INTEGER")
         if "count_failures" not in cols:    # with max_meshes: its climbs and boulders that failed count toward it too
             con.execute("ALTER TABLE campaigns ADD COLUMN count_failures INTEGER DEFAULT 0")
+        if "same_photos_once" not in cols:  # a boulder isn't meshed again from the photos its current mesh was made from
+            con.execute("ALTER TABLE campaigns ADD COLUMN same_photos_once INTEGER DEFAULT 1")
+        if "keep_better" not in cols:       # a rebuild from the same photos that places fewer leaves the mesh before current
+            con.execute("ALTER TABLE campaigns ADD COLUMN keep_better INTEGER DEFAULT 1")
         cols = {r[1] for r in con.execute("PRAGMA table_info(campaign_items)")}
         # redo: what it's queued to do again (REDO_NAMES); was: its status before; changed: its photos have
         # changed since it was last meshed or checked; redo_started: a rebuild that began, to carry on with
@@ -546,6 +550,34 @@ def boulder_mesh_with(climb_id: str, area_path) -> str | None:
     return None
 
 
+def boulder_unchanged(boulder: str) -> str | None:
+    """A boulder's current mesh (run_boulder()), if it was made from the photos its climbs' harvests hold now: the same
+    harvests of the same climbs, none harvested again since its photos were pooled. None otherwise.
+
+    Args:
+        boulder: as boulder_of() has it.
+    """
+    proj = boulder_project(boulder)
+    if not proj or proj["status"] != "done" or not proj["mesh_id"] or not q(
+            "SELECT 1 FROM meshes WHERE id=? AND replaced_by IS NULL", proj["mesh_id"]):
+        return None
+    try:
+        record = json.loads((PROJECTS / proj["id"] / CLIMBS_FILE).read_text())
+        then, pooled_at = {c["id"]: sorted(c["projects"]) for c in record["climbs"]}, float(record["created"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if {c["id"]: sorted(climb_harvests(c["id"])) for c in boulder_climbs(boulder)} != then:
+        return None
+    for h in {h for hs in then.values() for h in hs}:
+        photos = PROJECTS / h / "photos"
+        try:
+            if max([photos.stat().st_mtime] + [f.stat().st_mtime for f in photos.iterdir()]) > pooled_at:
+                return None     # harvested again since
+        except OSError:
+            return None
+    return proj["mesh_id"]
+
+
 def boulder_name(boulder: str) -> str:
     return json.loads(boulder)[-1].strip("* ")
 
@@ -744,6 +776,24 @@ def boulder_place(boulder: str | None) -> tuple[float | None, float | None]:
 CLIMBS_FILE = "climbs.json"   # in a boulder's project: its climbs, the harvests pooled from each, and the photos of their own
 
 
+def placed_photos(mid: str) -> list[str] | None:
+    """The photos a mesh's reconstruction placed, by name (its cameras.json), or None if it kept none."""
+    try:
+        return [c["name"] for c in json.loads((MESHES / mid / "cameras.json").read_text())]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def fewer_placed(before: str, mid: str, photos: Path) -> tuple[int, int] | None:
+    """(how many photos mesh mid placed, how many mesh before did), if mid was made from photos that included every one
+    before placed, and placed fewer of them; else None."""
+    was, now = placed_photos(before), placed_photos(mid)
+    if not was or now is None or len(now) >= len(was):
+        return None
+    given = {f.name for f in photos.iterdir()} if photos.is_dir() else set()
+    return (len(now), len(was)) if set(was) <= given else None
+
+
 def place_climbs(mid: str, pid: str, log) -> None:
     """Work out where on a boulder's mesh each of its climbs is seen from (viewpoints.py). Only costs that if it fails."""
     try:
@@ -756,11 +806,17 @@ def place_climbs(mid: str, pid: str, log) -> None:
         log(f"placing its climbs failed ({type(e).__name__}: {e})")
 
 
-def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = None, resume: bool = False) -> None:
+def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = None, resume: bool = False,
+                    keep_better: bool = False) -> str | None:
     """Make a project's mesh.
 
     Args:
         resume: carry on from the last step an interrupted run finished, rather than from scratch.
+        keep_better: if this places fewer photos than the project's mesh before, from photos that included every one
+            that mesh placed (fewer_placed()), that one stays the current one, and this is kept as an older version of it.
+
+    Returns:
+        The id of the mesh it made, if it made one.
     """
     pdir = PROJECTS / pid
     q("UPDATE projects SET status='running' WHERE id=?", pid, write=True)
@@ -784,21 +840,29 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         if proj["climb_id"]:
             link_mesh(mid, proj["climb_id"], "auto-linked from reconstruction project")
             log(f"mesh linked to climb {proj['climb_id']}")
-        if proj["mesh_id"] and proj["mesh_id"] != mid and q("SELECT id FROM meshes WHERE id=?", proj["mesh_id"]):
-            supersede(proj["mesh_id"], mid)
-            log(f"this replaces mesh {proj['mesh_id']}, which stays as an older version")
+        before = proj["mesh_id"] if proj["mesh_id"] and proj["mesh_id"] != mid and q("SELECT id FROM meshes WHERE id=?", proj["mesh_id"]) else None
+        worse = fewer_placed(before, mid, pdir / "photos") if before and keep_better else None
+        if worse:
+            supersede(mid, before)
+            log(f"this placed {worse[0]} of its photos, fewer than the {worse[1]} mesh {before} placed from them: that one stays "
+                "the current one, and this is kept as an older version of it")
+        elif before:
+            supersede(before, mid)
+            log(f"this replaces mesh {before}, which stays as an older version")
+        current = before if worse else mid
         clean_mesh(mid, log)
         record_sources(mid, pid, log)
-        if proj["kind"] == "boulder":
+        if proj["kind"] == "boulder" and not worse:
             place_climbs(mid, pid, log)
         tracker.finish()     # before it's marked done, so that anything waiting for that sees it all finished
         log("done")
-        q("UPDATE projects SET status='done', mesh_id=?, demo=? WHERE id=?", mid, int(demo), pid, write=True)
+        q("UPDATE projects SET status='done', mesh_id=?, demo=? WHERE id=?", current, int(demo), pid, write=True)
         q("UPDATE campaign_items SET status='done', mesh_id=?, retry=0, note=NULL, updated=? WHERE project_id=? AND status='failed'",
-          mid, time.time(), pid, write=True)   # made by hand since its area gave up on it
-        if not demo:
+          current, time.time(), pid, write=True)   # made by hand since its area gave up on it
+        if not demo and not worse:
             queue_scale(mid)
             queue_splat(mid)
+        return mid
     except compute.ComputeUnavailable as e:    # not the climb's failure: it waits for a machine
         log(f"waiting for a machine to mesh it on: {e}")
         q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
@@ -1071,7 +1135,7 @@ def mesh_boulder(boulder: str) -> tuple[dict, int]:
     return {"queued": True, "project_id": pid, "position": jobs.qsize()}, 202
 
 
-def run_boulder(pid: str, resume: bool = False, fetch: bool = True) -> None:
+def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better: bool = False) -> None:
     """Mesh a whole boulder from every photo its climbs' harvests found, in a project and mesh of its own, which
     take nothing from any climb's own; then work out where on it each climb is seen from (viewpoints.py), by the
     photos from its own page and videos. A climb's own harvests stay as they are, to mesh it from on its own.
@@ -1081,6 +1145,7 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True) -> None:
             already go straight on to meshing, from the last step that finished.
         fetch: first harvest each of its climbs that has no harvest yet, in a project of its own, as an area would
             (new_harvest_project()). Otherwise only what has been harvested is used.
+        keep_better: as run_reconstruct() has it.
     """
     proj = q("SELECT boulder, harvest FROM projects WHERE id=?", pid, one=True)
     boulder, pdir = proj["boulder"], PROJECTS / pid
@@ -1142,7 +1207,7 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True) -> None:
             log("not enough viewpoint diversity for photogrammetry, even with every climb's photos - skipping reconstruction")
             tracker.skip_rest()
             return
-        run_reconstruct(pid, internet=True, tracker=tracker, resume=resume)
+        run_reconstruct(pid, internet=True, tracker=tracker, resume=resume, keep_better=keep_better)
         if q("SELECT status FROM projects WHERE id=?", pid, one=True)["status"] == "done":
             shutil.rmtree(pdir / "work", ignore_errors=True)   # most of its disk use, and only useful to itself
     except compute.ComputeUnavailable:
@@ -1199,7 +1264,7 @@ def busy_campaigns() -> set[str]:
 
 def create_campaign(area: str, order: str = "popularity", csv_text: str | None = None, start: bool = True,
                     without_youtube: bool = False, max_meshes: int | None = None, count_failures: bool = False,
-                    check_new: bool = False) -> dict:
+                    check_new: bool = False, same_photos_once: bool = True, keep_better: bool = True) -> dict:
     """List a Mountain Project area's boulder problems, in one request, and queue them for meshing.
 
     Args:
@@ -1214,6 +1279,9 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
             them counting once (in_scope()); None to mesh all of it.
         count_failures: with max_meshes, count its climbs and boulders that failed or were skipped toward it too.
         check_new: for an area listed already, ask Mountain Project for its list again, and add the climbs added since.
+        same_photos_once: don't mesh a boulder again from the photos its current mesh was made from (boulder_unchanged()).
+        keep_better: when a rebuild from the photos the mesh before was made from places fewer of them, that mesh stays
+            the current one (run_reconstruct()).
 
     An area listed already is taken up again rather than listed twice, with these settings: what it has done stays
     done, so that a larger max_meshes only goes on to the next ones. Its list stays as it was, but for the climbs
@@ -1228,8 +1296,9 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
     old = q("SELECT * FROM campaigns WHERE area_id=? ORDER BY created DESC LIMIT 1", aid, one=True) if aid and not csv_text else None
     if old:
         added = add_new_climbs(old["id"], mp_mod.export_area_csv(aid, sort="popularity", fresh=True)) if check_new else 0
-        q("UPDATE campaigns SET ord=?, max_meshes=?, count_failures=?, without_youtube=? WHERE id=?", order, max_meshes,
-          int(bool(count_failures)), int(bool(without_youtube)), old["id"], write=True)
+        q("UPDATE campaigns SET ord=?, max_meshes=?, count_failures=?, without_youtube=?, same_photos_once=?, keep_better=? WHERE id=?",
+          order, max_meshes, int(bool(count_failures)), int(bool(without_youtube)), int(bool(same_photos_once)), int(bool(keep_better)),
+          old["id"], write=True)
         if start and old["status"] in ("stopped", "done"):
             q("UPDATE campaigns SET status='running', note=NULL, only_retries=0 WHERE id=?", old["id"], write=True)
         return {**q("SELECT * FROM campaigns WHERE id=?", old["id"], one=True), "again": True, "added": added}
@@ -1239,9 +1308,10 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
     common = os.path.commonprefix([c.area_path for c in recs])
     cid = new_id()
     note = "Mountain Project's export stops at 1000 climbs: these are the most popular 1000" if len(recs) >= 1000 else None
-    q("INSERT INTO campaigns(id,name,area_id,ord,created,note,status,without_youtube,max_meshes,count_failures) "
-      "VALUES(?,?,?,?,?,?,?,?,?,?)", cid, common[-1].strip("* ") if common else f"area {aid}", aid, order, time.time(), note,
-      "running" if start else "stopped", int(bool(without_youtube)), max_meshes, int(bool(count_failures)), write=True)
+    q("INSERT INTO campaigns(id,name,area_id,ord,created,note,status,without_youtube,max_meshes,count_failures,same_photos_once,"
+      "keep_better) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", cid, common[-1].strip("* ") if common else f"area {aid}", aid, order, time.time(),
+      note, "running" if start else "stopped", int(bool(without_youtube)), max_meshes, int(bool(count_failures)),
+      int(bool(same_photos_once)), int(bool(keep_better)), write=True)
     add_new_climbs(cid, recs)
     return q("SELECT * FROM campaigns WHERE id=?", cid, one=True)
 
@@ -1277,7 +1347,7 @@ def set_campaign_options(camp_id: str, options: dict) -> dict:
     """Change how an area meshes: {"without_youtube": whether a climb is meshed before YouTube has been searched for it}.
     Turned on, its climbs waiting for volunteers are meshed with what they have, as after waiting too long.
     {"max_meshes": how many meshes to stop at, or None for all; "count_failures": whether failures count toward it}:
-    an area done that these give more to carries on."""
+    an area done that these give more to carries on. {"same_photos_once", "keep_better"}: as create_campaign() has them."""
     limit = {}
     if "max_meshes" in options:
         limit["max_meshes"] = clean_max_meshes(options["max_meshes"])
@@ -1288,6 +1358,9 @@ def set_campaign_options(camp_id: str, options: dict) -> dict:
         camp = q("SELECT * FROM campaigns WHERE id=?", camp_id, one=True)
         if camp["status"] == "done" and ordered_pending(camp):
             q("UPDATE campaigns SET status='running', note=NULL WHERE id=?", camp_id, write=True)
+    for key in ("same_photos_once", "keep_better"):
+        if key in options:
+            q(f"UPDATE campaigns SET {key}=? WHERE id=?", int(bool(options[key])), camp_id, write=True)
     if "without_youtube" in options:
         q("UPDATE campaigns SET without_youtube=? WHERE id=?", int(bool(options["without_youtube"])), camp_id, write=True)
         if options["without_youtube"]:
@@ -1497,7 +1570,8 @@ def settle_boulder(camp_id: str, boulder: str | None) -> bool:
     if not boulder:
         return False
     items = q("SELECT source_id, status FROM campaign_items WHERE campaign_id=? AND boulder=? ORDER BY rank", camp_id, boulder)
-    scope = in_scope(q("SELECT * FROM campaigns WHERE id=?", camp_id, one=True) or {})
+    camp = q("SELECT * FROM campaigns WHERE id=?", camp_id, one=True) or {}
+    scope = in_scope(camp)
     if scope is not None:   # those past an area's limit (as after lowering it) aren't waited for
         items = [i for i in items if i["source_id"] in scope or i["status"] in ("running", "waiting", "harvested")]
     if any(i["status"] in ("pending", "running", "waiting") for i in items):
@@ -1505,9 +1579,17 @@ def settle_boulder(camp_id: str, boulder: str | None) -> bool:
     harvested = [i for i in items if i["status"] == "harvested"]
     if not harvested:
         return False
+    mesh = boulder_unchanged(json.dumps(boulder.split("/"))) if camp.get("same_photos_once", 1) != 0 else None
+    if mesh:    # as when a climb harvested for it resumes after its mesh was made: that mesh is theirs
+        q("UPDATE campaign_items SET status='done', mesh_id=?, retry=0, note=?, updated=? WHERE campaign_id=? AND boulder=? "
+          "AND status='harvested'", mesh, SAME_PHOTOS_NOTE, time.time(), camp_id, boulder, write=True)
+        return False
     set_item(camp_id, harvested[0]["source_id"], status="pending", retry=1, redo="boulder", was="harvested", redo_started=0,
              note=f"queued to {REDO_NAMES['boulder']}")
     return True
+
+
+SAME_PHOTOS_NOTE = "already meshed with its boulder, from these same photos"
 
 
 def boulder_meshed(camp_id: str, source_id: str, end: dict, failed: bool) -> dict:
@@ -1519,7 +1601,8 @@ def boulder_meshed(camp_id: str, source_id: str, end: dict, failed: bool) -> dic
         status, mesh = "done", proj["mesh_id"]
     else:
         status, mesh = ("skipped" if not failed and proj and proj["status"] == "harvested" else "failed"), None
-    note = end["note"] if status != "done" else f"meshed with its boulder: {end['note'].removeprefix('its boulder meshed from ')}"
+    note = (f"meshed with its boulder: {end['note'].removeprefix('its boulder meshed from ')}"
+            if status == "done" and end["note"].startswith("its boulder meshed from ") else end["note"])
     q("UPDATE campaign_items SET status=?, mesh_id=COALESCE(?, mesh_id), note=?, retry=0, updated=? "
       "WHERE campaign_id=? AND boulder=? AND status='harvested' AND source_id!=?", status, mesh, note, time.time(), camp_id, boulder,
       source_id, write=True)
@@ -1960,8 +2043,13 @@ def _rebuild(cid: str, row: dict, log) -> dict:
     resume = bool(row["redo_started"]) and (PROJECTS / pid / "work").is_dir()
     set_item(cid, row["source_id"], redo_started=1)
     append_log(pid, "-- carrying on rebuilding" if resume else "-- rebuilding")
-    run_reconstruct(pid, internet=True, resume=resume)
+    camp = q("SELECT keep_better FROM campaigns WHERE id=?", cid, one=True) or {}
+    made = run_reconstruct(pid, internet=True, resume=resume, keep_better=camp.get("keep_better", 1) != 0)
     p = q("SELECT status,mesh_id FROM projects WHERE id=?", pid, one=True)
+    if made and p["status"] == "done" and row["mesh_id"] and p["mesh_id"] == row["mesh_id"] != made:
+        shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)
+        return {"status": "done", "mesh_id": row["mesh_id"], "changed": 0, "note": "rebuilt, but that placed fewer of the same "
+                "photos: the mesh before stays the current one, and the new one is kept as an older version of it"}
     if p["status"] == "done" and p["mesh_id"] and p["mesh_id"] != row["mesh_id"]:
         shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)
         return {"status": "done", "mesh_id": p["mesh_id"], "note": "rebuilt" + (": the one before is kept as an older version" if row["mesh_id"] else ""),
@@ -1985,10 +2073,13 @@ def _boulder_again(cid: str, row: dict) -> dict:
         if row["was"] == "harvested":   # its climbs wait for that mesh: this tries again in a while
             raise compute.ComputeUnavailable("its boulder is being meshed by something else now")
         return {"status": row["was"], "note": "its boulder is being meshed already"}
+    camp = q("SELECT same_photos_once, keep_better FROM campaigns WHERE id=?", cid, one=True) or {}
+    if not row["redo_started"] and camp.get("same_photos_once", 1) != 0 and boulder_unchanged(boulder):
+        return {"status": row["was"], "note": SAME_PHOTOS_NOTE}
     resume = bool(row["redo_started"] and proj and proj["status"] in ("stopped", "interrupted", "failed", "harvesting", "running"))
     pid = boulder_project_made(boulder)
     set_item(cid, row["source_id"], redo_started=1)
-    run_boulder(pid, resume=resume)
+    run_boulder(pid, resume=resume, keep_better=camp.get("keep_better", 1) != 0)
     p = q("SELECT status, mesh_id, harvest FROM projects WHERE id=?", pid, one=True)
     harvest = json.loads(p["harvest"]) if p["harvest"] else {}
     of = harvest.get("climbs") or {}
@@ -2065,6 +2156,11 @@ def _run_boulder_redo(camp: dict, row: dict) -> None:
         end, failed = {"status": row["was"], "note": f"{REDO_NAMES['boulder']}: {type(e).__name__}: {e}"}, True
     if row["was"] == "harvested":
         end = boulder_meshed(cid, sid, end, failed)
+    elif not failed:    # one done or skipped before carried it: its neighbours harvested for it are done with it too
+        b = q("SELECT boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)["boulder"]
+        proj = boulder_project(json.dumps(b.split("/"))) if b else None
+        if proj and proj["status"] == "done" and proj["mesh_id"]:
+            boulder_meshed(cid, sid, end, failed)
     set_item(cid, sid, **end, redo=None, retry=0, redo_started=0)
 
 
@@ -3560,7 +3656,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     camp = create_campaign(b.get("area") or "", b.get("order") or "popularity", b.get("csv"), bool(b.get("start", True)),
                                            bool(b.get("without_youtube")), b.get("max_meshes"), bool(b.get("count_failures")),
-                                           bool(b.get("check_new")))
+                                           bool(b.get("check_new")), bool(b.get("same_photos_once", True)), bool(b.get("keep_better", True)))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
                 return self.send_json(campaign_view(camp), 201)

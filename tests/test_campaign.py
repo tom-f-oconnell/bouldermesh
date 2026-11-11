@@ -1524,4 +1524,71 @@ server.stop_campaign(c["id"])
 server.mp_mod.export_area_csv = real_export
 server.settings().update({"areas.meshes": "climbs"})
 print("overlapping areas OK")
+
+# --- a boulder isn't meshed again from the same photos (same_photos_once); a rebuild that places fewer of the same photos
+# leaves the mesh before current (keep_better); and climbs harvested for a boulder are done with it whoever carried it
+fresh()
+server.settings().update({"areas.meshes": "boulders"})
+c = server.create_campaign("", "popularity", sub({"Alpha", "Alpha2"}))
+assert c["same_photos_once"] == 1 and c["keep_better"] == 1, "both on unless turned off"
+run_all(c["id"], 40)
+got = items(c["id"])
+first = server.q("SELECT id FROM meshes WHERE boulder IS NOT NULL AND replaced_by IS NULL", one=True)["id"]
+assert got["Alpha"]["mesh_id"] == got["Alpha2"]["mesh_id"] == first, got
+boulder, alpha2 = got["Alpha"]["boulder"], got["Alpha2"]["source_id"]
+meshes = server.q("SELECT COUNT(*) n FROM meshes", one=True)["n"]
+server.set_item(c["id"], alpha2, status="harvested", mesh_id=None)     # as when it resumes after an interruption
+assert not server.settle_boulder(c["id"], boulder), "not queued again"
+got = items(c["id"])
+assert got["Alpha2"]["status"] == "done" and got["Alpha2"]["mesh_id"] == first and got["Alpha2"]["note"] == server.SAME_PHOTOS_NOTE
+os.utime(server.PROJECTS / got["Alpha2"]["project_id"] / "photos")    # harvested again since: new photos, meshed again
+server.set_item(c["id"], alpha2, status="harvested")
+assert server.boulder_unchanged(server.boulder_of(server.climb_row(got["Alpha2"]["climb_id"])["area_path"])) is None
+assert server.settle_boulder(c["id"], boulder), "queued, from its new photos"
+server.set_item(c["id"], alpha2, status="harvested", redo=None, retry=0, note=None)
+server.set_campaign_options(c["id"], {"same_photos_once": False})
+assert server.q("SELECT same_photos_once FROM campaigns WHERE id=?", c["id"], one=True)["same_photos_once"] == 0
+# off: queued even from the same photos; and Alpha, done before, carrying it leaves Alpha2 done with the new mesh
+server.set_item(c["id"], got["Alpha"]["source_id"], status="pending", retry=1, redo="boulder", was="done", redo_started=0)
+server.q("UPDATE campaigns SET status='running', only_retries=1 WHERE id=?", c["id"], write=True)     # as queue_boulders() does
+run_all(c["id"], 5)
+got = items(c["id"])
+second = server.q("SELECT id FROM meshes WHERE boulder IS NOT NULL AND replaced_by IS NULL", one=True)["id"]
+assert second != first and server.q("SELECT COUNT(*) n FROM meshes", one=True)["n"] == meshes + 1
+assert got["Alpha"]["status"] == "done" and got["Alpha2"]["status"] == "done" and got["Alpha2"]["mesh_id"] == second, got
+server.stop_campaign(c["id"])
+server.settings().update({"areas.meshes": "climbs"})
+
+kept = "k" * 12
+server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,?)", kept, "Kept (harvest)", time.time(), "harvest", "harvested",
+         write=True)
+(server.PROJECTS / kept / "photos").mkdir(parents=True)
+for n in "abcde":
+    (server.PROJECTS / kept / "photos" / f"{n}.jpg").write_bytes(b"j")
+placing: list[str] = []
+
+
+def placing_rec(images, work, out_dir, log, use_gpu=False, internet=False, tracker=None):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "mesh.ply").write_text("ply")
+    (out_dir / "cameras.json").write_text(json.dumps([{"name": f"{n}.jpg"} for n in placing]))
+    return out_dir / "mesh.ply", False
+
+
+pipeline.reconstruct = placing_rec
+current = lambda: server.q("SELECT mesh_id FROM projects WHERE id=?", kept, one=True)["mesh_id"]  # noqa: E731
+placing[:] = "abcd"
+m1 = server.run_reconstruct(kept)
+placing[:] = "ab"
+m2 = server.run_reconstruct(kept, keep_better=True)
+assert current() == m1 and server.q("SELECT replaced_by FROM meshes WHERE id=?", m2, one=True)["replaced_by"] == m1, "the one before stays"
+assert "fewer than the 4 mesh" in server.read_log(kept) and not server.q("SELECT replaced_by FROM meshes WHERE id=?", m1, one=True)["replaced_by"]
+(server.PROJECTS / kept / "photos" / "d.jpg").unlink()      # not the same photos: one the mesh before placed is gone
+m3 = server.run_reconstruct(kept, keep_better=True)
+assert current() == m3 and server.q("SELECT replaced_by FROM meshes WHERE id=?", m1, one=True)["replaced_by"] == m3
+placing[:] = "a"
+m4 = server.run_reconstruct(kept)
+assert current() == m4, "without keep_better, the newest is current"
+pipeline.reconstruct = fake_reconstruct
+print("the same photos once, and keeping the better mesh OK")
 print("ALL CAMPAIGN TESTS PASSED")
