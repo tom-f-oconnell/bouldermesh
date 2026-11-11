@@ -203,7 +203,7 @@ async function call(path, body){
   return j;
 }
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-let timings = null;
+let timings = null, machChangesOpen = false;
 function renderTimings(){
   const t = timings, rows = t ? t[$('#times-since').value] : null;
   const fmt = (x, unit = '') => x == null ? '–' : `${x}${unit}`;
@@ -247,15 +247,24 @@ function render(s){
   $('#mach-note').innerHTML = (ms.served ? `Each machine runs <code>bouldermesh_worker.py</code> (from ${esc(ms.url || '(WORKER_URL not set)')}/worker/) with a token of its own, and asks this server for climbs to mesh over HTTPS, so this server never has to reach it.`
     : '<span class="warn">Not taking machines here: WORKER_PORT isn\'t set (README, "Running reconstructions elsewhere").</span>')
     + (s.compute.local_meshing ? '' : ' This server meshes nothing itself: climbs wait for a machine.');
-  $('#mach-list').innerHTML = ms.machines.length ? `<table><tr><th>Machine</th><th>Now</th><th>Last seen</th><th>Address</th><th>Done / failed</th><th></th></tr>${
+  const ago = t => { const m = Math.max(0, (Date.now() / 1000 - t) / 60); return m < 90 ? `${Math.round(m)} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} days`; };
+  const SHARE = [['working', 'working'], ['idle', 'idle'], ['held back', 'held back'], ['offline', 'offline'], ['awaiting approval', 'awaiting approval']];
+  const shares = d => !d || !d.hours ? '–' : SHARE.filter(([k]) => d[k]).map(([k, label]) => `${label} ${Math.round(100 * d[k])}%`).join(' · ')
+    + ` <small class="note">(${d.hours} h recorded)</small>`;
+  $('#mach-list').innerHTML = ms.machines.length ? `<table><tr><th>Machine</th><th>Now</th><th>Last 24 h <small>(7 days)</small></th><th>Last seen</th><th>Address</th><th>Done / failed</th><th></th></tr>${
     ms.machines.map(m => `<tr class="mach" data-mshow="${esc(m.id)}" title="Shows the command to run on it again"><td>${esc(m.name)}${m.provisional ? '<span class="tag">waiting for approval</span>' : ''}${m.client ? `<div class="note">${esc(m.client)}${m.gpu ? ', GPU' : ''}${m.cpus ? `, ${m.cpus} cores` : ''}</div>` : ''}${m.held ? `<div class="note warn">${m.held} mesh(es) made, waiting for its approval</div>` : ''}</td>
-      <td class="${m.status === 'working' ? 'ok' : m.status === 'revoked' || m.status === 'denied' ? 'bad' : m.status === 'awaiting approval' ? 'warn' : ''}">${esc(m.status)}${m.job ? ` (${esc(m.job.project)}, ${m.job.minutes} min)` : ''}</td>
+      <td class="${m.status === 'working' ? 'ok' : m.status === 'revoked' || m.status === 'denied' ? 'bad' : m.status === 'awaiting approval' || m.status === 'held back' ? 'warn' : ''}">${esc(m.status)}${m.job ? ` (${esc(m.job.project)}, ${m.job.minutes} min)` : ''}${
+        m.now && ['held back', 'idle', 'offline'].includes(m.now.state) ? `<div class="note">${esc(m.now.state)} for ${ago(m.now.start)}${m.now.why ? `: ${esc(m.now.why)}` : ''}</div>` : ''}</td>
+      <td>${shares(m.day)}<div class="note">${shares(m.week).replace(/ <small.*/, '')}</div></td>
       <td>${seen(m.last_seen)}</td><td>${esc(m.address || '')}</td><td>${m.done} / ${m.failed}</td><td>${m.status === 'revoked' || m.status === 'denied' ? '' : m.provisional
         ? `<button data-mapprove="${esc(m.id)}">Approve</button> <button class="danger" data-mdeny="${esc(m.id)}">Deny</button>`
         : `<button class="danger" data-mrevoke="${esc(m.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
     : '<div class="note">No machines yet.</div>';
   const waiting = ms.jobs.filter(j => j.state === 'queued');
   if (waiting.length) $('#mach-list').innerHTML += `<div class="note">${waiting.length} climb(s) waiting for a machine.</div>`;
+  if ((ms.changes || []).length) $('#mach-list').innerHTML += `<details${machChangesOpen ? ' open' : ''} id="mach-changes"><summary class="note">Latest changes</summary><table>${
+    ms.changes.map(c => `<tr><td>${new Date(c.start * 1000).toLocaleString()}</td><td>${esc(c.name || c.machine)}</td><td>${esc(c.state)}${c.why ? `: ${esc(c.why)}` : ''}</td></tr>`).join('')}</table></details>`;
+  $('#mach-changes')?.addEventListener('toggle', ev => { machChangesOpen = ev.target.open; });
   $('#area-meshes').value = v['areas.meshes'];
   if (document.activeElement !== $('#map-km')) $('#map-km').value = v['site.map_km'];
   const u = s.usage || {}, gb = b => (b / 2 ** 30).toFixed(1) + ' GB';

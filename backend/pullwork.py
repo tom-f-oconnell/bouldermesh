@@ -18,6 +18,11 @@ it may. Then it's given only reconstructions, and what it makes is held (in held
 becoming a mesh: its climb waits, and takes the held mesh once the machine is approved, or is meshed again elsewhere if
 it's turned down. Jobs are kept only in memory: a restart here
 ends them anyway, the climbs carry on after it as new jobs, and a machine still running an old one is told it's gone.
+
+A machine whose owner's work keeps its GPU busy, or whose memory is short, says it's held back, and gets no job; one
+whose GPU hasn't memory free for the next job's (gpu_need_mb()) is held back too. Each machine's state as it asks
+(working, idle, held back, awaiting approval, or offline once it stops asking) is kept as it changes, in machine_states,
+and logged, for the admin page's share of time in each.
 """
 from __future__ import annotations
 
@@ -41,6 +46,7 @@ from urllib.parse import parse_qs, urlparse
 import compute
 import meshopts
 import registration
+import vggt_place
 from volunteers import OffsetError, _client_ip
 
 PART_MAX = 64 * 2**20       # the largest part of a file either way, under Cloudflare's 100 MB a request
@@ -48,6 +54,9 @@ MAX_OUTPUT = 4 * 2**30      # what a job may send back: a mesh, its textures, ca
 CONNECTED = 120             # seconds since a machine last asked or reported for it to count as there
 QUIET = 15 * 60             # a job whose machine hasn't been heard from for this long is lost
 POLL = 15                   # seconds a machine with nothing to do waits before asking again
+GPU_NEED_PHOTOS = 20        # a reconstruction's GPU memory is reckoned for VGGT placing this many (it places fewer in less)
+OTHER_GPU_MB = 4000         # finding a mesh's beta or size
+STATES = ("working", "idle", "held back", "awaiting approval", "offline")
 SEND_EVERY = 5              # seconds between a running job's reports, which are also how it's known to be alive
 MAX_LINES = 5000            # lines in one report
 CLIENT_VERSION = 1          # the oldest script that speaks to this
@@ -76,6 +85,7 @@ class Job:
     error: str | None = None
     task: str = "reconstruct"       # or one of remote_job.py's other tasks: "beta", "scale"
     version: int = 1                # the oldest script that does it
+    gpu_mb: int = 0                 # the GPU memory it may need (gpu_need_mb())
 
     @property
     def output(self) -> Path:
@@ -92,12 +102,14 @@ class Board:
         jobctl: the waiting thread's job control, to stop waiting when its climb is stopped.
         rules: the admin page's settings, as RULES.
         registered: called with a new machine's row when one registers itself.
+        log: for each machine's state as it changes.
     """
 
     def __init__(self, db_path: Path, files: Path, image: Callable[[], str], jobctl, rules: Callable[[], dict] = lambda: RULES,
-                 registered: Callable[[dict], None] = lambda m: None):
+                 registered: Callable[[dict], None] = lambda m: None, log: Callable[[str], None] = print):
         self.db_path, self.files, self.image, self.jobctl = db_path, files, image, jobctl
         self.rules, self.registered = rules, registered
+        self.log = lambda line: log(line) if log is not print else print(line, flush=True)
         self.held = db_path.parent / "held"     # what provisional machines made, for climbs to take once they're approved
         self.jobs: dict[str, Job] = {}
         self.cond = threading.Condition(threading.RLock())
@@ -109,6 +121,8 @@ class Board:
                 CREATE TABLE IF NOT EXISTS machines(id TEXT PRIMARY KEY, name TEXT, token_hash TEXT UNIQUE, created REAL,
                   revoked REAL, last_seen REAL, last_ip TEXT, client TEXT, gpu INTEGER, cpus REAL, done INTEGER DEFAULT 0,
                   failed INTEGER DEFAULT 0, token TEXT);
+                CREATE TABLE IF NOT EXISTS machine_states(machine_id TEXT, state TEXT, why TEXT, start REAL, end REAL);
+                CREATE INDEX IF NOT EXISTS machine_states_by ON machine_states(machine_id, start);
             """)
             if "token" not in {r[1] for r in con.execute("PRAGMA table_info(machines)")}:   # kept since 2026-11-10
                 con.execute("ALTER TABLE machines ADD COLUMN token TEXT")
@@ -181,6 +195,75 @@ class Board:
     def machine(self, token: str) -> dict | None:
         return self.q("SELECT * FROM machines WHERE token_hash=?", registration.token_hash(token), one=True)
 
+    # -- what each machine is doing, as it changes --------------------------------------------------------------------
+    def _state(self, m: dict, state: str, why: str | None = None) -> None:
+        """Record a machine's state, if it changed (a new reason for the same state only replaces the reason), and log
+        the change. A machine not heard from for more than CONNECTED was offline from then until now."""
+        now = time.time()
+        with self.cond:
+            cur = self.q("SELECT rowid, state, start FROM machine_states WHERE machine_id=? AND end IS NULL ORDER BY start DESC LIMIT 1",
+                         m["id"], one=True)
+            last = m.get("last_seen")
+            if cur and cur["state"] != "offline" and last and now - last > CONNECTED:     # it stopped asking a while
+                self.q("UPDATE machine_states SET end=? WHERE rowid=?", last + CONNECTED, cur["rowid"])
+                self.q("INSERT INTO machine_states VALUES(?,?,?,?,?)", m["id"], "offline", None, last + CONNECTED, None)
+                cur = {"rowid": None, "state": "offline"}
+            if cur and cur["state"] == state:
+                if cur["rowid"]:
+                    self.q("UPDATE machine_states SET why=? WHERE rowid=?", why, cur["rowid"])
+                return
+            self.q("UPDATE machine_states SET end=? WHERE machine_id=? AND end IS NULL", now, m["id"])
+            self.q("INSERT INTO machine_states VALUES(?,?,?,?,?)", m["id"], state, why, now, None)
+        self.log(f"machines: {m['name']} {state}" + (f": {why}" if why else ""))
+
+    def sweep(self) -> None:
+        """Mark machines that stopped asking as offline, from when they were last heard from (CONNECTED after it)."""
+        now = time.time()
+        for r in self.q("SELECT s.rowid, s.machine_id, m.name, m.last_seen FROM machine_states s JOIN machines m ON m.id=s.machine_id "
+                        "WHERE s.end IS NULL AND s.state!='offline' AND COALESCE(m.last_seen, 0) < ?", now - CONNECTED):
+            with self.cond:
+                if self.seen.get(r["machine_id"], 0) > now - CONNECTED:
+                    continue
+                at = (r["last_seen"] or now) + CONNECTED
+                self.q("UPDATE machine_states SET end=? WHERE rowid=?", at, r["rowid"])
+                self.q("INSERT INTO machine_states VALUES(?,?,?,?,?)", r["machine_id"], "offline", None, at, None)
+            self.log(f"machines: {r['name']} offline (not heard from since {time.strftime('%H:%M', time.localtime(r['last_seen'] or now))})")
+
+    def shares(self, mid: str, since: float) -> dict:
+        """The share of the time since `since` a machine spent in each state, {state: fraction}, with "hours", how much of
+        it was recorded (from its first record on); an open record of a machine since gone quiet counts as offline."""
+        now = time.time()
+        last = (self.q("SELECT last_seen FROM machines WHERE id=?", mid, one=True) or {}).get("last_seen") or 0
+        took: dict[str, float] = {}
+        for r in self.q("SELECT state, start, end FROM machine_states WHERE machine_id=? AND (end IS NULL OR end>?)", mid, since):
+            start, end = max(r["start"], since), r["end"] or now
+            if r["end"] is None and r["state"] != "offline" and now - last > CONNECTED:
+                took["offline"] = took.get("offline", 0) + max(0.0, end - max(start, last + CONNECTED))
+                end = max(start, last + CONNECTED)
+            took[r["state"]] = took.get(r["state"], 0) + max(0.0, end - start)
+        total = sum(took.values())
+        return {"hours": round(total / 3600, 1), **{k: round(v / total, 3) for k, v in took.items()}} if total else {"hours": 0}
+
+    def changes(self, limit: int = 30) -> list[dict]:
+        """The latest state changes, of all machines, newest first."""
+        return self.q("SELECT s.machine_id AS machine, m.name, s.state, s.why, s.start FROM machine_states s "
+                      "LEFT JOIN machines m ON m.id=s.machine_id ORDER BY s.start DESC LIMIT ?", limit)
+
+    def current(self, mid: str) -> dict | None:
+        return self.q("SELECT state, why, start FROM machine_states WHERE machine_id=? AND end IS NULL ORDER BY start DESC LIMIT 1",
+                      mid, one=True)
+
+    def held_why(self) -> str | None:
+        """Why the machines there now aren't taking a job: each one's reason, if none of them is idle or working; None
+        otherwise (or with none there)."""
+        cut = time.time() - CONNECTED
+        with self.cond:
+            there = [mid for mid, t in self.seen.items() if t > cut]
+        states = [(self.q("SELECT name FROM machines WHERE id=?", mid, one=True) or {}, self.current(mid)) for mid in there]
+        if not states or any(not c or c["state"] != "held back" for _, c in states):
+            return None
+        return "; ".join(f"{m.get('name')} is held back ({c['why']})" for m, c in states)
+
     def connected(self) -> bool:
         """Whether a machine has asked for work or reported lately."""
         cut = time.time() - CONNECTED
@@ -207,7 +290,13 @@ class Board:
         if client.get("check"):
             return {"name": m["name"], "wait": POLL, "status": "provisional" if waiting else "approved", "may_work": allowed}
         if not allowed:
+            self._state(m, "awaiting approval")
             return {"wait": 300, "why": "waiting for approval by whoever runs this site", "provisional": True}
+        held = str(client.get("held") or "")[:200]
+        if held:    # its owner's work, or memory short: as its script says
+            self._state(m, "held back", held)
+            return {"wait": POLL, "why": f"held back: {held}", "held": True}
+        free = _number(client.get("gpu_free_mb")) if client.get("gpu") else None
         now = time.time()
         with self.cond:
             mine = next((j for j in self.jobs.values() if j.machine == m["id"] and j.state == "running"), None)
@@ -217,15 +306,23 @@ class Board:
                 mine.output.unlink(missing_ok=True)
             else:
                 version = int(_number(client.get("version")) or 1)
-                mine = min((j for j in self.jobs.values() if j.state == "queued" and j.version <= version
-                            and (not waiting or j.task == "reconstruct")), key=lambda j: j.created, default=None)
+                could = [j for j in self.jobs.values() if j.state == "queued" and j.version <= version
+                         and (not waiting or j.task == "reconstruct")]
+                mine = min((j for j in could if free is None or j.gpu_mb <= free), key=lambda j: j.created, default=None)
+                if not mine and could:      # none fits in the GPU memory free there now
+                    why = (f"its GPU has {free / 1024:.1f} GB free, and the next climb may need "
+                           f"{min(j.gpu_mb for j in could) / 1024:.1f} GB")
+                    self._state(m, "held back", why)
+                    return {"wait": POLL, "why": f"held back: {why}", "held": True}
                 if not mine:
+                    self._state(m, "idle")
                     return {"wait": POLL}
                 gpu = " (GPU)" if client.get("gpu") else ""
                 mine.state, mine.machine, mine.machine_name, mine.taken = "running", m["id"], m["name"], now
                 mine.lines.append(f"remote: {m['name']}{gpu} took it after {now - mine.created:.0f} s")
             mine.touched = now
             self.cond.notify_all()
+            self._state(m, "working", mine.label)
             return {"job": {"id": mine.id, "image": mine.image, "internet": mine.internet, "size": mine.size, "part": PART_MAX,
                             "task": mine.task}}
 
@@ -433,7 +530,7 @@ class Board:
             raise compute.ComputeUnavailable("set the Docker image the machines run on the admin page")
         job = self._new_job(kind, files, args, label, image)
         log(f"remote: {job.size / 1e6:.0f} MB ready for the machines that connect here, job {job.id}")
-        result, last = None, ""
+        result, last, said, said_at = None, "", None, 0.0
         try:
             while True:
                 with self.cond:
@@ -446,6 +543,11 @@ class Board:
                     if not line.startswith(("@@", "remote: ")):
                         last = line or last
                 self.jobctl.check()
+                if state == "queued" and time.time() - said_at > 30:
+                    said_at, why = time.time(), self.held_why()
+                    if why and why != said:
+                        log(f"remote: waiting: {why}")
+                    said = why
                 if state == "queued" and not self.connected():
                     raise compute.ComputeUnavailable(f"no machine has asked this server for work in the last {CONNECTED // 60} minutes")
                 if state == "running" and time.time() - touched > QUIET:
@@ -480,8 +582,9 @@ class Board:
                 info.size, info.mtime = len(data), time.time()
                 tar.addfile(info, io.BytesIO(data))
         # a reconstruction sent task.json only goes to scripts that take one (version 2)
+        photos = sum(1 for _ in files["photos"].iterdir()) if "photos" in files and files["photos"].is_dir() else 0
         job = Job(id=jid, label=label, input=path, size=path.stat().st_size, internet=bool(args.get("internet")), image=image,
-                  task=kind, version=2 if told else 1)
+                  task=kind, version=2 if told else 1, gpu_mb=gpu_need_mb(kind, photos))
         with self.cond:
             self.jobs[jid] = job
         return job
@@ -509,14 +612,18 @@ class Board:
             elif waiting and not rules["provisional_work"]:
                 status = "awaiting approval"
             elif seen.get(m["id"], 0) > now - CONNECTED:
-                status = "working" if doing else "waiting for work"
+                cur = self.current(m["id"])
+                status = "working" if doing else "held back" if cur and cur["state"] == "held back" else "waiting for work"
             else:
                 status = "not connected"
             machines.append({"id": m["id"], "name": m["name"], "status": status, "last_seen": m["last_seen"], "address": m["last_ip"],
                              "token_kept": bool(m["token"]),
                              "client": m["client"], "gpu": bool(m["gpu"]), "cpus": m["cpus"], "done": m["done"], "failed": m["failed"],
-                             "job": doing, "provisional": waiting, "held": held.get(m["id"], 0), "created": m["created"]})
-        return {"machines": machines, "jobs": jobs, "connected": sum(m["status"] in ("working", "waiting for work") for m in machines)}
+                             "job": doing, "provisional": waiting, "held": held.get(m["id"], 0), "created": m["created"],
+                             "now": self.current(m["id"]), "day": self.shares(m["id"], now - 86400),
+                             "week": self.shares(m["id"], now - 7 * 86400)})
+        return {"machines": machines, "jobs": jobs, "changes": self.changes(),
+                "connected": sum(m["status"] in ("working", "waiting for work", "held back") for m in machines)}
 
 
 def _inputs(files: dict[str, Path]) -> list:
@@ -527,6 +634,15 @@ def _inputs(files: dict[str, Path]) -> list:
             if f.is_file():
                 out.append([name + "/" + str(f.relative_to(src)) if src.is_dir() else name, f.stat().st_size])
     return out
+
+
+def gpu_need_mb(kind: str, photos: int) -> int:
+    """The GPU memory a job may need: for a reconstruction, VGGT placing GPU_NEED_PHOTOS of its photos (or all, if
+    fewer), its largest use, should COLMAP not place them; for the others, OTHER_GPU_MB."""
+    if kind != "reconstruct":
+        return OTHER_GPU_MB
+    n = max(vggt_place.MIN_PHOTOS, min(photos, GPU_NEED_PHOTOS))
+    return vggt_place.GPU_BASE_MB + vggt_place.GPU_SPARE_MB + vggt_place.GPU_PER_PHOTO_MB * n
 
 
 def _number(v) -> float | None:

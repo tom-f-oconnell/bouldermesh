@@ -576,7 +576,9 @@ waits for whoever runs it to approve the machine before giving it climbs. It say
 there's room for jobs and the image; short of room, it says what's short. Add <code>--cpus N</code> to limit the cores jobs use, and <code>--data DIR</code> to keep jobs and models
 on another disk. It remembers them all, with the server and the token (in <code>.bouldermesh-worker</code> in your home
 folder, readable only by you). When this site has a newer version of the script, it replaces itself with that between
-one climb and the next, never during one (<code>--no-auto-update</code> stops that).</p>
+one climb and the next, never during one (<code>--no-auto-update</code> stops that). It takes no climb while your own work
+keeps the GPU busier than half (<code>--busy-gpu-util</code>) or leaves less than 24 GB of memory free
+(<code>--need-ram-gb</code>), and finishes any it has started.</p>
 <h3>3. Run it</h3>
 <div class="box"><pre>python3 bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
 <h3>Optional: start it by itself, whenever the computer starts</h3>

@@ -2958,6 +2958,10 @@ def reap_machines() -> None:
             print(f"compute: couldn't check for machines left running: {e}", flush=True)
     while True:
         time.sleep(60)
+        try:
+            MACHINES.sweep()    # machines that stopped asking: offline, in their record
+        except Exception as e:
+            print(f"machines: sweep failed ({type(e).__name__}: {e})", flush=True)
         for pool in [_pool, *_old_pools]:
             if pool:
                 pool.reap()

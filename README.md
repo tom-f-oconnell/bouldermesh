@@ -627,7 +627,15 @@ On the admin page, *Run more on* adds up to *At most this many other machines at
   there's room there for two climbs (3 GB each) and the models still to download (5.5 GB the first time; `--need-gb`
   changes that), and before pulling an image, room in Docker's storage for about four times its download (18 GB if the
   registry won't say); short of either, it gives the job back and stops, saying what's short. Each job's folder goes when
-  it's done, and an image it pulled goes once it pulls a newer one. Its other options: `--gpu auto|all|cdi|none` (`cdi` for
+  it's done, and an image it pulled goes once it pulls a newer one. It shares the machine: it takes no climb while others
+  keep its GPU busier than 50% (`--busy-gpu-util`; a median over 3 min, and quiet again over 5 before it carries on), or
+  while less than 24 GB of memory is free (`--need-ram-gb`; also `BOULDERMESH_NEED_RAM_GB`), and only one whose GPU
+  memory fits in what's free (what VGGT may need to place 20 of its photos: 7.6-9.3 GB; 4 GB for beta or size). Its CPU
+  use is held down by `--nice` and `--cpus` instead. A climb it has started, it finishes. It tells this server why it's
+  held back, which keeps each machine's state as it changes (working, idle, held back, awaiting approval, offline once
+  it stops asking for 2 min) and logs each change: *Machines* on the admin page shows each one's now and for how long,
+  its share of the last day and week in each, and the latest changes, and a climb waiting for held-back machines says
+  why in its log. Its other options: `--gpu auto|all|cdi|none` (`cdi` for
   a host whose GPU is a CDI device), `--docker-arg=--memory=64g` (repeatable), and `--image-prefix ghcr.io/<owner>/`
   to refuse any other image, should the server be taken over. The public setup's Caddy passes `/worker/` to a port that
   answers only that (`WORKER_PORT`, 47614); elsewhere, publish that port to where the machines are. With

@@ -20,6 +20,11 @@ stops saying what's short rather than filling a disk partway through a job. Each
 an image it pulled once it pulls a newer one.
 Stop it with Ctrl-C: the climb it was on goes back to the server, for this or another machine.
 
+It takes no climbs while others keep the GPU busy (over 50% as a median over 3 minutes, until it's quiet again for 5;
+--busy-gpu-util), or while less than 24 GB of memory is free (--need-ram-gb), and only those whose GPU memory fits in
+what's free; it tells the server why, which keeps a record of how often each machine works, waits or is held back. A
+climb it has started, it finishes. Its CPU use is held down by --nice and --cpus.
+
 When the server has a newer version of this script, it says so when the script asks for a climb, and the script replaces
 itself with that (checked against what the server said of it) and starts again, between one job and the next, never
 during one; --no-auto-update stops that.
@@ -35,6 +40,7 @@ import secrets
 import shutil
 import signal
 import socket
+import statistics
 import subprocess
 import sys
 import tarfile
@@ -42,9 +48,11 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from pathlib import Path
 
-VERSION = 3                 # 2: takes task.json for a reconstruction; 3: updates itself when the server says to
+VERSION = 4                 # 2: takes task.json for a reconstruction; 3: updates itself when the server says to;
+                            # 4: holds back while others keep its GPU busy or its memory is short, and says so
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale")     # remote_job.py's: meshing a climb, finding its beta, finding its size
@@ -60,10 +68,70 @@ IMAGE_GUESS_GB = 18         # what to allow for an image whose size the registry
 IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}")
 TURNED_AWAY = 3             # the exit status when the server won't take this script: starting again won't help,
                             # so systemd units leave it stopped (RestartPreventExitStatus)
+BUSY_GPU_UTIL = 50          # others' GPU use (%), as a median, over which it takes no climbs
+# memory free (MemAvailable) a job may need at its peak (19 GB seen on hal-2, 24 on hal itself); the variable, as the flag
+NEED_RAM_GB = float(os.environ.get("BOULDERMESH_NEED_RAM_GB", "24"))
+# seconds between GPU samples, over which others' use makes it hold back, and over which it must be quiet again to stop
+GPU_EVERY, BUSY_WINDOW, QUIET_WINDOW = (float(x) for x in os.environ.get("BOULDERMESH_GPU_WINDOWS", "5,180,300").split(","))
 
 
 def log(msg: str) -> None:
     print(time.strftime("%Y-%m-%d %H:%M:%S ") + msg, flush=True)
+
+
+class GpuWatch:
+    """The GPU's use (nvidia-smi), sampled every GPU_EVERY seconds on a thread of its own, each sample marked by whether
+    a job of this script's was running then (or had just ended), so that others' use can be told from its own."""
+
+    def __init__(self):
+        self.samples: deque = deque(maxlen=int(QUIET_WINDOW / GPU_EVERY) + 10)     # (time, util %, used MB, total MB, ours)
+        self.running, self.ours_until = False, 0.0
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    @staticmethod
+    def sample() -> tuple[float, float, float] | None:
+        """The first GPU's (utilization %, memory used MB, memory total MB), or None if nvidia-smi can't say."""
+        try:
+            r = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
+                               capture_output=True, text=True, timeout=30)
+            util, used, total = (float(x) for x in r.stdout.splitlines()[0].split(","))
+            return util, used, total
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+            return None
+
+    def _loop(self) -> None:
+        while True:
+            s = self.sample()
+            if s:
+                self.samples.append((time.time(), *s, self.running or time.time() < self.ours_until))
+            time.sleep(GPU_EVERY)
+
+    def ours(self, running: bool) -> None:
+        """Mark a job of this script's as running, or ended (its use lingers in the samples for a little)."""
+        self.running = running
+        if not running:
+            self.ours_until = time.time() + 2 * GPU_EVERY
+
+    def others(self, seconds: float) -> list[float]:
+        """Others' utilization in the samples of the last seconds, while no job of this script's ran."""
+        cut = time.time() - seconds
+        return [s[1] for s in list(self.samples) if s[0] >= cut and not s[4]]
+
+    def free_mb(self) -> float | None:
+        """GPU memory free in the last sample without a job of this script's."""
+        mine = [s for s in list(self.samples) if not s[4]]
+        return mine[-1][3] - mine[-1][2] if mine else None
+
+
+def mem_available_gb() -> float | None:
+    """Memory free for a job (MemAvailable), or None where /proc/meminfo isn't there."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024 / GB
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
 
 
 class Gone(Exception):
@@ -240,6 +308,8 @@ class Worker:
         self.server = Server(args.server, args.token)
         self.gpu = self.gpu_args(args.gpu)
         self.container: str | None = None
+        self.watch = GpuWatch() if self.gpu else None
+        self.gpu_busy = False
         (self.home / "data").mkdir(parents=True, exist_ok=True)
 
     @staticmethod
@@ -251,6 +321,27 @@ class Worker:
         if choice == "all" or shutil.which("nvidia-smi") and subprocess.run(["nvidia-smi", "-L"], capture_output=True).returncode == 0:
             return ["--gpus", "all"]
         return []
+
+    # -- others using this machine -----------------------------------------------------------------------------------
+    def held_back(self) -> str | None:
+        """Why this machine shouldn't take a climb now, or None: too little memory free, or others keeping its GPU busy
+        (a median over BUSY_WINDOW, and once over, quiet again over QUIET_WINDOW, so as not to flip back and forth). The
+        GPU memory a climb needs, the server checks against what's free (gpu_free_mb)."""
+        need = self.args.need_ram_gb if self.args.need_ram_gb is not None else NEED_RAM_GB
+        free = mem_available_gb()
+        if need and free is not None and free < need:
+            return f"{free:.0f} GB of memory free, and a climb may need {need:g} GB"
+        limit = self.args.busy_gpu_util if self.args.busy_gpu_util is not None else BUSY_GPU_UTIL
+        if self.watch and limit:
+            window = QUIET_WINDOW if self.gpu_busy else BUSY_WINDOW
+            recent = self.watch.others(window)
+            if len(recent) >= 3:
+                self.gpu_busy = statistics.median(recent) > limit
+            if self.gpu_busy:
+                span = f"{window / 60:.0f} min" if window >= 60 else f"{window:.0f} s"
+                return (f"others keep its GPU busy ({statistics.median(recent):.0f}% over the last {span}, over {limit:g}%)"
+                        if recent else "others kept its GPU busy")
+        return None
 
     # -- room on disk --------------------------------------------------------------------------------------------------
     def data_room(self) -> str | None:
@@ -475,8 +566,11 @@ class Worker:
             + (f"; it doesn't update itself ({blocked})" if blocked else "; it updates itself when the server says to"))
         updates = not blocked and not self.args.once
         while True:
+            held = self.held_back()
+            asking = {**client, "updates": updates, "held": held,
+                      "gpu_free_mb": self.watch.free_mb() if self.watch else None}
             try:
-                r = self.server.call("/worker/api/work", {**client, "updates": updates})
+                r = self.server.call("/worker/api/work", asking)
             except urllib.error.HTTPError as e:
                 if e.code in (401, 403):
                     self.renew(e)
@@ -500,6 +594,8 @@ class Worker:
             if "job" in r:
                 log(f"job {r['job'].get('id')}: {r['job'].get('size', 0) / 1e6:.0f} MB of photos, in {r['job'].get('image')}")
                 try:
+                    if self.watch:
+                        self.watch.ours(True)
                     self.do(r["job"])
                 except urllib.error.HTTPError as e:
                     if e.code in (401, 403):       # its token stopped working partway through: the job went back
@@ -512,12 +608,16 @@ class Worker:
                     log(f"couldn't do it here ({e}): gave it back; asking again in 5 min")
                     if not self.args.once:
                         time.sleep(300)
+                finally:
+                    if self.watch:
+                        self.watch.ours(False)
             elif self.args.once:
                 log(f"nothing to do{': ' + r['why'] if r.get('why') else ''}")
             else:
-                if r.get("why") and r["why"] != getattr(self, "why", None):
+                kind = re.sub(r"[\d.]+", "#", r.get("why") or "")     # said once, not again for each new figure
+                if r.get("why") and kind != getattr(self, "why", None):
                     log(f"no climbs for now: {r['why']}")
-                self.why = r.get("why")
+                self.why = kind
                 time.sleep(max(5, min(float(r.get("wait") or 15), 300)))
             if self.args.once:
                 return
@@ -600,6 +700,10 @@ def main() -> None:
     ap.add_argument("--gpu", choices=("auto", "all", "cdi", "none"), help="give jobs the GPU: auto (if nvidia-smi finds one, "
                     "the default), all (--gpus all), cdi (the CDI device nvidia.com/gpu=all) or none (remembered)")
     ap.add_argument("--nice", type=int, default=10, help="run jobs at this niceness (10)")
+    ap.add_argument("--busy-gpu-util", type=float, help=f"take no climbs while others keep the GPU busier than this (%%, as a "
+                    f"median over {BUSY_WINDOW / 60:g} min; {BUSY_GPU_UTIL} by default, 0 never; remembered)")
+    ap.add_argument("--need-ram-gb", type=float, help=f"take no climbs while less memory than this is free (GB; {NEED_RAM_GB} by "
+                    "default, 0 never; remembered)")
     ap.add_argument("--docker-arg", action="append", default=[], help="another option for docker run, such as --memory=64g "
                     "(repeat it for more)")
     ap.add_argument("--image-prefix", help="run only images whose names start with this, such as ghcr.io/you/bouldermesh: "
@@ -629,7 +733,7 @@ def main() -> None:
         ap.error("--register makes a new token, so not with --token")
     if args.server and args.server != conf.get("server") and not args.token or args.register:
         conf.pop("token", None)     # a token is the server's it was registered with
-    for k in ("server", "token", "cpus", "gpu", "image_prefix", "data"):
+    for k in ("server", "token", "cpus", "gpu", "image_prefix", "data", "busy_gpu_util", "need_ram_gb"):
         if getattr(args, k) is None:
             setattr(args, k, conf.get(k))
         else:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import os
 import shutil
 import socket
@@ -39,6 +40,7 @@ except ImportError:
     sys.exit(0)
 
 SCRIPT = ROOT / "worker" / "bouldermesh_worker.py"
+SCRIPT_VERSION = int(re.search(r"^VERSION = (\d+)", SCRIPT.read_text(), re.M)[1])
 FAKE_DOCKER = f'''#!{sys.executable}
 import json, os, signal, sys
 args = sys.argv[1:]
@@ -82,7 +84,14 @@ fake = TMP / "fake"
 (fake / "bin").mkdir(parents=True)
 (fake / "bin" / "docker").write_text(FAKE_DOCKER)
 (fake / "bin" / "docker").chmod(0o755)
-ENV = {**os.environ, "PATH": f"{fake / 'bin'}:{os.environ['PATH']}", "FAKE_DOCKER_DIR": str(fake)}
+(fake / "bin" / "nvidia-smi").write_text(f"""#!{sys.executable}
+import os, sys
+if "-L" in sys.argv:
+    print("GPU 0: a fake one"); sys.exit(0)
+print(open(os.environ["FAKE_GPU"]).read() if os.environ.get("FAKE_GPU") else "0, 0, 24576")
+""")
+(fake / "bin" / "nvidia-smi").chmod(0o755)
+ENV = {**os.environ, "PATH": f"{fake / 'bin'}:{os.environ['PATH']}", "FAKE_DOCKER_DIR": str(fake), "BOULDERMESH_NEED_RAM_GB": "0"}
 
 
 def free_port() -> int:
@@ -507,7 +516,7 @@ try:
         assert r.returncode == 0 and here.read_bytes() == SCRIPT.read_bytes(), r.stdout + r.stderr
         assert ("newer version of this script (99)" in r.stdout) == (extra != ["--check"]), r.stdout
     r = subprocess.run([sys.executable, str(here), *args, "--register"][:-1], env=ENV, capture_output=True, text=True, timeout=120)
-    assert r.returncode == 0 and "updated itself from version 3 to 99" in r.stdout and here.read_text() == NEWER, r.stdout + r.stderr
+    assert r.returncode == 0 and f"updated itself from version {SCRIPT_VERSION} to 99" in r.stdout and here.read_text() == NEWER, r.stdout + r.stderr
     assert json.loads((here.parent / "ran.json").read_text()) == args, "started again with the same arguments"
     assert (TMP / "home" / "previous.py").read_bytes() == SCRIPT.read_bytes(), "the one before kept"
     assert not board.jobs or all(j.machine != hal["id"] for j in board.jobs.values()), "given no job meanwhile"
@@ -516,4 +525,72 @@ try:
 finally:
     pullwork.SCRIPT = served
 print("updating itself OK")
+
+# --- holding back while its owner's work keeps its GPU busy, or its memory is short; and what the server keeps of it -----
+box = board.add("gpu-box")
+mb = lambda: board.machine(box["token"])     # noqa: E731
+asks = {"version": SCRIPT_VERSION, "gpu": True}
+r = board.work(mb(), "10.0.0.9", {**asks, "held": "others keep its GPU busy (85% over the last 3 min, over 50%)"})
+assert r["held"] and "others keep its GPU busy" in r["why"] and board.current(box["id"])["state"] == "held back", r
+assert board.held_why() is None, "hal, there too, isn't held back"
+assert board.work(mb(), "10.0.0.9", asks) == {"wait": pullwork.POLL} and board.current(box["id"])["state"] == "idle"
+many = TMP / "many"
+(many / "photos").mkdir(parents=True)
+for i in range(30):
+    (many / "photos" / f"p{i}.jpg").write_bytes(b"x")
+big = board._new_job("reconstruct", {"photos": many / "photos"}, {"internet": True}, "big", image[0])
+assert big.gpu_mb == 6300 + 1000 + 100 * 20 == pullwork.gpu_need_mb("reconstruct", 30) and pullwork.gpu_need_mb("reconstruct", 1) == 7600
+r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 5000})
+assert r["held"] and "its GPU has 4.9 GB free, and the next climb may need 9.1 GB" in r["why"] and big.state == "queued", r
+assert board.current(box["id"])["why"].startswith("its GPU has 4.9 GB"), "the same state: only the reason replaced"
+r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 12000})
+assert r["job"]["id"] == big.id and board.current(box["id"]) == {**board.current(box["id"]), "state": "working", "why": "big"}
+del board.jobs[big.id]
+big.input.unlink()
+# gone quiet: offline from CONNECTED after it was last heard from, by the sweep or when it asks again
+board.q("UPDATE machines SET last_seen=? WHERE id=?", time.time() - 600, box["id"])
+board.seen[box["id"]] = time.time() - 600
+board.sweep()
+assert board.current(box["id"])["state"] == "offline" and abs(board.current(box["id"])["start"] - (time.time() - 600 + pullwork.CONNECTED)) < 5
+assert board.work(mb(), "10.0.0.9", asks) == {"wait": pullwork.POLL} and board.current(box["id"])["state"] == "idle"
+states = [c["state"] for c in board.changes(200) if c["name"] == "gpu-box"]
+assert states[0] == "idle" and "offline" in states and states.count("held back") == 2, states
+# its shares of a day: as recorded, with an open record of one gone quiet counted as offline
+quiet = board.add("quiet-box")
+now = time.time()
+for state, start, end in (("working", now - 4 * 3600, now - 3 * 3600), ("idle", now - 3 * 3600, now - 3600), ("held back", now - 3600, None)):
+    board.q("INSERT INTO machine_states VALUES(?,?,?,?,?)", quiet["id"], state, None, start, end)
+board.q("UPDATE machines SET last_seen=? WHERE id=?", now - 1800 - pullwork.CONNECTED, quiet["id"])
+sh = board.shares(quiet["id"], now - 86400)
+assert sh["hours"] == 4.0 and sh["working"] == 0.25 and sh["idle"] == 0.5 and sh["held back"] == 0.125 and sh["offline"] == 0.125, sh
+assert board.shares(quiet["id"], now - 2 * 3600)["idle"] == 0.5, "only since"
+st = {m["name"]: m for m in board.state()["machines"]}
+assert st["quiet-box"]["day"] == sh and st["gpu-box"]["now"]["state"] == "idle" and "changes" in board.state()
+# the script: holding back while others keep its GPU busy, and taking climbs again once it's quiet
+gpu_file = TMP / "gpu.csv"
+gpu_file.write_text("90, 3000, 24576")
+genv = {**ENV, "FAKE_GPU": str(gpu_file), "BOULDERMESH_GPU_WINDOWS": "0.1,0.6,1.2"}
+proc = subprocess.Popen([sys.executable, str(SCRIPT), "--server", URL, "--token", box["token"], "--home", str(TMP / "gbox"), "--gpu", "all"],
+                        env=genv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+pullwork.POLL, poll = 0.3, pullwork.POLL
+try:
+    def wait_state(state, why_has="", seconds=30):
+        for _ in range(int(seconds * 10)):
+            c = board.current(box["id"])
+            if c and c["state"] == state and why_has in (c["why"] or ""):
+                return c
+            time.sleep(0.1)
+        raise AssertionError(f"not {state}: {board.current(box['id'])}")
+    wait_state("held back", "others keep its GPU busy")
+    gpu_file.write_text("3, 3000, 24576")
+    wait_state("idle")
+finally:
+    proc.terminate()
+    out = proc.communicate(timeout=30)[0]
+    pullwork.POLL = poll
+assert "no climbs for now: held back: others keep its GPU busy" in out and out.count("others keep its GPU busy") == 1, out
+r = subprocess.run([sys.executable, str(SCRIPT), "--server", URL, "--token", box["token"], "--home", str(TMP / "gbox"), "--once",
+                    "--need-ram-gb", "1e6"], env=genv, capture_output=True, text=True, timeout=60)
+assert "GB of memory free, and a climb may need 1e+06 GB" in r.stdout and board.current(box["id"])["state"] == "held back", r.stdout
+print("holding back OK")
 print("ALL MACHINES TESTS PASSED")
