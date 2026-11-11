@@ -4,7 +4,9 @@
 #     python3 worker/bouldermesh_worker.py --server https://boulders.example.com --token bmw_... --cpus 12 \
 #         --data /data/you/bouldermesh-worker --check
 # (--data: where jobs' photos and results, and the models they download, go, if not in ~/.bouldermesh-worker)
-# Then edit User and SCRIPT below, and:
+# Then put a copy of the script where it can replace itself, outside any git checkout, as SCRIPT below names:
+#     curl -o ~/.bouldermesh-worker/bouldermesh_worker.py https://boulders.example.com/worker/bouldermesh_worker.py
+# edit User and SCRIPT below, and:
 #     sudo cp deploy/bouldermesh-worker.service /etc/systemd/system/ && sudo systemctl enable --now bouldermesh-worker
 # journalctl -u bouldermesh-worker -f shows what it's doing. Stopping it gives the climb it was on back to the server.
 [Unit]
@@ -14,13 +16,13 @@ Wants=network-online.target
 
 [Service]
 User=tom
-Environment=SCRIPT=/home/tom/src/bouldermesh/worker/bouldermesh_worker.py
+Environment=SCRIPT=/home/tom/.bouldermesh-worker/bouldermesh_worker.py
 ExecStart=/usr/bin/python3 ${SCRIPT}
 Restart=always
 RestartSec=60
 # 3: the server won't take this script, as too old, and it couldn't update itself (it says what to do): starting again
-# won't help. Run from this repository, it doesn't update itself (git pull does); a copy elsewhere replaces itself with
-# the server's newer version between jobs, in the same process. A token it won't take, the script forgets, and
+# won't help. The copy SCRIPT names replaces itself with the server's newer version between jobs, in the same process;
+# this repository's own copy wouldn't (git pull updates that), so it isn't the one run here. A token it won't take, the script forgets, and
 # registers another, without stopping.
 RestartPreventExitStatus=3
 # a job's container is ended by the script when it stops, which takes a few seconds
