@@ -45,6 +45,7 @@ from urllib.parse import parse_qs, urlparse
 
 import compute
 import meshopts
+import presence
 import registration
 import vggt_place
 from volunteers import OffsetError, _client_ip
@@ -54,6 +55,7 @@ MAX_OUTPUT = 4 * 2**30      # what a job may send back: a mesh, its textures, ca
 CONNECTED = 120             # seconds since a machine last asked or reported for it to count as there
 QUIET = 15 * 60             # a job whose machine hasn't been heard from for this long is lost
 POLL = 15                   # seconds a machine with nothing to do waits before asking again
+GONE_AFTER = 600            # a machine not heard from for this long has left (presence.py), unless it said goodbye before
 GPU_NEED_PHOTOS = 20        # a reconstruction's GPU memory is reckoned for VGGT placing this many (it places fewer in less)
 OTHER_GPU_MB = 4000         # finding a mesh's beta or size
 STATES = ("working", "idle", "held back", "awaiting approval", "offline")
@@ -103,12 +105,15 @@ class Board:
         rules: the admin page's settings, as RULES.
         registered: called with a new machine's row when one registers itself.
         log: for each machine's state as it changes.
+        came_went: called with (a machine's row, "here" or "gone", why) when it starts being heard from or stops, not
+            as it's busy or held back (presence.py).
     """
 
     def __init__(self, db_path: Path, files: Path, image: Callable[[], str], jobctl, rules: Callable[[], dict] = lambda: RULES,
-                 registered: Callable[[dict], None] = lambda m: None, log: Callable[[str], None] = print):
+                 registered: Callable[[dict], None] = lambda m: None, log: Callable[[str], None] = print,
+                 came_went: Callable[[dict, str, str], None] = lambda m, state, why: None):
         self.db_path, self.files, self.image, self.jobctl = db_path, files, image, jobctl
-        self.rules, self.registered = rules, registered
+        self.rules, self.registered, self.came_went = rules, registered, came_went
         self.log = lambda line: log(line) if log is not print else print(line, flush=True)
         self.held = db_path.parent / "held"     # what provisional machines made, for climbs to take once they're approved
         self.jobs: dict[str, Job] = {}
@@ -127,6 +132,7 @@ class Board:
             if "token" not in {r[1] for r in con.execute("PRAGMA table_info(machines)")}:   # kept since 2026-11-10
                 con.execute("ALTER TABLE machines ADD COLUMN token TEXT")
             registration.migrate(con, "machines")
+            presence.migrate(con, "machines", GONE_AFTER)
         os.chmod(db_path, 0o600)
 
     def db(self) -> sqlite3.Connection:
@@ -271,14 +277,25 @@ class Board:
             return any(t > cut for t in self.seen.values())
 
     def _touch(self, m: dict, ip: str | None = None, client: dict | None = None) -> None:
+        """A machine was heard from: asking for work (client), or about a job; a token's check doesn't count as being here."""
         now = time.time()
         with self.cond:
             self.seen[m["id"]] = now
+        active = None if (client or {}).get("check") else now
         if client is not None:
-            self.q("UPDATE machines SET last_seen=?, last_ip=?, client=?, gpu=?, cpus=? WHERE id=?", now, ip,
-                   str(client.get("client") or "")[:120], int(bool(client.get("gpu"))), _number(client.get("cpus")), m["id"])
+            self.q("UPDATE machines SET last_seen=?, active_at=COALESCE(?, active_at), last_ip=?, client=?, gpu=?, cpus=? WHERE id=?",
+                   now, active, ip, str(client.get("client") or "")[:120], int(bool(client.get("gpu"))), _number(client.get("cpus")), m["id"])
         else:
-            self.q("UPDATE machines SET last_seen=? WHERE id=?", now, m["id"])
+            self.q("UPDATE machines SET last_seen=?, active_at=? WHERE id=?", now, now, m["id"])
+
+    def bye(self, m: dict) -> None:
+        """A machine's script stopped: it's gone, at once, for telling of it (presence.py). It still counts as there
+        for CONNECTED, as one run again at once (--once, or restarted) takes the next job without waiting."""
+        self.q("UPDATE machines SET bye_at=? WHERE id=?", time.time(), m["id"])
+
+    def presence(self) -> list:
+        """Tell of machines that came or went since (presence.sweep())."""
+        return presence.sweep(self.q, "machines", lambda m: GONE_AFTER, self.came_went)
 
     # -- the machine's side ---------------------------------------------------------------------------------------
     def work(self, m: dict, ip: str, client: dict) -> dict:
@@ -776,6 +793,11 @@ def handler_for(board: Board, log: Callable[[str], None]):
                 return
 
             def post():
+                if u.path == "/worker/api/bye":     # its script stopped
+                    self.body(2**16)
+                    board.bye(who)
+                    log(f"machines: {who['name']} said goodbye")
+                    return self.json({"ok": True})
                 if u.path == "/worker/api/work":
                     body = json.loads(self.body(2**20) or b"{}")
                     if int(body.get("version") or 0) < CLIENT_VERSION:

@@ -593,4 +593,42 @@ r = subprocess.run([sys.executable, str(SCRIPT), "--server", URL, "--token", box
                     "--need-ram-gb", "1e6"], env=genv, capture_output=True, text=True, timeout=60)
 assert "GB of memory free, and a climb may need 1e+06 GB" in r.stdout and board.current(box["id"])["state"] == "held back", r.stdout
 print("holding back OK")
+
+# --- machines joining and leaving (presence.py): told when one starts being heard from or stops, not as it's held back,
+# and each at most once in an hour, so that one dropping out and back in tells where it ended up
+import presence  # noqa: E402
+
+came: list = []
+board.came_went = lambda m, state, why: came.append((m["name"], state, why))
+board.q("UPDATE machines SET told=CASE WHEN active_at>? THEN 'here' ELSE 'gone' END, told_at=NULL", time.time() - pullwork.GONE_AFTER)
+board.presence()
+came.clear()
+pat = board.add("pat")
+r = worker(pat["token"], "--check", "--home", str(TMP / "pat"))
+board.presence()
+assert came == [], "a token's check isn't joining"
+r = worker(pat["token"], "--once", "--home", str(TMP / "pat"), "--need-ram-gb", "1e6")       # it asks, held back, and stops
+assert board.q("SELECT bye_at FROM machines WHERE id=?", pat["id"], one=True)["bye_at"], "it said goodbye" + r.stdout + r.stderr
+board.q("UPDATE machines SET bye_at=NULL WHERE id=?", pat["id"])
+board.presence()
+assert came == [("pat", "here", "")], came
+board.q("UPDATE machines SET bye_at=?, told_at=told_at-3600 WHERE id=?", time.time(), pat["id"])
+board.presence()
+assert len(came) == 1, "a goodbye just said may be a restart"
+board.q("UPDATE machines SET told_at=told_at+3600, active_at=?, bye_at=? WHERE id=?", time.time() - 300, time.time() - 200, pat["id"])
+board.presence()
+assert len(came) == 1, "stopped, but not told again within the hour"
+board.q("UPDATE machines SET told_at=told_at-3600 WHERE id=?", pat["id"])
+board.presence()
+assert came[-1] == ("pat", "gone", "it said goodbye"), came
+board.q("UPDATE machines SET bye_at=NULL, active_at=?, told_at=told_at-3600 WHERE id=?", time.time() - pullwork.GONE_AFTER - 60, pat["id"])
+board.presence()
+assert len(came) == 2, "gone, and still gone: nothing new"
+board.q("UPDATE machines SET active_at=?, told_at=told_at-3600 WHERE id=?", time.time(), pat["id"])
+board.presence()
+assert came[-1] == ("pat", "here", "") and len(came) == 3
+board.q("UPDATE machines SET active_at=?, told_at=told_at-3600 WHERE id=?", time.time() - pullwork.GONE_AFTER - 60, pat["id"])
+board.presence()
+assert came[-1][1] == "gone" and came[-1][2].startswith("not heard from since"), came
+print("joining and leaving OK")
 print("ALL MACHINES TESTS PASSED")

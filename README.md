@@ -781,6 +781,13 @@ and *Deny*, or after three in ten minutes, one summary of the rest. The taps go 
 server follows, signed so that no one else can make them; but anyone who learns the first topic's name can read the
 notifications, and so tap them, so keep it private, and *Make new topics* if it gets out. design.md has why.
 
+**Joining and leaving:** your phone is also told, by name, when a worker (a machine lending itself) or a downloader (a
+volunteer) joins, as it starts asking for work, and leaves: its script stopped (it says goodbye, from worker script 5 and
+volunteer script 6) or it hasn't been heard from for 10 minutes (a worker) or 30 (a volunteer: its script says it's still
+there while it waits for its limits or rests; 26 hours for scripts before 6, which wait without a word). Not as it's
+busy, held back for the GPU or memory, or resting, nor when its script restarts (back within 2 minutes). Each one is told of at most once an hour, so one that drops out and
+back in is told of where it ended up, at the end of the hour; one that registered itself was told of by its registration.
+
 **Cloudflare, in front:** a rate-limiting rule catches floods before they reach the server. The free plan has one, under
 Security, then WAF, then *Rate limiting rules* (or *Security rules*, then a rate limiting rule, in newer dashboards):
 - **If incoming requests match:** *URI Path* equals `/volunteer/api/register`, *Or* *URI Path* equals
@@ -814,6 +821,7 @@ Security, then WAF, then *Rate limiting rules* (or *Security rules*, then a rate
     backend/retexture.py           colouring a mesh from only the photos free to copy
     backend/compute.py             running reconstructions on other machines, and starting and ending them
     backend/pullwork.py            machines that connect here for work: their tokens, the jobs, and their port
+    backend/presence.py            telling of machines and volunteers joining and leaving, once an hour at most
     backend/registration.py        volunteers and machines registering their own tokens: names, limits, approval
     backend/notify.py              notifications on a phone through ntfy, with Approve and Deny buttons that reach back
     backend/remote_job.py          what such a machine runs

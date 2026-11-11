@@ -38,8 +38,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = 5                 # 3: updates itself when the server says to; 4: then updates yt-dlp and Deno at once;
-                            # 5: tells the server of signs YouTube is degrading or throttling it, and rests when throttled
+VERSION = 6                 # 3: updates itself when the server says to; 4: then updates yt-dlp and Deno at once;
+                            # 5: tells the server of signs YouTube is degrading or throttling it, and rests when throttled;
+                            # 6: says it's still there while it waits (every 10 min), and goodbye when it stops
 SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
 AGENT = "bouldermesh-volunteer"
 TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
@@ -391,7 +392,19 @@ class Volunteer:
                 return
             if why:
                 log(f"waiting {wait / 60:.0f} min: {why}")
-            time.sleep(min(wait, 600))
+            self.nap(min(wait, 600))
+
+    def nap(self, seconds: float) -> None:
+        """Wait, telling the server at least every 10 minutes that this is still here (what it tells whoever runs it of
+        volunteers joining and leaving counts on that)."""
+        end = time.time() + seconds
+        while (left := end - time.time()) > 0:
+            time.sleep(min(left, 600))
+            if end - time.time() > 0 or seconds >= 600:
+                try:
+                    self.server.call("/volunteer/api/alive", {"version": VERSION}, tries=1)
+                except Exception:  # noqa: S110 - the next ask for work says so too
+                    pass
 
     def fetched_now(self) -> None:
         self.state["fetched"].append(time.time())
@@ -634,7 +647,7 @@ class Volunteer:
             if r.get("why") != getattr(self, "idle_why", None):      # said once, not every minute
                 log(f"nothing to fetch now ({r.get('why')}): asking again every {wait / 60:.0f} min")
             self.idle_why = r.get("why")
-            time.sleep(wait)
+            self.nap(wait)
             if time.time() - self.state.get("updated", 0) > 86400:
                 self.tools()
                 version = self.ytdlp_version = self.run_ytdlp(["--version"], self.home).stdout.strip()
@@ -691,6 +704,12 @@ def main() -> None:
         volunteer.run()
     except KeyboardInterrupt:
         log("stopped")
+    finally:    # gone, as whoever runs the server is told (not when it updates itself: that carries on, in its place)
+        if args.token:
+            try:
+                Server(args.server, args.token).call("/volunteer/api/bye", {}, tries=1)
+            except Exception:  # noqa: S110 - stopping anyway
+                pass
 
 
 def _stop(*_) -> None:

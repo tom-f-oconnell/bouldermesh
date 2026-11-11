@@ -51,8 +51,9 @@ import urllib.request
 from collections import deque
 from pathlib import Path
 
-VERSION = 4                 # 2: takes task.json for a reconstruction; 3: updates itself when the server says to;
-                            # 4: holds back while others keep its GPU busy or its memory is short, and says so
+VERSION = 5                 # 2: takes task.json for a reconstruction; 3: updates itself when the server says to;
+                            # 4: holds back while others keep its GPU busy or its memory is short, and says so;
+                            # 5: says goodbye when it stops, so that the server knows at once it's gone
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale")     # remote_job.py's: meshing a climb, finding its beta, finding its size
@@ -754,6 +755,12 @@ def main() -> None:
         Worker(args).run()
     except KeyboardInterrupt:
         log("stopped")
+    finally:
+        if not args.check:      # gone, as whoever runs the server is told (not when it updates itself: that carries on)
+            try:
+                Server(args.server, args.token).call("/worker/api/bye", {}, tries=1)
+            except Exception:  # noqa: S110 - stopping anyway
+                pass
 
 
 def _stop(*_) -> None:

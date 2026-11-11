@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
+import presence
 import registration
 
 PER_HOUR = 15               # videos a volunteer, or an address, may be given in an hour (hal's refusals came after 20-30)
@@ -49,6 +50,9 @@ MAX_TRIES = 3               # a video that fails this often, for reasons that mi
 PART_MAX = 64 * 2**20       # the largest part of a file, under Cloudflare's 100 MB per request
 MAX_VIDEO = 600 * 2**20     # the script asks yt-dlp for at most 500 MB
 IDLE_WAIT = 60              # seconds an idle volunteer waits before asking again, so that a harvest's asks start soon
+# a volunteer not heard from for this long has left (presence.py), unless it said goodbye: scripts from version 6 keep in
+# touch while they wait (at least every 10 min); older ones wait silently through a day's limit or a rest
+GONE_AFTER, GONE_AFTER_OLD = 30 * 60, 26 * 3600
 VIDEO_FORMAT = "bv*[height<=1080]/b"   # as the harvest downloads: video only, no audio
 VIDEO_EXT = {"mp4", "webm", "mkv", "mov", "m4v", "3gp"}
 FAILED_DAYS = 30            # a video that failed for good isn't asked for again for this long
@@ -126,6 +130,8 @@ class Broker:
             refuses, throttles or degrades it, and it didn't before (or less so).
         widespread: called with (how many, of how many, an example) when many volunteers say YouTube is degrading them at
             once (WIDESPREAD), at most once in that span.
+        came_went: called with (a volunteer's row, "here" or "gone", why) when it starts being heard from or stops, not as
+            it rests or waits for work (presence.py).
     """
 
     def __init__(self, db_path: Path, files: Path, delivered: Callable[[dict, Path | None, dict], None],
@@ -133,9 +139,11 @@ class Broker:
                  paused: Callable[[], str | None] = lambda: None, rules: Callable[[], dict] = lambda: RULES,
                  registered: Callable[[dict], None] = lambda v: None,
                  troubled: Callable[[dict, str | None, str, str], None] = lambda v, was, now, why: None,
-                 widespread: Callable[[int, int, str], None] = lambda n, of, example: None):
+                 widespread: Callable[[int, int, str], None] = lambda n, of, example: None,
+                 came_went: Callable[[dict, str, str], None] = lambda v, state, why: None):
         self.db_path, self.files, self.delivered, self.ready, self.probe = db_path, files, delivered, ready, probe
         self.paused, self.rules, self.registered, self.troubled, self.widespread = paused, rules, registered, troubled, widespread
+        self.came_went = came_went
         self.widespread_said = 0.0      # when widespread() was last called
         self.lock = threading.RLock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -161,6 +169,7 @@ class Broker:
                                ("yt_dlp", "TEXT"), ("rest_why", "TEXT")):
                 if name not in have:
                     con.execute(f"ALTER TABLE volunteers ADD COLUMN {name} {kind}")
+            presence.migrate(con, "volunteers", GONE_AFTER_OLD)
 
     def db(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.db_path, timeout=30)
@@ -265,7 +274,7 @@ class Broker:
         now = time.time()
         with self.lock:
             self.requeue_stale()
-            self.q("UPDATE volunteers SET last_seen=?, last_ip=?, client=? WHERE id=?", now, ip, client[:80], v["id"])
+            self.q("UPDATE volunteers SET last_seen=?, active_at=?, last_ip=?, client=? WHERE id=?", now, now, ip, client[:80], v["id"])
             why = self.paused()
             if why:     # what it has stays its own, to send when it can
                 return {"wait": PAUSE_WAIT, "why": why}
@@ -299,6 +308,23 @@ class Broker:
             self.q("DELETE FROM given WHERE at<?", now - 2 * 86400)
             (self.files / f"{task['id']}.part").unlink(missing_ok=True)
         return {"task": self._task_view(task)}
+
+    def alive(self, v: dict) -> None:
+        """A volunteer's script, waiting (for its limits, or a rest), says it's still there."""
+        now = time.time()
+        self.q("UPDATE volunteers SET last_seen=?, active_at=? WHERE id=?", now, now, v["id"])
+
+    def bye(self, v: dict) -> None:
+        """A volunteer's script stopped: it's gone, at once (presence.py); what it had goes back to the queue."""
+        self.q("UPDATE volunteers SET bye_at=? WHERE id=?", time.time(), v["id"])
+        self.q("UPDATE tasks SET state='queued', volunteer=NULL WHERE volunteer=? AND state='assigned'", v["id"])
+
+    def presence(self) -> list:
+        """Tell of volunteers that came or went since (presence.sweep())."""
+        def quiet(v: dict) -> float:
+            found = re.search(r"script (\d+)", v.get("client") or "")
+            return GONE_AFTER if found and int(found[1]) >= 6 else GONE_AFTER_OLD
+        return presence.sweep(self.q, "volunteers", quiet, self.came_went)
 
     def _task_view(self, t: dict) -> dict:
         if t["kind"] == "search":
@@ -813,6 +839,15 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
             v = self.who()
             if not v:
                 return
+            if u.path in ("/volunteer/api/alive", "/volunteer/api/bye"):
+                self.body(2**16)
+            if u.path == "/volunteer/api/alive":
+                broker.alive(v)
+                return self.json({"ok": True})
+            if u.path == "/volunteer/api/bye":
+                broker.bye(v)
+                log(f"volunteers: {v['name']} said goodbye")
+                return self.json({"ok": True})
             try:
                 if u.path == "/volunteer/api/work":
                     body = json.loads(self.body(2**20) or b"{}")

@@ -1192,6 +1192,15 @@ try:
     server.settings().update({"storage.warn_gb": 2.5})
     assert server.warn_room() == 2.5 * 2**30, "the GB set overrides the %"
     assert server.settings().get("storage.warn_percent") == 1.0
+    # and when a worker or downloader joins or leaves (presence.py)
+    server.came_went("machine")({"id": 1, "name": "hal", "client": "script 5"}, "here", "")
+    server.came_went("volunteer")({"id": 2, "name": "erin"}, "gone", "not heard from since 09:41")
+    for _ in range(50):
+        if len(told) == 4:
+            break
+        time.sleep(0.05)
+    assert sorted(told[2:]) == [("Downloader erin left", "Not heard from since 09:41."),
+                                ("Worker hal joined", "It's lending its computer to mesh (script 5).")], told
 finally:
     server.NOTIFIER.send = real_send
     server.settings().update({"storage.cap_gb": 0, "storage.warn_gb": 0, "storage.warn_percent": 0.5})

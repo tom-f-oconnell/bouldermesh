@@ -315,6 +315,29 @@ def script_and_broker() -> None:
         assert "resting 1 h" in out and health()["health"] == "throttled" and health()["rest_why"] == "throttled", out
         assert "throttling" in call(base + "/volunteer/api/work", {"version": 5}, token)[1]["why"]
         b.q("UPDATE volunteers SET refused_until=NULL")
+        # joining and leaving (presence.py): each run above said goodbye as it stopped, and a wait keeps in touch
+        row = b.q("SELECT active_at, bye_at FROM volunteers", one=True)
+        assert row["bye_at"] and row["active_at"] - row["bye_at"] < 5, row     # since, only the ask for work just above
+        assert call(base + "/volunteer/api/alive", {"version": SCRIPT_VERSION}, token)[0] == 200
+        b.q("UPDATE volunteers SET client=?", f"script {SCRIPT_VERSION}, yt-dlp 2099.01.01")
+        assert b.q("SELECT active_at FROM volunteers", one=True)["active_at"] > row["bye_at"]
+        came = []
+        b.came_went = lambda v, state, why: came.append((v["name"], state, why))
+        b.q("UPDATE volunteers SET told='gone', told_at=NULL")
+        b.presence()
+        b.presence()
+        assert came == [("tester", "here", "")], came
+        b.q("UPDATE volunteers SET active_at=?, bye_at=NULL, told_at=told_at-3600", time.time() - volunteers.GONE_AFTER - 60)
+        b.presence()
+        assert came[-1][1] == "gone" and came[-1][2].startswith("not heard from since"), came
+        b.q("UPDATE volunteers SET client='script 5, yt-dlp 2099.01.01', told='here', told_at=NULL")
+        b.presence()
+        assert len(came) == 2, "an older script waits through its limits without a word: it's given longer"
+        b.want("video", "byebyebyeaa", "harvest", "p4")
+        b.work(b.q("SELECT * FROM volunteers", one=True), "127.0.0.1")
+        assert call(base + "/volunteer/api/bye", {}, token)[0] == 200
+        assert b.q("SELECT state FROM tasks WHERE video_id='byebyebyeaa'", one=True)["state"] == "queued", "what it had goes back"
+        b.q("DELETE FROM tasks WHERE state='queued'")
         print("script OK")
     finally:
         httpd.shutdown()
@@ -834,11 +857,31 @@ def youtube_health():
     print("YouTube's signs, unit OK")
 
 
+def keeping_in_touch() -> None:
+    """The script, waiting, tells the server it's still there at least every 10 minutes."""
+    import importlib.util
+    import types
+    spec = importlib.util.spec_from_file_location("bouldermesh_volunteer_nap", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    clock, calls = [1000.0], []
+    v = mod.Volunteer.__new__(mod.Volunteer)
+    v.server = types.SimpleNamespace(call=lambda path, body, tries=3: calls.append((path, clock[0])))
+    mod.time = types.SimpleNamespace(time=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+    v.nap(1500)
+    assert calls == [("/volunteer/api/alive", 1600), ("/volunteer/api/alive", 2200), ("/volunteer/api/alive", 2500)], calls
+    calls.clear()
+    v.nap(30)
+    assert calls == [], "a short wait ends in an ask for work, which says so"
+    print("keeping in touch OK")
+
+
 try:
     broker_alone()
     tools_python()
     youtube_health()
     updating()
+    keeping_in_touch()
     if shutil.which("ffmpeg"):
         script_and_broker()
         registering()

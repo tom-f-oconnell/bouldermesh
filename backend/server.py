@@ -3315,6 +3315,11 @@ def reap_machines() -> None:
             MACHINES.sweep()    # machines that stopped asking: offline, in their record
         except Exception as e:
             print(f"machines: sweep failed ({type(e).__name__}: {e})", flush=True)
+        for board in (MACHINES, VOLUNTEERS):    # who joined or left (presence.py), told on your phone
+            try:
+                board.presence()
+            except Exception as e:
+                print(f"presence: sweep failed ({type(e).__name__}: {e})", flush=True)
         for pool in [_pool, *_old_pools]:
             if pool:
                 pool.reap()
@@ -3338,8 +3343,25 @@ def machine_rules() -> dict:
             "max_waiting": s["registration.max_waiting"]}
 
 
+def came_went(kind: str):
+    """What tells your phone a machine (a worker) or a volunteer (a downloader) joined or left (presence.py), in the
+    background."""
+    which = {"machine": "Worker", "volunteer": "Downloader"}[kind]
+    def tell(row: dict, state: str, why: str) -> None:
+        name = row.get("name") or f"#{row['id']}"
+        if state == "here":
+            title = f"{which} {name} joined"
+            text = f"It's {'lending its computer to mesh' if kind == 'machine' else 'fetching YouTube videos'}" \
+                + (f" ({row['client']})" if row.get("client") else "") + "."
+        else:
+            title, text = f"{which} {name} left", f"{why[:1].upper()}{why[1:]}."
+        threading.Thread(target=NOTIFIER.send, args=(title, text), kwargs={"priority": 2, "tags": ["wave"]}, daemon=True).start()
+    return tell
+
+
 MACHINES = pullwork.Board(DATA / "compute" / "machines.sqlite", DATA / "compute" / "jobs", lambda: compute_settings()["compute.image"],
-                          jobctl, machine_rules, lambda m: NOTIFIER.registered("machine", m, f" ({m['client'] or 'a worker script'})"))
+                          jobctl, machine_rules, lambda m: NOTIFIER.registered("machine", m, f" ({m['client'] or 'a worker script'})"),
+                          came_went=came_went("machine"))
 
 
 def machine_command(m: dict, result: str) -> dict:
@@ -4467,7 +4489,7 @@ def volunteers_widespread(n: int, of: int, example: str) -> None:
 VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteers", volunteer_delivered, volunteer_ready,
                                    paused=lambda: full(), rules=volunteer_rules,
                                    registered=lambda v: NOTIFIER.registered("volunteer", v, f" ({v['client'] or 'a volunteer script'})"),
-                                   troubled=volunteer_troubled, widespread=volunteers_widespread)
+                                   troubled=volunteer_troubled, widespread=volunteers_widespread, came_went=came_went("volunteer"))
 
 
 def notify_act(verb: str, kind: str, rid: str) -> str:
