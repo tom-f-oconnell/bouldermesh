@@ -772,9 +772,36 @@ def link(a: str, b: str, pairs: int, how: str) -> None:
       a, b, pairs, how, time.time(), write=True)
 
 
+# names too common to say which climb a description means
+COMMON_NAMES = re.compile(r"^(the\s+)?(unnamed|unknown|no name|project|open project|arete|arête|traverse|roof|crack|slab|dyno|mantle|"
+                          r"prow|corner|face|left|right|center|centre|direct|sit|sit start|ss|lowball|highball|warm[- ]?up)$", re.I)
+
+
+def links_from_text(climb_ids: list[str]) -> int:
+    """Climbs whose page (description or location) names another of them ("left of X", "same boulder as X"): linked, as
+    on one rock, most likely ("text"). Returns how many pairs."""
+    rows = q(f"SELECT id, name, data FROM climbs WHERE id IN ({','.join('?' * len(climb_ids)) or 'NULL'})", *climb_ids)
+    names = {r["id"]: (r["name"] or "").strip() for r in rows}
+    n = 0
+    for r in rows:
+        try:
+            d = json.loads(r["data"] or "{}")
+        except ValueError:
+            continue
+        text = f"{d.get('description') or ''} {d.get('location') or ''}"
+        for other, name in names.items():
+            if other != r["id"] and len(name) >= 5 and not COMMON_NAMES.match(name) and \
+                    re.search(r"(?<![\w'])" + re.escape(name) + r"(?![\w'])", text, re.I):
+                link(r["id"], other, relevance_mod.LINK_MIN_PAIRS, "text")
+                n += 1
+    return n
+
+
 def link_climbs(climb_ids: list[str], log) -> None:
     """Compare these climbs' photos, those pairs not compared before (relevance.link_climbs()); with many, each with
-    those whose photos look most like its own (relevance.nearest())."""
+    those whose photos look most like its own (relevance.nearest()). Those whose pages name each other are linked by
+    that (links_from_text())."""
+    links_from_text(climb_ids)
     samples = climb_samples(climb_ids)
     if len(samples) < 2:
         return
@@ -2958,6 +2985,18 @@ def link_after(camp_id: str, source_id: str) -> None:
         link_climbs(list(dict.fromkeys([it["climb_id"]] + others)), log)
     except Exception as e:
         log(f"links: comparing its photos with its neighbours' failed ({type(e).__name__}: {e})")
+
+
+def catch_up_own_attempts() -> int:
+    """For running areas' boulders meshed before own_attempts() was: those of their climbs the boulder's mesh hardly
+    shows, queued to mesh on their own. Once each (own_tried). Returns how many."""
+    n = 0
+    for camp in q("SELECT id FROM campaigns WHERE status='running'"):
+        for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND boulder IS NOT NULL", camp["id"]):
+            proj = boulder_project(b["boulder"])
+            if proj and proj["status"] == "done" and proj["mesh_id"]:
+                n += len(own_attempts(camp["id"], proj["mesh_id"]))
+    return n
 
 
 def _run_own_redo(camp: dict, row: dict) -> None:
@@ -5540,6 +5579,9 @@ def main() -> None:
     threading.Thread(target=orient_existing_meshes, daemon=True).start()
     threading.Thread(target=source_existing_meshes, daemon=True).start()
     threading.Thread(target=adopt_old_pools, daemon=True).start()
+    caught = catch_up_own_attempts()
+    if caught:
+        print(f"{caught} running area climb(s) its boulder's mesh hardly shows queued to mesh on their own", flush=True)
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
     for d in MESHES.iterdir() if MESHES.exists() else []:
         beta_mod.carry_on(d)        # finding beta carries on after a restart, like areas

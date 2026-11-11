@@ -270,7 +270,12 @@ for name, desc, kind, why in (
         ("Cuvier Rempart", "The red circuit starts here.", "group", "'circuit'"),
         ("Pancake House", "One of the best boulders in the area, with tall slabs.", "unknown", "neither"),
         ("Pancake House", "", "unknown", "no description"),
-        ("Two Face", "This boulder sits in the main area of the canyon.", "unknown", "both")):
+        ("Two Face", "This boulder sits in the main area of the canyon.", "unknown", "both"),
+        # from Joshua Tree's pages: a nook between two named rocks isn't either of them; a description saying what it is
+        ("Hemingway Corridor", "A nice little nook of a spot in between the Undertaker Boulder and the Oak Tree Boulder.", "unknown", "neither"),
+        ("A Little Bush", "Small boulder shaded in the AM and after sunset", "boulder", "'Small boulder'"),
+        ("Pancake House", "A low and wide boulder against a tree.", "boulder", "'A low and wide boulder'"),
+        ("The Dead", "The few boulders that make up this cluster form a semi-death pit", "group", "'this cluster'")):
     got = mp.area_kind(name, desc)
     assert got[0] == kind and why in got[1], (name, got)
 print("boulders and groups of them OK")

@@ -235,7 +235,16 @@ _GROUP_MANY = re.compile(r"\b(many|several|numerous|lots of|a lot of|plenty of|d
 _GROUP_WORD = re.compile(r"\b(circuits?|boulder ?fields?|secteurs?)\b", re.I)
 _ONE_SELF = re.compile(r"\b(?:(this|one|single|lone)\s+(\w+\s+){0,2}?(boulder|block|bloc|stone|rock|egg)|"
                        r"(is|it's|it is)\s+an?\s+(\w+\s+){0,2}?(boulder|block|bloc|stone|egg)|"
-                       r"the\s+(\w+\s+){0,1}?(boulder|block|bloc)(?!\s*(field|garden|park|problems? in)))\b(?!s)", re.I)
+                       r"the\s+([\w'-]+\s+){0,1}?(boulder|block|bloc)(?!\s*(field|garden|park|problems? in)))\b(?!s)", re.I)
+# a description that opens by saying what it is: "Small boulder shaded in the AM", "A low and wide boulder against a tree"
+_ONE_START = re.compile(r"^(an?\s+|the\s+|this\s+)?([\w'-]+,?\s+(and\s+)?){0,3}?(boulder|block|bloc|stone|rock|egg)\b(?!s)", re.I)
+
+
+def _other_rock(said: str, name: str) -> bool:
+    """Whether "the Undertaker Boulder" names a rock other than the area's own: its name's words, capitalised, not in
+    the area's name."""
+    words = said.split()[1:-1] if said.lower().startswith("the ") else []
+    return bool(words) and all(w[:1].isupper() for w in words) and not all(w.lower() in name.lower() for w in words)
 
 
 def area_kind(name: str | None, description: str | None) -> tuple[str, str]:
@@ -248,9 +257,9 @@ def area_kind(name: str | None, description: str | None) -> tuple[str, str]:
         return "group", f"its name, {name!r}, is a group's"
     if ONE_NAME.search(name):
         return "boulder", f"its name, {name!r}, is a rock's"
-    text = re.sub(r"\s+", " ", description or "")
+    text = re.sub(r"\s+", " ", description or "").strip()
     group = _GROUP_SELF.search(text) or _GROUP_MANY.search(text) or _GROUP_WORD.search(text)
-    one = _ONE_SELF.search(text)
+    one = _ONE_START.match(text) or next((m for m in _ONE_SELF.finditer(text) if not _other_rock(m[0], name)), None)
     if group and not one:
         return "group", f"its description says {group[0]!r}"
     if one and not group:

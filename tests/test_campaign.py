@@ -2169,6 +2169,25 @@ assert server.is_pool(key) and sorted(server.pool_members(key)) == sorted([ids["
 notes = {r["climb_id"]: r["note"] for r in server.q("SELECT climb_id, note FROM mesh_links WHERE mesh_id='0ldp00l00000'")}
 assert notes == {ids["Old A"]: "auto-linked from reconstruction project", ids["Old B"]: server.POOLED_LINK,
                  ids["Old C"]: server.SHARED + "Old A"}, notes
+# climbs whose pages name each other ("left of Marie Rose") are linked; "the Arete" names nothing
+server.q("DELETE FROM climb_links", write=True)
+texts = {"Text A": "Just left of Text Bee on the same block.", "Text Bee": "Sit start.", "Text C": "Same holds as the Arete.", "Arete": "x"}
+tid = {n: server.upsert_climb(Climb(source="mountainproject", source_id=f"97{i}", url=f"https://x/97{i}", name=n, area_path=leafp,
+                                    description=d)) for i, (n, d) in enumerate(texts.items())}
+assert server.links_from_text(list(tid.values())) == 1
+assert server.q("SELECT a, b, how FROM climb_links", one=True) == {**dict(zip("ab", sorted((tid["Text A"], tid["Text Bee"])))), "how": "text"}
+# running areas' boulders meshed before climbs it hardly showed were meshed on their own: caught up as the server starts
+fresh()
+c = server.create_campaign("", "popularity", HEAD + "".join([leaf_row(41, "Pea", 3.8, "Peabody"), leaf_row(42, "Body", 3.7, "Peabody")]))
+server.settings().update({"areas.meshes": "boulders"})
+server.climbs_mod.fetch_climb_url = with_areas
+run_all(c["id"])
+got = items(c["id"])
+(server.MESHES / got["Pea"]["mesh_id"]).mkdir(parents=True, exist_ok=True)
+(server.MESHES / got["Pea"]["mesh_id"] / "views.json").write_text(json.dumps({"climbs": {}, "unplaced": {got["Body"]["climb_id"]: 12}}))
+server.q("UPDATE campaign_items SET status='done', redo=NULL WHERE campaign_id=?", c["id"], write=True)
+server.q("UPDATE campaigns SET status='running' WHERE id=?", c["id"], write=True)
+assert server.catch_up_own_attempts() == 1 and items(c["id"])["Body"]["redo"] == "own"
 server.climbs_mod.fetch_climb_url = fake_fetch
 server.settings().update({"areas.meshes": "climbs"})
 print("boulders told from groups by their pages OK")
