@@ -209,7 +209,8 @@
     #volunteer{order:1;margin-left:auto} #edit,#viewonly,#forget{order:2}
     /* the view on its own: back, and a toggle between the mesh and the map; wireframe and notes live elsewhere or not at all */
     #toctl{font-size:17px;line-height:1;padding:3px 10px} #v3d,#vwire,#vnotes,#viewing{display:none!important}
-    #vmap{order:1;margin-left:auto} #vfrom{flex:0 1 auto;min-width:0}
+    /* back, Random, Sway and Map at the left (then what shows only now and then), and settings alone at the right */
+    #vsway{order:1} #vmap{order:2} #vmark,#vfrom{order:3} #vfrom{flex:0 1 auto;min-width:0} #vprefs{order:4;margin-left:auto}
     #prefs .phone-only{display:revert!important}
     #caps,#code,#admin{display:none!important}
     /* the background and colour choices open from a button in either view, as a panel over it */
