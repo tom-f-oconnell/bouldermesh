@@ -130,6 +130,7 @@
   .toast{position:fixed;bottom:16px;right:16px;background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:8px;max-width:420px;display:none;z-index:2000}
   a{color:var(--acc)}
   details summary{cursor:pointer;color:var(--mute);font-size:12px}
+  #ca-box > summary h2{display:inline;margin:0} #ca-box[open] > summary{margin-bottom:10px}   /* the Areas box, collapsible */
   .crows{display:grid;grid-template-columns:auto 1fr auto auto;gap:3px 8px;font-size:12px;margin-top:6px;align-items:baseline}
   .crows small{color:var(--mute)} .crows .note{grid-column:2/-1;color:var(--mute);font-size:11px;margin-top:-3px}
   #viewnote{display:none;position:absolute;top:40px;left:22px;max-width:640px;background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-line);border-radius:6px;padding:6px 10px;font-size:12px;z-index:2}
@@ -302,7 +303,7 @@
     <!-- ============================ AREAS ============================ -->
     <div class="pane" id="pane-areas">
       <section class="w">
-        <h2>Mesh a whole area</h2>
+        <details id="ca-box" open><summary><h2>Mesh a whole area</h2></summary>
         <textarea id="ca-area" rows="3" style="width:100%" placeholder="Mountain Project area URLs, one a line, e.g. mountainproject.com/area/105720495/joshua-tree-national-park"></textarea>
         <div class="row" style="margin-top:8px">
           <label>Order
@@ -326,6 +327,7 @@
         </details>
         <div style="text-align:center;margin-top:10px"><button id="ca-go">Start meshing</button></div>
         <div class="notice" style="margin-top:8px">Meshes its boulder problems one at a time until you stop it, and keeps every mesh finished before then. Each can take most of an hour. Problems that share a boulder are harvested, and the boulder is meshed from all their photos. Several areas, one a line, are taken in the order given, top first, after any running already; one with no climb to take for now (waiting for volunteers) is passed over until it has. With a limit, each stops at that many meshes, a boulder's counting once. An area listed already is taken up again with these settings, keeping what's done, and moves to its place in the new list.</div>
+        </details>
       </section>
       <section>
         <h2>Areas</h2>
@@ -1927,6 +1929,9 @@ async function campaignLoop(){
 }
 // "count failures" only means something with a limit to count toward
 $('#ca-max').oninput = () => { const f = $('#ca-countfail'); f.disabled = !$('#ca-max').value.trim(); if (f.disabled) f.checked = false; };
+// the Areas box open or closed, as last left in this browser
+try { if (localStorage.getItem('bm_ca_box') === 'closed') $('#ca-box').open = false; } catch {}
+$('#ca-box').addEventListener('toggle', () => { try { localStorage.setItem('bm_ca_box', $('#ca-box').open ? 'open' : 'closed'); } catch {} });
 // one area after another, in the order given; those that fail stay in the box, to try again
 $('#ca-go').onclick = async () => {
   const areas = $('#ca-area').value.split('\n').map(s => s.trim()).filter(Boolean);
