@@ -113,6 +113,20 @@ def compute(mesh_dir: Path, climbs: dict[str, set[str]], log: Log) -> dict:
     return out
 
 
+POOR_LEAST, POOR_SHARE = 3, 0.25     # a climb with fewer of its own photos placed than both of these is poorly placed
+
+
+def poorly_placed(views: dict) -> dict[str, tuple[int, int]]:
+    """The climbs a pooled mesh hardly shows, by their own photos (a side its other climbs' photos don't reach, or a
+    rock that didn't join the rest): {climb id: (placed, of its own)}, for those with fewer placed than POOR_LEAST or
+    than POOR_SHARE of their own. Not climbs without own photos, of which nothing can be said."""
+    out = {cid: (0, n) for cid, n in (views.get("unplaced") or {}).items() if n}
+    for cid, v in (views.get("climbs") or {}).items():
+        if v.get("of") and v["photos"] < max(POOR_LEAST, POOR_SHARE * v["of"]):
+            out[cid] = (v["photos"], v["of"])
+    return out
+
+
 def load(mesh_dir: Path) -> dict | None:
     try:
         return json.loads((mesh_dir / FILE).read_text())

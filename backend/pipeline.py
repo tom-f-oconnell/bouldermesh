@@ -233,6 +233,30 @@ def _largest_model(sparse: Path) -> tuple[Path | None, int]:
     return best, best_n
 
 
+MODELS_FILE = "models.json"     # beside a mesh: each model COLMAP made of its photos, and the photos each placed
+MODEL_LEAST = 4                 # models placing fewer photos than this aren't worth recording
+
+
+def write_models(sparse: Path, dest: Path) -> list[dict]:
+    """Record every model the mapper made (not only the largest, which the mesh is made from), as {name, photos},
+    largest first, in dest (the work folder, whence it goes beside the mesh): photos that land in a model together
+    overlap, which says which climbs' photos can be pooled, and which made a separate piece."""
+    models = []
+    for m in sorted(sparse.iterdir()) if sparse.exists() else []:
+        if not (m / "images.bin").exists():
+            continue
+        try:
+            names = sorted(c["name"] for c in orientation.read_cameras(m))
+        except (OSError, struct.error, UnicodeDecodeError):
+            continue
+        if len(names) >= MODEL_LEAST:
+            models.append({"name": m.name, "photos": names})
+    models.sort(key=lambda x: -len(x["photos"]))
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / MODELS_FILE).write_text(json.dumps({"models": models}))
+    return models
+
+
 def _upright(model: Path, images: Path, work: Path, log: Log, tracker: Tracker) -> Path:
     """COLMAP models have no meaningful orientation, and tend to come out upside down in the
     viewer. Level the model from its cameras (most photos are taken upright), which puts gravity
@@ -416,6 +440,12 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             _place_with_vggt(db, images, sparse, work, log, tracker, registered)
     model, registered = _largest_model(sparse)
     log(f"registered {registered}/{n_images} images in the largest model")
+    try:
+        others = write_models(sparse, work)[1:]
+        if others:
+            log(f"other models: {', '.join(str(len(m['photos'])) for m in others[:8])} photo(s)")
+    except OSError as e:
+        log(f"couldn't record the mapper's models: {e}")
     if model is None or registered < min_registered:
         raise RuntimeError(f"only {registered} image(s) could be registered (need >= {min_registered}); "
                            "the photos may not overlap enough for photogrammetry")
@@ -435,6 +465,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             orientation.save(out_dir, report, model)
         if _largest_model(sparse)[0] == sparse / "vggt" and (work / "vggt" / "placed.json").exists():   # the mesh's model came from VGGT's
             shutil.copyfile(work / "vggt" / "placed.json", out_dir / "placement.json")
+        if (work / MODELS_FILE).exists():
+            shutil.copyfile(work / MODELS_FILE, out_dir / MODELS_FILE)
 
     if not _finished(work, "undistort"):
         log("== COLMAP: undistort")

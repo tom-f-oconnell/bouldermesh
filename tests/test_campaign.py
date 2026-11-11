@@ -2055,6 +2055,27 @@ server.init_db()
 got = items(c["id"])["Drifter"]
 assert (got["boulder"], got["status"], got["mesh_id"]) == (json.dumps(slash), "done", "m-drifter"), got
 assert got["note"] == "meshed with its boulder: 234 photos of 9 of its 9 climbs", got["note"]
+# a boulder's mesh that hardly shows one of its climbs (its own photos not placed): that one meshed on its own too,
+# from its own harvest; one whose own mesh can't be made keeps the boulder's
+fresh()
+c = server.create_campaign("", "popularity", HEAD + "".join([leaf_row(13, "Pea", 3.8, "Peabody"), leaf_row(14, "Body", 3.7, "Peabody"),
+                                                            leaf_row(15, "Arm", 3.6, "Peabody")]))
+run_all(c["id"])
+got = items(c["id"])
+boulder_mesh = got["Pea"]["mesh_id"]
+assert boulder_mesh and got["Body"]["mesh_id"] == got["Arm"]["mesh_id"] == boulder_mesh, got
+(server.MESHES / boulder_mesh).mkdir(parents=True, exist_ok=True)
+(server.MESHES / boulder_mesh / "views.json").write_text(json.dumps({"climbs": {got["Pea"]["climb_id"]: {"photos": 20, "of": 25}},
+                                                                     "unplaced": {got["Body"]["climb_id"]: 18, got["Arm"]["climb_id"]: 9}}))
+outcome["Arm"] = "few"
+assert sorted(server.own_attempts(c["id"], boulder_mesh)) == ["Arm", "Body"]
+assert items(c["id"])["Body"]["redo"] == "own" and server.campaign_status(c["id"]) == "running"
+run_all(c["id"])
+got = items(c["id"])
+assert got["Body"]["status"] == "done" and got["Body"]["mesh_id"] not in (None, boulder_mesh) and got["Body"]["redo"] is None, got["Body"]
+assert got["Arm"]["status"] == "done" and got["Arm"]["mesh_id"] == boulder_mesh and "its boulder's mesh stays" in got["Arm"]["note"], got["Arm"]
+assert got["Pea"]["mesh_id"] == boulder_mesh, "placed: its boulder's mesh is its own"
+assert server.own_attempts(c["id"], boulder_mesh) == [], "once"
 server.climbs_mod.fetch_climb_url = fake_fetch
 server.settings().update({"areas.meshes": "climbs"})
 print("boulders told from groups by their pages OK")

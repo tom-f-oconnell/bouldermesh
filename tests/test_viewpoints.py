@@ -99,4 +99,11 @@ with tempfile.TemporaryDirectory() as td:
     (proj / "sources.json").write_text(json.dumps({"files": [{"file": "mountainproject_9.jpg", "pooled_from": "other"}]}))
     assert viewpoints.own_photos(proj) == {"mountainproject_1.jpg", "yt_ab_001.jpg"}
     assert viewpoints.own_photos(proj / "nothing") == set()
+
+# --- which climbs a pooled mesh hardly shows: none of theirs placed, or fewer than 3 and a quarter of their own
+views = {"climbs": {"a": {"photos": 30, "of": 40}, "b": {"photos": 4, "of": 40}, "c": {"photos": 2, "of": 4}, "d": {"photos": 3, "of": 3}},
+         "unplaced": {"e": 12, "f": 0}}
+assert viewpoints.poorly_placed(views) == {"b": (4, 40), "c": (2, 4), "e": (0, 12)}, viewpoints.poorly_placed(views)
+assert viewpoints.poorly_placed({}) == {}
+print("poorly placed OK")
 print("ALL VIEWPOINT TESTS PASSED")

@@ -538,4 +538,25 @@ for placed, vggt in ((2, True), (8, False)):
             restore(saved)
         assert (tmp / "out" / "placement.json").exists() is vggt, (placed, vggt)
 print("placement record OK")
+
+# --- every model the mapper made is recorded beside the mesh, largest first, with the photos each placed
+def images_bin(path: pathlib.Path, names: list[str]) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    with open(path / "images.bin", "wb") as f:
+        f.write(struct.pack("<Q", len(names)))
+        for i, n in enumerate(names):
+            f.write(struct.pack("<i", i + 1) + struct.pack("<4d", 1, 0, 0, 0) + struct.pack("<3d", 0, 0, 0) + struct.pack("<i", 1))
+            f.write(n.encode() + b"\0" + struct.pack("<Q", 0))
+
+
+with tempfile.TemporaryDirectory() as d:
+    sparse = pathlib.Path(d) / "sparse"
+    images_bin(sparse / "0", ["a1.jpg", "a2.jpg", "b1.jpg", "b2.jpg", "b3.jpg"])
+    images_bin(sparse / "1", ["c1.jpg", "c2.jpg", "c3.jpg", "c4.jpg", "c5.jpg", "c6.jpg"])
+    images_bin(sparse / "2", ["d1.jpg", "d2.jpg"])      # too few to count
+    (sparse / "3").mkdir()                               # empty
+    got = pipeline.write_models(sparse, pathlib.Path(d) / "out")      # (the work folder, in a run)
+    assert [(m["name"], len(m["photos"])) for m in got] == [("1", 6), ("0", 5)], got
+    assert json.loads((pathlib.Path(d) / "out" / pipeline.MODELS_FILE).read_text())["models"][1]["photos"][:2] == ["a1.jpg", "a2.jpg"]
+print("models recorded OK")
 print("ALL PIPELINE TESTS PASSED")

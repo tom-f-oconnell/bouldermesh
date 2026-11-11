@@ -248,8 +248,9 @@ def init_db() -> None:
         # redo: what it's queued to do again (REDO_NAMES); was: its status before; changed: its photos have
         # changed since it was last meshed or checked; redo_started: a rebuild that began, to carry on with
         # waiting_since: when it first waited for volunteers' YouTube searches and videos (status 'waiting')
+        # own_tried: when it was meshed on its own after a pooled mesh hardly showed it (own_attempts()), once
         for c, t in (("retry", "INTEGER DEFAULT 0"), ("redo", "TEXT"), ("was", "TEXT"), ("changed", "INTEGER DEFAULT 0"),
-                     ("redo_started", "INTEGER DEFAULT 0"), ("waiting_since", "REAL")):
+                     ("redo_started", "INTEGER DEFAULT 0"), ("waiting_since", "REAL"), ("own_tried", "REAL")):
             if c not in cols:
                 con.execute(f"ALTER TABLE campaign_items ADD COLUMN {c} {t}")
         if "replaced_by" not in {r[1] for r in con.execute("PRAGMA table_info(meshes)")}:
@@ -2373,7 +2374,8 @@ def run_retry(pid: str) -> None:
 REDO_NAMES = {"harvest": "harvest again", "videos": "look for new videos", "rebuild": "rebuild", "rebuild-changed": "rebuild",
               "harvest+rebuild": "harvest again and rebuild", "videos+rebuild": "look for new videos and rebuild",
               "boulder": "mesh its boulder from every climb's photos", "pool": "mesh its boulder from every climb's photos",
-              "try-skipped": "try meshing, as the viewpoint check would let it now"}
+              "try-skipped": "try meshing, as the viewpoint check would let it now",
+              "own": "mesh it on its own, as its boulder's mesh hardly shows it"}
 POOLED = " (pooled)"     # the name of a project made, before boulders had their own, from every harvest of a boulder for one of its climbs
 
 
@@ -2570,6 +2572,8 @@ def run_redo(camp: dict, item: dict) -> None:
     first, *then = row["redo"].split("+")
     if first in ("boulder", "pool"):    # pool: queued before boulders had their own meshes
         return _run_boulder_redo(camp, row)
+    if first == "own":
+        return _run_own_redo(camp, row)
     jobctl.begin(low_priority=True)
     try:
         set_item(cid, sid, status="running", note=None)
@@ -2603,6 +2607,59 @@ def run_redo(camp: dict, item: dict) -> None:
     set_item(cid, sid, **end, redo=None, retry=0, redo_started=0)
 
 
+def own_attempts(camp_id: str, mesh_id: str | None) -> list[str]:
+    """After a pooled mesh (a boulder's): those of an area's climbs on it whose own photos it hardly placed
+    (viewpoints.poorly_placed()) queued to mesh on their own as well, from their own harvests, as they may be on a side
+    or a rock the rest didn't reach. Not one that has a mesh of its own, or whose own photos are too few to. Returns
+    their names."""
+    views = viewpoints.load(MESHES / mesh_id) if mesh_id else None
+    names = []
+    for climb_id, (placed, of) in viewpoints.poorly_placed(views or {}).items():
+        for it in q("SELECT source_id, name, project_id, status FROM campaign_items WHERE campaign_id=? AND climb_id=? AND redo IS NULL "
+                    "AND own_tried IS NULL AND status IN ('done','skipped','failed','harvested')", camp_id, climb_id):
+            own = q("SELECT mesh_id FROM projects WHERE id=?", it["project_id"], one=True) if it["project_id"] else None
+            if not own or own["mesh_id"] or _verdict(it["project_id"]) == "poor":
+                continue
+            set_item(camp_id, it["source_id"], status="pending", retry=1, redo="own", was=it["status"], redo_started=0,
+                     mesh_id=mesh_id, note=f"{placed} of its {of} own photos made it into its boulder's mesh: meshing it on its own too")
+            names.append(it["name"])
+    if names:   # a finished area runs only these
+        q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", camp_id, write=True)
+    return names
+
+
+def _run_own_redo(camp: dict, row: dict) -> None:
+    """run_redo() for meshing a climb on its own after its boulder's mesh hardly placed its photos (own_attempts()): from
+    its own harvest. If that can't be done, it keeps its boulder's mesh."""
+    cid, sid, pid, pooled_mesh = camp["id"], row["source_id"], row["project_id"], row["mesh_id"]
+    jobctl.begin(low_priority=True)
+    try:
+        set_item(cid, sid, status="running", note=None)
+        resume = bool(row["redo_started"]) and (PROJECTS / pid / "work").is_dir()
+        set_item(cid, sid, redo_started=1)
+        append_log(pid, "-- carrying on meshing it on its own" if resume else
+                   "-- meshing it on its own: its boulder's mesh hardly placed its own photos")
+        run_reconstruct(pid, internet=True, resume=resume)
+        p = q("SELECT status, mesh_id FROM projects WHERE id=?", pid, one=True)
+        if p["status"] == "done" and p["mesh_id"] and p["mesh_id"] != pooled_mesh:
+            shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)
+            end = {"status": "done", "mesh_id": p["mesh_id"], "note": "meshed on its own too, as its boulder's mesh hardly placed its photos"}
+        else:
+            why = too_few_placed(pid) or f"meshing failed: {last_failure(pid)}"
+            end = {"status": "done" if pooled_mesh else row["was"], "mesh_id": pooled_mesh, "note": f"on its own, {why}; its boulder's mesh stays"}
+    except Cancelled:
+        q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
+        set_item(cid, sid, status="pending", note=f"stopped partway: carries on with its {REDO_NAMES['own']} when resumed")
+        return
+    except compute.ComputeUnavailable as e:
+        q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
+        set_item(cid, sid, status="pending", note=f"waiting for a machine to mesh it on: {e}")
+        raise
+    except Exception as e:
+        end = {"status": "done" if pooled_mesh else row["was"], "mesh_id": pooled_mesh, "note": f"{REDO_NAMES['own']}: {type(e).__name__}: {e}"}
+    set_item(cid, sid, **end, redo=None, retry=0, redo_started=0, own_tried=time.time())
+
+
 def _run_boulder_redo(camp: dict, row: dict) -> None:
     """run_redo() for meshing a climb's boulder, whose project is the boulder's, not the climb's."""
     cid, sid = camp["id"], row["source_id"]
@@ -2631,6 +2688,11 @@ def _run_boulder_redo(camp: dict, row: dict) -> None:
         if proj and proj["status"] == "done" and proj["mesh_id"]:
             boulder_meshed(cid, sid, end, failed)
     set_item(cid, sid, **end, redo=None, retry=0, redo_started=0)
+    if not failed:  # those it hardly shows: on their own too
+        b = q("SELECT boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)["boulder"]
+        proj = boulder_project(b) if b else None
+        if proj and proj["status"] == "done" and proj["mesh_id"]:
+            own_attempts(cid, proj["mesh_id"])
 
 
 def run_beta(mid: str) -> None:
