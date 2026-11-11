@@ -139,6 +139,10 @@
   #viewnote button{margin-left:8px}
   #pieces{display:none;position:absolute;top:12px;right:12px;max-width:340px;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;z-index:2}
   #pieces .row{margin-top:6px;gap:6px;flex-wrap:wrap}
+  #pieces .tools{margin-left:0} #pieces .tools button{padding:4px 8px} #pieces label{display:inline-flex;gap:4px;align-items:center}
+  #stroke{position:absolute;pointer-events:none;z-index:1;overflow:visible}
+  #stroke polyline,#stroke polygon{fill:none;stroke:var(--acc);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
+  #stroke polygon{fill:color-mix(in srgb,var(--acc) 15%,transparent);stroke-dasharray:6 4}
   #nearby{position:absolute;top:12px;right:12px;z-index:4;width:min(370px,calc(100% - 24px));max-height:calc(100% - 70px);overflow:auto;
     background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12px;box-shadow:0 4px 16px rgba(0,0,0,.3)}
   #nearby[hidden]{display:none} #nearby .row{gap:6px;flex-wrap:wrap;align-items:center} #nearby .head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
@@ -264,6 +268,8 @@
     <span class="seg" id="bgmode" title="Behind a mesh: the plain page colour, or a scene: a sky over ground the colour of the rock's foot, and around a reconstructed mesh, where its photos show it, what's really there"><button data-bg="solid">Solid</button><button data-bg="scene" class="on">Scene</button></span>
     <span class="plabel shown">Detail</span>
     <span class="seg" id="detailmode" title="How much of each mesh to load. Auto: a simplified copy at once, then all of it, with its texture as sharp as this device can use, unless the connection looks too slow for that, when a button offers it. Full: all of it, always. Preview: the simplified copy only, with the button for the rest."><button data-detail="auto" class="on">Auto</button><button data-detail="full">Full</button><button data-detail="preview">Preview</button></span>
+    <span class="plabel">Walls in the way</span>
+    <span class="seg" id="xraymode" title="See-through: the grey backs of a rock (the side of its surface no photo saw, as on the outside of an arch whose inside was photographed) show the rock behind them through them; and once you double-click a spot to look at, whatever comes between you and it is see-through around it. Opaque: every surface solid."><button data-xray="1" class="on">See-through</button><button data-xray="0">Opaque</button></span>
     <span class="plabel">Colours</span>
     <span class="seg" id="theme" title="Colours: the browser's setting, or light or dark here"><button data-theme="system" class="on">System</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span>
   </span>
@@ -601,18 +607,25 @@ $('#vmap').onclick = () => {
 const vEl = $('#viewer');
 const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0f1115);
 const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000); camera.position.set(2, 1.5, 2.5);
-const renderer = new THREE.WebGLRenderer({ antialias: true }); vEl.appendChild(renderer.domElement);
+const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true }); vEl.appendChild(renderer.domElement);   // the stencil: for see-through backs
 const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true;
 controls.zoomToCursor = true; controls.zoomSpeed = 1.5;
 // Zooming only ever closes the distance to the orbit point. So that it heads for what's under the pointer
 // and slows as it gets there, rather than going through the rock towards a fixed point behind it, each
 // zoom in starts by putting that point straight ahead, as far away as the surface under the pointer.
 const raycaster = new THREE.Raycaster();
-function surfaceUnder(ev){
+// The surface under the pointer: the nearest front, looking through see-through backs and what's see-through around the
+// spot looked at, as they're drawn; else the nearest back. anySide: the nearest face of either side, as it's built.
+function surfaceUnder(ev, anySide = false){
   if (!current) return null;
   const r = renderer.domElement.getBoundingClientRect();
   raycaster.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, 1 - (ev.clientY - r.top) / r.height * 2), camera);
-  return raycaster.intersectObjects(nearby?.group ? [current, nearby.group] : [current], true).find(h => h.object.visible && !h.object.userData.beta) || null;
+  const cast = () => raycaster.intersectObjects(nearby?.group ? [current, nearby.group] : [current], true).filter(h => h.object.visible && !h.object.userData.beta);
+  const fronts = anySide ? [] : cast().filter(h => !xrayed(h.point));
+  if (fronts.length) return fronts[0];
+  const sides = backs.map(b => [b.of.material, b.of.material.side]);     // backs are drawn by meshes of their own: these, both sides
+  for (const [m] of sides) m.side = THREE.DoubleSide;
+  try { return cast()[0] || null; } finally { for (const [m, side] of sides) m.side = side; }
 }
 let lastWheel = 0;
 renderer.domElement.addEventListener('wheel', ev => {
@@ -667,6 +680,7 @@ renderer.domElement.addEventListener('dblclick', ev => {
   if (!hit) return;
   camera.position.add(hit.point.clone().sub(controls.target));
   controls.target.copy(hit.point);
+  xrayPicked = !!hit.object.userData.model;     // a spot on the mesh to look at: what comes in front of it is see-through
 });
 scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.1));
 const dir = new THREE.DirectionalLight(0xffffff, 1.2); dir.position.set(3, 5, 2); scene.add(dir);
@@ -723,6 +737,8 @@ renderer.setAnimationLoop(now => {
   if (splat?.viewer && current) splat.viewer.matrix.copy(current.matrixWorld);   // the splat is in the mesh's own frame
   const near = THREE.MathUtils.clamp(camera.position.distanceTo(controls.target) / 50, 1e-4, .01);   // so a close surface isn't clipped
   if (near !== camera.near) { camera.near = near; camera.updateProjectionMatrix(); }
+  syncBacks();
+  updateXray();
   renderer.render(scene, camera);
 });
 
@@ -754,8 +770,105 @@ function plainBack(material){
   };
   material.needsUpdate = true;
 }
+// ---- walls in the way, see-through (the Walls in the way setting)
+// A mesh we built has its faces' fronts towards the photos, so its backs are rock no photo saw: the back of a sheet, or
+// the outside of an arch whose inside was photographed, which hides that inside from anywhere outside. Fronts are drawn
+// first, each marking the stencil where it lands; then backs, by meshes of their own, faint where a front is behind them
+// and plain grey where none is.
+// And once a spot is double-clicked to look at, anything between it and the camera, around it on the screen, is drawn
+// with only some of its pixels (a 4x4 ordered dither), which needs no sorting, as real transparency would.
+let seeThroughOn = true; try { seeThroughOn = localStorage.getItem('bm_xray') !== '0'; } catch {}
+const BACKS_FAINT = .25;         // how much of a back shows over the rock behind it
+const XRAY = { radius: .2, keep: .22, margin: .08, fade: .08 };   // of the smaller side of the view; pixels kept in the middle; of the distance to the spot
+const backsSolid = new THREE.MeshBasicMaterial({ color: 0x808080, side: THREE.BackSide, stencilWrite: true, stencilRef: 1, stencilFunc: THREE.NotEqualStencilFunc });
+const backsFaint = new THREE.MeshBasicMaterial({ color: 0x808080, side: THREE.BackSide, transparent: true, opacity: BACKS_FAINT, depthWrite: false,
+  stencilWrite: true, stencilRef: 1, stencilFunc: THREE.EqualStencilFunc });
+let backs = [];             // [{of: a model mesh, meshes: [solid, faint]}]
+let xrayPicked = false;     // whether the orbit point is a spot double-clicked on the mesh
+const xrayUniforms = { xrayFocus: { value: new THREE.Vector2() }, xrayRadius: { value: 0 }, xrayNear: { value: 0 }, xrayFade: { value: 1 } };
+// Patches a model's material: see-through in front of the spot looked at, and with plain grey backs if plainBacks, for
+// when the backs are drawn with it, as with Opaque
+function seeThrough(material, plainBacks){
+  material.onBeforeCompile = shader => {
+    Object.assign(shader.uniforms, xrayUniforms);
+    shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nvarying float vXrayDepth;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\n  vXrayDepth = -mvPosition.z;');
+    shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `#include <common>
+varying float vXrayDepth;
+uniform vec2 xrayFocus; uniform float xrayRadius; uniform float xrayNear; uniform float xrayFade;
+const float XRAY_ORDER[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);`)
+      .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+  if (xrayRadius > 0.0 && vXrayDepth < xrayNear) {
+    float r = length(gl_FragCoord.xy - xrayFocus) / xrayRadius;
+    float keep = max(mix(${XRAY.keep.toFixed(3)}, 1.0, smoothstep(0.7, 1.0, r)), smoothstep(xrayNear - xrayFade, xrayNear, vXrayDepth));
+    ivec2 at = ivec2(mod(gl_FragCoord.xy, 4.0));
+    if (r < 1.0 && (XRAY_ORDER[at.x + 4 * at.y] + 0.5) / 16.0 >= keep) discard;
+  }`);
+    if (plainBacks) shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>',
+      `#include <color_fragment>\n  if (!gl_FrontFacing) diffuseColor.rgb = vec3(${BACK_COLOR});`);
+  };
+  material.customProgramCacheKey = () => `xray${plainBacks ? '+plainback' : ''}`;
+  material.needsUpdate = true;
+}
+function addBacks(o){
+  const meshes = [new THREE.Mesh(o.geometry, backsSolid), new THREE.Mesh(o.geometry, backsFaint)];
+  for (const m of meshes) {
+    Object.assign(m, { matrixAutoUpdate: false, matrixWorldAutoUpdate: false, frustumCulled: false, renderOrder: 1 });
+    m.raycast = () => {};
+    scene.add(m);
+  }
+  backs.push({ of: o, meshes });
+}
+function clearBacks(){ for (const b of backs) for (const m of b.meshes) scene.remove(m); backs = []; }
+// The model's own materials as the setting has them: front faces only, marking the stencil, with backs of their own; or
+// both sides, the backs plain grey
+function applySeeThrough(){
+  for (const { of: o } of backs) {
+    const m = o.userData.surface || o.material;
+    m.side = seeThroughOn ? THREE.FrontSide : THREE.DoubleSide;
+    Object.assign(m, { stencilWrite: seeThroughOn, stencilRef: 1, stencilFunc: THREE.AlwaysStencilFunc, stencilZPass: THREE.ReplaceStencilOp });
+    m.needsUpdate = true;
+  }
+  showXrayButtons();
+  woke();
+}
+function showXrayButtons(){ document.querySelectorAll('#xraymode button').forEach(b => b.classList.toggle('on', (b.dataset.xray === '1') === seeThroughOn)); }
+showXrayButtons();
+document.querySelectorAll('#xraymode button').forEach(b => b.onclick = () => {
+  seeThroughOn = b.dataset.xray === '1'; try { localStorage.setItem('bm_xray', seeThroughOn ? '1' : '0'); } catch {}
+  applySeeThrough();
+});
+function syncBacks(){
+  for (const b of backs) {
+    b.of.updateWorldMatrix(true, false);
+    for (const m of b.meshes) {
+      m.geometry = b.of.geometry; m.matrixWorld.copy(b.of.matrixWorld);
+      m.visible = seeThroughOn && !wire && b.of.visible;
+    }
+  }
+}
+const xrayOn = () => seeThroughOn && xrayPicked && !wire && !pieces?.editing && !!current;
+function updateXray(){
+  if (!xrayOn()) { xrayUniforms.xrayRadius.value = 0; return; }
+  camera.updateMatrixWorld();
+  const size = renderer.getDrawingBufferSize(new THREE.Vector2()), p = controls.target.clone().project(camera);
+  const depth = -controls.target.clone().applyMatrix4(camera.matrixWorldInverse).z;
+  xrayUniforms.xrayFocus.value.set((p.x + 1) / 2 * size.x, (p.y + 1) / 2 * size.y);
+  xrayUniforms.xrayRadius.value = XRAY.radius * Math.min(size.x, size.y);
+  xrayUniforms.xrayNear.value = depth * (1 - XRAY.margin);
+  xrayUniforms.xrayFade.value = depth * XRAY.fade;
+}
+// Whether a point on the mesh is drawn mostly see-through now, so that clicks go through it
+function xrayed(point){
+  if (!xrayOn()) return false;
+  const p = point.clone().project(camera), f = controls.target.clone().project(camera), r = renderer.domElement.getBoundingClientRect();
+  const off = Math.hypot((p.x - f.x) * r.width / 2, (p.y - f.y) * r.height / 2), depth = -point.clone().applyMatrix4(camera.matrixWorldInverse).z;
+  return off < .8 * XRAY.radius * Math.min(r.width, r.height) && depth < xrayUniforms.xrayNear.value - xrayUniforms.xrayFade.value / 2;
+}
 function showObject(obj, label, plainBacks = false){
   if (current) scene.remove(current);
+  clearBacks();
+  xrayPicked = false;
   obj.traverse(o => {
     if (o.isMesh && !o.userData.hiddenPieces) {
       o.userData.model = true;      // the mesh itself, as opposed to what's drawn over it later
@@ -764,10 +877,13 @@ function showObject(obj, label, plainBacks = false){
       if (!o.material?.map && (!o.material || o.material.type === 'MeshBasicMaterial' || hasColor))
         o.material = new THREE.MeshStandardMaterial({ vertexColors: hasColor, color: hasColor ? 0xffffff : 0xb8c4d6, side: THREE.DoubleSide, roughness: .8 });
       else o.material.side = THREE.DoubleSide;
-      if (plainBacks && (o.material.map || hasColor)) plainBack(o.material);
+      const ours = plainBacks && !!(o.material.map || hasColor);
+      seeThrough(o.material, ours);
+      if (ours) addBacks(o);
       if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();
     }
   });
+  applySeeThrough();
   const box = mainBox(obj);
   const size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
   const s = 2 / Math.max(size.x, size.y, size.z, 1e-6);
@@ -781,7 +897,9 @@ function showObject(obj, label, plainBacks = false){
   $('#hud').textContent = `${label} — drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan`;
 }
 // ---- a mesh's cleanup: the pieces of it that are hidden, which meshclean.py works out on the server
-let pieces = null;   // {id, deleted} or {id, record, parts: [{mesh, faces, labels, hidden}], editing}
+// {id, deleted, undo} or {id, record, parts: [{mesh, faces, labels, start, hidden}], editing, lod, total, busy}: start is
+// where a part's faces begin among all of the copy's (total), as the server numbers them for that copy (lod)
+let pieces = null;
 let indexEdits = 0;
 const hiddenMaterial = new THREE.MeshBasicMaterial({ color: 0xff5544, transparent: true, opacity: .4, side: THREE.DoubleSide, depthWrite: false });
 // lod: the mesh is a copy packed for viewing (backend/glbpack.py), whose faces are in another order, and fewer in a
@@ -791,7 +909,7 @@ async function attachPieces(gltf, id, lod = null, v = null){
   if (res.status === 404) { pieces = { id, deleted: true, never: true }; return ''; }   // an upload, which is only cleaned up if asked
   if (!res.ok) return '';
   const record = await res.json();
-  if (record.deleted) { pieces = { id, deleted: true }; return ''; }
+  if (record.deleted) { pieces = { id, deleted: true, undo: record.undo }; return ''; }
   try {
     const bin = await fetch(`/meshes/${id}/cleanup_faces.bin?${[lod ? `lod=${lod}` : '', v ? `v=${v}` : ''].filter(Boolean).join('&')}`);
     if (!bin.ok) throw new Error(`the server answered ${bin.status}`);
@@ -801,7 +919,7 @@ async function attachPieces(gltf, id, lod = null, v = null){
     let start = 0;
     const slices = record.primitives.map(p => {
       const faces = lod ? (meshes.get(`${p.mesh}/${p.primitive}`)?.geometry.index?.count || 0) / 3 : p.faces;
-      const labels = all.subarray(start, start + faces); start += faces; return { ...p, faces, labels };
+      const slice = { ...p, faces, labels: all.subarray(start, start + faces), start }; start += faces; return slice;
     });
     if (start !== all.length) throw new Error('it doesn\'t match this mesh');
     const parts = [];
@@ -810,9 +928,9 @@ async function attachPieces(gltf, id, lod = null, v = null){
       const at = gltf.parser.associations.get(o), slice = at && slices.find(s => s.mesh === at.meshes && s.primitive === at.primitives);
       if (!slice || !o.geometry.index || o.geometry.index.count !== slice.faces * 3) throw new Error('it doesn\'t match this mesh');
       if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();   // while all of it is there, for a grey material
-      parts.push({ mesh: o, faces: o.geometry.index.array, labels: slice.labels });
+      parts.push({ mesh: o, faces: o.geometry.index.array, labels: slice.labels, start: slice.start });
     });
-    pieces = { id, record, parts, editing: false };
+    pieces = { id, record, parts, editing: false, lod, total: all.length };
     applyPieces();
     return '';
   } catch (e) { pieces = null; return `Showing the whole mesh, as its list of stray pieces wouldn't load: ${e.message}`; }
@@ -849,9 +967,11 @@ function renderPieces(){
   const el = $('#pieces');
   if (!pieces || (!pieces.deleted && pieces.record.pieces.length < 2)) { el.style.display = 'none'; return; }
   el.style.display = 'block';
+  syncTool();
   if (pieces.deleted) {
-    el.innerHTML = `${pieces.never ? 'Showing the whole mesh.' : 'Cleanup removed: showing the whole mesh.'}<div class="row"><button class="sm sec redo">${pieces.never ? 'Hide stray pieces' : 'Clean up again'}</button></div>`;
+    el.innerHTML = `${pieces.never ? 'Showing the whole mesh.' : 'Cleanup removed: showing the whole mesh.'}<div class="row"><button class="sm sec redo">${pieces.never ? 'Hide stray pieces' : 'Clean up again'}</button>${pieces.undo ? '<button class="sm sec undo" title="Bring back the cleanup as it was">Undo</button>' : ''}</div>`;
     el.querySelector('.redo').onclick = redoCleanup;
+    el.querySelector('.undo')?.addEventListener('click', undoCleanup);
     return;
   }
   const r = pieces.record, hide = new Set(r.removed), hiddenFaces = r.pieces.filter(p => hide.has(p.id)).reduce((t, p) => t + p.faces, 0);
@@ -862,12 +982,20 @@ function renderPieces(){
     el.querySelector('.del').onclick = deleteCleanup;
     return;
   }
-  el.innerHTML = `Click a piece to hide or show it. Hidden ones are red.<br>${what}
-    <div class="row"><button class="sm done">Done</button><button class="sm sec fit">See everything</button><button class="sm sec redo">Back to automatic</button></div>
+  const tools = Object.entries(TOOLS).map(([k, t]) => `<button data-tool="${k}" class="${editTool === k ? 'on' : ''}" title="${esc(t.help)}">${t.label}</button>`).join('');
+  const needsAll = editTool !== 'move' && pieces.lod === 'preview';
+  el.innerHTML = `${pieces.busy ? '<b>Working on it…</b>' : esc(TOOLS[editTool].help)}<br>${what}
+    <div class="row"><span class="seg tools">${tools}</span>${editTool === 'hide' ? `<label title="Also hide the faces behind the nearest surface, inside the line"><input type="checkbox" class="behind" ${hideBehind ? 'checked' : ''}> and what's behind</label>` : ''}</div>
+    ${needsAll ? '<div class="row"><small>This needs every face, and only a simplified copy is loaded.</small><button class="sm sec all">Load all faces</button></div>' : ''}
+    <div class="row"><button class="sm done">Done</button><button class="sm sec undo" ${r.undo && !pieces.busy ? '' : 'disabled'} title="Take back the last change">Undo</button><button class="sm sec fit">See everything</button><button class="sm sec redo">Back to automatic</button></div>
     <div class="list">${r.pieces.slice(0, 200).map(p => `<span>${hide.has(p.id) ? '<s>' : ''}${pieceLabel(p)}${hide.has(p.id) ? '</s>' : ''}</span><button class="sm sec" data-piece="${p.id}">${hide.has(p.id) ? 'Show' : 'Hide'}</button>`).join('')}</div>`;
   el.querySelector('.done').onclick = () => { pieces.editing = false; applyPieces(); frameMain(); renderPieces(); refreshMeshes(); };
+  el.querySelector('.undo').onclick = undoCleanup;
   el.querySelector('.fit').onclick = fitEverything;
   el.querySelector('.redo').onclick = redoCleanup;
+  el.querySelector('.all')?.addEventListener('click', () => { if (detailLoad?.id === pieces.id && detailLoad.steps?.length) fetchDetail(detailLoad); else toast('Open the mesh again with Detail set to Full', 6000); });
+  el.querySelector('.behind')?.addEventListener('change', ev => { hideBehind = ev.target.checked; });
+  el.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => { editTool = b.dataset.tool; renderPieces(); });
   el.querySelectorAll('[data-piece]').forEach(b => b.onclick = () => togglePiece(+b.dataset.piece));
 }
 async function togglePiece(id){
@@ -877,9 +1005,221 @@ async function togglePiece(id){
   catch (e) { toast(e.message, 5000); }
 }
 async function deleteCleanup(){
-  try { await api(`/api/meshes/${pieces.id}/cleanup`, { method: 'DELETE' }); } catch (e) { return toast(e.message, 5000); }
+  let rec;
+  try { rec = await api(`/api/meshes/${pieces.id}/cleanup`, { method: 'DELETE' }); } catch (e) { return toast(e.message, 5000); }
   pieces.record.removed = []; pieces.editing = false; applyPieces();
-  pieces = { id: pieces.id, deleted: true }; frameMain(); renderPieces(); refreshMeshes();
+  pieces = { id: pieces.id, deleted: true, undo: rec.undo }; frameMain(); renderPieces(); refreshMeshes();
+}
+// The cleanup as the server now has it, after a change that may have changed each face's piece: those fetched again,
+// for the copy shown, at the mesh's new version
+async function useRecord(rec){
+  const id = pieces.id;
+  if (rec.v && meshesById[id]) meshesById[id].v = rec.v;
+  if (rec.deleted || pieces.deleted) { await refreshMeshes(); return viewMesh(id); }   // shown whole, or to be cut up again: open it afresh
+  const res = await fetch(`/meshes/${id}/cleanup_faces.bin?${[pieces.lod ? `lod=${pieces.lod}` : '', rec.v ? `v=${rec.v}` : ''].filter(Boolean).join('&')}`);
+  if (!res.ok) throw new Error(`its pieces wouldn't load: the server answered ${res.status}`);
+  const buf = await res.arrayBuffer(), all = rec.label_bytes === 2 ? new Uint16Array(buf) : new Uint32Array(buf);
+  if (pieces?.id !== id) return;
+  if (all.length !== pieces.total) throw new Error('its pieces don\'t fit the copy shown: open it again');
+  showHover(null);
+  for (const part of pieces.parts) part.labels = all.subarray(part.start, part.start + part.labels.length);
+  pieces.record = rec;
+  applyPieces(); renderPieces();
+}
+async function undoCleanup(){
+  try { await useRecord(await api(`/api/meshes/${pieces.id}/cleanup/undo`, { method: 'POST' })); }
+  catch (e) { toast(e.message, 5000); }
+}
+
+// ---- cutting a mesh, and hiding or showing an area of it, by drawing on the view while its cleanup is edited.
+// Faces are chosen here, in the copy shown (all of its faces: not a preview), and sent as a bit each; the server
+// (meshclean.edit) makes the pieces.
+const TOOLS = {
+  move: { label: 'Move', help: 'Drag to turn the view. Click a piece to hide or show it; hidden ones are red.' },
+  cut: { label: 'Cut', help: 'Draw a line across the mesh to cut through everything under it. A cut that crosses a piece from edge to edge, or meets other cuts, splits it: then click a part to hide it. Right-drag or two fingers move the view.' },
+  hide: { label: 'Hide area', help: 'Draw around faces to hide them: the nearest surface only, unless "and what\'s behind" is ticked. Click a piece to hide or show it.' },
+  show: { label: 'Show area', help: 'Draw around hidden (red) faces to show them again, whatever is in front of them.' },
+};
+let editTool = 'move', hideBehind = false;
+const drawing = () => !!pieces?.editing && editTool !== 'move';
+function syncTool(){
+  controls.enableRotate = !drawing();     // a finger or the left button draws; right-drag, the wheel and two fingers still move the view
+  renderer.domElement.style.cursor = drawing() ? 'crosshair' : '';
+  if (!pieces?.editing && hovered != null) showHover(null);
+}
+const strokeSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+strokeSvg.id = 'stroke'; vEl.appendChild(strokeSvg);
+let stroke = null;     // {id: its pointer, points: [[x, y], ...] in CSS pixels over the view, moved}
+function drawStroke(){
+  const c = renderer.domElement;
+  Object.assign(strokeSvg.style, { left: c.offsetLeft + 'px', top: c.offsetTop + 'px', width: c.clientWidth + 'px', height: c.clientHeight + 'px' });
+  const pts = stroke ? stroke.points.map(p => p.join(',')).join(' ') : '';
+  strokeSvg.innerHTML = !stroke ? '' : editTool === 'cut' ? `<polyline points="${pts}"/>` : `<polygon points="${pts}"/>`;
+}
+renderer.domElement.addEventListener('pointerdown', ev => {
+  if (!drawing() || ev.button !== 0 || stroke || pieces.busy) return;
+  if (ev.pointerType === 'touch' && fingers > 1) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  stroke = { id: ev.pointerId, points: [[ev.clientX - r.left, ev.clientY - r.top]], moved: false };
+  drawStroke();
+});
+renderer.domElement.addEventListener('pointermove', ev => {
+  if (!stroke) return;
+  if (ev.pointerType === 'touch' && fingers > 1) { stroke = null; return drawStroke(); }    // two fingers: moving the view instead
+  if (ev.pointerId !== stroke.id) return;
+  const r = renderer.domElement.getBoundingClientRect(), p = [ev.clientX - r.left, ev.clientY - r.top], last = stroke.points[stroke.points.length - 1];
+  if (Math.hypot(p[0] - last[0], p[1] - last[1]) < 3) return;
+  stroke.points.push(p);
+  stroke.moved ||= Math.hypot(p[0] - stroke.points[0][0], p[1] - stroke.points[0][1]) > 5;
+  drawStroke();
+});
+for (const t of ['pointerup', 'pointercancel']) renderer.domElement.addEventListener(t, ev => {
+  if (!stroke || ev.pointerId !== stroke.id) return;
+  const s = stroke;
+  stroke = null;
+  if (t === 'pointerup' && s.moved) finishStroke(s); else drawStroke();   // not moved: a click, which picks a piece
+});
+async function finishStroke(s){
+  const op = editTool;
+  try {
+    if (pieces.lod === 'preview') throw new Error('That needs every face: press "Load all faces" first');
+    if (op !== 'cut' && s.points.length < 3) throw new Error('Draw all the way around the faces');
+    pieces.busy = true; renderPieces();
+    await new Promise(r => requestAnimationFrame(() => setTimeout(r)));    // the panel says so before the work starts
+    const chosen = chooseFaces(op, s.points);
+    if (!chosen.count) throw new Error(op === 'cut' ? 'That line didn\'t cross the mesh' : op === 'hide' ? 'No shown faces there' : 'No hidden faces there');
+    const rec = await api(`/api/meshes/${pieces.id}/cleanup/edit`, { method: 'POST',
+      json: { op, lod: pieces.lod, count: pieces.total, faces: await gzipBase64(chosen.bits) } });
+    pieces.busy = false;
+    await useRecord(rec);
+    toast(op !== 'cut' ? `${op === 'hide' ? 'Hidden' : 'Shown'}: ${chosen.count.toLocaleString()} faces` : rec.made
+      ? `Cut: ${plural(rec.made, 'new piece')}. Click a part to hide it.`
+      : 'That cut didn\'t split anything off: a cut has to cross a piece from edge to edge, or meet other cuts', rec.made || op !== 'cut' ? 3000 : 6000);
+  } catch (e) { toast(e.message, 6000); }
+  finally { if (pieces) { pieces.busy = false; renderPieces(); } strokeSvg.innerHTML = ''; }
+}
+async function gzipBase64(bytes){
+  if (typeof CompressionStream === 'undefined') throw new Error('This browser is too old to send that');
+  const buf = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
+  let s = '';
+  for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+// The faces a stroke chooses, as a bit each among all of the copy's: for a cut, every face its line crosses on the screen,
+// at any depth; for an area, every face whose middle is inside it, hidden ones to show or shown ones to hide, and when
+// hiding, only those of the nearest surface there unless what's behind is wanted too
+function chooseFaces(op, points){
+  const r = renderer.domElement.getBoundingClientRect(), W = Math.round(r.width), H = Math.round(r.height);
+  camera.updateMatrixWorld(); current.updateMatrixWorld(true);
+  const hide = new Set(pieces.record.removed), bits = new Uint8Array(Math.ceil(pieces.total / 8));
+  const lines = op === 'cut' ? strokeGrid(points) : null, inside = op === 'cut' ? null : areaMask(points, W, H);
+  const depth = op === 'hide' && !hideBehind ? depthImage(W, H) : null, m = new THREE.Matrix4();
+  let count = 0;
+  for (const part of pieces.parts) {
+    m.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).multiply(part.mesh.matrixWorld);
+    const e = m.elements, pos = part.mesh.geometry.attributes.position, nv = pos.count;
+    const X = new Float32Array(nv), Y = new Float32Array(nv), Z = new Float32Array(nv);
+    for (let v = 0; v < nv; v++) {     // on the screen, and how far in front of the camera
+      const x = pos.getX(v), y = pos.getY(v), z = pos.getZ(v), w = e[3] * x + e[7] * y + e[11] * z + e[15];
+      Z[v] = w;
+      X[v] = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w + 1) / 2 * W;
+      Y[v] = (1 - (e[1] * x + e[5] * y + e[9] * z + e[13]) / w) / 2 * H;
+    }
+    const F = part.faces, n = part.labels.length, near = camera.near;
+    for (let f = 0; f < n; f++) {
+      const a = F[3 * f], b = F[3 * f + 1], c = F[3 * f + 2];
+      if (Z[a] <= near || Z[b] <= near || Z[c] <= near) continue;
+      let take;
+      if (lines) take = crossed(lines, X[a], Y[a], X[b], Y[b], X[c], Y[c]);
+      else {
+        if (hide.has(part.labels[f]) !== (op === 'show')) continue;
+        const px = Math.floor((X[a] + X[b] + X[c]) / 3), py = Math.floor((Y[a] + Y[b] + Y[c]) / 3);
+        take = px >= 0 && py >= 0 && px < W && py < H && inside[py * W + px] === 1
+          && (!depth || (Z[a] + Z[b] + Z[c]) / 3 <= nearestAt(depth, px, py, W, H) * 1.015 + .003);
+      }
+      if (take) { const g = part.start + f; bits[g >> 3] |= 1 << (g & 7); count++; }
+    }
+  }
+  return { bits, count };
+}
+function areaMask(points, W, H){
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const g = cv.getContext('2d', { willReadFrequently: true });
+  g.beginPath(); points.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); g.fill();
+  const d = g.getImageData(0, 0, W, H).data, mask = new Uint8Array(W * H);
+  for (let i = 0; i < mask.length; i++) mask[i] = d[4 * i + 3] > 127 ? 1 : 0;
+  return mask;
+}
+// A stroke's segments, by the cells of the screen they pass through, to look at only those near a face
+const CELL = 32;
+function strokeGrid(points){
+  const cells = new Map(), segs = [];
+  for (let i = 1; i < points.length; i++) {
+    const [px, py] = points[i - 1], [qx, qy] = points[i], k = segs.length;
+    segs.push([px, py, qx, qy]);
+    for (let cx = Math.floor(Math.min(px, qx) / CELL); cx <= Math.floor(Math.max(px, qx) / CELL); cx++)
+      for (let cy = Math.floor(Math.min(py, qy) / CELL); cy <= Math.floor(Math.max(py, qy) / CELL); cy++) {
+        const key = cx * 65536 + cy;
+        cells.has(key) ? cells.get(key).push(k) : cells.set(key, [k]);
+      }
+  }
+  return { cells, segs };
+}
+const orient = (ax, ay, bx, by, cx, cy) => (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+const segsCross = (px, py, qx, qy, ax, ay, bx, by) => (orient(px, py, qx, qy, ax, ay) > 0) !== (orient(px, py, qx, qy, bx, by) > 0)
+  && (orient(ax, ay, bx, by, px, py) > 0) !== (orient(ax, ay, bx, by, qx, qy) > 0);
+function inTriangle(px, py, ax, ay, bx, by, cx, cy){
+  const d1 = orient(ax, ay, bx, by, px, py), d2 = orient(bx, by, cx, cy, px, py), d3 = orient(cx, cy, ax, ay, px, py);
+  return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+}
+// Whether a face on the screen meets the stroke
+function crossed({ cells, segs }, ax, ay, bx, by, cx, cy){
+  const x0 = Math.min(ax, bx, cx), x1 = Math.max(ax, bx, cx), y0 = Math.min(ay, by, cy), y1 = Math.max(ay, by, cy);
+  if (x1 - x0 > 1e5 || y1 - y0 > 1e5) return false;    // nearly edge-on to the camera, through its plane
+  for (let gx = Math.floor(x0 / CELL); gx <= Math.floor(x1 / CELL); gx++)
+    for (let gy = Math.floor(y0 / CELL); gy <= Math.floor(y1 / CELL); gy++)
+      for (const k of cells.get(gx * 65536 + gy) || []) {
+        const [px, py, qx, qy] = segs[k];
+        if (Math.max(px, qx) < x0 || Math.min(px, qx) > x1 || Math.max(py, qy) < y0 || Math.min(py, qy) > y1) continue;
+        if (inTriangle(px, py, ax, ay, bx, by, cx, cy) || inTriangle(qx, qy, ax, ay, bx, by, cx, cy) || segsCross(px, py, qx, qy, ax, ay, bx, by)
+          || segsCross(px, py, qx, qy, bx, by, cx, cy) || segsCross(px, py, qx, qy, cx, cy, ax, ay)) return true;
+      }
+  return false;
+}
+// How far the nearest shown surface is at each pixel of the view (Infinity: none), drawn again off the screen with
+// each fragment's distance in its colour, 24 bits of it
+const DEPTH_LAYER = 7, DEPTH_RANGE = 100;
+const depthMaterial = new THREE.ShaderMaterial({ side: THREE.DoubleSide,
+  vertexShader: 'varying float vDepth; void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); vDepth = -mv.z; gl_Position = projectionMatrix * mv; }',
+  fragmentShader: `varying float vDepth; void main(){ float v = floor(clamp(vDepth / ${DEPTH_RANGE.toFixed(1)}, 0.0, 1.0) * 16777214.0);
+    float r = floor(v / 65536.0), g = floor((v - r * 65536.0) / 256.0); gl_FragColor = vec4(r, g, v - r * 65536.0 - g * 256.0, 255.0) / 255.0; }` });
+function depthImage(W, H){
+  const rt = new THREE.WebGLRenderTarget(W, H), px = new Uint8Array(W * H * 4);
+  const was = { background: scene.background, mask: camera.layers.mask, clear: renderer.getClearColor(new THREE.Color()), alpha: renderer.getClearAlpha() };
+  for (const part of pieces.parts) part.mesh.layers.enable(DEPTH_LAYER);
+  try {
+    camera.layers.set(DEPTH_LAYER); scene.background = null; scene.overrideMaterial = depthMaterial;
+    renderer.setClearColor(0xffffff, 1); renderer.setRenderTarget(rt);
+    renderer.render(scene, camera);
+    renderer.readRenderTargetPixels(rt, 0, 0, W, H, px);
+  } finally {
+    renderer.setRenderTarget(null); renderer.setClearColor(was.clear, was.alpha);
+    scene.overrideMaterial = null; scene.background = was.background; camera.layers.mask = was.mask;
+    rt.dispose();
+  }
+  const depth = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = ((H - 1 - y) * W + x) * 4, v = px[i] * 65536 + px[i + 1] * 256 + px[i + 2];
+    depth[y * W + x] = v >= 16777215 ? Infinity : v / 16777214 * DEPTH_RANGE;
+  }
+  return depth;
+}
+function nearestAt(depth, x, y, W, H){     // of the pixel and those around it: a face can be a little behind its pixel's nearest
+  let d = Infinity;
+  for (let j = Math.max(0, y - 1); j <= Math.min(H - 1, y + 1); j++)
+    for (let i = Math.max(0, x - 1); i <= Math.min(W - 1, x + 1); i++) d = Math.min(d, depth[j * W + i]);
+  return d;
 }
 async function redoCleanup(){
   const id = pieces.id;
@@ -889,15 +1229,53 @@ async function redoCleanup(){
 let pressedAt = null;
 renderer.domElement.addEventListener('pointerdown', ev => { pressedAt = [ev.clientX, ev.clientY]; }, { capture: true });
 renderer.domElement.addEventListener('click', ev => {
-  if (!pieces?.editing || ev.detail > 1 || !pressedAt || Math.hypot(ev.clientX - pressedAt[0], ev.clientY - pressedAt[1]) > 5) return;   // not the end of a drag
-  const hit = surfaceUnder(ev), part = hit?.object.userData.part;
+  if (!pieces?.editing || pieces.busy || ev.detail > 1 || !pressedAt || Math.hypot(ev.clientX - pressedAt[0], ev.clientY - pressedAt[1]) > 5) return;   // not the end of a drag
+  const hit = surfaceUnder(ev, true), part = hit?.object.userData.part;
   if (part) togglePiece(part.labels[hit.object.userData.faceList[hit.faceIndex]]);
 });
+// While editing, the piece under a mouse resting on the view is tinted, to see what a click would hide or show: what a
+// cut split off, say
+const hoverMaterial = new THREE.MeshBasicMaterial({ color: 0xffc83d, transparent: true, opacity: .45, side: THREE.DoubleSide, depthWrite: false,
+  polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+let hovered = null, hoverT;
+function showHover(id){
+  if (id === hovered) return;
+  hovered = id;
+  for (const part of pieces?.parts || []) {
+    if (!part.hover) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', part.mesh.geometry.attributes.position);
+      part.hover = new THREE.Mesh(g, hoverMaterial);
+      part.hover.userData.hiddenPieces = true; part.hover.raycast = () => {};
+      part.mesh.add(part.hover);
+    }
+    part.hover.visible = id != null;
+    if (id == null) continue;
+    const n = part.labels.length;
+    let k = 0;
+    for (let f = 0; f < n; f++) if (part.labels[f] === id) k++;
+    const index = new Uint32Array(k * 3);
+    for (let f = 0, j = 0; f < n; f++) if (part.labels[f] === id) { index[j++] = part.faces[3 * f]; index[j++] = part.faces[3 * f + 1]; index[j++] = part.faces[3 * f + 2]; }
+    part.hover.geometry.setIndex(new THREE.BufferAttribute(index, 1));
+  }
+  woke();
+}
+renderer.domElement.addEventListener('pointermove', ev => {
+  clearTimeout(hoverT);
+  if (ev.pointerType !== 'mouse' || !pieces?.editing || pieces.busy || stroke || ev.buttons) return;
+  hoverT = setTimeout(() => {     // once the mouse rests: finding the surface under it takes a while on a big mesh
+    if (!pieces?.editing || pieces.busy || stroke) return;
+    const hit = surfaceUnder(ev, true), part = hit?.object.userData.part;
+    showHover(part ? part.labels[hit.object.userData.faceList[hit.faceIndex]] : null);
+  }, 150);
+});
+renderer.domElement.addEventListener('pointerleave', () => { clearTimeout(hoverT); if (pieces?.parts) showHover(null); });
 function fitEverything(){
   current.traverse(o => { if (o.userData.hiddenPieces) o.geometry.computeBoundingBox(); });
   const box = new THREE.Box3().setFromObject(current), c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() / 2;
   const away = camera.position.clone().sub(controls.target).normalize();
   controls.target.copy(c);
+  xrayPicked = false;
   camera.position.copy(c).addScaledVector(away, Math.max(r, .5) / Math.sin(camera.fov * Math.PI / 360) * 1.1);
 }
 for (const stop of ['pointerdown', 'wheel']) renderer.domElement.addEventListener(stop, endSway, { capture: true, passive: true });   // the view is theirs again
@@ -921,6 +1299,7 @@ function standOnGrid(obj){
 }
 function frameMain(){
   endSway();
+  xrayPicked = false;
   standOnGrid(current);
   controls.target.copy(mainBox(current).getCenter(new THREE.Vector3()));
   // further back on a screen taller than it's wide, as a phone's is, so that the rock fits across it too
@@ -2843,6 +3222,7 @@ function showFrom(m, from){
 function lookFrom(view){
   if (!current) return;
   endSway();
+  xrayPicked = false;
   current.updateMatrixWorld(true);
   const node = meshNode();
   controls.target.copy(node.localToWorld(new THREE.Vector3(...view.target)));

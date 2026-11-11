@@ -995,6 +995,56 @@ def clean_existing_meshes() -> None:
             time.sleep(0.1)
 
 
+_cleanup_lock = threading.Lock()    # held while a cleanup is changed from the API, so two changes at once don't mix
+
+
+def cleanup_answer(mid: str, record: dict, **extra) -> dict:
+    """A mesh's cleanup as the API gives it: with how many changes to it can be undone, and the mesh's version now,
+    which its files' addresses carry, and which changes with its pieces."""
+    row = q("SELECT filename, source FROM meshes WHERE id=?", mid, one=True)
+    v = mesh_version(mid, texture_mode(mid, row["source"]), row["filename"]) if row else None
+    return {**record, "undo": meshclean.undo_steps(served_dir(mid)), "v": v, **extra}
+
+
+def chosen_faces(mid: str, body: dict, record: dict):
+    """The faces chosen in the viewer for a change to a mesh's cleanup, as a bool for each of the mesh's own faces.
+
+    The viewer sends a bit for each face of the copy it has ("count" of them, gzipped, in base64), and with "lod" the
+    copy packed for viewing that it's from (glbpack.py), whose faces are in another order. Only the full one has
+    every face: a preview's are fewer and simplified.
+    """
+    import zlib
+
+    import numpy as np
+    count = int(body.get("count") or 0)
+    if count <= 0:
+        raise ValueError("count: how many faces the viewer's copy has")
+    try:
+        unzip = zlib.decompressobj(wbits=31)
+        bits = unzip.decompress(base64.b64decode(body.get("faces") or "", validate=True), (count + 7) // 8)
+    except (ValueError, zlib.error) as e:
+        raise ValueError("faces: a gzipped bit for each face, in base64") from e
+    chosen = np.unpackbits(np.frombuffer(bits, np.uint8), bitorder="little")[:count].astype(bool)
+    if len(chosen) != count:
+        raise ValueError("faces: fewer than count")
+    lod = body.get("lod")
+    if not lod:
+        return chosen
+    if lod != "full":
+        raise ValueError("this needs every face of the mesh: load its full detail first")
+    row = q("SELECT filename, source FROM meshes WHERE id=?", mid, one=True)
+    src = viewer_glb(mid, texture_mode(mid, row["source"]), row["filename"]) if row else None
+    order = glbpack.path(src, "full", faces=True) if src else None
+    if order is None:
+        raise ValueError("this mesh's copy for viewing has changed since it was loaded: open it again")
+    origin = np.frombuffer(order.read_bytes(), "<u4")
+    if len(origin) != count or (origin.size and int(origin.max()) >= record["faces"]):
+        raise ValueError("the faces chosen don't match this mesh: open it again")
+    out = np.zeros(record["faces"], bool)
+    out[origin[chosen]] = True
+    return out
+
+
 def orient_existing_meshes() -> None:
     """Report on reconstructions from before orientation.json existed. A model still on disk can be
     checked; most had theirs deleted to save space, so all a report can say is what their photos hold."""
@@ -5210,7 +5260,7 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
             if m:
                 record = meshclean.load(served_dir(m[1]))
-                return self.send_json(record) if record else self.send_json({"error": "no cleanup"}, 404)
+                return self.send_json(cleanup_answer(m[1], record)) if record else self.send_json({"error": "no cleanup"}, 404)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/nearby", p)
             if m:   # the meshes around one, to show around it
                 try:
@@ -5499,10 +5549,29 @@ class Handler(BaseHTTPRequestHandler):
                 if not meshclean.available():
                     return self.send_json({"error": "cleaning up meshes needs numpy"}, 501)
                 try:
-                    record = meshclean.clean(served_dir(m[1]), print, force=True)
+                    with _cleanup_lock:
+                        record = meshclean.clean(served_dir(m[1]), print, force=True)
                 except ValueError as e:
                     return self.send_json({"error": f"can't clean up this mesh: {e}"}, 400)
-                return self.send_json(record) if record else self.send_json({"error": "only GLB meshes can be cleaned up"}, 400)
+                return self.send_json(cleanup_answer(m[1], record)) if record else self.send_json({"error": "only GLB meshes can be cleaned up"}, 400)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup/(edit|undo)", p)
+            if m:   # a cut, or an area hidden or shown, with faces chosen in the viewer; or the last change undone
+                if not (MESHES / m[1]).is_dir():
+                    return self.send_json({"error": "not found"}, 404)
+                if not meshclean.available():
+                    return self.send_json({"error": "cleaning up meshes needs numpy"}, 501)
+                d = served_dir(m[1])
+                try:
+                    with _cleanup_lock:
+                        if m[2] == "undo":
+                            return self.send_json(cleanup_answer(m[1], meshclean.undo(d)))
+                        body, record = self.read_json(), meshclean.load(d)
+                        if not record or record.get("deleted"):
+                            raise ValueError("this mesh has no cleanup to edit")
+                        record, made = meshclean.edit(d, body.get("op"), chosen_faces(m[1], body, record))
+                    return self.send_json(cleanup_answer(m[1], record, made=made))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/links", p)
             if m:
                 body = self.read_json()
@@ -5704,7 +5773,9 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
             if m:
                 try:
-                    return self.send_json(meshclean.set_removed(served_dir(m[1]), body.get("removed", [])))
+                    with _cleanup_lock:
+                        record = meshclean.set_removed(served_dir(m[1]), body.get("removed", []))
+                    return self.send_json(cleanup_answer(m[1], record))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/heading", p)
@@ -5742,8 +5813,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"deleted": m[1]})
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
         if m:   # the whole mesh shows again; its own files were never changed
-            meshclean.delete(served_dir(m[1]))
-            return self.send_json({"deleted": True})
+            with _cleanup_lock:
+                meshclean.delete(served_dir(m[1]))
+            return self.send_json(cleanup_answer(m[1], {"deleted": True}))
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/links/([0-9a-f]+)", p)
         if m:
             q("DELETE FROM mesh_links WHERE mesh_id=? AND climb_id=?", m[1], m[2], write=True)

@@ -505,6 +505,37 @@ mesh's files, can be edited piece by piece, and can be deleted. It costs at most
 The list of faces is what the viewer needs to hide pieces without working them out itself. A cleaned
 file is only made when someone downloads one.
 
+**Edits by hand (2026-11-11).** The rule can't know which wall is in the way, so pieces can also be made by hand,
+in the same step. Selecting is done in the viewer, which has the view the person sees: a cut is the faces a drawn
+line crosses on the screen, at any depth; an area is the faces whose middles are inside a drawn loop, and when hiding,
+only those within about 1.5% of the nearest surface there (a depth image drawn off the screen, each pixel's nearest of
+the 3x3 around it), so a wall in front can go without the one it hides. It sends a bit per face of its copy, in that
+copy's order; the server maps them to the GLB's own faces through the packed copy's face order. A preview's faces
+aren't the mesh's, so cuts and areas wait for every face.
+
+The server makes the pieces (`meshclean.edit`). A cut joins the faces of each piece it touches by the corners they
+share, except the faces it crossed, with each piece's corners kept apart from other pieces', so an earlier cut stays
+cut even where its faces still share corners with the other side. Crossed faces go with the biggest part beside
+them, so the cut follows the faces' edges, a face wide. A piece's biggest part keeps its id (and whether it's hidden),
+and parts under 100 faces stay with it rather than litter the list. An area becomes a piece of its own for each
+piece it takes part of. On Caveman (1.47M faces) a cut takes 2 s and an area 1 s on the server; the viewer's share is
+under a second. Before each change, the cleanup is kept (its faces' pieces zlib'd, about 20 KB for Caveman), and the
+last 20 can be undone.
+
+**Walls in the way.** Reconstructions are mostly sheets with their fronts towards the photos, so their backs are
+rock nobody photographed. Caveman is the case in point: its textured faces are the inside of an arch, so from outside,
+the grey back of one wall hides the other. 0.15% of its faces are untextured; the grey walls are backs, not faces
+without a texture, so "hide what's untextured" would have done nothing. The usual ways around such walls are a
+clipping plane, see-through backs, and the dithered cut-out games use to keep a character visible behind walls.
+The viewer does the last two. Fronts are drawn first, each marking the stencil buffer; backs are drawn after by
+meshes of their own, at a quarter strength where the stencil says a front is behind them and solid elsewhere, so
+a back only fades where there's rock behind it. Blending is order-independent there, as every back is the same grey.
+And after a double-click on a spot, fragments nearer than 92% of its distance and within a circle around it on the
+screen are dropped in a 4x4 ordered-dither pattern, down to 22% of them in the middle, which needs no sorting
+(real transparency would, and costs more on phones); the circle fades out at its edge and in depth. It applies only to
+a spot picked on the surface: the orbit point after framing is usually inside the rock, where it would hide the
+near side of every boulder.
+
 ## Meshing a whole area (`backend/server.py`, "campaigns")
 
 **Staying within Mountain Project's terms decides most of this.** They disallow automated or bulk

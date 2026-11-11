@@ -9,6 +9,8 @@ view-graph verdict), otherwise falls back to simple images and the count-based v
 """
 from __future__ import annotations
 
+import base64
+import gzip
 import io
 import json
 import os
@@ -443,7 +445,42 @@ def run(B: str, tmp: Path) -> None:
         st, _ = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": [1]})
         assert st == 400
         st, rec = req(B, "POST", f"/api/meshes/{mid}/cleanup", {})
-        assert st == 200 and rec["removed"] == [1], rec
+        assert st == 200 and rec["removed"] == [1] and rec["undo"] >= 1 and rec["v"], rec
+
+        # --- edits by hand, with faces chosen in the viewer: a bit for each face of its copy, gzipped, in base64
+        def bits(mask):
+            return base64.b64encode(gzip.compress(np.packbits(np.asarray(mask, bool), bitorder="little").tobytes())).decode()
+        steps = rec["undo"]
+        cut = np.zeros(402, bool)
+        cut[[(5 * 10 + j) * 2 + k for j in range(10) for k in (0, 1)]] = True     # down the sheet's sixth column
+        st, rec = req(B, "POST", f"/api/meshes/{mid}/cleanup/edit", {"op": "cut", "faces": bits(cut), "count": 402})
+        assert st == 200 and rec["made"] == 1 and [p["faces"] for p in rec["pieces"]] == [300, 2, 100] and rec["undo"] == steps + 1, rec
+        assert rec["v"] == version(), "its version, for its files' new addresses"
+        if glbpack.available():   # chosen in the order of the packed copy's faces: the piece just cut off, hidden
+            for _ in range(100):
+                if next(m for m in req(B, "GET", "/api/meshes")[1] if m["id"] == mid)["pack"]:
+                    break
+                time.sleep(0.1)
+            with urllib.request.urlopen(f"{B}/meshes/{mid}/cleanup_faces.bin?lod=full&v={version()}") as r:
+                order = np.frombuffer(r.read(), "<u2")
+            assert len(order) == 402 and (order == 2).sum() == 100
+            st, rec = req(B, "POST", f"/api/meshes/{mid}/cleanup/edit", {"op": "hide", "lod": "full", "faces": bits(order == 2), "count": 402})
+            assert st == 200 and rec["made"] == 0 and rec["removed"] == [1, 2], rec
+            st, bad = req(B, "POST", f"/api/meshes/{mid}/cleanup/edit", {"op": "hide", "lod": "preview", "faces": bits(order == 2), "count": 402})
+            assert st == 400 and "full detail" in bad["error"], bad
+            st, rec = req(B, "POST", f"/api/meshes/{mid}/cleanup/undo", {})
+            assert st == 200 and rec["removed"] == [1], rec
+        for body, why in (({"op": "cut", "faces": bits(cut), "count": 401}, "match"), ({"op": "cut", "faces": "%%", "count": 402}, "base64"),
+                          ({"op": "slice", "faces": bits(cut), "count": 402}, "op"), ({"op": "hide", "faces": bits(np.ones(402)), "count": 402}, "at least one")):
+            st, bad = req(B, "POST", f"/api/meshes/{mid}/cleanup/edit", body)
+            assert st == 400 and why in bad["error"], (body, bad)
+        st, rec = req(B, "POST", f"/api/meshes/{mid}/cleanup/undo", {})
+        assert st == 200 and [p["faces"] for p in rec["pieces"]] == [400, 2] and rec["undo"] == steps, rec
+        st, _ = req(B, "DELETE", f"/api/meshes/{mid}/cleanup")
+        st, rec = req(B, "POST", f"/api/meshes/{mid}/cleanup/undo", {})
+        assert st == 200 and rec["removed"] == [1] and not rec.get("deleted"), "removing it can be undone"
+        assert req(B, "POST", "/api/meshes/000000000000/cleanup/undo", {})[0] == 404
+        print("cleanup edits OK")
         st, _ = req(B, "DELETE", f"/api/meshes/{mid}")
         print("mesh cleanup routes OK")
     st, nomesh = req(B, "POST", "/api/meshes/000000000000/cleanup", {})

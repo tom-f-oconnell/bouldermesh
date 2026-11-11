@@ -191,6 +191,97 @@ with tempfile.TemporaryDirectory() as td:
     assert hashlib.sha1((d / "mesh.glb").read_bytes()).hexdigest() == before, "the mesh itself never changes"
     print("delete OK")
 
+# --- edits by hand: cuts, areas hidden or shown, and undoing them
+with tempfile.TemporaryDirectory() as td:
+    d = pathlib.Path(td)
+    glb(d / "mesh.glb", [join(grid(40, 40, split_seam=True), grid(2, 2, x0=300.0))])   # 3200 faces in 40 columns, and 8 apart
+    rec = meshclean.clean(d, lambda s: None)
+    assert [p["faces"] for p in rec["pieces"]] == [3200, 8] and rec["removed"] == [1] and meshclean.undo_steps(d) == 0, rec
+    n = rec["faces"]
+    face = lambda i, j: [(i * 40 + j) * 2, (i * 40 + j) * 2 + 1]  # noqa: E731     the two faces of column i, row j
+    labels = lambda: np.frombuffer((d / meshclean.FACES_FILE).read_bytes(), "<u2")  # noqa: E731
+
+    def chosen(cells):
+        out = np.zeros(n, bool)
+        out[[f for i, j in cells for f in face(i, j)]] = True
+        return out
+
+    # a cut right across, down column 20: its faces go with the bigger side, which keeps the piece's id
+    rec, made = meshclean.edit(d, "cut", chosen((20, j) for j in range(40)))
+    assert made == 1 and [p["faces"] for p in rec["pieces"]] == [1680, 8, 1520] and rec["removed"] == [1], rec["pieces"]
+    assert rec["pieces"][2]["center"][0] == 30.5 and rec["edits"] == 1 and meshclean.summary(rec)["edited"], rec["pieces"][2]
+    assert (labels()[face(20, 5)] == 0).all() and (labels()[face(21, 5)] == 2).all() and meshclean.undo_steps(d) == 1
+    assert rec["pieces"][2]["density"] == 1.0, "as dense as the mesh was"
+    # one that stops short splits nothing, and changes nothing
+    rec2, made = meshclean.edit(d, "cut", chosen((5, j) for j in range(30)))
+    assert made == 0 and rec2 == rec and meshclean.undo_steps(d) == 1
+    # across the left part only: the right one, already cut off, isn't joined back through the corners they share
+    rec, made = meshclean.edit(d, "cut", chosen((i, 10) for i in range(21)))
+    assert made == 1 and [p["faces"] for p in rec["pieces"]] == [1260, 8, 1520, 420], [p["faces"] for p in rec["pieces"]]
+    # bits under MIN_CUT_PIECE faces stay with their piece
+    rec2, made = meshclean.edit(d, "cut", chosen([(i, j) for i in (30, 31, 32) for j in (30, 31, 32) if (i, j) != (31, 31)]))
+    assert made == 0 and meshclean.undo_steps(d) == 2, "a ring around 2 faces: they stay"
+    # a hidden piece's parts stay hidden
+    meshclean.set_removed(d, [1, 2])
+    rec, made = meshclean.edit(d, "cut", chosen((25, j) for j in range(40)))
+    assert made == 1 and rec["removed"] == [1, 2, 4] and [p["faces"] for p in rec["pieces"]] == [1260, 8, 1200, 420, 320], rec
+    meshclean.set_removed(d, [1])
+    # an area hidden: the part of a piece chosen becomes a piece of its own, a piece chosen whole is hidden as it is
+    meshclean.set_removed(d, [])
+    rec, made = meshclean.edit(d, "hide", chosen((i, j) for i in range(5) for j in range(40)) | (np.arange(n) >= 3200))
+    assert made == 2 and rec["removed"] == [1, 5, 6] and [p["faces"] for p in rec["pieces"]] == [960, 8, 1200, 320, 320, 300, 100], rec
+    assert set(labels()[face(0, 39)]) == {5} and set(labels()[face(0, 0)]) == {6} and set(labels()[face(5, 0)]) == {3}
+    # and shown: hidden faces chosen become pieces that show, and those already showing are left as they are
+    rec, made = meshclean.edit(d, "show", chosen((i, j) for i in range(2) for j in range(40)) | chosen([(39, 39)]))
+    assert made == 2 and rec["removed"] == [1, 5, 6] and [p["faces"] for p in rec["pieces"]][5:] == [180, 60, 120, 40], rec["pieces"]
+    rec, made = meshclean.edit(d, "show", np.arange(n) >= 3200)
+    assert made == 0 and rec["removed"] == [5, 6], "a whole piece shown as it is"
+    for bad, why in ((np.ones(n, bool), "at least one"), (np.ones(n - 1, bool), "don't match")):
+        try:
+            meshclean.edit(d, "hide", bad)
+            raise AssertionError(why)
+        except ValueError as e:
+            assert why in str(e), e
+    assert meshclean.undo_steps(d) == 9 and meshclean.summary(meshclean.load(d))["hidden_faces"] == 240
+    out = meshclean.write_cleaned(d)
+    assert sum(p["faces"] for p in meshclean.analyse(out)[0]) == n - 240, "the cleaned download leaves out what's hidden"
+    print("edits OK")
+
+    # --- undo: each change back in turn, to the cleanup as the rule made it
+    states = []
+
+    def keep():
+        states.append((meshclean.load(d), labels().copy() if (d / meshclean.FACES_FILE).exists() else None))
+
+    keep()
+    meshclean.set_removed(d, [5])
+    keep()
+    meshclean.delete(d)
+    keep()
+    meshclean.clean(d, lambda s: None, force=True)
+    assert meshclean.undo_steps(d) == 12
+    for want, want_labels in reversed(states):
+        got = meshclean.undo(d)
+        assert got == want == meshclean.load(d), (got, want)
+        if want.get("deleted"):
+            assert not (d / meshclean.FACES_FILE).exists()
+        else:
+            assert np.array_equal(labels(), want_labels)
+    while meshclean.undo_steps(d):
+        rec = meshclean.undo(d)
+    assert [p["faces"] for p in rec["pieces"]] == [3200, 8] and rec["removed"] == [1] and "edits" not in rec, rec
+    assert len(labels()) == n and set(labels().tolist()) == {0, 1}
+    try:
+        meshclean.undo(d)
+        raise AssertionError("nothing left to undo")
+    except ValueError as e:
+        assert "nothing to undo" in str(e)
+    for k in range(meshclean.UNDO_KEEP + 5):
+        meshclean.set_removed(d, [1] if k % 2 else [])
+    assert meshclean.undo_steps(d) == meshclean.UNDO_KEEP and len(list((d / meshclean.UNDO_DIR).iterdir())) == 2 * meshclean.UNDO_KEEP
+    assert meshclean._write_labels(d, np.arange(70000) % 70000, 70000) == 4, "past 65,536 pieces: 4 bytes each"
+    print("undo OK")
+
 # --- what it can't work on
 with tempfile.TemporaryDirectory() as td:
     d = pathlib.Path(td)

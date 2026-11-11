@@ -408,7 +408,7 @@ in view is blue. *Random* opens any mesh; it's blue until one is in view.
 
 On a phone, the page shows either the controls or the view. The controls' header holds *Viewer* (grey until a mesh is
 opened, then with the climb in view named under it), *Random*, a ⚙ button (the mesh as *Surface* or *Wireframe*, the
-background, how much detail to load, and colours), *Volunteer*, and *Edit…* or *Editing*. The view's bar holds ← back to the controls, *Random*,
+background, how much detail to load, walls in the way, and colours), *Volunteer*, and *Edit…* or *Editing*. The view's bar holds ← back to the controls, *Random*,
 ⚙, *Sway*, and at its right end *Map*, which swaps the mesh for the map, and then reads *3D*. While a mesh loads, its
 progress shows over whichever is on screen, and the view takes over once it's ready. Over
 the mesh it shows only the climb's name, small, at the top, so texture problems, stray-piece cleanup, *Hide notes* and
@@ -435,8 +435,18 @@ view shows both and how far apart they are, or why there's no reading. Meshes ha
 
 Reconstructions come with stray pieces, so each one hides those that have under 1% of the main piece's
 faces, or are over 5x sparser. This never changes the mesh's own files: on the view, *Edit* lets you
-click any piece to hide or show it, and *Remove cleanup* shows the whole mesh again. The download
+click any piece to hide or show it (resting the mouse on one tints it first), and *Remove cleanup* shows the whole
+mesh again. While editing, *Cut* draws a line that cuts through everything under it, splitting any piece it crosses
+from edge to edge into parts to hide or show; *Hide area* hides the faces you draw around (only the nearest surface,
+unless *and what's behind* is ticked); *Show area* shows hidden ones again; *Undo* takes back the last 20 changes, any
+of these, *Back to automatic* or *Remove cleanup*. Cuts and areas need every face loaded, not a preview. The download
 button leaves out whatever is hidden. It needs numpy, and only works on GLB meshes.
+
+Rock no photo saw can hide rock that was photographed: the inside of an arch is all most photos show, and from
+outside only its grey back is seen. With ⚙ *Walls in the way: See-through* (the default), a mesh's grey backs show
+the rock behind them through them, and they stay solid where there's nothing behind. Double-clicking a spot to look
+at also makes anything that comes between it and you see-through around it, as you turn the view, until the view is
+framed again. *Opaque* draws every surface solid.
 
 ## Run it as a service
 
@@ -985,6 +995,9 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/meshes/{id}/scale                         find its size (scale.json: metres per unit, and each estimate)
     POST /api/meshes/scale-all {again}                  size every reconstructed mesh not yet sized, or all of them
     GET|POST|DELETE /api/meshes/{id}/cleanup · PATCH /api/meshes/{id}/cleanup {removed} · GET /meshes/{id}/mesh.glb?cleaned=1
+    POST /api/meshes/{id}/cleanup/edit {op: cut|hide|show, faces, count, lod}  a cut, or an area hidden or shown: faces is
+                                                        a bit for each face of the viewer's copy (lod), gzipped, in base64
+    POST /api/meshes/{id}/cleanup/undo                  the cleanup as it was before its last change (20 are kept)
     GET  /api/meshes/{id}/sources                       each photo in the mesh: source, URL, page, credit, licence
     On the admin page's port: GET /api/admin/state · POST /api/admin/settings · POST /api/admin/secrets
     POST /api/admin/actions/{test,end-nodes,retexture,machine-add,machine-revoke,volunteer-add,volunteer-revoke,
@@ -1029,7 +1042,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_viewpoints.py  # offline: placing each climb on a boulder's mesh by its own photos
     python3 tests/test_bundle.py      # offline: moving a boulder's mesh and its harvests to another copy of the data
     python3 tests/test_diagnostics.py # offline: what's recorded when real processes fail or get killed
-    python3 tests/test_meshclean.py   # offline: finding and hiding stray pieces on small GLBs, the cleaned download
+    python3 tests/test_meshclean.py   # offline: finding and hiding stray pieces on small GLBs, cuts and areas, undo, the cleaned download
     python3 tests/test_glbpack.py     # offline: packed and simplified copies for the viewer, and their cleanups (needs node or deno)
     python3 tests/test_worker_setup.py # offline: the worker's --setup and Docker check, on machines described, not changed
     python3 tests/test_heading.py     # offline: which way a mesh faces, from photos' compasses and Mountain Project's text
