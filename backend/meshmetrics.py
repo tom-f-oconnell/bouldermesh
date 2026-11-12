@@ -15,9 +15,9 @@ import math
 from pathlib import Path
 
 FILE = "metrics.json"
-VERSION = 1
+VERSION = 2
 VIEW_DEG = 15.0         # photos taken within this of the same direction from the rock count as one viewpoint
-SOURCES = ("cameras.json", "cleanup.json", "orientation.json", "timings.json")
+SOURCES = ("cameras.json", "cleanup.json", "orientation.json", "timings.json", "photo_sources.json")
 
 
 def _rotation(q: list[float]) -> list[list[float]]:
@@ -119,8 +119,10 @@ def compute(mesh_dir: Path) -> dict:
     orient = _read(mesh_dir / "orientation.json") or {}
     timings = _read(mesh_dir / "timings.json") or {}
     cams = cameras(_read(mesh_dir / "cameras.json") or [])
+    given = _read(mesh_dir / "photo_sources.json") or {}     # an older mesh's: every photo it was given, if not which placed
     out = {"faces": cleanup.get("faces"), "placed": len(cams) or orient.get("placed") or timings.get("placed"),
-           "photos_in": timings.get("photos_in"), "views": None, "around": None}
+           "photos_in": timings.get("photos_in") or (len(given.get("photos") or []) if given.get("basis") == "given" else None) or None,
+           "views": None, "around": None}
     centre = rock_centre(cams) if len(cams) >= 2 else None
     if centre:
         dirs = [_unit(_sub(c, centre)) for c, _ in cams]

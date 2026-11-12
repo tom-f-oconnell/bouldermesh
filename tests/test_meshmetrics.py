@@ -83,6 +83,10 @@ try:
     bare = tmp / "uploaded"
     bare.mkdir()
     assert mm.load(bare) == {"faces": None, "placed": None, "photos_in": None, "views": None, "around": None}
+    old = tmp / "older"     # meshed before cameras.json: its photo_sources.json has every photo it was given
+    old.mkdir()
+    (old / "photo_sources.json").write_text(json.dumps({"basis": "given", "photos": [{"file": f"{i}.jpg"} for i in range(7)]}))
+    assert mm.load(old)["photos_in"] == 7 and mm.load(old)["placed"] is None
     print("ALL MESH METRICS TESTS PASSED")
 finally:
     shutil.rmtree(tmp, ignore_errors=True)

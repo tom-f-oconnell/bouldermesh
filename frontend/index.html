@@ -4016,7 +4016,7 @@ async function pickBoulder(r, fromLink = false){
     <p class="note">${items.length ? `${plural(items.length, 'mesh', 'meshes')}, made apart: pick one` : 'No mesh of it yet.'}</p>
     ${items.map(x => {
       const m = meshesById[x.id], t = m.metrics || {};
-      const facts = [x.home.length > 1 ? plural(x.home.length, 'climb') : '', t.placed ? `${t.placed} photos placed` : '', x.faces ? `${fmtCount(x.faces)} faces` : ''].filter(Boolean).join(' · ');
+      const facts = [x.home.length > 1 ? plural(x.home.length, 'climb') : '', t.placed ? `${t.placed} photos placed` : t.photos_in ? `${t.photos_in} photos in (how many placed wasn't kept)` : '', x.faces ? `${fmtCount(x.faces)} faces` : ''].filter(Boolean).join(' · ');
       return `<button class="bitem${x.id === shownMesh ? ' on' : ''}" data-id="${x.id}">${m.thumb ? `<img alt="" src="/meshes/${m.id}/thumb.small.jpg?v=${m.thumb.v}">` : ''}<span class="bkind">${what[meshKind(m)] || 'A mesh'}${facts ? ` <small>· ${esc(facts)}</small>` : ''}</span>
         <span class="bclimbs">${[...x.home.map(id => `<b>${esc(names[id] || '')}</b>`), ...x.others.map(id => `<span class="mute">${esc(names[id] || '')}</span>`)].join(', ') || '<span class="mute">none of its climbs placed</span>'}</span></button>`;
     }).join('')}
