@@ -10,7 +10,8 @@ Data layout (DATA_DIR, default ./data):
   projects/<project_id>/rejected/       duplicates / too-small images set aside by the diversity check
   projects/<project_id>/work/           COLMAP/OpenMVS scratch
   meshes/<mesh_id>/<file>               reconstructed or uploaded meshes
-  cache/http/                           cached web responses (climb pages, API calls, images)
+  cache/http/                           cached web responses (climb pages, API calls, searches), pruned for room
+  cache/http-kept/                      photos downloaded, kept for good (common.Http.get's keep)
 """
 from __future__ import annotations
 
@@ -2715,7 +2716,7 @@ def boulder_projects(climb_id: str, but: str | None = None) -> list[Path]:
 
 def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter: bool = True, resume: bool = False,
                 again: bool = False, wait: bool = False, need_youtube: bool = False, add: bool = False,
-                follow: Callable[[dict], None] | None = None) -> None:
+                follow: Callable[[dict], None] | None = None, refresh: bool = False, rejudge: bool = False) -> None:
     """Gather a climb's photos into its project, and optionally make its mesh. Only photos found for it are kept,
     so that its mesh shows the climb; the other harvests of its boulder only help tell which web photos are of it.
 
@@ -2730,16 +2731,23 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
         add: with again, add the videos volunteers fetched since to what the harvest before found (harvest_mod's add),
             rather than start again: its photos stay (brought back from the backup first, if they were offloaded,
             waiting for that as for a machine), and only YouTube is looked at. Without a harvest before, from scratch.
+        refresh: with add, every source is looked at again, and only what wasn't found before downloaded.
+        rejudge: with add, nothing is looked for: every photo is judged again by the filter, from scratch, but for
+            those put back by hand.
         follow: given its progress as it goes (tracker_for()), as a boulder's harvest of its climbs follows each.
     """
     pdir = PROJECTS / pid
     before = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)["harvest"] if again and add else None
     add = bool(before) and (pdir / "sources.json").is_file()
     if add:
-        need_back([pid], "adding what volunteers fetched")
+        need_back([pid], "judging its photos again" if rejudge else "adding to its photos")
     finished = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)["harvest"] if resume else None
     if resume:
         append_log(pid, "-- carrying on after an interruption")
+    elif add and rejudge:
+        append_log(pid, "-- judging every photo again, from scratch, keeping those put back by hand")
+    elif add and refresh:
+        append_log(pid, "-- looking in every source again, for what wasn't found before")
     elif add:
         append_log(pid, "-- adding the videos volunteers fetched to what was harvested before")
     elif again:
@@ -2754,9 +2762,12 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
         proj = q("SELECT climb_id FROM projects WHERE id=?", pid, one=True)
         c = climb_obj(proj["climb_id"])
         stub = bool(c.raw.get("stub"))
-        if add:
+        if add and rejudge:
+            sources = set()
+        elif add and not refresh:
             sources = {"youtube"} & set(sources) or {"youtube"}
-        tracker = tracker_for(pid, ([("page", "Fetch problem page", 1)] if stub else []) + harvest_mod.steps(sources, relevance_filter, add)
+        tracker = tracker_for(pid, ([("page", "Fetch problem page", 1)] if stub else [])
+                              + harvest_mod.steps(sources, relevance_filter, add and not refresh)
                               + (pipeline.steps() if reconstruct else []), follow)
         if finished:
             summary = json.loads(finished)
@@ -2780,7 +2791,8 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                     log(f"couldn't read the problem page again ({e}); using what was read before")
             summary = harvest_mod.harvest(c, pdir, log, sources, relevance_filter=relevance_filter, tracker=tracker,
                                           anchors_from=boulder_projects(proj["climb_id"], pid), want=video_wanter("harvest", pid),
-                                          want_search=search_wanter("harvest", pid), add=add)
+                                          want_search=search_wanter("harvest", pid), add=add, refresh=add and refresh,
+                                          rejudge=add and rejudge)
             videos = summary.pop("videos", [])
             record_videos(proj["climb_id"], videos, log)
             summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license")} for v in videos]
@@ -3715,8 +3727,8 @@ def offload_candidates() -> list[tuple[str, str, str]]:
 
 
 def prune_web_cache(need: float) -> int:
-    """Delete web cache files older than CACHE_DAYS, oldest first, until need bytes are freed: the backup keeps none,
-    and they're fetched again if wanted. Returns the bytes freed."""
+    """Delete web cache files older than CACHE_DAYS, oldest first, until need bytes are freed: searches and pages,
+    fetched again if wanted. Not the photos kept for good (cache/http-kept). Returns the bytes freed."""
     root, freed = DATA / "cache" / "http", 0
     old = sorted(((f.stat().st_mtime, f) for f in root.rglob("*") if f.is_file()), key=lambda x: x[0]) if root.is_dir() else []
     for t, f in old:
@@ -3785,10 +3797,12 @@ def watch_usage() -> None:
 
 def snapshot_databases() -> list[Path]:
     """Copy each database into SNAPSHOTS as <name>.backup, by SQLite's backup API, which is safe while they're in use,
-    as copying the files isn't. Returns the copies."""
+    as copying the files isn't: the filter's cache too (relevance.sqlite), which takes hours of work to make again.
+    Returns the copies."""
     SNAPSHOTS.mkdir(parents=True, exist_ok=True)
     made = []
-    for db_file in (DATA / "bouldermesh.sqlite", DATA / "volunteers.sqlite", DATA / "compute" / "machines.sqlite"):
+    for db_file in (DATA / "bouldermesh.sqlite", DATA / "volunteers.sqlite", DATA / "compute" / "machines.sqlite",
+                    DATA / "cache" / "relevance.sqlite"):
         if not db_file.exists():
             continue
         out = SNAPSHOTS / f"{db_file.name}.backup"
@@ -3993,7 +4007,7 @@ def stop_project(pid: str) -> tuple[dict, int]:
 
 ITEM_STATES = {"pending": "still to go", "running": "in progress", "waiting": "waiting for volunteers' YouTube searches and videos",
                "harvested": "harvested, waiting for the rest of its boulder's", "done": "meshed", "skipped": "skipped", "failed": "failed"}
-OWN_REDOS = ("harvest", "videos", "more", "rebuild", "rebuild-changed", "try-skipped", "own")   # done in a climb's own project
+OWN_REDOS = ("harvest", "videos", "more", "new", "refilter", "rebuild", "rebuild-changed", "try-skipped", "own")   # done in a climb's own project
 MESHES_FOR = ("boulder", "pool", "cluster")     # done in the project of the climb's boulder, or of a group of climbs
 
 
@@ -4173,6 +4187,8 @@ def run_retry(pid: str) -> None:
 
 REDO_NAMES = {"harvest": "harvest again", "videos": "look for new videos", "rebuild": "rebuild", "rebuild-changed": "rebuild",
               "more": "add what volunteers fetched", "more+rebuild": "add what volunteers fetched and rebuild",
+              "new": "check for new photos", "new+rebuild": "check for new photos and rebuild",
+              "refilter": "judge its photos again", "refilter+rebuild": "judge its photos again and rebuild",
               "harvest+rebuild": "harvest again and rebuild", "videos+rebuild": "look for new videos and rebuild",
               "boulder": "mesh its boulder from every climb's photos", "pool": "mesh its boulder from every climb's photos",
               "try-skipped": "try meshing, as the viewpoint check would let it now",
@@ -4233,7 +4249,9 @@ def queue_redo(camp_id: str, what: str) -> int:
     rest of its list. An area that isn't running runs only these, and then stops, as for retries.
 
     Args:
-        what: "harvest" every climb with photos of its own; "videos": only those that YouTube has new
+        what: "harvest" every climb with photos of its own, from scratch; "new": every one, looking in every source
+            again and adding only what wasn't found before; "refilter": every one's photos judged again by the filter
+            from scratch (but those put back by hand); "videos": only those that YouTube has new
             videos of; "rebuild" every one with enough viewpoints; "rebuild-changed": only those whose
             photos changed since they were meshed or checked. "harvest+rebuild" and "videos+rebuild"
             rebuild each climb whose photos changed straight after harvesting it.
@@ -4246,7 +4264,7 @@ def queue_redo(camp_id: str, what: str) -> int:
     rows = triable(camp_id) if what == "try-skipped" else q(
         "SELECT ci.source_id, ci.status FROM campaign_items ci JOIN projects p ON p.id=ci.project_id "
         "WHERE ci.campaign_id=? AND ci.status IN ('done','skipped','failed') AND p.status NOT IN ('queued','running','harvesting')"
-        + ("" if what.split("+")[0] in ("harvest", "videos", "more") else " AND p.harvest IS NOT NULL")
+        + ("" if what.split("+")[0] in ("harvest", "videos", "more", "new") else " AND p.harvest IS NOT NULL")
         + (" AND ci.changed=1" if what == "rebuild-changed" else ""), camp_id)
     for r in rows:
         set_item(camp_id, r["source_id"], status="pending", retry=1, redo=what, was=r["status"], redo_started=0,
@@ -4291,8 +4309,8 @@ def _harvest_again(row: dict, log) -> dict:
     pid = row["project_id"]
     before = photo_names(pid)
     first = row["redo"].split("+")[0]
-    if first == "more":     # what volunteers fetched since, added to what it had
-        run_harvest(pid, set(HARVEST_SOURCES), False, again=True, add=True)
+    if first in ("more", "new", "refilter"):     # added to what it had: what volunteers fetched, or every source's new
+        run_harvest(pid, set(HARVEST_SOURCES), False, again=True, add=True, refresh=first == "new", rejudge=first == "refilter")
         return _harvested_again(row, pid, before)
     if first == "videos":
         new = new_videos(row["climb_id"], pid, log)
@@ -4396,7 +4414,7 @@ def run_redo(camp: dict, item: dict) -> None:
     jobctl.begin(low_priority=True)
     try:
         set_item(cid, sid, status="running", note=None)
-        if first in ("harvest", "videos", "more") and not row["redo_started"]:    # a rebuild that started was harvested already
+        if first in ("harvest", "videos", "more", "new", "refilter") and not row["redo_started"]:    # a rebuild that started was harvested already
             end = _harvest_again(row, log)
             if row["was"] == "waiting" and not row["mesh_id"] and may_wait(row) and VOLUNTEERS.pending("harvest", row["project_id"]):
                 log("waiting for more from volunteers: the YouTube videos their search found")
@@ -5242,6 +5260,23 @@ def photo_entry(pid: str, name: str) -> dict:
     if _sources_cache.get(pid, (None,))[0] != stamp:
         _sources_cache[pid] = (stamp, provenance.harvested(PROJECTS / pid))
     return provenance.describe(name, _sources_cache[pid][1])
+
+
+def record_put_back(pid: str, name: str) -> None:
+    """Keep in a project's filter report (relevance.json) that a photo it rejected was put back by hand, so that
+    harvesting or filtering it again keeps it (relevance.filter_photos()'s put_back)."""
+    path = PROJECTS / pid / "relevance.json"
+    try:
+        rep = json.loads(path.read_text())
+    except (OSError, ValueError):
+        rep = {}
+    (rep.get("rejected") or {}).pop(name, None)
+    if isinstance(rep.get("kept"), list) and name not in rep["kept"]:
+        rep["kept"].append(name)
+    rep["put_back"] = sorted(set(rep.get("put_back") or []) | {name})
+    tmp = path.with_suffix(".part")
+    tmp.write_text(json.dumps(rep, indent=1))
+    tmp.replace(path)
 
 
 PHOTO_THUMBS = DATA / "cache" / "photo-thumbs"     # small copies of projects' photos (photo_thumb())
@@ -7527,6 +7562,7 @@ class Handler(BaseHTTPRequestHandler):
                 if "_" not in name or not src.is_file():
                     return self.send_json({"error": "not found"}, 404)
                 src.rename(PROJECTS / m[1] / "photos" / name.split("_", 1)[1])
+                record_put_back(m[1], name.split("_", 1)[1])
                 return self.send_json({"restored": name.split("_", 1)[1]})
 
             # ---- meshes
@@ -7685,7 +7721,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not campaign_status(m[1]):
                     return self.send_json({"error": "not found"}, 404)
                 b = self.read_json()
-                what = (("videos" if b.get("videos_only") else "harvest") + ("+rebuild" if b.get("then_rebuild") else "")
+                what = (("refilter" if b.get("refilter") else "new" if b.get("new_only") else "videos" if b.get("videos_only")
+                         else "harvest") + ("+rebuild" if b.get("then_rebuild") else "")
                         if m[2] == "harvest-again" else "try-skipped" if b.get("skipped_only")
                         else ("rebuild-changed" if b.get("changed_only") else "rebuild"))
                 queued = queue_redo(m[1], what)

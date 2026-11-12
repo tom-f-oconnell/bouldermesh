@@ -17,8 +17,9 @@
 #   current/          the server's data/ as it is now, and its .env (which has the editing token and the key its saved
 #                     credentials are encrypted with): meshes, projects' photos, masks, rejected photos and records,
 #                     fetched videos, the visitors' logs, and data/snapshots/, the databases as the server copied them
-#                     safely within the last hour; and what the server offloaded. Not its live databases, caches of web
-#                     pages and models, or work folders.
+#                     safely within the last hour (the filter's cache, relevance.sqlite, too); and what the server
+#                     offloaded; and its web cache (the photos it downloaded, kept for good, and searches and pages),
+#                     so that the sites needn't be asked again. Not its live databases, models, or work folders.
 #   db/<date>/        that night's database snapshots, kept KEEP_DAYS (30)
 #   changed/<date>/   whatever that night's copy replaced or deleted in current/, kept KEEP_DAYS too, so a mesh deleted
 #                     on the server, or a database gone wrong, can still be had back for a while
@@ -98,7 +99,6 @@ fi
 cat "$tmp/protect" - > "$tmp/filter" <<'RULES'
 - /data/**.sqlite
 - /data/**.sqlite-*
-- /data/cache/http/
 - /data/cache/models/
 - /data/cache/terrain/
 - /data/cache/terrarium/
@@ -122,6 +122,7 @@ rsync -a --delete --delete-excluded --backup --backup-dir="$dest/changed/$day" -
 [ -d "$dest/current/data" ] || fail "no data/ came from $src: is that the server's checkout?"
 for snap in "$dest/current/data/snapshots/"*.backup; do
     [ -e "$snap" ] || continue
+    case "$snap" in */relevance.sqlite.backup) continue ;; esac     # a cache: only the latest, in current/
     mkdir -p "$dest/db/$day"
     cp -p "$snap" "$dest/db/$day/"
 done

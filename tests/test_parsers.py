@@ -181,6 +181,15 @@ with tempfile.TemporaryDirectory() as tmp:
         assert False, "no ApiError"
     except ApiError as e:
         assert "too busy" in str(e) and not cp.exists(), (e, cp.exists())
+    # a photo is kept for good: one cached before is moved among those, and isn't asked for again however old
+    common.KEPT_DIR = pathlib.Path(tmp) / "kept"
+    old = http._cache_path("https://u/p.jpg")
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_bytes(b"jpeg")
+    os.utime(old, (0, 0))
+    assert http.get("https://u/p.jpg", binary=True, keep=True) == b"jpeg" and not old.exists()
+    assert http._cache_path("https://u/p.jpg", kept=True).read_bytes() == b"jpeg"
+    assert http.get("https://u/p.jpg", binary=True, keep=True, ttl=0) == b"jpeg", "never stale"
 
 logged, sleep = [], time.sleep
 time.sleep = lambda s: None

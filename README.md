@@ -782,14 +782,15 @@ It uses a key of its own with no passphrase, which the server takes only for rea
 
 To restore onto a new server, put `current/data` in its checkout's `data/` and `current/.env` beside it, then copy a
 night's `db/<date>/bouldermesh.sqlite.backup` and `volunteers.sqlite.backup` into `data/`, and `machines.sqlite.backup`
-into `data/compute/`, each without its `.backup`.
+into `data/compute/`, each without its `.backup`, and `current/data/snapshots/relevance.sqlite.backup` (the filter's
+cache) into `data/cache/` as `relevance.sqlite`.
 
 **Offloading to the backup.** Above 70% of the cap (*Room for data*'s *offload* %, `storage.offload_percent`; 0 never),
 the server deletes, down to that %, what the backup holds and nothing uses any more, oldest first in each kind and in this
 order: photos the filter rejected, after 3 days; fetched videos, once every climb they're of has been meshed (or skipped
 or failed) and beta has been found in each of its meshes; the photos and people masks of climbs and boulders meshed 2
 weeks ago, or skipped a month ago, none of whose boulder's climbs is still to be harvested or meshed; and the big files of
-older versions of meshes replaced 2 weeks ago. The web cache's month-old pages go too (the backup keeps none). Meshes,
+older versions of meshes replaced 2 weeks ago. The web cache's month-old searches and pages go too (the photos it downloaded, in `cache/http-kept/`, stay). Meshes,
 the databases, and each climb's and mesh's records always stay. In two steps, so that nothing goes that the backup can't
 be shown to hold: what's to go is marked (`data/offload.list`, which the backup reads first, and keeps whatever the server
 does); it's deleted once the backup says a copy that began after the mark went well. A job that needs photos that went

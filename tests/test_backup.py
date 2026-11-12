@@ -30,6 +30,11 @@ try:
     server.q("INSERT INTO projects(id,name,created,kind,status) VALUES('aaaaaaaaaaaa','x',0,'harvest','done')", write=True)
     made = server.snapshot_databases()
     assert {p.name for p in made} >= {"bouldermesh.sqlite.backup", "volunteers.sqlite.backup", "machines.sqlite.backup"}, made
+    rel = server.DATA / "cache" / "relevance.sqlite"      # the filter's cache too
+    rel.parent.mkdir(parents=True, exist_ok=True)
+    sqlite3.connect(rel).execute("CREATE TABLE IF NOT EXISTS t(x)").connection.close()
+    assert "relevance.sqlite.backup" in {p.name for p in server.snapshot_databases()}
+    (server.SNAPSHOTS / "relevance.sqlite.backup").unlink()
     snap = sqlite3.connect(server.SNAPSHOTS / "bouldermesh.sqlite.backup")
     assert snap.execute("SELECT name FROM projects").fetchall() == [("x",)] and oct((server.SNAPSHOTS / "bouldermesh.sqlite.backup").stat().st_mode)[-3:] == "600"
     snap.close()
@@ -41,7 +46,7 @@ try:
                       ("meshes/m1/smaller/t-2048.jpg", b"jpg"),
                       ("projects/aaaaaaaaaaaa/rejected/r.jpg", b"rej"), ("projects/aaaaaaaaaaaa/work/big.bin", b"work"),
                       ("projects/aaaaaaaaaaaa/sources.json", b"{}"), ("cache/videos/vvvvvvvvvvv.mp4", b"video"),
-                      ("cache/http/page", b"html"), ("cache/models/w.pt", b"weights"), ("uploads/u.part", b"up"),
+                      ("cache/http/page", b"html"), ("cache/http-kept/ab/photo", b"jpg"), ("cache/models/w.pt", b"weights"), ("uploads/u.part", b"up"),
                       ("cache/terrain/0123456789abcdef.bin", b"heights"), ("cache/terrarium/10/176/398.png", b"png"),
                       ("compute/jobs/j.in.tar", b"tar"), ("bouldermesh.sqlite-wal", b"wal"), ("mesh-views.jsonl", b"{}\n")):
         (data / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +62,7 @@ try:
     got = {str(p.relative_to(dest / "current")) for p in (dest / "current").rglob("*") if p.is_file()}
     assert got == {".env", "data/meshes/m1/mesh.glb", "data/meshes/m2/mesh.glb", "data/projects/aaaaaaaaaaaa/photos/p.jpg",
                    "data/projects/aaaaaaaaaaaa/rejected/r.jpg", "data/projects/aaaaaaaaaaaa/sources.json", "data/cache/videos/vvvvvvvvvvv.mp4",
-                   "data/mesh-views.jsonl", "data/snapshots/bouldermesh.sqlite.backup", "data/snapshots/volunteers.sqlite.backup",
+                   "data/cache/http/page", "data/cache/http-kept/ab/photo", "data/mesh-views.jsonl", "data/snapshots/bouldermesh.sqlite.backup", "data/snapshots/volunteers.sqlite.backup",
                    "data/snapshots/machines.sqlite.backup"}, sorted(got)
     nights = list((dest / "db").iterdir())
     assert len(nights) == 1 and {p.name for p in nights[0].iterdir()} >= {"bouldermesh.sqlite.backup"}
@@ -87,7 +92,7 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
                            capture_output=True, text=True)
         assert r.returncode == 0, r.stdout + r.stderr
         assert (dest / "current" / ".env").exists() and (dest / "current" / "data" / "meshes" / "m1" / "mesh.glb").exists()
-        assert not (dest / "current" / "backend").exists() and not (dest / "current" / "data" / "cache" / "http").exists()
+        assert not (dest / "current" / "backend").exists() and (dest / "current" / "data" / "cache" / "http-kept" / "ab" / "photo").exists()
         print("through rrsync OK")
     else:
         print("rrsync not installed: skipping the forced command")

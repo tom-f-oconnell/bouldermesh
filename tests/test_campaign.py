@@ -58,7 +58,7 @@ added: list[tuple[str, frozenset]] = []     # harvests that added to the one bef
 
 
 def fake_harvest(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, anchors_from=None, want=None,
-                 want_search=None, add=False):
+                 want_search=None, add=False, refresh=False, rejudge=False):
     harvested.append(c.name)
     if add:
         added.append((c.name, frozenset(sources)))
@@ -1079,7 +1079,7 @@ searched: dict[str, list[str]] = {}      # the videos a YouTube search finds of 
 
 
 def harvest_with_photos(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, anchors_from=None, want=None,
-                        want_search=None, add=False):
+                        want_search=None, add=False, refresh=False, rejudge=False):
     harvested.append(c.name)
     for n in photo_sets.get(c.name, ["a.jpg", "b.jpg", "c.jpg"]):
         (project_dir / "photos" / n).write_bytes(b"x")
@@ -1313,8 +1313,8 @@ seen_add = []
 
 
 def adding(c_, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, anchors_from=None, want=None,
-           want_search=None, add=False):
-    seen_add.append((add, set(sources), (project_dir / "photos" / "keep.jpg").exists()))
+           want_search=None, add=False, refresh=False, rejudge=False):
+    seen_add.append((add, set(sources), (project_dir / "photos" / "keep.jpg").exists()) + ((refresh, rejudge) if refresh or rejudge else ()))
     return {"images": 2, "video_frames": 1, "queries": [], "diversity": {"verdict": "good"}, "videos": [{"url": "u2"}]}
 
 
@@ -1325,6 +1325,13 @@ try:
     h = json.loads(server.q("SELECT harvest FROM projects WHERE id=?", apid, one=True)["harvest"])
     assert h["video_frames"] == 3 and [v["url"] for v in h["videos"]] == ["u1", "u2"] and h["queries"] == ["q"], h
     assert "adding the videos volunteers fetched" in server.read_log(apid)
+    # every source looked at again, for what's new; or every photo judged again, looking for nothing
+    server.run_harvest(apid, set(server.HARVEST_SOURCES), False, again=True, add=True, refresh=True)
+    assert seen_add[-1] == (True, set(server.HARVEST_SOURCES), True, True, False), seen_add[-1]
+    server.run_harvest(apid, set(server.HARVEST_SOURCES), False, again=True, add=True, rejudge=True)
+    assert seen_add[-1] == (True, set(), True, False, True), seen_add[-1]
+    assert "looking in every source again" in server.read_log(apid) and "judging every photo again" in server.read_log(apid)
+    del seen_add[1:]
     # its photos in the backup: asked back, and it waits for them, as for a machine
     server.q("INSERT OR REPLACE INTO offloads(path, kind, ref, bytes, marked, done) VALUES(?,?,?,?,?,?)", f"projects/{apid}/photos",
              "photos", apid, 1, time.time() - 60, time.time() - 30, write=True)
@@ -2273,6 +2280,11 @@ server.settings().update({"site.small_thumbs": False})
 assert not any(x["small"] for g in server.photo_groups(gp) for x in g["photos"])
 server.settings().update({"site.sources": "all", "site.small_thumbs": True})
 assert server.photo_thumb(gp, "photos", "nope.jpg") is None and server.photo_thumb(gp, "photos", "..") is None
+# a photo put back by hand is kept in the filter's report, so that judging it again keeps it
+(server.PROJECTS / gp / "relevance.json").write_text(json.dumps({"kept": ["a.jpg"], "rejected": {"b.jpg": "nomatch"}}))
+server.record_put_back(gp, "b.jpg")
+rep = json.loads((server.PROJECTS / gp / "relevance.json").read_text())
+assert rep == {"kept": ["a.jpg", "b.jpg"], "rejected": {}, "put_back": ["b.jpg"]}, rep
 print("a climb's photos by source, and small copies OK")
 
 # --- how long each step takes, for the time left of the bars and deploy.sh: kept for every run (step_runs), filled at

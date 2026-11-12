@@ -659,7 +659,8 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
         prior: an earlier run's report on photos with the same names, as a boulder pooled again or a climb harvested
             again has (reusable() says whether it may be used). Its verdicts stand: kept, and rejected as a title card
             or not a boulder, which depend only on the photo. One it found matching nothing is matched only against
-            photos it wasn't then (anchors and photos kept since), and kept if one matches.
+            photos it wasn't then (anchors and photos kept since), and kept if one matches. Its "put_back", photos
+            someone put back by hand, are kept whatever, even when the rest of it can't be used.
 
     Returns:
         A JSON-able report: methods run, kept file names, rejected {name: reason}, per-photo scores, the settings,
@@ -738,6 +739,9 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
         for p in alive:
             if p.name in again:
                 why[p.name] = "nomatch"
+    held = set((prior or {}).get("put_back") or []) & {p.name for p in paths}
+    for name in held:       # put back by hand: kept, whatever this run makes of it
+        why.pop(name, None)
     fallback = bool(paths) and len(why) == len(paths)
     if fallback:
         # more likely a false alarm than a whole harvest of junk: leave it for the diversity check to judge
@@ -753,4 +757,4 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
         + "".join(f", {n} rejected: {REASONS[r]}" for r, n in counts.items() if n))
     return {"methods": methods, "kept": [p.name for p in paths if p.name not in why], "rejected": why, "counts": counts,
             "scores": scores, "settings": settings_key(), "fallback": fallback, "more": sorted({p.name for p in more_anchors or []}),
-            "reused": len(stood)}
+            "reused": len(stood), **({"put_back": sorted(held)} if held else {})}

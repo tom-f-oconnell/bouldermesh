@@ -350,10 +350,11 @@ def _sharpest(frames: list[Path], keep: int, log: Log) -> list[Path]:
 
 # ----------------------------------------------------------------------------- download
 def download_all(media: list[Media], out_dir: Path, log: Log, min_bytes: int = 20_000, max_total: int = 200,
-                 progress: Callable[..., None] | None = None) -> list[dict]:
+                 progress: Callable[..., None] | None = None, skip: set[str] = frozenset()) -> list[dict]:
+    """Download each photo (each URL once, none in skip: those a harvest here had already), up to max_total."""
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = []
-    seen_urls = set()
+    seen_urls = set(skip)
     for i, m in enumerate(media):
         if progress:
             progress(i / max(1, len(media)), f"{i} of {len(media)} photos")
@@ -362,13 +363,13 @@ def download_all(media: list[Media], out_dir: Path, log: Log, min_bytes: int = 2
         seen_urls.add(m.url)
         try:
             try:
-                data = http.get(m.url, binary=True, ttl=90 * 86400, headers={"Referer": m.page or ""})
+                data = http.get(m.url, binary=True, keep=True, headers={"Referer": m.page or ""})
             except HttpError as e:
                 # mountainproject.resolve_image() picks _large_ without probing that it exists
                 if not (m.source == "mountainproject" and "_large_" in m.url and e.status == 404):
                     raise
                 m.url = m.url.replace("_large_", "_medium_")
-                data = http.get(m.url, binary=True, ttl=90 * 86400, headers={"Referer": m.page or ""})
+                data = http.get(m.url, binary=True, keep=True, headers={"Referer": m.page or ""})
         except Exception as e:
             log(f"  skip {m.url[:90]}: {e}")
             continue
@@ -478,8 +479,9 @@ def steps(sources: set[str], relevance_filter: bool = True, add: bool = False) -
 
 
 def photos_part(c: Climb, sources: set[str], queries: list[str], photos_dir: Path, log: Log,
-                progress: Callable[[str], Callable[..., None] | None]) -> list[dict]:
-    """harvest()'s photos: found in each of its sources, then downloaded into photos_dir; their manifest."""
+                progress: Callable[[str], Callable[..., None] | None], skip: set[str] = frozenset()) -> list[dict]:
+    """harvest()'s photos: found in each of its sources, then downloaded into photos_dir (but those at URLs in skip,
+    which it had already); their manifest."""
     media: list[Media] = []
     finding = [s for s in ("climb", "google", "ddg", "commons", "flickr") if s in sources]
     report_find = progress("find") or (lambda frac=0.0, detail=None: None)
@@ -497,13 +499,15 @@ def photos_part(c: Climb, sources: set[str], queries: list[str], photos_dir: Pat
             media += commons_geosearch(c.lat, c.lng, log)
         else:
             media += flickr_search(c.lat, c.lng, queries, log)
-    return download_all(media, photos_dir, log, progress=progress("download"))
+    if skip:
+        log(f"{sum(1 for m in media if m.url in skip)} of the {len(media)} photo(s) found were found before: only the rest are downloaded")
+    return download_all(media, photos_dir, log, progress=progress("download"), skip=skip)
 
 
 def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = None, relevance_filter: bool = True,
             tracker=None, pool_from: list[Path] | None = None, anchors_from: list[Path] | None = None,
             want: Callable[[str], bool] | None = None, want_search: Callable[[str], bool] | None = None,
-            add: bool = False) -> dict:
+            add: bool = False, refresh: bool = False, rejudge: bool = False) -> dict:
     """Collect photos for climb `c` into project_dir/photos (provenance + reports are written
     next to it, never inside it, so the reconstruction only sees images).
 
@@ -520,6 +524,9 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
             videos it took frames from (or found none of use in) aren't framed again, and only the new photos are
             judged by the filter (its earlier report's verdicts stand). As when volunteers bring the videos a climb
             waited for. "video_frames" then counts only the new frames.
+        refresh: with add, look in every source again (sources), downloading only the photos it hadn't found before.
+        rejudge: with add, judge every photo again from scratch (what the filter rejected is put back first), but
+            for those put back by hand, which stay; nothing is looked for (sources is then empty).
 
     Returns:
         A summary, whose "asked" says what volunteers were asked for: {"searches": [words], "videos": [URLs]};
@@ -574,7 +581,9 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         alongside = threading.Thread(target=youtube_part, args=(current_control(),), name="harvest-youtube", daemon=True)
         alongside.start()
     try:
-        manifest = list(earlier) if add else photos_part(c, sources, queries, photos_dir, log, progress)
+        known = {f["url"] for f in earlier if f.get("url") and f.get("kind") != "video-frame"}
+        manifest = list(earlier) + photos_part(c, sources, queries, photos_dir, log, progress, skip=known) if add and refresh \
+            else list(earlier) if add else photos_part(c, sources, queries, photos_dir, log, progress)
     finally:
         if alongside:
             alongside.join()
@@ -610,6 +619,16 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
                 prior = json.loads((project_dir / "relevance.json").read_text())
             except (OSError, ValueError):
                 prior = None
+            if rejudge:     # from scratch: what it rejected back among the photos, and only the hand's put-backs standing
+                back = 0
+                for f in sorted((project_dir / "rejected").iterdir()) if (project_dir / "rejected").is_dir() else []:
+                    why, _, name = f.name.partition("_")
+                    if why in relevance.REASONS and name and not (photos_dir / name).exists():
+                        f.rename(photos_dir / name)
+                        back += 1
+                log(f"relevance: judging every photo again from scratch ({back} rejected before put back to judge)")
+                paths = diversity.dedupe(photos_dir, log)
+                prior = {"put_back": (prior or {}).get("put_back") or []}
             filtered = relevance.run_filter(paths, project_dir / "rejected", log, progress=progress("filter"),
                                             more_anchors=more, prior=prior)
             (project_dir / "relevance.json").write_text(json.dumps(filtered, indent=1))

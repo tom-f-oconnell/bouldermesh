@@ -36,6 +36,7 @@ USER_AGENT = os.environ.get(
     "BOULDERMESH_UA",
     "BoulderMesh/0.2 (personal photogrammetry prototype; contact: set BOULDERMESH_UA env var)")
 CACHE_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parents[2] / "data")) / "cache" / "http"
+KEPT_DIR = CACHE_DIR.parent / "http-kept"     # responses kept for good (photos): never expire, nor pruned for room
 CACHE_TTL = int(os.environ.get("HTTP_CACHE_TTL", str(30 * 86400)))
 MIN_INTERVAL = float(os.environ.get("HTTP_MIN_INTERVAL", "3.0"))  # seconds between requests to one host
 SHARED_GAP = 10.0   # hosts asking for this long between requests or longer are kept to it across processes too
@@ -311,16 +312,22 @@ class _Http:
 
     # -- cache ------------------------------------------------------------
     @staticmethod
-    def _cache_path(url: str, data: bytes | None = None) -> Path:
+    def _cache_path(url: str, data: bytes | None = None, kept: bool = False) -> Path:
         key = url + ("|" + hashlib.sha1(data).hexdigest() if data else "")
         h = hashlib.sha1(key.encode()).hexdigest()
-        return CACHE_DIR / h[:2] / h
+        return (KEPT_DIR if kept else CACHE_DIR) / h[:2] / h
 
-    def get(self, url: str, headers: dict | None = None, data: bytes | None = None, ttl: int = CACHE_TTL,
-            use_cache: bool = True, binary: bool = False, obey_robots: bool = True) -> bytes:
-        """GET (or POST when data is given). Returns body bytes. Cached by (url, data)."""
-        cp = self._cache_path(url, data)
-        if use_cache and cp.exists() and time.time() - cp.stat().st_mtime < ttl:
+    def get(self, url: str, headers: dict | None = None, data: bytes | None = None, ttl: float = CACHE_TTL,
+            use_cache: bool = True, binary: bool = False, obey_robots: bool = True, keep: bool = False) -> bytes:
+        """GET (or POST when data is given). Returns body bytes. Cached by (url, data); with keep, for good, in
+        KEPT_DIR (ttl unused), as for photos: the sites aren't asked for them again (one cached before keep is moved there)."""
+        cp = self._cache_path(url, data, kept=keep)
+        if keep and use_cache and not cp.exists():
+            old = self._cache_path(url, data)
+            if old.exists():
+                cp.parent.mkdir(parents=True, exist_ok=True)
+                old.replace(cp)
+        if use_cache and cp.exists() and (keep or time.time() - cp.stat().st_mtime < ttl):
             return cp.read_bytes()
         check_destination(url)
         if obey_robots and not self.allowed(url):

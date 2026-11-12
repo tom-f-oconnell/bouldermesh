@@ -394,6 +394,62 @@ with tempfile.TemporaryDirectory() as td:
     assert harvest_mod.steps({"youtube"}, True, add=True)[0][0] == "video", "no finding or downloading photos"
 print("adding to a harvest OK")
 
+# --- looking in every source again: only what wasn't found before is downloaded; judging again from scratch puts back
+# what the filter rejected to judge, and keeps what was put back by hand (put_back), even when nothing else stands
+with tempfile.TemporaryDirectory() as td:
+    proj = pathlib.Path(td) / "proj"
+    (proj / "photos").mkdir(parents=True)
+    view_of(proj / "photos", "ddg_x.jpg", 100, 100)
+    earlier = [{"file": "ddg_x.jpg", "url": "http://x/old.jpg", "source": "ddg"}]
+    (proj / "sources.json").write_text(json.dumps({"files": earlier}))
+    asked = {}
+
+    def found(c, sources, queries, photos_dir, log, progress, skip=frozenset()):
+        asked.update(sources=set(sources), skip=set(skip))
+        return [{"file": "ddg_y.jpg", "url": "http://x/new.jpg", "source": "ddg"}]
+
+    real = harvest_mod.photos_part
+    harvest_mod.photos_part = found
+    try:
+        climb = Climb(source="test", source_id="1", url="http://x", name="X")
+        got = harvest_mod.harvest(climb, proj, lambda s: None, {"ddg", "commons"}, relevance_filter=False, add=True, refresh=True)
+    finally:
+        harvest_mod.photos_part = real
+    assert asked == {"sources": {"ddg", "commons"}, "skip": {"http://x/old.jpg"}}, asked
+    assert [f["file"] for f in json.loads((proj / "sources.json").read_text())["files"]] == ["ddg_x.jpg", "ddg_y.jpg"]
+    assert harvest_mod.steps({"ddg"}, True, add=False)[0][0] == "find", "refresh finds and downloads"
+    # download_all: a URL in skip isn't fetched at all
+    fetched = []
+    real_get = harvest_mod.http.get
+    harvest_mod.http.get = lambda url, **kw: fetched.append(url) or b""
+    try:
+        harvest_mod.download_all([Media(url="http://x/old.jpg", kind="image"), Media(url="http://x/n.jpg", kind="image")],
+                                 proj / "photos", lambda s: None, skip={"http://x/old.jpg"})
+    finally:
+        harvest_mod.http.get = real_get
+    assert fetched == ["http://x/n.jpg"], fetched
+    # judging again: the card it rejected comes back to be judged (and is rejected again), the one put back stays
+    title_card(proj / "photos", "yt_card.jpg")
+    mine = np.full((720, 1280, 3), 120, np.uint8)     # mostly flat too, but not a duplicate of the card
+    mine[:150] = rock[:150, :1280, None]
+    Image.fromarray(mine).save(proj / "photos" / "yt_mine.jpg")
+    assert relevance.flat_share(proj / "photos" / "yt_mine.jpg") > relevance.FLAT_MAX
+    (proj / "rejected").mkdir()
+    (proj / "photos" / "yt_card.jpg").rename(proj / "rejected" / "card_yt_card.jpg")
+    (proj / "relevance.json").write_text(json.dumps({"kept": ["ddg_x.jpg", "yt_mine.jpg"], "rejected": {"yt_card.jpg": "card"},
+                                                     "settings": "other", "put_back": ["yt_mine.jpg"]}))
+    real_av = relevance.available
+    relevance.available = lambda: ["cards"]
+    try:
+        harvest_mod.harvest(Climb(source="test", source_id="1", url="http://x", name="X"), proj, lambda s: None, set(),
+                            add=True, rejudge=True)
+    finally:
+        relevance.available = real_av
+    rep = json.loads((proj / "relevance.json").read_text())
+    assert rep["rejected"] == {"yt_card.jpg": "card"} and "yt_mine.jpg" in rep["kept"] and rep["put_back"] == ["yt_mine.jpg"], rep
+    assert (proj / "photos" / "yt_mine.jpg").exists() and (proj / "rejected" / "card_yt_card.jpg").exists()
+print("looking again for new photos, and judging again OK")
+
 # --- the viewpoint verdict, by the current rules, from a report made under older ones ---------------
 from climbs import diversity  # noqa: E402
 
