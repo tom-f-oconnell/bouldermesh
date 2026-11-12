@@ -25,6 +25,18 @@ esac
 on_server() { ssh bouldermesh "cd bouldermesh && $1"; }
 cli() { on_server "docker compose exec -T bouldermesh python3 cli.py $*"; }
 if [ -t 1 ]; then ask=$'\e[1;33m' white=$'\e[1;37m' plain=$'\e[0m'; else ask='' white='' plain=''; fi    # what asks you, in bold yellow (the restart question white, among the coloured list)
+# a question, with the legend (what a restart does to each kind of work in progress) below it while it's asked, if
+# at a terminal: the caller reads the answer, then clears it with \e[J
+below() {
+    if [ -n "$legend" ] && [ -t 1 ]; then
+        local n=$(($(printf '%s\n' "$legend" | wc -l) + 1))
+        printf "%${n}s" '' | tr ' ' '\n'; printf '\e[%dA' "$n"     # room below first, so that it doesn't scroll
+        printf '%s\e7\n%s\e8' "$1" "$legend"                       # the legend below, back to the question
+    else
+        printf '%s' "$1"
+    fi
+}
+legend=''
 cancel() {
     cli deploy-drain --off >/dev/null || true
     echo "not restarted: the new image is pulled, and runs at the next restart"
@@ -57,17 +69,11 @@ printf '%s\n' "$out"
 if [ "$check" -eq 3 ]; then
     if [ "$mode" = ask ]; then
         question="${white}Restart [n]ow, [a]fter what's in progress finishes (taking no new work meanwhile), or [c]ancel?${plain} "
-        if [ -n "$legend" ]; then
-            n=$(($(printf '%s\n' "$legend" | wc -l) + 1))
-            printf "%${n}s" '' | tr ' ' '\n'; printf '\e[%dA' "$n"     # room below first, so that it doesn't scroll
-            printf '%s\e7\n%s\e8' "$question" "$legend"                 # the legend below, back to the question
-            trap 'printf "\\e[J\\n"; cancel 130' INT HUP TERM              # Ctrl-C clears it too
-            read -r answer || { printf '\n'; answer=c; }                # Ctrl-D: cancel, as any other answer
-            trap - INT HUP TERM
-            printf '\e[J'                                              # and the legend gone again
-        else
-            read -r -p "$question" answer
-        fi
+        trap 'printf "\\e[J\\n"; cancel 130' INT HUP TERM      # Ctrl-C (or being killed) clears the legend too
+        below "$question"
+        read -r answer || { printf '\n'; answer=c; }        # Ctrl-D: cancel, as any other answer
+        trap - INT HUP TERM
+        printf '\e[J'                                      # and the legend gone again
         case "$answer" in
             n*|N*) mode=now ;;
             a*|A*) mode=after ;;
@@ -76,7 +82,7 @@ if [ "$check" -eq 3 ]; then
     fi
     if [ "$mode" = after ]; then
         cli deploy-drain >/dev/null || true
-        trap 'echo; cancel 130' INT HUP TERM    # never leave the server taking no new work
+        trap 'printf "\\e[J\\n"; cancel 130' INT HUP TERM    # never leave the server taking no new work (nor the legend shown)
         echo "taking no new work, and restarting once what's in progress has finished"
         deadline=$((SECONDS + ${WAIT_MINUTES:-90} * 60)) late=''
         while true; do
@@ -97,8 +103,9 @@ if [ "$check" -eq 3 ]; then
             fi
             if [ -t 0 ]; then
                 key=''
-                read -r -s -n 1 -t 30 -p "${ask}restarting once it's done; or [n] now, [c] cancel, any other key: look again${plain} " key || true
-                printf '\r\e[K' >&2     # the next line takes its place, and it comes again below that
+                below "${white}restarting once it's done; or [n] now, [c] cancel, any other key: look again${plain} "
+                read -r -s -n 1 -t 30 key || true
+                printf '\r\e[J'     # it and the legend: the next line takes its place, and they come again below that
                 case "$key" in
                     n|N) echo "$(date +%H:%M:%S) restarting now, as you said"; mode=now; break ;;
                     c|C) cancel ;;

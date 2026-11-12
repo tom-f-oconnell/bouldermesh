@@ -314,9 +314,11 @@ WIDTH = 101     # deploy-check's lines wrap at this
 # how heavy each kind of work is, and how much a restart loses of it, lightest/least first: listed in this order
 WEIGHT = ["video", "scale", "beta", "filter", "harvest", "area", "boulder", "meshing"]
 LOSS = ["queued again", "pauses", "starts", "interrupted", "lost", "ends"]
-COLOR = {"meshing": "31", "!": "38;5;208", "area": "36", "harvest": "34", "scale": "35", "beta": "32", "filter": "33",
-         "boulder": "38;5;141", "video": "90"}
-VERB = {"ends": "31", "interrupted": "31", "lost": "31", "starts": "32", "pauses": "33", "queued": "36"}
+# red, green, orange and yellow say how it's going (bad, good, warning, waiting), so kinds of work are other colours
+COLOR = {"meshing": "1;34", "harvest": "36", "area": "38;5;141", "scale": "35", "beta": "38;5;105", "filter": "38;5;73",
+         "boulder": "38;5;183", "video": "38;5;153"}
+STATUS = {"running": "32", "waiting for a machine": "33", "queued": "90", "!": "1;31"}
+VERB = {"ends": "31", "interrupted": "31", "lost": "31", "starts": "32", "pauses": "33", "queued": "90"}
 
 
 def _paint(s: str, code: str | None, color: bool) -> str:
@@ -345,8 +347,30 @@ def _state(i: dict) -> str:
         "asked for" if "asked for" in i["what"] else "running"
 
 
-def _line_color(i: dict) -> str | None:
-    return COLOR["meshing"] if i["costly"] and i.get("kind") == "meshing" else COLOR["!"] if i["costly"] else COLOR.get(i.get("kind"))
+def _parts(what: str, area: bool = False) -> tuple[str, str]:
+    """What an item says it is, split into the work ("meshing", an area's name) and how it's going ("on hal-2",
+    "queued", the step an area's climb is on)."""
+    for sep in ((": ",) if area else (", ", " on ", " here", " coming from ")):
+        if sep in what:
+            job, rest = what.split(sep, 1)
+            return job, (sep.strip(", :") + " " + rest).strip() if sep.strip(", :") else rest
+    return what, ""
+
+
+def _colored(line: str, i: dict, color: bool) -> str:
+    """A line of an item's, with its work coloured by its kind, how it's going by that (green running, yellow waiting,
+    grey queued), and a ! in red."""
+    if not color:
+        return line
+    job, how = _parts(i["what"], i.get("kind") in ("area", "other"))
+    if line.lstrip().startswith("!"):
+        line = line.replace("!", _paint("!", STATUS["!"], True), 1)
+    if job and job in line:
+        line = line.replace(job, _paint(job, COLOR.get(i.get("kind")), True), 1)
+    if how and how in line:
+        last = how.rsplit(": ", 1)[-1]      # an area's climb's step, not "its boulder: " before it
+        line = line.replace(last, _paint(last, STATUS.get(_state(i), STATUS["running"]), True), 1)
+    return line
 
 
 def _show(st: dict, color: bool = False) -> None:
@@ -367,19 +391,19 @@ def _show(st: dict, color: bool = False) -> None:
     for top in items:
         if parents.get(top.get("project_id"), top) is not top:
             continue    # told under the one it's part of
-        lines = textwrap.wrap(f"{'!' if top['costly'] else ' '} {_item(top)}", WIDTH - 2, subsequent_indent="    ")
+        for n, line in enumerate(textwrap.wrap(f"{'!' if top['costly'] else ' '} {_item(top)}", WIDTH - 2, subsequent_indent="    ")):
+            print("  " + (_colored(line, top, color) if n == 0 else line))
         for sub in under.get(id(top), []):
-            lines += textwrap.wrap(f"  └ {_item(sub)}", WIDTH - 2, subsequent_indent="      ")
-        for line in lines:
-            print("  " + _paint(line, _line_color(top), color))
+            for n, line in enumerate(textwrap.wrap(f"  └ {_item(sub)}", WIDTH - 2, subsequent_indent="      ")):
+                print("  " + (_colored(line, sub, color) if n == 0 else line))
     legend: dict[tuple, dict] = {}
     for i in items:
         legend.setdefault((i.get("kind") or "other", _state(i), i["lost"]), i)
     print("@@legend")
     print("a restart:")
-    for (kind, state, lost), i in legend.items():     # the kind coloured as its lines are, and what happens by its verbs
+    for (kind, state, lost), i in legend.items():     # coloured as its lines are, and what happens by its verbs
         said = " ".join(_paint(w, VERB.get(w.strip(",:")), color) for w in lost.split(" "))
-        print("  " + _paint(f"{kind} ({state})", _line_color(i), color) + ": " + said)
+        print(f"  {_paint(kind, COLOR.get(kind), color)} ({_paint(state, STATUS.get(state, STATUS['running']), color)}): {said}")
 
 
 def deploy_check(server: str, brief: bool = False, color: bool = False, source: str | None = None) -> int:
@@ -388,7 +412,7 @@ def deploy_check(server: str, brief: bool = False, color: bool = False, source: 
 
     Args:
         brief: print only a line of what a restart would lose, for deploy.sh to print as it waits.
-        color: in colour, by kind of work (meshing in red, the other ! ones orange), as for a terminal.
+        color: in colour: each piece of work by its kind, how it's going, and ! in red (_colored()), as for a terminal.
         source: a file of the server's /api/deploy JSON ('-': stdin), fetched by deploy.sh, which shows it with this
             copy of cli.py rather than the server's (which may be older).
 

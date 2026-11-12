@@ -5570,7 +5570,7 @@ def _eta_from(progress: dict | None, keys: set[str]) -> float | None:
     return took * (1 - done) / done if 0.1 <= done < 1 and took >= 30 else None
 
 
-MACHINE_TASKS = {"reconstruct": "meshing", "beta": "finding beta", "scale": "finding size",     # as deploy_state() tells them
+MACHINE_TASKS = {"reconstruct": "meshing", "beta": "finding beta", "scale": "scale",     # as deploy_state() tells them
                  "filter": "filtering photos"}
 KINDS = {"reconstruct": "meshing"}     # deploy_state()'s kinds of work, from task or job types: else as they are
 
@@ -5632,7 +5632,7 @@ def deploy_state() -> dict:
         if j["machine_job"]:
             continue    # told as its machine's job, above
         sizing = j["type"] == "scale"
-        items.append({"what": "finding size here" if sizing else f"{j['type']}, asked for", "name": j["name"], "costly": True,
+        items.append({"what": "scale here" if sizing else f"{j['type']}, asked for", "name": j["name"], "costly": True,
                       "kind": KINDS.get(j["type"], j["type"]), "project_id": j.get("project_id"),
                       "elapsed": round(now - j.get("started", now)), "eta": j.get("eta"),
                       "lost": "starts again after" if sizing else "interrupted: runs again when asked again"})

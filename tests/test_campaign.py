@@ -2442,12 +2442,12 @@ w.job = {"job": {"type": "scale", "mid": mid}, "started": time.time() - 60, "fro
 sj = board._new_job("scale", {}, {}, f"size: {mid}", "img")
 sj.owner = -1   # the worker's thread, which waits for it
 st = server.deploy_state()
-sizes = [i for i in st["items"] if "size" in i["what"]]
-assert [(i["what"], i["name"], i["costly"]) for i in sizes] == [("finding size, waiting for a machine", "East Face", False)], sizes
+sizes = [i for i in st["items"] if i["what"].startswith("scale")]
+assert [(i["what"], i["name"], i["costly"]) for i in sizes] == [("scale, waiting for a machine", "East Face", False)], sizes
 assert st["costly"] == 1, "only the mesh on hal-2"
 sj.state, sj.machine_name, sj.taken = "running", "hal-2", time.time()
-sizes = [i for i in server.deploy_state()["items"] if "size" in i["what"]]
-assert [(i["what"], i["costly"]) for i in sizes] == [("finding size on hal-2", True)], "once taken, costly"
+sizes = [i for i in server.deploy_state()["items"] if i["what"].startswith("scale")]
+assert [(i["what"], i["costly"]) for i in sizes] == [("scale on hal-2", True)], "once taken, costly"
 # a job asked for here: time left from how fast it went up to its last progress, counting down while it doesn't move,
 # rather than growing with the time it's taken (Nov 12, 2026: a boulder harvesting a climb went from 76 to 211 min)
 real_progress = server.job_progress
@@ -2468,8 +2468,8 @@ finally:
     server.job_progress = real_progress
 # with no machine's job, it's found here, and starts again after a restart (sizes carry on: scale.carry_on())
 board.jobs.pop(sj.id)
-sizes = [i for i in server.deploy_state()["items"] if "size" in i["what"]]
-assert [(i["what"], i["name"], i["costly"], i["lost"]) for i in sizes] == [("finding size here", "East Face", True, "starts again after")], sizes
+sizes = [i for i in server.deploy_state()["items"] if i["what"].startswith("scale")]
+assert [(i["what"], i["name"], i["costly"], i["lost"]) for i in sizes] == [("scale here", "East Face", True, "starts again after")], sizes
 assert server.jobs_state()["running"][0]["machine_job"] is None
 w.job = None
 server._workers[:] = [server._first]
