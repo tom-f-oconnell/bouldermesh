@@ -41,11 +41,15 @@ case "$src" in
     *) from=${src%/}/ ;;        # a folder's contents
 esac
 # Not through an SSH agent: one holding another key for the same host (as the bouldermesh alias's) offers that first,
-# which logs in without the read-only restriction, so "host:" is then the home folder, where there's nothing to copy
-ssh=${BACKUP_SSH:-ssh -i $key -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes -o ServerAliveInterval=30}
+# which logs in without the read-only restriction, so "host:" is then the home folder, where there's nothing to copy.
+# Nor through a connection already open to it (ControlMaster in ~/.ssh/config): one deploy.sh opened with that key is
+# shared for hours, and the night's copy went through it on Nov 12, 2026, found the home folder, and moved all of
+# current/ aside into changed/
+nomux="-o ControlMaster=no -o ControlPath=none"
+ssh=${BACKUP_SSH:-ssh -i $key -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes $nomux -o ServerAliveInterval=30}
 handshake=${BACKUP_HANDSHAKE:-}
 if [ -z "$handshake" ] && [ -f "$hkey" ]; then
-    case "$src" in *:) handshake="ssh -i $hkey -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes ${src%:}" ;; esac
+    case "$src" in *:) handshake="ssh -i $hkey -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes $nomux ${src%:}" ;; esac
 fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -97,6 +101,8 @@ cat "$tmp/protect" - > "$tmp/filter" <<'RULES'
 + /data/***
 - *
 RULES
+# data/ there first, before anything here is deleted to match: a copy of the wrong folder would move all of current/ aside
+rsync -e "$ssh" --list-only "${from}data/" > /dev/null 2>&1 || { echo "no data/ at $src: is that the server's checkout? nothing copied" >&2; exit 1; }
 rsync -a --delete --delete-excluded --backup --backup-dir="$dest/changed/$day" --info=stats1 -e "$ssh" \
     --filter="merge $tmp/filter" "$from" "$dest/current/"
 [ -d "$dest/current/data" ] || { echo "no data/ came from $src: is that the server's checkout?" >&2; exit 1; }
