@@ -4642,6 +4642,72 @@ def remote_scale(mid: str, pid: str, climbs: list[dict], log) -> None:
         shutil.rmtree(back, ignore_errors=True)
 
 
+FILTER_VERSION = 12     # the oldest machines' script that filters a harvest's photos (remote_job.py --task filter)
+FILTER_TAKE = 180       # seconds a machine has to take a harvest's filtering, before it's done here instead
+
+
+class _StepProgress:
+    """A remote job's progress (compute.follow() gives it a tracker) to a harvest step's progress(fraction, detail)."""
+
+    def __init__(self, progress):
+        self.progress = progress
+
+    def update(self, key: str, frac: float = 0.0, detail: str | None = None) -> None:
+        if self.progress:
+            self.progress(frac, detail)
+
+
+def filter_anywhere(paths: list[Path], rejected: Path | None, log, **kw) -> dict:
+    """relevance_mod.RUNNER: a harvest's filtering (relevance.filter_photos()) on a machine that connects here, when this
+    server meshes on machines (offloading()), the admin page's relevance.machines is on, and one with a script that
+    does it has been in touch; otherwise, or if no machine takes it within FILTER_TAKE or it fails, here. Either way
+    the report is the same, and the photos it rejects are moved here."""
+    if not (paths and settings().get("relevance.machines") and offloading() and MACHINES.can(FILTER_VERSION)) or kw.get("anchors") is not None:
+        return relevance_mod.filter_photos(paths, rejected, log, **kw)
+    try:
+        return filter_remote(paths, rejected, log, **kw)
+    except Cancelled:
+        raise
+    except Exception as e:
+        log(f"relevance: not on a machine ({e if isinstance(e, compute.ComputeUnavailable) else f'{type(e).__name__}: {e}'}): "
+            "filtering here")
+        return relevance_mod.filter_photos(paths, rejected, log, **kw)
+
+
+def filter_remote(paths: list[Path], rejected: Path | None, log, methods: list[str] | None = None, progress=None,
+                  more_anchors: list[Path] | None = None, prior: dict | None = None, anchors: None = None) -> dict:
+    """relevance.filter_photos() on a machine that connects here: its photos, the other harvests' anchors, and what
+    this server's cache knows of them go; its report and the pairs it matched come back (kept in the cache here),
+    and the photos it rejects are moved to rejected here."""
+    stage = Path(tempfile.mkdtemp(prefix="bm-filter-", dir=DATA / "compute"))
+    try:
+        files = {f"photos/{p.name}": p for p in paths}
+        more = {f"more/{i}/{p.name}": p for i, p in enumerate(more_anchors or [])}
+        files.update(more)
+        relevance_mod.export_cache(list(paths) + list(more_anchors or []), stage / "cache.sqlite")
+        files["cache.sqlite"] = stage / "cache.sqlite"
+        pid = rejected.parent.name if rejected is not None else None
+        name = (q("SELECT name FROM projects WHERE id=?", pid, one=True) or {}).get("name") if pid else None
+        log(f"relevance: filtering {plural(len(paths), 'photo')} on a machine that connects here")
+        _, back = MACHINES.task("filter", files, {"methods": methods, "more": sorted(more), "prior": prior,
+                                                  "matcher": relevance_mod.MATCHER},
+                                f"filter: {name or pid or 'photos'}", log, tracker=_StepProgress(progress), version=FILTER_VERSION,
+                                take_within=FILTER_TAKE)
+        try:
+            report = json.loads((back / "out" / "relevance.json").read_text())
+            relevance_mod.merge_cache(back / "out" / "cache.sqlite")
+        finally:
+            shutil.rmtree(back, ignore_errors=True)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    if rejected is not None:
+        for p in paths:
+            if p.name in report["rejected"] and p.exists():
+                rejected.mkdir(exist_ok=True)
+                p.rename(rejected / f"{report['rejected'][p.name]}_{p.name}")
+    return report
+
+
 def requeue_waiting_scale() -> None:
     """Queue again the sizes that waited for a machine, once one is there."""
     if not (offloading() and MACHINES.connected()):
@@ -5070,7 +5136,8 @@ def _eta_from(progress: dict | None, keys: set[str]) -> float | None:
     return took * (1 - done) / done if done >= 0.1 and took >= 30 else None
 
 
-MACHINE_TASKS = {"reconstruct": "meshing", "beta": "finding beta", "scale": "finding size"}   # as deploy_state() tells them
+MACHINE_TASKS = {"reconstruct": "meshing", "beta": "finding beta", "scale": "finding size",     # as deploy_state() tells them
+                 "filter": "filtering photos"}
 
 
 def deploy_state() -> dict:
@@ -6993,6 +7060,7 @@ def apply_settings() -> None:
     """What changing the admin page's settings changes at once."""
     youtube_mod.via = settings().get("youtube.via")
     relevance_mod.MATCHER = settings().get("relevance.matcher")
+    relevance_mod.RUNNER = filter_anywhere      # on a machine when one can (relevance.machines), else here
     configure_workers()
     NOTIFIER.reconfigured()
     threading.Thread(target=skyline_existing_meshes, daemon=True).start()

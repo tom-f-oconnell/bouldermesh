@@ -1504,6 +1504,80 @@ assert server.beta_mod.load(md)["machine_wait"] > time.time() and not server.bet
 shutil.rmtree(md)
 print("beta and size on machines OK")
 
+# --- a harvest's filtering on a machine that connects here, when one with a new enough script is in touch; here
+# otherwise, or when none takes it in time; its rejections moved here, and the pairs it matched kept here
+fpid = "f1f1f1f1f1f1"
+fdir = server.PROJECTS / fpid
+(fdir / "photos").mkdir(parents=True)
+fphotos = []
+for name in ("mountainproject_a.jpg", "ddg_b.jpg", "ddg_c.jpg"):
+    (fdir / "photos" / name).write_bytes(name.encode())
+    fphotos.append(fdir / "photos" / name)
+other_harvest = server.PROJECTS / "f2f2f2f2f2f2" / "photos"
+other_harvest.mkdir(parents=True)
+(other_harvest / "mountainproject_z.jpg").write_bytes(b"z")
+server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,?)", fpid, "Filtered (harvest)", time.time(), "harvest", "harvesting",
+         write=True)
+remote, here = [], []
+
+
+def remote_filter(kind, files, args, label, log, tracker=None, version=None, take_within=None):
+    remote.append((kind, sorted(files), args, label, version, take_within))
+    tracker.update("filter", 0.5, "matching: 1 of 2")
+    back = pathlib.Path(tempfile.mkdtemp())
+    (back / "out").mkdir()
+    (back / "out" / "relevance.json").write_text(json.dumps({"methods": ["cards"], "kept": ["mountainproject_a.jpg", "ddg_b.jpg"],
+                                                             "rejected": {"ddg_c.jpg": "nomatch"}, "counts": {}, "scores": {}}))
+    import sqlite3
+    with sqlite3.connect(back / "out" / "cache.sqlite") as con:
+        con.execute("CREATE TABLE clip(digest TEXT, model TEXT, p REAL, PRIMARY KEY(digest, model))")
+        con.execute("CREATE TABLE keypoints(digest TEXT, sift TEXT, n INTEGER, PRIMARY KEY(digest, sift))")
+        con.execute("CREATE TABLE pairs(a TEXT, b TEXT, how TEXT, inliers INTEGER, coverage REAL, PRIMARY KEY(a, b, how))")
+        con.execute("INSERT INTO pairs VALUES('m1','m2','h',42,0.3)")
+    return {"mesh": "", "files": []}, back
+
+
+real_filter = server.relevance_mod.filter_photos
+saved = (server.MACHINES.task, server.MACHINES.can, server._local_meshing, server._executor, server.relevance_mod.CACHE_FILE)
+server.relevance_mod.CACHE_FILE = pathlib.Path(tempfile.mkdtemp()) / "relevance.sqlite"
+server.relevance_mod.filter_photos = lambda paths, rejected, log, **kw: (here.append(kw), {"kept": [p.name for p in paths], "rejected": {}})[1]
+server.MACHINES.task = remote_filter
+server._local_meshing, server._executor = False, server.MACHINES
+try:
+    steps = []
+    server.MACHINES.can = lambda version: version <= 11
+    server.filter_anywhere(fphotos, fdir / "rejected", print, progress=lambda f=0.0, d=None: steps.append((f, d)))
+    assert len(here) == 1 and not remote, "no machine with a script that filters: here"
+    server.MACHINES.can = lambda version: version <= server.FILTER_VERSION
+    prior = {"kept": ["ddg_b.jpg"], "rejected": {"ddg_c.jpg": "nomatch"}}
+    report = server.filter_anywhere(fphotos, fdir / "rejected", print, progress=lambda f=0.0, d=None: steps.append((f, d)),
+                                    more_anchors=[other_harvest / "mountainproject_z.jpg"], prior=prior, methods=["cards", "same-rock"])
+    (kind, files, args, label, version, take_within), = remote
+    assert (kind, version, take_within) == ("filter", server.FILTER_VERSION, server.FILTER_TAKE) and label == "filter: Filtered (harvest)"
+    assert files == ["cache.sqlite", "more/0/mountainproject_z.jpg", "photos/ddg_b.jpg", "photos/ddg_c.jpg", "photos/mountainproject_a.jpg"], files
+    assert args == {"methods": ["cards", "same-rock"], "more": ["more/0/mountainproject_z.jpg"], "prior": prior, "matcher": "brute"}, args
+    assert report["rejected"] == {"ddg_c.jpg": "nomatch"} and (fdir / "rejected" / "nomatch_ddg_c.jpg").exists() and not fphotos[2].exists()
+    assert steps[-1] == (0.5, "matching: 1 of 2"), steps
+    assert server.relevance_mod.cache().pairs("h", ["m1"]) == {("m1", "m2"): (42, 0.3)}, "what it matched, kept here"
+    (fdir / "rejected" / "nomatch_ddg_c.jpg").rename(fphotos[2])
+    # none took it in time, or it failed: here, as before
+    server.MACHINES.task = no_machine
+    here.clear()
+    server.filter_anywhere(fphotos, fdir / "rejected", print)
+    assert len(here) == 1
+    server.settings().update({"relevance.machines": False})
+    server.MACHINES.task = remote_filter
+    remote.clear()
+    server.filter_anywhere(fphotos, fdir / "rejected", print)
+    assert not remote, "turned off on the admin page"
+    server.settings().update({"relevance.machines": True})
+finally:
+    (server.MACHINES.task, server.MACHINES.can, server._local_meshing, server._executor, server.relevance_mod.CACHE_FILE) = saved
+    server.relevance_mod.filter_photos = real_filter
+server.apply_settings()
+assert server.relevance_mod.RUNNER is server.filter_anywhere, "harvests filter through it"
+print("filtering on machines OK")
+
 # --- the first N meshes of an area: only those; entering it again, or raising N, goes on without doing again what's done ---
 fresh()
 server.settings().update({"areas.meshes": "climbs"})

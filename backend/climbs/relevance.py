@@ -197,12 +197,17 @@ def _load_clip(log: Log):
     return _clip
 
 
+def _clip_key() -> str:
+    """What a photo's CLIP probability depends on: the model, its weights and the prompts."""
+    return f"{CLIP_MODEL}/{CLIP_WEIGHTS}/" + hashlib.sha1("|".join(BOULDER_PROMPTS + OTHER_PROMPTS).encode()).hexdigest()[:12]
+
+
 def boulder_probability(paths: list[Path], log: Log, progress: Progress | None = None) -> dict[Path, float]:
     """CLIP's probability, for each photo, that one of the boulder prompts fits it best."""
     import torch
     from PIL import Image
     store = cache()
-    model_key = f"{CLIP_MODEL}/{CLIP_WEIGHTS}/" + hashlib.sha1("|".join(BOULDER_PROMPTS + OTHER_PROMPTS).encode()).hexdigest()[:12]
+    model_key = _clip_key()
     digests = {p: store.digest(p) for p in paths} if store else {}
     known = store.get("clip", "p", "model", model_key, list(digests.values())) if store else {}
     out = {p: known[digests[p]] for p in paths if digests.get(p) in known}
@@ -390,21 +395,28 @@ def _self_anchors(paths: list[Path], photos: _Photos, ok: dict, log: Log, progre
     return best if len(best) >= 3 else []
 
 
-def same_rock(candidates: list[Path], anchors: list[Path], log: Log, progress: Progress | None = None) -> dict[Path, dict]:
+def same_rock(candidates: list[Path], anchors: list[Path], log: Log, progress: Progress | None = None,
+              confirmed: list[Path] | None = None, tried: dict[Path, set[str]] | None = None) -> dict[Path, dict]:
     """For each candidate, its best match found: {"inliers":, "coverage":, "match":}.
 
     Without anchors the candidates' own largest matching group stands in for them. Returns {}
     if there is nothing to anchor on, as then nothing can be said. Pairs matched before (by their photos' contents,
     with this MATCHER) come from the cache.
+
+    Args:
+        confirmed: photos known to show the rock already (an earlier run kept them): matched against as the photos
+            confirmed in a round are, from the first, beyond the anchors' cap.
+        tried: {candidate: names of photos it was matched against before, without passing}, not matched again.
     """
     anchors = _spaced(anchors, MAX_ANCHORS)
-    everything = list(dict.fromkeys(anchors + candidates))
+    confirmed = [c for c in confirmed or [] if c not in anchors]
+    everything = list(dict.fromkeys(anchors + confirmed + candidates))
     photos = _Photos(everything, cache())
     try:
         ok = dict(zip(everything, _map(photos.usable, everything, (lambda f, d=None: progress(0.2 * f, d)) if progress else None,
                                        "reading photos")))
         pair_progress = (lambda f, d=None: progress(0.2 + 0.8 * f, d)) if progress else None
-        self_anchored = not anchors
+        self_anchored = not anchors and not confirmed
         if self_anchored:
             anchors = _self_anchors(candidates, photos, ok, log, pair_progress)
             if not anchors:
@@ -417,7 +429,8 @@ def same_rock(candidates: list[Path], anchors: list[Path], log: Log, progress: P
             return result["inliers"] >= min_inliers and result["coverage"] >= MIN_COVERAGE
 
         results = {p: {"inliers": 0, "coverage": 0.0, "match": None} for p in candidates}
-        frontier = [a for a in anchors if ok[a]]
+        frontier = [a for a in anchors if ok[a]] + [c for c in confirmed if ok[c]]
+        tried = tried or {}
         todo = [p for p in candidates if ok[p]]
         for p in todo:
             if p in anchors:
@@ -427,6 +440,8 @@ def same_rock(candidates: list[Path], anchors: list[Path], log: Log, progress: P
         def best_for(p: Path) -> dict:
             best = results[p]
             for a in frontier:
+                if a.name in tried.get(p, ()):
+                    continue
                 k, cov = photos.match(p, a)
                 if k > best["inliers"]:
                     best = {"inliers": k, "coverage": cov, "match": a.name}
@@ -561,9 +576,66 @@ def split_rejected(project_dir: Path, log: Log, progress: Progress | None = None
 
 
 # ------------------------------------------------------------------------------ all together
+# Where filtering runs: None, here (filter_photos()); or what the server sets, which hands it to a machine that connects
+# to it when one is free, with the same arguments and report (and falls back to here)
+RUNNER: Callable[..., dict] | None = None
+
+
+def run_filter(paths: list[Path], rejected: Path | None, log: Log, **kw) -> dict:
+    """filter_photos(), where RUNNER says."""
+    return (RUNNER or filter_photos)(paths, rejected, log, **kw)
+
+
+def export_cache(paths: list[Path], dest: Path) -> int:
+    """What the cache knows of these photos (their CLIP probabilities, keypoint counts, and the pairs among them), in a
+    new cache file at dest, for a machine to filter them with. Returns how many pairs."""
+    store, out = cache(), Cache(dest)
+    if not store:
+        return 0
+    digests = sorted({store.digest(p) for p in paths})
+    clip = store.get("clip", "p", "model", _clip_key(), digests)
+    n = store.get("keypoints", "n", "sift", _sift_key(), digests)
+    inside = set(digests)
+    pairs = [(a, b, _how(), k, cov) for (a, b), (k, cov) in store.pairs(_how(), digests).items() if b in inside]
+    out.put("clip", [(d, _clip_key(), p) for d, p in clip.items()])
+    out.put("keypoints", [(d, _sift_key(), k) for d, k in n.items()])
+    out.put("pairs", pairs)
+    return len(pairs)
+
+
+def merge_cache(src: Path) -> int:
+    """Keep what a machine's cache file (export_cache(), then filtering) worked out in this one. Returns how many rows."""
+    store = cache()
+    if not store or not src.is_file():
+        return 0
+    n = 0
+    with sqlite3.connect(src) as con:
+        for table in ("clip", "keypoints", "pairs"):
+            rows = con.execute(f"SELECT * FROM {table}").fetchall()
+            store.put(table, rows)
+            n += len(rows)
+    return n
+
+
+def settings_key() -> str:
+    """What a photo's verdict depends on besides the photos it's matched against: the checks' thresholds, SIFT's and
+    the matcher's settings, and CLIP's model. A verdict kept with another one isn't used again (filter_photos())."""
+    return (f"flat {FLAT_MAX}; clip {_clip_key()} {BOULDER_MIN_P}; inliers {MIN_INLIERS}/{SELF_MIN_INLIERS} "
+            f"coverage {MIN_COVERAGE}; rounds {CHAIN_ROUNDS}; anchors {MAX_ANCHORS}; {_how()}")
+
+
+def reusable(prior: dict | None) -> bool:
+    """Whether an earlier run's report (relevance.json) can stand for its photos' verdicts: not one that rejected every
+    photo and so kept them all, nor one from other settings. One from before the settings were recorded only if it
+    rejected some, as one that rejected none may have been that fallback."""
+    if not prior or prior.get("fallback") or not isinstance(prior.get("kept"), list):
+        return False
+    return prior["settings"] == settings_key() if prior.get("settings") else bool(prior.get("rejected"))
+
+
 def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: list[str] | None = None,
                   anchors: list[Path] | None = None, progress: Progress | None = None,
-                  more_anchors: list[Path] | None = None) -> dict:
+                  more_anchors: list[Path] | None = None, prior: dict | None = None) -> dict:
     """Filter photos, moving the rejected ones to `rejected` (None: only report).
 
     Args:
@@ -574,37 +646,61 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
         progress: progress(fraction, detail).
         more_anchors: photos known to show the boulder from elsewhere, such as other problems' pages: matched
             against after this set's own anchors, but not themselves filtered or kept.
+        prior: an earlier run's report on photos with the same names, as a boulder pooled again or a climb harvested
+            again has (reusable() says whether it may be used). Its verdicts stand: kept, and rejected as a title card
+            or not a boulder, which depend only on the photo. One it found matching nothing is matched only against
+            photos it wasn't then (anchors and photos kept since), and kept if one matches.
 
     Returns:
-        A JSON-able report: methods run, kept file names, rejected {name: reason}, per-photo scores.
+        A JSON-able report: methods run, kept file names, rejected {name: reason}, per-photo scores, the settings,
+        whether every photo would have been rejected (fallback), the other anchors' names, and how many verdicts
+        stood from before (reused).
     """
     can = available()
     methods = [m for m in (methods if methods is not None else can) if m in can]
     missing = [m for m in ("cards", "boulder", "same-rock") if m not in can]
-    log(f"relevance: checking {len(paths)} photo(s) with {', '.join(methods) or 'nothing'}"
-        + (f" ({', '.join(missing)} not installed)" if missing else ""))
     scores: dict[str, dict] = {p.name: {} for p in paths}
     why: dict[str, str] = {}
-    alive = list(paths)
+    before = prior if reusable(prior) and set(methods) <= set(prior.get("methods") or []) else None
+    stood: dict[str, str | None] = {}     # name -> its earlier verdict, which stands (None: kept)
+    again: set[str] = set()                # names it found matching nothing, to match against what's new
+    if before:
+        was_kept, was_out = set(before["kept"]), before.get("rejected") or {}
+        for p in paths:
+            if p.name in was_kept or was_out.get(p.name) in ("card", "notboulder"):
+                stood[p.name] = None if p.name in was_kept else was_out[p.name]
+                scores[p.name] = dict((before.get("scores") or {}).get(p.name) or {})
+                if stood[p.name]:
+                    why[p.name] = stood[p.name]
+            elif was_out.get(p.name) == "nomatch":
+                again.add(p.name)
+    log(f"relevance: checking {len(paths) - len(stood)} photo(s) with {', '.join(methods) or 'nothing'}"
+        + (f" ({', '.join(missing)} not installed)" if missing else "")
+        + (f"; {len(stood)} more as an earlier run found them" + (f", and {len(again)} it found matching nothing only against "
+           "what's new" if again else "") if before else ""))
+    alive = [p for p in paths if p.name not in stood]
 
     def sub(lo: float, hi: float) -> Progress | None:
         return (lambda f=0.0, d=None: progress(lo + (hi - lo) * f, d)) if progress else None
 
     if "cards" in methods:
         for p in alive:
+            if p.name in again:
+                continue
             scores[p.name]["flat"] = round(flat_share(p), 3)
             if scores[p.name]["flat"] > FLAT_MAX:
                 why[p.name] = "card"
         alive = [p for p in alive if p.name not in why]
-    if "boulder" in methods and alive:
+    if "boulder" in methods and [p for p in alive if p.name not in again]:
         try:
-            for p, prob in boulder_probability(alive, log, sub(0.0, 0.3)).items():
+            for p, prob in boulder_probability([p for p in alive if p.name not in again], log, sub(0.0, 0.3)).items():
                 scores[p.name]["boulder"] = round(prob, 3)
                 if prob < BOULDER_MIN_P:
                     why[p.name] = "notboulder"
             alive = [p for p in alive if p.name not in why]
         except Exception as e:  # e.g. the model can't be downloaded: only costs this method
             log(f"relevance: CLIP check failed ({e}); skipping it")
+    kept_before = [p for p in paths if p.name in stood and stood[p.name] is None]
     if "same-rock" in methods and alive:
         anchor_list = [p for p in (anchors if anchors is not None else alive) if p in alive and (anchors is not None or is_trusted(p))]
         candidates = [p for p in alive if p not in anchor_list]
@@ -614,11 +710,21 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
                 anchor_list.append(p)
                 names.add(p.name)
         if candidates:
-            for p, r in same_rock(candidates, anchor_list, log, sub(0.3, 1.0)).items():
-                scores[p.name].update(inliers=r["inliers"], coverage=round(r["coverage"], 3), match=r["match"])
-                if r["inliers"] < (MIN_INLIERS if anchor_list else SELF_MIN_INLIERS) or r["coverage"] < MIN_COVERAGE:
+            seen_then = set((before or {}).get("scores") or {}) | set((before or {}).get("more") or [])
+            tried = {p: seen_then for p in candidates if p.name in again}
+            for p, r in same_rock(candidates, anchor_list, log, sub(0.3, 1.0), confirmed=kept_before, tried=tried).items():
+                if p.name in again and not r["match"]:     # nothing new to match against: as it was
+                    scores[p.name] = dict((before.get("scores") or {}).get(p.name) or {})
+                else:
+                    scores[p.name].update(inliers=r["inliers"], coverage=round(r["coverage"], 3), match=r["match"])
+                if r["inliers"] < (MIN_INLIERS if anchor_list or kept_before else SELF_MIN_INLIERS) or r["coverage"] < MIN_COVERAGE:
                     why[p.name] = "nomatch"
-    if paths and len(why) == len(paths):
+    elif "same-rock" in methods:
+        for p in alive:
+            if p.name in again:
+                why[p.name] = "nomatch"
+    fallback = bool(paths) and len(why) == len(paths)
+    if fallback:
         # more likely a false alarm than a whole harvest of junk: leave it for the diversity check to judge
         log("relevance: every photo would be rejected: keeping them all")
         why = {}
@@ -631,4 +737,5 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
     log(f"relevance: kept {len(paths) - len(why)} of {len(paths)}"
         + "".join(f", {n} rejected: {REASONS[r]}" for r, n in counts.items() if n))
     return {"methods": methods, "kept": [p.name for p in paths if p.name not in why], "rejected": why, "counts": counts,
-            "scores": scores}
+            "scores": scores, "settings": settings_key(), "fallback": fallback, "more": sorted({p.name for p in more_anchors or []}),
+            "reused": len(stood)}

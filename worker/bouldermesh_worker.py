@@ -69,11 +69,14 @@ from pathlib import Path
 # 9: says the name it asks for is shown on the site's public leaderboard;
 # 10: measures its jobs' share of the GPU's use, and says which GPU it has, for the leaderboard's compute
 # 11: --setup installs Docker and NVIDIA's container toolkit where they're missing; says what's wrong with Docker at once
-VERSION = 11
+# 12: filters a harvest's photos for those of other rocks (remote_job.py --task filter), sent its photos, the anchors from
+#     other harvests (more/) and what the server's cache knows of them (cache.sqlite)
+VERSION = 12
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
-TASKS = ("reconstruct", "beta", "scale")     # remote_job.py's: meshing a climb, finding its beta, finding its size
-INPUTS = ("photos", "masks", "mesh", "videos", "task.json")   # what a job's folder may hold
+TASKS = ("reconstruct", "beta", "scale", "filter")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
+                                                    # filtering a harvest's photos
+INPUTS = ("photos", "masks", "mesh", "videos", "more", "cache.sqlite", "task.json")   # what a job's folder may hold
 SEND_EVERY = 5              # seconds between reports of a job's log, which also tell the server it's alive
 JOB_ID = re.compile(r"[0-9a-f]{12}")
 GB = 2**30                  # as df -h counts them

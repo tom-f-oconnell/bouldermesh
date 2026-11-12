@@ -316,6 +316,17 @@ class Board:
         with self.cond:
             return any(t > cut for t in self.seen.values())
 
+    def can(self, version: int) -> bool:
+        """Whether a machine whose script is this version or newer (as it last said, "script N") has been in touch lately."""
+        cut = time.time() - CONNECTED
+        with self.cond:
+            ids = [i for i, t in self.seen.items() if t > cut]
+        for r in self.q(f"SELECT client FROM machines WHERE revoked IS NULL AND id IN ({','.join('?' * len(ids))})", *ids) if ids else []:
+            m = re.search(r"script (\d+)", r["client"] or "")
+            if m and int(m[1]) >= version:
+                return True
+        return False
+
     def _touch(self, m: dict, ip: str | None = None, client: dict | None = None) -> None:
         """A machine was heard from: asking for work (client), or about a job; a token's check doesn't count as being here."""
         now = time.time()
@@ -369,8 +380,9 @@ class Board:
                 version = int(_number(client.get("version")) or 1)
                 could = [j for j in self.jobs.values() if j.state == "queued" and j.version <= version
                          and (not waiting or j.task == "reconstruct")]
-                mine = min((j for j in could if free is None or j.gpu_mb <= free),        # meshing first, then beta and size
-                           key=lambda j: (j.task != "reconstruct", j.created), default=None)
+                # a harvest's filtering first (short, and the server waits for it), then meshing, then beta and size
+                mine = min((j for j in could if free is None or j.gpu_mb <= free),
+                           key=lambda j: (j.task != "filter", j.task != "reconstruct", j.created), default=None)
                 if not mine and could:      # none fits in the GPU memory free there now
                     why = (f"its GPU has {free / 1024:.1f} GB free, and the next climb may need "
                            f"{min(j.gpu_mb for j in could) / 1024:.1f} GB")
@@ -606,22 +618,27 @@ class Board:
         log(f"remote: taking what {m['name']} made before it was approved")
         return held["result"], tar
 
-    def task(self, kind: str, files: dict[str, Path], args: dict, label: str, log, tracker=None) -> tuple[dict, Path]:
-        """Run another kind of job (remote_job.py's --task: "beta" or "scale") on a machine that connects here.
+    def task(self, kind: str, files: dict[str, Path], args: dict, label: str, log, tracker=None,
+             version: int | None = None, take_within: float | None = None) -> tuple[dict, Path]:
+        """Run another kind of job (remote_job.py's --task: "beta", "scale" or "filter") on a machine that connects here.
 
         Args:
             files: what to send, by the name it has in the job's folder there (a file, or a folder and all in it).
             args: given to the job as task.json.
             label: what the admin page calls it.
+            version: the oldest machines' script that does it, if newer than task.json needs.
+            take_within: seconds a machine has to take it, else it's given up (ComputeUnavailable), as when one
+                that could do it here instead is better than waiting.
 
         Returns:
             What the job said it made, and a new folder holding its out/, which is the caller's to delete.
 
         Raises:
-            compute.ComputeUnavailable: no machine has been in touch lately, or the one doing it went quiet.
+            compute.ComputeUnavailable: no machine has been in touch lately, the one doing it went quiet, or none took
+                it within take_within.
         """
         self.files.mkdir(parents=True, exist_ok=True)
-        result, back, job = self._run(kind, files, args, label, self.files, log, tracker)
+        result, back, job = self._run(kind, files, args, label, self.files, log, tracker, version, take_within)
         try:
             safe_extract(job.output, back, ("out",))
         except BaseException:
@@ -631,7 +648,8 @@ class Board:
             job.output.unlink(missing_ok=True)
         return result, back
 
-    def _run(self, kind: str, files: dict[str, Path], args: dict, label: str, near: Path, log, tracker) -> tuple[dict, Path, "Job"]:
+    def _run(self, kind: str, files: dict[str, Path], args: dict, label: str, near: Path, log, tracker,
+             version: int | None = None, take_within: float | None = None) -> tuple[dict, Path, "Job"]:
         """Hand a job to a machine and follow it until it's done: its result, a new folder in near for its results,
         and the job, whose output (a tar) is the caller's to unpack and delete."""
         from progress import Tracker
@@ -645,7 +663,7 @@ class Board:
         image = self.image()
         if not image:
             raise compute.ComputeUnavailable("set the Docker image the machines run on the admin page")
-        job = self._new_job(kind, files, args, label, image)
+        job = self._new_job(kind, files, args, label, image, version)
         log(f"remote: {job.size / 1e6:.0f} MB ready for the machines that connect here, job {job.id}")
         result, last, said, said_at = None, "", None, 0.0
         try:
@@ -667,6 +685,8 @@ class Board:
                     said = why
                 if state == "queued" and not self.connected():
                     raise compute.ComputeUnavailable(f"no machine has asked this server for work in the last {CONNECTED // 60} minutes")
+                if state == "queued" and take_within is not None and time.time() - job.created > take_within:
+                    raise compute.ComputeUnavailable(f"no machine took it within {take_within / 60:.0f} min")
                 if state == "running" and time.time() - touched > QUIET:
                     raise compute.ComputeUnavailable(f"lost {job.machine_name}: not heard from in {QUIET // 60} minutes")
                 if state == "failed":
@@ -687,7 +707,7 @@ class Board:
                     self._ended(job, "gone")
             job.input.unlink(missing_ok=True)
 
-    def _new_job(self, kind: str, files: dict[str, Path], args: dict, label: str, image: str) -> Job:
+    def _new_job(self, kind: str, files: dict[str, Path], args: dict, label: str, image: str, version: int | None = None) -> Job:
         jid = secrets.token_hex(6)
         self.files.mkdir(parents=True, exist_ok=True)
         path = self.files / f"{jid}.in.tar"
@@ -703,7 +723,7 @@ class Board:
         # a reconstruction sent task.json only goes to scripts that take one (version 2)
         photos = sum(1 for _ in files["photos"].iterdir()) if "photos" in files and files["photos"].is_dir() else 0
         job = Job(id=jid, label=label, input=path, size=path.stat().st_size, internet=bool(args.get("internet")), image=image,
-                  task=kind, version=2 if told else 1, gpu_mb=gpu_need_mb(kind, photos))
+                  task=kind, version=max(2 if told else 1, version or 1), gpu_mb=gpu_need_mb(kind, photos))
         with self.cond:
             self.jobs[jid] = job
         self.q("INSERT OR REPLACE INTO machine_jobs(id, task, label, created) VALUES(?,?,?,?)", jid, kind, label, job.created)

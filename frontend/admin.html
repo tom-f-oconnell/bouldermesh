@@ -96,6 +96,8 @@
     <div class="note">Most of a harvest's time on a small server. Pairs matched before are kept, for each way, so a climb
       harvested again only matches what's new. On 12 of hal's harvests FLANN kept 92 of the 101 search photos brute force
       matched (and one it didn't), and more checks didn't close the gap, so brute force stays the default.</div>
+    <label class="choice"><input type="checkbox" id="filter-machines"> Filter harvests' photos on a machine that connects here, when one can
+      <small>(its script version 12 or newer; it takes them before meshing, and they're filtered here if none takes one within 3 minutes. An earlier run's verdicts stand either way: a boulder pooled again only judges what's new)</small></label>
     <label class="choice"><input type="checkbox" id="beta-auto"> Find beta in each new mesh with video frames placed in it
       <small>(while its videos are still here; on a machine, after meshing)</small></label>
     <label class="choice"><input type="checkbox" id="skyline-auto"> Work out which way each mesh faces from the skyline in its photos, where distant mountains show
@@ -335,6 +337,7 @@ function render(s){
   $('#mach-changes')?.addEventListener('toggle', ev => { machChangesOpen = ev.target.open; });
   $('#area-meshes').value = v['areas.meshes'];
   $('#matcher').value = v['relevance.matcher'];
+  $('#filter-machines').checked = v['relevance.machines'];
   $('#beta-auto').checked = v['beta.auto']; $('#prune-videos').checked = v['videos.prune_unplaced'];
   if (document.activeElement !== $('#map-km')) $('#map-km').value = v['site.map_km'];
   if (document.activeElement !== $('#preview-faces')) $('#preview-faces').value = v['viewer.preview_faces'];
@@ -596,6 +599,7 @@ $('#rest-all').onclick = async () => { try { msg((await call('/api/admin/actions
 $('#map-km').onchange = () => save({ 'site.map_km': +$('#map-km').value });
 $('#placed-percent').onchange = () => save({ 'boulders.placed_percent': +$('#placed-percent').value });
 $('#rest-auto').onchange = () => save({ 'boulders.rest_auto': $('#rest-auto').checked });
+$('#filter-machines').onchange = () => save({ 'relevance.machines': $('#filter-machines').checked });
 $('#preview-faces').onchange = () => save({ 'viewer.preview_faces': Math.round(+$('#preview-faces').value) });
 $('#vol-add').onclick = async () => {
   try {

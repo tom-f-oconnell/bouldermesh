@@ -715,6 +715,30 @@ for j in (older, newer):
     j.input.unlink(missing_ok=True)
 print("meshing first OK")
 
+# --- a harvest's filtering: only to scripts that do it (version 12), before meshing; given up if none takes it in time ----
+mesh_job = board._new_job("reconstruct", {"photos": job / "photos"}, {"internet": True}, "mesh", image[0])
+filter_job = board._new_job("filter", {"photos": job / "photos"}, {"methods": None}, "filter", image[0], version=12)
+assert filter_job.version == 12 and mesh_job.version == 1
+old_box = board.add("old-box")
+r = board.work(board.machine(old_box["token"]), "10.0.0.9", {"version": 11, "client": "old-box: docker 29, script 11"})
+assert r["job"]["id"] == mesh_job.id, "a script that doesn't filter gets the mesh"
+assert not board.can(99) and board.can(11), "none with a script that new in touch"
+new_box = board.add("new-box")
+r = board.work(board.machine(new_box["token"]), "10.0.0.9", {"version": 12, "client": "new-box: docker 29, script 12"})
+assert r["job"]["id"] == filter_job.id and r["job"]["task"] == "filter", "one that does takes it"
+assert board.can(12)
+for j in (mesh_job, filter_job):
+    board.jobs.pop(j.id, None)
+    j.input.unlink(missing_ok=True)
+t0 = time.time()
+try:
+    board.task("filter", {"photos": job / "photos"}, {"methods": None}, "nobody", lambda s: None, version=99, take_within=1.0)
+    raise AssertionError("taken by nobody")
+except compute.ComputeUnavailable as e:
+    assert "no machine took it within" in str(e) and time.time() - t0 < 30, e
+assert not [j for j in board.running() if j["label"] == "nobody"], "and it's gone from the board"
+print("filtering on machines OK")
+
 # --- paused, as before a restart: no new job given out, though one is waiting ------------------------------------------
 waiting_job = board._new_job("reconstruct", {"photos": job / "photos"}, {"internet": True}, "paused", image[0])
 board.paused = "the server is about to restart, for a new version"

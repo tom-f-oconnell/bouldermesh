@@ -145,6 +145,70 @@ with tempfile.TemporaryDirectory() as td:
         assert relevance.filter_photos(paths, None, logs.append, methods=["cards", "same-rock"]) == first
         relevance.CACHE_FILE = saved_cache
         print("matches kept, and FLANN OK")
+
+        # an earlier run's verdicts stand (a boulder pooled again): what it kept and its title cards aren't checked again,
+        # and a photo it found matching nothing is matched only against what's new since; not after it kept everything for
+        # want of any match, nor with other settings
+        assert relevance.reusable(first) and first["settings"] == relevance.settings_key() and first["fallback"] is False
+        assert not relevance.reusable({**first, "fallback": True}) and not relevance.reusable({**first, "settings": "older"})
+        assert relevance.reusable({k: v for k, v in first.items() if k != "settings"}), "from before settings were kept, with rejections"
+        assert not relevance.reusable({"kept": ["a.jpg"], "rejected": {}}), "rejected none: maybe the fallback"
+        calls = []
+        real_match = relevance.match
+        relevance.match = lambda fa, fb: (calls.append(1), real_match(fa, fb))[1]
+        saved_cache, relevance.CACHE_FILE = relevance.CACHE_FILE, None   # every pair worked out, to count them
+        try:
+            logs.clear()
+            same_again = relevance.filter_photos(paths, None, logs.append, methods=["cards", "same-rock"], prior=first)
+            assert same_again["rejected"] == first["rejected"] and same_again["kept"] == first["kept"], same_again
+            assert same_again["reused"] == len(first["kept"]) + 1 and calls == [], (same_again["reused"], len(calls))
+            assert same_again["scores"] == first["scores"], "as they were"
+            assert "as an earlier run found them" in logs[0], logs[0]
+            # a new page photo of the other rock: the photo that matched nothing is kept, matched only against it
+            newer = view_of(photos, "mountainproject_d.jpg", 500, 400, make_rock(4))
+            calls.clear()
+            r = relevance.filter_photos(paths + [newer], None, logs.append, methods=["cards", "same-rock"], prior=first)
+            assert "commons_other.jpg" in r["kept"] and r["scores"]["commons_other.jpg"]["match"] == "mountainproject_d.jpg", r
+            assert len(calls) == 1, ("only against the new anchor", len(calls))
+            newer.unlink()
+            # every photo would be rejected: kept, and that run isn't one to go by
+            r = relevance.filter_photos([card], None, logs.append, methods=["cards"])
+            assert r["fallback"] and not relevance.reusable(r), r
+        finally:
+            relevance.match, relevance.CACHE_FILE = real_match, saved_cache
+        print("an earlier run's verdicts OK")
+
+        # what the cache knows of a set of photos, for a machine to filter them with, and what it worked out, kept here
+        export = tmp / "export.sqlite"
+        n = relevance.export_cache(paths, export)
+        assert n > 0, "pairs among them known"
+        import sqlite3
+        with sqlite3.connect(export) as con:
+            assert con.execute("SELECT COUNT(*) FROM pairs").fetchone()[0] == n
+            con.execute("INSERT INTO pairs VALUES('x1','x2',?,99,0.5)", (relevance._how(),))
+        assert relevance.merge_cache(export) >= n + 1
+        assert relevance.cache().pairs(relevance._how(), ["x1"]) == {("x1", "x2"): (99, 0.5)}
+        print("cache export and merge OK")
+
+        # a machine's side (remote_job.py --task filter): the same report as here, nothing moved, and its cache back
+        import shutil
+        import remote_job
+        job = tmp / "job"
+        (job / "photos").mkdir(parents=True)
+        for q in paths:
+            shutil.copy(q, job / "photos" / q.name)
+        relevance.export_cache(paths, job / "cache.sqlite")
+        (job / "task.json").write_text(json.dumps({"methods": ["cards", "same-rock"], "more": [], "prior": None, "matcher": "brute"}))
+        saved_file, out = relevance.CACHE_FILE, []
+        try:
+            assert remote_job.filter_task(job, out.append) == 0
+        finally:
+            relevance.CACHE_FILE = saved_file
+        there = json.loads((job / "out" / "relevance.json").read_text())
+        assert there["rejected"] == first["rejected"] and there["kept"] == first["kept"], there
+        assert all((job / "photos" / q.name).exists() for q in paths) and (job / "out" / "cache.sqlite").is_file()
+        assert any("matched 0 pair(s)" in x for x in out), ("the pairs known here went with it", out)
+        print("filtering on a machine OK")
     else:
         assert "same-rock" not in relevance.filter_photos(paths, None, logs.append)["methods"]
         print("same-rock skipped: no OpenCV")

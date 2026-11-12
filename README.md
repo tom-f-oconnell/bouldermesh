@@ -130,10 +130,22 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
    of a harvest's time on a small server (about 150 ms a pair on one core, nearly all of them junk
    tried against every known photo), so what's worked out is kept in `data/cache/relevance.sqlite`,
    by the photos' contents: each pair's matches and CLIP's verdict. A climb harvested again, or a
-   boulder pooling its climbs' photos, only works out what's new. The admin page's *Areas* section
+   boulder pooling its climbs' photos, only works out what's new. Its earlier run's verdicts stand
+   too (`relevance.json`, when made with the same settings, and not one that rejected every photo and so
+   kept them all): photos it kept, and title cards and photos that aren't of bouldering, aren't checked
+   again; one it found matching nothing is matched only against photos it wasn't then. So a boulder
+   meshed again judges only what's new, rather than re-matching everything, which took hours for one
+   whose first mesh was made on another machine. The admin page's *Areas* section
    chooses how pairs are matched: brute force (the original, and the default) or FLANN's approximate
    nearest neighbours, 1.6 times as fast but missing about a tenth of the matches (design.md); each
    keeps its own record.
+
+   **On machines.** Where machines connect to mesh (below), a harvest's filtering goes to one too, when
+   one whose worker script is version 12 or newer has been in touch (*Filter harvests' photos on a
+   machine that connects here*, on by default): it's sent the photos, the other harvests' anchors and
+   what the server's cache knows of them, and sends back its report and the pairs it matched, which the
+   server keeps. Machines take it before meshing, as the harvest waits for it; if none does within 3
+   minutes, or it fails, the server filters as before.
 4. Diversity check (`climbs/diversity.py`): with OpenCV, ORB matching + fundamental-matrix
    RANSAC between every pair to build a view graph. Pairs explained by a 2-D similarity
    (crops, re-encodes, pan/zoom) are discounted because they carry no parallax. The largest

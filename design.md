@@ -84,6 +84,23 @@ are the ones that add viewpoints, so brute force stays the default; the bigger s
 (relevance.sqlite), so that a harvest again only matches what's new. A cheaper first pass on 500 features was 16 times
 as fast but missed 3 of 4 real matches among a climb's own photos.
 
+## Filtering again, and on machines (Nov 12)
+
+Meshing again the six boulders made before scenes and ties were recorded showed what re-filtering costs. Gunsmoke Wall's
+157 pooled photos took over 2.5 hours in the same-rock check on the 2-core server, at 64% after 1 h 44 min, as none of
+their pairs were in the server's cache: the first meshes were made on hal. Two changes:
+- **An earlier run's verdicts stand** (`filter_photos(prior=)`), from the project's `relevance.json`: kept photos, and
+  title cards and photos that aren't of bouldering, which depend only on the photo; a photo it found matching nothing
+  is matched only against photos it wasn't then (anchors added since, as page problems adopted for a boulder bring,
+  and photos kept since). Not from a run with other settings (`settings_key()`: the thresholds, SIFT, the matcher,
+  CLIP and its prompts), nor one that would have rejected every photo and so kept them all, nor one from before
+  settings were recorded that rejected none, as it may have been that. What it costs: a re-check only tries old
+  rejections against new photos, where a full run would also let photos newly kept in a round vouch for others.
+- **Filtering on machines** (`filter_anywhere()`, remote_job.py `--task filter`, worker script 12): the machines mesh in
+  minutes what takes the server hours, and sat idle 83% of the time while harvests waited on the server (Nov 11). They
+  take a filter before meshing, as the harvest waits; one not taken in 3 minutes is done on the server. The server's
+  cache goes with the photos (`export_cache()`) and what the machine worked out comes back into it (`merge_cache()`).
+
 ## Does filtering help the mesh?
 
 Not much: web photos do, but filtering them mostly saves time. Times are rough, as these runs

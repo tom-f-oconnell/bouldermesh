@@ -585,8 +585,12 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
             if more:
                 log(f"relevance: also matching against {len(more)} photo(s) from the pages and videos of "
                     f"{len(anchors_from)} other harvest(s) of this boulder")
-            filtered = relevance.filter_photos(paths, project_dir / "rejected", log, progress=progress("filter"),
-                                               more_anchors=more)
+            try:    # what an earlier run here found of photos it had too (a boulder pooled again, a climb harvested again)
+                prior = json.loads((project_dir / "relevance.json").read_text())
+            except (OSError, ValueError):
+                prior = None
+            filtered = relevance.run_filter(paths, project_dir / "rejected", log, progress=progress("filter"),
+                                            more_anchors=more, prior=prior)
             (project_dir / "relevance.json").write_text(json.dumps(filtered, indent=1))
             paths = [p for p in paths if p.name in set(filtered["kept"])]
         report = diversity.assess_unique(paths, log, progress=progress("diversity"))
