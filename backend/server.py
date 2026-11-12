@@ -48,6 +48,7 @@ import compute  # noqa: E402
 import diagnostics  # noqa: E402
 import glbpack  # noqa: E402
 import heading as heading_mod  # noqa: E402
+import skyline as skyline_mod  # noqa: E402
 import terrain as terrain_mod  # noqa: E402
 import meshclean  # noqa: E402
 import meshmetrics  # noqa: E402
@@ -1299,6 +1300,91 @@ def heading_existing_meshes() -> None:
         if (MESHES / m["id"]).is_dir() and not heading_mod.current(MESHES / m["id"]):
             keep_heading(m["id"])
             time.sleep(0.05)
+
+
+# which way meshes face from their photos' skyline (skyline.py): in the background, one at a time, at the lowest CPU
+# priority, once a mesh's size is known (its parallax check is in metres); most stop at its place's horizon, in a second
+_skylines: "queue.Queue[str]" = queue.Queue()
+_skyline_lock = threading.Lock()
+_skyline_queued: set[str] = set()
+_skyline_now: dict = {}
+
+
+def queue_skyline(mid: str) -> None:
+    """Look at a mesh's photos' skyline, if the admin page has that on (facing.skyline)."""
+    if not settings().get("facing.skyline"):
+        return
+    with _skyline_lock:
+        if mid in _skyline_queued:
+            return
+        _skyline_queued.add(mid)
+    _skylines.put(mid)
+
+
+def skyline_mesh(mid: str) -> None:
+    """Which way a mesh faces from its photos' skyline, kept in its heading.json whether found or not."""
+    m = q("SELECT source, lat, lng FROM meshes WHERE id=?", mid, one=True)
+    if not m or not m["source"].startswith("project:") or m["lat"] is None or not (MESHES / mid).is_dir():
+        return
+    pid = m["source"].split(":", 1)[1]
+    if photos_away(pid):
+        heading_mod.set_skyline(MESHES / mid, None, {"version": skyline_mod.VERSION, "at": time.time(), "retry": True,
+                                                     "why": "its photos are in the backup"})
+        return
+    found, note = skyline_mod.check(MESHES / mid, PROJECTS / pid / "photos", m["lat"], m["lng"], metres_per_unit(mid),
+                                    DATA / "cache", log=lambda line: print(f"{mid}: {line}", flush=True))
+    heading_mod.set_skyline(MESHES / mid, found, note)
+    print(f"{mid}: skyline: " + (f"faces {found['deg']:.1f}°" if found else note["why"]) + f" ({note['seconds']} s)", flush=True)
+
+
+def skyline_worker() -> None:
+    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    while True:
+        mid = _skylines.get()
+        with _skyline_lock:
+            _skyline_queued.discard(mid)
+        if not settings().get("facing.skyline"):
+            continue
+        use_processing_cores()
+        _skyline_now.update(mid=mid, since=time.time())
+        try:
+            skyline_mesh(mid)
+        except Exception as e:  # never let the thread die
+            print(f"{mid}: looking at its skyline failed: {type(e).__name__}: {e}", flush=True)
+        finally:
+            _skyline_now.clear()
+
+
+def skyline_wanted(mid: str) -> bool:
+    """Whether a mesh's skyline is still to be looked at: never, not since skyline.py changed, or it's worth trying
+    again (its size wasn't known then, or elevation data couldn't be had). Only once its size is known."""
+    note = (heading_mod.load(MESHES / mid) or {}).get("skyline_note") or {}
+    return bool(metres_per_unit(mid)) and (note.get("version") != skyline_mod.VERSION or bool(note.get("retry")))
+
+
+def skyline_existing_meshes() -> None:
+    """Queue the meshes whose skyline is still to be looked at, newest first."""
+    if not settings().get("facing.skyline"):
+        return
+    for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%' ORDER BY created DESC"):
+        if (MESHES / m["id"]).is_dir() and skyline_wanted(m["id"]):
+            queue_skyline(m["id"])
+
+
+def skyline_progress() -> dict:
+    """For the admin page: of the current meshes made here, how many have had their skyline looked at, how many it
+    gave a facing for, and what's being looked at now."""
+    total = checked = found = 0
+    for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%'"):
+        record = heading_mod.load(MESHES / m["id"]) or {}
+        note = record.get("skyline_note") or {}
+        total += 1
+        checked += note.get("version") == skyline_mod.VERSION and not note.get("retry")
+        found += bool(record.get("skyline"))
+    now = dict(_skyline_now)
+    name = now and (q("SELECT name FROM meshes WHERE id=?", now["mid"], one=True) or {}).get("name")
+    return {"on": bool(settings().get("facing.skyline")), "total": total, "checked": checked, "found": found,
+            "queued": _skylines.qsize(), "now": {"name": name, "seconds": round(time.time() - now["since"])} if now else None}
 
 
 def metres_per_unit(mid: str) -> float | None:
@@ -3787,6 +3873,8 @@ def run_scale(mid: str) -> None:
     except Exception as e:
         log(f"FAILED: {type(e).__name__}: {e}")
         scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": f"failed: {type(e).__name__}: {e}", "progress": None})
+    if skyline_wanted(mid):     # its skyline's parallax check needed its size
+        queue_skyline(mid)
 
 
 # ------------------------------------------------------------------ beta and size, on machines that connect here
@@ -6186,6 +6274,7 @@ def apply_settings() -> None:
     relevance_mod.MATCHER = settings().get("relevance.matcher")
     configure_workers()
     NOTIFIER.reconfigured()
+    threading.Thread(target=skyline_existing_meshes, daemon=True).start()
 
 
 def admin_state() -> dict:
@@ -6210,7 +6299,7 @@ def admin_state() -> dict:
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
             "notify": NOTIFIER.state(),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
-            "packing": pack_progress(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+            "packing": pack_progress(), "skyline": skyline_progress(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q)}
 
 
@@ -6294,6 +6383,7 @@ def main() -> None:
     threading.Thread(target=orient_existing_meshes, daemon=True).start()
     threading.Thread(target=source_existing_meshes, daemon=True).start()
     threading.Thread(target=heading_existing_meshes, daemon=True).start()
+    threading.Thread(target=skyline_worker, daemon=True).start()
     threading.Thread(target=adopt_old_pools, daemon=True).start()
     caught = catch_up_own_attempts()
     if caught:

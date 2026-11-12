@@ -65,6 +65,9 @@ DEFAULTS = {
     # find beta in each new mesh with video frames placed in it, while its videos are still in the cache; and delete
     # cached videos none of whose frames is placed in any mesh, once the climbs that used them are settled
     "beta.auto": True,
+    # work out which way each mesh faces from the skyline in its photos (skyline.py), where distant mountains show;
+    # elsewhere it stops at its place's horizon, in about a second
+    "facing.skyline": True,
     "videos.prune_unplaced": True,
     # clients that register themselves (registration.py): provisional until approved here or from a phone. Volunteers
     # fetching videos: their limits (the script's own are 15 an hour, 200 a day; searches have their own), and while provisional, whether they

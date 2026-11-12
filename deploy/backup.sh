@@ -83,6 +83,7 @@ cat "$tmp/protect" - > "$tmp/filter" <<'RULES'
 - /data/cache/http/
 - /data/cache/models/
 - /data/cache/terrain/
+- /data/cache/terrarium/
 - /data/uploads/
 - /data/compute/jobs/
 - /data/volunteers/

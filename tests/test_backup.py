@@ -42,6 +42,7 @@ try:
                       ("projects/aaaaaaaaaaaa/rejected/r.jpg", b"rej"), ("projects/aaaaaaaaaaaa/work/big.bin", b"work"),
                       ("projects/aaaaaaaaaaaa/sources.json", b"{}"), ("cache/videos/vvvvvvvvvvv.mp4", b"video"),
                       ("cache/http/page", b"html"), ("cache/models/w.pt", b"weights"), ("uploads/u.part", b"up"),
+                      ("cache/terrain/0123456789abcdef.bin", b"heights"), ("cache/terrarium/10/176/398.png", b"png"),
                       ("compute/jobs/j.in.tar", b"tar"), ("bouldermesh.sqlite-wal", b"wal"), ("mesh-views.jsonl", b"{}\n")):
         (data / rel).parent.mkdir(parents=True, exist_ok=True)
         (data / rel).write_bytes(body)
@@ -49,7 +50,7 @@ try:
     (checkout / "backend").mkdir()
     (checkout / "backend" / "server.py").write_text("code")
     dest = TMP / "backups"
-    env = {**os.environ, "BACKUP_DIR": str(dest)}
+    env = {**os.environ, "BACKUP_DIR": str(dest), "BACKUP_HANDSHAKE_KEY": str(TMP / "no-handshake-key")}   # not this machine's own
     run = lambda: subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), str(checkout)], env=env, capture_output=True, text=True)  # noqa: E731
     r = run()
     assert r.returncode == 0, r.stdout + r.stderr

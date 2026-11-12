@@ -2,12 +2,16 @@
 shows it), for placing meshes around each other (the viewer's Nearby). From the best there is of:
 
   edited    turned by hand in the viewer and saved
+  skyline   the skyline in its photos against the horizon from elevation data (skyline.py): to about 10°, where
+            distant mountains show; worked out in the background, and kept when the rest is worked out again
   compass   its placed photos whose camera recorded where it pointed (GPSImgDirection), against where the photo was
-            placed: real data, though few photos have it (design.md, "Placing meshes together")
+            placed: real data, though few photos have it (design.md, "Placing meshes together"); one photo's is often
+            20-30° off, so the skyline comes first, unless STRONG_COMPASS photos agree
   text      Mountain Project saying which face a climb is on ("the north face", "faces west"), against where that
-            climb's photos look from in the mesh: a guess, to start from, which either of the others replaces
+            climb's photos look from in the mesh: a guess, to start from, which any of the others replaces
 
-  heading.json  {version, created, edited, compass, text}: each null or {deg, ...what it came from}
+  heading.json  {version, created, edited, skyline, compass, text}: each null or {deg, ...what it came from}; and
+                skyline_note, how its skyline was last looked at (skyline.check()'s note)
 
 A face that "faces north" points north, so its photos were taken from north of it, looking south.
 """
@@ -16,12 +20,15 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
 import time
 from pathlib import Path
 
 FILE = "heading.json"
 VERSION = 1          # recomputed (all but an edit) when this changes
-ORDER = ("edited", "compass", "text")
+ORDER = ("edited", "skyline", "compass", "text")
+STRONG_COMPASS = 3   # photos whose compasses agree (within 15°) for the compass to come before the skyline
+_lock = threading.Lock()     # heading.json is written from more than one thread
 GPS_IFD, IMG_DIRECTION, IMG_DIRECTION_REF = 0x8825, 17, 16
 MIN_LEVEL = 0.3      # a camera looking more steeply up or down than this (its axis's horizontal share) says little
 
@@ -51,7 +58,9 @@ def _save(mesh_dir: Path, record: dict) -> dict:
 
 def best(record: dict | None) -> dict | None:
     """The heading to use: {deg, source, detail}, from the first of ORDER there is; None if none."""
-    for source in ORDER:
+    compass = (record or {}).get("compass") or {}
+    strong = compass.get("photos", 0) >= STRONG_COMPASS and compass.get("spread_deg", 180) <= 15
+    for source in ("edited", "compass", "skyline", "text") if strong else ORDER:
         found = (record or {}).get(source)
         if found:
             return {"deg": round(found["deg"] % 360, 1), "source": source, "detail": found.get("detail", "")}
@@ -193,10 +202,22 @@ def from_text(mesh_dir: Path, climbs: list[dict]) -> dict | None:
 
 
 def compute(mesh_dir: Path, photos_dir: Path | None, climbs: list[dict]) -> dict:
-    """Work its heading out again from its photos and its climbs' text, keeping an edit; the record."""
-    old = load(mesh_dir) or {}
-    return _save(mesh_dir, {"version": VERSION, "created": time.time(), "edited": old.get("edited"),
-                            "compass": from_compass(mesh_dir, photos_dir), "text": from_text(mesh_dir, climbs)})
+    """Work its heading out again from its photos and its climbs' text, keeping an edit and the skyline's; the
+    record."""
+    compass, text = from_compass(mesh_dir, photos_dir), from_text(mesh_dir, climbs)
+    with _lock:
+        old = load(mesh_dir) or {}
+        return _save(mesh_dir, {"version": VERSION, "created": time.time(), "edited": old.get("edited"),
+                                "skyline": old.get("skyline"), "skyline_note": old.get("skyline_note"),
+                                "compass": compass, "text": text})
+
+
+def set_skyline(mesh_dir: Path, found: dict | None, note: dict) -> dict:
+    """Keep what the skyline gave (skyline.check()): its heading or None, and how it went."""
+    with _lock:
+        record = load(mesh_dir) or {"version": 0, "created": time.time(), "edited": None, "compass": None, "text": None}
+        record.update(skyline=found, skyline_note=note)
+        return _save(mesh_dir, record)
 
 
 def current(mesh_dir: Path) -> bool:
@@ -207,6 +228,7 @@ def set_edited(mesh_dir: Path, deg: float | None) -> dict:
     """Turn it by hand (deg, a compass bearing for its -Z axis), or with None go back to what's worked out."""
     if deg is not None and not (isinstance(deg, (int, float)) and not isinstance(deg, bool) and math.isfinite(deg)):
         raise ValueError("deg: a number of degrees, or null")
-    record = load(mesh_dir) or {"version": 0, "created": time.time(), "compass": None, "text": None}
-    record["edited"] = None if deg is None else {"deg": float(deg) % 360, "at": time.time(), "detail": "turned by hand"}
-    return _save(mesh_dir, record)
+    with _lock:
+        record = load(mesh_dir) or {"version": 0, "created": time.time(), "compass": None, "text": None}
+        record["edited"] = None if deg is None else {"deg": float(deg) % 360, "at": time.time(), "detail": "turned by hand"}
+        return _save(mesh_dir, record)

@@ -1,8 +1,9 @@
 # Facing from the skyline
 
 This test asks whether a mesh's facing (the compass bearing of its -Z axis) can be found by matching the skyline in its
-placed photos against the horizon computed from elevation data at its coordinates. It's an experiment for deciding what
-to build, and nothing in the app uses it.
+placed photos against the horizon computed from elevation data at its coordinates. It was an experiment for deciding
+what to build. The app now does the same, with `--tilt 4` and the skips in item 4 below, in `backend/skyline.py`
+(design.md, "Placing meshes together").
 
 ## How it works
 

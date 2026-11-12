@@ -1900,7 +1900,7 @@ document.querySelectorAll('#detailmode button').forEach(x => x.classList.toggle(
 // text, or as it was made. Its -Z axis points at its heading's bearing; here north is -Z and east +X, in metres, which
 // the mesh in view's own size and placement turn into the view's units around it.
 const NEARBY_GUESS_M = 8;       // a mesh whose size wasn't found is taken as this many metres across
-const FACING = { edited: 'facing as turned by hand', compass: "facing by its photos' compasses", text: "facing by Mountain Project's text, a guess" };
+const FACING = { edited: 'facing as turned by hand', skyline: "facing by the skyline in its photos, to about 10°", compass: "facing by its photos' compasses", text: "facing by Mountain Project's text, a guess" };
 let nearby = null;    // {id, radius, self: {h, saved, m}, items: [{n, wrap, local, h, saved, state}], group, arrow, picked, seq}
 let nearbyRadius = 50; try { nearbyRadius = +localStorage.getItem('bm_nearby_radius') || 50; } catch {}
 let nearbyTerrain = true; try { nearbyTerrain = localStorage.getItem('bm_nearby_terrain') !== '0'; } catch {}

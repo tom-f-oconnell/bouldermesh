@@ -438,6 +438,10 @@ def run(B: str, tmp: Path) -> None:
         assert st == 200 and ground["source"] is None and "no free elevation data" in ground["why"], ground   # TERRAIN_OFFLINE
         assert req(B, "GET", f"/api/meshes/{um['id']}/terrain?radius=far")[0] == 400 and req(B, "GET", "/api/meshes/000000000000/terrain")[0] == 404
         assert status_of(f"{B}/terrain/0123456789abcdef.bin") == 404
+        with urllib.request.urlopen(ADMIN + "/api/admin/state") as r:
+            state = json.load(r)
+        sky = state["skyline"]
+        assert state["settings"]["facing.skyline"] is True and sky["on"] and sky["found"] == 0 and sky["total"] >= 0, sky
         print("nearby and facing OK")
         st, bad = req(B, "PATCH", f"/api/meshes/{mid}/cleanup", {"removed": [0, 1]})
         assert st == 400 and "at least one" in bad["error"], bad

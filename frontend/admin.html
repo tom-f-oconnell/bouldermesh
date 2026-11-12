@@ -94,6 +94,9 @@
     <div class="note">A climb alone on its boulder, or on an area holding several (as "… Boulders"), is meshed on its own either way. A climb meshed with its boulder shows on its mesh from where its own photos were taken.</div>
     <label class="choice"><input type="checkbox" id="beta-auto"> Find beta in each new mesh with video frames placed in it
       <small>(while its videos are still here; on a machine, after meshing)</small></label>
+    <label class="choice"><input type="checkbox" id="skyline-auto"> Work out which way each mesh faces from the skyline in its photos, where distant mountains show
+      <small>(to about 10°, as a start for turning it by hand in Nearby; in the background, once its size is known)</small></label>
+    <div class="note" id="skyline-note"></div>
     <label class="choice"><input type="checkbox" id="prune-videos"> Delete kept videos none of whose frames is placed in any mesh, once their climbs are done
       <small>(beta can't use them; only harvesting again would, which fetches them again. Checked hourly; their details stay)</small></label>
   </section>
@@ -315,6 +318,7 @@ function render(s){
   if (document.activeElement !== $('#map-km')) $('#map-km').value = v['site.map_km'];
   if (document.activeElement !== $('#preview-faces')) $('#preview-faces').value = v['viewer.preview_faces'];
   $('#pack-note').textContent = packNote(s.packing);
+  $('#skyline-auto').checked = v['facing.skyline']; $('#skyline-note').textContent = skylineNote(s.skyline);
   const u = s.usage || {}, gb = b => (b / 2 ** 30).toFixed(1) + ' GB';
   $('#room').classList.toggle('alert', !!u.full);
   if (document.activeElement !== $('#room-cap')) $('#room-cap').value = v['storage.cap_gb'];
@@ -458,6 +462,15 @@ function packNote(p){
   if (p.failed) text += ` ${p.failed} couldn't be made (the server's log says why), and open as they are.`;
   return text;
 }
+// How far looking at meshes' skylines has got: most stop at their place's horizon, which is too near
+function skylineNote(k){
+  if (!k || !k.total) return '';
+  let text = `Looked at ${k.checked} of ${k.total} meshes; a facing found for ${k.found}.`;
+  if (k.now) text += ` Looking at ${k.now.name || 'one'} now (${k.now.seconds} s so far)${k.queued ? `, ${k.queued} more queued` : ''}.`;
+  else if (k.queued) text += ` ${k.queued} queued.`;
+  else if (k.on && k.checked < k.total) text += ' The rest wait for their size to be found.';
+  return text + ' Most stop in about a second: only open country, like the Buttermilks, shows distant terrain; Joshua Tree\'s domes and forests hide it. Turning it off stops looking; facings found are kept.';
+}
 // Revoked and turned-down machines and volunteers: hidden unless shown, and those that never did anything forgettable
 let showGone = { mach: false, vol: false }; try { showGone = { ...showGone, ...JSON.parse(localStorage.getItem('bm_admin_gone') || '{}') }; } catch {}
 function goneLine(list, rows, what){
@@ -537,6 +550,7 @@ $('#area-meshes').onchange = () => save({ 'areas.meshes': $('#area-meshes').valu
 $('#matcher').onchange = () => save({ 'relevance.matcher': $('#matcher').value });
 $('#beta-auto').onchange = () => save({ 'beta.auto': $('#beta-auto').checked });
 $('#prune-videos').onchange = () => save({ 'videos.prune_unplaced': $('#prune-videos').checked });
+$('#skyline-auto').onchange = () => save({ 'facing.skyline': $('#skyline-auto').checked });
 $('#map-km').onchange = () => save({ 'site.map_km': +$('#map-km').value });
 $('#preview-faces').onchange = () => save({ 'viewer.preview_faces': Math.round(+$('#preview-faces').value) });
 $('#vol-add').onclick = async () => {

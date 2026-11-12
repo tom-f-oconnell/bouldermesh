@@ -425,9 +425,15 @@ point with another), 183 a size (`scale.py`), and all an up (`orientation.py`). 
 meshes, two at most in one) recorded a compass heading, 16 meshes have a GPS-tagged photo, 58 a timestamped one (16 three
 or more), and 17 a time zone. Within 100 m, 147 meshes have another (median 2, at most 12); within 50 m, 119.
 
-So `heading.json` keeps each way of telling, and the viewer uses the best: turned by hand and saved (`edited`), then
-the compass readings of its placed photos (`compass`: GPSImgDirection, against where cameras.json puts each photo's
-axis), then Mountain Project's text (`text`). The text is the climb's description and location, then the last area
+So `heading.json` keeps each way of telling, and the viewer uses the best:
+1. turned by hand and saved (`edited`);
+2. the skyline in its photos (`skyline`, below);
+3. the compass readings of its placed photos (`compass`: GPSImgDirection, against where cameras.json puts each
+   photo's axis);
+4. Mountain Project's text (`text`).
+
+One photo's compass is often 20-30° off, so the compass comes before the skyline only when three or more photos'
+agree within 15°. The text is the climb's description and location, then the last area
 it's in, which Mountain Project often names by a face ("Manx Boulders - Southeast Face"): the first face named outside
 sentences about getting there or off. A climb's face, so named, points where its photos were taken from: on a
 boulder's mesh, its view (views.json); on its own mesh, the side all the photos look from (from the point nearest all
@@ -452,19 +458,53 @@ lowest within 3 m of its point, and each mesh stands at that height; a bump left
 lidar has it, which says how far its coordinates are off. Untextured ground shows its shape poorly in flat light, so it
 has a darker line every metre of height (2 or 5 where it rises more than 30 or 80 m).
 
-Other ways to tell, not built: the sun, fitted from how bright each part of the rock is against which way it faces in a
-photo of known time (perhaps 10-20 meshes: few photos have a time, fewer a time zone, camera clocks are often hours off,
-and video frames have no time of day); and the skyline in frames, matched against the horizon worked out from
-elevation data at the climb's coordinates. [experiments/skyline](experiments/skyline/README.md) tried that on
-2026-11-11. It failed at Joshua Tree and the Tramway, where near domes and trees fill the skyline. In the Buttermilks it
-gave headings to about ±10°: meshes of the same boulder, compared through their shared photos, disagreed by that much.
-Fitting each mesh's tilt as well (its up a few degrees off) brought three of the four within 2°.
-[experiments/footprint](experiments/footprint/README.md) then fitted meshes against the boulders lidar keeps as bumps.
-On hal's 182 meshes it agreed with the other sources no better than chance. At the Buttermilks it was consistent
-across meshes of one boulder, but turned half way round: most meshes are one face, which fits the side of many bumps,
-and a rounded boulder fits nearly as well either way. USGS 3DEP's 1 m lidar elevation covers Joshua Tree, the
-Buttermilks, Hueco Tanks, Red Rocks and Yosemite (its 1/3 arc-second, about 10 m, the whole US), from one request a
-square: 300 m at Joshua Tree came in 9 s as 360 KB of heights, 65 m of relief (now shown under Nearby, above).
+**The skyline** (`backend/skyline.py`) matches where sky meets distant mountains in a mesh's photos against the
+horizon worked out from elevation data at its coordinates. [experiments/skyline](experiments/skyline/README.md) has
+the tests:
+- **Where it fails:** at Joshua Tree and the Tramway, near domes and trees fill the skyline.
+- **Where it works:** in the Buttermilks. Meshes of one boulder, compared through their shared photos, disagreed by
+  up to 15° at first.
+- **The fix:** fitting each mesh's tilt as well (its up a few degrees off) brought the three with enough skyline within
+  2-3° of each other. The fourth, with 3 photos' skylines, is left out.
+
+It runs on every mesh made here, once its size is known (its parallax check is in metres), in the background, one at a
+time, at the lowest CPU priority. Each step skips what can't work, cheapest first, so no area needs a setting of its
+own:
+1. **Its place's horizon** comes from AWS's Terrain Tiles: zoom 14 to 2.5 km and zoom 10 to 50 km, cached in
+   `data/cache/terrarium`, about 25-30 tiles (2-3 MB) for each new area. If half of it is within 5 km, it stops. That
+   takes about 1 s and looks at no photos. The median distance is 7.4 km in the Buttermilks, against at most 3.3 km at
+   Joshua Tree. A flat plain's horizon is about 4.8 km, and has nothing to match anyway.
+2. **Six of its photos** go through SegFormer-b0 (ADE20K, ONNX, about 0.3 s a photo on one core, using up to 0.5 GB of
+   memory meanwhile). If none shows sky meeting mountain or hill away from the mesh's own outline, it stops. That
+   catches forests whose ground is open in the elevation data.
+3. **The rest** are its stills and six frames of each video. It keeps only points that photos 8 m or more apart see
+   at the same bearing and height. It needs 4 photos and 100 points, then matches over every heading, every 1° of tilt
+   up to 4°, and offsets within ±1°. It keeps the result only if the best heading 45° or more away fits at least 2.5
+   times worse, and two halves of the photos agree within 10°.
+
+The model (15 MB) is downloaded once and checked against its hash. onnxruntime is already in the image for the pose
+models. SegFormer's weights are NVIDIA's, licensed for non-commercial use, as VGGT's are.
+
+On hal, the Buttermilks' Drifter took 47 s on 2 cores and gave 125.5°. East Face Sit and Les Trois Maunets took 5 s
+each, and agree with it within 3° through their shared photos. Every Joshua Tree mesh stops at step 1.
+
+Each mesh's `heading.json` keeps the note of how its skyline went (`skyline_note`: why not, how far its horizon is, how
+long it took). It's looked at again when skyline.py's VERSION changes, or when it couldn't be then (no size, no
+elevation data, its photos offloaded). The admin page turns it off, and shows how many meshes it has looked at and
+found a facing for.
+
+Other ways to tell, not built:
+- **The sun**, fitted from how bright each part of the rock is against which way it faces, in a photo of known time.
+  Perhaps 10-20 meshes would qualify: few photos have a time, fewer a time zone, camera clocks are often hours off, and
+  video frames have no time of day.
+- **The boulders lidar keeps as bumps,** which [experiments/footprint](experiments/footprint/README.md) fitted meshes
+  against. On hal's 182 meshes it agreed with the other sources no better than chance. In the Buttermilks it was
+  consistent across meshes of one boulder, but turned half way round. Most meshes are one face, which fits the side of
+  many bumps, and a rounded boulder fits nearly as well either way.
+
+USGS 3DEP's 1 m lidar elevation covers Joshua Tree, the Buttermilks, Hueco Tanks, Red Rocks and Yosemite (its 1/3
+arc-second, about 10 m, the whole US), from one request a square: 300 m at Joshua Tree came in 9 s as 360 KB of
+heights, 65 m of relief (now shown under Nearby, above).
 
 ## Which way is down (`backend/orientation.py`)
 

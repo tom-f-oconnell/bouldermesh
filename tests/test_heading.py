@@ -97,6 +97,19 @@ with tempfile.TemporaryDirectory() as td:
             raise AssertionError(bad)
         except ValueError:
             pass
+    # the skyline's (skyline.py): before one photo's compass, kept when the rest is worked out again, after an edit,
+    # and after the compass when several photos' agree
+    sky = {"deg": 92.5, "photos": 7, "detail": "the skyline in 7 of its photos"}
+    rec = heading.set_skyline(mesh, sky, {"version": 1, "why": None})
+    assert heading.best(rec) == {"deg": 92.5, "source": "skyline", "detail": "the skyline in 7 of its photos"}, heading.best(rec)
+    rec = heading.compute(mesh, photos, climbs)
+    assert rec["skyline"] == sky and rec["skyline_note"]["why"] is None and heading.best(rec)["source"] == "skyline", rec
+    assert heading.best(heading.set_edited(mesh, 10))["source"] == "edited"
+    heading.set_edited(mesh, None)
+    strong = {"deg": 95.0, "photos": 3, "spread_deg": 8.0}
+    assert heading.best({"skyline": sky, "compass": strong})["source"] == "compass"
+    assert heading.best({"skyline": sky, "compass": {**strong, "spread_deg": 30.0}})["source"] == "skyline", "three that disagree"
+    heading.set_skyline(mesh, None, {"version": 1, "why": "its horizon is mostly near"})
     (photos / "p1.jpg").unlink()
     assert heading.best(heading.compute(mesh, photos, climbs))["source"] == "text", "without its compass reading"
     print("best OK")

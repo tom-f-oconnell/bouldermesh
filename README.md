@@ -387,10 +387,21 @@ many it has made, which it's making, and about how long the rest will take.
 
 *Nearby* in the view's bar shows the meshes around the one in view: within 50 m to start (the box it opens changes the
 radius), each placed by its coordinates, at its real size where that was found, upright, on the ground, with a red arrow
-pointing north. Which way each faces is the best known of: turned by hand, its photos' compass readings, Mountain
-Project's text naming its face ("the north face", or an area named "... - Southeast Face"), a guess the others replace,
-or unknown (as made). *Turn* (or clicking one in the view) turns a mesh; an editor's *Save facing* keeps it for everyone.
-Coordinates are often 5-20 m off, and several climbs often share one point, so it's a rough layout (design.md, "Placing
+pointing north. Which way each faces is the best known of:
+- **Turned by hand.**
+- **The skyline in its photos**, matched against the horizon from elevation data, to about 10°. This works only where
+  distant mountains show, as in the Buttermilks.
+- **Its photos' compass readings.** Readings from three or more photos that agree come before the skyline.
+- **Mountain Project's text** naming its face ("the north face", or an area named "... - Southeast Face"). This is a
+  guess the others replace.
+- **Unknown**, as when first made.
+
+The skyline is looked at in the background once a mesh's size is known (*Work out which way each mesh faces from the
+skyline* on the admin page, on by default, which also shows how far it's got). Most meshes stop in about a second, at
+their place's horizon (`backend/skyline.py`, design.md, "Placing meshes together").
+
+*Turn* (or clicking one in the view) turns a mesh; an editor's *Save facing* keeps it for everyone. Coordinates are
+often 5-20 m off, and several climbs often share one point, so it's a rough layout (design.md, "Placing
 meshes together"). *Ground* (on to start) lays the terrain under them, untextured, with a line every metre of height
 (or 2 or 5 where steeper): USGS 3DEP's lidar elevation in the US (1 m apart where it has it, about 10 m elsewhere) and
 IGN's in France (1 m), nothing elsewhere. Each mesh then stands on the ground at its point. Lidar often keeps big rocks
@@ -958,6 +969,7 @@ Security, then WAF, then *Rate limiting rules* (or *Security rules*, then a rate
     backend/glbpack.py, glbpack.mjs  compressed and simplified copies of meshes for the viewer (meshoptimizer, in vendor/)
     backend/heading.py             which way a mesh faces, for placing meshes around each other (the viewer's Nearby)
     backend/terrain.py             the ground around a place, from USGS's and IGN's lidar elevation, for Nearby
+    backend/skyline.py             which way a mesh faces from the skyline in its photos, where distant mountains show
     volunteer/bouldermesh_volunteer.py  the script volunteers run
     backend/proxy_ranges.py        whether the Caddyfile's trusted proxies are still Cloudflare's
     backend/policy.py              which photos are free to copy, and what the site may show
@@ -1067,8 +1079,9 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_meshclean.py   # offline: finding and hiding stray pieces on small GLBs, cuts and areas, undo, the cleaned download
     python3 tests/test_glbpack.py     # offline: packed and simplified copies for the viewer, and their cleanups (needs node or deno)
     python3 tests/test_worker_setup.py # offline: the worker's --setup and Docker check, on machines described, not changed
-    python3 tests/test_heading.py     # offline: which way a mesh faces, from photos' compasses and Mountain Project's text
+    python3 tests/test_heading.py     # offline: which way a mesh faces, from photos' compasses and Mountain Project's text, and which wins
     python3 tests/test_terrain.py     # offline: elevation squares, with stand-ins for USGS's and IGN's services
+    python3 tests/test_skyline.py     # offline: facing from a made-up skyline, and each way it gives up early
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
     python3 tests/test_scale.py       # offline: sizing people, objects and the rock on scenes built with known sizes
     python3 tests/test_youtube.py     # offline: telling a climb's videos apart, climbers' sizes in text, leaving YouTube alone when it refuses
