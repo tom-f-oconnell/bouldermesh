@@ -458,6 +458,7 @@ and video frames have no time of day); and the skyline in frames, matched agains
 elevation data at the climb's coordinates. [experiments/skyline](experiments/skyline/README.md) tried that on
 2026-11-11. It failed at Joshua Tree and the Tramway, where near domes and trees fill the skyline. In the Buttermilks it
 gave headings to about ±10°: meshes of the same boulder, compared through their shared photos, disagreed by that much.
+Fitting each mesh's tilt as well (its up a few degrees off) brought three of the four within 2°.
 [experiments/footprint](experiments/footprint/README.md) then fitted meshes against the boulders lidar keeps as bumps.
 On hal's 182 meshes it agreed with the other sources no better than chance. At the Buttermilks it was consistent
 across meshes of one boulder, but turned half way round: most meshes are one face, which fits the side of many bumps,

@@ -42,6 +42,7 @@ SKY = 2                # ADE20K's sky
 DISTANT = {16, 68}     # ADE20K's mountain and hill: what's below a skyline point that's far enough away to be in the elevation data
 THREADS = 6            # for the segmentation and numpy: hal is shared
 SIGMA = 0.75           # degrees: how well a skyline point is expected to fit
+TILT = 0.0             # degrees the mesh's up may be tipped each way when matching (--tilt); 0: one offset only
 ABOVE = 0.15           # weight of a point above the terrain's horizon (trees, rocks and ground near by may add height)
 MODEL = ROOT / "data" / "cache" / "models" / "skyline" / "segformer-b0-ade.onnx"
 
@@ -208,20 +209,26 @@ def bearing(x: float, z: float) -> float:
 # ------------------------------------------------------------------------------------------------ matching
 def match(obs: list[np.ndarray], el: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """The loss of each heading (each STEP), for photos' points (each [n, 2]: bearing in the mesh's frame, elevation),
-    each photo's mean counting once, with the best constant offset within ±4° (an up a little off); and the offsets."""
+    each photo's mean counting once, with the best constant offset within ±4° (an up a little off); and the offsets.
+    With TILT, the mesh's up is instead tipped up to TILT degrees each way (1° apart), with an offset within ±1°: a
+    tipped up raises the skyline on one side and lowers it on the other, which one offset can't follow."""
     n = len(el)
     heads = np.arange(n)
-    loss, offset = np.zeros(n), np.zeros(n)
+    offset = np.zeros(n)
     best = np.full(n, np.inf)
-    for b in np.arange(-4, 4.01, 0.5):
-        total = np.zeros(n)
-        for pts in obs:
-            idx = (np.round(pts[:, 0] / STEP).astype(int)[None, :] + heads[:, None]) % n      # [heads, points]
-            r = pts[None, :, 1] - (el[idx] + b)
-            rho = np.where(r < 0, np.minimum((r / SIGMA) ** 2, 9), ABOVE * np.minimum((r / SIGMA) ** 2, 9))
-            total += rho.mean(1)
-        better = total < best
-        best[better], offset[better] = total[better], b
+    steps = np.arange(-TILT, TILT + 0.01, 1.0) if TILT else [0.0]
+    tips = [(a, b) for a in steps for b in steps if a * a + b * b <= TILT * TILT + 0.01]
+    for ta, tb in tips:
+        tipped = [p[:, 1] - ta * np.sin(np.radians(p[:, 0])) - tb * np.cos(np.radians(p[:, 0])) for p in obs]
+        for b in (np.arange(-1, 1.01, 0.5) if TILT else np.arange(-4, 4.01, 0.5)):
+            total = np.zeros(n)
+            for pts, e in zip(obs, tipped):
+                idx = (np.round(pts[:, 0] / STEP).astype(int)[None, :] + heads[:, None]) % n      # [heads, points]
+                r = e[None, :] - (el[idx] + b)
+                rho = np.where(r < 0, np.minimum((r / SIGMA) ** 2, 9), ABOVE * np.minimum((r / SIGMA) ** 2, 9))
+                total += rho.mean(1)
+            better = total < best
+            best[better], offset[better] = total[better], b
     loss = best / max(1, len(obs))
     return loss, offset
 
@@ -309,9 +316,12 @@ def main():
     ap.add_argument("--parallax", action="store_true", help="keep only skyline points that don't shift between photos far apart")
     ap.add_argument("--photos", default="*", help="only photos whose names match this pattern (yt_* are video frames)")
     ap.add_argument("--pairs", action="store_true", help="also check meshes that share photos against each other")
+    ap.add_argument("--tilt", type=float, default=0.0, help="also fit the mesh's up tipped up to this many degrees")
     ap.add_argument("--halves", action="store_true", help="also match two halves of the photos (by video) on their own")
     ap.add_argument("meshes", nargs="+")
     args = ap.parse_args()
+    global TILT
+    TILT = args.tilt
     args.out.mkdir(parents=True, exist_ok=True)
     if args.index:
         index = {m["id"]: m for m in json.loads(args.index.read_text())}

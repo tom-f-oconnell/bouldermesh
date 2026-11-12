@@ -71,9 +71,15 @@ about 10°.
 - **The evidence.** The same photo's skyline points land at bearings within 1-3° of each other in two meshes, but at
   elevations 0.3-1.8° apart, and that moved the best heading by 5° or more. One shared photo was placed about 140°
   differently in the two meshes.
-- **Fitting the tilt doesn't fix it.** Fitting the mesh's tilt (2 more parameters, within 3°) along with the offset
-  moved Drifter only to 123.5°, and the others hardly at all. Drifter's points also fit its horizon 10-20 times worse
-  than the small meshes' do.
+- **Fitting the tilt mostly fixes it.** `--tilt 4` tips the mesh's up as much as 4° each way, with the offset held
+  within ±1°.
+  - Drifter, East Face Sit and Les Trois Maunets then agree within 2° (125.5°, 126.5° and 123.75°).
+  - Smoking, with only 3 photos' skylines, stays 8-10° off.
+  - Drifter's margin rises from 2.3 to 4.2.
+  - An earlier try tipped the up but left the offset free to ±4°, and moved little: the offset traded against the
+    heading again.
+
+  These meshes share photos, so agreeing shows the answer survives their different ups, not that it's right.
 
 All the estimates for Drifter fall within 111-127°. Its text guess, 189°, is 60° or more away. The single compass
 reading (143°, true north) is 16-32° away. Phone compasses are often that far off, so this doesn't settle which is right.
@@ -85,9 +91,20 @@ which would give its facing and position in exactly the places where skylines fa
 
 ## Cost
 
-- **Storage.** 126 Terrarium tiles (12 MB) covered both areas, and areas share them. The segmentation model is 15 MB.
-- **Compute.** 3-45 s a mesh on 6 of hal's CPU threads, almost all of it segmentation (0.15-0.3 s a photo). It needs
-  no GPU.
+Measured on hal's Threadripper 3960X, one core at a time. The server has 2 cores of an EPYC Genoa and 3.7 GB of memory.
+- **Once.** The segmentation model is 15 MB. onnxruntime is already in the app's image, for scale.py's and beta.py's
+  pose models, so the image doesn't grow. It needs no GPU.
+- **Each new area.** About 25-30 elevation tiles (2-3 MB), fetched in a few seconds. The server's meshes are in six
+  areas, which took 281 tiles (26 MB) in all.
+- **Each place.** Working out its horizon takes 0.8 s (the median over the server's 134 places), and up to 15 s when
+  tiles have to be fetched.
+- **Each mesh that gets that far:**
+  - Segmentation takes 0.28 s a photo. Most photos are 1280 x 720 video frames, so decoding is a small part of that.
+  - Memory peaks at about 0.5 GB while it runs: the model's working memory, with 85 MB once loaded.
+  - Matching takes 0.05-0.35 s, or 0.3-5 s with `--tilt 4`.
+  - In all, Drifter's 139 photos take about 45 s, and the smaller meshes 4-6 s.
+- **With the skips in item 4,** a place whose horizon is near costs only that ~1 s. Today, all of the server's meshes
+  but the four in the Buttermilks would stop there.
 
 ## What it would take to use
 
@@ -98,8 +115,8 @@ Tree's domes or forest like the Tramway's and Fontainebleau's. Before building i
 2. **Weigh the alternatives.** Footprint matching against the lidar ground
    ([experiments/footprint](../footprint/README.md)) did no better than chance at Joshua Tree, and turned the Buttermilks
    meshes half way round.
-3. **Make it hold up.** Weight points by how much they constrain the heading (peaks and notches over steady slopes),
-   and fit each photo's own small tilt rather than one offset per mesh.
+3. **Make it hold up.** Fit the mesh's tilt (`--tilt`), which held Drifter's meshes together here. Weight points by
+   how much they constrain the heading (peaks and notches over steady slopes).
 4. **Skip what has no clear skyline, before segmenting.** Segmentation is nearly all of the cost, and on hal's 31
    meshes only 48% of the 1,222 photos had any skyline at all.
    - Skip a whole mesh whose horizon is near, from the elevation data alone. Its median distance was 7.4 km in the
@@ -107,6 +124,8 @@ Tree's domes or forest like the Tramway's and Fontainebleau's. Before building i
    - Segment only a few frames of each video. The 935 frames came from 86 videos, and neighbouring frames repeat the
      same skyline.
    - Try a cheap test for sky along a photo's top edge (bright and smooth) before segmenting it.
+   - Where the elevation data shows a far horizon but trees hide it, segment a few photos first, and stop if none
+     shows distant terrain.
    - Skipping photos whose camera points too far down saves little: only 2% had their top edge below level.
 
 ## Running it
@@ -118,7 +137,7 @@ It needs onnxruntime in the venv, the segmentation model, and a data folder like
     curl -L -o data/cache/models/skyline/segformer-b0-ade.onnx \
         https://huggingface.co/Xenova/segformer-b0-finetuned-ade-512-512/resolve/main/onnx/model.onnx
 
-    venv/bin/python experiments/skyline/skyline.py --data data --parallax --halves --pairs MESH_ID...
+    venv/bin/python experiments/skyline/skyline.py --data data --parallax --tilt 4 --halves --pairs MESH_ID...
 
 `--data` is a folder holding `meshes/<id>` and `projects/<project>/photos`. That's the app's own `data/`, or a few
 meshes copied from the server, with `--index` given a saved copy of `GET /api/meshes` for their places. Results go to
