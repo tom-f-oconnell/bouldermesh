@@ -251,7 +251,12 @@ stays, and *Resume* carries on from the last step the climb finished. *Pause* be
 stops that one alone, while the area goes on with its others. It stays paused, through restarts too, until
 its own *Resume*, and then goes next. Each climb in progress shows its whole job's bar and each running
 step's, with who's doing that step (the server, a machine, or volunteers) and about how long it has left:
-at its own pace once that's clear, or else from how long the step took in recent runs. A server restart loses no more
+at its own pace once that's clear, or else from how long the step took in recent runs. On the *Projects* tab,
+a project made for an area says which, and what it is there (a climb's own harvest, or its boulder's or a group's
+mesh). Its *Stop* pauses that climb in the area, and before stopping or deleting any project the page says what that
+does to its job, its meshes and the areas' climbs it's for. A project can't be deleted while its job or an area's
+climb in it is running; an area's climb whose harvest is deleted keeps its mesh if it has one, or is harvested again
+from the start. A server restart loses no more
 than that, and it carries on by itself afterwards, unless you'd stopped it. It also stops by itself after 5 climbs in a row fail before finishing a
 harvest, which usually means a network problem, or with under 50 GB of disk left
 (`CAMPAIGN_MIN_FREE_GB`).
@@ -1102,7 +1107,9 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     GET  /api/status
     GET  /api/projects · POST /api/projects {name, climb_id?} · GET|DELETE /api/projects/{id}
     POST /api/projects/{id}/photos (multipart "photos") · POST /api/projects/{id}/reconstruct
-    POST /api/projects/{id}/retry                       a failed or interrupted project, from its last finished step
+    POST /api/projects/{id}/retry                       a failed, stopped or interrupted project, from its last finished step
+    POST /api/projects/{id}/stop                        its job (an area's climb in it is paused there instead)
+    GET  /api/projects/{id}/effects                     what stopping or deleting it would do: {stop, delete: {says, blocked}}
     POST /api/projects/retry-interrupted                every project a restart interrupted
     GET  /api/jobs                                      what a restart would interrupt (jobs outside areas) or pause (areas' climbs)
     GET  /api/projects/{id}/harvest                     sources.json + diversity.json
@@ -1122,6 +1129,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
                                                same_photos_once, keep_better, mapper_below, mapper_more}
     POST /api/campaigns/{id}/options {without_youtube, max_meshes, count_failures, same_photos_once, keep_better, mapper_below, mapper_more}   an area listed again is taken up again
     POST /api/campaigns/{id}/start · POST /api/campaigns/{id}/stop {now} · DELETE /api/campaigns/{id}
+    POST /api/campaigns/{id}/pause {source_id, paused}  pause one of its climbs (false: resume it)
     POST /api/campaigns/{id}/retry                      its failed climbs, ahead of the rest
     POST /api/campaigns/{id}/harvest-again {videos_only, then_rebuild} · POST /api/campaigns/{id}/rebuild {changed_only, skipped_only}
     POST /api/campaigns/{id}/boulders                   its boulders with more than one climb, each meshed from all their photos

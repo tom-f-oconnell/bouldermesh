@@ -2710,9 +2710,10 @@ async function refreshProjects(){
     const d = document.createElement('div'); d.className = 'card' + (p.id===active ? ' active' : '');
     const busy = BUSY.includes(p.status);
     d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':p.kind==='boulder'?'<span class="tag climb" title="Every photo its climbs\' harvests found, together">boulder</span>':''}</b><span class="status ${p.status}">${p.status}${p.demo?' (demo)':''}</span></div>
+      ${projectAreasHtml(p)}
       <div class="row" style="margin-top:8px">
         <label class="file"><button class="sec sm" type="button">Add photos or videos</button><input type="file" multiple accept="image/jpeg,image/png,video/*"></label>
-        ${RETRYABLE.includes(p.status) ? '<button class="retry sm" title="Tries again from the last step it finished, rather than from the start">Retry</button>' : ''}
+        ${RETRYABLE.includes(p.status) ? `<button class="retry sm" title="Tries again from the last step it finished, rather than from the start${(p.areas || []).some(a => a.kind === 'climb') ? '. In its area it goes next, resumed if it was paused; a stopped area runs only what\'s asked for again, and stops' : ''}">Retry</button>` : ''}
         ${busy ? '<button class="stop sm sec" title="Stops its job now, or takes it out of the queue; Retry carries on from the last step it finished. An area\'s climb in progress is paused on the Areas tab instead">Stop</button>' : ''}
         <button class="rec sm ${RETRYABLE.includes(p.status) ? 'sec' : ''}" title="Makes a new mesh from the start" ${busy?'disabled':''}>Reconstruct</button>
         ${p.mesh_id?'<button class="sec sm view">View mesh</button>':''}
@@ -2741,7 +2742,12 @@ async function refreshProjects(){
       catch(e){ toast(e.message); }
     };
     d.querySelector('.stop')?.addEventListener('click', async () => {
-      try { await api(`/api/projects/${p.id}/stop`, {method:'POST'}); toast('Stopped: Retry carries on with it'); refreshProjects(); }
+      if (!await projectSure(p, 'stop')) return;
+      try {
+        const r = await api(`/api/projects/${p.id}/stop`, {method:'POST'});
+        toast(r.paused ? `Paused ${r.paused.map(x => `${x.climb} in ${x.area}`).join(', ')}: resume it on the Areas tab` : 'Stopped: Retry carries on with it', 8000);
+        refreshProjects();
+      }
       catch(e){ toast(e.message, 8000); }
     });
     d.querySelector('.retry')?.addEventListener('click', async () => {
@@ -2750,7 +2756,13 @@ async function refreshProjects(){
     });
     d.querySelector('.view')?.addEventListener('click', () => viewMesh(p.mesh_id, null, 'project'));
     d.querySelector('.climb')?.addEventListener('click', () => openClimb(p.climb_id));
-    d.querySelector('.del').onclick = async () => { if (ask(`Delete project "${p.name}"?`)) { await api(`/api/projects/${p.id}`, {method:'DELETE'}); refreshProjects(); } };
+    d.querySelector('.del').onclick = async () => {
+      if (!await projectSure(p, 'delete')) return;
+      try { await api(`/api/projects/${p.id}`, {method:'DELETE'}); }
+      catch(e){ toast(e.message, 10000); }
+      refreshProjects();
+    };
+    d.querySelectorAll('a[data-area]').forEach(a => a.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); showArea(a.dataset.area); });
     d.onclick = ev => { if (ev.target.tagName !== 'BUTTON') { active = p.id; loadDetail(p.id, d); } };
     el.appendChild(d);
     projectCards.set(p.id, d);
@@ -2758,6 +2770,30 @@ async function refreshProjects(){
   }
 }
 const BUSY = ['queued', 'running', 'harvesting'], RETRYABLE = ['failed', 'stopped', 'interrupted'];
+// a project made for an area: which, and what it is there (a climb's own harvest, with how that climb stands on the
+// list, or the mesh of its boulder, a group of its climbs, or what a boulder's mesh left out)
+const AREA_STATES = { pending: 'still to go', running: 'in progress', waiting: 'waiting for volunteers\' YouTube searches and videos',
+                      harvested: 'harvested, waiting for the rest of its boulder\'s', done: 'meshed', skipped: 'skipped', failed: 'failed' };
+const AREA_KINDS = { boulder: 'the mesh of its boulder', group: 'the mesh of a group of its climbs whose photos match',
+                     rest: 'the mesh of what its boulder\'s mesh left out' };
+function projectAreasHtml(p){
+  return (p.areas || []).map(a => `<div class="meta" style="margin-top:4px">For the area <a href="#" data-area="${esc(a.id)}" title="Its card, on the Areas tab">${esc(a.name)}</a>:
+    ${a.kind === 'climb' ? `${esc(a.climb)}, ${a.paused ? 'paused' : AREA_STATES[a.status] || esc(a.status)}` : `${AREA_KINDS[a.kind] || esc(a.kind)}, of ${plural(a.climbs, 'climb')} on its list`}</div>`).join('');
+}
+async function showArea(id){
+  document.querySelector('.tabs button[data-tab=areas]').click();
+  await refreshCampaigns().catch(() => null);
+  document.querySelector(`#campaigns [data-camp="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'start' });
+}
+// before stopping or deleting a project, what that does: to its job, its meshes, and the areas' climbs it's for
+async function projectSure(p, what){
+  if (!editor) return ask('');
+  let fx;
+  try { fx = (await api(`/api/projects/${p.id}/effects`))[what]; }
+  catch (e) { toast(e.message, 8000); return false; }
+  if (fx.blocked) { alert(`"${p.name}" can't be ${what === 'delete' ? 'deleted' : 'stopped'} now: ${fx.blocked}.`); return false; }
+  return confirm(`${what === 'delete' ? 'Delete' : 'Stop'} "${p.name}"?\n\n${fx.says.join('\n\n')}`);
+}
 function progressHtml(p){
   const pr = p.progress;
   if (p.status === 'queued') return '<div class="status queued" style="margin-top:8px">Queued: waits for any job ahead of it</div>';

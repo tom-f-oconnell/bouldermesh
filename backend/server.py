@@ -3721,9 +3721,9 @@ def next_campaign_step() -> bool:
 
 
 def queue_retry(camp_id: str, source_id: str, project_id: str | None) -> None:
-    """Put one of a campaign's climbs at the front of its list. A campaign that isn't running runs
-    only its retries and then stops, rather than carrying on down its list."""
-    set_item(camp_id, source_id, status="pending", retry=1, note="queued to try again")
+    """Put one of a campaign's climbs at the front of its list, resuming it if it was paused. A campaign that isn't
+    running runs only its retries and then stops, rather than carrying on down its list."""
+    set_item(camp_id, source_id, status="pending", retry=1, paused=None, note="queued to try again")
     if project_id:
         q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", project_id, write=True)
     q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status IN ('stopped','done')", camp_id, write=True)
@@ -3771,17 +3771,20 @@ def retry_project(pid: str) -> tuple[dict, int]:
 def stop_project(pid: str) -> tuple[dict, int]:
     """Stop a project's job someone asked for (the Projects tab's Stop): one queued leaves the queue; one running stops
     at once, with the tool it's running and any job it handed a machine. It's left stopped, and Retry runs it again as
-    it was asked for, carrying on from the last step it finished. An area's climb in progress is paused on the Areas tab
-    instead, as the area would take it up again.
+    it was asked for, carrying on from the last step it finished. An area's climb whose work it is (area_work()), in
+    progress or still to go, is paused in its area instead (pause_item()), as the area would take it up again.
 
     Returns:
         The response, and its HTTP status.
     """
-    proj = q("SELECT status, job FROM projects WHERE id=?", pid, one=True)
+    proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
     if not proj:
         return {"error": "not found"}, 404
-    if q("SELECT 1 FROM campaign_items WHERE project_id=? AND status='running'", pid, one=True):
-        return {"error": "an area's climb in progress: pause it on the Areas tab"}, 409
+    held = [i for i in area_work(pid, proj) if i["status"] in ("pending", "running") and not i["paused"]]
+    if held:    # an area's climb on it, in progress or to go: paused there, as the area would take it up again
+        for i in held:
+            pause_item(i["campaign_id"], i["source_id"])
+        return {"paused": [{"area": i["area"], "climb": i["name"]} for i in held]}, 200
     with jobs.mutex:
         waiting = [j for j in jobs.queue if j.get("pid") == pid]
         for j in waiting:
@@ -3795,6 +3798,172 @@ def stop_project(pid: str) -> tuple[dict, int]:
     for w in on:
         w.control.stop()
     return {"stopped": True}, 200
+
+
+ITEM_STATES = {"pending": "still to go", "running": "in progress", "waiting": "waiting for volunteers' YouTube searches and videos",
+               "harvested": "harvested, waiting for the rest of its boulder's", "done": "meshed", "skipped": "skipped", "failed": "failed"}
+OWN_REDOS = ("harvest", "videos", "more", "rebuild", "rebuild-changed", "try-skipped", "own")   # done in a climb's own project
+MESHES_FOR = ("boulder", "pool", "cluster")     # done in the project of the climb's boulder, or of a group of climbs
+
+
+def redo_head(redo: str | None) -> str:
+    """What an area's climb is queued to do again, before any "+rebuild"."""
+    return (redo or "").split("+")[0]
+
+
+def _area_items(where: str = "1", *args) -> list[dict]:
+    """Areas' climbs, with their areas' names."""
+    return q("SELECT ci.campaign_id, c.name AS area, ci.source_id, ci.name, ci.status, ci.paused, ci.redo, ci.was, ci.mesh_id, "
+             "ci.project_id, ci.boulder, ci.pool, ci.climb_id FROM campaign_items ci JOIN campaigns c ON c.id=ci.campaign_id "
+             f"WHERE {where} ORDER BY c.created, ci.rank", *args)
+
+
+def project_areas() -> dict[str, list[dict]]:
+    """The areas each project was made for, for the Projects tab: {project id: [{id and name (the area's), kind ("climb"
+    for a climb's own harvest; "boulder", "group" or "rest" for the project of a boulder's mesh, of a group of climbs'
+    whose photos match, or of what a boulder's mesh left out), and for a climb, its name ("climb"), its status on the
+    list and whether it's paused; else how many of the area's climbs it's of ("climbs")}]}."""
+    items = _area_items()
+    by: dict[str, dict[str, list[dict]]] = {"boulder": {}, "pool": {}, "climb_id": {}}
+    out: dict[str, list[dict]] = {}
+    for i in items:
+        for k in by:
+            if i[k]:
+                by[k].setdefault(i[k], []).append(i)
+        if i["project_id"]:
+            out.setdefault(i["project_id"], []).append({"id": i["campaign_id"], "name": i["area"], "kind": "climb", "climb": i["name"],
+                                                        "status": i["status"], "paused": bool(i["paused"])})
+    for p in q("SELECT id, boulder FROM projects WHERE kind='boulder' AND boulder IS NOT NULL"):
+        key = p["boulder"]
+        if is_rest(key):
+            parent = q("SELECT boulder FROM meshes WHERE id=?", rest_parent(key), one=True)
+            kind, on = "rest", by["boulder"].get((parent or {}).get("boulder") or "", [])
+        elif is_pool(key):
+            kind, on = "group", list({id(i): i for i in by["pool"].get(key, []) + [i for c in pool_members(key) for i in by["climb_id"].get(c, [])]}.values())
+        else:
+            kind, on = "boulder", by["boulder"].get(key, [])
+        for area in dict.fromkeys(i["campaign_id"] for i in on):
+            mine = [i for i in on if i["campaign_id"] == area]
+            out.setdefault(p["id"], []).append({"id": area, "name": mine[0]["area"], "kind": kind, "climbs": len(mine)})
+    return out
+
+
+def area_work(pid: str, proj: dict) -> list[dict]:
+    """The areas' climbs whose work is in this project: one whose own harvest it is, unless it's meshing its boulder or
+    a group (in that one's project); for a boulder's or group's project, those meshing it, or queued to."""
+    if proj["kind"] == "boulder" and proj["boulder"]:
+        key = proj["boulder"]
+        return [i for i in _area_items("ci.boulder=? OR ci.pool=?", key, key)
+                if redo_head(i["redo"]) in MESHES_FOR and (i["pool"] if redo_head(i["redo"]) == "cluster" else i["boulder"]) == key]
+    return [i for i in _area_items("ci.project_id=?", pid) if redo_head(i["redo"]) not in MESHES_FOR]
+
+
+def project_effects(pid: str) -> dict | None:
+    """What stopping or deleting a project would do, for the Projects tab to say first: {"stop": {says, blocked},
+    "delete": {says, blocked}}, says being sentences of what happens to its job, its meshes and the areas' climbs it's
+    for, and blocked why it can't be done now (else None). None if there's no such project."""
+    proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
+    if not proj:
+        return None
+    work = area_work(pid, proj)
+    held = [i for i in work if i["status"] in ("pending", "running") and not i["paused"]]
+    with jobs.mutex:
+        queued = any(j.get("pid") == pid for j in jobs.queue)
+    running = any(w.job and w.job["job"].get("pid") == pid for w in list(_workers))
+    stop = [f"In {i['area']}, {i['name']} is paused: the area goes on with its other climbs, and this one waits until you "
+            "resume it there, on the Areas tab. It then carries on from the last step it finished; one it's partway "
+            "through, on a machine too, starts again." if i["status"] == "running" else
+            f"In {i['area']}, {i['name']} is paused before the area gets to it: no worker takes it until you resume it there, "
+            "on the Areas tab." for i in held]
+    if not held and running:
+        stop.append("Its job stops now, with the tool it's running and any job it handed a machine. Retry carries on from the "
+                    "last step it finished; one it was partway through starts again.")
+    elif not held and queued:
+        stop.append("It leaves the queue, and Retry queues it again.")
+
+    busy = next((i for i in work if i["status"] == "running"), None)
+    blocked = (f"{busy['name']} is in progress in {busy['area']}, in this project: stop it first (which pauses it there)" if busy
+               else "its job is queued or running: stop it first" if running or queued else None)
+    says = [f"Its photos, videos, people masks, log{' and harvest record' if proj['kind'] in ('harvest', 'boulder') else ''} are "
+            "deleted, for good."]
+    made = q("SELECT COUNT(*) AS n FROM meshes WHERE source=?", f"project:{pid}", one=True)["n"]
+    if made:
+        says.append(("The mesh made from it stays, with what was found of its size and beta, but can't be rebuilt, retextured, "
+                     "or have its" if made == 1 else f"The {made} meshes made from it stay, with what was found of their size and "
+                     "beta, but can't be rebuilt, retextured, or have their") + " size or beta found again, which use its photos.")
+    own = _area_items("ci.project_id=?", pid)
+    for i in own:
+        first, what = redo_head(i["redo"]), f"In {i['area']}, {i['name']}"
+        if i["status"] in ("done", "skipped", "failed"):
+            says.append(f"{what} stays {ITEM_STATES[i['status']]}{', with its mesh' if i['mesh_id'] else ''}. The area's Harvest "
+                        "again and Rebuild leave it out from then on, with no harvest of it to go by.")
+        elif first == "cluster":
+            says.append(f"{what} is still queued to {REDO_NAMES['cluster']}, which goes without its photos.")
+        elif first in MESHES_FOR:
+            says.append(f"{what} is still queued to {REDO_NAMES[first]}, which harvests it again first.")
+        elif i["mesh_id"] and first in OWN_REDOS:
+            says.append(f"{what} isn't to {REDO_NAMES.get(i['redo'], first)} after all: it stays "
+                        f"{ITEM_STATES.get(i['was']) or 'meshed'}, with the mesh it has.")
+        else:
+            says.append(f"{what} is harvested again from the start, in a new project, when the area gets to it"
+                        + (", once you resume it" if i["paused"] else "")
+                        + ("; its boulder's mesh waits for that" if i["status"] == "harvested" else "") + ".")
+    if proj["kind"] == "harvest":   # pooled in a boulder's or group's mesh
+        climb = ((q("SELECT name FROM climbs WHERE id=?", proj["climb_id"], one=True) or {}).get("name")
+                 or next((i["name"] for i in own), "its climb"))
+        for b in q("SELECT id, name, boulder FROM projects WHERE kind='boulder' AND boulder IS NOT NULL"):
+            try:
+                rec = json.loads((PROJECTS / b["id"] / CLIMBS_FILE).read_text())
+                pooled = any(pid in (c.get("projects") or []) for c in rec.get("climbs") or [])
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+            if pooled and not is_rest(b["boulder"]):
+                says.append(f"Its photos are pooled in the mesh of {mesh_name(b['name'])}, which stays. "
+                            + ("Meshing that group again goes without them." if is_pool(b["boulder"])
+                               else f"Meshing that boulder again harvests {climb} again first."))
+    if proj["kind"] == "boulder" and proj["boulder"]:
+        says.append("The climbs' own harvests it pooled stay as they are. Meshing it again pools them again, in a new project; "
+                    "meanwhile an area that gets to one of its climbs meshes it again, as it can't tell its mesh was made "
+                    "from the same photos.")
+        if proj["mesh_id"] and load_rest(proj["mesh_id"]):
+            says.append("What its mesh left out can't be meshed apart again, as that's made from its photos.")
+        for i in work:
+            if i["status"] == "pending":
+                says.append(f"In {i['area']}, {i['name']}'s queued {REDO_NAMES.get(i['redo'], 'meshing')} starts over, in a new project.")
+    return {"stop": {"says": stop, "blocked": None if stop else "nothing of it is queued or running"},
+            "delete": {"says": says, "blocked": blocked}}
+
+
+def delete_project(pid: str) -> tuple[dict, int]:
+    """Delete a project and all in it (the Projects tab's ✕, which says first what that does: project_effects()), but
+    not while its job, or an area's climb in it, is queued or running. An area's climb whose own harvest it was no
+    longer has one: one finished keeps its status and mesh; one queued to mesh its boulder or group still is; one with
+    a mesh already queued to do something again in this project (OWN_REDOS) doesn't, keeping that mesh; and any other
+    is harvested again from the start when its area gets to it.
+
+    Returns:
+        The response, and its HTTP status.
+    """
+    fx = project_effects(pid)
+    if fx is None:
+        return {"error": "not found"}, 404
+    if fx["delete"]["blocked"]:
+        return {"error": f"Not deleted: {fx['delete']['blocked']}."}, 409
+    for i in _area_items("ci.project_id=?", pid):
+        first, at = redo_head(i["redo"]), (i["campaign_id"], i["source_id"])
+        if i["status"] in ("done", "skipped", "failed") or first in MESHES_FOR:
+            set_item(*at, project_id=None)
+        elif i["mesh_id"] and first in OWN_REDOS:
+            set_item(*at, status=i["was"] if i["was"] in ("done", "skipped", "failed") else "done", project_id=None, redo=None,
+                     retry=0, redo_started=0, changed=0, waiting_since=None,
+                     note=f"its project was deleted, so it wasn't to {REDO_NAMES.get(i['redo'], first)} after all")
+        else:
+            set_item(*at, status="pending", project_id=None, redo=None, was=None, retry=0, redo_started=0, changed=0, waiting_since=None,
+                     note="its project was deleted: harvested again from the start")
+    q("DELETE FROM projects WHERE id=?", pid, write=True)
+    q("DELETE FROM offloads WHERE path LIKE ?", f"projects/{pid}/%", write=True)     # nothing there to bring back
+    shutil.rmtree(PROJECTS / pid, ignore_errors=True)
+    return {"deleted": pid}, 200
 
 
 def run_retry(pid: str) -> None:
@@ -6340,7 +6509,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(deploy_state())
             # ---- projects
             if p == "/api/projects":
-                return self.send_json(q("SELECT id,name,created,status,mesh_id,demo,kind,climb_id FROM projects ORDER BY created DESC"))
+                rows, areas = q("SELECT id,name,created,status,mesh_id,demo,kind,climb_id FROM projects ORDER BY created DESC"), project_areas()
+                for r in rows:
+                    if r["id"] in areas:
+                        r["areas"] = areas[r["id"]]
+                return self.send_json(rows)
+            m = re.fullmatch(r"/api/projects/([0-9a-f]+)/effects", p)
+            if m:   # what stopping or deleting it would do, to say first
+                fx = project_effects(m[1])
+                return self.send_json(fx) if fx else self.send_json({"error": "not found"}, 404)
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)", p)
             if m:
                 proj = q("SELECT * FROM projects WHERE id=?", m[1], one=True)
@@ -7098,9 +7275,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"deleted": m[1]})
         m = re.fullmatch(r"/api/projects/([0-9a-f]+)", p)
         if m:
-            q("DELETE FROM projects WHERE id=?", m[1], write=True)
-            shutil.rmtree(PROJECTS / m[1], ignore_errors=True)
-            return self.send_json({"deleted": m[1]})
+            return self.send_json(*delete_project(m[1]))
         m = re.fullmatch(r"/api/climbs/([0-9a-f]+)", p)
         if m:
             q("DELETE FROM climbs WHERE id=?", m[1], write=True)

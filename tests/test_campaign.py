@@ -492,10 +492,15 @@ for bad, error in ((sid["Alpha"], ValueError), ("nope", KeyError)):
         raise AssertionError(bad)
     except error:
         pass
-server.init_db()        # a restart
+stop_worker.set()       # a restart, with no worker on anything meanwhile
+t.join(5)
+server.init_db()
 assert items(c["id"])["Beta"]["paused"] and server.campaign_status(c["id"]) == "running", "still paused"
 outcome.clear()
 server.pause_item(c["id"], sid["Beta"], False)
+stop_worker = threading.Event()
+t = threading.Thread(target=loop, daemon=True)
+t.start()
 for _ in range(500):
     if server.campaign_status(c["id"]) == "done":
         break
@@ -689,9 +694,13 @@ assert json.loads(server.q("SELECT job FROM projects WHERE id=?", ran, one=True)
 server._workers.remove(stopper)
 assert server.retry_project(ran)[1] == 202 and server.jobs.get_nowait()["resume"] is True, "carries on from where it got to"
 server.q("UPDATE projects SET status='harvesting' WHERE id=?", ran, write=True)
-server.q("INSERT INTO campaign_items(campaign_id, source_id, project_id, status) VALUES('s1', 's1', ?, 'running')", ran, write=True)
-assert server.stop_project(ran)[1] == 409, "an area's climb is paused on the Areas tab"
+server.q("INSERT INTO campaigns(id, name, status, created) VALUES('s1', 'Some Area', 'running', 0)", write=True)
+server.q("INSERT INTO campaign_items(campaign_id, source_id, name, project_id, status) VALUES('s1', 's1', 'Some Climb', ?, 'running')", ran,
+         write=True)
+assert server.stop_project(ran) == ({"paused": [{"area": "Some Area", "climb": "Some Climb"}]}, 200), "an area's climb: paused there"
+assert server.q("SELECT paused FROM campaign_items WHERE campaign_id='s1'", one=True)["paused"]
 server.q("DELETE FROM campaign_items WHERE campaign_id='s1'", write=True)
+server.q("DELETE FROM campaigns WHERE id='s1'", write=True)
 
 # a stop waits for a job outside an area that looks like finishing in time, but not for one that doesn't
 w = server.Worker("this server 2")
@@ -2210,6 +2219,79 @@ assert got[1]["typical"] == 99, "too few runs of as many photos: of any"
 assert server.with_typicals({"overall": 0, "steps": [dict(s) for s in steps]}, None)["steps"][1]["typical"] == 99
 server._typicals["at"] = 0
 print("how long steps usually take OK")
+
+# --- the Projects tab: which area a project was made for, and what stopping or deleting it does to that area's climb,
+# said first; deleting leaves the climb something it can carry on with
+fresh()
+c = server.create_campaign("", "popularity", CSV)
+area = server.q("SELECT name FROM campaigns WHERE id=?", c["id"], one=True)["name"]
+rows = items(c["id"])
+
+
+def made_project(name: str, kind: str = "harvest", status: str = "done", **extra) -> str:
+    pid = server.new_id()
+    (server.PROJECTS / pid / "photos").mkdir(parents=True)
+    server.q("INSERT INTO projects(id,name,created,kind,status,harvest,boulder) VALUES(?,?,?,?,?,?,?)", pid, name, time.time(), kind, status,
+             json.dumps({"images": 20}), extra.get("boulder"), write=True)
+    return pid
+
+
+def set_climb(name: str, **fields) -> None:
+    server.set_item(c["id"], rows[name]["source_id"], **fields)
+
+
+pa, pb, pg, pa2, pd = (made_project(f"{n} (harvest)") for n in ("Alpha", "Beta", "Gamma", "Alpha2", "Delta"))
+server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES('ma','Alpha','mesh.glb',?,0)", f"project:{pa}", write=True)
+server.q("INSERT INTO climbs(id,source,source_id,url,name,created) VALUES('ca','mountainproject','1','https://x/1','Alpha',0)", write=True)
+server.q("UPDATE projects SET climb_id='ca' WHERE id=?", pa, write=True)
+set_climb("Alpha", status="done", project_id=pa, mesh_id="ma")
+set_climb("Beta", status="pending", project_id=pb, paused=time.time())
+set_climb("Gamma", status="running", project_id=pg)
+set_climb("Alpha2", status="pending", project_id=pa2, mesh_id="ma2", redo="more+rebuild", was="done", retry=1)
+set_climb("Delta", status="harvested", project_id=pd)
+alpha_boulder, delta_boulder = rows["Alpha"]["boulder"], rows["Delta"]["boulder"]
+pbo = made_project("Alpha Boulder (boulder)", "boulder", boulder=alpha_boulder)
+(server.PROJECTS / pbo / server.CLIMBS_FILE).write_text(json.dumps({"climbs": [{"id": "x", "projects": [pa]}], "created": 0}))
+pdb = made_project("Delta Boulders (boulder)", "boulder", status="new", boulder=delta_boulder)
+set_climb("Delta2", status="pending", redo="boulder", was="harvested", retry=1)
+listed = server.project_areas()
+assert listed[pa] == [{"id": c["id"], "name": area, "kind": "climb", "climb": "Alpha", "status": "done", "paused": False}], listed[pa]
+assert listed[pb][0]["paused"] and listed[pbo] == [{"id": c["id"], "name": area, "kind": "boulder", "climbs": 2}], listed[pbo]
+fx = server.project_effects(pg)
+assert "Gamma is in progress" in fx["delete"]["blocked"] and "Gamma is paused: the area goes on" in fx["stop"]["says"][0], fx
+assert server.delete_project(pg)[1] == 409 and (server.PROJECTS / pg).is_dir(), "not while it's being worked on"
+says = " ".join(server.project_effects(pa)["delete"]["says"])
+assert "Alpha stays meshed, with its mesh" in says and "The mesh made from it stays" in says, says
+assert "pooled in the mesh of Alpha Boulder" in says and "harvests Alpha again first" in says, says
+assert "isn't to add what volunteers fetched and rebuild after all" in " ".join(server.project_effects(pa2)["delete"]["says"])
+assert "Beta is harvested again from the start, in a new project, when the area gets to it, once you resume it" in \
+    " ".join(server.project_effects(pb)["delete"]["says"])
+assert server.project_effects(pb)["stop"]["blocked"], "paused already, and no job"
+fx = server.project_effects(pdb)
+assert "Delta2's queued mesh its boulder from every climb's photos starts over" in " ".join(fx["delete"]["says"]), fx
+assert "Delta2 is paused before the area gets to it" in fx["stop"]["says"][0], fx
+for pid in (pa, pb, pa2, pd):
+    assert server.delete_project(pid) == ({"deleted": pid}, 200) and not (server.PROJECTS / pid).exists()
+got = items(c["id"])
+assert (got["Alpha"]["status"], got["Alpha"]["mesh_id"], got["Alpha"]["project_id"]) == ("done", "ma", None), got["Alpha"]
+assert server.q("SELECT id FROM meshes WHERE id='ma'"), "its mesh stays"
+assert (got["Beta"]["status"], got["Beta"]["project_id"]) == ("pending", None) and got["Beta"]["paused"], "still paused, to start over"
+assert (got["Alpha2"]["status"], got["Alpha2"]["redo"], got["Alpha2"]["mesh_id"]) == ("done", None, "ma2"), got["Alpha2"]
+assert (got["Delta"]["status"], got["Delta"]["project_id"], got["Delta"]["note"]) == \
+    ("pending", None, "its project was deleted: harvested again from the start"), got["Delta"]
+assert server.stop_project(pdb) == ({"paused": [{"area": area, "climb": "Delta2"}]}, 200)
+pb2 = made_project("Beta (harvest)", status="stopped")
+(server.PROJECTS / pb2 / "photos" / "a.jpg").write_bytes(b"x")
+set_climb("Beta", project_id=pb2)
+assert server.retry_project(pb2)[1] == 202 and not items(c["id"])["Beta"]["paused"], "Retry on its project resumes it"
+# a job outside areas: stopping takes it out of the queue; deleting waits for that
+mine = made_project("Mine", "user", status="queued")
+server.queue_job({"type": "reconstruct", "pid": mine})
+assert server.project_effects(mine)["stop"]["says"] == ["It leaves the queue, and Retry queues it again."]
+assert "queued or running" in server.delete_project(mine)[0]["error"]
+assert server.stop_project(mine)[1] == 200 and server.delete_project(mine)[1] == 200
+assert server.delete_project(mine)[1] == 404
+print("the Projects tab's areas, and stopping or deleting OK")
 
 # --- beta found in each new mesh with video frames placed in it; kept videos beta can't use, deleted once settled ------
 fresh()
