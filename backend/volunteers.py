@@ -16,6 +16,7 @@ app (option B in design.md), or through an SSH tunnel to another server (option 
 """
 from __future__ import annotations
 
+import html
 import ipaddress
 import json
 import re
@@ -730,6 +731,18 @@ def script_fetch(handler: BaseHTTPRequestHandler) -> dict:
             "headers": {k.lower(): v for k, v in handler.headers.items() if k.lower().startswith("cf-ip") or k.lower().startswith("cf-region")}}
 
 
+# What a computer without an NVIDIA GPU does for the site (the worker script's CPU_TASKS, by remote_job.py's --task):
+# the volunteer page's Compute helper says each, so keep it in step with them (tests/test_volunteers.py checks).
+HELPER_JOBS = {"filter": "sorts each climb's photos from the web into those that show its boulder and those that don't"}
+
+
+def helper_jobs_text() -> str:
+    """The Compute helper button's second line: what it does, from HELPER_JOBS."""
+    jobs = list(HELPER_JOBS.values())
+    text = jobs[0] if len(jobs) == 1 else "; ".join(jobs[:-1]) + "; and " + jobs[-1]
+    return text[0].upper() + text[1:] + ", in Docker, on Linux, a Mac or Windows."
+
+
 COPY_ICON = ('<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" '
              'stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/>'
              '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>')
@@ -751,6 +764,11 @@ code{background:var(--code);padding:1px 4px;border-radius:3px}
   font-weight:600;line-height:1.3}
 .choose a small{display:block;font-weight:400;font-size:.8em;color:var(--mute);margin-top:4px}
 .choose a.on{background:var(--acc);color:var(--acc-fg)} .choose a.on small{color:inherit;opacity:.85}
+@media (max-width:560px){.choose .req{display:block}}   /* on a phone, a button's requirements on a line of their own */
+.tabs{display:flex;flex-wrap:wrap;gap:6px;margin:.8em 0 .4em;border-bottom:1px solid var(--line);padding-bottom:6px}
+.tabs button{font:inherit;padding:5px 12px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;cursor:pointer}
+.tabs button.on{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}
+.os{display:none} .os.on{display:block}
 section{display:none} section.on{display:block}
 .box{position:relative;margin:6px 0 10px}
 .box pre{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:10px 46px 10px 12px;margin:0;
@@ -764,12 +782,13 @@ ul{padding-left:1.2em} li{margin:.2em 0}
 </style>
 <a class="lead" href="/volunteer/leaderboard" title="Who has fetched the most videos, and whose computers have made the most meshes">Leaderboard</a>
 <h1>Volunteer for BoulderMesh</h1>
-<p>BoulderMesh makes 3D models of boulders from photos and climbing videos. You can help from your own computer in two
-ways now: either script makes a token for you, asks your name (shown on the leaderboard; you can leave it out), and registers itself with this
-site, and whoever runs it then approves it. A third way, collecting data yourself, is coming soon.</p>
+<p>BoulderMesh makes 3D models of boulders from photos and climbing videos. You can help from your own computer in three
+ways now: each script makes a token for you, asks your name (shown on the leaderboard; you can leave it out), and registers itself with this
+site, and whoever runs it then approves it. A fourth way, collecting data yourself, is coming soon.</p>
 <div class="choose">
   <a href="#videos" data-show="videos">Collect videos<small>Fetch YouTube videos of climbs from your address, slowly. Python is all it needs.</small></a>
-  <a href="#compute" data-show="compute">Compute meshes<small>Turn climbs' photos into 3D models on your computer's GPU, in Docker, or on Linux without one, sort which photos show the climb.</small></a>
+  <a href="#compute" data-show="compute">Compute meshes <span class="req">(requires Linux + GPU)</span><small>Turn climbs' photos into 3D models on your computer's NVIDIA GPU, in Docker.</small></a>
+  <a href="#helper" data-show="helper">Compute helper <span class="req">(all platforms; CPU only)</span><small>{helper_jobs}</small></a>
   <a href="#data" data-show="data">Data collection<small>Coming soon: your own photos and videos, and photos to scale and orient meshes.</small></a>
 </div>
 
@@ -812,11 +831,7 @@ below inside it. A Mac won't do: it has no NVIDIA GPU, and Docker on a Mac can't
 script keeps its jobs and the models they download, which <code>--data</code> can put on another disk.</li>
 <li><b>Internet:</b> a climb's photos are 50 to 300 MB down, and its mesh 20 to 60 MB up.</li>
 </ul>
-<p><b>No NVIDIA GPU?</b> A Linux computer with Docker (usable without sudo) and Python 3.9 or newer can still help: the
-same script, on a computer without one, only sorts each climb's web photos into those that show it and those that
-don't, much of the work before meshing. That needs about 4 GB of memory free, 5 GB where Docker keeps its
-images and 2 GB for jobs, and a climb's photos (50 to 300 MB) down at a time. It takes no jobs until whoever runs
-this site approves it.</p>
+<p><b>No NVIDIA GPU, or not Linux?</b> See <a href="#helper">Compute helper</a>: the same script helps without one.</p>
 <h3>1. Get the script</h3>
 <div class="box"><pre>curl -O {base}/worker/bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
 <p><a href="/worker/bouldermesh_worker.py" download="bouldermesh_worker.py">Or download it here</a>.</p>
@@ -856,6 +871,143 @@ loginctl enable-linger "$USER"</pre><button class="copy" title="Copy" aria-label
 <code>systemctl --user disable --now bouldermesh-worker</code> stops it for good.</p>
 </section>
 
+<section id="helper">
+<h2>Help as a compute helper</h2>
+<p>The same script as for meshes, on a computer without an NVIDIA GPU, does the work for meshes that
+needs only a processor: it {helper_list}. It runs in this site's small Docker image for it (about 1.7 GB, for Intel and AMD
+processors and for Apple Silicon), one job at a time, each a few minutes. Only your computer connects out, over HTTPS;
+nothing needs to reach it. Ctrl-C stops it, and the job goes to another computer. It takes no jobs until whoever runs
+this site approves it, as what it keeps is what gets meshed.</p>
+<p>Wherever it runs, it needs about <b>4 GB of memory</b> free for Docker, <b>5 GB of disk</b> where Docker keeps its
+images and 2 GB for jobs, and a climb's photos (50 to 300 MB) down for each job.</p>
+<div class="tabs" role="tablist">
+  <button data-os="linux" role="tab">Linux</button>
+  <button data-os="mac" role="tab">Mac</button>
+  <button data-os="windows" role="tab">Windows</button>
+</div>
+
+<div class="os" data-os="linux">
+<h3>What it needs</h3>
+<ul>
+<li>Docker, usable without sudo (in the <code>docker</code> group), and Python 3.9 or newer. On Debian or Ubuntu, step 2
+offers to install what's missing.</li>
+</ul>
+<h3>1. Get the script</h3>
+<div class="box"><pre>curl -O {base}/worker/bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<h3>2. On Debian or Ubuntu, install what's missing</h3>
+<div class="box"><pre>python3 bouldermesh_worker.py --setup</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p>It shows each step's commands and runs them only if you say so. Joining the <code>docker</code> group takes effect
+when you log in again.</p>
+<h3>3. Check it can work</h3>
+<div class="box"><pre>python3 bouldermesh_worker.py --server {base} --check</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p>The first time, it makes this computer's token, asks your name (optional) and registers with this site. It says
+whether it's approved yet and whether there's room. With an NVIDIA GPU it would mesh too: add <code>--tasks filter --gpu
+none</code> to only help this way. <code>--cpus N</code> limits the cores jobs use. It remembers them all.</p>
+<h3>4. Run it</h3>
+<div class="box"><pre>python3 bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<h3>Optional: start it by itself, whenever the computer starts</h3>
+<div class="box"><pre>mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/bouldermesh-worker.service &lt;&lt;'EOF'
+[Unit]
+Description=BoulderMesh: compute helper for {base}
+
+[Service]
+ExecStart=/usr/bin/python3 %h/bouldermesh_worker.py
+Restart=always
+RestartSec=60
+RestartPreventExitStatus=3
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now bouldermesh-worker
+loginctl enable-linger "$USER"</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p><code>journalctl --user -u bouldermesh-worker -f</code> shows what it's doing, and
+<code>systemctl --user disable --now bouldermesh-worker</code> stops it for good.</p>
+</div>
+
+<div class="os" data-os="mac">
+<h3>What it needs</h3>
+<ul>
+<li>A Mac with Apple Silicon (M1 or newer) or an Intel processor.</li>
+<li><b>Docker:</b> <a href="https://docs.docker.com/desktop/setup/install/mac-install/">Docker Desktop</a> (free for
+personal use), or OrbStack or Colima. In Docker Desktop's Settings, under Resources, give it at least 4 GB of memory, and
+under General, start it when you sign in, if you'd like the script to run then too. A Mac's own GPU can't be used from
+Docker, so a Mac helps this way only.</li>
+<li><b>Python 3.9 or newer:</b> <code>python3 --version</code> in Terminal says; if it offers to install the command line
+developer tools, say yes, or install Python from <a href="https://www.python.org/downloads/macos/">python.org</a>.</li>
+</ul>
+<h3>1. Get the script</h3>
+<p>In Terminal (Applications, Utilities):</p>
+<div class="box"><pre>curl -O {base}/worker/bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<h3>2. Check it can work</h3>
+<p>With Docker running:</p>
+<div class="box"><pre>python3 bouldermesh_worker.py --server {base} --check</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p>The first time, it makes this computer's token, asks your name (optional) and registers with this site. It says
+whether it's approved yet. <code>--cpus N</code> limits the cores jobs use. It remembers them all.</p>
+<h3>3. Run it</h3>
+<div class="box"><pre>python3 bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<h3>Optional: start it by itself, whenever you sign in</h3>
+<p>As a launch agent of your own, with the script left in your home folder:</p>
+<div class="box"><pre>mkdir -p ~/Library/LaunchAgents
+cat > ~/Library/LaunchAgents/sh.boulderme.worker.plist &lt;&lt;EOF
+&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1.0"&gt;&lt;dict&gt;
+  &lt;key&gt;Label&lt;/key&gt;&lt;string&gt;sh.boulderme.worker&lt;/string&gt;
+  &lt;key&gt;ProgramArguments&lt;/key&gt;&lt;array&gt;
+    &lt;string&gt;$(command -v python3)&lt;/string&gt;&lt;string&gt;$HOME/bouldermesh_worker.py&lt;/string&gt;
+  &lt;/array&gt;
+  &lt;key&gt;EnvironmentVariables&lt;/key&gt;&lt;dict&gt;
+    &lt;key&gt;PATH&lt;/key&gt;&lt;string&gt;/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.orbstack/bin&lt;/string&gt;
+  &lt;/dict&gt;
+  &lt;key&gt;RunAtLoad&lt;/key&gt;&lt;true/&gt;
+  &lt;key&gt;KeepAlive&lt;/key&gt;&lt;true/&gt;
+  &lt;key&gt;ThrottleInterval&lt;/key&gt;&lt;integer&gt;60&lt;/integer&gt;
+  &lt;key&gt;StandardOutPath&lt;/key&gt;&lt;string&gt;$HOME/Library/Logs/bouldermesh-worker.log&lt;/string&gt;
+  &lt;key&gt;StandardErrorPath&lt;/key&gt;&lt;string&gt;$HOME/Library/Logs/bouldermesh-worker.log&lt;/string&gt;
+&lt;/dict&gt;&lt;/plist&gt;
+EOF
+launchctl load -w ~/Library/LaunchAgents/sh.boulderme.worker.plist</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p><code>tail -f ~/Library/Logs/bouldermesh-worker.log</code> shows what it's doing, and
+<code>launchctl unload -w ~/Library/LaunchAgents/sh.boulderme.worker.plist</code> stops it for good. It waits while
+Docker isn't running, and carries on once it is.</p>
+</div>
+
+<div class="os" data-os="windows">
+<h3>What it needs</h3>
+<ul>
+<li>Windows 10 (version 2004 or newer) or 11, with <b>WSL 2</b>: Linux in Windows, where the script runs. In PowerShell
+as administrator, <code>wsl --install</code> installs it with Ubuntu, and asks you to restart; then open Ubuntu from the
+Start menu once, to make its user.</li>
+<li><b>Docker:</b> <a href="https://docs.docker.com/desktop/setup/install/windows-install/">Docker Desktop</a> (free for
+personal use), using WSL 2, with Settings, Resources, WSL integration turned on for Ubuntu. Or, without Docker Desktop,
+step 2 below installs Docker inside Ubuntu itself.</li>
+</ul>
+<p>Everything below is typed in the Ubuntu window, not in PowerShell.</p>
+<h3>1. Get the script</h3>
+<div class="box"><pre>cd ~ &amp;&amp; curl -O {base}/worker/bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<h3>2. Without Docker Desktop: install Docker in Ubuntu</h3>
+<div class="box"><pre>python3 bouldermesh_worker.py --setup</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p>It asks before each step. Afterwards, close the Ubuntu window and open it again, for the <code>docker</code> group to
+take effect.</p>
+<h3>3. Check it can work</h3>
+<div class="box"><pre>python3 bouldermesh_worker.py --server {base} --check</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p>The first time, it makes this computer's token, asks your name (optional) and registers with this site. It says
+whether it's approved yet. <code>--cpus N</code> limits the cores jobs use. It remembers them all.</p>
+<h3>4. Run it</h3>
+<div class="box"><pre>python3 bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p>It runs while the Ubuntu window stays open.</p>
+<h3>Optional: start it by itself, whenever you sign in</h3>
+<p>In PowerShell (not as administrator), once:</p>
+<div class="box"><pre>$a = New-ScheduledTaskAction -Execute "wsl.exe" -Argument "-d Ubuntu -- bash -lc 'python3 ~/bouldermesh_worker.py >> ~/bouldermesh-worker.log 2>&amp;1'"
+Register-ScheduledTask -TaskName "BoulderMesh compute helper" -Action $a -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME)</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
+<p><code>tail -f ~/bouldermesh-worker.log</code> in Ubuntu shows what it's doing, and
+<code>Unregister-ScheduledTask -TaskName "BoulderMesh compute helper"</code> in PowerShell stops it starting.</p>
+</div>
+</section>
+
 <section id="data">
 <h2>Data collection</h2>
 <p>Coming soon:</p>
@@ -875,13 +1027,20 @@ for (const b of document.querySelectorAll('.copy')) b.onclick = async () => {
   b.classList.add('done'); b.title = 'Copied';
   setTimeout(() => { b.classList.remove('done'); b.title = 'Copy'; }, 1500);
 };
-// the two ways to help: one shows at a time, from the buttons or the address's #videos or #compute
+// the ways to help: one shows at a time, from the buttons or the address's #videos, #compute or #helper
 function show(which){
   for (const s of document.querySelectorAll('section')) s.classList.toggle('on', s.id === which);
   for (const a of document.querySelectorAll('.choose a')) a.classList.toggle('on', a.dataset.show === which);
 }
 addEventListener('hashchange', () => show(location.hash.slice(1)));
 show(location.hash.slice(1));
+// the compute helper's instructions for one system at a time: this computer's, to start with
+function showOs(os){
+  for (const b of document.querySelectorAll('.tabs button')) b.classList.toggle('on', b.dataset.os === os);
+  for (const d of document.querySelectorAll('.os')) d.classList.toggle('on', d.dataset.os === os);
+}
+for (const b of document.querySelectorAll('.tabs button')) b.onclick = () => showOs(b.dataset.os);
+showOs(/Mac/.test(navigator.platform || navigator.userAgent) ? 'mac' : /Win/.test(navigator.platform || navigator.userAgent) ? 'windows' : 'linux');
 </script>
 """
 
@@ -967,7 +1126,9 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
             u = urlparse(self.path)
             base = f"https://{self.headers.get('X-Forwarded-Host') or self.headers.get('Host') or 'this-site'}"
             if u.path in ("/volunteer", "/volunteer/"):
-                return self.send(200, PAGE.replace("{base}", base).replace("{icon}", COPY_ICON).encode(), "text/html; charset=utf-8")
+                page = PAGE.replace("{helper_jobs}", html.escape(helper_jobs_text()))
+                page = page.replace("{helper_list}", html.escape("; ".join(HELPER_JOBS.values())))
+                return self.send(200, page.replace("{base}", base).replace("{icon}", COPY_ICON).encode(), "text/html; charset=utf-8")
             if u.path in ("/volunteer/leaderboard", "/volunteer/leaderboard/"):
                 return self.send(200, LEADERBOARD_PAGE.encode(), "text/html; charset=utf-8")
             if u.path == "/volunteer/api/leaderboard":     # anyone's to see, worked out at most once a LEADERBOARD_CACHE

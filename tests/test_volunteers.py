@@ -330,6 +330,12 @@ def script_and_broker() -> None:
         assert st == 200 and b"bouldermesh_volunteer.py" in page
         assert b"Help compute meshes" in page and b"/worker/bouldermesh_worker.py" in page, "both ways to help, on one page"
         assert b'data-show="data">Data collection' in page and b"Coming soon" in page and b">Help collect videos<" not in page.split(b"<section")[0]
+        # the compute helper: what it does, from HELPER_JOBS, which says each kind of job the worker script takes without a GPU
+        worker_cpu = re.search(r'^CPU_TASKS = \(([^)]*)\)', (ROOT / "worker" / "bouldermesh_worker.py").read_text(), re.M)[1]
+        assert set(volunteers.HELPER_JOBS) == set(re.findall(r'"(\w+)"', worker_cpu)), "the page says what a CPU-only worker does"
+        assert b'(requires Linux + GPU)</span>' in page and b'(all platforms; CPU only)</span>' in page
+        assert volunteers.html.escape(volunteers.helper_jobs_text()).encode() in page and b"{helper" not in page
+        assert all(f'data-os="{os}"'.encode() in page for os in ("linux", "mac", "windows")), "a tab for each system"
         fetched_by = []
         b.downloaded = fetched_by.append
         req = urllib.request.Request(base + "/volunteer/bouldermesh_volunteer.py", headers={"User-Agent": "curl/8.5.0", "X-Real-IP": "203.0.113.50",
