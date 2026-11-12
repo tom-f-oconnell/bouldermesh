@@ -552,7 +552,8 @@ can't carry on by themselves. So when it's stopped, the server takes no new work
 minutes for those jobs, if they look like finishing by then. Its log and the top of the page say what it's
 waiting for, and stopping it again stops it at once. Projects it doesn't wait for come back *interrupted*,
 not failed: *Retry*, or *Retry N interrupted* on the *Projects* tab, carries on with each from the last step
-it finished, as it was asked for. To see what a restart would interrupt now:
+it finished, as it was asked for. Those still queued, not started, are queued again as the server starts, in the
+order they were (deploy.sh lists them as "queued again after"). To see what a restart would interrupt now:
 
     python3 cli.py jobs                         # exits 1 if a restart would interrupt anything
 

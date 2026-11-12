@@ -547,7 +547,8 @@ got = items(c["id"])
 assert harvested == ["Alpha"] and got["Alpha"]["status"] == "done" and got["Alpha"]["project_id"] != "gone", got["Alpha"]
 print("restart OK")
 
-# --- jobs started outside areas: a restart marks them interrupted, not failed, and Retry runs them again
+# --- jobs started outside areas: a restart marks one that had started interrupted, not failed, and Retry runs it again;
+# one still waiting stays queued, and is queued again as the server starts, in the order they were
 fresh()
 
 
@@ -563,22 +564,35 @@ def own_project(status: str, job: dict | None = None) -> str:
 
 
 ran = own_project("running", {"type": "reconstruct", "internet": False})
-waited = own_project("queued", {"type": "reconstruct", "internet": False})
+waited = own_project("queued", {"type": "boulder"})
+later = own_project("queued", {"type": "reconstruct", "internet": True})
+old = own_project("queued")     # from before jobs were recorded
 st = server.jobs_state()
-assert [j["name"] for j in st["queued"]] == ["mine running", "mine queued"] and st["running"] == [] and st["stopping"] is None, st
+assert [j["name"] for j in st["queued"]] == ["mine running", "mine queued", "mine queued"] and st["running"] == [] and st["stopping"] is None, st
+queued_items = [(i["what"], i["costly"], i["lost"]) for i in server.deploy_state()["items"]]
+assert queued_items == [("reconstruct, queued", False, "queued again after"), ("boulder, queued", False, "queued again after"),
+                        ("reconstruct, queued", False, "queued again after")], queued_items
 with server.jobs.mutex:
     server.jobs.queue.clear()     # lost with the restart
 server.init_db()
-for pid, when in ((ran, "during this job"), (waited, "before this job started")):
-    row = server.q("SELECT status, job FROM projects WHERE id=?", pid, one=True)
-    assert row["status"] == "interrupted" and when in server.last_failure(pid, "INTERRUPTED: "), (row, server.read_log(pid))
+row = server.q("SELECT status, job FROM projects WHERE id=?", ran, one=True)
+assert row["status"] == "interrupted" and "during this job" in server.last_failure(ran, "INTERRUPTED: "), (row, server.read_log(ran))
+assert server.q("SELECT status FROM projects WHERE id=?", old, one=True)["status"] == "interrupted", "no job recorded: Retry runs it"
+assert [server.q("SELECT status FROM projects WHERE id=?", p, one=True)["status"] for p in (waited, later)] == ["queued", "queued"]
+assert server.requeue_waiting() == 2 and server.requeue_waiting() == 0, "once"
+with server.jobs.mutex:
+    again = list(server.jobs.queue)
+    server.jobs.queue.clear()
+assert again == [{"type": "boulder", "pid": waited}, {"type": "reconstruct", "internet": True, "pid": later}], "in the order they were asked for"
+assert "queued again, as it was" in server.read_log(waited)
 assert json.loads(server.q("SELECT job FROM projects WHERE id=?", ran, one=True)["job"])["resume"], "it had started: Retry carries on with it"
+server.q("UPDATE projects SET status='interrupted' WHERE id=?", waited, write=True)
 assert server.retry_project(ran) == ({"queued": True}, 202) and server.retry_project(waited)[1] == 202
 with server.jobs.mutex:
     again = list(server.jobs.queue)
     server.jobs.queue.clear()
 assert again == [{"type": "reconstruct", "internet": False, "pid": ran, "resume": True},
-                 {"type": "reconstruct", "internet": False, "pid": waited}], "as they were asked for"
+                 {"type": "boulder", "pid": waited}], "as they were asked for"
 server.q("UPDATE projects SET status='failed' WHERE id=?", ran, write=True)
 assert server.retry_project(ran)[1] == 202 and server.jobs.queue[-1] == {"type": "retry", "pid": ran}, "a failure: tried again"
 with server.jobs.mutex:
@@ -1945,6 +1959,8 @@ print("beta with each new mesh, and pruning videos OK")
 
 # --- what a restart would cost, for deploy.sh: work in progress, what it would lose, about how long it has left -------
 fresh()
+with server.jobs.mutex:
+    server.jobs.queue.clear()     # what tests before left queued
 assert server.deploy_state() == {"draining": False, "items": [], "costly": 0, "eta": None}
 c = server.create_campaign("", "popularity", CSV, start=False)
 pid = "e1" * 6

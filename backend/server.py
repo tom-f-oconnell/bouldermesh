@@ -234,8 +234,9 @@ def init_db() -> None:
         cols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
         # job: the last job queued for it outside an area, to run again, as it was asked for, if a restart stops it;
         # boulder: for a boulder's project, the area path of its climbs (as climbs.area_path has it)
+        # job_at: when that job was queued, to queue again those a restart found waiting in the order they were
         for c, t in (("kind", "TEXT DEFAULT 'user'"), ("climb_id", "TEXT"), ("harvest", "TEXT"), ("progress", "TEXT"), ("job", "TEXT"),
-                     ("boulder", "TEXT")):
+                     ("boulder", "TEXT"), ("job_at", "REAL")):
             if c not in cols:
                 con.execute(f"ALTER TABLE projects ADD COLUMN {c} {t}")
         cols = {r[1] for r in con.execute("PRAGMA table_info(meshes)")}
@@ -309,13 +310,17 @@ def init_db() -> None:
                             (p["mesh_id"], "meshed with its boulder: " + r["note"].removeprefix("its boulder meshed from "),
                              r["campaign_id"], r["source_id"]))
         # A restart only pauses an area: its climb carries on from the last step it finished, and the
-        # area carries on by itself unless someone stopped it. Other jobs are lost, as their queue is, so
-        # they're marked interrupted, not failed: Retry carries on with one, or runs one that hadn't started.
+        # area carries on by itself unless someone stopped it. Other jobs are lost, as their queue is: one that had
+        # started is marked interrupted, not failed (Retry carries on with it); one still waiting stays queued, and is
+        # queued again as the server starts (requeue_waiting()), as it was asked for. One without its job recorded
+        # (from before jobs were) is interrupted, for Retry to run.
         con.execute("UPDATE projects SET status='stopped' WHERE id IN (SELECT project_id FROM campaign_items "
                     "WHERE status='running' OR (status='pending' AND retry=1 AND redo IS NULL))")
         con.execute("UPDATE campaign_items SET status='pending', note='interrupted by a restart: carrying on from where it got to' WHERE status='running'")
         con.execute("UPDATE campaigns SET status='stopped', note=NULL WHERE status='stopping'")
-        cut = con.execute("SELECT id, status, job FROM projects WHERE status IN ('queued','running','harvesting')").fetchall()
+        cut = con.execute("SELECT id, status, job FROM projects WHERE status IN ('queued','running','harvesting') "
+                          "AND NOT (status='queued' AND job IS NOT NULL)").fetchall()
+        waiting = con.execute("SELECT id FROM projects WHERE status='queued' AND job IS NOT NULL").fetchall()
         for r in cut:
             job = json.loads(r["job"]) if r["job"] else None
             if job and r["status"] != "queued":
@@ -325,6 +330,8 @@ def init_db() -> None:
     for r in cut:
         append_log(r["id"], "INTERRUPTED: the server restarted " + ("before this job started: Retry runs it" if r["status"] == "queued"
                                                                     else "during this job: Retry carries on from the last step it finished"))
+    for r in waiting:
+        append_log(r["id"], "-- the server restarted before this job started: it's queued again, as it was")
 
 
 def q(sql: str, *args, one=False, write=False):
@@ -1628,10 +1635,27 @@ jobs: "queue.Queue[dict]" = queue.Queue()
 
 def queue_job(job: dict) -> None:
     """Queue a job someone asked for, keeping a project's with the project, to run again as it was asked for
-    if a restart interrupts it."""
+    if a restart interrupts it, or to queue again after a restart if it hadn't started (requeue_waiting())."""
     if job.get("pid"):
-        q("UPDATE projects SET job=? WHERE id=?", json.dumps(job), job["pid"], write=True)
+        q("UPDATE projects SET job=?, job_at=? WHERE id=?", json.dumps(job), time.time(), job["pid"], write=True)
     jobs.put(job)
+
+
+def requeue_waiting() -> int:
+    """As the server starts: the jobs people asked for that a restart found still queued (init_db() leaves their
+    projects queued), queued again in the order they were. Returns how many."""
+    with jobs.mutex:
+        there = {j.get("pid") for j in jobs.queue}
+    n = 0
+    for r in q("SELECT id, job FROM projects WHERE status='queued' AND job IS NOT NULL ORDER BY COALESCE(job_at, created)"):
+        if r["id"] in there:
+            continue
+        try:
+            jobs.put(json.loads(r["job"]))
+            n += 1
+        except ValueError:
+            q("UPDATE projects SET status='interrupted' WHERE id=?", r["id"], write=True)
+    return n
 
 
 def append_log(pid: str, line: str) -> None:
@@ -5100,6 +5124,10 @@ def deploy_state() -> dict:
     if _beta_now and not beta_job:
         items.append({"what": "finding beta here", "name": beta_name, "costly": True, "elapsed": round(now - _beta_now["started"]),
                       "eta": None, "lost": "starts again after"})
+    for j in jobs_state(board)["queued"]:     # nothing done yet: a project's is queued again as the server starts
+        items.append({"what": f"{j['type']}, queued", "name": j["name"], "costly": False, "elapsed": None, "eta": None,
+                      "lost": "queued again after" if j.get("project_id") or j["type"] == "scale" else
+                      f"lost: {AGAIN[j['type']]} again" if j["type"] in AGAIN else "lost: ask for it again"})
     try:
         for t in VOLUNTEERS.q("SELECT t.id, t.video_id, t.size, v.name FROM tasks t LEFT JOIN volunteers v ON v.id=t.volunteer "
                               "WHERE t.state='assigned' AND t.kind='video'"):
@@ -7093,6 +7121,9 @@ def main() -> None:
     if settled:
         print(f"{settled} area climb(s) that failed as COLMAP placed too few photos now count as skipped, as they would now", flush=True)
     apply_settings()
+    again = requeue_waiting()
+    if again:
+        print(f"{plural(again, 'job')} people asked for, still waiting when the server stopped, queued again", flush=True)
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=reap_machines, daemon=True).start()
     threading.Thread(target=clean_existing_meshes, daemon=True).start()
