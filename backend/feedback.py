@@ -42,13 +42,14 @@ def clean(value: str, lines: bool = False) -> str:
 
 
 def parse(report: dict) -> dict | None:
-    """A comment as the form sent it, cleaned for keeping: {kind, message, contact, page}; None for one a bot sent (its
+    """A comment as the form sent it, cleaned for keeping: {kind, message, contact, page, mesh (the id of the
+    one in view, if it's shaped as one; the server checks there is one)}; None for one a bot sent (its
     hidden field filled in).
 
     Raises:
         ValueError: for one that isn't text, is empty once cleaned, or is longer than the form allows.
     """
-    for k in ("kind", "message", "contact", "page", HONEYPOT):
+    for k in ("kind", "message", "contact", "page", "mesh", HONEYPOT):
         if not isinstance(report.get(k, ""), str):
             raise ValueError(f"{k} is text")
     if report.get(HONEYPOT):
@@ -66,7 +67,8 @@ def parse(report: dict) -> dict | None:
         raise ValueError(f"kind is one of {', '.join(KINDS)}")
     page = clean(report.get("page", "")[:300])
     return {"kind": kind, "message": message, "contact": clean(contact) or None,
-            "page": page if re.fullmatch(r"/[^\s\"'<>\\]*", page) else None}     # the site's own path and #, or nothing
+            "page": page if re.fullmatch(r"/[^\s\"'<>\\]*", page) else None,      # the site's own path and #, or nothing
+            "mesh": report.get("mesh") if re.fullmatch(r"[0-9a-f]{1,40}", report.get("mesh", "")) else None}
 
 
 def keep(path: Path, line: dict) -> None:
@@ -94,7 +96,8 @@ def recent(path: Path, most: int = 30) -> dict:
 
 
 def note(line: dict) -> tuple[str, str]:
-    """A notification's title and plain text for a comment: its start, how to reach its sender, and the page it was on."""
+    """A notification's title and plain text for a comment: its start, the mesh it's about (mesh_name, if given), how to reach
+    its sender, and the page it was on."""
     text = line["message"] if len(line["message"]) <= NOTE_CHARS else line["message"][:NOTE_CHARS].rstrip() + "…"
-    more = [f"{label}: {line[k]}" for k, label in (("contact", "Reach them"), ("page", "Page")) if line.get(k)]
+    more = [f"{label}: {line[k]}" for k, label in (("mesh_name", "Mesh"), ("contact", "Reach them"), ("page", "Page")) if line.get(k)]
     return ("BoulderMesh: a bug report" if line["kind"] == "bug" else "BoulderMesh: a comment"), "\n".join([text, *([""] if more else []), *more])

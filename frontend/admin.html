@@ -535,7 +535,7 @@ function render(s){
   // what visitors typed: only ever put in the page escaped, as text
   const fb = s.feedback;
   $('#fb-note').textContent = fb.count ? `${fb.count} from the main site's "?" tab, kept in data/${fb.file}; the newest first.` : 'None yet. Visitors leave them on the main site\'s "?" tab.';
-  $('#fb-list').innerHTML = fb.recent.map(f => `<div class="fb"><div class="note">${esc(fmtFbTime(f.time))} · ${f.kind === 'bug' ? '<span class="warn">bug report</span>' : 'comment'}${f.contact ? ` · reach them: ${esc(f.contact)}` : ''}${f.page ? ` · on ${esc(f.page)}` : ''}${f.browser ? ` · <span title="${esc(f.browser)}">their browser</span>` : ''}</div><div class="fbtext">${esc(f.message)}</div></div>`).join('');
+  $('#fb-list').innerHTML = fb.recent.map(f => `<div class="fb"><div class="note">${esc(fmtFbTime(f.time))} · ${f.kind === 'bug' ? '<span class="warn">bug report</span>' : 'comment'}${f.contact ? ` · reach them: ${esc(f.contact)}` : ''}${f.mesh ? ` · mesh ${esc(f.mesh)}` : ''}${f.page ? ` · on ${esc(f.page)}` : ''}${f.browser ? ` · <span title="${esc(f.browser)}">their browser</span>` : ''}</div><div class="fbtext">${esc(f.message)}</div></div>`).join('');
   $('#ntfy-test').disabled = !nt.enabled;
   $('#ntfy-note').innerHTML = nt.enabled ? (nt.listening ? '<span class="ok">on, and following replies</span>' : '<span class="warn">on, but not following replies yet</span>') : 'off';
   $('#ntfy-body').innerHTML = (nt.subscribe

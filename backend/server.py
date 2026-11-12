@@ -6277,7 +6277,8 @@ FEEDBACK_NOTES = notify_mod.Paced(lambda title, text, actions: threading.Thread(
 def record_feedback(report: dict, sender: str, user_agent: str, editor: bool) -> bool | None:
     """Keep a comment or bug report from the page's "?" tab, cleaned (feedback.parse()), in FEEDBACK, and tell the
     admin's phone (notify.feedback), as plain text. Who sent it isn't kept, only their browser and what they gave to be
-    reached by. Returns None for one dropped as a bot's (its hidden field filled in), and False if that address, or
+    reached by, and the mesh that was in view if the viewer's
+    Report a problem button opened the form. Returns None for one dropped as a bot's (its hidden field filled in), and False if that address, or
     everyone together, has sent too many lately.
 
     Raises:
@@ -6287,6 +6288,8 @@ def record_feedback(report: dict, sender: str, user_agent: str, editor: bool) ->
     if line is None:
         print("a comment with the form's hidden field filled in: dropped", flush=True)
         return None
+    found = q("SELECT name FROM meshes WHERE id=?", line["mesh"]) if line["mesh"] else []
+    line["mesh"] = line["mesh"] if found else None      # only one there is
     now = time.time()
     with _client_lock:
         _feedback_times[:] = [t for t in _feedback_times if now - t < FEEDBACK_ALL[1]]
@@ -6296,7 +6299,7 @@ def record_feedback(report: dict, sender: str, user_agent: str, editor: bool) ->
         feedback_mod.keep(FEEDBACK, {**line, "browser": feedback_mod.clean(user_agent[:300]) or None, "editor": editor, "version": VERSION})
     print(f"a visitor's {'bug report' if line['kind'] == 'bug' else 'comment'}: {line['message'][:200]!r}", flush=True)
     if settings().get("notify.feedback"):
-        FEEDBACK_NOTES.add(*feedback_mod.note(line))
+        FEEDBACK_NOTES.add(*feedback_mod.note({**line, "mesh_name": f"{feedback_mod.clean(found[0]['name'] or '')[:100]} ({line['mesh']})" if found else None}))
     return True
 
 

@@ -602,29 +602,33 @@ def feedback(tmp: Path) -> None:
         assert b'<button data-tab="help"' in page and b'<form id="fb"' in page and b'id="fb-website"' in page, "the ? tab and its form"
         assert req(B, "GET", "/api/status")[2]["donate_url"] == "https://donate.example/tom", "DONATE_URL starts the button's address"
 
+        mid = req(B, "POST", "/api/meshes", headers=AUTH, files=[("files", "cube.ply", PLY)], form={"name": "A cube"})[2]["id"]
+        assert b'id="vreport"' in page and b'id="hdonate"' in page, "the viewer's Report a problem button, and the header's Donate link"
+
         # from a visitor without the token: kept as plain text, as typed but for what can't be seen
         typed = "It\x00 broke\x07\r\n\r\n\r\n\r\n<script>alert(1)</script>\u202e \u200bend\tx"
-        st, _, r = post({"kind": "bug", "message": typed, "contact": "  tom@example.org\nBcc: x ", "page": "/#mesh=abc", "website": ""}, "198.51.100.40")
+        st, _, r = post({"kind": "bug", "message": typed, "contact": "  tom@example.org\nBcc: x ", "page": "/#mesh=abc", "website": "", "mesh": mid}, "198.51.100.40")
         assert st == 202 and r == {"kept": True}, (st, r)
         line = kept()[-1]
         assert line["kind"] == "bug" and line["message"] == "It broke\n\n<script>alert(1)</script> end x", line
-        assert line["contact"] == "tom@example.org Bcc: x" and line["page"] == "/#mesh=abc" and line["editor"] is False, line
+        assert line["contact"] == "tom@example.org Bcc: x" and line["page"] == "/#mesh=abc" and line["editor"] is False and line["mesh"] == mid, line
         assert line["browser"] == "TestBrowser/1" and "198.51.100.40" not in kept_in.read_text(), "their browser, not their address"
         for _ in range(50):
             if any(n["title"] == "BoulderMesh: a bug report" for n in sent):
                 break
             time.sleep(0.1)
         note = next(n for n in sent if n["title"] == "BoulderMesh: a bug report")
-        assert note["topic"] == "bm-topic" and note["message"] == "It broke\n\n<script>alert(1)</script> end x\n\nReach them: tom@example.org Bcc: x\nPage: /#mesh=abc", note
+        assert note["topic"] == "bm-topic" and note["message"] == "It broke\n\n<script>alert(1)</script> end x\n\nMesh: A cube (" + mid + ")\nReach them: tom@example.org Bcc: x\nPage: /#mesh=abc", note
         assert "markdown" not in note and "actions" not in note and "click" not in note, "plain text, nothing to tap through to"
-        st, _, _ = post({"message": "from an editor", "page": "https://evil.example/"}, "198.51.100.41", **AUTH)
+        st, _, _ = post({"message": "from an editor", "page": "https://evil.example/", "mesh": "0123456789ab"}, "198.51.100.41", **AUTH)
         line = kept()[-1]
         assert st == 202 and line["kind"] == "comment" and line["editor"] is True and "page" not in line and "contact" not in line, line
+        assert "mesh" not in line and post({"message": "x", "mesh": "<b>"}, "198.51.100.41")[0] == 202 and "mesh" not in kept()[-1], "only a mesh there is"
 
         # refused: too long, empty once cleaned, not text, not the form's, from another site's page
         n = len(kept())
         for bad, code in (({"message": "x" * 4001}, 400), ({"message": "x", "contact": "c" * 201}, 400), ({"message": " \x00\u200b\n"}, 400),
-                          ({"message": ["x"]}, 400), ({"message": "x", "kind": "spam"}, 400), ({"message": "x", "contact": 5}, 400), ({}, 400),
+                          ({"message": ["x"]}, 400), ({"message": "x", "kind": "spam"}, 400), ({"message": "x", "contact": 5}, 400), ({"message": "x", "mesh": 7}, 400), ({}, 400),
                           (b"[1]", 400), (b"{", 400), (b"x" * 40000, 413)):
             assert post(bad, "198.51.100.42")[0] == code, bad if isinstance(bad, dict) else bad[:20]
         assert post({"message": "x"}, "198.51.100.42", Origin="https://evil.example")[0] == 403
