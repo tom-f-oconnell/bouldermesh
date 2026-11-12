@@ -5366,11 +5366,12 @@ class Handler(BaseHTTPRequestHandler):
             # ---- meshes
             if p == "/api/meshes":
                 rows = q("SELECT * FROM meshes ORDER BY created DESC")
-                links = q("SELECT l.mesh_id, l.note, c.id, c.name, c.grade, c.area_path FROM mesh_links l JOIN climbs c ON c.id=l.climb_id")
+                links = q("SELECT l.mesh_id, l.note, c.id, c.name, c.grade, c.url, c.area_path FROM mesh_links l JOIN climbs c ON c.id=l.climb_id")
                 by, leaves = {}, {}
                 for l in links:     # shared: an area linked it as on the same boulder as the climb the mesh was made for
                     shared = (l["note"] or "").startswith(SHARED)
-                    by.setdefault(l["mesh_id"], []).append({"id": l["id"], "name": l["name"], "grade": l["grade"], "shared": shared})
+                    by.setdefault(l["mesh_id"], []).append({"id": l["id"], "name": l["name"], "grade": l["grade"], "url": l["url"],
+                                                            "shared": shared})
                     if not shared:
                         leaves.setdefault(l["mesh_id"], set()).add(l["area_path"])
                 urls = {}

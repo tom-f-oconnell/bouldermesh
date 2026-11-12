@@ -147,6 +147,9 @@
   #ca-box details label.row:not(:has(> input[type=checkbox])),#campaigns details label.row:not(:has(> input[type=checkbox])){display:block}
   .campname a,.mesh .name a{color:inherit;text-decoration:underline dotted;text-underline-offset:2px}
   details.mclimbs{flex-basis:100%} details.mclimbs > .chips{margin-top:4px}
+  /* a mesh card's download: a link, drawn as the small buttons above it are, its icon a little taller than their words */
+  .dlbtn{display:flex;align-items:center;justify-content:center;height:25.4px;border:1px solid var(--line);border-radius:6px;color:var(--fg)}
+  .dlbtn:hover{border-color:var(--acc)} .dlbtn svg{width:17px;height:17px}
   button.copy{background:transparent;color:var(--mute);border:0;padding:0 3px;vertical-align:-2px;line-height:1} button.copy:hover{color:var(--fg)}
   button.copy svg{width:14px;height:14px;display:block}
   .crows{display:grid;grid-template-columns:auto 1fr auto auto;gap:3px 8px;font-size:12px;margin-top:6px;align-items:baseline}
@@ -3297,6 +3300,8 @@ async function refreshMeshes(){
 }
 // the cards whose list of climbs is open (folded away to start with), kept as the list is drawn again
 const climbListsOpen = new Set();
+// a mesh card's download button: an arrow down onto a tray
+const DOWNLOAD_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8.5M4.25 7 8 10.75 11.75 7M2.5 11v2.5h11V11"/></svg>';
 // the list as fetched, sorted and filtered; with filter false, the filter's own controls aren't drawn again (a slider being moved)
 function renderMeshes(filter = true){
   const el = $('#meshes'); el.innerHTML = meshesCache.length ? '' : '<div class="status">No meshes yet.</div>';
@@ -3330,7 +3335,7 @@ function renderMeshes(filter = true){
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px">
         <button class="sm view">View</button>
         ${m.lat!=null?'<button class="sm sec fly">Map</button>':'<button class="sm sec setll">Set coords</button>'}
-        <a href="/meshes/${m.id}/${m.filename}?download=1${m.cleanup?.hidden ? '&cleaned=1' : ''}" download title="${m.cleanup?.hidden ? 'Without the hidden pieces. To get the whole mesh, remove the cleanup first.' : 'Download'}"><button class="sm sec" style="width:100%">⤓</button></a>
+        <a class="dlbtn" href="/meshes/${m.id}/${m.filename}?download=1${m.cleanup?.hidden ? '&cleaned=1' : ''}" download aria-label="Download this mesh" title="${m.cleanup?.hidden ? `Download this mesh, without its ${plural(m.cleanup.hidden, 'hidden stray piece')}. To get the whole mesh, remove the cleanup first.` : `Download this mesh (${esc(m.filename.split('.').pop().toUpperCase())}, ${fmtSize(m.size)})`}">${DOWNLOAD_ICON}</a>
         <button class="sm danger del">✕</button></div>`;
     const bar = sourceBar(m);
     if (bar) d.querySelector('.chips').before(bar);
@@ -3378,12 +3383,19 @@ function soleClimb(m){
   return own.length === 1 && linkCounts.get(own[0].id) === 1 ? own[0] : null;
 }
 function meshTitle(m){ const c = soleClimb(m); return c ? `${c.name} ${c.grade || ''}`.trim() : m.name; }
-// a card's title: for a mesh of several climbs, a link to the Mountain Project page of the lowest area they're on
+// a card's title: a link to its climb's page, for a mesh of one climb; for a mesh of several, to the Mountain Project
+// page of the lowest area they're on
 function meshNameHtml(m){
   const kind = meshKind(m), name = esc(meshTitle(m));
-  if (!m.boulder_url || (kind !== 'groups' && kind !== 'boulders')) return name;
-  const area = m.pooled?.area;
-  return `<a href="${esc(m.boulder_url)}" target="_blank" rel="noopener" title="${area ? `${esc(area)}, on Mountain Project` : 'Its area on Mountain Project'}">${name}</a>`;
+  const link = (url, title) => `<a href="${esc(url)}" target="_blank" rel="noopener" title="${esc(title)}">${name}</a>`;
+  if (kind === 'climbs') {
+    const c = m.climbs.find(x => !x.shared);
+    if (!c?.url) return name;
+    const site = /mountainproject\.com/.test(c.url) ? 'Mountain Project' : /openbeta\.io/.test(c.url) ? 'OpenBeta' : '';
+    return link(c.url, `${c.name}${site ? `, on ${site}` : ': its page'}`);
+  }
+  if (!m.boulder_url || kind !== 'groups' && kind !== 'boulders') return name;
+  return link(m.boulder_url, m.pooled?.area ? `${m.pooled.area}, on Mountain Project` : 'Its area on Mountain Project');
 }
 function viewTitle(m, from){
   const seen = (m.boulder_climbs || []).find(c => c.id === from), own = m.climbs.filter(c => !c.shared);
