@@ -26,6 +26,7 @@ import mimetypes
 import os
 import queue
 import re
+import resource
 import secrets
 import shutil
 import signal
@@ -5387,6 +5388,81 @@ BOTS = re.compile(r"bot|crawl|spider|slurp|preview|facebookexternalhit|monitor|u
 _fetched: dict[tuple[str, str], float] = {}     # (script, address) -> when it was last told of
 
 
+# ------------------------------------------------------------------ when a job hangs: what each thread is doing
+DIAGNOSTICS = DATA / "diagnostics"     # thread dumps (diagnostics.dump_threads()), when a job stalls or on SIGUSR1
+STALL_MINUTES = 20      # a job whose progress hasn't moved this long while this server is busy has its threads written down
+STALL_BUSY = 0.5        # busy: this server's own threads used at least this many cores, on average, meanwhile
+STALL_GAP = 1800        # at most one such dump in this many seconds, however many jobs stall
+_stalls: dict[str, tuple[str, float, float]] = {}     # project -> (its progress as last seen, since when, CPU seconds then)
+_stall_dumped: set[str] = set()                       # projects written down for the stall they're in
+_last_stall_dump = 0.0
+
+
+def own_cpu() -> float:
+    """CPU seconds this server's own threads have used (not the tools it runs)."""
+    r = resource.getrusage(resource.RUSAGE_SELF)
+    return r.ru_utime + r.ru_stime
+
+
+def dump_threads_now(why: str) -> Path | None:
+    """Write down what each of this server's threads is doing (diagnostics.dump_threads()), saying where in its log."""
+    try:
+        path = diagnostics.dump_threads(DIAGNOSTICS, why)
+        print(f"diagnostics: {why}: what each thread is doing is in data/diagnostics/{path.name}", flush=True)
+        return path
+    except Exception as e:  # only costs the dump
+        print(f"diagnostics: couldn't write down the threads ({type(e).__name__}: {e})", flush=True)
+        return None
+
+
+def stall_check(now: float | None = None, cpu: float | None = None) -> list[str]:
+    """Once a minute (stall_watch()): a job here whose progress hasn't moved for STALL_MINUTES while this server's own
+    threads stayed busy (STALL_BUSY cores) looks hung, as Gunsmoke Wall's filter did for 5 hours on Nov 12, 2026 with two
+    threads spinning in the kernel. Its threads are written down once for that stall (not one handed to a machine, which
+    this server only waits for), its log says where, and your phone is told. Returns the projects written down for."""
+    global _last_stall_dump
+    now, cpu = time.time() if now is None else now, own_cpu() if cpu is None else cpu
+    on_machines = {j["label"] for j in MACHINES.running()}
+    dumped, seen = [], set()
+    for r in q("SELECT id, name, progress FROM projects WHERE status IN ('running','harvesting')"):
+        seen.add(r["id"])
+        was = _stalls.get(r["id"])
+        if not was or was[0] != (r["progress"] or "") or r["id"] in on_machines:
+            _stalls[r["id"]] = (r["progress"] or "", now, cpu)
+            _stall_dumped.discard(r["id"])
+            continue
+        _, since, cpu_then = was
+        took = now - since
+        if (took < STALL_MINUTES * 60 or r["id"] in _stall_dumped or (cpu - cpu_then) / took < STALL_BUSY
+                or now - _last_stall_dump < STALL_GAP):
+            continue
+        _stall_dumped.add(r["id"])
+        _last_stall_dump = now
+        why = (f"{r['name']} ({r['id']}): no progress for {took / 60:.0f} min, while this server used "
+               f"{(cpu - cpu_then) / took:.1f} cores")
+        path = dump_threads_now(why)
+        if path:
+            append_log(r["id"], f"-- no progress for {took / 60:.0f} min while this server is busy: what each of its threads is "
+                                f"doing is in data/diagnostics/{path.name}")
+            threading.Thread(target=NOTIFIER.send, args=(f"BoulderMesh: {r['name']} looks stuck",
+                             f"No progress for {took / 60:.0f} min, with the server busy. What its threads are doing is in "
+                             f"data/diagnostics/{path.name}."), kwargs={"priority": 3, "tags": ["warning"]}, daemon=True).start()
+            dumped.append(r["id"])
+    for k in [k for k in _stalls if k not in seen]:
+        _stalls.pop(k, None)
+        _stall_dumped.discard(k)
+    return dumped
+
+
+def stall_watch() -> None:
+    while True:
+        time.sleep(60)
+        try:
+            stall_check()
+        except Exception as e:  # never let the thread die
+            print(f"stall watch error: {e!r}", flush=True)
+
+
 def mark_stopped() -> None:
     try:
         STOPPED_AT.write_text(f"{time.time()}\n")
@@ -7189,6 +7265,9 @@ def main() -> None:
     if settled:
         print(f"{settled} area climb(s) that failed as COLMAP placed too few photos now count as skipped, as they would now", flush=True)
     apply_settings()
+    if not diagnostics.allow_tracing():     # so that py-spy can attach to it, from a stall's dump or inside its container
+        print("diagnostics: couldn't let py-spy attach to this process; a thread dump will only have Python's side", flush=True)
+    threading.Thread(target=stall_watch, daemon=True, name="stall-watch").start()
     again = requeue_waiting()
     if again:
         print(f"{plural(again, 'job')} people asked for, still waiting when the server stopped, queued again", flush=True)
@@ -7249,6 +7328,8 @@ def main() -> None:
                        lambda line: print(line, flush=True))
     server = ThreadingHTTPServer((host, port), Handler)
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=stop_when_idle, args=(server,), daemon=True).start())
+    # docker kill -s USR1 <container>: what each thread is doing, written down now (README, "When it hangs")
+    signal.signal(signal.SIGUSR1, lambda *_: threading.Thread(target=dump_threads_now, args=("asked for (SIGUSR1)",), daemon=True).start())
     threading.Thread(target=tell_back_up, args=(began, port), daemon=True).start()
     server.serve_forever()
     sys.stdout.flush()

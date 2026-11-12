@@ -75,6 +75,8 @@ RUN pip install --no-cache-dir --break-system-packages segno
 # support: without them yt-dlp warns that formats may be missing. Deno is the runtime it looks for on PATH.
 RUN pip install --no-cache-dir --break-system-packages --upgrade "yt-dlp[default]" deno \
  && deno --version | head -1 && python3 -c "import yt_dlp_ejs"
+# py-spy: what a hung process's threads are doing, native frames too (diagnostics.dump_threads(); README, "When it hangs")
+RUN pip install --no-cache-dir --break-system-packages py-spy && py-spy --version
 # Ubuntu's colmap package is only there for the libraries this one links to: /usr/local/bin comes first
 COPY --from=colmap /opt/colmap-cuda/bin/colmap /usr/local/bin/colmap
 COPY --from=build /usr/local/bin/OpenMVS /usr/local/bin/OpenMVS

@@ -159,5 +159,33 @@ if gcc:
 else:
     print("signal_note skipped: no gcc")
 
+# what a hung process's threads are doing: the busiest first, each Python thread's stack, and py-spy's native dump once
+# this process lets it attach (Yama only lets a parent, otherwise)
+stop = threading.Event()
+
+
+def spinner():
+    while not stop.is_set():
+        pass
+
+
+threading.Thread(target=spinner, daemon=True, name="spinner").start()
+time.sleep(1.0)
+try:
+    rows = diagnostics.thread_table()
+    assert rows[0]["user"] + rows[0]["system"] > 0.3 and {"tid", "name", "state", "voluntary", "involuntary"} <= set(rows[0]), rows[0]
+    assert diagnostics.allow_tracing(), "Linux, with Yama or without it"
+    path = diagnostics.dump_threads(tmp / "diagnostics", "a test")
+    text = path.read_text()
+    assert path.parent == tmp / "diagnostics" and "a test" in text and "[python: spinner]" in text, text[:800]
+    assert "--- python thread spinner" in text and "in spinner" in text, text
+    if "isn't installed" not in text:
+        assert '"spinner"' in text.split("--- py-spy dump --native:")[1], text.split("--- py-spy dump --native:")[1][:600]
+        print("thread dump, with py-spy's native frames OK")
+    else:
+        print("thread dump OK (no py-spy here)")
+finally:
+    stop.set()
+
 shutil.rmtree(tmp, ignore_errors=True)
 print("ALL DIAGNOSTICS TESTS PASSED")

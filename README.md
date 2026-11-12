@@ -569,6 +569,19 @@ order they were (deploy.sh lists them as "queued again after"). To see what a re
 
     python3 cli.py jobs                         # exits 1 if a restart would interrupt anything
 
+**When it hangs.** A job whose progress hasn't moved for 20 minutes while the server stays busy (half a core or more of
+its own threads' time) gets what each of the server's threads is doing written down, in
+`data/diagnostics/threads-*.txt`: the threads busiest first, with their CPU time, state and context switches (one
+switching millions of times while it holds a core is spinning), each Python thread's stack, and py-spy's dump with
+native frames, as where a thread spins inside a library. The job's log says where, and your phone is told; at most one
+such dump every 30 minutes. To write one down at any time, or to look interactively, on the server:
+
+    docker kill -s USR1 bouldermesh-bouldermesh-1                      # a dump, as above; the log says where
+    docker compose exec bouldermesh py-spy dump --native --pid 1       # or py-spy top --pid 1
+
+The server lets any process of its user attach to it (`diagnostics.allow_tracing()`), as Ubuntu's Yama otherwise only
+lets its parent; the container's other limits (no capabilities, no new privileges) stay as they are.
+
 ## Putting it on the public internet
 
 As it comes, anyone who can reach the port can change anything, which suits a LAN and nothing else. The public

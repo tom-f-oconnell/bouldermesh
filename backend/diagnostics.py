@@ -239,3 +239,89 @@ def log_failure(log: Callable[[str], None], e: BaseException, data_dir: Path | s
         log(traceback.format_exc().rstrip())
         log(f"diagnostics: machine now: {machine_state(data_dir)}")
     log(f"FAILED: {e if isinstance(e, RuntimeError) else f'{type(e).__name__}: {e}'}")
+
+
+# ---------------------------------------------------------------------------------------- what a hung process is doing
+# A job that stops making progress while its process stays busy (Nov 12, 2026: two threads of the server's own off-topic
+# filter spinning in the kernel for 5 hours) can only be worked out from what each thread is doing at the time:
+# dump_threads() writes that down, from Python's side and, where py-spy can attach, from the native side too.
+PR_SET_PTRACER, PR_SET_PTRACER_ANY = 0x59616D61, 2**64 - 1
+
+
+def allow_tracing() -> bool:
+    """Let any process of this user attach to this one (py-spy, a debugger): Yama (ptrace_scope 1, Ubuntu's default)
+    otherwise allows only its parent, so neither py-spy run from inside its container nor one this process starts
+    could. Whatever runs as this user could already do as much through the files it can reach. False where this
+    can't be set (not Linux, or no Yama)."""
+    import ctypes
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        return libc.prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0) == 0
+    except (OSError, AttributeError):
+        return False
+
+
+def thread_table(pid: int | str = "self") -> list[dict]:
+    """The process's threads, as the kernel has them: {tid, name, state, user, system (CPU seconds), voluntary,
+    involuntary (context switches)}, busiest first."""
+    tick = os.sysconf("SC_CLK_TCK")
+    out = []
+    for d in Path(f"/proc/{pid}/task").iterdir() if Path(f"/proc/{pid}/task").is_dir() else []:
+        try:
+            stat = (d / "stat").read_text()
+            name = stat[stat.index("(") + 1:stat.rindex(")")]
+            fields = stat[stat.rindex(")") + 2:].split()
+            status = dict(line.split(":", 1) for line in (d / "status").read_text().splitlines() if ":" in line)
+            out.append({"tid": int(d.name), "name": name, "state": fields[0], "user": int(fields[11]) / tick,
+                        "system": int(fields[12]) / tick, "voluntary": int(status.get("voluntary_ctxt_switches", "0")),
+                        "involuntary": int(status.get("nonvoluntary_ctxt_switches", "0"))})
+        except (OSError, ValueError, IndexError):
+            continue
+    return sorted(out, key=lambda t: -(t["user"] + t["system"]))
+
+
+def python_stacks() -> dict[int, tuple[str, list[str]]]:
+    """Each Python thread's name and stack, by its native thread id (as thread_table() gives it)."""
+    import sys
+    frames = sys._current_frames()
+    out = {}
+    for t in threading.enumerate():
+        frame = frames.get(t.ident)
+        if frame is not None and t.native_id is not None:
+            out[t.native_id] = (t.name, traceback.format_stack(frame))
+    return out
+
+
+def native_stacks(pid: int, timeout: float = 60) -> str:
+    """py-spy's dump of a process, with native frames (where a thread spins inside a library), or why there isn't one."""
+    import sys
+    spy = shutil.which("py-spy") or shutil.which("py-spy", path=str(Path(sys.executable).parent))    # or beside this Python
+    if not spy:
+        return "(py-spy isn't installed here)"
+    try:
+        r = subprocess.run([spy, "dump", "--native", "--pid", str(pid)], capture_output=True, text=True, timeout=timeout)
+        return (r.stdout + r.stderr).strip() or f"(py-spy exited with {r.returncode}, saying nothing)"
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"(py-spy failed: {type(e).__name__}: {e})"
+
+
+def dump_threads(dest: Path, why: str, native: bool = True) -> Path:
+    """Write down what every thread of this process is doing, to a new file in dest: why, the threads busiest first
+    with their CPU times, state and context switches (a thread switching millions of times while it holds a core is
+    spinning), each Python thread's stack, and, with native, py-spy's dump with native frames. Returns its path."""
+    dest.mkdir(parents=True, exist_ok=True)
+    path = dest / time.strftime(f"threads-%Y%m%d-%H%M%S-{os.getpid()}.txt")
+    stacks = python_stacks()
+    lines = [f"{time.strftime('%Y-%m-%d %H:%M:%S %z')}: {why}", f"machine: {machine_state(dest.parent)}", "",
+             "threads, busiest first (CPU seconds; state R running, S sleeping, D waiting on I/O; context switches):"]
+    for t in thread_table():
+        py = stacks.get(t["tid"])
+        lines.append(f"  {t['tid']:>8} {t['name'][:15]:<15} {t['state']} user {t['user']:9.1f} system {t['system']:9.1f} "
+                     f"switches {t['voluntary']} voluntary, {t['involuntary']} involuntary" + (f"  [python: {py[0]}]" if py else ""))
+    for tid, (name, stack) in stacks.items():
+        lines += ["", f"--- python thread {name} (native {tid}):", *(s.rstrip() for s in stack)]
+    if native:
+        lines += ["", "--- py-spy dump --native:", native_stacks(os.getpid())]
+    path.write_text("\n".join(lines) + "\n")
+    return path

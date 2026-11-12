@@ -1578,6 +1578,40 @@ server.apply_settings()
 assert server.relevance_mod.RUNNER is server.filter_anywhere, "harvests filter through it"
 print("filtering on machines OK")
 
+# --- a job whose progress stops while the server stays busy: its threads written down once, its log says where, and
+# your phone is told; not while the server is idle (waiting on something), nor for a job on a machine
+fresh()
+spid = "5ta11ed00000"
+server.q("INSERT INTO projects(id,name,created,kind,status,progress) VALUES(?,?,?,?,?,?)", spid, "Stuck (boulder)", time.time(), "boulder",
+         "harvesting", json.dumps({"overall": 7.6, "steps": [{"key": "filter", "frac": 0.638, "state": "running"}]}), write=True)
+told, dumps = [], []
+real_send, real_dump, real_running = server.NOTIFIER.send, server.diagnostics.dump_threads, server.MACHINES.running
+server.NOTIFIER.send = lambda title, text, **kw: told.append(title)
+server.diagnostics.dump_threads = lambda dest, why, native=True: (dumps.append(why), dest / "threads-test.txt")[1]
+server.MACHINES.running = lambda: []
+server._stalls.clear()
+server._stall_dumped.clear()
+server._last_stall_dump = 0.0
+try:
+    t0 = 1_000_000.0
+    assert server.stall_check(t0, 0.0) == []
+    assert server.stall_check(t0 + 1200, 100.0) == [], "20 min, but under half a core: waiting, not stuck"
+    server._stalls[spid] = (server._stalls[spid][0], t0, 0.0)
+    assert server.stall_check(t0 + 1300, 1300.0) == [spid], "20 min at a core: written down"
+    assert "no progress for 22 min" in dumps[0] and "1.0 cores" in dumps[0] and told == ["BoulderMesh: Stuck (boulder) looks stuck"]
+    time.sleep(0.2)     # the notification goes on a thread
+    assert "data/diagnostics/threads-test.txt" in server.read_log(spid)
+    assert server.stall_check(t0 + 1400, 1400.0) == [], "once for this stall"
+    server.q("UPDATE projects SET progress=? WHERE id=?", json.dumps({"overall": 8.0}), spid, write=True)
+    assert server.stall_check(t0 + 1500, 1500.0) == [], "moving again"
+    server._last_stall_dump = 0.0
+    server.MACHINES.running = lambda: [{"label": spid}]
+    server._stalls[spid] = (server._stalls[spid][0], t0, 0.0)
+    assert server.stall_check(t0 + 3000, 3000.0) == [], "on a machine: this server only waits"
+finally:
+    server.NOTIFIER.send, server.diagnostics.dump_threads, server.MACHINES.running = real_send, real_dump, real_running
+print("stalls written down OK")
+
 # --- the first N meshes of an area: only those; entering it again, or raising N, goes on without doing again what's done ---
 fresh()
 server.settings().update({"areas.meshes": "climbs"})

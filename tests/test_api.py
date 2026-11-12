@@ -72,6 +72,25 @@ def cache_of(url: str) -> str:
         return r.headers["Cache-Control"]
 
 
+
+def thread_dump(srv, tmp) -> None:
+    """SIGUSR1: what each of the server's threads is doing, written down in data/diagnostics, with py-spy's native frames
+    where it's installed (it can attach, as the server allows it)."""
+    import signal
+    srv.send_signal(signal.SIGUSR1)
+    diag, dumps = tmp / "data" / "diagnostics", []
+    for _ in range(300):
+        dumps = sorted(diag.glob("threads-*.txt")) if diag.is_dir() else []
+        if dumps and "--- py-spy dump --native:" in dumps[-1].read_text():
+            break
+        time.sleep(0.2)
+    assert dumps, "no thread dump"
+    text = dumps[-1].read_text()
+    assert "asked for (SIGUSR1)" in text and "--- python thread MainThread" in text, text[:600]
+    native = text.split("--- py-spy dump --native:")[1]
+    assert "isn't installed" in native or "Thread " in native, native[:400]
+    print("thread dump on SIGUSR1 OK" + ("" if "isn't installed" in native else ", with native frames"))
+
 def main() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="bouldermesh-test-"))
     passed = False
@@ -94,6 +113,7 @@ def main() -> None:
             except Exception:
                 time.sleep(0.2)
         run(B, tmp)
+        thread_dump(srv, tmp)
         srv.terminate()     # a stop, as Docker sends it: it says what it waited for, and exits cleanly
         out = srv.communicate(timeout=30)[0]
         assert srv.returncode == 0 and "stopping: " in out, (srv.returncode, out[-3000:])
@@ -585,6 +605,7 @@ def run(B: str, tmp: Path) -> None:
     assert left == {"1": (hm["id"], f"its mesh was deleted: done with {hm['name']}"), "2": (None, "its mesh was deleted"),
                     "3": ("b0u1de4me5h0", "its mesh was deleted: done with A Boulder")}, left
     con.close()
+
     print("ALL API TESTS PASSED")
 
 
