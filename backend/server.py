@@ -7968,6 +7968,24 @@ def apply_settings() -> None:
     threading.Thread(target=skyline_existing_meshes, daemon=True).start()
 
 
+BACKUP_STALE_HOURS = 36     # the backup copies each night: a good copy older than this means it has stopped
+
+
+def backup_state() -> dict:
+    """What the backup has told this server through its handshake (deploy/backup-handshake.py), for the admin page:
+    when its last good copy began (data/backed-up), its last report of a night's copy, good or not (data/backup-report.json:
+    its size, why it failed, and what it keeps by night), and how old a good copy may be before it's out of date."""
+    try:
+        confirmed = float((DATA / offload_mod.MARK).read_text().strip())
+    except (OSError, ValueError):
+        confirmed = None
+    try:
+        report = json.loads((DATA / "backup-report.json").read_text())
+    except (OSError, ValueError):
+        report = None
+    return {"confirmed": confirmed, "report": report, "stale_hours": BACKUP_STALE_HOURS}
+
+
 def admin_state() -> dict:
     """What the admin page shows: settings, which credentials are set, the workers, and how many meshes
     each texture setting would affect."""
@@ -7991,7 +8009,7 @@ def admin_state() -> dict:
             "notify": NOTIFIER.state(), "pairing": pairing_state(),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
             "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "untied_meshes": len(untied_meshes()), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
-            "offload": offload_mod.state(DATA, q)}
+            "offload": offload_mod.state(DATA, q), "backup": backup_state()}
 
 
 def admin_test(_: dict) -> dict:

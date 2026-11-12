@@ -29,6 +29,12 @@
   table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
   td,th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
   section.alert{border-color:var(--warn)}
+  /* the backup's state, at the top when there's none (red) or it's out of date (orange) */
+  #backupbanner{margin:0 0 16px;padding:12px 16px;border-radius:8px;font-weight:600;line-height:1.4}
+  #backupbanner.none{background:rgba(255,107,107,.14);border:1px solid var(--bad);color:var(--bad)}
+  #backupbanner.late{background:rgba(255,159,67,.14);border:1px solid #ff9f43;color:#ff9f43}
+  #backupbanner small{display:block;font-weight:400;color:var(--fg);margin-top:4px}
+  #backupdays td{padding:2px 12px 2px 0;font-size:12px} #backupdays th{text-align:left;font-size:12px;color:var(--mute);padding-right:12px}
   code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}
   a{color:var(--acc);overflow-wrap:anywhere}
   tr.mach{cursor:pointer} tr.mach:hover td{background:var(--line)}
@@ -56,6 +62,7 @@
 <body>
 <header><h1>BoulderMesh admin</h1><span class="note" id="where"></span></header>
 <main>
+  <div id="backupbanner" hidden></div>
   <section id="ranges" hidden>
     <h2>Cloudflare's addresses</h2>
     <div id="ranges-body"></div>
@@ -237,6 +244,12 @@
     <div class="row"><button class="sec" id="room-measure">Measure now</button><button class="danger" id="room-rejected">Delete the photos the filter rejected</button></div>
   </section>
 
+  <section id="backups">
+    <h2>Backups</h2>
+    <div class="note" id="backupnote"></div>
+    <table id="backupdays"></table>
+  </section>
+
   <section id="times">
     <h2>How long meshes take</h2>
     <div class="row" style="margin-top:0"><select id="times-since" style="width:auto" aria-label="Which meshes">
@@ -294,7 +307,38 @@ function renderTimings(){
           <td>${r.vggt ? `${r.vggt}, +${fmt(r.vggt_seconds)} s` : '–'}</td></tr>`).join('')}</table>`;
 }
 $('#times-since').onchange = renderTimings;
+// What the backup has told this server (deploy/backup-handshake.py): none, in red at the top; out of date, or its latest
+// try failed, in orange; and each night's copy it keeps
+function renderBackup(b){
+  const now = Date.now() / 1000, rep = b.report, ago = t => { const h = (now - t) / 3600; return h < 1.5 ? `${Math.round(h * 60)} min` : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} days`; };
+  const size = n => n >= 2 ** 30 ? (n / 2 ** 30).toFixed(1) + ' GB' : `${Math.round(n / 2 ** 20)} MB`, when = t => new Date(t * 1000).toLocaleString();
+  const why = rep?.status === 'failed' ? esc(rep.why || 'no reason given') : '';
+  let level = null, say = '';
+  if (!b.confirmed) {
+    level = 'none';
+    say = 'No backup of this site\'s data has been confirmed.' + (why ? `<small>The last try, ${ago(rep.ended)} ago, failed: ${why}</small>`
+      : '<small>Nothing has told this server of one: the backup tells it through its handshake key (README, "Backups"). Until then nothing is offloaded either.</small>');
+  } else if (now - b.confirmed > b.stale_hours * 3600) {
+    level = 'late';
+    say = `The last good backup began ${ago(b.confirmed)} ago.` + (why ? `<small>The latest try, ${ago(rep.ended)} ago, failed: ${why}</small>` : `<small>It runs each night: more than ${b.stale_hours} h means it has stopped.</small>`);
+  } else if (why && rep.ended > b.confirmed) {
+    level = 'late';
+    say = `The latest backup, ${ago(rep.ended)} ago, failed.<small>${why}. The last good one began ${ago(b.confirmed)} ago.</small>`;
+  }
+  const banner = $('#backupbanner');
+  banner.hidden = !level;
+  banner.className = level || '';
+  banner.innerHTML = say;
+  $('#backupnote').innerHTML = b.confirmed
+    ? `The last good copy began ${when(b.confirmed)} (${ago(b.confirmed)} ago)` + (rep?.status === 'ok' && rep.bytes ? `: ${size(rep.bytes)}${rep.host ? `, on ${esc(rep.host)}` : ''}` : '') + '.'
+      + (rep?.kept?.length ? ' What it keeps by night, each for 30 days: that night\'s databases, and what that night\'s copy replaced or deleted here.' : '')
+    : 'No good copy confirmed yet.';
+  $('#backupdays').innerHTML = rep?.kept?.length ? '<tr><th>Night</th><th>Databases</th><th>Replaced or deleted</th></tr>'
+    + rep.kept.slice().reverse().map(k => `<tr><td>${esc(k.day)}</td><td>${size(k.db || 0)}</td><td>${size(k.changed || 0)}</td></tr>`).join('') : '';
+}
+
 function render(s){
+  renderBackup(s.backup || {});
   timings = s.timings || null;
   renderTimings();
   state = s;

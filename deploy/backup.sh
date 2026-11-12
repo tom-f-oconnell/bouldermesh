@@ -52,7 +52,21 @@ if [ -z "$handshake" ] && [ -f "$hkey" ]; then
     case "$src" in *:) handshake="ssh -i $hkey -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes $nomux ${src%:}" ;; esac
 fi
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+started= why= done_ok=
+# how the night's copy went, through the handshake, for the admin page (backup-handshake.py's report): sizes of what's
+# kept here by night, and on a failure why
+report() {
+    [ -n "$handshake" ] || return 0
+    kept=$(for d in $(ls "$dest/db" "$dest/changed" 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort -u); do
+        printf '{"day":"%s","db":%s,"changed":%s},' "$d" "$(du -sb "$dest/db/$d" 2>/dev/null | cut -f1 || echo 0)" \
+            "$(du -sb "$dest/changed/$d" 2>/dev/null | cut -f1 || echo 0)"
+    done)
+    printf '{"status":"%s","began":%s,"ended":%s,"bytes":%s,"why":"%s","host":"%s","kept":[%s]}' "$1" "${started:-null}" \
+        "$(date +%s)" "$(du -sb "$dest/current" 2>/dev/null | cut -f1 || echo 0)" "$(printf '%s' "$2" | tr -d '"\\\n')" \
+        "$(hostname)" "${kept%,}" | $handshake report > /dev/null 2>&1 || echo "couldn't tell the server how the copy went" >&2
+}
+fail() { why=$1; echo "$1" >&2; exit 1; }
+trap 'st=$?; if [ -z "$only_restore" ] && [ -z "$done_ok" ]; then report failed "${why:-it stopped with an error (exit $st)}"; fi; rm -rf "$tmp"' EXIT
 # the paths the server offloads, as backend/offload.py's PATH
 valid='^(projects/[0-9a-f]{6,32}/(photos|masks|rejected)|cache/videos/[A-Za-z0-9_-]{11}\.[a-z0-9]{2,5}|meshes/[0-9a-f]{6,32}/[A-Za-z0-9_.-]{1,120})$'
 
@@ -102,10 +116,10 @@ cat "$tmp/protect" - > "$tmp/filter" <<'RULES'
 - *
 RULES
 # data/ there first, before anything here is deleted to match: a copy of the wrong folder would move all of current/ aside
-rsync -e "$ssh" --list-only "${from}data/" > /dev/null 2>&1 || { echo "no data/ at $src: is that the server's checkout? nothing copied" >&2; exit 1; }
+rsync -e "$ssh" --list-only "${from}data/" > /dev/null 2>&1 || fail "no data/ at $src: is that the server's checkout? nothing copied"
 rsync -a --delete --delete-excluded --backup --backup-dir="$dest/changed/$day" --info=stats1 -e "$ssh" \
     --filter="merge $tmp/filter" "$from" "$dest/current/"
-[ -d "$dest/current/data" ] || { echo "no data/ came from $src: is that the server's checkout?" >&2; exit 1; }
+[ -d "$dest/current/data" ] || fail "no data/ came from $src: is that the server's checkout?"
 for snap in "$dest/current/data/snapshots/"*.backup; do
     [ -e "$snap" ] || continue
     mkdir -p "$dest/db/$day"
@@ -113,9 +127,11 @@ for snap in "$dest/current/data/snapshots/"*.backup; do
 done
 find "$dest/db" "$dest/changed" -mindepth 1 -maxdepth 1 -type d -mtime "+$keep" -exec rm -rf {} +
 date +%s > "$dest/last-ok"
+done_ok=1
 echo "backed up $src to $dest/current ($(du -sh "$dest/current" | cut -f1)); databases kept in $dest/db/$day"
 if [ -n "$handshake" ]; then    # the server may now delete what it marked before this copy began, and gets back what it wants
     $handshake backed-up "$started"
+    report ok ""
     send_back
 else
     echo "no handshake key ($hkey): the server offloads nothing (README, \"Backups\")"

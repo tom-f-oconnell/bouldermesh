@@ -6,6 +6,8 @@ here, through a key of its own whose forced command this is (README, "Backups"),
 
     backed-up <unix time>   its last copy, begun then, went well: what was marked to offload before then may go
                             (data/backed-up, read by the server's offloading, backend/offload.py)
+    report                  how a night's copy went, as JSON on stdin ({status: ok|failed, began, ended, bytes, why,
+                            kept: [{day, db, changed}]}), for the admin page (data/backup-report.json)
     wanted                  the paths under data/ wanted back from it (data/offload-wanted.list)
     restore                 a tar of some of those on stdin, unpacked into data/restore-inbox/, which the server puts back
 
@@ -25,6 +27,7 @@ DATA = Path(os.environ.get("BOULDERMESH_DATA") or Path(__file__).resolve().paren
 PATH = re.compile(r"projects/[0-9a-f]{6,32}/(photos|masks|rejected)|cache/videos/[A-Za-z0-9_-]{11}\.[a-z0-9]{2,5}"
                   r"|meshes/[0-9a-f]{6,32}/[A-Za-z0-9_.-]{1,120}")      # as backend/offload.py's
 MOST = 20 * 2**30       # the most a restore unpacks
+REPORT_MOST = 64 * 1024     # the most a report may be
 
 
 def wanted() -> list[str]:
@@ -61,6 +64,25 @@ def restore() -> int:
     return 0
 
 
+def report() -> int:
+    """Keep what the backup says of its last copy (JSON on stdin), with when it said so, for the admin page."""
+    import json
+    raw = sys.stdin.buffer.read(REPORT_MOST + 1)
+    if len(raw) > REPORT_MOST:
+        sys.exit("too long")
+    try:
+        got = json.loads(raw)
+    except ValueError:
+        sys.exit("not JSON")
+    if not isinstance(got, dict) or got.get("status") not in ("ok", "failed"):
+        sys.exit("not a report: {status: ok|failed, ...}")
+    keep = {k: got[k] for k in ("status", "began", "ended", "bytes", "why", "kept", "host") if k in got}
+    tmp = DATA / "backup-report.json.tmp"
+    tmp.write_text(json.dumps({**keep, "received": time.time()}))
+    tmp.replace(DATA / "backup-report.json")
+    return 0
+
+
 def main() -> int:
     words = (os.environ.get("SSH_ORIGINAL_COMMAND") or " ".join(sys.argv[1:])).split()
     if len(words) == 2 and words[0] == "backed-up" and re.fullmatch(r"\d{9,11}(\.\d+)?", words[1]):
@@ -75,7 +97,9 @@ def main() -> int:
         return 0
     if words == ["restore"]:
         return restore()
-    sys.exit("usage: backed-up <unix time> | wanted | restore")
+    if words == ["report"]:
+        return report()
+    sys.exit("usage: backed-up <unix time> | wanted | restore | report")
 
 
 if __name__ == "__main__":

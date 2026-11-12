@@ -783,7 +783,11 @@ offloaded, marked, and asked back. That needs a second key on hal, which the ser
     sudo cp deploy/bouldermesh-restore.service deploy/bouldermesh-restore.timer /etc/systemd/system/
     sudo systemctl daemon-reload && sudo systemctl enable --now bouldermesh-restore.timer     # what's wanted back, half-hourly
 
-Without that key nothing is offloaded. backup.sh finds it as `~/.ssh/bouldermesh_handshake` (`BACKUP_HANDSHAKE_KEY`).
+Without that key nothing is offloaded, and the server can't know of any backup. backup.sh finds it as
+`~/.ssh/bouldermesh_handshake` (`BACKUP_HANDSHAKE_KEY`). Through it each night's copy also says how it went
+(`data/backup-report.json`): the admin page's *Backups* shows the last good copy, its size, and what's kept by night,
+and a banner at its top is red while no good copy is confirmed, and orange once the last is over 36 h old or a later
+one failed (with why).
 
 **Troubleshooting.** The commands in `cli.py` that read the data run inside the container, where it is (`/data`), from
 the checkout whose `.env` names the compose files. On the server:

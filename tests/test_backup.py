@@ -92,9 +92,12 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
     else:
         print("rrsync not installed: skipping the forced command")
     # a source with no data/, as the home folder is when a key without the restriction logs in: a failure, not a backup
+    # (as through a connection ssh shared with a deploy, Nov 12, 2026): found before anything here is touched
     (TMP / "home").mkdir()
+    before = sorted(p.relative_to(dest) for p in (dest / "current").rglob("*"))
     r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), str(TMP / "home")], env=env, capture_output=True, text=True)
-    assert r.returncode == 1 and "no data/ came" in r.stderr, r.stdout + r.stderr
+    assert r.returncode == 1 and "no data/ at" in r.stderr and "nothing copied" in r.stderr, r.stdout + r.stderr
+    assert sorted(p.relative_to(dest) for p in (dest / "current").rglob("*")) == before, "current/ left as it was"
     print("nothing to copy OK")
 
     # offloading's handshake (deploy/backup-handshake.py, here run directly): what the server offloaded is kept here,
@@ -117,6 +120,18 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
     assert (cur / "projects" / "aaaaaaaaaaaa" / "photos" / "p.jpg").read_bytes() == b"jpg, kept" and (cur / "cache" / "videos" / "vvvvvvvvvvv.mp4").exists()
     assert not (cur / "meshes" / "m1" / "mesh.glb").exists(), "what wasn't offloaded follows the server, as before"
     assert began - 2 <= float((data / "backed-up").read_text()) <= time.time(), "when the copy began"
+    # and how it went, for the admin page: its size here, and what's kept by night
+    import json
+    rep = json.loads((data / "backup-report.json").read_text())
+    assert rep["status"] == "ok" and rep["why"] == "" and began - 2 <= rep["began"] <= rep["ended"] <= time.time() and rep["bytes"] > 0, rep
+    assert rep["kept"] and all(set(k) == {"day", "db", "changed"} for k in rep["kept"]) and rep["received"] >= rep["ended"], rep
+    # one that fails says why
+    r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), str(TMP / "home")], env=henv, capture_output=True, text=True)
+    assert r.returncode == 1, r.stdout + r.stderr
+    rep = json.loads((data / "backup-report.json").read_text())
+    assert rep["status"] == "failed" and rep["why"].startswith("no data/ at "), rep
+    st = server.backup_state()      # the admin page's: the last good copy, and the latest try, which failed
+    assert st["confirmed"] == float((data / "backed-up").read_text()) and st["report"]["status"] == "failed" and st["stale_hours"] == 36, st
     (data / "offload-wanted.list").write_text("projects/aaaaaaaaaaaa/photos\nmeshes/m1/mesh.glb\n")
     r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), "--restore-only", str(checkout)], env=henv, capture_output=True, text=True)
     assert r.returncode == 0 and "restored 1 file(s)" in r.stdout, r.stdout + r.stderr
@@ -125,6 +140,8 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
                                                env={**os.environ, "BOULDERMESH_DATA": str(data)}, input=stdin, capture_output=True)
     assert hs("backed-up", "soon").returncode and hs("backed-up", str(int(time.time()) + 3600)).returncode, "nonsense refused"
     assert hs("rm", "-rf", "/").returncode and hs("wanted").stdout.decode().split() == ["projects/aaaaaaaaaaaa/photos"], "only valid paths"
+    assert hs("report", stdin=b"[1]").returncode and hs("report", stdin=b'{"status": "fine"}').returncode, "not a report"
+    assert hs("report", stdin=b'{"status": "ok", "x": "' + b"y" * 70000 + b'"}').returncode, "too long"
     import io
     import tarfile
     buf = io.BytesIO()
