@@ -1800,13 +1800,15 @@ async function loadGltfWithTexture(url, base, label, first = 0){
   return { gltf, note };
 }
 let shownMesh = null;    // the id of the mesh in the viewer, if it's one of ours
-// A phone shows a mesh's progress over whichever view is showing, and moves to the view once it's ready to see, rather
-// than to an empty view while it loads. Returns what to call when it's done.
+// A mesh's progress while it loads: on a phone over whichever view is showing, moving to the view once it's ready to see,
+// rather than to an empty view; on a wider screen over the middle of the view. Returns what to call when it's done.
 let loadSeq = 0, loadingUpdate = null;
 function loading(label){
   const seq = ++loadSeq, el = $('#loading');
   loadingUpdate = null;
-  if (!phone.matches) { el.hidden = true; return () => {}; }
+  const r = phone.matches ? null : $('#right').getBoundingClientRect();
+  Object.assign(el.style, r ? { inset: 'auto', left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`, background: 'transparent' }
+                            : { inset: '', left: '', top: '', width: '', height: '', background: '' });
   const bar = el.querySelector('.bar'), fill = bar.querySelector('i'), detail = el.querySelector('.detail');
   const show = (frac, text) => { bar.classList.toggle('indef', frac == null); fill.style.width = frac == null ? '' : `${Math.round(frac * 100)}%`; detail.textContent = text; };
   el.querySelector('.what').textContent = 'Loading ' + label;
@@ -1830,8 +1832,8 @@ async function loadMeshUrl(url, filename, label, id){
   viewVia = '';
   $('#vfrom').style.display = 'none';
   closeBeta(id);
-  const loaded = loading(label);
   if (!phone.matches) showRight('3d');
+  const loaded = loading(label);
   viewNote('');
   pieces = null; renderPieces();
   $('#orient').style.display = 'none';
@@ -1840,7 +1842,6 @@ async function loadMeshUrl(url, filename, label, id){
   // with the mesh's version from the list, its files are kept a year: what's at that address never changes (server.py)
   const v = id ? meshesById[id]?.v : null, at = (u, query = '') => { const qs = [query, v ? `v=${v}` : ''].filter(Boolean).join('&'); return qs ? `${u}?${qs}` : u; };
   const base = url.slice(0, url.lastIndexOf('/') + 1);
-  if (!phone.matches) toast('Loading ' + filename + '…', 60000);
   $('#viewing').textContent = `Loading ${label}…`;
   try {
     let obj, note = '', detail = null;
