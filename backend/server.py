@@ -6075,7 +6075,8 @@ def came_went(kind: str):
 
 MACHINES = pullwork.Board(DATA / "compute" / "machines.sqlite", DATA / "compute" / "jobs", lambda: compute_settings()["compute.image"],
                           jobctl, machine_rules, lambda m: NOTIFIER.registered("machine", m, f" ({m['client'] or 'a worker script'})"),
-                          came_went=came_went("machine"), idle_why=lambda: machines_idle_why(), downloaded=script_downloaded("worker"))
+                          came_went=came_went("machine"), idle_why=lambda: machines_idle_why(), downloaded=script_downloaded("worker"),
+                          cpu_image=lambda image: image.removesuffix("-gpu"))    # deploy/build.sh's names: <commit>-gpu, <commit>
 
 
 def machine_command(m: dict, result: str) -> dict:

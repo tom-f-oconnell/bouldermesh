@@ -868,7 +868,10 @@ machine. *Run more on* adds up to that many machines (2 by default):
   restart are ended. Its credentials need EC2 (run, describe and terminate instances, security groups)
   and SSM's GetParameter. *Test the connection* checks them without starting anything.
 - **Machines that connect here for work**: for any this server can't reach, such as one behind a lab's firewall. On the
-  machine, which needs Python 3.9, Docker you may use, and NVIDIA's container toolkit for the GPU, run:
+  machine, which needs Python 3.9, Docker you may use, and NVIDIA's container toolkit for the GPU, run the commands
+  below. One without an NVIDIA GPU only filters harvests' photos (`--tasks`, which also picks what one with a GPU
+  takes), in this server's own CPU image (2.4 GB), needing about 4 GB of memory free; meshing on a CPU alone would take
+  hours a climb. Filtering goes only to approved machines, as what it keeps is what's meshed.
 
       curl -O https://<site>/worker/bouldermesh_worker.py      # or worker/bouldermesh_worker.py in this repository
       python3 bouldermesh_worker.py --setup                    # Debian or Ubuntu: Docker and NVIDIA's toolkit, if missing

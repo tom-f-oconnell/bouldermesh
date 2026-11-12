@@ -23,8 +23,11 @@ Stop it with Ctrl-C: the climb it was on goes back to the server, for this or an
 It keeps a record of its time in usage.jsonl in ~/.bouldermesh-worker (each job, and each change between working, waiting
 for climbs and held back), and says once an hour how the hour went.
 
+A machine without an NVIDIA GPU only filters harvests' photos by default (--tasks), which needs no GPU, a few GB of
+memory and disk, and the server's CPU image (2.4 GB): meshing on a CPU alone takes hours a climb.
+
 It takes no climbs while others keep the GPU busy (over 50% as a median over 3 minutes, until it's quiet again for 5;
---busy-gpu-util), or while less than 24 GB of memory is free (--need-ram-gb), and only those whose GPU memory fits in
+--busy-gpu-util), or while less than 24 GB of memory is free (--need-ram-gb; 4 GB for filtering alone), and only those whose GPU memory fits in
 what's free; it tells the server why, which keeps a record of how often each machine works, waits or is held back. A
 climb it has started, it finishes. Its CPU use is held down by --nice and --cpus.
 
@@ -71,11 +74,12 @@ from pathlib import Path
 # 11: --setup installs Docker and NVIDIA's container toolkit where they're missing; says what's wrong with Docker at once
 # 12: filters a harvest's photos for those of other rocks (remote_job.py --task filter), sent its photos, the anchors from
 #     other harvests (more/) and what the server's cache knows of them (cache.sqlite)
-VERSION = 12
+VERSION = 13
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
                                                     # filtering a harvest's photos
+CPU_TASKS = ("filter",)     # what a machine without a GPU takes, unless --tasks says otherwise
 INPUTS = ("photos", "masks", "mesh", "videos", "more", "cache.sqlite", "task.json")   # what a job's folder may hold
 SEND_EVERY = 5              # seconds between reports of a job's log, which also tell the server it's alive
 JOB_ID = re.compile(r"[0-9a-f]{12}")
@@ -91,6 +95,8 @@ TURNED_AWAY = 3             # the exit status when the server won't take this sc
 BUSY_GPU_UTIL = 50          # others' GPU use (%), as a median, over which it takes no climbs
 # memory free (MemAvailable) a job may need at its peak (19 GB seen on hal-2, 24 on hal itself); the variable, as the flag
 NEED_RAM_GB = float(os.environ.get("BOULDERMESH_NEED_RAM_GB", "24"))
+LIGHT_RAM_GB = 4            # and without meshing: filtering's CLIP model and its matching
+LIGHT_GB = 2.0              # room for a job's folder and CLIP's weights, without meshing
 # seconds between GPU samples, over which others' use makes it hold back, and over which it must be quiet again to stop
 GPU_EVERY, BUSY_WINDOW, QUIET_WINDOW = (float(x) for x in os.environ.get("BOULDERMESH_GPU_WINDOWS", "5,180,300").split(","))
 SHARE_EVERY = 15            # seconds between looks at which of the GPU's processes are a job's, for its share of the GPU's use
@@ -644,6 +650,8 @@ class Worker:
         self.settings = Path(args.home).expanduser().resolve()              # config.json, and pulled.json
         self.server = Server(args.server, args.token)
         self.gpu = self.gpu_args(args.gpu)
+        self.tasks = tuple(t for t in TASKS if t in (args.tasks or "").split(",")) or (TASKS if self.gpu else CPU_TASKS)
+        self.meshes = "reconstruct" in self.tasks    # what it needs room and memory for: a climb's, or less
         self.container: str | None = None
         self.watch = GpuWatch() if self.gpu else None
         self.gpu_busy = False
@@ -664,10 +672,10 @@ class Worker:
         """Why this machine shouldn't take a climb now, or None: too little memory free, or others keeping its GPU busy
         (a median over BUSY_WINDOW, and once over, quiet again over QUIET_WINDOW, so as not to flip back and forth). The
         GPU memory a climb needs, the server checks against what's free (gpu_free_mb)."""
-        need = self.args.need_ram_gb if self.args.need_ram_gb is not None else NEED_RAM_GB
+        need = self.args.need_ram_gb if self.args.need_ram_gb is not None else NEED_RAM_GB if self.meshes else LIGHT_RAM_GB
         free = mem_available_gb()
         if need and free is not None and free < need:
-            return f"{free:.0f} GB of memory free, and a climb may need {need:g} GB"
+            return f"{free:.0f} GB of memory free, and {'a climb' if self.meshes else 'a job'} may need {need:g} GB"
         limit = self.args.busy_gpu_util if self.args.busy_gpu_util is not None else BUSY_GPU_UTIL
         if self.watch and limit:
             window = QUIET_WINDOW if self.gpu_busy else BUSY_WINDOW
@@ -685,12 +693,14 @@ class Worker:
         """Why there isn't room under --data (or --home) for CLIMBS_AHEAD climbs and the models still to download,
         or None if there is."""
         have = tree_size(self.home / "data" / "cache" / "models") / GB
-        need = self.args.need_gb if self.args.need_gb is not None else CLIMBS_AHEAD * CLIMB_GB + max(0.0, MODELS_GB - have)
+        need = (self.args.need_gb if self.args.need_gb is not None else CLIMBS_AHEAD * CLIMB_GB + max(0.0, MODELS_GB - have)
+                if self.meshes else LIGHT_GB)
         free = free_gb(self.home)
         if free >= need:
             return None
-        why = (f"{self.home} has {free:.1f} GB free, and jobs need about {need:.1f} GB there (room for {CLIMBS_AHEAD} climbs at "
-               f"{CLIMB_GB:g} GB" + (f", and {MODELS_GB - have:.1f} GB of models to download the first time" if have < MODELS_GB else "") + ")")
+        why = (f"{self.home} has {free:.1f} GB free, and jobs need about {need:.1f} GB there" + (
+            f" (room for {CLIMBS_AHEAD} climbs at {CLIMB_GB:g} GB" + (f", and {MODELS_GB - have:.1f} GB of models to download the "
+                                                                      f"first time" if have < MODELS_GB else "") + ")" if self.meshes else ""))
         if not self.args.data:
             why += (". Give --data DIR to put jobs and models on a disk with more room (it's remembered; this script's settings "
                     "stay where they are)")
@@ -728,8 +738,10 @@ class Worker:
             raise SystemExit(f"can't use Docker: {(docker.stderr or docker.stdout).strip()[-300:]}")
         blocked = update_blocked(self.server.url)
         return {"version": VERSION, "client": f"{socket.gethostname()}: docker {docker.stdout.strip()}, script {VERSION}"
+                + ("" if self.tasks == TASKS else f"; takes {', '.join(self.tasks)} only")
                 + (f"; won't update itself: {blocked.split(',')[0]}" if blocked else ""),
-                "gpu": bool(self.gpu), "cpus": self.args.cpus, "gpu_name": self.watch.name if self.watch else None}
+                "gpu": bool(self.gpu), "cpus": self.args.cpus, "gpu_name": self.watch.name if self.watch else None,
+                "tasks": list(self.tasks)}
 
     # -- one job --------------------------------------------------------------------------------------------------------
     def do(self, job: dict) -> None:
@@ -737,6 +749,9 @@ class Worker:
         if not JOB_ID.fullmatch(jid) or not IMAGE.fullmatch(image) or task not in TASKS:
             raise RuntimeError(f"the server sent a job this script can't run: {job}")
         api = f"/worker/api/jobs/{jid}"
+        if task not in self.tasks:      # a server too old to know what it takes
+            self.server.call(f"{api}/done", {"status": "released"})
+            raise NotHere(f"the server sent a job of a kind this machine doesn't take ({task}; it takes {', '.join(self.tasks)})")
         if self.args.image_prefix and not image.startswith(self.args.image_prefix):
             self.server.call(f"{api}/done", {"status": "released"})
             raise SystemExit(f"the server asked for {image}, and this machine only runs images starting {self.args.image_prefix}")
@@ -911,6 +926,7 @@ class Worker:
             raise SystemExit(f"not starting: {short}")
         blocked = update_blocked(self.server.url)
         log(f"working for {self.server.url}: {client['client']}" + (", with the GPU" if self.gpu else ", without a GPU")
+            + ("" if self.tasks == TASKS else f", taking {', '.join(self.tasks)} only")
             + (f", at most {self.args.cpus} cores" if self.args.cpus else "")
             + (f"; it doesn't update itself ({blocked})" if blocked else "; it updates itself when the server says to"))
         updates = not blocked and not self.args.once
@@ -1052,6 +1068,8 @@ def main() -> None:
     ap.add_argument("--cpus", type=float, help="at most this many cores for a job (docker run --cpus; remembered)")
     ap.add_argument("--gpu", choices=("auto", "all", "cdi", "none"), help="give jobs the GPU: auto (if nvidia-smi finds one, "
                     "the default), all (--gpus all), cdi (the CDI device nvidia.com/gpu=all) or none (remembered)")
+    ap.add_argument("--tasks", help="the kinds of job to take, comma-separated, of " + ", ".join(TASKS) + ": all of them with "
+                    "a GPU, and filter alone without one, by default, as meshing on a CPU alone takes hours (remembered)")
     ap.add_argument("--nice", type=int, default=10, help="run jobs at this niceness (10)")
     ap.add_argument("--busy-gpu-util", type=float, help=f"take no climbs while others keep the GPU busier than this (%%, as a "
                     f"median over {BUSY_WINDOW / 60:g} min; {BUSY_GPU_UTIL} by default, 0 never; remembered)")
@@ -1090,7 +1108,7 @@ def main() -> None:
         ap.error("--register makes a new token, so not with --token")
     if args.server and args.server != conf.get("server") and not args.token or args.register:
         conf.pop("token", None)     # a token is the server's it was registered with
-    for k in ("server", "token", "cpus", "gpu", "image_prefix", "data", "busy_gpu_util", "need_ram_gb"):
+    for k in ("server", "token", "cpus", "gpu", "image_prefix", "data", "busy_gpu_util", "need_ram_gb", "tasks"):
         if getattr(args, k) is None:
             setattr(args, k, conf.get(k))
         else:

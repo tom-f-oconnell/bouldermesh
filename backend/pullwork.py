@@ -19,6 +19,8 @@ becoming a mesh: its climb waits, and takes the held mesh once the machine is ap
 it's turned down. Jobs are kept only in memory: a restart here
 ends them anyway, the climbs carry on after it as new jobs, and a machine still running an old one is told it's gone.
 
+A machine says which kinds of job it takes (worker script 13 on): one without a GPU only filters harvests' photos, by
+default, and is given the server's own CPU image to run them in (cpu_image), 2.4 GB rather than the GPU build's 10.4.
 A machine whose owner's work keeps its GPU busy, or whose memory is short, says it's held back, and gets no job; one
 whose GPU hasn't memory free for the next job's (gpu_need_mb()) is held back too. Each machine's state as it asks
 (working, idle, held back, awaiting approval, or offline once it stops asking) is kept as it changes, in machine_states,
@@ -114,8 +116,9 @@ class Board:
                  registered: Callable[[dict], None] = lambda m: None, log: Callable[[str], None] = print,
                  came_went: Callable[[dict, str, str], None] = lambda m, state, why: None,
                  downloaded: Callable[[dict], None] = lambda info: None,
-                 idle_why: Callable[[], str | None] = lambda: None):
+                 idle_why: Callable[[], str | None] = lambda: None, cpu_image: Callable[[str], str] = lambda image: image):
         self.db_path, self.files, self.image, self.jobctl = db_path, files, image, jobctl
+        self.cpu_image = cpu_image      # the image to run a job in on a machine without a GPU, for the one it was made with
         self.rules, self.registered, self.came_went, self.idle_why = rules, registered, came_went, idle_why
         self.downloaded = downloaded
         self._said: dict[str, tuple[str, float]] = {}   # each machine's reason for its state last logged, and when
@@ -361,6 +364,12 @@ class Board:
         if not allowed:
             self._state(m, "awaiting approval")
             return {"wait": 300, "why": "waiting for approval by whoever runs this site", "provisional": True}
+        tasks = client.get("tasks")     # what it takes (worker script 13 on): all, before; without a GPU, filtering alone
+        tasks = {str(t) for t in tasks} if isinstance(tasks, list) else None
+        if waiting and tasks is not None and "reconstruct" not in tasks:   # only meshing waits for approval, held
+            self._state(m, "awaiting approval")
+            return {"wait": 300, "why": "waiting for approval by whoever runs this site: only approved machines filter photos, "
+                                        "find beta or find sizes", "provisional": True}
         held = str(client.get("held") or "")[:200]
         if held:    # its owner's work, or memory short: as its script says
             self._state(m, "held back", held)
@@ -379,7 +388,7 @@ class Board:
             else:
                 version = int(_number(client.get("version")) or 1)
                 could = [j for j in self.jobs.values() if j.state == "queued" and j.version <= version
-                         and (not waiting or j.task == "reconstruct")]
+                         and (not waiting or j.task == "reconstruct") and (tasks is None or j.task in tasks)]
                 # a harvest's filtering first (short, and the server waits for it), then meshing, then beta and size
                 mine = min((j for j in could if free is None or j.gpu_mb <= free),
                            key=lambda j: (j.task != "filter", j.task != "reconstruct", j.created), default=None)
@@ -402,8 +411,8 @@ class Board:
             self.cond.notify_all()
             self.q("UPDATE machine_jobs SET machine_id=?, machine=?, taken=?, outcome=NULL WHERE id=?", m["id"], m["name"], now, mine.id)
             self._state(m, "working", mine.label)
-            return {"job": {"id": mine.id, "image": mine.image, "internet": mine.internet, "size": mine.size, "part": PART_MAX,
-                            "task": mine.task}}
+            return {"job": {"id": mine.id, "image": mine.image if client.get("gpu") else self.cpu_image(mine.image),
+                            "internet": mine.internet, "size": mine.size, "part": PART_MAX, "task": mine.task}}
 
     def _mine(self, m: dict, job_id: str) -> Job:
         j = self.jobs.get(job_id)

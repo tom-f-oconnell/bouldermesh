@@ -41,6 +41,7 @@ except ImportError:
 
 SCRIPT = ROOT / "worker" / "bouldermesh_worker.py"
 SCRIPT_VERSION = int(re.search(r"^VERSION = (\d+)", SCRIPT.read_text(), re.M)[1])
+ALL_TASKS = "reconstruct,beta,scale,filter"     # what the fake machines here take, without a GPU (the script's default: filter)
 FAKE_DOCKER = f'''#!{sys.executable}
 import json, os, signal, sys
 args = sys.argv[1:]
@@ -114,7 +115,7 @@ def call(path: str, body=None, token: str | None = None, raw: bytes | None = Non
 
 def worker(token: str, *extra: str, env: dict | None = None, timeout: float = 120) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(SCRIPT), "--server", URL, "--token", token, "--home", str(TMP / "home"),
-                           "--gpu", "none", *extra], env=env or ENV, capture_output=True, text=True, timeout=timeout)
+                           "--gpu", "none", "--tasks", ALL_TASKS, *extra], env=env or ENV, capture_output=True, text=True, timeout=timeout)
 
 
 def project(name: str) -> Path:
@@ -374,7 +375,7 @@ reg_home = TMP / "home-reg"
 
 
 def registered_worker(*extra: str, ok: bool = True) -> str:
-    r = subprocess.run([sys.executable, str(SCRIPT), "--server", URL, "--home", str(reg_home), "--gpu", "none", *extra], env=ENV,
+    r = subprocess.run([sys.executable, str(SCRIPT), "--server", URL, "--home", str(reg_home), "--gpu", "none", "--tasks", ALL_TASKS, *extra], env=ENV,
                        capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
     assert (r.returncode == 0) is ok, r.stdout + r.stderr
     return r.stdout + r.stderr
@@ -738,6 +739,28 @@ except compute.ComputeUnavailable as e:
     assert "no machine took it within" in str(e) and time.time() - t0 < 30, e
 assert not [j for j in board.running() if j["label"] == "nobody"], "and it's gone from the board"
 print("filtering on machines OK")
+
+# --- a machine without a GPU takes only the kinds of job it says (the script's default: filtering), in the server's CPU
+# image; none of them before it's approved
+board.cpu_image = lambda name: name.removesuffix("-gpu")
+mesh_job = board._new_job("reconstruct", {"photos": job / "photos"}, {"internet": True}, "mesh", image[0] + "-gpu")
+filter_job = board._new_job("filter", {"photos": job / "photos"}, {"methods": None}, "cpu filter", image[0] + "-gpu", version=12)
+asks = {"version": SCRIPT_VERSION, "client": "cpu-box: docker 29, script 13; takes filter only", "tasks": ["filter"]}
+cpu_box = board.add("cpu-box")
+r = board.work(board.machine(cpu_box["token"]), "10.0.0.10", asks)
+assert r["job"]["id"] == filter_job.id and r["job"]["image"] == image[0], r
+assert "job" not in board.work(board.machine(board.add("cpu-box-2")["token"]), "10.0.0.10", asks), "not the mesh"
+r = board.work(board.machine(board.add("gpu-box")["token"]), "10.0.0.11", {"version": SCRIPT_VERSION, "gpu": True})
+assert r["job"]["id"] == mesh_job.id and r["job"]["image"] == image[0] + "-gpu", "the GPU build, with a GPU"
+lent = board.add("lent-box")
+board.q("UPDATE machines SET status='provisional' WHERE id=?", lent["id"])
+r = board.work(board.machine(lent["token"]), "10.0.0.12", asks)
+assert r["provisional"] and "only approved machines filter photos" in r["why"], r
+for j in (mesh_job, filter_job):
+    board.jobs.pop(j.id, None)
+    j.input.unlink(missing_ok=True)
+board.cpu_image = lambda name: name
+print("machines without a GPU OK")
 
 # --- paused, as before a restart: no new job given out, though one is waiting ------------------------------------------
 waiting_job = board._new_job("reconstruct", {"photos": job / "photos"}, {"internet": True}, "paused", image[0])

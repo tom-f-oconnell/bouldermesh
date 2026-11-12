@@ -768,7 +768,7 @@ ways now: either script makes a token for you, asks your name (shown on the lead
 site, and whoever runs it then approves it. A third way, collecting data yourself, is coming soon.</p>
 <div class="choose">
   <a href="#videos" data-show="videos">Collect videos<small>Fetch YouTube videos of climbs from your address, slowly. Python is all it needs.</small></a>
-  <a href="#compute" data-show="compute">Compute meshes<small>(GPU required) Turn climbs' photos into 3D models on your computer, in Docker.</small></a>
+  <a href="#compute" data-show="compute">Compute meshes<small>Turn climbs' photos into 3D models on your computer's GPU, in Docker, or on Linux without one, sort which photos show the climb.</small></a>
   <a href="#data" data-show="data">Data collection<small>Coming soon: your own photos and videos, and photos to scale and orient meshes.</small></a>
 </div>
 
@@ -811,6 +811,11 @@ below inside it. A Mac won't do: it has no NVIDIA GPU, and Docker on a Mac can't
 script keeps its jobs and the models they download, which <code>--data</code> can put on another disk.</li>
 <li><b>Internet:</b> a climb's photos are 50 to 300 MB down, and its mesh 20 to 60 MB up.</li>
 </ul>
+<p><b>No NVIDIA GPU?</b> A Linux computer with Docker (usable without sudo) and Python 3.9 or newer can still help: the
+same script, on a computer without one, only sorts each climb's web photos into those that show it and those that
+don't, much of the work before meshing. That needs about 4 GB of memory free, 5 GB where Docker keeps its
+images and 2 GB for jobs, and a climb's photos (50 to 300 MB) down at a time. It takes no jobs until whoever runs
+this site approves it.</p>
 <h3>1. Get the script</h3>
 <div class="box"><pre>curl -O {base}/worker/bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
 <p><a href="/worker/bouldermesh_worker.py" download="bouldermesh_worker.py">Or download it here</a>.</p>
