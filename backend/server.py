@@ -289,6 +289,16 @@ def init_db() -> None:
                     "WHERE status='pending' AND redo IN ('harvest', 'harvest+rebuild') AND COALESCE(redo_started, 0)=0 "
                     "AND (note LIKE 'volunteers have fetched%' OR note LIKE 'queued to harvest again with the videos volunteers%' "
                     "OR note LIKE 'waited % h for volunteers%')")
+        # and so other projects queued to harvest again for them (reharvest_with_videos(), before its add), as their logs say
+        for r in con.execute("SELECT id, job FROM projects WHERE status='queued' AND job LIKE '%\"harvest\"%'").fetchall():
+            try:
+                job = json.loads(r["job"])
+                said = (PROJECTS / r["id"] / "job.log").read_text(errors="replace")[-4000:]
+            except (OSError, ValueError):
+                continue
+            if (job.get("type") == "harvest" and job.get("again") and not job.get("add")
+                    and "volunteers fetched the videos this harvest couldn't have: harvesting it again" in said):
+                con.execute("UPDATE projects SET job=? WHERE id=?", (json.dumps({**job, "add": True}), r["id"]))
         if "replaced_by" not in {r[1] for r in con.execute("PRAGMA table_info(meshes)")}:
             con.execute("ALTER TABLE meshes ADD COLUMN replaced_by TEXT")   # a rebuild of the same photos' project
         # an area's climbs' boulders were their area paths joined by "/", which a name with one in it ("Drifter/Smoking

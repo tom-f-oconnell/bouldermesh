@@ -1274,8 +1274,19 @@ for name, redo, note, started in (("Alpha", "harvest+rebuild", "volunteers have 
                                   ("Gamma", "harvest+rebuild", "waited 24 h for volunteers: meshing it with what's come", 1)):
     server.q("UPDATE campaign_items SET status='pending', redo=?, note=?, redo_started=? WHERE campaign_id=? AND name=?", redo, note, started,
              cm["id"], name, write=True)
+hpid = server.new_id()
+(server.PROJECTS / hpid / "photos").mkdir(parents=True)
+server.q("INSERT INTO projects(id,name,created,kind,status,job) VALUES(?,?,?,?,?,?)", hpid, "Elsewhere (harvest)", time.time(), "harvest",
+         "queued", json.dumps({"type": "harvest", "pid": hpid, "sources": ["youtube"], "reconstruct": False, "again": True}), write=True)
+server.append_log(hpid, "volunteers fetched the videos this harvest couldn't have: harvesting it again (Reconstruct uses them)")
+byhand = server.new_id()
+(server.PROJECTS / byhand / "photos").mkdir(parents=True)
+server.q("INSERT INTO projects(id,name,created,kind,status,job) VALUES(?,?,?,?,?,?)", byhand, "By hand (harvest)", time.time(), "harvest",
+         "queued", json.dumps({"type": "harvest", "pid": byhand, "sources": ["youtube"], "reconstruct": False, "again": True}), write=True)
 server.init_db()
 assert {n: i["redo"] for n, i in items(cm["id"]).items()} == {"Alpha": "more+rebuild", "Beta": "harvest+rebuild", "Gamma": "harvest+rebuild"}
+assert json.loads(server.q("SELECT job FROM projects WHERE id=?", hpid, one=True)["job"])["add"] is True, "a project outside areas, as its log says"
+assert "add" not in json.loads(server.q("SELECT job FROM projects WHERE id=?", byhand, one=True)["job"]), "not one queued otherwise"
 print("adding what volunteers fetched OK")
 
 # --- a climb isn't meshed until YouTube has been searched for it, unless its area says to go without ---------------------
