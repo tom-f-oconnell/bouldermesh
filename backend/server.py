@@ -56,7 +56,6 @@ import heading as heading_mod  # noqa: E402
 import skyline as skyline_mod  # noqa: E402
 import terrain as terrain_mod  # noqa: E402
 import meshclean  # noqa: E402
-import dbconn  # noqa: E402
 import links as links_mod  # noqa: E402
 import thumbs as thumbs_mod  # noqa: E402
 import meshmetrics  # noqa: E402
@@ -123,6 +122,7 @@ CLIENT_IP_HEADER = os.environ.get("CLIENT_IP_HEADER") or None
 VERSION = os.environ.get("BOULDERMESH_COMMIT") or None
 OWN_IMAGE = os.environ.get("BOULDERMESH_IMAGE") or None
 MACHINES_IMAGE = os.environ.get("BOULDERMESH_WORKER_IMAGE") or OWN_IMAGE
+WORKER_CPU_IMAGE = os.environ.get("BOULDERMESH_WORKER_CPU_IMAGE") or None   # machines without a GPU's, x86-64 and ARM64
 # the Caddyfile in front, whose trusted proxies are compared with Cloudflare's published ranges each day (proxy_ranges.py)
 RANGES = proxy_ranges.Watch(Path(os.environ["CADDYFILE"])) if os.environ.get("CADDYFILE") else None
 # volunteers fetching YouTube videos (volunteers.py), served on VOLUNTEER_PORT if it's set, for a proxy to pass on
@@ -170,7 +170,7 @@ def settings() -> settings_mod.Settings:
 
 
 def db() -> sqlite3.Connection:
-    con = dbconn.connect(DATA / "bouldermesh.sqlite", check_same_thread=False)    # closed as its with block ends
+    con = sqlite3.connect(DATA / "bouldermesh.sqlite", check_same_thread=False)
     con.row_factory = sqlite3.Row
     return con
 
@@ -6078,7 +6078,16 @@ def came_went(kind: str):
 MACHINES = pullwork.Board(DATA / "compute" / "machines.sqlite", DATA / "compute" / "jobs", lambda: compute_settings()["compute.image"],
                           jobctl, machine_rules, lambda m: NOTIFIER.registered("machine", m, f" ({m['client'] or 'a worker script'})"),
                           came_went=came_went("machine"), idle_why=lambda: machines_idle_why(), downloaded=script_downloaded("worker"),
-                          cpu_image=lambda image: image.removesuffix("-gpu"))    # deploy/build.sh's names: <commit>-gpu, <commit>
+                          cpu_image=lambda image: cpu_image_for(image))
+
+
+def cpu_image_for(image: str) -> str:
+    """The image a machine without a GPU runs a job made for image in: this build's slim one for them (WORKER_CPU_IMAGE,
+    which only filters, for x86-64 and ARM64) for the machines' image the build named; else, in deploy/build.sh's names,
+    the server's own (<commit> for <commit>-gpu, which only x86-64 runs); else the same."""
+    if WORKER_CPU_IMAGE and image == MACHINES_IMAGE:
+        return WORKER_CPU_IMAGE
+    return image.removesuffix("-gpu")
 
 
 def machine_command(m: dict, result: str) -> dict:

@@ -622,13 +622,18 @@ start or change one); *Edit…*, with the token, brings the rest.
 The image isn't built there: compiling COLMAP wants cores and memory a small server hasn't got, so the public setup runs
 one built elsewhere. On a machine with the meshes to show:
 
-    deploy/build.sh                          # from the commit checked out: bouldermesh:public (2.5 GB), bouldermesh:gpu (10.4 GB)
+    deploy/build.sh                          # from the commit checked out: bouldermesh:public (2.5 GB), bouldermesh:gpu (10.4 GB),
+                                             # and <registry>:<commit>-cpu (1.7 GB), for machines without a GPU
     deploy/ship.sh you@boulders.example.com bouldermesh:public   # pushes both, the server pulls its own; meshes, database
 
 The server's image has torch's CPU build, as it meshes nothing itself. The GPU one, with the CUDA libraries VGGT needs, is
 for the machines that mesh (see "Running reconstructions elsewhere"). The server pulls its image from the
 registry, so a ship moves only the layers that changed, usually a few MB. Its earlier builds' images go once nothing runs
-them. `NO_PUSH=1` sends the image whole instead. `GPU=0 deploy/build.sh` builds only the server's.
+them. `NO_PUSH=1` sends the image whole instead. `GPU=0 deploy/build.sh` builds only the server's and the CPU workers'.
+Those, from `deploy/worker-cpu.Dockerfile`, hold only what filtering photos needs (Python, OpenCV, CLIP on torch's CPU
+build), for x86-64 and, where Docker here can run ARM64 images, ARM64 too, for Apple Silicon Macs, under one name;
+`CPU=0` skips them. Building the ARM64 half on an x86-64 machine needs QEMU registered with the kernel, once per boot:
+`docker run --privileged --rm tonistiigi/binfmt --install arm64` (build.sh says so when it's missing, and builds x86-64 only).
 
 Areas are stopped in the copy, so nothing runs there by itself. Projects' photos don't go, so their cards show none, and
 the database there is replaced each time, all but the settings changed on its admin page. Once the public server harvests
@@ -881,7 +886,7 @@ machine. *Run more on* adds up to that many machines (2 by default):
 - **Machines that connect here for work**: for any this server can't reach, such as one behind a lab's firewall. On the
   machine, which needs Python 3.9, Docker you may use, and NVIDIA's container toolkit for the GPU, run the commands
   below. One without an NVIDIA GPU only filters harvests' photos (`--tasks`, which also picks what one with a GPU
-  takes), in this server's own CPU image (2.4 GB), needing about 4 GB of memory free; meshing on a CPU alone would take
+  takes), in a slim CPU image (1.7 GB, for x86-64 and ARM64), needing about 4 GB of memory free; meshing on a CPU alone would take
   hours a climb. Filtering goes only to approved machines, as what it keeps is what's meshed.
 
       curl -O https://<site>/worker/bouldermesh_worker.py      # or worker/bouldermesh_worker.py in this repository
@@ -939,7 +944,8 @@ machine. *Run more on* adds up to that many machines (2 by default):
 Machines run the same commit as this server, in its GPU build (torch's CUDA libraries, for VGGT), which they pull from a
 registry. `deploy/build.sh` names both builds for GitHub's by their commit: `ghcr.io/<owner>/bouldermesh:<commit>` for
 the server, and `:<commit>-gpu` for machines (`REGISTRY` for another registry). `deploy/ship.sh` pushes them there, and
-as `:latest` and `:latest-gpu`, before the server gets its own. Left empty, *Docker image the machines run* is then the
+as `:latest` and `:latest-gpu`, before the server gets its own, and `:<commit>-cpu` (`:latest-cpu`), which machines
+without a GPU are given. Left empty, *Docker image the machines run* is then the
 GPU build of the commit the server runs, so each ship moves the machines with it, and a machine that has an older build pulls the new one
 by its new name; the admin page shows which. Pushing to GitHub's registry needs gh's token to be allowed to write packages
 (`gh auth refresh -h github.com -s write:packages`, once); ship.sh logs in with it for the push only. The package starts

@@ -51,7 +51,8 @@ with open(os.path.join(state, "calls"), "a") as f:
 if args[:1] == ["version"]:
     print("99.0"); sys.exit(0)
 if args[:1] == ["info"]:
-    print(state); sys.exit(0)
+    fmt = args[-1]
+    print("x86_64" if "Architecture" in fmt else str(64 * 2**30) if "MemTotal" in fmt else state); sys.exit(0)
 if args[:2] == ["manifest", "inspect"]:
     size = int(os.environ.get("FAKE_IMAGE_BYTES", "1000"))
     print(json.dumps({{"Descriptor": {{"platform": {{"architecture": "amd64", "os": "linux"}}}}, "SchemaV2Manifest": {{"layers": [{{"size": size}}]}}}}))

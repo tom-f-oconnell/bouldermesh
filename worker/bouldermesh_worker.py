@@ -24,7 +24,7 @@ It keeps a record of its time in usage.jsonl in ~/.bouldermesh-worker (each job,
 for climbs and held back), and says once an hour how the hour went.
 
 A machine without an NVIDIA GPU only filters harvests' photos by default (--tasks), which needs no GPU, a few GB of
-memory and disk, and the server's CPU image (2.4 GB): meshing on a CPU alone takes hours a climb.
+memory and disk, and a slim CPU image (1.7 GB, for x86-64 and ARM64): meshing on a CPU alone takes hours a climb.
 
 It takes no climbs while others keep the GPU busy (over 50% as a median over 3 minutes, until it's quiet again for 5;
 --busy-gpu-util), or while less than 24 GB of memory is free (--need-ram-gb; 4 GB for filtering alone), and only those whose GPU memory fits in
@@ -219,14 +219,15 @@ class GpuWatch:
 
 
 def mem_available_gb() -> float | None:
-    """Memory free for a job (MemAvailable), or None where /proc/meminfo isn't there."""
+    """Memory free for a job (MemAvailable), or where /proc/meminfo isn't there (a Mac), all that Docker's virtual
+    machine has (docker_memory_gb()), or None."""
     try:
         for line in Path("/proc/meminfo").read_text().splitlines():
             if line.startswith("MemAvailable:"):
                 return int(line.split()[1]) * 1024 / GB
     except (OSError, ValueError, IndexError):
         pass
-    return None
+    return docker_memory_gb()
 
 
 class Usage:
@@ -434,6 +435,11 @@ def setup() -> int:
     before each step. Never from a self-update or a service: only when its user asks, at a terminal."""
     st = machine_state()
     print(f"This machine: {describe(st)}.")
+    if sys.platform == "darwin":
+        print("--setup installs only on Debian and Ubuntu. On a Mac, install Docker Desktop "
+              "(https://docs.docker.com/desktop/setup/install/mac-install/), OrbStack or Colima, start it, and give it at least "
+              "4 GB of memory (Docker Desktop: Settings, Resources). A Mac only filters photos: Docker can't use its GPU.")
+        return 1
     if not st["linux"] or not st["debian"]:
         print(f"--setup installs only on Debian, Ubuntu and systems based on them. Here, install them yourself: {INSTALL_DOCS}")
         return 1
@@ -1023,9 +1029,30 @@ def image_download(image: str) -> int | None:
     for m in found if isinstance(found, list) else [found] if found else []:
         platform = (m.get("Descriptor") or {}).get("platform") or {}
         layers = (m.get("SchemaV2Manifest") or m.get("OCIManifest") or {}).get("layers") or []
-        if layers and platform.get("os", "linux") == "linux" and platform.get("architecture", "amd64") in ("amd64", "x86_64"):
+        if layers and platform.get("os", "linux") == "linux" and platform.get("architecture", "amd64") == docker_arch():
             return sum(int(layer.get("size") or 0) for layer in layers)
     return None
+
+
+def docker_arch() -> str:
+    """The architecture Docker runs images for here, as registries name it: amd64, or arm64 (an Apple Silicon Mac)."""
+    try:
+        r = subprocess.run(["docker", "info", "--format", "{{.Architecture}}"], capture_output=True, text=True, timeout=60)
+        arch = r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        arch = ""
+    arch = arch or __import__("platform").machine()
+    return {"x86_64": "amd64", "aarch64": "arm64"}.get(arch, arch)
+
+
+def docker_memory_gb() -> float | None:
+    """All the memory Docker's own virtual machine has, where it runs in one (Docker Desktop, OrbStack, Colima on a Mac
+    or Windows), as jobs can use no more than that; None if it won't say."""
+    try:
+        r = subprocess.run(["docker", "info", "--format", "{{.MemTotal}}"], capture_output=True, text=True, timeout=60)
+        return int(r.stdout.strip()) / GB if r.returncode == 0 and r.stdout.strip() else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
 
 
 def docker_storage() -> list[Path]:

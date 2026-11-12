@@ -32,6 +32,7 @@ trap 'rm -rf "$snap" "$kept" ${cfg:+"$cfg"}' EXIT
 env=$(docker image inspect "$image" --format '{{range .Config.Env}}{{println .}}{{end}}')
 pushed=$(echo "$env" | sed -n 's/^BOULDERMESH_IMAGE=//p')
 machines=$(echo "$env" | sed -n 's/^BOULDERMESH_WORKER_IMAGE=//p')
+cpu=$(echo "$env" | sed -n 's/^BOULDERMESH_WORKER_CPU_IMAGE=//p')     # machines without a GPU's, for x86-64 and ARM64
 push() {    # local image, name, also as
     docker tag "$1" "$2"
     docker tag "$1" "$3"
@@ -55,6 +56,13 @@ else
             push "$machines" "$machines" "${machines%:*}:latest-gpu"
         else
             echo "warning: remote machines will pull $machines, which isn't here to push: build it with deploy/build.sh" >&2
+        fi
+    fi
+    if [ -n "$cpu" ]; then
+        if docker image inspect "$cpu" > /dev/null 2>&1; then
+            push "$cpu" "$cpu" "${cpu%:*}:latest-cpu"   # every platform it was built for
+        else
+            echo "warning: machines without a GPU will pull $cpu, which isn't here to push: build it with deploy/build.sh" >&2
         fi
     fi
 fi
