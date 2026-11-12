@@ -455,7 +455,11 @@ has a darker line every metre of height (2 or 5 where it rises more than 30 or 8
 Other ways to tell, not built: the sun, fitted from how bright each part of the rock is against which way it faces in a
 photo of known time (perhaps 10-20 meshes: few photos have a time, fewer a time zone, camera clocks are often hours off,
 and video frames have no time of day); and the skyline in frames, matched against the horizon worked out from
-elevation data at the climb's coordinates (open terrain only). USGS 3DEP's 1 m lidar elevation covers Joshua Tree, the
+elevation data at the climb's coordinates. [experiments/skyline](experiments/skyline/README.md) tried that on
+2026-11-11. It failed at Joshua Tree and the Tramway, where near domes and trees fill the skyline. In the Buttermilks it
+gave headings to about ±10°: meshes of the same boulder, compared through their shared photos, disagreed by that much.
+A mesh's footprint matched against the boulders lidar keeps as bumps is the next thing to try, as it would also reach
+Joshua Tree. USGS 3DEP's 1 m lidar elevation covers Joshua Tree, the
 Buttermilks, Hueco Tanks, Red Rocks and Yosemite (its 1/3 arc-second, about 10 m, the whole US), from one request a
 square: 300 m at Joshua Tree came in 9 s as 360 KB of heights, 65 m of relief (now shown under Nearby, above).
 
