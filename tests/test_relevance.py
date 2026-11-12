@@ -261,6 +261,19 @@ assert state() == {"a": "done", "b": "running", "v": "running", "c": "pending"},
 t.end("v", detail="2 frames")
 t.update("c", 0.5)
 assert state() == {"a": "done", "b": "done", "v": "done", "c": "running"}, state()
+assert [x.get("parallel", False) for x in t.snapshot()["steps"]] == [False, False, True, False]
+# where each step runs, as it starts: the tracker's then, unless the step was told its own
+t = Tracker([("a", "A", 1), ("f", "F", 1), ("m", "M", 1), ("n", "N", 1)], where="server")
+t.update("a", 0.5)
+report = t.callback("f")
+report.at("waiting")
+report(0.1, "waiting for a machine to take it")
+report.at("machine")
+t.at("machine")
+t.update("m", 0.2)
+where = lambda: {x["key"]: x.get("where") for x in t.snapshot()["steps"]}  # noqa: E731
+assert where() == {"a": "server", "f": "machine", "m": "machine", "n": None} and t.snapshot()["where"] == "machine", where()
+assert "where" not in Tracker([("a", "A", 1)]).snapshot(), "unsaid unless given"
 print("progress OK")
 
 # --- pooling other harvests of the same boulder ---------------------------------------------------

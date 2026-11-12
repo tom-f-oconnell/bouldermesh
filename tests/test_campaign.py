@@ -454,6 +454,70 @@ assert server.campaign_status(c["id"]) == "stopped" and got["Alpha"]["status"] =
 assert got["Beta"]["status"] == "pending", got["Beta"]
 print("stop after this climb OK")
 
+# --- one climb paused: its worker alone stops it, for real; the area goes on with its others without it, and doesn't
+# finish while it's paused; a restart leaves it paused; resumed, it goes next and carries on in the same project
+fresh()
+outcome["Beta"] = "stop"
+started.clear()
+c = server.create_campaign("", "popularity", CSV)
+sid = {i["name"]: i["source_id"] for i in items(c["id"]).values()}
+stop_worker = threading.Event()
+t = threading.Thread(target=loop, daemon=True)
+t.start()
+assert started.wait(20), "never got to Beta"
+time.sleep(0.2)
+assert server._first.item == sid["Beta"]
+paused_at = time.time()
+server.pause_item(c["id"], sid["Beta"])
+running = server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["running"]
+assert items(c["id"])["Beta"]["paused"] and all(r["paused"] for r in running if r["name"] == "Beta"), "pausing"
+for _ in range(500):
+    if server.campaign_status(c["id"]) == "running" and items(c["id"])["Delta2"]["status"] == "done":
+        break
+    time.sleep(0.02)
+time.sleep(0.3)
+got = items(c["id"])
+assert time.time() - paused_at < 10, "tool wasn't killed"
+assert got["Beta"]["status"] == "pending" and got["Beta"]["paused"] and "carries on" in got["Beta"]["note"], got["Beta"]
+assert all(got[n]["status"] == "done" for n in ("Alpha", "Gamma", "Alpha2", "Delta", "Delta2")), got
+assert harvested == ["Alpha", "Beta", "Gamma", "Alpha2", "Delta", "Delta2"], harvested
+paused_pid = got["Beta"]["project_id"]
+assert server.q("SELECT status FROM projects WHERE id=?", paused_pid, one=True)["status"] == "stopped"
+view = next(v for v in server.campaigns_listed() if v["id"] == c["id"])
+assert server.campaign_status(c["id"]) == "running" and view["state"] == "waiting" and server.PAUSED_NOTE in view["note"], view
+assert view["counts"]["paused"] == 1 and [p["name"] for p in view["paused"]] == ["Beta"] and not view["next"], view
+for bad, error in ((sid["Alpha"], ValueError), ("nope", KeyError)):
+    try:
+        server.pause_item(c["id"], bad)
+        raise AssertionError(bad)
+    except error:
+        pass
+server.init_db()        # a restart
+assert items(c["id"])["Beta"]["paused"] and server.campaign_status(c["id"]) == "running", "still paused"
+outcome.clear()
+server.pause_item(c["id"], sid["Beta"], False)
+for _ in range(500):
+    if server.campaign_status(c["id"]) == "done":
+        break
+    time.sleep(0.02)
+stop_worker.set()
+t.join(5)
+got = items(c["id"])
+assert server.campaign_status(c["id"]) == "done" and got["Beta"]["status"] == "done" and not got["Beta"]["paused"], got["Beta"]
+assert got["Beta"]["project_id"] == paused_pid and harvested[-1] == "Beta", "the same project carries on"
+assert server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["note"] is None
+# among several workers: only the one on it is stopped
+fresh()
+c = server.create_campaign("", "popularity", CSV)
+w1, w2 = server.Worker("one"), server.Worker("two", remote=True)
+server._workers.extend([w1, w2])
+with server._claim_lock:
+    (_, a), (_, b) = server._claim(w1), server._claim(w2)
+server.pause_item(c["id"], b["source_id"])
+assert w2.control._stop.is_set() and not w1.control._stop.is_set() and not server._first.control._stop.is_set()
+server._workers[:] = [server._first]
+print("pausing one climb OK")
+
 # --- a server restart only pauses it: each climb carries on from where it got to
 fresh()
 c = server.create_campaign("", "popularity", CSV)
@@ -1621,8 +1685,17 @@ try:
     assert steps[-1] == (0.5, "matching: 1 of 2"), steps
     assert server.relevance_mod.cache().pairs("h", ["m1"]) == {("m1", "m2"): (42, 0.3)}, "what it matched, kept here"
     (fdir / "rejected" / "nomatch_ddg_c.jpg").rename(fphotos[2])
+    # its step says where it's done: waiting for a machine, then on the one that took it
+    tracked = server.Tracker([("filter", "Filter off-topic photos", 1)], where="server")
+    server.filter_anywhere(fphotos, fdir / "rejected", print, progress=tracked.callback("filter"))
+    assert tracked.snapshot()["steps"][0]["where"] == "machine", tracked.snapshot()
+    (fdir / "rejected" / "nomatch_ddg_c.jpg").rename(fphotos[2])
     # none took it in time, or it failed: here, as before
     server.MACHINES.task = no_machine
+    here.clear()
+    tracked = server.Tracker([("filter", "Filter off-topic photos", 1)], where="server")
+    server.filter_anywhere(fphotos, fdir / "rejected", print, progress=tracked.callback("filter"))
+    assert len(here) == 1 and tracked.snapshot()["steps"][0]["where"] == "server", tracked.snapshot()
     here.clear()
     server.filter_anywhere(fphotos, fdir / "rejected", print)
     assert len(here) == 1
@@ -2063,6 +2136,38 @@ assert "area 1 is harvesting Alpha2" in why and "still to harvest" in why, why
 server._workers[:] = [server._first]
 server.settings().update({"areas.meshes": "climbs"})
 print("areas running and queued, and the boulder panel OK")
+
+# --- how long each step usually takes, for the time left of the Areas tab's bars: the median of its last runs that
+# finished, of about as many photos as the job's harvest found where enough runs had, else of any
+fresh()
+
+
+def ran(pid: str, images: int, **seconds) -> None:
+    steps = [{"key": k, "label": k, "frac": 1.0, "detail": "", "state": "done", "started": 1000.0 + i, "seconds": v}
+             for i, (k, v) in enumerate(seconds.items())]
+    server.q("INSERT INTO projects(id,name,created,kind,status,progress,harvest) VALUES(?,?,?,?,?,?,?)", pid, pid, time.time(), "harvest",
+             "done", json.dumps({"overall": 100, "steps": steps}), json.dumps({"images": images}), write=True)
+
+
+for i in range(3):
+    ran(f"small{i}", 10, mapper=60 + i, download=30)
+    ran(f"big{i}", 100, mapper=600 + i, download=40)
+ran("one", 50, mapper=99)
+server.q("INSERT INTO projects(id,name,created,kind,status,progress) VALUES('cut','cut',0,'harvest','stopped',?)",
+         json.dumps({"overall": 5, "steps": [{"key": "mapper", "state": "running", "frac": 0.5, "started": 1.0}]}), write=True)
+server._typicals["at"] = 0
+by = server.step_typicals()
+assert by[("mapper", "0-20")] == 61 and by[("mapper", "80+")] == 601 and ("mapper", "40-80") not in by, by
+assert by[("mapper", None)] == 99 and by[("download", None)] == 35, "a step cut short doesn't count"
+steps = [{"key": "download", "state": "done", "frac": 1.0}, {"key": "mapper", "state": "running", "frac": 0.01},
+         {"key": "dense", "state": "pending", "frac": 0.0}]
+got = server.with_typicals({"overall": 10, "steps": [dict(s) for s in steps]}, json.dumps({"images": 12}))["steps"]
+assert [s.get("typical") for s in got] == [None, 61, None], got
+got = server.with_typicals({"overall": 10, "steps": [dict(s) for s in steps]}, json.dumps({"images": 50}))["steps"]
+assert got[1]["typical"] == 99, "too few runs of as many photos: of any"
+assert server.with_typicals({"overall": 0, "steps": [dict(s) for s in steps]}, None)["steps"][1]["typical"] == 99
+server._typicals["at"] = 0
+print("how long steps usually take OK")
 
 # --- beta found in each new mesh with video frames placed in it; kept videos beta can't use, deleted once settled ------
 fresh()

@@ -549,6 +549,8 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
     def youtube_part(control):
         use_control(control)    # stopping the job stops this part too, and the tools it runs
         report_video = progress("video") or (lambda frac=0.0, detail=None: None)
+        if want_search is not None and hasattr(report_video, "at"):
+            report_video.at("server+volunteers")    # volunteers search YouTube and fetch its videos; frames are taken here
         try:
             report_video(0, "searching YouTube")
             seen = {youtube.video_id(v.url) or v.url for v in c.videos}    # the page's links, in any of YouTube's URL forms

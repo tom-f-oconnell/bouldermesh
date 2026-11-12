@@ -78,7 +78,7 @@
   body.readonly .stopnow,body.readonly .stoplater,body.readonly .resume,body.readonly .retryfailed,body.readonly .harvestagain,body.readonly .rebuildchanged,
   body.readonly .rebuildall,body.readonly .boulders,body.readonly .meshboulder,body.readonly .setll,body.readonly #pieces .edit,body.readonly #pieces .redo,body.readonly .rebuild,
   body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly button.mark,body.readonly .clearmine,body.readonly #vmark,
-  body.readonly .tryskipped,body.readonly .editopt,
+  body.readonly .tryskipped,body.readonly .editopt,body.readonly .pause,body.readonly .unpause,
   body.readonly .tabs button[data-tab=projects],body.readonly .projs{display:none!important}
   label.file input{display:none}
   .status{font-size:12px;color:var(--mute)}
@@ -617,12 +617,43 @@ const toast = (msg, ms=3500) => { if (overMesh()) return; const t=$('#toast'); t
 const fmtSize = n => n>1e6 ? (n/1e6).toFixed(1)+' MB' : (n/1e3).toFixed(0)+' kB';
 const fmtWhen = t => new Date(t * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const fmtDur = s => s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
-// a running step's own pace: how long it's been going, and about how long it has left at that pace (once that's clear)
+// a step's time left, in seconds: at its own pace once that's clear (5% done, a minute in), else from how long it usually
+// takes ("typical", from the server's past runs) less the time it's been going. over: it's taken longer than usual;
+// left null: no telling
+function stepLeft(s, now = Date.now() / 1000){
+  if (s.state !== 'running' && s.state !== 'pending') return { left: 0 };
+  const going = s.state === 'running' && s.started ? now - s.started : 0;
+  if (going >= 60 && s.frac >= 0.05) return { left: going * (1 - s.frac) / s.frac, going };
+  if (s.typical == null) return { left: null, going };
+  return s.typical > going ? { left: s.typical - going, going, usual: s.typical } : { left: null, going, usual: s.typical, over: true };
+}
+// a running step's timing: how long it's been going, and about how long it has left
 function stepTiming(s){
   if (!s.started) return '';
-  const going = Date.now() / 1000 - s.started, left = s.frac >= 0.05 && going >= 60 ? going * (1 - s.frac) / s.frac : null;
-  return ` · going ${fmtDur(going)}` + (left != null ? `, about ${fmtDur(left)} left` : '');
+  const t = stepLeft(s);
+  return ` · going ${fmtDur(t.going)}` + (t.over ? `, usually ${fmtDur(t.usual)}` : t.left == null ? ', no estimate yet'
+    : `, about ${fmtDur(t.left)} left` + (t.usual ? ` (usually ${fmtDur(t.usual)})` : ''));
 }
+// the whole job's: going since its first step started, and its steps' time left, a step alongside the others (YouTube's)
+// running beside those before it while those after wait for it. "more than" where some step can't be told
+function jobTiming(pr){
+  const now = Date.now() / 1000, began = (pr?.steps || []).map(s => s.started).filter(Boolean);
+  let left = 0, unsure = false;
+  for (const s of pr?.steps || []) {
+    const t = stepLeft(s, now);
+    if (t.left == null) unsure = true;
+    if (s.parallel) left = Math.max(left, t.left || 0); else left += t.left || 0;
+  }
+  const going = began.length ? ` · going ${fmtDur(now - Math.min(...began))}` : '';
+  return going + (unsure ? (left >= 60 ? `, more than ${fmtDur(left)} left` : ', no estimate yet') : `, about ${fmtDur(left)} left`);
+}
+// who does a step: this server, a machine that takes work from it, or volunteers (not named, for now)
+const WHERE = { server: 'on the server', machine: 'on a machine', waiting: 'waiting for a machine to take it', volunteers: 'by volunteers',
+                'server+volunteers': 'on the server, with volunteers fetching from YouTube' };
+const stepWhere = s => WHERE[s.where] ? ' · ' + WHERE[s.where] : '';
+// a job handed to a machine that hasn't started on it yet: no step running, the rest to be done there
+const machineTake = pr => pr?.where === 'machine' && !(pr.steps || []).some(s => s.state === 'running')
+  && (pr.steps || []).some(s => s.state === 'pending') ? ' · waiting for a machine to take it' : '';
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const parseLL = s => { const m = /(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)/.exec(s||''); return m ? [parseFloat(m[1]), parseFloat(m[2])] : null; };
 const fmtLL = (lat,lng) => (lat==null||lng==null) ? '—' : `${(+lat).toFixed(5)}, ${(+lng).toFixed(5)}`;
@@ -2698,8 +2729,9 @@ function progressHtml(p){
   if (!pr || !(BUSY.includes(p.status) || p.status === 'failed')) return '';
   const pct = v => (100 * v).toFixed(0) + '%';
   const rows = pr.steps.map(s => `<span class="${s.state}">${s.state==='done'?'✓':s.state==='failed'?'✕':s.state==='running'?'▸':'·'} ${esc(s.label)}</span>
-    <div class="bar ${s.state}" title="${pct(s.frac)}"><i style="width:${pct(s.frac)}"></i></div>${s.state==='running'?`<span></span><span class="detail">${pct(s.frac)}${s.detail?' · '+esc(s.detail):''}${stepTiming(s)}</span>`:''}`).join('');
-  return `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall</small><div class="steps">${rows}</div>`;
+    <div class="bar ${s.state}" title="${pct(s.frac)}"><i style="width:${pct(s.frac)}"></i></div>${s.state==='running'?`<span></span><span class="detail">${pct(s.frac)}${s.detail?' · '+esc(s.detail):''}${stepWhere(s)}${stepTiming(s)}</span>`:''}`).join('');
+  const busy = BUSY.includes(p.status);
+  return `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall${busy ? jobTiming(pr) + machineTake(pr) : ''}</small><div class="steps">${rows}</div>`;
 }
 // a project's photo as the admin page allows: shown, a link to where it came from, or nothing
 function photoThumb(id, name, access){
@@ -2874,20 +2906,27 @@ function boulderPanelHtml(b, c){
     ${b.rows.map(r => `<div class="brow ${r.state}${r.why ? ' why' : ''}"${r.why ? ` title="${esc(why)}"` : ''}><i></i><span><b>${r.climb ? `<a href="#" data-bclimb="${esc(r.climb)}" title="Its photos, under Climbs">${esc(r.name)}</a>` : esc(r.name)}</b> ${esc(r.grade || '')}${r.rank ? ` <small>#${r.rank}</small>` : ''}${r.listed ? '' : ' <small>(not on the list)</small>'}${r.why ? ' ★' : ''}</span><span>${what(r)}</span></div>`).join('')}
     ${b.pooled && b.own ? `<div class="brow in"><i></i><span>the boulder's own search</span><span>${plural(b.own, 'photo')}</span></div>` : ''}</div>`;
 }
+// an area's paused climbs, each with its Resume (its card's click handler)
+function pausedHtml(c){
+  return (c.paused || []).map(i => `<div class="row" style="margin-top:6px"><span class="meta grow">Paused: <b>${esc(i.name)}</b> ${esc(i.grade||'')} <small>#${i.rank}</small>${i.note ? ` <small>· ${esc(i.note)}</small>` : ''}</span>
+    <button class="sm sec unpause" data-unpause="${esc(i.source_id)}" title="${c.status === 'running' ? 'It goes next' : 'It goes once the area runs'}, carrying on from the last step it finished">Resume</button></div>`).join('');
+}
 function currentHtml(c){
   const running = c.running || (c.current ? [c.current] : []);
-  if (!running.length) return machineWaitHtml(c) || (c.state === 'queued' ? '<div class="status" style="margin-top:6px">Queued: it starts once an area ahead of it finishes, or has nothing to go for now.</div>'
-    : c.status === 'running' ? '<div class="status" style="margin-top:6px">Waiting for the next climb to start…</div>' : '');
+  if (!running.length) return (machineWaitHtml(c) || (c.state === 'queued' ? '<div class="status" style="margin-top:6px">Queued: it starts once an area ahead of it finishes, or has nothing to go for now.</div>'
+    : c.status === 'running' && !(c.paused || []).length ? '<div class="status" style="margin-top:6px">Waiting for the next climb to start…</div>' : '')) + pausedHtml(c);
   return machineWaitHtml(c) + running.map(cur => {
     const pr = cur.progress, now = (pr?.steps || []).filter(s => s.state === 'running'), pct = v => (100 * v).toFixed(0) + '%';
-    const said = s => esc(s.label) + ` ${pct(s.frac)}` + (s.detail ? ' · ' + esc(s.detail) : '') + stepTiming(s);
+    const said = s => esc(s.label) + ` ${pct(s.frac)}` + (s.detail ? ' · ' + esc(s.detail) : '') + stepWhere(s) + stepTiming(s);
     // the whole job's bar, and under it each step running (a harvest's photos and its YouTube videos can be at once)
     // with its own: steps such as filtering take an hour on a small server while the whole barely moves
-    return `<div class="meta" style="margin-top:8px">Now: <b>${esc(cur.name)}</b> ${esc(cur.grade||'')} <small>#${cur.rank}</small></div>
-      ${!pr ? '' : `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall</small>
+    const pause = cur.paused ? '<span class="status">pausing…</span>'
+      : c.status === 'running' || c.status === 'stopping' ? `<button class="sm sec pause" data-pause="${esc(cur.source_id)}" data-name="${esc(cur.name)}" title="Stops this climb alone, now; the area goes on with its others. When you resume it, it carries on from the last step it finished.">Pause</button>` : '';
+    return `<div class="row" style="margin-top:8px"><span class="meta grow">Now: <b>${esc(cur.name)}</b> ${esc(cur.grade||'')} <small>#${cur.rank}</small></span>${pause}</div>
+      ${!pr ? '' : `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall${jobTiming(pr)}${machineTake(pr)}</small>
           ${now.map(s => `<div class="bar running" title="${pct(s.frac)}" style="margin-top:4px"><i style="width:${pct(s.frac)}"></i></div><small>${said(s)}</small>`).join('')}`}
       ${boulderPanelHtml(cur.boulder_panel, c)}`;
-  }).join('');
+  }).join('') + pausedHtml(c);
 }
 async function refreshCampaigns(){
   const list = await api('/api/campaigns');
@@ -2912,9 +2951,9 @@ async function refreshCampaigns(){
         <span>${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
       const state = c.state || c.status;
       const tip = { queued: 'Running, but waiting its turn: no worker is free for it. Areas are taken in the order they were entered, top first.',
-                    waiting: 'Running, but with no climb to take now: its climbs wait for volunteers\' YouTube searches and videos, or for the rest of their boulder\'s. Workers go on to the next area meanwhile.' }[state];
+                    waiting: 'Running, but with no climb to take now: its climbs wait for volunteers\' YouTube searches and videos, or for the rest of their boulder\'s, or are paused. Workers go on to the next area meanwhile.' }[state];
       d.innerHTML = `<div class="row"><span class="grow campname">${title}</span>${c.place ? `<small class="meta" title="Its place in the order areas are taken: as entered, top first">#${c.place}</small>` : ''}<span class="status ${['stopped', 'queued', 'waiting'].includes(state) ? '' : state === 'done' ? 'done' : 'running'}"${tip ? ` title="${esc(tip)}"` : ''}>${esc(state)}</span></div>
-        <div class="meta">${ORDER_NAMES[c.ord] || ''}${c.max_meshes ? `, up to ${c.max_meshes} mesh${c.max_meshes === 1 ? '' : 'es'}${c.count_failures ? ` or failure${c.max_meshes === 1 ? '' : 's'}` : ''} (${c.made} made)` : ''} · <b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${n.beyond ? ` · ${n.beyond} more past the limit` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
+        <div class="meta">${ORDER_NAMES[c.ord] || ''}${c.max_meshes ? `, up to ${c.max_meshes} mesh${c.max_meshes === 1 ? '' : 'es'}${c.count_failures ? ` or failure${c.max_meshes === 1 ? '' : 's'}` : ''} (${c.made} made)` : ''} · <b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${n.paused ? ` · ${n.paused} paused` : ''}${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${n.beyond ? ` · ${n.beyond} more past the limit` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
         ${c.note ? `<div class="notice" style="margin-top:6px">${esc(c.note)}</div>` : ''}
         <div class="now">${currentHtml(c)}</div>
         <div class="row" style="margin-top:8px">
@@ -2984,6 +3023,17 @@ async function refreshCampaigns(){
   meshedShown = meshed;
   return list;
 }
+// a running climb's Pause, and a paused one's Resume (redrawn as the area's progress moves)
+$('#campaigns').addEventListener('click', async ev => {
+  const b = ev.target.closest('button[data-pause], button[data-unpause]'), card = b?.closest('[data-camp]');
+  if (!card) return;
+  const on = 'pause' in b.dataset;
+  if (on && !ask(`Pause ${b.dataset.name} now? The area goes on with its other climbs. When you resume it, it carries on from the last step it finished; one it's partway through (on a machine too) starts again.`)) return;
+  b.disabled = true;
+  try { await api(`/api/campaigns/${card.dataset.camp}/pause`, { method: 'POST', json: { source_id: on ? b.dataset.pause : b.dataset.unpause, paused: on } }); }
+  catch (e) { toast(e.message, 6000); }
+  campaignLoop();
+});
 // the boulder panel's climbs (redrawn as the area's progress moves): each opens under Climbs, with its photos
 $('#campaigns').addEventListener('click', ev => {
   const a = ev.target.closest('a[data-bclimb]');

@@ -31,6 +31,7 @@ import secrets
 import shutil
 import signal
 import sqlite3
+import statistics
 import sys
 import tempfile
 import threading
@@ -275,9 +276,11 @@ def init_db() -> None:
         # changed since it was last meshed or checked; redo_started: a rebuild that began, to carry on with
         # waiting_since: when it first waited for volunteers' YouTube searches and videos (status 'waiting')
         # own_tried: when it was meshed on its own after a pooled mesh hardly showed it (before keep_rest()), once;
-        # pool: for redo "cluster", the pool it meshes (pools.key)
+        # pool: for redo "cluster", the pool it meshes (pools.key); paused: when someone paused it (pause_item()), so that
+        # it isn't taken until they resume it
         for c, t in (("retry", "INTEGER DEFAULT 0"), ("redo", "TEXT"), ("was", "TEXT"), ("changed", "INTEGER DEFAULT 0"),
-                     ("redo_started", "INTEGER DEFAULT 0"), ("waiting_since", "REAL"), ("own_tried", "REAL"), ("pool", "TEXT")):
+                     ("redo_started", "INTEGER DEFAULT 0"), ("waiting_since", "REAL"), ("own_tried", "REAL"), ("pool", "TEXT"),
+                     ("paused", "REAL")):
             if c not in cols:
                 con.execute(f"ALTER TABLE campaign_items ADD COLUMN {c} {t}")
         # climbs queued to be harvested again from scratch for what volunteers fetched, not started yet: added to instead,
@@ -1685,7 +1688,7 @@ def read_log(pid: str, older: str = "", tail: int = 64_000) -> str:
 
 
 def tracker_for(pid: str, steps: list[tuple[str, str, float]]) -> Tracker:
-    return Tracker(steps, lambda snapshot: q("UPDATE projects SET progress=? WHERE id=?", snapshot, pid, write=True))
+    return Tracker(steps, lambda snapshot: q("UPDATE projects SET progress=? WHERE id=?", snapshot, pid, write=True), where="server")
 
 
 def boulder_place(boulder: str | None) -> tuple[float | None, float | None]:
@@ -2272,6 +2275,10 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             raise compute.ComputeUnavailable("this server meshes nothing itself (Reconstructions at once on this server is 0), "
                                              "and no other machines are set up")
         build = _executor.reconstruct if remote else pipeline.reconstruct
+        for st in tracker.snapshot()["steps"]:      # the harvest's last, which was left running until a next one began
+            if st["state"] == "running" and not st.get("parallel"):
+                tracker.end(st["key"])
+        tracker.at("machine" if remote else "server")
         mesh_path, demo = build(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker)
         proj = q("SELECT name, climb_id, mesh_id, kind, boulder FROM projects WHERE id=?", pid, one=True)
         q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng,boulder) VALUES(?,?,?,?,?,?,?,?,?,?)", mid, mesh_name(proj["name"]),
@@ -2830,6 +2837,7 @@ class Worker:
         self.name, self.remote = name, remote
         self.control = control or JobControl()
         self.campaign: str | None = None   # the area whose climb it's on
+        self.item: str | None = None       # and that climb's source_id
         self.boulder: str | None = None    # which no other worker takes a climb on meanwhile, as harvests of its climbs
                                            # use each other's photos, and its own mesh pools them
         self.doing: str | None = None
@@ -3059,9 +3067,9 @@ def following(item: dict) -> bool:
 
 
 def ordered_pending(camp: dict) -> list[dict]:
-    """A campaign's waiting climbs, next first: within its limit, if it has one."""
+    """A campaign's waiting climbs, next first: within its limit, if it has one. Not those paused (pause_item())."""
     items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry,redo,was,boulder,waiting_since FROM campaign_items "
-              "WHERE campaign_id=? AND status='pending' ORDER BY rank", camp["id"])
+              "WHERE campaign_id=? AND status='pending' AND paused IS NULL ORDER BY rank", camp["id"])
     scope = in_scope(camp)
     if scope is None:
         items = _in_order(camp, items)
@@ -3648,8 +3656,11 @@ def _claim(w: Worker):
         if not free:
             if not items and not any(x.campaign == camp["id"] for x in others):
                 held = q("SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND status='waiting'", camp["id"], one=True)["n"]
-                if held:    # it carries on once volunteers have fetched what those wait for
-                    note = f"{held} climb(s) waiting for volunteers' YouTube searches and videos"
+                paused = q("SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND status='pending' AND paused IS NOT NULL",
+                           camp["id"], one=True)["n"]
+                if held or paused:    # it carries on once volunteers have fetched what those wait for, or they're resumed
+                    note = "; ".join([f"{held} climb(s) waiting for volunteers' YouTube searches and videos"] * bool(held)
+                                     + [f"{paused} climb(s) {PAUSED_NOTE}"] * bool(paused))
                     q("UPDATE campaigns SET note=? WHERE id=? AND COALESCE(note,'')!=?", note, camp["id"], note, write=True)
                 else:
                     q("UPDATE campaigns SET status=?, only_retries=0, note=NULL WHERE id=? AND status='running'",
@@ -3657,8 +3668,10 @@ def _claim(w: Worker):
             continue
         item = free[0]
         set_item(camp["id"], item["source_id"], status="running")
-        q("UPDATE campaigns SET note=NULL WHERE id=? AND note LIKE '%waiting for volunteers%'", camp["id"], write=True)
+        q("UPDATE campaigns SET note=NULL WHERE id=? AND (note LIKE '%waiting for volunteers%' OR note LIKE ?)", camp["id"],
+          f"%{PAUSED_NOTE}%", write=True)
         w.campaign, w.boulder, w.doing = camp["id"], item["boulder"] if pools_whole(item["boulder"]) else None, item["name"]
+        w.item = item["source_id"]
         return camp, item
     return None
 
@@ -3689,7 +3702,9 @@ def next_campaign_step() -> bool:
     except Exception as e:
         set_item(camp["id"], item["source_id"], status="failed", note=f"{type(e).__name__}: {e}")
     finally:
-        w.campaign = w.boulder = w.doing = None
+        w.campaign = w.boulder = w.doing = w.item = None
+        q("UPDATE campaign_items SET paused=NULL WHERE campaign_id=? AND source_id=? AND status NOT IN ('pending','running')",
+          camp["id"], item["source_id"], write=True)    # paused only to be stopped, as it finished
         if not any(x.campaign == camp["id"] for x in _workers):
             q("UPDATE campaigns SET status='stopped', note=NULL WHERE id=? AND status='stopping'", camp["id"], write=True)
     return True
@@ -4681,13 +4696,17 @@ FILTER_TAKE = 180       # seconds a machine has to take a harvest's filtering, b
 
 
 class _StepProgress:
-    """A remote job's progress (compute.follow() gives it a tracker) to a harvest step's progress(fraction, detail)."""
+    """A remote job's progress (compute.follow() gives it a tracker) to a harvest step's progress(fraction, detail),
+    which once the machine reports says the step is on a machine (Tracker.callback()'s at())."""
 
     def __init__(self, progress):
-        self.progress = progress
+        self.progress, self.heard = progress, False
 
     def update(self, key: str, frac: float = 0.0, detail: str | None = None) -> None:
         if self.progress:
+            if not self.heard and hasattr(self.progress, "at"):
+                self.progress.at("machine")
+            self.heard = True
             self.progress(frac, detail)
 
 
@@ -4705,6 +4724,8 @@ def filter_anywhere(paths: list[Path], rejected: Path | None, log, **kw) -> dict
     except Exception as e:
         log(f"relevance: not on a machine ({e if isinstance(e, compute.ComputeUnavailable) else f'{type(e).__name__}: {e}'}): "
             "filtering here")
+        if hasattr(kw.get("progress"), "at"):
+            kw["progress"].at("server")
         return relevance_mod.filter_photos(paths, rejected, log, **kw)
 
 
@@ -4723,6 +4744,10 @@ def filter_remote(paths: list[Path], rejected: Path | None, log, methods: list[s
         pid = rejected.parent.name if rejected is not None else None
         name = (q("SELECT name FROM projects WHERE id=?", pid, one=True) or {}).get("name") if pid else None
         log(f"relevance: filtering {plural(len(paths), 'photo')} on a machine that connects here")
+        if progress:    # the step starts, waiting for a machine to take it
+            if hasattr(progress, "at"):
+                progress.at("waiting")
+            progress(0.0)
         _, back = MACHINES.task("filter", files, {"methods": methods, "more": sorted(more), "prior": prior,
                                                   "matcher": relevance_mod.MATCHER},
                                 f"filter: {name or pid or 'photos'}", log, tracker=_StepProgress(progress), version=FILTER_VERSION,
@@ -4829,6 +4854,80 @@ def stop_campaign(camp_id: str, now: bool = True) -> None:
             w.control.stop()
 
 
+TYPICAL_RUNS = 30      # the most recent runs of a step whose median says how long it usually takes (step_typicals())
+TYPICAL_LEAST = 3      # runs a step needs, of about as many photos as a job's (timings.band()), to go by those alone
+TYPICAL_EVERY = 600    # seconds between gathering them again
+_typicals: dict = {"at": 0.0, "by": {}}
+
+
+def step_typicals() -> dict[tuple[str, str | None], float]:
+    """How long each progress step usually takes, in seconds: the median of its last TYPICAL_RUNS runs that finished,
+    from projects' progress (each keeps its last job's), by (step, photos band of the project's harvest) and (step,
+    None) for any number. Gathered again every TYPICAL_EVERY seconds."""
+    if time.time() - _typicals["at"] < TYPICAL_EVERY:
+        return _typicals["by"]
+    runs: dict[tuple[str, str | None], list[tuple[float, float]]] = {}
+    for r in q("SELECT progress, harvest FROM projects WHERE progress IS NOT NULL"):
+        try:
+            steps = json.loads(r["progress"])["steps"]
+            band = timings_mod.band(json.loads(r["harvest"]).get("images")) if r["harvest"] else None
+        except (TypeError, ValueError, KeyError, AttributeError):
+            continue
+        for st in steps:
+            if st.get("state") == "done" and st.get("seconds") is not None and st.get("started"):
+                for key in [(st["key"], None)] + [(st["key"], band)] * bool(band):
+                    runs.setdefault(key, []).append((st["started"], st["seconds"]))
+    by = {k: statistics.median(sec for _, sec in sorted(v, reverse=True)[:TYPICAL_RUNS])
+          for k, v in runs.items() if len(v) >= TYPICAL_LEAST}
+    _typicals.update(at=time.time(), by=by)
+    return by
+
+
+def with_typicals(progress: dict, harvest: str | None) -> dict:
+    """A job's progress (a tracker's snapshot), each step still to finish given how long it usually takes ("typical",
+    seconds, step_typicals()), of as many photos as its harvest found if enough runs had, else of any, for its time
+    left in the UI."""
+    try:
+        band = timings_mod.band(json.loads(harvest).get("images")) if harvest else None
+    except (TypeError, ValueError, AttributeError):
+        band = None
+    by = step_typicals()
+    for st in progress.get("steps", []):
+        if st.get("state") in ("pending", "running"):
+            t = by.get((st["key"], band)) if band else None
+            t = t if t is not None else by.get((st["key"], None))
+            if t is not None:
+                st["typical"] = round(t, 1)
+    return progress
+
+
+PAUSED_NOTE = "paused, carrying on once resumed"    # in an area's note: how many of its climbs, with nothing else to take
+
+
+def pause_item(camp_id: str, source_id: str, on: bool = True) -> None:
+    """Pause one of an area's climbs, still to go or in progress, or resume it. Paused, no worker takes it until it's
+    resumed, while the area goes on with its others; one in progress stops now (its worker alone, where stop_campaign()
+    stops them all), and when resumed goes next, carrying on from the last step it finished, as after a stop. A restart
+    leaves it paused.
+
+    Raises:
+        KeyError: the area has no such climb.
+        ValueError: it's finished (or waits for something), so there's nothing to pause.
+    """
+    row = q("SELECT name, status FROM campaign_items WHERE campaign_id=? AND source_id=?", camp_id, source_id, one=True)
+    if not row:
+        raise KeyError(source_id)
+    if not on:
+        set_item(camp_id, source_id, paused=None)
+        return
+    if row["status"] not in ("pending", "running"):
+        raise ValueError(f"{row['name']} isn't to go or in progress ({row['status']}): there's nothing to pause")
+    set_item(camp_id, source_id, paused=time.time())
+    for w in list(_workers):
+        if w.campaign == camp_id and w.item == source_id:
+            w.control.stop()
+
+
 def campaign_view(camp: dict) -> dict:
     """A campaign for the UI, with where it's got to."""
     cid = camp["id"]
@@ -4839,26 +4938,30 @@ def campaign_view(camp: dict) -> dict:
     again["triable"] = len(triable(cid))
     worked = q("SELECT rank,name,grade,stars,url,climb_id,mesh_id,project_id,status,note,updated FROM campaign_items "
                "WHERE campaign_id=? AND status NOT IN ('pending','running') ORDER BY updated DESC LIMIT 300", cid)
-    running = q("SELECT rank,name,grade,stars,project_id,source_id,boulder,redo,updated FROM campaign_items "
+    running = q("SELECT rank,name,grade,stars,project_id,source_id,boulder,redo,updated,paused FROM campaign_items "
                 "WHERE campaign_id=? AND status='running' ORDER BY updated", cid)
     for r in running:
-        p = q("SELECT status,progress FROM projects WHERE id=?", r["project_id"], one=True) if r["project_id"] else None
-        r["progress"] = json.loads(p["progress"]) if p and p["progress"] else None
+        p = q("SELECT status,progress,harvest FROM projects WHERE id=?", r["project_id"], one=True) if r["project_id"] else None
+        r["progress"] = with_typicals(json.loads(p["progress"]), p["harvest"]) if p and p["progress"] else None
         try:
             r["boulder_panel"] = boulder_panel(camp, r)
         except Exception as e:      # only the panel is lost
             print(f"error: the boulder panel of {r['name']}: {type(e).__name__}: {e}", flush=True)
             r["boulder_panel"] = None
+    paused = q("SELECT rank,name,grade,stars,source_id,project_id,note,paused FROM campaign_items "
+               "WHERE campaign_id=? AND status='pending' AND paused IS NOT NULL ORDER BY paused", cid)
+    if paused:
+        counts["paused"] = len(paused)
     pending = ordered_pending(camp)
     made = None
     if camp.get("max_meshes"):      # those past its limit aren't to go
-        counts["beyond"] = counts.get("pending", 0) - len(pending)
-        counts["pending"] = len(pending)
+        counts["beyond"] = counts.get("pending", 0) - len(paused) - len(pending)
+        counts["pending"] = len(pending) + len(paused)
         made = limit_scope(camp)[1]
     last_mesh = q("SELECT MAX(updated) t FROM campaign_items WHERE campaign_id=? AND status='done' AND mesh_id IS NOT NULL",
                   cid, one=True)["t"]
     return {**camp, "counts": counts, "again": again, "worked": worked, "current": running[0] if running else None,
-            "running": running, "next": pending[:10], "machine_wait": machine_wait(cid), "made": made, "last_mesh": last_mesh}
+            "running": running, "paused": paused, "next": pending[:10], "machine_wait": machine_wait(cid), "made": made, "last_mesh": last_mesh}
 
 
 def active_areas(camps: list[dict]) -> set[str]:
@@ -6201,8 +6304,8 @@ class Handler(BaseHTTPRequestHandler):
                 proj["log"] = read_log(m[1], proj.get("log") or "")
                 proj["failure"] = (last_failure(m[1]) if proj["status"] == "failed" else
                                    last_failure(m[1], "INTERRUPTED: ") if proj["status"] == "interrupted" else None)
+                proj["progress"] = with_typicals(json.loads(proj["progress"]), proj.get("harvest")) if proj.get("progress") else None
                 proj["harvest"] = json.loads(proj["harvest"]) if proj.get("harvest") else None
-                proj["progress"] = json.loads(proj["progress"]) if proj.get("progress") else None
                 proj["known_object"] = known_object(m[1])
                 rejected = PROJECTS / m[1] / "rejected"
                 try:
@@ -6717,6 +6820,18 @@ class Handler(BaseHTTPRequestHandler):
                     stop_campaign(m[1], bool(self.read_json().get("now", True)))
                 return self.send_json(campaign_view(q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)))
 
+            m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)/pause", p)
+            if m:   # {"source_id": one of its climbs, "paused": false to resume it}
+                if not campaign_status(m[1]):
+                    return self.send_json({"error": "not found"}, 404)
+                b = self.read_json()
+                try:
+                    pause_item(m[1], str(b.get("source_id")), b.get("paused", True) is not False)
+                except KeyError:
+                    return self.send_json({"error": "no such climb in this area"}, 404)
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 409)
+                return self.send_json(campaign_view(q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)))
             m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)/retry", p)
             if m:
                 if not campaign_status(m[1]):

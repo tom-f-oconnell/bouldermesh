@@ -247,7 +247,11 @@ climbs again* meshes climbs skipped for too few viewpoints that the viewpoint ch
 COLMAP try.
 
 *Stop now* pauses the climb in progress and *Stop after this climb* finishes it. Every finished mesh
-stays, and *Resume* carries on from the last step the climb finished. A server restart loses no more
+stays, and *Resume* carries on from the last step the climb finished. *Pause* beside one climb in progress
+stops that one alone, while the area goes on with its others. It stays paused, through restarts too, until
+its own *Resume*, and then goes next. Each climb in progress shows its whole job's bar and each running
+step's, with who's doing that step (the server, a machine, or volunteers) and about how long it has left:
+at its own pace once that's clear, or else from how long the step took in recent runs. A server restart loses no more
 than that, and it carries on by itself afterwards, unless you'd stopped it. It also stops by itself after 5 climbs in a row fail before finishing a
 harvest, which usually means a network problem, or with under 50 GB of disk left
 (`CAMPAIGN_MIN_FREE_GB`).
