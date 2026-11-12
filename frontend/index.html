@@ -2469,7 +2469,7 @@ function pooledTags(m){
     : p.untried ? `. ${plural(p.untried, 'climb')} on ${esc(p.area)} ${p.untried === 1 ? 'has' : 'have'} no photos tried in it (never harvested, or none found), so it isn't one boulder yet`
     : p.short?.length && p.kind === 'boulder' ? `. Too few of some climbs' own photos are placed in it for one boulder (it needs ${p.least ? `${p.least}% of each, and one` : 'one of each'}): ${p.short.map(s => `${esc(s.name)} ${s.placed} of ${s.of}`).join(', ')}`
     : p.apart && ['queued', 'running'].includes(p.rest) ? `. ${apart[0].toUpperCase() + apart.slice(1)} ${p.scenes && p.apart === 1 ? 'is' : 'are'} being meshed apart`
-    : p.apart && !p.rest ? `. ${apart[0].toUpperCase() + apart.slice(1)} ${p.scenes ? `${p.apart === 1 ? 'is' : 'are'} to be meshed apart` : 'are enough to try meshing apart'} (on the admin page), so it isn't one boulder yet` : '';
+    : p.apart && !p.rest ? `. ${apart[0].toUpperCase() + apart.slice(1)} ${p.scenes ? `${p.apart === 1 ? 'is' : 'are'} to be meshed apart (on the admin page)` : 'may be another side or rock (meshing the boulder again, from a climb\'s card or the admin page, checks whether they\'re tied to it)'}, so it isn't one boulder yet` : '';
   return `<span class="tag ok" title="Made from the photos of ${plural(p.climbs, 'climb')}${of}: ${p.placed} of them placed in it, by their own photos${why}">${word ? `${word} · ` : ''}${p.placed}/${p.climbs} climb${p.climbs === 1 ? '' : 's'}</span>`;
 }
 function boulderHtml(c){

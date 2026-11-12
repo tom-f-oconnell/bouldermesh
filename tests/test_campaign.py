@@ -2147,7 +2147,7 @@ while not server.jobs.empty():
     before.append(server.jobs.get_nowait())
 untied = server.keep_rest(boulder_mesh, bproj["id"], logged.append, untied=False)
 assert untied["apart"] and untied["attempt"] is None and server.jobs.empty(), \
-    ("untied leftovers (a mesh from before ties) aren't queued after a boulder's mesh, only from the admin page", untied, before)
+    ("untied leftovers (a mesh from before ties) aren't queued after a boulder's mesh", untied, before)
 for j in before:
     server.jobs.put(j)
 rec = server.keep_rest(boulder_mesh, bproj["id"], logged.append)
@@ -2209,9 +2209,10 @@ assert server.pooled_summary(got["Pea"]["boulder"], one_placed, kinds, boulder_m
 server.save_rest(boulder_mesh, {**rec, "attempt": None})
 summary = server.pooled_summary(got["Pea"]["boulder"], on_parent, kinds, boulder_mesh)
 assert (summary["whole"], summary["apart"], summary["rest"]) == (False, 2, None), ("enough left out, never tried: a group till it is", summary)
-assert server.rest_waiting() == [boulder_mesh] and server.rest_queue_all() == 1 and server.rest_waiting() == []
 while not server.jobs.empty():
     server.jobs.get_nowait()
+assert server.rest_waiting() == [] and server.rest_queue_all() == 0 and server.jobs.empty(), \
+    "untied leftovers from before ties are never queued, even from the admin page: meshing the boulder again checks them"
 # one boulder needs every climb on it harvested and tried in its mesh: one known since, or listed on its page and
 # never harvested, holds it a group; its page's problems become known as its mesh is made, to harvest and place too
 server.save_rest(boulder_mesh, {**rec, "apart": [], "attempt": None})
@@ -2584,6 +2585,24 @@ assert not (server.MESHES / got["Pea"]["mesh_id"] / server.REST_FILE).exists(), 
 (server.MESHES / got["Pea"]["mesh_id"] / "cameras.json").write_text("[]")
 server.rest_existing_meshes()
 assert server.load_rest(got["Pea"]["mesh_id"])["attempt"] is None and server.jobs.empty()
+# made before ties were recorded: the admin page meshes it again, from its photos as harvested, after reading its area's
+# kind where never read; one with them recorded isn't
+assert [m["id"] for m in server.untied_meshes()] == [got["Pea"]["mesh_id"]]
+kind_read = []
+real_kind, real_leaf = server.boulder_kind, server.leaf_kind
+server.leaf_kind = lambda key, kinds=None: None
+server.boulder_kind = lambda boulder, url, log=print: kind_read.append((boulder, url)) or "boulder"
+try:
+    assert server.remesh_untied() == {"queued": 1, "groups": 0, "busy": 0, "unread": 0}
+finally:
+    server.boulder_kind, server.leaf_kind = real_kind, real_leaf
+assert len(kind_read) == 1 and kind_read[0][0] == got["Pea"]["boulder"], kind_read
+job = server.jobs.get_nowait()
+assert job["type"] == "boulder" and server.q("SELECT boulder FROM projects WHERE id=?", job["pid"], one=True)["boulder"] == got["Pea"]["boulder"]
+assert server.remesh_untied()["busy"] == 1, "not twice while it's queued"
+server.q("UPDATE projects SET status='done' WHERE id=?", job["pid"], write=True)
+server.save_rest(got["Pea"]["mesh_id"], {**server.load_rest(got["Pea"]["mesh_id"]), "models": []})
+assert server.untied_meshes() == [] and server.jobs.empty()
 server.climbs_mod.fetch_climb_url = fake_fetch
 server.settings().update({"areas.meshes": "climbs"})
 print("boulders told from groups by their pages OK")

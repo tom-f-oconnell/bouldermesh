@@ -1919,7 +1919,8 @@ def keep_rest(mid: str, pid: str, log, queue: bool = True, untied: bool = True) 
 
     Args:
         untied: with queue, also queue what a mesh from before ties were recorded left out (its climbs with REST_LEAST
-            or more out), which nothing checks is of a rock its photos see: only from the admin page.
+            or more out), which nothing checks is of a rock its photos see: nothing does any more, as Drifter's made a
+            mesh of another rock that way. Meshing the boulder again records its scenes instead.
     """
     try:
         with _rest_lock:
@@ -2023,12 +2024,13 @@ def rest_resume() -> int:
 
 
 def rest_waiting() -> list[str]:
-    """Current boulders' meshes with a scene they left out to mesh apart (before ties, climbs' left-out photos), never
-    tried or cut short."""
+    """Current boulders' meshes with a scene they left out, tied to them, to mesh apart, never tried or cut short. Not
+    those from before ties were recorded, whose left-out photos nothing checks are of a rock their photos see (meshing
+    the boulder again records them)."""
     out = []
     for m in q("SELECT id, boulder FROM meshes WHERE boulder IS NOT NULL AND replaced_by IS NULL"):
         rec = None if is_pool(m["boulder"]) else load_rest(m["id"])
-        if rec and any(rest_due(x.get("attempt")) for x in rest_attempts(rec)):
+        if rec and "models" in rec and any(rest_due(x.get("attempt")) for x in rest_attempts(rec)):
             out.append(m["id"])
     return out
 
@@ -2040,9 +2042,45 @@ def rest_queue_all() -> int:
     for mid in rest_waiting():
         m = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
         if m and m["source"].startswith("project:"):
-            rec = keep_rest(mid, m["source"].split(":", 1)[1], print)
+            rec = keep_rest(mid, m["source"].split(":", 1)[1], print, untied=False)
             n += bool(rec and any(rest_state(x.get("attempt")) in REST_BUSY for x in rest_attempts(rec)))
     return n
+
+
+def untied_meshes() -> list[dict]:
+    """Current boulders' meshes (not pools') made before ties were recorded: no rest record, or one without models.
+    Meshing them again records their scenes and ties, and counts their climbs' frames by evidence. [{id, boulder}]"""
+    out = []
+    for m in q("SELECT id, boulder FROM meshes WHERE boulder IS NOT NULL AND replaced_by IS NULL ORDER BY created"):
+        rec = None if is_pool(m["boulder"]) else load_rest(m["id"])
+        if not is_pool(m["boulder"]) and (rec is None or "models" not in rec):
+            out.append(m)
+    return out
+
+
+def remesh_untied(log=print) -> dict:
+    """The admin page's: mesh again each boulder whose current mesh was made before ties were recorded (untied_meshes()),
+    from its climbs' photos as harvested (run_boulder(): only problems its page lists that were never harvested are,
+    nothing is fetched again), first reading what its lowest area is where that never was, so that it can be told one
+    boulder or not. A lowest area found to hold several boulders isn't meshed as one (its climbs go on their own,
+    settle_groups()). Returns {queued, groups, busy, unread}."""
+    out = {"queued": 0, "groups": 0, "busy": 0, "unread": 0}
+    for m in untied_meshes():
+        boulder = m["boulder"]
+        if leaf_kind(boulder) is None:
+            url = None
+            for c in q("SELECT data FROM climbs WHERE area_path=? AND data IS NOT NULL", boulder):
+                try:
+                    url = climb_area_url(Climb.from_dict(json.loads(c["data"])))
+                except Exception:
+                    url = None
+                if url:
+                    break
+            if boulder_kind(boulder, url, log) is None:
+                out["unread"] += 1
+        body, code = mesh_boulder(boulder)
+        out["queued" if code == 202 else "busy" if "already" in body.get("error", "") else "groups"] += 1
+    return out
 
 
 def rest_deleted(mid: str, key: str) -> None:
@@ -6949,7 +6987,7 @@ def admin_state() -> dict:
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
             "notify": NOTIFIER.state(),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
-            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "untied_meshes": len(untied_meshes()), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q)}
 
 
@@ -6999,8 +7037,25 @@ def admin_measure(_: dict) -> dict:
     return {"result": f"the data takes {u['total'] / 2**30:.1f} GB" + (f" of {data_cap() / 2**30:g}" if data_cap() else "")}
 
 
+def admin_remesh_untied(_: dict) -> dict:
+    """Mesh again the boulders whose meshes were made before ties were recorded (remesh_untied()), in the background, as
+    reading their areas' pages waits its turn with Mountain Project."""
+    n = len(untied_meshes())
+    if not n:
+        return {"result": "every boulder's mesh was made with its scenes and ties recorded"}
+
+    def run() -> None:
+        got = remesh_untied()
+        print(f"admin: meshing boulders again: {got['queued']} queued, {got['groups']} found to hold several boulders, "
+              f"{got['busy']} being meshed already, {got['unread']} whose area's page couldn't be read", flush=True)
+    threading.Thread(target=run, daemon=True, name="remesh-untied").start()
+    return {"result": f"queuing {plural(n, 'boulder')} to mesh again (reading first what their areas are, where never read): "
+                      f"each shows in Projects once queued"}
+
+
 def admin_rest(_: dict) -> dict:
-    """Queue meshing what every current boulder's mesh left out of its climbs' photos, where that was never tried."""
+    """Queue meshing each scene tied to a current boulder's mesh that it left out, where that was never tried, or was
+    cut short."""
     n = rest_queue_all()
     return {"result": f"queued {n} mesh{'' if n == 1 else 'es'} of what boulders' meshes left out" if n else "nothing left out to mesh"}
 
@@ -7069,6 +7124,7 @@ def main() -> None:
     in_docker = Path("/.dockerenv").exists()
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rest": admin_rest,
+                                       "remesh-untied": admin_remesh_untied,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,

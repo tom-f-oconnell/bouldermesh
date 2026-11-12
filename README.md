@@ -296,11 +296,16 @@ well.
   and the boulder's card stays a group meanwhile.
 - **Instead of re-meshing.** This replaces meshing each climb the boulder's mesh hardly showed on its own from its whole
   harvest, which mostly made copies of the same rock from the same web photos.
-- **By hand.** Boulders' meshes made before this have what they left out worked out as the server starts.
-  *Mesh what boulders' meshes left out* on the admin page queues every scene never tried, or cut short (a restart, no
-  machine free, an error). Meshes from before the ties were recorded go by the climbs with 6 or more photos left out,
-  whose left-out photos are meshed together, once, only from there: nothing checks those are of a rock the boulder's
-  photos see.
+- **By hand.** *Mesh the scenes boulders' meshes left out, tied to them* on the admin page queues every scene never
+  tried, or cut short (a restart, no machine free, an error).
+- **Older meshes.** Boulders' meshes made before the ties were recorded have what they left out worked out as the
+  server starts, by the climbs with 6 or more photos left out, and stay groups while any has. Nothing meshes those
+  left-out photos as they are, since nothing checks they're of a rock the boulder's photos see (for Drifter that made a
+  mesh of a night scene elsewhere). Meshing the boulder again records its scenes and ties: *Mesh again the boulders
+  meshed before ties were recorded* on the admin page does that for all of them (reading first what each one's Mountain
+  Project area is, where it never was), or *Mesh the boulder again* on a climb's card for one. Either uses the photos as
+  harvested; only problems on the boulder's page never harvested are harvested. An area's *Rebuild all* isn't for this:
+  it meshes each climb on its own.
 
 **On the cards.** Meshes are named for what they're of, not how they were made. A mesh of several climbs' photos says how
 many of them it places, each counted only on the mesh of its boulder that places most of its own photos.

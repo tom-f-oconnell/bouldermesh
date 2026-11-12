@@ -105,13 +105,18 @@
     <div class="note" id="placed-note"></div>
     <label class="choice"><input type="checkbox" id="rest-auto"> After each boulder's mesh, mesh apart each scene of what it left out that's tied to it
       <small>(off, a boulder's mesh only records them, in its log and rest.json; never those of meshes from before ties were recorded, which the button below does)</small></label>
-    <div class="row"><button class="sec" id="rest-all">Mesh what boulders' meshes left out</button><span class="note" id="rest-note"></span></div>
+    <div class="row"><button class="sec" id="rest-all">Mesh the scenes boulders' meshes left out, tied to them</button><span class="note" id="rest-note"></span></div>
+    <div class="row"><button class="sec" id="remesh-untied">Mesh again the boulders meshed before ties were recorded</button><span class="note" id="remesh-note"></span></div>
     <div class="note">A boulder's mesh tries the photos it leaves out again against itself. Of what's still left, each set
       COLMAP places together (6 photos or more) is a scene to mesh apart, as another side or rock, if it's tied to the
       boulder: it holds a climb's Mountain Project page photo, or 2 of its photos match photos the mesh placed (16 verified
       matches, as the off-topic filter takes one). Its card says boulder only when no such scene waits or made a mesh (one
-      tried that made nothing doesn't count), and every climb on it was harvested and tried in it. Meshes from before
-      those were recorded go by the climbs with 6 or more photos left out. This queues each never tried, or cut short.</div>
+      tried that made nothing doesn't count), and every climb on it was harvested and tried in it. This queues each never
+      tried, or cut short. Meshes from before those were recorded go by the climbs with 6 or more photos left out, and
+      stay groups until meshed again (the button above, for all of them, or a climb's card's <i>Mesh the boulder
+      again</i>), which checks what they left out; nothing meshes those left-out photos as they are, as for Drifter that
+      made a mesh of another rock. Meshing again uses the photos as harvested (only problems on a boulder's page never
+      harvested are), and first reads what each one's Mountain Project area is, where that never was.</div>
     <label class="choice"><input type="checkbox" id="prune-videos"> Delete kept videos none of whose frames is placed in any mesh, once their climbs are done
       <small>(beta can't use them; only harvesting again would, which fetches them again. Checked hourly; their details stay)</small></label>
   </section>
@@ -334,8 +339,10 @@ function render(s){
   if (document.activeElement !== $('#preview-faces')) $('#preview-faces').value = v['viewer.preview_faces'];
   $('#pack-note').textContent = packNote(s.packing);
   $('#skyline-auto').checked = v['facing.skyline']; $('#skyline-note').textContent = skylineNote(s.skyline);
-  $('#rest-note').textContent = s.rest_waiting ? `${s.rest_waiting} boulder${s.rest_waiting === 1 ? "'s mesh has" : "s' meshes have"} some to try` : 'none waiting';
+  $('#rest-note').textContent = s.rest_waiting ? `${s.rest_waiting} boulder${s.rest_waiting === 1 ? "'s mesh has" : "s' meshes have"} some to mesh` : 'none waiting';
   $('#rest-all').disabled = !s.rest_waiting;
+  $('#remesh-note').textContent = s.untied_meshes ? `${s.untied_meshes} boulder${s.untied_meshes === 1 ? "'s mesh" : "s' meshes"}` : 'none';
+  $('#remesh-untied').disabled = !s.untied_meshes;
   $('#rest-auto').checked = v['boulders.rest_auto'];
   if (document.activeElement !== $('#placed-percent')) $('#placed-percent').value = v['boulders.placed_percent'];
   $('#placed-note').innerHTML = placedNote(s.boulder_shares || [], v['boulders.placed_percent']);
@@ -583,6 +590,7 @@ $('#matcher').onchange = () => save({ 'relevance.matcher': $('#matcher').value }
 $('#beta-auto').onchange = () => save({ 'beta.auto': $('#beta-auto').checked });
 $('#prune-videos').onchange = () => save({ 'videos.prune_unplaced': $('#prune-videos').checked });
 $('#skyline-auto').onchange = () => save({ 'facing.skyline': $('#skyline-auto').checked });
+$('#remesh-untied').onclick = async () => { try { msg((await call('/api/admin/actions/remesh-untied', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#rest-all').onclick = async () => { try { msg((await call('/api/admin/actions/rest', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#map-km').onchange = () => save({ 'site.map_km': +$('#map-km').value });
 $('#placed-percent').onchange = () => save({ 'boulders.placed_percent': +$('#placed-percent').value });
