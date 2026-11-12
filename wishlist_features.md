@@ -7,6 +7,3 @@
 - **Naming who does each step.** The Areas tab's running steps say only whether the server, a machine or volunteers
   are doing them (`Tracker.at()`). An admin setting could name the machine, or the volunteers whose videos it uses,
   for those that agreed to be shown, as the leaderboard does (`shown_name()`).
-- **Pausing jobs outside areas.** Areas' climbs can each be paused (`pause_item()`); jobs people asked for on the
-  Projects tab (a harvest again with what volunteers fetched, a boulder's mesh) can't be stopped at all, short of a
-  restart.

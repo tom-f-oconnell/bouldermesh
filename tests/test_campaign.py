@@ -18,7 +18,7 @@ os.environ["DATA_DIR"] = tmp
 
 import pipeline  # noqa: E402
 import server  # noqa: E402
-from climbs.common import Climb, Media, jobctl  # noqa: E402
+from climbs.common import Cancelled, Climb, Media, jobctl  # noqa: E402
 
 HEAD = 'Route,Location,URL,"Avg Stars","Your Stars","Route Type",Rating,Pitches,Length,"Area Latitude","Area Longitude"\n'
 
@@ -667,6 +667,31 @@ assert server.retry_project(ran)[1] == 202 and server.jobs.queue[-1] == {"type":
 with server.jobs.mutex:
     server.jobs.queue.clear()
 assert server.retry_project(waited)[1] == 409, "already queued"
+# Stop on the Projects tab: a queued job leaves the queue, a running one stops at once; either way it's stopped, and
+# Retry runs it again as it was asked for, carrying on from the last step it finished if it had started
+server.q("UPDATE projects SET status='queued' WHERE id=?", waited, write=True)
+server.queue_job({"type": "boulder", "pid": waited})
+assert server.stop_project(waited) == ({"stopped": True}, 200) and server.jobs.empty()
+assert server.q("SELECT status FROM projects WHERE id=?", waited, one=True)["status"] == "stopped" and "stopped by hand" in server.read_log(waited)
+assert server.stop_project(waited)[1] == 409, "nothing of it queued or running"
+assert server.retry_project(waited)[1] == 202 and server.jobs.get_nowait() == {"type": "boulder", "pid": waited}, "as it was asked for"
+stopper = server.Worker("this server 3")
+server._workers.append(stopper)
+stopper.job = {"job": {"type": "harvest", "pid": ran, "sources": ["youtube"], "reconstruct": False}, "started": time.time(), "from": 0.0}
+server.q("UPDATE projects SET status='harvesting', job=? WHERE id=?", json.dumps(stopper.job["job"]), ran, write=True)
+assert server.stop_project(ran)[1] == 200
+try:
+    stopper.control.check()
+    raise AssertionError("the job running wasn't told to stop")
+except Cancelled:
+    pass
+assert json.loads(server.q("SELECT job FROM projects WHERE id=?", ran, one=True)["job"])["resume"] is True
+server._workers.remove(stopper)
+assert server.retry_project(ran)[1] == 202 and server.jobs.get_nowait()["resume"] is True, "carries on from where it got to"
+server.q("UPDATE projects SET status='harvesting' WHERE id=?", ran, write=True)
+server.q("INSERT INTO campaign_items(campaign_id, source_id, project_id, status) VALUES('s1', 's1', ?, 'running')", ran, write=True)
+assert server.stop_project(ran)[1] == 409, "an area's climb is paused on the Areas tab"
+server.q("DELETE FROM campaign_items WHERE campaign_id='s1'", write=True)
 
 # a stop waits for a job outside an area that looks like finishing in time, but not for one that doesn't
 w = server.Worker("this server 2")
@@ -2139,6 +2164,12 @@ assert panel["pooled"] and panel["own"] == 1 and (rows["Alpha"]["photos"], rows[
 assert (rows["Alpha2"]["photos"], rows["Alpha2"]["state"]) == (0, "out"), "kept none of its photos, or never harvested: none to give"
 v = next(v for v in server.campaigns_listed() if v["id"] == camp["id"])
 assert v["running"][0]["boulder_panel"]["name"] == "Alpha Boulder", "with the climb being worked on"
+# meshing its boulder: the bars are the boulder's project's, not its own harvest's, and it says what it's meshing
+server.q("UPDATE projects SET progress=? WHERE id=?", json.dumps({"overall": 42.0, "steps": []}), bpid, write=True)
+server.q("UPDATE projects SET progress=? WHERE id=?", json.dumps({"overall": 100.0, "steps": []}), apid, write=True)
+v = next(v for v in server.campaigns_listed() if v["id"] == camp["id"])
+assert v["running"][0]["meshing"] == {"kind": "boulder", "name": "Alpha Boulder", "project_id": bpid}, v["running"][0]["meshing"]
+assert v["running"][0]["progress"]["overall"] == 42.0, "the boulder's, not its own finished harvest's 100%"
 w2.campaign, w2.doing = camp["id"], "Alpha2"     # why a machine asking for work gets none: what the areas are doing
 server._workers[:] = [server._first, w2]
 server._idle_why["at"] = 0

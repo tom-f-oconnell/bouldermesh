@@ -2683,6 +2683,7 @@ async function refreshProjects(){
       <div class="row" style="margin-top:8px">
         <label class="file"><button class="sec sm" type="button">Add photos or videos</button><input type="file" multiple accept="image/jpeg,image/png,video/*"></label>
         ${RETRYABLE.includes(p.status) ? '<button class="retry sm" title="Tries again from the last step it finished, rather than from the start">Retry</button>' : ''}
+        ${busy ? '<button class="stop sm sec" title="Stops its job now, or takes it out of the queue; Retry carries on from the last step it finished. An area\'s climb in progress is paused on the Areas tab instead">Stop</button>' : ''}
         <button class="rec sm ${RETRYABLE.includes(p.status) ? 'sec' : ''}" title="Makes a new mesh from the start" ${busy?'disabled':''}>Reconstruct</button>
         ${p.mesh_id?'<button class="sec sm view">View mesh</button>':''}
         ${p.climb_id?`<button class="sec sm climb">Climb</button>`:''}
@@ -2709,6 +2710,10 @@ async function refreshProjects(){
       try { await api(`/api/projects/${p.id}/reconstruct`, {method:'POST'}); toast('Reconstruction queued'); active = p.id; poll(); }
       catch(e){ toast(e.message); }
     };
+    d.querySelector('.stop')?.addEventListener('click', async () => {
+      try { await api(`/api/projects/${p.id}/stop`, {method:'POST'}); toast('Stopped: Retry carries on with it'); refreshProjects(); }
+      catch(e){ toast(e.message, 8000); }
+    });
     d.querySelector('.retry')?.addEventListener('click', async () => {
       try { await api(`/api/projects/${p.id}/retry`, {method:'POST'}); toast('Queued to try again'); active = p.id; poll(); }
       catch(e){ toast(e.message); }
@@ -2922,7 +2927,9 @@ function currentHtml(c){
     // with its own: steps such as filtering take an hour on a small server while the whole barely moves
     const pause = cur.paused ? '<span class="status">pausing…</span>'
       : c.status === 'running' || c.status === 'stopping' ? `<button class="sm sec pause" data-pause="${esc(cur.source_id)}" data-name="${esc(cur.name)}" title="Stops this climb alone, now; the area goes on with its others. When you resume it, it carries on from the last step it finished.">Pause</button>` : '';
-    return `<div class="row" style="margin-top:8px"><span class="meta grow">Now: <b>${esc(cur.name)}</b> ${esc(cur.grade||'')} <small>#${cur.rank}</small></span>${pause}</div>
+    // one meshing its boulder, or a group its photos matched: the bars are that project's, as its own harvest is done
+    const whole = cur.meshing ? ` <small>· meshing its ${cur.meshing.kind}: <a href="#" data-proj="${esc(cur.meshing.project_id)}" title="Its project">${esc(cur.meshing.name)}</a></small>` : '';
+    return `<div class="row" style="margin-top:8px"><span class="meta grow">Now: <b>${esc(cur.name)}</b> ${esc(cur.grade||'')} <small>#${cur.rank}</small>${whole}</span>${pause}</div>
       ${!pr ? '' : `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall${jobTiming(pr)}${machineTake(pr)}</small>
           ${now.map(s => `<div class="bar running" title="${pct(s.frac)}" style="margin-top:4px"><i style="width:${pct(s.frac)}"></i></div><small>${said(s)}</small>`).join('')}`}
       ${boulderPanelHtml(cur.boulder_panel, c)}`;
@@ -3040,6 +3047,15 @@ $('#campaigns').addEventListener('click', ev => {
   if (!a) return;
   ev.preventDefault();
   openClimb(a.dataset.bclimb);
+});
+// the boulder or group a running climb is meshing: its project, under Projects
+$('#campaigns').addEventListener('click', ev => {
+  const a = ev.target.closest('a[data-proj]');
+  if (!a) return;
+  ev.preventDefault();
+  document.querySelector('.tabs button[data-tab=projects]').click();
+  active = a.dataset.proj;
+  refreshProjects();
 });
 let campaignTimer = null;
 // while the server waits for jobs to finish before it restarts, say so, as nothing new starts meanwhile

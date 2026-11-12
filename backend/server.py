@@ -3764,8 +3764,37 @@ def retry_project(pid: str) -> tuple[dict, int]:
         queue_retry(item["campaign_id"], item["source_id"], pid)
     else:
         q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
-        queue_job(json.loads(proj["job"]) if proj["status"] == "interrupted" and proj["job"] else {"type": "retry", "pid": pid})
+        queue_job(json.loads(proj["job"]) if proj["status"] in ("interrupted", "stopped") and proj["job"] else {"type": "retry", "pid": pid})
     return {"queued": True}, 202
+
+
+def stop_project(pid: str) -> tuple[dict, int]:
+    """Stop a project's job someone asked for (the Projects tab's Stop): one queued leaves the queue; one running stops
+    at once, with the tool it's running and any job it handed a machine. It's left stopped, and Retry runs it again as
+    it was asked for, carrying on from the last step it finished. An area's climb in progress is paused on the Areas tab
+    instead, as the area would take it up again.
+
+    Returns:
+        The response, and its HTTP status.
+    """
+    proj = q("SELECT status, job FROM projects WHERE id=?", pid, one=True)
+    if not proj:
+        return {"error": "not found"}, 404
+    if q("SELECT 1 FROM campaign_items WHERE project_id=? AND status='running'", pid, one=True):
+        return {"error": "an area's climb in progress: pause it on the Areas tab"}, 409
+    with jobs.mutex:
+        waiting = [j for j in jobs.queue if j.get("pid") == pid]
+        for j in waiting:
+            jobs.queue.remove(j)
+    on = [w for w in list(_workers) if w.job and w.job["job"].get("pid") == pid]
+    if not waiting and not on:
+        return {"error": "nothing of it is queued or running"}, 409
+    job = json.loads(proj["job"]) if proj["job"] else (on[0].job["job"] if on else waiting[0])
+    q("UPDATE projects SET status='stopped', job=? WHERE id=?", json.dumps({**job, "resume": True} if on else job), pid, write=True)
+    append_log(pid, "-- stopped by hand: Retry carries on with it" + (" from the last step it finished" if on else ""))
+    for w in on:
+        w.control.stop()
+    return {"stopped": True}, 200
 
 
 def run_retry(pid: str) -> None:
@@ -4948,10 +4977,17 @@ def campaign_view(camp: dict) -> dict:
     again["triable"] = len(triable(cid))
     worked = q("SELECT rank,name,grade,stars,url,climb_id,mesh_id,project_id,status,note,updated FROM campaign_items "
                "WHERE campaign_id=? AND status NOT IN ('pending','running') ORDER BY updated DESC LIMIT 300", cid)
-    running = q("SELECT rank,name,grade,stars,project_id,source_id,boulder,redo,updated,paused FROM campaign_items "
+    running = q("SELECT rank,name,grade,stars,project_id,source_id,boulder,redo,pool,updated,paused FROM campaign_items "
                 "WHERE campaign_id=? AND status='running' ORDER BY updated", cid)
     for r in running:
-        p = q("SELECT status,progress,harvest FROM projects WHERE id=?", r["project_id"], one=True) if r["project_id"] else None
+        # one meshing its boulder (or a group its photos matched) is on that project, not its own harvest, which is done
+        first, pool = (r["redo"] or "").split("+")[0], r.pop("pool", None)
+        whole = boulder_project(r["boulder"]) if first in ("boulder", "pool") and r["boulder"] else \
+            boulder_project(pool) if first == "cluster" and pool else None
+        r["meshing"] = {"kind": "group" if first == "cluster" else "boulder", "name": whole["name"].removesuffix(" (boulder)"),
+                        "project_id": whole["id"]} if whole else None
+        p = q("SELECT status,progress,harvest FROM projects WHERE id=?", whole["id"] if whole else r["project_id"], one=True) \
+            if whole or r["project_id"] else None
         r["progress"] = with_typicals(json.loads(p["progress"]), p["harvest"]) if p and p["progress"] else None
         try:
             r["boulder_panel"] = boulder_panel(camp, r)
@@ -5151,7 +5187,10 @@ def run_job(job: dict) -> None:
             run_retry(job["pid"])
         elif job["type"] == "boulder":
             run_boulder(job["pid"], resume=job.get("resume", False))
-    except (Exception, Cancelled) as e:  # never let the worker die
+    except Cancelled:   # stopped by hand (stop_project()), which said so: left stopped, whatever the job made of it
+        if job.get("pid"):
+            q("UPDATE projects SET status='stopped' WHERE id=?", job["pid"], write=True)
+    except Exception as e:  # never let the worker die
         append_log(job.get("pid", "?"), f"worker error: {e!r}")
     finally:
         w.job = None
@@ -6702,6 +6741,9 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/retry", p)
             if m:
                 return self.send_json(*retry_project(m[1]))
+            m = re.fullmatch(r"/api/projects/([0-9a-f]+)/stop", p)
+            if m:
+                return self.send_json(*stop_project(m[1]))
             if p == "/api/projects/retry-interrupted":     # every project a restart interrupted, oldest first
                 ids = [r["id"] for r in q("SELECT id FROM projects WHERE status='interrupted' ORDER BY created")]
                 return self.send_json({"queued": sum(retry_project(pid)[1] == 202 for pid in ids), "of": len(ids)})
