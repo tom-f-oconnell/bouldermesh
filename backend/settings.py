@@ -71,9 +71,9 @@ DEFAULTS = {
     # a boulder's mesh is one boulder (pooled_summary()) only if each of its climbs with photos of its own has at least
     # this % of them placed in it, and at least one (0: one is enough)
     "boulders.placed_percent": 0.0,
-    # after each boulder's mesh, mesh apart each scene of what it left out that's tied to it (keep_rest()); off until a
-    # run has shown what qualifies, so a boulder's mesh only records them (rest.json)
-    "boulders.rest_auto": False,
+    # after each boulder's mesh, mesh apart each scene of what it left out that's tied to it (keep_rest()); off, a
+    # boulder's mesh only records them (rest.json). Never what a mesh from before ties left out, which isn't checked
+    "boulders.rest_auto": True,
     "videos.prune_unplaced": True,
     # clients that register themselves (registration.py): provisional until approved here or from a phone. Volunteers
     # fetching videos: their limits (the script's own are 15 an hour, 200 a day; searches have their own), and while provisional, whether they

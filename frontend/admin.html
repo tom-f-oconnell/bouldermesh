@@ -104,7 +104,7 @@
       <input type="number" id="placed-percent" min="0" max="100" step="5"></div></div>
     <div class="note" id="placed-note"></div>
     <label class="choice"><input type="checkbox" id="rest-auto"> After each boulder's mesh, mesh apart each scene of what it left out that's tied to it
-      <small>(off for now: until then a boulder's mesh only records them, in its log and rest.json)</small></label>
+      <small>(off, a boulder's mesh only records them, in its log and rest.json; never those of meshes from before ties were recorded, which the button below does)</small></label>
     <div class="row"><button class="sec" id="rest-all">Mesh what boulders' meshes left out</button><span class="note" id="rest-note"></span></div>
     <div class="note">A boulder's mesh tries the photos it leaves out again against itself. Of what's still left, each set
       COLMAP places together (6 photos or more) is a scene to mesh apart, as another side or rock, if it's tied to the

@@ -645,8 +645,11 @@ So the photos left out are now handled in two steps:
    matches with (`models.json`, from the database's two-view geometries, not counting watermarks). A model is a scene
    of the boulder to mesh apart if 6 or more of its photos were left out, and it holds a climb's Mountain Project page
    photo, or 2 of its photos share 16 or more verified matches with placed photos: the same-rock check's 16 inliers and
-   linking climbs' 2 pairs, so no new threshold. Each is meshed once, from those photos (`rest_models()`, `run_rest()`).
-   The ties are from the reconstruction's own matching, so checking costs nothing more.
+   linking climbs' 2 pairs, so no new threshold. Each is meshed once, from those photos (`rest_models()`, `run_rest()`),
+   by default as soon as the boulder's mesh is made (`boulders.rest_auto`): a wrong one is a small mesh to look at,
+   easier to judge than a log line. Its mesh deleted, it's meshed again from the same kept photos, as a scene tied to the
+   boulder is still something its mesh doesn't show. The ties are from the reconstruction's own matching, so checking
+   costs nothing more.
 
    **What came before.** The first version pooled what was left of each climb with 6 or more out, meshed it again from
    scratch (a second mapper run over all of it) and kept only the largest model. Tried on hal for Drifter, it pooled 92

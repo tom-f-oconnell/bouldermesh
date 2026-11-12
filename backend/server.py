@@ -1693,7 +1693,8 @@ REST_LEAST = pipeline.MIN_REGISTERED    # photos left out, at least, to mesh apa
 REST_MARK = POOL_MARK + "rest "     # the last of the key of a pool of what a boulder's mesh left out: that mesh's id, and the
                                     # name of its model (none, before models were tied)
 REST_LINK = "meshed from the photos its boulder's mesh left out"   # a mesh_links note: a rest mesh, to each climb it places
-REST_TRIED = ("failed", "poor", "deleted")  # attempts that were tried and made nothing (or what they made was deleted)
+REST_TRIED = ("failed", "poor", "deleted")  # attempts that were tried and made nothing (or, of an older version of the
+                                            # boulder's mesh, what they made was deleted)
 REST_BUSY = ("queued", "running")
 _rest_lock = threading.RLock()      # rest.json is read, changed and written again by jobs and requests
 
@@ -1911,10 +1912,15 @@ def rest_said(record: dict, queued: int) -> str:
             f"apart" + (f", {queued} queued" if queued else "") + f": {each}")
 
 
-def keep_rest(mid: str, pid: str, log, queue: bool = True) -> dict | None:
+def keep_rest(mid: str, pid: str, log, queue: bool = True, untied: bool = True) -> dict | None:
     """After a boulder's mesh is made (one Mountain Project lists as one area, not a pool): what it left out (rest_of()),
     kept beside it, with how meshing each scene of it went before; and with queue, each scene that counts never tried,
-    or cut short, queued to be meshed apart (queue_rest()). Only costs that if it fails."""
+    or cut short, queued to be meshed apart (queue_rest()). Only costs that if it fails.
+
+    Args:
+        untied: with queue, also queue what a mesh from before ties were recorded left out (its climbs with REST_LEAST
+            or more out), which nothing checks is of a rock its photos see: only from the admin page.
+    """
     try:
         with _rest_lock:
             old = load_rest(mid) or {}
@@ -1932,7 +1938,7 @@ def keep_rest(mid: str, pid: str, log, queue: bool = True) -> dict | None:
             else:
                 record["attempt"] = old.get("attempt")
                 apart = record["apart"]
-                if apart and queue and rest_due(record["attempt"]):
+                if apart and queue and untied and rest_due(record["attempt"]):
                     record["attempt"] = queue_rest(mid, leaf, None, apart, resume=bool(record["attempt"]))
                     names = ", ".join(record["climbs"][c]["name"] for c in apart)
                     log(f"rest: the photos it left out of {plural(len(apart), 'climb')} ({names}) queued to be meshed together")
@@ -2040,12 +2046,21 @@ def rest_queue_all() -> int:
 
 
 def rest_deleted(mid: str, key: str) -> None:
-    """A mesh of what a boulder's mesh left out was deleted: meshing that was tried, and what it made isn't wanted."""
+    """A mesh of what a boulder's mesh left out was deleted: while that boulder's mesh is current, its scene is meshed
+    again from the same photos (linked from the boulder's project, as kept: nothing is fetched again), and its card stays
+    a group meanwhile; otherwise only noted."""
     parent, model = rest_ref(key)
-    rec = load_rest(parent) or {}
-    target = next((m for m in rec.get("models") or [] if m.get("name") == model), None) if model else rec
-    if target and (target.get("attempt") or {}).get("mesh") == mid:
-        rest_attempt(parent, model, status="deleted")
+    with _rest_lock:
+        rec = load_rest(parent) or {}
+        target = next((m for m in rec.get("models") or [] if m.get("name") == model), None) if model else rec
+        if not target or (target.get("attempt") or {}).get("mesh") != mid:
+            return
+        row = q("SELECT boulder, replaced_by FROM meshes WHERE id=?", parent, one=True)
+        if not row or row["replaced_by"]:
+            rest_attempt(parent, model, status="deleted")
+            return
+        target["attempt"] = queue_rest(parent, row["boulder"], model, target["climbs"] if model else rec.get("apart") or [])
+        save_rest(parent, rec)
 
 
 def run_rest(pid: str, key: str, resume: bool, log, tracker) -> None:
@@ -2694,7 +2709,7 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
         if done["status"] == "done":
             shutil.rmtree(pdir / "work", ignore_errors=True)   # most of its disk use, and only useful to itself
             if not is_pool(boulder) and done["mesh_id"]:
-                keep_rest(done["mesh_id"], pid, log, queue=settings().get("boulders.rest_auto"))
+                keep_rest(done["mesh_id"], pid, log, queue=settings().get("boulders.rest_auto"), untied=False)
                 log_shares(done["mesh_id"], log)
     except compute.ComputeUnavailable:
         raise

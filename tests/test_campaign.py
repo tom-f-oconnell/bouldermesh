@@ -2116,12 +2116,12 @@ fresh()
 c = server.create_campaign("", "popularity", HEAD + "".join([leaf_row(13, "Pea", 3.8, "Peabody"), leaf_row(14, "Body", 3.7, "Peabody"),
                                                             leaf_row(15, "Arm", 3.6, "Peabody")]))
 real_keep, queued_rest = server.keep_rest, []
-server.keep_rest = lambda mid, pid, log, queue=True: (queued_rest.append(queue), real_keep(mid, pid, log, queue))[1]
+server.keep_rest = lambda mid, pid, log, queue=True, untied=True: (queued_rest.append((queue, untied)), real_keep(mid, pid, log, queue, untied))[1]
 try:
     run_all(c["id"])
 finally:
     server.keep_rest = real_keep
-assert queued_rest == [False], "queued only with boulders.rest_auto"
+assert queued_rest == [(True, False)], "tied scenes queued by default (boulders.rest_auto); untied leftovers never by themselves"
 got = items(c["id"])
 boulder_mesh = got["Pea"]["mesh_id"]
 assert boulder_mesh and got["Body"]["mesh_id"] == got["Arm"]["mesh_id"] == boulder_mesh, got
@@ -2142,6 +2142,14 @@ for n, count in (("Pea", 10), ("Body", 9), ("Arm", 7)):
 placed = [f["file"] for f in files if f["file"].startswith(("mountainproject_pea", "ddg_pea"))][:8] + ["ddg_body02.jpg"]
 (server.MESHES / boulder_mesh / "cameras.json").write_text(json.dumps([{"name": n} for n in placed]))
 logged = []
+before = []
+while not server.jobs.empty():
+    before.append(server.jobs.get_nowait())
+untied = server.keep_rest(boulder_mesh, bproj["id"], logged.append, untied=False)
+assert untied["apart"] and untied["attempt"] is None and server.jobs.empty(), \
+    ("untied leftovers (a mesh from before ties) aren't queued after a boulder's mesh, only from the admin page", untied, before)
+for j in before:
+    server.jobs.put(j)
 rec = server.keep_rest(boulder_mesh, bproj["id"], logged.append)
 assert rec["apart"] == sorted([ids["Arm"], ids["Body"]], key=lambda i: {ids["Arm"]: "Arm", ids["Body"]: "Body"}[i]), rec["apart"]
 assert len(rec["climbs"][ids["Body"]]["left"]) == 8 and rec["climbs"][ids["Body"]]["own"] == 2, rec["climbs"][ids["Body"]]
@@ -2231,7 +2239,7 @@ assert mine and mine[0]["climbs"] == [{"name": "Arm", "placed": 0, "of": 7}, {"n
 logged = []
 server.log_shares(boulder_mesh, logged.append)
 assert logged == ["own photos placed, each climb with any: Arm 0/7 (under), Body 1/9, Pea 8/10; a boulder needs at least 0% of each, and one"], logged
-assert server.settings().get("boulders.rest_auto") is False, "what a boulder's mesh left out isn't meshed apart by itself"
+assert server.settings().get("boulders.rest_auto") is True, "scenes tied to a boulder's mesh are meshed apart by themselves"
 late = server.upsert_climb(Climb(source="mountainproject", source_id="977", url="https://x/977", name="Late", area_path=json.loads(got["Pea"]["boulder"])))
 summary = server.pooled_summary(got["Pea"]["boulder"], on_parent, kinds, boulder_mesh)
 assert (summary["whole"], summary["untried"]) == (False, 1), summary
@@ -2260,6 +2268,7 @@ assert server.q("SELECT COUNT(*) n FROM climbs WHERE area_path=?", got["Pea"]["b
 # photo, or 2 of them share 16+ verified matches with placed photos; each is recorded with why, meshed once (with
 # boulders.rest_auto, or from the admin page), and only one waiting or meshed keeps the boulder's mesh a group
 fresh()
+server.settings().update({"boulders.rest_auto": False})
 c = server.create_campaign("", "popularity", HEAD + "".join([leaf_row(13, "Pea", 3.8, "Peabody"), leaf_row(14, "Body", 3.7, "Peabody"),
                                                             leaf_row(15, "Arm", 3.6, "Peabody")]))
 run_all(c["id"])
@@ -2370,9 +2379,27 @@ for how, status in (("boom", "error"), ("few", "failed")):
 outcome.clear()
 summary = card()
 assert (summary["whole"], summary["split"], summary["rest"]) == (False, True, "done"), "a scene made a mesh: a group"
-# that mesh deleted: tried, and what it made isn't wanted; then no scene waits or made one: one boulder
+# that mesh deleted: meshed again from the same photos (nothing fetched), and a group meanwhile
 server.rest_deleted(p3["mesh_id"], key3)
-assert {m["name"]: m["attempt"] for m in server.load_rest(bmesh)["models"]}["3"]["status"] == "deleted"
+a3 = {m["name"]: m["attempt"] for m in server.load_rest(bmesh)["models"]}["3"]
+assert a3["status"] == "queued" and a3["project"] == server.q("SELECT id FROM projects WHERE id=?", a3["project"], one=True)["id"], a3
+assert server.jobs.get_nowait() == {"type": "boulder", "pid": a3["project"]} and server.jobs.empty()
+assert card()["whole"] is False
+fetched_before = len(fetched)
+server.diversity_mod.assess = lambda photos, log: {"verdict": "good", "unique_images": 15}
+server.place_climbs = lambda mid, pid, log: (server.MESHES / mid / "views.json").write_text(json.dumps({"climbs": {ids["Arm"]: {"photos": 1, "of": 1}}}))
+try:
+    server.run_boulder(a3["project"])
+finally:
+    server.diversity_mod.assess, server.place_climbs = real_assess, real_place
+again = {m["name"]: m["attempt"] for m in server.load_rest(bmesh)["models"]}["3"]
+assert again["status"] == "done" and again["mesh"] != p3["mesh_id"] and len(fetched) == fetched_before, (again, "nothing fetched")
+assert sorted(f.name for f in (server.PROJECTS / a3["project"] / "photos").iterdir()) == sorted(
+    next(m for m in server.load_rest(bmesh)["models"] if m["name"] == "3")["photos"]), "the same photos"
+p3 = server.q("SELECT * FROM projects WHERE id=?", a3["project"], one=True)     # its mesh now the new one
+assert p3["mesh_id"] == again["mesh"]
+# a scene whose mesh made nothing: then no scene waits or made one: one boulder
+server.rest_attempt(bmesh, "3", status="failed", mesh=None, climbs=[])
 assert card()["whole"] is True and card()["rest"] == "failed"
 # cut short: a restart left it queued (its project interrupted), or no machine took it: due again, and the card says so
 rec = server.load_rest(bmesh)
