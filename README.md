@@ -600,8 +600,9 @@ the images are built (hal's own copy of the site was stopped on Nov 10, 2026: a 
 
 which builds and ships the images (`deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public`), asks the server
 what a restart would cost (`cli.py deploy-check`), and then pulls and restarts it there (`git pull --ff-only && sudo
-systemctl restart bouldermesh`), and if hal's worker runs here as a system service (`bouldermesh-worker`, loaded and
-active), restarts that with sudo, so that it runs the worker script as checked out. When a restart would lose work in
+systemctl restart bouldermesh`). hal's worker needs no restart: `deploy/bouldermesh-worker.service` runs a downloaded
+copy of the script, which updates itself from the server, and every job runs in the server's own image. Only if the
+unit runs this repository's copy (which never updates itself) is it restarted, with sudo. When a restart would lose work in
 progress, it lists it with about how long each has left (`!` for what it would lose: a job on a machine, which starts
 over; a job asked for; beta or size found here; harvests, volunteers' uploads, and jobs no machine has taken yet only
 pause) and asks: restart **now**, or **after** what's in progress finishes, the server taking no new work meanwhile, or

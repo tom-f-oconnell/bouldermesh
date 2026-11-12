@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Deploys what's committed to the public server (README, "Deploying"), then restarts hal's worker if it runs here as a
-# system service, so that it runs the worker script as checked out: from this repository, it never updates itself.
+# system service from this repository's copy of the worker script, which never updates itself. A downloaded copy (as
+# deploy/bouldermesh-worker.service runs) updates itself from the server, and every job runs in the server's own image,
+# so that needs no restart.
 #
 #     ./deploy.sh            asks first, if a restart would lose work in progress (meshing on a machine, a job asked for)
 #     ./deploy.sh --now      restarts at once, whatever's in progress
@@ -92,7 +94,10 @@ fi
 on_server 'git pull --ff-only && sudo systemctl restart bouldermesh' || exit 1
 
 # only a system unit (not a user's own, systemctl --user), loaded and running, which takes root to restart
-if [ "$(systemctl show -p LoadState --value bouldermesh-worker.service 2>/dev/null)" = loaded ] \
+script=$(systemctl show -p Environment --value bouldermesh-worker.service 2>/dev/null | tr ' ' '\n' | sed -n 's/^SCRIPT=//p')
+if [ -n "$script" ] && [ "$(readlink -f "$script")" != "$(readlink -f worker/bouldermesh_worker.py)" ]; then
+    echo "hal's worker runs its own copy of the worker script ($script), which updates itself: not restarting it"
+elif [ "$(systemctl show -p LoadState --value bouldermesh-worker.service 2>/dev/null)" = loaded ] \
         && systemctl is-active --quiet bouldermesh-worker.service; then
     if [ "$(id -u)" -eq 0 ]; then
         systemctl restart bouldermesh-worker
