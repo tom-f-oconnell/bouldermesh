@@ -674,6 +674,11 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
                     why[p.name] = stood[p.name]
             elif was_out.get(p.name) == "nomatch":
                 again.add(p.name)
+    # kept before the CLIP check was (Nov 2026), which `offtopic-split` then only ran on those rejected: those kept are
+    # checked with it now, their match to the rock standing (Don't Rock the Boat's board-game photos had never been)
+    unclipped = [p for p in paths if "boulder" in methods and p.name in stood and stood[p.name] is None and "boulder" not in scores[p.name]]
+    if unclipped:
+        log(f"relevance: {len(unclipped)} photo(s) an earlier run kept without CLIP's check of whether it's a boulder: checking that now")
     log(f"relevance: checking {len(paths) - len(stood)} photo(s) with {', '.join(methods) or 'nothing'}"
         + (f" ({', '.join(missing)} not installed)" if missing else "")
         + (f"; {len(stood)} more as an earlier run found them" + (f", and {len(again)} it found matching nothing only against "
@@ -691,16 +696,16 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
             if scores[p.name]["flat"] > FLAT_MAX:
                 why[p.name] = "card"
         alive = [p for p in alive if p.name not in why]
-    if "boulder" in methods and [p for p in alive if p.name not in again]:
+    if "boulder" in methods and ([p for p in alive if p.name not in again] or unclipped):
         try:
-            for p, prob in boulder_probability([p for p in alive if p.name not in again], log, sub(0.0, 0.3)).items():
+            for p, prob in boulder_probability([p for p in alive if p.name not in again] + unclipped, log, sub(0.0, 0.3)).items():
                 scores[p.name]["boulder"] = round(prob, 3)
                 if prob < BOULDER_MIN_P:
                     why[p.name] = "notboulder"
             alive = [p for p in alive if p.name not in why]
         except Exception as e:  # e.g. the model can't be downloaded: only costs this method
             log(f"relevance: CLIP check failed ({e}); skipping it")
-    kept_before = [p for p in paths if p.name in stood and stood[p.name] is None]
+    kept_before = [p for p in paths if p.name in stood and stood[p.name] is None and p.name not in why]
     if "same-rock" in methods and alive:
         anchor_list = [p for p in (anchors if anchors is not None else alive) if p in alive and (anchors is not None or is_trusted(p))]
         candidates = [p for p in alive if p not in anchor_list]

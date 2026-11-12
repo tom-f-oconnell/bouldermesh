@@ -178,6 +178,24 @@ with tempfile.TemporaryDirectory() as td:
             relevance.match, relevance.CACHE_FILE = real_match, saved_cache
         print("an earlier run's verdicts OK")
 
+        # kept before the CLIP check was, which offtopic-split only ran on those rejected: CLIP judges them now, and one it
+        # finds not of bouldering goes, though it matched (Don't Rock the Boat's board-game box, Nov 12, 2026)
+        old = {**first, "methods": ["cards", "same-rock", "boulder"], "scores": {k: {kk: vv for kk, vv in v.items() if kk != "boulder"}
+                                                                                for k, v in first["scores"].items()}}
+        judged = []
+        real_prob, real_avail = relevance.boulder_probability, relevance.available
+        relevance.boulder_probability = lambda ps, log, progress=None: (judged.extend(p.name for p in ps), {p: (0.1 if p.name == "ddg_same.jpg" else 0.9) for p in ps})[1]
+        relevance.available = lambda: ["cards", "boulder", "same-rock"]
+        try:
+            logs.clear()
+            r = relevance.filter_photos(paths, None, logs.append, prior=old)
+        finally:
+            relevance.boulder_probability, relevance.available = real_prob, real_avail
+        assert sorted(judged) == sorted(first["kept"]), ("only those kept without it", judged)
+        assert r["rejected"].get("ddg_same.jpg") == "notboulder" and "mountainproject_a.jpg" in r["kept"], r
+        assert any("without CLIP's check" in x for x in logs), logs
+        print("verdicts from before the CLIP check OK")
+
         # what the cache knows of a set of photos, for a machine to filter them with, and what it worked out, kept here
         export = tmp / "export.sqlite"
         n = relevance.export_cache(paths, export)

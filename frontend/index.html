@@ -124,7 +124,10 @@
   .checks label{display:flex;gap:4px;align-items:center}
   #right{position:relative;min-height:0;display:grid;grid-template-rows:auto 1fr;grid-template-columns:minmax(0,1fr)}
   .viewbar{display:flex;gap:6px;padding:6px 10px;border-bottom:1px solid var(--line);background:var(--panel);align-items:center}
-  .viewbar .status{margin-left:auto}
+  /* on one line however narrow the viewer: buttons keep their labels whole, and the "Seen from" list and the mesh's name
+     give way (cut short) before anything wraps */
+  .viewbar button{white-space:nowrap;flex:none} .viewbar select{min-width:8em;flex:0 1 auto}
+  .viewbar .status{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #viewer,#map{position:relative;min-height:0;display:none}
   #viewer.on,#map.on{display:block}
   #viewer canvas{display:block;width:100%;height:100%}
@@ -3497,7 +3500,7 @@ function renderMeshes(filter = true){
     const n = new Set([...pooledIds, ...m.climbs.map(c => c.id)]).size;
     d.innerHTML = `<div class="grow"><span class="name">${meshNameHtml(m)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
         <div class="chips">${several ? `<details class="mclimbs"${climbListsOpen.has(m.id) ? ' open' : ''}><summary>${plural(n, 'climb')}</summary><div class="chips">${chips}</div></details>` : chips}
-          <select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option>${climbsCache.filter(c=>c.kind!=='area').map(c=>`<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('')}</select></div></div>
+          ${editor ? '<select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option></select>' : ''}</div></div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px">
         <button class="sm view">View</button>
         ${m.lat!=null?'<button class="sm sec fly">Map</button>':'<button class="sm sec setll">Set coords</button>'}
@@ -3523,7 +3526,13 @@ function renderMeshes(filter = true){
       c?.view ? viewMesh(m.id, c.id, 'meshes') : openClimb(ch.dataset.from);
     });
     d.querySelectorAll('[data-unlink]').forEach(x => x.onclick = async ev => { ev.stopPropagation(); await api(`/api/meshes/${m.id}/links/${x.dataset.unlink}`, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); });
-    d.querySelector('.linksel').onchange = async ev => { if (!ev.target.value) return; await api(`/api/meshes/${m.id}/links`, {method:'POST', json:{climb_id: ev.target.value}}); toast('Linked'); refreshMeshes(); refreshClimbs(); };
+    const link = d.querySelector('.linksel');
+    if (link) {     // its climbs listed only once it's opened: hundreds of options on every card made each sort take seconds
+      const fill = () => { if (link.options.length > 1) return; link.insertAdjacentHTML('beforeend', climbsCache.filter(c => c.kind !== 'area').map(c => `<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('')); };
+      link.addEventListener('pointerdown', fill);
+      link.addEventListener('focus', fill);
+      link.onchange = async ev => { if (!ev.target.value) return; await api(`/api/meshes/${m.id}/links`, {method:'POST', json:{climb_id: ev.target.value}}); toast('Linked'); refreshMeshes(); refreshClimbs(); };
+    }
     el.appendChild(d);
   }
   renderBetaList();
