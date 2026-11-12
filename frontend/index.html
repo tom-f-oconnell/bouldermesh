@@ -524,9 +524,10 @@
         </div>
         <details id="m-filter" style="margin-bottom:8px"><summary>Filter <small id="m-filter-note"></small></summary>
           <div class="meta" style="margin-bottom:4px" title="Each placed photo counts once among those taken within 15° of the same direction from the rock, so many frames of one video count about once. Coverage: how much of a full circle round the rock its photos see, from above.">Distinct viewpoints count photos taken from nearly the same spot once; coverage is how far round the rock its photos go. A filter left at its ends leaves out nothing, and meshes without that number stay.</div>
-          <label class="row" style="margin:4px 0 6px" title="Climbs: made for one climb. Groups: from the photos of more than one, but not every climb on a rock Mountain Project names as one boulder (pools of climbs whose photos match, and boulders' meshes that don't place every climb on them). Boulders: every climb known on a rock Mountain Project names as one boulder, each placed by its own photos. Meshes linked to no climb show only under All.">Of
-            <select id="m-kind" style="width:auto"><option value="all">All</option><option value="climbs">Climbs</option>
-              <option value="groups">Groups</option><option value="boulders">Boulders</option></select></label>
+          <div class="row" id="m-kinds" style="margin:4px 0 6px" title="Climbs: made for one climb. Groups: from the photos of more than one, but not every climb on a rock Mountain Project names as one boulder (pools of climbs whose photos match, and boulders' meshes that don't place every climb on them). Boulders: every climb known on a rock Mountain Project names as one boulder, each placed by its own photos. Meshes linked to no climb show only with all three ticked. At least one stays ticked."><span class="meta">Of:</span>
+            <label><input type="checkbox" data-kind="boulders"> <span>Boulders</span></label>
+            <label><input type="checkbox" data-kind="groups"> <span>Groups</span></label>
+            <label><input type="checkbox" data-kind="climbs"> <span>Climbs</span></label></div>
           <div id="m-areas"></div>
           <div id="m-ranges"></div>
           <button class="sm sec" id="m-clear" title="All meshes, every area, and every range back to its ends">Clear the filter</button>
@@ -3566,8 +3567,11 @@ function meshKind(m){
   return own > 1 ? 'groups' : own === 1 ? 'climbs' : null;
 }
 const KIND_NAMES = { all: 'All', climbs: 'Climbs', groups: 'Groups', boulders: 'Boulders' };
-let meshView = { sort: 'created', desc: true, ranges: {}, hidden: [], noBad: false, noMineBad: false, kind: 'all' };    // hidden: areas left out
+let meshView = { sort: 'created', desc: true, ranges: {}, hidden: [], noBad: false, noMineBad: false, hideKinds: [] };    // hidden: areas left out; hideKinds: of climbs, groups and boulders, those left out
 try { Object.assign(meshView, JSON.parse(localStorage.getItem('bm_mesh_view') || '{}')); } catch {}
+if (meshView.kind && meshView.kind !== 'all') meshView.hideKinds = ['climbs', 'groups', 'boulders'].filter(k => k !== meshView.kind);   // the one kind picked before
+delete meshView.kind;
+if (!Array.isArray(meshView.hideKinds) || meshView.hideKinds.length >= 3) meshView.hideKinds = [];
 function saveMeshView(){ try { localStorage.setItem('bm_mesh_view', JSON.stringify(meshView)); } catch {} }
 // a slider's 0..1000 to a value between the least and most there are, and back: faces on a log scale
 function toValue(t, lo, hi, log){ return log && lo > 0 ? Math.exp(Math.log(lo) + (Math.log(hi) - Math.log(lo)) * t / 1000) : lo + (hi - lo) * t / 1000; }
@@ -3575,8 +3579,10 @@ function toSlider(v, lo, hi, log){ if (hi <= lo) return 0; return Math.round(100
 function renderMeshFilter(all){
   const kinds = { all: all.length };
   for (const m of all) { const k = meshKind(m); if (k) kinds[k] = (kinds[k] || 0) + 1; }
-  $('#m-kind').querySelectorAll('option').forEach(o => { o.textContent = `${KIND_NAMES[o.value]} (${kinds[o.value] || 0})`; });
-  $('#m-kind').value = meshView.kind || 'all';
+  $('#m-kinds').querySelectorAll('[data-kind]').forEach(b => {
+    b.checked = !meshView.hideKinds.includes(b.dataset.kind);
+    b.nextElementSibling.textContent = `${KIND_NAMES[b.dataset.kind]} (${kinds[b.dataset.kind] || 0})`;
+  });
   const areas = [...new Set(all.flatMap(meshAreas))].sort((a, b) => (a === NO_AREA) - (b === NO_AREA) || a.localeCompare(b));
   $('#m-areas').innerHTML = areas.length > 1 ? '<span class="meta">Areas: </span>' + areas.map(a =>
     `<label><input type="checkbox" data-area="${esc(a)}" ${meshView.hidden.includes(a) ? '' : 'checked'}>${esc(a)}</label>`).join('') : '';
@@ -3609,7 +3615,7 @@ function renderMeshFilter(all){
   }
 }
 function meshShown(m){
-  if (meshView.kind && meshView.kind !== 'all' && meshKind(m) !== meshView.kind) return false;
+  if (meshView.hideKinds.length && (!meshKind(m) || meshView.hideKinds.includes(meshKind(m)))) return false;
   if (meshAreas(m).every(a => meshView.hidden.includes(a))) return false;
   if (meshView.noBad && m.rating?.n && m.rating.mean <= 1.5) return false;
   if (meshView.noMineBad && myRating(m.id) === 1) return false;
@@ -3635,8 +3641,14 @@ $('#m-sort').onchange = () => { meshView.sort = $('#m-sort').value; saveMeshView
 $('#m-dir').onclick = () => { meshView.desc = !meshView.desc; saveMeshView(); renderMeshes(); };
 $('#m-nobad').onchange = () => { meshView.noBad = $('#m-nobad').checked; saveMeshView(); renderMeshes(); };
 $('#m-nomine').onchange = () => { meshView.noMineBad = $('#m-nomine').checked; saveMeshView(); renderMeshes(); };
-$('#m-kind').onchange = () => { meshView.kind = $('#m-kind').value; saveMeshView(); renderMeshes(); };
-$('#m-clear').onclick = () => { meshView.ranges = {}; meshView.hidden = []; meshView.kind = 'all'; saveMeshView(); renderMeshes(); };
+// climbs, groups and boulders each ticked or not; the last one ticked can't be unticked, as that would show nothing
+$('#m-kinds').querySelectorAll('[data-kind]').forEach(b => b.onchange = () => {
+  const boxes = [...$('#m-kinds').querySelectorAll('[data-kind]')];
+  if (!boxes.some(x => x.checked)) { b.checked = true; toast('At least one of boulders, groups and climbs stays ticked', 4000); return; }
+  meshView.hideKinds = boxes.filter(x => !x.checked).map(x => x.dataset.kind);
+  saveMeshView(); renderMeshes();
+});
+$('#m-clear').onclick = () => { meshView.ranges = {}; meshView.hidden = []; meshView.hideKinds = []; saveMeshView(); renderMeshes(); };
 // ---- rating a mesh, from its 3D view: bad, OK or good, and a comment. Kept in this browser (bm_ratings), and sent to the
 // site each time either changes, which keeps one of each for every browser (an id made here, bm_browser)
 const RATING_NAMES = { 1: 'bad', 2: 'OK', 3: 'good' };
