@@ -30,7 +30,7 @@
   body.prefs-open #prefs{display:grid} #prefs .plabel{font-size:12px;color:var(--mute)} #prefs .seg{margin-left:0;justify-self:start}
   .prefsbtn[aria-expanded=true]{background:var(--line)}
   /* icons in buttons as tall as the words in their neighbours: the line keeps the height of a small button's text */
-  .prefsbtn .gear{font-size:15px;line-height:0;vertical-align:-1px} #vinfo svg{width:14px;height:14px;vertical-align:-3px}
+  .prefsbtn .gear{font-size:15px;line-height:0;vertical-align:-1px} #vinfo svg,#vshare svg{width:14px;height:14px;vertical-align:-3px}
   #vinfo[aria-pressed=true]{background:var(--line)} #vinfo{position:relative}
   #vinfo.dot::after{content:'';position:absolute;top:2px;right:2px;width:6px;height:6px;border-radius:50%;background:var(--warn)}
   .seg button{background:transparent;color:var(--mute);border:0;border-radius:0;padding:3px 8px;font-size:12px} .seg button.on{color:var(--fg);background:var(--line)}
@@ -180,7 +180,8 @@
   #nearby .note{color:var(--mute);margin-top:8px;line-height:1.4}
   #pieces .list{max-height:260px;overflow:auto;margin-top:6px;display:grid;grid-template-columns:1fr auto;gap:3px 8px;align-items:center}
   #orient{display:none;position:absolute;left:12px;bottom:12px;max-width:430px;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.45;z-index:2}
-  #rate{position:absolute;right:12px;bottom:12px;z-index:3;display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+  #vcorner{position:absolute;right:12px;bottom:12px;z-index:3;display:flex;align-items:flex-end;gap:6px}   /* Rate, then the notes' button */
+  #rate{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
   #rate[hidden],#ratemenu[hidden]{display:none}
   #detail[hidden]{display:none} #detail.busy{pointer-events:none;opacity:.8}
   #ratemenu{display:flex;flex-direction:column;gap:6px;width:min(300px,calc(100vw - 48px));padding:8px;border-radius:8px;
@@ -255,8 +256,8 @@
     /* the view on its own: back, and a toggle between the mesh and the map */
     #toctl{padding:3px 10px;border:1px solid transparent} #toctl .arrow{font-size:17px;line-height:0;vertical-align:-1px}
     #v3d,#viewing{display:none!important}
-    /* back, Random, Nearby and Map at the left (then what shows only now and then), and notes and settings at the right */
-    #vnearby{order:1} #vmap{order:2} #vmark,#vfrom,#detail{order:3} #vinfo{order:4;margin-left:auto}
+    /* back, Random, Nearby and Map at the left (then what shows only now and then), and share and settings at the right */
+    #vnearby{order:1} #vmap{order:2} #vmark,#vfrom,#detail{order:3} #vshare{order:4;margin-left:auto}
     #nearby.turning .list,#nearby.turning .note{display:none}     /* turning one: only that, so the view shows */
     #nearby.turning{top:auto;bottom:12px;max-height:45%} #vfrom{flex:0 1 auto;min-width:0} #vprefs{order:5}
     #caps,#code,#admin{display:none!important}
@@ -265,8 +266,8 @@
        foot, left of the rating; not the mouse's controls */
     #hud{display:none!important}
     #orient,#viewnote{top:56px;bottom:auto;left:8px;right:8px;max-width:none;max-height:35%;overflow:auto} #viewnote{z-index:3}
-    #pieces{top:auto;bottom:12px;left:8px;right:auto;max-width:calc(100% - 130px);max-height:35%;overflow:auto}
-    #ratebtn{font-size:14px;padding:6px 12px} #ratemenu .seg button{padding:7px 14px;font-size:14px} #ratecomment{font-size:16px}
+    #pieces{top:auto;bottom:12px;left:8px;right:auto;max-width:calc(100% - 175px);max-height:35%;overflow:auto}
+    #ratebtn{font-size:14px;padding:6px 12px} #vcorner #vinfo{padding:6px 10px} #ratemenu .seg button{padding:7px 14px;font-size:14px} #ratecomment{font-size:16px}
     #vtitle:has(#vname:not(:empty)){display:block;position:absolute;top:6px;left:8px;max-width:calc(100% - 16px);font-size:12px;line-height:1.35;
       padding:2px 8px;border-radius:10px;background:var(--overlay-soft);color:var(--fg);pointer-events:none;z-index:2}
     #vname,#varea{white-space:nowrap;overflow:hidden;text-overflow:ellipsis} #varea{font-size:11px;color:var(--mute)} #varea:empty{display:none}
@@ -478,7 +479,7 @@
       <select id="vfrom" style="display:none;width:auto" title="A boulder's own mesh is made from the photos of every climb on it: this looks at it from where one climb's own photos (its page's and its videos') were taken"></select>
       <button class="sec sm" id="detail" hidden></button>
       <span class="status" id="viewing"></span>
-      <button class="sec sm" id="vinfo" aria-pressed="false" aria-label="Notes over the view" title="Notes over the view: about its texture, its stray pieces, how it was framed and scaled, and on a computer how to move round it. Click again to hide them, and the rating box too. A dot: there's a note now."><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="6.75"/><path d="M8 7.2v4.3" stroke-linecap="round"/><circle cx="8" cy="4.9" r=".55" fill="currentColor"/></svg></button>
+      <button class="sec sm" id="vshare" disabled aria-label="Share" title="Share a link to this mesh: on a phone, with its apps; elsewhere, copied for you to paste"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="3.5" r="1.9"/><circle cx="4" cy="8" r="1.9"/><circle cx="12" cy="12.5" r="1.9"/><path d="M5.7 7.1l4.6-2.6M5.7 8.9l4.6 2.6"/></svg></button>
       <button class="sm sec prefsbtn" id="vprefs" title="Settings: the mesh's look, its background, detail and colours" aria-label="Settings" aria-expanded="false"><span class="gear" aria-hidden="true">⚙︎</span></button>
     </div>
     <div id="viewer" class="on">
@@ -488,6 +489,7 @@
       <div id="pieces"></div>
       <div id="nearby" hidden></div>
       <div id="orient"></div>
+      <div id="vcorner">
       <div id="rate" hidden>
         <div id="ratemenu" hidden>
           <span class="seg" id="rateseg" title="How good this mesh is. Click your choice again to take it back."><button data-r="1">Bad</button><button data-r="2">OK</button><button data-r="3">Good</button></span>
@@ -495,6 +497,8 @@
           <div class="meta ratefoot"><span id="rateavg" title="Everyone's ratings, on average: bad 1, OK 2, good 3"></span><span id="ratestate"></span></div>
         </div>
         <button class="sm sec" id="ratebtn" title="Rate this mesh: bad, OK or good, with a comment if you like. Kept in this browser, and sent to the site. Click again to fold the box away." aria-expanded="false">Rate</button>
+      </div>
+        <button class="sec sm" id="vinfo" aria-pressed="false" aria-label="Notes over the view" title="Notes over the view: about its texture, its stray pieces, how it was framed and scaled, and on a computer how to move round it. Click again to hide them, and the rating box too. A dot: there's a note now."><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="6.75"/><path d="M8 7.2v4.3" stroke-linecap="round"/><circle cx="8" cy="4.9" r=".55" fill="currentColor"/></svg></button>
       </div>
       <div id="hud">Pick a mesh, or drop a mesh file here. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan</div>
       <div id="drop">Drop mesh file to upload &amp; view</div>
@@ -747,13 +751,19 @@ for (const t of ['pointerup', 'pointercancel']) renderer.domElement.addEventList
   fingers = Math.max(0, fingers - 1);
   clearTimeout(press?.timer);
 });
-function linkMenu(x, y){
+// The link to the mesh in view, and what to call it
+function meshShare(){
   const m = meshesById[shownMesh];
-  if (!m) return;
+  if (!m) return null;
   const from = $('#vfrom').style.display !== 'none' ? $('#vfrom').value : '';
-  const url = location.origin + location.pathname + viewLink(m.id, from), menu = $('#linkmenu');
+  return { url: location.origin + location.pathname + viewLink(m.id, from), title: viewTitle(m, from) };
+}
+function linkMenu(x, y){
+  const s = meshShare();
+  if (!s) return;
+  const { url, title } = s, menu = $('#linkmenu');
   const r = vEl.getBoundingClientRect();
-  menu.innerHTML = `<button class="sm" data-act="copy">Copy link to ${esc(viewTitle(m, from))}</button>`
+  menu.innerHTML = `<button class="sm" data-act="copy">Copy link to ${esc(title)}</button>`
     + (navigator.share ? '<button class="sm sec" data-act="share">Share…</button>' : '') + `<span class="url">${esc(url)}</span>`;
   menu.hidden = false;
   menu.style.left = Math.max(8, Math.min(x - r.left, r.width - menu.offsetWidth - 8)) + 'px';
@@ -761,12 +771,31 @@ function linkMenu(x, y){
   menu.onclick = async ev => {
     const b = ev.target.closest('button');
     if (!b) return;
-    if (b.dataset.act === 'share') { try { await navigator.share({ title: viewTitle(m, from), url }); } catch {} return closeLinkMenu(); }
+    if (b.dataset.act === 'share') { try { await navigator.share({ title, url }); } catch {} return closeLinkMenu(); }
     try { await navigator.clipboard.writeText(url); b.textContent = 'Copied'; setTimeout(closeLinkMenu, 1200); }
     catch { getSelection().selectAllChildren(menu.querySelector('.url')); b.textContent = 'Selected: copy it'; }   // no clipboard over plain HTTP
   };
 }
 function closeLinkMenu(){ $('#linkmenu').hidden = true; }
+// Share: on a phone or tablet, its share sheet, to pick an app; elsewhere (or if that fails) the link is copied, and if
+// it can't be, the menu a long press shows, by the button, with the link to select
+const shareIcon = $('#vshare').innerHTML, shareTitle = $('#vshare').title;
+$('#vshare').onclick = async () => {
+  const s = meshShare(), b = $('#vshare');
+  if (!s) return;
+  if (navigator.share && matchMedia('(pointer: coarse)').matches) {
+    try { return await navigator.share({ title: s.title, url: s.url }); }
+    catch (e) { if (e.name === 'AbortError') return; }     // put away: nothing more
+  }
+  if (await copyText(s.url)) {
+    b.innerHTML = COPIED_ICON; b.title = 'Link copied';
+    toast('Link copied: ' + s.url, 2500);
+    clearTimeout(b.t); b.t = setTimeout(() => { b.innerHTML = shareIcon; b.title = shareTitle; }, 1500);
+    return;
+  }
+  const r = b.getBoundingClientRect();
+  linkMenu(r.right, r.bottom + 4);
+};
 document.addEventListener('pointerdown', ev => { if (!$('#linkmenu').hidden && !ev.target.closest('#linkmenu')) closeLinkMenu(); });
 renderer.domElement.addEventListener('dblclick', ev => {
   let hit = pieces?.editing ? null : surfaceUnder(ev);
@@ -1762,6 +1791,7 @@ async function loadMeshUrl(url, filename, label, id){
   stopDetail();
   clearNearby();
   shownMesh = id || null;
+  $('#vshare').disabled = !shownMesh;
   showRate(true);
   const began = performance.now(), via = viewVia;
   viewVia = '';
