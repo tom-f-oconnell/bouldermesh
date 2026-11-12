@@ -133,6 +133,14 @@
   a{color:var(--acc)}
   details summary{cursor:pointer;color:var(--mute);font-size:12px}
   #ca-box > summary h2{display:inline;margin:0} #ca-box[open] > summary{margin-bottom:10px}   /* the Areas box, collapsible */
+  #ca-about p{margin:0 0 6px} #ca-about p:last-child{margin:0}
+  /* in the areas' option lists, a checkbox's words wrap beside it, and words around number inputs flow round them,
+     rather than each dropping whole onto a line of its own */
+  #ca-box details label.row:has(> input[type=checkbox]),#campaigns details label.row:has(> input[type=checkbox]){display:grid;grid-template-columns:auto 1fr;gap:6px;align-items:start}
+  #ca-box details label.row:not(:has(> input[type=checkbox])),#campaigns details label.row:not(:has(> input[type=checkbox])){display:block}
+  .campname a{color:inherit;text-decoration:underline dotted;text-underline-offset:2px}
+  button.copy{background:transparent;color:var(--mute);border:0;padding:0 3px;vertical-align:-2px;line-height:1} button.copy:hover{color:var(--fg)}
+  button.copy svg{width:14px;height:14px;display:block}
   .crows{display:grid;grid-template-columns:auto 1fr auto auto;gap:3px 8px;font-size:12px;margin-top:6px;align-items:baseline}
   .crows small{color:var(--mute)} .crows .note{grid-column:2/-1;color:var(--mute);font-size:11px;margin-top:-3px}
   #viewnote{display:none;position:absolute;top:40px;left:22px;max-width:640px;background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-line);border-radius:6px;padding:6px 10px;font-size:12px;z-index:2}
@@ -336,13 +344,13 @@
               <option value="rating">Highest rated</option>
               <option value="data">Most photos and videos</option>
             </select></label>
-          <label title="Stops each area once this many meshes are made, of its climbs in its order. Climbs that share a boulder are harvested together, wherever they come in the order, and the boulder meshed from all their photos counts as one. Empty for no limit. Raising it later goes on from there, without doing again what's done.">First
+          <label title="Stops each area once this many meshes are made, of its climbs in its order. Climbs on a rock their Mountain Project area says is one boulder are harvested together, wherever they come in the order, and meshed together, counting as one; other climbs count one each. Meshes made after, of climbs whose photos match or that a boulder's mesh hardly shows, don't count. Empty for no limit. Raising it later goes on from there, without doing again what's done.">First
             <input type="number" id="ca-max" min="1" step="1" placeholder="all" autocomplete="off" style="width:72px"> meshes of each</label>
           <label class="limitopt" title="Off: a climb or boulder that fails, or is skipped for too few viewpoints, doesn't count, and the next is meshed in its place. On: it counts, as if meshed."><input type="checkbox" id="ca-countfail" autocomplete="off" disabled> Count failures towards limit</label>
         </div>
-        <label class="row" style="margin-top:6px" title="Off: a climb waits until YouTube has been searched for its videos (by a volunteer, on a server YouTube refuses) before it's meshed. On: meshes it anyway, as when no volunteer is connected to search."><input type="checkbox" id="ca-noyt" autocomplete="off"> Mesh climbs without searching YouTube for their videos first</label>
-        <label class="row" style="margin-top:6px" title="An area listed already keeps the list Mountain Project gave when it was first entered. On: asks Mountain Project again (up to a minute each), and adds the problems posted since, without changing the order of those listed: by popularity, the new ones come after them."><input type="checkbox" id="ca-checknew" autocomplete="off"> For areas listed already, check Mountain Project for climbs added since</label>
         <details style="margin-top:6px"><summary>More options</summary>
+          <label class="row" style="margin-top:6px" title="Off: a climb waits until YouTube has been searched for its videos (by a volunteer, on a server YouTube refuses) before it's meshed. On: meshes it anyway, as when no volunteer is connected to search."><input type="checkbox" id="ca-noyt" autocomplete="off"> Mesh climbs without searching YouTube</label>
+          <label class="row" style="margin-top:6px" title="An area listed already keeps the list Mountain Project gave when it was first entered. On: asks Mountain Project again (up to a minute each), and adds the problems posted since, without changing the order of those listed: by popularity, the new ones come after them."><input type="checkbox" id="ca-checknew" autocomplete="off"> For areas listed already, check MP for climbs added since</label>
           <label class="row" style="margin-top:6px" title="On: a boulder whose mesh was made from the photos its climbs have now isn't meshed again, as when one of its climbs comes round again after it was. Off: it's meshed again, which can come out different. Rebuild still rebuilds."><input type="checkbox" id="ca-samephotos" checked autocomplete="off"> Don't mesh a boulder again from the same photos</label>
           <label class="row" style="margin-top:6px" title="On: when a mesh is rebuilt from photos that include every one the mesh before placed, and places fewer of them, the mesh before stays the current one, and the new one is kept as an older version. Off: the newest is always current."><input type="checkbox" id="ca-keepbetter" checked autocomplete="off"> Keep the mesh before when a rebuild from the same photos places fewer</label>
           <label class="row" style="margin-top:6px" title="COLMAP can place many fewer photos of the same set from one run to the next (19 of 19, then 13, for one boulder). When the model it keeps places under this share of a climb's or boulder's photos, it tries this many more random seeds, a minute or so each, and keeps the model placing most. 0 in either turns it off.">When COLMAP places under
@@ -350,7 +358,23 @@
             <input type="number" id="ca-mapmore" min="0" max="5" step="1" value="1" autocomplete="off" style="width:52px"> more seed(s), keeping the best</label>
         </details>
         <div style="text-align:center;margin-top:10px"><button id="ca-go">Start meshing</button></div>
-        <div class="notice" style="margin-top:8px">Meshes its boulder problems one at a time until you stop it, and keeps every mesh finished before then. Each can take most of an hour. Problems that share a boulder are harvested, and the boulder is meshed from all their photos. Several areas, one a line, are taken in the order given, top first, after any running already; one with no climb to take for now (waiting for volunteers) is passed over until it has. With a limit, each stops at that many meshes, a boulder's counting once. An area listed already is taken up again with these settings, keeping what's done, and moves to its place in the new list.</div>
+        <details id="ca-about" style="margin-top:8px"><summary>Details</summary><div class="notice" style="margin-top:6px">
+          <p>Meshes each area's boulder problems in its order until you stop it, keeping every mesh finished before then. Each can
+            take most of an hour.</p>
+          <p>Before a climb is meshed, the page of its lowest Mountain Project area is read, for whether that's one rock. Where its
+            name or description says so ("Drifter/Smoking Boulder"), the area's climbs on it are harvested, wherever they come in
+            the order, and meshed together from all their photos: one mesh, counting once toward a limit. It shows what their
+            photos do, often not all the way round, and is called a whole boulder only when it places every climb on it. A climb
+            it hardly shows is meshed on its own too. (The admin page can have every climb meshed on its own instead.)</p>
+          <p>Where the area holds several rocks ("Stained Glass/Flyboy Area", "Birthday Boulders"), or its page doesn't say, each
+            climb is meshed on its own, counting one each. Once its climbs within the limit are through, those whose photos show
+            the same rock are meshed together as well: clusters of a boulder's climbs, not always all of them. These, like the
+            climbs a boulder's mesh hardly shows, come on top of the limit.</p>
+          <p>Several areas, one a line, are taken in the order given, top first, after any running already; one with no climb to
+            take for now (waiting for volunteers) is passed over until it has. An area listed already is taken up again with these
+            settings, keeping what's done, and moves to its place in the new list. One removed and entered again starts over,
+            but its climbs that have meshes keep them.</p>
+        </div></details>
         </details>
       </section>
       <section>
@@ -2731,6 +2755,16 @@ const ORDER_NAMES = { popularity: 'most popular first', rating: 'highest rated f
 const ITEM_NAMES = { done: 'meshed', skipped: 'skipped', failed: 'failed', waiting: 'waiting for volunteers', harvested: 'harvested, for its boulder' };
 const stars = v => v == null ? '' : `★${(+v).toFixed(1)}`;
 let campaignShown = null, meshedShown = null;
+const COPY_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h1.5"/></svg>';
+const COPIED_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg>';
+// over plain HTTP (a LAN address) there's no clipboard API, but a selected textarea can still be copied
+async function copyText(text){
+  try { await navigator.clipboard.writeText(text); return true; } catch {}
+  const t = document.createElement('textarea');
+  t.value = text; t.style.position = 'fixed'; t.style.opacity = '0';
+  document.body.appendChild(t); t.select();
+  try { return document.execCommand('copy'); } catch { return false; } finally { t.remove(); }
+}
 // An area whose climbs found no machine to mesh on: what it waits for, which kind of machine, and when it tries again
 function machineWaitHtml(c){
   const m = c.machine_wait;
@@ -2784,12 +2818,15 @@ async function refreshCampaigns(){
       const n = c.counts, active = c.status === 'running' || c.status === 'stopping';
       const left = (n.pending || 0) + (n.running || 0);
       const d = document.createElement('div'); d.className = 'card'; d.dataset.camp = c.id;
+      const mpUrl = c.area_id ? `https://www.mountainproject.com/area/${encodeURIComponent(c.area_id)}` : null;
+      const title = mpUrl ? `<b><a href="${esc(mpUrl)}" target="_blank" rel="noopener" title="Its page on Mountain Project">${esc(c.name)}</a></b>
+        <button class="copy" title="Copy its Mountain Project link, to enter it again above" aria-label="Copy its Mountain Project link">${COPY_ICON}</button>` : `<b>${esc(c.name)}</b>`;
       const row = i => `<span><small>#${i.rank}</small></span><span>${i.climb_id ? `<a href="#" data-climb="${i.climb_id}">${esc(i.name)}</a>` : `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.name)}</a>`} ${esc(i.grade||'')}</span><small>${stars(i.stars)}</small>
         <span>${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
       const state = c.state || c.status;
       const tip = { queued: 'Running, but waiting its turn: no worker is free for it. Areas are taken in the order they were entered, top first.',
                     waiting: 'Running, but with no climb to take now: its climbs wait for volunteers\' YouTube searches and videos, or for the rest of their boulder\'s. Workers go on to the next area meanwhile.' }[state];
-      d.innerHTML = `<div class="row"><b class="grow">${esc(c.name)}</b>${c.place ? `<small class="meta" title="Its place in the order areas are taken: as entered, top first">#${c.place}</small>` : ''}<span class="status ${['stopped', 'queued', 'waiting'].includes(state) ? '' : state === 'done' ? 'done' : 'running'}"${tip ? ` title="${esc(tip)}"` : ''}>${esc(state)}</span></div>
+      d.innerHTML = `<div class="row"><span class="grow campname">${title}</span>${c.place ? `<small class="meta" title="Its place in the order areas are taken: as entered, top first">#${c.place}</small>` : ''}<span class="status ${['stopped', 'queued', 'waiting'].includes(state) ? '' : state === 'done' ? 'done' : 'running'}"${tip ? ` title="${esc(tip)}"` : ''}>${esc(state)}</span></div>
         <div class="meta">${ORDER_NAMES[c.ord] || ''}${c.max_meshes ? `, up to ${c.max_meshes} mesh${c.max_meshes === 1 ? '' : 'es'}${c.count_failures ? ` or failure${c.max_meshes === 1 ? '' : 's'}` : ''} (${c.made} made)` : ''} · <b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${n.beyond ? ` · ${n.beyond} more past the limit` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
         ${c.note ? `<div class="notice" style="margin-top:6px">${esc(c.note)}</div>` : ''}
         <div class="now">${currentHtml(c)}</div>
@@ -2803,7 +2840,7 @@ async function refreshCampaigns(){
           <button class="sm sec rebuildall" title="Meshes every climb with enough viewpoints again, as after the pipeline changes. Older meshes stay, as older versions.">Rebuild all</button>` : ''}
           ${c.status !== 'stopping' && c.again.triable ? `<button class="sm sec tryskipped" title="Climbs skipped as their photos looked too few viewpoints, which the viewpoint check now lets COLMAP try: it decides within minutes if it can't place enough of them.">Try ${c.again.triable} skipped climb${c.again.triable === 1 ? '' : 's'} again</button>` : ''}
           ${c.status !== 'stopping' && c.again.boulders ? `<button class="sm sec boulders" title="Boulders with more than one climb on this list: each meshed from the photos of all its climbs, as a mesh of its own beside each climb's, with each climb placed where its own photos were taken. Its climbs never harvested are harvested first.">Mesh ${c.again.boulders} boulder${c.again.boulders === 1 ? '' : 's'} from all their climbs' photos</button>` : ''}
-          <span class="grow"></span><label class="meta editopt" title="Stops it once this many meshes are made, of its climbs in its order. Climbs that share a boulder are harvested together, wherever they come in the order, and the boulder meshed from all their photos counts as one. Empty for no limit. Raising it goes on from there, without doing again what's done.">up to <input type="number" class="maxmeshes" min="1" step="1" placeholder="all" value="${c.max_meshes || ''}" style="width:64px"> meshes</label>
+          <span class="grow"></span><label class="meta editopt" title="Stops it once this many meshes are made, of its climbs in its order. Climbs on a rock their Mountain Project area says is one boulder are harvested together, wherever they come in the order, and meshed together, counting as one; other climbs count one each. Meshes made after, of climbs whose photos match or that a boulder's mesh hardly shows, don't count. Empty for no limit. Raising it goes on from there, without doing again what's done.">up to <input type="number" class="maxmeshes" min="1" step="1" placeholder="all" value="${c.max_meshes || ''}" style="width:64px"> meshes</label>
           <label class="meta limitopt editopt" title="Off: a climb or boulder that fails, or is skipped for too few viewpoints, doesn't count, and the next is meshed in its place. On: it counts, as if meshed."><input type="checkbox" class="countfail" ${c.max_meshes ? '' : 'disabled'} ${c.max_meshes && c.count_failures ? 'checked' : ''}> count failures</label>
           <label class="meta editopt" title="Off: a climb waits until YouTube has been searched for its videos before it's meshed. On: meshes it anyway, as when no volunteer is connected to search."><input type="checkbox" class="noyt" ${c.without_youtube ? 'checked' : ''}> mesh without searching YouTube</label>
           <button class="danger sm del" title="Remove this list; its meshes stay">✕</button>
@@ -2842,6 +2879,12 @@ async function refreshCampaigns(){
           if (!/^\d+$/.test(v) || +v > top) { toast(`A whole number from 0 to ${top}`, 6000); ev.target.value = was ?? ''; return; }
           post('options', { [key]: +v }).catch(e => toast(e.message, 6000));
         };
+      d.querySelector('.copy')?.addEventListener('click', async ev => {
+        const b = ev.currentTarget;
+        if (!await copyText(mpUrl)) return toast(`Couldn't copy it: ${mpUrl}`, 10000);
+        b.innerHTML = COPIED_ICON; setTimeout(() => { b.innerHTML = COPY_ICON; }, 1500);
+        toast(`Copied ${mpUrl}`, 3000);
+      });
       d.querySelector('.del').onclick = async () => { if (ask(`Remove the list for "${c.name}"? Its meshes stay.`)) { await api('/api/campaigns/' + c.id, { method: 'DELETE' }); campaignLoop(); } };
       d.querySelectorAll('[data-mesh]').forEach(b => b.onclick = async () => { if (!meshesById[b.dataset.mesh]) await refreshMeshes(); viewMesh(b.dataset.mesh, null, 'area'); });
       d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
