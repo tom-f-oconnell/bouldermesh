@@ -311,6 +311,10 @@ def init_db() -> None:
                 con.execute("UPDATE projects SET job=? WHERE id=?", (json.dumps({**job, "add": True}), r["id"]))
         if "replaced_by" not in {r[1] for r in con.execute("PRAGMA table_info(meshes)")}:
             con.execute("ALTER TABLE meshes ADD COLUMN replaced_by TEXT")   # a rebuild of the same photos' project
+        if "rules" not in {r[1] for r in con.execute("PRAGMA table_info(meshes)")}:
+            con.execute("ALTER TABLE meshes ADD COLUMN rules INTEGER")      # the MESH_RULES it was made under
+        for n, since in sorted(MESH_RULES_SINCE.items()):     # those made before it was kept: by when they were made
+            con.execute("UPDATE meshes SET rules=? WHERE rules IS NULL AND source LIKE 'project:%' AND created>=?", (n, since))
         # an area's climbs' boulders were their area paths joined by "/", which a name with one in it ("Drifter/Smoking
         # Boulder") broke when split again: JSON, as boulder_of() has them, since 2026-11-11
         for r in con.execute("SELECT campaign_id, source_id, data FROM campaign_items WHERE boulder IS NOT NULL AND boulder NOT LIKE '[%'").fetchall():
@@ -570,16 +574,20 @@ def coord_doubts(fresh: bool = False) -> dict[str, dict]:
 
 def climb_rows(ids: list[str], data: bool = False) -> list[dict]:
     """Climbs as their cards show them, in the order given (those not found left out): each with its counts of
-    images and videos (with data, its data instead), of meshes linked to it as its own (n_links), of its boulder's
-    current meshes (n_boulder), and of those an area linked it to that were made for another climb on it (n_shared,
-    shared_of: the climb the newest current one was made for). A few queries for them all, rather than six each: the
+    images and videos (with data, its data instead), of meshes linked to it as its own (n_links, n_links_old of them old:
+    MESH_RULES), of its boulder's current meshes (n_boulder, n_boulder_old), and of those an area linked it to that were
+    made for another climb on it (n_shared, shared_of: the climb the newest current one was made for). A few queries for them all, rather than six each: the
     Climbs tab lists up to 500, which took 2 s a search."""
     if not ids:
         return []
     marks = ",".join("?" * len(ids))
     rows = {r["id"]: r for r in q(f"SELECT * FROM climbs WHERE id IN ({marks})", *ids)}
-    own = {r["climb_id"]: r["n"] for r in q(f"SELECT climb_id, COUNT(*) n FROM mesh_links WHERE climb_id IN ({marks}) "
-                                            "AND COALESCE(note,'') NOT LIKE ? GROUP BY climb_id", *ids, SHARED + "%")}
+    own, own_old = {}, {}
+    for r in q(f"SELECT l.climb_id, {OLD_MESH} AS old, COUNT(*) n FROM mesh_links l LEFT JOIN meshes m ON m.id=l.mesh_id "
+               f"WHERE l.climb_id IN ({marks}) AND COALESCE(l.note,'') NOT LIKE ? GROUP BY l.climb_id, old", *ids, SHARED + "%"):
+        own[r["climb_id"]] = own.get(r["climb_id"], 0) + r["n"]
+        if r["old"]:
+            own_old[r["climb_id"]] = r["n"]
     nshared = {r["climb_id"]: r["n"] for r in q(f"SELECT climb_id, COUNT(*) n FROM mesh_links WHERE climb_id IN ({marks}) "
                                                 "AND note LIKE ? GROUP BY climb_id", *ids, SHARED + "%")}
     shared: dict[str, dict] = {}
@@ -600,18 +608,20 @@ def climb_rows(ids: list[str], data: bool = False) -> list[dict]:
         else:
             r["n_images"] = len(d.get("images") or [])
             r["n_videos"] = len(d.get("videos") or [])
-        r["n_links"] = own.get(cid, 0)
+        r["n_links"], r["n_links_old"] = own.get(cid, 0), own_old.get(cid, 0)
         r["boulder_key"] = boulder_of(r["area_path"])
         s = shared.get(cid)
         r["n_shared"] = nshared.get(cid, 0)
         r["shared_of"] = (s["made_for"] or s["note"][len(SHARED):]) if s else None
         out.append(r)
     keys = sorted({r["boulder_key"] for r in out if r["boulder_key"]})
-    counts = {r["boulder"]: r["n"] for r in q(f"SELECT boulder, COUNT(*) n FROM meshes WHERE replaced_by IS NULL AND boulder IN "
-                                              f"({','.join('?' * len(keys))}) GROUP BY boulder", *keys)} if keys else {}
+    counts, olds = {}, {}
+    for r in q(f"SELECT boulder, COUNT(*) n, SUM({OLD_MESH}) old FROM meshes m WHERE replaced_by IS NULL AND boulder IN "
+               f"({','.join('?' * len(keys))}) GROUP BY boulder", *keys) if keys else []:
+        counts[r["boulder"]], olds[r["boulder"]] = r["n"], r["old"] or 0
     for r in out:   # meshes of its whole boulder (run_boulder())
         key = r.pop("boulder_key")
-        r["n_boulder"] = counts.get(key, 0) if key else 0
+        r["n_boulder"], r["n_boulder_old"] = (counts.get(key, 0), olds.get(key, 0)) if key else (0, 0)
     return out
 
 
@@ -748,6 +758,22 @@ def settle_groups(boulder: str) -> int:
         set_item(r["campaign_id"], r["source_id"], status="pending", retry=1, redo="rebuild", was="harvested", redo_started=0,
                  note="its Mountain Project area holds several boulders, or doesn't say it's one: meshed on its own")
     return len(rows)
+
+
+# Meshes made before the rules that decide what an area meshes last changed (what's one boulder and what's a group, which
+# photos the filter keeps) are "old": shown so to editors, left out of a boulder's meshes for visitors, and to be made
+# again under the rules, as old_mesh_report() follows. MESH_RULES goes up with each such change; MESH_RULES_SINCE says
+# when the server began making meshes under each, for meshes made before meshes.rules was kept. Only what areas and
+# projects made (source "project:"): an uploaded mesh is never old.
+MESH_RULES = 1
+MESH_RULES_SINCE = {1: 1794510600.0}    # 2026-11-12 11:10 PST: boulderme.sh ran b70f624 from between 11:03 and 11:16, the
+                                        # first with 5a7cb26 (an area whose page doesn't say it's one rock isn't meshed
+                                        # whole) and 584beda (filter verdicts from before the CLIP check get it)
+OLD_MESH = f"(m.source LIKE 'project:%' AND COALESCE(m.rules, 0) < {MESH_RULES})"     # an old mesh, as meshes m
+
+
+def mesh_is_old(row: dict) -> bool:
+    return (row.get("source") or "").startswith("project:") and (row.get("rules") or 0) < MESH_RULES
 
 
 SHARED = "same boulder as "   # how areas noted linking a climb to the mesh made for another climb on its boulder, before
@@ -2198,6 +2224,61 @@ def untied_meshes() -> list[dict]:
     return out
 
 
+OLD_REPORT_EVERY = 60      # seconds old_mesh_report() is kept before it's worked out again
+_old_report: dict = {"at": 0.0, "report": None}
+
+
+def old_mesh_report(fresh: bool = False) -> dict:
+    """How far the meshes are from none old (MESH_RULES), for the admin page. The climbs of current old meshes (linked
+    to one as their own; a boulder's climbs, or a group's, for a boulder's or a group's mesh), and those linked only to
+    another climb's mesh, "via" it (SHARED), are each: remade, if a current mesh made under the rules is of it (linked to
+    it, or a boulder's or a group's placing it); missed, if under the rules an area finished it (done, skipped or failed)
+    or a project of it ran to an end, and yet no new mesh is of it, which is to be looked into; else waiting, not tried
+    under them yet. Worked out at most every OLD_REPORT_EVERY seconds.
+
+    Returns:
+        {rules, since, old_meshes, meshes (current ones made by areas and projects), climbs, remade, waiting, via,
+        missed: [{id, name, why}]}.
+    """
+    if not fresh and _old_report["report"] and time.time() - _old_report["at"] < OLD_REPORT_EVERY:
+        return _old_report["report"]
+    since = MESH_RULES_SINCE[MESH_RULES]
+    made = q("SELECT id, source, rules, boulder FROM meshes m WHERE replaced_by IS NULL AND source LIKE 'project:%'")
+    old = [m for m in made if mesh_is_old(m)]
+    of_old = {r["climb_id"] for r in q(f"SELECT l.climb_id FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE m.replaced_by IS NULL "
+                                       f"AND {OLD_MESH} AND COALESCE(l.note,'') NOT LIKE ?", SHARED + "%")}
+    for m in old:
+        if m["boulder"]:
+            of_old |= {c["id"] for c in boulder_climbs(m["boulder"])}
+    via = {r["climb_id"] for r in q("SELECT DISTINCT climb_id FROM mesh_links WHERE note LIKE ? AND climb_id NOT IN "
+                                    "(SELECT climb_id FROM mesh_links WHERE COALESCE(note,'') NOT LIKE ?)", SHARED + "%", SHARED + "%")}
+    remade = {r["climb_id"] for r in q("SELECT l.climb_id FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE m.replaced_by IS NULL "
+                                       "AND m.source LIKE 'project:%' AND COALESCE(m.rules, 0)>=? AND COALESCE(l.note,'') NOT LIKE ?",
+                                       MESH_RULES, SHARED + "%")}
+    for m in made:      # a new boulder's or group's mesh: the climbs it places
+        if m["boulder"] and not mesh_is_old(m):
+            remade |= set(((viewpoints.load(MESHES / m["id"]) or {}).get("climbs") or {}))
+    climbs = of_old | via
+    tried: dict[str, str] = {}
+    for r in q("SELECT climb_id, status, note FROM campaign_items WHERE climb_id IS NOT NULL AND updated>=? AND status IN "
+               "('done','skipped','failed') ORDER BY updated", since):
+        tried[r["climb_id"]] = f"{r['status']} in its area since" + (f": {r['note']}" if r["note"] else "")
+    for r in q("SELECT climb_id, status, progress FROM projects WHERE climb_id IS NOT NULL AND status IN ('done','failed') AND progress IS NOT NULL"):
+        try:
+            began = max((st.get("started") or 0 for st in json.loads(r["progress"]).get("steps") or []), default=0)
+        except (ValueError, AttributeError):
+            continue
+        if began >= since and r["climb_id"] not in tried:
+            tried[r["climb_id"]] = f"its project {'made a mesh' if r['status'] == 'done' else 'failed'} since, none of it current"
+    missed_ids = sorted(c for c in climbs if c in tried and c not in remade)
+    names = {r["id"]: r["name"] for r in q(f"SELECT id, name FROM climbs WHERE id IN ({','.join('?' * len(missed_ids)) or 'NULL'})", *missed_ids)}
+    report = {"rules": MESH_RULES, "since": since, "old_meshes": len(old), "meshes": len(made), "climbs": len(climbs),
+              "remade": len(climbs & remade), "waiting": len([c for c in climbs if c not in tried and c not in remade]),
+              "via": len(via - remade), "missed": [{"id": c, "name": names.get(c, c), "why": tried[c]} for c in missed_ids]}
+    _old_report.update(at=time.time(), report=report)
+    return report
+
+
 def remesh_untied(log=print) -> dict:
     """The admin page's: mesh again each boulder whose current mesh was made before ties were recorded (untied_meshes()),
     from its climbs' photos as harvested (run_boulder(): only problems its page lists that were never harvested are,
@@ -2392,9 +2473,9 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         tracker.at("machine" if remote else "server")
         mesh_path, demo = build(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker)
         proj = q("SELECT name, climb_id, mesh_id, kind, boulder FROM projects WHERE id=?", pid, one=True)
-        q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng,boulder) VALUES(?,?,?,?,?,?,?,?,?,?)", mid, mesh_name(proj["name"]),
-          mesh_path.name, f"project:{pid}", time.time(), mesh_path.stat().st_size, int(demo), *boulder_place(proj["boulder"]),
-          proj["boulder"] if proj["kind"] == "boulder" else None, write=True)
+        q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng,boulder,rules) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+          mid, mesh_name(proj["name"]), mesh_path.name, f"project:{pid}", time.time(), mesh_path.stat().st_size, int(demo),
+          *boulder_place(proj["boulder"]), proj["boulder"] if proj["kind"] == "boulder" else None, MESH_RULES, write=True)
         if proj["climb_id"]:
             link_mesh(mid, proj["climb_id"], "auto-linked from reconstruction project")
             log(f"mesh linked to climb {proj['climb_id']}")
@@ -7051,6 +7132,7 @@ class Handler(BaseHTTPRequestHandler):
                 for r in rows:
                     r["climbs"] = by.get(r["id"], [])
                     r["rating"] = rated.get(r["id"])
+                    r["old"] = mesh_is_old(r)
                     if r["boulder"]:    # a pooled mesh (a boulder's, or a pool's): its climbs, and where each is seen from
                         views = pooled_views[r["id"]]
                         r["boulder_climbs"] = [{**c, "view": (views.get("climbs") or {}).get(c["id"]),
@@ -7098,6 +7180,7 @@ class Handler(BaseHTTPRequestHandler):
                     sets = boulder_mesh_sets(rows, kinds)
                     leaf_of = {mid: leaf for leaf, ids in sets.items() for mid in ids}
                     current = {r["id"] for r in rows if not r.get("replaced_by")}
+                    old = {r["id"] for r in rows if r["old"]}
                     if any(c["id"] not in cnames for r in rows for c in r["climbs"]) or \
                             any(leaf not in bnames for leaf, ids in sets.items() if current.intersection(ids)):
                         cnames, bnames = link_names(force=True)     # one added since the last naming
@@ -7106,7 +7189,8 @@ class Handler(BaseHTTPRequestHandler):
                             c["slug"] = cnames.get(c["id"])
                         leaf = leaf_of.get(r["id"])
                         r["boulder_link"] = {"slug": bnames[leaf], "name": boulder_name(leaf),
-                                             "meshes": sum(mid in current for mid in sets[leaf])} if leaf in bnames else None
+                                             "meshes": sum(mid in current for mid in sets[leaf]),
+                                             "old": sum(mid in current and mid in old for mid in sets[leaf])} if leaf in bnames else None
                 except Exception as e:
                     print(f"error: meshes' links: {type(e).__name__}: {e}", flush=True)
                 return self.send_json(rows)
@@ -8438,7 +8522,7 @@ def admin_state() -> dict:
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
             "notify": NOTIFIER.state(), "pairing": pairing_state(), "feedback": feedback_mod.recent(FEEDBACK),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
-            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "untied_meshes": len(untied_meshes()), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q), "backup": backup_state()}
 
 

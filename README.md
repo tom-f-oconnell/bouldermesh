@@ -261,6 +261,14 @@ than that, and it carries on by itself afterwards, unless you'd stopped it. It a
 harvest, which usually means a network problem, or with under 50 GB of disk left
 (`CAMPAIGN_MIN_FREE_GB`).
 
+Meshes areas and projects made before the rules for what an area meshes last changed (which climbs make one boulder,
+which photos the filter keeps: `MESH_RULES` in server.py, raised with each such change) are *old*. With the editing
+token, they're tagged old in yellow on the Meshes tab, in the 3D view's bottom-left corner, and in a boulder's list of
+meshes, and a climb's card counts its old meshes apart from its green count of new ones. Visitors' lists of a boulder's
+meshes leave them out. The admin page says how many are left, and of their climbs (with those linked only "via"
+another climb's mesh) how many have a mesh made under the rules, how many wait to be tried, and, listed, those tried
+under the rules that no new mesh is of.
+
 *Retry N failed* tries an area's failed climbs again, each from the last step it finished. If the area
 is running they go next, and if it isn't, only they run.
 

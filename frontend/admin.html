@@ -121,6 +121,7 @@
       <small>(off, a boulder's mesh only records them, in its log and rest.json; never those of meshes from before ties were recorded, which the button below does)</small></label>
     <div class="row"><button class="sec" id="rest-all">Mesh the scenes boulders' meshes left out, tied to them</button><span class="note" id="rest-note"></span></div>
     <div class="row"><button class="sec" id="remesh-untied">Mesh again the boulders meshed before ties were recorded</button><span class="note" id="remesh-note"></span></div>
+    <div id="old-meshes" class="note"></div>
     <div class="note">A boulder's mesh tries the photos it leaves out again against itself. Of what's still left, each set
       COLMAP places together (6 photos or more) is a scene to mesh apart, as another side or rock, if it's tied to the
       boulder: it holds a climb's Mountain Project page photo, or 2 of its photos match photos the mesh placed (16 verified
@@ -299,6 +300,17 @@ const $ = s => document.querySelector(s);
 let state = null;
 let editing = false;   // the Compute form has changes not saved yet, which refreshing mustn't undo
 const msg = (text, ms = 4000) => { const m = $('#msg'); m.textContent = text; m.style.display = 'block'; clearTimeout(msg.t); msg.t = setTimeout(() => m.style.display = 'none', ms); };
+// Meshes made before the rules for what an area meshes last changed, and how far their climbs are from being made again
+// under them: those tried under the rules that no new mesh is of, first, as they're to be looked into
+function oldMeshesNote(o){
+  if (!o) return '';
+  const when = new Date(o.since * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  const missed = o.missed.length ? `<div class="bad"><b>${o.missed.length} climb${o.missed.length === 1 ? '' : 's'} tried under the current rules that no new mesh is of:</b>
+    <ul>${o.missed.map(c => `<li>${esc(c.name)} <small>(${esc(c.why)})</small></li>`).join('')}</ul></div>` : '';
+  return `${missed}<b class="${o.old_meshes ? 'warn' : 'ok'}">Old meshes: ${o.old_meshes} of ${o.meshes} current ones</b>, made before the rules for what
+    an area meshes last changed (${esc(when)}). Of their climbs and those linked only to another climb's mesh (${o.climbs} in all, ${o.via} of them
+    "via" another), ${o.remade} have a mesh made under the rules, ${o.missed.length} were tried without one, and ${o.waiting} wait to be tried.`;
+}
 async function call(path, body){
   const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const j = await r.json().catch(() => ({}));
@@ -417,6 +429,7 @@ function render(s){
   $('#rest-all').disabled = !s.rest_waiting;
   $('#remesh-note').textContent = s.untied_meshes ? `${s.untied_meshes} boulder${s.untied_meshes === 1 ? "'s mesh" : "s' meshes"}` : 'none';
   $('#remesh-untied').disabled = !s.untied_meshes;
+  $('#old-meshes').innerHTML = oldMeshesNote(s.old_meshes);
   $('#rest-auto').checked = v['boulders.rest_auto'];
   if (document.activeElement !== $('#placed-percent')) $('#placed-percent').value = v['boulders.placed_percent'];
   $('#placed-note').innerHTML = placedNote(s.boulder_shares || [], v['boulders.placed_percent']);

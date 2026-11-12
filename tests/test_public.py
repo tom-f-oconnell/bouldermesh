@@ -493,7 +493,7 @@ def links_site(tmp: Path) -> None:
                 con.execute("INSERT INTO mesh_links VALUES(?,?,NULL,?)", (mid, cid, time.time()))
         listed = {m["id"]: m for m in req(B, "GET", "/api/meshes")[2]}
         assert [c["slug"] for c in listed[mids[0]]["climbs"]] == ["the-mandala"], listed[mids[0]]["climbs"]
-        assert listed[mids[0]]["boulder_link"] == {"slug": "mandala-boulder", "name": "Mandala Boulder", "meshes": 2}, listed[mids[0]]
+        assert listed[mids[0]]["boulder_link"] == {"slug": "mandala-boulder", "name": "Mandala Boulder", "meshes": 2, "old": 0}, listed[mids[0]]
         assert listed[mids[1]]["boulder_link"]["meshes"] == 1 and listed[mids[1]]["climbs"][0]["slug"] == "unnamed"
         assert req(B, "GET", "/api/links/c/unnamed-the-pig-sty")[2]["id"] == "c3", "the second gets its boulder's name added"
         same = req(B, "GET", "/api/links/c/unnamed")[2]["same"]

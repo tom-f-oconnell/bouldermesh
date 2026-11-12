@@ -256,6 +256,10 @@ def climb_row_by_one(cid):    # what climb_row() worked out a climb at a time, s
     r["n_links"] = server.q("SELECT COUNT(*) n FROM mesh_links WHERE climb_id=? AND COALESCE(note,'') NOT LIKE ?", cid, server.SHARED + "%", one=True)["n"]
     boulder = server.boulder_of(r["area_path"])
     r["n_boulder"] = server.q("SELECT COUNT(*) n FROM meshes WHERE boulder=? AND replaced_by IS NULL", boulder, one=True)["n"] if boulder else 0
+    r["n_links_old"] = server.q(f"SELECT COUNT(*) n FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=? "
+                                f"AND COALESCE(l.note,'') NOT LIKE ? AND {server.OLD_MESH}", cid, server.SHARED + "%", one=True)["n"]
+    r["n_boulder_old"] = server.q(f"SELECT COUNT(*) n FROM meshes m WHERE boulder=? AND replaced_by IS NULL AND {server.OLD_MESH}",
+                                  boulder, one=True)["n"] if boulder else 0
     shared = server.q(f"""SELECT l.note, ({server.MADE_FOR}) AS made_for FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
                           WHERE l.climb_id=? AND l.note LIKE ? ORDER BY m.replaced_by IS NOT NULL, m.created DESC LIMIT 1""",
                       server.SHARED + "%", cid, server.SHARED + "%", one=True)
@@ -2400,6 +2404,49 @@ assert "queued or running" in server.delete_project(mine)[0]["error"]
 assert server.stop_project(mine)[1] == 200 and server.delete_project(mine)[1] == 200
 assert server.delete_project(mine)[1] == 404
 print("the Projects tab's areas, and stopping or deleting OK")
+
+# --- old meshes: made by areas and projects before the rules for what an area meshes last changed (MESH_RULES); flagged,
+# and followed until each of their climbs has a mesh made under the rules, or was tried under them and is reported
+fresh()
+server.q("DELETE FROM pools", write=True)
+since = server.MESH_RULES_SINCE[server.MESH_RULES]
+rock = ["California", "Joshua Tree National Park", "Old Rock"]
+
+
+def made(mid: str, created: float, boulder: str | None = None, source: str = "project:p") -> None:
+    server.q("INSERT INTO meshes(id,name,filename,source,created,boulder) VALUES(?,?,?,?,?,?)", mid, mid, "m.glb", source, created,
+             boulder, write=True)
+
+
+def known(cid: str, path: list | None = None) -> None:
+    server.q("INSERT INTO climbs(id,source,source_id,url,name,area_path,created) VALUES(?,?,?,?,?,?,0)", cid, "mountainproject", cid,
+             f"https://x/{cid}", f"Climb {cid}", json.dumps(path) if path else None, write=True)
+
+
+for cid in ("ca", "cb", "ce", "cf"):
+    known(cid)
+for cid in ("cc", "cd"):
+    known(cid, rock)
+made("mo", since - 3600)                            # ca's own, from before
+made("mn", since + 60)                              # cb's, under the rules (rules filled in as the server starts)
+made("bo", since - 7200, boulder=json.dumps(rock))  # Old Rock's, from before: cc's and cd's
+made("mf", since - 1800)                            # cf's own, from before; cf was tried since, and made nothing new
+made("up", since - 9000, source="upload")           # uploaded: never old
+for mid, cid, note in (("mo", "ca", None), ("mn", "cb", None), ("mn", "cd", None), ("mf", "cf", None), ("mo", "ce", server.SHARED + "Climb ca")):
+    server.link_mesh(mid, cid, note)
+server.q("INSERT INTO campaign_items(campaign_id, source_id, climb_id, name, status, note, updated) VALUES('k','f','cf','Climb cf','done',"
+         "'already had a mesh',?)", since + 120, write=True)
+server.init_db()
+rows = {r["id"]: r for r in server.q("SELECT * FROM meshes")}
+assert [mid for mid in sorted(rows) if server.mesh_is_old(rows[mid])] == ["bo", "mf", "mo"], rows
+assert rows["mn"]["rules"] == server.MESH_RULES and rows["up"]["rules"] is None
+got = {r["id"]: r for r in server.climb_rows(["ca", "cb", "cc"])}
+assert (got["ca"]["n_links"], got["ca"]["n_links_old"], got["cb"]["n_links"], got["cb"]["n_links_old"]) == (1, 1, 1, 0), got
+assert (got["cc"]["n_boulder"], got["cc"]["n_boulder_old"]) == (1, 1), got["cc"]
+r = server.old_mesh_report(fresh=True)
+assert (r["old_meshes"], r["meshes"], r["climbs"], r["remade"], r["waiting"], r["via"]) == (3, 4, 5, 1, 3, 1), r
+assert [(c["id"], c["why"]) for c in r["missed"]] == [("cf", "done in its area since: already had a mesh")], r["missed"]
+print("old meshes OK")
 
 # --- beta found in each new mesh with video frames placed in it; kept videos beta can't use, deleted once settled ------
 fresh()
