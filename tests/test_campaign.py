@@ -245,6 +245,27 @@ assert server.climb_row(alpha)["shared_of"] == "Gamma", "with no climb of its ow
 server.link_mesh(again["mesh_id"], alpha2, "auto-linked from reconstruction project")
 assert server.climb_row(alpha)["shared_of"] == "Alpha2", server.climb_row(alpha)
 assert [x["made_for"] for x in server.climb_row(alpha, full=True)["boulder"]["shared"]] == ["Alpha2"]
+
+
+def climb_row_by_one(cid):    # what climb_row() worked out a climb at a time, six queries each, before climb_rows()
+    r = server.q("SELECT * FROM climbs WHERE id=?", cid, one=True)
+    r["area_path"] = json.loads(r["area_path"] or "[]")
+    data = json.loads(r.pop("data") or "{}")
+    r["n_images"], r["n_videos"] = len(data.get("images") or []), len(data.get("videos") or [])
+    r["n_links"] = server.q("SELECT COUNT(*) n FROM mesh_links WHERE climb_id=? AND COALESCE(note,'') NOT LIKE ?", cid, server.SHARED + "%", one=True)["n"]
+    boulder = server.boulder_of(r["area_path"])
+    r["n_boulder"] = server.q("SELECT COUNT(*) n FROM meshes WHERE boulder=? AND replaced_by IS NULL", boulder, one=True)["n"] if boulder else 0
+    shared = server.q(f"""SELECT l.note, ({server.MADE_FOR}) AS made_for FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
+                          WHERE l.climb_id=? AND l.note LIKE ? ORDER BY m.replaced_by IS NOT NULL, m.created DESC LIMIT 1""",
+                      server.SHARED + "%", cid, server.SHARED + "%", one=True)
+    r["n_shared"] = server.q("SELECT COUNT(*) n FROM mesh_links WHERE climb_id=? AND note LIKE ?", cid, server.SHARED + "%", one=True)["n"]
+    r["shared_of"] = (shared["made_for"] or shared["note"][len(server.SHARED):]) if shared else None
+    return r
+
+
+every_id = [r["id"] for r in server.q("SELECT id FROM climbs ORDER BY name")] + ["nosuchclimb"]
+assert server.climb_rows(every_id) == [climb_row_by_one(i) for i in every_id[:-1]], "all at once, as one at a time"
+assert server.climb_rows([]) == [] and server.climb_row("nosuchclimb") is None
 server.q("DELETE FROM mesh_links WHERE mesh_id=?", again["mesh_id"], write=True)
 print("boulder meshes OK")
 

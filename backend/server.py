@@ -562,14 +562,59 @@ def coord_doubts(fresh: bool = False) -> dict[str, dict]:
     return out
 
 
+def climb_rows(ids: list[str], data: bool = False) -> list[dict]:
+    """Climbs as their cards show them, in the order given (those not found left out): each with its counts of
+    images and videos (with data, its data instead), of meshes linked to it as its own (n_links), of its boulder's
+    current meshes (n_boulder), and of those an area linked it to that were made for another climb on it (n_shared,
+    shared_of: the climb the newest current one was made for). A few queries for them all, rather than six each: the
+    Climbs tab lists up to 500, which took 2 s a search."""
+    if not ids:
+        return []
+    marks = ",".join("?" * len(ids))
+    rows = {r["id"]: r for r in q(f"SELECT * FROM climbs WHERE id IN ({marks})", *ids)}
+    own = {r["climb_id"]: r["n"] for r in q(f"SELECT climb_id, COUNT(*) n FROM mesh_links WHERE climb_id IN ({marks}) "
+                                            "AND COALESCE(note,'') NOT LIKE ? GROUP BY climb_id", *ids, SHARED + "%")}
+    nshared = {r["climb_id"]: r["n"] for r in q(f"SELECT climb_id, COUNT(*) n FROM mesh_links WHERE climb_id IN ({marks}) "
+                                                "AND note LIKE ? GROUP BY climb_id", *ids, SHARED + "%")}
+    shared: dict[str, dict] = {}
+    for r in q(f"""SELECT l.climb_id, l.note, ({MADE_FOR}) AS made_for FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
+                   WHERE l.climb_id IN ({marks}) AND l.note LIKE ? ORDER BY m.replaced_by IS NOT NULL, m.created DESC""",
+               SHARED + "%", *ids, SHARED + "%"):
+        shared.setdefault(r["climb_id"], r)     # the first of each: current before older, newest first
+    out = []
+    for cid in ids:
+        r = rows.get(cid)
+        if r is None:
+            continue
+        r = dict(r)
+        r["area_path"] = json.loads(r["area_path"] or "[]")
+        d = json.loads(r.pop("data") or "{}")
+        if data:
+            r["data"] = d
+        else:
+            r["n_images"] = len(d.get("images") or [])
+            r["n_videos"] = len(d.get("videos") or [])
+        r["n_links"] = own.get(cid, 0)
+        r["boulder_key"] = boulder_of(r["area_path"])
+        s = shared.get(cid)
+        r["n_shared"] = nshared.get(cid, 0)
+        r["shared_of"] = (s["made_for"] or s["note"][len(SHARED):]) if s else None
+        out.append(r)
+    keys = sorted({r["boulder_key"] for r in out if r["boulder_key"]})
+    counts = {r["boulder"]: r["n"] for r in q(f"SELECT boulder, COUNT(*) n FROM meshes WHERE replaced_by IS NULL AND boulder IN "
+                                              f"({','.join('?' * len(keys))}) GROUP BY boulder", *keys)} if keys else {}
+    for r in out:   # meshes of its whole boulder (run_boulder())
+        key = r.pop("boulder_key")
+        r["n_boulder"] = counts.get(key, 0) if key else 0
+    return out
+
+
 def climb_row(cid: str, full=False) -> dict | None:
-    r = q("SELECT * FROM climbs WHERE id=?", cid, one=True)
-    if not r:
+    rows = climb_rows([cid], data=full)
+    if not rows:
         return None
-    r["area_path"] = json.loads(r["area_path"] or "[]")
-    data = json.loads(r.pop("data") or "{}")
+    r = rows[0]
     if full:
-        r["data"] = data
         r["meshes"] = q("SELECT m.*, l.note FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=? AND COALESCE(l.note,'') NOT LIKE ?",
                         cid, SHARED + "%")
         r["boulder"] = boulder_info(r)
@@ -584,19 +629,6 @@ def climb_row(cid: str, full=False) -> dict | None:
                                     c.ape_index_cm AS channel_ape_index_cm, c.quotes AS channel_quotes
                                  FROM climb_videos cv LEFT JOIN videos v ON v.url=cv.url LEFT JOIN channels c ON c.channel_url=v.channel_url
                                  WHERE cv.climb_id=? ORDER BY cv.found_by, cv.created""", cid)
-    else:
-        r["n_images"] = len(data.get("images") or [])
-        r["n_videos"] = len(data.get("videos") or [])
-    r["n_links"] = q("SELECT COUNT(*) n FROM mesh_links WHERE climb_id=? AND COALESCE(note,'') NOT LIKE ?", cid, SHARED + "%", one=True)["n"]
-    # meshes of its whole boulder (run_boulder()), and those an area linked it to that were made for another climb on it
-    boulder = boulder_of(r["area_path"])
-    r["n_boulder"] = q("SELECT COUNT(*) n FROM meshes WHERE boulder=? AND replaced_by IS NULL", boulder, one=True)["n"] if boulder else 0
-    # the climb the mesh its View button opens was made for (the page picks a current one, the newest first)
-    shared = q(f"""SELECT l.note, ({MADE_FOR}) AS made_for FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
-                   WHERE l.climb_id=? AND l.note LIKE ? ORDER BY m.replaced_by IS NOT NULL, m.created DESC LIMIT 1""",
-               SHARED + "%", cid, SHARED + "%", one=True)
-    r["n_shared"] = q("SELECT COUNT(*) n FROM mesh_links WHERE climb_id=? AND note LIKE ?", cid, SHARED + "%", one=True)["n"]
-    r["shared_of"] = (shared["made_for"] or shared["note"][len(SHARED):]) if shared else None
     return r
 
 
@@ -6947,8 +6979,8 @@ class Handler(BaseHTTPRequestHandler):
                 if qs.get("multi"):     # those with more than one mesh first, to pick out
                     order = [f"{MESH_COUNT} > 1 DESC"] + order
                 sql += " ORDER BY " + ", ".join(order + ["created DESC"]) + " LIMIT 500"
-                return self.send_json([{**climb_row(r["id"]), "coords_doubt": doubts.get(r["id"])}
-                                       for r in q(sql, *args, *([SHARED + "%"] if qs.get("multi") else []), *(oargs if text else []))])
+                ids = [r["id"] for r in q(sql, *args, *([SHARED + "%"] if qs.get("multi") else []), *(oargs if text else []))]
+                return self.send_json([{**r, "coords_doubt": doubts.get(r["id"])} for r in climb_rows(ids)])
             if p == "/api/climbs/count":
                 return self.send_json({"climbs": q("SELECT count(*) AS n FROM climbs", one=True)["n"], "doubtful": len(coord_doubts()),
                                        "multi": q(f"SELECT count(*) AS n FROM climbs WHERE {MESH_COUNT} > 1", SHARED + "%", one=True)["n"]})
