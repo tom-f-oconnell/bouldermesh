@@ -533,6 +533,10 @@ def run(B: str, tmp: Path) -> None:
     assert [c["name"] for c in req(B, "GET", "/api/climbs?q=v11")[1]] == ["The Egg"], "grades too"
     n = req(B, "GET", "/api/climbs/count")[1]
     assert n["climbs"] == len(req(B, "GET", "/api/climbs")[1]) >= 3 and n["doubtful"] == 0, n
+    many = [c for c in req(B, "GET", "/api/climbs")[1] if c["n_links"] + c["n_boulder"] > 1]
+    assert n["multi"] == len(many) >= 1, (n, many)     # the reconstructed mesh, and the upload linked to it after
+    first = req(B, "GET", "/api/climbs?multi=1")[1]
+    assert {c["id"] for c in first[:len(many)]} == {c["id"] for c in many} and len(first) == n["climbs"], "picked out, not filtered"
     assert req(B, "GET", "/api/climbs?doubtful=1")[1] == [] and all(c["coords_doubt"] is None for c in req(B, "GET", "/api/climbs")[1])
     st, only = req(B, "GET", "/api/climbs?meshed=1")
     st, every = req(B, "GET", "/api/climbs")

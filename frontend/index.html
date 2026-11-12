@@ -52,6 +52,7 @@
   .card{border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--bg);margin-bottom:8px}
   .card.active{border-color:var(--acc)}
   #climbs>.card{cursor:pointer}
+  #climbs>.card.multi{border-color:var(--warn);box-shadow:inset 3px 0 0 var(--warn)}   /* more than one mesh, while picked out */
   #climbs>.card,#meshes>.card{content-visibility:auto;contain-intrinsic-size:auto 110px}   /* off screen: not laid out until near */
   #climbs>.card.open{border-color:var(--acc);border-bottom-left-radius:0;border-bottom-right-radius:0;margin-bottom:0}
   .card.active.under{border-top-left-radius:0;border-top-right-radius:0;border-top-color:var(--line);cursor:default}
@@ -72,7 +73,7 @@
   body.readonly .rebuildall,body.readonly .boulders,body.readonly .meshboulder,body.readonly .setll,body.readonly #pieces .edit,body.readonly #pieces .redo,body.readonly .rebuild,
   body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly button.mark,body.readonly .clearmine,body.readonly #vmark,
   body.readonly .tryskipped,body.readonly .editopt,
-  body.readonly .tabs button[data-tab=projects],body.readonly .projs,body.readonly .doubtful{display:none!important}
+  body.readonly .tabs button[data-tab=projects],body.readonly .projs{display:none!important}
   label.file input{display:none}
   .status{font-size:12px;color:var(--mute)}
   /* an area's climb harvested for its boulder's mesh: what each of the boulder's climbs gives it */
@@ -294,7 +295,7 @@
     <!-- ============================ CLIMBS ============================ -->
     <div class="pane on" id="pane-climbs">
       <section class="w">
-        <h2>Import a climb / boulder</h2>
+        <h2>Import</h2>
         <div class="row">
           <input type="text" id="imp-url" class="grow" placeholder="mountainproject.com route or area URL · openbeta.io/climbs/<uuid> · kaya link">
           <button id="imp-go">Import</button>
@@ -320,8 +321,12 @@
       <section>
         <h2>Climbs <small id="c-count"></small></h2>
         <div class="row" style="margin-bottom:6px"><input type="text" id="c-filter" class="grow" placeholder="search every climb: name, boulder, area, grade"></div>
-        <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="c-meshed" checked autocomplete="off"> Hide climbs without meshes</label>
-          <label class="doubtful" title="Their page's GPS is far from their area's, or they're far from the other climbs on their boulder: put them right where they came from, then import them again"><input type="checkbox" id="c-doubtful" autocomplete="off"> Only climbs whose coordinates look wrong <span id="c-doubtful-n"></span></label></div>
+        <div class="checks" style="margin-bottom:6px"><label><input type="checkbox" id="c-meshed" checked autocomplete="off"> Hide climbs without meshes</label></div>
+        <details id="c-more" style="margin-bottom:8px"><summary>More options</summary>
+          <div class="checks" style="margin-top:6px;flex-direction:column;gap:4px">
+            <label title="Their page's GPS is far from their area's, or they're far from the other climbs on their boulder: put them right where they came from, then import them again"><input type="checkbox" id="c-doubtful" autocomplete="off"> Only climbs whose coordinates look wrong <span id="c-doubtful-n"></span></label>
+            <label title="Climbs with more than one mesh: of their own, with others whose photos match, or of their boulder. They come first, marked."><input type="checkbox" id="c-multi" autocomplete="off"> Highlight climbs with more than one mesh <span id="c-multi-n"></span></label></div>
+        </details>
         <div id="climb-open"></div>
         <div id="climbs"></div>
       </section>
@@ -414,9 +419,12 @@
         </div>
         <details id="m-filter" style="margin-bottom:8px"><summary>Filter <small id="m-filter-note"></small></summary>
           <div class="meta" style="margin-bottom:4px" title="Each placed photo counts once among those taken within 15° of the same direction from the rock, so many frames of one video count about once. Coverage: how much of a full circle round the rock its photos see, from above.">Distinct viewpoints count photos taken from nearly the same spot once; coverage is how far round the rock its photos go. A filter left at its ends leaves out nothing, and meshes without that number stay.</div>
+          <label class="row" style="margin:4px 0 6px" title="Climbs: made for one climb. Groups: from the photos of more than one, but not every climb on a rock Mountain Project names as one boulder (pools of climbs whose photos match, and boulders' meshes that don't place every climb on them). Boulders: every climb known on a rock Mountain Project names as one boulder, each placed by its own photos. Meshes linked to no climb show only under All.">Of
+            <select id="m-kind" style="width:auto"><option value="all">All</option><option value="climbs">Climbs</option>
+              <option value="groups">Groups</option><option value="boulders">Boulders</option></select></label>
           <div id="m-areas"></div>
           <div id="m-ranges"></div>
-          <button class="sm sec" id="m-clear" title="Every area, and every range back to its ends">Clear the filter</button>
+          <button class="sm sec" id="m-clear" title="All meshes, every area, and every range back to its ends">Clear the filter</button>
           <div class="checks" style="margin-top:8px">
             <label title="Rated 1.5 or under on average, with bad 1, OK 2 and good 3"><input type="checkbox" id="m-nobad"> Hide those rated bad</label>
             <label title="Those you rated bad in their 3D view, in this browser"><input type="checkbox" id="m-nomine"> Hide those I rated bad</label></div>
@@ -2322,7 +2330,7 @@ function flyTo(lat, lng){ mapFitted = true; showRight('map'); refreshMap().then(
 
 // ---------------------------------------------------------------- climbs
 let climbsCache = [];
-let climbsTotal = null, climbsDoubtful = null;   // every climb there is, of which the list has the newest 500
+let climbsTotal = null, climbsDoubtful = null, climbsMulti = null;   // every climb there is, of which the list has the newest 500
 let climbsFound = null;       // with a search or a box ticked: the server's matches among every climb
 // a list redrawn while someone scrolls it jumps, and on a phone stalls the scroll: wait until it's been still a moment
 let lastScroll = 0;
@@ -2334,7 +2342,7 @@ async function scrollStill(ms = 800, most = 10000){
 async function refreshClimbs(){
   const [list, count] = await Promise.all([api('/api/climbs'), api('/api/climbs/count').catch(() => ({}))]);
   await scrollStill();
-  climbsCache = list; climbsTotal = count.climbs ?? null; climbsDoubtful = count.doubtful ?? null;
+  climbsCache = list; climbsTotal = count.climbs ?? null; climbsDoubtful = count.doubtful ?? null; climbsMulti = count.multi ?? null;
   await searchClimbs();
   // fill selects (editors only: thousands of options to make)
   if (document.body.classList.contains('readonly')) return;
@@ -2348,6 +2356,7 @@ function climbQuery(){
   if (text) q.set('q', text);
   if ($('#c-meshed').checked) q.set('meshed', '1');
   if ($('#c-doubtful').checked) q.set('doubtful', '1');
+  if ($('#c-multi').checked) q.set('multi', '1');
   return q.toString();
 }
 let searchSeq = 0, searchT;
@@ -2364,12 +2373,14 @@ function renderClimbs(){
   const el = $('#climbs'), query = climbQuery(), list = query && climbsFound ? climbsFound : climbsCache;
   const total = climbsTotal ?? climbsCache.length;
   $('#c-doubtful-n').textContent = climbsDoubtful ? `(${climbsDoubtful})` : '';
+  $('#c-multi-n').textContent = climbsMulti != null ? `(${climbsMulti})` : '';
   $('#c-count').textContent = !climbsCache.length ? '' : query ? `(${list.length >= 500 ? 'the first 500' : list.length} found, of ${total})`
     : total > climbsCache.length ? `(the newest ${climbsCache.length} of ${total}: searching covers them all)` : `(${total})`;
   el.innerHTML = list.length ? '' : `<div class="status">${!climbsCache.length ? 'No climbs yet — paste a Mountain Project or OpenBeta link above.' : query ? 'No climbs match.' : 'No climbs.'}</div>`;
   for (const c of list) {
-    const d = document.createElement('div'); d.className = 'card' + (c.id === openClimbId ? ' open' : ''); d.dataset.id = c.id;
-    d.innerHTML = `<div class="row"><span class="name grow">${esc(c.name)} <small>${esc(c.grade||'')}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${c.n_links?`<span class="tag ok">${c.n_links} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">via ${esc(c.shared_of)}</span>`:''}${c.n_boulder?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
+    const meshes = (c.n_links || 0) + (c.n_boulder || 0), multi = $('#c-multi').checked && meshes > 1;
+    const d = document.createElement('div'); d.className = 'card' + (c.id === openClimbId ? ' open' : '') + (multi ? ' multi' : ''); d.dataset.id = c.id;
+    d.innerHTML = `<div class="row"><span class="name grow">${esc(c.name)} <small>${esc(c.grade||'')}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${c.n_links?`<span class="tag ok">${c.n_links} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">via ${esc(c.shared_of)}</span>`:''}${c.n_boulder?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${multi?`<span class="tag" title="Its own meshes, and pools of it with others: ${c.n_links}; its boulder's: ${c.n_boulder}">${meshes} meshes</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
         <button class="sm ${shownClimbs().has(c.id) ? '' : 'sec '}viewmesh" ${c.n_links || c.n_boulder || c.n_shared ? '' : 'disabled'} title="${c.n_links ? 'Show its newest mesh' : c.n_boulder ? 'Show its boulder\'s mesh, from where its own photos were taken' : c.n_shared ? 'Show the mesh of another climb on its boulder' : 'No mesh is linked to it yet'}">View</button></div>
       <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
       <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
@@ -2383,6 +2394,7 @@ function renderClimbs(){
 $('#c-filter').oninput = () => { clearTimeout(searchT); searchT = setTimeout(searchClimbs, 250); };
 $('#c-meshed').onchange = searchClimbs;
 $('#c-doubtful').onchange = searchClimbs;
+$('#c-multi').onchange = searchClimbs;
 $('#m-older').onchange = refreshMeshes;
 
 // what a video or its uploader's channel says about the climber: "178 cm (5'10"), ape index +5 cm"
@@ -2482,7 +2494,7 @@ async function openClimb(id, focus=true){
     <div class="chips">${[...vids, ...searched].map(v=>`<a class="chip" href="${esc(v.url)}" target="_blank" rel="noopener" title="${esc(v.title||'')}">${esc(v.title ? v.title.slice(0,40) : v.url.replace(/^https?:\/\/(www\.)?/,'').slice(0,40))}</a>`).join('')}</div>
     ${sizes.length ? `<div class="meta" style="margin-top:4px">Climbers' sizes, as their videos or channels give them: ${sizes.map(esc).join(' · ')}</div>` : ''}
     <div class="meta" style="margin-top:8px">Its meshes (${c.meshes.length})</div>
-    <div class="chips">${c.meshes.map(m=>`<span class="chip" data-mesh="${m.id}">▣ ${esc(m.name)}</span>`).join('')}
+    <div class="chips">${c.meshes.map(m=>`<span class="chip" data-mesh="${m.id}">▣ ${esc(meshesById[m.id] ? meshTitle(meshesById[m.id]) : m.name)}</span>`).join('')}
       <select class="linksel" style="width:auto;padding:2px 6px;font-size:12px"><option value="">+ link existing mesh…</option>${meshesCache.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>
     ${boulderHtml(c)}
     ${c.projects.length?`<div class="meta projs" style="margin-top:8px">Projects: ${c.projects.map(p=>`<span class="chip" data-proj="${p.id}">${esc(p.name)} <small>${p.status}</small></span>`).join(' ')}</div>`:''}
@@ -3097,13 +3109,25 @@ function meshMetric(m, key){
   return x[key] ?? null;
 }
 const meshAreas = m => (m.areas && m.areas.length ? m.areas : [NO_AREA]);
-let meshView = { sort: 'created', desc: true, ranges: {}, hidden: [], noBad: false, noMineBad: false };    // hidden: areas left out
+// What a mesh is of: "climbs", one climb's; "boulders", a pooled mesh of a rock Mountain Project names as one, placing every
+// climb known on it; "groups", any other of more than one climb; null, of none
+function meshKind(m){
+  if (m.boulder) return m.pooled?.whole ? 'boulders' : 'groups';
+  const own = m.climbs.filter(c => !c.shared).length;
+  return own > 1 ? 'groups' : own === 1 ? 'climbs' : null;
+}
+const KIND_NAMES = { all: 'All', climbs: 'Climbs', groups: 'Groups', boulders: 'Boulders' };
+let meshView = { sort: 'created', desc: true, ranges: {}, hidden: [], noBad: false, noMineBad: false, kind: 'all' };    // hidden: areas left out
 try { Object.assign(meshView, JSON.parse(localStorage.getItem('bm_mesh_view') || '{}')); } catch {}
 function saveMeshView(){ try { localStorage.setItem('bm_mesh_view', JSON.stringify(meshView)); } catch {} }
 // a slider's 0..1000 to a value between the least and most there are, and back: faces on a log scale
 function toValue(t, lo, hi, log){ return log && lo > 0 ? Math.exp(Math.log(lo) + (Math.log(hi) - Math.log(lo)) * t / 1000) : lo + (hi - lo) * t / 1000; }
 function toSlider(v, lo, hi, log){ if (hi <= lo) return 0; return Math.round(1000 * (log && lo > 0 ? (Math.log(v) - Math.log(lo)) / (Math.log(hi) - Math.log(lo)) : (v - lo) / (hi - lo))); }
 function renderMeshFilter(all){
+  const kinds = { all: all.length };
+  for (const m of all) { const k = meshKind(m); if (k) kinds[k] = (kinds[k] || 0) + 1; }
+  $('#m-kind').querySelectorAll('option').forEach(o => { o.textContent = `${KIND_NAMES[o.value]} (${kinds[o.value] || 0})`; });
+  $('#m-kind').value = meshView.kind || 'all';
   const areas = [...new Set(all.flatMap(meshAreas))].sort((a, b) => (a === NO_AREA) - (b === NO_AREA) || a.localeCompare(b));
   $('#m-areas').innerHTML = areas.length > 1 ? '<span class="meta">Areas: </span>' + areas.map(a =>
     `<label><input type="checkbox" data-area="${esc(a)}" ${meshView.hidden.includes(a) ? '' : 'checked'}>${esc(a)}</label>`).join('') : '';
@@ -3136,6 +3160,7 @@ function renderMeshFilter(all){
   }
 }
 function meshShown(m){
+  if (meshView.kind && meshView.kind !== 'all' && meshKind(m) !== meshView.kind) return false;
   if (meshAreas(m).every(a => meshView.hidden.includes(a))) return false;
   if (meshView.noBad && m.rating?.n && m.rating.mean <= 1.5) return false;
   if (meshView.noMineBad && myRating(m.id) === 1) return false;
@@ -3161,7 +3186,8 @@ $('#m-sort').onchange = () => { meshView.sort = $('#m-sort').value; saveMeshView
 $('#m-dir').onclick = () => { meshView.desc = !meshView.desc; saveMeshView(); renderMeshes(); };
 $('#m-nobad').onchange = () => { meshView.noBad = $('#m-nobad').checked; saveMeshView(); renderMeshes(); };
 $('#m-nomine').onchange = () => { meshView.noMineBad = $('#m-nomine').checked; saveMeshView(); renderMeshes(); };
-$('#m-clear').onclick = () => { meshView.ranges = {}; meshView.hidden = []; saveMeshView(); renderMeshes(); };
+$('#m-kind').onchange = () => { meshView.kind = $('#m-kind').value; saveMeshView(); renderMeshes(); };
+$('#m-clear').onclick = () => { meshView.ranges = {}; meshView.hidden = []; meshView.kind = 'all'; saveMeshView(); renderMeshes(); };
 // ---- rating a mesh, from its 3D view: bad, OK or good, and a comment. Kept in this browser (bm_ratings), and sent to the
 // site each time either changes, which keeps one of each for every browser (an id made here, bm_browser)
 const RATING_NAMES = { 1: 'bad', 2: 'OK', 3: 'good' };
@@ -3288,9 +3314,10 @@ function renderMeshes(filter = true){
   if (meshesCache.length && !shown.length) el.innerHTML = '<div class="status">No mesh fits the filter.</div>';
   for (const m of shown) {
     const d = document.createElement('div'); d.className = 'card mesh';
-    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
+    const sole = soleClimb(m);
+    d.innerHTML = `<div class="grow"><span class="name">${esc(meshTitle(m))}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
         <div class="chips">${(m.boulder_climbs || []).map(c => `<span class="chip" data-from="${c.id}" title="${c.view ? `Look at it from where ${esc(c.name)}'s own photos were taken (${plural(c.view.photos, 'photo')})` : `None of ${esc(c.name)}'s own photos were placed in it: opens the climb`}">${c.view ? '👁 ' : ''}${esc(c.name)} ${esc(c.grade||'')}</span>`).join('')}
-          ${m.climbs.map(c=>`<span class="chip${c.shared ? ' shared' : ''}" data-climb="${c.id}" ${c.shared ? 'title="Linked by an area as on the same boulder as the climb this was made for: it may not show this climb\'s side"' : ''}>${esc(c.name)} ${esc(c.grade||'')}${c.shared ? ' <small>same boulder</small>' : ''} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('')}
+          ${m.climbs.filter(c => editor || c !== sole).map(c=>`<span class="chip${c.shared ? ' shared' : ''}" data-climb="${c.id}" ${c.shared ? 'title="Linked by an area as on the same boulder as the climb this was made for: it may not show this climb\'s side"' : ''}>${esc(c.name)} ${esc(c.grade||'')}${c.shared ? ' <small>same boulder</small>' : ''} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('')}
           <select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option>${climbsCache.filter(c=>c.kind!=='area').map(c=>`<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('')}</select></div></div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px">
         <button class="sm view">View</button>
@@ -3309,7 +3336,7 @@ function renderMeshes(filter = true){
     d.querySelector('.view').onclick = () => viewMesh(m.id, null, 'meshes');
     d.querySelector('.fly')?.addEventListener('click', () => flyTo(m.lat, m.lng));
     d.querySelector('.setll')?.addEventListener('click', async () => { const ll = parseLL(prompt('lat, lng')); if (!ll) return; await api('/api/meshes/'+m.id, {method:'PATCH', json:{lat:ll[0], lng:ll[1]}}); refreshMeshes(); });
-    d.querySelector('.del').onclick = async () => { if (ask(`Delete mesh "${m.name}"?`)) { await api('/api/meshes/' + m.id, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); } };
+    d.querySelector('.del').onclick = async () => { if (ask(`Delete mesh "${meshTitle(m)}"?`)) { await api('/api/meshes/' + m.id, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); } };
     d.querySelectorAll('[data-climb]').forEach(ch => ch.onclick = ev => { if (ev.target.dataset.unlink) return; openClimb(ch.dataset.climb); });
     d.querySelectorAll('[data-from]').forEach(ch => ch.onclick = () => {
       const c = m.boulder_climbs.find(x => x.id === ch.dataset.from);
@@ -3329,6 +3356,19 @@ const gradeTag = c => c.grade ? ` ${c.grade.split(' ')[0]}` : '';
 function meshAreaText(id){ return (meshesById[id]?.areas || []).join(', '); }
 // a phone's title over the view: what's in view, and its areas on a line under it
 function showTitle(name, area = ''){ $('#vname').textContent = name; $('#varea').textContent = area; }
+// The climb a mesh was made for, when it's of that climb alone and the only mesh linked to it (older versions aside):
+// the mesh then goes by the climb's name and grades, as its chip would
+let linkCounts = null, linksOf = null;
+function soleClimb(m){
+  if (m.boulder || m.replaced_by) return null;
+  if (linksOf !== meshesCache) {
+    linksOf = meshesCache; linkCounts = new Map();
+    for (const x of meshesCache) if (!x.replaced_by) for (const c of x.climbs) linkCounts.set(c.id, (linkCounts.get(c.id) || 0) + 1);
+  }
+  const own = m.climbs.filter(c => !c.shared);
+  return own.length === 1 && linkCounts.get(own[0].id) === 1 ? own[0] : null;
+}
+function meshTitle(m){ const c = soleClimb(m); return c ? `${c.name} ${c.grade || ''}`.trim() : m.name; }
 function viewTitle(m, from){
   const seen = (m.boulder_climbs || []).find(c => c.id === from), own = m.climbs.filter(c => !c.shared);
   if (seen) return seen.name + gradeTag(seen);
@@ -3374,7 +3414,7 @@ function viewMesh(id, from, via = '', climb = null){
   showTitle(viewTitle(m, from), meshAreaText(id));
   setLink(id, from);
   const own = m.climbs.filter(c => !c.shared), on = m.boulder_climbs || [];
-  const label = m.name + (own.length ? ` — ${own.map(c => c.name).join(', ')}` : on.length ? ` — ${plural(on.length, 'climb')}` : '');
+  const label = soleClimb(m) ? meshTitle(m) : m.name + (own.length ? ` — ${own.map(c => c.name).join(', ')}` : on.length ? ` — ${plural(on.length, 'climb')}` : '');
   return loadMeshUrl(`/meshes/${id}/${m.filename}`, m.filename, label, id).then(() => { if (shownMesh === id) showFrom(m, from); markShown(); });
 }
 // Where each climb on a boulder's own mesh is seen from: a point and where it looks, in the mesh's own coordinates
@@ -3464,7 +3504,7 @@ function renderBetaList(){
   for (const m of list) {
     const d = document.createElement('div'); d.className = 'card mesh' + (betaState?.mid === m.id ? ' active' : '');
     const canFind = m.source.startsWith('project:') && m.cameras_kept && videoCount(m) && !['queued', 'running'].includes(m.beta?.status);
-    d.innerHTML = `<div class="grow"><span class="name">${esc(m.name)}</span><br>
+    d.innerHTML = `<div class="grow"><span class="name">${esc(meshTitle(m))}</span><br>
         <small>${m.marked ? `${m.marked} hold${m.marked === 1 ? '' : 's'} marked · ` : ''}${betaLine(m)}</small></div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px"><button class="sm open">Open</button>
         ${canFind ? `<button class="sm sec find">${m.beta?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}</div>`;
@@ -3737,7 +3777,6 @@ let statusCache = { env: {} };
 statusCache = await api('/api/status');
 editor = !!statusCache.editor;
 document.body.classList.toggle('readonly', !editor);
-if (!editor) $('#c-doubtful').checked = false;     // its box is only an editor's (coordinates to put right)
 if (statusCache.editing === 'none') $('#viewonly').style.display = '';
 if (statusCache.editing === 'token') {
   const b = $('#edit');

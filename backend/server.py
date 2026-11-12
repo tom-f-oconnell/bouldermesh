@@ -215,6 +215,8 @@ def init_db() -> None:
           status TEXT DEFAULT 'pending',   -- pending | running | waiting (for volunteers) | done | skipped | failed
           PRIMARY KEY(campaign_id, source_id));
         CREATE INDEX IF NOT EXISTS campaign_items_boulder ON campaign_items(boulder);
+        -- a climb's meshes, counted for each climb listed (climb_row(), MESH_COUNT)
+        CREATE INDEX IF NOT EXISTS mesh_links_climb ON mesh_links(climb_id);
         -- videos of climbs, found on their pages or by searching, and what their uploaders say about the
         -- climber's size (youtube.stats), for scaling meshes later
         CREATE TABLE IF NOT EXISTS videos(
@@ -242,6 +244,7 @@ def init_db() -> None:
                 con.execute(f"ALTER TABLE meshes ADD COLUMN {c} REAL")
         if "boulder" not in cols:   # a mesh of a whole boulder (a boulder project's): the area path of its climbs
             con.execute("ALTER TABLE meshes ADD COLUMN boulder TEXT")
+        con.execute("CREATE INDEX IF NOT EXISTS meshes_boulder ON meshes(boulder)")    # its climbs' count of them (MESH_COUNT)
         cols = {r[1] for r in con.execute("PRAGMA table_info(campaigns)")}
         if "only_retries" not in cols:
             con.execute("ALTER TABLE campaigns ADD COLUMN only_retries INTEGER DEFAULT 0")
@@ -561,6 +564,12 @@ def climb_row(cid: str, full=False) -> dict | None:
     r["n_shared"] = q("SELECT COUNT(*) n FROM mesh_links WHERE climb_id=? AND note LIKE ?", cid, SHARED + "%", one=True)["n"]
     r["shared_of"] = (shared["made_for"] or shared["note"][len(SHARED):]) if shared else None
     return r
+
+
+# How many meshes a climb has, as SQL beside a climbs row (binds SHARED + "%"): those linked to it as its own (its own
+# meshes, and pools of it with others), and its boulder's (run_boulder()), as its card counts them (n_links, n_boulder)
+MESH_COUNT = ("((SELECT COUNT(*) FROM mesh_links l WHERE l.climb_id=climbs.id AND COALESCE(l.note,'') NOT LIKE ?)"
+              " + (SELECT COUNT(*) FROM meshes b WHERE b.boulder=climbs.area_path AND b.replaced_by IS NULL))")
 
 
 def climb_obj(cid: str) -> Climb:
@@ -5528,10 +5537,14 @@ class Handler(BaseHTTPRequestHandler):
                     conds.append("(id IN (SELECT climb_id FROM mesh_links) OR area_path IN (SELECT boulder FROM meshes WHERE boulder IS NOT NULL))")
                 if conds:
                     sql += " WHERE " + " AND ".join(conds)
+                if qs.get("multi"):     # those with more than one mesh first, to pick out
+                    order = [f"{MESH_COUNT} > 1 DESC"] + order
                 sql += " ORDER BY " + ", ".join(order + ["created DESC"]) + " LIMIT 500"
-                return self.send_json([{**climb_row(r["id"]), "coords_doubt": doubts.get(r["id"])} for r in q(sql, *args, *(oargs if text else []))])
+                return self.send_json([{**climb_row(r["id"]), "coords_doubt": doubts.get(r["id"])}
+                                       for r in q(sql, *args, *([SHARED + "%"] if qs.get("multi") else []), *(oargs if text else []))])
             if p == "/api/climbs/count":
-                return self.send_json({"climbs": q("SELECT count(*) AS n FROM climbs", one=True)["n"], "doubtful": len(coord_doubts())})
+                return self.send_json({"climbs": q("SELECT count(*) AS n FROM climbs", one=True)["n"], "doubtful": len(coord_doubts()),
+                                       "multi": q(f"SELECT count(*) AS n FROM climbs WHERE {MESH_COUNT} > 1", SHARED + "%", one=True)["n"]})
             m = re.fullmatch(r"/api/climbs/([0-9a-f]+)", p)
             if m:
                 r = climb_row(m[1], full=True)

@@ -89,8 +89,11 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
   show the other side of the rock.
 * `GET /api/geojson` serves climbs + meshes for the map tab (Leaflet, OSM/OpenTopoMap).
 * The *Meshes* tab sorts by newest, faces, photos placed, distinct viewpoints, coverage around the
-  rock, or the share of its photos placed, either way, and *Filter* narrows it to the areas ticked
-  and, for each of those numbers, between a least and a most. Distinct viewpoints count photos taken
+  rock, or the share of its photos placed, either way, and *Filter* narrows it to what they're of
+  (*Climbs*: one climb's; *Boulders*: every climb known on a rock Mountain Project names as one boulder,
+  each placed by its own photos; *Groups*: any other of more than one climb), to the areas ticked,
+  and, for each of those numbers, between a least and a most. A mesh of one climb, that climb's only
+  one, is called by the climb's name and grades. Distinct viewpoints count photos taken
   within 15° of the same direction from the rock once, so many frames of one video count about once;
   coverage is how much of a full circle round the rock its photos see from above (`meshmetrics.py`,
   from where its photos were placed, kept in each mesh's `metrics.json`). Each card names the areas
@@ -427,7 +430,9 @@ elsewhere. Fitting splats is off (`SPLATS=1` turns it on for new meshes, and `py
 as it needs CUDA builds of torch and gsplat, and the few photos most meshes are placed from make poor ones: design.md,
 "Scenes around meshes". A splat is learnt from all of a mesh's photos, so it's shown only where the site shows all its textures.
 
-The climbs list hides climbs without meshes until that box is unticked. Each climb's *View* opens its mesh, and the one
+The climbs list hides climbs without meshes until that box is unticked. Under *More options*, it can show only climbs
+whose coordinates look wrong, or pick out those with more than one mesh (their own, pools of them with others, and their
+boulder's), first in the list. Each climb's *View* opens its mesh, and the one
 in view is blue. *Random* opens any mesh; it's blue until one is in view.
 
 On a phone, the page shows either the controls or the view. The controls' header holds *Viewer* (grey until a mesh is
@@ -1012,8 +1017,9 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/projects/{id}/restore {file}              put a photo the filter rejected back
     GET  /api/meshes · POST /api/meshes (multipart "files", +name, +lat/lng, +climb_id) · PATCH|DELETE /api/meshes/{id}
     POST /api/meshes/{id}/links {climb_id, note} · DELETE /api/meshes/{id}/links/{climb_id}
-    GET  /api/climbs?q=&source=&meshed=&doubtful=       the newest 500, or of every climb those with each word of q (name, boulder,
-                                                        area or grade), with meshes, or whose coordinates look wrong
+    GET  /api/climbs?q=&source=&meshed=&doubtful=&multi= the newest 500, or of every climb those with each word of q (name, boulder,
+                                                        area or grade), with meshes, or whose coordinates look wrong; multi: those
+                                                        with more than one mesh first
     GET  /api/climbs/count · GET|PATCH|DELETE /api/climbs/{id}
     POST /api/climbs/import {url, include_children}     MP / OpenBeta / Kaya URL
     POST /api/climbs/search {q, lat, lng, radius_m}     OpenBeta live search
