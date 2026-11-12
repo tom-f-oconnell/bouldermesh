@@ -90,8 +90,7 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
 * `GET /api/geojson` serves climbs + meshes for the map tab (Leaflet, OSM/OpenTopoMap).
 * The *Meshes* tab sorts by newest, faces, photos placed, distinct viewpoints, coverage around the
   rock, or the share of its photos placed, either way, and *Filter* narrows it to what they're of
-  (*Climbs*: one climb's; *Boulders*: every climb known on a rock Mountain Project names as one boulder,
-  each placed by its own photos; *Groups*: any other of more than one climb), to the areas ticked,
+  (*Climbs*: one climb's; *Boulders* and *Groups*: as their cards say, under "On the cards" below), to the areas ticked,
   and, for each of those numbers, between a least and a most. A mesh of one climb, that climb's only
   one, is called by the climb's name and grades. Distinct viewpoints count photos taken
   within 15° of the same direction from the rock once, so many frames of one video count about once;
@@ -207,9 +206,11 @@ again.
 - *Keep the mesh before when a rebuild from the same photos places fewer*: COLMAP can place fewer photos of the same set
   from one run to the next. When a rebuild had every photo the mesh before placed and places fewer, the mesh before stays
   the current one, and the new one is kept as an older version of it.
-- *When COLMAP places under 75% of the photos, try 1 more seed, keeping the best*: within one meshing, COLMAP's placing of
-  the photos is tried again with another random seed (a minute or so for most) while the model it keeps places under that
-  share of them, and the model placing most is used. 0 in either turns it off. Meshes made outside areas use 75% and 1.
+- *When COLMAP places under 75% of the photos, try 0 more seeds, keeping the best*: within one meshing, COLMAP's placing
+  of the photos can be tried again with another random seed (a minute or so for most, much more for big boulders) while
+  the model it keeps places under that share of them, and the model placing most is used. 0 in either turns it off, as
+  it is by default since Nov 11, 2026 (areas that had the old default, 1 more seed, were changed to it): over 5 runs it
+  took 72 minutes for 3 more photos, and *Placing the rest* (below) recovers photos the mapper left out for far less.
 
 Its boulder problems are then taken one at a time until you stop, or the list runs out. A climb that shares its boulder
 with others on the list is only harvested; once all of the list's climbs on that boulder are, the boulder is meshed from
@@ -276,22 +277,28 @@ well.
   model it finished (*Place the rest*, `_place_rest()` in `backend/pipeline.py`). Fewer of a photo's matches need to fit
   than the mapper asks for, and those that join are refined with the rest.
 - **Meshing what's still left.** After a boulder's mesh, what it still left out of each climb's photos is kept beside it
-  (`rest.json`). The photos left out of every climb with 6 or more out are then meshed together, once, from the
+  (`rest.json`). The photos left out of every climb with 6 or more out can then be meshed together, once, from the
   boulder's own filtered photos (`keep_rest()`, `run_rest()`), as another side or another rock. That mesh is named for
-  those climbs and linked to each one it places, whatever the area's limit.
+  those climbs and linked to each one it places, whatever the area's limit. This is off by default (the admin page's
+  *After each boulder's mesh, mesh what it left out*), as nothing yet checks that such a mesh is of a rock the boulder's
+  photos see: Drifter's made one of a night scene elsewhere.
 - **Instead of re-meshing.** This replaces meshing each climb the boulder's mesh hardly showed on its own from its whole
   harvest, which mostly made copies of the same rock from the same web photos.
-- **Older meshes.** Boulders' meshes made before this have what they left out worked out as the server starts.
-  *Mesh what boulders' meshes left out* on the admin page queues the rest of those that have enough.
+- **By hand.** Boulders' meshes made before this have what they left out worked out as the server starts.
+  *Mesh what boulders' meshes left out* on the admin page queues the rest of every boulder's mesh that has enough.
 
 **On the cards.** Meshes are named for what they're of, not how they were made. A mesh of several climbs' photos says how
 many of them it places, each counted only on the mesh of its boulder that places most of its own photos.
-- **Boulder** ("boulder · 7/9 climbs") needs all four of these:
+- **Boulder** ("boulder · 7/9 climbs") needs all five of these:
   - Mountain Project says its area is one rock.
   - It places more than one climb, by their own photos.
+  - It places some of every climb's own photos, for each climb that has any: at least one, and at least the admin page's
+    % of them (0 by default, so one is enough). The admin page lists each boulder's mesh either side of that %, with
+    the climbs short of it, and a boulder's mesh's log says how many of each climb's own photos it placed.
   - Every climb on it was harvested and had photos tried in its mesh. That includes every problem its page lists, which
     are made known and harvested before it's meshed. A climb whose harvest found no photos keeps it a group.
-  - Nothing it left out made a mesh of its own: none of its climbs left 6 photos out, or meshing them failed.
+  - Nothing it left out made a mesh of its own: none of its climbs left 6 photos out, or meshing them was tried and
+    failed. While meshing what's left isn't on, a boulder's mesh with a climb that left 6 or more out stays a group.
 - **Group** ("group · 7/9 climbs"): any other placing more than one climb. That includes a boulder's mesh when what it
   left out made another mesh, and that other mesh, if it places more than one climb.
 - **Neither:** a mesh placing only one climb is that climb's.
@@ -1149,11 +1156,11 @@ gets every optional check; the tests also pass without them.
   - **One level only.** It's meshed once, and only the largest model of what's left becomes a mesh. A second separate
     rock among those photos isn't meshed.
   - **A photo is in one mesh or the other, never both.** The mesh of what was left out can't use photos of its rock that
-    the boulder's mesh placed. For example, Drifter's mesh placed some of Smoking's frames that also see the Smoking
-    boulder.
+    the boulder's mesh placed.
   - **Every frame of a climb's page videos counts as its own.** That includes frames of other boulders and of the walk
-    in. So the mesh of what was left out can be of another rock, and be linked to that climb (Smoking's page video is
-    mostly a hike up Cloudripper and other boulders).
+    in. So the mesh of what was left out can be of another rock, and be linked to that climb, and a climb can look
+    hardly placed when only its video's other scenes were left out (Smoking's page video is mostly a hike up Cloudripper
+    and other boulders; the frames of Smoking itself, on Drifter's face, are placed).
   - **Older meshes.** Boulders' meshes made before 2671afe didn't try the photos the mapper left out against the
     finished model, so their counts of what's left out include photos that step might now place. Meshing the boulder
     again fixes that.

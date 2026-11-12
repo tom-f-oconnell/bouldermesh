@@ -68,6 +68,12 @@ DEFAULTS = {
     # work out which way each mesh faces from the skyline in its photos (skyline.py), where distant mountains show;
     # elsewhere it stops at its place's horizon, in about a second
     "facing.skyline": True,
+    # a boulder's mesh is one boulder (pooled_summary()) only if each of its climbs with photos of its own has at least
+    # this % of them placed in it, and at least one (0: one is enough)
+    "boulders.placed_percent": 0.0,
+    # after each boulder's mesh, mesh the photos it left out of climbs with 6 or more out apart (keep_rest()); off until
+    # those meshes are checked against the boulder's, as Drifter's made one of another rock
+    "boulders.rest_auto": False,
     "videos.prune_unplaced": True,
     # clients that register themselves (registration.py): provisional until approved here or from a phone. Volunteers
     # fetching videos: their limits (the script's own are 15 an hour, 200 a day; searches have their own), and while provisional, whether they
@@ -94,7 +100,7 @@ DEFAULTS = {
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
            "areas.meshes": ("boulders", "climbs"), "relevance.matcher": ("brute", "flann"), "leaderboard.names": ("new", "all", "none")}
-LIMITS = {"site.map_km": (0.05, 2000), "viewer.preview_faces": (0, 5_000_000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.processing_cores": (1, os.cpu_count() or 1), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
+LIMITS = {"site.map_km": (0.05, 2000), "boulders.placed_percent": (0, 100), "viewer.preview_faces": (0, 5_000_000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.processing_cores": (1, os.cpu_count() or 1), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 200),
           "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 200),
           "registration.per_address_day": (1, 100), "registration.max_waiting": (1, 1000)}

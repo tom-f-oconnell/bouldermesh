@@ -10,7 +10,9 @@ from __future__ import annotations
 import contextlib
 import threading
 
-MAPPER = {"retry_below": 0.75, "more": 1}   # its defaults, wherever no area says otherwise
+# its defaults, wherever no area says otherwise: no more seeds since Nov 11, 2026, as over 5 runs they took 72 minutes
+# for 3 more photos, and placing the rest (pipeline._place_rest()) recovers photos the mapper left out for far less
+MAPPER = {"retry_below": 0.75, "more": 0}
 _local = threading.local()
 
 

@@ -135,14 +135,16 @@ with tempfile.TemporaryDirectory() as td:
         assert "only 3 image(s)" in str(e), e
 print("mapper abort OK")
 
-# placing many fewer than it was given, another seed is tried too (meshopts.MAPPER: under 75%, one more), and the model
-# placing most is kept; an area can change both, or turn it off
+# placing many fewer than it was given, an area can have another seed tried too (more seeds, under retry_below of the
+# photos), and the model placing most is kept; by default none is (meshopts.MAPPER)
 import meshopts  # noqa: E402
 
-assert stops_at([{"models": {"0": 13}}, {"models": {"0": 19}}], 20).endswith("sparse/0"), "13 of 20: another seed, which placed 19"
-assert stops_at([{"models": {"0": 13}}, {"models": {"0": 9}}], 20).endswith("aborted0-0"), "the first placed more: it's kept"
-assert stops_at([{"models": {"0": 13}}, {**ABORT, "models": {"0": 4}}], 20).endswith("aborted0-0"), "an abort then isn't a failure"
-assert stops_at([{"models": {"0": 16}}], 20).endswith("sparse/0"), "16 of 20 is enough"
+assert stops_at([{"models": {"0": 13}}], 20).endswith("sparse/0"), "no more seeds by default"
+with meshopts.using({"retry_below": 0.75, "more": 1}):
+    assert stops_at([{"models": {"0": 13}}, {"models": {"0": 19}}], 20).endswith("sparse/0"), "13 of 20: another seed, which placed 19"
+    assert stops_at([{"models": {"0": 13}}, {"models": {"0": 9}}], 20).endswith("aborted0-0"), "the first placed more: it's kept"
+    assert stops_at([{"models": {"0": 13}}, {**ABORT, "models": {"0": 4}}], 20).endswith("aborted0-0"), "an abort then isn't a failure"
+    assert stops_at([{"models": {"0": 16}}], 20).endswith("sparse/0"), "16 of 20 is enough"
 with meshopts.using({"retry_below": 0, "more": 3}):
     assert stops_at([{"models": {"0": 13}}], 20).endswith("sparse/0"), "off"
 with meshopts.using({"retry_below": 0.9, "more": 2}):

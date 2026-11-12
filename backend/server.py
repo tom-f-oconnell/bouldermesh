@@ -265,6 +265,9 @@ def init_db() -> None:
             con.execute(f"ALTER TABLE campaigns ADD COLUMN mapper_below INTEGER DEFAULT {round(meshopts.MAPPER['retry_below'] * 100)}")
         if "mapper_more" not in cols:       # how many more
             con.execute(f"ALTER TABLE campaigns ADD COLUMN mapper_more INTEGER DEFAULT {meshopts.MAPPER['more']}")
+        if con.execute("PRAGMA user_version").fetchone()[0] < 1:   # once: areas on the old defaults take the new ones
+            con.execute("UPDATE campaigns SET mapper_more=? WHERE mapper_below=75 AND mapper_more=1", (meshopts.MAPPER["more"],))
+            con.execute("PRAGMA user_version=1")
         cols = {r[1] for r in con.execute("PRAGMA table_info(campaign_items)")}
         # redo: what it's queued to do again (REDO_NAMES); was: its status before; changed: its photos have
         # changed since it was last meshed or checked; redo_started: a rebuild that began, to carry on with
@@ -962,25 +965,36 @@ def leaf_url(leaf: str, cache: dict) -> str | None:
     return cache[leaf]
 
 
-def pooled_summary(key: str, climbs: list[dict], kinds: dict, mid: str | None = None, homes: dict | None = None) -> dict:
+def pooled_summary(key: str, climbs: list[dict], kinds: dict, mid: str | None = None, homes: dict | None = None,
+                   least: float | None = None) -> dict:
     """What a pooled mesh's card says of it: how many climbs' photos it's made from and how many of them it places (by
     their own photos, each counted only on the mesh of its boulder that places most of them: homes, {climb: mesh}), its
-    lowest area and what that is, and whether it's one boulder.
+    lowest area and what that is, and whether it's one boulder. climbs: {id, name, view (views.json's, if placed), own
+    (how many photos of its own were pooled, if none placed)}.
 
-    It's one boulder when Mountain Project says the area is one rock, it places more than one climb, every climb on it
-    was tried in it, and nothing the mesh left out of its climbs' photos makes a mesh apart (keep_rest()): none of them
-    left REST_LEAST out, or meshing those failed. Otherwise a mesh placing more than one climb is a group. A mesh from
-    before its rest was kept goes by whether every climb known on the area is placed in it.
+    It's one boulder when Mountain Project says the area is one rock, it places more than one climb, each climb with
+    photos of its own has at least least % of them placed (the admin page's boulders.placed_percent), and at least one,
+    every climb on it was tried in it, and nothing the mesh left out of its climbs' photos makes a mesh apart
+    (keep_rest()): none of them left REST_LEAST out, or meshing those failed. Otherwise a mesh placing more than one
+    climb is a group. A mesh from before its rest was kept goes by whether every climb known on the area is placed in
+    it. short: the climbs with own photos too few of which it places, {name, placed, of}.
     """
     leaf = pool_leaf(key)
     placed = {c["id"] for c in climbs if c.get("view") and (not homes or homes.get(c["id"], mid) == mid)}
+    least = settings().get("boulders.placed_percent") if least is None else least
+    short = []
+    for c in climbs:
+        of = (c.get("view") or {}).get("of") or c.get("own") or 0
+        n = (c.get("view") or {}).get("photos", 0) if c["id"] in placed else 0
+        if of and (n < 1 or 100 * n < least * of):
+            short.append({"name": c.get("name"), "placed": n, "of": of})
     kind = leaf_kind(leaf, kinds)
     rest = load_rest(mid) if mid and not is_pool(key) else None
     tried = (rest or {}).get("attempt") or {}
     split = tried.get("status") == "done" and bool(tried.get("climbs"))
     apart = len((rest or {}).get("apart") or [])
     untried = boulder_untried(mid, leaf) if mid and not is_pool(key) else None
-    if len(placed) < 2:
+    if len(placed) < 2 or short:
         whole = False
     elif rest is not None:
         whole = kind == "boulder" and not split and (not apart or tried.get("status") in ("failed", "poor")) and untried == 0
@@ -989,7 +1003,25 @@ def pooled_summary(key: str, climbs: list[dict], kinds: dict, mid: str | None = 
         whole = bool(on_leaf) and on_leaf <= {c["id"] for c in climbs if c.get("view")}
     return {"climbs": len(climbs), "placed": len(placed), "area": json.loads(leaf)[-1].strip("* "), "kind": kind, "whole": whole,
             "apart": apart, "rest": tried.get("status") if apart else None, "split": split, "untried": untried,
-            "rest_of": rest_parent(key) if is_rest(key) else None}
+            "rest_of": rest_parent(key) if is_rest(key) else None, "short": short, "least": least}
+
+
+def boulder_shares() -> list[dict]:
+    """Each current mesh of an area Mountain Project calls one rock (not a pool's): each of its climbs with photos of
+    their own and how many of them it places (views.json), fewest first, for the admin page to show which are either
+    side of boulders.placed_percent. [{id, name, climbs: [{name, placed, of}]}]"""
+    kinds, out = boulder_kinds(), []
+    for m in q("SELECT id, name, boulder FROM meshes WHERE boulder IS NOT NULL AND replaced_by IS NULL ORDER BY created DESC"):
+        if is_pool(m["boulder"]) or leaf_kind(m["boulder"], kinds) != "boulder":
+            continue
+        views = viewpoints.load(MESHES / m["id"]) or {}
+        names = {c["id"]: c["name"] for c in q("SELECT id, name FROM climbs WHERE area_path=?", m["boulder"])}
+        climbs = [{"name": names.get(cid, cid), "placed": v.get("photos") or 0, "of": v["of"]}
+                  for cid, v in (views.get("climbs") or {}).items() if v and v.get("of")]
+        climbs += [{"name": names.get(cid, cid), "placed": 0, "of": n} for cid, n in (views.get("unplaced") or {}).items() if n]
+        if climbs:
+            out.append({"id": m["id"], "name": m["name"], "climbs": sorted(climbs, key=lambda c: (c["placed"] / c["of"], c["name"]))})
+    return out
 
 
 def boulder_untried(mid: str, leaf: str) -> int | None:
@@ -1710,6 +1742,24 @@ def keep_rest(mid: str, pid: str, log, queue: bool = True) -> dict | None:
         return None
 
 
+def log_shares(mid: str, log) -> None:
+    """In a boulder's mesh's log: how many of each climb's own photos it places, and which are under the admin page's
+    boulders.placed_percent, for choosing that from what meshes make."""
+    try:
+        views = viewpoints.load(MESHES / mid) or {}
+        names = {c["id"]: c["name"] for c in q("SELECT c.id, c.name FROM climbs c JOIN meshes m ON c.area_path=m.boulder "
+                                               "WHERE m.id=?", mid)}
+        least = settings().get("boulders.placed_percent")
+        got = [(names.get(cid, cid), v.get("photos") or 0, v["of"]) for cid, v in (views.get("climbs") or {}).items() if v and v.get("of")]
+        got += [(names.get(cid, cid), 0, n) for cid, n in (views.get("unplaced") or {}).items() if n]
+        if got:
+            said = ", ".join(f"{name} {n}/{of}{' (under)' if n < 1 or 100 * n < least * of else ''}" for name, n, of in
+                             sorted(got, key=lambda g: (g[1] / g[2], g[0])))
+            log(f"own photos placed, each climb with any: {said}; a boulder needs at least {least:g}% of each, and one")
+    except Exception as e:
+        log(f"couldn't say how much of each climb it places ({type(e).__name__}: {e})")
+
+
 def rest_existing_meshes() -> None:
     """What boulders' meshes made before the rest was kept left out (keep_rest()): kept, not queued, as only their
     cards' boulder or group depends on it; the admin page queues those with any to mesh (rest_queue_all())."""
@@ -2372,7 +2422,8 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
         if done["status"] == "done":
             shutil.rmtree(pdir / "work", ignore_errors=True)   # most of its disk use, and only useful to itself
             if not is_pool(boulder) and done["mesh_id"]:
-                keep_rest(done["mesh_id"], pid, log)
+                keep_rest(done["mesh_id"], pid, log, queue=settings().get("boulders.rest_auto"))
+                log_shares(done["mesh_id"], log)
     except compute.ComputeUnavailable:
         raise
     except Exception as e:
@@ -5643,13 +5694,15 @@ class Handler(BaseHTTPRequestHandler):
                 areas, rated = mesh_areas(), mesh_ratings()
                 pooled_views = {r["id"]: viewpoints.load(MESHES / r["id"]) or {} for r in rows if r["boulder"]}
                 homes = boulder_homes([r for r in rows if not r.get("replaced_by")], pooled_views)
+                least = settings().get("boulders.placed_percent")
                 for r in rows:
                     r["climbs"] = by.get(r["id"], [])
                     r["rating"] = rated.get(r["id"])
                     if r["boulder"]:    # a pooled mesh (a boulder's, or a pool's): its climbs, and where each is seen from
                         views = pooled_views[r["id"]]
-                        r["boulder_climbs"] = [{**c, "view": (views.get("climbs") or {}).get(c["id"])} for c in on.get(r["boulder"], [])]
-                        r["pooled"] = pooled_summary(r["boulder"], r["boulder_climbs"], kinds, r["id"], homes)
+                        r["boulder_climbs"] = [{**c, "view": (views.get("climbs") or {}).get(c["id"]),
+                                                "own": (views.get("unplaced") or {}).get(c["id"], 0)} for c in on.get(r["boulder"], [])]
+                        r["pooled"] = pooled_summary(r["boulder"], r["boulder_climbs"], kinds, r["id"], homes, least)
                     # the Mountain Project page of the lowest area a mesh of several climbs is on: a pooled mesh's, or
                     # that of the climbs linked to one, when they're all on one
                     leaf = (pool_leaf(r["boulder"]) if r["boulder"] else
@@ -6296,7 +6349,15 @@ class Handler(BaseHTTPRequestHandler):
             q("DELETE FROM mesh_links WHERE mesh_id=? AND climb_id=?", m[1], m[2], write=True)
             return self.send_json({"unlinked": True})
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)", p)
-        if m:
+        if m:   # an area's climb done with it is done with another current mesh of that climb (linked, or its boulder's)
+            for item in q("SELECT campaign_id, source_id, climb_id FROM campaign_items WHERE mesh_id=?", m[1]):
+                other = (q("SELECT m.id, m.name FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=? AND m.id!=? "
+                           "AND m.replaced_by IS NULL ORDER BY m.created DESC LIMIT 1", item["climb_id"], m[1], one=True)
+                         or q("SELECT m.id, m.name FROM meshes m JOIN climbs c ON m.boulder=c.area_path WHERE c.id=? AND m.id!=? "
+                              "AND m.replaced_by IS NULL ORDER BY m.created DESC LIMIT 1", item["climb_id"], m[1], one=True))
+                q("UPDATE campaign_items SET mesh_id=?, note=? WHERE campaign_id=? AND source_id=?", other and other["id"],
+                  f"its mesh was deleted: done with {other['name']}" if other else "its mesh was deleted",
+                  item["campaign_id"], item["source_id"], write=True)
             q("DELETE FROM meshes WHERE id=?", m[1], write=True)
             q("DELETE FROM mesh_links WHERE mesh_id=?", m[1], write=True)
             q("DELETE FROM mesh_ratings WHERE mesh_id=?", m[1], write=True)
@@ -6598,7 +6659,7 @@ def admin_state() -> dict:
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
             "notify": NOTIFIER.state(),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
-            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q)}
 
 

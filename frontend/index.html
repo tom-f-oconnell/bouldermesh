@@ -359,7 +359,7 @@
           <label class="row" style="margin-top:6px" title="On: when a mesh is rebuilt from photos that include every one the mesh before placed, and places fewer of them, the mesh before stays the current one, and the new one is kept as an older version. Off: the newest is always current."><input type="checkbox" id="ca-keepbetter" checked autocomplete="off"> Keep the mesh before when a rebuild from the same photos places fewer</label>
           <label class="row" style="margin-top:6px" title="COLMAP can place many fewer photos of the same set from one run to the next (19 of 19, then 13, for one boulder). When the model it keeps places under this share of a climb's or boulder's photos, it tries this many more random seeds, a minute or so each, and keeps the model placing most. 0 in either turns it off.">When COLMAP places under
             <input type="number" id="ca-mapbelow" min="0" max="100" step="5" value="75" autocomplete="off" style="width:64px">% of the photos, try
-            <input type="number" id="ca-mapmore" min="0" max="5" step="1" value="1" autocomplete="off" style="width:52px"> more seed(s), keeping the best</label>
+            <input type="number" id="ca-mapmore" min="0" max="5" step="1" value="0" autocomplete="off" style="width:52px"> more seed(s), keeping the best</label>
         </details>
         <div style="text-align:center;margin-top:10px"><button id="ca-go">Start meshing</button></div>
         <details id="ca-about" style="margin-top:8px"><summary>Details</summary><div class="notice" style="margin-top:6px">
@@ -2454,10 +2454,11 @@ function pooledTags(m){
   const of = p.kind === 'group' ? ` in ${esc(p.area)}, a Mountain Project area of several boulders, whose photos match`
     : p.kind === 'boulder' ? ` on ${esc(p.area)}` : ` in ${esc(p.area)}`;
   const word = p.whole ? 'boulder' : p.placed > 1 ? 'group' : '';
-  const why = p.whole ? `. Mountain Project says ${esc(p.area)} is one rock, every climb on it was harvested and tried in it, it places more than one of them, and none of their photos it left out make a mesh of their own, so it's one boulder`
+  const why = p.whole ? `. Mountain Project says ${esc(p.area)} is one rock, every climb on it was harvested and tried in it, it places more than one of them and ${p.least ? `at least ${p.least}% of` : 'some of'} each one's own photos, and none of their photos it left out make a mesh of their own, so it's one boulder`
     : p.rest_of ? `. Made from the photos the mesh of ${esc(p.area)} left out, so it's another side or rock than that one`
     : p.split ? `. The photos it left out of some climbs made a mesh of their own, so it isn't the whole boulder`
     : p.untried ? `. ${plural(p.untried, 'climb')} on ${esc(p.area)} ${p.untried === 1 ? 'has' : 'have'} no photos tried in it (never harvested, or none found), so it isn't one boulder yet`
+    : p.short?.length && p.kind === 'boulder' ? `. Too few of some climbs' own photos are placed in it for one boulder (it needs ${p.least ? `${p.least}% of each, and one` : 'one of each'}): ${p.short.map(s => `${esc(s.name)} ${s.placed} of ${s.of}`).join(', ')}`
     : p.apart && ['queued', 'running'].includes(p.rest) ? `. The photos it left out of ${plural(p.apart, 'climb')} are being meshed apart`
     : p.apart && !p.rest ? `. It left out enough photos of ${plural(p.apart, 'climb')} to try meshing apart (on the admin page)` : '';
   return `<span class="tag ok" title="Made from the photos of ${plural(p.climbs, 'climb')}${of}: ${p.placed} of them placed in it, by their own photos${why}">${word ? `${word} · ` : ''}${p.placed}/${p.climbs} climb${p.climbs === 1 ? '' : 's'}</span>`;
@@ -2912,7 +2913,7 @@ async function refreshCampaigns(){
           <label class="meta row" title="On: a boulder whose mesh was made from the photos its climbs have now isn't meshed again, as when one of its climbs comes round again after it was. Off: it's meshed again, which can come out different. Rebuild still rebuilds."><input type="checkbox" class="samephotos" ${c.same_photos_once !== 0 ? 'checked' : ''}> don't mesh a boulder again from the same photos</label>
           <label class="meta row" title="On: when a mesh is rebuilt from photos that include every one the mesh before placed, and places fewer of them, the mesh before stays the current one, and the new one is kept as an older version. Off: the newest is always current."><input type="checkbox" class="keepbetter" ${c.keep_better !== 0 ? 'checked' : ''}> keep the mesh before when a rebuild from the same photos places fewer</label>
           <label class="meta row" title="COLMAP can place many fewer photos of the same set from one run to the next (19 of 19, then 13, for one boulder). When the model it keeps places under this share of a climb's or boulder's photos, it tries this many more random seeds, a minute or so each, and keeps the model placing most. 0 in either turns it off.">when COLMAP places under <input type="number" class="mapbelow" min="0" max="100" step="5" value="${c.mapper_below ?? 75}" style="width:60px">% of the photos, try
-            <input type="number" class="mapmore" min="0" max="5" step="1" value="${c.mapper_more ?? 1}" style="width:48px"> more seed(s), keeping the best</label>
+            <input type="number" class="mapmore" min="0" max="5" step="1" value="${c.mapper_more ?? 0}" style="width:48px"> more seed(s), keeping the best</label>
         </details>
         ${c.worked.length ? `<details data-list="${c.id}-done"><summary class="meta">Worked through (${c.worked.length}${c.worked.length === 300 ? ' most recent' : ''})</summary><div class="crows">${c.worked.map(row).join('')}</div></details>` : ''}
         ${c.next.length ? `<details data-list="${c.id}-next"><summary class="meta">Up next</summary><div class="crows">${c.next.map(row).join('')}</div></details>` : ''}`;

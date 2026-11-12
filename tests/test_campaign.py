@@ -1689,7 +1689,17 @@ for bad in ({"mapper_below": 101}, {"mapper_more": 6}, {"mapper_more": "x"}, {"m
     except ValueError as e:
         assert "a whole number from 0 to" in str(e), e
 d = server.create_campaign("", "popularity", sub({"Gamma"}))
-assert (d["mapper_below"], d["mapper_more"]) == (75, 1), "the defaults"
+assert (d["mapper_below"], d["mapper_more"]) == (75, 0), "the defaults: no more seeds"
+# areas holding the old defaults (75%, 1 more seed) take the new ones, once; others keep theirs
+server.q("UPDATE campaigns SET mapper_below=75, mapper_more=1 WHERE id=?", d["id"], write=True)
+with server.db() as con:
+    con.execute("PRAGMA user_version=0")
+server.init_db()
+assert server.q("SELECT mapper_more FROM campaigns WHERE id=?", d["id"], one=True)["mapper_more"] == 0
+assert server.q("SELECT mapper_below, mapper_more FROM campaigns WHERE id=?", c["id"], one=True) == {"mapper_below": 0, "mapper_more": 2}
+server.q("UPDATE campaigns SET mapper_more=1 WHERE id=?", d["id"], write=True)
+server.init_db()
+assert server.q("SELECT mapper_more FROM campaigns WHERE id=?", d["id"], one=True)["mapper_more"] == 1, "only once"
 pipeline.reconstruct = fake_reconstruct
 print("the mapper's settings OK")
 
@@ -2105,7 +2115,13 @@ assert got["note"] == "meshed with its boulder: 234 photos of 9 of its 9 climbs"
 fresh()
 c = server.create_campaign("", "popularity", HEAD + "".join([leaf_row(13, "Pea", 3.8, "Peabody"), leaf_row(14, "Body", 3.7, "Peabody"),
                                                             leaf_row(15, "Arm", 3.6, "Peabody")]))
-run_all(c["id"])
+real_keep, queued_rest = server.keep_rest, []
+server.keep_rest = lambda mid, pid, log, queue=True: (queued_rest.append(queue), real_keep(mid, pid, log, queue))[1]
+try:
+    run_all(c["id"])
+finally:
+    server.keep_rest = real_keep
+assert queued_rest == [False], "queued only with boulders.rest_auto"
 got = items(c["id"])
 boulder_mesh = got["Pea"]["mesh_id"]
 assert boulder_mesh and got["Body"]["mesh_id"] == got["Arm"]["mesh_id"] == boulder_mesh, got
@@ -2193,6 +2209,29 @@ while not server.jobs.empty():
 server.save_rest(boulder_mesh, {**rec, "apart": [], "attempt": None})
 assert server.boulder_untried(boulder_mesh, got["Pea"]["boulder"]) == 0
 assert server.pooled_summary(got["Pea"]["boulder"], on_parent, kinds, boulder_mesh)["whole"] is True
+# each climb with photos of its own must have some placed, and at least the admin page's % of them
+shares = [{"id": ids["Pea"], "name": "Pea", "view": {"photos": 8, "of": 10}}, {"id": ids["Body"], "name": "Body", "view": {"photos": 1, "of": 9}},
+          {"id": ids["Arm"], "name": "Arm", "view": None, "own": 0}]
+summary = server.pooled_summary(got["Pea"]["boulder"], shares, kinds, boulder_mesh)
+assert (summary["whole"], summary["short"], summary["least"]) == (True, [], 0), "one of each is enough by default; Arm has none of its own"
+summary = server.pooled_summary(got["Pea"]["boulder"], shares, kinds, boulder_mesh, least=20)
+assert (summary["whole"], summary["short"]) == (False, [{"name": "Body", "placed": 1, "of": 9}]), summary
+shares[2]["own"] = 7
+summary = server.pooled_summary(got["Pea"]["boulder"], shares, kinds, boulder_mesh)
+assert (summary["whole"], summary["short"]) == (False, [{"name": "Arm", "placed": 0, "of": 7}]), "own photos, none placed"
+server.settings().update({"boulders.placed_percent": 20})
+assert server.pooled_summary(got["Pea"]["boulder"], shares[:2], kinds, boulder_mesh)["least"] == 20
+server.settings().update({"boulders.placed_percent": 0})
+# the admin page's and the mesh's log's account of them, fewest placed first
+(server.MESHES / boulder_mesh / "views.json").write_text(json.dumps({"climbs": {ids["Pea"]: {"photos": 8, "of": 10}, ids["Body"]: {"photos": 1, "of": 9}},
+                                                                     "unplaced": {ids["Arm"]: 7}}))
+mine = [m for m in server.boulder_shares() if m["id"] == boulder_mesh]
+assert mine and mine[0]["climbs"] == [{"name": "Arm", "placed": 0, "of": 7}, {"name": "Body", "placed": 1, "of": 9},
+                                      {"name": "Pea", "placed": 8, "of": 10}], mine
+logged = []
+server.log_shares(boulder_mesh, logged.append)
+assert logged == ["own photos placed, each climb with any: Arm 0/7 (under), Body 1/9, Pea 8/10; a boulder needs at least 0% of each, and one"], logged
+assert server.settings().get("boulders.rest_auto") is False, "what a boulder's mesh left out isn't meshed apart by itself"
 late = server.upsert_climb(Climb(source="mountainproject", source_id="977", url="https://x/977", name="Late", area_path=json.loads(got["Pea"]["boulder"])))
 summary = server.pooled_summary(got["Pea"]["boulder"], on_parent, kinds, boulder_mesh)
 assert (summary["whole"], summary["untried"]) == (False, 1), summary
@@ -2261,7 +2300,7 @@ finally:
 # meshed as one from a climb's card; names without the project's kind
 summary = server.pooled_summary(pool["key"], [{"id": "a", "view": {"photos": 2}}, {"id": "b", "view": None}], server.boulder_kinds())
 assert summary == {"climbs": 2, "placed": 1, "area": "Bas Cuvier", "kind": "group", "whole": False, "apart": 0, "rest": None,
-                   "split": False, "untried": None, "rest_of": None}, summary
+                   "split": False, "untried": None, "rest_of": None, "short": [], "least": 0}, summary
 pea = server.q("SELECT key FROM boulders WHERE name='Peabody'", one=True)["key"]
 for n, sid in (("Pea", "961"), ("Body", "962")):
     server.upsert_climb(Climb(source="mountainproject", source_id=sid, url=f"https://x/{sid}", name=n, area_path=json.loads(pea)))

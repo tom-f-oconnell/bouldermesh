@@ -571,6 +571,20 @@ def run(B: str, tmp: Path) -> None:
     st, meshes = req(B, "GET", "/api/meshes")
     hm = [x for x in meshes if x["source"] == f"project:{hv['project_id']}"][0]
     assert hm["climbs"][0]["id"] == cid and hm["lat"] == 37.7, hm
+
+    # --- deleting a mesh: an area's climb done with it is done with that climb's other current mesh, or none -----------
+    con = sqlite3.connect(tmp / "data" / "bouldermesh.sqlite")
+    leaf = '["Test", "A Boulder"]'
+    con.execute("INSERT INTO climbs(id, source, source_id, url, name, area_path) VALUES('onboulder', 'test', 'ob', 'x', 'On it', ?)", (leaf,))
+    con.execute("INSERT INTO meshes(id, name, source, boulder, created) VALUES('b0u1de4me5h0', 'A Boulder', 'project:x', ?, 1)", (leaf,))
+    con.executemany("INSERT INTO campaign_items(campaign_id, source_id, climb_id, mesh_id, status) VALUES(?,?,?,?,'done')",
+                    [("cdel", "1", cid, up["id"]), ("cdel", "2", "nosuchclimb", up["id"]), ("cdel", "3", "onboulder", up["id"])])
+    con.commit()
+    assert req(B, "DELETE", f"/api/meshes/{up['id']}")[0] == 200
+    left = {r[0]: r[1:] for r in con.execute("SELECT source_id, mesh_id, note FROM campaign_items WHERE campaign_id='cdel'")}
+    assert left == {"1": (hm["id"], f"its mesh was deleted: done with {hm['name']}"), "2": (None, "its mesh was deleted"),
+                    "3": ("b0u1de4me5h0", "its mesh was deleted: done with A Boulder")}, left
+    con.close()
     print("ALL API TESTS PASSED")
 
 

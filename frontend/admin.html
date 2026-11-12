@@ -100,11 +100,16 @@
     <label class="choice"><input type="checkbox" id="skyline-auto"> Work out which way each mesh faces from the skyline in its photos, where distant mountains show
       <small>(to about 10°, as a start for turning it by hand in Nearby; in the background, once its size is known)</small></label>
     <div class="note" id="skyline-note"></div>
+    <div class="grid"><div><label>A boulder's mesh is one boulder only if it places at least this % of each climb's own photos, and one <small>(0: one is enough)</small></label>
+      <input type="number" id="placed-percent" min="0" max="100" step="5"></div></div>
+    <div class="note" id="placed-note"></div>
+    <label class="choice"><input type="checkbox" id="rest-auto"> After each boulder's mesh, mesh what it left out of climbs with 6 or more out apart
+      <small>(off until those meshes are checked against the boulder's: Drifter's made one of another rock)</small></label>
     <div class="row"><button class="sec" id="rest-all">Mesh what boulders' meshes left out</button><span class="note" id="rest-note"></span></div>
     <div class="note">A boulder's mesh tries the photos it leaves out again against itself; what's still left of each climb
-      with 6 or more out is meshed apart, as another side or rock, once a boulder's mesh is made. Its card says boulder only
-      when that makes nothing and every climb on it was harvested and tried in it. This queues it for those meshed before
-      that was done.</div>
+      with 6 or more out can be meshed apart, as another side or rock. Its card says boulder only when that makes nothing,
+      or was tried and failed, and every climb on it was harvested and tried in it. This queues it for each boulder's mesh
+      with enough left out, never tried.</div>
     <label class="choice"><input type="checkbox" id="prune-videos"> Delete kept videos none of whose frames is placed in any mesh, once their climbs are done
       <small>(beta can't use them; only harvesting again would, which fetches them again. Checked hourly; their details stay)</small></label>
   </section>
@@ -329,6 +334,9 @@ function render(s){
   $('#skyline-auto').checked = v['facing.skyline']; $('#skyline-note').textContent = skylineNote(s.skyline);
   $('#rest-note').textContent = s.rest_waiting ? `${s.rest_waiting} boulder${s.rest_waiting === 1 ? "'s mesh has" : "s' meshes have"} enough left out to try` : 'none waiting';
   $('#rest-all').disabled = !s.rest_waiting;
+  $('#rest-auto').checked = v['boulders.rest_auto'];
+  if (document.activeElement !== $('#placed-percent')) $('#placed-percent').value = v['boulders.placed_percent'];
+  $('#placed-note').innerHTML = placedNote(s.boulder_shares || [], v['boulders.placed_percent']);
   const u = s.usage || {}, gb = b => (b / 2 ** 30).toFixed(1) + ' GB';
   $('#room').classList.toggle('alert', !!u.full);
   if (document.activeElement !== $('#room-cap')) $('#room-cap').value = v['storage.cap_gb'];
@@ -472,6 +480,18 @@ function packNote(p){
   if (p.failed) text += ` ${p.failed} couldn't be made (the server's log says why), and open as they are.`;
   return text;
 }
+// Boulders' meshes either side of the share of each climb's own photos a boulder needs placed: those placing enough of
+// every climb, and those that don't, with the climbs short of it
+function placedNote(meshes, least){
+  if (!meshes.length) return 'No mesh of an area Mountain Project calls one rock has climbs with photos of their own yet.';
+  const under = c => c.placed < 1 || 100 * c.placed < least * c.of;
+  const pct = c => `${c.placed}/${c.of} (${Math.round(100 * c.placed / c.of)}%)`;
+  const ok = meshes.filter(m => !m.climbs.some(under)), short = meshes.filter(m => m.climbs.some(under));
+  const line = (m, cs) => `<li>${esc(m.name)}: ${cs.map(c => `${esc(c.name)} ${pct(c)}`).join(', ')}</li>`;
+  return `Of ${meshes.length} current mesh${meshes.length === 1 ? '' : 'es'} of areas Mountain Project calls one rock, ${ok.length} place${ok.length === 1 ? 's' : ''} enough of every climb's own photos (other conditions aside) and ${short.length} ${short.length === 1 ? "doesn't" : "don't"}.
+    <details><summary>Each one's climbs, fewest placed first</summary><b>Enough</b><ul>${ok.map(m => line(m, m.climbs.slice(0, 3))).join('') || '<li>none</li>'}</ul>
+    <b>Short of it</b> (the climbs under it)<ul>${short.map(m => line(m, m.climbs.filter(under))).join('') || '<li>none</li>'}</ul></details>`;
+}
 // How far looking at meshes' skylines has got: most stop at their place's horizon, which is too near
 function skylineNote(k){
   if (!k || !k.total) return '';
@@ -563,6 +583,8 @@ $('#prune-videos').onchange = () => save({ 'videos.prune_unplaced': $('#prune-vi
 $('#skyline-auto').onchange = () => save({ 'facing.skyline': $('#skyline-auto').checked });
 $('#rest-all').onclick = async () => { try { msg((await call('/api/admin/actions/rest', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#map-km').onchange = () => save({ 'site.map_km': +$('#map-km').value });
+$('#placed-percent').onchange = () => save({ 'boulders.placed_percent': +$('#placed-percent').value });
+$('#rest-auto').onchange = () => save({ 'boulders.rest_auto': $('#rest-auto').checked });
 $('#preview-faces').onchange = () => save({ 'viewer.preview_faces': Math.round(+$('#preview-faces').value) });
 $('#vol-add').onclick = async () => {
   try {

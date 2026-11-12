@@ -625,12 +625,13 @@ its boulder's mesh hardly showed on its own from its whole harvest did:
   Maunets were then each meshed on their own.
 - **Two pure duplicates.** East Face Sit and Les Trois Maunets placed the same 15 web photos of Drifter, 13 of them
   already in the boulder's mesh.
-- **One of the wrong rock.** Smoking is on the Smoking boulder (its page says so), a separate rock, but its own mesh
-  was of Drifter too: the same web photos and 7 frames of Drifter's face.
+- **A third duplicate.** Smoking's own mesh was of Drifter too: the same web photos and 7 frames of Drifter's face.
+  "Drifter/Smoking Boulder" is probably one rock with two names: Smoking's page says to climb the patina on the face,
+  mantle and finish up the crack, and frames 56–66 of its page video show that on Drifter's face, placed in the
+  boulder's mesh. ("On the smoking boulder" was first taken for another rock, and the small separate piece in the
+  boulder's mesh for it, until a review on Nov 11.)
 - **Why they were made.** "Hardly shows" counted only a climb's own photos (its page's and its videos' frames), and
-  those two had one each.
-- **Where Smoking really is.** Most of its page's video frames weren't placed anywhere. Some show the Smoking boulder,
-  which is probably the small separate piece in the boulder's mesh.
+  those two had one each; Smoking's own were mostly its video's frames of other places.
 
 So the photos left out are now handled in two steps:
 1. **Against the finished model.** Every reconstruction tries again the photos the mapper left out, one at a time,
@@ -644,16 +645,22 @@ So the photos left out are now handled in two steps:
 
    Tried on hal for Drifter's mesh, step 2 pooled 92 left-out photos (Smoking's 85, High Plains Drifter's 10, Les Trois
    Maunets' 6, many shared). The largest model placed 7 frames of a night-time scene in Smoking's page video, another
-   boulder, and nothing of the Smoking boulder. Frames of one video can rebuild whatever the camera filmed, so a mesh
-   from them alone isn't evidence of the climb's rock.
+   boulder. Frames of one video can rebuild whatever the camera filmed, so a mesh from them alone isn't evidence of the
+   climb's rock. So step 2 is off by default (`boulders.rest_auto`) until it's replaced by keeping each model the
+   mapper makes from a boulder's photos that's tied to the boulder's own: holding a climb's Mountain Project photo, or
+   matching its placed photos. Run on the same leftovers with COLMAP's smallest model at 4 photos, the mapper made 5
+   models (the night scene, an overhang, a large pale boulder twice, 6 to 10 photos each), and none was tied to Drifter's.
 
 **One boulder or a group.** A mesh is called one boulder when Mountain Project says its area is one rock, it places more
-than one climb, every climb on it was harvested and had its photos tried in the mesh, and nothing its mesh left out makes
-a mesh of its own (no climb left 6 or more out, or meshing them failed). Otherwise each mesh placing more than one climb is a group, the boulder's
+than one climb, it places some of each climb's own photos (at least `boulders.placed_percent` of them, 0 by default, and
+one), every climb on it was harvested and had its photos tried in the mesh, and nothing its mesh left out makes a mesh of
+its own (no climb left 6 or more out, or meshing them failed). Requiring every climb placed would make a boulder of none
+with a climb that has no photos of its own, as 7 climbs on 5 of the 6 boulders' meshes on the server had on Nov 11; and
+one placed photo of 38 (Slitherin) shows little of a climb, hence the % to choose from what meshes make. Otherwise each mesh placing more than one climb is a group, the boulder's
 own included. Every problem on the boulder's page is made known and harvested before its mesh is made. The page is read
 from the HTTP cache, as it was when its kind was read. So a climb never harvested, or whose harvest found nothing, keeps
 it a group. Each climb counts toward one mesh, the one placing most of its own photos, so groups don't share climbs.
-A mesh can still show part of another climb's rock, as Drifter's shows the Smoking boulder.
+A mesh can still show part of another rock, as Drifter's has a small separate piece about 14 m away.
 
 **One mesh per boulder.** The 1000 most popular Joshua Tree problems are on 364 lowest-level areas,
 nearly all single boulders, so linking problems to a mesh of their boulder saves about 60% of the work. Areas with
