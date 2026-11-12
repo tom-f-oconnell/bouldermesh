@@ -321,7 +321,23 @@ assert got["Alpha"]["status"] == "done" and got["Alpha2"]["status"] == "pending"
 assert [x["source_id"] for x in server.boulders_to_mesh(c["id"])] == [got["Alpha"]["source_id"]]
 harvested.clear()
 assert server.queue_boulders(c["id"]) == 1
+seen_boulder = []
+
+
+def reporting(c_, project_dir, log, sources, relevance_filter=True, tracker=None, **k):
+    """Its harvest's progress moves the boulder's own, so that it's never taken as stuck (stall_check())."""
+    if tracker and c_.name == "Alpha2":
+        time.sleep(0.6)     # trackers save at most every 0.5 s
+        tracker.update("filter", 0.5, "matching: 1 of 2")
+        seen_boulder.append(json.loads(server.q("SELECT progress FROM projects WHERE kind='boulder'", one=True)["progress"]))
+    return fake_harvest(c_, project_dir, log, sources, relevance_filter, tracker, **k)
+
+
+server.harvest_mod.harvest = reporting
 run_all(c["id"])
+server.harvest_mod.harvest = fake_harvest
+step = next(s for s in seen_boulder[-1]["steps"] if s["key"] == "climbs")
+assert 0 < step["frac"] < 1 and step["detail"] == "Alpha2: filter off-topic photos, matching: 1 of 2", step
 got = items(c["id"])
 assert harvested == ["Alpha2", "Alpha Boulder"], harvested
 assert got["Alpha2"]["climb_id"] and got["Alpha2"]["project_id"] and got["Alpha2"]["status"] == "pending", got["Alpha2"]
