@@ -648,11 +648,12 @@ controls.zoomToCursor = true; controls.zoomSpeed = 1.5;
 const raycaster = new THREE.Raycaster();
 // The surface under the pointer: the nearest front, looking through see-through backs and what's see-through around the
 // spot looked at, as they're drawn; else the nearest back. anySide: the nearest face of either side, as it's built.
-function surfaceUnder(ev, anySide = false){
+// among: only these objects (else the mesh in view, those nearby and the ground).
+function surfaceUnder(ev, anySide = false, among = null){
   if (!current) return null;
   const r = renderer.domElement.getBoundingClientRect();
   raycaster.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, 1 - (ev.clientY - r.top) / r.height * 2), camera);
-  const cast = () => raycaster.intersectObjects([current, nearby?.group, nearby?.terrain?.obj].filter(Boolean), true).filter(h => h.object.visible && !h.object.userData.beta);
+  const cast = () => raycaster.intersectObjects((among || [current, nearby?.group, nearby?.terrain?.obj]).filter(Boolean), true).filter(h => h.object.visible && !h.object.userData.beta);
   const fronts = anySide ? [] : cast().filter(h => !xrayed(h.point));
   if (fronts.length) return fronts[0];
   const sides = backs.map(b => [b.of.material, b.of.material.side]);     // backs are drawn by meshes of their own: these, both sides
@@ -708,11 +709,14 @@ function linkMenu(x, y){
 function closeLinkMenu(){ $('#linkmenu').hidden = true; }
 document.addEventListener('pointerdown', ev => { if (!$('#linkmenu').hidden && !ev.target.closest('#linkmenu')) closeLinkMenu(); });
 renderer.domElement.addEventListener('dblclick', ev => {
-  const hit = pieces?.editing ? null : surfaceUnder(ev);
+  let hit = pieces?.editing ? null : surfaceUnder(ev);
   if (!hit) return;
+  if (hit.object.userData.terrain && seeThroughOn)      // a mesh behind the ground there: that, and the ground goes see-through
+    hit = surfaceUnder(ev, false, [current, nearby?.group]) || hit;
   camera.position.add(hit.point.clone().sub(controls.target));
   controls.target.copy(hit.point);
-  xrayPicked = !!hit.object.userData.model;     // a spot on the mesh to look at: what comes in front of it is see-through
+  // a spot on a mesh to look at (the one in view, or one nearby): what comes in front of it is see-through
+  xrayPicked = !!(hit.object.userData.model || hit.object.userData.nearby);
 });
 scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.1));
 const dir = new THREE.DirectionalLight(0xffffff, 1.2); dir.position.set(3, 5, 2); scene.add(dir);
@@ -801,13 +805,6 @@ function mainBox(obj){
 // From behind, a sheet of rock would show the photos of its front through it, mirrored. Only faces we built
 // can be trusted to have their front towards the photos. The colour matches --empty-color in pipeline.py.
 const BACK_COLOR = new THREE.Color(0x808080).toArray().map(x => x.toFixed(4)).join();
-function plainBack(material){
-  material.onBeforeCompile = shader => {
-    shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>',
-      `#include <color_fragment>\n  if (!gl_FrontFacing) diffuseColor.rgb = vec3(${BACK_COLOR});`);
-  };
-  material.needsUpdate = true;
-}
 // ---- walls in the way, see-through (the Walls in the way setting)
 // A mesh we built has its faces' fronts towards the photos, so its backs are rock no photo saw: the back of a sheet, or
 // the outside of an arch whose inside was photographed, which hides that inside from anywhere outside. Fronts are drawn
@@ -825,9 +822,11 @@ let backs = [];             // [{of: a model mesh, meshes: [solid, faint]}]
 let xrayPicked = false;     // whether the orbit point is a spot double-clicked on the mesh
 const xrayUniforms = { xrayFocus: { value: new THREE.Vector2() }, xrayRadius: { value: 0 }, xrayNear: { value: 0 }, xrayFade: { value: 1 } };
 // Patches a model's material: see-through in front of the spot looked at, and with plain grey backs if plainBacks, for
-// when the backs are drawn with it, as with Opaque
-function seeThrough(material, plainBacks){
+// when the backs are drawn with it, as with Opaque. also: another patch of its own first (the ground's contour lines),
+// named by alsoKey, so that each kind is compiled apart.
+function seeThrough(material, plainBacks, also = null, alsoKey = ''){
   material.onBeforeCompile = shader => {
+    also?.(shader);
     Object.assign(shader.uniforms, xrayUniforms);
     shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nvarying float vXrayDepth;')
       .replace('#include <project_vertex>', '#include <project_vertex>\n  vXrayDepth = -mvPosition.z;');
@@ -845,7 +844,7 @@ const float XRAY_ORDER[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11
     if (plainBacks) shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>',
       `#include <color_fragment>\n  if (!gl_FrontFacing) diffuseColor.rgb = vec3(${BACK_COLOR});`);
   };
-  material.customProgramCacheKey = () => `xray${plainBacks ? '+plainback' : ''}`;
+  material.customProgramCacheKey = () => `xray${plainBacks ? '+plainback' : ''}${alsoKey ? '+' + alsoKey : ''}`;
   material.needsUpdate = true;
 }
 function addBacks(o){
@@ -1928,7 +1927,7 @@ function clearNearby(){
     nearby.group.traverse(o => { if (o.isMesh) { o.geometry.dispose(); for (const m of [o.material].flat()) { m?.map?.dispose(); m?.dispose(); } } });
     scene.remove(nearby.group);
   }
-  if (nearby?.arrow) scene.remove(nearby.arrow);
+  dropArrow();
   if (nearby?.terrain?.obj) { scene.remove(nearby.terrain.obj); nearby.terrain.obj.geometry.dispose(); nearby.terrain.obj.material.dispose(); }
   nearby = null;
   if (terrainShown) { terrainShown = false; applyScene(); }
@@ -1978,7 +1977,8 @@ async function loadNeighbour(n){
     if (!o.isMesh) return;
     if (!o.material?.map && (!o.material || o.material.type === 'MeshBasicMaterial'))
       o.material = new THREE.MeshStandardMaterial({ vertexColors: !!o.geometry.attributes.color, color: o.geometry.attributes.color ? 0xffffff : 0xb8c4d6, side: THREE.DoubleSide, roughness: .8 });
-    else { o.material.side = THREE.DoubleSide; if (o.material.map) plainBack(o.material); }
+    else o.material.side = THREE.DoubleSide;
+    seeThrough(o.material, !!o.material.map);     // see-through in front of a spot looked at, as the mesh in view is
     if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();
     o.userData.nearby = n.id;
   });
@@ -2020,12 +2020,13 @@ async function loadTerrain(nb){
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setIndex(index); g.computeVertexNormals();
     // contour lines every metre (or 2 or 5 where it's steeper), as untextured ground otherwise shows little of its shape
     const step = high - low < 30 ? 1 : high - low < 80 ? 2 : 5;
+    // and like the meshes, see-through in front of a spot double-clicked on one, so that a hill doesn't hide it
     const m = new THREE.MeshStandardMaterial({ color: 0xa39785, roughness: 1, side: THREE.DoubleSide });
-    m.onBeforeCompile = sh => {
+    seeThrough(m, false, sh => {
       sh.vertexShader = 'varying float vHeight;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vHeight = position.y;');
       sh.fragmentShader = 'varying float vHeight;\n' + sh.fragmentShader.replace('#include <color_fragment>',
         `#include <color_fragment>\n  float hc = vHeight / ${step.toFixed(1)}; float line = abs(fract(hc - .5) - .5) / max(fwidth(hc), 1e-4);\n  diffuseColor.rgb *= mix(.72, 1., clamp(line, 0., 1.));`);
-    };
+    }, `contour${step}`);
     nb.terrain.obj = new THREE.Mesh(g, m);
     nb.terrain.obj.userData.terrain = true;
     nb.terrain.step = step;
@@ -2074,15 +2075,33 @@ function placeNearby(){
     t.obj.visible = nearby.useTerrain;
   }
   if (terrainShown !== !!(t?.obj && nearby.useTerrain)) { terrainShown = !terrainShown; applyScene(); }
-  if (nearby.arrow) scene.remove(nearby.arrow);
+  dropArrow();
+  // north, from the edge of the mesh in view, a little above its ground; and faintly over whatever hides it, as the
+  // ground beyond its own often rises above it
   const north = new THREE.Vector3(0, 0, -1).applyMatrix4(turn0), length = Math.max(1.5, Math.min(nearby.radius * perMetre * .35, 12));
+  const from = new THREE.Vector3(c0.x, Math.max(.02, .1 * perMetre), c0.z).addScaledVector(north, Math.min(self.across / 2 * perMetre, length / 2));
   nearby.arrow = new THREE.Group();
-  nearby.arrow.add(new THREE.ArrowHelper(north, new THREE.Vector3(c0.x, .02, c0.z), length, 0xe0564f, length * .12, length * .06));
+  for (const faint of [false, true]) {
+    const a = new THREE.ArrowHelper(north, from, length, 0xe0564f, length * .12, length * .06);
+    if (faint) for (const part of [a.line, a.cone]) {
+      Object.assign(part.material, { depthTest: false, depthWrite: false, transparent: true, opacity: .55 });
+      part.renderOrder = 20;
+    }
+    nearby.arrow.add(a);
+  }
   const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: northLabel(), depthTest: false, transparent: true }));
-  label.position.copy(north).multiplyScalar(length * 1.12).add(new THREE.Vector3(c0.x, length * .08, c0.z)); label.scale.setScalar(length * .14);
+  label.position.copy(from).addScaledVector(north, length * 1.12).add(new THREE.Vector3(0, length * .08, 0)); label.scale.setScalar(length * .14);
+  label.renderOrder = 20;
   nearby.arrow.add(label);
   scene.add(nearby.arrow);
   woke();
+}
+// The north arrow gone, with its materials (its shapes are three's, shared by every arrow)
+function dropArrow(){
+  if (!nearby?.arrow) return;
+  scene.remove(nearby.arrow);
+  nearby.arrow.traverse(o => { if (o.material) o.material.dispose(); });
+  nearby.arrow = null;
 }
 let northTexture = null;
 function northLabel(){
@@ -2171,7 +2190,7 @@ function renderNearby(){
       <small class="note" style="margin:0">${nb.terrain?.obj ? `${esc(nb.terrain.name)}, ${Math.round(nb.terrain.dx * 10) / 10} m apart; lines every ${nb.terrain.step} m` : nb.terrain ? esc(nb.terrain.why || '') : 'fetching…'}</small></div>` : ''}
     ${list ? `<div class="list">${list}</div>` : ''}
     ${turning}
-    <div class="note">Placed by Mountain Project's coordinates, which are often 5–20 m off, at real size where it was found, upright, ${nb?.terrain?.obj && nb.useTerrain ? 'each on the ground at its point (bare earth: lidar has the rocks taken out, or not)' : 'on one level'}. The red arrow points north${nb?.self && !nb.self.saved ? ', as far as this mesh knows, which is not at all yet' : ''}.</div>`;
+    <div class="note">Placed by Mountain Project's coordinates, which are often 5–20 m off, at real size where it was found, upright, ${nb?.terrain?.obj && nb.useTerrain ? 'each on the ground at its point (bare earth: lidar has the rocks taken out, or not)' : 'on one level'}. The red arrow points north${nb?.self && !nb.self.saved ? ', as far as this mesh knows, which is not at all yet' : ''}, faint where the ground hides it. Double-click a mesh, even behind a hill, to see it through what's in front.</div>`;
 }
 function setTurn(deg){
   const nb = nearby, it = nb && nearbyItem(nb.picked);

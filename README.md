@@ -407,6 +407,9 @@ meshes together"). *Ground* (on to start) lays the terrain under them, untexture
 IGN's in France (1 m), nothing elsewhere. Each mesh then stands on the ground at its point. Lidar often keeps big rocks
 as ground, so the ground under each mesh shown is lowered to that beside it; a bump left near a mesh is often its rock,
 where lidar has it rather than where the coordinates say. The squares fetched are kept in `data/cache/terrain`.
+The red arrow points north from the edge of the mesh in view, and shows faintly through ground that rises over it. With
+*Walls in the way: See-through*, double-clicking a mesh, even through the ground in front of it, makes the ground and
+other meshes between it and you see-through around it, as the mesh's own walls are.
 
 If a browser can't load a mesh's texture, the viewer tries it smaller, then says why on the view. Grey
 on a mesh means no photo shows that side, including the backs of surfaces.
