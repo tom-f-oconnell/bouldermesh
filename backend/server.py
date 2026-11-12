@@ -5163,6 +5163,53 @@ def photo_entry(pid: str, name: str) -> dict:
     return provenance.describe(name, _sources_cache[pid][1])
 
 
+PHOTO_THUMBS = DATA / "cache" / "photo-thumbs"     # small copies of projects' photos (photo_thumb())
+THUMB_PX = 320
+
+
+def photo_thumb(pid: str, folder: str, name: str) -> Path | None:
+    """A small JPEG of one of a project's photos (in folder: "photos" or "rejected"), made the first time it's asked
+    for and again if the photo changes, or None if the photo isn't here."""
+    src = PROJECTS / pid / folder / name
+    if not src.is_file():
+        return None
+    dst = PHOTO_THUMBS / pid / f"{folder}_{name}.jpg"
+    if not dst.exists() or dst.stat().st_mtime < src.stat().st_mtime:
+        from PIL import Image
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(src) as im:
+            im.draft("RGB", (THUMB_PX * 2, THUMB_PX * 2))   # JPEG: decode at a fraction of full size
+            im = im.convert("RGB")
+            im.thumbnail((THUMB_PX, THUMB_PX))
+            tmp = dst.with_suffix(".part")
+            im.save(tmp, "JPEG", quality=80)
+            tmp.replace(dst)
+    return dst
+
+
+def photo_groups(pid: str, climb: str | None = None) -> list[dict]:
+    """A project's photos by where they came from, in the page's order of sources (as SOURCE_INFO), each with what
+    the site may show of it ({file, show, page}). With climb, a boulder's pooled photos of only that climb's
+    harvests ("own": the boulder's own search), as boulder_panel() counts them."""
+    photos = PROJECTS / pid / "photos"
+    names = sorted(f.name for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.is_dir() else []
+    if climb:
+        try:
+            files = {f["file"]: f.get("pooled_from") for f in json.loads((PROJECTS / pid / "sources.json").read_text()).get("files", [])}
+            whose = {h: c["id"] for c in json.loads((PROJECTS / pid / CLIMBS_FILE).read_text())["climbs"] for h in c.get("projects") or []}
+        except (OSError, ValueError, KeyError):
+            files, whose = {}, {}
+        names = [n for n in names if (whose.get(files[n]) if files.get(n) else None) == (None if climb == "own" else climb)]
+    setting = settings().get("site.sources")
+    by: dict[str, list[dict]] = {}
+    for n in names:
+        e = photo_entry(pid, n)
+        by.setdefault(e.get("source") or "other", []).append({"file": n, "show": policy.source_access(setting, e),
+                                                                 "page": e.get("page") or e.get("url")})
+    order = ["ddg", "youtube", "commons", "mountainproject", "openbeta", "flickr", "google", "upload"]
+    return [{"source": k, "photos": by[k]} for k in sorted(by, key=lambda k: order.index(k) if k in order else len(order))]
+
+
 def video_info(url: str) -> dict | None:
     """What the videos table knows of a video, for provenance.load: its licence and uploader; None if nothing."""
     row = q("SELECT license, uploader FROM videos WHERE url=?", url, one=True)
@@ -5394,6 +5441,8 @@ def boulder_panel(camp: dict, item: dict) -> dict | None:
         photos = _image_count(PROJECTS / harvests[0] / "photos") if harvests else None
         rows.append({"climb": c["id"], "name": c["name"], "grade": c["grade"], "rank": None, "listed": False,
                      "state": "in" if photos else "pending", "photos": photos, "why": False, "projects": harvests})
+    for r in rows:      # where the photos counted are, for the page to show them (photo_groups())
+        r["photos_of"] = {"project": r["projects"][0]} if r["projects"] and r["photos"] else None
     out = {"name": boulder_name(key), "url": boulder_url(key), "pooled": False, "rows": rows, "own": None}
     proj = boulder_project(key) if (item.get("redo") or "").split("+")[0] in ("boulder", "pool") else None
     sources = PROJECTS / proj["id"] / "sources.json" if proj else None
@@ -5413,8 +5462,9 @@ def boulder_panel(camp: dict, item: dict) -> dict | None:
         done = proj["status"] in ("harvested", "running", "done", "failed") or bool(proj.get("harvest"))
         for r in rows:
             n = by.get(r["climb"], 0) if r["climb"] else 0      # a climb never harvested has none: not the boulder's own
-            r.update(photos=n, state=("in" if n else "out") if done else ("in" if n else "pending"))
-        out.update(pooled=True, own=by.get(None, 0))
+            r.update(photos=n, state=("in" if n else "out") if done else ("in" if n else "pending"),
+                     photos_of={"project": proj["id"], "climb": r["climb"]} if r["climb"] else None)
+        out.update(pooled=True, own=by.get(None, 0), own_of={"project": proj["id"], "climb": "own"})
     return out
 
 
@@ -6937,12 +6987,24 @@ class Handler(BaseHTTPRequestHandler):
                     f = d / f"{name}.json"
                     out[name] = json.loads(f.read_text()) if f.exists() else None
                 return self.send_json(out)
+            m = re.fullmatch(r"/api/projects/([0-9a-f]+)/photo-groups", p)
+            if m:
+                if not (PROJECTS / m[1]).is_dir():
+                    return self.send_json({"error": "not found"}, 404)
+                return self.send_json({"groups": photo_groups(m[1], (qs.get("climb") or [None])[0])})
             m = re.fullmatch(r"/photos/([0-9a-f]+)/(rejected/)?([A-Za-z0-9._-]+)", p)
-            if m:   # rejected photos are named <reason>_<name>
+            if m:   # rejected photos are named <reason>_<name>; ?thumb: a small copy (photo_thumb())
                 name = m[3].split("_", 1)[1] if m[2] and "_" in m[3] else m[3]
                 if policy.source_access(settings().get("site.sources"), photo_entry(m[1], name)) != "show":
                     return self.send_json({"error": "not shown: it isn't clearly free to copy"}, 403)
-                return self.send_file(PROJECTS / m[1] / ("rejected" if m[2] else "photos") / m[3])
+                folder = "rejected" if m[2] else "photos"
+                if "thumb" in qs:
+                    try:
+                        small = photo_thumb(m[1], folder, m[3])
+                    except (OSError, ValueError) as e:
+                        return self.send_json({"error": f"no small copy: {e}"}, 500)
+                    return self.send_file(small, cache="public, max-age=86400") if small else self.send_json({"error": "not found"}, 404)
+                return self.send_file(PROJECTS / m[1] / folder / m[3])
             # ---- meshes
             if p == "/api/meshes":
                 rows = q("SELECT * FROM meshes ORDER BY created DESC")

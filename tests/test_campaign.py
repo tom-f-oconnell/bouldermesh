@@ -2236,6 +2236,27 @@ server._workers[:] = [server._first]
 server.settings().update({"areas.meshes": "climbs"})
 print("areas running and queued, and the boulder panel OK")
 
+# --- a climb's photos for the boulder panel's popup: by source, in the page's order, and a boulder's pooled ones by
+# the climb whose harvest they came from; and small copies of them
+from PIL import Image as _Image  # noqa: E402
+gp = "9a" * 6
+gdir = server.PROJECTS / gp / "photos"
+gdir.mkdir(parents=True, exist_ok=True)
+for name in ("yt_abc_001.jpg", "ddg_1.jpg", "commons_2.jpg", "ddg_3.jpg"):
+    _Image.new("RGB", (900, 600), (90, 40, 20)).save(gdir / name)
+got = server.photo_groups(gp)
+assert [g["source"] for g in got] == ["ddg", "youtube", "commons"] and [x["file"] for x in got[0]["photos"]] == ["ddg_1.jpg", "ddg_3.jpg"], got
+(server.PROJECTS / gp / "sources.json").write_text(json.dumps({"files": [{"file": "ddg_1.jpg", "pooled_from": "h1"},
+                                                                         {"file": "yt_abc_001.jpg", "pooled_from": "h2"}]}))
+(server.PROJECTS / gp / server.CLIMBS_FILE).write_text(json.dumps({"climbs": [{"id": "c1", "projects": ["h1"]}, {"id": "c2", "projects": ["h2"]}]}))
+assert [x["file"] for g in server.photo_groups(gp, "c1") for x in g["photos"]] == ["ddg_1.jpg"]
+assert [x["file"] for g in server.photo_groups(gp, "own") for x in g["photos"]] == ["ddg_3.jpg", "commons_2.jpg"], "the boulder's own search"
+small = server.photo_thumb(gp, "photos", "ddg_1.jpg")
+with _Image.open(small) as im:
+    assert max(im.size) == server.THUMB_PX, im.size
+assert server.photo_thumb(gp, "photos", "nope.jpg") is None and server.photo_thumb(gp, "photos", "..") is None
+print("a climb's photos by source, and small copies OK")
+
 # --- how long each step takes, for the time left of the bars and deploy.sh: kept for every run (step_runs), filled at
 # first from projects' last jobs, and estimated from the runs most like it: same kind, same machine, nearest in photos
 fresh()
