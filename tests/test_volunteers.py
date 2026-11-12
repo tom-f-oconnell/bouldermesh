@@ -116,9 +116,43 @@ def broker_alone() -> None:
     assert v["token"].startswith("bmv_") and b.any()
     alice = b.volunteer(v["token"])
     assert alice and alice["per_hour"] == 3 and b.volunteer("bmv_wrong") is None
-    assert b.add("Bob", per_hour=99)["id"] and b.volunteer(b.add("Carol")["token"])["per_hour"] == volunteers.PER_HOUR, "capped"
+    bob = b.volunteer(b.add("Bob", per_hour=99, per_day=999)["token"])
+    assert (bob["per_hour"], bob["per_day"]) == (volunteers.PER_HOUR, volunteers.PER_DAY), "capped"
+    carol = b.volunteer(b.add("Carol")["token"])
+    assert (carol["per_hour"], carol["per_day"]) == (None, None), "none chosen: the site's, whatever they become"
+    # set later, and back to the site's; the list shows what applies, within the site's
+    assert b.set_limits(carol["id"], 4, "")["per_hour"] == 4 and b.get(carol["id"])["per_day"] is None
+    rules_now = {"per_hour": 9, "per_day": 150}
+    b.rules = lambda: rules_now
+    c = next(x for x in b.state()["volunteers"] if x["name"] == "Carol")
+    assert (c["per_hour"], c["per_day"], c["own_per_hour"], c["own_per_day"]) == (4, 150, 4, None), c
+    assert (b.set_limits(carol["id"], None, None)["per_hour"], b.set_limits("nope", 1, 1)) == (None, None)
+    c = next(x for x in b.state()["volunteers"] if x["name"] == "Carol")
+    assert (c["per_hour"], c["per_day"], c["own_per_hour"]) == (9, 150, None), c
+    b.rules = lambda: volunteers.RULES
+    # what its script asks for: lower limits its volunteer chose, or an old script's own
+    for client, asked, chose, day in (("script 9, yt-dlp 2099.01.01", 100, False, 100), ("script 10, yt-dlp 2099.01.01", 100, True, 100),
+                                      ("script 10, yt-dlp 2099.01.01", 200, False, 200), ("script 10, yt-dlp 2099.01.01", 50, True, 50)):
+        b.work(b.get(carol["id"]), "198.51.100.7", client, 15, asked, kinds=["video"])
+        c = next(x for x in b.state()["volunteers"] if x["name"] == "Carol")
+        assert (c["script_per_day"], c["script_chose"], c["per_day"]) == (asked, chose, day), (client, asked, c)
+    b.q("DELETE FROM given WHERE ip='198.51.100.7'")
 
     assert b.work(alice, "198.51.100.1")["why"] == "nothing wanted now"
+    old = TMP / "b0" / "v.sqlite"
+    old.parent.mkdir()
+    con = sqlite3.connect(old)
+    con.execute("CREATE TABLE volunteers(id TEXT PRIMARY KEY, name TEXT, token_hash TEXT UNIQUE, created REAL, revoked REAL, "
+                "last_seen REAL, last_ip TEXT, client TEXT, per_hour INTEGER, per_day INTEGER, refused_until REAL, "
+                "refusal_level INTEGER DEFAULT -1, done INTEGER DEFAULT 0)")
+    con.executemany("INSERT INTO volunteers(id, name, per_hour, per_day) VALUES(?,?,?,?)", [("v1", "given", 15, 100), ("v2", "chosen", 5, 60)])
+    con.commit()
+    con.close()
+    b0 = volunteers.Broker(old, TMP / "b0" / "files", lambda *a: None, lambda *a: None)
+    assert [(r["per_hour"], r["per_day"]) for r in b0.q("SELECT * FROM volunteers ORDER BY id")] == [(None, None), (5, 60)]
+    b0.set_limits("v1", 15, 100)
+    b0 = volunteers.Broker(old, TMP / "b0" / "files", lambda *a: None, lambda *a: None)
+    assert (b0.get("v1")["per_hour"], b0.get("v1")["per_day"]) == (15, 100), "chosen since: kept"
     for vid, ref in (("aaaaaaaaaaa", "p1"), ("bbbbbbbbbbb", "p1"), ("ccccccccccc", "p2")):
         assert b.want("video", vid, "harvest", ref)
     assert b.want("video", "aaaaaaaaaaa", "beta", "m1"), "a second purpose for the same video"
@@ -720,7 +754,13 @@ def through_the_server() -> None:
         assert sam["status"] == "awaiting approval", sam
         assert "approved Sam" in call(admin + "/api/admin/actions/volunteer-approve", {"id": sam["id"]})[1]["result"]
         sam = next(v for v in call(admin + "/api/admin/state")[1]["volunteers"]["volunteers"] if v["name"] == "Sam")
-        assert not sam["provisional"] and sam["per_hour"] == 7, sam
+        assert not sam["provisional"] and sam["per_hour"] == 7 and sam["own_per_hour"] is None, sam
+        r4 = call(admin + "/api/admin/actions/volunteer-limits", {"id": sam["id"], "per_hour": 2, "per_day": None})[1]
+        assert r4["result"] == "Sam: at most 2 an hour, within the site's", r4
+        sam = next(v for v in call(admin + "/api/admin/state")[1]["volunteers"]["volunteers"] if v["name"] == "Sam")
+        assert (sam["per_hour"], sam["own_per_hour"], sam["own_per_day"]) == (2, 2, None), sam
+        assert call(admin + "/api/admin/actions/volunteer-limits", {"id": sam["id"]})[1]["result"] == "Sam: the site's limits"
+        assert call(admin + "/api/admin/actions/volunteer-limits", {"id": "nope"})[0] == 400
         assert call(admin + "/api/admin/actions/volunteer-approve", {"id": sam["id"]})[0] == 200, "again: no harm"
         assert call(admin + "/api/admin/actions/volunteer-approve", {"id": "nope"})[0] == 400
         assert call(admin + "/api/admin/settings", {"notify.server": "http://ntfy.example"})[0] == 400, "https only"

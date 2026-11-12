@@ -39,6 +39,7 @@ PER_DAY = 200
 # YouTube's player, where its bot check is. hal's searches went on through every spell of its refusals.
 PAGES_PER_HOUR, PAGES_PER_DAY = 30, 200
 PAGE_KINDS = ("search", "channel")
+SCRIPT_DEFAULTS = (15, 200)     # what the script fetches at most without being told less, from version 10 (100 a day before)
 ONE = {"videos": "video", "searches": "search"}
 # what the admin page's settings say by default (volunteers.* there): a provisional volunteer's limits, whether one gets
 # work at all before it's approved, and how many may register
@@ -177,12 +178,19 @@ class Broker:
             """)
             if "kind" not in {r[1] for r in con.execute("PRAGMA table_info(given)")}:   # rows from before count as videos
                 con.execute("ALTER TABLE given ADD COLUMN kind TEXT")
+            if con.execute("PRAGMA user_version").fetchone()[0] < 1:
+                # a volunteer's own limits are kept only when someone chose them; before, everyone was given the limits
+                # of the day (15 and 100), which then held them to those whatever the site's became
+                con.execute("UPDATE volunteers SET per_hour=NULL WHERE per_hour=15")
+                con.execute("UPDATE volunteers SET per_day=NULL WHERE per_day=100")
+                con.execute("PRAGMA user_version=1")
             registration.migrate(con, "volunteers")
             have = {r[1] for r in con.execute("PRAGMA table_info(volunteers)")}
             # how YouTube treats it, as its script last said (health: ok, or one of TROUBLE), and why; the speed of its
-            # last whole video, in KB/s; its yt-dlp; why it rests (rest_why: "refused" or "throttled")
+            # last whole video, in KB/s; its yt-dlp; why it rests (rest_why: "refused" or "throttled"); the limits its
+            # script last asked for (its own, or what its volunteer gave it)
             for name, kind in (("health", "TEXT"), ("health_detail", "TEXT"), ("health_at", "REAL"), ("kbps", "REAL"),
-                               ("yt_dlp", "TEXT"), ("rest_why", "TEXT")):
+                               ("yt_dlp", "TEXT"), ("rest_why", "TEXT"), ("asked_per_hour", "INTEGER"), ("asked_per_day", "INTEGER")):
                 if name not in have:
                     con.execute(f"ALTER TABLE volunteers ADD COLUMN {name} {kind}")
             presence.migrate(con, "volunteers", GONE_AFTER_OLD)
@@ -199,16 +207,23 @@ class Broker:
 
     # -- volunteers ---------------------------------------------------------------------------------------------
     def add(self, name: str, per_hour: int | None = None, per_day: int | None = None) -> dict:
-        """A new volunteer: {id, name, token}. The token is shown this once; only its hash is kept."""
+        """A new volunteer: {id, name, token}. The token is shown this once; only its hash is kept. Its own limits only
+        if given (within PER_HOUR and PER_DAY); else the site's apply, as they are at the time (set_limits())."""
         name = (name or "").strip()[:80]
         if not name:
             raise ValueError("give the volunteer a name")
         name = registration.unique_name(name, (r["name"] for r in self.q("SELECT name FROM volunteers")))
         vid, token = secrets.token_hex(4), "bmv_" + secrets.token_urlsafe(32)
         self.q("INSERT INTO volunteers(id,name,token_hash,created,per_hour,per_day,status,approved) VALUES(?,?,?,?,?,?,?,?)", vid,
-               name, registration.token_hash(token), time.time(), _limit(per_hour, PER_HOUR), _limit(per_day, PER_DAY),
+               name, registration.token_hash(token), time.time(), _own(per_hour, PER_HOUR), _own(per_day, PER_DAY),
                "approved", time.time())
         return {"id": vid, "name": name, "token": token}
+
+    def set_limits(self, vid: str, per_hour=None, per_day=None) -> dict | None:
+        """A volunteer's own limits, within PER_HOUR and PER_DAY; None (or "") for either: the site's, whatever they
+        are. None for one unknown."""
+        self.q("UPDATE volunteers SET per_hour=?, per_day=? WHERE id=?", _own(per_hour, PER_HOUR), _own(per_day, PER_DAY), vid)
+        return self.get(vid)
 
     def register(self, token: str, name, ip: str, client: str = "") -> dict:
         """A volunteer's script registering the token it made: provisional until approved (registration.register()).
@@ -216,7 +231,7 @@ class Broker:
         rules = {**RULES, **self.rules()}
         before = self.volunteer(token)
         v = registration.register(self.q, "volunteers", token, name, ip, "volunteer", rules["registrations_per_address"],
-                                  rules["max_waiting"], {"per_hour": PER_HOUR, "per_day": PER_DAY, "client": str(client)[:80]})
+                                  rules["max_waiting"], {"client": str(client)[:80]})
         if not before:
             self.registered(v)
         return v
@@ -304,7 +319,8 @@ class Broker:
         now = time.time()
         with self.lock:
             self.requeue_stale()
-            self.q("UPDATE volunteers SET last_seen=?, active_at=?, last_ip=?, client=? WHERE id=?", now, now, ip, client[:80], v["id"])
+            self.q("UPDATE volunteers SET last_seen=?, active_at=?, last_ip=?, client=?, asked_per_hour=?, asked_per_day=? WHERE id=?",
+                   now, now, ip, client[:80], _own(per_hour, 10**6), _own(per_day, 10**6), v["id"])
             why = self.paused()
             if why:     # what it has stays its own, to send when it can
                 return {"wait": PAUSE_WAIT, "why": why}
@@ -648,7 +664,9 @@ class Broker:
             hour, day = ((rules["provisional_per_hour"], rules["provisional_per_day"]) if waiting else (rules["per_hour"], rules["per_day"]))
             vols.append({"id": v["id"], "name": v["name"], "status": status, "last_seen": v["last_seen"], "address": v["last_ip"],
                          "client": v["client"], "refused_until": v["refused_until"] if (v["refused_until"] or 0) > now else None,
-                         "per_hour": min(v["per_hour"] or PER_HOUR, hour), "per_day": min(v["per_day"] or PER_DAY, day), "done": v["done"],
+                         "per_hour": min(v["per_hour"] or PER_HOUR, hour, v.get("asked_per_hour") or PER_HOUR),
+                         "per_day": min(v["per_day"] or PER_DAY, day, v.get("asked_per_day") or PER_DAY), "done": v["done"],
+                         "own_per_hour": v["per_hour"], "own_per_day": v["per_day"], **script_limits(v),
                          "fetching": fetching, "provisional": waiting, "registered": v.get("registered_ip") is not None,
                          "created": v["created"], "last_hour": sum(g["at"] > now - 3600 for g in given), "last_day": len(given),
                          "pages_last_hour": sum(g["at"] > now - 3600 for g in pages), "pages_last_day": len(pages),
@@ -667,6 +685,21 @@ class OffsetError(Exception):
     def __init__(self, have: int):
         self.have = have
         super().__init__(f"expected the part at byte {have}")
+
+
+def script_limits(v: dict) -> dict:
+    """The limits a volunteer's script last asked for, and whether its volunteer chose them (--per-hour, --per-day) or
+    they're its version's own: scripts before 10 kept to 100 a day, whatever the site allowed."""
+    found = re.search(r"script (\d+)", v.get("client") or "")
+    hour, day = SCRIPT_DEFAULTS[0], (SCRIPT_DEFAULTS[1] if found and int(found[1]) >= 10 else 100)
+    asked = (v.get("asked_per_hour"), v.get("asked_per_day"))
+    return {"script_per_hour": asked[0], "script_per_day": asked[1],
+            "script_chose": bool(found) and any(a is not None and a < most for a, most in zip(asked, (hour, day)))}
+
+
+def _own(given, most: int) -> int | None:
+    """A limit someone chose, within most; None if none was."""
+    return None if given is None or given == "" else _limit(given, most)
 
 
 def _limit(given, most: int) -> int:

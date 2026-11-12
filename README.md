@@ -879,7 +879,11 @@ or on your phone. Until then, under *Volunteers and machines that register thems
 - **Volunteers waiting** may fetch, at most 3 an hour and 10 a day by default, or nothing if unticked.
 - **Machines waiting** get nothing by default. Ticked, they may mesh (only that), and a climb keeps the mesh one made
   for when you approve the machine; turned down, the climb is meshed again elsewhere.
-- **Approved volunteers'** limits are set there too (15 videos an hour and 200 a day at most).
+- **Approved volunteers'** limits are set there too (15 videos an hour and 200 a day at most). A volunteer has limits
+  of its own only if they're chosen, when adding it or with *Limits…* in its row; otherwise the site's apply, as they
+  change. Its row tags *own* limits, *their choice* when its volunteer started the script with lower ones
+  (`--per-hour`, `--per-day`), and *old script* for one from before version 10, which keeps to 100 a day until it
+  updates itself.
 - **Registering:** at most 5 a day from one address, and 30 waiting at once, of each kind; ones never approved go after
   14 days without being heard from.
 - **Revoked and turned down** volunteers and machines are hidden in their lists until *Show them*. *Forget* deletes

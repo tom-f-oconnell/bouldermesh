@@ -6125,6 +6125,15 @@ def admin_volunteer_add(body: dict) -> dict:
             "download": f"{url}/volunteer/bouldermesh_volunteer.py"}
 
 
+def admin_volunteer_limits(body: dict) -> dict:
+    """A volunteer's own limits ({id, per_hour, per_day}), or null for either: the site's."""
+    v = VOLUNTEERS.set_limits(str(body.get("id") or ""), body.get("per_hour"), body.get("per_day"))
+    if not v:
+        raise ValueError("no such volunteer")
+    own = [f"{n} {what}" for n, what in ((v["per_hour"], "an hour"), (v["per_day"], "a day")) if n]
+    return {"result": f"{v['name']}: at most {' and '.join(own)}, within the site's" if own else f"{v['name']}: the site's limits"}
+
+
 def admin_volunteer_revoke(body: dict) -> dict:
     VOLUNTEERS.revoke(str(body.get("id") or ""))
     return {"result": "revoked: its token no longer works, and what it was fetching goes to someone else"}
@@ -6317,6 +6326,7 @@ def main() -> None:
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
+                                       "volunteer-limits": admin_volunteer_limits,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
                                        "volunteers-cancel": admin_volunteers_cancel, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
                                        "machine-revoke": admin_machine_revoke, "clear-rejected": admin_clear_rejected,

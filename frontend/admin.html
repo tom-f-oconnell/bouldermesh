@@ -150,7 +150,9 @@
     <div id="vol-list"></div>
     <div class="grid">
       <div><label>New volunteer's name</label><input type="text" id="vol-name" placeholder="who it is, for you"></div>
-      <div><label>At most this many videos an hour (15 at most; 200 a day)</label><input type="number" id="vol-hour" min="1" max="15" value="15"></div>
+      <div><label>Its own limits, if any: videos an hour, and a day <small>(blank: the site's, below, as they change)</small></label>
+        <span class="inline"><input type="number" id="vol-hour" min="1" max="15" placeholder="site's" style="width:80px">
+        <input type="number" id="vol-day" min="1" max="200" placeholder="site's" style="width:80px"></span></div>
     </div>
     <div class="row"><button id="vol-add">Add volunteer</button></div>
     <div id="vol-new"></div>
@@ -395,14 +397,21 @@ function render(s){
     degrading them, as: ${esc(tr.example || '')}. That's likely YouTube changing something, which a newer yt-dlp usually fixes (volunteers
     update theirs daily), rather than one address's trouble.</div>` : '';
   const shownVol = vs.volunteers.filter(x => showGone.vol || !gone(x.status));
-  $('#vol-list').innerHTML = shownVol.length ? `<table><tr><th>Volunteer</th><th>Now</th><th>YouTube</th><th>Last seen</th><th>Address</th><th title="Videos (with videos' details), and searches (with channels' pages)">Last hour / day</th><th>Fetched</th><th></th></tr>${
-    shownVol.map(x => `<tr><td>${esc(x.name)}${x.provisional ? '<span class="tag">waiting for approval</span>' : ''}${x.registered ? `<div class="note">registered itself ${when(x.created)}</div>` : ''}</td><td class="${x.status === 'resting' || x.status === 'awaiting approval' ? 'warn' : gone(x.status) ? 'bad' : x.status === 'fetching' ? 'ok' : ''}">${esc(x.status)}${
-      x.refused_until ? `${x.rest_why === 'throttled' ? ' (throttled)' : ''} until ${when(x.refused_until)}` : ''}${x.fetching ? `: ${esc(x.fetching.kind)} ${esc(x.fetching.video_id)}` : ''}</td><td>${yt(x)}</td><td>${when(x.last_seen)}</td><td>${esc(x.address || '')}</td>
-      <td>${x.last_hour} / ${x.last_day} (of ${x.per_hour} / ${x.per_day})${x.pages_last_day ? `<div class="note">searches ${x.pages_last_hour} / ${x.pages_last_day}</div>` : ''}</td><td>${x.done}</td><td>${gone(x.status) ? '' : x.provisional
-        ? `<button data-vapprove="${esc(x.id)}">Approve</button> <button class="danger" data-vdeny="${esc(x.id)}">Deny</button>`
-        : `<button class="danger" data-revoke="${esc(x.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
-    : `<div class="note">${vs.volunteers.length ? 'No volunteers but revoked or turned-down ones.' : 'No volunteers yet.'}</div>`;
-  $('#vol-list').innerHTML += goneLine('vol', vs.volunteers.filter(x => gone(x.status)), 'volunteer');
+  if (!limitsEditing || volDrawnFor !== limitsEditing) {     // not redrawn while a volunteer's limits are being typed in
+    volDrawnFor = limitsEditing;
+    $('#vol-list').innerHTML = shownVol.length ? `<table><tr><th>Volunteer</th><th>Now</th><th>YouTube</th><th>Last seen</th><th>Address</th><th title="Videos (with videos' details), and searches (with channels' pages)">Last hour / day</th><th>Fetched</th><th></th></tr>${
+      shownVol.map(x => `<tr><td>${esc(x.name)}${x.provisional ? '<span class="tag">waiting for approval</span>' : ''}${x.registered ? `<div class="note">registered itself ${when(x.created)}</div>` : ''}</td><td class="${x.status === 'resting' || x.status === 'awaiting approval' ? 'warn' : gone(x.status) ? 'bad' : x.status === 'fetching' ? 'ok' : ''}">${esc(x.status)}${
+        x.refused_until ? `${x.rest_why === 'throttled' ? ' (throttled)' : ''} until ${when(x.refused_until)}` : ''}${x.fetching ? `: ${esc(x.fetching.kind)} ${esc(x.fetching.video_id)}` : ''}</td><td>${yt(x)}</td><td>${when(x.last_seen)}</td><td>${esc(x.address || '')}</td>
+        <td>${x.id === limitsEditing ? `<span class="inline"><input type="number" min="1" max="15" id="vl-hour" placeholder="site's" value="${x.own_per_hour ?? ''}" style="width:64px"> an hour,
+          <input type="number" min="1" max="200" id="vl-day" placeholder="site's" value="${x.own_per_day ?? ''}" style="width:72px"> a day
+          <button data-vlsave="${esc(x.id)}">Save</button><button class="sec" data-vlsite="${esc(x.id)}" title="No limits of its own: the site's, as they change">The site's</button><button class="sec" data-vlcancel="1">Cancel</button></span>`
+          : `${x.last_hour} / ${x.last_day} (of ${x.per_hour} / ${x.per_day})${x.own_per_hour || x.own_per_day ? ` <span class="tag" title="Its own limits${x.own_per_hour ? `, ${x.own_per_hour} an hour` : ''}${x.own_per_day ? `, ${x.own_per_day} a day` : ''}, within the site's">own</span>` : ''}${scriptTag(x)}${
+          gone(x.status) ? '' : ` <button class="sec" data-vlimits="${esc(x.id)}" title="Set this volunteer's own limits, or give it the site's">Limits…</button>`}`}${x.pages_last_day ? `<div class="note">searches ${x.pages_last_hour} / ${x.pages_last_day}</div>` : ''}</td><td>${x.done}</td><td>${gone(x.status) ? '' : x.provisional
+          ? `<button data-vapprove="${esc(x.id)}">Approve</button> <button class="danger" data-vdeny="${esc(x.id)}">Deny</button>`
+          : `<button class="danger" data-revoke="${esc(x.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
+      : `<div class="note">${vs.volunteers.length ? 'No volunteers but revoked or turned-down ones.' : 'No volunteers yet.'}</div>`;
+    $('#vol-list').innerHTML += goneLine('vol', vs.volunteers.filter(x => gone(x.status)), 'volunteer');
+  }
   const vc = vs.counts, n = k => vc[k] || 0, active = vs.volunteers.some(x => x.status !== 'revoked');
   $('#vol-queue').innerHTML = `Wanted: ${n('queued_video') + n('assigned_video')} video(s)${vs.wanted.harvest ? `, ${vs.wanted.harvest} for harvests` : ''}${vs.wanted.beta ? `, ${vs.wanted.beta} for finding beta` : ''}; `
     + `${n('queued_search') + n('assigned_search')} search(es); ${n('queued_details') + n('assigned_details')} video(s)' details; ${n('queued_channel') + n('assigned_channel')} channel(s). `
@@ -532,14 +541,29 @@ $('#map-km').onchange = () => save({ 'site.map_km': +$('#map-km').value });
 $('#preview-faces').onchange = () => save({ 'viewer.preview_faces': Math.round(+$('#preview-faces').value) });
 $('#vol-add').onclick = async () => {
   try {
-    const r = await call('/api/admin/actions/volunteer-add', { name: $('#vol-name').value, per_hour: +$('#vol-hour').value });
-    $('#vol-name').value = '';
+    const own = el => el.value === '' ? null : +el.value;
+    const r = await call('/api/admin/actions/volunteer-add', { name: $('#vol-name').value, per_hour: own($('#vol-hour')), per_day: own($('#vol-day')) });
+    $('#vol-name').value = $('#vol-hour').value = $('#vol-day').value = '';
     $('#vol-new').innerHTML = `<div class="note ok">${esc(r.result)}</div><div class="note">They download the script from <a href="${esc(r.download)}" download="bouldermesh_volunteer.py">${esc(r.download)}</a> and run:</div><textarea readonly id="vol-cmd">${esc(r.command)}</textarea>`;
     msg('Added ' + r.name); refresh();
   } catch (e) { msg(e.message, 8000); }
 };
+// what a volunteer's script asks for itself: lower limits its volunteer chose, or a script from before 10, which keeps to
+// 100 a day until it updates itself
+const scriptTag = x => x.script_chose ? ` <span class="tag" title="Its volunteer started the script with lower limits (--per-hour, --per-day): ${x.script_per_hour} an hour and ${x.script_per_day} a day">their choice</span>`
+  : x.script_per_day != null && x.script_per_day < 200 ? ` <span class="tag" title="A script from before version 10, which keeps to ${x.script_per_day} a day; it updates itself when it next asks for work">old script</span>` : '';
+let limitsEditing = null, volDrawnFor = null;     // the volunteer whose limits are being edited: the table isn't redrawn meanwhile
 $('#vol-list').addEventListener('click', async ev => {
   const d = ev.target.dataset;
+  if (d.vlimits || d.vlcancel) { limitsEditing = d.vlimits || null; volDrawnFor = undefined; return refresh(); }
+  if (d.vlsave || d.vlsite) {
+    const own = el => d.vlsite || el.value === '' ? null : +el.value;
+    try {
+      msg((await call('/api/admin/actions/volunteer-limits', { id: d.vlsave || d.vlsite, per_hour: own($('#vl-hour')), per_day: own($('#vl-day')) })).result);
+      limitsEditing = null; volDrawnFor = undefined; refresh();
+    } catch (e) { msg(e.message, 8000); }
+    return;
+  }
   const [action, id, ask] = d.vapprove ? ['volunteer-approve', d.vapprove] : d.vdeny ? ['volunteer-deny', d.vdeny, 'Turn down this volunteer? Their token stops working.']
     : d.revoke ? ['volunteer-revoke', d.revoke, 'Revoke this volunteer? Their token stops working at once.'] : [];
   if (!action || (ask && !confirm(ask))) return;
