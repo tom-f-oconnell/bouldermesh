@@ -80,6 +80,7 @@
     <label class="choice"><input type="radio" name="src" value="all"> Show all <small>(as now)</small></label>
     <label class="choice"><input type="radio" name="src" value="link"> Show those free to copy, and only link to the rest <small>(their copies here aren't shown)</small></label>
     <label class="choice"><input type="radio" name="src" value="permitted"> Show only those free to copy <small>(the rest aren't shown or linked)</small></label>
+    <label class="choice"><input type="checkbox" id="small-thumbs"> With either of those, still show the rest as small copies <small>(at most 160 px, linking to where each came from, as image search engines do)</small></label>
     <div class="grid" style="margin-top:14px"><div><label>The map opens around a boulder this many km across <small>(its narrower side)</small></label><input type="number" id="map-km" min="0.05" step="0.25"></div>
       <div><label>A mesh opens first as a simplified copy of about this many faces <small>(0: none)</small></label><input type="number" id="preview-faces" min="0" max="5000000" step="10000">
         <div class="note" id="pack-note"></div></div></div>
@@ -361,6 +362,7 @@ function render(s){
     : 'This server\'s image wasn\'t made by deploy/build.sh, so name the one the machines run.';
   for (const r of document.querySelectorAll('input[name=tex]')) r.checked = r.value === v['site.textures'];
   for (const r of document.querySelectorAll('input[name=src]')) r.checked = r.value === v['site.sources'];
+  $('#small-thumbs').checked = v['site.small_thumbs'];
   const c = s.policy;
   $('#tex-counts').textContent = `${c.meshes} meshes: ${c.all_permitted} only from photos free to copy, ${c.variant} with a texture made from those, ${c.hidden_if_permitted} that would be plain grey`;
   $('#retex-note').textContent = `${c.can_retexture} can be, ${c.need_rebuild} need rebuilding first` + (s.retexture_queued ? `; ${s.retexture_queued} queued` : '');
@@ -617,6 +619,7 @@ async function save(changes, compute){
 $('#compute').addEventListener('input', ev => { if (ev.target.id === 'mach-name') return; editing = true; $('#unsaved').textContent = 'Not saved yet'; });
 document.querySelectorAll('input[name=tex]').forEach(r => r.onchange = () => save({ 'site.textures': r.value }));
 document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => save({ 'site.sources': r.value }));
+$('#small-thumbs').onchange = () => save({ 'site.small_thumbs': $('#small-thumbs').checked });
 $('#provider').onchange = () => { document.body.className = 'p-' + $('#provider').value; };
 $('#save').onclick = () => save({
   'compute.local_workers': +$('#local').value, 'compute.provider': $('#provider').value, 'compute.remote_workers': +$('#remote').value,

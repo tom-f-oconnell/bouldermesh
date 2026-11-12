@@ -325,6 +325,9 @@ def run(B: str, tmp: Path) -> None:
     assert status_of(f"{B}/meshes/{up['id']}/atlas.png") == 200, "an upload is the user's own"
     assert status_of(f"{B}/photos/{pid}/p0.jpg") == 200, "and so are their photos"
     assert req(B, "GET", f"/api/projects/{pid}")[1]["access"]["p0.jpg"]["show"] == "show"
+    assert status_of(f"{B}/photos/{pid}/p0.jpg?thumb") == 200 and status_of(f"{B}/photos/{pid}/nope.jpg?thumb") == 404
+    st, pg = req(B, "GET", f"/api/projects/{pid}/photo-groups")
+    assert st == 200 and [g["source"] for g in pg["groups"]] == ["upload"] and len(pg["groups"][0]["photos"]) == 3, pg
     admin_set({"site.textures": "all", "site.sources": "all"})
     st, _ = req(B, "DELETE", f"/api/meshes/{up['id']}/links/{cid}")
     st, _ = req(B, "POST", f"/api/meshes/{up['id']}/links", {"climb_id": cid, "note": "west face"})

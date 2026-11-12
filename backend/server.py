@@ -5165,22 +5165,23 @@ def photo_entry(pid: str, name: str) -> dict:
 
 PHOTO_THUMBS = DATA / "cache" / "photo-thumbs"     # small copies of projects' photos (photo_thumb())
 THUMB_PX = 320
+SMALL_PX = 160      # the most a photo not clearly free to copy is shown at (site.small_thumbs), as image search engines do
 
 
-def photo_thumb(pid: str, folder: str, name: str) -> Path | None:
-    """A small JPEG of one of a project's photos (in folder: "photos" or "rejected"), made the first time it's asked
-    for and again if the photo changes, or None if the photo isn't here."""
+def photo_thumb(pid: str, folder: str, name: str, px: int = THUMB_PX) -> Path | None:
+    """A small JPEG of one of a project's photos (in folder: "photos" or "rejected"), at most px on a side, made the
+    first time it's asked for and again if the photo changes, or None if the photo isn't here."""
     src = PROJECTS / pid / folder / name
     if not src.is_file():
         return None
-    dst = PHOTO_THUMBS / pid / f"{folder}_{name}.jpg"
+    dst = PHOTO_THUMBS / pid / f"{folder}_{name}{'' if px == THUMB_PX else f'.{px}'}.jpg"
     if not dst.exists() or dst.stat().st_mtime < src.stat().st_mtime:
         from PIL import Image
         dst.parent.mkdir(parents=True, exist_ok=True)
         with Image.open(src) as im:
-            im.draft("RGB", (THUMB_PX * 2, THUMB_PX * 2))   # JPEG: decode at a fraction of full size
+            im.draft("RGB", (px * 2, px * 2))   # JPEG: decode at a fraction of full size
             im = im.convert("RGB")
-            im.thumbnail((THUMB_PX, THUMB_PX))
+            im.thumbnail((px, px))
             tmp = dst.with_suffix(".part")
             im.save(tmp, "JPEG", quality=80)
             tmp.replace(dst)
@@ -5189,7 +5190,7 @@ def photo_thumb(pid: str, folder: str, name: str) -> Path | None:
 
 def photo_groups(pid: str, climb: str | None = None) -> list[dict]:
     """A project's photos by where they came from, in the page's order of sources (as SOURCE_INFO), each with what
-    the site may show of it ({file, show, page}). With climb, a boulder's pooled photos of only that climb's
+    the site may show of it ({file, show, page, small: shown only as a SMALL_PX copy, site.small_thumbs}). With climb, a boulder's pooled photos of only that climb's
     harvests ("own": the boulder's own search), as boulder_panel() counts them."""
     photos = PROJECTS / pid / "photos"
     names = sorted(f.name for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.is_dir() else []
@@ -5200,12 +5201,13 @@ def photo_groups(pid: str, climb: str | None = None) -> list[dict]:
         except (OSError, ValueError, KeyError):
             files, whose = {}, {}
         names = [n for n in names if (whose.get(files[n]) if files.get(n) else None) == (None if climb == "own" else climb)]
-    setting = settings().get("site.sources")
+    setting, small = settings().get("site.sources"), settings().get("site.small_thumbs")
     by: dict[str, list[dict]] = {}
     for n in names:
         e = photo_entry(pid, n)
-        by.setdefault(e.get("source") or "other", []).append({"file": n, "show": policy.source_access(setting, e),
-                                                                 "page": e.get("page") or e.get("url")})
+        show = policy.source_access(setting, e)
+        by.setdefault(e.get("source") or "other", []).append({"file": n, "show": show, "page": e.get("page") or e.get("url"),
+                                                                 "small": show != "show" and small})
     order = ["ddg", "youtube", "commons", "mountainproject", "openbeta", "flickr", "google", "upload"]
     return [{"source": k, "photos": by[k]} for k in sorted(by, key=lambda k: order.index(k) if k in order else len(order))]
 
@@ -5330,6 +5332,10 @@ def campaign_view(camp: dict) -> dict:
     again = {key: q(f"SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND {where}", cid, one=True)["n"]
              for key, where in (("changed", "changed=1"), ("queued", "redo IS NOT NULL AND status IN ('pending','running')"))}
     again["boulders"] = len(boulders_to_mesh(cid))
+    kinds, leaves = boulder_kinds(), q("SELECT boulder, COUNT(*) n FROM campaign_items WHERE campaign_id=? GROUP BY boulder", cid)
+    found = [leaf_kind(r["boulder"], kinds) for r in leaves if r["boulder"]]
+    listed = {"climbs": sum(r["n"] for r in leaves), "boulders": found.count("boulder"), "groups": found.count("group"),
+              "unread": len(found) - found.count("boulder") - found.count("group")}    # its lowest areas, as MP says
     again["triable"] = len(triable(cid))
     worked = q("SELECT rank,name,grade,stars,url,climb_id,mesh_id,project_id,status,note,updated FROM campaign_items "
                "WHERE campaign_id=? AND status NOT IN ('pending','running') ORDER BY updated DESC LIMIT 300", cid)
@@ -5363,7 +5369,7 @@ def campaign_view(camp: dict) -> dict:
         made = limit_scope(camp)[1]
     last_mesh = q("SELECT MAX(updated) t FROM campaign_items WHERE campaign_id=? AND status='done' AND mesh_id IS NOT NULL",
                   cid, one=True)["t"]
-    return {**camp, "counts": counts, "again": again, "worked": worked, "current": running[0] if running else None,
+    return {**camp, "counts": counts, "again": again, "listed": listed, "worked": worked, "current": running[0] if running else None,
             "running": running, "paused": paused, "next": pending[:10], "machine_wait": machine_wait(cid), "made": made, "last_mesh": last_mesh}
 
 
@@ -5415,8 +5421,10 @@ def boulder_panel(camp: dict, item: dict) -> dict | None:
         {name, url (its page), pooled (whether these are the boulder's own photos, after its filter, by the harvest they came from,
         rather than each climb's own harvest's), rows: [{name, grade, rank, listed (on the area's list), state
         ("pending": not harvested yet, "in": gives photos, "out": none), photos (page photos and video frames too),
-        why (the climb that brought the boulder in: the first of them in the area's order)}], own (photos of the
-        boulder's own search, once pooled)}.
+        why (the climb that brought the boulder in: the first of them in the area's order), url (its Mountain Project
+        page), photos_of (where its photos are, for photo_groups())}], own (photos of the boulder's own search, once
+        pooled), harvested_at (when the last of its climbs' harvests finished, once none is still to come), waiting
+        (harvested, and its mesh not started yet)}.
     """
     boulder = item.get("boulder")
     if not boulder or not pooled(camp["id"], boulder):
@@ -5441,9 +5449,20 @@ def boulder_panel(camp: dict, item: dict) -> dict | None:
         photos = _image_count(PROJECTS / harvests[0] / "photos") if harvests else None
         rows.append({"climb": c["id"], "name": c["name"], "grade": c["grade"], "rank": None, "listed": False,
                      "state": "in" if photos else "pending", "photos": photos, "why": False, "projects": harvests})
+    urls = {c["id"]: c["url"] for c in q(f"SELECT id, url FROM climbs WHERE id IN ({','.join('?' * len(rows))})",
+                                           *[r["climb"] for r in rows])} if rows else {}
     for r in rows:      # where the photos counted are, for the page to show them (photo_groups())
         r["photos_of"] = {"project": r["projects"][0]} if r["projects"] and r["photos"] else None
-    out = {"name": boulder_name(key), "url": boulder_url(key), "pooled": False, "rows": rows, "own": None}
+        r["url"] = urls.get(r["climb"])
+    ends = [(PROJECTS / pid / "sources.json").stat().st_mtime for r in rows for pid in r["projects"][:1]
+            if (PROJECTS / pid / "sources.json").exists()]
+    harvested_at = max(ends) if ends and not any(r["state"] == "pending" for r in rows) else None
+    whole = boulder_project(key)
+    started = whole and (whole["status"] == "done" or any(
+        st.get("started") for st in (json.loads(whole["progress"]) if whole["progress"] else {}).get("steps", [])
+        if st["key"] in {k[0] for k in pipeline.steps()}))
+    out = {"name": boulder_name(key), "url": boulder_url(key), "pooled": False, "rows": rows, "own": None,
+           "harvested_at": harvested_at, "waiting": bool(harvested_at and not started)}
     proj = boulder_project(key) if (item.get("redo") or "").split("+")[0] in ("boulder", "pool") else None
     sources = PROJECTS / proj["id"] / "sources.json" if proj else None
     if sources and sources.exists() and sources.stat().st_mtime >= (item.get("updated") or 0) - 5:     # pooled this time
@@ -6995,12 +7014,13 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/photos/([0-9a-f]+)/(rejected/)?([A-Za-z0-9._-]+)", p)
             if m:   # rejected photos are named <reason>_<name>; ?thumb: a small copy (photo_thumb())
                 name = m[3].split("_", 1)[1] if m[2] and "_" in m[3] else m[3]
-                if policy.source_access(settings().get("site.sources"), photo_entry(m[1], name)) != "show":
+                shown = policy.source_access(settings().get("site.sources"), photo_entry(m[1], name)) == "show"
+                if not shown and not ("thumb" in qs and settings().get("site.small_thumbs")):
                     return self.send_json({"error": "not shown: it isn't clearly free to copy"}, 403)
                 folder = "rejected" if m[2] else "photos"
-                if "thumb" in qs:
+                if "thumb" in qs:   # one not clearly free to copy: only a SMALL_PX copy
                     try:
-                        small = photo_thumb(m[1], folder, m[3])
+                        small = photo_thumb(m[1], folder, m[3], THUMB_PX if shown else SMALL_PX)
                     except (OSError, ValueError) as e:
                         return self.send_json({"error": f"no small copy: {e}"}, 500)
                     return self.send_file(small, cache="public, max-age=86400") if small else self.send_json({"error": "not found"}, 404)

@@ -2201,6 +2201,10 @@ server.set_item(camp["id"], alpha["source_id"], status="harvested", project_id=a
 server.set_item(camp["id"], item("Alpha2")["source_id"], status="failed")
 rows = {r["name"]: r for r in server.boulder_panel(camp, item("Alpha"))["rows"]}
 assert (rows["Alpha"]["state"], rows["Alpha"]["photos"], rows["Alpha2"]["state"]) == ("in", 3, "out"), rows
+(server.PROJECTS / apid / "sources.json").write_text("{}")      # its harvest's end
+panel = server.boulder_panel(camp, item("Alpha"))
+assert abs(panel["harvested_at"] - time.time()) < 60 and panel["waiting"], "all its climbs harvested, its mesh not begun"
+assert panel["rows"][0]["photos_of"] == {"project": apid}
 # the boulder's mesh pooling them: each counted by the harvest its kept photos came from, and its own search apart
 bkey = alpha["boulder"]
 bpid = "b2" * 6
@@ -2221,6 +2225,10 @@ assert panel["pooled"] and panel["own"] == 1 and (rows["Alpha"]["photos"], rows[
 assert (rows["Alpha2"]["photos"], rows["Alpha2"]["state"]) == (0, "out"), "kept none of its photos, or never harvested: none to give"
 v = next(v for v in server.campaigns_listed() if v["id"] == camp["id"])
 assert v["running"][0]["boulder_panel"]["name"] == "Alpha Boulder", "with the climb being worked on"
+assert v["listed"]["climbs"] >= 3 and v["listed"]["boulders"] + v["listed"]["groups"] + v["listed"]["unread"] >= 1, v["listed"]
+server.q("UPDATE projects SET progress=? WHERE id=?", json.dumps({"overall": 50.0, "steps": [{"key": "features", "state": "running", "started": 1.0}]}),
+         bpid, write=True)
+assert not server.boulder_panel(camp, item("Alpha"))["waiting"], "its mesh begun"
 # meshing its boulder: the bars are the boulder's project's, not its own harvest's, and it says what it's meshing
 server.q("UPDATE projects SET progress=? WHERE id=?", json.dumps({"overall": 42.0, "steps": []}), bpid, write=True)
 server.q("UPDATE projects SET progress=? WHERE id=?", json.dumps({"overall": 100.0, "steps": []}), apid, write=True)
@@ -2254,6 +2262,12 @@ assert [x["file"] for g in server.photo_groups(gp, "own") for x in g["photos"]] 
 small = server.photo_thumb(gp, "photos", "ddg_1.jpg")
 with _Image.open(small) as im:
     assert max(im.size) == server.THUMB_PX, im.size
+assert max(_Image.open(server.photo_thumb(gp, "photos", "ddg_1.jpg", server.SMALL_PX)).size) == server.SMALL_PX
+server.settings().update({"site.sources": "permitted"})
+assert all(x["small"] and x["show"] != "show" for g in server.photo_groups(gp) for x in g["photos"]), "none free to copy: small copies"
+server.settings().update({"site.small_thumbs": False})
+assert not any(x["small"] for g in server.photo_groups(gp) for x in g["photos"])
+server.settings().update({"site.sources": "all", "site.small_thumbs": True})
 assert server.photo_thumb(gp, "photos", "nope.jpg") is None and server.photo_thumb(gp, "photos", "..") is None
 print("a climb's photos by source, and small copies OK")
 

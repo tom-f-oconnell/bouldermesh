@@ -45,6 +45,7 @@ DEFAULTS = {
     # what the main site shows
     "site.textures": "all",                # all | permitted (only from clearly licensed photos) | none
     "site.sources": "all",                 # all | link (non-permitted ones only as links) | permitted
+    "site.small_thumbs": True,             # with sources link/permitted: small copies of the rest anyway, linking to where they came from
     "site.map_km": 1.0,                    # how many km across (its narrower side) the map opens around a boulder
     "site.donate_url": "",                 # where the "?" tab's Donate button goes (https://…); none while empty (DONATE_URL starts it)
     # the viewer opens a mesh with at least twice as many faces as a simplified copy of about this many first, then the
