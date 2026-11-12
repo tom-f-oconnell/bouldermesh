@@ -312,9 +312,9 @@ def _item(i: dict) -> str:
 
 WIDTH = 101     # deploy-check's lines wrap at this
 # how heavy each kind of work is, and how much a restart loses of it, lightest/least first: listed in this order
-WEIGHT = ["video", "size", "beta", "filter", "harvest", "area", "boulder", "meshing"]
+WEIGHT = ["video", "scale", "beta", "filter", "harvest", "area", "boulder", "meshing"]
 LOSS = ["queued again", "pauses", "starts", "interrupted", "lost", "ends"]
-COLOR = {"meshing": "31", "!": "38;5;208", "area": "36", "harvest": "34", "size": "35", "beta": "32", "filter": "33",
+COLOR = {"meshing": "31", "!": "38;5;208", "area": "36", "harvest": "34", "scale": "35", "beta": "32", "filter": "33",
          "boulder": "38;5;141", "video": "90"}
 VERB = {"ends": "31", "interrupted": "31", "lost": "31", "starts": "32", "pauses": "33", "queued": "36"}
 
@@ -325,7 +325,7 @@ def _paint(s: str, code: str | None, color: bool) -> str:
 
 def _kind(what: str) -> str:
     """An item's kind from what it says it is, for an older server's."""
-    for start, kind in (("meshing", "meshing"), ("finding size", "size"), ("scale", "size"), ("finding beta", "beta"),
+    for start, kind in (("meshing", "meshing"), ("finding size", "scale"), ("scale", "scale"), ("finding beta", "beta"),
                         ("beta", "beta"), ("filtering", "filter"), ("harvest", "harvest"), ("boulder", "boulder"),
                         ("reconstruct", "meshing"), ("a video", "video")):
         if what.startswith(start):

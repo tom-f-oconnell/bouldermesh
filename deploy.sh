@@ -24,7 +24,7 @@ esac
 [ "$mode" = ask ] && [ ! -t 0 ] && mode=after
 on_server() { ssh bouldermesh "cd bouldermesh && $1"; }
 cli() { on_server "docker compose exec -T bouldermesh python3 cli.py $*"; }
-if [ -t 1 ]; then ask=$'\e[1;33m' plain=$'\e[0m'; else ask='' plain=''; fi    # what asks you, in bold yellow
+if [ -t 1 ]; then ask=$'\e[1;33m' white=$'\e[1;37m' plain=$'\e[0m'; else ask='' white='' plain=''; fi    # what asks you, in bold yellow (the restart question white, among the coloured list)
 cancel() {
     cli deploy-drain --off >/dev/null || true
     echo "not restarted: the new image is pulled, and runs at the next restart"
@@ -56,7 +56,7 @@ printf '%s\n' "$out"
 [ "$check" -eq 3 ] && [ "$mode" = ask ] || { [ -n "$legend" ] && printf '%s\n' "$legend"; }
 if [ "$check" -eq 3 ]; then
     if [ "$mode" = ask ]; then
-        question="${ask}Restart [n]ow, [a]fter what's in progress finishes (taking no new work meanwhile), or [c]ancel?${plain} "
+        question="${white}Restart [n]ow, [a]fter what's in progress finishes (taking no new work meanwhile), or [c]ancel?${plain} "
         if [ -n "$legend" ]; then
             n=$(($(printf '%s\n' "$legend" | wc -l) + 1))
             printf "%${n}s" '' | tr ' ' '\n'; printf '\e[%dA' "$n"     # room below first, so that it doesn't scroll

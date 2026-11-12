@@ -5569,7 +5569,7 @@ def _eta_from(progress: dict | None, keys: set[str]) -> float | None:
 
 MACHINE_TASKS = {"reconstruct": "meshing", "beta": "finding beta", "scale": "finding size",     # as deploy_state() tells them
                  "filter": "filtering photos"}
-KINDS = {"reconstruct": "meshing", "scale": "size"}     # deploy_state()'s kinds of work, from task or job types: else as they are
+KINDS = {"reconstruct": "meshing"}     # deploy_state()'s kinds of work, from task or job types: else as they are
 
 
 def deploy_state() -> dict:
