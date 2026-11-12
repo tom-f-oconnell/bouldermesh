@@ -458,8 +458,10 @@ and video frames have no time of day); and the skyline in frames, matched agains
 elevation data at the climb's coordinates. [experiments/skyline](experiments/skyline/README.md) tried that on
 2026-11-11. It failed at Joshua Tree and the Tramway, where near domes and trees fill the skyline. In the Buttermilks it
 gave headings to about ±10°: meshes of the same boulder, compared through their shared photos, disagreed by that much.
-A mesh's footprint matched against the boulders lidar keeps as bumps is the next thing to try, as it would also reach
-Joshua Tree. USGS 3DEP's 1 m lidar elevation covers Joshua Tree, the
+[experiments/footprint](experiments/footprint/README.md) then fitted meshes against the boulders lidar keeps as bumps.
+On hal's 182 meshes it agreed with the other sources no better than chance. At the Buttermilks it was consistent
+across meshes of one boulder, but turned half way round: most meshes are one face, which fits the side of many bumps,
+and a rounded boulder fits nearly as well either way. USGS 3DEP's 1 m lidar elevation covers Joshua Tree, the
 Buttermilks, Hueco Tanks, Red Rocks and Yosemite (its 1/3 arc-second, about 10 m, the whole US), from one request a
 square: 300 m at Joshua Tree came in 9 s as 360 KB of heights, 65 m of relief (now shown under Nearby, above).
 

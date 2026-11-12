@@ -79,8 +79,9 @@ All the estimates for Drifter fall within 111-127°. Its text guess, 189°, is 6
 reading (143°, true north) is 16-32° away. Phone compasses are often that far off, so this doesn't settle which is right.
 
 **The lidar ground** in USGS's 1 m data shows boulders as bumps of their own: 15 m within 40 m of Drifter's point, and
-6 m with 28 and 58 m² footprints near Wrangler at Joshua Tree. A mesh's footprint could be matched against those bumps.
-That would give its facing and correct its position too, which works best in exactly the places where skylines fail.
+6 m with 28 and 58 m² footprints near Wrangler at Joshua Tree. A mesh's footprint could be matched against those bumps,
+which would give its facing and position in exactly the places where skylines fail.
+[experiments/footprint](../footprint/README.md) tried that next, and it didn't work.
 
 ## Cost
 
@@ -94,9 +95,19 @@ Only where the skyline is distant terrain: the Buttermilks, Bishop's other areas
 Tree's domes or forest like the Tramway's and Fontainebleau's. Before building it into the app:
 1. **Ground truth.** Turn a few Buttermilks meshes by hand in Nearby (to the boulders around them and the trail), then
    compare these estimates against them.
-2. **Weigh the alternatives.** Try footprint matching against the lidar ground, which reaches Joshua Tree as well.
+2. **Weigh the alternatives.** Footprint matching against the lidar ground
+   ([experiments/footprint](../footprint/README.md)) did no better than chance at Joshua Tree, and turned the Buttermilks
+   meshes half way round.
 3. **Make it hold up.** Weight points by how much they constrain the heading (peaks and notches over steady slopes),
    and fit each photo's own small tilt rather than one offset per mesh.
+4. **Skip what has no clear skyline, before segmenting.** Segmentation is nearly all of the cost, and on hal's 31
+   meshes only 48% of the 1,222 photos had any skyline at all.
+   - Skip a whole mesh whose horizon is near, from the elevation data alone. Its median distance was 7.4 km in the
+     Buttermilks, against 0.1-3.3 km at Joshua Tree and the Tramway, where nothing survived the parallax filter.
+   - Segment only a few frames of each video. The 935 frames came from 86 videos, and neighbouring frames repeat the
+     same skyline.
+   - Try a cheap test for sky along a photo's top edge (bright and smooth) before segmenting it.
+   - Skipping photos whose camera points too far down saves little: only 2% had their top edge below level.
 
 ## Running it
 
