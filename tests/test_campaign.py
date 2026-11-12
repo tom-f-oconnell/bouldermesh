@@ -2070,7 +2070,7 @@ assert got["Pea"]["status"] == got["Body"]["status"] == "done" and got["Pea"]["m
 kinds = {r["name"]: (r["kind"], r["why"]) for r in server.q("SELECT name, kind, why FROM boulders")}
 assert kinds == {"Bas Cuvier": ("group", "its description says 'Main zone'"),
                  "Peabody": ("boulder", "its description says 'is a huge boulder'")}, kinds
-assert sum("/area/" in u for u in fetched) == 2, "each area's page read once"
+assert sum("/area/" in u for u in fetched) == 3, "each area's page read once for what it is; a boulder's again, for its problems, as it's meshed"
 marie = server.climb_row(got["Marie"]["climb_id"])
 assert [p.name for p in server.boulder_projects(marie["id"])] == [got["Marie"]["project_id"]], "a sector's other climbs aren't its anchors"
 assert server.boulder_key(["X", "Bas Cuvier"]) == "[\"X\", \"Bas Cuvier\"]" and server.leaf_kind(server.boulder_key(["X", "Hall of Horrors Area"])) == "group"
@@ -2186,6 +2186,33 @@ assert (summary["whole"], summary["apart"], summary["rest"]) == (False, 2, None)
 assert server.rest_waiting() == [boulder_mesh] and server.rest_queue_all() == 1 and server.rest_waiting() == []
 while not server.jobs.empty():
     server.jobs.get_nowait()
+# one boulder needs every climb on it harvested and tried in its mesh: one known since, or listed on its page and
+# never harvested, holds it a group; its page's problems become known as its mesh is made, to harvest and place too
+server.save_rest(boulder_mesh, {**rec, "apart": [], "attempt": None})
+assert server.boulder_untried(boulder_mesh, got["Pea"]["boulder"]) == 0
+assert server.pooled_summary(got["Pea"]["boulder"], on_parent, kinds, boulder_mesh)["whole"] is True
+late = server.upsert_climb(Climb(source="mountainproject", source_id="977", url="https://x/977", name="Late", area_path=json.loads(got["Pea"]["boulder"])))
+summary = server.pooled_summary(got["Pea"]["boulder"], on_parent, kinds, boulder_mesh)
+assert (summary["whole"], summary["untried"]) == (False, 1), summary
+server.q("DELETE FROM climbs WHERE id=?", late, write=True)
+record = json.loads((server.PROJECTS / bproj["id"] / "climbs.json").read_text())
+(server.PROJECTS / bproj["id"] / "climbs.json").write_text(json.dumps({**record, "page_problems": 4}))
+assert server.boulder_untried(boulder_mesh, got["Pea"]["boulder"]) == 1, "its page listed one more than were tried"
+server.q("INSERT OR REPLACE INTO boulders(key, name, url, kind, why, routes, checked) VALUES(?,?,?,?,?,?,?)",
+         got["Pea"]["boulder"], "Peabody", "https://www.mountainproject.com/area/9/peabody", "boulder", "test", 4, 1, write=True)
+page = Climb(source="mountainproject", source_id="9", url="https://www.mountainproject.com/area/9/peabody", name="Peabody", kind="area")
+stubs = [Climb(source="mountainproject", source_id=sid, url=f"https://www.mountainproject.com/route/{sid}/x", name=n, kind="boulder",
+               raw={"stub": True}) for sid, n in (("13", "Pea"), ("14", "Body"), ("15", "Arm"), ("16", "Leg"))]
+real_fetch = server.climbs_mod.fetch_climb_url
+server.climbs_mod.fetch_climb_url = lambda url, include_children=False: [page] + (stubs if include_children else [])
+try:
+    logged = []
+    assert server.adopt_page_climbs(got["Pea"]["boulder"], logged.append) == 4
+finally:
+    server.climbs_mod.fetch_climb_url = real_fetch
+leg = server.q("SELECT * FROM climbs WHERE source_id='16'", one=True)
+assert leg and leg["area_path"] == got["Pea"]["boulder"] and "1 problem its Mountain Project page lists" in logged[0], (leg, logged)
+assert server.q("SELECT COUNT(*) n FROM climbs WHERE area_path=?", got["Pea"]["boulder"], one=True)["n"] == 4, "the known ones as they were"
 # a sector's climbs whose photos match (climb_links): meshed together as a pool once the sector's climbs are through,
 # each linked to its mesh; one that matches none stays on its own; not pooled again from the same climbs
 fresh()
@@ -2232,7 +2259,7 @@ finally:
 # meshed as one from a climb's card; names without the project's kind
 summary = server.pooled_summary(pool["key"], [{"id": "a", "view": {"photos": 2}}, {"id": "b", "view": None}], server.boulder_kinds())
 assert summary == {"climbs": 2, "placed": 1, "area": "Bas Cuvier", "kind": "group", "whole": False, "apart": 0, "rest": None,
-                   "split": False, "rest_of": None}, summary
+                   "split": False, "untried": None, "rest_of": None}, summary
 pea = server.q("SELECT key FROM boulders WHERE name='Peabody'", one=True)["key"]
 for n, sid in (("Pea", "961"), ("Body", "962")):
     server.upsert_climb(Climb(source="mountainproject", source_id=sid, url=f"https://x/{sid}", name=n, area_path=json.loads(pea)))

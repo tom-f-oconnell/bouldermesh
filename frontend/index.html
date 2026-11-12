@@ -370,8 +370,9 @@
             the order, and meshed together from all their photos: one mesh, counting once toward a limit. It shows what their
             photos do, often not all the way round. The photos it leaves out are tried again against it, and what's still left
             of the climbs with several photos out is meshed together apart, as another side or another rock. It's a boulder when
-            that makes nothing, and otherwise each mesh placing more than one climb is a group. (The admin page can have every
-            climb meshed on its own instead.)</p>
+            every climb on it (its page's every problem) was harvested and tried in it, and what it left out makes nothing;
+            otherwise each mesh placing more than one climb is a group. (The admin page can have every climb meshed on its own
+            instead.)</p>
           <p>Where the area holds several rocks ("Stained Glass/Flyboy Area", "Birthday Boulders"), or its page doesn't say, each
             climb is meshed on its own, counting one each. Once its climbs within the limit are through, those whose photos show
             the same rock are meshed together as well, as groups: clusters of a boulder's climbs, not always all of them. These,
@@ -2453,9 +2454,10 @@ function pooledTags(m){
   const of = p.kind === 'group' ? ` in ${esc(p.area)}, a Mountain Project area of several boulders, whose photos match`
     : p.kind === 'boulder' ? ` on ${esc(p.area)}` : ` in ${esc(p.area)}`;
   const word = p.whole ? 'boulder' : p.placed > 1 ? 'group' : '';
-  const why = p.whole ? `. Mountain Project says ${esc(p.area)} is one rock, and none of its climbs' photos this mesh left out make a mesh of their own, so it's one boulder`
+  const why = p.whole ? `. Mountain Project says ${esc(p.area)} is one rock, every climb on it was harvested and tried in it, and none of their photos it left out make a mesh of their own, so it's one boulder`
     : p.rest_of ? `. Made from the photos the mesh of ${esc(p.area)} left out, so it's another side or rock than that one`
     : p.split ? `. The photos it left out of some climbs made a mesh of their own, so it isn't the whole boulder`
+    : p.untried ? `. ${plural(p.untried, 'climb')} on ${esc(p.area)} ${p.untried === 1 ? 'has' : 'have'} no photos tried in it (never harvested, or none found), so it isn't one boulder yet`
     : p.apart && ['queued', 'running'].includes(p.rest) ? `. The photos it left out of ${plural(p.apart, 'climb')} are being meshed apart`
     : p.apart && !p.rest ? `. It left out enough photos of ${plural(p.apart, 'climb')} to try meshing apart (on the admin page)` : '';
   return `<span class="tag ok" title="Made from the photos of ${plural(p.climbs, 'climb')}${of}: ${p.placed} of them placed in it, by their own photos${why}">${word ? `${word} · ` : ''}${p.placed}/${p.climbs} climb${p.climbs === 1 ? '' : 's'}</span>`;

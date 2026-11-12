@@ -286,8 +286,11 @@ well.
 
 **On the cards.** Meshes are named for what they're of, not how they were made. A mesh of several climbs' photos says how
 many of them it places, each counted only on the mesh of its boulder that places most of its own photos.
-- **Boulder** ("boulder · 7/9 climbs"): Mountain Project says its area is one rock, and nothing it left out made a mesh
-  of its own (none of its climbs left 6 photos out, or meshing them failed).
+- **Boulder** ("boulder · 7/9 climbs") needs all three of these:
+  - Mountain Project says its area is one rock.
+  - Every climb on it was harvested and had photos tried in its mesh. That includes every problem its page lists, which
+    are made known and harvested before it's meshed. A climb whose harvest found no photos keeps it a group.
+  - Nothing it left out made a mesh of its own: none of its climbs left 6 photos out, or meshing them failed.
 - **Group** ("group · 7/9 climbs"): any other placing more than one climb. That includes a boulder's mesh when what it
   left out made another mesh, and that other mesh, if it places more than one climb.
 - **Neither:** a mesh placing only one climb is that climb's.
@@ -1141,3 +1144,15 @@ gets every optional check; the tests also pass without them.
   Google Images is not implemented on purpose. That API is reported as closed to new
   customers and shutting down on 2027-01-01, so it only helps with a key you already hold.
 - With Docker's default user, everything in `./data` ends up owned by root.
+- **What a boulder's mesh leaves out** ("A boulder's own mesh" above):
+  - **One level only.** It's meshed once, and only the largest model of what's left becomes a mesh. A second separate
+    rock among those photos isn't meshed.
+  - **A photo is in one mesh or the other, never both.** The mesh of what was left out can't use photos of its rock that
+    the boulder's mesh placed. For example, Drifter's mesh placed some of Smoking's frames that also see the Smoking
+    boulder.
+  - **Every frame of a climb's page videos counts as its own.** That includes frames of other boulders and of the walk
+    in. So the mesh of what was left out can be of another rock, and be linked to that climb (Smoking's page video is
+    mostly a hike up Cloudripper and other boulders).
+  - **Older meshes.** Boulders' meshes made before 2671afe didn't try the photos the mapper left out against the
+    finished model, so their counts of what's left out include photos that step might now place. Meshing the boulder
+    again fixes that.

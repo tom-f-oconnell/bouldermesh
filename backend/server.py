@@ -918,6 +918,28 @@ def adopt_listed_climbs(boulder: str) -> int:
     return len(rows)
 
 
+def adopt_page_climbs(boulder: str, log) -> int | None:
+    """Save the problems a boulder's Mountain Project page lists (its route table) that aren't known yet, so that its
+    mesh harvests and places every climb on it, as one boulder needs. Returns how many problems the page lists, or None
+    if it couldn't be read (its climbs known by then stand)."""
+    row = q("SELECT url FROM boulders WHERE key=? AND url IS NOT NULL", boulder, one=True)
+    if not row or is_pool(boulder):
+        return None
+    try:
+        stubs = [c for c in climbs_mod.fetch_climb_url(row["url"], include_children=True)[1:] if c.kind == "boulder"]
+    except Exception as e:
+        log(f"couldn't read its page's problems ({type(e).__name__}: {e}): meshing the climbs known on it")
+        return None
+    known = {r["source_id"] for r in q("SELECT source_id FROM climbs WHERE area_path=?", boulder)}
+    new = [c for c in stubs if c.source_id not in known]
+    for c in new:
+        c.area_path = json.loads(boulder)
+        upsert_climb(c)
+    if new:
+        log(f"{plural(len(new), 'problem')} its Mountain Project page lists weren't known: now they are, to harvest and place too")
+    return len(stubs)
+
+
 def boulder_project(boulder: str) -> dict | None:
     """A boulder's project, which pools its climbs' harvests (run_boulder())."""
     return q("SELECT * FROM projects WHERE kind='boulder' AND boulder=? ORDER BY created DESC LIMIT 1", boulder, one=True)
@@ -957,14 +979,31 @@ def pooled_summary(key: str, climbs: list[dict], kinds: dict, mid: str | None = 
     tried = (rest or {}).get("attempt") or {}
     split = tried.get("status") == "done" and bool(tried.get("climbs"))
     apart = len((rest or {}).get("apart") or [])
+    untried = boulder_untried(mid, leaf) if mid and not is_pool(key) else None
     if rest is not None:
-        whole = kind == "boulder" and not split and (not apart or tried.get("status") in ("failed", "poor"))
+        whole = kind == "boulder" and not split and (not apart or tried.get("status") in ("failed", "poor")) and untried == 0
     else:
         on_leaf = {c["id"] for c in q("SELECT id FROM climbs WHERE area_path=?", leaf)} if kind == "boulder" and not is_pool(key) else set()
         whole = bool(on_leaf) and on_leaf <= {c["id"] for c in climbs if c.get("view")}
     return {"climbs": len(climbs), "placed": len(placed), "area": json.loads(leaf)[-1].strip("* "), "kind": kind, "whole": whole,
-            "apart": apart, "rest": tried.get("status") if apart else None, "split": split,
+            "apart": apart, "rest": tried.get("status") if apart else None, "split": split, "untried": untried,
             "rest_of": rest_parent(key) if is_rest(key) else None}
+
+
+def boulder_untried(mid: str, leaf: str) -> int | None:
+    """How many of a boulder's climbs its mesh didn't try to place: known on it, or listed on its Mountain Project page
+    when the mesh was made, but without a harvest of photos pooled into it (never harvested, a harvest that found none,
+    or known since). None if its project's record of them can't be read."""
+    src = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
+    if not src or not src["source"].startswith("project:"):
+        return None
+    try:
+        record = json.loads((PROJECTS / src["source"].split(":", 1)[1] / CLIMBS_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    pooled = {c["id"] for c in record.get("climbs") or [] if c.get("projects")}
+    known = {r["id"] for r in q("SELECT id FROM climbs WHERE area_path=?", leaf)}
+    return max(len(known - pooled), (record.get("page_problems") or 0) - len(pooled), 0)
 
 
 def boulder_homes(rows: list[dict], views: dict[str, dict]) -> dict[str, str]:
@@ -2276,10 +2315,12 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
     log = lambda s: append_log(pid, s)  # noqa: E731
     tracker = None
     try:
+        page = None
         if fetch:
             adopted = adopt_listed_climbs(boulder)
             if adopted:
                 log(f"{adopted} climb(s) an area lists here, which it hadn't reached, are now known")
+            page = adopt_page_climbs(boulder, log) if not finished else None
         climbs = boulder_climbs(boulder)
         missing = [c for c in climbs if not climb_harvests(c["id"])] if fetch and not finished else []
         tracker = tracker_for(pid, ([("climbs", "Harvest its climbs", 3 * len(missing))] if missing else [])
@@ -2303,7 +2344,8 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
                 harvests = climb_harvests(c["id"])
                 own = set().union(*(viewpoints.own_photos(PROJECTS / h) for h in harvests))
                 record.append({"id": c["id"], "name": c["name"], "grade": c["grade"], "projects": harvests, "own": sorted(own)})
-            (pdir / CLIMBS_FILE).write_text(json.dumps({"boulder": boulder, "climbs": record, "created": time.time()}, indent=1))
+            (pdir / CLIMBS_FILE).write_text(json.dumps({"boulder": boulder, "climbs": record, "created": time.time(),
+                                                        "page_problems": page}, indent=1))
             others = [PROJECTS / h for r in record for h in r["projects"]]
             log(f"-- pooling the photos of {len(others)} harvest(s) of {sum(bool(r['projects']) for r in record)} of its "
                 f"{len(record)} climb(s)")
