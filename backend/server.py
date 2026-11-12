@@ -5557,14 +5557,17 @@ def drain(on: bool, now: bool = False) -> dict:
 
 
 def _eta_from(progress: dict | None, keys: set[str]) -> float | None:
-    """Seconds left of the steps with these keys, from how long they've taken so far for how far they've got."""
+    """Seconds left of the steps with these keys, from how long they've taken so far for how far they've got, each
+    step counted by its weight (its typical share of the time), or None when there's no telling (or all are done, as
+    then what's going on now isn't one of them)."""
     steps = [s for s in (progress or {}).get("steps", []) if s["key"] in keys and s.get("state") != "skipped"]
     began = [s["started"] for s in steps if s.get("started")]
-    if not steps or not began:
+    total = sum(s.get("weight") or 1 for s in steps)
+    if not steps or not began or not total:
         return None
-    done = sum(1.0 if s["state"] == "done" else s.get("frac", 0.0) for s in steps) / len(steps)
+    done = sum((s.get("weight") or 1) * (1.0 if s["state"] == "done" else s.get("frac", 0.0)) for s in steps) / total
     took = time.time() - min(began)
-    return took * (1 - done) / done if done >= 0.1 and took >= 30 else None
+    return took * (1 - done) / done if 0.1 <= done < 1 and took >= 30 else None
 
 
 MACHINE_TASKS = {"reconstruct": "meshing", "beta": "finding beta", "scale": "finding size",     # as deploy_state() tells them
@@ -5599,13 +5602,19 @@ def deploy_state() -> dict:
         mine = for_job.get(j["id"])
         project = q("SELECT name FROM projects WHERE id=?", j["label"], one=True) if j["task"] == "reconstruct" else None
         lost = "ends, and starts again on a machine after" if j["state"] == "running" else "queued again after"
+        eta = None
+        if j["state"] == "running":     # from how far its steps have got (the machine tells its project), else as usual
+            p = q("SELECT progress FROM projects WHERE id=?", j["label"], one=True) if project else None
+            eta = _eta_from(json.loads(p["progress"]), mesh_keys) if p and p["progress"] else None
+            if eta is None and typical and typical > elapsed:
+                eta = typical - elapsed     # past the usual time, there's no telling
         if mine and mine["type"] != "scale":
             lost = "interrupted: runs again when asked again"
         items.append({"what": f"{task} on {j['machine']}" if j["state"] == "running" else f"{task}, waiting for a machine",
                       "name": mine["name"] if mine else beta_name if j["id"] == beta_job else project["name"] if project else j["label"],
                       "kind": KINDS.get(j["task"], j["task"]), "project_id": j["label"] if project else (mine or {}).get("project_id"),
                       "costly": j["state"] == "running", "elapsed": round(elapsed),
-                      "eta": round(max(0.0, typical - elapsed)) if typical and j["state"] == "running" else None, "lost": lost})
+                      "eta": round(eta) if eta is not None else None, "lost": lost})
     for r in q("SELECT c.name area, i.name, i.project_id, i.updated, i.redo, i.boulder FROM campaign_items i "
                "JOIN campaigns c ON c.id=i.campaign_id WHERE i.status='running'"):
         # meshing its boulder (run_redo()) goes on in the boulder's project, not the climb's, which says nothing meanwhile
