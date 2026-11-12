@@ -49,7 +49,7 @@ if [ "$check" -eq 3 ]; then
     fi
     if [ "$mode" = after ]; then
         cli deploy-drain >/dev/null || true
-        trap 'echo; cancel 130' INT
+        trap 'echo; cancel 130' INT HUP TERM    # never leave the server taking no new work
         echo "taking no new work, and restarting once what's in progress has finished"
         deadline=$((SECONDS + ${WAIT_MINUTES:-90} * 60)) late=''
         while true; do
@@ -80,7 +80,7 @@ if [ "$check" -eq 3 ]; then
                 sleep 30
             fi
         done
-        trap - INT
+        trap - INT HUP TERM
     fi
     if [ "$mode" = now ]; then
         cli deploy-drain --now >/dev/null       # the stop then doesn't wait for jobs either
