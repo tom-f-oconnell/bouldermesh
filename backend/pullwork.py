@@ -46,6 +46,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 import compute
+import dbconn
 import meshopts
 import presence
 import registration
@@ -155,7 +156,7 @@ class Board:
         os.chmod(db_path, 0o600)
 
     def db(self) -> sqlite3.Connection:
-        con = sqlite3.connect(self.db_path, timeout=30)
+        con = dbconn.connect(self.db_path, timeout=30)
         con.row_factory = sqlite3.Row
         return con
 
