@@ -1987,6 +1987,24 @@ assert st["costly"] == 1, "only the mesh on hal-2"
 sj.state, sj.machine_name, sj.taken = "running", "hal-2", time.time()
 sizes = [i for i in server.deploy_state()["items"] if "size" in i["what"]]
 assert [(i["what"], i["costly"]) for i in sizes] == [("finding size on hal-2", True)], "once taken, costly"
+# a job asked for here: time left from how fast it went up to its last progress, counting down while it doesn't move,
+# rather than growing with the time it's taken (Nov 12, 2026: a boulder harvesting a climb went from 76 to 211 min)
+real_progress = server.job_progress
+seen = {"p": 10.0}
+server.job_progress = lambda job: seen["p"]
+try:
+    run = {"job": {"type": "boulder", "pid": pid}, "started": time.time() - 600, "from": 0.0}
+    first = server.job_info(run["job"], run)["eta"]
+    assert 5350 < first < 5450, first     # 10% in 600 s: about 5400 s for the other 90%
+    run["moved"] = (10.0, time.time() - 300)    # then no progress for 5 minutes
+    stalled = server.job_info(run["job"], run)["eta"]
+    assert 2350 < stalled < 2450, stalled  # 10% in the 300 s to then: 2700 s for the rest, less the 300 since
+    run["moved"] = (10.0, time.time() - 3000)
+    assert server.job_info(run["job"], run)["eta"] is None, "stalled for longer than it had: no telling"
+    seen["p"] = 20.0
+    assert server.job_info(run["job"], run)["eta"] is not None and run["moved"][0] == 20.0, "moving again"
+finally:
+    server.job_progress = real_progress
 # with no machine's job, it's found here, and starts again after a restart (sizes carry on: scale.carry_on())
 board.jobs.pop(sj.id)
 sizes = [i for i in server.deploy_state()["items"] if "size" in i["what"]]

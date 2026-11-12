@@ -4975,15 +4975,20 @@ def job_progress(job: dict) -> float | None:
 
 def job_info(job: dict, run: dict | None = None) -> dict:
     """A job someone asked for, as /api/jobs gives it; if it's running, how far it's got, and roughly how many
-    seconds it has left, from how fast it's got on so far (None until that's clear)."""
+    seconds it has left: from how fast it got on up to the last time its progress moved, less the time since (None
+    until that's clear, or once a stall has outlasted it, as then there's no telling). Not from how long it's taken
+    in all, which while a step says nothing of its progress (a boulder harvesting a climb) grew without end."""
     table, key = ("projects", "pid") if job.get("pid") else ("meshes", "mid")
     row = q(f"SELECT name FROM {table} WHERE id=?", job.get(key), one=True)
     out = {"type": job["type"], ("project_id" if key == "pid" else "mesh_id"): job.get(key), "name": row["name"] if row else job.get(key)}
     if run:
-        now, took = job_progress(job), time.time() - run["started"]
-        gained = (now or 0.0) - run["from"]
-        out.update(started=run["started"], progress=now,
-                   eta=took * (100 - now) / gained if now is not None and took >= 60 and gained >= 2 else None)
+        now, at = job_progress(job), time.time()
+        if now is not None and now != run.get("moved", (None,))[0]:
+            run["moved"] = (now, at)      # run is the worker's record of the job: kept between calls
+        moved = run.get("moved", (now, at))[1]
+        took, gained = moved - run["started"], (now or 0.0) - run["from"]
+        eta = took * (100 - now) / gained - (at - moved) if now is not None and took >= 60 and gained >= 2 else None
+        out.update(started=run["started"], progress=now, eta=eta if eta is None or eta > 0 else None)
     return out
 
 
