@@ -82,16 +82,19 @@
 
   <section>
     <h2>Areas</h2>
-    <label>An area's climbs that share a boulder with others it lists</label>
-    <select id="area-meshes"><option value="boulders">Harvested, then meshed together as their boulder, from all their photos</option>
+    <label>An area's climbs that share their lowest Mountain Project area with others it lists</label>
+    <select id="area-meshes"><option value="boulders">Together where that area's page says it's one rock; elsewhere each alone, then with those whose photos match</option>
       <option value="climbs">Each meshed on its own, from its own photos</option></select>
+    <div class="note">Together: the climbs on one rock are harvested, then meshed from all their photos as one mesh, which shows each
+      from where its own photos were taken; a climb it hardly shows is meshed on its own too. Where the page names several
+      rocks (a sector, "… Area", "… Boulders") or doesn't say, each climb is meshed on its own, and once they're through, those
+      whose photos show the same rock are meshed together as well. A climb alone on its rock is meshed on its own either way.</div>
     <label>How the off-topic photo filter matches search photos against a climb's own</label>
     <select id="matcher"><option value="brute">Brute force (the original)</option>
       <option value="flann">FLANN's approximate nearest neighbours: 1.6 times as fast, but misses about a tenth of the matches</option></select>
     <div class="note">Most of a harvest's time on a small server. Pairs matched before are kept, for each way, so a climb
       harvested again only matches what's new. On 12 of hal's harvests FLANN kept 92 of the 101 search photos brute force
       matched (and one it didn't), and more checks didn't close the gap, so brute force stays the default.</div>
-    <div class="note">A climb alone on its boulder, or on an area holding several (as "… Boulders"), is meshed on its own either way. A climb meshed with its boulder shows on its mesh from where its own photos were taken.</div>
     <label class="choice"><input type="checkbox" id="beta-auto"> Find beta in each new mesh with video frames placed in it
       <small>(while its videos are still here; on a machine, after meshing)</small></label>
     <label class="choice"><input type="checkbox" id="skyline-auto"> Work out which way each mesh faces from the skyline in its photos, where distant mountains show

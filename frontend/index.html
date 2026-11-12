@@ -21,12 +21,18 @@
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mute)}
   .pill.real{color:var(--ok);border-color:var(--ok)} .pill.demo,.pill.stopping{color:var(--warn);border-color:var(--warn)}
   .seg{display:inline-flex;margin-left:auto;border:1px solid var(--line);border-radius:6px;overflow:hidden}
-  #prefs{margin-left:auto} header .seg{flex:none}   /* Random and the editing token's buttons at the left; the rest at the right */
+  #hspace{flex:1} header .seg{flex:none}   /* Random and the editing token's buttons at the left; the rest at the right */
   #tofull small{display:block;color:inherit;opacity:.9;font-size:10px;font-weight:400;line-height:1.1;max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #tofull:disabled{background:var(--line);color:var(--mute);opacity:1}
-  .phone-only{display:none!important}
-  #prefs{display:inline-flex;gap:12px;align-items:center;flex:none} #prefs .seg{margin-left:0} .plabel{display:none}
-  .plabel.shown{display:inline;font-size:12px;color:var(--mute);margin-right:-6px}   /* Detail's choices say little without it */
+  /* the settings open from a button, at the right of the view's bar (and on a phone in the header too), as a panel over the page */
+  #prefs{position:fixed;z-index:2600;display:none;grid-template-columns:auto auto;gap:10px 12px;align-items:center;padding:12px;
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.45)}
+  body.prefs-open #prefs{display:grid} #prefs .plabel{font-size:12px;color:var(--mute)} #prefs .seg{margin-left:0;justify-self:start}
+  .prefsbtn[aria-expanded=true]{background:var(--line)}
+  /* icons in buttons as tall as the words in their neighbours: the line keeps the height of a small button's text */
+  .prefsbtn .gear{font-size:15px;line-height:0;vertical-align:-1px} #vinfo svg{width:14px;height:14px;vertical-align:-3px}
+  #vinfo[aria-pressed=true]{background:var(--line)} #vinfo{position:relative}
+  #vinfo.dot::after{content:'';position:absolute;top:2px;right:2px;width:6px;height:6px;border-radius:50%;background:var(--warn)}
   .seg button{background:transparent;color:var(--mute);border:0;border-radius:0;padding:3px 8px;font-size:12px} .seg button.on{color:var(--fg);background:var(--line)}
   #code,#volunteer{color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;text-decoration:none;white-space:nowrap}
   #admindlg{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;max-width:600px;padding:16px}
@@ -116,7 +122,7 @@
   #viewer.on,#map.on{display:block}
   #viewer canvas{display:block;width:100%;height:100%}
   #viewer.quiet #hud,#viewer.quiet #viewnote,#viewer.quiet #pieces,#viewer.quiet #orient{display:none!important}
-  #vtitle{display:none}
+  #vtitle{display:none} #viewing .area{opacity:.8}
   #linkmenu{position:absolute;z-index:4;display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:8px;
     background:var(--overlay);border:1px solid var(--line);box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:calc(100% - 16px)}
   #linkmenu[hidden]{display:none} #viewer canvas{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
@@ -172,6 +178,7 @@
   #ratemenu .ratefoot{display:flex;justify-content:space-between;gap:8px} #ratestate{text-align:right}
   #ratecomment{width:100%;box-sizing:border-box;resize:none;overflow-y:auto;min-height:32px;font:inherit;font-size:13px}
   #ratebtn.r1,#rateseg button.on[data-r="1"]{color:var(--bad)} #ratebtn.r3,#rateseg button.on[data-r="3"]{color:var(--ok)}
+  #ratebtn[aria-expanded=true]{background:var(--line)} #ratebtn .fold{font-size:10px;margin-left:5px;opacity:.8}
   .bpanel .head a,.bpanel .brow a{color:inherit;text-decoration:underline dotted;text-underline-offset:2px}
   #orient b{font-weight:600} #orient .key{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
   #orient div+div{margin-top:5px} #orient button{margin-left:6px}
@@ -232,27 +239,26 @@
   @media (max-width:860px){
     body,main{grid-template-columns:minmax(0,1fr)} aside{border-right:0} #right{display:none} .phone{display:inline-block}
     body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
-    header{padding:6px 10px;gap:8px} header h1,#mode{display:none} #prefs{margin-left:0}
+    header{padding:6px 10px;gap:8px} header h1,#mode,#hspace{display:none}
     #volunteer{order:1;margin-left:auto} #edit,#viewonly,#forget{order:2}
-    /* the view on its own: back, and a toggle between the mesh and the map; wireframe and notes live elsewhere or not at all */
-    #toctl{font-size:17px;line-height:1;padding:3px 10px} #v3d,#vwire,#vnotes,#viewing{display:none!important}
-    /* back, Random, Sway and Map at the left (then what shows only now and then), and settings alone at the right */
-    #vsway{order:1} #vmap{order:2} #vnearby,#vmark,#vfrom,#detail{order:3}
+    /* the view on its own: back, and a toggle between the mesh and the map */
+    #toctl{padding:3px 10px;border:1px solid transparent} #toctl .arrow{font-size:17px;line-height:0;vertical-align:-1px}
+    #v3d,#viewing{display:none!important}
+    /* back, Random, Nearby and Map at the left (then what shows only now and then), and notes and settings at the right */
+    #vnearby{order:1} #vmap{order:2} #vmark,#vfrom,#detail{order:3} #vinfo{order:4;margin-left:auto}
     #nearby.turning .list,#nearby.turning .note{display:none}     /* turning one: only that, so the view shows */
-    #nearby.turning{top:auto;bottom:12px;max-height:45%} #vfrom{flex:0 1 auto;min-width:0} #vprefs{order:4;margin-left:auto}
-    #prefs .phone-only{display:revert!important}
+    #nearby.turning{top:auto;bottom:12px;max-height:45%} #vfrom{flex:0 1 auto;min-width:0} #vprefs{order:5}
     #caps,#code,#admin{display:none!important}
-    /* the background and colour choices open from a button in either view, as a panel over it */
-    #prefs{position:fixed;z-index:2600;display:none;grid-template-columns:auto auto;gap:10px 12px;align-items:center;padding:12px;
-      background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.45)}
-    body.prefs-open #prefs{display:grid} #prefs .plabel{display:block;font-size:12px;color:var(--mute)}
-    #prefs .seg{justify-self:start} #prefs .seg button{padding:6px 10px;font-size:13px}
-    .prefsbtn{font-size:15px;line-height:1.2;padding-top:2px;padding-bottom:2px} .prefsbtn[aria-expanded=true]{background:var(--line)}
-    #hud,#viewnote,#pieces,#orient{display:none!important}
+    #prefs .seg button{padding:6px 10px;font-size:13px}
+    /* the notes, when shown: how it's framed and scaled under its name, a passing note over that, its stray pieces at the
+       foot, left of the rating; not the mouse's controls */
+    #hud{display:none!important}
+    #orient,#viewnote{top:56px;bottom:auto;left:8px;right:8px;max-width:none;max-height:35%;overflow:auto} #viewnote{z-index:3}
+    #pieces{top:auto;bottom:12px;left:8px;right:auto;max-width:calc(100% - 130px);max-height:35%;overflow:auto}
     #ratebtn{font-size:14px;padding:6px 12px} #ratemenu .seg button{padding:7px 14px;font-size:14px} #ratecomment{font-size:16px}
-    #vtitle:not(:empty){display:block;position:absolute;top:6px;left:8px;max-width:calc(100% - 16px);font-size:12px;line-height:1.35;
-      padding:2px 8px;border-radius:10px;background:var(--overlay-soft);color:var(--fg);white-space:nowrap;overflow:hidden;
-      text-overflow:ellipsis;pointer-events:none;z-index:2}
+    #vtitle:has(#vname:not(:empty)){display:block;position:absolute;top:6px;left:8px;max-width:calc(100% - 16px);font-size:12px;line-height:1.35;
+      padding:2px 8px;border-radius:10px;background:var(--overlay-soft);color:var(--fg);pointer-events:none;z-index:2}
+    #vname,#varea{white-space:nowrap;overflow:hidden;text-overflow:ellipsis} #varea{font-size:11px;color:var(--mute)} #varea:empty{display:none}
     .viewbar{overflow-x:auto} .viewbar button{white-space:nowrap} .viewbar .status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   }
 </style>
@@ -268,19 +274,8 @@
   <span id="viewonly" class="pill" style="display:none" title="This copy of the site can't be changed from a browser">view-only</span>
   <button class="sm sec" id="edit" style="display:none"></button>
   <button class="sm danger" id="forget" style="display:none" title="Forget the editing token kept in this browser: changing anything here then needs it again">Forget edit token</button>
-  <button class="sm sec phone prefsbtn" id="prefsbtn" title="Background and colours" aria-label="Settings" aria-expanded="false">⚙︎</button>
-  <span id="prefs">
-    <span class="plabel phone-only">Mesh</span>
-    <span class="seg phone-only" id="wiremode" title="The mesh's surface, or only the edges of its triangles, to see how it's built"><button data-wire="0" class="on">Surface</button><button data-wire="1">Wireframe</button></span>
-    <span class="plabel">Background</span>
-    <span class="seg" id="bgmode" title="Behind a mesh: the plain page colour, or a scene: a sky over ground the colour of the rock's foot, and around a reconstructed mesh, where its photos show it, what's really there"><button data-bg="solid">Solid</button><button data-bg="scene" class="on">Scene</button></span>
-    <span class="plabel shown">Detail</span>
-    <span class="seg" id="detailmode" title="How much of each mesh to load. Auto: a simplified copy at once, then all of it, with its texture as sharp as this device can use, unless the connection looks too slow for that, when a button offers it. Full: all of it, always. Preview: the simplified copy only, with the button for the rest."><button data-detail="auto" class="on">Auto</button><button data-detail="full">Full</button><button data-detail="preview">Preview</button></span>
-    <span class="plabel">Walls in the way</span>
-    <span class="seg" id="xraymode" title="See-through: the grey backs of a rock (the side of its surface no photo saw, as on the outside of an arch whose inside was photographed) show the rock behind them through them; and once you double-click a spot to look at, whatever comes between you and it is see-through around it. Opaque: every surface solid."><button data-xray="1" class="on">See-through</button><button data-xray="0">Opaque</button></span>
-    <span class="plabel">Colours</span>
-    <span class="seg" id="theme" title="Colours: the browser's setting, or light or dark here"><button data-theme="system" class="on">System</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span>
-  </span>
+  <button class="sm sec phone prefsbtn" id="prefsbtn" title="Settings: the mesh's look, its background, detail and colours" aria-label="Settings" aria-expanded="false"><span class="gear" aria-hidden="true">⚙︎</span></button>
+  <span id="hspace"></span>
   <button class="sm sec" id="admin" style="display:none" title="The admin page: what the site shows, where reconstructions run, credentials. It's on a port of its own, which only the server itself (or its LAN) can reach.">Admin</button>
   <a id="volunteer" style="display:none" href="/volunteer/" title="Lend this site your computer: to fetch YouTube videos of climbs, or to make meshes on its GPU">Volunteer</a>
   <a id="code" href="https://github.com/tom-f-oconnell/bouldermesh" target="_blank" rel="noopener">Code</a>
@@ -409,9 +404,6 @@
             <input type="file" id="meshfile" multiple accept=".ply,.obj,.mtl,.glb,.gltf,.stl,.png,.jpg"></label>
           <select id="upclimb" style="width:170px"><option value="">link to climb (optional)</option></select>
         </div>
-        <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="m-older"> Show older versions of rebuilt meshes</label>
-          <label title="Rated 1.5 or under on average, with bad 1, OK 2 and good 3"><input type="checkbox" id="m-nobad"> Hide those rated bad</label>
-          <label title="Those you rated bad in their 3D view, in this browser"><input type="checkbox" id="m-nomine"> Hide those I rated bad</label></div>
         <div class="row" style="margin-bottom:6px">
           <label>Sort by <select id="m-sort" style="width:auto">
             <option value="created">Newest</option><option value="faces">Faces</option><option value="placed">Photos placed</option>
@@ -424,7 +416,11 @@
           <div class="meta" style="margin-bottom:4px" title="Each placed photo counts once among those taken within 15° of the same direction from the rock, so many frames of one video count about once. Coverage: how much of a full circle round the rock its photos see, from above.">Distinct viewpoints count photos taken from nearly the same spot once; coverage is how far round the rock its photos go. A filter left at its ends leaves out nothing, and meshes without that number stay.</div>
           <div id="m-areas"></div>
           <div id="m-ranges"></div>
-          <button class="sm sec" id="m-clear">Clear the filter</button>
+          <button class="sm sec" id="m-clear" title="Every area, and every range back to its ends">Clear the filter</button>
+          <div class="checks" style="margin-top:8px">
+            <label title="Rated 1.5 or under on average, with bad 1, OK 2 and good 3"><input type="checkbox" id="m-nobad"> Hide those rated bad</label>
+            <label title="Those you rated bad in their 3D view, in this browser"><input type="checkbox" id="m-nomine"> Hide those I rated bad</label></div>
+          <div class="checks" style="margin-top:6px"><label><input type="checkbox" id="m-older"> Show older versions of rebuilt meshes</label></div>
         </details>
         <div id="meshes"></div>
       </section>
@@ -449,22 +445,22 @@
 
   <div id="right">
     <div class="viewbar">
-      <button class="sm phone" id="toctl" title="Back to the climbs and the rest" aria-label="Back">←</button>
+      <button class="sm phone" id="toctl" title="Back to the climbs and the rest" aria-label="Back"><span class="arrow" aria-hidden="true">←</span></button>
       <button class="sm sec phone" id="vrandom" title="Another mesh, picked at random">Random</button>
-      <button class="sm sec phone prefsbtn" id="vprefs" title="Background and colours" aria-label="Settings" aria-expanded="false">⚙︎</button>
       <button class="sec sm" id="v3d">3D viewer</button>
+      <button class="sec sm" id="vnearby" disabled title="Shows the meshes near this one around it, placed by their coordinates, at their real size and facing as best known" aria-expanded="false">Nearby</button>
       <button class="sec sm" id="vmap">Map</button>
       <button class="sec sm" id="vmark" style="display:none" title="Click the rock to add a start hold, and a hold again for hand, finish, foot, then none">Mark holds</button>
-      <button class="sec sm" id="vsway" disabled title="Rocks the view a few degrees either way from where it is now, to show off that it's 3D. Dragging or scrolling stops it.">Sway</button>
-      <button class="sec sm" id="vnearby" disabled title="Shows the meshes near this one around it, placed by their coordinates, at their real size and facing as best known" aria-expanded="false">Nearby</button>
-      <button class="sec sm" id="vwire" disabled title="Shows only the edges of the mesh's triangles, to see how it's built: where it's dense, thin or patched. Click again for its surface.">Wireframe</button>
-      <button class="sec sm" id="vnotes" title="Hides the notes over the view: about its texture, its stray pieces, and how it was framed and scaled. Click again to show them.">Hide notes</button>
+      <!-- put away for now: its code stays -->
+      <button class="sec sm" id="vsway" hidden disabled title="Rocks the view a few degrees either way from where it is now, to show off that it's 3D. Dragging or scrolling stops it.">Sway</button>
       <select id="vfrom" style="display:none;width:auto" title="A boulder's own mesh is made from the photos of every climb on it: this looks at it from where one climb's own photos (its page's and its videos') were taken"></select>
       <button class="sec sm" id="detail" hidden></button>
       <span class="status" id="viewing"></span>
+      <button class="sec sm" id="vinfo" aria-pressed="false" aria-label="Notes over the view" title="Notes over the view: about its texture, its stray pieces, how it was framed and scaled, and on a computer how to move round it. Click again to hide them, and the rating box too. A dot: there's a note now."><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="6.75"/><path d="M8 7.2v4.3" stroke-linecap="round"/><circle cx="8" cy="4.9" r=".55" fill="currentColor"/></svg></button>
+      <button class="sm sec prefsbtn" id="vprefs" title="Settings: the mesh's look, its background, detail and colours" aria-label="Settings" aria-expanded="false"><span class="gear" aria-hidden="true">⚙︎</span></button>
     </div>
     <div id="viewer" class="on">
-      <div id="vtitle"></div>
+      <div id="vtitle"><div id="vname"></div><div id="varea"></div></div>
       <div id="linkmenu" hidden></div>
       <div id="viewnote"></div>
       <div id="pieces"></div>
@@ -476,7 +472,7 @@
           <textarea id="ratecomment" rows="1" maxlength="2000" placeholder="A comment on this mesh (optional)" aria-label="A comment on this mesh"></textarea>
           <div class="meta ratefoot"><span id="rateavg" title="Everyone's ratings, on average: bad 1, OK 2, good 3"></span><span id="ratestate"></span></div>
         </div>
-        <button class="sm sec" id="ratebtn" title="Rate this mesh: bad, OK or good, with a comment if you like. Kept in this browser, and sent to the site." aria-expanded="false">Rate</button>
+        <button class="sm sec" id="ratebtn" title="Rate this mesh: bad, OK or good, with a comment if you like. Kept in this browser, and sent to the site. Click again to fold the box away." aria-expanded="false">Rate</button>
       </div>
       <div id="hud">Pick a mesh, or drop a mesh file here. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan</div>
       <div id="drop">Drop mesh file to upload &amp; view</div>
@@ -487,6 +483,18 @@
 <div id="loading" hidden><div class="card"><div class="spin"></div><div class="what"></div><div class="detail"></div><div class="bar"><i></i></div></div></div>
 <div class="toast" id="toast"></div>
 <div id="srctip" role="tooltip"></div>
+<span id="prefs">
+  <span class="plabel">Mesh</span>
+  <span class="seg" id="wiremode" title="The mesh's surface, or only the edges of its triangles, to see how it's built"><button data-wire="0" class="on">Surface</button><button data-wire="1">Wireframe</button></span>
+  <span class="plabel">Background</span>
+  <span class="seg" id="bgmode" title="Behind a mesh: the plain page colour, or a scene: a sky over ground the colour of the rock's foot, and around a reconstructed mesh, where its photos show it, what's really there"><button data-bg="solid">Solid</button><button data-bg="scene" class="on">Scene</button></span>
+  <span class="plabel">Detail</span>
+  <span class="seg" id="detailmode" title="How much of each mesh to load. Auto: a simplified copy at once, then all of it, with its texture as sharp as this device can use, unless the connection looks too slow for that, when a button offers it. Full: all of it, always. Preview: the simplified copy only, with the button for the rest."><button data-detail="auto" class="on">Auto</button><button data-detail="full">Full</button><button data-detail="preview">Preview</button></span>
+  <span class="plabel">Walls in the way</span>
+  <span class="seg" id="xraymode" title="See-through: the grey backs of a rock (the side of its surface no photo saw, as on the outside of an arch whose inside was photographed) show the rock behind them through them; and once you double-click a spot to look at, whatever comes between you and it is see-through around it. Opaque: every surface solid."><button data-xray="1" class="on">See-through</button><button data-xray="0">Opaque</button></span>
+  <span class="plabel">Colours</span>
+  <span class="seg" id="theme" title="Colours: the browser's setting, or light or dark here"><button data-theme="system" class="on">System</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span>
+</span>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script type="importmap">
@@ -708,7 +716,13 @@ renderer.domElement.addEventListener('dblclick', ev => {
 });
 scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.1));
 const dir = new THREE.DirectionalLight(0xffffff, 1.2); dir.position.set(3, 5, 2); scene.add(dir);
-const grid = new THREE.GridHelper(4, 20, 0x334, 0x223); grid.position.y = -0.001; scene.add(grid);
+let grid = null;
+function makeGrid(dark){
+  if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
+  grid = new THREE.GridHelper(4, 20, dark ? 0xc8cedb : 0x000334, dark ? 0x7d869b : 0x000223);
+  grid.position.y = -0.001; grid.userData.dark = dark; scene.add(grid);
+}
+makeGrid(false);
 let current = null;
 let drawn = '';     // the size the view's drawing buffer was made at: making it again, when nothing changed, costs a frame
 function resize(){
@@ -916,8 +930,9 @@ function showObject(obj, label, plainBacks = false){
   applyWire();
   applyScene();
   frameMain();
-  $('#vsway').disabled = $('#vwire').disabled = false;
-  $('#viewing').textContent = 'Viewing: ' + label;
+  $('#vsway').disabled = false;
+  const area = meshAreaText(shownMesh);
+  $('#viewing').innerHTML = 'Viewing: ' + esc(label) + (area ? ` <span class="area">(${esc(area)})</span>` : '');
   $('#hud').textContent = `${label} — drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan`;
 }
 // ---- a mesh's cleanup: the pieces of it that are hidden, which meshclean.py works out on the server
@@ -1434,16 +1449,26 @@ async function watchSize(id){   // until it's found, while that mesh is still th
 let viewNoteT;
 function viewNote(text, retry){
   const n = $('#viewnote'); n.style.display = text ? 'block' : 'none'; n.textContent = text || '';
+  $('#vinfo').classList.toggle('dot', !!text && quiet);
   if (retry) { const b = document.createElement('button'); b.className = 'sm sec'; b.textContent = 'Try again'; b.onclick = retry; n.appendChild(b); }
   if (text) { const b = document.createElement('button'); b.className = 'sm sec dismiss'; b.textContent = 'Dismiss'; b.onclick = () => viewNote(''); n.appendChild(b); }
   clearTimeout(viewNoteT);
   if (text) viewNoteT = setTimeout(() => viewNote(''), 30000);   // read by then, or not wanted
 }
-// Hiding the notes over the view also dismisses the one about its texture, so showing them again doesn't bring it back
-let quiet = false; try { quiet = localStorage.getItem('bm_quiet') === '1'; } catch {}
-function showQuiet(){ $('#viewer').classList.toggle('quiet', quiet); $('#vnotes').textContent = quiet ? 'Show notes' : 'Hide notes'; }
+// The notes over the view, hidden until the info button shows them (bm_notes), as it last left them. Hiding them also
+// dismisses the one about its texture, so showing them again doesn't bring it back, and folds the rating box away.
+let quiet = true; try { quiet = localStorage.getItem('bm_notes') !== 'shown'; } catch {}
+function showQuiet(){
+  $('#viewer').classList.toggle('quiet', quiet); $('#vinfo').setAttribute('aria-pressed', String(!quiet));
+  if (!quiet) $('#vinfo').classList.remove('dot');
+}
 showQuiet();
-$('#vnotes').onclick = () => { quiet = !quiet; if (quiet) viewNote(''); try { localStorage.setItem('bm_quiet', quiet ? '1' : '0'); } catch {} showQuiet(); };
+$('#vinfo').onclick = () => {
+  quiet = !quiet;
+  if (quiet) { viewNote(''); setRateOpen(false); }
+  try { localStorage.setItem('bm_notes', quiet ? 'hidden' : 'shown'); } catch {}
+  showQuiet();
+};
 // The wireframe: only the edges of the mesh's triangles, in the accent colour, in place of its surface
 let wire = false; try { wire = localStorage.getItem('bm_wire') === '1'; } catch {}
 const wireMaterial = new THREE.MeshBasicMaterial({ wireframe: true, transparent: true, opacity: .6 });
@@ -1454,10 +1479,8 @@ function applyWire(){
     if (wire && o.material !== wireMaterial) { o.userData.surface = o.material; o.material = wireMaterial; }
     else if (!wire && o.userData.surface) { o.material = o.userData.surface; delete o.userData.surface; }
   });
-  $('#vwire').textContent = wire ? 'Show surface' : 'Wireframe';
   document.querySelectorAll('#wiremode button').forEach(b => b.classList.toggle('on', (b.dataset.wire === '1') === wire));
 }
-$('#vwire').onclick = () => { wire = !wire; try { localStorage.setItem('bm_wire', wire ? '1' : '0'); } catch {} applyWire(); };
 document.querySelectorAll('#wiremode button').forEach(b => b.onclick = () => {
   wire = b.dataset.wire === '1'; try { localStorage.setItem('bm_wire', wire ? '1' : '0'); } catch {} applyWire();
 });
@@ -1526,6 +1549,7 @@ function applyScene(){
   const root = document.documentElement, dark = root.dataset.theme === 'dark' || (!root.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
   const s = SKY[dark ? 'dark' : 'light'], on = bgMode === 'scene';
   for (const k of ['top', 'horizon', 'below']) sky.material.uniforms[k].value.setHex(s[k]);
+  if (grid.userData.dark !== dark) makeGrid(dark);
   backdrop.visible = on; grid.visible = !on && !terrainShown;
   scene.fog = on ? new THREE.Fog(s.horizon, 8, 140) : null;
   scene.background = new THREE.Color(on ? s.horizon : getComputedStyle(root).getPropertyValue('--bg').trim());
@@ -1584,8 +1608,8 @@ document.querySelectorAll('#theme button').forEach(b => b.onclick = () => {
   try { themeChoice === 'system' ? localStorage.removeItem('bm_theme') : localStorage.setItem('bm_theme', themeChoice); } catch {}
   applyTheme();
 });
-// On a phone, the background and colour choices open from a button in either view, as a panel over it
-const prefs = $('#prefs'), prefsHome = prefs.parentNode, prefsNext = prefs.nextSibling;
+// The settings open from a button (the view's, and on a phone the header's too), as a panel over the page
+const prefs = $('#prefs');
 function setPrefs(open, btn){
   document.body.classList.toggle('prefs-open', open);
   document.querySelectorAll('.prefsbtn').forEach(b => b.setAttribute('aria-expanded', String(open && b === btn)));
@@ -1594,18 +1618,12 @@ function setPrefs(open, btn){
   prefs.style.top = r.bottom + 6 + 'px';
   prefs.style.left = Math.max(8, Math.min(r.left, innerWidth - prefs.offsetWidth - 8)) + 'px';
 }
-function placePrefs(){
-  setPrefs(false);
-  if (phone.matches) document.body.append(prefs);
-  else { prefsHome.insertBefore(prefs, prefsNext); prefs.style.top = prefs.style.left = ''; }
-}
-placePrefs();
-phone.addEventListener('change', placePrefs);
+phone.addEventListener('change', () => setPrefs(false));
 document.querySelectorAll('.prefsbtn').forEach(b => b.onclick = () => setPrefs(b.getAttribute('aria-expanded') !== 'true', b));
 document.addEventListener('pointerdown', ev => { if (document.body.classList.contains('prefs-open') && !ev.target.closest('#prefs, .prefsbtn')) setPrefs(false); });
 addEventListener('keydown', ev => { if (ev.key === 'Escape') setPrefs(false); });
 renderer.domElement.addEventListener('webglcontextlost', ev => { ev.preventDefault(); $('#viewing').textContent = 'The view stopped working: reload the page';
-  if (phone.matches) $('#vtitle').textContent = 'The view stopped working: reload the page';     // where a phone has room to say so
+  if (phone.matches) showTitle('The view stopped working: reload the page');     // where a phone has room to say so
   viewNote('The graphics card dropped this view, usually because it ran out of memory. Close other tabs that use it and reload the page.'); });
 // A 1×1 image, for a GLB whose shape alone is wanted: the mesh in view has its textures already
 const NO_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
@@ -3178,12 +3196,11 @@ function growComment(){
   t.style.height = Math.min(t.scrollHeight + 2, innerHeight * 0.4) + 'px';
 }
 // the button, for a mesh of the site's (not a file opened here): what this browser said of it, and its menu
-// the box open or closed, as its button last left it: the same on every mesh until changed, and kept in this browser (bm_rate_open)
-let rateOpen = true;
-try { rateOpen = localStorage.getItem('bm_rate_open') !== 'no'; } catch {}
+// the box folded away to start with; then open or closed as its button last left it, the same on every mesh until changed.
+// Hiding the notes over the view folds it away too.
+let rateOpen = false;
 function setRateOpen(open){
   rateOpen = open;
-  try { localStorage.setItem('bm_rate_open', open ? 'yes' : 'no'); } catch {}
   if (!open) flushRating();
   showRate();
   if (open) {
@@ -3199,7 +3216,7 @@ function showRate(changed = false){
   btn.setAttribute('aria-expanded', String(rateOpen));
   if (rateOpen) growComment();
   const r = myRating(id);
-  btn.textContent = r ? `Rated ${RATING_NAMES[r]}` : 'Rate';
+  btn.innerHTML = (r ? `Rated ${RATING_NAMES[r]}` : 'Rate') + `<span class="fold" aria-hidden="true">${rateOpen ? '▾' : '▴'}</span>`;
   btn.classList.toggle('r1', r === 1); btn.classList.toggle('r3', r === 3);
   $('#rateseg').querySelectorAll('button').forEach(b => b.classList.toggle('on', +b.dataset.r === r));
   const t = $('#ratecomment');
@@ -3289,6 +3306,10 @@ function renderMeshes(filter = true){
 // The climb a phone names over the view, as it shows nothing else there: the one a boulder's mesh is seen from, or the
 // mesh's own climbs (the first, and how many more), or else the mesh's name
 const gradeTag = c => c.grade ? ` ${c.grade.split(' ')[0]}` : '';
+// the areas a mesh was made for (as the Meshes tab shows them), or ''
+function meshAreaText(id){ return (meshesById[id]?.areas || []).join(', '); }
+// a phone's title over the view: what's in view, and its areas on a line under it
+function showTitle(name, area = ''){ $('#vname').textContent = name; $('#varea').textContent = area; }
 function viewTitle(m, from){
   const seen = (m.boulder_climbs || []).find(c => c.id === from), own = m.climbs.filter(c => !c.shared);
   if (seen) return seen.name + gradeTag(seen);
@@ -3318,7 +3339,7 @@ function shownClimbs(){
 function markShown(){
   const m = shownMesh && meshesById[shownMesh], has = !!m, b = $('#tofull');
   const picked = has && viewedClimb && [...m.climbs, ...(m.boulder_climbs || []), ...climbsCache].find(c => c.id === viewedClimb);
-  const name = picked ? picked.name + gradeTag(picked) : $('#vtitle').textContent || m?.name || '';
+  const name = picked ? picked.name + gradeTag(picked) : $('#vname').textContent || m?.name || '';
   b.disabled = !has;
   b.title = has ? 'Back to the mesh' : 'Pick a climb\'s mesh first';
   b.innerHTML = 'Viewer' + (has && name ? `<small>${esc(name)}</small>` : '');
@@ -3331,7 +3352,7 @@ function viewMesh(id, from, via = '', climb = null){
   if (!m) return;
   viewVia = via;
   viewedClimb = climb;
-  $('#vtitle').textContent = viewTitle(m, from);
+  showTitle(viewTitle(m, from), meshAreaText(id));
   setLink(id, from);
   const own = m.climbs.filter(c => !c.shared), on = m.boulder_climbs || [];
   const label = m.name + (own.length ? ` — ${own.map(c => c.name).join(', ')}` : on.length ? ` — ${plural(on.length, 'climb')}` : '');
@@ -3348,7 +3369,7 @@ function showFrom(m, from){
   sel.onchange = () => {
     const c = seen.find(x => x.id === sel.value);
     if (c) viewedClimb = c.id;
-    $('#vtitle').textContent = viewTitle(m, c?.id); setLink(m.id, c?.id); markShown();
+    showTitle(viewTitle(m, c?.id), meshAreaText(m.id)); setLink(m.id, c?.id); markShown();
     c ? lookFrom(c.view) : frameMain();
   };
   if (sel.value) lookFrom(seen.find(c => c.id === from).view);

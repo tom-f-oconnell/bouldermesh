@@ -96,10 +96,10 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
   from where its photos were placed, kept in each mesh's `metrics.json`). Each card names the areas
   it was made for, with its first climb's Mountain Project path on hovering. The choices are
   remembered in the browser.
-* **Rating a mesh:** *Rate*, at the 3D view's bottom right, takes bad, OK or good and a comment, which grows as it's
-  typed. They're kept in the browser and sent to the site whenever either changes; the site keeps one of each per
+* **Rating a mesh:** *Rate ▴*, at the 3D view's bottom right, opens a box (folded away to start with, and again by
+  *Rate ▾* or by hiding the notes) that takes bad, OK or good and a comment, which grows as it's typed. They're kept in the browser and sent to the site whenever either changes; the site keeps one of each per
   browser, wherever it's sent from (`cli.py mesh-ratings` lists them, with the comments). The Meshes tab sorts by everyone's average
-  or your own rating (unrated past the bad end), can hide those rated bad (1.5 or under on average, bad 1, OK 2, good
+  or your own rating (unrated past the bad end), and under *Filter* can hide those rated bad (1.5 or under on average, bad 1, OK 2, good
   3) or those you rated bad, and each card shows your rating and the average.
 * In the Areas tab, the boulder a climb is harvested for names its Mountain Project page, and each of its climbs opens
   under Climbs, with its photos.
@@ -241,8 +241,8 @@ is running they go next, and if it isn't, only they run.
 again, from scratch, keeping their meshes, so it finds what's been posted since. *Rebuild N changed*
 then meshes those whose photos changed, and *Rebuild all* meshes every climb with enough viewpoints
 again, as after a change to the pipeline. These are queued like retries. A rebuilt mesh takes over
-its climbs, and the one before it stays as an older version: *Show older versions* on the *Meshes*
-tab lists those, and *Use this version* goes back to one. The API can also look only for new videos
+its climbs, and the one before it stays as an older version: *Show older versions*, under the *Meshes*
+tab's *Filter*, lists those, and *Use this version* goes back to one. The API can also look only for new videos
 (`{"videos_only": true}`), and rebuild each climb as soon as it has new photos (`{"then_rebuild": true}`). *Retry* on a failed project does the same for
 that one, and its card and log say what ended it, including when something outside the app killed a tool.
 
@@ -378,7 +378,7 @@ OpenMVS's 11-photo sample set takes 3-4 minutes, and a 100-photo harvest about a
 A large mesh shows within seconds, as a simplified copy (about 150,000 faces, which the admin page changes, or turns off
 with 0) with its texture at 2048 pixels; then its
 texture as sharp as the device can use (4096 on phones and tablets, up to 8192 elsewhere) and all its faces come in the
-background, and *Loading detail…* in the view's bar says how far that's got. ⚙ (or *Detail* in the header) chooses:
+background, and *Loading detail…* in the view's bar says how far that's got. ⚙ *Detail* chooses:
 *Auto* (the default) fetches the rest at once unless the connection is slow (data saving on, or the preview came too
 slowly for the rest to take under 30 s), when the bar offers *Full detail (N MB)* instead; *Full* always fetches it, and
 *Preview* only on that button. The server makes these copies itself for every GLB mesh, new or old (`backend/glbpack.py`,
@@ -411,7 +411,13 @@ where lidar has it rather than where the coordinates say. The squares fetched ar
 If a browser can't load a mesh's texture, the viewer tries it smaller, then says why on the view. Grey
 on a mesh means no photo shows that side, including the backs of surfaces.
 
-*Solid* and *Scene* in the header choose what's behind a mesh: the page's colour, or a sky over ground the colour of the
+The settings, under ⚙ at the right of the view's bar, hold the mesh as *Surface* or *Wireframe*, what's behind it,
+how much detail to load, walls in the way, and colours. ⓘ beside it shows the notes over the view (texture problems,
+stray-piece cleanup, how it was levelled and sized, and on a computer how to move round it), which are hidden to start
+with; a dot on it means a note came while they were. The bar names what's in view, with the areas it was made for in
+brackets.
+
+*Solid* and *Scene* choose what's behind a mesh: the page's colour, or a sky over ground the colour of the
 rock's foot, with a soft shadow under it (the default, until a browser chooses *Solid*). Around a reconstructed mesh with a splat (`scene.splat`, from `backend/splat.py`),
 *Scene* also shows what its photos saw around the rock, where enough of them saw it, and the plain sky and ground
 elsewhere. Fitting splats is off (`SPLATS=1` turns it on for new meshes, and `python3 cli.py splat <mesh_id>` fits one),
@@ -422,13 +428,12 @@ The climbs list hides climbs without meshes until that box is unticked. Each cli
 in view is blue. *Random* opens any mesh; it's blue until one is in view.
 
 On a phone, the page shows either the controls or the view. The controls' header holds *Viewer* (grey until a mesh is
-opened, then with the climb in view named under it), *Random*, a ⚙ button (the mesh as *Surface* or *Wireframe*, the
-background, how much detail to load, walls in the way, and colours), *Volunteer*, and *Edit…* or *Editing*. The view's bar holds ← back to the controls, *Random*,
-⚙, *Sway*, and at its right end *Map*, which swaps the mesh for the map, and then reads *3D*. While a mesh loads, its
-progress shows over whichever is on screen, and the view takes over once it's ready. Over
-the mesh it shows only the climb's name, small, at the top, so texture problems, stray-piece cleanup, *Hide notes* and
-the iPhone gravity comparison are only shown on wider screens (over 860 px). A long press on the view gives a link to the
-mesh, to copy or share.
+opened, then with the climb in view named under it), *Random*, ⚙ (the same settings), *Volunteer*, and *Edit…* or
+*Editing*. The view's bar holds ← back to the controls, *Random*, *Nearby*, *Map* (which swaps the mesh for the map,
+and then reads *3D*), and ⓘ and ⚙ at its right end. While a mesh loads, its progress shows over whichever is on screen,
+and the view takes over once it's ready. Over the mesh it shows the climb's name, small, at the top, with the areas it
+was made for under it, and ⓘ's notes when they're shown. A long press on the view gives a link to the mesh, to copy or
+share.
 
 The map opens around the mesh in view, its narrower side 1 km across (the admin page's *The map opens around a boulder
 this many km across*), with the point of its climb open as if clicked: the climb whose *View* opened it, or the one a
