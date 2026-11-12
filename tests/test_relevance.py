@@ -319,6 +319,50 @@ with tempfile.TemporaryDirectory() as td:
         relevance.boulder_probability, relevance.available = real
 print("pooling and splitting OK")
 
+# --- adding to a harvest (volunteers brought the videos it waited for): its photos and sources stay, videos framed before
+# aren't framed again, and no photos are searched for or downloaded
+import hashlib  # noqa: E402
+
+from climbs import harvest as harvest_mod, youtube as youtube_mod  # noqa: E402
+from climbs.common import Climb, Media  # noqa: E402
+
+with tempfile.TemporaryDirectory() as td:
+    proj = pathlib.Path(td) / "proj"
+    (proj / "photos").mkdir(parents=True)
+    old_url, new_url = "https://www.youtube.com/watch?v=AAAAAAAAAAA", "https://www.youtube.com/watch?v=BBBBBBBBBBB"
+    tag = lambda u: hashlib.sha1(u.encode()).hexdigest()[:8]  # noqa: E731
+    view_of(proj / "photos", "ddg_x.jpg", 100, 100)
+    view_of(proj / "photos", f"yt_{tag(old_url)}_000.jpg", 300, 200)
+    earlier = [{"file": "ddg_x.jpg", "url": "http://x/ddg_x.jpg", "source": "ddg"},
+               {"file": f"yt_{tag(old_url)}_000.jpg", "url": old_url, "kind": "video-frame", "source": "youtube"}]
+    (proj / "sources.json").write_text(json.dumps({"files": earlier}))
+    framed = []
+
+    def frames_of(videos, out_dir, log, **kw):
+        framed.extend(v.url for v in videos)
+        return [view_of(out_dir, f"yt_{tag(v.url)}_000.jpg", 500, 400) for v in videos]
+
+    def no_photos(*a, **k):
+        raise AssertionError("photos searched for when adding")
+
+    real = harvest_mod.video_frames, harvest_mod.photos_part, youtube_mod.search
+    harvest_mod.video_frames, harvest_mod.photos_part = frames_of, no_photos
+    youtube_mod.search = lambda c, log, **kw: []
+    try:
+        climb = Climb(source="test", source_id="1", url="http://x", name="X",
+                      videos=[Media(url=old_url, kind="video"), Media(url=new_url, kind="video")])
+        logged = []
+        got = harvest_mod.harvest(climb, proj, logged.append, {"youtube"}, relevance_filter=False, add=True)
+    finally:
+        harvest_mod.video_frames, harvest_mod.photos_part, youtube_mod.search = real
+    assert framed == [new_url], framed
+    assert sorted(p.name for p in (proj / "photos").iterdir()) == sorted(["ddg_x.jpg", f"yt_{tag(old_url)}_000.jpg", f"yt_{tag(new_url)}_000.jpg"])
+    files = json.loads((proj / "sources.json").read_text())["files"]
+    assert files[:2] == earlier and files[2]["file"] == f"yt_{tag(new_url)}_000.jpg" and files[2]["url"] == new_url, files
+    assert got["images"] == 3 and got["video_frames"] == 1 and any("1 video(s) framed before" in x for x in logged), (got, logged)
+    assert harvest_mod.steps({"youtube"}, True, add=True)[0][0] == "video", "no finding or downloading photos"
+print("adding to a harvest OK")
+
 # --- the viewpoint verdict, by the current rules, from a report made under older ones ---------------
 from climbs import diversity  # noqa: E402
 

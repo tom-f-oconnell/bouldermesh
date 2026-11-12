@@ -466,9 +466,9 @@ def anchors_of(others: list[Path]) -> list[Path]:
 
 
 # ----------------------------------------------------------------------------- orchestrate
-def steps(sources: set[str], relevance_filter: bool = True) -> list[tuple[str, str, float]]:
-    """The progress steps of harvest(), weighted roughly by duration."""
-    out = [("find", "Find photos", 1), ("download", "Download photos", 5)]
+def steps(sources: set[str], relevance_filter: bool = True, add: bool = False) -> list[tuple[str, str, float]]:
+    """The progress steps of harvest(), weighted roughly by duration (with add, no photos are found or downloaded)."""
+    out = [] if add else [("find", "Find photos", 1), ("download", "Download photos", 5)]
     if "youtube" in sources:     # alongside the photos, so that volunteers are asked at once
         out.append(("video", "YouTube videos and their frames", 5, True))
     out.append(("dedupe", "Remove duplicates", 1))
@@ -502,7 +502,8 @@ def photos_part(c: Climb, sources: set[str], queries: list[str], photos_dir: Pat
 
 def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = None, relevance_filter: bool = True,
             tracker=None, pool_from: list[Path] | None = None, anchors_from: list[Path] | None = None,
-            want: Callable[[str], bool] | None = None, want_search: Callable[[str], bool] | None = None) -> dict:
+            want: Callable[[str], bool] | None = None, want_search: Callable[[str], bool] | None = None,
+            add: bool = False) -> dict:
     """Collect photos for climb `c` into project_dir/photos (provenance + reports are written
     next to it, never inside it, so the reconstruction only sees images).
 
@@ -515,6 +516,10 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
             filter matches web photos against, without adding them.
         want: given the URL of each video YouTube wouldn't let this server have, to ask volunteers (video_frames()).
         want_search: given the words of a YouTube search this server won't do, to ask volunteers (youtube.search()).
+        add: add to what an earlier harvest here found, rather than start again: its photos and sources.json stay,
+            videos it took frames from (or found none of use in) aren't framed again, and only the new photos are
+            judged by the filter (its earlier report's verdicts stand). As when volunteers bring the videos a climb
+            waited for. "video_frames" then counts only the new frames.
 
     Returns:
         A summary, whose "asked" says what volunteers were asked for: {"searches": [words], "videos": [URLs]};
@@ -533,6 +538,14 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
     # needn't wait for the photos, which Mountain Project's minute between requests makes slow
     frames, videos, infos, asked, yt, failed = [], [], {}, {"searches": [], "videos": []}, {"checked": True}, []
 
+    earlier: list[dict] = []
+    if add:
+        try:
+            earlier = json.loads((project_dir / "sources.json").read_text()).get("files") or []
+        except (OSError, ValueError):
+            earlier = []
+    framed = {youtube.video_id(f["url"]) or f["url"] for f in earlier if f.get("kind") == "video-frame" and f.get("url")}
+
     def youtube_part(control):
         use_control(control)    # stopping the job stops this part too, and the tools it runs
         report_video = progress("video") or (lambda frac=0.0, detail=None: None)
@@ -541,8 +554,11 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
             seen = {youtube.video_id(v.url) or v.url for v in c.videos}    # the page's links, in any of YouTube's URL forms
             found = youtube.search(c, log, want=want_search, asked=asked["searches"], state=yt)
             videos.extend(list(c.videos) + [v for v in found if (youtube.video_id(v.url) or v.url) not in seen])
-            if videos:
-                frames.extend(video_frames(videos, photos_dir, log, progress=progress("video"), infos=infos, want=want,
+            new = [v for v in videos if (youtube.video_id(v.url) or v.url) not in framed]
+            if add and len(new) < len(videos):
+                log(f"youtube: {len(videos) - len(new)} video(s) framed before, kept as they are")
+            if new:
+                frames.extend(video_frames(new, photos_dir, log, progress=progress("video"), infos=infos, want=want,
                                            asked=asked["videos"]))
             if tracker:
                 tracker.end("video", detail=f"{len(frames)} frame(s) from {len(videos)} video(s)"
@@ -556,7 +572,7 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         alongside = threading.Thread(target=youtube_part, args=(current_control(),), name="harvest-youtube", daemon=True)
         alongside.start()
     try:
-        manifest = photos_part(c, sources, queries, photos_dir, log, progress)
+        manifest = list(earlier) if add else photos_part(c, sources, queries, photos_dir, log, progress)
     finally:
         if alongside:
             alongside.join()
@@ -564,7 +580,10 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         raise failed[0]
     if videos:
         by_tag = {hashlib.sha1(v.url.encode()).hexdigest()[:8]: v for v in videos}   # as video_frames names them
+        listed = {m["file"] for m in manifest}
         for f in frames:
+            if f.name in listed:
+                continue
             v = by_tag[f.name.split("_")[1]]
             info = infos.get(v.url) or {}
             manifest.append({"file": f.name, "url": v.url, "page": v.url, "kind": "video-frame", "source": "youtube",

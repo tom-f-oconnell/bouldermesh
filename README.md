@@ -946,14 +946,16 @@ volunteers and for connecting the public site to whichever server harvests.
   and it rests an hour. The admin page's Volunteers list shows each one's state, why, its last speed and yt-dlp; your
   phone is told when one gets worse (with notifications on), and when several are degraded at once, which is likely
   YouTube changing something that a newer yt-dlp fixes, the page says so. Warnings when a fetch worked are only noted.
-- **An area's climbs wait for them:** a climb whose harvest asked volunteers for a search or videos is harvested again
-  when they've come, and meshed once, rather than meshed without them first; after 24 h (`VOLUNTEER_WAIT_HOURS`) it's
-  meshed with what's come.
+- **An area's climbs wait for them:** a climb whose harvest asked volunteers for a search or videos has what they
+  fetched added once it's come, and is meshed once, rather than meshed without them first; after 24 h
+  (`VOLUNTEER_WAIT_HOURS`) it's meshed with what's come. Adding keeps the photos it had (asking for them back from the
+  backup first, if they were offloaded, and waiting for them as for a machine): only YouTube is looked at, videos framed
+  before aren't framed again, and the filter judges only the new frames.
 - **What's asked of them:** with *Fetch videos from YouTube* at its default, videos a harvest or finding beta couldn't
   have because YouTube is refusing this server, once there's a volunteer. *Fetch the videos harvests went without* asks
-  for earlier ones too, and *Fetch videos' missing details* for licences never read. A climb is harvested again once its
-  videos have come: an area's as *harvest again and rebuild*, which a finished area runs by itself and a stopped one when
-  it's started. *Only through volunteers* is for a cloud server, which shouldn't ask YouTube itself at all.
+  for earlier ones too, and *Fetch videos' missing details* for licences never read. A climb has its videos added once
+  they've come: an area's as *add what volunteers fetched and rebuild*, which a finished area runs by itself and a stopped
+  one when it's started. A climb with no harvest before is harvested from scratch. *Only through volunteers* is for a cloud server, which shouldn't ask YouTube itself at all.
 - **Fetched videos** are kept (`data/cache/videos`, up to `VIDEO_CACHE_GB`, 50 by default and 10 in the public setup)
   for finding beta and harvesting again, so YouTube isn't asked for one twice; this server's own downloads too. Beta
   can only use a video with a frame placed in a mesh, which was about half of those harvests used (387 of 739 on hal):

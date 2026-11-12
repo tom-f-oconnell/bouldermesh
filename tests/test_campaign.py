@@ -53,9 +53,14 @@ def fake_fetch(url, include_children=False):
                   videos=[Media(url=f"http://y/{i}", kind="video") for i in range(videos.get(name, 0))])]
 
 
+added: list[tuple[str, frozenset]] = []     # harvests that added to the one before: (climb, sources)
+
+
 def fake_harvest(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, anchors_from=None, want=None,
-                 want_search=None):
+                 want_search=None, add=False):
     harvested.append(c.name)
+    if add:
+        added.append((c.name, frozenset(sources)))
     pools[c.name] = [p.name for p in pool_from or []]
     anchors[c.name] = [p.name for p in anchors_from or []]
     what = outcome.get(c.name) if sources else outcome.get("pooled")
@@ -283,7 +288,7 @@ def with_a_frame(c_, project_dir, *a, **k):
 
 server.harvest_mod.harvest = with_a_frame
 server.reharvest_with_videos(got["Alpha2"]["project_id"])
-assert items(c["id"])["Alpha2"]["redo"] == "harvest+rebuild" and server.campaign_status(c["id"]) == "running"
+assert items(c["id"])["Alpha2"]["redo"] == "more+rebuild" and server.campaign_status(c["id"]) == "running"
 reconstructed.clear()
 run_all(c["id"], limit=10)
 server.harvest_mod.harvest = fake_harvest
@@ -934,7 +939,7 @@ searched: dict[str, list[str]] = {}      # the videos a YouTube search finds of 
 
 
 def harvest_with_photos(c, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, anchors_from=None, want=None,
-                        want_search=None):
+                        want_search=None, add=False):
     harvested.append(c.name)
     for n in photo_sets.get(c.name, ["a.jpg", "b.jpg", "c.jpg"]):
         (project_dir / "photos" / n).write_bytes(b"x")
@@ -1102,7 +1107,7 @@ assert server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id
 coming[pid] = 0
 server.volunteer_ready("harvest", pid)      # the search's results came
 it = items(c["id"])["Alpha"]
-assert it["status"] == "pending" and it["redo"] == "harvest+rebuild" and it["retry"] == 1, it
+assert it["status"] == "pending" and it["redo"] == "more+rebuild" and it["retry"] == 1, it
 run_all(c["id"])
 it = items(c["id"])["Alpha"]
 assert it["status"] == "waiting" and "2 YouTube" in it["note"] and not meshed and harvested.count("Alpha") == 2, it
@@ -1152,6 +1157,52 @@ finally:
     server.VOLUNTEERS.resettle = real_resettle
 server.VOLUNTEERS.pending, server.harvest_mod.harvest, pipeline.reconstruct = real_pending, fake_harvest, fake_reconstruct
 print("waiting for volunteers OK")
+
+# --- what volunteers fetched, added to a harvest: its photos and record stay, only YouTube is looked at, and what it had
+# before is kept in its summary; its photos brought back from the backup first if they were offloaded; from scratch
+# without a harvest before
+fresh()
+acid = server.upsert_climb(Climb(source="test", source_id="add1", url="https://x/add1", name="Adding"))
+apid = server.new_id()
+(server.PROJECTS / apid / "photos").mkdir(parents=True)
+(server.PROJECTS / apid / "photos" / "keep.jpg").write_bytes(b"x")
+(server.PROJECTS / apid / "sources.json").write_text(json.dumps({"files": [{"file": "keep.jpg"}]}))
+server.q("INSERT INTO projects(id,name,created,kind,climb_id,status,harvest) VALUES(?,?,?,?,?,?,?)", apid, "Adding (harvest)", time.time(),
+         "harvest", acid, "done", json.dumps({"images": 1, "video_frames": 2, "videos": [{"url": "u1"}], "queries": ["q"]}), write=True)
+seen_add = []
+
+
+def adding(c_, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, anchors_from=None, want=None,
+           want_search=None, add=False):
+    seen_add.append((add, set(sources), (project_dir / "photos" / "keep.jpg").exists()))
+    return {"images": 2, "video_frames": 1, "queries": [], "diversity": {"verdict": "good"}, "videos": [{"url": "u2"}]}
+
+
+server.harvest_mod.harvest = adding
+try:
+    server.run_harvest(apid, set(server.HARVEST_SOURCES), False, again=True, add=True)
+    assert seen_add == [(True, {"youtube"}, True)], seen_add
+    h = json.loads(server.q("SELECT harvest FROM projects WHERE id=?", apid, one=True)["harvest"])
+    assert h["video_frames"] == 3 and [v["url"] for v in h["videos"]] == ["u1", "u2"] and h["queries"] == ["q"], h
+    assert "adding the videos volunteers fetched" in server.read_log(apid)
+    # its photos in the backup: asked back, and it waits for them, as for a machine
+    server.q("INSERT OR REPLACE INTO offloads(path, kind, ref, bytes, marked, done) VALUES(?,?,?,?,?,?)", f"projects/{apid}/photos",
+             "photos", apid, 1, time.time() - 60, time.time() - 30, write=True)
+    try:
+        server.run_harvest(apid, set(server.HARVEST_SOURCES), False, again=True, add=True)
+        raise AssertionError("harvested without its photos")
+    except server.PhotosAway:
+        pass
+    assert server.q("SELECT wanted FROM offloads WHERE path=?", f"projects/{apid}/photos", one=True)["wanted"], "asked for back"
+    assert len(seen_add) == 1
+    server.q("DELETE FROM offloads", write=True)
+    # without a harvest before: from scratch
+    server.q("UPDATE projects SET harvest=NULL WHERE id=?", apid, write=True)
+    server.run_harvest(apid, set(server.HARVEST_SOURCES), False, again=True, add=True)
+    assert seen_add[-1] == (False, set(server.HARVEST_SOURCES), False), seen_add[-1]
+finally:
+    server.harvest_mod.harvest = fake_harvest
+print("adding what volunteers fetched OK")
 
 # --- a climb isn't meshed until YouTube has been searched for it, unless its area says to go without ---------------------
 fresh()

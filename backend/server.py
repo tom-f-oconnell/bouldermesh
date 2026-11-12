@@ -2509,7 +2509,7 @@ def boulder_projects(climb_id: str, but: str | None = None) -> list[Path]:
 
 
 def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter: bool = True, resume: bool = False,
-                again: bool = False, wait: bool = False, need_youtube: bool = False) -> None:
+                again: bool = False, wait: bool = False, need_youtube: bool = False, add: bool = False) -> None:
     """Gather a climb's photos into its project, and optionally make its mesh. Only photos found for it are kept,
     so that its mesh shows the climb; the other harvests of its boulder only help tell which web photos are of it.
 
@@ -2521,11 +2521,20 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
             fetch for it (an area's climb, which is meshed once they've come, so that it's meshed once).
         need_youtube: rather than mesh it now, leave it "waiting" until YouTube has been searched for it (an area's
             climb, unless its area meshes without that).
+        add: with again, add the videos volunteers fetched since to what the harvest before found (harvest_mod's add),
+            rather than start again: its photos stay (brought back from the backup first, if they were offloaded,
+            waiting for that as for a machine), and only YouTube is looked at. Without a harvest before, from scratch.
     """
     pdir = PROJECTS / pid
+    before = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)["harvest"] if again and add else None
+    add = bool(before) and (pdir / "sources.json").is_file()
+    if add:
+        need_back([pid], "adding what volunteers fetched")
     finished = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)["harvest"] if resume else None
     if resume:
         append_log(pid, "-- carrying on after an interruption")
+    elif add:
+        append_log(pid, "-- adding the videos volunteers fetched to what was harvested before")
     elif again:
         append_log(pid, "-- harvesting again")
     else:
@@ -2538,13 +2547,15 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
         proj = q("SELECT climb_id FROM projects WHERE id=?", pid, one=True)
         c = climb_obj(proj["climb_id"])
         stub = bool(c.raw.get("stub"))
-        tracker = tracker_for(pid, ([("page", "Fetch problem page", 1)] if stub else []) + harvest_mod.steps(sources, relevance_filter)
+        if add:
+            sources = {"youtube"} & set(sources) or {"youtube"}
+        tracker = tracker_for(pid, ([("page", "Fetch problem page", 1)] if stub else []) + harvest_mod.steps(sources, relevance_filter, add)
                               + (pipeline.steps() if reconstruct else []))
         if finished:
             summary = json.loads(finished)
             log("the photos were already harvested")
         else:
-            if resume or again:
+            if (resume or again) and not add:
                 for partial in ("photos", "rejected"):
                     shutil.rmtree(pdir / partial, ignore_errors=True)
                 (pdir / "photos").mkdir()
@@ -2562,10 +2573,16 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                     log(f"couldn't read the problem page again ({e}); using what was read before")
             summary = harvest_mod.harvest(c, pdir, log, sources, relevance_filter=relevance_filter, tracker=tracker,
                                           anchors_from=boulder_projects(proj["climb_id"], pid), want=video_wanter("harvest", pid),
-                                          want_search=search_wanter("harvest", pid))
+                                          want_search=search_wanter("harvest", pid), add=add)
             videos = summary.pop("videos", [])
             record_videos(proj["climb_id"], videos, log)
             summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license")} for v in videos]
+            if add:     # the harvest before's videos and frames, with what's new
+                was = json.loads(before)
+                had = {v.get("url") for v in summary["videos"]}
+                summary["videos"] = [v for v in was.get("videos") or [] if v.get("url") not in had] + summary["videos"]
+                summary["video_frames"] = (was.get("video_frames") or 0) + (summary.get("video_frames") or 0)
+                summary["queries"] = was.get("queries") or summary.get("queries")
             q("UPDATE projects SET harvest=?, status='harvested' WHERE id=?", json.dumps(summary), pid, write=True)
         verdict = diversity_mod.judge(summary.get("diversity"))     # by the current rules, for a harvest finished earlier
         log(f"harvest complete: {summary['images']} image(s), verdict {verdict}")
@@ -3266,7 +3283,7 @@ def wait_for_volunteers(cid: str, sid: str, pid: str, since: float | None) -> No
 
 def settle_waiting(camp_id: str) -> None:
     """An area's climbs that have waited for volunteers for VOLUNTEER_WAIT: harvested again and meshed with what's come."""
-    q("UPDATE campaign_items SET status='pending', retry=1, redo='harvest+rebuild', was='waiting', redo_started=0, note=? "
+    q("UPDATE campaign_items SET status='pending', retry=1, redo='more+rebuild', was='waiting', redo_started=0, note=? "
       "WHERE campaign_id=? AND status='waiting' AND waiting_since<?",
       f"waited {VOLUNTEER_WAIT / 3600:.0f} h for volunteers: meshing it with what's come", camp_id, time.time() - VOLUNTEER_WAIT,
       write=True)
@@ -3735,6 +3752,7 @@ def run_retry(pid: str) -> None:
 
 
 REDO_NAMES = {"harvest": "harvest again", "videos": "look for new videos", "rebuild": "rebuild", "rebuild-changed": "rebuild",
+              "more": "add what volunteers fetched", "more+rebuild": "add what volunteers fetched and rebuild",
               "harvest+rebuild": "harvest again and rebuild", "videos+rebuild": "look for new videos and rebuild",
               "boulder": "mesh its boulder from every climb's photos", "pool": "mesh its boulder from every climb's photos",
               "try-skipped": "try meshing, as the viewpoint check would let it now",
@@ -3808,7 +3826,7 @@ def queue_redo(camp_id: str, what: str) -> int:
     rows = triable(camp_id) if what == "try-skipped" else q(
         "SELECT ci.source_id, ci.status FROM campaign_items ci JOIN projects p ON p.id=ci.project_id "
         "WHERE ci.campaign_id=? AND ci.status IN ('done','skipped','failed') AND p.status NOT IN ('queued','running','harvesting')"
-        + ("" if what.split("+")[0] in ("harvest", "videos") else " AND p.harvest IS NOT NULL")
+        + ("" if what.split("+")[0] in ("harvest", "videos", "more") else " AND p.harvest IS NOT NULL")
         + (" AND ci.changed=1" if what == "rebuild-changed" else ""), camp_id)
     for r in rows:
         set_item(camp_id, r["source_id"], status="pending", retry=1, redo=what, was=r["status"], redo_started=0,
@@ -3852,13 +3870,22 @@ def settle_too_few_placed() -> int:
 def _harvest_again(row: dict, log) -> dict:
     pid = row["project_id"]
     before = photo_names(pid)
-    if row["redo"].split("+")[0] == "videos":
+    first = row["redo"].split("+")[0]
+    if first == "more":     # what volunteers fetched since, added to what it had
+        run_harvest(pid, set(HARVEST_SOURCES), False, again=True, add=True)
+        return _harvested_again(row, pid, before)
+    if first == "videos":
         new = new_videos(row["climb_id"], pid, log)
         if not new:
             log("no videos of this climb on YouTube that its photos don't already have frames from")
             return {"status": row["was"], "note": "no new videos found"}
         log(f"{len(new)} new video(s) of this climb: harvesting it again")
     run_harvest(pid, set(HARVEST_SOURCES), False, again=True)
+    return _harvested_again(row, pid, before)
+
+
+def _harvested_again(row: dict, pid: str, before: set[str]) -> dict:
+    """How an area's climb harvested again (_harvest_again()) went: its status and note, and whether its photos changed."""
     p = q("SELECT status,harvest FROM projects WHERE id=?", pid, one=True)
     if row["mesh_id"]:
         q("UPDATE projects SET status='done' WHERE id=? AND status='harvested'", pid, write=True)
@@ -3949,7 +3976,7 @@ def run_redo(camp: dict, item: dict) -> None:
     jobctl.begin(low_priority=True)
     try:
         set_item(cid, sid, status="running", note=None)
-        if first in ("harvest", "videos") and not row["redo_started"]:    # a rebuild that started was harvested already
+        if first in ("harvest", "videos", "more") and not row["redo_started"]:    # a rebuild that started was harvested already
             end = _harvest_again(row, log)
             if row["was"] == "waiting" and not row["mesh_id"] and may_wait(row) and VOLUNTEERS.pending("harvest", row["project_id"]):
                 log("waiting for more from volunteers: the YouTube videos their search found")
@@ -5000,7 +5027,7 @@ def run_job(job: dict) -> None:
             run_reconstruct(job["pid"], job.get("internet", False), resume=job.get("resume", False))
         elif job["type"] == "harvest":
             run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True), resume=job.get("resume", False),
-                        again=job.get("again", False))
+                        again=job.get("again", False), add=job.get("add", False))
         elif job["type"] == "retry":
             run_retry(job["pid"])
         elif job["type"] == "boulder":
@@ -6973,19 +7000,19 @@ def reharvest_with_videos(pid: str) -> bool:
     item = q("SELECT campaign_id, source_id, status FROM campaign_items WHERE project_id=? LIMIT 1", pid, one=True)
     if item:
         if item["status"] == "waiting":
-            set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="harvest+rebuild", was="waiting",
-                     redo_started=0, note="volunteers have fetched what it waited for: harvesting it again, then meshing it")
-        elif item["status"] == "harvested":     # harvested for its boulder's mesh, which isn't made yet: again first
-            set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="harvest", was="harvested",
-                     redo_started=0, note="volunteers have fetched more for it: harvesting it again for its boulder's mesh")
+            set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="more+rebuild", was="waiting",
+                     redo_started=0, note="volunteers have fetched what it waited for: adding it to its photos, then meshing it")
+        elif item["status"] == "harvested":     # harvested for its boulder's mesh, which isn't made yet: added to first
+            set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="more", was="harvested",
+                     redo_started=0, note="volunteers have fetched more for it: adding it to its photos for its boulder's mesh")
         elif item["status"] in ("done", "skipped", "failed"):
-            set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="harvest+rebuild", was=item["status"],
-                     redo_started=0, note="queued to harvest again with the videos volunteers fetched")
+            set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="more+rebuild", was=item["status"],
+                     redo_started=0, note="queued to add the videos volunteers fetched to its photos")
             q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", item["campaign_id"], write=True)
         return True
-    append_log(pid, "volunteers fetched the videos this harvest couldn't have: harvesting it again (Reconstruct uses them)")
+    append_log(pid, "volunteers fetched the videos this harvest couldn't have: adding them to its photos (Reconstruct uses them)")
     q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
-    queue_job({"type": "harvest", "pid": pid, "sources": sorted(HARVEST_SOURCES), "reconstruct": False, "again": True})
+    queue_job({"type": "harvest", "pid": pid, "sources": sorted(HARVEST_SOURCES), "reconstruct": False, "again": True, "add": True})
     return True
 
 
