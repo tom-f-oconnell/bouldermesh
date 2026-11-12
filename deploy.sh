@@ -61,7 +61,9 @@ if [ "$check" -eq 3 ]; then
             n=$(($(printf '%s\n' "$legend" | wc -l) + 1))
             printf "%${n}s" '' | tr ' ' '\n'; printf '\e[%dA' "$n"     # room below first, so that it doesn't scroll
             printf '%s\e7\n%s\e8' "$question" "$legend"                 # the legend below, back to the question
-            read -r answer
+            trap 'printf "\\e[J\\n"; cancel 130' INT HUP TERM              # Ctrl-C clears it too
+            read -r answer || { printf '\n'; answer=c; }                # Ctrl-D: cancel, as any other answer
+            trap - INT HUP TERM
             printf '\e[J'                                              # and the legend gone again
         else
             read -r -p "$question" answer
