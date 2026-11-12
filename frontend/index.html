@@ -2522,7 +2522,7 @@ function climbsTail(el, more){
 function climbsCount(list, searching){
   const total = climbsTotal ?? climbsCache.length;
   $('#c-count').textContent = !climbsCache.length ? '' : searching
-    ? (climbsFoundMore ? `(${list.length} found so far: more as you scroll; of ${total})` : `(${list.length} found, of ${total})`)
+    ? `(${total})`
     : climbsMore || total > climbsCache.length ? `(the newest ${climbsCache.length} of ${total}: more as you scroll, and searching covers them all)` : `(${total})`;
 }
 const SOURCE_NAME = { mountainproject: 'Mountain Project', openbeta: 'OpenBeta', kaya: 'Kaya' };
