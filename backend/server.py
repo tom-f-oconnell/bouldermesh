@@ -967,10 +967,10 @@ def pooled_summary(key: str, climbs: list[dict], kinds: dict, mid: str | None = 
     their own photos, each counted only on the mesh of its boulder that places most of them: homes, {climb: mesh}), its
     lowest area and what that is, and whether it's one boulder.
 
-    It's one boulder when Mountain Project says the area is one rock, and nothing the mesh left out of its climbs'
-    photos makes a mesh apart (keep_rest()): none of them left REST_LEAST out, or meshing those failed. Otherwise
-    a mesh placing more than one climb is a group. A mesh from before its rest was kept goes by whether every climb
-    known on the area is placed in it.
+    It's one boulder when Mountain Project says the area is one rock, it places more than one climb, every climb on it
+    was tried in it, and nothing the mesh left out of its climbs' photos makes a mesh apart (keep_rest()): none of them
+    left REST_LEAST out, or meshing those failed. Otherwise a mesh placing more than one climb is a group. A mesh from
+    before its rest was kept goes by whether every climb known on the area is placed in it.
     """
     leaf = pool_leaf(key)
     placed = {c["id"] for c in climbs if c.get("view") and (not homes or homes.get(c["id"], mid) == mid)}
@@ -980,7 +980,9 @@ def pooled_summary(key: str, climbs: list[dict], kinds: dict, mid: str | None = 
     split = tried.get("status") == "done" and bool(tried.get("climbs"))
     apart = len((rest or {}).get("apart") or [])
     untried = boulder_untried(mid, leaf) if mid and not is_pool(key) else None
-    if rest is not None:
+    if len(placed) < 2:
+        whole = False
+    elif rest is not None:
         whole = kind == "boulder" and not split and (not apart or tried.get("status") in ("failed", "poor")) and untried == 0
     else:
         on_leaf = {c["id"] for c in q("SELECT id FROM climbs WHERE area_path=?", leaf)} if kind == "boulder" and not is_pool(key) else set()

@@ -2454,7 +2454,7 @@ function pooledTags(m){
   const of = p.kind === 'group' ? ` in ${esc(p.area)}, a Mountain Project area of several boulders, whose photos match`
     : p.kind === 'boulder' ? ` on ${esc(p.area)}` : ` in ${esc(p.area)}`;
   const word = p.whole ? 'boulder' : p.placed > 1 ? 'group' : '';
-  const why = p.whole ? `. Mountain Project says ${esc(p.area)} is one rock, every climb on it was harvested and tried in it, and none of their photos it left out make a mesh of their own, so it's one boulder`
+  const why = p.whole ? `. Mountain Project says ${esc(p.area)} is one rock, every climb on it was harvested and tried in it, it places more than one of them, and none of their photos it left out make a mesh of their own, so it's one boulder`
     : p.rest_of ? `. Made from the photos the mesh of ${esc(p.area)} left out, so it's another side or rock than that one`
     : p.split ? `. The photos it left out of some climbs made a mesh of their own, so it isn't the whole boulder`
     : p.untried ? `. ${plural(p.untried, 'climb')} on ${esc(p.area)} ${p.untried === 1 ? 'has' : 'have'} no photos tried in it (never harvested, or none found), so it isn't one boulder yet`

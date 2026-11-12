@@ -647,9 +647,9 @@ So the photos left out are now handled in two steps:
    boulder, and nothing of the Smoking boulder. Frames of one video can rebuild whatever the camera filmed, so a mesh
    from them alone isn't evidence of the climb's rock.
 
-**One boulder or a group.** A mesh is called one boulder when Mountain Project says its area is one rock, every climb on
-it was harvested and had its photos tried in the mesh, and nothing its mesh left out makes a mesh of its own (no climb
-left 6 or more out, or meshing them failed). Otherwise each mesh placing more than one climb is a group, the boulder's
+**One boulder or a group.** A mesh is called one boulder when Mountain Project says its area is one rock, it places more
+than one climb, every climb on it was harvested and had its photos tried in the mesh, and nothing its mesh left out makes
+a mesh of its own (no climb left 6 or more out, or meshing them failed). Otherwise each mesh placing more than one climb is a group, the boulder's
 own included. Every problem on the boulder's page is made known and harvested before its mesh is made. The page is read
 from the HTTP cache, as it was when its kind was read. So a climb never harvested, or whose harvest found nothing, keeps
 it a group. Each climb counts toward one mesh, the one placing most of its own photos, so groups don't share climbs.

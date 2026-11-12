@@ -2180,6 +2180,8 @@ server.save_rest(boulder_mesh, {**rec, "attempt": {**rec["attempt"], "status": "
 assert server.pooled_summary(got["Pea"]["boulder"], on_parent, kinds, boulder_mesh)["whole"] is True
 server.save_rest(boulder_mesh, {**rec, "apart": [], "attempt": None})
 assert server.pooled_summary(got["Pea"]["boulder"], on_parent, kinds, boulder_mesh)["whole"] is True
+one_placed = [{**c, "view": c["view"] if c["id"] == ids["Pea"] else None} for c in on_parent]
+assert server.pooled_summary(got["Pea"]["boulder"], one_placed, kinds, boulder_mesh)["whole"] is False, "one climb isn't a boulder"
 server.save_rest(boulder_mesh, {**rec, "attempt": None})
 summary = server.pooled_summary(got["Pea"]["boulder"], on_parent, kinds, boulder_mesh)
 assert (summary["whole"], summary["apart"], summary["rest"]) == (False, 2, None), "enough left out, never tried: a group till it is"

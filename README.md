@@ -286,8 +286,9 @@ well.
 
 **On the cards.** Meshes are named for what they're of, not how they were made. A mesh of several climbs' photos says how
 many of them it places, each counted only on the mesh of its boulder that places most of its own photos.
-- **Boulder** ("boulder · 7/9 climbs") needs all three of these:
+- **Boulder** ("boulder · 7/9 climbs") needs all four of these:
   - Mountain Project says its area is one rock.
+  - It places more than one climb, by their own photos.
   - Every climb on it was harvested and had photos tried in its mesh. That includes every problem its page lists, which
     are made known and harvested before it's meshed. A climb whose harvest found no photos keeps it a group.
   - Nothing it left out made a mesh of its own: none of its climbs left 6 photos out, or meshing them failed.
