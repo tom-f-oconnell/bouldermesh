@@ -1202,6 +1202,16 @@ try:
     assert seen_add[-1] == (False, set(server.HARVEST_SOURCES), False), seen_add[-1]
 finally:
     server.harvest_mod.harvest = fake_harvest
+# climbs queued before to be harvested again from scratch for what volunteers fetched: added to instead, as the server
+# starts; not one asked to harvest again by hand, nor one already started
+cm = server.create_campaign("", "popularity", only("Alpha") + "".join(line for line in CSV.splitlines(True)[1:] if line.startswith(("Beta,", "Gamma,"))), start=False)
+for name, redo, note, started in (("Alpha", "harvest+rebuild", "volunteers have fetched what it waited for: harvesting it again, then meshing it", 0),
+                                  ("Beta", "harvest+rebuild", "queued to harvest again and rebuild", 0),
+                                  ("Gamma", "harvest+rebuild", "waited 24 h for volunteers: meshing it with what's come", 1)):
+    server.q("UPDATE campaign_items SET status='pending', redo=?, note=?, redo_started=? WHERE campaign_id=? AND name=?", redo, note, started,
+             cm["id"], name, write=True)
+server.init_db()
+assert {n: i["redo"] for n, i in items(cm["id"]).items()} == {"Alpha": "more+rebuild", "Beta": "harvest+rebuild", "Gamma": "harvest+rebuild"}
 print("adding what volunteers fetched OK")
 
 # --- a climb isn't meshed until YouTube has been searched for it, unless its area says to go without ---------------------

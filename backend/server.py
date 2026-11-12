@@ -280,6 +280,12 @@ def init_db() -> None:
                      ("redo_started", "INTEGER DEFAULT 0"), ("waiting_since", "REAL"), ("own_tried", "REAL"), ("pool", "TEXT")):
             if c not in cols:
                 con.execute(f"ALTER TABLE campaign_items ADD COLUMN {c} {t}")
+        # climbs queued to be harvested again from scratch for what volunteers fetched, not started yet: added to instead,
+        # since Nov 12, 2026 (run_harvest()'s add)
+        con.execute("UPDATE campaign_items SET redo=CASE redo WHEN 'harvest' THEN 'more' ELSE 'more+rebuild' END "
+                    "WHERE status='pending' AND redo IN ('harvest', 'harvest+rebuild') AND COALESCE(redo_started, 0)=0 "
+                    "AND (note LIKE 'volunteers have fetched%' OR note LIKE 'queued to harvest again with the videos volunteers%' "
+                    "OR note LIKE 'waited % h for volunteers%')")
         if "replaced_by" not in {r[1] for r in con.execute("PRAGMA table_info(meshes)")}:
             con.execute("ALTER TABLE meshes ADD COLUMN replaced_by TEXT")   # a rebuild of the same photos' project
         # an area's climbs' boulders were their area paths joined by "/", which a name with one in it ("Drifter/Smoking
