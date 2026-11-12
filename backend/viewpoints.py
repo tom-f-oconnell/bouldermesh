@@ -5,7 +5,12 @@ particular are those from its own page and its own videos (relevance.is_trusted(
 of the boulder as a whole). Where those were placed, they show which side of the rock the climb is
 on: the view is taken from the middle one of them, looking at where they all look.
 
-  views.json   {created, climbs: {climb id: {eye, target, photos, of, names}}, unplaced: {climb id: n}}
+A video's frames may be of anything the camera filmed: the walk in, the night before, other rocks. So where the mesh's
+reconstruction recorded how the photos it left out are tied to those it placed (pipeline.write_models()), a climb's
+frames count as its own only where they're placed, or tied to a photo that is (own_by_evidence()); its page's photos
+always do. evidence says whether that was so.
+
+  views.json   {created, climbs: {climb id: {eye, target, photos, of, names}}, unplaced: {climb id: n}, evidence}
 
 eye and target are points in the mesh's own coordinates, as are its cameras (cameras.json).
 """
@@ -34,6 +39,25 @@ def own_photos(project_dir: Path) -> set[str]:
         files = []
     pooled = {f["file"] for f in files if f.get("pooled_from")}
     return {p.name for p in photos.iterdir() if is_trusted(p) and p.name not in pooled} if photos.is_dir() else set()
+
+
+def ties(mesh_dir: Path) -> dict[str, int] | None:
+    """How many verified matches each photo a mesh's reconstruction left out shares with one it placed, as it recorded
+    them (pipeline.write_models()): {photo: matches}; None for a mesh made before that was recorded."""
+    import pipeline
+    left = (pipeline.load_models(mesh_dir) or {}).get("left")
+    return {n: int((v or {}).get("inliers") or 0) for n, v in left.items()} if isinstance(left, dict) else None
+
+
+def own_by_evidence(names: set[str], placed: set[str], tied: dict[str, int] | None) -> set[str]:
+    """Of a climb's own photos (own_photos()), those that say how well a mesh shows it: its page's always, and its
+    videos' frames where placed in the mesh, or tied to a photo that is (pipeline.TIE_LEAST verified matches, by ties());
+    all of them for a mesh without the ties recorded (tied None)."""
+    if tied is None:
+        return set(names)
+    import pipeline
+    from climbs.relevance import is_frame
+    return {n for n in names if not is_frame(Path(n)) or n in placed or tied.get(n, 0) >= pipeline.TIE_LEAST}
 
 
 def _pose(cam: dict):
@@ -72,13 +96,21 @@ def compute(mesh_dir: Path, climbs: dict[str, set[str]], log: Log) -> dict:
     """Work out and save each climb's view of a boulder's mesh.
 
     Args:
-        climbs: {climb id: the names of its own photos}, as own_photos() gives them.
+        climbs: {climb id: the names of its own photos}, as own_photos() gives them; of its videos' frames, only those
+            with evidence of showing it count, where the mesh has it (own_by_evidence()).
 
     Returns:
         What's saved in views.json.
     """
     import numpy as np
     cams = {c["name"]: c for c in json.loads((mesh_dir / "cameras.json").read_text())}
+    tied = ties(mesh_dir)
+    if tied is not None:
+        given = sum(len(v) for v in climbs.values())
+        climbs = {cid: own_by_evidence(names, set(cams), tied) for cid, names in climbs.items()}
+        if given > sum(len(v) for v in climbs.values()):
+            log(f"views: {given - sum(len(v) for v in climbs.values())} of the climbs' video frames count as nobody's own: "
+                "neither placed nor tied to a photo that is")
     try:
         from beta import Mesh
         mesh = Mesh.load(mesh_dir)
@@ -88,7 +120,7 @@ def compute(mesh_dir: Path, climbs: dict[str, set[str]], log: Log) -> dict:
         mesh = None
         centres = np.array([_pose(c)[0] for c in cams.values()])
         middle, size = np.median(centres, axis=0), float(np.ptp(centres, axis=0).max() or 1.0) / 3
-    out = {"created": time.time(), "climbs": {}, "unplaced": {}}
+    out = {"created": time.time(), "climbs": {}, "unplaced": {}, "evidence": tied is not None}
     for cid, names in climbs.items():
         placed = [cams[n] for n in sorted(names) if n in cams]
         if not placed:
@@ -119,7 +151,8 @@ POOR_LEAST, POOR_SHARE = 3, 0.25     # a climb with fewer of its own photos plac
 def poorly_placed(views: dict) -> dict[str, tuple[int, int]]:
     """The climbs a pooled mesh hardly shows, by their own photos (a side its other climbs' photos don't reach, or a
     rock that didn't join the rest): {climb id: (placed, of its own)}, for those with fewer placed than POOR_LEAST or
-    than POOR_SHARE of their own. Not climbs without own photos, of which nothing can be said."""
+    than POOR_SHARE of their own, as compute() counted them (video frames by evidence, where there was some). Not
+    climbs without own photos, of which nothing can be said."""
     out = {cid: (0, n) for cid, n in (views.get("unplaced") or {}).items() if n}
     for cid, v in (views.get("climbs") or {}).items():
         if v.get("of") and v["photos"] < max(POOR_LEAST, POOR_SHARE * v["of"]):

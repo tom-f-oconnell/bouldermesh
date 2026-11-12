@@ -26,6 +26,7 @@ import occlusion
 import orientation
 import vggt_place
 from climbs.common import Cancelled, jobctl
+from climbs.relevance import MIN_INLIERS
 from diagnostics import gpu_free_mb
 from progress import Tracker
 
@@ -42,6 +43,7 @@ GPU_MIN_FREE_MB = 4000  # matching 113 photos peaked at about 3 GB
 GPU_MATCH_ARGS = ["--TwoViewGeometry.min_num_inliers", "12"]
 MAX_TEXTURE = 4096      # larger atlases get split: an 8192 x 8192 one takes 270 MB in a browser, which can refuse it
 MIN_FACES = 1000        # a mesh with fewer isn't one: harvests' empty meshes had 0-574, real ones 3,870 and up (design.md)
+MIN_REGISTERED = 6      # photos COLMAP must place together for a mesh to be made from them
 COLMAP = shutil.which("colmap")
 # OpenMVS binaries are usually installed under /usr/local/bin/OpenMVS
 _MVS_DIRS = [os.environ.get("OPENMVS_BIN", ""), "/usr/local/bin/OpenMVS", "/usr/local/bin", "/usr/bin"]
@@ -238,14 +240,46 @@ def _largest_model(sparse: Path) -> tuple[Path | None, int]:
     return best, best_n
 
 
-MODELS_FILE = "models.json"     # beside a mesh: each model COLMAP made of its photos, and the photos each placed
+# Beside a mesh: each model COLMAP made of its photos, largest first, and the photos each placed; with the database, which
+# of them the mesh is made from (main), and each photo that one doesn't place with the placed photo it shares most verified
+# matches with (left: {photo: {with, inliers}}, inliers 0 if it shares none).
+#   models.json   {models: [{name, photos}], main, left}
+MODELS_FILE = "models.json"
 MODEL_LEAST = 4                 # models placing fewer photos than this aren't worth recording
+TIE_LEAST = MIN_INLIERS         # verified matches two photos share for them to be tied: as the off-topic filter takes a match
+WATERMARK = 7                   # COLMAP's two-view configuration for matches that are an overlay in the same place in both
+                                # (a logo or caption on a video's frames), not of the scene
+PAIR_BASE = 2147483647          # COLMAP's pair id: PAIR_BASE * the lower image id + the higher
 
 
-def write_models(sparse: Path, dest: Path) -> list[dict]:
+def best_ties(db: Path, placed: set[str]) -> dict[str, dict]:
+    """Each photo in a COLMAP database that isn't among those placed, with the placed photo it shares most verified
+    matches with (its two-view geometry's inliers, unless they're a watermark): {photo: {"with": that photo or None,
+    "inliers": n}}."""
+    import sqlite3
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        names = dict(con.execute("SELECT image_id, name FROM images"))
+        best = {n: {"with": None, "inliers": 0} for n in names.values() if n not in placed}
+        for pair, n, config in con.execute("SELECT pair_id, rows, config FROM two_view_geometries WHERE rows > 0"):
+            if config == WATERMARK:
+                continue
+            a, b = names.get(pair // PAIR_BASE), names.get(pair % PAIR_BASE)
+            for x, y in ((a, b), (b, a)):
+                if x in best and y in placed and n > best[x]["inliers"]:
+                    best[x] = {"with": y, "inliers": n}
+        return best
+    finally:
+        con.close()
+
+
+def write_models(sparse: Path, dest: Path, db: Path | None = None, main: Path | None = None) -> dict:
     """Record every model the mapper made (not only the largest, which the mesh is made from), as {name, photos},
     largest first, in dest (the work folder, whence it goes beside the mesh): photos that land in a model together
-    overlap, which says which climbs' photos can be pooled, and which made a separate piece."""
+    overlap, which says which climbs' photos can be pooled, and which made a separate piece. With the database and the
+    model the mesh is made from (main), also how each photo that model leaves out is tied to those it places
+    (best_ties()): what says whether another model is of the boulder's surroundings or of somewhere else, and whether a
+    video's frame shows the climb's rock. Returns what's recorded."""
     models = []
     for m in sorted(sparse.iterdir()) if sparse.exists() else []:
         if not (m / "images.bin").exists():
@@ -254,12 +288,27 @@ def write_models(sparse: Path, dest: Path) -> list[dict]:
             names = sorted(c["name"] for c in orientation.read_cameras(m))
         except (OSError, struct.error, UnicodeDecodeError):
             continue
-        if len(names) >= MODEL_LEAST:
+        if len(names) >= MODEL_LEAST or m == main:
             models.append({"name": m.name, "photos": names})
     models.sort(key=lambda x: -len(x["photos"]))
+    record: dict = {"models": models}
+    placed = next((set(x["photos"]) for x in models if main is not None and x["name"] == main.name), None)
+    if placed is not None and db is not None and db.exists():
+        try:
+            record.update(main=main.name, left=best_ties(db, placed))
+        except Exception:   # only costs telling the other models and video frames apart
+            pass
     dest.mkdir(parents=True, exist_ok=True)
-    (dest / MODELS_FILE).write_text(json.dumps({"models": models}))
-    return models
+    (dest / MODELS_FILE).write_text(json.dumps(record))
+    return record
+
+
+def load_models(mesh_dir: Path) -> dict | None:
+    """A mesh's models.json (write_models()), or None if it has none."""
+    try:
+        return json.loads((mesh_dir / MODELS_FILE).read_text())
+    except (OSError, ValueError):
+        return None
 
 
 def _upright(model: Path, images: Path, work: Path, log: Log, tracker: Tracker) -> Path:
@@ -373,7 +422,7 @@ def _level_from_readings(model: Path, images: Path, work: Path, log: Log) -> dic
 
 
 def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool,
-                               internet: bool = False, min_registered: int = 6, tracker: Tracker | None = None) -> Path:
+                               internet: bool = False, min_registered: int = MIN_REGISTERED, tracker: Tracker | None = None) -> Path:
     """internet=True tunes COLMAP for unordered photos from many cameras (per-image intrinsics,
     affine-shape SIFT, domain-size pooling, guided matching) - slower but far more tolerant.
 
@@ -437,7 +486,10 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         if any(sparse.iterdir()):   # what an interrupted run left may be half written, and it'll be made again
             sparse.rename(work / f"interrupted_sparse{len(list(work.glob('interrupted_sparse*')))}")
             sparse.mkdir()
-        cmd = [COLMAP, "mapper", "--database_path", str(db), "--image_path", str(images), "--output_path", str(sparse)]
+        # models after the first as small as a mesh can be made from (COLMAP's own least is 10; the first is kept whatever
+        # its size): what the largest leaves out may be another side or rock (write_models())
+        cmd = [COLMAP, "mapper", "--database_path", str(db), "--image_path", str(images), "--output_path", str(sparse),
+               "--Mapper.min_model_size", str(min_registered)]
         if internet:
             cmd += ["--Mapper.ba_refine_principal_point", "1", "--Mapper.min_num_matches", "20"]
         # COLMAP 3.9's mapper can abort on one failing model ("NumRegImages() >= 2"; 2 of 25 runs when
@@ -479,9 +531,13 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         _finish(work, "rest")
     log(f"registered {registered}/{n_images} images in the largest model")
     try:
-        others = write_models(sparse, work)[1:]
+        rec = write_models(sparse, work, db, model)
+        others = [m for m in rec["models"] if model is None or m["name"] != model.name]
+        tied = lambda m: sum((rec.get("left") or {}).get(p, {}).get("inliers", 0) >= TIE_LEAST for p in m["photos"])  # noqa: E731
         if others:
-            log(f"other models: {', '.join(str(len(m['photos'])) for m in others[:8])} photo(s)")
+            log(f"other models: {', '.join(str(len(m['photos'])) for m in others[:8])} photo(s)" +
+                (f"; of their photos the largest doesn't place, tied to one it does ({TIE_LEAST}+ verified matches): "
+                 f"{', '.join(str(tied(m)) for m in others[:8])}" if "left" in rec else ""))
     except OSError as e:
         log(f"couldn't record the mapper's models: {e}")
     if model is None or registered < min_registered:

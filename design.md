@@ -639,28 +639,53 @@ So the photos left out are now handled in two steps:
    mapper's 30 and 25%, then bundle adjustment with the rest). The mapper gives up on a photo that doesn't fit what it
    has grown so far; against the whole model, some do. The Drifter photos East Face Sit's and Les Trois Maunets' meshes
    placed and the boulder's didn't are the kind this catches.
-2. **Together, apart from the boulder's mesh.** What's still left of each climb with 6 or more out (`rest.json`) is
-   pooled, once, from the boulder's own filtered photos (not the climbs' whole harvests, whose web photos the
-   boulder's filter dropped as other rocks). That pool's largest model is another side or another rock.
+2. **Scenes from the same run, tied to the boulder.** COLMAP's mapper already makes a model of each set of photos that
+   fit together. Its smallest kept after the first is set to 6, what a mesh needs, rather than its own 10, and each
+   reconstruction records every model, and for each photo the mesh left out, the placed photo it shares most verified
+   matches with (`models.json`, from the database's two-view geometries, not counting watermarks). A model is a scene
+   of the boulder to mesh apart if 6 or more of its photos were left out, and it holds a climb's Mountain Project page
+   photo, or 2 of its photos share 16 or more verified matches with placed photos: the same-rock check's 16 inliers and
+   linking climbs' 2 pairs, so no new threshold. Each is meshed once, from those photos (`rest_models()`, `run_rest()`).
+   The ties are from the reconstruction's own matching, so checking costs nothing more.
 
-   Tried on hal for Drifter's mesh, step 2 pooled 92 left-out photos (Smoking's 85, High Plains Drifter's 10, Les Trois
-   Maunets' 6, many shared). The largest model placed 7 frames of a night-time scene in Smoking's page video, another
-   boulder. Frames of one video can rebuild whatever the camera filmed, so a mesh from them alone isn't evidence of the
-   climb's rock. So step 2 is off by default (`boulders.rest_auto`) until it's replaced by keeping each model the
-   mapper makes from a boulder's photos that's tied to the boulder's own: holding a climb's Mountain Project photo, or
-   matching its placed photos. Run on the same leftovers with COLMAP's smallest model at 4 photos, the mapper made 5
-   models (the night scene, an overhang, a large pale boulder twice, 6 to 10 photos each), and none was tied to Drifter's.
+   **What came before.** The first version pooled what was left of each climb with 6 or more out, meshed it again from
+   scratch (a second mapper run over all of it) and kept only the largest model. Tried on hal for Drifter, it pooled 92
+   left-out photos (Smoking's 85, High Plains Drifter's 10, Les Trois Maunets' 6, many shared). The largest model was 7
+   frames of a night-time scene in Smoking's page video, another boulder. Frames of one video can rebuild whatever the
+   camera filmed, so a mesh from them alone isn't evidence of the climb's rock. A guard of "photos from two sources" was
+   arbitrary; matching the leftover mesh against the boulder's photos afterwards was the same idea as the ties, done
+   later and at more cost.
+
+   **Drifter, again (Nov 11).** Replayed on its 92 left-out photos with the smallest model at 6, the mapper made 4
+   models: the large pale boulder twice (10 and 8 photos), an overhang (9) and the night scene (7). Matched against the
+   139 placed photos, none has a page photo or a single tied photo, so none counts. 11 left-out photos are tied: 5 web
+   photos of Drifter (216 to 1,636 verified matches) that place-the-rest, which didn't exist then, would likely place,
+   High Plains Drifter's video frames 1-3, and Smoking's frames 75, 89 and 90, tied to placed frames 74 and 88.
+
+   **Its limits.** A photo is in one mesh or the other. A side seen only in one video, with nothing of the rest of the
+   boulder in its frames, is tied to nothing, so it isn't meshed: a missing mesh, rather than a wrong one. Two
+   consecutive frames of one shot tied to a placed frame count as 2 tied photos, as frames 89 and 90 do; they're of the
+   placed frame's scene, which is the boulder's.
+
+**A climb's own photos, by evidence.** A climb's own photos (its page's, and its videos' frames) say where it's seen from
+on a boulder's mesh, and how well the mesh shows it. Every frame of a video counted as the climb's own, though Smoking's
+page video is mostly a hike up Cloudripper, so the mesh looked to place 10 of Smoking's 91. Now, where the ties are
+recorded, a frame counts only where it's placed or tied to a placed photo; page photos always count. By the ties above,
+Smoking would be 10 of 13. Meshes from before keep the old count.
 
 **One boulder or a group.** A mesh is called one boulder when Mountain Project says its area is one rock, it places more
 than one climb, it places some of each climb's own photos (at least `boulders.placed_percent` of them, 0 by default, and
-one), every climb on it was harvested and had its photos tried in the mesh, and nothing its mesh left out makes a mesh of
-its own (no climb left 6 or more out, or meshing them failed). Requiring every climb placed would make a boulder of none
+one), every climb on it was harvested and had its photos tried in the mesh, and no scene it left out that counts is
+waiting to be meshed or made a mesh. A scene whose meshing was tried and made nothing, as its photos weren't enough,
+doesn't count against it; one cut short (a restart, no machine, an error) does, until it's tried again. Before the ties
+were recorded it was the climbs with 6 or more left out instead. Requiring every climb placed would make a boulder of none
 with a climb that has no photos of its own, as 7 climbs on 5 of the 6 boulders' meshes on the server had on Nov 11; and
-one placed photo of 38 (Slitherin) shows little of a climb, hence the % to choose from what meshes make. Otherwise each mesh placing more than one climb is a group, the boulder's
-own included. Every problem on the boulder's page is made known and harvested before its mesh is made. The page is read
-from the HTTP cache, as it was when its kind was read. So a climb never harvested, or whose harvest found nothing, keeps
-it a group. Each climb counts toward one mesh, the one placing most of its own photos, so groups don't share climbs.
-A mesh can still show part of another rock, as Drifter's has a small separate piece about 14 m away.
+one placed photo of 38 (Slitherin) shows little of a climb, hence the % to choose from what meshes make. Otherwise each
+mesh placing more than one climb is a group, the boulder's own included. Every problem on the boulder's page is made
+known and harvested before its mesh is made. The page is read from the HTTP cache, as it was when its kind was read. So
+a climb never harvested, or none of whose photos were pooled into the mesh, keeps it a group. Each climb counts toward
+one mesh, the one placing most of its own photos, so groups don't share climbs. A mesh can still show part of another
+rock, as Drifter's has a small separate piece about 14 m away.
 
 **One mesh per boulder.** The 1000 most popular Joshua Tree problems are on 364 lowest-level areas,
 nearly all single boulders, so linking problems to a mesh of their boulder saves about 60% of the work. Areas with

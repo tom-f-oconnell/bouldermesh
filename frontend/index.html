@@ -368,11 +368,11 @@
           <p>Before a climb is meshed, the page of its lowest Mountain Project area is read, for whether that's one rock. Where its
             name or description says so ("Drifter/Smoking Boulder"), the area's climbs on it are harvested, wherever they come in
             the order, and meshed together from all their photos: one mesh, counting once toward a limit. It shows what their
-            photos do, often not all the way round. The photos it leaves out are tried again against it, and what's still left
-            of the climbs with several photos out is meshed together apart, as another side or another rock. It's a boulder when
-            every climb on it (its page's every problem) was harvested and tried in it, and what it left out makes nothing;
-            otherwise each mesh placing more than one climb is a group. (The admin page can have every climb meshed on its own
-            instead.)</p>
+            photos do, often not all the way round. The photos it leaves out are tried again against it, and each set of what's
+            still left that COLMAP places together, and that's tied to it (a climb's page photo, or photos matching those it
+            placed), can be meshed apart, as another side or another rock. It's a boulder when every climb on it (its page's
+            every problem) was harvested and tried in it, and none of that is waiting or made a mesh; otherwise each mesh placing
+            more than one climb is a group. (The admin page can have every climb meshed on its own instead.)</p>
           <p>Where the area holds several rocks ("Stained Glass/Flyboy Area", "Birthday Boulders"), or its page doesn't say, each
             climb is meshed on its own, counting one each. Once its climbs within the limit are through, those whose photos show
             the same rock are meshed together as well, as groups: clusters of a boulder's climbs, not always all of them. These,
@@ -2433,10 +2433,16 @@ function closeClimb(){
 // that were made for another climb on its boulder
 const climbMeshes = (id, shared = false) => (meshesCache || []).filter(m => m.climbs.some(c => c.id === id && !!c.shared === shared))
   .sort((a, b) => (a.replaced_by ? 1 : 0) - (b.replaced_by ? 1 : 0) || (b.created || 0) - (a.created || 0));
-const boulderMeshOf = id => (meshesCache || []).find(m => !m.replaced_by && (m.boulder_climbs || []).some(c => c.id === id));
+// the current pooled mesh placing most of a climb's own photos (the one it counts toward), or else the newest listing it
+const boulderMeshOf = id => {
+  const on = (meshesCache || []).filter(m => !m.replaced_by && (m.boulder_climbs || []).some(c => c.id === id));
+  const n = m => m.boulder_climbs.find(c => c.id === id).view?.photos || 0;
+  return on.sort((a, b) => n(b) - n(a))[0];
+};
 async function viewClimbMesh(id){
   if (!climbMeshes(id).length && !boulderMeshOf(id) && !climbMeshes(id, true).length) await refreshMeshes();
-  const own = climbMeshes(id)[0], boulder = boulderMeshOf(id), shared = climbMeshes(id, true)[0];
+  // a mesh of what its boulder's mesh left out isn't the climb's own: the boulder's may show it better
+  const own = climbMeshes(id).find(m => !m.pooled?.rest_of), boulder = boulderMeshOf(id), shared = climbMeshes(id, true)[0];
   if (own) return viewMesh(own.id, null, 'climb', id);
   if (boulder) return viewMesh(boulder.id, id, 'climb', id);
   if (shared) return viewMesh(shared.id, null, 'climb', id);
@@ -2446,21 +2452,24 @@ const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', wa
 // The boulder a climb is on: its own mesh, made from the photos of every climb on it, seen from where this climb's own
 // photos were taken; meshes an area linked this climb to that were made for another climb on it; and the other climbs.
 // A mesh of several climbs' photos (a boulder's, of what a boulder's left out, or a pool's: climbs whose photos match): how
-// many of them it places, and whether it's a boulder (Mountain Project says one rock, and nothing it left out made a mesh
-// of its own) or a group (any other placing more than one climb)
+// many of them it places, and whether it's a boulder (Mountain Project says one rock, and nothing it left out that's tied
+// to it waits to be meshed or made a mesh of its own) or a group (any other placing more than one climb)
 function pooledTags(m){
   const p = m.pooled;
   if (!p) return '';
   const of = p.kind === 'group' ? ` in ${esc(p.area)}, a Mountain Project area of several boulders, whose photos match`
     : p.kind === 'boulder' ? ` on ${esc(p.area)}` : ` in ${esc(p.area)}`;
   const word = p.whole ? 'boulder' : p.placed > 1 ? 'group' : '';
-  const why = p.whole ? `. Mountain Project says ${esc(p.area)} is one rock, every climb on it was harvested and tried in it, it places more than one of them and ${p.least ? `at least ${p.least}% of` : 'some of'} each one's own photos, and none of their photos it left out make a mesh of their own, so it's one boulder`
-    : p.rest_of ? `. Made from the photos the mesh of ${esc(p.area)} left out, so it's another side or rock than that one`
-    : p.split ? `. The photos it left out of some climbs made a mesh of their own, so it isn't the whole boulder`
+  // apart: scenes of what it left out that are tied to it (COLMAP placed 6 or more together, with a climb's page photo or
+  // matching photos it placed), or for a mesh from before those were recorded, climbs with 6 or more left out
+  const apart = p.scenes ? plural(p.apart, 'scene') + ' of the photos it left out, tied to it,' : `the photos it left out of ${plural(p.apart, 'climb')}`;
+  const why = p.whole ? `. Mountain Project says ${esc(p.area)} is one rock, every climb on it was harvested and tried in it, it places more than one of them and ${p.least ? `at least ${p.least}% of` : 'some of'} each one's own photos, and ${p.scenes ? 'nothing it left out that\'s tied to it makes a mesh of its own' : 'none of their photos it left out make a mesh of their own'}, so it's one boulder`
+    : p.rest_of ? `. Made from photos the mesh of ${esc(p.area)} left out that COLMAP placed together, so it's another side of that rock, or one beside it`
+    : p.split ? `. ${p.scenes ? 'Some of what it left out made a mesh of its own' : 'The photos it left out of some climbs made a mesh of their own'}, so it isn't the whole boulder`
     : p.untried ? `. ${plural(p.untried, 'climb')} on ${esc(p.area)} ${p.untried === 1 ? 'has' : 'have'} no photos tried in it (never harvested, or none found), so it isn't one boulder yet`
     : p.short?.length && p.kind === 'boulder' ? `. Too few of some climbs' own photos are placed in it for one boulder (it needs ${p.least ? `${p.least}% of each, and one` : 'one of each'}): ${p.short.map(s => `${esc(s.name)} ${s.placed} of ${s.of}`).join(', ')}`
-    : p.apart && ['queued', 'running'].includes(p.rest) ? `. The photos it left out of ${plural(p.apart, 'climb')} are being meshed apart`
-    : p.apart && !p.rest ? `. It left out enough photos of ${plural(p.apart, 'climb')} to try meshing apart (on the admin page)` : '';
+    : p.apart && ['queued', 'running'].includes(p.rest) ? `. ${apart[0].toUpperCase() + apart.slice(1)} ${p.scenes && p.apart === 1 ? 'is' : 'are'} being meshed apart`
+    : p.apart && !p.rest ? `. ${apart[0].toUpperCase() + apart.slice(1)} ${p.scenes ? `${p.apart === 1 ? 'is' : 'are'} to be meshed apart` : 'are enough to try meshing apart'} (on the admin page), so it isn't one boulder yet` : '';
   return `<span class="tag ok" title="Made from the photos of ${plural(p.climbs, 'climb')}${of}: ${p.placed} of them placed in it, by their own photos${why}">${word ? `${word} · ` : ''}${p.placed}/${p.climbs} climb${p.climbs === 1 ? '' : 's'}</span>`;
 }
 function boulderHtml(c){

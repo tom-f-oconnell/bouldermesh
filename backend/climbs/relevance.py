@@ -153,6 +153,14 @@ def is_trusted(path: Path) -> bool:
     return not path.name.startswith(UNTRUSTED)
 
 
+FRAMES = ("yt_", "vid_")    # file name prefixes of video frames: a page's or search's videos (harvest.py), and uploaded ones
+
+
+def is_frame(path: Path) -> bool:
+    """Whether a photo is a frame of a video, which may show anything the camera filmed: the walk in, or other rocks."""
+    return path.name.startswith(FRAMES)
+
+
 # ------------------------------------------------------------------------------ cards
 def flat_share(path: Path) -> float:
     """Share of the image, without any black bars, that has no texture at all."""

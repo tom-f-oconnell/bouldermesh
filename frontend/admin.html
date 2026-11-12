@@ -103,13 +103,15 @@
     <div class="grid"><div><label>A boulder's mesh is one boulder only if it places at least this % of each climb's own photos, and one <small>(0: one is enough)</small></label>
       <input type="number" id="placed-percent" min="0" max="100" step="5"></div></div>
     <div class="note" id="placed-note"></div>
-    <label class="choice"><input type="checkbox" id="rest-auto"> After each boulder's mesh, mesh what it left out of climbs with 6 or more out apart
-      <small>(off until those meshes are checked against the boulder's: Drifter's made one of another rock)</small></label>
+    <label class="choice"><input type="checkbox" id="rest-auto"> After each boulder's mesh, mesh apart each scene of what it left out that's tied to it
+      <small>(off for now: until then a boulder's mesh only records them, in its log and rest.json)</small></label>
     <div class="row"><button class="sec" id="rest-all">Mesh what boulders' meshes left out</button><span class="note" id="rest-note"></span></div>
-    <div class="note">A boulder's mesh tries the photos it leaves out again against itself; what's still left of each climb
-      with 6 or more out can be meshed apart, as another side or rock. Its card says boulder only when that makes nothing,
-      or was tried and failed, and every climb on it was harvested and tried in it. This queues it for each boulder's mesh
-      with enough left out, never tried.</div>
+    <div class="note">A boulder's mesh tries the photos it leaves out again against itself. Of what's still left, each set
+      COLMAP places together (6 photos or more) is a scene to mesh apart, as another side or rock, if it's tied to the
+      boulder: it holds a climb's Mountain Project page photo, or 2 of its photos match photos the mesh placed (16 verified
+      matches, as the off-topic filter takes one). Its card says boulder only when no such scene waits or made a mesh (one
+      tried that made nothing doesn't count), and every climb on it was harvested and tried in it. Meshes from before
+      those were recorded go by the climbs with 6 or more photos left out. This queues each never tried, or cut short.</div>
     <label class="choice"><input type="checkbox" id="prune-videos"> Delete kept videos none of whose frames is placed in any mesh, once their climbs are done
       <small>(beta can't use them; only harvesting again would, which fetches them again. Checked hourly; their details stay)</small></label>
   </section>
@@ -332,7 +334,7 @@ function render(s){
   if (document.activeElement !== $('#preview-faces')) $('#preview-faces').value = v['viewer.preview_faces'];
   $('#pack-note').textContent = packNote(s.packing);
   $('#skyline-auto').checked = v['facing.skyline']; $('#skyline-note').textContent = skylineNote(s.skyline);
-  $('#rest-note').textContent = s.rest_waiting ? `${s.rest_waiting} boulder${s.rest_waiting === 1 ? "'s mesh has" : "s' meshes have"} enough left out to try` : 'none waiting';
+  $('#rest-note').textContent = s.rest_waiting ? `${s.rest_waiting} boulder${s.rest_waiting === 1 ? "'s mesh has" : "s' meshes have"} some to try` : 'none waiting';
   $('#rest-all').disabled = !s.rest_waiting;
   $('#rest-auto').checked = v['boulders.rest_auto'];
   if (document.activeElement !== $('#placed-percent')) $('#placed-percent').value = v['boulders.placed_percent'];
@@ -487,7 +489,7 @@ function placedNote(meshes, least){
   const under = c => c.placed < 1 || 100 * c.placed < least * c.of;
   const pct = c => `${c.placed}/${c.of} (${Math.round(100 * c.placed / c.of)}%)`;
   const ok = meshes.filter(m => !m.climbs.some(under)), short = meshes.filter(m => m.climbs.some(under));
-  const line = (m, cs) => `<li>${esc(m.name)}: ${cs.map(c => `${esc(c.name)} ${pct(c)}`).join(', ')}</li>`;
+  const line = (m, cs) => `<li>${esc(m.name)}${m.evidence ? ' <small title="Its climbs\' video frames count as their own only where placed, or tied to photos that are">(frames by evidence)</small>' : ''}: ${cs.map(c => `${esc(c.name)} ${pct(c)}`).join(', ')}</li>`;
   return `Of ${meshes.length} current mesh${meshes.length === 1 ? '' : 'es'} of areas Mountain Project calls one rock, ${ok.length} place${ok.length === 1 ? 's' : ''} enough of every climb's own photos (other conditions aside) and ${short.length} ${short.length === 1 ? "doesn't" : "don't"}.
     <details><summary>Each one's climbs, fewest placed first</summary><b>Enough</b><ul>${ok.map(m => line(m, m.climbs.slice(0, 3))).join('') || '<li>none</li>'}</ul>
     <b>Short of it</b> (the climbs under it)<ul>${short.map(m => line(m, m.climbs.filter(under))).join('') || '<li>none</li>'}</ul></details>`;

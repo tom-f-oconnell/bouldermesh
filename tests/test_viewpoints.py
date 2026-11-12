@@ -90,6 +90,33 @@ with tempfile.TemporaryDirectory() as td:
     assert a["eye"][0] > 2 and a["target"][0] < a["eye"][0], a
     assert "couldn't read the mesh" in logged[-2], logged
 
+# where the reconstruction recorded how what it left out is tied to what it placed (models.json), a climb's video frames
+# are its own only where placed, or tied to a placed photo by 16 verified matches or more; its page's photos always are
+with tempfile.TemporaryDirectory() as td:
+    mesh = pathlib.Path(td)
+    cube_ply(mesh / "mesh.ply")
+    cams = [camera("mountainproject_a1.jpg", [5, 0.5, 0.4]), camera("yt_aaaa_001.jpg", [5.5, 0.2, -0.3]), camera("ddg_web.jpg", [-5, 0, 0])]
+    (mesh / "cameras.json").write_text(json.dumps(cams))
+    left = {"yt_aaaa_002.jpg": {"with": "yt_aaaa_001.jpg", "inliers": 16}, "yt_aaaa_003.jpg": {"with": "ddg_web.jpg", "inliers": 15},
+            "yt_aaaa_004.jpg": {"with": None, "inliers": 0}, "mountainproject_a9.jpg": {"with": None, "inliers": 0},
+            "vid_up_001.jpg": {"with": "ddg_web.jpg", "inliers": 200}}
+    (mesh / "models.json").write_text(json.dumps({"models": [{"name": "0", "photos": [c["name"] for c in cams]}], "main": "0", "left": left}))
+    own = {"a": {"mountainproject_a1.jpg", "yt_aaaa_001.jpg", "yt_aaaa_002.jpg", "yt_aaaa_003.jpg", "yt_aaaa_004.jpg", "yt_aaaa_099.jpg",
+                 "mountainproject_a9.jpg"},
+           "f": {"yt_ffff_001.jpg", "yt_ffff_002.jpg"}, "g": {"mountainproject_g1.jpg", "yt_gggg_001.jpg"}, "h": {"vid_up_001.jpg"}}
+    logged = []
+    out = viewpoints.compute(mesh, own, logged.append)
+    a = out["climbs"]["a"]
+    assert (a["photos"], a["of"]) == (2, 4), ("placed: its page photo and a frame; of: those, a tied frame and its other page photo", a)
+    assert out["unplaced"] == {"g": 1, "h": 1} and "f" not in out["climbs"], ("frames with no evidence are nobody's", out)
+    assert out["evidence"] is True and any("6 of the climbs' video frames count as nobody's own" in s for s in logged), logged
+    assert viewpoints.poorly_placed(out) == {"a": (2, 4), "g": (0, 1), "h": (0, 1)}, viewpoints.poorly_placed(out)
+    assert viewpoints.own_by_evidence({"yt_x_001.jpg"}, set(), None) == {"yt_x_001.jpg"}, "no ties recorded: all of them"
+    # a models.json from before the ties were recorded: as before
+    (mesh / "models.json").write_text(json.dumps({"models": [{"name": "0", "photos": [c["name"] for c in cams]}]}))
+    out = viewpoints.compute(mesh, own, logged.append)
+    assert (out["climbs"]["a"]["of"], out["unplaced"], out["evidence"]) == (7, {"f": 2, "g": 2, "h": 1}, False), out
+
 # a climb's own photos: its page's and videos', not web searches', nor those an older harvest pooled from another climb
 with tempfile.TemporaryDirectory() as td:
     proj = pathlib.Path(td)

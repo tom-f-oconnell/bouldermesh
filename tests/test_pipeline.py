@@ -127,6 +127,30 @@ with tempfile.TemporaryDirectory() as td:
 assert stops_at([{"models": {"0": 3}}, {"models": {"0": 23}}]).endswith("sparse/0")
 assert stops_at([{"models": {"0": 2}}, {"models": {"0": 1}}, {"models": {"0": 9}}]).endswith("sparse/0")
 assert stops_at([{"models": {"0": 9}}]).endswith("sparse/0"), "enough first time shouldn't try again"
+
+
+def mapper_command() -> list[str]:
+    """The mapper's command line, as reconstruct_colmap_openmvs() runs it."""
+    with tempfile.TemporaryDirectory() as td:
+        (pathlib.Path(td) / "images").mkdir()
+
+        def fake_run(cmd, cwd, log, watch=None):
+            if cmd[1] == "mapper":
+                raise Stop(cmd)
+        saved = pipeline._run, pipeline.COLMAP
+        pipeline._run, pipeline.COLMAP = fake_run, "colmap"
+        try:
+            pipeline.reconstruct_colmap_openmvs(pathlib.Path(td) / "images", pathlib.Path(td) / "work", pathlib.Path(td) / "out",
+                                                lambda s: None, False)
+        except Stop as e:
+            return e.args[0]
+        finally:
+            pipeline._run, pipeline.COLMAP = saved
+    raise AssertionError("no mapper run")
+
+
+cmd = mapper_command()     # models after the first are kept down to what a mesh needs, not COLMAP's own least of 10
+assert cmd[cmd.index("--Mapper.min_model_size") + 1] == str(pipeline.MIN_REGISTERED) == "6", cmd
 with tempfile.TemporaryDirectory() as td:
     try:
         run_with_mapper([{"models": {"0": 2}}, {"models": {"0": 3}}, {"models": {}}], pathlib.Path(td))
@@ -602,6 +626,22 @@ def images_bin(path: pathlib.Path, names: list[str]) -> None:
             f.write(n.encode() + b"\0" + struct.pack("<Q", 0))
 
 
+def colmap_db(path: pathlib.Path, names: list[str], pairs: dict[tuple[str, str], tuple[int, int]]) -> None:
+    """A COLMAP database with just what best_ties() reads: images, and each pair's two-view geometry (its inliers and
+    configuration), its id made as COLMAP makes it, from the lower image id."""
+    import sqlite3
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE images (image_id INTEGER PRIMARY KEY, name TEXT, camera_id INTEGER)")
+    con.execute("CREATE TABLE two_view_geometries (pair_id INTEGER PRIMARY KEY, rows INTEGER, cols INTEGER, data BLOB, config INTEGER)")
+    ids = {n: i + 1 for i, n in enumerate(names)}
+    con.executemany("INSERT INTO images VALUES (?, ?, 1)", [(i, n) for n, i in ids.items()])
+    for (a, b), (inliers, config) in pairs.items():
+        lo, hi = sorted((ids[a], ids[b]))
+        con.execute("INSERT INTO two_view_geometries VALUES (?, ?, 2, ?, ?)", (lo * pipeline.PAIR_BASE + hi, inliers, b"x" * 8, config))
+    con.commit()
+    con.close()
+
+
 with tempfile.TemporaryDirectory() as d:
     sparse = pathlib.Path(d) / "sparse"
     images_bin(sparse / "0", ["a1.jpg", "a2.jpg", "b1.jpg", "b2.jpg", "b3.jpg"])
@@ -609,7 +649,29 @@ with tempfile.TemporaryDirectory() as d:
     images_bin(sparse / "2", ["d1.jpg", "d2.jpg"])      # too few to count
     (sparse / "3").mkdir()                               # empty
     got = pipeline.write_models(sparse, pathlib.Path(d) / "out")      # (the work folder, in a run)
-    assert [(m["name"], len(m["photos"])) for m in got] == [("1", 6), ("0", 5)], got
+    assert [(m["name"], len(m["photos"])) for m in got["models"]] == [("1", 6), ("0", 5)] and "left" not in got, got
     assert json.loads((pathlib.Path(d) / "out" / pipeline.MODELS_FILE).read_text())["models"][1]["photos"][:2] == ["a1.jpg", "a2.jpg"]
+    assert pipeline.load_models(pathlib.Path(d) / "out") == got and pipeline.load_models(pathlib.Path(d)) is None
+
+    # with the database and the model the mesh is made from: each photo it doesn't place, with the placed photo it shares
+    # most verified matches with, in either order of their ids; an overlay's matches (a watermark) aren't the scene's
+    db = pathlib.Path(d) / "database.db"
+    names = ["c1.jpg", "a1.jpg", "c2.jpg", "c3.jpg", "c4.jpg", "c5.jpg", "c6.jpg", "a2.jpg", "b1.jpg", "b2.jpg", "b3.jpg", "d1.jpg",
+             "d2.jpg", "e1.jpg"]
+    colmap_db(db, names, {("a1.jpg", "c1.jpg"): (40, 2), ("c2.jpg", "a1.jpg"): (17, 3), ("a2.jpg", "c3.jpg"): (90, 7),
+                          ("a2.jpg", "c4.jpg"): (12, 2), ("a2.jpg", "c5.jpg"): (0, 1), ("a1.jpg", "d1.jpg"): (30, 2),
+                          ("a1.jpg", "a2.jpg"): (300, 2), ("e1.jpg", "d1.jpg"): (50, 2)})
+    got = pipeline.write_models(sparse, pathlib.Path(d) / "out", db, sparse / "1")
+    assert got["main"] == "1", got
+    left = {n: (v["with"], v["inliers"]) for n, v in got["left"].items()}
+    assert left == {"a1.jpg": ("c1.jpg", 40), "a2.jpg": ("c4.jpg", 12), "b1.jpg": (None, 0), "b2.jpg": (None, 0), "b3.jpg": (None, 0),
+                    "d1.jpg": (None, 0), "d2.jpg": (None, 0), "e1.jpg": (None, 0)}, left
+    assert json.loads((pathlib.Path(d) / "out" / pipeline.MODELS_FILE).read_text()) == got
+    # a main model smaller than those worth recording is recorded all the same, as the one the mesh is made from
+    assert [m["name"] for m in pipeline.write_models(sparse, pathlib.Path(d) / "out", db, sparse / "2")["models"]] == ["1", "0", "2"]
+    # an unreadable database only costs the ties
+    (pathlib.Path(d) / "bad.db").write_text("not a database")
+    got = pipeline.write_models(sparse, pathlib.Path(d) / "out", pathlib.Path(d) / "bad.db", sparse / "1")
+    assert "left" not in got and len(got["models"]) == 2, got
 print("models recorded OK")
 print("ALL PIPELINE TESTS PASSED")

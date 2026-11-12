@@ -276,16 +276,27 @@ well.
 - **Placing the rest.** Every reconstruction tries the photos COLMAP's mapper left out again, one at a time, against the
   model it finished (*Place the rest*, `_place_rest()` in `backend/pipeline.py`). Fewer of a photo's matches need to fit
   than the mapper asks for, and those that join are refined with the rest.
-- **Meshing what's still left.** After a boulder's mesh, what it still left out of each climb's photos is kept beside it
-  (`rest.json`). The photos left out of every climb with 6 or more out can then be meshed together, once, from the
-  boulder's own filtered photos (`keep_rest()`, `run_rest()`), as another side or another rock. That mesh is named for
-  those climbs and linked to each one it places, whatever the area's limit. This is off by default (the admin page's
-  *After each boulder's mesh, mesh what it left out*), as nothing yet checks that such a mesh is of a rock the boulder's
-  photos see: Drifter's made one of a night scene elsewhere.
+- **Scenes from the same run.** COLMAP's mapper makes a model of each set of photos that fit together, keeping any of
+  6 or more (what a mesh needs). Every reconstruction records each model beside the mesh (`models.json`), and for each
+  photo the mesh left out, the placed photo it shares most verified matches with (`write_models()`).
+- **Which scenes count.** After a boulder's mesh, each other model is recorded in `rest.json` with why it counts or
+  not (`rest_models()`). It counts if 6 or more of its photos were left out by the mesh, and it's tied to the boulder:
+  - it holds a climb's Mountain Project page photo, or
+  - 2 of its photos share 16 or more verified matches with photos the mesh placed (the bars the off-topic filter and
+    linking climbs use).
+  Frames of a video's walk in, or of another boulder it filmed, are tied to neither, so they don't count.
+- **Meshing them.** Each scene that counts can be meshed once, apart, from the boulder's own filtered photos
+  (`keep_rest()`, `run_rest()`), as another side or another rock. That mesh is linked to, and named for, the climbs whose
+  own photos it places, whatever the area's limit. This is off by default (the admin page's *After each boulder's mesh,
+  mesh apart each scene of what it left out that's tied to it*), so a boulder's mesh only records them, in its log and
+  `rest.json`, until a run shows what qualifies. On Drifter's left-out photos the mapper made 4 models (a night scene, an
+  overhang and a large pale boulder twice), and none was tied.
 - **Instead of re-meshing.** This replaces meshing each climb the boulder's mesh hardly showed on its own from its whole
   harvest, which mostly made copies of the same rock from the same web photos.
 - **By hand.** Boulders' meshes made before this have what they left out worked out as the server starts.
-  *Mesh what boulders' meshes left out* on the admin page queues the rest of every boulder's mesh that has enough.
+  *Mesh what boulders' meshes left out* on the admin page queues every scene never tried, or cut short (a restart, no
+  machine free, an error). Meshes from before the ties were recorded go by the climbs with 6 or more photos left out,
+  whose left-out photos are meshed together, once.
 
 **On the cards.** Meshes are named for what they're of, not how they were made. A mesh of several climbs' photos says how
 many of them it places, each counted only on the mesh of its boulder that places most of its own photos.
@@ -297,8 +308,13 @@ many of them it places, each counted only on the mesh of its boulder that places
     the climbs short of it, and a boulder's mesh's log says how many of each climb's own photos it placed.
   - Every climb on it was harvested and had photos tried in its mesh. That includes every problem its page lists, which
     are made known and harvested before it's meshed. A climb whose harvest found no photos keeps it a group.
-  - Nothing it left out made a mesh of its own: none of its climbs left 6 photos out, or meshing them was tried and
-    failed. While meshing what's left isn't on, a boulder's mesh with a climb that left 6 or more out stays a group.
+  - No scene it left out that counts (above) is waiting to be meshed, or made a mesh. One whose meshing was tried and
+    made nothing, for too few photos placed, doesn't count against it. While meshing them isn't on, a boulder's mesh
+    with a scene that counts stays a group. Meshes from before the ties were recorded need instead that none of their
+    climbs left 6 photos out, or that meshing those made nothing.
+- **A climb's own photos** are its page's photos and its videos' frames. In a mesh whose reconstruction recorded the
+  ties, a frame counts only where the mesh placed it, or where it's tied to a placed photo (16 verified matches), as a
+  video may show the walk in or other boulders; page photos always count. The admin page marks the meshes counted so.
 - **Group** ("group · 7/9 climbs"): any other placing more than one climb. That includes a boulder's mesh when what it
   left out made another mesh, and that other mesh, if it places more than one climb.
 - **Neither:** a mesh placing only one climb is that climb's.
@@ -1153,14 +1169,12 @@ gets every optional check; the tests also pass without them.
   customers and shutting down on 2027-01-01, so it only helps with a key you already hold.
 - With Docker's default user, everything in `./data` ends up owned by root.
 - **What a boulder's mesh leaves out** ("A boulder's own mesh" above):
-  - **One level only.** It's meshed once, and only the largest model of what's left becomes a mesh. A second separate
-    rock among those photos isn't meshed.
-  - **A photo is in one mesh or the other, never both.** The mesh of what was left out can't use photos of its rock that
-    the boulder's mesh placed.
-  - **Every frame of a climb's page videos counts as its own.** That includes frames of other boulders and of the walk
-    in. So the mesh of what was left out can be of another rock, and be linked to that climb, and a climb can look
-    hardly placed when only its video's other scenes were left out (Smoking's page video is mostly a hike up Cloudripper
-    and other boulders; the frames of Smoking itself, on Drifter's face, are placed).
-  - **Older meshes.** Boulders' meshes made before 2671afe didn't try the photos the mapper left out against the
-    finished model, so their counts of what's left out include photos that step might now place. Meshing the boulder
-    again fixes that.
+  - **A photo is in one mesh or the other, never both.** The mesh of a scene that was left out can't use photos of its
+    rock that the boulder's mesh placed.
+  - **A side seen only in one video** with nothing of the rest of the boulder in its frames is tied to nothing, so it
+    isn't meshed, and its climb's frames of it don't count as its own: a missing mesh, rather than a wrong one.
+  - **Older meshes.** Boulders' meshes made before the ties were recorded count every frame of a climb's page videos as
+    its own, including frames of other boulders and of the walk in (Smoking's page video is mostly a hike up
+    Cloudripper: 10 of its 91 frames are placed on Drifter's mesh, which by the ties would be 10 of 13). They also go by
+    the climbs with 6 or more photos left out, and those made before 2671afe didn't try the photos the mapper left out
+    against the finished model. Meshing the boulder again fixes all of that.
