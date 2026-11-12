@@ -43,7 +43,7 @@ from email.parser import BytesParser
 from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
 import admin as admin_mod  # noqa: E402
@@ -57,6 +57,7 @@ import skyline as skyline_mod  # noqa: E402
 import terrain as terrain_mod  # noqa: E402
 import meshclean  # noqa: E402
 import links as links_mod  # noqa: E402
+import thumbs as thumbs_mod  # noqa: E402
 import meshmetrics  # noqa: E402
 import meshopts  # noqa: E402
 import offload as offload_mod  # noqa: E402
@@ -6306,15 +6307,23 @@ def page_parts() -> dict:
     return _page
 
 
-def page_head(title: str, text: str, path: str | None, found: bool = True) -> str:
+def page_head(title: str, text: str, path: str | None, found: bool = True, mid: str | None = None) -> str:
     """The page's title, and what apps showing a link's preview (WhatsApp, iMessage, Slack) read: its title and a line
-    about it, and the link's own address, where SITE_URL says the site's."""
+    about it, the link's own address, and the picture of the mesh it opens (mid's, thumbs.py), where SITE_URL says the
+    site's."""
     e = lambda v: html.escape(v, quote=True)    # noqa: E731
     url = f"{SITE_URL}{path}" if SITE_URL and path is not None else None
+    row = q("SELECT source FROM meshes WHERE id=?", mid, one=True) if mid and SITE_URL else None
+    pic = row and thumb_now(mid, texture_mode(mid, row["source"]))
+    src = f"{SITE_URL}/meshes/{mid}/thumb.jpg?v={pic['v']}" if pic else ""
+    image = [f'<meta property="og:image" content="{e(src)}">',
+             f'<meta property="og:image:width" content="{thumbs_mod.SIZE[0]}">', f'<meta property="og:image:height" content="{thumbs_mod.SIZE[1]}">',
+             f'<meta property="og:image:alt" content="{e(title)} in 3D">'] if pic else []
     return "\n".join([f"<title>{e(title if title == 'BoulderMesh' else title + ' · BoulderMesh')}</title>",
                       f'<meta name="description" content="{e(text)}">', '<meta property="og:site_name" content="BoulderMesh">',
                       '<meta property="og:type" content="website">', f'<meta property="og:title" content="{e(title)}">',
-                      f'<meta property="og:description" content="{e(text)}">', '<meta name="twitter:card" content="summary">',
+                      f'<meta property="og:description" content="{e(text)}">', *image,
+                      f'<meta name="twitter:card" content="{"summary_large_image" if image else "summary"}">',
                       *([f'<meta property="og:url" content="{e(url)}">', f'<link rel="canonical" href="{e(url)}">'] if url and found else []),
                       *([] if found else ['<meta name="robots" content="noindex">'])])
 
@@ -6331,7 +6340,8 @@ def link_page(kind: str, key: str) -> tuple[int, str, str | None]:
             "SELECT c.name, c.grade FROM mesh_links l JOIN climbs c ON c.id=l.climb_id WHERE l.mesh_id=? AND COALESCE(l.note,'') "
             "NOT LIKE ? ORDER BY c.name", key, SHARED + "%")] if m else []
         title = ", ".join(own[:3]) + (f" +{len(own) - 3}" if len(own) > 3 else "") if own else (m or g)["name"] or "A mesh"
-        return 200, page_head(title, f"{title} in 3D, a mesh made from photos and videos of climbing it.", f"/m/{key}"), None
+        return 200, page_head(title, f"{title} in 3D, a mesh made from photos and videos of climbing it.", f"/m/{key}",
+                              mid=key if m else g["successor"]), None
     slug = links_mod.slugify(key)
     found = find_link(kind, slug)
     if not found:
@@ -6342,13 +6352,15 @@ def link_page(kind: str, key: str) -> tuple[int, str, str | None]:
         c = q("SELECT name, grade, area_path FROM climbs WHERE id=?", found["ref"], one=True) or {}
         name = (c.get("name") or key) + (f" {c['grade'].split(' ')[0]}" if c.get("grade") else "")
         where = [str(a).strip("* ") for a in json.loads(c.get("area_path") or "[]")][-3:][::-1]
-        return 200, page_head(name, f"{name} in 3D" + (f" · {', '.join(where)}" if where else "") + ".", f"/c/{key}"), None
+        return 200, page_head(name, f"{name} in 3D" + (f" · {', '.join(where)}" if where else "") + ".", f"/c/{key}",
+                              mid=climb_mesh(found["ref"])), None
     path = json.loads(found["leaf"] or "[]")
+    first = boulder_choices(found["leaf"], found["slug"])["meshes"][:1] if path else []
     n = len(boulder_mesh_sets().get(found["leaf"], []))
     where = ", ".join(str(a).strip("* ") for a in path[-3:-1][::-1])
     return 200, page_head(boulder_name(found["leaf"]) if path else key,
                           f"{boulder_name(found['leaf']) if path else key} in 3D" + (f" · {where}" if where else "")
-                          + (f" · {n} meshes" if n > 1 else "") + ".", f"/b/{key}"), None
+                          + (f" · {n} meshes" if n > 1 else "") + ".", f"/b/{key}", mid=first[0]["id"] if first else None), None
 
 
 class _Discard(io.RawIOBase):
@@ -6709,7 +6721,7 @@ class Handler(BaseHTTPRequestHandler):
                                        "volunteer_url": VOLUNTEER_URL if VOLUNTEER_PORT else None,
                                        "editing": "none" if READ_ONLY else "token" if EDIT_TOKEN else "open",
                                        "editor": not READ_ONLY and (not EDIT_TOKEN or self.is_editor()), "stopping": _stopping,
-                                       "version": VERSION,
+                                       "version": VERSION, "thumbs": thumbs_mod.available(),
                                        # where the admin page is, and how to reach it over SSH: for editors only
                                        "admin": admin_link() if not READ_ONLY and (not EDIT_TOKEN or self.is_editor()) else None})
             if p == "/api/jobs":     # what a restart would interrupt now, and what it would only pause
@@ -6834,6 +6846,11 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as e:
                         r["pack"] = r["v"] = None
                         print(f"error: mesh {r['id']}'s packed copies: {type(e).__name__}: {e}", flush=True)
+                    try:
+                        r["thumb"] = thumb_info(r)      # its picture, for its card (thumbs.py)
+                    except Exception as e:
+                        r["thumb"] = None
+                        print(f"error: mesh {r['id']}'s picture: {type(e).__name__}: {e}", flush=True)
                 # the names in its climbs' and its boulder's links, for Share, and how many current meshes its boulder has
                 # (boulder_mesh_sets(): its own, what that left out, its climbs' own), for the viewer's Meshes button
                 try:    # links failing shouldn't empty the list
@@ -6923,6 +6940,23 @@ class Handler(BaseHTTPRequestHandler):
             if m:   # how much of a file sent in parts has come, to carry on from there
                 state = upload_state(m[1])
                 return self.send_json(state) if state else self.send_json({"error": "no such upload"}, 404)
+            m = re.fullmatch(r"/meshes/([0-9a-f]+)/thumb(\.small)?\.jpg", p)
+            if m:   # its picture (thumbs.py), drawn as its texture is shown now, or none; kept as a texture is, as it shows one
+                row = q("SELECT source FROM meshes WHERE id=?", m[1], one=True)
+                now = row and thumb_now(m[1], texture_mode(m[1], row["source"]))
+                if not now:
+                    return self.send_json({"error": "it has no picture yet"}, 404)
+                cache = f"public, max-age={TEXTURE_CACHE}" if qs.get("v", [""])[0] in ("", now["v"]) else "no-cache"
+                return self.send_file(MESHES / m[1] / thumbs_mod.DIR / (thumbs_mod.SMALL_FILE if m[2] else thumbs_mod.LARGE), cache=cache)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/thumb", p)
+            if m:   # its picture, and whether one's being drawn or failed, for Share's Use this view
+                row = q("SELECT source, filename FROM meshes WHERE id=?", m[1], one=True)
+                if not row:
+                    return self.send_json({"error": "not found"}, 404)
+                mode, rec = texture_mode(m[1], row["source"]), thumbs_mod.load(MESHES / m[1])
+                want = thumbs_mod.key(mesh_version(m[1], mode, row["filename"]), MESHES / m[1], rec.get("pose"))
+                return self.send_json({"thumb": thumb_now(m[1], mode), "queued": m[1] in _thumbing,
+                                       "failed": rec.get("failed") if rec.get("failed_key") == want else None})
             m = re.fullmatch(r"/meshes/([0-9a-f]+)/([A-Za-z0-9._-]+)", p)
             if m:
                 mid, name = m[1], m[2]
@@ -7165,6 +7199,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"restored": name.split("_", 1)[1]})
 
             # ---- meshes
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/thumb", p)
+            if m:   # {pose}: draw its picture from that camera, or (None) as it would be by itself
+                if not thumbs_mod.available():
+                    return self.send_json({"error": "pictures of meshes can't be drawn on this server"}, 501)
+                if not (MESHES / m[1]).is_dir():
+                    return self.send_json({"error": "not found"}, 404)
+                pose = thumbs_mod.check_pose(self.read_json().get("pose"))
+                rec = thumbs_mod.load(MESHES / m[1])
+                rec.update(pose=pose, failed=None, failed_key=None)
+                thumbs_mod.save(MESHES / m[1], rec)
+                queue_thumb(m[1], urgent=True)
+                return self.send_json({"queued": True})
             if p == "/api/meshes":
                 fields, files = self.read_files()
                 if not files:
@@ -7737,6 +7783,143 @@ def keep_gone(mid: str) -> None:
         con.execute("UPDATE meshes_gone SET successor=? WHERE successor=?", (m["replaced_by"], mid))
 
 
+def climb_mesh(cid: str) -> str | None:
+    """The mesh a climb's link opens, as the page picks it (pickClimbMesh()): its own (not one of what its boulder's
+    left out), else the current one of its boulder's or pool's placing most of its own photos, else one an area linked it
+    to; None if none."""
+    own = [r for r in q("SELECT m.id, m.boulder FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=? AND "
+                        "COALESCE(l.note,'') NOT LIKE ? ORDER BY m.replaced_by IS NOT NULL, m.created DESC", cid, SHARED + "%")
+           if not is_rest(r["boulder"])]
+    if own:
+        return own[0]["id"]
+    c = q("SELECT area_path FROM climbs WHERE id=?", cid, one=True)
+    leaf = boulder_of(c["area_path"]) if c else None
+    best = None
+    for r in q("SELECT id, boulder, created FROM meshes WHERE replaced_by IS NULL AND (boulder=? OR boulder LIKE ?)",
+               leaf, (leaf or "")[:-1] + ", %") if leaf else []:
+        if r["boulder"] != leaf and not (is_pool(r["boulder"]) and cid in pool_members(r["boulder"])):
+            continue
+        n = ((viewpoints.load(MESHES / r["id"]) or {}).get("climbs") or {}).get(cid) or {}
+        best = max(best or (-1, 0, ""), (n.get("photos") or 0, r["created"] or 0, r["id"]))
+    if best:
+        return best[2]
+    shared = q("SELECT m.id FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=? AND l.note LIKE ? "
+               "ORDER BY m.replaced_by IS NOT NULL, m.created DESC LIMIT 1", cid, SHARED + "%", one=True)
+    return shared["id"] if shared else None
+
+
+# ----------------------------------------------------------------- pictures of meshes (thumbs.py)
+_thumbs: "queue.PriorityQueue[tuple[int, float, str]]" = queue.PriorityQueue()
+_thumb_lock = threading.Lock()
+_thumbing: dict[str, int] = {}      # meshes queued, and how soon: 0 asked for by an editor, 1 new or out of date
+_renderer: dict = {}
+
+
+def thumb_site() -> str:
+    """Where the browser drawing pictures opens the site: this server, as it listens (THUMB_SITE says otherwise)."""
+    host = os.environ.get("HOST", "0.0.0.0")
+    host = "127.0.0.1" if host in ("0.0.0.0", "::", "localhost", "") else host
+    return os.environ.get("THUMB_SITE") or f"http://{host}:{int(os.environ.get('PORT', '8470'))}"
+
+
+def thumb_now(mid: str, mode: str | None) -> dict | None:
+    """A mesh's picture as its card and links may show it: {v, hand}, or None if it hasn't one drawn as its texture is
+    shown now, which would show what the site no longer does."""
+    d = MESHES / mid
+    rec = thumbs_mod.load(d)
+    if not rec.get("v") or rec.get("mode") != mode or not (d / thumbs_mod.DIR / thumbs_mod.LARGE).is_file():
+        return None
+    return {"v": rec["v"], "hand": bool(rec.get("pose"))}
+
+
+def thumb_info(r: dict) -> dict | None:
+    """A listed mesh's picture (thumb_now()); one missing or out of date is queued, once the mesh is packed for viewing,
+    as it's drawn from its preview. Older versions of rebuilt meshes keep what they had."""
+    d = MESHES / r["id"]
+    if thumbs_mod.available() and not r.get("replaced_by") and (r.get("pack") or not r["filename"].lower().endswith(".glb")):
+        rec = thumbs_mod.load(d)
+        want = thumbs_mod.key(r.get("v"), d, rec.get("pose"))
+        if rec.get("key") != want and rec.get("failed_key") != want:
+            queue_thumb(r["id"])
+    return thumb_now(r["id"], r.get("texture"))
+
+
+def queue_thumb(mid: str, urgent: bool = False) -> None:
+    soon = 0 if urgent else 1
+    with _thumb_lock:
+        if _thumbing.get(mid, 2) <= soon:
+            return
+        _thumbing[mid] = soon
+    _thumbs.put((soon, time.time(), mid))
+
+
+def thumb_pose(mid: str) -> dict | None:
+    """Where a mesh's picture is drawn from by itself: from its own climb's view, on a boulder's mesh, else the view of
+    its climb with most photos placed (views.json), else the view from all its photos (viewpoints.photos_view()); None
+    for one with none of those, which the viewer frames as it opens it."""
+    d = MESHES / mid
+    climbs = (viewpoints.load(d) or {}).get("climbs") or {}
+    if climbs:
+        own = [r["climb_id"] for r in q("SELECT climb_id FROM mesh_links WHERE mesh_id=? AND COALESCE(note,'') NOT LIKE ?",
+                                        mid, SHARED + "%")]
+        v = climbs[own[0]] if len(own) == 1 and own[0] in climbs else max(climbs.values(), key=lambda v: v.get("photos") or 0)
+        return {"eye": v["eye"], "target": v["target"]}
+    return viewpoints.photos_view(d)
+
+
+def draw_thumb(mid: str) -> bool:
+    """Draw a mesh's picture (thumbs_mod.Renderer), unless it's drawn already from what it would be now. Whether it
+    drew one; a failure is kept, with what it was drawn from, so as not to try that again."""
+    m = q("SELECT source, filename FROM meshes WHERE id=?", mid, one=True)
+    if not m:
+        return False
+    d = MESHES / mid
+    mode = texture_mode(mid, m["source"])
+    rec = thumbs_mod.load(d)
+    pose = rec.get("pose")
+    want = thumbs_mod.key(mesh_version(mid, mode, m["filename"]), d, pose)
+    if rec.get("key") == want:
+        return False
+    out = d / thumbs_mod.DIR
+    out.mkdir(exist_ok=True)
+    tmp = out / "drawing.jpg"
+    if "r" not in _renderer:
+        _renderer["r"] = thumbs_mod.Renderer(BETA_NICE)
+    try:
+        camera = pose or thumb_pose(mid)
+        took = _renderer["r"].draw(f"{thumb_site()}/m/{mid}?thumb={quote(json.dumps(camera) if camera else 'auto')}"
+                                   + ("" if pose else "&fit=1"), tmp)
+        thumbs_mod.shrink(tmp, out / thumbs_mod.SMALL_FILE)
+        tmp.replace(out / thumbs_mod.LARGE)
+    except Exception as e:
+        print(f"{mid}: its picture couldn't be drawn: {type(e).__name__}: {e}", flush=True)
+        rec = thumbs_mod.load(d)
+        rec.update(failed=str(e), failed_key=want)
+        thumbs_mod.save(d, rec)
+        return False
+    rec = thumbs_mod.load(d)    # a camera chosen meanwhile stays, and draws it again
+    rec.update(key=want, mode=mode, v=want, made=time.time(), seconds=round(took, 1), failed=None, failed_key=None)
+    thumbs_mod.save(d, rec)
+    if rec.get("pose") != pose:
+        queue_thumb(mid, urgent=True)
+    return True
+
+
+def thumb_worker() -> None:
+    """Draws meshes' pictures one at a time, on a thread of its own at the lowest CPU priority, as the browser does."""
+    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    while True:
+        _, _, mid = _thumbs.get()
+        with _thumb_lock:
+            if _thumbing.pop(mid, None) is None:
+                continue
+        use_processing_cores()
+        try:
+            draw_thumb(mid)
+        except Exception as e:  # never let the thread die
+            print(f"{mid}: drawing its picture failed: {type(e).__name__}: {e}", flush=True)
+
+
 # ----------------------------------------------------------------- volunteers
 def search_wanter(purpose: str, ref: str):
     """What to ask volunteers for a YouTube search with, for purpose and ref, when this server won't search itself;
@@ -8138,6 +8321,9 @@ def main() -> None:
     threading.Thread(target=frames_worker, daemon=True).start()
     threading.Thread(target=prune_worker, daemon=True).start()
     threading.Thread(target=pack_worker, daemon=True).start()
+    if thumbs_mod.available():
+        threading.Thread(target=thumb_worker, daemon=True, name="thumbs").start()
+    print(f"pictures of meshes: {'drawn here' if thumbs_mod.available() else 'not drawn: no node and playwright-core here (thumbs.py)'}", flush=True)
     if splat_mod.enabled():
         why = splat_mod.unavailable()
         print(f"splats: {'not fitted, as ' + why if why else 'fitted for each new mesh'}", flush=True)

@@ -534,6 +534,13 @@ name added, and a rename keeps the old name as an alias (design.md, "Links to cl
 address follows the view, as the link that opens what's in it, and old `#mesh=<id>` links still open. *Meshes (n)*
 over *Rate* lists the meshes of the boulder in view.
 
+**Pictures.** Each mesh has a picture, on its card, in a boulder's list of meshes, and in its links' previews in chat
+apps. The server draws them itself with the site's own viewer in a browser with no screen, from where its climb's
+photos were taken, moved back to show the whole rock, as soon as the mesh is packed for viewing, and again when it's
+rebuilt, levelled, cleaned up or textured differently. An editor can choose one: turn the view, then *Share* → *Use
+this view*; *Back to automatic* undoes it. The Docker image for the server has the browser (about 0.6 GB); without it
+(`THUMBS=0`, or no node and playwright-core outside Docker) there are no pictures (design.md, "Pictures of meshes").
+
 Each mesh's card has a bar of where its photos came from, by source, in the same colour for each
 source everywhere. Hovering it, focusing it or tapping it shows each source's licence terms, and the
 licence recorded for each photo where the source gives one (Commons, Flickr). It counts the photos
@@ -1224,6 +1231,8 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_admin.py       # offline: the admin page's settings, credentials and photo permissions
     python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job
     python3 tests/test_public.py      # the editing token and read-only modes, other sites' pages refused, the page's policy and headers, what's served how
+    python3 tests/test_links.py       # offline: the names in climbs' and boulders' links, clashes, renames, deleted meshes
+    python3 tests/test_thumbs.py      # what pictures of meshes are drawn from; a real one where PLAYWRIGHT_CORE and PLAYWRIGHT_BROWSERS_PATH name a playwright-core and its browser
 
 ## Known gaps
 

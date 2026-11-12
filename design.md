@@ -1275,3 +1275,32 @@ hasn't got, and the whole of it comes again. So, with the links:
   it; its files are gzipped once, when they're made. Each page has an ETag, so a returning visitor's browser gets a "not
   modified" for one it has.
 - `/api/` and `/meshes/`, and their caching, don't change.
+
+## Pictures of meshes (`backend/thumbs.py`)
+
+Built on 2026-11-12, for link previews (WhatsApp, iMessage, Slack want 1200 x 630) and the Meshes tab's cards. A
+picture is drawn by the site's own viewer, opened at `/m/<id>?thumb=...` in headless Chromium (playwright-core, run by
+node: `thumbs.mjs`, kept open between pictures, closed after 5 idle minutes), with no controls, notes or view reports,
+from the mesh's preview copy and without its splat. So it looks as the site does, and follows its texture setting: a
+picture is served only if it was drawn as the mesh's texture is shown now, as one drawn from a texture the site no
+longer shows would still show it. A lighter renderer (pyrender, software OpenGL) would have meant drawing meshes a
+second way, with its framing and levelling done again in Python.
+
+**From where.** A boulder's mesh: from its climb's view (where that climb's own photos were taken, viewpoints.py), or
+on one of several climbs, the one with most photos placed; else from all the photos it placed (`photos_view()`). That
+puts the camera where climbers stand, often right at the rock, so a camera chosen this way is moved back until the
+whole of the rock fits (`fit`). Without photos (an upload), as the viewer opens it. An editor's *Use this view* sends
+where the camera is and what it looks at, in the mesh's own coordinates as a climb's view is, and the picture is drawn
+from that exactly, so it follows later cleanups and texture changes as an automatic one does.
+
+**When.** The mesh list queues a mesh whose picture is missing or was drawn from something that has changed since:
+what the viewer is sent (`mesh_version()`), its levelling, its climbs' views, its cameras, or the camera chosen. It
+waits for the mesh to be packed, as it's drawn from the preview. One drawn picture takes 5-8 s on hal (1M faces, from
+its 150k-face preview, with SwiftShader), the view from all its photos 5 s more; the server, with 2 cores, at the lowest
+priority, takes longer. A failure is kept with what it was drawn from, and not tried again until that changes.
+
+**Where.** Beside the mesh, `thumb/large.jpg` and `thumb/small.jpg` (480 x 252, for cards), served at
+`/meshes/<id>/thumb.jpg` and `thumb.small.jpg` with the picture's version, kept a day as textures are. In Docker,
+Chromium and its libraries take about 0.6 GB of the server's image (`THUMBS=1`, the default); the machines' build
+leaves them out.
+

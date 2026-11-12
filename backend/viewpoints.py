@@ -92,6 +92,47 @@ def _looked_at(cams: list[dict], mesh, fallback) -> "object":
     return np.linalg.solve(A, b)
 
 
+def _mesh(mesh_dir: Path, cams: dict[str, dict], log: Log) -> tuple:
+    """The mesh to cast rays on (beta.Mesh), its middle and size; without one that can be read, those its cameras say."""
+    import numpy as np
+    try:
+        from beta import Mesh
+        mesh = Mesh.load(mesh_dir)
+        return mesh, np.median(mesh.c, axis=0), mesh.size
+    except Exception as e:     # a mesh that can't be read: its cameras still say roughly where things are
+        log(f"views: couldn't read the mesh ({e}); going by the cameras alone")
+        centres = np.array([_pose(c)[0] for c in cams.values()])
+        return None, np.median(centres, axis=0), float(np.ptp(centres, axis=0).max() or 1.0) / 3
+
+
+def _view(placed: list[dict], mesh, middle, size) -> dict:
+    """The view from photos placed in a mesh: from the middle one of them, looking at where they all look, no nearer or
+    further than NEAREST and FURTHEST of its size. {eye, target}"""
+    import numpy as np
+    centres = np.array([_pose(c)[0] for c in placed])
+    eye = centres[np.argmin(np.linalg.norm(centres - np.median(centres, axis=0), axis=1))]
+    target = _looked_at(placed, mesh, middle)
+    away = eye - target
+    dist = float(np.linalg.norm(away))
+    if dist < 1e-9:
+        away, dist = eye - middle, float(np.linalg.norm(eye - middle)) or 1.0
+    eye = target + away / dist * min(max(dist, NEAREST * size), FURTHEST * size)
+    return {"eye": [round(float(x), 5) for x in eye], "target": [round(float(x), 5) for x in target]}
+
+
+def photos_view(mesh_dir: Path, log: Log = lambda line: None) -> dict | None:
+    """The view from all the photos a mesh placed (cameras.json), as a climb's is from its own: for its picture, where
+    no climb's view says which side it's seen from. None without cameras."""
+    try:
+        cams = {c["name"]: c for c in json.loads((mesh_dir / "cameras.json").read_text())}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not cams:
+        return None
+    mesh, middle, size = _mesh(mesh_dir, cams, log)
+    return _view(list(cams.values()), mesh, middle, size)
+
+
 def compute(mesh_dir: Path, climbs: dict[str, set[str]], log: Log) -> dict:
     """Work out and save each climb's view of a boulder's mesh.
 
@@ -111,15 +152,7 @@ def compute(mesh_dir: Path, climbs: dict[str, set[str]], log: Log) -> dict:
         if given > sum(len(v) for v in climbs.values()):
             log(f"views: {given - sum(len(v) for v in climbs.values())} of the climbs' video frames count as nobody's own: "
                 "neither placed nor tied to a photo that is")
-    try:
-        from beta import Mesh
-        mesh = Mesh.load(mesh_dir)
-        middle, size = np.median(mesh.c, axis=0), mesh.size
-    except Exception as e:     # a mesh that can't be read: its cameras still say roughly where things are
-        log(f"views: couldn't read the mesh ({e}); going by the cameras alone")
-        mesh = None
-        centres = np.array([_pose(c)[0] for c in cams.values()])
-        middle, size = np.median(centres, axis=0), float(np.ptp(centres, axis=0).max() or 1.0) / 3
+    mesh, middle, size = _mesh(mesh_dir, cams, log)
     out = {"created": time.time(), "climbs": {}, "unplaced": {}, "evidence": tied is not None}
     for cid, names in climbs.items():
         placed = [cams[n] for n in sorted(names) if n in cams]
@@ -127,16 +160,8 @@ def compute(mesh_dir: Path, climbs: dict[str, set[str]], log: Log) -> dict:
             if names:
                 out["unplaced"][cid] = len(names)
             continue
-        centres = np.array([_pose(c)[0] for c in placed])
-        eye = centres[np.argmin(np.linalg.norm(centres - np.median(centres, axis=0), axis=1))]
-        target = _looked_at(placed, mesh, middle)
-        away = eye - target
-        dist = float(np.linalg.norm(away))
-        if dist < 1e-9:
-            away, dist = eye - middle, float(np.linalg.norm(eye - middle)) or 1.0
-        eye = target + away / dist * min(max(dist, NEAREST * size), FURTHEST * size)
-        out["climbs"][cid] = {"eye": [round(float(x), 5) for x in eye], "target": [round(float(x), 5) for x in target],
-                              "photos": len(placed), "of": len(names), "names": [c["name"] for c in placed]}
+        out["climbs"][cid] = {**_view(placed, mesh, middle, size), "photos": len(placed), "of": len(names),
+                              "names": [c["name"] for c in placed]}
     tmp = mesh_dir / (FILE + ".partial")
     tmp.write_text(json.dumps(out))
     tmp.replace(mesh_dir / FILE)

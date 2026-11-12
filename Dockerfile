@@ -77,6 +77,17 @@ RUN pip install --no-cache-dir --break-system-packages --upgrade "yt-dlp[default
  && deno --version | head -1 && python3 -c "import yt_dlp_ejs"
 # py-spy: what a hung process's threads are doing, native frames too (diagnostics.dump_threads(); README, "When it hangs")
 RUN pip install --no-cache-dir --break-system-packages py-spy && py-spy --version
+# Pictures of meshes (backend/thumbs.py): the site's own viewer in a browser with no screen, Chromium as playwright-core
+# downloads it (with the libraries it needs), run by Ubuntu's node. The server's build only: the machines' (deploy/build.sh)
+# passes THUMBS=0, as they don't draw them.
+ARG THUMBS=1
+ENV PLAYWRIGHT_CORE=/opt/playwright-core PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN if [ "$THUMBS" = 1 ]; then \
+      apt-get update && apt-get install -y --no-install-recommends nodejs curl ca-certificates \
+   && mkdir -p $PLAYWRIGHT_CORE \
+   && curl -fsSL https://registry.npmjs.org/playwright-core/-/playwright-core-1.48.2.tgz | tar -xz -C $PLAYWRIGHT_CORE --strip-components=1 \
+   && node $PLAYWRIGHT_CORE/cli.js install --with-deps chromium \
+   && chmod -R a+rX $PLAYWRIGHT_BROWSERS_PATH && rm -rf /var/lib/apt/lists/*; fi
 # Ubuntu's colmap package is only there for the libraries this one links to: /usr/local/bin comes first
 COPY --from=colmap /opt/colmap-cuda/bin/colmap /usr/local/bin/colmap
 COPY --from=build /usr/local/bin/OpenMVS /usr/local/bin/OpenMVS

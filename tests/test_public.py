@@ -524,6 +524,28 @@ def links_site(tmp: Path) -> None:
         assert out.startswith(b"HTTP/1.0 301") and b"Location: /c/the-mandala-direct?x=1\r\n" in out, out[:300]
         assert req(B, "GET", "/api/links/c/the-mandala")[2]["slug"] == "the-mandala-direct"
 
+        # a mesh's picture, where one's been drawn as its texture is shown now: on its links' previews, and served as a
+        # texture is; none here to draw more with, so none's asked for
+        assert req(B, "GET", "/api/status")[2]["thumbs"] is False
+        pic = tmp / "data" / "meshes" / mids[0]
+        (pic / "thumb").mkdir()
+        (pic / "thumb" / "large.jpg").write_bytes(b"\xff\xd8large")
+        (pic / "thumb" / "small.jpg").write_bytes(b"\xff\xd8small")
+        (pic / "thumb.json").write_text(json.dumps({"v": "abc123", "mode": "full", "key": "abc123", "pose": None}))
+        st, h, body = req(B, "GET", f"/meshes/{mids[0]}/thumb.small.jpg?v=abc123")
+        assert st == 200 and body == b"\xff\xd8small" and h["Cache-Control"] == "public, max-age=86400", (st, h)
+        assert req(B, "GET", f"/meshes/{mids[0]}/thumb.jpg?v=old")[1]["Cache-Control"] == "no-cache"
+        assert req(B, "GET", f"/api/meshes/{mids[0]}/thumb")[2] == {"thumb": {"v": "abc123", "hand": False}, "queued": False, "failed": None}
+        assert next(m for m in req(B, "GET", "/api/meshes")[2] if m["id"] == mids[0])["thumb"] == {"v": "abc123", "hand": False}
+        page = req(B, "GET", "/c/the-mandala-direct")[2]
+        assert b'<meta property="og:image" content="https://rocks.example/meshes/' + mids[0].encode() + b'/thumb.jpg?v=abc123">' in page \
+            and b'content="summary_large_image"' in page, page[:2000]
+        (pic / "thumb.json").write_text(json.dumps({"v": "abc123", "mode": "hidden", "key": "abc123"}))
+        assert req(B, "GET", f"/meshes/{mids[0]}/thumb.jpg")[0] == 404, "drawn when its texture was shown otherwise: not shown"
+        assert b"og:image" not in req(B, "GET", "/c/the-mandala-direct")[2]
+        st, _, e = req(B, "POST", f"/api/meshes/{mids[0]}/thumb", {"pose": None})
+        assert st == 501 and "can't be drawn" in e["error"], (st, e)
+
         # a deleted mesh: what its link opens instead
         assert req(B, "DELETE", f"/api/meshes/{mids[2]}")[0] == 200
         g = req(B, "GET", f"/api/links/m/{mids[2]}")[2]["gone"]

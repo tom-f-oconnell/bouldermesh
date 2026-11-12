@@ -48,9 +48,19 @@
   #editdlg video[hidden]{display:none}
   #bpick{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;width:min(520px,calc(100vw - 32px));box-sizing:border-box;padding:16px;max-height:calc(100vh - 48px)}
   #bpick::backdrop{background:rgba(0,0,0,.5)} #bpick p{font-size:13px;margin:0 0 10px} #bpick a{color:var(--acc)} #bpick .note{color:var(--mute)}
-  #bpick .bitem{display:flex;flex-direction:column;align-items:flex-start;gap:3px;width:100%;text-align:left;margin:0 0 8px;padding:9px 11px;
+  #bpick .bitem{display:grid;grid-template-columns:auto 1fr;grid-auto-flow:dense;align-items:center;gap:3px 10px;width:100%;text-align:left;margin:0 0 8px;padding:9px 11px;
     background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;font:inherit;font-size:13px;cursor:pointer}
   #bpick .bitem:hover,#bpick .bitem.on{border-color:var(--acc)} #bpick .bkind small,#bpick .mute{color:var(--mute)}
+  #bpick .bitem>span{grid-column:2} #bpick .bitem img{grid-row:1/3;grid-column:1;width:96px;aspect-ratio:1200/630;object-fit:cover;border-radius:4px}
+  .mthumb{flex:none;width:128px;aspect-ratio:1200/630;object-fit:cover;border-radius:6px;background:var(--line);cursor:pointer}
+  #linkmenu .thumbset{display:grid;grid-template-columns:auto 1fr;gap:6px 8px;align-items:center;border-top:1px solid var(--line);padding-top:8px;margin-top:2px}
+  #linkmenu .thumbset img,#linkmenu .thumbset .noimg{grid-row:1/4;width:120px;aspect-ratio:1200/630;object-fit:cover;border-radius:4px;background:var(--line)}
+  #linkmenu .thumbset .noimg{display:grid;place-items:center;font-size:11px;color:var(--mute)} #linkmenu .thumbset .what{font-size:11px;color:var(--mute)}
+  /* the picture's renderer (thumbMode): the view alone, its whole size */
+  body.thumb{grid-template-rows:1fr} body.thumb main{grid-template-columns:minmax(0,1fr)} body.thumb #right{display:grid;grid-template-rows:1fr}
+  body.thumb header,body.thumb aside,body.thumb .viewbar,body.thumb #vtitle,body.thumb #vcorner,body.thumb #vextra,body.thumb #hud,
+  body.thumb #viewnote,body.thumb #pieces,body.thumb #orient,body.thumb #nearby,body.thumb #map,body.thumb .toast,body.thumb #loading,
+  body.thumb #linkmenu,body.thumb #srctip,body.thumb #prefs{display:none!important}
   #vextra{position:absolute;right:12px;bottom:50px;z-index:3;display:flex;flex-direction:column;align-items:flex-end;gap:6px}  /* over Rate */
   #vnewest[hidden],#vothers[hidden]{display:none}
   #linkmenu .hint{font-size:11px;color:var(--mute)} #viewnote a.same{color:inherit;margin-left:6px;text-decoration:underline}
@@ -282,7 +292,7 @@
     #orient,#viewnote{top:56px;bottom:auto;left:8px;right:8px;max-width:none;max-height:35%;overflow:auto} #viewnote{z-index:3}
     #pieces{top:auto;bottom:12px;left:8px;right:auto;max-width:calc(100% - 175px);max-height:35%;overflow:auto}
     #ratebtn{font-size:14px;padding:6px 12px} #vcorner #vinfo{padding:6px 10px}
-    #vextra{bottom:56px} #vextra button{font-size:14px;padding:6px 12px} #ratemenu .seg button{padding:7px 14px;font-size:14px} #ratecomment{font-size:16px}
+    #vextra{bottom:56px} #vextra button{font-size:14px;padding:6px 12px} .mthumb{width:96px} #ratemenu .seg button{padding:7px 14px;font-size:14px} #ratecomment{font-size:16px}
     #vtitle:has(#vname:not(:empty)){display:block;position:absolute;top:6px;left:8px;max-width:calc(100% - 16px);font-size:12px;line-height:1.35;
       padding:2px 8px;border-radius:10px;background:var(--overlay-soft);color:var(--fg);pointer-events:none;z-index:2}
     #vname,#varea{white-space:nowrap;overflow:hidden;text-overflow:ellipsis} #varea{font-size:11px;color:var(--mute)} #varea:empty{display:none}
@@ -561,6 +571,9 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 const $ = s => document.querySelector(s);
 // whether this copy of the site may be changed from here: open, or with its editing token (kept in this browser)
 let editor = true, token = null;
+// the server's renderer drawing a mesh's picture (backend/thumbs.py), at /m/<id>?thumb=auto or ?thumb=<a camera, as
+// JSON>: the view alone, its whole size, with no controls, notes or reports, from its preview copy without a splat
+const thumbMode = new URLSearchParams(location.search).get('thumb'), thumbFit = !!new URLSearchParams(location.search).get('fit');
 // what a button that would change something says on a copy of the site this browser can't change, in place of
 // what it would do
 function viewOnlyNote(){
@@ -794,11 +807,13 @@ function linkMenu(x, y){
   const menu = $('#linkmenu'), r = vEl.getBoundingClientRect(), sheet = navigator.share && matchMedia('(pointer: coarse)').matches;
   menu.innerHTML = choices.map((c, i) => c.off ? `<button class="sm sec" disabled title="${esc(c.off)}">${esc(c.label)}</button>`
     : `<button class="sm${i ? ' sec' : ''}" data-i="${i}">${esc(c.label)}</button><span class="url">${esc(c.url)}</span>`).join('')
-    + `<span class="hint">${sheet ? 'Tap one, then pick the app to send it with' : 'Click one to copy it'}</span>`;
+    + `<span class="hint">${sheet ? 'Tap one, then pick the app to send it with' : 'Click one to copy it'}</span>` + thumbHtml(meshesById[shownMesh]);
   menu.hidden = false;
   menu.style.left = Math.max(8, Math.min(x - r.left, r.width - menu.offsetWidth - 8)) + 'px';
   menu.style.top = Math.max(8, Math.min(y - r.top, r.height - menu.offsetHeight - 8)) + 'px';
   menu.onclick = async ev => {
+    const t = ev.target.closest('button[data-act]'), m = meshesById[shownMesh];
+    if (t && m) return setThumb(m, t.dataset.act === 'thumb' ? cameraPose() : null, t);
     const b = ev.target.closest('button[data-i]');
     if (!b) return;
     const c = choices[+b.dataset.i];
@@ -1675,7 +1690,7 @@ function applyScene(){
 }
 let splat = null;     // {id, viewer}: the splat drawn behind the mesh now
 async function loadSplat(){
-  const id = shownMesh, want = bgMode === 'scene' && !!id && !!meshesById[id]?.splat;
+  const id = shownMesh, want = bgMode === 'scene' && !!id && !!meshesById[id]?.splat && !thumbMode;
   if (splat && (!want || splat.id !== id)) { if (splat.viewer) { scene.remove(splat.viewer); splat.viewer.dispose?.(); } splat = null; }
   if (!want || splat) return;
   const mine = splat = { id, viewer: null };
@@ -3520,7 +3535,7 @@ function renderMeshes(filter = true){
     const chips = (m.boulder_climbs || []).map(c => `<span class="chip" data-from="${c.id}" title="${c.view ? `Look at it from where ${esc(c.name)}'s own photos were taken (${plural(c.view.photos, 'photo')})` : `None of ${esc(c.name)}'s own photos were placed in it: opens the climb`}">${c.view ? '👁 ' : ''}${esc(c.name)} ${esc(c.grade||'')}</span>`).join('')
       + m.climbs.filter(c => editor || (c !== sole && !pooledIds.has(c.id))).map(c=>`<span class="chip${c.shared ? ' shared' : ''}" data-climb="${c.id}" ${c.shared ? 'title="Linked by an area as on the same boulder as the climb this was made for: it may not show this climb\'s side"' : ''}>${esc(c.name)} ${esc(c.grade||'')}${c.shared ? ' <small>same boulder</small>' : ''} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('');
     const n = new Set([...pooledIds, ...m.climbs.map(c => c.id)]).size;
-    d.innerHTML = `<div class="grow"><span class="name">${meshNameHtml(m)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
+    d.innerHTML = `${m.thumb ? `<img class="mthumb" loading="lazy" alt="" src="/meshes/${m.id}/thumb.small.jpg?v=${m.thumb.v}" title="View it">` : ''}<div class="grow"><span class="name">${meshNameHtml(m)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
         <div class="chips">${several ? `<details class="mclimbs"${climbListsOpen.has(m.id) ? ' open' : ''}><summary>${plural(n, 'climb')}</summary><div class="chips">${chips}</div></details>` : chips}
           ${editor ? '<select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option></select>' : ''}</div></div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px">
@@ -3538,6 +3553,7 @@ function renderMeshes(filter = true){
       d.querySelector('.chips').before(b);
     }
     d.querySelector('.view').onclick = () => viewMesh(m.id, null, 'meshes');
+    d.querySelector('.mthumb')?.addEventListener('click', () => viewMesh(m.id, null, 'meshes'));
     d.querySelector('.fly')?.addEventListener('click', () => flyTo(m.lat, m.lng));
     d.querySelector('.setll')?.addEventListener('click', async () => { const ll = parseLL(prompt('lat, lng')); if (!ll) return; await api('/api/meshes/'+m.id, {method:'PATCH', json:{lat:ll[0], lng:ll[1]}}); refreshMeshes(); });
     d.querySelector('.del').onclick = async () => { if (ask(`Delete mesh "${meshTitle(m)}"?`)) { await api('/api/meshes/' + m.id, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); } };
@@ -3632,6 +3648,7 @@ async function openFromAddress(){
   if (!m) return openLinked();
   const [, kind, key] = m;
   try {
+    if (kind === 'm' && thumbMode) return await drawThumb(key);
     if (kind === 'm') return await openExact(key, new URLSearchParams(location.search).get('from'));
     const r = await api(`/api/links/${kind}/${encodeURIComponent(decodeURIComponent(key))}`);
     if (kind === 'b') return pickBoulder(r, true);
@@ -3645,6 +3662,59 @@ async function openFromAddress(){
       }
     }
   } catch (e) { toast(e.message, 8000); }
+}
+// The camera as the picture's renderer is to set it: given (with fit, one the server chose, moved back as far as all of
+// the rock needs), else from where the climb it's of was photographed (the one with most photos placed, on a boulder's),
+// else as the mesh opens; then html[data-thumb] says it's drawn, or failed
+async function drawThumb(id){
+  let pose = null;
+  try { pose = thumbMode === 'auto' ? null : JSON.parse(thumbMode); } catch {}
+  if (meshesById[id]) await viewMesh(id, null, 'thumb');
+  const m = meshesById[id];
+  if (!m || shownMesh !== id || !current) { document.documentElement.dataset.thumb = 'failed'; return; }
+  const seen = (m.boulder_climbs || []).filter(c => c.view), sole = soleClimb(m);
+  pose = pose || (seen.find(c => c.id === sole?.id) || seen.sort((a, b) => (b.view.photos || 0) - (a.view.photos || 0))[0])?.view;
+  if (pose) lookFrom(pose);
+  if (pose && thumbFit) {   // a camera chosen for it, not by hand: back far enough for all of it
+    const r = mainBox(current).getSize(new THREE.Vector3()).length() / 2, away = camera.position.clone().sub(controls.target);
+    const need = r / Math.sin(camera.fov * Math.PI / 360) * 0.85;
+    if (away.length() < need) { camera.position.copy(controls.target).addScaledVector(away.normalize(), need); controls.update(); }
+  }
+  await pause(500);     // its texture onto the card, the ground under it
+  await new Promise(ok => requestAnimationFrame(() => requestAnimationFrame(ok)));
+  document.documentElement.dataset.thumb = 'ready';
+}
+// Where the camera is and what it looks at, in the mesh's own coordinates (as a climb's view is, for lookFrom())
+function cameraPose(){
+  if (!current) return null;
+  current.updateMatrixWorld(true);
+  const node = meshNode();
+  return { eye: node.worldToLocal(camera.position.clone()).toArray(), target: node.worldToLocal(controls.target.clone()).toArray() };
+}
+// For an editor, at the foot of Share's menu: the mesh's picture (for link previews and cards), Use this view to have it
+// drawn from where the view is now, and Back to automatic once one's been chosen
+function thumbHtml(m){
+  if (!editor || !statusCache.thumbs || !m) return '';
+  const t = m.thumb;
+  return `<div class="thumbset">${t ? `<img src="/meshes/${m.id}/thumb.small.jpg?v=${t.v}" alt="">` : '<span class="noimg">No picture yet</span>'}
+    <span class="what">Its picture, for link previews and cards${t?.hand ? ', from a view chosen here' : ''}</span>
+    <button class="sm sec" data-act="thumb" title="Draw its picture from where the view is now (a little wider or narrower than this screen, at 1200 × 630)">Use this view</button>
+    ${t?.hand ? '<button class="sm sec" data-act="auto" title="Draw its picture as it would be by itself again">Back to automatic</button>' : ''}</div>`;
+}
+async function setThumb(m, pose, b){
+  b.disabled = true; b.textContent = 'Drawing it…';
+  try {
+    const was = m.thumb?.v;
+    await api(`/api/meshes/${m.id}/thumb`, { method: 'POST', json: { pose } });
+    for (let n = 0; n < 60; n++) {
+      await pause(2000);
+      const t = await api(`/api/meshes/${m.id}/thumb`);
+      if (t.failed) throw new Error(t.failed);
+      if (t.thumb && t.thumb.v !== was) { m.thumb = t.thumb; break; }
+    }
+    if (m.id === shownMesh && !$('#linkmenu').hidden) { const r = $('#vshare').getBoundingClientRect(); linkMenu(r.right, r.bottom + 4); }
+    renderMeshes(false);
+  } catch (e) { toast('Its picture: ' + e.message, 8000); b.textContent = 'Failed'; }
 }
 // /m/<id>: that mesh, with the Newest button if it's been rebuilt since; a deleted one's link opens what took its
 // place, else its climb's newest mesh, else its boulder's meshes to pick from, saying so
@@ -3675,7 +3745,7 @@ async function pickBoulder(r, fromLink = false){
     ${items.map(x => {
       const m = meshesById[x.id], t = m.metrics || {};
       const facts = [x.home.length > 1 ? plural(x.home.length, 'climb') : '', t.placed ? `${t.placed} photos placed` : '', x.faces ? `${fmtCount(x.faces)} faces` : ''].filter(Boolean).join(' · ');
-      return `<button class="bitem${x.id === shownMesh ? ' on' : ''}" data-id="${x.id}"><span class="bkind">${what[meshKind(m)] || 'A mesh'}${facts ? ` <small>· ${esc(facts)}</small>` : ''}</span>
+      return `<button class="bitem${x.id === shownMesh ? ' on' : ''}" data-id="${x.id}">${m.thumb ? `<img alt="" src="/meshes/${m.id}/thumb.small.jpg?v=${m.thumb.v}">` : ''}<span class="bkind">${what[meshKind(m)] || 'A mesh'}${facts ? ` <small>· ${esc(facts)}</small>` : ''}</span>
         <span class="bclimbs">${[...x.home.map(id => `<b>${esc(names[id] || '')}</b>`), ...x.others.map(id => `<span class="mute">${esc(names[id] || '')}</span>`)].join(', ') || '<span class="mute">none of its climbs placed</span>'}</span></button>`;
     }).join('')}
     ${r.missing.length ? `<p class="note">In no mesh yet: ${r.missing.map(c => esc(names[c.id] || '') + (c.why ? ` <small>(${esc(c.why)})</small>` : '')).join(', ')}</p>` : ''}
@@ -4015,7 +4085,7 @@ addEventListener('unhandledrejection', ev => reportError('page', ev.reason));
 // Cloudflare keep copies for an hour. Its note, if it has one (a texture loaded smaller), goes too.
 let viewVia = '', viewsSent = 0;
 function reportView(mesh, via, seconds, note){
-  if (viewsSent++ >= 200) return;
+  if (thumbMode || viewsSent++ >= 200) return;
   fetch('/api/mesh-views', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
     body: JSON.stringify({ mesh, via, seconds: Math.round(seconds * 10) / 10, note: note || undefined }) }).catch(() => {});
 }
@@ -4145,6 +4215,7 @@ if (pairCode) {    // the phone's camera app opened the admin page's QR: the cod
   try { const t = await takePairing('pair=' + pairCode); if (keepToken(t)) { token = t; toast('This browser can edit now: it keeps the token.', 5000); } }
   catch (e) { toast(e.message, 8000); }
 }
+if (thumbMode) document.body.classList.add('thumb');
 let statusCache = { env: {} };
 statusCache = await api('/api/status');
 editor = !!statusCache.editor;
@@ -4175,7 +4246,8 @@ mode.textContent = statusCache.real_pipeline ? 'COLMAP + OpenMVS' : 'demo pipeli
 mode.className = 'pill ' + (statusCache.real_pipeline ? 'real' : 'demo');
 $('#caps').textContent = [statusCache.opencv?'opencv':'no opencv', statusCache.people_masks?'people masking':'no people masking', statusCache.gpu?'GPU matching':'CPU matching'].join(' · ');
 $('#caps').title = 'Photo matching: ' + statusCache.gpu_why;
-await refreshClimbs(); await refreshMeshes(); await refreshProjects(); poll(); campaignLoop();
+if (thumbMode) { detailChoice = 'preview'; await refreshMeshes(); }
+else { await refreshClimbs(); await refreshMeshes(); await refreshProjects(); poll(); campaignLoop(); }
 openFromAddress();
 addEventListener('hashchange', openLinked);
 $('#vnewest').onclick = () => { const n = newestOf(shownMesh); if (n && n !== shownMesh) viewMesh(n, null, 'newest', viewedClimb); };

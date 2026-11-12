@@ -30,7 +30,7 @@ docker build --build-arg TORCH=cpu --build-arg BOULDERMESH_COMMIT="$commit" --bu
     --build-arg BOULDERMESH_WORKER_IMAGE="$machines" -t "$image" -t "$REGISTRY:$commit" "$tmp"
 echo "built $image, which is $REGISTRY:$commit"
 if [ "${GPU:-1}" != 0 ]; then
-    docker build --build-arg TORCH=cu126 --build-arg BOULDERMESH_COMMIT="$commit" --build-arg BOULDERMESH_IMAGE="$machines" \
+    docker build --build-arg TORCH=cu126 --build-arg THUMBS=0 --build-arg BOULDERMESH_COMMIT="$commit" --build-arg BOULDERMESH_IMAGE="$machines" \
         --build-arg BOULDERMESH_WORKER_IMAGE="$machines" -t "$gpu_image" -t "$machines" "$tmp"
     echo "built $gpu_image, which is $machines"
 fi
