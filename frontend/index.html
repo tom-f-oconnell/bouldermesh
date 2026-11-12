@@ -609,6 +609,13 @@ const overMesh = () => phone.matches && document.body.classList.contains('full')
 const toast = (msg, ms=3500) => { if (overMesh()) return; const t=$('#toast'); t.textContent=msg; t.style.display='block'; clearTimeout(toastT); toastT=setTimeout(()=>t.style.display='none', ms); };
 const fmtSize = n => n>1e6 ? (n/1e6).toFixed(1)+' MB' : (n/1e3).toFixed(0)+' kB';
 const fmtWhen = t => new Date(t * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const fmtDur = s => s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
+// a running step's own pace: how long it's been going, and about how long it has left at that pace (once that's clear)
+function stepTiming(s){
+  if (!s.started) return '';
+  const going = Date.now() / 1000 - s.started, left = s.frac >= 0.05 && going >= 60 ? going * (1 - s.frac) / s.frac : null;
+  return ` · going ${fmtDur(going)}` + (left != null ? `, about ${fmtDur(left)} left` : '');
+}
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const parseLL = s => { const m = /(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)/.exec(s||''); return m ? [parseFloat(m[1]), parseFloat(m[2])] : null; };
 const fmtLL = (lat,lng) => (lat==null||lng==null) ? '—' : `${(+lat).toFixed(5)}, ${(+lng).toFixed(5)}`;
@@ -2684,7 +2691,7 @@ function progressHtml(p){
   if (!pr || !(BUSY.includes(p.status) || p.status === 'failed')) return '';
   const pct = v => (100 * v).toFixed(0) + '%';
   const rows = pr.steps.map(s => `<span class="${s.state}">${s.state==='done'?'✓':s.state==='failed'?'✕':s.state==='running'?'▸':'·'} ${esc(s.label)}</span>
-    <div class="bar ${s.state}" title="${pct(s.frac)}"><i style="width:${pct(s.frac)}"></i></div>${s.state==='running'&&s.detail?`<span></span><span class="detail">${esc(s.detail)}</span>`:''}`).join('');
+    <div class="bar ${s.state}" title="${pct(s.frac)}"><i style="width:${pct(s.frac)}"></i></div>${s.state==='running'?`<span></span><span class="detail">${pct(s.frac)}${s.detail?' · '+esc(s.detail):''}${stepTiming(s)}</span>`:''}`).join('');
   return `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall</small><div class="steps">${rows}</div>`;
 }
 // a project's photo as the admin page allows: shown, a link to where it came from, or nothing
@@ -2866,11 +2873,11 @@ function currentHtml(c){
     : c.status === 'running' ? '<div class="status" style="margin-top:6px">Waiting for the next climb to start…</div>' : '');
   return machineWaitHtml(c) + running.map(cur => {
     const pr = cur.progress, now = (pr?.steps || []).filter(s => s.state === 'running'), pct = v => (100 * v).toFixed(0) + '%';
-    const said = s => esc(s.label) + (s.detail ? ' · ' + esc(s.detail) : '');
-    // steps at once, as a harvest's photos and its YouTube videos: a bar each, under the whole job's
+    const said = s => esc(s.label) + ` ${pct(s.frac)}` + (s.detail ? ' · ' + esc(s.detail) : '') + stepTiming(s);
+    // the whole job's bar, and under it each step running (a harvest's photos and its YouTube videos can be at once)
+    // with its own: steps such as filtering take an hour on a small server while the whole barely moves
     return `<div class="meta" style="margin-top:8px">Now: <b>${esc(cur.name)}</b> ${esc(cur.grade||'')} <small>#${cur.rank}</small></div>
-      ${!pr ? '' : now.length < 2 ? `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% · ${now[0] ? said(now[0]) : ''}</small>`
-        : `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall</small>
+      ${!pr ? '' : `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall</small>
           ${now.map(s => `<div class="bar running" title="${pct(s.frac)}" style="margin-top:4px"><i style="width:${pct(s.frac)}"></i></div><small>${said(s)}</small>`).join('')}`}
       ${boulderPanelHtml(cur.boulder_panel, c)}`;
   }).join('');
