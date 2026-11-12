@@ -765,6 +765,8 @@ code{background:var(--code);padding:1px 4px;border-radius:3px}
 .choose a small{display:block;font-weight:400;font-size:.8em;color:var(--mute);margin-top:4px}
 .choose a.on{background:var(--acc);color:var(--acc-fg)} .choose a.on small{color:inherit;opacity:.85}
 @media (max-width:560px){.choose .req{display:block}}   /* on a phone, a button's requirements on a line of their own */
+h1 a.home{color:inherit;text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:5px;text-decoration-color:var(--acc)}
+h1 a.home:hover{color:var(--acc)}
 .tabs{display:flex;flex-wrap:wrap;gap:6px;margin:.8em 0 .4em;border-bottom:1px solid var(--line);padding-bottom:6px}
 .tabs button{font:inherit;padding:5px 12px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;cursor:pointer}
 .tabs button.on{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}
@@ -781,7 +783,7 @@ ul{padding-left:1.2em} li{margin:.2em 0}
   text-decoration:none}
 </style>
 <a class="lead" href="/volunteer/leaderboard" title="Who has fetched the most videos, and whose computers have made the most meshes">Leaderboard</a>
-<h1>Volunteer for BoulderMesh</h1>
+<h1>Volunteer for <a class="home" href="/" title="BoulderMesh's meshes">BoulderMesh</a></h1>
 <p>BoulderMesh makes 3D models of boulders from photos and climbing videos. You can help from your own computer in three
 ways now: each script makes a token for you, asks your name (shown on the leaderboard; you can leave it out), and registers itself with this
 site, and whoever runs it then approves it. A fourth way, collecting data yourself, is coming soon.</p>
