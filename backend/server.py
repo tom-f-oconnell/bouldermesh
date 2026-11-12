@@ -2093,11 +2093,13 @@ def rest_queue_all() -> int:
 
 def untied_meshes() -> list[dict]:
     """Current boulders' meshes (not pools') made before ties were recorded: no rest record, or one without models.
-    Meshing them again records their scenes and ties, and counts their climbs' frames by evidence. [{id, boulder}]"""
-    out = []
+    Meshing them again records their scenes and ties, and counts their climbs' frames by evidence. Not one of a lowest
+    area read as holding several boulders, or not saying it's one, whose climbs are meshed on their own and pooled by
+    their photos instead (meshing it whole again would only make another of a group). [{id, boulder}]"""
+    out, kinds = [], boulder_kinds()
     for m in q("SELECT id, boulder FROM meshes WHERE boulder IS NOT NULL AND replaced_by IS NULL ORDER BY created"):
         rec = None if is_pool(m["boulder"]) else load_rest(m["id"])
-        if not is_pool(m["boulder"]) and (rec is None or "models" not in rec):
+        if not is_pool(m["boulder"]) and (rec is None or "models" not in rec) and leaf_kind(m["boulder"], kinds) in (None, "boulder"):
             out.append(m)
     return out
 
@@ -2106,8 +2108,10 @@ def remesh_untied(log=print) -> dict:
     """The admin page's: mesh again each boulder whose current mesh was made before ties were recorded (untied_meshes()),
     from its climbs' photos as harvested (run_boulder(): only problems its page lists that were never harvested are,
     nothing is fetched again), first reading what its lowest area is where that never was, so that it can be told one
-    boulder or not. A lowest area found to hold several boulders isn't meshed as one (its climbs go on their own,
-    settle_groups()). Returns {queued, groups, busy, unread}."""
+    boulder or not. A lowest area found to hold several boulders, or not to say it's one, isn't meshed as one: its climbs
+    go on their own and are pooled by their photos (settle_groups(), settle_clusters()); Gunsmoke Wall's six climbs, read
+    so on Nov 12, 2026, were pooled as a group just as its whole mesh was queued again, which would have made a second.
+    Returns {queued, groups, busy, unread}."""
     out = {"queued": 0, "groups": 0, "busy": 0, "unread": 0}
     for m in untied_meshes():
         boulder = m["boulder"]
@@ -2122,6 +2126,9 @@ def remesh_untied(log=print) -> dict:
                     break
             if boulder_kind(boulder, url, log) is None:
                 out["unread"] += 1
+        if leaf_kind(boulder) not in (None, "boulder"):
+            out["groups"] += 1
+            continue
         body, code = mesh_boulder(boulder)
         out["queued" if code == 202 else "busy" if "already" in body.get("error", "") else "groups"] += 1
     return out

@@ -3032,6 +3032,22 @@ assert len(kind_read) == 1 and kind_read[0][0] == got["Pea"]["boulder"], kind_re
 job = server.jobs.get_nowait()
 assert job["type"] == "boulder" and server.q("SELECT boulder FROM projects WHERE id=?", job["pid"], one=True)["boulder"] == got["Pea"]["boulder"]
 assert server.remesh_untied()["busy"] == 1, "not twice while it's queued"
+# one whose page, read, doesn't say it's one rock: not meshed whole again (its climbs are pooled by their photos)
+server.q("UPDATE projects SET status='done' WHERE id=?", job["pid"], write=True)
+read_as = {"kind": None}
+server.leaf_kind = lambda key, kinds=None: read_as["kind"]
+server.boulder_kind = lambda boulder, url, log=print: read_as.update(kind="unknown") or "unknown"
+real_mesh = server.mesh_boulder
+server.mesh_boulder = lambda b: (_ for _ in ()).throw(AssertionError("meshed whole"))
+try:
+    got_unclear = server.remesh_untied()
+finally:
+    server.boulder_kind, server.leaf_kind, server.mesh_boulder = real_kind, real_leaf, real_mesh
+assert got_unclear == {"queued": 0, "groups": 1, "busy": 0, "unread": 0} and server.jobs.empty(), got_unclear
+server.q("INSERT OR REPLACE INTO boulders(key, name, kind, why, checked) VALUES(?,?,?,?,?)", got["Pea"]["boulder"], "Peabody", "unknown", "test", 1,
+         write=True)
+assert server.untied_meshes() == [], "and not counted as one to mesh again"
+server.q("UPDATE boulders SET kind='boulder' WHERE key=?", got["Pea"]["boulder"], write=True)
 server.q("UPDATE projects SET status='done' WHERE id=?", job["pid"], write=True)
 server.save_rest(got["Pea"]["mesh_id"], {**server.load_rest(got["Pea"]["mesh_id"]), "models": []})
 assert server.untied_meshes() == [] and server.jobs.empty()

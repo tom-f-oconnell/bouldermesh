@@ -324,7 +324,8 @@ well.
   left-out photos as they are, since nothing checks they're of a rock the boulder's photos see (for Drifter that made a
   mesh of a night scene elsewhere). Meshing the boulder again records its scenes and ties: *Mesh again the boulders
   meshed before ties were recorded* on the admin page does that for all of them (reading first what each one's Mountain
-  Project area is, where it never was), or *Mesh the boulder again* on a climb's card for one. Either uses the photos as
+  Project area is, where it never was, and leaving out one whose page doesn't say it's one rock, as its climbs are pooled
+  by their photos instead), or *Mesh the boulder again* on a climb's card for one. Either uses the photos as
   harvested; only problems on the boulder's page never harvested are harvested. An area's *Rebuild all* isn't for this:
   it meshes each climb on its own.
 
