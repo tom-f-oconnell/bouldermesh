@@ -279,7 +279,7 @@
       #forget .short{display:inline} #forget .long{display:none} }
     /* the view on its own: back, and a toggle between the mesh and the map */
     #toctl{padding:3px 10px;border:1px solid transparent} #toctl .arrow{font-size:17px;line-height:0;vertical-align:-1px}
-    #v3d,#viewing{display:none!important}
+    #viewing{display:none!important}
     /* back, Random, Nearby and Map at the left (then what shows only now and then), and share and settings at the right */
     #vnearby{order:1} #vmap{order:2} #vmark,#vfrom,#detail{order:3} #vshare{order:4;margin-left:auto}
     #nearby.turning .list,#nearby.turning .note{display:none}     /* turning one: only that, so the view shows */
@@ -496,7 +496,6 @@
     <div class="viewbar">
       <button class="sm phone" id="toctl" title="Back to the climbs and the rest" aria-label="Back"><span class="arrow" aria-hidden="true">←</span></button>
       <button class="sm sec phone" id="vrandom" title="Another mesh, picked at random">Random</button>
-      <button class="sec sm" id="v3d">3D viewer</button>
       <button class="sec sm" id="vnearby" disabled title="Shows the meshes near this one around it, placed by their coordinates, at their real size and facing as best known" aria-expanded="false">Nearby</button>
       <button class="sec sm" id="vmap">Map</button>
       <button class="sec sm" id="vmark" style="display:none" title="Click the rock to add a start hold, and a hold again for hand, finish, foot, then none">Mark holds</button>
@@ -716,12 +715,11 @@ function showRight(which){
   setFull(true);
   if (which !== 'map') map.stop();      // any pan or zoom still easing out, which would go on behind the view
   $('#viewer').classList.toggle('on', which==='3d'); $('#map').classList.toggle('on', which==='map');
-  $('#vmap').textContent = phone.matches && which === 'map' ? '3D' : 'Map';    // on a phone, one button goes between them
+  $('#vmap').textContent = which === 'map' ? (phone.matches ? '3D' : '3D viewer') : 'Map';    // one button goes between them
   if (which==='map') { setTimeout(()=>map.invalidateSize(), 50); } else resize();
 }
-$('#v3d').onclick = () => showRight('3d');
 $('#vmap').onclick = () => {
-  if (phone.matches && $('#map').classList.contains('on')) return showRight('3d');
+  if ($('#map').classList.contains('on')) return showRight('3d');
   endSway(); showRight('map');
   const m = shownMesh && meshesById[shownMesh];
   // opened around the mesh in view, the first time for it, and its climb's point opened as if clicked, unless it's been moved
