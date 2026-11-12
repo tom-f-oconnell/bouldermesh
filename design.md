@@ -619,6 +619,35 @@ cost of one reconstruction a boulder. Whether a boulder's mesh shows each climb 
 hasn't been measured yet: if some are much worse, `areas.meshes` "climbs" meshes every climb on its own, as from Nov 9.
 A climb volunteers fetch more for later is harvested again, and its boulder meshed again as a new version.
 
+**What a boulder's mesh leaves out (Nov 11).** The Buttermilks' Drifter/Smoking Boulder showed what meshing each climb
+its boulder's mesh hardly showed on its own from its whole harvest did:
+- **What was made.** It placed 139 of the 234 photos pooled from 9 climbs. Smoking, East Face Sit and Les Trois
+  Maunets were then each meshed on their own.
+- **Two pure duplicates.** East Face Sit and Les Trois Maunets placed the same 15 web photos of Drifter, 13 of them
+  already in the boulder's mesh.
+- **One of the wrong rock.** Smoking is on the Smoking boulder (its page says so), a separate rock, but its own mesh
+  was of Drifter too: the same web photos and 7 frames of Drifter's face.
+- **Why they were made.** "Hardly shows" counted only a climb's own photos (its page's and its videos' frames), and
+  those two had one each.
+- **Where Smoking really is.** Most of its page's video frames weren't placed anywhere. Some show the Smoking boulder,
+  which is probably the small separate piece in the boulder's mesh.
+
+So the photos left out are now handled in two steps:
+1. **Against the finished model.** Every reconstruction tries again the photos the mapper left out, one at a time,
+   against the model it finished (COLMAP's image_registrator, needing 15 inliers and 15% of matches rather than the
+   mapper's 30 and 25%, then bundle adjustment with the rest). The mapper gives up on a photo that doesn't fit what it
+   has grown so far; against the whole model, some do. The Drifter photos East Face Sit's and Les Trois Maunets' meshes
+   placed and the boulder's didn't are the kind this catches.
+2. **Together, apart from the boulder's mesh.** What's still left of each climb with 6 or more out (`rest.json`) is
+   pooled, once, from the boulder's own filtered photos (not the climbs' whole harvests, whose web photos the
+   boulder's filter dropped as other rocks). That pool's largest model is another side or another rock.
+
+**One boulder or a group.** A mesh is called one boulder when Mountain Project says its area is one rock and nothing its
+mesh left out makes a mesh of its own: no climb left 6 or more out, or meshing them failed. Otherwise each mesh placing
+more than one climb is a group, the boulder's own included. Climbs never harvested don't count either way, as nothing
+could mesh them. Each climb counts toward one mesh, the one placing most of its own photos, so groups don't share climbs.
+A mesh can still show part of another climb's rock, as Drifter's shows the Smoking boulder.
+
 **One mesh per boulder.** The 1000 most popular Joshua Tree problems are on 364 lowest-level areas,
 nearly all single boulders, so linking problems to a mesh of their boulder saves about 60% of the work. Areas with
 group names (`GROUP_AREA`, e.g. "Manx Boulders - Northwest Face") hold several rocks, so don't

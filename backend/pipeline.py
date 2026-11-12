@@ -1,7 +1,8 @@
 """Photogrammetry pipeline: photos -> mesh.
 
 Real path:  COLMAP (sparse SfM) -> OpenMVS (dense + mesh), via subprocess. Where COLMAP's mapper can't place the
-            photos, VGGT places them and COLMAP refines that (vggt_place.py).
+            photos, VGGT places them and COLMAP refines that (vggt_place.py). The photos the mapper left out are then
+            tried again, one at a time, against the model it made (_place_rest()).
 Fallback:   if either tool is missing, builds a labelled DEMO relief mesh from
             the first photo so the rest of the app can be exercised.
 
@@ -31,6 +32,10 @@ from progress import Tracker
 Log = Callable[[str], None]
 
 MAPPER_ATTEMPTS = 3
+# placing the photos the mapper left out against its finished model: fewer of a photo's matches need to fit a camera
+# position than the mapper's 30 and 25% (its defaults), as the model is then complete; a wrong one is rare, as each must
+# still fit 15 points of the model it's seen to, within 12 px, and bundle adjustment then refines it with the rest
+REST_ARGS = ["--Mapper.abs_pose_min_num_inliers", "15", "--Mapper.abs_pose_min_inlier_ratio", "0.15"]
 GPU_MIN_FREE_MB = 4000  # matching 113 photos peaked at about 3 GB
 # COLMAP's minimum of 15 raw matches, on the GPU. Its matcher finds about 4% fewer, which would drop
 # borderline pairs before guided matching can rescue them; design.md has the measurements.
@@ -145,7 +150,7 @@ def steps() -> list[tuple[str, str, float]]:
     people = occlusion.available()
     out = ([("people", "Find people in photos", 1)] if people else []) + [
         ("features", "Find features", 3), ("matching", "Match photos", 15), ("mapper", "Place cameras", 40),
-        ("level", "Level the model", 1), ("undistort", "Undistort photos", 1)]
+        ("rest", "Place the rest", 2), ("level", "Level the model", 1), ("undistort", "Undistort photos", 1)]
     out += ([("people-undistorted", "Mask people for dense steps", 1)] if people else []) + [
         ("import", "Import scene", 1), ("dense", "Dense reconstruction", 25), ("mesh", "Build mesh", 8)]
     return out + ([("texture", "Texture mesh", 6)] if _mvs("TextureMesh") else [])
@@ -296,6 +301,36 @@ def _place_with_vggt(db: Path, images: Path, sparse: Path, work: Path, log: Log,
         log(f"placing them with VGGT failed: {e}")
 
 
+def _place_rest(db: Path, model: Path, work: Path, log: Log, tracker: Tracker, placed: int, n_images: int) -> tuple[Path, int]:
+    """The photos the mapper left out, tried one at a time against the model it finished (COLMAP's image_registrator,
+    with REST_ARGS), then everything refined together (bundle adjustment). The mapper grows its model from one pair
+    of photos, and gives up on a photo that doesn't fit what it has at the time; against the whole model, more do.
+    The model it makes takes the mapper's place, which is kept in work/. Returns the model to use and how many photos
+    it places: the mapper's, if none more could be placed or it failed, which only costs the time."""
+    log(f"== COLMAP: placing the rest ({n_images - placed} photos the mapper left out) against its model")
+    tracker.update("rest")
+    tmp = work / "rest"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir()
+    try:
+        _run([COLMAP, "image_registrator", "--database_path", str(db), "--input_path", str(model), "--output_path", str(tmp),
+              *REST_ARGS], work, log)
+        n = vggt_place.count(tmp, "images")
+        if n <= placed:
+            log("none of them could be placed")
+            return model, placed
+        _run([COLMAP, "bundle_adjuster", "--input_path", str(tmp), "--output_path", str(tmp)], work, log)
+    except RuntimeError as e:
+        log(f"placing the rest failed ({e}); keeping the mapper's model")
+        return model, placed
+    kept = work / f"mapper_{model.name}"
+    shutil.rmtree(kept, ignore_errors=True)
+    model.rename(kept)
+    tmp.rename(model)
+    log(f"placed {n - placed} more of them")
+    return model, n
+
+
 def _finished(work: Path, step: str) -> bool:
     return (work / "finished" / step).exists()
 
@@ -439,6 +474,9 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         if registered < min_registered:
             _place_with_vggt(db, images, sparse, work, log, tracker, registered)
     model, registered = _largest_model(sparse)
+    if model is not None and min_registered <= registered < n_images and not _finished(work, "rest"):
+        model, registered = _place_rest(db, model, work, log, tracker, registered, n_images)
+        _finish(work, "rest")
     log(f"registered {registered}/{n_images} images in the largest model")
     try:
         others = write_models(sparse, work)[1:]

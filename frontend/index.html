@@ -368,12 +368,14 @@
           <p>Before a climb is meshed, the page of its lowest Mountain Project area is read, for whether that's one rock. Where its
             name or description says so ("Drifter/Smoking Boulder"), the area's climbs on it are harvested, wherever they come in
             the order, and meshed together from all their photos: one mesh, counting once toward a limit. It shows what their
-            photos do, often not all the way round, and is called a whole boulder only when it places every climb on it. A climb
-            it hardly shows is meshed on its own too. (The admin page can have every climb meshed on its own instead.)</p>
+            photos do, often not all the way round. The photos it leaves out are tried again against it, and what's still left
+            of the climbs with several photos out is meshed together apart, as another side or another rock. It's a boulder when
+            that makes nothing, and otherwise each mesh placing more than one climb is a group. (The admin page can have every
+            climb meshed on its own instead.)</p>
           <p>Where the area holds several rocks ("Stained Glass/Flyboy Area", "Birthday Boulders"), or its page doesn't say, each
             climb is meshed on its own, counting one each. Once its climbs within the limit are through, those whose photos show
-            the same rock are meshed together as well: clusters of a boulder's climbs, not always all of them. These, like the
-            climbs a boulder's mesh hardly shows, come on top of the limit.</p>
+            the same rock are meshed together as well, as groups: clusters of a boulder's climbs, not always all of them. These,
+            like what a boulder's mesh leaves out, come on top of the limit.</p>
           <p>Several areas, one a line, are taken in the order given, top first, after any running already; one with no climb to
             take for now (waiting for volunteers) is passed over until it has. An area listed already is taken up again with these
             settings, keeping what's done, and moves to its place in the new list. One removed and entered again starts over,
@@ -2442,15 +2444,21 @@ async function viewClimbMesh(id){
 const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', waiting: 'waiting for volunteers', harvested: 'harvested, for its boulder\'s mesh', done: 'meshed', failed: 'failed', skipped: 'skipped' };
 // The boulder a climb is on: its own mesh, made from the photos of every climb on it, seen from where this climb's own
 // photos were taken; meshes an area linked this climb to that were made for another climb on it; and the other climbs.
-// a pooled mesh (a boulder's, or a pool's: climbs whose photos match): how many of the climbs whose photos it's made from
-// it places, and, only when every climb Mountain Project lists on that one rock is placed, that it's the whole boulder
+// A mesh of several climbs' photos (a boulder's, of what a boulder's left out, or a pool's: climbs whose photos match): how
+// many of them it places, and whether it's a boulder (Mountain Project says one rock, and nothing it left out made a mesh
+// of its own) or a group (any other placing more than one climb)
 function pooledTags(m){
   const p = m.pooled;
   if (!p) return '';
   const of = p.kind === 'group' ? ` in ${esc(p.area)}, a Mountain Project area of several boulders, whose photos match`
     : p.kind === 'boulder' ? ` on ${esc(p.area)}` : ` in ${esc(p.area)}`;
-  return `<span class="tag ok" title="Made from the photos of ${plural(p.climbs, 'climb')}${of}: ${p.placed} of them placed in it, by their own photos">pooled · ${p.placed}/${p.climbs} climbs</span>`
-    + (p.whole ? `<span class="tag ok" title="Every climb Mountain Project lists on ${esc(p.area)} is placed in it">whole boulder</span>` : '');
+  const word = p.whole ? 'boulder' : p.placed > 1 ? 'group' : '';
+  const why = p.whole ? `. Mountain Project says ${esc(p.area)} is one rock, and none of its climbs' photos this mesh left out make a mesh of their own, so it's one boulder`
+    : p.rest_of ? `. Made from the photos the mesh of ${esc(p.area)} left out, so it's another side or rock than that one`
+    : p.split ? `. The photos it left out of some climbs made a mesh of their own, so it isn't the whole boulder`
+    : p.apart && ['queued', 'running'].includes(p.rest) ? `. The photos it left out of ${plural(p.apart, 'climb')} are being meshed apart`
+    : p.apart && !p.rest ? `. It left out enough photos of ${plural(p.apart, 'climb')} to try meshing apart (on the admin page)` : '';
+  return `<span class="tag ok" title="Made from the photos of ${plural(p.climbs, 'climb')}${of}: ${p.placed} of them placed in it, by their own photos${why}">${word ? `${word} · ` : ''}${p.placed}/${p.climbs} climb${p.climbs === 1 ? '' : 's'}</span>`;
 }
 function boulderHtml(c){
   const b = c.boulder;
@@ -2614,7 +2622,7 @@ async function refreshProjects(){
   for (const p of list) {
     const d = document.createElement('div'); d.className = 'card' + (p.id===active ? ' active' : '');
     const busy = BUSY.includes(p.status);
-    d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':p.kind==='boulder'?'<span class="tag climb" title="Every photo its climbs\' harvests found, pooled">boulder</span>':''}</b><span class="status ${p.status}">${p.status}${p.demo?' (demo)':''}</span></div>
+    d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':p.kind==='boulder'?'<span class="tag climb" title="Every photo its climbs\' harvests found, together">boulder</span>':''}</b><span class="status ${p.status}">${p.status}${p.demo?' (demo)':''}</span></div>
       <div class="row" style="margin-top:8px">
         <label class="file"><button class="sec sm" type="button">Add photos or videos</button><input type="file" multiple accept="image/jpeg,image/png,video/*"></label>
         ${RETRYABLE.includes(p.status) ? '<button class="retry sm" title="Tries again from the last step it finished, rather than from the start">Retry</button>' : ''}
@@ -3113,10 +3121,10 @@ function meshMetric(m, key){
   return x[key] ?? null;
 }
 const meshAreas = m => (m.areas && m.areas.length ? m.areas : [NO_AREA]);
-// What a mesh is of: "climbs", one climb's; "boulders", a pooled mesh of a rock Mountain Project names as one, placing every
-// climb known on it; "groups", any other of more than one climb; null, of none
+// What a mesh is of: "climbs", one climb's (or a mesh of several climbs' photos that places only one); "boulders", one
+// boulder (pooled_summary() on the server); "groups", any other of more than one climb; null, of none
 function meshKind(m){
-  if (m.boulder) return m.pooled?.whole ? 'boulders' : 'groups';
+  if (m.boulder) return m.pooled?.whole ? 'boulders' : (m.pooled?.placed ?? 2) > 1 ? 'groups' : 'climbs';
   const own = m.climbs.filter(c => !c.shared).length;
   return own > 1 ? 'groups' : own === 1 ? 'climbs' : null;
 }

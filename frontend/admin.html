@@ -100,6 +100,10 @@
     <label class="choice"><input type="checkbox" id="skyline-auto"> Work out which way each mesh faces from the skyline in its photos, where distant mountains show
       <small>(to about 10°, as a start for turning it by hand in Nearby; in the background, once its size is known)</small></label>
     <div class="note" id="skyline-note"></div>
+    <div class="row"><button class="sec" id="rest-all">Mesh what boulders' meshes left out</button><span class="note" id="rest-note"></span></div>
+    <div class="note">A boulder's mesh tries the photos it leaves out again against itself; what's still left of each climb
+      with 6 or more out is meshed apart, as another side or rock, once a boulder's mesh is made. Its card says boulder only
+      when that makes nothing. This queues it for those meshed before that was done.</div>
     <label class="choice"><input type="checkbox" id="prune-videos"> Delete kept videos none of whose frames is placed in any mesh, once their climbs are done
       <small>(beta can't use them; only harvesting again would, which fetches them again. Checked hourly; their details stay)</small></label>
   </section>
@@ -322,6 +326,8 @@ function render(s){
   if (document.activeElement !== $('#preview-faces')) $('#preview-faces').value = v['viewer.preview_faces'];
   $('#pack-note').textContent = packNote(s.packing);
   $('#skyline-auto').checked = v['facing.skyline']; $('#skyline-note').textContent = skylineNote(s.skyline);
+  $('#rest-note').textContent = s.rest_waiting ? `${s.rest_waiting} boulder${s.rest_waiting === 1 ? "'s mesh has" : "s' meshes have"} enough left out to try` : 'none waiting';
+  $('#rest-all').disabled = !s.rest_waiting;
   const u = s.usage || {}, gb = b => (b / 2 ** 30).toFixed(1) + ' GB';
   $('#room').classList.toggle('alert', !!u.full);
   if (document.activeElement !== $('#room-cap')) $('#room-cap').value = v['storage.cap_gb'];
@@ -554,6 +560,7 @@ $('#matcher').onchange = () => save({ 'relevance.matcher': $('#matcher').value }
 $('#beta-auto').onchange = () => save({ 'beta.auto': $('#beta-auto').checked });
 $('#prune-videos').onchange = () => save({ 'videos.prune_unplaced': $('#prune-videos').checked });
 $('#skyline-auto').onchange = () => save({ 'facing.skyline': $('#skyline-auto').checked });
+$('#rest-all').onclick = async () => { try { msg((await call('/api/admin/actions/rest', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#map-km').onchange = () => save({ 'site.map_km': +$('#map-km').value });
 $('#preview-faces').onchange = () => save({ 'viewer.preview_faces': Math.round(+$('#preview-faces').value) });
 $('#vol-add').onclick = async () => {

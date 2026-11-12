@@ -2099,8 +2099,9 @@ server.init_db()
 got = items(c["id"])["Drifter"]
 assert (got["boulder"], got["status"], got["mesh_id"]) == (json.dumps(slash), "done", "m-drifter"), got
 assert got["note"] == "meshed with its boulder: 234 photos of 9 of its 9 climbs", got["note"]
-# a boulder's mesh that hardly shows one of its climbs (its own photos not placed): that one meshed on its own too,
-# from its own harvest; one whose own mesh can't be made keeps the boulder's
+# what a boulder's mesh left out of its climbs' photos (keep_rest()): the climbs with REST_LEAST or more out have theirs
+# meshed together apart, once, from the boulder's own photos; each climb placed there linked to it; the boulder's card
+# says group rather than boulder, and each climb counts toward the mesh placing most of its own photos
 fresh()
 c = server.create_campaign("", "popularity", HEAD + "".join([leaf_row(13, "Pea", 3.8, "Peabody"), leaf_row(14, "Body", 3.7, "Peabody"),
                                                             leaf_row(15, "Arm", 3.6, "Peabody")]))
@@ -2108,18 +2109,83 @@ run_all(c["id"])
 got = items(c["id"])
 boulder_mesh = got["Pea"]["mesh_id"]
 assert boulder_mesh and got["Body"]["mesh_id"] == got["Arm"]["mesh_id"] == boulder_mesh, got
-(server.MESHES / boulder_mesh).mkdir(parents=True, exist_ok=True)
-(server.MESHES / boulder_mesh / "views.json").write_text(json.dumps({"climbs": {got["Pea"]["climb_id"]: {"photos": 20, "of": 25}},
-                                                                     "unplaced": {got["Body"]["climb_id"]: 18, got["Arm"]["climb_id"]: 9}}))
-outcome["Arm"] = "few"
-assert sorted(server.own_attempts(c["id"], boulder_mesh)) == ["Arm", "Body"]
-assert items(c["id"])["Body"]["redo"] == "own" and server.campaign_status(c["id"]) == "running"
-run_all(c["id"])
-got = items(c["id"])
-assert got["Body"]["status"] == "done" and got["Body"]["mesh_id"] not in (None, boulder_mesh) and got["Body"]["redo"] is None, got["Body"]
-assert got["Arm"]["status"] == "done" and got["Arm"]["mesh_id"] == boulder_mesh and "its boulder's mesh stays" in got["Arm"]["note"], got["Arm"]
-assert got["Pea"]["mesh_id"] == boulder_mesh, "placed: its boulder's mesh is its own"
-assert server.own_attempts(c["id"], boulder_mesh) == [], "once"
+assert server.load_rest(boulder_mesh) == {**server.load_rest(boulder_mesh), "apart": [], "attempt": None}, "kept, with nothing left out"
+bproj = server.q("SELECT * FROM projects WHERE mesh_id=? AND kind='boulder'", boulder_mesh, one=True)
+harvest = {n: got[n]["project_id"] for n in ("Pea", "Body", "Arm")}
+ids = {n: got[n]["climb_id"] for n in ("Pea", "Body", "Arm")}
+photos = server.PROJECTS / bproj["id"] / "photos"
+from PIL import Image  # noqa: E402
+files, k = [], 0
+for n, count in (("Pea", 10), ("Body", 9), ("Arm", 7)):
+    for i in range(count):
+        name = f"{'mountainproject' if i < 2 else 'ddg'}_{n.lower()}{i:02d}.jpg"
+        Image.new("RGB", (8, 8), (k % 255, 40, 90)).save(photos / name)
+        files.append({"file": name, "pooled_from": harvest[n], **({"also_in": [harvest["Arm"]]} if n == "Body" and i == 8 else {})})
+        k += 1
+(server.PROJECTS / bproj["id"] / "sources.json").write_text(json.dumps({"files": files}))
+placed = [f["file"] for f in files if f["file"].startswith(("mountainproject_pea", "ddg_pea"))][:8] + ["ddg_body02.jpg"]
+(server.MESHES / boulder_mesh / "cameras.json").write_text(json.dumps([{"name": n} for n in placed]))
+logged = []
+rec = server.keep_rest(boulder_mesh, bproj["id"], logged.append)
+assert rec["apart"] == sorted([ids["Arm"], ids["Body"]], key=lambda i: {ids["Arm"]: "Arm", ids["Body"]: "Body"}[i]), rec["apart"]
+assert len(rec["climbs"][ids["Body"]]["left"]) == 8 and rec["climbs"][ids["Body"]]["own"] == 2, rec["climbs"][ids["Body"]]
+assert len(rec["climbs"][ids["Arm"]]["left"]) == 8, "and the photo another climb's harvest had too"
+assert len(rec["climbs"][ids["Pea"]]["left"]) == 2 and ids["Pea"] not in rec["apart"], "too few out to mesh apart"
+queued = []
+while not server.jobs.empty():
+    queued.append(server.jobs.get_nowait())
+rpid = rec["attempt"]["project"]
+assert {"type": "boulder", "pid": rpid} in queued, queued
+assert server.q("SELECT status FROM projects WHERE id=?", rpid, one=True)["status"] == "queued"
+assert any("queued to be meshed together" in s for s in logged), logged
+assert server.keep_rest(boulder_mesh, bproj["id"], logged.append)["attempt"]["project"] == rpid and server.jobs.empty(), "once"
+real_assess, real_place = server.diversity_mod.assess, server.place_climbs
+server.diversity_mod.assess = lambda photos, log: {"verdict": "good", "unique_images": 15}
+
+
+def place_body(mid, pid, log):     # Body's own photos place in it; Arm's don't
+    (server.MESHES / mid / "views.json").write_text(json.dumps({"climbs": {ids["Body"]: {"photos": 2, "of": 2}}}))
+
+
+server.place_climbs = place_body
+try:
+    server.run_boulder(rpid)
+finally:
+    server.diversity_mod.assess, server.place_climbs = real_assess, real_place
+rproj = server.q("SELECT * FROM projects WHERE id=?", rpid, one=True)
+rest_mesh = rproj["mesh_id"]
+assert rproj["status"] == "done" and rest_mesh and rest_mesh != boulder_mesh, rproj
+assert sorted(f.name for f in (server.PROJECTS / rpid / "photos").iterdir()) == sorted(set(rec["climbs"][ids["Body"]]["left"]) | set(rec["climbs"][ids["Arm"]]["left"]))
+own = {c["id"]: c["own"] for c in json.loads((server.PROJECTS / rpid / "climbs.json").read_text())["climbs"]}
+assert sorted(own[ids["Body"]]) == ["mountainproject_body00.jpg", "mountainproject_body01.jpg"], own
+assert [r["climb_id"] for r in server.q("SELECT climb_id FROM mesh_links WHERE mesh_id=? AND note=?", rest_mesh, server.REST_LINK)] == [ids["Body"]]
+attempt = server.load_rest(boulder_mesh)["attempt"]
+assert (attempt["status"], attempt["mesh"], attempt["climbs"]) == ("done", rest_mesh, [ids["Body"]]), attempt
+assert server.q("SELECT boulder FROM meshes WHERE id=?", rest_mesh, one=True)["boulder"] == json.dumps(json.loads(got["Pea"]["boulder"]) + [server.REST_MARK + boulder_mesh])
+assert server.q("SELECT name FROM meshes WHERE id=?", rest_mesh, one=True)["name"] == "Arm, Body", "named after its climbs"
+kinds = server.boulder_kinds()
+views = {boulder_mesh: {"climbs": {ids["Pea"]: {"photos": 8}, ids["Body"]: {"photos": 1}}}, rest_mesh: {"climbs": {ids["Body"]: {"photos": 2}}}}
+rows = server.q("SELECT id, boulder FROM meshes WHERE id IN (?, ?)", boulder_mesh, rest_mesh)
+homes = server.boulder_homes(rows, views)
+assert homes == {ids["Body"]: rest_mesh}, homes
+on_parent = [{"id": i, "view": (views[boulder_mesh]["climbs"]).get(i)} for i in ids.values()]
+parent = server.pooled_summary(got["Pea"]["boulder"], on_parent, kinds, boulder_mesh, homes)
+assert (parent["whole"], parent["split"], parent["placed"], parent["kind"]) == (False, True, 1, "boulder"), parent
+rest_card = server.pooled_summary(rows[0]["boulder"] if rows[0]["id"] == rest_mesh else rows[1]["boulder"],
+                                  [{"id": ids["Body"], "view": {"photos": 2}}, {"id": ids["Arm"], "view": None}], kinds, rest_mesh, homes)
+assert (rest_card["placed"], rest_card["rest_of"], rest_card["whole"]) == (1, boulder_mesh, False), rest_card
+# meshing what it left out failed, or nothing was left out to: one boulder
+rec = server.load_rest(boulder_mesh)
+server.save_rest(boulder_mesh, {**rec, "attempt": {**rec["attempt"], "status": "failed", "mesh": None, "climbs": []}})
+assert server.pooled_summary(got["Pea"]["boulder"], on_parent, kinds, boulder_mesh)["whole"] is True
+server.save_rest(boulder_mesh, {**rec, "apart": [], "attempt": None})
+assert server.pooled_summary(got["Pea"]["boulder"], on_parent, kinds, boulder_mesh)["whole"] is True
+server.save_rest(boulder_mesh, {**rec, "attempt": None})
+summary = server.pooled_summary(got["Pea"]["boulder"], on_parent, kinds, boulder_mesh)
+assert (summary["whole"], summary["apart"], summary["rest"]) == (False, 2, None), "enough left out, never tried: a group till it is"
+assert server.rest_waiting() == [boulder_mesh] and server.rest_queue_all() == 1 and server.rest_waiting() == []
+while not server.jobs.empty():
+    server.jobs.get_nowait()
 # a sector's climbs whose photos match (climb_links): meshed together as a pool once the sector's climbs are through,
 # each linked to its mesh; one that matches none stays on its own; not pooled again from the same climbs
 fresh()
@@ -2165,7 +2231,8 @@ finally:
 # what a pooled mesh's card says: how many of its climbs it places, and whether it's the whole boulder; a sector isn't
 # meshed as one from a climb's card; names without the project's kind
 summary = server.pooled_summary(pool["key"], [{"id": "a", "view": {"photos": 2}}, {"id": "b", "view": None}], server.boulder_kinds())
-assert summary == {"climbs": 2, "placed": 1, "area": "Bas Cuvier", "kind": "group", "whole": False}, summary
+assert summary == {"climbs": 2, "placed": 1, "area": "Bas Cuvier", "kind": "group", "whole": False, "apart": 0, "rest": None,
+                   "split": False, "rest_of": None}, summary
 pea = server.q("SELECT key FROM boulders WHERE name='Peabody'", one=True)["key"]
 for n, sid in (("Pea", "961"), ("Body", "962")):
     server.upsert_climb(Climb(source="mountainproject", source_id=sid, url=f"https://x/{sid}", name=n, area_path=json.loads(pea)))
@@ -2220,18 +2287,16 @@ tid = {n: server.upsert_climb(Climb(source="mountainproject", source_id=f"97{i}"
                                     description=d)) for i, (n, d) in enumerate(texts.items())}
 assert server.links_from_text(list(tid.values())) == 1
 assert server.q("SELECT a, b, how FROM climb_links", one=True) == {**dict(zip("ab", sorted((tid["Text A"], tid["Text Bee"])))), "how": "text"}
-# running areas' boulders meshed before climbs it hardly showed were meshed on their own: caught up as the server starts
+# boulders' meshes made before what they left out was kept: kept as the server starts, not queued (the admin page does)
 fresh()
 c = server.create_campaign("", "popularity", HEAD + "".join([leaf_row(41, "Pea", 3.8, "Peabody"), leaf_row(42, "Body", 3.7, "Peabody")]))
 server.settings().update({"areas.meshes": "boulders"})
 server.climbs_mod.fetch_climb_url = with_areas
 run_all(c["id"])
 got = items(c["id"])
-(server.MESHES / got["Pea"]["mesh_id"]).mkdir(parents=True, exist_ok=True)
-(server.MESHES / got["Pea"]["mesh_id"] / "views.json").write_text(json.dumps({"climbs": {}, "unplaced": {got["Body"]["climb_id"]: 12}}))
-server.q("UPDATE campaign_items SET status='done', redo=NULL WHERE campaign_id=?", c["id"], write=True)
-server.q("UPDATE campaigns SET status='running' WHERE id=?", c["id"], write=True)
-assert server.catch_up_own_attempts() == 1 and items(c["id"])["Body"]["redo"] == "own"
+(server.MESHES / got["Pea"]["mesh_id"] / server.REST_FILE).unlink()
+server.rest_existing_meshes()
+assert server.load_rest(got["Pea"]["mesh_id"])["attempt"] is None and server.jobs.empty()
 server.climbs_mod.fetch_climb_url = fake_fetch
 server.settings().update({"areas.meshes": "climbs"})
 print("boulders told from groups by their pages OK")

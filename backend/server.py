@@ -269,7 +269,7 @@ def init_db() -> None:
         # redo: what it's queued to do again (REDO_NAMES); was: its status before; changed: its photos have
         # changed since it was last meshed or checked; redo_started: a rebuild that began, to carry on with
         # waiting_since: when it first waited for volunteers' YouTube searches and videos (status 'waiting')
-        # own_tried: when it was meshed on its own after a pooled mesh hardly showed it (own_attempts()), once;
+        # own_tried: when it was meshed on its own after a pooled mesh hardly showed it (before keep_rest()), once;
         # pool: for redo "cluster", the pool it meshes (pools.key)
         for c, t in (("retry", "INTEGER DEFAULT 0"), ("redo", "TEXT"), ("was", "TEXT"), ("changed", "INTEGER DEFAULT 0"),
                      ("redo_started", "INTEGER DEFAULT 0"), ("waiting_since", "REAL"), ("own_tried", "REAL"), ("pool", "TEXT")):
@@ -940,16 +940,50 @@ def leaf_url(leaf: str, cache: dict) -> str | None:
     return cache[leaf]
 
 
-def pooled_summary(key: str, climbs: list[dict], kinds: dict) -> dict:
-    """What a pooled mesh's card says of it: how many climbs' photos it's made from and how many of them it places, its
-    lowest area and what that is, and whether it's of the whole boulder: one Mountain Project says is one rock, every
-    climb known on it placed."""
+def pooled_summary(key: str, climbs: list[dict], kinds: dict, mid: str | None = None, homes: dict | None = None) -> dict:
+    """What a pooled mesh's card says of it: how many climbs' photos it's made from and how many of them it places (by
+    their own photos, each counted only on the mesh of its boulder that places most of them: homes, {climb: mesh}), its
+    lowest area and what that is, and whether it's one boulder.
+
+    It's one boulder when Mountain Project says the area is one rock, and nothing the mesh left out of its climbs'
+    photos makes a mesh apart (keep_rest()): none of them left REST_LEAST out, or meshing those failed. Otherwise
+    a mesh placing more than one climb is a group. A mesh from before its rest was kept goes by whether every climb
+    known on the area is placed in it.
+    """
     leaf = pool_leaf(key)
-    placed = {c["id"] for c in climbs if c.get("view")}
+    placed = {c["id"] for c in climbs if c.get("view") and (not homes or homes.get(c["id"], mid) == mid)}
     kind = leaf_kind(leaf, kinds)
-    on_leaf = {c["id"] for c in q("SELECT id FROM climbs WHERE area_path=?", leaf)} if kind == "boulder" else set()
-    return {"climbs": len(climbs), "placed": len(placed), "area": json.loads(leaf)[-1].strip("* "), "kind": kind,
-            "whole": bool(on_leaf) and on_leaf <= placed}
+    rest = load_rest(mid) if mid and not is_pool(key) else None
+    tried = (rest or {}).get("attempt") or {}
+    split = tried.get("status") == "done" and bool(tried.get("climbs"))
+    apart = len((rest or {}).get("apart") or [])
+    if rest is not None:
+        whole = kind == "boulder" and not split and (not apart or tried.get("status") in ("failed", "poor"))
+    else:
+        on_leaf = {c["id"] for c in q("SELECT id FROM climbs WHERE area_path=?", leaf)} if kind == "boulder" and not is_pool(key) else set()
+        whole = bool(on_leaf) and on_leaf <= {c["id"] for c in climbs if c.get("view")}
+    return {"climbs": len(climbs), "placed": len(placed), "area": json.loads(leaf)[-1].strip("* "), "kind": kind, "whole": whole,
+            "apart": apart, "rest": tried.get("status") if apart else None, "split": split,
+            "rest_of": rest_parent(key) if is_rest(key) else None}
+
+
+def boulder_homes(rows: list[dict], views: dict[str, dict]) -> dict[str, str]:
+    """Which mesh each climb counts toward among the current meshes of one Mountain Project boulder: its own mesh and
+    the mesh of what that left out (rows, {id, boulder}; views, {mesh: views.json}): the one placing most of its own
+    photos, so that a climb is in only one group. {climb: mesh}; climbs placed in only one aren't listed."""
+    best: dict[tuple[str, str], tuple[int, str]] = {}
+    seen: dict[tuple[str, str], int] = {}
+    for r in rows:
+        key = r["boulder"]
+        if not key or (is_pool(key) and not is_rest(key)):
+            continue
+        leaf = pool_leaf(key)
+        for cid, v in ((views.get(r["id"]) or {}).get("climbs") or {}).items():
+            n = (v or {}).get("photos") or 0
+            seen[(leaf, cid)] = seen.get((leaf, cid), 0) + 1
+            if n > best.get((leaf, cid), (-1, ""))[0]:
+                best[(leaf, cid)] = (n, r["id"])
+    return {cid: m for (leaf, cid), (n, m) in best.items() if seen[(leaf, cid)] > 1}
 
 
 def boulder_info(climb: dict) -> dict | None:
@@ -965,7 +999,10 @@ def boulder_info(climb: dict) -> dict | None:
                SHARED + "%", *[c["id"] for c in climbs]):
         own.setdefault(r["climb_id"], []).append({"id": r["id"], "name": r["name"]})
     meshes = []
-    for m in q("SELECT id, name, created FROM meshes WHERE boulder=? AND replaced_by IS NULL ORDER BY created DESC", boulder):
+    rests = [m["id"] for m in q("SELECT id, boulder FROM meshes WHERE boulder LIKE ? AND replaced_by IS NULL", boulder[:-1] + ", %")
+             if is_rest(m["boulder"]) and pool_leaf(m["boulder"]) == boulder]     # and those of what its mesh left out
+    for m in q(f"SELECT id, name, created FROM meshes WHERE (boulder=? OR id IN ({','.join('?' * len(rests)) or 'NULL'})) "
+               "AND replaced_by IS NULL ORDER BY created DESC", boulder, *rests):
         views = viewpoints.load(MESHES / m["id"]) or {}
         meshes.append({**m, "view": (views.get("climbs") or {}).get(climb["id"]), "placed": len(views.get("climbs") or {}),
                        "unplaced": (views.get("unplaced") or {}).get(climb["id"])})
@@ -1536,6 +1573,203 @@ def placed_photos(mid: str) -> list[str] | None:
         return None
 
 
+# ------------------------------------------------------------------ the rest: what a boulder's mesh left out
+# A boulder's mesh is made from every photo its climbs' harvests kept (run_boulder()), and its reconstruction places what
+# it can, then tries the rest against the finished model (pipeline._place_rest()). What it still leaves out of a climb's
+# photos may be another side no photo joins, or another rock under the same Mountain Project boulder: the photos left out
+# of every climb with REST_LEAST or more are meshed together, once, in a pool of their own (run_rest()), whose largest
+# model is what they show together. Only a boulder that leaves nothing that makes a mesh apart is one boulder
+# (pooled_summary()); otherwise each mesh of more than one climb is a group.
+REST_FILE = "rest.json"     # beside a boulder's mesh: {created, mesh, climbs: {id: {name, left, own}}, apart, attempt}
+REST_LEAST = 6              # photos left out of a climb, at least, for them to be meshed apart (what a mesh needs placed)
+REST_MARK = POOL_MARK + "rest "     # the last of the key of a pool of what a boulder's mesh left out, with that mesh's id
+REST_LINK = "meshed from the photos its boulder's mesh left out"   # a mesh_links note: a rest mesh, to each climb it places
+
+
+def is_rest(key: str | None) -> bool:
+    try:
+        return bool(key) and str(json.loads(key)[-1]).startswith(REST_MARK)
+    except (TypeError, ValueError, IndexError):
+        return False
+
+
+def rest_parent(key: str) -> str:
+    """The boulder's mesh whose left-out photos a rest pool's key is of."""
+    return str(json.loads(key)[-1])[len(REST_MARK):]
+
+
+def load_rest(mid: str) -> dict | None:
+    try:
+        return json.loads((MESHES / mid / REST_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def save_rest(mid: str, record: dict) -> None:
+    tmp = MESHES / mid / (REST_FILE + ".partial")
+    tmp.write_text(json.dumps(record))
+    tmp.replace(MESHES / mid / REST_FILE)
+
+
+def rest_of(mid: str, pid: str) -> dict:
+    """What a boulder's mesh left out of each of its climbs' photos: of the photos it was made from, those it didn't
+    place, by the climbs whose harvests had them (sources.json's pooled_from and also_in), with how many of each's are
+    its own (its page's and its videos' frames); and the climbs with REST_LEAST or more left out, to mesh apart."""
+    placed = set(placed_photos(mid) or [])
+    photos = PROJECTS / pid / "photos"
+    given = {f.name for f in photos.iterdir()} if photos.is_dir() else set()
+    climbs = json.loads((PROJECTS / pid / CLIMBS_FILE).read_text())["climbs"]
+    whose: dict[str, set] = {}
+    for c in climbs:
+        for h in c.get("projects") or []:
+            whose.setdefault(h, set()).add(c["id"])
+    try:
+        files = json.loads((PROJECTS / pid / "sources.json").read_text()).get("files") or []
+    except (OSError, ValueError):
+        files = []
+    left: dict[str, set] = {}
+    for f in files:
+        if f.get("file") in given and f["file"] not in placed:
+            for h in [f.get("pooled_from")] + list(f.get("also_in") or []):
+                for cid in whose.get(h, ()):
+                    left.setdefault(cid, set()).add(f["file"])
+    names = {c["id"]: c["name"] for c in climbs}
+    out = {cid: {"name": names[cid], "left": sorted(v), "own": sum(relevance_mod.is_trusted(Path(n)) for n in v)}
+           for cid, v in left.items()}
+    return {"created": time.time(), "mesh": mid, "climbs": out,
+            "apart": sorted((cid for cid, v in out.items() if len(v["left"]) >= REST_LEAST), key=lambda c: names[c]), "attempt": None}
+
+
+def keep_rest(mid: str, pid: str, log, queue: bool = True) -> dict | None:
+    """After a boulder's mesh is made (one Mountain Project lists as one area, not a pool): what it left out of each
+    climb's photos (rest_of()), kept beside it; and with queue, the photos left out of the climbs with REST_LEAST or more
+    queued to be meshed together (run_rest()), once for this mesh. Only costs that if it fails."""
+    try:
+        old = load_rest(mid) or {}
+        record = rest_of(mid, pid)
+        record["attempt"] = old.get("attempt")
+        apart = record["apart"]
+        if apart and queue and not record["attempt"]:
+            leaf = q("SELECT boulder FROM meshes WHERE id=?", mid, one=True)["boulder"]
+            key = json.dumps(json.loads(leaf) + [REST_MARK + mid])
+            q("INSERT INTO pools(key, leaf, members, created, updated) VALUES(?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET "
+              "members=excluded.members, updated=excluded.updated", key, leaf, json.dumps(apart), time.time(), time.time(), write=True)
+            rpid = boulder_project_made(key)
+            q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", rpid, write=True)
+            queue_job({"type": "boulder", "pid": rpid})
+            record["attempt"] = {"project": rpid, "status": "queued", "at": time.time()}
+            names = ", ".join(record["climbs"][c]["name"] for c in apart)
+            log(f"rest: the photos it left out of {plural(len(apart), 'climb')} ({names}) queued to be meshed together")
+        elif record["climbs"]:
+            log(f"rest: it left out photos of {plural(len(record['climbs']), 'climb')}, too few of any to mesh apart")
+        save_rest(mid, record)
+        return record
+    except Exception as e:
+        log(f"rest: couldn't work out what it left out ({type(e).__name__}: {e})")
+        return None
+
+
+def rest_existing_meshes() -> None:
+    """What boulders' meshes made before the rest was kept left out (keep_rest()): kept, not queued, as only their
+    cards' boulder or group depends on it; the admin page queues those with any to mesh (rest_queue_all())."""
+    for m in q("SELECT m.id, m.source, m.boulder FROM meshes m WHERE m.boulder IS NOT NULL AND m.replaced_by IS NULL"):
+        if is_pool(m["boulder"]) or load_rest(m["id"]) or not (MESHES / m["id"]).is_dir():
+            continue
+        pid = m["source"].split(":", 1)[1] if m["source"].startswith("project:") else None
+        if pid and (PROJECTS / pid / CLIMBS_FILE).exists():
+            keep_rest(m["id"], pid, lambda s: None, queue=False)
+
+
+def rest_waiting() -> list[str]:
+    """Current boulders' meshes with photos left out to mesh apart, never tried."""
+    out = []
+    for m in q("SELECT id, boulder FROM meshes WHERE boulder IS NOT NULL AND replaced_by IS NULL"):
+        rec = None if is_pool(m["boulder"]) else load_rest(m["id"])
+        if rec and rec.get("apart") and not rec.get("attempt"):
+            out.append(m["id"])
+    return out
+
+
+def rest_queue_all() -> int:
+    """The admin page's: queue meshing what every current boulder's mesh left out, where that was never tried."""
+    n = 0
+    for mid in rest_waiting():
+        m = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
+        if m and m["source"].startswith("project:"):
+            rec = keep_rest(mid, m["source"].split(":", 1)[1], print)
+            n += bool(rec and rec.get("attempt"))
+    return n
+
+
+def run_rest(pid: str, key: str, resume: bool, log, tracker) -> None:
+    """Mesh what a boulder's mesh left out of its climbs' photos (keep_rest()), from that mesh's own photos, as filtered
+    for it, in this pool's project: then each climb its own photos place in it is linked to it, and the boulder's mesh's
+    rest says how it went."""
+    parent = rest_parent(key)
+    rec = load_rest(parent) or {"climbs": {}, "apart": []}
+    pdir = PROJECTS / pid
+    members = pool_members(key)
+
+    def attempt(**how) -> None:
+        latest = load_rest(parent)
+        if latest is not None:
+            latest["attempt"] = {**(latest.get("attempt") or {}), "project": pid, **how, "at": time.time()}
+            save_rest(parent, latest)
+    proj = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)
+    if resume and proj["harvest"]:
+        summary = json.loads(proj["harvest"])
+    else:
+        src = q("SELECT source FROM meshes WHERE id=?", parent, one=True)
+        if not src or not src["source"].startswith("project:"):
+            raise ValueError(f"the boulder's mesh {parent} is gone")
+        ppid = src["source"].split(":", 1)[1]
+        need_back([ppid], "meshing what its boulder's mesh left out")
+        names = sorted({n for c in members for n in (rec["climbs"].get(c) or {}).get("left", [])})
+        log(f"-- meshing the {plural(len(names), 'photo')} the boulder's mesh {parent} left out of {plural(len(members), 'climb')}")
+        for partial in ("photos", "rejected", "masks"):
+            shutil.rmtree(pdir / partial, ignore_errors=True)
+        (pdir / "photos").mkdir(parents=True)
+        for n in names:
+            f = PROJECTS / ppid / "photos" / n
+            if f.is_file():
+                try:
+                    os.link(f, pdir / "photos" / n)
+                except OSError:
+                    shutil.copy2(f, pdir / "photos" / n)
+        try:
+            files = [f for f in json.loads((PROJECTS / ppid / "sources.json").read_text()).get("files") or [] if f.get("file") in names]
+        except (OSError, ValueError):
+            files = []
+        (pdir / "sources.json").write_text(json.dumps({"files": files}))
+        climbs = {c["id"]: c for c in boulder_climbs(key)}
+        record = [{"id": c, "name": climbs[c]["name"] if c in climbs else c, "grade": climbs[c]["grade"] if c in climbs else None,
+                   "projects": [], "own": [n for n in (rec["climbs"].get(c) or {}).get("left", []) if relevance_mod.is_trusted(Path(n))]}
+                  for c in members]
+        (pdir / CLIMBS_FILE).write_text(json.dumps({"boulder": key, "climbs": record, "created": time.time()}, indent=1))
+        summary = {"images": len(names), "rest_of": parent, "diversity": diversity_mod.assess(pdir / "photos", log)}
+        q("UPDATE projects SET harvest=?, status='harvested' WHERE id=?", json.dumps(summary), pid, write=True)
+    verdict = diversity_mod.judge(summary.get("diversity"))
+    log(f"left out: {summary['images']} image(s), verdict {verdict}")
+    if verdict == "poor":
+        log("not enough viewpoint diversity for photogrammetry - skipping reconstruction")
+        tracker.skip_rest()
+        attempt(status="poor", mesh=None, climbs=[])
+        return
+    attempt(status="running")
+    run_reconstruct(pid, internet=True, tracker=tracker, resume=resume)
+    p = q("SELECT status, mesh_id FROM projects WHERE id=?", pid, one=True)
+    if p["status"] == "done" and p["mesh_id"]:
+        shutil.rmtree(pdir / "work", ignore_errors=True)
+        seen = (viewpoints.load(MESHES / p["mesh_id"]) or {}).get("climbs") or {}
+        placed = [c for c in members if c in seen]
+        for c in placed:
+            link_mesh(p["mesh_id"], c, REST_LINK)
+        log(f"rest: places {plural(len(placed), 'climb')} by their own photos")
+        attempt(status="done", mesh=p["mesh_id"], climbs=placed)
+    else:
+        attempt(status="failed", mesh=None, climbs=[], why=too_few_placed(pid) or last_failure(pid))
+
+
 def fewer_placed(before: str, mid: str, photos: Path) -> tuple[int, int] | None:
     """(how many photos mesh mid placed, how many mesh before did), if mid was made from photos that included every one
     before placed, and placed fewer of them; else None."""
@@ -2008,6 +2242,23 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
     """
     proj = q("SELECT boulder, harvest FROM projects WHERE id=?", pid, one=True)
     boulder, pdir = proj["boulder"], PROJECTS / pid
+    if is_rest(boulder):     # what a boulder's mesh left out: from that mesh's own photos
+        q("UPDATE projects SET status='harvesting' WHERE id=?", pid, write=True)
+        tracker = tracker_for(pid, pipeline.steps())
+        try:
+            run_rest(pid, boulder, resume, lambda s: append_log(pid, s), tracker)
+        except compute.ComputeUnavailable:
+            raise
+        except Exception as e:
+            diagnostics.log_failure(lambda s: append_log(pid, s), e, DATA)
+            tracker.finish("failed")
+            q("UPDATE projects SET status='failed' WHERE id=?", pid, write=True)
+            rec = load_rest(rest_parent(boulder))
+            if rec is not None:
+                rec["attempt"] = {**(rec.get("attempt") or {}), "project": pid, "status": "failed", "mesh": None, "climbs": [],
+                                  "why": f"{type(e).__name__}: {e}", "at": time.time()}
+                save_rest(rest_parent(boulder), rec)
+        return
     finished = proj["harvest"] if resume else None
     if not finished:    # the harvests it pools: back from the backup first, if any were offloaded
         try:
@@ -2073,8 +2324,11 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
             tracker.skip_rest()
             return
         run_reconstruct(pid, internet=True, tracker=tracker, resume=resume, keep_better=keep_better)
-        if q("SELECT status FROM projects WHERE id=?", pid, one=True)["status"] == "done":
+        done = q("SELECT status, mesh_id FROM projects WHERE id=?", pid, one=True)
+        if done["status"] == "done":
             shutil.rmtree(pdir / "work", ignore_errors=True)   # most of its disk use, and only useful to itself
+            if not is_pool(boulder) and done["mesh_id"]:
+                keep_rest(done["mesh_id"], pid, log)
     except compute.ComputeUnavailable:
         raise
     except Exception as e:
@@ -2345,7 +2599,7 @@ def ordered_pending(camp: dict) -> list[dict]:
         items = _in_order(camp, items)
     else:       # a boulder's climbs one after another, so that its mesh is made before going on; and whatever the limit,
                 # what follows from work done: meshing on their own those harvested for a boulder's mesh that won't be
-                # (settle_groups()) or that it hardly showed (own_attempts()), and pools of climbs (settle_clusters())
+                # (settle_groups()) or that one hardly showed (before keep_rest()), and pools of climbs (settle_clusters())
         items = [i for unit in _units(camp, [i for i in items if i["source_id"] in scope or following(i)]) for i in unit]
     # retries were asked for, and a climb that was interrupted comes next, to finish what it started
     items.sort(key=lambda i: (not i["retry"], not i["project_id"]))
@@ -3282,27 +3536,6 @@ def run_redo(camp: dict, item: dict) -> None:
         link_after(cid, sid)
 
 
-def own_attempts(camp_id: str, mesh_id: str | None) -> list[str]:
-    """After a pooled mesh (a boulder's): those of an area's climbs on it whose own photos it hardly placed
-    (viewpoints.poorly_placed()) queued to mesh on their own as well, from their own harvests, as they may be on a side
-    or a rock the rest didn't reach. Not one that has a mesh of its own, or whose own photos are too few to. Returns
-    their names."""
-    views = viewpoints.load(MESHES / mesh_id) if mesh_id else None
-    names = []
-    for climb_id, (placed, of) in viewpoints.poorly_placed(views or {}).items():
-        for it in q("SELECT source_id, name, project_id, status FROM campaign_items WHERE campaign_id=? AND climb_id=? AND redo IS NULL "
-                    "AND own_tried IS NULL AND status IN ('done','skipped','failed','harvested')", camp_id, climb_id):
-            own = q("SELECT mesh_id FROM projects WHERE id=?", it["project_id"], one=True) if it["project_id"] else None
-            if not own or own["mesh_id"] or _verdict(it["project_id"]) == "poor":
-                continue
-            set_item(camp_id, it["source_id"], status="pending", retry=1, redo="own", was=it["status"], redo_started=0,
-                     mesh_id=mesh_id, note=f"{placed} of its {of} own photos made it into its boulder's mesh: meshing it on its own too")
-            names.append(it["name"])
-    if names:   # a finished area runs only these
-        q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", camp_id, write=True)
-    return names
-
-
 def plural(n: int, one: str) -> str:
     return f"{n} {one}{'' if n == 1 else 's'}"
 
@@ -3314,7 +3547,8 @@ def settle_clusters(camp_id: str, leaf: str) -> int:
     """Once an area's climbs of a lowest area that isn't one boulder are all through (none pending, running, waiting or
     queued again), those whose photos are of one rock (clusters(), by the links worked out as each was harvested)
     queued to mesh together as a pool, on the first of them in the area's order, unless they have been, these same
-    climbs. Of one boulder's, those its mesh hardly showed (viewpoints.poorly_placed()). Returns how many were queued."""
+    climbs. Not one boulder's, whose mesh's left-out photos are meshed together instead (keep_rest()). Returns how many
+    were queued."""
     kind = leaf_kind(leaf)
     if kind is None:
         return 0
@@ -3331,12 +3565,8 @@ def settle_clusters(camp_id: str, leaf: str) -> int:
     if any(i["status"] in ("pending", "running", "waiting", "harvested") or i["redo"] for i in due):
         return 0
     ids = [i["climb_id"] for i in items if i["status"] in ("done", "skipped", "failed") and i["climb_id"] and climb_harvests(i["climb_id"])]
-    if kind == "boulder":
-        proj = boulder_project(leaf)
-        if not proj or proj["status"] != "done" or not proj["mesh_id"]:
-            return 0
-        poor = viewpoints.poorly_placed(viewpoints.load(MESHES / proj["mesh_id"]) or {})
-        ids = [c for c in ids if c in poor]
+    if kind == "boulder":   # what its mesh left out is meshed together instead (keep_rest())
+        return 0
     queued = 0
     for group in clusters(ids) if len(ids) >= 2 else []:
         if len(group) < 2:
@@ -3463,21 +3693,9 @@ def link_after(camp_id: str, source_id: str) -> None:
         log(f"links: comparing its photos with its neighbours' failed ({type(e).__name__}: {e})")
 
 
-def catch_up_own_attempts() -> int:
-    """For running areas' boulders meshed before own_attempts() was: those of their climbs the boulder's mesh hardly
-    shows, queued to mesh on their own. Once each (own_tried). Returns how many."""
-    n = 0
-    for camp in q("SELECT id FROM campaigns WHERE status='running'"):
-        for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND boulder IS NOT NULL", camp["id"]):
-            proj = boulder_project(b["boulder"])
-            if proj and proj["status"] == "done" and proj["mesh_id"]:
-                n += len(own_attempts(camp["id"], proj["mesh_id"]))
-    return n
-
-
 def _run_own_redo(camp: dict, row: dict) -> None:
-    """run_redo() for meshing a climb on its own after its boulder's mesh hardly placed its photos (own_attempts()): from
-    its own harvest. If that can't be done, it keeps its boulder's mesh."""
+    """run_redo() for meshing a climb on its own after its boulder's mesh hardly placed its photos, as queued before
+    keep_rest() replaced that: from its own harvest. If that can't be done, it keeps its boulder's mesh."""
     cid, sid, pid, pooled_mesh = camp["id"], row["source_id"], row["project_id"], row["mesh_id"]
     jobctl.begin(low_priority=True)
     try:
@@ -3536,16 +3754,12 @@ def _run_boulder_redo(camp: dict, row: dict) -> None:
         if proj and proj["status"] == "done" and proj["mesh_id"]:
             boulder_meshed(cid, sid, end, failed)
     set_item(cid, sid, **end, redo=None, retry=0, redo_started=0)
-    if not failed:  # those it hardly shows: on their own too, and pooled together where their photos match
+    if not failed:  # which climbs' photos it placed together (what it left out is meshed apart: keep_rest())
         b = q("SELECT boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)["boulder"]
         proj = boulder_project(b) if b else None
         if proj and proj["status"] == "done" and proj["mesh_id"]:
-            own_attempts(cid, proj["mesh_id"])
             try:
                 links_from_models(proj["mesh_id"], proj["id"])
-                poor = list(viewpoints.poorly_placed(viewpoints.load(MESHES / proj["mesh_id"]) or {}))
-                if len(poor) >= 2:
-                    link_climbs(poor, lambda s: append_log(proj["id"], s))
             except Exception as e:
                 append_log(proj["id"], f"links: failed ({type(e).__name__}: {e})")
 
@@ -5383,13 +5597,15 @@ class Handler(BaseHTTPRequestHandler):
                 for key in {r["boulder"] for r in rows if is_pool(r["boulder"])}:     # a pool's: its climbs
                     on[key] = [{k: c[k] for k in ("id", "name", "grade")} for c in boulder_climbs(key)]
                 areas, rated = mesh_areas(), mesh_ratings()
+                pooled_views = {r["id"]: viewpoints.load(MESHES / r["id"]) or {} for r in rows if r["boulder"]}
+                homes = boulder_homes([r for r in rows if not r.get("replaced_by")], pooled_views)
                 for r in rows:
                     r["climbs"] = by.get(r["id"], [])
                     r["rating"] = rated.get(r["id"])
                     if r["boulder"]:    # a pooled mesh (a boulder's, or a pool's): its climbs, and where each is seen from
-                        views = viewpoints.load(MESHES / r["id"]) or {}
+                        views = pooled_views[r["id"]]
                         r["boulder_climbs"] = [{**c, "view": (views.get("climbs") or {}).get(c["id"])} for c in on.get(r["boulder"], [])]
-                        r["pooled"] = pooled_summary(r["boulder"], r["boulder_climbs"], kinds)
+                        r["pooled"] = pooled_summary(r["boulder"], r["boulder_climbs"], kinds, r["id"], homes)
                     # the Mountain Project page of the lowest area a mesh of several climbs is on: a pooled mesh's, or
                     # that of the climbs linked to one, when they're all on one
                     leaf = (pool_leaf(r["boulder"]) if r["boulder"] else
@@ -6338,7 +6554,7 @@ def admin_state() -> dict:
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
             "notify": NOTIFIER.state(),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
-            "packing": pack_progress(), "skyline": skyline_progress(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q)}
 
 
@@ -6388,6 +6604,12 @@ def admin_measure(_: dict) -> dict:
     return {"result": f"the data takes {u['total'] / 2**30:.1f} GB" + (f" of {data_cap() / 2**30:g}" if data_cap() else "")}
 
 
+def admin_rest(_: dict) -> dict:
+    """Queue meshing what every current boulder's mesh left out of its climbs' photos, where that was never tried."""
+    n = rest_queue_all()
+    return {"result": f"queued {n} mesh{'' if n == 1 else 'es'} of what boulders' meshes left out" if n else "nothing left out to mesh"}
+
+
 def admin_retexture(_: dict) -> dict:
     """Queue every mesh that can be textured from only its photos that are free to copy."""
     n = away = 0
@@ -6424,9 +6646,7 @@ def main() -> None:
     threading.Thread(target=heading_existing_meshes, daemon=True).start()
     threading.Thread(target=skyline_worker, daemon=True).start()
     threading.Thread(target=adopt_old_pools, daemon=True).start()
-    caught = catch_up_own_attempts()
-    if caught:
-        print(f"{caught} running area climb(s) its boulder's mesh hardly shows queued to mesh on their own", flush=True)
+    threading.Thread(target=rest_existing_meshes, daemon=True).start()
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
     for d in MESHES.iterdir() if MESHES.exists() else []:
         beta_mod.carry_on(d)        # finding beta and size carry on after a restart, like areas
@@ -6453,7 +6673,7 @@ def main() -> None:
                          "open to anyone who can reach this port; set EDIT_TOKEN, or READ_ONLY=1, before exposing it"), flush=True)
     in_docker = Path("/.dockerenv").exists()
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
-                                      {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture,
+                                      {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rest": admin_rest,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,

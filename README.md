@@ -97,10 +97,9 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
   within 15° of the same direction from the rock once, so many frames of one video count about once;
   coverage is how much of a full circle round the rock its photos see from above (`meshmetrics.py`,
   from where its photos were placed, kept in each mesh's `metrics.json`). Each card names the areas
-  it was made for, with its first climb's Mountain Project path on hovering. A climb's mesh's title
-  links to the climb's page, and a boulder's or group's to the Mountain Project page of the lowest area
-  its climbs are on, whose climbs fold under *N climbs*. Its download button says, on hovering, whether
-  the stray pieces hidden in the viewer are left out. The choices are
+  it was made for, with its first climb's Mountain Project path on hovering. A boulder's or group's
+  title links to the Mountain Project page of the lowest area its climbs are on, and its climbs fold
+  under *N climbs*. The choices are
   remembered in the browser.
 * **Rating a mesh:** *Rate ▴*, at the 3D view's bottom right, opens a box (folded away to start with, and again by
   *Rate ▾* or by hiding the notes) that takes bad, OK or good and a comment, which grows as it's typed. They're kept in the browser and sent to the site whenever either changes; the site keeps one of each per
@@ -268,16 +267,34 @@ those harvested for it as one before its page was read are meshed on their own t
 **Pools.** In a group, or one that doesn't say, each climb's own photos are compared with its neighbours' as it's
 done (a few of each, matched as the off-topic filter's same-rock check matches; with many neighbours, each with the 8
 whose photos CLIP finds most alike), and once the area's climbs there are through, those of one rock are meshed together
-(`settle_clusters()`), as a mesh of their own linked to each of them; not again from the same climbs. A climb a pooled
-mesh hardly shows (none of its own photos placed, or fewer than 3 and a quarter of them: a side the others' don't reach,
-or a rock that didn't join) is meshed on its own too, from its own harvest, once. Every model COLMAP makes is recorded
-beside the mesh (`models.json`), and climbs whose photos land in one together are linked by that as well.
+(`settle_clusters()`), as a mesh of their own linked to each of them; not again from the same climbs. Every model COLMAP
+makes is recorded beside the mesh (`models.json`), and climbs whose photos land in one together are linked by that as
+well.
 
-**On the cards.** Meshes are named for what they're of, not how they were made. A pooled mesh says how many of its
-climbs it places ("pooled · 7/9 climbs"), and *whole boulder* only when every climb Mountain Project lists on that one rock
-is placed in it. A climb's card says what its lowest area is, linked to its page. The meshes made before boulders had
-their own (from one climb's project pooling its neighbours') became pools as the server started, saying which climbs
-they show.
+**What a boulder's mesh leaves out.**
+- **Placing the rest.** Every reconstruction tries the photos COLMAP's mapper left out again, one at a time, against the
+  model it finished (*Place the rest*, `_place_rest()` in `backend/pipeline.py`). Fewer of a photo's matches need to fit
+  than the mapper asks for, and those that join are refined with the rest.
+- **Meshing what's still left.** After a boulder's mesh, what it still left out of each climb's photos is kept beside it
+  (`rest.json`). The photos left out of every climb with 6 or more out are then meshed together, once, from the
+  boulder's own filtered photos (`keep_rest()`, `run_rest()`), as another side or another rock. That mesh is named for
+  those climbs and linked to each one it places, whatever the area's limit.
+- **Instead of re-meshing.** This replaces meshing each climb the boulder's mesh hardly showed on its own from its whole
+  harvest, which mostly made copies of the same rock from the same web photos.
+- **Older meshes.** Boulders' meshes made before this have what they left out worked out as the server starts.
+  *Mesh what boulders' meshes left out* on the admin page queues the rest of those that have enough.
+
+**On the cards.** Meshes are named for what they're of, not how they were made. A mesh of several climbs' photos says how
+many of them it places, each counted only on the mesh of its boulder that places most of its own photos.
+- **Boulder** ("boulder · 7/9 climbs"): Mountain Project says its area is one rock, and nothing it left out made a mesh
+  of its own (none of its climbs left 6 photos out, or meshing them failed).
+- **Group** ("group · 7/9 climbs"): any other placing more than one climb. That includes a boulder's mesh when what it
+  left out made another mesh, and that other mesh, if it places more than one climb.
+- **Neither:** a mesh placing only one climb is that climb's.
+
+The Meshes tab's filter picks climbs, groups or boulders the same way. A climb's card says what its lowest area is,
+linked to its page. The meshes made before boulders had their own (from one climb's project pooling its neighbours')
+became pools as the server started, saying which climbs they show.
 
 *Mesh the boulder from all its climbs' photos*, on a climb's card (not for a group), makes a mesh of the whole rock from
 every photo its climbs' harvests kept, in a project and mesh of its own (`<boulder> (boulder)`), which

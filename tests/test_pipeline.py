@@ -152,6 +152,57 @@ assert meshopts.given() is None, "only inside using()"
 print("mapper's other seeds OK")
 
 
+# ---- the photos the mapper left out, tried again against its finished model: those placed join it; failing keeps it
+def place_rest(placed_after=None, fails=None):
+    """The mapper places 6 of 10; image_registrator then places placed_after in all (or fails, if fails is the step).
+    Returns what was logged, the tools run after the mapper, and the model levelling was given."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = pathlib.Path(td)
+        images, work, logged, ran = tmp / "images", tmp / "work", [], []
+        images.mkdir()
+        for i in range(10):
+            (images / f"{i}.jpg").write_bytes(b"x")
+
+        def fake_run(cmd, cwd, log, watch=None):
+            name = cmd[1]
+            if name in ("image_registrator", "bundle_adjuster"):
+                ran.append(name)
+                if name == fails:
+                    raise RuntimeError("colmap exited with 1")
+                if name == "image_registrator" and placed_after:
+                    (pathlib.Path(cmd[cmd.index("--output_path") + 1]) / "images.bin").write_bytes(struct.pack("<Q", placed_after))
+                    assert cmd[cmd.index("--input_path") + 1].endswith("sparse/0") and "--Mapper.abs_pose_min_num_inliers" in cmd, cmd
+            if name == "mapper":
+                model(work / "sparse", "0", 6)
+            if name == "model_orientation_aligner":
+                given = cmd[cmd.index("--input_path") + 1]
+                raise Stop(given, vggt_place_count(pathlib.Path(given)), (work / "mapper_0").is_dir())
+        saved = pipeline._run, pipeline.COLMAP
+        pipeline._run, pipeline.COLMAP = fake_run, "colmap"
+        try:
+            with meshopts.using({"retry_below": 0, "more": 0}):
+                pipeline.reconstruct_colmap_openmvs(images, work, tmp / "out", logged.append, False)
+            raise AssertionError("didn't reach levelling")
+        except Stop as e:
+            return logged, ran, e.args
+        finally:
+            pipeline._run, pipeline.COLMAP = saved
+
+
+def vggt_place_count(m):
+    return pipeline.vggt_place.count(m, "images")
+
+
+logged, ran, (given, n, kept) = place_rest(placed_after=9)
+assert ran == ["image_registrator", "bundle_adjuster"] and given.endswith("sparse/0") and n == 9 and kept, (ran, given, n, kept)
+assert any("placed 3 more of them" in s for s in logged) and any("registered 9/10 images" in s for s in logged), logged
+logged, ran, (given, n, kept) = place_rest(placed_after=6)
+assert ran == ["image_registrator"] and n == 6 and not kept and any("none of them could be placed" in s for s in logged), (ran, logged)
+logged, ran, (given, n, kept) = place_rest(fails="image_registrator")
+assert n == 6 and not kept and any("placing the rest failed" in s for s in logged), logged
+print("placing the rest OK")
+
+
 # ---- when the mapper places too few, VGGT's placements (refined by COLMAP) are another model to choose from
 def with_vggt(why=None, placed=None, fails=None):
     """vggt_place standing in: unavailable for why, or placing that many photos as sparse/vggt, or raising fails."""
