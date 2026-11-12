@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
+import dbconn
 import presence
 import registration
 
@@ -196,7 +197,7 @@ class Broker:
             presence.migrate(con, "volunteers", GONE_AFTER_OLD)
 
     def db(self) -> sqlite3.Connection:
-        con = sqlite3.connect(self.db_path, timeout=30)
+        con = dbconn.connect(self.db_path, timeout=30)
         con.row_factory = sqlite3.Row
         return con
 

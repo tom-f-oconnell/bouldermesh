@@ -19,6 +19,8 @@ import sqlite3
 import threading
 from pathlib import Path
 
+import dbconn
+
 DEFAULTS = {
     # compute: where reconstructions run. The server itself runs local_workers of them (0: none, as on a small server
     # that only harvests); with a provider, up to remote_workers more run on other machines at once.
@@ -136,7 +138,7 @@ class Settings:
             con.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
 
     def _db(self):
-        return sqlite3.connect(self.db_path, timeout=30)
+        return dbconn.connect(self.db_path, timeout=30)
 
     def get(self, key: str):
         if key not in DEFAULTS:

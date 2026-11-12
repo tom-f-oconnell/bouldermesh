@@ -56,6 +56,7 @@ import heading as heading_mod  # noqa: E402
 import skyline as skyline_mod  # noqa: E402
 import terrain as terrain_mod  # noqa: E402
 import meshclean  # noqa: E402
+import dbconn  # noqa: E402
 import links as links_mod  # noqa: E402
 import thumbs as thumbs_mod  # noqa: E402
 import meshmetrics  # noqa: E402
@@ -169,7 +170,7 @@ def settings() -> settings_mod.Settings:
 
 
 def db() -> sqlite3.Connection:
-    con = sqlite3.connect(DATA / "bouldermesh.sqlite", check_same_thread=False)
+    con = dbconn.connect(DATA / "bouldermesh.sqlite", check_same_thread=False)    # closed as its with block ends
     con.row_factory = sqlite3.Row
     return con
 

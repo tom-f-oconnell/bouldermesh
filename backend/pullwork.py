@@ -20,7 +20,7 @@ it's turned down. Jobs are kept only in memory: a restart here
 ends them anyway, the climbs carry on after it as new jobs, and a machine still running an old one is told it's gone.
 
 A machine says which kinds of job it takes (worker script 13 on): one without a GPU only filters harvests' photos, by
-default, and is given the server's own CPU image to run them in (cpu_image), 2.4 GB rather than the GPU build's 10.4.
+default, and is given a CPU image to run them in (cpu_image): the slim worker one (1.7 GB, x86-64 and ARM64) where built.
 A machine whose owner's work keeps its GPU busy, or whose memory is short, says it's held back, and gets no job; one
 whose GPU hasn't memory free for the next job's (gpu_need_mb()) is held back too. Each machine's state as it asks
 (working, idle, held back, awaiting approval, or offline once it stops asking) is kept as it changes, in machine_states,
@@ -46,6 +46,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 import compute
+import dbconn
 import meshopts
 import presence
 import registration
@@ -155,7 +156,7 @@ class Board:
         os.chmod(db_path, 0o600)
 
     def db(self) -> sqlite3.Connection:
-        con = sqlite3.connect(self.db_path, timeout=30)
+        con = dbconn.connect(self.db_path, timeout=30)
         con.row_factory = sqlite3.Row
         return con
 
