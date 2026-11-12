@@ -99,7 +99,7 @@ if [ "$(ssh "$dest" "docker image inspect $image --format '{{.Id}}' 2>/dev/null"
     echo "image $image: $dest already has it"
 else
     # images no container uses any more (each ship's leaves one, after the restart that follows it), for room
-    ssh "$dest" 'docker image prune -f' | tail -1
+    ssh "$dest" 'docker image prune -f' | tail -1 | grep -v '^Total reclaimed space: 0B$' || true
     if [ -n "$pushed" ] && [ -z "${NO_PUSH:-}" ]; then
         # from the registry, which sends only the layers it hasn't got; then earlier builds' names go, so that their
         # images go too once no container runs them (the one running now keeps its own until the restart after this)
@@ -120,7 +120,7 @@ if [ -n "${PHOTOS:-}" ]; then
     esac
 fi
 if [ -n "$only_image" ]; then
-    echo "done. On $dest:  cd $remote && sudo systemctl restart bouldermesh   (or docker compose up -d)"
+    [ -n "${DEPLOY_SH:-}" ] || echo "done. On $dest:  cd $remote && sudo systemctl restart bouldermesh   (or docker compose up -d)"
     exit 0
 fi
 echo "meshes: $(du -sh "$data/meshes" | cut -f1)"

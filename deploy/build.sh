@@ -41,4 +41,4 @@ for old in $(docker images --format '{{.Tag}} {{.CreatedAt}}' "$REGISTRY" | grep
              sort -k2 -r | awk '!seen[$1]++ {print $1}' | awk -v keep="${KEEP_BUILDS:-2}" 'NR > keep'); do
     docker image rm "$REGISTRY:$old" "$REGISTRY:$old-gpu" > /dev/null 2>&1 || true
 done
-echo "Next: deploy/ship.sh you@host $image"
+[ -n "${DEPLOY_SH:-}" ] || echo "Next: deploy/ship.sh you@host $image"     # deploy.sh does that itself

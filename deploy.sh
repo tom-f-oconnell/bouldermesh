@@ -33,6 +33,7 @@ cancel() {
 
 # the images first: the server pulls its own, which changes nothing until the restart
 # (set -e doesn't stop at a failure partway through a && list, hence the || exit)
+export DEPLOY_SH=1      # so that they leave out what they'd tell you to do next by hand, which this does
 deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public || exit 1
 
 # what a restart would cost now: exit 3 if it would lose work in progress (a server too old to say: 1 or 2)
@@ -92,11 +93,24 @@ elif [ "$check" -ne 0 ]; then
 fi
 
 on_server 'git pull --ff-only && sudo systemctl restart bouldermesh' || exit 1
+want=$(git rev-parse --short HEAD)
+for _ in $(seq 30); do      # up to a minute for it to answer again
+    live=$(on_server "curl -s http://127.0.0.1:\${PORT:-8470}/api/status" 2>/dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin).get("version") or "")' 2>/dev/null || true)
+    [ -n "$live" ] && break
+    sleep 2
+done
+if [ "$live" = "$want" ]; then
+    echo "deployed: the server runs $want"
+elif [ -n "$live" ]; then
+    echo "restarted, but the server says it runs $live, not $want: see its log (docker compose logs bouldermesh, on it)"
+else
+    echo "restarted, but the server isn't answering yet: see its log (docker compose logs bouldermesh, on it)"
+fi
 
 # only a system unit (not a user's own, systemctl --user), loaded and running, which takes root to restart
 script=$(systemctl show -p Environment --value bouldermesh-worker.service 2>/dev/null | tr ' ' '\n' | sed -n 's/^SCRIPT=//p')
 if [ -n "$script" ] && [ "$(readlink -f "$script")" != "$(readlink -f worker/bouldermesh_worker.py)" ]; then
-    echo "hal's worker runs its own copy of the worker script ($script), which updates itself: not restarting it"
+    :   # hal's worker runs its own copy of the worker script, which updates itself, and jobs run in the server's image
 elif [ "$(systemctl show -p LoadState --value bouldermesh-worker.service 2>/dev/null)" = loaded ] \
         && systemctl is-active --quiet bouldermesh-worker.service; then
     if [ "$(id -u)" -eq 0 ]; then
