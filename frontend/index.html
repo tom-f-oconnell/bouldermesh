@@ -86,6 +86,9 @@
   button{background:var(--acc);color:var(--acc-fg);border:0;padding:7px 11px;border-radius:6px;font-weight:600;cursor:pointer;font:inherit;font-weight:600}
   button.sec{background:transparent;color:var(--fg);border:1px solid var(--line)}
   button.danger{background:transparent;color:var(--bad);border:1px solid var(--line)}
+  #forget .short,#vrandom .short{display:none}   /* the short labels on a phone (below) */
+  #hbreak{display:none}
+  @media (min-width:861px){ header #random{display:none} }   /* the viewer's bar has it */
   button.sm{padding:3px 8px;font-size:12px}
   button:disabled{opacity:.45;cursor:default}
   .limitopt:has(input:disabled){opacity:.45;cursor:default}   /* "count failures", with no limit to count toward */
@@ -93,7 +96,6 @@
   body.readonly .w,body.readonly .del,body.readonly .editll,body.readonly .details,body.readonly .linksel,body.readonly .unlink,body.readonly .harvest,
   body.readonly .rec,body.readonly .retry,body.readonly #p-interrupted,body.readonly button.back,body.readonly button.all,body.readonly label.file,
   body.readonly .stopnow,body.readonly .stoplater,body.readonly .resume,body.readonly .retryfailed,body.readonly .harvestagain,body.readonly .rebuildchanged,
-  #forget .short{display:none}   /* "Forget token" only on the narrowest phones (below) */
   body.readonly .rebuildall,body.readonly .boulders,body.readonly .meshboulder,body.readonly .setll,body.readonly #pieces .edit,body.readonly #pieces .redo,body.readonly .rebuild,
   body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly button.mark,body.readonly .clearmine,body.readonly #vmark,
   body.readonly .tryskipped,body.readonly .editopt,body.readonly .pause,body.readonly .unpause,
@@ -272,11 +274,15 @@
   @media (max-width:860px){
     body,main{grid-template-columns:minmax(0,1fr)} aside{border-right:0} #right{display:none} .phone{display:inline-block}
     body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
-    header{padding:6px 10px;gap:8px} header h1,#mode{display:none}
+    header{padding:6px 10px;gap:8px;flex-wrap:wrap;min-width:0;max-width:100vw;box-sizing:border-box} header h1{display:none}
+    html,body{overflow-x:hidden;max-width:100vw}
+    header>*{min-width:0;flex-shrink:1;overflow:hidden;text-overflow:ellipsis}
+    /* the editing token's button on a line of its own, at the right */
+    header:has(#forget:not([style*='none'])) #hbreak{display:block;order:4;flex-basis:100%;height:0}
+    #forget{order:5;margin-left:auto} #forget .short,#vrandom .short{display:inline} #forget .long,#vrandom .long{display:none}
     #hspace{order:1} #volunteer{order:2} #prefsbtn{order:3}   /* the editing token's button at the left, settings at the far right */
     header button,header a{white-space:nowrap}
-    @media (max-width:400px){ header{gap:5px;padding:6px} header button.sm{padding-left:8px;padding-right:8px}
-      #forget .short{display:inline} #forget .long{display:none} }
+    @media (max-width:400px){ header{gap:5px;padding:6px} header button.sm{padding-left:8px;padding-right:8px} }
     /* the view on its own: back, and a toggle between the mesh and the map */
     #toctl{padding:3px 10px;border:1px solid transparent} #toctl .arrow{font-size:17px;line-height:0;vertical-align:-1px}
     #viewing{display:none!important}
@@ -284,7 +290,7 @@
     #vnearby{order:1} #vmap{order:2} #vmark,#vfrom,#detail{order:3} #vshare{order:4;margin-left:auto}
     #nearby.turning .list,#nearby.turning .note{display:none}     /* turning one: only that, so the view shows */
     #nearby.turning{top:auto;bottom:12px;max-height:45%} #vfrom{flex:0 1 auto;min-width:0} #vprefs{order:5}
-    #caps,#code,#admin{display:none!important}
+    #code,#admin{display:none!important}
     #prefs .seg button{padding:6px 10px;font-size:13px}
     /* the notes, when shown: how it's framed and scaled under its name, a passing note over that, its stray pieces at the
        foot, left of the rating; not the mouse's controls */
@@ -303,16 +309,15 @@
 <body>
 <header>
   <button class="sm phone" id="tofull" disabled title="Pick a climb's mesh first">Viewer</button>
-  <h1>BoulderMesh</h1>
-  <span id="mode" class="pill">checking…</span>
+  <h1>boulderme.sh</h1>
   <span id="stopping" class="pill stopping" style="display:none"></span>
-  <span id="caps" class="status"></span>
   <button class="sm" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random</button>
   <span id="viewonly" class="pill" style="display:none" title="This copy of the site can't be changed from a browser">view-only</span>
   <button class="sm sec" id="edit" style="display:none"></button>
-  <button class="sm danger" id="forget" style="display:none" title="Forget the editing token kept in this browser: changing anything here then needs it again"><span class="long">Forget edit token</span><span class="short">Forget token</span></button>
   <button class="sm sec phone prefsbtn" id="prefsbtn" title="Settings: the mesh's look, its background, detail and colours" aria-label="Settings" aria-expanded="false"><span class="gear" aria-hidden="true">⚙︎</span></button>
   <span id="hspace"></span>
+  <span id="hbreak"></span>
+  <button class="sm danger" id="forget" style="display:none" title="Forget the editing token kept in this browser: changing anything here then needs it again"><span class="long">Forget edit token</span><span class="short">Forget token</span></button>
   <button class="sm danger" id="admin" style="display:none" title="The admin page: what the site shows, where reconstructions run, credentials. It's on a port of its own, which only the server itself (or its LAN) can reach.">Admin</button>
   <a id="volunteer" style="display:none" href="/volunteer/" title="Lend this site your computer: to fetch YouTube videos of climbs, or to make meshes on its GPU">Volunteer</a>
   <a id="code" href="https://github.com/tom-f-oconnell/bouldermesh" target="_blank" rel="noopener">Code</a>
@@ -495,7 +500,7 @@
   <div id="right">
     <div class="viewbar">
       <button class="sm phone" id="toctl" title="Back to the climbs and the rest" aria-label="Back"><span class="arrow" aria-hidden="true">←</span></button>
-      <button class="sm sec phone" id="vrandom" title="Another mesh, picked at random">Random</button>
+      <button class="sm sec" id="vrandom" title="Another mesh, picked at random"><span class="long">Random mesh</span><span class="short">Random</span></button>
       <button class="sec sm" id="vnearby" disabled title="Shows the meshes near this one around it, placed by their coordinates, at their real size and facing as best known" aria-expanded="false">Nearby</button>
       <button class="sec sm" id="vmap">Map</button>
       <button class="sec sm" id="vmark" style="display:none" title="Click the rock to add a start hold, and a hold again for hand, finish, foot, then none">Mark holds</button>
@@ -4301,11 +4306,6 @@ if (statusCache.editing === 'token') {
 if (statusCache.admin) { $('#admin').style.display = ''; $('#admin').onclick = openAdmin; }
 if (statusCache.volunteer_url) { $('#volunteer').dataset.base = statusCache.volunteer_url + '/volunteer/'; volunteerLink(); $('#volunteer').style.display = ''; }
 if (!editor) $('#hud').textContent = 'Pick a mesh. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan';
-const mode = $('#mode');
-mode.textContent = statusCache.real_pipeline ? 'COLMAP + OpenMVS' : 'demo pipeline — install COLMAP/OpenMVS';
-mode.className = 'pill ' + (statusCache.real_pipeline ? 'real' : 'demo');
-$('#caps').textContent = [statusCache.opencv?'opencv':'no opencv', statusCache.people_masks?'people masking':'no people masking', statusCache.gpu?'GPU matching':'CPU matching'].join(' · ');
-$('#caps').title = 'Photo matching: ' + statusCache.gpu_why;
 if (thumbMode) { detailChoice = 'preview'; await refreshMeshes(); }
 else { await refreshClimbs(); await refreshMeshes(); await refreshProjects(); poll(); campaignLoop(); }
 openFromAddress();
