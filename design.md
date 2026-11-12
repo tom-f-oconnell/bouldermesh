@@ -642,6 +642,11 @@ So the photos left out are now handled in two steps:
    pooled, once, from the boulder's own filtered photos (not the climbs' whole harvests, whose web photos the
    boulder's filter dropped as other rocks). That pool's largest model is another side or another rock.
 
+   Tried on hal for Drifter's mesh, step 2 pooled 92 left-out photos (Smoking's 85, High Plains Drifter's 10, Les Trois
+   Maunets' 6, many shared). The largest model placed 7 frames of a night-time scene in Smoking's page video, another
+   boulder, and nothing of the Smoking boulder. Frames of one video can rebuild whatever the camera filmed, so a mesh
+   from them alone isn't evidence of the climb's rock.
+
 **One boulder or a group.** A mesh is called one boulder when Mountain Project says its area is one rock, every climb on
 it was harvested and had its photos tried in the mesh, and nothing its mesh left out makes a mesh of its own (no climb
 left 6 or more out, or meshing them failed). Otherwise each mesh placing more than one climb is a group, the boulder's
