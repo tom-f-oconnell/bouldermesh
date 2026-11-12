@@ -2446,9 +2446,12 @@ function popShown(m){
 function flyTo(lat, lng){ mapFitted = true; showRight('map'); refreshMap().then(() => mapAround(lat, lng)); }
 
 // ---------------------------------------------------------------- climbs
-let climbsCache = [];
-let climbsTotal = null, climbsDoubtful = null, climbsMulti = null;   // every climb there is, of which the list has the newest 500
-let climbsFound = null;       // with a search or a box ticked: the server's matches among every climb
+let climbsCache = [];          // the newest climbs, a page at a time as the list is scrolled
+let climbsTotal = null, climbsDoubtful = null, climbsMulti = null;   // every climb there is
+let climbsFound = null;       // with a search or a box ticked: the server's matches among every climb, a page at a time
+let climbsMore = false, climbsFoundMore = false;     // whether the server may have more after those
+let climbsPick = [];          // the newest 500, for editors' lists to pick a climb from
+const CLIMB_PAGE = 100;
 // a list redrawn while someone scrolls it jumps, and on a phone stalls the scroll: wait until it's been still a moment
 let lastScroll = 0;
 addEventListener('scroll', () => { lastScroll = performance.now(); }, { capture: true, passive: true });
@@ -2456,16 +2459,20 @@ async function scrollStill(ms = 800, most = 10000){
   const began = performance.now();
   while (performance.now() - lastScroll < ms && performance.now() - began < most) await pause(200);
 }
+const climbPage = (query, offset, limit = CLIMB_PAGE) => api(`/api/climbs?${query ? query + '&' : ''}limit=${limit}&offset=${offset}`);
 async function refreshClimbs(){
-  const [list, count] = await Promise.all([api('/api/climbs'), api('/api/climbs/count').catch(() => ({}))]);
+  const n = Math.max(CLIMB_PAGE, climbsCache.length);     // as many as were scrolled to, so the list doesn't shrink under you
+  const [list, count] = await Promise.all([climbPage('', 0, n), api('/api/climbs/count').catch(() => ({}))]);
   await scrollStill();
-  climbsCache = list; climbsTotal = count.climbs ?? null; climbsDoubtful = count.doubtful ?? null; climbsMulti = count.multi ?? null;
-  await searchClimbs();
-  // fill selects (editors only: thousands of options to make)
+  climbsCache = list; climbsMore = list.length === n; climbsTotal = count.climbs ?? null; climbsDoubtful = count.doubtful ?? null; climbsMulti = count.multi ?? null;
+  await searchClimbs(true);
+  // fill selects (editors only: thousands of options to make), from the newest 500
   if (document.body.classList.contains('readonly')) return;
+  const some = climbsCache.length >= 500 || !climbsMore ? climbsCache : await climbPage('', 0, 500).catch(() => climbsCache);
+  climbsPick = some.filter(c => c.kind !== 'area').slice(0, 500);
   for (const sel of [$('#pclimb'), $('#upclimb')]) {
     const first = sel.options[0].outerHTML;
-    sel.innerHTML = first + climbsCache.filter(c=>c.kind!=='area').map(c => `<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('');
+    sel.innerHTML = first + climbsPick.map(c => `<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('');
   }
 }
 function climbQuery(){
@@ -2477,41 +2484,74 @@ function climbQuery(){
   return q.toString();
 }
 let searchSeq = 0, searchT;
-async function searchClimbs(){   // searches every climb, on the server: each word in the name, boulder, area or grade
+async function searchClimbs(keep = false){   // searches every climb, on the server: each word in the name, boulder, area or grade
   const query = climbQuery(), seq = ++searchSeq;
   if (!query) { climbsFound = null; return renderClimbs(); }
+  const n = keep && climbsFound ? Math.max(CLIMB_PAGE, climbsFound.length) : CLIMB_PAGE;   // a refresh keeps what was scrolled to
   try {
-    const found = await api('/api/climbs?' + query);
-    if (seq === searchSeq) { climbsFound = found; renderClimbs(); }
+    const found = await climbPage(query, 0, n);
+    if (seq === searchSeq) { climbsFound = found; climbsFoundMore = found.length === n; renderClimbs(); }
   } catch (e) { if (seq === searchSeq) toast('Search failed: ' + e.message, 5000); }
 }
-const SOURCE_NAME = { mountainproject: 'Mountain Project', openbeta: 'OpenBeta', kaya: 'Kaya' };
-function renderClimbs(){
-  const el = $('#climbs'), query = climbQuery(), list = query && climbsFound ? climbsFound : climbsCache;
+// the next page, once the end of the list comes into view
+let climbsLoading = false;
+const climbsEnd = new IntersectionObserver(async es => {
+  if (!es.some(e => e.isIntersecting) || climbsLoading) return;
+  const query = climbQuery(), searching = !!(query && climbsFound), list = searching ? climbsFound : climbsCache, seq = searchSeq;
+  if (!(searching ? climbsFoundMore : climbsMore)) return;
+  climbsLoading = true;
+  try {
+    const more = await climbPage(searching ? query : '', list.length);
+    if (seq !== searchSeq || list !== (searching ? climbsFound : climbsCache)) return;     // searched again meanwhile
+    const have = new Set(list.map(c => c.id)), add = more.filter(c => !have.has(c.id));
+    list.push(...add);
+    if (searching) climbsFoundMore = more.length === CLIMB_PAGE; else climbsMore = more.length === CLIMB_PAGE;
+    const el = $('#climbs');
+    $('#climbs-end')?.remove();
+    for (const c of add) el.appendChild(climbCard(c));
+    climbsCount(list, searching);
+    climbsTail(el, searching ? climbsFoundMore : climbsMore);
+  } catch (e) { toast('Loading more failed: ' + e.message, 5000); }
+  finally { climbsLoading = false; }
+}, { rootMargin: '600px' });
+function climbsTail(el, more){
+  if (!more) return;
+  const t = document.createElement('div'); t.id = 'climbs-end'; t.className = 'status'; t.textContent = 'Loading more…';
+  el.appendChild(t); climbsEnd.observe(t);
+}
+function climbsCount(list, searching){
   const total = climbsTotal ?? climbsCache.length;
+  $('#c-count').textContent = !climbsCache.length ? '' : searching
+    ? (climbsFoundMore ? `(${list.length} found so far: more as you scroll; of ${total})` : `(${list.length} found, of ${total})`)
+    : climbsMore || total > climbsCache.length ? `(the newest ${climbsCache.length} of ${total}: more as you scroll, and searching covers them all)` : `(${total})`;
+}
+const SOURCE_NAME = { mountainproject: 'Mountain Project', openbeta: 'OpenBeta', kaya: 'Kaya' };
+function climbCard(c){
+  const meshes = (c.n_links || 0) + (c.n_boulder || 0), multi = $('#c-multi').checked && meshes > 1;
+  const d = document.createElement('div'); d.className = 'card' + (c.id === openClimbId ? ' open' : '') + (multi ? ' multi' : ''); d.dataset.id = c.id;
+  d.innerHTML = `<div class="row"><span class="name grow">${esc(c.name)} <small>${esc(c.grade||'')}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${c.n_links?`<span class="tag ok">${c.n_links} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">via ${esc(c.shared_of)}</span>`:''}${c.n_boulder?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${multi?`<span class="tag" title="Its own meshes, and pools of it with others: ${c.n_links}; its boulder's: ${c.n_boulder}">${meshes} meshes</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
+      <button class="sm ${shownClimbs().has(c.id) ? '' : 'sec '}viewmesh" ${c.n_links || c.n_boulder || c.n_shared ? '' : 'disabled'} title="${c.n_links ? 'Show its newest mesh' : c.n_boulder ? 'Show its boulder\'s mesh, from where its own photos were taken' : c.n_shared ? 'Show the mesh of another climb on its boulder' : 'No mesh is linked to it yet'}">View</button></div>
+    <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
+    <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
+    ${c.coords_doubt ? `<div class="meta bad">Coordinates look wrong: ${esc(c.coords_doubt.why)}.${c.url ? ` <a href="${esc(c.url)}" target="_blank" rel="noopener">Put them right on ${esc(SOURCE_NAME[c.source] || c.source)} ↗</a>, then paste its link above to import it again.` : ''}</div>` : ''}`;
+  d.querySelector('.viewmesh').onclick = ev => { ev.stopPropagation(); viewClimbMesh(c.id); };
+  d.onclick = ev => { if (ev.target.closest('button, a, select, input, label')) return; c.id === openClimbId && openClimbEl ? closeClimb() : openClimb(c.id); };
+  return d;
+}
+function renderClimbs(){
+  const el = $('#climbs'), query = climbQuery(), searching = !!(query && climbsFound), list = searching ? climbsFound : climbsCache;
   $('#c-doubtful-n').textContent = climbsDoubtful ? `(${climbsDoubtful})` : '';
   $('#c-multi-n').textContent = climbsMulti != null ? `(${climbsMulti})` : '';
-  $('#c-count').textContent = !climbsCache.length ? '' : query ? `(${list.length >= 500 ? 'the first 500' : list.length} found, of ${total})`
-    : total > climbsCache.length ? `(the newest ${climbsCache.length} of ${total}: searching covers them all)` : `(${total})`;
+  climbsCount(list, searching);
   el.innerHTML = list.length ? '' : `<div class="status">${!climbsCache.length ? 'No climbs yet — paste a Mountain Project or OpenBeta link above.' : query ? 'No climbs match.' : 'No climbs.'}</div>`;
-  for (const c of list) {
-    const meshes = (c.n_links || 0) + (c.n_boulder || 0), multi = $('#c-multi').checked && meshes > 1;
-    const d = document.createElement('div'); d.className = 'card' + (c.id === openClimbId ? ' open' : '') + (multi ? ' multi' : ''); d.dataset.id = c.id;
-    d.innerHTML = `<div class="row"><span class="name grow">${esc(c.name)} <small>${esc(c.grade||'')}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${c.n_links?`<span class="tag ok">${c.n_links} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">via ${esc(c.shared_of)}</span>`:''}${c.n_boulder?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${multi?`<span class="tag" title="Its own meshes, and pools of it with others: ${c.n_links}; its boulder's: ${c.n_boulder}">${meshes} meshes</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
-        <button class="sm ${shownClimbs().has(c.id) ? '' : 'sec '}viewmesh" ${c.n_links || c.n_boulder || c.n_shared ? '' : 'disabled'} title="${c.n_links ? 'Show its newest mesh' : c.n_boulder ? 'Show its boulder\'s mesh, from where its own photos were taken' : c.n_shared ? 'Show the mesh of another climb on its boulder' : 'No mesh is linked to it yet'}">View</button></div>
-      <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
-      <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
-      ${c.coords_doubt ? `<div class="meta bad">Coordinates look wrong: ${esc(c.coords_doubt.why)}.${c.url ? ` <a href="${esc(c.url)}" target="_blank" rel="noopener">Put them right on ${esc(SOURCE_NAME[c.source] || c.source)} ↗</a>, then paste its link above to import it again.` : ''}</div>` : ''}`;
-    d.querySelector('.viewmesh').onclick = ev => { ev.stopPropagation(); viewClimbMesh(c.id); };
-    d.onclick = ev => { if (ev.target.closest('button, a, select, input, label')) return; c.id === openClimbId && openClimbEl ? closeClimb() : openClimb(c.id); };
-    el.appendChild(d);
-  }
+  for (const c of list) el.appendChild(climbCard(c));
+  climbsTail(el, searching ? climbsFoundMore : climbsMore);
   if (openClimbEl && openClimbId) placeClimb(openClimbEl, openClimbId);   // the list was made again around it
 }
 $('#c-filter').oninput = () => { clearTimeout(searchT); searchT = setTimeout(searchClimbs, 250); };
-$('#c-meshed').onchange = searchClimbs;
-$('#c-doubtful').onchange = searchClimbs;
-$('#c-multi').onchange = searchClimbs;
+$('#c-meshed').onchange = () => searchClimbs();
+$('#c-doubtful').onchange = () => searchClimbs();
+$('#c-multi').onchange = () => searchClimbs();
 $('#m-older').onchange = refreshMeshes;
 
 // what a video or its uploader's channel says about the climber: "178 cm (5'10"), ape index +5 cm"
@@ -3566,7 +3606,7 @@ function renderMeshes(filter = true){
     d.querySelectorAll('[data-unlink]').forEach(x => x.onclick = async ev => { ev.stopPropagation(); await api(`/api/meshes/${m.id}/links/${x.dataset.unlink}`, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); });
     const link = d.querySelector('.linksel');
     if (link) {     // its climbs listed only once it's opened: hundreds of options on every card made each sort take seconds
-      const fill = () => { if (link.options.length > 1) return; link.insertAdjacentHTML('beforeend', climbsCache.filter(c => c.kind !== 'area').map(c => `<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('')); };
+      const fill = () => { if (link.options.length > 1) return; link.insertAdjacentHTML('beforeend', climbsPick.map(c => `<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('')); };
       link.addEventListener('pointerdown', fill);
       link.addEventListener('focus', fill);
       link.onchange = async ev => { if (!ev.target.value) return; await api(`/api/meshes/${m.id}/links`, {method:'POST', json:{climb_id: ev.target.value}}); toast('Linked'); refreshMeshes(); refreshClimbs(); };

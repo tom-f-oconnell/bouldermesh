@@ -7010,7 +7010,7 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/campaigns":
                 return self.send_json(campaigns_listed())
             # ---- climbs
-            if p == "/api/climbs":   # the newest 500, or with q those of every climb with each of its words
+            if p == "/api/climbs":   # the newest, or with q those of every climb with each of its words: limit (most 2000) from offset
                 sql, args, order = "SELECT id FROM climbs", [], []
                 conds, doubts = [], coord_doubts()
                 if qs.get("doubtful"):    # only those whose coordinates look wrong
@@ -7031,7 +7031,12 @@ class Handler(BaseHTTPRequestHandler):
                     sql += " WHERE " + " AND ".join(conds)
                 if qs.get("multi"):     # those with more than one mesh first, to pick out
                     order = [f"{MESH_COUNT} > 1 DESC"] + order
-                sql += " ORDER BY " + ", ".join(order + ["created DESC"]) + " LIMIT 500"
+                try:
+                    limit = min(max(int((qs.get("limit") or ["500"])[0]), 1), 2000)
+                    offset = max(int((qs.get("offset") or ["0"])[0]), 0)
+                except ValueError:
+                    return self.send_json({"error": "limit and offset are whole numbers"}, 400)
+                sql += " ORDER BY " + ", ".join(order + ["created DESC"]) + f" LIMIT {limit} OFFSET {offset}"
                 ids = [r["id"] for r in q(sql, *args, *([SHARED + "%"] if qs.get("multi") else []), *(oargs if text else []))]
                 return self.send_json([{**r, "coords_doubt": doubts.get(r["id"])} for r in climb_rows(ids)])
             if p == "/api/climbs/count":

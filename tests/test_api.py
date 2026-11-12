@@ -551,6 +551,10 @@ def run(B: str, tmp: Path) -> None:
     assert [c["name"] for c in req(B, "GET", "/api/climbs?q=" + urllib.parse.quote("problem test"))[1]] == ["Test Problem"]
     assert req(B, "GET", "/api/climbs?q=" + urllib.parse.quote("egg nowhere"))[1] == [], "every word has to match"
     assert [c["name"] for c in req(B, "GET", "/api/climbs?q=v11")[1]] == ["The Egg"], "grades too"
+    every = [c["id"] for c in req(B, "GET", "/api/climbs")[1]]      # a page at a time, as the list is scrolled
+    assert len(every) > 1 and [c["id"] for c in req(B, "GET", "/api/climbs?limit=1")[1]] == every[:1]
+    assert [c["id"] for c in req(B, "GET", "/api/climbs?limit=1&offset=1")[1]] == every[1:2]
+    assert req(B, "GET", "/api/climbs?limit=many")[0] == 400, "whole numbers only"
     n = req(B, "GET", "/api/climbs/count")[1]
     assert n["climbs"] == len(req(B, "GET", "/api/climbs")[1]) >= 3 and n["doubtful"] == 0, n
     many = [c for c in req(B, "GET", "/api/climbs")[1] if c["n_links"] + c["n_boulder"] > 1]
