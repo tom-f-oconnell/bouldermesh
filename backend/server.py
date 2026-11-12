@@ -17,8 +17,6 @@ from __future__ import annotations
 import base64
 import csv
 import email.utils
-import gzip
-import html
 import hashlib
 import hmac
 import io
@@ -43,7 +41,7 @@ from email.parser import BytesParser
 from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
 import admin as admin_mod  # noqa: E402
@@ -56,7 +54,6 @@ import heading as heading_mod  # noqa: E402
 import skyline as skyline_mod  # noqa: E402
 import terrain as terrain_mod  # noqa: E402
 import meshclean  # noqa: E402
-import links as links_mod  # noqa: E402
 import meshmetrics  # noqa: E402
 import meshopts  # noqa: E402
 import offload as offload_mod  # noqa: E402
@@ -6227,79 +6224,6 @@ def page_csp() -> str | None:
     return _csp["value"]
 
 
-ASSET_CACHE = "public, max-age=31536000, immutable"     # files named by what's in them never change
-SITE_TEXT = "Boulders in 3D, made from photos and videos of their climbs."
-_page: dict = {"mtime": None}
-
-
-def page_parts() -> dict:
-    """index.html as it's served: its markup, with its styles and its module script moved to files named by what's in
-    them (/static/app.<hash>.css and .js), which browsers and Cloudflare keep a year, so that the page for each link is a
-    few KB and the rest comes once. Made again when the file changes. {html, assets: {name: (type, body, gzipped)}}"""
-    page = FRONTEND / "index.html"
-    mtime = page.stat().st_mtime
-    if _page["mtime"] != mtime:
-        text, assets = page.read_text(), {}
-
-        def moved(m: re.Match, ext: str, ctype: str, tag: str) -> str:
-            body = m[1].encode()
-            name = f"app.{hashlib.sha256(body).hexdigest()[:16]}.{ext}"
-            assets[name] = (ctype, body, gzip.compress(body, 9))
-            return tag.format(f"/static/{name}")
-        text = re.sub(r"<style>(.*?)</style>", lambda m: moved(m, "css", "text/css; charset=utf-8", '<link rel="stylesheet" href="{}">'),
-                      text, count=1, flags=re.S)
-        text = re.sub(r'<script type="module">(.*?)</script>',
-                      lambda m: moved(m, "js", "text/javascript; charset=utf-8", '<script type="module" src="{}"></script>'),
-                      text, count=1, flags=re.S)
-        _page.update(mtime=mtime, html=text, assets=assets)
-    return _page
-
-
-def page_head(title: str, text: str, path: str | None, found: bool = True) -> str:
-    """The page's title, and what apps showing a link's preview (WhatsApp, iMessage, Slack) read: its title and a line
-    about it, and the link's own address, where SITE_URL says the site's."""
-    e = lambda v: html.escape(v, quote=True)    # noqa: E731
-    url = f"{SITE_URL}{path}" if SITE_URL and path is not None else None
-    return "\n".join([f"<title>{e(title if title == 'BoulderMesh' else title + ' · BoulderMesh')}</title>",
-                      f'<meta name="description" content="{e(text)}">', '<meta property="og:site_name" content="BoulderMesh">',
-                      '<meta property="og:type" content="website">', f'<meta property="og:title" content="{e(title)}">',
-                      f'<meta property="og:description" content="{e(text)}">', '<meta name="twitter:card" content="summary">',
-                      *([f'<meta property="og:url" content="{e(url)}">', f'<link rel="canonical" href="{e(url)}">'] if url and found else []),
-                      *([] if found else ['<meta name="robots" content="noindex">'])])
-
-
-def link_page(kind: str, key: str) -> tuple[int, str, str | None]:
-    """What the page at /c/, /b/ or /m/<key> says of itself (page_head()): (status, its head, the address to redirect
-    to, for an alias or a name spelt otherwise)."""
-    if kind == "m":
-        m = q("SELECT name FROM meshes WHERE id=?", key, one=True) if re.fullmatch(r"[0-9a-f]+", key) else None
-        g = None if m else gone_mesh(key) if re.fullmatch(r"[0-9a-f]+", key) else None
-        if not m and not g:
-            return 404, page_head("No such mesh", SITE_TEXT, None, False), None
-        own = [c["name"] + (f" {c['grade'].split(' ')[0]}" if c["grade"] else "") for c in q(
-            "SELECT c.name, c.grade FROM mesh_links l JOIN climbs c ON c.id=l.climb_id WHERE l.mesh_id=? AND COALESCE(l.note,'') "
-            "NOT LIKE ? ORDER BY c.name", key, SHARED + "%")] if m else []
-        title = ", ".join(own[:3]) + (f" +{len(own) - 3}" if len(own) > 3 else "") if own else (m or g)["name"] or "A mesh"
-        return 200, page_head(title, f"{title} in 3D, a mesh made from photos and videos of climbing it.", f"/m/{key}"), None
-    slug = links_mod.slugify(key)
-    found = find_link(kind, slug)
-    if not found:
-        return 404, page_head(f"No {'climb' if kind == 'c' else 'boulder'} called {key} here", SITE_TEXT, None, False), None
-    if found["slug"] != key:
-        return 301, "", f"/{kind}/{found['slug']}"
-    if kind == "c":
-        c = q("SELECT name, grade, area_path FROM climbs WHERE id=?", found["ref"], one=True) or {}
-        name = (c.get("name") or key) + (f" {c['grade'].split(' ')[0]}" if c.get("grade") else "")
-        where = [str(a).strip("* ") for a in json.loads(c.get("area_path") or "[]")][-3:][::-1]
-        return 200, page_head(name, f"{name} in 3D" + (f" · {', '.join(where)}" if where else "") + ".", f"/c/{key}"), None
-    path = json.loads(found["leaf"] or "[]")
-    n = len(boulder_mesh_sets().get(found["leaf"], []))
-    where = ", ".join(str(a).strip("* ") for a in path[-3:-1][::-1])
-    return 200, page_head(boulder_name(found["leaf"]) if path else key,
-                          f"{boulder_name(found['leaf']) if path else key} in 3D" + (f" · {where}" if where else "")
-                          + (f" · {n} meshes" if n > 1 else "") + ".", f"/b/{key}"), None
-
-
 class _Discard(io.RawIOBase):
     """Where the body of an answer to a HEAD request goes."""
 
@@ -6330,43 +6254,6 @@ class Handler(BaseHTTPRequestHandler):
         """The sender's address, for the log: the one in CLIENT_IP_HEADER if that's set and the request has it."""
         headers = getattr(self, "headers", None)
         return (CLIENT_IP_HEADER and headers and headers.get(CLIENT_IP_HEADER)) or self.client_address[0]
-
-    def send_page(self, head: str | None = None, status: int = 200) -> None:
-        """The page (page_parts()), with head (page_head()) for its title and preview: compressed here, as its
-        no-transform keeps Caddy and Cloudflare from doing it, and checked again on each visit by its ETag."""
-        body = page_parts()["html"].replace("<title>BoulderMesh</title>", head or page_head("BoulderMesh", SITE_TEXT, "/"), 1).encode()
-        tag, csp = f'"{hashlib.sha256(body).hexdigest()[:24]}"', page_csp()
-        headers = {"Cache-Control": "no-cache, no-transform", "ETag": tag, "Vary": "Accept-Encoding",
-                   **({"Content-Security-Policy": csp} if csp else {})}
-        if status == 200 and tag in (self.headers.get("If-None-Match") or ""):
-            return self.send_body(b"", "text/html; charset=utf-8", 304, headers)
-        self.send_body(body, "text/html; charset=utf-8", status, headers)
-
-    def send_asset(self, name: str) -> None:
-        """One of the page's own files (page_parts()), kept a year; one an older page named, before a restart, is gone."""
-        found = page_parts()["assets"].get(name)
-        if not found:
-            return self.send_json({"error": "not found: the page has changed since, so load it again"}, 404,
-                                  headers={"Cache-Control": "no-store"})
-        ctype, body, packed = found
-        tag = f'"{name}"'
-        headers = {"Cache-Control": ASSET_CACHE, "ETag": tag, "Vary": "Accept-Encoding"}
-        if tag in (self.headers.get("If-None-Match") or ""):
-            return self.send_body(b"", ctype, 304, headers)
-        self.send_body(body, ctype, 200, headers, packed)
-
-    def send_body(self, body: bytes, ctype: str, status: int, headers: dict, packed: bytes | None = None) -> None:
-        """body, gzipped if the browser takes that (packed, if it's been already) and it's worth it."""
-        if status != 304 and len(body) > 1024 and "gzip" in (self.headers.get("Accept-Encoding") or ""):
-            body, headers = packed or gzip.compress(body, 6), {**headers, "Content-Encoding": "gzip"}
-        self.send_response(status)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        for k, v in headers.items():
-            self.send_header(k, v)
-        self.end_headers()
-        if body:
-            self.wfile.write(body)
 
     def send_json(self, obj, code=200, headers: dict | None = None):
         body = json.dumps(obj, default=str).encode()
@@ -6607,33 +6494,8 @@ class Handler(BaseHTTPRequestHandler):
         p, qs = u.path, parse_qs(u.query)
         try:
             if p in ("/", "/index.html"):
-                return self.send_page()
-            m = re.fullmatch(r"/static/(app\.[0-9a-f]{16}\.(?:js|css))", p)
-            if m:
-                return self.send_asset(m[1])
-            m = re.fullmatch(r"/([cbm])/([^/]+)/?", p)
-            if m:   # a climb's, a boulder's or a mesh's link: the page, which opens it
-                status, head, moved = link_page(m[1], unquote(m[2]))
-                if moved:
-                    self.send_response(301)
-                    self.send_header("Location", moved + (f"?{u.query}" if u.query else ""))
-                    self.send_header("Cache-Control", "no-cache")
-                    self.send_header("Content-Length", "0")
-                    return self.end_headers()
-                return self.send_page(head, status)
-            m = re.fullmatch(r"/api/links/([cbm])/([^/]+)", p)
-            if m:   # what the page opens for a link: a climb, a boulder's meshes, or what took a deleted mesh's place
-                kind, key = m[1], unquote(m[2])
-                if kind == "m":
-                    g = gone_mesh(key)
-                    return self.send_json({"id": key, "gone": g} if g else {"error": "no such mesh"}, 200 if g else 404)
-                found = find_link(kind, links_mod.slugify(key))
-                if not found:
-                    return self.send_json({"error": f"no {'climb' if kind == 'c' else 'boulder'} called {key} here"}, 404)
-                if kind == "b":
-                    return self.send_json(boulder_choices(found["leaf"], found["slug"]))
-                c = q("SELECT id, name, grade FROM climbs WHERE id=?", found["ref"], one=True)
-                return self.send_json({"slug": found["slug"], **c} if c else {"error": "that climb is gone"}, 200 if c else 404)
+                csp = page_csp()
+                return self.send_file(FRONTEND / "index.html", headers={"Content-Security-Policy": csp} if csp else None)
             if p.startswith("/static/"):
                 f = (FRONTEND / p[len("/static/"):]).resolve()
                 if FRONTEND.resolve() not in f.parents:
@@ -6781,18 +6643,6 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as e:
                         r["pack"] = r["v"] = None
                         print(f"error: mesh {r['id']}'s packed copies: {type(e).__name__}: {e}", flush=True)
-                # the names in its climbs' and its boulder's links, for Share, and how many current meshes its boulder has
-                # (boulder_mesh_sets(): its own, what that left out, its climbs' own), for the viewer's Meshes button
-                cnames, bnames = link_names()
-                sets = boulder_mesh_sets(rows, kinds)
-                leaf_of = {mid: leaf for leaf, ids in sets.items() for mid in ids}
-                current = {r["id"] for r in rows if not r.get("replaced_by")}
-                for r in rows:
-                    for c in r["climbs"] + r.get("boulder_climbs", []):
-                        c["slug"] = cnames.get(c["id"])
-                    leaf = leaf_of.get(r["id"])
-                    r["boulder_link"] = {"slug": bnames[leaf], "name": boulder_name(leaf),
-                                         "meshes": sum(mid in current for mid in sets[leaf])} if leaf in bnames else None
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
             if m:   # what each video's climber did, and the holds marked by hand
@@ -7438,7 +7288,6 @@ class Handler(BaseHTTPRequestHandler):
                 q("UPDATE campaign_items SET mesh_id=?, note=? WHERE campaign_id=? AND source_id=?", other and other["id"],
                   f"its mesh was deleted: done with {other['name']}" if other else "its mesh was deleted",
                   item["campaign_id"], item["source_id"], write=True)
-            keep_gone(m[1])     # for its /m/ links
             q("DELETE FROM meshes WHERE id=?", m[1], write=True)
             q("DELETE FROM mesh_links WHERE mesh_id=?", m[1], write=True)
             q("DELETE FROM mesh_ratings WHERE mesh_id=?", m[1], write=True)
@@ -7524,139 +7373,6 @@ def pairing_state() -> dict:
     with _pairing_lock:
         return {"editing": "none" if READ_ONLY else "token" if EDIT_TOKEN else "open", "site_url": SITE_URL,
                 "waiting": bool(_pairing["code"]) and time.time() < _pairing["until"], "given": _pairing["given"]}
-
-
-# ----------------------------------------------------------------- links: /c/<climb>, /b/<boulder>, /m/<mesh id>
-SYNC_EVERY = 30         # seconds between giving new climbs and boulders their links' names (links_mod.sync()), at most
-_links: dict = {"at": 0.0}
-_links_lock = threading.Lock()
-
-
-def boulder_mesh_sets(rows: list[dict] | None = None, kinds: dict | None = None) -> dict[str, list[str]]:
-    """The current meshes of each lowest area meshed as one boulder (pools_whole()): its own (run_boulder()), those of
-    what they left out (run_rest()), and its climbs' own, newest first. {leaf: [mesh id]}
-
-    Args:
-        rows: the current meshes, {id, boulder, created}, if the caller has them.
-    """
-    rows = rows if rows is not None else q("SELECT id, boulder, created FROM meshes WHERE replaced_by IS NULL")
-    kinds = kinds if kinds is not None else boulder_kinds()
-    own: dict[str, set] = {}
-    for r in q("SELECT l.mesh_id, c.area_path FROM mesh_links l JOIN climbs c ON c.id=l.climb_id "
-               "WHERE COALESCE(l.note,'') NOT LIKE ?", SHARED + "%"):
-        own.setdefault(r["mesh_id"], set()).add(r["area_path"])
-    sets: dict[str, list[tuple[float, str]]] = {}
-    for r in rows:
-        key = r.get("boulder")
-        if key:
-            leaf = pool_leaf(key) if is_rest(key) else None if is_pool(key) else key
-        else:
-            leaf = next(iter(own[r["id"]])) if len(own.get(r["id"], ())) == 1 else None
-        if leaf and pools_whole(leaf, kinds):
-            sets.setdefault(leaf, []).append((r.get("created") or 0, r["id"]))
-    return {leaf: [mid for _, mid in sorted(ms, reverse=True)] for leaf, ms in sets.items()}
-
-
-def sync_links(force: bool = False) -> None:
-    """Give climbs, and boulders with a mesh, the names in their links (links_mod.sync()), at most every SYNC_EVERY
-    seconds unless forced: the first added with a name gets it plain."""
-    with _links_lock:
-        if not force and time.time() - _links["at"] < SYNC_EVERY:
-            return
-        _links["at"] = time.time()
-        climbs = [{"ref": c["id"], "name": c["name"], "more": [c["boulder_name"], (c["grade"] or "").split(" ")[0]]}
-                  for c in q("SELECT id, name, boulder_name, grade FROM climbs ORDER BY created, id")]
-        with _db_lock, db() as con:
-            known = {r[0]: r[1] for r in con.execute("SELECT leaf, ref FROM slugs WHERE kind='b' AND current=1")}
-        first = {r["area_path"]: r["t"] for r in q("SELECT area_path, MIN(created) t FROM climbs GROUP BY area_path")}
-        urls: dict = {}
-        boulders = []
-        for leaf in sorted(boulder_mesh_sets(), key=lambda k: (first.get(k) or 0, k)):
-            path = json.loads(leaf)
-            boulders.append({"ref": known.get(leaf) or links_mod.boulder_ref(leaf, leaf_url(leaf, urls)),
-                             "name": boulder_name(leaf), "more": [str(a).strip("* ") for a in path[-2:-4:-1]], "leaf": leaf})
-        with _db_lock, db() as con:
-            links_mod.sync(con, "c", climbs)
-            links_mod.sync(con, "b", boulders)
-
-
-def link_names() -> tuple[dict[str, str], dict[str, str]]:
-    """The current names in climbs' and boulders' links: ({climb id: name}, {boulder key: name})."""
-    sync_links()
-    with _db_lock, db() as con:
-        return links_mod.current(con, "c"), links_mod.current(con, "b")
-
-
-def find_link(kind: str, slug: str) -> dict | None:
-    """What /c/<slug> or /b/<slug> is of ({slug, ref, leaf}, its current name in slug), giving new climbs and boulders
-    their names first if it's no one's yet."""
-    for force in (False, True):
-        if force:
-            sync_links(force=True)
-        with _db_lock, db() as con:
-                found = links_mod.resolve(con, kind, slug)
-        if found:
-            return found
-    return None
-
-
-def boulder_choices(leaf: str, slug: str) -> dict:
-    """What /b/<slug> offers: the boulder's current meshes (boulder_mesh_sets()), most of its climbs first, each with the
-    climbs it's the home of (home: placing more of their own photos than its other meshes do, or made for them) and
-    others it shows; and its climbs no mesh places, with why where that's known."""
-    ids = boulder_mesh_sets().get(leaf, [])
-    rows = q(f"SELECT id, boulder, created FROM meshes WHERE id IN ({','.join('?' * len(ids)) or 'NULL'})", *ids)
-    views = {r["id"]: viewpoints.load(MESHES / r["id"]) or {} for r in rows if r["boulder"]}
-    homes = boulder_homes(rows, views)
-    linked: dict[str, list[dict]] = {}
-    for r in q(f"SELECT mesh_id, climb_id, note FROM mesh_links WHERE mesh_id IN ({','.join('?' * len(ids)) or 'NULL'})", *ids):
-        linked.setdefault(r["mesh_id"], []).append(r)
-    climbs = boulder_climbs(leaf)
-    on, out, unplaced = {c["id"] for c in climbs}, [], {}
-    for r in rows:
-        if r["boulder"]:
-            v = views[r["id"]]
-            seen = {cid: (x or {}).get("photos") or 0 for cid, x in (v.get("climbs") or {}).items() if cid in on}
-            home = [cid for cid, n in seen.items() if n and homes.get(cid, r["id"]) == r["id"]]
-            others = [cid for cid, n in seen.items() if n and cid not in home]
-            for cid, n in (v.get("unplaced") or {}).items():
-                unplaced[cid] = max(unplaced.get(cid, 0), n or 0)
-        else:
-            home = [x["climb_id"] for x in linked.get(r["id"], []) if not (x["note"] or "").startswith(SHARED)]
-            others = [x["climb_id"] for x in linked.get(r["id"], []) if (x["note"] or "").startswith(SHARED)]
-        metrics = meshmetrics.load(MESHES / r["id"]) or {}
-        out.append({"id": r["id"], "home": home, "others": others, "placed": metrics.get("placed") or 0,
-                    "faces": metrics.get("faces"), "created": r["created"]})
-    out.sort(key=lambda m: (-len(m["home"]), -m["placed"], -(m["created"] or 0)))
-    shown = {cid for m in out for cid in m["home"] + m["others"]}
-    missing = [{"id": c["id"], "why": f"{plural(unplaced[c['id']], 'photo')} of its own tried, none placed"
-                if unplaced.get(c["id"]) else None} for c in climbs if c["id"] not in shown]
-    path = json.loads(leaf)
-    return {"slug": slug, "key": leaf, "name": boulder_name(leaf), "area": [str(a).strip("* ") for a in path[:-1]][-2:],
-            "url": leaf_url(leaf, {}), "meshes": out, "missing": missing,
-            "climbs": [{"id": c["id"], "name": c["name"], "grade": c["grade"]} for c in climbs]}
-
-
-def gone_mesh(mid: str) -> dict | None:
-    """A deleted mesh, for its /m/ links (links_mod.gone()), with the name of its boulder's link if it was one's."""
-    with _db_lock, db() as con:
-        g = links_mod.gone(con, mid)
-    if g and g["leaf"]:
-        g["boulder_slug"] = link_names()[1].get(g["leaf"])
-    return g
-
-
-def keep_gone(mid: str) -> None:
-    """Before a mesh is deleted: what its /m/ links open instead (links_mod.mesh_gone())."""
-    m = q("SELECT name, boulder, replaced_by FROM meshes WHERE id=?", mid, one=True)
-    if not m:
-        return
-    climbs = [r["climb_id"] for r in q("SELECT climb_id, note FROM mesh_links WHERE mesh_id=?", mid)
-              if not (r["note"] or "").startswith(SHARED)]
-    leaf = pool_leaf(m["boulder"]) if m["boulder"] and (is_rest(m["boulder"]) or not is_pool(m["boulder"])) else None
-    with _db_lock, db() as con:
-        links_mod.mesh_gone(con, mid, m["name"], m["replaced_by"], climbs, leaf)
-        con.execute("UPDATE meshes_gone SET successor=? WHERE successor=?", (m["replaced_by"], mid))
 
 
 # ----------------------------------------------------------------- volunteers
@@ -8006,8 +7722,6 @@ def admin_retexture(_: dict) -> dict:
 def main() -> None:
     began = time.time()
     init_db()
-    with db() as con:
-        links_mod.init(con)
     moved = settle_far_coordinates()
     if moved:
         print(f"{moved} climb(s) whose page's GPS was far from their area's now use their area's", flush=True)
