@@ -791,7 +791,7 @@ function shareChoices(){
   const cid = viewedClimb || from || soleClimb(m)?.id, c = cid && [...m.climbs, ...(m.boulder_climbs || [])].find(x => x.id === cid);
   const b = m.boulder_link;
   return [
-    c?.slug ? { label: `${c.name}${gradeTag(c)}: its newest mesh`, url: `${at}/c/${c.slug}`, title: c.name + gradeTag(c) }
+    c?.slug ? { label: `${named(c)}: its newest mesh`, url: `${at}/c/${c.slug}`, title: named(c) }
       : { label: 'A climb\'s newest mesh', off: 'This mesh isn\'t shown for one climb: pick one under "Seen from", or open it from a climb' },
     ...(b ? [{ label: b.meshes > 1 ? `${b.name}: its ${b.meshes} meshes, to pick from` : `${b.name}: its newest mesh`, url: `${at}/b/${b.slug}`, title: b.name }] : []),
     { label: 'This exact mesh', url: at + exactLink(m.id, from), title: viewTitle(m, from) },
@@ -2392,7 +2392,7 @@ L.control.layers({ 'OSM': map._layers[Object.keys(map._layers)[0]], 'OpenTopoMap
 let geoLayer = null, mapFitted = false;
 const popupHtml = ({ properties: p }) => p.layer==='mesh'
   ? `<b>${esc(p.name)}</b><br><small>mesh</small><br><a href="#" data-mesh="${p.id}">view in 3D</a>`
-  : `<b>${esc(p.name)}</b> ${esc(p.grade||'')}<br><small>${esc(p.boulder_name||'')} · ${esc(p.source)} · coords from ${esc(p.coord_source)}</small><br><a href="#" data-climb="${p.id}">open climb</a>`;
+  : `<b>${esc(named(p, true))}</b><br><small>${esc(p.boulder_name||'')} · ${esc(p.source)} · coords from ${esc(p.coord_source)}</small><br><a href="#" data-climb="${p.id}">open climb</a>`;
 async function refreshMap(fit=false){
   const gj = await api('/api/geojson');
   if (geoLayer) map.removeLayer(geoLayer);
@@ -2470,7 +2470,7 @@ async function refreshClimbs(){
   climbsPick = some.filter(c => c.kind !== 'area').slice(0, 500);
   for (const sel of [$('#pclimb'), $('#upclimb')]) {
     const first = sel.options[0].outerHTML;
-    sel.innerHTML = first + climbsPick.map(c => `<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('');
+    sel.innerHTML = first + climbsPick.map(c => `<option value="${c.id}">${esc(named(c, true))}</option>`).join('');
   }
 }
 function climbQuery(){
@@ -2527,7 +2527,7 @@ const SOURCE_NAME = { mountainproject: 'Mountain Project', openbeta: 'OpenBeta',
 function climbCard(c){
   const meshes = (c.n_links || 0) + (c.n_boulder || 0), multi = $('#c-multi').checked && meshes > 1;
   const d = document.createElement('div'); d.className = 'card' + (c.id === openClimbId ? ' open' : '') + (multi ? ' multi' : ''); d.dataset.id = c.id;
-  d.innerHTML = `<div class="row"><span class="name grow">${esc(c.name)} <small>${esc(c.grade||'')}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${c.n_links?`<span class="tag ok">${c.n_links} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">via ${esc(c.shared_of)}</span>`:''}${c.n_boulder?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${multi?`<span class="tag" title="Its own meshes, and pools of it with others: ${c.n_links}; its boulder's: ${c.n_boulder}">${meshes} meshes</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
+  d.innerHTML = `<div class="row"><span class="name grow">${esc(namedParts(c).name)} <small>${esc(gradeLeft(c))}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${c.n_links?`<span class="tag ok">${c.n_links} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">via ${esc(c.shared_of)}</span>`:''}${c.n_boulder?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${multi?`<span class="tag" title="Its own meshes, and pools of it with others: ${c.n_links}; its boulder's: ${c.n_boulder}">${meshes} meshes</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
       <button class="sm ${shownClimbs().has(c.id) ? '' : 'sec '}viewmesh" ${c.n_links || c.n_boulder || c.n_shared ? '' : 'disabled'} title="${c.n_links ? 'Show its newest mesh' : c.n_boulder ? 'Show its boulder\'s mesh, from where its own photos were taken' : c.n_shared ? 'Show the mesh of another climb on its boulder' : 'No mesh is linked to it yet'}">View</button></div>
     <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
     <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
@@ -2655,7 +2655,7 @@ async function openClimb(id, focus=true){
   const searched = (c.videos_found||[]).filter(v => v.found_by === 'search' && !vids.some(p => p.url === v.url));
   const sizes = (c.videos_found||[]).map(climberSize).filter(Boolean);
   d.innerHTML = `
-    <div class="row"><span class="name grow">${esc(c.name)} <small>${esc(c.grade||'')}</small><span class="tag src">${esc(c.source)}</span></span><button class="sm sec close">✕ close</button></div>
+    <div class="row"><span class="name grow">${esc(namedParts(c).name)} <small>${esc(gradeLeft(c))}</small><span class="tag src">${esc(c.source)}</span></span><button class="sm sec close">✕ close</button></div>
     <div class="meta">${esc((c.area_path||[]).join(' › '))}</div>
     <div class="meta">Boulder: <b>${esc(c.boulder_name||'?')}</b> · FA: <b>${esc(data.fa||'?')}</b>${data.rating?` · ★ ${data.rating} (${data.votes||'?'})`:''}</div>
     <div class="row" style="margin-top:6px"><span class="meta grow">📍 <b>${fmtLL(c.lat,c.lng)}</b> <small>(${esc(c.coord_source||'none')})</small></span>
@@ -3052,12 +3052,12 @@ function boulderPanelHtml(b, c){
   const why = `brought its boulder in: the first of its climbs in the area's order${c.max_meshes ? `, within the first ${c.max_meshes} meshes` : ''}`;
   const name = b.url ? `<a href="${esc(b.url)}" target="_blank" rel="noopener" title="Its page on Mountain Project">${esc(b.name)}</a>` : esc(b.name);
   return `<div class="bpanel"><div class="head">${name}: ${b.pooled ? 'photos each climb gives its mesh, after its filter' : 'its climbs\' photos, for its mesh'}</div>
-    ${b.rows.map(r => `<div class="brow ${r.state}${r.why ? ' why' : ''}"${r.why ? ` title="${esc(why)}"` : ''}><i></i><span><b>${r.climb ? `<a href="#" data-bclimb="${esc(r.climb)}" title="Its photos, under Climbs">${esc(r.name)}</a>` : esc(r.name)}</b> ${esc(r.grade || '')}${r.rank ? ` <small>#${r.rank}</small>` : ''}${r.listed ? '' : ' <small>(not on the list)</small>'}${r.why ? ' ★' : ''}</span><span>${what(r)}</span></div>`).join('')}
+    ${b.rows.map(r => `<div class="brow ${r.state}${r.why ? ' why' : ''}"${r.why ? ` title="${esc(why)}"` : ''}><i></i><span><b>${r.climb ? `<a href="#" data-bclimb="${esc(r.climb)}" title="Its photos, under Climbs">${esc(named(r, true))}</a>` : esc(named(r, true))}</b>${r.rank ? ` <small>#${r.rank}</small>` : ''}${r.listed ? '' : ' <small>(not on the list)</small>'}${r.why ? ' ★' : ''}</span><span>${what(r)}</span></div>`).join('')}
     ${b.pooled && b.own ? `<div class="brow in"><i></i><span>the boulder's own search</span><span>${plural(b.own, 'photo')}</span></div>` : ''}</div>`;
 }
 // an area's paused climbs, each with its Resume (its card's click handler)
 function pausedHtml(c){
-  return (c.paused || []).map(i => `<div class="row" style="margin-top:6px"><span class="meta grow">Paused: <b>${esc(i.name)}</b> ${esc(i.grade||'')} <small>#${i.rank}</small>${i.note ? ` <small>· ${esc(i.note)}</small>` : ''}</span>
+  return (c.paused || []).map(i => `<div class="row" style="margin-top:6px"><span class="meta grow">Paused: <b>${esc(named(i, true))}</b> <small>#${i.rank}</small>${i.note ? ` <small>· ${esc(i.note)}</small>` : ''}</span>
     <button class="sm sec unpause" data-unpause="${esc(i.source_id)}" title="${c.status === 'running' ? 'It goes next' : 'It goes once the area runs'}, carrying on from the last step it finished">Resume</button></div>`).join('');
 }
 function currentHtml(c){
@@ -3073,7 +3073,7 @@ function currentHtml(c){
       : c.status === 'running' || c.status === 'stopping' ? `<button class="sm sec pause" data-pause="${esc(cur.source_id)}" data-name="${esc(cur.name)}" title="Stops this climb alone, now; the area goes on with its others. When you resume it, it carries on from the last step it finished.">Pause</button>` : '';
     // one meshing its boulder, or a group its photos matched: the bars are that project's, as its own harvest is done
     const whole = cur.meshing ? ` <small>· meshing its ${cur.meshing.kind}: <a href="#" data-proj="${esc(cur.meshing.project_id)}" title="Its project">${esc(cur.meshing.name)}</a></small>` : '';
-    return `<div class="row" style="margin-top:8px"><span class="meta grow">Now: <b>${esc(cur.name)}</b> ${esc(cur.grade||'')} <small>#${cur.rank}</small>${whole}</span>${pause}</div>
+    return `<div class="row" style="margin-top:8px"><span class="meta grow">Now: <b>${esc(named(cur, true))}</b> <small>#${cur.rank}</small>${whole}</span>${pause}</div>
       ${!pr ? '' : `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall${jobTiming(pr)}${machineTake(pr)}</small>
           ${now.map(s => `<div class="bar running" title="${pct(s.frac)}" style="margin-top:4px"><i style="width:${pct(s.frac)}"></i></div><small>${said(s)}</small>`).join('')}`}
       ${boulderPanelHtml(cur.boulder_panel, c)}`;
@@ -3098,7 +3098,7 @@ async function refreshCampaigns(){
       const mpUrl = c.area_id ? `https://www.mountainproject.com/area/${encodeURIComponent(c.area_id)}` : null;
       const title = mpUrl ? `<b><a href="${esc(mpUrl)}" target="_blank" rel="noopener" title="Its page on Mountain Project">${esc(c.name)}</a></b>
         <button class="copy" title="Copy its Mountain Project link, to enter it again above" aria-label="Copy its Mountain Project link">${COPY_ICON}</button>` : `<b>${esc(c.name)}</b>`;
-      const row = i => `<span><small>#${i.rank}</small></span><span>${i.climb_id ? `<a href="#" data-climb="${i.climb_id}">${esc(i.name)}</a>` : `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.name)}</a>`} ${esc(i.grade||'')}</span><small>${stars(i.stars)}</small>
+      const row = i => `<span><small>#${i.rank}</small></span><span>${i.climb_id ? `<a href="#" data-climb="${i.climb_id}">${esc(named(i, true))}</a>` : `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(named(i, true))}</a>`}</span><small>${stars(i.stars)}</small>
         <span>${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
       const state = c.state || c.status;
       const tip = { queued: 'Running, but waiting its turn: no worker is free for it. Areas are taken in the order they were entered, top first.',
@@ -3570,8 +3570,8 @@ function renderMeshes(filter = true){
     // its climbs: a boulder's or a pool's, each opening it from where its own photos were taken, and those linked to it
     // (a pool's again only where they can be unlinked here)
     const pooledIds = new Set((m.boulder_climbs || []).map(c => c.id));
-    const chips = (m.boulder_climbs || []).map(c => `<span class="chip" data-from="${c.id}" title="${c.view ? `Look at it from where ${esc(c.name)}'s own photos were taken (${plural(c.view.photos, 'photo')})` : `None of ${esc(c.name)}'s own photos were placed in it: opens the climb`}">${c.view ? '👁 ' : ''}${esc(c.name)} ${esc(c.grade||'')}</span>`).join('')
-      + m.climbs.filter(c => editor || (c !== sole && !pooledIds.has(c.id))).map(c=>`<span class="chip${c.shared ? ' shared' : ''}" data-climb="${c.id}" ${c.shared ? 'title="Linked by an area as on the same boulder as the climb this was made for: it may not show this climb\'s side"' : ''}>${esc(c.name)} ${esc(c.grade||'')}${c.shared ? ' <small>same boulder</small>' : ''} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('');
+    const chips = (m.boulder_climbs || []).map(c => `<span class="chip" data-from="${c.id}" title="${c.view ? `Look at it from where ${esc(c.name)}'s own photos were taken (${plural(c.view.photos, 'photo')})` : `None of ${esc(c.name)}'s own photos were placed in it: opens the climb`}">${c.view ? '👁 ' : ''}${esc(named(c, true))}</span>`).join('')
+      + m.climbs.filter(c => editor || (c !== sole && !pooledIds.has(c.id))).map(c=>`<span class="chip${c.shared ? ' shared' : ''}" data-climb="${c.id}" ${c.shared ? 'title="Linked by an area as on the same boulder as the climb this was made for: it may not show this climb\'s side"' : ''}>${esc(named(c, true))}${c.shared ? ' <small>same boulder</small>' : ''} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('');
     const n = new Set([...pooledIds, ...m.climbs.map(c => c.id)]).size;
     d.innerHTML = `${m.thumb ? `<img class="mthumb" loading="lazy" alt="" src="/meshes/${m.id}/thumb.small.jpg?v=${m.thumb.v}" title="View it">` : ''}<div class="grow"><span class="name">${meshNameHtml(m)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
         <div class="chips">${several ? `<details class="mclimbs"${climbListsOpen.has(m.id) ? ' open' : ''}><summary>${plural(n, 'climb')}</summary><div class="chips">${chips}</div></details>` : chips}
@@ -3604,7 +3604,7 @@ function renderMeshes(filter = true){
     d.querySelectorAll('[data-unlink]').forEach(x => x.onclick = async ev => { ev.stopPropagation(); await api(`/api/meshes/${m.id}/links/${x.dataset.unlink}`, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); });
     const link = d.querySelector('.linksel');
     if (link) {     // its climbs listed only once it's opened: hundreds of options on every card made each sort take seconds
-      const fill = () => { if (link.options.length > 1) return; link.insertAdjacentHTML('beforeend', climbsPick.map(c => `<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('')); };
+      const fill = () => { if (link.options.length > 1) return; link.insertAdjacentHTML('beforeend', climbsPick.map(c => `<option value="${c.id}">${esc(named(c, true))}</option>`).join('')); };
       link.addEventListener('pointerdown', fill);
       link.addEventListener('focus', fill);
       link.onchange = async ev => { if (!ev.target.value) return; await api(`/api/meshes/${m.id}/links`, {method:'POST', json:{climb_id: ev.target.value}}); toast('Linked'); refreshMeshes(); refreshClimbs(); };
@@ -3616,7 +3616,28 @@ function renderMeshes(filter = true){
 // via: how it was asked for, for the server's record of what's viewed (reportView())
 // The climb a phone names over the view, as it shows nothing else there: the one a boulder's mesh is seen from, or the
 // mesh's own climbs (the first, and how many more), or else the mesh's name
-const gradeTag = c => c.grade ? ` ${c.grade.split(' ')[0]}` : '';
+// A climb's name with its grade, said once: a name that ends in a V grade ("Unnamed V0") isn't followed by the same
+// again, and where the climb's own differs the two are joined, the lower first, the other without its V, or only its
+// + or - where the number's the same: V0 and V0+ "V0/+", V3- and V3 "V3-/3", V0 and V1 "V0/1". A range ("V2-3"), a
+// name's grade that can't be one (V50), or a name with words after its grade, as before. {name, grade: its V grade, or
+// none if that's in name now, rest: the rest of the climb's grade (Font, safety)}
+function namedParts(c){
+  const words = (c.grade || '').trim().split(/\s+/), g = words[0] || '', rest = words.slice(1).join(' ');
+  const plain = { name: c.name || '', grade: g, rest };
+  const n = /^(.*\S)\s+V(\d+|-?easy)([+-]?)$/i.exec(c.name || ''), v = /^V(\d+|-?easy)([+-]?)$/i.exec(g);
+  if (!n || !v) return plain;
+  const num = x => /easy/i.test(x) ? -1 : +x, a = [num(n[2]), n[3]], b = [num(v[1]), v[2]];
+  if (a[0] > 17) return plain;
+  const rank = ([x, m]) => x * 3 + (m === '-' ? 0 : m === '+' ? 2 : 1), say = x => x < 0 ? '-easy' : String(x);
+  if (rank(a) === rank(b)) return { name: `${n[1]} V${say(a[0])}${a[1]}`, grade: '', rest };
+  const [lo, hi] = rank(a) < rank(b) ? [a, b] : [b, a];
+  const joined = `V${say(lo[0])}${lo[1]}/` + (lo[0] === hi[0] && hi[1] ? hi[1] : `${say(hi[0])}${hi[1]}`);
+  return { name: `${n[1]} ${joined}`, grade: '', rest };
+}
+// The name and V grade as one, or with full, the rest of its grade too
+const named = (c, full = false) => { const p = namedParts(c); return [p.name, p.grade, full ? p.rest : ''].filter(Boolean).join(' '); };
+// The grade a card shows small, after the name: as it was, less what the name says now
+const gradeLeft = c => { const p = namedParts(c); return [p.grade, p.rest].filter(Boolean).join(' '); };
 // the areas a mesh was made for (as the Meshes tab shows them), or ''
 function meshAreaText(id){ return (meshesById[id]?.areas || []).join(', '); }
 // a phone's title over the view: what's in view, and its areas on a line under it
@@ -3633,7 +3654,7 @@ function soleClimb(m){
   const own = m.climbs.filter(c => !c.shared);
   return own.length === 1 && linkCounts.get(own[0].id) === 1 ? own[0] : null;
 }
-function meshTitle(m){ const c = soleClimb(m); return c ? `${c.name} ${c.grade || ''}`.trim() : m.name; }
+function meshTitle(m){ const c = soleClimb(m); return c ? named(c, true) : m.name; }
 // a card's title: a link to its climb's page, for a mesh of one climb; for a mesh of several, to the Mountain Project
 // page of the lowest area they're on
 function meshNameHtml(m){
@@ -3650,8 +3671,8 @@ function meshNameHtml(m){
 }
 function viewTitle(m, from){
   const seen = (m.boulder_climbs || []).find(c => c.id === from), own = m.climbs.filter(c => !c.shared);
-  if (seen) return seen.name + gradeTag(seen);
-  if (own.length) return own[0].name + gradeTag(own[0]) + (own.length > 1 ? ` +${own.length - 1}` : '');
+  if (seen) return named(seen);
+  if (own.length) return named(own[0]) + (own.length > 1 ? ` +${own.length - 1}` : '');
   return m.name.replace(/ \((harvest|boulder)\)$/, '');
 }
 // Links (design.md, "Links to climbs, boulders and meshes"): /c/<climb> and /b/<boulder> open their newest mesh (a
@@ -3695,7 +3716,7 @@ async function openFromAddress(){
       viewNote(`${r.same.length === 1 ? 'Another climb is' : `${r.same.length} other climbs are`} also called ${r.name}:`);
       for (const c of r.same) {
         const a = document.createElement('a');
-        a.href = `/c/${c.slug}`; a.className = 'same'; a.textContent = c.name + gradeTag(c) + (c.boulder ? ` on ${c.boulder}` : '');
+        a.href = `/c/${c.slug}`; a.className = 'same'; a.textContent = named(c) + (c.boulder ? ` on ${c.boulder}` : '');
         $('#viewnote').insertBefore(a, $('#viewnote .dismiss'));
       }
     }
@@ -3773,7 +3794,7 @@ async function openExact(id, fromSlug){
 // home of (bold) and others it shows, then its climbs no mesh places. From a link, a boulder with one mesh opens it.
 async function pickBoulder(r, fromLink = false){
   if (r.meshes.some(x => !meshesById[x.id])) await refreshMeshes();
-  const items = r.meshes.filter(x => meshesById[x.id]), names = Object.fromEntries(r.climbs.map(c => [c.id, c.name + gradeTag(c)]));
+  const items = r.meshes.filter(x => meshesById[x.id]), names = Object.fromEntries(r.climbs.map(c => [c.id, named(c)]));
   const open = id => { linkedBoulder = { slug: r.slug, meshes: items.map(x => x.id) }; return viewMesh(id, null, fromLink ? 'link' : 'boulder'); };
   if (fromLink && items.length === 1) return open(items[0].id);
   const what = { boulders: 'The boulder', groups: 'A group of its climbs', climbs: 'One climb' };
@@ -3805,7 +3826,7 @@ function shownClimbs(){
 function markShown(){
   const m = shownMesh && meshesById[shownMesh], has = !!m, b = $('#tofull');
   const picked = has && viewedClimb && [...m.climbs, ...(m.boulder_climbs || []), ...climbsCache].find(c => c.id === viewedClimb);
-  const name = picked ? picked.name + gradeTag(picked) : $('#vname').textContent || m?.name || '';
+  const name = picked ? named(picked) : $('#vname').textContent || m?.name || '';
   b.disabled = !has;
   b.title = has ? 'Back to the mesh' : 'Pick a climb\'s mesh first';
   b.innerHTML = 'Viewer' + (has && name ? `<small>${esc(name)}</small>` : '');
@@ -3835,7 +3856,7 @@ function showFrom(m, from){
   const sel = $('#vfrom'), seen = (m?.boulder_climbs || []).filter(c => c.view);
   sel.style.display = seen.length ? '' : 'none';
   if (!seen.length) return;
-  sel.innerHTML = '<option value="">Seen from: the whole boulder</option>' + seen.map(c => `<option value="${c.id}">Seen from ${esc(c.name)} ${esc(c.grade || '')}</option>`).join('');
+  sel.innerHTML = '<option value="">Seen from: the whole boulder</option>' + seen.map(c => `<option value="${c.id}">Seen from ${esc(named(c, true))}</option>`).join('');
   sel.value = seen.some(c => c.id === from) ? from : '';
   sel.onchange = () => {
     const c = seen.find(x => x.id === sel.value);

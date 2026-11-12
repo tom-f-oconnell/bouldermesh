@@ -27,6 +27,14 @@ def names() -> None:
     assert got == ["iwaya", "iwaya-2", "iwaya-3"], ("a name with nothing left starts from its boulder's", got)
     got = [s for _, s in zip(range(2), links.candidates("ドラゴン", [], "c-abc123"))]
     assert got == ["c-abc123-2", "c-abc123-3"], got
+    for name, grade, want in [("Unnamed V0", "V0+ 4+", "Unnamed V0/+"), ("Unnamed V0", "V0 4", "Unnamed V0"),
+                              ("Unnamed v4", "V4 6B", "Unnamed V4"), ("Unnamed V3", "V3- 6A", "Unnamed V3-/3"),
+                              ("Unnamed V0", "V1 5", "Unnamed V0/1"), ("Unnamed V1", "V0 4", "Unnamed V0/1"),
+                              ("Unnamed V0-", "V0+", "Unnamed V0-/+"), ("Unnamed V-easy", "V0 4", "Unnamed V-easy/0"),
+                              ("Unnamed V3", "V2-3 5+", "Unnamed V3 V2-3"), ("V50", "V4 6B", "V50 V4"),
+                              ("Big V50", "V4", "Big V50 V4"), ("V1 Left", "V1+ 5", "V1 Left V1+"),
+                              ("The Mandala", "V12 8A+", "The Mandala V12"), ("Unnamed V2", None, "Unnamed V2")]:
+        assert links.named(name, grade) == want, (name, grade, links.named(name, grade), want)
     assert links.boulder_ref('["CA","Bishop","Drifter"]', "https://www.mountainproject.com/area/105739324/drifter") == "mp:105739324"
     assert links.boulder_ref('["CA","Bishop","Drifter"]', None) == 'key:["CA","Bishop","Drifter"]'
     print("names OK")

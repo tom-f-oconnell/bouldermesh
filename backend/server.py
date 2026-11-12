@@ -6347,7 +6347,7 @@ def link_page(kind: str, key: str) -> tuple[int, str, str | None]:
         g = None if m else gone_mesh(key) if re.fullmatch(r"[0-9a-f]+", key) else None
         if not m and not g:
             return 404, page_head("No such mesh", SITE_TEXT, None, False), None
-        own = [c["name"] + (f" {c['grade'].split(' ')[0]}" if c["grade"] else "") for c in q(
+        own = [links_mod.named(c["name"], c["grade"]) for c in q(
             "SELECT c.name, c.grade FROM mesh_links l JOIN climbs c ON c.id=l.climb_id WHERE l.mesh_id=? AND COALESCE(l.note,'') "
             "NOT LIKE ? ORDER BY c.name", key, SHARED + "%")] if m else []
         title = ", ".join(own[:3]) + (f" +{len(own) - 3}" if len(own) > 3 else "") if own else (m or g)["name"] or "A mesh"
@@ -6361,7 +6361,7 @@ def link_page(kind: str, key: str) -> tuple[int, str, str | None]:
         return 301, "", f"/{kind}/{found['slug']}"
     if kind == "c":
         c = q("SELECT name, grade, area_path FROM climbs WHERE id=?", found["ref"], one=True) or {}
-        name = (c.get("name") or key) + (f" {c['grade'].split(' ')[0]}" if c.get("grade") else "")
+        name = links_mod.named(c.get("name") or key, c.get("grade"))
         where = [str(a).strip("* ") for a in json.loads(c.get("area_path") or "[]")][-3:][::-1]
         return 200, page_head(name, f"{name} in 3D" + (f" · {', '.join(where)}" if where else "") + ".", f"/c/{key}",
                               mid=climb_mesh(found["ref"])), None

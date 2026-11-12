@@ -123,3 +123,26 @@ def gone(con: sqlite3.Connection, mid: str) -> dict | None:
     """A deleted mesh, as mesh_gone() kept it: {name, successor, climbs, leaf, deleted}; None if it never was one."""
     r = con.execute("SELECT name, successor, climbs, leaf, deleted FROM meshes_gone WHERE id=?", (mid,)).fetchone()
     return {"name": r[0], "successor": r[1], "climbs": json.loads(r[2] or "[]"), "leaf": r[3], "deleted": r[4]} if r else None
+
+
+def named(name: str | None, grade: str | None) -> str:
+    """A climb's name with its V grade, said once, as the page says it (namedParts()): a name ending in a V grade isn't
+    followed by the same again, and where the climb's own differs the two are joined, the lower first: "Unnamed V0"
+    given V0+ is "Unnamed V0/+", given V1 "Unnamed V0/1". A range, a name's grade that can't be one (V50), or none, as
+    the name and the grade's first word."""
+    name, g = name or "", (grade or "").split(" ")[0]
+    n = re.fullmatch(r"(.*\S)\s+V(\d+|-?easy)([+-]?)", name, re.I)
+    v = re.fullmatch(r"V(\d+|-?easy)([+-]?)", g, re.I)
+    plain = f"{name} {g}".strip()
+    if not n or not v:
+        return plain
+    num = lambda x: -1 if "easy" in x.lower() else int(x)  # noqa: E731
+    a, b = (num(n[2]), n[3]), (num(v[1]), v[2])
+    if a[0] > 17:
+        return plain
+    rank = lambda t: t[0] * 3 + {"-": 0, "": 1, "+": 2}[t[1]]  # noqa: E731
+    say = lambda x: "-easy" if x < 0 else str(x)  # noqa: E731
+    if rank(a) == rank(b):
+        return f"{n[1]} V{say(a[0])}{a[1]}"
+    lo, hi = sorted((a, b), key=rank)
+    return f"{n[1]} V{say(lo[0])}{lo[1]}/" + (hi[1] if lo[0] == hi[0] and hi[1] else f"{say(hi[0])}{hi[1]}")
