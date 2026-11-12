@@ -35,9 +35,10 @@ class Tracker:
     def _step(self, key: str) -> dict | None:
         return next((s for s in self.steps if s["key"] == key), None)
 
-    def update(self, key: str, frac: float = 0.0, detail: str | None = None) -> None:
+    def update(self, key: str, frac: float = 0.0, detail: str | None = None, count: tuple[int, int, str] | None = None) -> None:
         """Report progress on a step, which also ends any step before it. Where the steps that
-        don't run a tool get stopped: raises Cancelled if the job has been."""
+        don't run a tool get stopped: raises Cancelled if the job has been. count: (done, of, what), as "2/17
+        climbs", for the UI to show what's done rather than frac, where the detail doesn't say "x of y"."""
         jobctl.check()
         with self._lock:
             s = self._step(key)
@@ -57,6 +58,8 @@ class Tracker:
             s["frac"] = max(s["frac"], min(float(frac), 1.0))
             if detail is not None:
                 s["detail"] = detail
+            if count is not None:
+                s["count"] = list(count)
             self._flush(changed)
 
     def end(self, key: str, state: str = "done", detail: str | None = None) -> None:
@@ -136,6 +139,7 @@ class Tracker:
                            **({"parallel": True} if s["parallel"] else {}),
                            **({"where": s["where"]} if s.get("where") else {}),
                            **({"units": s["units"]} if "units" in s else {}),
+                           **({"count": s["count"]} if "count" in s else {}),
                            **({"started": round(s["started"], 1)} if "started" in s else {}),
                            **({"seconds": round(s["ended"] - s["started"], 1)} if "ended" in s else {})} for s in self.steps]}
 

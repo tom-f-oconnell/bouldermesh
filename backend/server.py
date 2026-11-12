@@ -2873,7 +2873,7 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
         if missing:
             tracker.units("climbs", len(missing))
         for i, c in enumerate(missing):
-            tracker.update("climbs", i / len(missing), c["name"])
+            tracker.update("climbs", i / len(missing), c["name"], count=(i, len(missing), "climbs"))
             log(f"harvesting {c['name']}, which hadn't been")
 
             def follow(snap: dict, i: int = i, name: str = c["name"]) -> None:   # its harvest's progress, as this step's
