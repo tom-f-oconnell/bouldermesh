@@ -100,6 +100,14 @@
   body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly button.mark,body.readonly .clearmine,body.readonly #vmark,
   body.readonly .tryskipped,body.readonly .editopt,body.readonly .pause,body.readonly .unpause,
   body.readonly .tabs button[data-tab=projects],body.readonly .projs{display:none!important}
+  /* the ? tab: comments and bug reports, from anyone, and the Donate button */
+  .tabs button[data-tab=help]{flex:0 0 auto;padding:10px 16px}
+  #pane-help p{font-size:13px;margin:0 0 8px} #pane-help a{color:var(--acc)} #pane-help .fine{font-size:12px;color:var(--mute);margin:10px 0 0}
+  #fb label{display:block;font-size:12px;color:var(--mute);margin:8px 0 3px} #fb .kinds label{display:inline-flex;gap:5px;align-items:center;font-size:13px;color:var(--fg);margin:0 8px 0 0}
+  #fb textarea{resize:vertical;min-height:110px;display:block}
+  #fb-trap{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}   /* a field people don't see, which bots fill in */
+  #donatebox[hidden]{display:none}
+  #pane-help a#donate{display:inline-block;background:var(--acc);color:var(--acc-fg);padding:7px 14px;border-radius:6px;font-weight:600;text-decoration:none}
   label.file input{display:none}
   .status{font-size:12px;color:var(--mute)}
   /* an area's climb harvested for its boulder's mesh: what each of the boulder's climbs gives it */
@@ -333,6 +341,7 @@
       <button data-tab="beta">Beta</button>
       <button data-tab="areas">Areas</button>
       <button data-tab="projects">Projects</button>
+      <button data-tab="help" title="Leave a comment, report a bug, or support the site" aria-label="Comments, bug reports and support">?</button>
     </div>
 
     <!-- ============================ CLIMBS ============================ -->
@@ -443,6 +452,31 @@
         <h2>Projects (photos → mesh)</h2>
         <div id="p-interrupted"></div>
         <div id="projects"></div>
+      </section>
+    </div>
+
+    <!-- ============================ ? ============================ -->
+    <div class="pane" id="pane-help">
+      <section>
+        <h2>Comments and bug reports</h2>
+        <p>Something broken, wrong or missing, or an idea? What you write here goes to the person who runs this site.</p>
+        <form id="fb" novalidate>
+          <div class="row kinds"><label><input type="radio" name="fbkind" value="comment" checked> A comment</label>
+            <label><input type="radio" name="fbkind" value="bug"> A bug report</label></div>
+          <label for="fb-text">What you'd like to say</label>
+          <textarea id="fb-text" rows="6" maxlength="4000" placeholder="For a bug: what you did, what happened, and what you expected"></textarea>
+          <label for="fb-contact">How to reach you, if you'd like an answer <small>(optional)</small></label>
+          <input type="text" id="fb-contact" maxlength="200" placeholder="An email address, or anywhere else">
+          <div id="fb-trap" aria-hidden="true"><label for="fb-website">Leave this empty</label><input type="text" id="fb-website" name="website" tabindex="-1" autocomplete="off"></div>
+          <div class="row" style="margin-top:10px"><button id="fb-send" type="submit">Send</button><span class="meta grow" id="fb-note" role="status"></span></div>
+        </form>
+        <p class="fine">The page you're on and your browser's name are sent with it, to help find a bug. Or
+          <a href="https://github.com/tom-f-oconnell/bouldermesh/issues" target="_blank" rel="noopener">open an issue on GitHub</a>.</p>
+      </section>
+      <section id="donatebox" hidden>
+        <h2>Support BoulderMesh</h2>
+        <p>BoulderMesh is free to use, and its code is open. If you'd like to help keep it running:</p>
+        <a id="donate" target="_blank" rel="noopener noreferrer">Donate</a>
       </section>
     </div>
 
@@ -724,6 +758,25 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   if (b.dataset.tab === 'beta') renderBetaList();
   if (b.dataset.tab === 'projects') poll();          // followed while it shows
   if (b.dataset.tab === 'areas') campaignLoop();     // every 5 s while it shows
+});
+// The ? tab's form: a comment or bug report, to POST /api/feedback (data/feedback.jsonl there), from anyone, editing or
+// not. Its hidden "website" field is for bots that fill in every field: the server drops what comes with it filled in.
+$('#fb').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const note = $('#fb-note');
+  if (!$('#fb-text').value.trim()) { note.textContent = 'Write something first.'; $('#fb-text').focus(); return; }
+  $('#fb-send').disabled = true;
+  note.textContent = 'Sending…';
+  try {
+    const r = await fetch('/api/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+      body: JSON.stringify({ kind: document.querySelector('input[name=fbkind]:checked').value, message: $('#fb-text').value, contact: $('#fb-contact').value,
+                             website: $('#fb-website').value, page: (location.pathname + location.hash).slice(0, 300) }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(r.status === 429 ? 'too many from here lately. Try again in a while.' : j.error || r.statusText);
+    $('#fb-text').value = '';
+    note.textContent = 'Sent. Thank you!';
+  } catch (e) { note.textContent = 'Not sent: ' + e.message; }
+  $('#fb-send').disabled = false;
 });
 // on a phone, the view on its own, or the controls on their own
 function setFull(on){
@@ -4321,6 +4374,7 @@ if (statusCache.editing === 'token') {
   if (token && !editor) toast('The editing token kept in this browser wasn\'t accepted.', 6000);
 }
 if (statusCache.admin) { $('#admin').style.display = ''; $('#admin').onclick = openAdmin; }
+if (/^https:\/\/\S+$/.test(statusCache.donate_url || '')) { $('#donate').href = statusCache.donate_url; $('#donatebox').hidden = false; }   // the admin page's site.donate_url
 if (statusCache.volunteer_url) { $('#volunteer').dataset.base = statusCache.volunteer_url + '/volunteer/'; volunteerLink(); $('#volunteer').style.display = ''; }
 if (!editor) $('#hud').textContent = 'Pick a mesh. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan';
 if (thumbMode) { detailChoice = 'preview'; await refreshMeshes(); }

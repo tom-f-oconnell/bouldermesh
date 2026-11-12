@@ -556,6 +556,110 @@ def links_site(tmp: Path) -> None:
     print("links OK")
 
 
+def feedback(tmp: Path) -> None:
+    """The "?" tab's comments and bug reports, and its Donate button: from a visitor without the token, cleaned to plain
+    text, refused when too long or not text, dropped when the hidden field is filled in, limited for one address, told to
+    the phone through a stand-in for ntfy, and listed on the admin page; the button's address only an https one."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import feedback as feedback_mod
+
+    assert feedback_mod.clean("a\x00b\x1b[31m\u202ec\u200b\ufeff \u00a0 d\ne\ud800") == "ab[31mc d e", "no controls, bidi or zero-width"
+    assert feedback_mod.clean(" a \r\n\n\n\n\tb \u2028c ", lines=True) == "a\n\n b\nc"
+    title, text = feedback_mod.note({"kind": "comment", "message": "x" * 4000, "contact": "me@example.org", "page": "/#m"})
+    assert title == "BoulderMesh: a comment" and text == "x" * 600 + "…\n\nReach them: me@example.org\nPage: /#m", text
+
+    sent: list[dict] = []
+
+    class Ntfy(BaseHTTPRequestHandler):
+        def do_POST(self):
+            sent.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def do_GET(self):       # the reply topic, followed: nothing comes
+            time.sleep(120)
+
+        def log_message(self, *a):
+            pass
+
+    ntfy = ThreadingHTTPServer(("127.0.0.1", 0), Ntfy)
+    ntfy.daemon_threads = True
+    threading.Thread(target=ntfy.serve_forever, daemon=True).start()
+    srv = Server(tmp, EDIT_TOKEN=TOKEN, READ_ONLY="auto", CLIENT_IP_HEADER="X-Real-IP", DONATE_URL="https://donate.example/tom")
+    B, A, kept_in = srv.url, f"http://127.0.0.1:{srv.admin_port}", tmp / "data" / "feedback.jsonl"
+    kept = lambda: [json.loads(x) for x in kept_in.read_text().splitlines()] if kept_in.exists() else []  # noqa: E731
+    post = lambda body, ip, **h: req(B, "POST", "/api/feedback", body, headers={"X-Real-IP": ip, "User-Agent": "Test\x07Browser/1", **h})  # noqa: E731
+    try:
+        with sqlite3.connect(tmp / "data" / "bouldermesh.sqlite", timeout=30) as con:    # ntfy here, which the admin page wouldn't take (not https)
+            con.executemany("INSERT OR REPLACE INTO settings VALUES(?,?)", [(k, json.dumps(v)) for k, v in {
+                "notify.enabled": True, "notify.server": f"http://127.0.0.1:{ntfy.server_port}", "notify.topic": "bm-topic",
+                "notify.reply_topic": "bm-replies"}.items()])
+        con.close()
+        page = req(B, "GET", "/")[2]
+        assert b'<button data-tab="help"' in page and b'<form id="fb"' in page and b'id="fb-website"' in page, "the ? tab and its form"
+        assert req(B, "GET", "/api/status")[2]["donate_url"] == "https://donate.example/tom", "DONATE_URL starts the button's address"
+
+        # from a visitor without the token: kept as plain text, as typed but for what can't be seen
+        typed = "It\x00 broke\x07\r\n\r\n\r\n\r\n<script>alert(1)</script>\u202e \u200bend\tx"
+        st, _, r = post({"kind": "bug", "message": typed, "contact": "  tom@example.org\nBcc: x ", "page": "/#mesh=abc", "website": ""}, "198.51.100.40")
+        assert st == 202 and r == {"kept": True}, (st, r)
+        line = kept()[-1]
+        assert line["kind"] == "bug" and line["message"] == "It broke\n\n<script>alert(1)</script> end x", line
+        assert line["contact"] == "tom@example.org Bcc: x" and line["page"] == "/#mesh=abc" and line["editor"] is False, line
+        assert line["browser"] == "TestBrowser/1" and "198.51.100.40" not in kept_in.read_text(), "their browser, not their address"
+        for _ in range(50):
+            if any(n["title"] == "BoulderMesh: a bug report" for n in sent):
+                break
+            time.sleep(0.1)
+        note = next(n for n in sent if n["title"] == "BoulderMesh: a bug report")
+        assert note["topic"] == "bm-topic" and note["message"] == "It broke\n\n<script>alert(1)</script> end x\n\nReach them: tom@example.org Bcc: x\nPage: /#mesh=abc", note
+        assert "markdown" not in note and "actions" not in note and "click" not in note, "plain text, nothing to tap through to"
+        st, _, _ = post({"message": "from an editor", "page": "https://evil.example/"}, "198.51.100.41", **AUTH)
+        line = kept()[-1]
+        assert st == 202 and line["kind"] == "comment" and line["editor"] is True and "page" not in line and "contact" not in line, line
+
+        # refused: too long, empty once cleaned, not text, not the form's, from another site's page
+        n = len(kept())
+        for bad, code in (({"message": "x" * 4001}, 400), ({"message": "x", "contact": "c" * 201}, 400), ({"message": " \x00\u200b\n"}, 400),
+                          ({"message": ["x"]}, 400), ({"message": "x", "kind": "spam"}, 400), ({"message": "x", "contact": 5}, 400), ({}, 400),
+                          (b"[1]", 400), (b"{", 400), (b"x" * 40000, 413)):
+            assert post(bad, "198.51.100.42")[0] == code, bad if isinstance(bad, dict) else bad[:20]
+        assert post({"message": "x"}, "198.51.100.42", Origin="https://evil.example")[0] == 403
+        assert post({"message": "é" * 4000}, "198.51.100.42")[0] == 202 and len(kept()) == n + 1, "as long as the form allows"
+
+        # the hidden field, which only a bot fills in: answered the same, and dropped
+        n = len(kept())
+        assert post({"message": "buy things", "website": "https://spam.example"}, "198.51.100.43")[:3:2] == (202, {"kept": True})
+        assert len(kept()) == n, "not kept"
+
+        # at most 5 an hour from one address
+        codes = [post({"message": f"again {i}"}, "198.51.100.44")[0] for i in range(6)]
+        assert codes == [202] * 5 + [429] and len(kept()) == n + 5, codes
+        assert post({"message": "someone else"}, "198.51.100.45")[0] == 202, "others still can"
+
+        # the admin page lists them, newest first, and takes the Donate button's address only as https
+        st, _, state = req(A, "GET", "/api/admin/state")
+        assert state["feedback"]["count"] == len(kept()) and state["feedback"]["recent"][0]["message"] == "someone else", state["feedback"]
+        for bad in ("javascript:alert(1)", "http://donate.example", "https://x.example/\"><script>", "https://a b.example"):
+            assert req(A, "POST", "/api/admin/settings", {"site.donate_url": bad})[0] == 400, bad
+        assert req(B, "GET", "/api/status")[2]["donate_url"] == "https://donate.example/tom"
+        assert req(A, "POST", "/api/admin/settings", {"site.donate_url": ""})[0] == 200
+        assert req(B, "GET", "/api/status")[2]["donate_url"] is None, "no button while it's empty"
+        assert req(A, "POST", "/api/admin/settings", {"notify.feedback": False})[0] == 200
+        before = len(sent)
+        assert post({"message": "not told"}, "198.51.100.46")[0] == 202
+        time.sleep(0.5)
+        assert len(sent) == before, "kept, but the phone isn't told with notify.feedback off"
+    finally:
+        out = srv.stop()
+        ntfy.shutdown()
+    assert "a visitor's bug report: 'It broke\\n\\n<script>" in out and "hidden field filled in: dropped" in out, out[-2000:]
+    print("feedback OK")
+
+
 def main() -> None:
     fetcher()
     with tempfile.TemporaryDirectory(prefix="bouldermesh-public-") as td:
@@ -565,6 +669,7 @@ def main() -> None:
         in_parts(Path(td) / "d")
         scene_hidden(Path(td) / "e")
         links_site(Path(td) / "f")
+        feedback(Path(td) / "g")
     print("ALL PUBLIC TESTS PASSED")
 
 

@@ -845,6 +845,13 @@ No Derivatives, or your own uploads ([license_considerations.md](license_conside
 - *Source photos and video frames*: all; or those free to copy, with only links to the rest, whose copies
   here aren't served; or only those free to copy.
 - *The map opens around a boulder this many km across*: its narrower side, when it opens on a mesh (1 by default).
+- *The "?" tab's Donate button goes to*: an `https://` address of yours for donations (`DONATE_URL` in `.env` starts it);
+  while it's empty, the tab has no button.
+
+The main page's **?** tab also has a form for comments and bug reports, which anyone viewing the site may send, with
+or without the editing token. They're kept as plain text in `data/feedback.jsonl`, listed on the admin page under
+*Comments and bug reports*, and told to your phone if notifications are on (*and when a visitor leaves a comment or
+bug report*).
 
 The coloured versions are made per vertex from the photos free to copy, so they're less sharp than a
 texture, and grey where none of those photos sees the rock. Meshes built before Nov 3 need rebuilding
@@ -1199,6 +1206,10 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
                                                         each per browser, replaced; mesh_ratings; `cli.py mesh-ratings`
     POST /api/mesh-views {mesh, via, seconds, note?}    a mesh a visitor's browser showed, as client-errors are taken (120 in 10
                                                         min an address): kept in data/mesh-views.jsonl; `cli.py mesh-views`
+    POST /api/feedback {kind, message, contact?, page?} a comment or bug report (kind) from the "?" tab, from anyone viewing
+                                                        the site (not other sites' pages; 4,000 characters, 5 an hour an
+                                                        address, 200 a day in all): control and invisible characters
+                                                        removed, kept in data/feedback.jsonl, and notified through ntfy
     POST /api/client-errors {kind, message, mesh?, file?, page?, source?}   what failed in a visitor's browser, from anyone
                                                         viewing the site (not other sites' pages; 8 KB, 20 in 10 min an address):
                                                         kept in data/client-errors.jsonl; `python3 cli.py client-errors` lists them

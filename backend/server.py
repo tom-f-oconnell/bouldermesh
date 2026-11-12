@@ -57,6 +57,7 @@ import skyline as skyline_mod  # noqa: E402
 import terrain as terrain_mod  # noqa: E402
 import meshclean  # noqa: E402
 import dbconn  # noqa: E402
+import feedback as feedback_mod  # noqa: E402
 import links as links_mod  # noqa: E402
 import thumbs as thumbs_mod  # noqa: E402
 import meshmetrics  # noqa: E402
@@ -6213,7 +6214,7 @@ def admin_machine_deny(body: dict) -> dict:
 CLIENT_ERRORS = DATA / "client-errors.jsonl"   # one report a line; the one before it, client-errors.jsonl.1, once it's full
 CLIENT_ERRORS_BYTES = 2 * 2**20                # how big the file gets before that
 CLIENT_REPORT_MAX = 8192                       # the largest report taken
-CLIENT_REPORTS = {"error": (20, 600), "view": (120, 600), "rating": (120, 3600)}  # at most this many of each from one address in this many seconds
+CLIENT_REPORTS = {"error": (20, 600), "view": (120, 600), "rating": (120, 3600), "feedback": (5, 3600)}  # at most this many of each from one address in this many seconds
 MESH_VIEWS = DATA / "mesh-views.jsonl"       # each mesh shown in a visitor's browser, and how it was asked for
 _client_reports: dict[tuple[str, str], list[float]] = {}
 _client_lock = threading.Lock()
@@ -6260,6 +6261,42 @@ def record_client_error(report: dict, sender: str, user_agent: str, editor: bool
     if not _client_report("error", sender, CLIENT_ERRORS, line):
         return False
     print(f"browser error ({line['kind']}){' in mesh ' + line['mesh'] if line['mesh'] else ''}: {(line['message'] or '')[:200]}", flush=True)
+    return True
+
+
+# ----------------------------------------------------------------- comments and bug reports from visitors
+FEEDBACK = DATA / "feedback.jsonl"      # one a line, as plain text (feedback.py)
+FEEDBACK_ALL = (200, 86400)             # at most this many kept from everyone together in this many seconds (CLIENT_REPORTS
+                                        # has one address's), so that many addresses can't fill the file or the phone
+FEEDBACK_GAP = 60                       # seconds: at most one notification in this many; those meanwhile together after
+_feedback_times: list[float] = []
+FEEDBACK_NOTES = notify_mod.Paced(lambda title, text, actions: threading.Thread(
+    target=NOTIFIER.send, args=(title, text, actions, 3, ["speech_balloon"]), daemon=True).start(), FEEDBACK_GAP)
+
+
+def record_feedback(report: dict, sender: str, user_agent: str, editor: bool) -> bool | None:
+    """Keep a comment or bug report from the page's "?" tab, cleaned (feedback.parse()), in FEEDBACK, and tell the
+    admin's phone (notify.feedback), as plain text. Who sent it isn't kept, only their browser and what they gave to be
+    reached by. Returns None for one dropped as a bot's (its hidden field filled in), and False if that address, or
+    everyone together, has sent too many lately.
+
+    Raises:
+        ValueError: for one that's empty, too long, or not text.
+    """
+    line = feedback_mod.parse(report)
+    if line is None:
+        print("a comment with the form's hidden field filled in: dropped", flush=True)
+        return None
+    now = time.time()
+    with _client_lock:
+        _feedback_times[:] = [t for t in _feedback_times if now - t < FEEDBACK_ALL[1]]
+        if len(_feedback_times) >= FEEDBACK_ALL[0] or not _client_allowed("feedback", sender):
+            return False
+        _feedback_times.append(now)
+        feedback_mod.keep(FEEDBACK, {**line, "browser": feedback_mod.clean(user_agent[:300]) or None, "editor": editor, "version": VERSION})
+    print(f"a visitor's {'bug report' if line['kind'] == 'bug' else 'comment'}: {line['message'][:200]!r}", flush=True)
+    if settings().get("notify.feedback"):
+        FEEDBACK_NOTES.add(*feedback_mod.note(line))
     return True
 
 
@@ -6690,6 +6727,33 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "too many reports from here lately"}, 429)
         self.send_json({"kept": True}, 202)
 
+    def feedback(self) -> None:
+        """POST /api/feedback: a comment or bug report from the page's "?" tab (record_feedback()), from any visitor, as
+        client_report() takes reports: only from the site's own pages, small, and not too often."""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if self.cross_site() or not 0 < n <= feedback_mod.REQUEST_BYTES:
+            self.close_connection = True    # its body, unread, would otherwise be taken for the next request
+            if self.cross_site():
+                return self.send_json({"error": "refused: sent from another site's page"}, 403)
+            return self.send_json({"error": f"a comment is 1 byte to {feedback_mod.REQUEST_BYTES // 1024} KB of JSON"}, 413 if n > 0 else 400)
+        try:
+            report = json.loads(self.rfile.read(n))
+        except ValueError:
+            report = None
+        if not isinstance(report, dict):
+            return self.send_json({"error": "a comment is a JSON object"}, 400)
+        try:
+            kept = record_feedback(report, self.address_string(), self.headers.get("User-Agent") or "",
+                                   not READ_ONLY and (not EDIT_TOKEN or self.is_editor()))
+        except ValueError as e:
+            return self.send_json({"error": str(e)}, 400)
+        if kept is False:
+            return self.send_json({"error": "too many comments from here lately"}, 429)
+        self.send_json({"kept": True}, 202)     # also for one dropped as a bot's, which isn't told
+
     def rate(self, mid: str) -> None:
         """POST /api/meshes/<id>/rating: a visitor's rating and comment (rate_mesh()), from any visitor, as client_report()
         takes reports: only from the site's own pages, and small."""
@@ -6807,6 +6871,7 @@ class Handler(BaseHTTPRequestHandler):
                                        "opencv": _has("cv2"), "pillow": _has("PIL"),
                                        "policy": {"textures": settings().get("site.textures"), "sources": settings().get("site.sources")},
                                        "map_km": settings().get("site.map_km"),
+                                       "donate_url": settings().get("site.donate_url") or None,   # the "?" tab's Donate button
                                        # the volunteers' page, for the header's Volunteer button, where this server takes them
                                        "volunteer_url": VOLUNTEER_URL if VOLUNTEER_PORT else None,
                                        "editing": "none" if READ_ONLY else "token" if EDIT_TOKEN else "open",
@@ -7176,6 +7241,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(drain(bool(b.get("on", True)), bool(b.get("now"))))
         if p in ("/api/client-errors", "/api/mesh-views"):    # from any visitor, not only editors
             return self.client_report("error" if p == "/api/client-errors" else "view")
+        if p == "/api/feedback":    # also from any visitor
+            return self.feedback()
         if p == "/api/pair":    # also from any visitor: the code is what's checked
             return self.pair()
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/rating", p)
@@ -8284,7 +8351,7 @@ def admin_state() -> dict:
             "proxy_ranges": RANGES.state() if RANGES else None, "version": VERSION,
             "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE, "machines_image": MACHINES_IMAGE,
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
-            "notify": NOTIFIER.state(), "pairing": pairing_state(),
+            "notify": NOTIFIER.state(), "pairing": pairing_state(), "feedback": feedback_mod.recent(FEEDBACK),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
             "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "untied_meshes": len(untied_meshes()), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q), "backup": backup_state()}

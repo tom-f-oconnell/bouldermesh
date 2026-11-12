@@ -46,6 +46,7 @@ DEFAULTS = {
     "site.textures": "all",                # all | permitted (only from clearly licensed photos) | none
     "site.sources": "all",                 # all | link (non-permitted ones only as links) | permitted
     "site.map_km": 1.0,                    # how many km across (its narrower side) the map opens around a boulder
+    "site.donate_url": "",                 # where the "?" tab's Donate button goes (https://…); none while empty (DONATE_URL starts it)
     # the viewer opens a mesh with at least twice as many faces as a simplified copy of about this many first, then the
     # rest (glbpack.py): 150,000 is about 1 MB, and on Caveman looks the same at a phone's size; 0: no previews
     "viewer.preview_faces": 150_000,
@@ -98,6 +99,7 @@ DEFAULTS = {
     "notify.reply_topic": "",
     "notify.restarts": True,        # when the server is back up after a restart
     "notify.downloads": True,       # when someone downloads the worker or volunteer script, roughly from where
+    "notify.feedback": True,        # when a visitor leaves a comment or bug report on the "?" tab (feedback.py)
     # whose names the public leaderboard shows (leaderboard()): those who registered since the scripts said it would
     # ("new"), everyone's ("all"), or no one's ("none"); the rest as anonymous
     "leaderboard.names": "new",
@@ -119,6 +121,11 @@ try:
     DEFAULTS["storage.cap_gb"] = max(0.0, float(os.environ.get("DATA_CAP_GB") or 0))
 except ValueError:
     print(f"DATA_CAP_GB={os.environ['DATA_CAP_GB']} ignored: a number of GB", flush=True)
+DONATE_URL = re.compile(r"https://[^\s\"'<>\\]{4,300}")      # a link a page can show: https only, nothing that ends an attribute
+if DONATE_URL.fullmatch(os.environ.get("DONATE_URL", "").strip()):
+    DEFAULTS["site.donate_url"] = os.environ["DONATE_URL"].strip()
+elif os.environ.get("DONATE_URL", "").strip():
+    print("DONATE_URL ignored: an https:// address", flush=True)
 SECRETS = ("aws.access_key_id", "aws.secret_access_key", "ssh.private_key")
 SECRETS_FILE = "secrets.json"
 _lock = threading.Lock()
@@ -194,6 +201,8 @@ class Settings:
                 raise ValueError("notify.server is an https:// address, such as https://ntfy.sh")
             if k in ("notify.topic", "notify.reply_topic") and v and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", v):
                 raise ValueError(f"{k} is up to 64 letters, digits, - and _")
+            if k == "site.donate_url" and v and not DONATE_URL.fullmatch(v):
+                raise ValueError("site.donate_url is an https:// address, or empty for no Donate button")
             clean[k] = v
         with self._db() as con:
             con.executemany("INSERT OR REPLACE INTO settings VALUES(?,?)", [(k, json.dumps(v)) for k, v in clean.items()])

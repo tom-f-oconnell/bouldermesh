@@ -54,6 +54,7 @@
   .bars .row.free .bar{background:transparent;border:1px dashed var(--mute);box-sizing:border-box}
   .bars .row{display:contents} .bars .row:hover .name,.bars .row:hover .fig{color:var(--fg)} .bars .row:hover .bar{filter:brightness(1.15)}
   #msg{position:fixed;bottom:14px;right:14px;background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:8px;display:none;max-width:420px}
+  .fb{border-top:1px solid var(--line);padding:8px 0} .fb .note{margin:0 0 4px} .fbtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
   .aws,.ssh,.pull{display:none}
   body.p-aws .aws, body.p-ssh .ssh, body.p-pull .pull{display:block}
   body.p-aws .grid.aws{display:grid}
@@ -82,6 +83,7 @@
     <div class="grid" style="margin-top:14px"><div><label>The map opens around a boulder this many km across <small>(its narrower side)</small></label><input type="number" id="map-km" min="0.05" step="0.25"></div>
       <div><label>A mesh opens first as a simplified copy of about this many faces <small>(0: none)</small></label><input type="number" id="preview-faces" min="0" max="5000000" step="10000">
         <div class="note" id="pack-note"></div></div></div>
+    <label>The "?" tab's Donate button goes to <small>(an https:// address; empty: no button)</small></label><input type="text" id="donate-url" maxlength="300" placeholder="https://…">
     <div class="note">Then the rest of it comes, with a sharper texture. A copy is made only for a mesh with at least twice as
       many faces. Fewer show sooner but coarser: about 7 bytes a face, so 150,000 (the default) is about 1 MB, and on
       Caveman (1.5 million faces) looks the same at a phone's size. A change makes every mesh's copies again, one at a
@@ -223,6 +225,8 @@
     <label class="choice"><input type="checkbox" id="ntfy-downloads"> and when someone downloads the worker or volunteer script, roughly from
       where <small>(the city Cloudflare's visitor location headers give, with a map; at most one notification in 10 minutes, and one a day for an
       address; every download is kept in data/script-downloads.jsonl)</small></label>
+    <label class="choice"><input type="checkbox" id="ntfy-feedback"> and when a visitor leaves a comment or bug report <small>(its start, as plain
+      text; at most one notification a minute)</small></label>
     <div class="grid"><div><label>ntfy server</label><input type="text" id="ntfy-server" placeholder="https://ntfy.sh"></div>
       <div class="row" style="margin-top:22px"><button class="sec" id="ntfy-topics">Make new topics</button><button class="sec" id="ntfy-test">Send a test</button></div></div>
     <div id="ntfy-body" class="note"></div>
@@ -262,6 +266,12 @@
       their logs (counted as "from logs").</div>
   </section>
 
+  <section id="feedback">
+    <h2>Comments and bug reports</h2>
+    <div class="note" id="fb-note"></div>
+    <div id="fb-list"></div>
+  </section>
+
   <section id="pairing">
     <h2>Editing from a phone</h2>
     <div class="note" id="pair-note"></div>
@@ -294,6 +304,7 @@ async function call(path, body){
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 }
+const fmtFbTime = t => { const d = new Date(t); return isNaN(d) ? '' : d.toLocaleString(); };
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 let timings = null, machChangesOpen = false;
 function renderTimings(){
@@ -520,6 +531,11 @@ function render(s){
   const nt = s.notify;
   $('#ntfy-on').checked = v['notify.enabled']; keep('#ntfy-server', v['notify.server']);
   $('#ntfy-restarts').checked = v['notify.restarts']; $('#ntfy-downloads').checked = v['notify.downloads'];
+  $('#ntfy-feedback').checked = v['notify.feedback']; keep('#donate-url', v['site.donate_url']);
+  // what visitors typed: only ever put in the page escaped, as text
+  const fb = s.feedback;
+  $('#fb-note').textContent = fb.count ? `${fb.count} from the main site's "?" tab, kept in data/${fb.file}; the newest first.` : 'None yet. Visitors leave them on the main site\'s "?" tab.';
+  $('#fb-list').innerHTML = fb.recent.map(f => `<div class="fb"><div class="note">${esc(fmtFbTime(f.time))} · ${f.kind === 'bug' ? '<span class="warn">bug report</span>' : 'comment'}${f.contact ? ` · reach them: ${esc(f.contact)}` : ''}${f.page ? ` · on ${esc(f.page)}` : ''}${f.browser ? ` · <span title="${esc(f.browser)}">their browser</span>` : ''}</div><div class="fbtext">${esc(f.message)}</div></div>`).join('');
   $('#ntfy-test').disabled = !nt.enabled;
   $('#ntfy-note').innerHTML = nt.enabled ? (nt.listening ? '<span class="ok">on, and following replies</span>' : '<span class="warn">on, but not following replies yet</span>') : 'off';
   $('#ntfy-body').innerHTML = (nt.subscribe
@@ -698,6 +714,8 @@ $('#lb-names').onchange = () => save({ 'leaderboard.names': $('#lb-names').value
 $('#ntfy-on').onchange = () => save({ 'notify.enabled': $('#ntfy-on').checked });
 $('#ntfy-restarts').onchange = () => save({ 'notify.restarts': $('#ntfy-restarts').checked });
 $('#ntfy-downloads').onchange = () => save({ 'notify.downloads': $('#ntfy-downloads').checked });
+$('#ntfy-feedback').onchange = () => save({ 'notify.feedback': $('#ntfy-feedback').checked });
+$('#donate-url').onchange = () => save({ 'site.donate_url': $('#donate-url').value });
 $('#ntfy-server').onchange = () => save({ 'notify.server': $('#ntfy-server').value });
 $('#ntfy-topics').onclick = async () => {
   if (state?.notify?.topic && !confirm('Make new topics? Your phone then has to subscribe to the new one, and buttons on notifications already sent stop working.')) return;
