@@ -71,11 +71,11 @@
   button.sm{padding:3px 8px;font-size:12px}
   button:disabled{opacity:.45;cursor:default}
   .limitopt:has(input:disabled){opacity:.45;cursor:default}   /* "count failures", with no limit to count toward */
-  #edit:disabled{opacity:1}   /* "Editing": a sign that this browser's token was accepted, not a button */
   /* a view-only copy of the site (no editing token): everything that would change something is hidden */
   body.readonly .w,body.readonly .del,body.readonly .editll,body.readonly .details,body.readonly .linksel,body.readonly .unlink,body.readonly .harvest,
   body.readonly .rec,body.readonly .retry,body.readonly #p-interrupted,body.readonly button.back,body.readonly button.all,body.readonly label.file,
   body.readonly .stopnow,body.readonly .stoplater,body.readonly .resume,body.readonly .retryfailed,body.readonly .harvestagain,body.readonly .rebuildchanged,
+  #forget .short{display:none}   /* "Forget token" only on the narrowest phones (below) */
   body.readonly .rebuildall,body.readonly .boulders,body.readonly .meshboulder,body.readonly .setll,body.readonly #pieces .edit,body.readonly #pieces .redo,body.readonly .rebuild,
   body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly button.mark,body.readonly .clearmine,body.readonly #vmark,
   body.readonly .tryskipped,body.readonly .editopt,body.readonly .pause,body.readonly .unpause,
@@ -255,7 +255,10 @@
     body,main{grid-template-columns:minmax(0,1fr)} aside{border-right:0} #right{display:none} .phone{display:inline-block}
     body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
     header{padding:6px 10px;gap:8px} header h1,#mode{display:none}
-    #hspace{order:1} #edit,#viewonly,#forget{order:2} #volunteer{order:3}
+    #hspace{order:1} #volunteer{order:2} #prefsbtn{order:3}   /* the editing token's button at the left, settings at the far right */
+    header button,header a{white-space:nowrap}
+    @media (max-width:400px){ header{gap:5px;padding:6px} header button.sm{padding-left:8px;padding-right:8px}
+      #forget .short{display:inline} #forget .long{display:none} }
     /* the view on its own: back, and a toggle between the mesh and the map */
     #toctl{padding:3px 10px;border:1px solid transparent} #toctl .arrow{font-size:17px;line-height:0;vertical-align:-1px}
     #v3d,#viewing{display:none!important}
@@ -288,10 +291,10 @@
   <button class="sm" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random</button>
   <span id="viewonly" class="pill" style="display:none" title="This copy of the site can't be changed from a browser">view-only</span>
   <button class="sm sec" id="edit" style="display:none"></button>
-  <button class="sm danger" id="forget" style="display:none" title="Forget the editing token kept in this browser: changing anything here then needs it again">Forget edit token</button>
+  <button class="sm danger" id="forget" style="display:none" title="Forget the editing token kept in this browser: changing anything here then needs it again"><span class="long">Forget edit token</span><span class="short">Forget token</span></button>
   <button class="sm sec phone prefsbtn" id="prefsbtn" title="Settings: the mesh's look, its background, detail and colours" aria-label="Settings" aria-expanded="false"><span class="gear" aria-hidden="true">⚙︎</span></button>
   <span id="hspace"></span>
-  <button class="sm sec" id="admin" style="display:none" title="The admin page: what the site shows, where reconstructions run, credentials. It's on a port of its own, which only the server itself (or its LAN) can reach.">Admin</button>
+  <button class="sm danger" id="admin" style="display:none" title="The admin page: what the site shows, where reconstructions run, credentials. It's on a port of its own, which only the server itself (or its LAN) can reach.">Admin</button>
   <a id="volunteer" style="display:none" href="/volunteer/" title="Lend this site your computer: to fetch YouTube videos of climbs, or to make meshes on its GPU">Volunteer</a>
   <a id="code" href="https://github.com/tom-f-oconnell/bouldermesh" target="_blank" rel="noopener">Code</a>
 </header>
@@ -4050,11 +4053,10 @@ editor = !!statusCache.editor;
 document.body.classList.toggle('readonly', !editor);
 if (statusCache.editing === 'none') $('#viewonly').style.display = '';
 if (statusCache.editing === 'token') {
-  const b = $('#edit');
-  b.style.display = '';
-  b.textContent = editor ? 'Editing' : 'Edit…';
-  b.disabled = editor;    // then only a sign that it's accepted: Forget edit token, beside it, is what forgets it
-  b.title = editor ? 'Changes made here are allowed by the token you entered.' : 'This copy of the site is view-only. Enter its editing token to change things from here.';
+  const b = $('#edit');      // Edit… without a token; with one accepted, only Forget edit token says so
+  b.style.display = editor ? 'none' : '';
+  b.textContent = 'Edit…';
+  b.title = 'This copy of the site is view-only. Enter its editing token to change things from here.';
   b.onclick = openEdit;
   if (editor) {
     const f = $('#forget');

@@ -673,8 +673,8 @@ answers these only from itself (`GET /api/deploy`, `POST /api/deploy/drain`), th
   COLMAP and OpenMVS again.
 
 **Changing things.** With `EDIT_TOKEN` set, the page has an *Edit…* button in its header: enter the token there (it
-stays in that browser) and the controls appear, with the Areas and Projects tabs. The button then says *Editing*, and
-*Forget edit token* beside it forgets the token in that browser. On a phone, rather than type it, press *Show a QR for
+stays in that browser) and the controls appear, with the Areas and Projects tabs. The button is then replaced by
+*Forget edit token*, which forgets the token in that browser. On a phone, rather than type it, press *Show a QR for
 a phone* on the admin page and scan it, with *Scan* in *Edit…* or with the phone's camera app. The QR holds a code that
 gets the token once, within 5 minutes, not the token itself; each use is logged, and sent through ntfy if notifications
 are on. The camera app's link needs `SITE_URL`, which the public setup sets from `SITE_HOST`. Without the token, the
