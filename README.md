@@ -851,10 +851,13 @@ By default this server does everything. *Reconstructions at once on this server*
 runs climbs side by side (two areas then share the workers), though most steps already use every core, or set to 0,
 for a small server that only harvests: then every climb waits for another machine to mesh it. *Cores for this server's
 own processing* (all by default) keeps harvests and their off-topic filter, packing meshes and finding beta here to
-that many of its cores, the last ones, leaving the first for answering visitors. The admin page's *Workers* line says
+that many of its cores, the last ones, leaving the first for answering visitors. This server filters one harvest's
+photos at a time, and the public setup holds native libraries to one thread each (`OMP_NUM_THREADS` and the like),
+as two filters at once on its 2 cores spun in the kernel for hours. The admin page's *Workers* line says
 what each worker is doing: each takes one area's climb at a time and harvests it here; *this server* meshes it here
-too, and *remote 1*, *remote 2*, ... each hand theirs to a machine, as many as *At most this many other machines at once*.
-On the admin page, *Run more on* adds up to *At most this many other machines at once* (2 by default):
+too, and *remote 1*, *remote 2*, ... each hand theirs to a machine, as many as *Climbs at once meshed on other
+machines*, which is how many climbs can be on their way at once, one harvested while another is meshed, even with one
+machine. *Run more on* adds up to that many machines (2 by default):
 
 - **Machines reached over SSH**: any you keep running, with Docker (and NVIDIA's container toolkit for
   the GPU), listed as `user@host[:port]`, all reached with one private key saved as a credential.

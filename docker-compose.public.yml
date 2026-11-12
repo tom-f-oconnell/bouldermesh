@@ -23,6 +23,11 @@ services:
       CAMPAIGN_MIN_FREE_GB: "${CAMPAIGN_MIN_FREE_GB:-10}"   # areas stop with less disk left than this (50 elsewhere)
       DATA_CAP_GB: "${DATA_CAP_GB:-60}"     # over this much data, volunteers and areas wait for room (none elsewhere); the admin page changes it
       SITE_SOURCES: "${SITE_SOURCES:-link}"  # photos and frames not clearly free to copy are linked to, not served (all | link | permitted)
+      # native libraries' thread pools (OpenMP, OpenBLAS, MKL, and CLIP's torch) one thread each, on a 2-core server where
+      # two harvests' filters at once spun in the kernel for 5 hours (Nov 12, 2026); it meshes nothing itself
+      OMP_NUM_THREADS: "${OMP_NUM_THREADS:-1}"
+      OPENBLAS_NUM_THREADS: "${OPENBLAS_NUM_THREADS:-1}"
+      MKL_NUM_THREADS: "${MKL_NUM_THREADS:-1}"
       SITE_TEXTURES:                        # from .env, optional: all (the default) | permitted | none. The admin page can change
                                             # both, and its choices last across deploy/ship.sh
     volumes:

@@ -1787,6 +1787,16 @@ try:
     server.filter_anywhere(fphotos, fdir / "rejected", print)
     assert not remote, "turned off on the admin page"
     server.settings().update({"relevance.machines": True})
+    # here, one harvest's at a time: another waits, saying so, until the first is done
+    server.MACHINES.task = no_machine
+    said, done = [], threading.Event()
+    with server._filtering_here:
+        waiter = threading.Thread(target=lambda: (server.filter_anywhere(fphotos, fdir / "rejected", said.append,
+                                                                         progress=lambda f=0.0, d=None: said.append(d)), done.set()))
+        waiter.start()
+        time.sleep(0.5)
+        assert not done.is_set() and "waiting for another harvest's filtering on the server" in said, said
+    assert done.wait(10), "carries on once the other's done"
 finally:
     (server.MACHINES.task, server.MACHINES.can, server._local_meshing, server._executor, server.relevance_mod.CACHE_FILE) = saved
     server.relevance_mod.filter_photos = real_filter

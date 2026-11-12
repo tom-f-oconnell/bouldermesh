@@ -214,7 +214,7 @@ def boulder_probability(paths: list[Path], log: Log, progress: Progress | None =
     todo = [p for p in paths if p not in out]
     if todo:
         model, prep, text, device = _load_clip(log)
-        torch.set_num_threads(cores())
+        torch.set_num_threads(native_threads())
     for i, p in enumerate(todo):
         if progress:
             progress(i / max(1, len(todo)), f"{i} of {len(todo)} photos")
@@ -285,6 +285,16 @@ def cores() -> int:
         return len(os.sched_getaffinity(0))
     except (AttributeError, OSError):
         return os.cpu_count() or 2
+
+
+def native_threads() -> int:
+    """Threads CLIP (torch) may use: cores(), or fewer where OMP_NUM_THREADS says, as on the public server, where native
+    libraries' thread pools spun in the kernel with two filters at once (Nov 12, 2026)."""
+    try:
+        cap = int(os.environ.get("OMP_NUM_THREADS") or 0)
+    except ValueError:
+        cap = 0
+    return min(cores(), cap) if cap > 0 else cores()
 
 
 def _threads() -> int:

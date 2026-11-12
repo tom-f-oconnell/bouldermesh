@@ -4976,10 +4976,10 @@ class _StepProgress:
 def filter_anywhere(paths: list[Path], rejected: Path | None, log, **kw) -> dict:
     """relevance_mod.RUNNER: a harvest's filtering (relevance.filter_photos()) on a machine that connects here, when this
     server meshes on machines (offloading()), the admin page's relevance.machines is on, and one with a script that
-    does it has been in touch; otherwise, or if no machine takes it within FILTER_TAKE or it fails, here. Either way
-    the report is the same, and the photos it rejects are moved here."""
+    does it has been in touch; otherwise, or if no machine takes it within FILTER_TAKE or it fails, here (filter_here(),
+    one at a time). Either way the report is the same, and the photos it rejects are moved here."""
     if not (paths and settings().get("relevance.machines") and offloading() and MACHINES.can(FILTER_VERSION)) or kw.get("anchors") is not None:
-        return relevance_mod.filter_photos(paths, rejected, log, **kw)
+        return filter_here(paths, rejected, log, **kw)
     try:
         return filter_remote(paths, rejected, log, **kw)
     except Cancelled:
@@ -4989,7 +4989,25 @@ def filter_anywhere(paths: list[Path], rejected: Path | None, log, **kw) -> dict
             "filtering here")
         if hasattr(kw.get("progress"), "at"):
             kw["progress"].at("server")
+        return filter_here(paths, rejected, log, **kw)
+
+
+_filtering_here = threading.Lock()      # the server's own filtering: one harvest's at a time (filter_here())
+
+
+def filter_here(paths: list[Path], rejected: Path | None, log, **kw) -> dict:
+    """relevance.filter_photos() on this server, one harvest's at a time, as two at once spun in the kernel for 5 hours on
+    the 2-core public server (Nov 12, 2026). One waiting for another says so in its step, and can be stopped meanwhile."""
+    if not _filtering_here.acquire(blocking=False):
+        log("relevance: waiting for another harvest's filtering here to finish")
+        if kw.get("progress"):
+            kw["progress"](0.0, "waiting for another harvest's filtering on the server")
+        while not _filtering_here.acquire(timeout=2):
+            jobctl.check()
+    try:
         return relevance_mod.filter_photos(paths, rejected, log, **kw)
+    finally:
+        _filtering_here.release()
 
 
 def filter_remote(paths: list[Path], rejected: Path | None, log, methods: list[str] | None = None, progress=None,
@@ -5442,8 +5460,8 @@ def worker(w: Worker | None = None) -> None:
             if job:
                 run_job(job)
                 continue
-        if not (w.remote or _local_meshing):    # areas' climbs are for other machines' workers
-            continue
+        if w.retired or not (w.remote or _local_meshing):   # retired while waiting for a job; areas' climbs are for
+            continue                                        # other machines' workers
         try:
             if not next_campaign_step() and w.remote:
                 time.sleep(CAMPAIGN_POLL)

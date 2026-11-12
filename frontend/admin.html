@@ -98,7 +98,7 @@
       harvested again only matches what's new. On 12 of hal's harvests FLANN kept 92 of the 101 search photos brute force
       matched (and one it didn't), and more checks didn't close the gap, so brute force stays the default.</div>
     <label class="choice"><input type="checkbox" id="filter-machines"> Filter harvests' photos on a machine that connects here, when one can
-      <small>(its script version 12 or newer; it takes them before meshing, and they're filtered here if none takes one within 3 minutes. An earlier run's verdicts stand either way: a boulder pooled again only judges what's new)</small></label>
+      <small>(its script version 12 or newer; it takes them before meshing, and they're filtered here, one at a time, if none takes one within 3 minutes, as when the only machine is meshing. An earlier run's verdicts stand either way: a boulder pooled again only judges what's new)</small></label>
     <label class="choice"><input type="checkbox" id="beta-auto"> Find beta in each new mesh with video frames placed in it
       <small>(while its videos are still here; on a machine, after meshing)</small></label>
     <label class="choice"><input type="checkbox" id="skyline-auto"> Work out which way each mesh faces from the skyline in its photos, where distant mountains show
@@ -131,15 +131,19 @@
     <div id="slots" class="note"></div>
     <div class="note">Each worker takes one area's climb at a time, and harvests it here, off-topic filter and all. <i>this server</i>
       then meshes it here (with reconstructions above 0), and also runs the jobs asked for on this page; each <i>remote</i> hands its
-      climbs to a machine, one at a time, up to <i>At most this many other machines at once</i>. One idle has no climb it can take
+      climbs to a machine, one at a time: <i>Climbs at once meshed on other machines</i> is how many of those workers there are,
+      so how many climbs can be on their way at once (one harvested here while another is meshed), even with one machine.
+      One idle has no climb it can take
       now: the rest are waiting for volunteers' videos, for others on their boulder, or for each other.
       <i>Cores for this server's own processing</i> keeps harvests, the filter, packing meshes and finding beta here to that many
-      of its cores (the last ones), leaving the first for visitors: all by default.</div>
+      of its cores (the last ones), leaving the first for visitors: all by default. Whatever it is, this server filters one
+      harvest's photos at a time, and the public setup holds its native libraries to one thread each (OMP_NUM_THREADS and
+      the like in docker-compose.public.yml), as two filters at once spun in the kernel for 5 hours on Nov 12, 2026.</div>
     <div class="grid">
       <div><label>Reconstructions at once on this server (0: none, it only harvests)</label><input type="number" id="local" min="0" max="4"></div>
       <div><label>Cores for this server's own processing <small id="cores-of"></small></label><input type="number" id="cores" min="1"></div>
       <div><label>Run more on</label><select id="provider"><option value="none">Nothing else: this server only</option><option value="ssh">Machines reached over SSH</option><option value="aws">AWS EC2 instances, started when needed</option><option value="pull">Machines that connect here for work (behind a firewall)</option></select></div>
-      <div><label>At most this many other machines at once</label><input type="number" id="remote" min="0" max="16"></div>
+      <div><label>Climbs at once meshed on other machines (for SSH and AWS, at most this many machines)</label><input type="number" id="remote" min="0" max="16"></div>
       <div><label>End an idle cloud machine after (minutes)</label><input type="number" id="idle" min="1" max="240"></div>
     </div>
     <div class="ssh aws pull"><label>Docker image the machines run (pushed to a registry they can pull from)</label><input type="text" id="image" placeholder="ghcr.io/you/bouldermesh:latest"><div class="note" id="image-note"></div></div>
