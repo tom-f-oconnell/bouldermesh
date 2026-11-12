@@ -24,8 +24,10 @@ SCRIPT = Path(__file__).with_name("thumbs.mjs")
 VERSION = 1                 # how pictures are drawn: one more draws them all again
 SIZE, SMALL = (1200, 630), (480, 252)
 DIR, LARGE, SMALL_FILE, RECORD = "thumb", "large.jpg", "small.jpg", "thumb.json"
-TIMEOUT = 180               # seconds one picture may take, page and mesh loading included
+TIMEOUT = 600               # seconds one picture may take, page and mesh loading included: at the lowest priority, on
+                            # a server busy harvesting, drawing gets little of its CPU
 IDLE = 300                  # seconds the browser stays open with nothing to draw
+RETRY = 3600                # seconds before a picture that failed is tried again, from the same things
 
 
 def core() -> Path:

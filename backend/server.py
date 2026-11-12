@@ -7844,8 +7844,8 @@ def thumb_info(r: dict) -> dict | None:
     if thumbs_mod.available() and not r.get("replaced_by") and (r.get("pack") or not r["filename"].lower().endswith(".glb")):
         rec = thumbs_mod.load(d)
         want = thumbs_mod.key(r.get("v"), d, rec.get("pose"))
-        if rec.get("key") != want and rec.get("failed_key") != want:
-            queue_thumb(r["id"])
+        if rec.get("key") != want and (rec.get("failed_key") != want or time.time() - (rec.get("failed_at") or 0) > thumbs_mod.RETRY):
+            queue_thumb(r["id"])     # one that failed, again after a while: most fail as the server's too busy
     return thumb_now(r["id"], r.get("texture"))
 
 
@@ -7874,7 +7874,7 @@ def thumb_pose(mid: str) -> dict | None:
 
 def draw_thumb(mid: str) -> bool:
     """Draw a mesh's picture (thumbs_mod.Renderer), unless it's drawn already from what it would be now. Whether it
-    drew one; a failure is kept, with what it was drawn from, so as not to try that again."""
+    drew one; a failure is kept, with what it was drawn from and when, so as not to try that again for RETRY seconds."""
     m = q("SELECT source, filename FROM meshes WHERE id=?", mid, one=True)
     if not m:
         return False
@@ -7899,7 +7899,7 @@ def draw_thumb(mid: str) -> bool:
     except Exception as e:
         print(f"{mid}: its picture couldn't be drawn: {type(e).__name__}: {e}", flush=True)
         rec = thumbs_mod.load(d)
-        rec.update(failed=str(e), failed_key=want)
+        rec.update(failed=str(e), failed_key=want, failed_at=time.time())
         thumbs_mod.save(d, rec)
         return False
     rec = thumbs_mod.load(d)    # a camera chosen meanwhile stays, and draws it again

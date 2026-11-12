@@ -21,11 +21,11 @@ for await (const line of createInterface({ input: process.stdin })) {
     job = JSON.parse(line);
     if (!browser?.isConnected()) browser = await chromium.launch({ headless: true, args: ARGS });
     page = await browser.newPage({ viewport: { width: job.width, height: job.height }, deviceScaleFactor: 1 });
-    const ms = (job.timeout || 120) * 1000;
-    await page.goto(job.url, { waitUntil: 'load', timeout: ms });
-    await page.waitForSelector('html[data-thumb]', { state: 'attached', timeout: ms });
+    const end = began + (job.timeout || 120) * 1000, left = () => Math.max(1000, end - Date.now());   // all of it, in that
+    await page.goto(job.url, { waitUntil: 'load', timeout: left() });
+    await page.waitForSelector('html[data-thumb]', { state: 'attached', timeout: left() });
     if (await page.getAttribute('html', 'data-thumb') !== 'ready') throw new Error("the viewer couldn't show it");
-    await page.screenshot({ path: job.out, type: 'jpeg', quality: 85 });
+    await page.screenshot({ path: job.out, type: 'jpeg', quality: 85, timeout: left() });   // slow while the server's busy
     say({ ok: true, seconds: seconds() });
   } catch (e) {
     say({ ok: false, error: String(e?.message || e).split('\n')[0].slice(0, 300), seconds: seconds() });
