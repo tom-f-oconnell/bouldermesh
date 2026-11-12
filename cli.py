@@ -89,6 +89,7 @@ def main():
     dc = sub.add_parser("deploy-check", help="what a restart would cost now (exit 3 if it would lose work in progress)")
     dc.add_argument("--server", default=here)
     dc.add_argument("--brief", action="store_true", help="one line: only what a restart would lose, as deploy.sh waits for it")
+    dc.add_argument("--color", action="store_true", help="colour it, by kind of work")
     dd = sub.add_parser("deploy-drain", help="take no new work (--off: carry on as before; --now: a stop won't wait either)")
     dd.add_argument("--server", default=here); dd.add_argument("--off", action="store_true"); dd.add_argument("--now", action="store_true")
     o = sub.add_parser("offtopic-split"); o.add_argument("--limit", type=int, default=0)
@@ -134,7 +135,7 @@ def main():
     if a.cmd == "jobs":
         sys.exit(jobs(a.server))
     if a.cmd == "deploy-check":
-        sys.exit(deploy_check(a.server, a.brief))
+        sys.exit(deploy_check(a.server, a.brief, a.color))
     if a.cmd == "deploy-drain":
         _deploy(a.server, {"on": not a.off, "now": a.now})
         print("carrying on as before" if a.off else "taking no new work" + ("; a stop won't wait for jobs either" if a.now else ""))
@@ -308,16 +309,75 @@ def _item(i: dict) -> str:
     return f"{i['what']}: {i['name']}" + (f" ({', '.join(bits)})" if bits else "")
 
 
-def _show(st: dict) -> None:
-    for i in st["items"]:
-        print(f"  {'!' if i['costly'] else ' '} {_item(i)}; a restart: {i['lost']}")
+WIDTH = 101     # deploy-check's lines wrap at this
+# how heavy each kind of work is, and how much a restart loses of it, lightest/least first: listed in this order
+WEIGHT = ["video", "size", "beta", "filter", "harvest", "area", "boulder", "meshing"]
+LOSS = ["queued again", "pauses", "starts", "interrupted", "lost", "ends"]
+COLOR = {"meshing": "31", "!": "38;5;208", "area": "36", "harvest": "34", "size": "35", "beta": "32", "filter": "33",
+         "boulder": "38;5;141", "video": "90"}
+VERB = {"ends": "31", "interrupted": "31", "lost": "31", "starts": "32", "pauses": "33", "queued": "36"}
 
 
-def deploy_check(server: str, brief: bool = False) -> int:
-    """Print what a restart would cost now, each piece of work in progress marked ! if it would lose much of it.
+def _paint(s: str, code: str | None, color: bool) -> str:
+    return f"\033[{code}m{s}\033[0m" if color and code else s
+
+
+def _rank(i: dict) -> tuple:
+    kind = WEIGHT.index(i["kind"]) if i.get("kind") in WEIGHT else WEIGHT.index("area")
+    loss = next((n for n, w in enumerate(LOSS) if i["lost"].startswith(w)), 0)
+    group = (2 if i.get("kind") == "meshing" else 1) if i["costly"] else 0
+    return group, kind, loss, i.get("elapsed") or 0
+
+
+def _state(i: dict) -> str:
+    return "queued" if i["what"].endswith(", queued") else "waiting for a machine" if "waiting for a machine" in i["what"] else \
+        "asked for" if "asked for" in i["what"] else "running"
+
+
+def _line_color(i: dict) -> str | None:
+    return COLOR["meshing"] if i["costly"] and i.get("kind") == "meshing" else COLOR["!"] if i["costly"] else COLOR.get(i.get("kind"))
+
+
+def _show(st: dict, color: bool = False) -> None:
+    """Each item, ! ones and heavier, costlier ones lower down (meshing last), wrapped at WIDTH; work for the project of
+    one before it (by "project_id") told under that one, as part of it. Then, after a line "@@legend" for deploy.sh,
+    what a restart does to each kind of work listed, once for each."""
+    import textwrap
+    items = sorted(st["items"], key=_rank)
+    parents: dict[str, dict] = {}
+    for i in items:
+        if i["costly"] and i.get("project_id"):
+            parents.setdefault(i["project_id"], i)
+    under: dict[int, list[dict]] = {}
+    for i in items:
+        top = parents.get(i.get("project_id"))
+        if top is not None and top is not i:
+            under.setdefault(id(top), []).append(i)
+    for top in items:
+        if parents.get(top.get("project_id"), top) is not top:
+            continue    # told under the one it's part of
+        lines = textwrap.wrap(f"{'!' if top['costly'] else ' '} {_item(top)}", WIDTH - 2, subsequent_indent="    ")
+        for sub in under.get(id(top), []):
+            lines += textwrap.wrap(f"  └ {_item(sub)}", WIDTH - 2, subsequent_indent="      ")
+        for line in lines:
+            print("  " + _paint(line, _line_color(top), color))
+    legend: dict[tuple, dict] = {}
+    for i in items:
+        legend.setdefault((i.get("kind") or "other", _state(i), i["lost"]), i)
+    print("@@legend")
+    print("a restart:")
+    for (kind, state, lost), i in legend.items():     # the kind coloured as its lines are, and what happens by its verbs
+        said = " ".join(_paint(w, VERB.get(w.strip(",:")), color) for w in lost.split(" "))
+        print("  " + _paint(f"{kind} ({state})", _line_color(i), color) + ": " + said)
+
+
+def deploy_check(server: str, brief: bool = False, color: bool = False) -> int:
+    """Print what a restart would cost now, each piece of work in progress marked ! if it would lose much of it, and
+    what a restart does to each kind of work, after a line "@@legend" (_show()).
 
     Args:
         brief: print only a line of what a restart would lose, for deploy.sh to print as it waits.
+        color: in colour, by kind of work (meshing in red, the other ! ones orange), as for a terminal.
 
     Returns:
         3 if a restart would lose work in progress, else 0 (1 if the server can't be asked; 2 is argparse's, as from an
@@ -336,14 +396,12 @@ def deploy_check(server: str, brief: bool = False) -> int:
         print("nothing in progress: a restart loses nothing")
         return 0
     if not st["costly"]:
-        print("in progress, which a restart only pauses:")
-        _show(st)
-        print("so a restart loses nothing much, and there's nothing to wait for")
+        print("in progress, which a restart only pauses, so there's nothing to wait for:")
+        _show(st, color)
         return 0
-    print("in progress (marked !: a restart now loses much of it):")
-    _show(st)
-    print(f"waiting for the ! ones would take about {_mins(st['eta'])}" if st["eta"] is not None
-          else "how long the ! ones have left isn't clear yet")
+    print("in progress (marked !: a restart now loses much of it" +
+          (f"; waiting for them would take about {_mins(st['eta'])}):" if st["eta"] is not None else "):"))
+    _show(st, color)
     return 3
 
 

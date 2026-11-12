@@ -37,13 +37,31 @@ export DEPLOY_SH=1      # so that they leave out what they'd tell you to do next
 deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public || exit 1
 
 # what a restart would cost now: exit 3 if it would lose work in progress (a server too old to say: 1 or 2)
+# (and after a line "@@legend", what a restart does to each kind of work listed: shown below the question while it's asked)
 set +e
-cli deploy-check
+out=$(cli deploy-check ${ask:+--color})
 check=$?
+[ "$check" -eq 2 ] && { out=$(cli deploy-check); check=$?; }    # a server from before --color (Nov 12, 2026)
 set -e
+legend=''
+if [[ "$out" == *$'\n@@legend\n'* ]]; then
+    legend=${out#*$'\n@@legend\n'}
+    out=${out%%$'\n@@legend\n'*}
+fi
+printf '%s\n' "$out"
+[ "$check" -eq 3 ] && [ "$mode" = ask ] || { [ -n "$legend" ] && printf '%s\n' "$legend"; }
 if [ "$check" -eq 3 ]; then
     if [ "$mode" = ask ]; then
-        read -r -p "${ask}Restart [n]ow, [a]fter what's in progress finishes (taking no new work meanwhile), or [c]ancel?${plain} " answer
+        question="${ask}Restart [n]ow, [a]fter what's in progress finishes (taking no new work meanwhile), or [c]ancel?${plain} "
+        if [ -n "$legend" ]; then
+            n=$(($(printf '%s\n' "$legend" | wc -l) + 1))
+            printf "%${n}s" '' | tr ' ' '\n'; printf '\e[%dA' "$n"     # room below first, so that it doesn't scroll
+            printf '%s\e7\n%s\e8' "$question" "$legend"                 # the legend below, back to the question
+            read -r answer
+            printf '\e[J'                                              # and the legend gone again
+        else
+            read -r -p "$question" answer
+        fi
         case "$answer" in
             n*|N*) mode=now ;;
             a*|A*) mode=after ;;

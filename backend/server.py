@@ -5569,6 +5569,7 @@ def _eta_from(progress: dict | None, keys: set[str]) -> float | None:
 
 MACHINE_TASKS = {"reconstruct": "meshing", "beta": "finding beta", "scale": "finding size",     # as deploy_state() tells them
                  "filter": "filtering photos"}
+KINDS = {"reconstruct": "meshing", "scale": "size"}     # deploy_state()'s kinds of work, from task or job types: else as they are
 
 
 def deploy_state() -> dict:
@@ -5579,7 +5580,9 @@ def deploy_state() -> dict:
     an area's climb being harvested (its downloads are kept, and it carries on), and a volunteer's upload (it carries
     on from what came). A job here that's handed its work to a machine is told as the machine's job: costly once a
     machine has taken it, and not while it waits for one, as nothing's done yet (and while draining, none takes it).
-    Also whether it's draining (drain()), and "eta", the longest of the costly ones'."""
+    Also whether it's draining (drain()), and "eta", the longest of the costly ones'. Each item's "kind" is the sort of
+    work (meshing, harvest, size, ...), for cli.py to group and colour by, and "project_id" the project it works on, if
+    any, so that work for the same project (a climb's boulder meshing on a machine) can be told under the job doing it."""
     items, now = [], time.time()
     mesh_keys = {k[0] for k in pipeline.steps()}
     board = MACHINES.running()
@@ -5600,16 +5603,20 @@ def deploy_state() -> dict:
             lost = "interrupted: runs again when asked again"
         items.append({"what": f"{task} on {j['machine']}" if j["state"] == "running" else f"{task}, waiting for a machine",
                       "name": mine["name"] if mine else beta_name if j["id"] == beta_job else project["name"] if project else j["label"],
+                      "kind": KINDS.get(j["task"], j["task"]), "project_id": j["label"] if project else (mine or {}).get("project_id"),
                       "costly": j["state"] == "running", "elapsed": round(elapsed),
                       "eta": round(max(0.0, typical - elapsed)) if typical and j["state"] == "running" else None, "lost": lost})
-    for r in q("SELECT c.name area, i.name, i.project_id, i.updated FROM campaign_items i JOIN campaigns c ON c.id=i.campaign_id "
-               "WHERE i.status='running'"):
-        p = q("SELECT progress FROM projects WHERE id=?", r["project_id"], one=True) if r["project_id"] else None
+    for r in q("SELECT c.name area, i.name, i.project_id, i.updated, i.redo, i.boulder FROM campaign_items i "
+               "JOIN campaigns c ON c.id=i.campaign_id WHERE i.status='running'"):
+        # meshing its boulder (run_redo()) goes on in the boulder's project, not the climb's, which says nothing meanwhile
+        bp = boulder_project(r["boulder"]) if r["boulder"] and (r["redo"] or "").split("+")[0] in ("boulder", "pool") else None
+        ppid = bp["id"] if bp else r["project_id"]
+        p = q("SELECT progress FROM projects WHERE id=?", ppid, one=True) if ppid else None
         prog = json.loads(p["progress"]) if p and p["progress"] else None
         step = next((s for s in (prog or {}).get("steps", []) if s.get("state") == "running"), None)
         meshing_here = bool(step and step["key"] in mesh_keys and _local_meshing and not _executor)
-        items.append({"what": f"{r['area']}: " + (step["label"].lower() if step else "starting"), "name": r["name"],
-                      "costly": meshing_here, "elapsed": round(now - (r["updated"] or now)),
+        items.append({"what": f"{r['area']}: " + ("its boulder: " if bp else "") + (step["label"].lower() if step else "starting"),
+                      "name": r["name"], "kind": "meshing" if meshing_here else "area", "project_id": ppid, "costly": meshing_here, "elapsed": round(now - (r["updated"] or now)),
                       "eta": _eta_from(prog, mesh_keys if meshing_here else {s["key"] for s in (prog or {}).get("steps", [])}),
                       "lost": "starts its step again after" if meshing_here else "pauses, and carries on after"})
     for j in asked:
@@ -5617,13 +5624,16 @@ def deploy_state() -> dict:
             continue    # told as its machine's job, above
         sizing = j["type"] == "scale"
         items.append({"what": "finding size here" if sizing else f"{j['type']}, asked for", "name": j["name"], "costly": True,
+                      "kind": KINDS.get(j["type"], j["type"]), "project_id": j.get("project_id"),
                       "elapsed": round(now - j.get("started", now)), "eta": j.get("eta"),
                       "lost": "starts again after" if sizing else "interrupted: runs again when asked again"})
     if _beta_now and not beta_job:
-        items.append({"what": "finding beta here", "name": beta_name, "costly": True, "elapsed": round(now - _beta_now["started"]),
+        items.append({"what": "finding beta here", "name": beta_name, "costly": True, "kind": "beta", "project_id": None,
+                      "elapsed": round(now - _beta_now["started"]),
                       "eta": None, "lost": "starts again after"})
     for j in jobs_state(board)["queued"]:     # nothing done yet: a project's is queued again as the server starts
         items.append({"what": f"{j['type']}, queued", "name": j["name"], "costly": False, "elapsed": None, "eta": None,
+                      "kind": KINDS.get(j["type"], j["type"]), "project_id": j.get("project_id"),
                       "lost": "queued again after" if j.get("project_id") or j["type"] == "scale" else
                       f"lost: {AGAIN[j['type']]} again" if j["type"] in AGAIN else "lost: ask for it again"})
     try:
@@ -5632,6 +5642,7 @@ def deploy_state() -> dict:
             got = (VOLUNTEERS.files / f"{t['id']}.part").stat().st_size if (VOLUNTEERS.files / f"{t['id']}.part").exists() else 0
             if got:
                 items.append({"what": f"a video coming from {t['name'] or 'a volunteer'}", "name": t["video_id"], "costly": False,
+                              "kind": "video", "project_id": None,
                               "elapsed": None, "eta": None, "lost": "pauses: the volunteer carries on from what came",
                               "progress": round(100 * got / t["size"]) if t["size"] else None})
     except Exception:  # only the volunteers' part is lost
