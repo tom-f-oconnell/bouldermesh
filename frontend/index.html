@@ -40,6 +40,12 @@
   #admindlg p{font-size:13px;margin:0 0 10px}
   #admindlg pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;margin:0 0 10px;white-space:pre-wrap;word-break:break-all;font-size:12px;user-select:all}
   #admindlg a{color:var(--acc)}
+  #editdlg{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;width:min(440px,calc(100vw - 32px));box-sizing:border-box;padding:16px}
+  #editdlg::backdrop{background:rgba(0,0,0,.5)}
+  #editdlg p{font-size:13px;margin:0 0 10px} #editdlg .scanmsg{color:var(--mute);min-height:1em}
+  #editdlg input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);color:var(--fg);padding:7px 9px;border-radius:6px;font:inherit}
+  #editdlg video{display:block;width:100%;max-height:50vh;object-fit:cover;border-radius:6px;background:#000;margin:0 0 10px}
+  #editdlg video[hidden]{display:none}
   #code:hover,#volunteer:hover{border-color:var(--acc)}
   main{display:grid;grid-template-columns:400px 1fr;min-height:0}
   aside{border-right:1px solid var(--line);overflow:hidden;background:var(--panel);display:flex;flex-direction:column;min-height:0}
@@ -286,6 +292,7 @@
   <a id="code" href="https://github.com/tom-f-oconnell/bouldermesh" target="_blank" rel="noopener">Code</a>
 </header>
 <dialog id="admindlg"></dialog>
+<dialog id="editdlg"></dialog>
 <main>
   <aside>
     <div class="tabs">
@@ -3827,7 +3834,75 @@ async function openAdmin(){
   dlg.showModal();
 }
 
+// Edit…: the editing token typed in, or given for the code in the admin page's QR (POST /api/pair), which the Scan
+// button reads with the camera, or which the phone's camera app opens the site with (#pair=<code>)
+function keepToken(t){
+  try { localStorage.setItem('bm_token', t); return true; }
+  catch { toast('This browser blocks site storage, so the token can\'t be kept.', 6000); return false; }
+}
+async function takePairing(text){
+  const code = (String(text).match(/\bpair=([\w-]{16,})/) || [])[1];
+  if (!code) throw new Error('That isn\'t the QR from the admin page.');
+  const r = await fetch('/api/pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j.token;
+}
+let scanFeed = null;    // the camera, while Scan reads QRs with it
+function stopCamera(){ scanFeed?.getTracks().forEach(t => t.stop()); scanFeed = null; }
+async function scanPairing(dlg){
+  const say = t => dlg.querySelector('.scanmsg').textContent = t, video = dlg.querySelector('video');
+  if (!navigator.mediaDevices?.getUserMedia)
+    return say(isSecureContext ? 'This browser can\'t use the camera: point the phone\'s camera app at the QR instead.'
+                               : 'The camera needs this site over HTTPS: point the phone\'s camera app at the QR instead.');
+  say('Starting the camera…');
+  let jsQR;
+  try { scanFeed = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false }); }
+  catch (e) { return say(`The camera didn't start (${e.message}): point the phone's camera app at the QR instead.`); }
+  try { jsQR = (await import('https://cdn.jsdelivr.net/npm/jsqr@1.4.0/+esm')).default; }
+  catch { stopCamera(); return say('The QR reader didn\'t load: point the phone\'s camera app at the QR instead.'); }
+  if (!dlg.open) return stopCamera();
+  video.srcObject = scanFeed; video.hidden = false;
+  await video.play().catch(() => {});
+  say('Point it at the QR on the admin page.');
+  const c = document.createElement('canvas'), g = c.getContext('2d', { willReadFrequently: true });
+  while (scanFeed && dlg.open) {
+    await pause(150);
+    if (video.readyState < 2 || !video.videoWidth) continue;
+    const w = Math.min(640, video.videoWidth), h = Math.round(video.videoHeight * w / video.videoWidth);
+    c.width = w; c.height = h; g.drawImage(video, 0, 0, w, h);
+    const found = jsQR(g.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
+    if (!found) continue;
+    if (!/\bpair=/.test(found.data)) { say('That isn\'t the QR from the admin page.'); continue; }
+    stopCamera(); video.hidden = true; say('Checking it…');
+    try { if (keepToken(await takePairing(found.data))) location.reload(); }
+    catch (e) { say(e.message); dlg.querySelector('.scan').disabled = false; }
+  }
+  stopCamera();
+}
+function openEdit(){    // on a phone, Scan has the focus, rather than the token, which would bring up the keyboard
+  const dlg = $('#editdlg');
+  dlg.innerHTML = `<p>Changing things here needs this site's editing token, which this browser then keeps.</p>
+    <div class="row" style="gap:8px;margin:0 0 14px"><input type="password" class="tok" placeholder="Editing token" autocomplete="off" aria-label="Editing token"${phone.matches ? '' : ' autofocus'}><button class="sm use">Use it</button></div>
+    <p>Or, on the admin page on your computer, press <i>Show a QR for a phone</i>, and scan it: <button class="sm sec scan"${phone.matches ? ' autofocus' : ''}>Scan</button></p>
+    <p class="scanmsg"></p><video playsinline muted hidden></video>
+    <div class="row" style="justify-content:flex-end"><button class="sm sec close">Cancel</button></div>`;
+  const use = () => { const t = dlg.querySelector('.tok').value.trim(); if (t && keepToken(t)) location.reload(); };
+  dlg.querySelector('.use').onclick = use;
+  dlg.querySelector('.tok').onkeydown = ev => { if (ev.key === 'Enter') use(); };
+  dlg.querySelector('.scan').onclick = ev => { ev.target.disabled = true; scanPairing(dlg); };
+  dlg.querySelector('.close').onclick = () => dlg.close();
+  dlg.onclose = stopCamera;
+  dlg.showModal();
+}
+
 // ---------------------------------------------------------------- boot
+const pairCode = new URLSearchParams(location.hash.slice(1)).get('pair');
+if (pairCode) {    // the phone's camera app opened the admin page's QR: the code works once, so it's taken off the address
+  history.replaceState(null, '', location.pathname + location.search);
+  try { const t = await takePairing('pair=' + pairCode); if (keepToken(t)) { token = t; toast('This browser can edit now: it keeps the token.', 5000); } }
+  catch (e) { toast(e.message, 8000); }
+}
 let statusCache = { env: {} };
 statusCache = await api('/api/status');
 editor = !!statusCache.editor;
@@ -3839,11 +3914,7 @@ if (statusCache.editing === 'token') {
   b.textContent = editor ? 'Editing' : 'Edit…';
   b.disabled = editor;    // then only a sign that it's accepted: Forget edit token, beside it, is what forgets it
   b.title = editor ? 'Changes made here are allowed by the token you entered.' : 'This copy of the site is view-only. Enter its editing token to change things from here.';
-  b.onclick = () => {
-    const t = prompt('Editing token'); if (!t) return;
-    try { localStorage.setItem('bm_token', t.trim()); } catch { return toast('This browser blocks site storage, so the token can\'t be kept.', 6000); }
-    location.reload();
-  };
+  b.onclick = openEdit;
   if (editor) {
     const f = $('#forget');
     f.style.display = '';

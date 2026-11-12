@@ -5904,7 +5904,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
         self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")   # the camera: Edit…'s Scan button
         super().end_headers()
         if self.head_only:
             self.wfile = _Discard()     # do_HEAD puts the connection's own back
@@ -6028,6 +6028,33 @@ class Handler(BaseHTTPRequestHandler):
         hosts = {(self.headers.get(h) or "").lower() for h in ("Host", "X-Forwarded-Host")}
         origin = self.headers.get("Origin")
         return (origin is not None and origin.split("//", 1)[-1].lower() not in hosts) or self.headers.get("Sec-Fetch-Site") == "cross-site"
+
+    def pair(self) -> None:
+        """POST /api/pair: {"code"} from the admin page's QR (admin_edit_pair()) gives this browser the editing token. From
+        any visitor, as the code is what's checked, but only from this site's own pages; each try is logged."""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        self.close_connection = True    # a body left unread would otherwise be taken for the next request
+        if self.cross_site():
+            return self.send_json({"error": "refused: sent from another site's page"}, 403)
+        if not 0 < n <= 1024:
+            return self.send_json({"error": "send the code as a small JSON object"}, 400)
+        try:
+            code = json.loads(self.rfile.read(n)).get("code")
+        except (ValueError, AttributeError):
+            return self.send_json({"error": "send the code as a small JSON object"}, 400)
+        who = f"{self.address_string()} ({(self.headers.get('User-Agent') or 'no User-Agent')[:160]})"
+        if READ_ONLY or not EDIT_TOKEN:
+            return self.send_json({"error": "this site has no editing token to give"}, 400)
+        if not take_pairing(code, who):
+            print(f"refused a pairing code from {who}", flush=True)
+            return self.send_json({"error": "That code was used already, or is out of date: show a new QR on the admin page."}, 403)
+        print(f"gave the editing token to {who}, for the admin page's QR", flush=True)
+        threading.Thread(target=NOTIFIER.send, args=("A browser can now edit BoulderMesh", f"From the admin page's QR: {who}"),
+                         kwargs={"priority": 2, "tags": ["key"]}, daemon=True).start()
+        self.send_json({"token": EDIT_TOKEN})
 
     def client_report(self, kind: str) -> None:
         """POST /api/client-errors: what went wrong in a visitor's browser (record_client_error()), or POST /api/mesh-views:
@@ -6462,6 +6489,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(drain(bool(b.get("on", True)), bool(b.get("now"))))
         if p in ("/api/client-errors", "/api/mesh-views"):    # from any visitor, not only editors
             return self.client_report("error" if p == "/api/client-errors" else "view")
+        if p == "/api/pair":    # also from any visitor: the code is what's checked
+            return self.pair()
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/rating", p)
         if m:   # also from any visitor
             return self.rate(m[1])
@@ -6944,6 +6973,46 @@ def admin_link() -> dict:
             "ssh": f"ssh -N -L {port}:{remote}:{port} {ssh or '<you>@<this server>'}", "ssh_known": bool(ssh)}
 
 
+# ----------------------------------------------------------------- the editing token, to a phone from a QR
+# the main site's address, for the link in the admin page's QR that a phone's camera app opens
+SITE_URL = (os.environ.get("SITE_URL") or (f"https://{os.environ['SITE_HOST']}" if os.environ.get("SITE_HOST") else "")).rstrip("/") or None
+PAIR_SECONDS = 300
+_pairing: dict = {"code": None, "until": 0.0, "given": None}
+_pairing_lock = threading.Lock()
+
+
+def admin_edit_pair(_: dict) -> dict:
+    """A code that gives a browser the editing token once, in the next PAIR_SECONDS, for the admin page to show as a QR:
+    a link to the main site, for a phone's camera app, which the Scan button by the main page's Edit… reads too. It's
+    neither the token nor anything that lasts, as a QR is easily photographed, and a phone's history keeps the links it
+    opened. A new code replaces the last, and none outlasts a restart."""
+    if READ_ONLY or not EDIT_TOKEN:
+        raise ValueError("the main site " + ("is view-only (READ_ONLY)" if READ_ONLY else "has no EDIT_TOKEN, so anyone who reaches it can change it")
+                         + ": there's no editing token to give")
+    code, now = secrets.token_urlsafe(16), time.time()
+    with _pairing_lock:
+        _pairing.update(code=code, until=now + PAIR_SECONDS)
+    text = f"{SITE_URL}/#pair={code}" if SITE_URL else f"pair={code}"
+    return {"qr": notify_mod.qr_svg(text), "text": text, "link": bool(SITE_URL), "seconds": PAIR_SECONDS, "made": now}
+
+
+def take_pairing(code, who: str) -> bool:
+    """Whether code is the admin page's latest pairing code (admin_edit_pair()), still in time; it then works no more."""
+    with _pairing_lock:
+        ok = (isinstance(code, str) and bool(_pairing["code"]) and time.time() < _pairing["until"]
+              and hmac.compare_digest(code.encode(), _pairing["code"].encode()))
+        if ok:
+            _pairing.update(code=None, given={"at": time.time(), "to": who})
+        return ok
+
+
+def pairing_state() -> dict:
+    """For the admin page: whether there's a token to give, whether its last code is waiting, and who used one last."""
+    with _pairing_lock:
+        return {"editing": "none" if READ_ONLY else "token" if EDIT_TOKEN else "open", "site_url": SITE_URL,
+                "waiting": bool(_pairing["code"]) and time.time() < _pairing["until"], "given": _pairing["given"]}
+
+
 # ----------------------------------------------------------------- volunteers
 def search_wanter(purpose: str, ref: str):
     """What to ask volunteers for a YouTube search with, for purpose and ref, when this server won't search itself;
@@ -7195,7 +7264,7 @@ def admin_state() -> dict:
             "proxy_ranges": RANGES.state() if RANGES else None, "version": VERSION,
             "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE, "machines_image": MACHINES_IMAGE,
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
-            "notify": NOTIFIER.state(),
+            "notify": NOTIFIER.state(), "pairing": pairing_state(),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
             "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "untied_meshes": len(untied_meshes()), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q)}
@@ -7350,7 +7419,7 @@ def main() -> None:
                                        "machines-forget": lambda _: {"result": f"forgot {MACHINES.forget_gone()} machine(s)"},
                                        "volunteer-approve": admin_volunteer_approve, "volunteer-deny": admin_volunteer_deny,
                                        "machine-approve": admin_machine_approve, "machine-deny": admin_machine_deny,
-                                       "notify-topics": admin_notify_topics, "notify-test": admin_notify_test,
+                                       "notify-topics": admin_notify_topics, "notify-test": admin_notify_test, "edit-pair": admin_edit_pair,
                                        "measure": admin_measure}),
                     os.environ.get("ADMIN_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), ADMIN_PORT)
     if VOLUNTEER_PORT:

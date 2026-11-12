@@ -23,6 +23,7 @@ services:
       VOLUNTEER_PORT: "47613"
       WORKER_PORT: "47614"        # machines that connect here for work: not published, but Caddy reaches it in the public setup
       VOLUNTEER_URL:              # from .env, optional: the address volunteers reach this at, as https://boulders.example.com
+      SITE_URL:                   # from .env, optional: the address phones reach this at, for the admin page's editing-token QR
       YOUTUBE_VIA:                # from .env, optional: here | volunteers_when_refused (the default) | volunteers
       VIDEO_CACHE_GB:             # from .env, optional: room for fetched videos, kept for beta and harvesting again (50)
       DATA_CAP_GB:                # from .env, optional: over this much in ./data, volunteers and areas wait for room (no cap); the admin page changes it

@@ -49,7 +49,8 @@ class Server:
         full = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(self.port), HOST="127.0.0.1", ADMIN_PORT=str(self.admin_port),
                     HTTP_MIN_INTERVAL="0", STOP_WAIT_MINUTES="0.1", **env)
         for k in ("EDIT_TOKEN", "READ_ONLY", "CSP", "CLIENT_IP_HEADER", "BOULDERMESH_COMMIT", "BOULDERMESH_IMAGE", "ADMIN_SSH",
-                  "BOULDERMESH_WORKER_IMAGE", "ADMIN_BIND", "ADMIN_PUBLISHED_PORT", "ADMIN_URL", "ADMIN_PASSWORD", "ADMIN_HOST"):
+                  "BOULDERMESH_WORKER_IMAGE", "ADMIN_BIND", "ADMIN_PUBLISHED_PORT", "ADMIN_URL", "ADMIN_PASSWORD", "ADMIN_HOST",
+                  "SITE_URL", "SITE_HOST"):
             if k not in env:
                 full.pop(k, None)
         self.proc = subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=full,
@@ -116,7 +117,7 @@ PLY = b"ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty floa
 
 def with_token(tmp: Path) -> None:
     """EDIT_TOKEN set, READ_ONLY=auto and CLIENT_IP_HEADER=X-Real-IP as the public setup has them: a token site."""
-    srv = Server(tmp, EDIT_TOKEN=TOKEN, READ_ONLY="auto", CLIENT_IP_HEADER="X-Real-IP")
+    srv = Server(tmp, EDIT_TOKEN=TOKEN, READ_ONLY="auto", CLIENT_IP_HEADER="X-Real-IP", SITE_URL="https://rocks.example/")
     B, port = srv.url, srv.port
     try:
         # the page, with its policy: a hash for each inline script, nothing framed, and the other headers
@@ -159,6 +160,34 @@ def with_token(tmp: Path) -> None:
         codes = [req(B, "POST", "/api/client-errors", report, headers={"X-Real-IP": "198.51.100.8"})[0] for _ in range(21)]
         assert codes == [202] * 20 + [429], codes
         assert req(B, "POST", "/api/client-errors", report, headers={"X-Real-IP": "198.51.100.9"})[0] == 202, "others still can"
+
+        # the editing token to a phone: the admin page's QR has a code for it, not the token, which works once and is replaced
+        A = f"http://127.0.0.1:{srv.admin_port}"
+        st, _, pr = req(A, "GET", "/api/admin/state")
+        assert pr["pairing"] == {"editing": "token", "site_url": "https://rocks.example", "waiting": False, "given": None}, pr["pairing"]
+        st, _, a = req(A, "POST", "/api/admin/actions/edit-pair", {})
+        assert st == 200 and a["seconds"] == 300, (st, a)
+        try:
+            import segno  # noqa: F401
+            assert a["qr"].startswith("<svg"), a["qr"]
+        except ImportError:
+            assert a["qr"] is None, "without segno, no QR code"
+        assert a["text"].startswith("https://rocks.example/#pair=") and TOKEN not in json.dumps(a), "a link with a code, not the token"
+        assert req(A, "GET", "/api/admin/state")[2]["pairing"]["waiting"] is True
+        b = req(A, "POST", "/api/admin/actions/edit-pair", {})[2]
+        old, code = a["text"].split("#pair=")[1], b["text"].split("#pair=")[1]
+        assert old != code and (b["qr"] != a["qr"] or not a["qr"]), "a new code each time"
+        pair = lambda c, **h: req(B, "POST", "/api/pair", {"code": c}, headers={"X-Real-IP": "198.51.100.50", "User-Agent": "Phone/1", **h})  # noqa: E731
+        st, _, e = pair(old)
+        assert st == 403 and "admin page" in e["error"], ("the code it replaced", st, e)
+        assert pair(code, Origin="https://evil.example")[0] == 403, "only from the site's own pages"
+        assert req(B, "POST", "/api/pair", b"x" * 2000)[0] == 400 and req(B, "POST", "/api/pair", b"[1]")[0] == 400
+        st, _, t = pair(code)
+        assert st == 200 and t == {"token": TOKEN}, (st, t)
+        assert pair(code)[0] == 403, "once only"
+        pr = req(A, "GET", "/api/admin/state")[2]["pairing"]
+        assert pr["waiting"] is False and pr["given"]["to"] == "198.51.100.50 (Phone/1)" and pr["given"]["at"] >= b["made"], pr
+        assert "camera=(self)" in req(B, "GET", "/")[1]["Permissions-Policy"], "Edit…'s Scan button uses the camera"
 
         # changes: refused without the token, before the body is read; with it, as before; never from another site's page
         st, h, e = req(B, "POST", "/api/projects", {"name": "x"})
@@ -285,6 +314,9 @@ def read_only(tmp: Path) -> None:
             assert req(srv.url, "POST", "/api/meshes/0123456789ab/rating", {"browser": "a" * 32, "rating": 1})[0] == 404, \
                 "rating isn't changing the site: taken, here as there's no such mesh"
             assert req(srv.url, "GET", "/api/meshes")[0] == 200
+            st, _, e = req(f"http://127.0.0.1:{srv.admin_port}", "POST", "/api/admin/actions/edit-pair", {})
+            assert st == 400 and "no editing token" in e["error"], (st, e)
+            assert req(srv.url, "POST", "/api/pair", {"code": "x" * 22})[0] == 400
         finally:
             out = srv.stop()
         assert "editing: none" in out, out[-1000:]

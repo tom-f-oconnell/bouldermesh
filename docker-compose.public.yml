@@ -18,6 +18,7 @@ services:
       CLIENT_IP_HEADER: X-Real-IP           # Caddy names the sender there, for the log
       CADDYFILE: /app/deploy/Caddyfile      # the admin page says when Cloudflare's addresses no longer match its trusted_proxies
       VOLUNTEER_URL: "https://${SITE_HOST}" # where volunteers reach it (Caddy passes /volunteer/ on), for the admin page's command
+      SITE_URL: "https://${SITE_HOST}"      # the link in the admin page's QR that gives a phone the editing token
       VIDEO_CACHE_GB: "${VIDEO_CACHE_GB:-10}"
       CAMPAIGN_MIN_FREE_GB: "${CAMPAIGN_MIN_FREE_GB:-10}"   # areas stop with less disk left than this (50 elsewhere)
       DATA_CAP_GB: "${DATA_CAP_GB:-60}"     # over this much data, volunteers and areas wait for room (none elsewhere); the admin page changes it
