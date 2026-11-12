@@ -46,6 +46,14 @@
   #editdlg input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);color:var(--fg);padding:7px 9px;border-radius:6px;font:inherit}
   #editdlg video{display:block;width:100%;max-height:50vh;object-fit:cover;border-radius:6px;background:#000;margin:0 0 10px}
   #editdlg video[hidden]{display:none}
+  #bpick{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;width:min(520px,calc(100vw - 32px));box-sizing:border-box;padding:16px;max-height:calc(100vh - 48px)}
+  #bpick::backdrop{background:rgba(0,0,0,.5)} #bpick p{font-size:13px;margin:0 0 10px} #bpick a{color:var(--acc)} #bpick .note{color:var(--mute)}
+  #bpick .bitem{display:flex;flex-direction:column;align-items:flex-start;gap:3px;width:100%;text-align:left;margin:0 0 8px;padding:9px 11px;
+    background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;font:inherit;font-size:13px;cursor:pointer}
+  #bpick .bitem:hover,#bpick .bitem.on{border-color:var(--acc)} #bpick .bkind small,#bpick .mute{color:var(--mute)}
+  #vextra{position:absolute;right:12px;bottom:50px;z-index:3;display:flex;flex-direction:column;align-items:flex-end;gap:6px}  /* over Rate */
+  #vnewest[hidden],#vothers[hidden]{display:none}
+  #linkmenu .hint{font-size:11px;color:var(--mute)} #viewnote a.same{color:inherit;margin-left:6px;text-decoration:underline}
   #code:hover,#volunteer:hover{border-color:var(--acc)}
   main{display:grid;grid-template-columns:400px 1fr;min-height:0}
   aside{border-right:1px solid var(--line);overflow:hidden;background:var(--panel);display:flex;flex-direction:column;min-height:0}
@@ -273,7 +281,8 @@
     #hud{display:none!important}
     #orient,#viewnote{top:56px;bottom:auto;left:8px;right:8px;max-width:none;max-height:35%;overflow:auto} #viewnote{z-index:3}
     #pieces{top:auto;bottom:12px;left:8px;right:auto;max-width:calc(100% - 175px);max-height:35%;overflow:auto}
-    #ratebtn{font-size:14px;padding:6px 12px} #vcorner #vinfo{padding:6px 10px} #ratemenu .seg button{padding:7px 14px;font-size:14px} #ratecomment{font-size:16px}
+    #ratebtn{font-size:14px;padding:6px 12px} #vcorner #vinfo{padding:6px 10px}
+    #vextra{bottom:56px} #vextra button{font-size:14px;padding:6px 12px} #ratemenu .seg button{padding:7px 14px;font-size:14px} #ratecomment{font-size:16px}
     #vtitle:has(#vname:not(:empty)){display:block;position:absolute;top:6px;left:8px;max-width:calc(100% - 16px);font-size:12px;line-height:1.35;
       padding:2px 8px;border-radius:10px;background:var(--overlay-soft);color:var(--fg);pointer-events:none;z-index:2}
     #vname,#varea{white-space:nowrap;overflow:hidden;text-overflow:ellipsis} #varea{font-size:11px;color:var(--mute)} #varea:empty{display:none}
@@ -300,6 +309,7 @@
 </header>
 <dialog id="admindlg"></dialog>
 <dialog id="editdlg"></dialog>
+<dialog id="bpick"></dialog>
 <main>
   <aside>
     <div class="tabs">
@@ -495,6 +505,10 @@
       <div id="pieces"></div>
       <div id="nearby" hidden></div>
       <div id="orient"></div>
+      <div id="vextra">
+        <button class="sm sec" id="vnewest" hidden title="This is an older version of this mesh, as its link was to: show the newest">Newest</button>
+        <button class="sm sec" id="vothers" hidden></button>
+      </div>
       <div id="vcorner">
       <div id="rate" hidden>
         <div id="ratemenu" hidden>
@@ -757,49 +771,49 @@ for (const t of ['pointerup', 'pointercancel']) renderer.domElement.addEventList
   fingers = Math.max(0, fingers - 1);
   clearTimeout(press?.timer);
 });
-// The link to the mesh in view, and what to call it
-function meshShare(){
+// What Share offers for the mesh in view: its climb's link and its boulder's, which open their newest mesh, and its own,
+// which opens this one; one with nothing to follow is shown greyed, with why
+function shareChoices(){
   const m = meshesById[shownMesh];
-  if (!m) return null;
-  const from = $('#vfrom').style.display !== 'none' ? $('#vfrom').value : '';
-  return { url: location.origin + location.pathname + viewLink(m.id, from), title: viewTitle(m, from) };
+  if (!m) return [];
+  const from = $('#vfrom').style.display !== 'none' ? $('#vfrom').value : '', at = location.origin;
+  const cid = viewedClimb || from || soleClimb(m)?.id, c = cid && [...m.climbs, ...(m.boulder_climbs || [])].find(x => x.id === cid);
+  const b = m.boulder_link;
+  return [
+    c?.slug ? { label: `${c.name}${gradeTag(c)}: its newest mesh`, url: `${at}/c/${c.slug}`, title: c.name + gradeTag(c) }
+      : { label: 'A climb\'s newest mesh', off: 'This mesh isn\'t shown for one climb: pick one under "Seen from", or open it from a climb' },
+    ...(b ? [{ label: b.meshes > 1 ? `${b.name}: its ${b.meshes} meshes, to pick from` : `${b.name}: its newest mesh`, url: `${at}/b/${b.slug}`, title: b.name }] : []),
+    { label: 'This exact mesh', url: at + exactLink(m.id, from), title: viewTitle(m, from) },
+  ];
 }
+// Share's menu (and a long press's on the view): each link, to the phone's share sheet, or copied elsewhere; if the
+// clipboard refuses (plain HTTP), the link is selected to copy by hand
 function linkMenu(x, y){
-  const s = meshShare();
-  if (!s) return;
-  const { url, title } = s, menu = $('#linkmenu');
-  const r = vEl.getBoundingClientRect();
-  menu.innerHTML = `<button class="sm" data-act="copy">Copy link to ${esc(title)}</button>`
-    + (navigator.share ? '<button class="sm sec" data-act="share">Share…</button>' : '') + `<span class="url">${esc(url)}</span>`;
+  const choices = shareChoices();
+  if (!choices.length) return;
+  const menu = $('#linkmenu'), r = vEl.getBoundingClientRect(), sheet = navigator.share && matchMedia('(pointer: coarse)').matches;
+  menu.innerHTML = choices.map((c, i) => c.off ? `<button class="sm sec" disabled title="${esc(c.off)}">${esc(c.label)}</button>`
+    : `<button class="sm${i ? ' sec' : ''}" data-i="${i}">${esc(c.label)}</button><span class="url">${esc(c.url)}</span>`).join('')
+    + `<span class="hint">${sheet ? 'Tap one, then pick the app to send it with' : 'Click one to copy it'}</span>`;
   menu.hidden = false;
   menu.style.left = Math.max(8, Math.min(x - r.left, r.width - menu.offsetWidth - 8)) + 'px';
   menu.style.top = Math.max(8, Math.min(y - r.top, r.height - menu.offsetHeight - 8)) + 'px';
   menu.onclick = async ev => {
-    const b = ev.target.closest('button');
+    const b = ev.target.closest('button[data-i]');
     if (!b) return;
-    if (b.dataset.act === 'share') { try { await navigator.share({ title, url }); } catch {} return closeLinkMenu(); }
-    try { await navigator.clipboard.writeText(url); b.textContent = 'Copied'; setTimeout(closeLinkMenu, 1200); }
-    catch { getSelection().selectAllChildren(menu.querySelector('.url')); b.textContent = 'Selected: copy it'; }   // no clipboard over plain HTTP
+    const c = choices[+b.dataset.i];
+    if (sheet) {
+      try { await navigator.share({ title: c.title, url: c.url }); return closeLinkMenu(); }
+      catch (e) { if (e.name === 'AbortError') return; }    // put away: the menu stays, for another
+    }
+    if (await copyText(c.url)) { b.textContent = 'Copied'; toast('Link copied: ' + c.url, 2500); setTimeout(closeLinkMenu, 1200); }
+    else { getSelection().selectAllChildren(b.nextElementSibling); b.textContent = 'Selected: copy it'; }
   };
 }
 function closeLinkMenu(){ $('#linkmenu').hidden = true; }
-// Share: on a phone or tablet, its share sheet, to pick an app; elsewhere (or if that fails) the link is copied, and if
-// it can't be, the menu a long press shows, by the button, with the link to select
-const shareIcon = $('#vshare').innerHTML, shareTitle = $('#vshare').title;
-$('#vshare').onclick = async () => {
-  const s = meshShare(), b = $('#vshare');
-  if (!s) return;
-  if (navigator.share && matchMedia('(pointer: coarse)').matches) {
-    try { return await navigator.share({ title: s.title, url: s.url }); }
-    catch (e) { if (e.name === 'AbortError') return; }     // put away: nothing more
-  }
-  if (await copyText(s.url)) {
-    b.innerHTML = COPIED_ICON; b.title = 'Link copied';
-    toast('Link copied: ' + s.url, 2500);
-    clearTimeout(b.t); b.t = setTimeout(() => { b.innerHTML = shareIcon; b.title = shareTitle; }, 1500);
-    return;
-  }
-  const r = b.getBoundingClientRect();
+$('#vshare').onclick = () => {
+  if (!$('#linkmenu').hidden) return closeLinkMenu();
+  const r = $('#vshare').getBoundingClientRect();
   linkMenu(r.right, r.bottom + 4);
 };
 document.addEventListener('pointerdown', ev => { if (!$('#linkmenu').hidden && !ev.target.closest('#linkmenu')) closeLinkMenu(); });
@@ -2520,14 +2534,19 @@ const boulderMeshOf = id => {
   const n = m => m.boulder_climbs.find(c => c.id === id).view?.photos || 0;
   return on.sort((a, b) => n(b) - n(a))[0];
 };
-async function viewClimbMesh(id){
-  if (!climbMeshes(id).length && !boulderMeshOf(id) && !climbMeshes(id, true).length) await refreshMeshes();
+// The mesh a climb opens (its View button, its /c/ link): its own, else its boulder's placing most of its photos (seen
+// from it), else one an area linked it to; {id, from}, or null
+function pickClimbMesh(id){
   // a mesh of what its boulder's mesh left out isn't the climb's own: the boulder's may show it better
   const own = climbMeshes(id).find(m => !m.pooled?.rest_of), boulder = boulderMeshOf(id), shared = climbMeshes(id, true)[0];
-  if (own) return viewMesh(own.id, null, 'climb', id);
-  if (boulder) return viewMesh(boulder.id, id, 'climb', id);
-  if (shared) return viewMesh(shared.id, null, 'climb', id);
+  return own ? { id: own.id, from: null } : boulder ? { id: boulder.id, from: id } : shared ? { id: shared.id, from: null } : null;
+}
+async function viewClimbMesh(id, via = 'climb'){
+  if (!pickClimbMesh(id)) await refreshMeshes();
+  const p = pickClimbMesh(id);
+  if (p) { await viewMesh(p.id, p.from, via, id); return true; }
   toast('No mesh is linked to this climb yet.');
+  return false;
 }
 const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', waiting: 'waiting for volunteers', harvested: 'harvested, for its boulder\'s mesh', done: 'meshed', failed: 'failed', skipped: 'skipped' };
 // The boulder a climb is on: its own mesh, made from the photos of every climb on it, seen from where this climb's own
@@ -3581,17 +3600,91 @@ function viewTitle(m, from){
   if (own.length) return own[0].name + gradeTag(own[0]) + (own.length > 1 ? ` +${own.length - 1}` : '');
   return m.name.replace(/ \((harvest|boulder)\)$/, '');
 }
-// A link to the mesh in view (#mesh=<id>), and to the climb a boulder's mesh is seen from (&climb=<id>), kept in the
-// address as it changes, so that it can be copied from there too; opening one shows that
+// Links (design.md, "Links to climbs, boulders and meshes"): /c/<climb> and /b/<boulder> open their newest mesh (a
+// boulder's, to pick from when it has several), /m/<id> one exact mesh, seen from a climb on a boulder's with
+// ?from=<climb>. The address says the one that opens what's in view: the boulder's link it came from, else its climb's
+// if that opens this mesh now, else its own. Old links, #mesh=<id>&climb=<id>, still open.
+let linkedBoulder = null;   // {slug, meshes}: the boulder's link the view came from, kept while it shows one of those
+const climbOn = (m, id) => id && [...(m?.climbs || []), ...(m?.boulder_climbs || [])].find(c => c.id === id);
+function exactLink(id, from){
+  const c = (meshesById[id]?.boulder_climbs || []).find(x => x.id === from);
+  return `/m/${id}` + (c?.slug ? `?from=${c.slug}` : '');
+}
 function viewLink(id, from){
-  const m = meshesById[id];
-  return `#mesh=${id}` + (from && (m?.boulder_climbs || []).some(c => c.id === from) ? `&climb=${from}` : '');
+  if (linkedBoulder?.meshes.includes(id)) return `/b/${linkedBoulder.slug}`;
+  const c = climbOn(meshesById[id], viewedClimb);
+  return c?.slug && pickClimbMesh(c.id)?.id === id ? `/c/${c.slug}` : exactLink(id, from);
 }
 function setLink(id, from){ try { history.replaceState(null, '', viewLink(id, from)); } catch {} }
 function openLinked(){
   const h = new URLSearchParams(location.hash.slice(1)), id = h.get('mesh');
   if (id && meshesById[id] && id !== shownMesh) viewMesh(id, h.get('climb') || undefined, 'link');
 }
+// The newest version of a mesh: what rebuilt it, and so on
+function newestOf(id){
+  let m = meshesById[id];
+  for (let n = 0; m?.replaced_by && meshesById[m.replaced_by] && n < 50; n++) m = meshesById[m.replaced_by];
+  return m?.id;
+}
+// What the page's address opens as it starts: a climb's, a boulder's or a mesh's link, or an old #mesh= one
+async function openFromAddress(){
+  const m = location.pathname.match(/^\/([cbm])\/([^/]+?)\/?$/);
+  if (!m) return openLinked();
+  const [, kind, key] = m;
+  try {
+    if (kind === 'm') return await openExact(key, new URLSearchParams(location.search).get('from'));
+    const r = await api(`/api/links/${kind}/${encodeURIComponent(decodeURIComponent(key))}`);
+    if (kind === 'b') return pickBoulder(r, true);
+    if (!(await viewClimbMesh(r.id, 'link'))) return openClimb(r.id);
+    if (r.same?.length) {   // others of the same name have links of their own, with something added
+      viewNote(`${r.same.length === 1 ? 'Another climb is' : `${r.same.length} other climbs are`} also called ${r.name}:`);
+      for (const c of r.same) {
+        const a = document.createElement('a');
+        a.href = `/c/${c.slug}`; a.className = 'same'; a.textContent = c.name + gradeTag(c) + (c.boulder ? ` on ${c.boulder}` : '');
+        $('#viewnote').insertBefore(a, $('#viewnote .dismiss'));
+      }
+    }
+  } catch (e) { toast(e.message, 8000); }
+}
+// /m/<id>: that mesh, with the Newest button if it's been rebuilt since; a deleted one's link opens what took its
+// place, else its climb's newest mesh, else its boulder's meshes to pick from, saying so
+async function openExact(id, fromSlug){
+  const m = meshesById[id];
+  if (m) return viewMesh(id, (m.boulder_climbs || []).find(c => c.slug === fromSlug)?.id, 'link');
+  const g = (await api(`/api/links/m/${encodeURIComponent(id)}`)).gone;
+  const was = `The mesh this link was to${g.name ? ` (${g.name})` : ''} has been deleted`, next = newestOf(g.successor);
+  if (next) { await viewMesh(next, null, 'link'); return viewNote(was + ': this is the one that replaced it.'); }
+  for (const c of g.climbs) {
+    const p = pickClimbMesh(c);
+    if (p) { await viewMesh(p.id, p.from, 'link', c); return viewNote(was + ': this is its climb\'s newest mesh.'); }
+  }
+  if (g.boulder_slug) { toast(was + ': here are its boulder\'s meshes.', 8000); return pickBoulder(await api(`/api/links/b/${g.boulder_slug}`), true); }
+  toast(was + ', and nothing has taken its place.', 8000);
+}
+// A boulder's meshes to pick from (GET /api/links/b/<name>): most of its climbs first, each with the climbs it's the
+// home of (bold) and others it shows, then its climbs no mesh places. From a link, a boulder with one mesh opens it.
+async function pickBoulder(r, fromLink = false){
+  if (r.meshes.some(x => !meshesById[x.id])) await refreshMeshes();
+  const items = r.meshes.filter(x => meshesById[x.id]), names = Object.fromEntries(r.climbs.map(c => [c.id, c.name + gradeTag(c)]));
+  const open = id => { linkedBoulder = { slug: r.slug, meshes: items.map(x => x.id) }; return viewMesh(id, null, fromLink ? 'link' : 'boulder'); };
+  if (fromLink && items.length === 1) return open(items[0].id);
+  const what = { boulders: 'The boulder', groups: 'A group of its climbs', climbs: 'One climb' };
+  const dlg = $('#bpick'), where = r.area.slice().reverse().join(', ');
+  dlg.innerHTML = `<p><b>${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener" title="Its page on Mountain Project">${esc(r.name)}</a>` : esc(r.name)}</b>${where ? ` <small>· ${esc(where)}</small>` : ''}</p>
+    <p class="note">${items.length ? `${plural(items.length, 'mesh', 'meshes')}, made apart: pick one` : 'No mesh of it yet.'}</p>
+    ${items.map(x => {
+      const m = meshesById[x.id], t = m.metrics || {};
+      const facts = [x.home.length > 1 ? plural(x.home.length, 'climb') : '', t.placed ? `${t.placed} photos placed` : '', x.faces ? `${fmtCount(x.faces)} faces` : ''].filter(Boolean).join(' · ');
+      return `<button class="bitem${x.id === shownMesh ? ' on' : ''}" data-id="${x.id}"><span class="bkind">${what[meshKind(m)] || 'A mesh'}${facts ? ` <small>· ${esc(facts)}</small>` : ''}</span>
+        <span class="bclimbs">${[...x.home.map(id => `<b>${esc(names[id] || '')}</b>`), ...x.others.map(id => `<span class="mute">${esc(names[id] || '')}</span>`)].join(', ') || '<span class="mute">none of its climbs placed</span>'}</span></button>`;
+    }).join('')}
+    ${r.missing.length ? `<p class="note">In no mesh yet: ${r.missing.map(c => esc(names[c.id] || '') + (c.why ? ` <small>(${esc(c.why)})</small>` : '')).join(', ')}</p>` : ''}
+    <div class="row" style="justify-content:flex-end"><button class="sm sec close">Close</button></div>`;
+  dlg.querySelectorAll('.bitem').forEach(b => b.onclick = () => { dlg.close(); open(b.dataset.id); });
+  dlg.querySelector('.close').onclick = () => dlg.close();
+  dlg.showModal();
+}
+const fmtCount = n => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n);
 // The climbs the mesh in view is shown for: the one it was opened from, or else its own
 let viewedClimb = null;
 function shownClimbs(){
@@ -3617,6 +3710,11 @@ function viewMesh(id, from, via = '', climb = null){
   if (!m) return;
   viewVia = via;
   viewedClimb = climb;
+  if (!linkedBoulder?.meshes.includes(id)) linkedBoulder = null;
+  $('#vnewest').hidden = !m.replaced_by;
+  const b = m.boulder_link, others = $('#vothers');
+  others.hidden = !(b && b.meshes > 1);
+  if (b) { others.textContent = `Meshes (${b.meshes})`; others.title = `${b.name} has ${b.meshes} meshes, made apart: see them all, with the climbs each shows`; }
   showTitle(viewTitle(m, from), meshAreaText(id));
   setLink(id, from);
   const own = m.climbs.filter(c => !c.shared), on = m.boulder_climbs || [];
@@ -4078,8 +4176,13 @@ mode.className = 'pill ' + (statusCache.real_pipeline ? 'real' : 'demo');
 $('#caps').textContent = [statusCache.opencv?'opencv':'no opencv', statusCache.people_masks?'people masking':'no people masking', statusCache.gpu?'GPU matching':'CPU matching'].join(' · ');
 $('#caps').title = 'Photo matching: ' + statusCache.gpu_why;
 await refreshClimbs(); await refreshMeshes(); await refreshProjects(); poll(); campaignLoop();
-openLinked();
+openFromAddress();
 addEventListener('hashchange', openLinked);
+$('#vnewest').onclick = () => { const n = newestOf(shownMesh); if (n && n !== shownMesh) viewMesh(n, null, 'newest', viewedClimb); };
+$('#vothers').onclick = async () => {
+  const b = meshesById[shownMesh]?.boulder_link;
+  if (b) try { pickBoulder(await api(`/api/links/b/${b.slug}`)); } catch (e) { toast(e.message, 6000); }
+};
 </script>
 </body>
 </html>

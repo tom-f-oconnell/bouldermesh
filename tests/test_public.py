@@ -9,6 +9,7 @@ machines then run, and files sent in parts, including a video turned into a proj
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import io
 import json
@@ -131,9 +132,27 @@ def with_token(tmp: Path) -> None:
         assert b'onclick="' not in page, "an inline handler, which the policy would block"
         assert h["X-Content-Type-Options"] == "nosniff" and h["X-Frame-Options"] == "DENY" and h["Referrer-Policy"], h
         assert "Python" not in h.get("Server", ""), h.get("Server")
-        since = h["Last-Modified"]
-        st, h, _ = req(B, "GET", "/", headers={"If-Modified-Since": since})
+        st, _, _ = req(B, "GET", "/", headers={"If-None-Match": h["ETag"]})
         assert st == 304, st
+
+        # the page as served: its styles and module script in files named by what's in them, kept a year; the page
+        # itself small, and compressed here, as its no-transform keeps Caddy and Cloudflare from doing that
+        source = (ROOT / "frontend" / "index.html").read_text()
+        assets = re.findall(r'(?:src|href)="/static/(app\.[0-9a-f]{16}\.(js|css))"', page.decode())
+        assert sorted(ext for _, ext in assets) == ["css", "js"] and len(page) < len(source) / 5, (assets, len(page))
+        assert b"<style>" not in page and b'<script type="module">' not in page and b'<script type="importmap">' in page
+        for name, ext in assets:
+            st, h, body = req(B, "GET", f"/static/{name}")
+            assert st == 200 and h["Cache-Control"] == "public, max-age=31536000, immutable" and body.decode() in source, (name, h)
+            assert h["Content-Type"].startswith("text/javascript" if ext == "js" else "text/css"), h
+            st, h, gz = req(B, "GET", f"/static/{name}", headers={"Accept-Encoding": "gzip"})
+            assert h["Content-Encoding"] == "gzip" and gzip.decompress(gz) == body and h["Vary"] == "Accept-Encoding", h
+            assert req(B, "GET", f"/static/{name}", headers={"If-None-Match": h["ETag"]})[0] == 304
+        st, h, _ = req(B, "GET", "/static/app.0123456789abcdef.js")
+        assert st == 404 and h["Cache-Control"] == "no-store", "an older page's, gone after a restart: kept by no one"
+        st, h, gz = req(B, "GET", "/", headers={"Accept-Encoding": "gzip, br"})
+        assert h["Content-Encoding"] == "gzip" and gzip.decompress(gz) == page and h["Cache-Control"] == "no-cache, no-transform", h
+        assert b'<meta property="og:title" content="BoulderMesh">' in page and b'href="https://rocks.example/"' in page, "its preview"
         assert f"connect-src 'self' data: blob: http://localhost:{srv.admin_port}" in csp, \
             "buffers embedded in a mesh load as data: URLs; the Admin button may look for the admin page"
         st, h, s = req(B, "GET", "/api/status")
@@ -455,6 +474,66 @@ def fetcher() -> None:
     print("fetcher OK")
 
 
+def links_site(tmp: Path) -> None:
+    """Links to climbs, boulders and meshes: /c/<name> and /b/<name> as the server names them, aliases after a rename,
+    the page's preview for each, a boulder's meshes to pick from, and a deleted mesh's link."""
+    srv = Server(tmp, SITE_URL="https://rocks.example")
+    B, port = srv.url, srv.port
+    try:
+        mids = [req(B, "POST", "/api/meshes", files=[("files", f"m{i}.ply", PLY)])[2]["id"] for i in range(3)]
+        mandala, pigsty = '["California", "Bishop", "Buttermilks", "Mandala Boulder"]', '["California", "Joshua Tree", "The Pig Sty"]'
+        climbs = [("c1", "The Mandala", "V12", "Mandala Boulder", mandala), ("c2", "Unnamed", "V2", "The Pig Sty", pigsty),
+                  ("c3", "Unnamed", "V3", "The Pig Sty", pigsty), ("c4", "Seven Spanish Angels", "V5", "Mandala Boulder", mandala),
+                  ("c5", "Mandala Sit", "V12", "Mandala Boulder", mandala)]
+        with sqlite3.connect(tmp / "data" / "bouldermesh.sqlite") as con:
+            for n, (cid, name, grade, boulder, path) in enumerate(climbs):
+                con.execute("INSERT INTO climbs(id,source,source_id,url,name,kind,grade,boulder_name,area_path,data,created) "
+                            "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (cid, "test", cid, None, name, "boulder", grade, boulder, path, "{}", n))
+            for mid, cid in zip(mids, ("c1", "c2", "c4")):
+                con.execute("INSERT INTO mesh_links VALUES(?,?,NULL,?)", (mid, cid, time.time()))
+        listed = {m["id"]: m for m in req(B, "GET", "/api/meshes")[2]}
+        assert [c["slug"] for c in listed[mids[0]]["climbs"]] == ["the-mandala"], listed[mids[0]]["climbs"]
+        assert listed[mids[0]]["boulder_link"] == {"slug": "mandala-boulder", "name": "Mandala Boulder", "meshes": 2}, listed[mids[0]]
+        assert listed[mids[1]]["boulder_link"]["meshes"] == 1 and listed[mids[1]]["climbs"][0]["slug"] == "unnamed"
+        assert req(B, "GET", "/api/links/c/unnamed-the-pig-sty")[2]["id"] == "c3", "the second gets its boulder's name added"
+        same = req(B, "GET", "/api/links/c/unnamed")[2]["same"]
+        assert same == [{"slug": "unnamed-the-pig-sty", "name": "Unnamed", "grade": "V3", "boulder": "The Pig Sty"}], same
+
+        # each link's page: its title and preview; another spelling redirects; one that's no one's is a 404
+        st, h, page = req(B, "GET", "/c/the-mandala")
+        assert st == 200 and b'<meta property="og:title" content="The Mandala V12">' in page and \
+            b'<link rel="canonical" href="https://rocks.example/c/the-mandala">' in page and b"<title>The Mandala V12 \xc2\xb7 BoulderMesh</title>" in page, page[:1500]
+        assert h["Cache-Control"] == "no-cache, no-transform" and "Content-Security-Policy" in h, h
+        out = raw_request(port, f"GET /c/The-Mandala HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
+        assert out.startswith(b"HTTP/1.0 301") and b"Location: /c/the-mandala\r\n" in out, out[:300]
+        st, _, page = req(B, "GET", "/c/nobody-at-all")
+        assert st == 404 and b'name="robots" content="noindex"' in page, st
+        st, _, page = req(B, "GET", "/b/mandala-boulder")
+        assert st == 200 and b"Mandala Boulder in 3D \xc2\xb7 Buttermilks, Bishop \xc2\xb7 2 meshes." in page, page[:1500]
+        assert req(B, "GET", f"/m/{mids[1]}")[0] == 200 and req(B, "GET", "/m/0123456789ab")[0] == 404
+
+        # a boulder's meshes to pick from: most of its climbs first, and its climbs no mesh places
+        b = req(B, "GET", "/api/links/b/mandala-boulder")[2]
+        assert sorted(m["id"] for m in b["meshes"]) == sorted([mids[0], mids[2]]) and b["missing"] == [{"id": "c5", "why": None}], b
+        assert {m["id"]: m["home"] for m in b["meshes"]} == {mids[0]: ["c1"], mids[2]: ["c4"]} and b["area"] == ["Bishop", "Buttermilks"], b
+
+        # a rename: a new name, and the old one an alias of it
+        assert req(B, "PATCH", "/api/climbs/c1", {"name": "The Mandala Direct"})[0] == 200
+        assert req(B, "GET", "/api/links/c/the-mandala-direct")[2]["id"] == "c1", "a name it hasn't got yet is looked for at once"
+        out = raw_request(port, f"GET /c/the-mandala?x=1 HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
+        assert out.startswith(b"HTTP/1.0 301") and b"Location: /c/the-mandala-direct?x=1\r\n" in out, out[:300]
+        assert req(B, "GET", "/api/links/c/the-mandala")[2]["slug"] == "the-mandala-direct"
+
+        # a deleted mesh: what its link opens instead
+        assert req(B, "DELETE", f"/api/meshes/{mids[2]}")[0] == 200
+        g = req(B, "GET", f"/api/links/m/{mids[2]}")[2]["gone"]
+        assert g["climbs"] == ["c4"] and g["boulder_slug"] == "mandala-boulder" and g["successor"] is None, g
+        assert req(B, "GET", f"/m/{mids[2]}")[0] == 200 and req(B, "GET", "/api/links/m/0123456789ab")[0] == 404
+    finally:
+        srv.stop()
+    print("links OK")
+
+
 def main() -> None:
     fetcher()
     with tempfile.TemporaryDirectory(prefix="bouldermesh-public-") as td:
@@ -463,6 +542,7 @@ def main() -> None:
         build(Path(td) / "c")
         in_parts(Path(td) / "d")
         scene_hidden(Path(td) / "e")
+        links_site(Path(td) / "f")
     print("ALL PUBLIC TESTS PASSED")
 
 

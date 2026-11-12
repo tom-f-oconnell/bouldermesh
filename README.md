@@ -516,18 +516,23 @@ in view is blue. *Random* opens any mesh; it's blue until one is in view.
 On a phone, the page shows either the controls or the view. The controls' header holds *Viewer* (grey until a mesh is
 opened, then with the climb in view named under it), *Random*, ⚙ (the same settings), *Volunteer*, and *Edit…* or
 *Editing*. The view's bar holds ← back to the controls, *Random*, *Nearby*, *Map* (which swaps the mesh for the map,
-and then reads *3D*), and ⓘ and ⚙ at its right end. While a mesh loads, its progress shows over whichever is on screen,
+and then reads *3D*), and *Share* and ⚙ at its right end; ⓘ is at the foot of the view, right of *Rate*. While a mesh loads, its progress shows over whichever is on screen,
 and the view takes over once it's ready. Over the mesh it shows the climb's name, small, at the top, with the areas it
-was made for under it, and ⓘ's notes when they're shown. A long press on the view gives a link to the mesh, to copy or
-share.
+was made for under it, and ⓘ's notes when they're shown. A long press on the view opens *Share*'s menu too.
 
 The map opens around the mesh in view, its narrower side 1 km across (the admin page's *The map opens around a boulder
 this many km across*), with the point of its climb open as if clicked: the climb whose *View* opened it, or the one a
 boulder's mesh is seen from, else its own climbs or its boulder's, if they're all at one point. Once the map has been
 moved, it's left where it is.
 
-The page's address follows the mesh in view (`#mesh=<id>`, and `&climb=<id>` for a boulder's mesh seen from one of its
-climbs), so it can be copied from there too, and opening such a link shows that mesh.
+**Links.** *Share* offers a climb's link, `/c/<its name>`, which opens its newest mesh; its boulder's, `/b/<its name>`,
+which opens the boulder's mesh, or when it has several made apart (a side its main mesh left out, a climb's own), lists
+them, each with the climbs it shows, to pick from; and the mesh's own, `/m/<id>`, which opens that one, with *Newest*
+over *Rate* once it's been rebuilt. A phone hands the link to its share sheet, to pick the app; a computer copies it.
+The names are given once and kept: the first climb called The Mandala gets `/c/the-mandala`, a later one its boulder's
+name added, and a rename keeps the old name as an alias (design.md, "Links to climbs, boulders and meshes"). The
+address follows the view, as the link that opens what's in it, and old `#mesh=<id>` links still open. *Meshes (n)*
+over *Rate* lists the meshes of the boulder in view.
 
 Each mesh's card has a bar of where its photos came from, by source, in the same colour for each
 source everywhere. Hovering it, focusing it or tapping it shows each source's licence terms, and the

@@ -1202,36 +1202,51 @@ are allowed by hash, computed from the file when it changes, so the policy needs
 inline handler appears; and the fetcher refuses private addresses because its URLs come from search results, which
 anyone can seed, and a cloud machine's metadata service hands out credentials to whoever asks from inside.
 
-## Links to climbs, boulders and meshes (not built)
+## Links to climbs, boulders and meshes (`backend/links.py`)
 
-Planned on 2026-11-12. Today a mesh's link is `/#mesh=<id>` (with `&climb=<id>` for a boulder's mesh seen from one of
-its climbs): a fragment, which the browser never sends, so the server and Cloudflare see only `/`, the page opens the
-mesh itself, and moving between meshes rewrites the fragment without a reload. Those links keep working.
+Planned and built on 2026-11-12. Before, a mesh's link was `/#mesh=<id>` (with `&climb=<id>` for a boulder's mesh seen
+from one of its climbs): a fragment, which the browser never sends, so the server and Cloudflare saw only `/`, and the
+page opened the mesh itself. Those links still open, and the address then changes to the new kind.
 
 **Two kinds of link.** `/m/<mesh id>` is one exact mesh, for as long as it's stored: a rebuild keeps the old mesh,
-marked `replaced_by`, and only deleting one by hand removes it. A deleted mesh's id is kept, with what replaced it, so
-its links open that with a note, and a replaced one's page can offer the newer mesh. `/c/<climb>` and `/b/<boulder>`
-follow whatever is newest: a climb's link opens the mesh that shows it best now (its own, its boulder's or its
-pool's, seen from that climb), a boulder's link its current mesh. Groups get no link of their own: their meshes are
-pools of climbs found to be one rock, keyed by one of them, and they merge and split as photos match, so "a group's
-latest mesh" has no single answer; a climb's link finds whichever pool it's in. Everything in a group would be a link
-to its area (its meshes listed, or placed together as Nearby does), a feature of its own.
+marked `replaced_by`, and only deleting one by hand removes it. Opening a replaced one shows *Newest* over *Rate*. A
+deleted mesh is kept in `meshes_gone`, with what replaced it, its climbs and its boulder, so its link opens what
+replaced it, else its climb's newest mesh, else its boulder's meshes, with a note saying so. `/c/<climb>` and
+`/b/<boulder>` follow what's newest: a climb's link opens what its *View* button does (its own mesh, else the boulder's
+placing most of its photos, seen from it, else one an area linked it to); a boulder's opens its mesh.
 
-The Share button would offer both, the following link first, as it's what sharing a climb usually means; it's greyed
-out when there's nothing to follow (an upload tied to no climb, a boulder's rest). The cost of a following link is
-that whoever opens it later may see another mesh than the one shared, even a worse one or one of part of a boulder;
-the exact link stays beside it for that.
+**A boulder's meshes.** One Mountain Project boulder can have several current meshes: its own, from every climb's
+photos; meshes of scenes that one left out (a side no photo joins, another rock under the same page, a video's walk-in),
+made apart; and its climbs' own. With any made apart, the boulder's own counts as a group, not "the boulder". So a
+boulder's link with more than one lists them to pick from, most of its climbs first: each with the climbs it's the home
+of (the one placing most of their own photos, `boulder_homes()`) in bold, others it shows in grey, photos placed and
+faces, and below, its climbs no mesh places, with "N photos of its own tried, none placed" where that's known. Lining
+them up instead, as Nearby does, would often be 5-20 m off, as they share no coordinates. *Meshes (n)* over *Rate*
+opens the same list from the view. Only lowest areas meshed as one boulder have such a link (`pools_whole()`); an area
+of several rocks, whose climbs are pooled by their photos, has none, as its pools merge and split as photos match and
+no name of Mountain Project's is theirs: a climb's link finds whichever pool it's in.
+
+**Share** offers the climb's link (the climb it's shown for, else its only one), the boulder's, and the exact one; the
+climb's is greyed, with why, when the mesh isn't shown for one. The cost of a link that follows is that whoever opens
+it later may see another mesh than the one shared, even a worse one or one of part of a boulder; the exact link is
+beside it for that. A phone gives the link to its share sheet, to pick the app (the Web Share API, which any site on
+HTTPS has); a computer copies it, as people there expect, even where the browser has a share sheet. The address bar
+shows the link that opens what's in view: the boulder's it came from, else its climb's if that opens this mesh now,
+else the exact one.
 
 **Names, not ids.** `/c/the-mandala`, not `/c/<id>/the-mandala`. A name looked up by searching would break when a
 second climb took the same name; so each name is chosen once, when the climb or boulder is added, stored, and looked
 up as it was stored, which makes it an id that reads well. The rules that keep it one:
 - A name is never reused or given to anything else. A rename (Mountain Project's) gets a new name, and the old one
-  stays as an alias that redirects; a deleted or merged climb's name redirects to what took its place, or to a page
-  saying it's gone.
+  stays as an alias that redirects (a 301 not kept by browsers, as a climb renamed back gets its old name again); a
+  deleted climb's link says it's gone. A boulder is known by its Mountain Project area's number where its page is
+  known, so a renamed area keeps its boulder's links.
+- Names are given when the mesh list is asked for (at most every 30 s, or at once for a climb or boulder on a mesh
+  without one), as the server starts, and when a link names no one yet, in the order climbs were added.
 - The first climb with a name gets it plain; a later one gets its boulder's name added (`/c/the-mandala-<boulder>`),
   then its grade, then a number. A boulder whose name is taken gets its area's added.
-- Who gets the plain name isn't swapped later, as that would move links already shared; the page for a plain name
-  says when another climb has the same one, and links to it.
+- Who gets the plain name isn't swapped later, as that would move links already shared; the page for a name says when
+  other climbs have the same one, and links to them.
 - Accents are dropped ("é" to "e"); a name that leaves nothing, as one in Japanese, gets its boulder's name or a
   number.
 - Names live in the database, so they go wherever it goes. boulderme.sh harvests by itself, so `deploy/ship.sh` sends
@@ -1241,20 +1256,22 @@ How often names clash, in hal's copy of Nov 10: 156 of 1,808 climbs share a name
 added, 22 still do, all several "Unnamed" climbs on one boulder (The Pig Sty, Iceberg 2, Tomb of Dracula), which the
 grade or a number separates. 36 of 631 boulder names clash across areas (Dike Boulder, Warm-Up Boulder).
 
-**Previews.** Apps that show a link's preview (WhatsApp, iMessage, Slack, Discord) never see a fragment, so every
-mesh's link previews as the site. A path reaches the server, which can put the climb's name in the page's preview
-tags; a picture needs a thumbnail of each mesh, which nothing makes yet.
+**Previews.** Apps that show a link's preview (WhatsApp, iMessage, Slack, Discord) never saw a fragment, so every
+mesh's link previewed as the site. A path reaches the server, which puts the climb's or boulder's name, and where it
+is, in the page's title and preview tags (`page_head()`), with the canonical address from `SITE_URL`; a link that
+names no one is a 404, kept from search engines. A picture needs a thumbnail of each mesh, which nothing makes yet.
 
 **Caching and speed.** On Nov 12 the page itself wasn't cached by Cloudflare (`cf-cache-status: DYNAMIC`, as it
 doesn't keep HTML unless told) and went out uncompressed: 306 KB, 96 KB gzipped. Its `Cache-Control: no-transform`,
 there so that Cloudflare doesn't add its analytics script, stops Caddy's compression too. Browsers revalidate it on
 each visit, so a returning visitor gets a "not modified"; with a path per climb, each new link is a page the browser
-hasn't got, and the whole of it comes again. The plan, in order:
-1. The app compresses the page itself (gzip or zstd, as asked); `no-transform` still keeps Cloudflare from changing it.
-2. The page splits into a small HTML (a few KB: preview tags, markup, the import map) for each address, and its script
-   (261 KB) and styles (26 KB) in files named by their contents, kept a year by browsers and Cloudflare. A link then
-   costs a few KB from the server and the rest comes once from Cloudflare's nearest copy, then the browser's own:
-   quicker than now, for new and returning visitors alike. Only the import map stays inline, allowed by its hash.
-3. The links: the server answers `/c/`, `/b/` and `/m/` with that page (unknown names with a 404 and a page that says
-   so), the page reads its path and moves with the history API rather than the fragment, and the Share button offers
-   both kinds. `/api/` and `/meshes/`, and their caching, don't change.
+hasn't got, and the whole of it comes again. So, with the links:
+- The server splits `index.html` as it serves it (`page_parts()`), so that it stays one file to edit: its styles and
+  module script go to `/static/app.<hash of each>.css` and `.js`, kept a year (`immutable`) by browsers and by
+  Cloudflare, which keeps `.js` and `.css` by default; the page itself is what's left, 25 KB, 8 KB gzipped, against 306
+  KB before. A link then costs a few KB from the server, and the rest comes once from Cloudflare's nearest copy, then
+  the browser's own. An older page's file after a restart is a 404 that no one keeps; loading the page again fixes it.
+- The page is gzipped by the app, as `no-transform` stops Caddy from doing it, and still keeps Cloudflare from changing
+  it; its files are gzipped once, when they're made. Each page has an ETag, so a returning visitor's browser gets a "not
+  modified" for one it has.
+- `/api/` and `/meshes/`, and their caching, don't change.
