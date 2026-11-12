@@ -90,6 +90,7 @@ def main():
     dc.add_argument("--server", default=here)
     dc.add_argument("--brief", action="store_true", help="one line: only what a restart would lose, as deploy.sh waits for it")
     dc.add_argument("--color", action="store_true", help="colour it, by kind of work")
+    dc.add_argument("--from", dest="source", help="the server's /api/deploy JSON from this file ('-': stdin), rather than asking it")
     dd = sub.add_parser("deploy-drain", help="take no new work (--off: carry on as before; --now: a stop won't wait either)")
     dd.add_argument("--server", default=here); dd.add_argument("--off", action="store_true"); dd.add_argument("--now", action="store_true")
     o = sub.add_parser("offtopic-split"); o.add_argument("--limit", type=int, default=0)
@@ -135,7 +136,7 @@ def main():
     if a.cmd == "jobs":
         sys.exit(jobs(a.server))
     if a.cmd == "deploy-check":
-        sys.exit(deploy_check(a.server, a.brief, a.color))
+        sys.exit(deploy_check(a.server, a.brief, a.color, a.source))
     if a.cmd == "deploy-drain":
         _deploy(a.server, {"on": not a.off, "now": a.now})
         print("carrying on as before" if a.off else "taking no new work" + ("; a stop won't wait for jobs either" if a.now else ""))
@@ -322,6 +323,16 @@ def _paint(s: str, code: str | None, color: bool) -> str:
     return f"\033[{code}m{s}\033[0m" if color and code else s
 
 
+def _kind(what: str) -> str:
+    """An item's kind from what it says it is, for an older server's."""
+    for start, kind in (("meshing", "meshing"), ("finding size", "size"), ("scale", "size"), ("finding beta", "beta"),
+                        ("beta", "beta"), ("filtering", "filter"), ("harvest", "harvest"), ("boulder", "boulder"),
+                        ("reconstruct", "meshing"), ("a video", "video")):
+        if what.startswith(start):
+            return kind
+    return "area" if ": " in what else "other"
+
+
 def _rank(i: dict) -> tuple:
     kind = WEIGHT.index(i["kind"]) if i.get("kind") in WEIGHT else WEIGHT.index("area")
     loss = next((n for n, w in enumerate(LOSS) if i["lost"].startswith(w)), 0)
@@ -371,21 +382,25 @@ def _show(st: dict, color: bool = False) -> None:
         print("  " + _paint(f"{kind} ({state})", _line_color(i), color) + ": " + said)
 
 
-def deploy_check(server: str, brief: bool = False, color: bool = False) -> int:
+def deploy_check(server: str, brief: bool = False, color: bool = False, source: str | None = None) -> int:
     """Print what a restart would cost now, each piece of work in progress marked ! if it would lose much of it, and
     what a restart does to each kind of work, after a line "@@legend" (_show()).
 
     Args:
         brief: print only a line of what a restart would lose, for deploy.sh to print as it waits.
         color: in colour, by kind of work (meshing in red, the other ! ones orange), as for a terminal.
+        source: a file of the server's /api/deploy JSON ('-': stdin), fetched by deploy.sh, which shows it with this
+            copy of cli.py rather than the server's (which may be older).
 
     Returns:
         3 if a restart would lose work in progress, else 0 (1 if the server can't be asked; 2 is argparse's, as from an
         older cli.py without this command, or without --brief).
     """
     try:
-        st = _deploy(server)
-    except (urllib.error.URLError, OSError, ValueError) as e:
+        st = json.load(sys.stdin if source == "-" else open(source)) if source else _deploy(server)
+        for i in st["items"]:
+            i.setdefault("kind", _kind(i["what"]))   # from a server from before deploy_state() said (Nov 12, 2026)
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError) as e:
         print(f"can't ask the server what's running: {e}")
         return 1
     if brief:

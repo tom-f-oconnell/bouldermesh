@@ -39,9 +39,13 @@ deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public || exit 1
 # what a restart would cost now: exit 3 if it would lose work in progress (a server too old to say: 1 or 2)
 # (and after a line "@@legend", what a restart does to each kind of work listed: shown below the question while it's asked)
 set +e
-out=$(cli deploy-check ${ask:+--color})
+# shown by this copy of cli.py, from the server's /api/deploy (asked from inside its container, as it only answers there)
+out=$(ssh bouldermesh 'cd bouldermesh && docker compose exec -T bouldermesh python3 -' <<'PY' | python3 cli.py deploy-check --from - ${ask:+--color}
+import os, sys, urllib.request
+sys.stdout.write(urllib.request.urlopen(f"http://127.0.0.1:{os.environ.get('PORT', '8470')}/api/deploy", timeout=30).read().decode())
+PY
+)
 check=$?
-[ "$check" -eq 2 ] && { out=$(cli deploy-check); check=$?; }    # a server from before --color (Nov 12, 2026)
 set -e
 legend=''
 if [[ "$out" == *$'\n@@legend\n'* ]]; then
