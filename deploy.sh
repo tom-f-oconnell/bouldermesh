@@ -37,6 +37,14 @@ below() {
     fi
 }
 legend=''
+grey=''; [ -n "$ask" ] && grey=$'\e[90m'    # what's said while it waits, as cli.py's deploy-check --brief --color
+# the server's /api/deploy, for this copy of cli.py to show (asked from inside its container, as it only answers there)
+deploy_json() {
+    ssh bouldermesh 'cd bouldermesh && docker compose exec -T bouldermesh python3 -' <<'PY'
+import os, sys, urllib.request
+sys.stdout.write(urllib.request.urlopen(f"http://127.0.0.1:{os.environ.get('PORT', '8470')}/api/deploy", timeout=30).read().decode())
+PY
+}
 cancel() {
     cli deploy-drain --off >/dev/null || true
     echo "not restarted: the new image is pulled, and runs at the next restart"
@@ -51,12 +59,7 @@ deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public || exit 1
 # what a restart would cost now: exit 3 if it would lose work in progress (a server too old to say: 1 or 2)
 # (and after a line "@@legend", what a restart does to each kind of work listed: shown below the question while it's asked)
 set +e
-# shown by this copy of cli.py, from the server's /api/deploy (asked from inside its container, as it only answers there)
-out=$(ssh bouldermesh 'cd bouldermesh && docker compose exec -T bouldermesh python3 -' <<'PY' | python3 cli.py deploy-check --from - ${ask:+--color}
-import os, sys, urllib.request
-sys.stdout.write(urllib.request.urlopen(f"http://127.0.0.1:{os.environ.get('PORT', '8470')}/api/deploy", timeout=30).read().decode())
-PY
-)
+out=$(deploy_json | python3 cli.py deploy-check --from - ${ask:+--color})
 check=$?
 set -e
 legend=''
@@ -83,18 +86,14 @@ if [ "$check" -eq 3 ]; then
     if [ "$mode" = after ]; then
         cli deploy-drain >/dev/null || true
         trap 'printf "\\e[J\\n"; cancel 130' INT HUP TERM    # never leave the server taking no new work (nor the legend shown)
-        echo "taking no new work, and restarting once what's in progress has finished"
+        echo "${grey}taking no new work, and restarting once what's in progress has finished${plain}"
         deadline=$((SECONDS + ${WAIT_MINUTES:-90} * 60)) late=''
         while true; do
             set +e
-            left=$(cli deploy-check --brief 2>&1)
+            left=$(deploy_json | python3 cli.py deploy-check --brief --from - ${ask:+--color} 2>&1)
             st=$?
             set -e
-            if [ "$st" -eq 2 ]; then    # a server from before deploy-check --brief (Nov 11, 2026), which waits by itself
-                cli deploy-wait --max-minutes "${WAIT_MINUTES:-90}" || echo "restarting anyway"
-                break
-            fi
-            echo "$(date +%H:%M:%S) $left"
+            echo "${grey}$(date +%H:%M:%S)${plain} $left"
             [ "$st" -eq 0 ] && break    # otherwise, something's left, or the server couldn't be asked just now
             if [ "$SECONDS" -ge "$deadline" ] && [ -z "$late" ]; then
                 [ -t 0 ] || { echo "still going after ${WAIT_MINUTES:-90} min: restarting anyway"; break; }
@@ -107,7 +106,7 @@ if [ "$check" -eq 3 ]; then
                 read -r -s -n 1 -t 30 key || true
                 printf '\r\e[J'     # it and the legend: the next line takes its place, and they come again below that
                 case "$key" in
-                    n|N) echo "$(date +%H:%M:%S) restarting now, as you said"; mode=now; break ;;
+                    n|N) echo "${grey}$(date +%H:%M:%S) restarting now, as you said${plain}"; mode=now; break ;;
                     c|C) cancel ;;
                 esac
             else

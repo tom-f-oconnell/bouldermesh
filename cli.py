@@ -317,6 +317,7 @@ LOSS = ["queued again", "pauses", "starts", "interrupted", "lost", "ends"]
 # red, green, orange and yellow say how it's going (bad, good, warning, waiting), so kinds of work are other colours
 COLOR = {"meshing": "1;34", "harvest": "36", "area": "38;5;141", "scale": "35", "beta": "38;5;105", "filter": "38;5;73",
          "boulder": "38;5;183", "video": "38;5;153"}
+GREY = "90"     # what deploy.sh says as it waits, but for what's coloured otherwise
 STATUS = {"running": "32", "waiting for a machine": "33", "queued": "90", "!": "1;31"}
 VERB = {"ends": "31", "interrupted": "31", "lost": "31", "starts": "32", "pauses": "33", "queued": "90"}
 
@@ -371,6 +372,25 @@ def _colored(line: str, i: dict, color: bool) -> str:
         last = how.rsplit(": ", 1)[-1]      # an area's climb's step, not "its boulder: " before it
         line = line.replace(last, _paint(last, STATUS.get(_state(i), STATUS["running"]), True), 1)
     return line
+
+
+def _brief(i: dict, color: bool) -> str:
+    """An item for deploy.sh's line as it waits, in grey (GREY) but for its work and how it's going, coloured as in
+    _colored(), and the machine or volunteer it's on, left white."""
+    text = _item(i)
+    if not color:
+        return text
+    back = lambda code, t: f"\033[{code}m{t}\033[{GREY}m"   # noqa: E731
+    job, how = _parts(i["what"], i.get("kind") in ("area", "other"))
+    if job and text.startswith(job):
+        text = back(COLOR.get(i.get("kind"), GREY), job) + text[len(job):]
+    for lead in ("on ", "coming from "):
+        if how.startswith(lead) and how in text:   # "on hal-2": "on" as how it's going, the machine white
+            return text.replace(how, back(STATUS["running"], lead.strip()) + " " + back("0", how[len(lead):]), 1)
+    if how:
+        last = how.rsplit(": ", 1)[-1]
+        text = text.replace(last, back(STATUS.get(_state(i), STATUS["running"]), last), 1)
+    return text
 
 
 def _show(st: dict, color: bool = False) -> None:
@@ -429,7 +449,8 @@ def deploy_check(server: str, brief: bool = False, color: bool = False, source: 
         return 1
     if brief:
         costly = [i for i in st["items"] if i["costly"]]
-        print("waiting for: " + "; ".join(map(_item, costly)) if costly else "nothing a restart would lose is in progress")
+        line = "waiting for: " + "; ".join(_brief(i, color) for i in costly) if costly else "nothing a restart would lose is in progress"
+        print(f"\033[{GREY}m{line}\033[0m" if color else line)
         return 3 if costly else 0
     if not st["items"]:
         print("nothing in progress: a restart loses nothing")
