@@ -97,7 +97,9 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
   within 15° of the same direction from the rock once, so many frames of one video count about once;
   coverage is how much of a full circle round the rock its photos see from above (`meshmetrics.py`,
   from where its photos were placed, kept in each mesh's `metrics.json`). Each card names the areas
-  it was made for, with its first climb's Mountain Project path on hovering. The choices are
+  it was made for, with its first climb's Mountain Project path on hovering. A boulder's or group's
+  title links to the Mountain Project page of the lowest area its climbs are on, and its climbs fold
+  under *N climbs*. The choices are
   remembered in the browser.
 * **Rating a mesh:** *Rate ▴*, at the 3D view's bottom right, opens a box (folded away to start with, and again by
   *Rate ▾* or by hiding the notes) that takes bad, OK or good and a comment, which grows as it's typed. They're kept in the browser and sent to the site whenever either changes; the site keeps one of each per

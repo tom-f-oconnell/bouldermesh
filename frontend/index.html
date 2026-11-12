@@ -145,7 +145,8 @@
      rather than each dropping whole onto a line of its own */
   #ca-box details label.row:has(> input[type=checkbox]),#campaigns details label.row:has(> input[type=checkbox]){display:grid;grid-template-columns:auto 1fr;gap:6px;align-items:start}
   #ca-box details label.row:not(:has(> input[type=checkbox])),#campaigns details label.row:not(:has(> input[type=checkbox])){display:block}
-  .campname a{color:inherit;text-decoration:underline dotted;text-underline-offset:2px}
+  .campname a,.mesh .name a{color:inherit;text-decoration:underline dotted;text-underline-offset:2px}
+  details.mclimbs{flex-basis:100%} details.mclimbs > .chips{margin-top:4px}
   button.copy{background:transparent;color:var(--mute);border:0;padding:0 3px;vertical-align:-2px;line-height:1} button.copy:hover{color:var(--fg)}
   button.copy svg{width:14px;height:14px;display:block}
   .crows{display:grid;grid-template-columns:auto 1fr auto auto;gap:3px 8px;font-size:12px;margin-top:6px;align-items:baseline}
@@ -3294,6 +3295,8 @@ async function refreshMeshes(){
   await scrollStill();
   renderMeshes();
 }
+// the cards whose list of climbs is open (folded away to start with), kept as the list is drawn again
+const climbListsOpen = new Set();
 // the list as fetched, sorted and filtered; with filter false, the filter's own controls aren't drawn again (a slider being moved)
 function renderMeshes(filter = true){
   const el = $('#meshes'); el.innerHTML = meshesCache.length ? '' : '<div class="status">No meshes yet.</div>';
@@ -3314,10 +3317,15 @@ function renderMeshes(filter = true){
   if (meshesCache.length && !shown.length) el.innerHTML = '<div class="status">No mesh fits the filter.</div>';
   for (const m of shown) {
     const d = document.createElement('div'); d.className = 'card mesh';
-    const sole = soleClimb(m);
-    d.innerHTML = `<div class="grow"><span class="name">${esc(meshTitle(m))}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
-        <div class="chips">${(m.boulder_climbs || []).map(c => `<span class="chip" data-from="${c.id}" title="${c.view ? `Look at it from where ${esc(c.name)}'s own photos were taken (${plural(c.view.photos, 'photo')})` : `None of ${esc(c.name)}'s own photos were placed in it: opens the climb`}">${c.view ? '👁 ' : ''}${esc(c.name)} ${esc(c.grade||'')}</span>`).join('')}
-          ${m.climbs.filter(c => editor || c !== sole).map(c=>`<span class="chip${c.shared ? ' shared' : ''}" data-climb="${c.id}" ${c.shared ? 'title="Linked by an area as on the same boulder as the climb this was made for: it may not show this climb\'s side"' : ''}>${esc(c.name)} ${esc(c.grade||'')}${c.shared ? ' <small>same boulder</small>' : ''} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('')}
+    const sole = soleClimb(m), several = ['groups', 'boulders'].includes(meshKind(m));
+    // its climbs: a boulder's or a pool's, each opening it from where its own photos were taken, and those linked to it
+    // (a pool's again only where they can be unlinked here)
+    const pooledIds = new Set((m.boulder_climbs || []).map(c => c.id));
+    const chips = (m.boulder_climbs || []).map(c => `<span class="chip" data-from="${c.id}" title="${c.view ? `Look at it from where ${esc(c.name)}'s own photos were taken (${plural(c.view.photos, 'photo')})` : `None of ${esc(c.name)}'s own photos were placed in it: opens the climb`}">${c.view ? '👁 ' : ''}${esc(c.name)} ${esc(c.grade||'')}</span>`).join('')
+      + m.climbs.filter(c => editor || (c !== sole && !pooledIds.has(c.id))).map(c=>`<span class="chip${c.shared ? ' shared' : ''}" data-climb="${c.id}" ${c.shared ? 'title="Linked by an area as on the same boulder as the climb this was made for: it may not show this climb\'s side"' : ''}>${esc(c.name)} ${esc(c.grade||'')}${c.shared ? ' <small>same boulder</small>' : ''} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('');
+    const n = new Set([...pooledIds, ...m.climbs.map(c => c.id)]).size;
+    d.innerHTML = `<div class="grow"><span class="name">${meshNameHtml(m)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
+        <div class="chips">${several ? `<details class="mclimbs"${climbListsOpen.has(m.id) ? ' open' : ''}><summary>${plural(n, 'climb')}</summary><div class="chips">${chips}</div></details>` : chips}
           <select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option>${climbsCache.filter(c=>c.kind!=='area').map(c=>`<option value="${c.id}">${esc(c.name)} ${esc(c.grade||'')}</option>`).join('')}</select></div></div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px">
         <button class="sm view">View</button>
@@ -3338,6 +3346,7 @@ function renderMeshes(filter = true){
     d.querySelector('.setll')?.addEventListener('click', async () => { const ll = parseLL(prompt('lat, lng')); if (!ll) return; await api('/api/meshes/'+m.id, {method:'PATCH', json:{lat:ll[0], lng:ll[1]}}); refreshMeshes(); });
     d.querySelector('.del').onclick = async () => { if (ask(`Delete mesh "${meshTitle(m)}"?`)) { await api('/api/meshes/' + m.id, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); } };
     d.querySelectorAll('[data-climb]').forEach(ch => ch.onclick = ev => { if (ev.target.dataset.unlink) return; openClimb(ch.dataset.climb); });
+    d.querySelector('details.mclimbs')?.addEventListener('toggle', ev => { ev.target.open ? climbListsOpen.add(m.id) : climbListsOpen.delete(m.id); });
     d.querySelectorAll('[data-from]').forEach(ch => ch.onclick = () => {
       const c = m.boulder_climbs.find(x => x.id === ch.dataset.from);
       c?.view ? viewMesh(m.id, c.id, 'meshes') : openClimb(ch.dataset.from);
@@ -3369,6 +3378,13 @@ function soleClimb(m){
   return own.length === 1 && linkCounts.get(own[0].id) === 1 ? own[0] : null;
 }
 function meshTitle(m){ const c = soleClimb(m); return c ? `${c.name} ${c.grade || ''}`.trim() : m.name; }
+// a card's title: for a mesh of several climbs, a link to the Mountain Project page of the lowest area they're on
+function meshNameHtml(m){
+  const kind = meshKind(m), name = esc(meshTitle(m));
+  if (!m.boulder_url || (kind !== 'groups' && kind !== 'boulders')) return name;
+  const area = m.pooled?.area;
+  return `<a href="${esc(m.boulder_url)}" target="_blank" rel="noopener" title="${area ? `${esc(area)}, on Mountain Project` : 'Its area on Mountain Project'}">${name}</a>`;
+}
 function viewTitle(m, from){
   const seen = (m.boulder_climbs || []).find(c => c.id === from), own = m.climbs.filter(c => !c.shared);
   if (seen) return seen.name + gradeTag(seen);

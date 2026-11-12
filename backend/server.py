@@ -923,11 +923,28 @@ def boulder_project(boulder: str) -> dict | None:
     return q("SELECT * FROM projects WHERE kind='boulder' AND boulder=? ORDER BY created DESC LIMIT 1", boulder, one=True)
 
 
+def pool_leaf(key: str) -> str:
+    """The lowest area a pooled mesh's climbs are on: a boulder's own key, or the area a pool of climbs is in."""
+    return json.dumps(json.loads(key)[:-1]) if is_pool(key) else key
+
+
+def leaf_url(leaf: str, cache: dict) -> str | None:
+    """A lowest area's Mountain Project page: as read for what it is (boulder_kind()), or as its climbs' pages name it.
+
+    Args:
+        cache: {lowest area: its page}, kept by the caller for the many meshes of one listing.
+    """
+    if leaf not in cache:
+        row = q("SELECT url FROM boulders WHERE key=? AND url IS NOT NULL", leaf, one=True)
+        cache[leaf] = row["url"] if row else boulder_url(leaf)
+    return cache[leaf]
+
+
 def pooled_summary(key: str, climbs: list[dict], kinds: dict) -> dict:
     """What a pooled mesh's card says of it: how many climbs' photos it's made from and how many of them it places, its
     lowest area and what that is, and whether it's of the whole boulder: one Mountain Project says is one rock, every
     climb known on it placed."""
-    leaf = json.dumps(json.loads(key)[:-1]) if is_pool(key) else key
+    leaf = pool_leaf(key)
     placed = {c["id"] for c in climbs if c.get("view")}
     kind = leaf_kind(leaf, kinds)
     on_leaf = {c["id"] for c in q("SELECT id FROM climbs WHERE area_path=?", leaf)} if kind == "boulder" else set()
@@ -5349,11 +5366,14 @@ class Handler(BaseHTTPRequestHandler):
             # ---- meshes
             if p == "/api/meshes":
                 rows = q("SELECT * FROM meshes ORDER BY created DESC")
-                links = q("SELECT l.mesh_id, l.note, c.id, c.name, c.grade FROM mesh_links l JOIN climbs c ON c.id=l.climb_id")
-                by = {}
+                links = q("SELECT l.mesh_id, l.note, c.id, c.name, c.grade, c.area_path FROM mesh_links l JOIN climbs c ON c.id=l.climb_id")
+                by, leaves = {}, {}
                 for l in links:     # shared: an area linked it as on the same boulder as the climb the mesh was made for
-                    by.setdefault(l["mesh_id"], []).append({"id": l["id"], "name": l["name"], "grade": l["grade"],
-                                                            "shared": (l["note"] or "").startswith(SHARED)})
+                    shared = (l["note"] or "").startswith(SHARED)
+                    by.setdefault(l["mesh_id"], []).append({"id": l["id"], "name": l["name"], "grade": l["grade"], "shared": shared})
+                    if not shared:
+                        leaves.setdefault(l["mesh_id"], set()).add(l["area_path"])
+                urls = {}
                 on = {}
                 for c in q("SELECT c.id, c.name, c.grade, c.area_path FROM climbs c WHERE c.area_path IN "
                            "(SELECT boulder FROM meshes WHERE boulder IS NOT NULL) ORDER BY c.name"):
@@ -5369,6 +5389,11 @@ class Handler(BaseHTTPRequestHandler):
                         views = viewpoints.load(MESHES / r["id"]) or {}
                         r["boulder_climbs"] = [{**c, "view": (views.get("climbs") or {}).get(c["id"])} for c in on.get(r["boulder"], [])]
                         r["pooled"] = pooled_summary(r["boulder"], r["boulder_climbs"], kinds)
+                    # the Mountain Project page of the lowest area a mesh of several climbs is on: a pooled mesh's, or
+                    # that of the climbs linked to one, when they're all on one
+                    leaf = (pool_leaf(r["boulder"]) if r["boulder"] else
+                            next(iter(leaves[r["id"]])) if sum(not c["shared"] for c in r["climbs"]) > 1 and len(leaves[r["id"]]) == 1 else None)
+                    r["boulder_url"] = leaf_url(leaf, urls) if leaf else None
                     r["texture"] = texture_mode(r["id"], r["source"])
                     try:    # one mesh's unreadable file shouldn't empty the whole list
                         r["cleanup"] = meshclean.summary(meshclean.load(served_dir(r["id"], r["texture"])))
