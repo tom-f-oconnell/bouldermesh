@@ -83,6 +83,14 @@ class Tracker:
                 return
             self._flush(True)
 
+    def units(self, key: str, n: int) -> None:
+        """Say how much the step with this key has to do, when that isn't its project's photos (a boulder's climbs to
+        harvest): kept with its time (steptimes.py), to tell from it how long one like it takes."""
+        with self._lock:
+            s = self._step(key)
+            if s is not None:
+                s["units"] = n
+
     def callback(self, key: str) -> Callable[..., None]:
         """A progress(frac, detail) function for code that doesn't need to know about steps. Its .at(where) says where
         that step's work is done (at())."""
@@ -127,6 +135,7 @@ class Tracker:
                 "steps": [{**{k: s[k] for k in ("key", "label", "frac", "detail", "state")},
                            **({"parallel": True} if s["parallel"] else {}),
                            **({"where": s["where"]} if s.get("where") else {}),
+                           **({"units": s["units"]} if "units" in s else {}),
                            **({"started": round(s["started"], 1)} if "started" in s else {}),
                            **({"seconds": round(s["ended"] - s["started"], 1)} if "ended" in s else {})} for s in self.steps]}
 

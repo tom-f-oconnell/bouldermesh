@@ -17,7 +17,8 @@ tmp = tempfile.mkdtemp(prefix="bouldermesh-campaign-")
 os.environ["DATA_DIR"] = tmp
 
 import pipeline  # noqa: E402
-import server  # noqa: E402
+import server
+import steptimes  # noqa: E402
 from climbs.common import Cancelled, Climb, Media, jobctl  # noqa: E402
 
 HEAD = 'Route,Location,URL,"Avg Stars","Your Stars","Route Type",Rating,Pitches,Length,"Area Latitude","Area Longitude"\n'
@@ -2235,9 +2236,10 @@ server._workers[:] = [server._first]
 server.settings().update({"areas.meshes": "climbs"})
 print("areas running and queued, and the boulder panel OK")
 
-# --- how long each step usually takes, for the time left of the Areas tab's bars: the median of its last runs that
-# finished, of about as many photos as the job's harvest found where enough runs had, else of any
+# --- how long each step takes, for the time left of the bars and deploy.sh: kept for every run (step_runs), filled at
+# first from projects' last jobs, and estimated from the runs most like it: same kind, same machine, nearest in photos
 fresh()
+server.q("DELETE FROM step_runs", write=True)
 
 
 def ran(pid: str, images: int, **seconds) -> None:
@@ -2253,17 +2255,41 @@ for i in range(3):
 ran("one", 50, mapper=99)
 server.q("INSERT INTO projects(id,name,created,kind,status,progress) VALUES('cut','cut',0,'harvest','stopped',?)",
          json.dumps({"overall": 5, "steps": [{"key": "mapper", "state": "running", "frac": 0.5, "started": 1.0}]}), write=True)
+server.backfill_step_runs()
+assert server.q("SELECT COUNT(*) n FROM step_runs", one=True)["n"] == 13, "a step cut short isn't kept"
+server.backfill_step_runs()
+assert server.q("SELECT COUNT(*) n FROM step_runs", one=True)["n"] == 13, "only once"
 server._typicals["at"] = 0
-by = server.step_typicals()
-assert by[("mapper", "0-20")] == 61 and by[("mapper", "80+")] == 601 and ("mapper", "40-80") not in by, by
-assert by[("mapper", None)] == 99 and by[("download", None)] == 35, "a step cut short doesn't count"
 steps = [{"key": "download", "state": "done", "frac": 1.0}, {"key": "mapper", "state": "running", "frac": 0.01},
          {"key": "dense", "state": "pending", "frac": 0.0}]
-got = server.with_typicals({"overall": 10, "steps": [dict(s) for s in steps]}, json.dumps({"images": 12}))["steps"]
-assert [s.get("typical") for s in got] == [None, 61, None], got
-got = server.with_typicals({"overall": 10, "steps": [dict(s) for s in steps]}, json.dumps({"images": 50}))["steps"]
-assert got[1]["typical"] == 99, "too few runs of as many photos: of any"
-assert server.with_typicals({"overall": 0, "steps": [dict(s) for s in steps]}, None)["steps"][1]["typical"] == 99
+got = server.with_typicals({"overall": 10, "steps": [dict(s) for s in steps]}, json.dumps({"images": 10}))["steps"]
+assert got[0].get("typical") is None and got[2].get("typical") is None and 55 < got[1]["typical"] < 70, got
+big = server.with_typicals({"overall": 10, "steps": [dict(s) for s in steps]}, json.dumps({"images": 200}))["steps"][1]["typical"]
+assert 1100 < big < 1300, ("twice the photos of the biggest: about twice its time", big)
+assert 60 <= server.with_typicals({"overall": 0, "steps": [dict(s) for s in steps]}, None)["steps"][1]["typical"] <= 600, "any"
+runs = [{"step": "mapper", "kind": "harvest", "machine": "server", "units": 20, "seconds": 900}] * 3 + \
+       [{"step": "mapper", "kind": "harvest", "machine": "hal-2", "units": 20, "seconds": 100}] * 3 + \
+       [{"step": "climbs", "kind": "boulder", "machine": "server", "units": 4, "seconds": 2000}] * 3
+assert steptimes.estimate(runs, "mapper", 20, "harvest", "hal-2") == 100 and steptimes.estimate(runs, "mapper", 20, machine="server") == 900
+assert steptimes.estimate(runs, "mapper", 20, "harvest", "atlas") is not None, "a machine with no runs: any"
+assert steptimes.estimate(runs, "climbs", 8, "boulder") == 3600, "twice the climbs: scaled by (8 + 1) / (4 + 1)"
+assert steptimes.estimate(runs, "dense", 20) is None
+assert steptimes.job_left({"steps": [{"state": "done"}, {"state": "pending", "typical": 50}, {"state": "pending", "typical": 30}]}) == 80
+assert steptimes.job_left({"steps": [{"state": "pending", "typical": 50}, {"state": "pending"}]}) is None
+# a tracker keeps each step it finishes, with where it ran and how much it had to do
+tpid = "f7" * 6
+(server.PROJECTS / tpid / "photos").mkdir(parents=True, exist_ok=True)
+for n in range(4):
+    (server.PROJECTS / tpid / "photos" / f"{n}.jpg").write_bytes(b"x")
+server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,?)", tpid, "B (boulder)", time.time(), "boulder", "running", write=True)
+tr = server.tracker_for(tpid, [("climbs", "Harvest its climbs", 6), ("mapper", "Place cameras", 40)])
+tr.units("climbs", 2)
+tr.update("climbs", 0.5)
+tr.update("mapper", 0.1)
+tr.finish()
+kept = server.q("SELECT step, kind, machine, units FROM step_runs WHERE project_id=? ORDER BY step", tpid)
+assert kept == [{"step": "climbs", "kind": "boulder", "machine": "server", "units": 2},
+                {"step": "mapper", "kind": "boulder", "machine": "server", "units": 4}], kept
 server._typicals["at"] = 0
 print("how long steps usually take OK")
 

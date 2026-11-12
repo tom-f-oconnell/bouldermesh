@@ -72,6 +72,7 @@ import proxy_ranges  # noqa: E402
 import pullwork  # noqa: E402
 import splat as splat_mod  # noqa: E402
 import timings as timings_mod  # noqa: E402
+import steptimes as steptimes_mod  # noqa: E402
 import viewpoints  # noqa: E402
 import notify as notify_mod  # noqa: E402
 import volunteers as volunteers_mod  # noqa: E402
@@ -238,6 +239,7 @@ def init_db() -> None:
           channel_url TEXT PRIMARY KEY, channel_id TEXT, name TEXT, description TEXT, fetched REAL,
           height_cm REAL, wingspan_cm REAL, ape_index_cm REAL, first_person INTEGER, quotes TEXT);
         """)
+        con.execute(steptimes_mod.SCHEMA)   # how long each step of each run took, for estimates (steptimes.py)
         con.execute(offload_mod.SCHEMA)     # what's been offloaded to the backup, or marked to be (offload.py)
         # migrations for databases created by v0.1
         cols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
@@ -1737,12 +1739,59 @@ def read_log(pid: str, older: str = "", tail: int = 64_000) -> str:
 
 
 def tracker_for(pid: str, steps: list[tuple[str, str, float]], follow: Callable[[dict], None] | None = None) -> Tracker:
-    """A project's job's tracker, saving its progress with the project, and giving it to follow if given (as a snapshot)."""
+    """A project's job's tracker, saving its progress with the project, and giving it to follow if given (as a snapshot).
+    Each step it finishes is kept in step_runs too (keep_step_runs())."""
+    kept: set = set()
+
     def save(snapshot: str) -> None:
         q("UPDATE projects SET progress=? WHERE id=?", snapshot, pid, write=True)
+        snap = json.loads(snapshot)
+        keep_step_runs(pid, snap, kept)
         if follow:
-            follow(json.loads(snapshot))
+            follow(snap)
     return Tracker(steps, save, where="server")
+
+
+def project_units(pid: str) -> int | None:
+    """How much a project's steps have to do, for their times (steptimes.py): its photos, as found by its harvest if
+    it's been harvested, else in its folder now (None if there are none yet, as a boulder's before it pools them)."""
+    p = q("SELECT harvest FROM projects WHERE id=?", pid, one=True)
+    try:
+        n = json.loads(p["harvest"]).get("images") if p and p["harvest"] else None
+    except (TypeError, ValueError, AttributeError):
+        n = None
+    if n is None:
+        photos = PROJECTS / pid / "photos"
+        n = sum(1 for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.is_dir() else 0
+    return n or None
+
+
+def step_machine(pid: str, where: str | None) -> str | None:
+    """Where a project's step ran, for step_runs: "server", or the name of the machine on its job ("machine" if that's
+    gone)."""
+    if where != "machine":
+        return "server" if where in (None, "server", "server+volunteers") else where
+    return next((j["machine"] for j in MACHINES.running() if j["label"] == pid and j["machine"]), "machine")
+
+
+def keep_step_runs(pid: str, snap: dict, kept: set) -> None:
+    """Keep each step of a tracker's snapshot that's newly finished in step_runs (steptimes.py); kept holds those kept
+    already. Only costs that step's time if it fails."""
+    try:
+        new = [st for st in snap.get("steps", []) if st.get("state") == "done" and st.get("seconds") is not None
+               and (st["key"], st.get("started")) not in kept]
+        if not new:
+            return
+        kind = (q("SELECT kind FROM projects WHERE id=?", pid, one=True) or {}).get("kind")
+        units = project_units(pid)
+        for st in new:
+            kept.add((st["key"], st.get("started")))
+            r = steptimes_mod.row(pid, st, kind, step_machine(pid, st.get("where")), units)
+            if r:
+                q("INSERT OR IGNORE INTO step_runs VALUES(?,?,?,?,?,?,?)", *r, write=True)
+        _typicals["at"] = 0.0
+    except Exception as e:
+        print(f"step_runs: not kept ({type(e).__name__}: {e})", flush=True)
 
 
 def boulder_place(boulder: str | None) -> tuple[float | None, float | None]:
@@ -2820,6 +2869,8 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
         missing = [c for c in climbs if not climb_harvests(c["id"])] if fetch and not finished else []
         tracker = tracker_for(pid, ([("climbs", "Harvest its climbs", 3 * len(missing))] if missing else [])
                               + harvest_mod.steps(set()) + pipeline.steps())
+        if missing:
+            tracker.units("climbs", len(missing))
         for i, c in enumerate(missing):
             tracker.update("climbs", i / len(missing), c["name"])
             log(f"harvesting {c['name']}, which hadn't been")
@@ -5138,48 +5189,60 @@ def stop_campaign(camp_id: str, now: bool = True) -> None:
             w.control.stop()
 
 
-TYPICAL_RUNS = 30      # the most recent runs of a step whose median says how long it usually takes (step_typicals())
-TYPICAL_LEAST = 3      # runs a step needs, of about as many photos as a job's (timings.band()), to go by those alone
-TYPICAL_EVERY = 600    # seconds between gathering them again
+TYPICAL_EVERY = 600    # seconds between reading step_runs again (and at once after a step's kept)
 _typicals: dict = {"at": 0.0, "by": {}}
 
 
-def step_typicals() -> dict[tuple[str, str | None], float]:
-    """How long each progress step usually takes, in seconds: the median of its last TYPICAL_RUNS runs that finished,
-    from projects' progress (each keeps its last job's), by (step, photos band of the project's harvest) and (step,
-    None) for any number. Gathered again every TYPICAL_EVERY seconds."""
-    if time.time() - _typicals["at"] < TYPICAL_EVERY:
-        return _typicals["by"]
-    runs: dict[tuple[str, str | None], list[tuple[float, float]]] = {}
-    for r in q("SELECT progress, harvest FROM projects WHERE progress IS NOT NULL"):
+def step_runs() -> dict[str, list[dict]]:
+    """step_runs by step, newest first (read again every TYPICAL_EVERY seconds, or after a step's kept)."""
+    if time.time() - _typicals["at"] >= TYPICAL_EVERY:
+        by: dict[str, list[dict]] = {}
+        for r in q("SELECT step, kind, machine, units, seconds FROM step_runs ORDER BY started DESC LIMIT 20000"):
+            by.setdefault(r["step"], []).append(r)
+        _typicals.update(at=time.time(), by=by)
+    return _typicals["by"]
+
+
+def backfill_step_runs() -> None:
+    """At the first start with step_runs, fill it from each project's last job's progress (all that was kept of
+    runs before), its photos as its harvest found, and where each step ran ("machine" for any of them)."""
+    if q("SELECT 1 FROM step_runs LIMIT 1"):
+        return
+    n = 0
+    for r in q("SELECT id, kind, progress, harvest FROM projects WHERE progress IS NOT NULL"):
         try:
             steps = json.loads(r["progress"])["steps"]
-            band = timings_mod.band(json.loads(r["harvest"]).get("images")) if r["harvest"] else None
+            units = json.loads(r["harvest"]).get("images") if r["harvest"] else None
         except (TypeError, ValueError, KeyError, AttributeError):
             continue
         for st in steps:
-            if st.get("state") == "done" and st.get("seconds") is not None and st.get("started"):
-                for key in [(st["key"], None)] + [(st["key"], band)] * bool(band):
-                    runs.setdefault(key, []).append((st["started"], st["seconds"]))
-    by = {k: statistics.median(sec for _, sec in sorted(v, reverse=True)[:TYPICAL_RUNS])
-          for k, v in runs.items() if len(v) >= TYPICAL_LEAST}
-    _typicals.update(at=time.time(), by=by)
-    return by
+            row = steptimes_mod.row(r["id"], st, r["kind"], "server" if st.get("where") in (None, "server", "server+volunteers")
+                                    else st["where"], units)
+            if row:
+                n += bool(q("INSERT OR IGNORE INTO step_runs VALUES(?,?,?,?,?,?,?)", *row, write=True))
+    print(f"step_runs: {n} step(s) from projects' last jobs", flush=True)
 
 
-def with_typicals(progress: dict, harvest: str | None) -> dict:
-    """A job's progress (a tracker's snapshot), each step still to finish given how long it usually takes ("typical",
-    seconds, step_typicals()), of as many photos as its harvest found if enough runs had, else of any, for its time
-    left in the UI."""
-    try:
-        band = timings_mod.band(json.loads(harvest).get("images")) if harvest else None
-    except (TypeError, ValueError, AttributeError):
-        band = None
-    by = step_typicals()
+def with_typicals(progress: dict, harvest: str | None, pid: str | None = None) -> dict:
+    """A job's progress (a tracker's snapshot), each step still to finish given how long it'll probably take
+    ("typical", seconds, steptimes.estimate()): from runs of the same kind of project, on the machine it's on (a step
+    that's begun: where it is; one to come: the machine meshing it now, if one is), of about as many photos as it has
+    (or for a boulder's "climbs" step, climbs), for its time left in the UI and deploy.sh."""
+    runs = step_runs()
+    units = kind = machine = None
+    if pid:
+        units, kind = project_units(pid), (q("SELECT kind FROM projects WHERE id=?", pid, one=True) or {}).get("kind")
+        machine = step_machine(pid, "machine") if progress.get("where") == "machine" else None
+        machine = None if machine == "machine" else machine
+    else:
+        try:
+            units = json.loads(harvest).get("images") if harvest else None
+        except (TypeError, ValueError, AttributeError):
+            pass
     for st in progress.get("steps", []):
         if st.get("state") in ("pending", "running"):
-            t = by.get((st["key"], band)) if band else None
-            t = t if t is not None else by.get((st["key"], None))
+            on = step_machine(pid, st["where"]) if pid and st.get("where") else machine
+            t = steptimes_mod.estimate(runs.get(st["key"], []), st["key"], st.get("units", units), kind, None if on == "machine" else on)
             if t is not None:
                 st["typical"] = round(t, 1)
     return progress
@@ -5233,7 +5296,8 @@ def campaign_view(camp: dict) -> dict:
                         "project_id": whole["id"]} if whole else None
         p = q("SELECT status,progress,harvest FROM projects WHERE id=?", whole["id"] if whole else r["project_id"], one=True) \
             if whole or r["project_id"] else None
-        r["progress"] = with_typicals(json.loads(p["progress"]), p["harvest"]) if p and p["progress"] else None
+        r["progress"] = with_typicals(json.loads(p["progress"]), p["harvest"], whole["id"] if whole else r["project_id"]) \
+            if p and p["progress"] else None
         try:
             r["boulder_panel"] = boulder_panel(camp, r)
         except Exception as e:      # only the panel is lost
@@ -5556,18 +5620,13 @@ def drain(on: bool, now: bool = False) -> dict:
     return deploy_state()
 
 
-def _eta_from(progress: dict | None, keys: set[str]) -> float | None:
-    """Seconds left of the steps with these keys, from how long they've taken so far for how far they've got, each
-    step counted by its weight (its typical share of the time), or None when there's no telling (or all are done, as
-    then what's going on now isn't one of them)."""
-    steps = [s for s in (progress or {}).get("steps", []) if s["key"] in keys and s.get("state") != "skipped"]
-    began = [s["started"] for s in steps if s.get("started")]
-    total = sum(s.get("weight") or 1 for s in steps)
-    if not steps or not began or not total:
+def _left(pid: str, progress: dict | None, keys: set[str] | None = None) -> float | None:
+    """Seconds left of a project's job (of only the steps with these keys, if given), as its progress bar says
+    (with_typicals(), steptimes.job_left()), or None when there's no telling."""
+    if not progress:
         return None
-    done = sum((s.get("weight") or 1) * (1.0 if s["state"] == "done" else s.get("frac", 0.0)) for s in steps) / total
-    took = time.time() - min(began)
-    return took * (1 - done) / done if 0.1 <= done < 1 and took >= 30 else None
+    steps = [st for st in with_typicals(progress, None, pid).get("steps", []) if keys is None or st["key"] in keys]
+    return steptimes_mod.job_left({"steps": steps}) if steps else None
 
 
 MACHINE_TASKS = {"reconstruct": "meshing", "beta": "finding beta", "scale": "scale",     # as deploy_state() tells them
@@ -5605,7 +5664,7 @@ def deploy_state() -> dict:
         eta = None
         if j["state"] == "running":     # from how far its steps have got (the machine tells its project), else as usual
             p = q("SELECT progress FROM projects WHERE id=?", j["label"], one=True) if project else None
-            eta = _eta_from(json.loads(p["progress"]), mesh_keys) if p and p["progress"] else None
+            eta = _left(j["label"], json.loads(p["progress"]), mesh_keys) if p and p["progress"] else None
             if eta is None and typical and typical > elapsed:
                 eta = typical - elapsed     # past the usual time, there's no telling
         if mine and mine["type"] != "scale":
@@ -5626,7 +5685,7 @@ def deploy_state() -> dict:
         meshing_here = bool(step and step["key"] in mesh_keys and _local_meshing and not _executor)
         items.append({"what": f"{r['area']}: " + ("its boulder: " if bp else "") + (step["label"].lower() if step else "starting"),
                       "name": r["name"], "kind": "meshing" if meshing_here else "area", "project_id": ppid, "costly": meshing_here, "elapsed": round(now - (r["updated"] or now)),
-                      "eta": _eta_from(prog, mesh_keys if meshing_here else {s["key"] for s in (prog or {}).get("steps", [])}),
+                      "eta": (lambda t: round(t) if t is not None else None)(_left(ppid, prog, mesh_keys if meshing_here else None) if ppid else None),
                       "lost": "starts its step again after" if meshing_here else "pauses, and carries on after"})
     for j in asked:
         if j["machine_job"]:
@@ -6784,7 +6843,7 @@ class Handler(BaseHTTPRequestHandler):
                 proj["log"] = read_log(m[1], proj.get("log") or "")
                 proj["failure"] = (last_failure(m[1]) if proj["status"] == "failed" else
                                    last_failure(m[1], "INTERRUPTED: ") if proj["status"] == "interrupted" else None)
-                proj["progress"] = with_typicals(json.loads(proj["progress"]), proj.get("harvest")) if proj.get("progress") else None
+                proj["progress"] = with_typicals(json.loads(proj["progress"]), proj.get("harvest"), m[1]) if proj.get("progress") else None
                 proj["harvest"] = json.loads(proj["harvest"]) if proj.get("harvest") else None
                 proj["known_object"] = known_object(m[1])
                 rejected = PROJECTS / m[1] / "rejected"
@@ -8347,6 +8406,7 @@ def main() -> None:
     threading.Thread(target=adopt_old_pools, daemon=True).start()
     threading.Thread(target=rest_existing_meshes, daemon=True).start()
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
+    threading.Thread(target=backfill_step_runs, daemon=True).start()
     for d in MESHES.iterdir() if MESHES.exists() else []:
         beta_mod.carry_on(d)        # finding beta and size carry on after a restart, like areas
         if scale_mod.carry_on(d):

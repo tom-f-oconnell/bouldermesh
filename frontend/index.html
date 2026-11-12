@@ -688,6 +688,23 @@ function jobTiming(pr){
   const going = began.length ? ` · going ${fmtDur(now - Math.min(...began))}` : '';
   return going + (unsure ? (left >= 60 ? `, more than ${fmtDur(left)} left` : ', no estimate yet') : `, about ${fmtDur(left)} left`);
 }
+// how far the whole job is, in percent: by time (what its steps took, have been going and have left) when every step
+// still to finish can be told, as that gets better with every run (the server's step_runs), else by its steps' rough
+// weights (the server's "overall")
+function overallPct(pr){
+  const now = Date.now() / 1000;
+  let gone = 0, left = 0;
+  for (const s of pr?.steps || []) {
+    if (s.parallel) continue;    // alongside the others: its time is theirs too
+    if (s.state === 'done') { gone += s.seconds || 0; continue; }
+    if (s.state !== 'running' && s.state !== 'pending') continue;
+    const t = stepLeft(s, now);
+    if (t.left == null) return pr.overall;
+    gone += t.going || 0;
+    left += t.left;
+  }
+  return gone + left > 0 ? Math.min(100, 100 * gone / (gone + left)) : pr.overall;
+}
 // who does a step: this server, a machine that takes work from it, or volunteers (not named, for now)
 const WHERE = { server: 'on the server', machine: 'on a machine', waiting: 'waiting for a machine to take it', volunteers: 'by volunteers',
                 'server+volunteers': 'on the server, with volunteers fetching from YouTube' };
@@ -2886,7 +2903,7 @@ function progressHtml(p){
   const rows = pr.steps.map(s => `<span class="${s.state}">${s.state==='done'?'✓':s.state==='failed'?'✕':s.state==='running'?'▸':'·'} ${esc(s.label)}</span>
     <div class="bar ${s.state}" title="${pct(s.frac)}"><i style="width:${pct(s.frac)}"></i></div>${s.state==='running'?`<span></span><span class="detail">${pct(s.frac)}${s.detail?' · '+esc(s.detail):''}${stepWhere(s)}${stepTiming(s)}</span>`:''}`).join('');
   const busy = BUSY.includes(p.status);
-  return `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall${busy ? jobTiming(pr) + machineTake(pr) : ''}</small><div class="steps">${rows}</div>`;
+  return `<div class="bar overall" title="${overallPct(pr).toFixed(0)}%"><i style="width:${overallPct(pr)}%"></i></div><small>${overallPct(pr).toFixed(0)}% overall${busy ? jobTiming(pr) + machineTake(pr) : ''}</small><div class="steps">${rows}</div>`;
 }
 // a project's photo as the admin page allows: shown, a link to where it came from, or nothing
 function photoThumb(id, name, access){
@@ -3080,7 +3097,7 @@ function currentHtml(c){
     // one meshing its boulder, or a group its photos matched: the bars are that project's, as its own harvest is done
     const whole = cur.meshing ? ` <small>· meshing its ${cur.meshing.kind}: <a href="#" data-proj="${esc(cur.meshing.project_id)}" title="Its project">${esc(cur.meshing.name)}</a></small>` : '';
     return `<div class="row" style="margin-top:8px"><span class="meta grow">Now: <b>${esc(named(cur, true))}</b> <small>#${cur.rank}</small>${whole}</span>${pause}</div>
-      ${!pr ? '' : `<div class="bar overall" title="${pr.overall}%"><i style="width:${pr.overall}%"></i></div><small>${pr.overall.toFixed(0)}% overall${jobTiming(pr)}${machineTake(pr)}</small>
+      ${!pr ? '' : `<div class="bar overall" title="${overallPct(pr).toFixed(0)}%"><i style="width:${overallPct(pr)}%"></i></div><small>${overallPct(pr).toFixed(0)}% overall${jobTiming(pr)}${machineTake(pr)}</small>
           ${now.map(s => `<div class="bar running" title="${pct(s.frac)}" style="margin-top:4px"><i style="width:${pct(s.frac)}"></i></div><small>${said(s)}</small>`).join('')}`}
       ${boulderPanelHtml(cur.boulder_panel, c)}`;
   }).join('') + pausedHtml(c);
