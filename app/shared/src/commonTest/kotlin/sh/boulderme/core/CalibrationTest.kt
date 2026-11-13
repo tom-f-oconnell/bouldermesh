@@ -11,6 +11,16 @@ import kotlin.test.assertTrue
 import sh.boulderme.core.TestWorld.near
 
 class CalibrationTest {
+    @Test fun uprightFromDown() {
+        // a phone held upright reads its picture out on its side: down runs along the rows, and a quarter turn shows it right
+        assertEquals(6, Axes.exifOrientation(Axes.downFromAccel(Vec3(0.0, 9.81, 0.0)), 0))
+        assertEquals(1, Axes.exifOrientation(Vec3(0.0, 1.0, 0.0), 90), "held on its side, the picture is upright as stored")
+        assertEquals(3, Axes.exifOrientation(Vec3(0.1, -1.0, 0.2), 90))
+        assertEquals(8, Axes.exifOrientation(Vec3(-1.0, 0.0, 0.0), 90))
+        assertEquals(6, Axes.exifOrientation(Vec3(0.1, 0.1, 1.0), 90), "looking straight down: as the screen showed it")
+        assertEquals(1, Axes.exifOrientation(null, 0))
+    }
+
     @Test fun accelerometer() {
         val bias = Vec3(0.21, -0.14, 0.3)
         // a table sloping 4 degrees: gravity as the phone reads it lying on it, after half a turn, and flipped over

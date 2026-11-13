@@ -97,26 +97,38 @@ class GuideMesh(
         return Vec3(lx, ly, lz) to Vec3(hx, hy, hz)
     }
 
-    /** A grid over its faces' centres, for finding the nearest to a point quickly (Registration). */
+    /**
+     * Grids over its faces' centres, for finding the nearest to a point quickly (Registration): the same faces in
+     * cells of `cell` and of 2, 4 and 8 times that, so that a search looks in a few cells however far it reaches.
+     * Nothing in it changes once made, so it can be read from any thread.
+     */
     inner class Nearest(private val cell: Double) {
         private val lo = bounds().first
-        private val buckets = HashMap<Long, MutableList<Int>>()
+        private val sizes = DoubleArray(LEVELS) { cell * (1 shl it) }
+        private val grids = Array(LEVELS) { HashMap<Long, IntArray>() }
 
         init {
-            for (f in 0 until faces) buckets.getOrPut(key(centre(f))) { ArrayList() }.add(f)
+            for (level in 0 until LEVELS) {
+                val lists = HashMap<Long, ArrayList<Int>>()
+                for (f in 0 until faces) lists.getOrPut(key(centre(f), sizes[level])) { ArrayList() }.add(f)
+                for ((k, v) in lists) grids[level][k] = v.toIntArray()
+            }
         }
 
-        private fun key(p: Vec3) = pack(floor((p.x - lo.x) / cell).toLong(), floor((p.y - lo.y) / cell).toLong(), floor((p.z - lo.z) / cell).toLong())
+        private fun key(p: Vec3, size: Double) = pack(floor((p.x - lo.x) / size).toLong(), floor((p.y - lo.y) / size).toLong(), floor((p.z - lo.z) / size).toLong())
         private fun pack(i: Long, j: Long, k: Long) = ((i + 4096) shl 42) or ((j + 4096) shl 21) or (k + 4096)
 
         /** The face whose centre is nearest p, if one is within `within`; and how far. */
         fun of(p: Vec3, within: Double): Pair<Int, Double>? {
-            val reach = kotlin.math.ceil(within / cell).toLong().coerceAtLeast(1)
-            val ci = floor((p.x - lo.x) / cell).toLong(); val cj = floor((p.y - lo.y) / cell).toLong(); val ck = floor((p.z - lo.z) / cell).toLong()
+            var level = 0
+            while (level < LEVELS - 1 && sizes[level] < within) level++       // cells at least as wide as the reach: three each way
+            val size = sizes[level]; val grid = grids[level]
+            val reach = kotlin.math.ceil(within / size).toLong().coerceIn(1, MAX_REACH)
+            val ci = floor((p.x - lo.x) / size).toLong(); val cj = floor((p.y - lo.y) / size).toLong(); val ck = floor((p.z - lo.z) / size).toLong()
             var best = -1
             var bestD = within * within
             for (i in ci - reach..ci + reach) for (j in cj - reach..cj + reach) for (k in ck - reach..ck + reach) {
-                val list = buckets[pack(i, j, k)] ?: continue
+                val list = grid[pack(i, j, k)] ?: continue
                 for (f in list) {
                     val dx = centres[3 * f] - p.x; val dy = centres[3 * f + 1] - p.y; val dz = centres[3 * f + 2] - p.z
                     val d = dx * dx + dy * dy + dz * dz
@@ -129,6 +141,8 @@ class GuideMesh(
 
     companion object {
         const val NO_PATCH = 65535
+        private const val LEVELS = 4
+        private const val MAX_REACH = 4L      // cells each way a search looks in, in the widest grid, however far it's asked to reach
 
         /** Reads guide.bin. Throws IllegalArgumentException if it isn't one, or is cut short. */
         fun parse(bytes: ByteArray): GuideMesh {

@@ -59,6 +59,7 @@ class CaptureFlow(val session: CaptureSession) {
     private var markers: List<Marker> = emptyList()
     private val cloud = HashMap<Long, Vec3>()
     private var lastRefine = 0.0
+    private var refining = false
     private var lastPose: CameraPose? = null
     private var lastTarget: String? = null
     private var ui = CaptureUi(phase = phase, guided = plan != null)
@@ -137,17 +138,29 @@ class CaptureFlow(val session: CaptureSession) {
 
     val pointCount: Int get() = cloud.size
 
-    /** The points to tighten the fit against, if it's time to (every few seconds once there's a fit): hand them to refine(). */
-    fun refineDue(now: Double): List<Vec3>? {
-        if (plan == null || session.fit == null || (phase != Phase.CONFIRM && phase != Phase.CAPTURE)) return null
+    /** Tightening the fit, as a piece of work: the fit as it was and the points to tighten it against. */
+    class Tighten(val start: Similarity, val points: List<Vec3>)
+
+    /**
+     * The fit to tighten and the points to tighten it against, if it's time to (every few seconds once there's a fit).
+     * tighter() does the work, which takes a while and may be done on another thread with no lock held; tightened()
+     * takes its answer, back on this one.
+     */
+    fun refineDue(now: Double): Tighten? {
+        val fit = session.fit
+        if (plan == null || fit == null || refining || (phase != Phase.CONFIRM && phase != Phase.CAPTURE)) return null
         if (now - lastRefine < (if (phase == Phase.CAPTURE) REFINE_EVERY_S * 2 else REFINE_EVERY_S) || cloud.size < REFINE_LEAST) return null
         lastRefine = now
-        val every = cloud.size / REFINE_POINTS + 1      // enough of them to fit to, few enough not to hold a frame up
-        return cloud.values.filterIndexed { i, _ -> i % every == 0 }
+        refining = true
+        val every = cloud.size / REFINE_POINTS + 1      // enough of them to fit to, few enough to be quick
+        return Tighten(fit, cloud.values.filterIndexed { i, _ -> i % every == 0 })
     }
 
-    fun refine(points: List<Vec3>) {
-        val r = session.refine(points) ?: return
+    fun tighter(work: Tighten): Registration.Refined? = session.tighter(work.start, work.points)
+
+    fun tightened(work: Tighten, found: Registration.Refined?) {
+        refining = false
+        val r = found?.let { session.refineWith(work.start, it) } ?: return
         if (phase == Phase.CONFIRM) note = "Fitted to ${r.matched} points the phone tracks, ${(r.rmsM * 1000).toInt() / 10.0} cm off."
         levelsDirty = true
     }

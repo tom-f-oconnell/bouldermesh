@@ -1475,7 +1475,9 @@ interrupting the tracking that the guidance runs on. So Android photos are small
 from nearer. ARKit hands over full 12-megapixel frames while tracking (iOS 16), and the camera under it can be told to
 keep its shutter to 1/120 s. On the iPhone, frames are read by a timer 12 times a second and Kotlin's memory swept
 after each: ARKit starts dropping the camera's pictures once about a dozen frames are held, and Kotlin holds anything
-it has seen until its next sweep.
+it has seen until its next sweep. And a button holds what it does, which holds its screen, which holds the button: a
+ring partly in Objective-C's memory, which Kotlin's sweep can't see round, so a screen's buttons are taken off it when
+it goes for good, or every capture would keep its camera and mesh.
 
 **On the server.** A project with a capture's record naming a mesh has that mesh's project's photos linked into it
 before it's meshed (`merge_capture()`), people masks and sources too; the mesh made is linked to that mesh's climbs

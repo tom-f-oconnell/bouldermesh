@@ -135,6 +135,13 @@ class FormController(private val form: Form) : UIViewController(nibName = null, 
         super.viewWillDisappear(animated)
         form.every(0.0) {}
     }
+
+    // A button holds what it does, which holds its form, which holds this screen, which holds the button: a ring that
+    // Kotlin's memory can't see round, as part of it is Objective-C's. Emptying a screen that's gone for good breaks it.
+    override fun viewDidDisappear(animated: Boolean) {
+        super.viewDidDisappear(animated)
+        if (isMovingFromParentViewController() || isBeingDismissed()) form.clear()
+    }
 }
 
 /**
@@ -150,8 +157,17 @@ abstract class Form(val heading: String) {
     open fun appear() {}
 
     fun rebuild() {
-        for (v in screen.stack.arrangedSubviews) (v as? UIView)?.removeFromSuperview()
+        clear()
         build()
+    }
+
+    /** Takes away everything on it, or everything after one thing on it (a field being typed in, which stays as it is). */
+    fun clear(after: UIView? = null) {
+        var keep = after != null
+        for (v in screen.stack.arrangedSubviews) {
+            if (!keep) (v as? UIView)?.removeFromSuperview()
+            if (v === after) keep = false
+        }
     }
 
     /** Does `what` every so many seconds while this screen shows; 0 for no more. */
@@ -183,7 +199,7 @@ abstract class Form(val heading: String) {
         f.secureTextEntry = secret
         f.autocapitalizationType = UITextAutocapitalizationType.UITextAutocapitalizationTypeNone
         f.autocorrectionType = UITextAutocorrectionType.UITextAutocorrectionTypeNo
-        f.addAction(UIAction.actionWithHandler { _ -> onChange(f.text ?: "") }, forControlEvents = UIControlEventEditingChanged)
+        f.addAction(UIAction.actionWithHandler { action -> onChange((action?.sender as? UITextField)?.text ?: "") }, forControlEvents = UIControlEventEditingChanged)   // by its sender: a field that held itself would never be let go
         add(f)
         return f
     }

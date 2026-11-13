@@ -58,6 +58,7 @@ import platform.Foundation.NSData
 import platform.Foundation.NSDate
 import platform.Foundation.NSDateFormatter
 import platform.Foundation.NSDictionary
+import platform.Foundation.NSLocale
 import platform.Foundation.NSNumber
 import platform.Foundation.dictionaryWithDictionary
 import platform.Foundation.numberWithDouble
@@ -100,6 +101,7 @@ import platform.SceneKit.SCNGeometrySource
 import platform.SceneKit.SCNGeometrySourceSemanticColor
 import platform.SceneKit.SCNGeometrySourceSemanticVertex
 import platform.SceneKit.SCNLightingModelConstant
+import platform.SceneKit.SCNMaterial
 import platform.SceneKit.SCNMatrix4
 import platform.SceneKit.SCNNode
 import platform.SceneKit.SCNScene
@@ -126,6 +128,7 @@ import platform.darwin.DISPATCH_QUEUE_PRIORITY_DEFAULT
 import platform.darwin.simd_float4x4
 import platform.posix.uname
 import platform.posix.utsname
+import sh.boulderme.core.Axes
 import sh.boulderme.core.CameraPose
 import sh.boulderme.core.CaptureFlow
 import sh.boulderme.core.CaptureSession
@@ -203,6 +206,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     // what's drawn in the world
     private val guideNode = SCNNode()
     private var levels: IntArray? = null
+    private var solid = false       // drawn as a thing of its own (the small model): nearer faces hide further ones
     private var positions: NSData? = null
     private val rings = HashMap<String, SCNNode>()
     private var drawn: List<Marker> = emptyList()
@@ -314,7 +318,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             val p = cloud.points
             if (p != null) for (i in 0 until cloud.count.toInt()) p[i].value.let { flow.addPoint(it.getFloatAt(0).toDouble(), it.getFloatAt(1).toDouble(), it.getFloatAt(2).toDouble()) }
         }
-        flow.refineDue(now)?.let { flow.refine(it) }
+        // the slow half of tightening the fit, off the main thread; its answer taken back on it
+        flow.refineDue(now)?.let { work -> dispatch_async(background) { val found = flow.tighter(work); dispatch_async(dispatch_get_main_queue()) { flow.tightened(work, found) } } }
         val seen = poseOf(camera)
         val pose = stillWidth?.takeIf { it != seen.lens.w }?.let { w -> seen.copy(lens = seen.lens.scaledTo(w, (w.toDouble() * seen.lens.h / seen.lens.w).roundToInt())) } ?: seen
         val out = flow.frame(pose, tracking, app.sensors.gyro(), camera.exposureDuration, now, UPRIGHT_DEG)
@@ -325,7 +330,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             if (guideNode.geometry == null) colour()
             guideNode.transform = matrix(fit)
             guideNode.opacity = if (out.solid) 0.95 else 0.45
-            guideNode.geometry?.firstMaterial?.writesToDepthBuffer = out.solid
+            if (out.solid != solid) { solid = out.solid; (guideNode.geometry?.materials?.firstOrNull() as? SCNMaterial)?.writesToDepthBuffer = solid }
         }
         if (out.markers != drawn) { drawn = out.markers; mark(out.markers) }
         show(out.ui)
@@ -364,12 +369,12 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             SCNGeometrySource.geometrySourceWithData(pos, SCNGeometrySourceSemanticVertex, n.toLong(), true, 3, 4, 0, 12),
             SCNGeometrySource.geometrySourceWithData(colours, SCNGeometrySourceSemanticColor, n.toLong(), true, 4, 4, 0, 16),
         ), listOf(SCNGeometryElement.geometryElementWithData(indices, SCNGeometryPrimitiveTypeTriangles, g.faces.toLong(), 4)))
-        geometry.firstMaterial?.let { m ->
-            m.lightingModelName = SCNLightingModelConstant
-            m.diffuse.contents = UIColor.whiteColor
-            m.doubleSided = false           // only the faces towards the camera: the far side would only muddy it
-            m.writesToDepthBuffer = false
-        }
+        val m = SCNMaterial()
+        m.lightingModelName = SCNLightingModelConstant      // its own colours as they are: the scene has no lights
+        m.diffuse.contents = UIColor.whiteColor
+        m.doubleSided = false           // only the faces towards the camera: the far side would only muddy it
+        m.writesToDepthBuffer = solid
+        geometry.materials = listOf(m)
         guideNode.geometry = geometry
     }
 
@@ -385,11 +390,11 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
                 val r = m.radiusM * (if (m.current) 1.25 else 1.0)
                 val torus = SCNTorus.torusWithRingRadius(r, pipeRadius = r * 0.12)
                 val c = LEVEL_RGB[m.level.coerceIn(0, LEVEL_RGB.size - 1)]
-                torus.firstMaterial?.let { mat ->
-                    mat.lightingModelName = SCNLightingModelConstant
-                    mat.diffuse.contents = if (m.current) UIColor.whiteColor else UIColor.colorWithRed(c[0].toDouble(), c[1].toDouble(), c[2].toDouble(), 1.0)
-                    mat.readsFromDepthBuffer = false        // seen through the rock and the mesh, wherever they are
-                }
+                val mat = SCNMaterial()
+                mat.lightingModelName = SCNLightingModelConstant
+                mat.diffuse.contents = if (m.current) UIColor.whiteColor else UIColor.colorWithRed(c[0].toDouble(), c[1].toDouble(), c[2].toDouble(), 1.0)
+                mat.readsFromDepthBuffer = false        // seen through the rock and the mesh, wherever they are
+                torus.materials = listOf(mat)
                 val ring = SCNNode.nodeWithGeometry(torus)
                 ring.renderingOrder = 10
                 ring.eulerAngles = SCNVector3Make((kotlin.math.PI / 2).toFloat(), 0f, 0f)        // a torus lies flat: stood up, it faces the camera
@@ -446,7 +451,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             dispatch_async(dispatch_get_main_queue()) {
                 val out = flow.shot(ShotIn(pose, sample, stats, exposure, iso, null, tracking, arSession, now, unix, UPRIGHT_DEG, sample.gyro?.norm ?: 0.0))
                 if (out.kept) dispatch_async(background) {
-                    val ok = writeJpeg(frame, "$dir/photos/${out.record.name}", out.userComment, sample, pose.lens, exposure, iso, unix)
+                    val upright = Axes.exifOrientation(out.record.blob.down?.let { Vec3.of(it) }, UPRIGHT_DEG)
+                    val ok = writeJpeg(frame, "$dir/photos/${out.record.name}", out.userComment, sample, pose.lens, exposure, upright, unix)
                     dispatch_async(dispatch_get_main_queue()) { if (ok) save() else flow.say("A photo couldn't be saved.") }
                 }
             }
@@ -468,17 +474,18 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     }
 
     /** The picture as a JPEG, its pixels as the sensor read them, with its readings and how to show it upright in its EXIF. */
-    private fun writeJpeg(frame: ARFrame, path: String, comment: String, s: SensorSample, lens: Lens, exposure: Double, iso: Double?, unix: Double): Boolean {
+    private fun writeJpeg(frame: ARFrame, path: String, comment: String, s: SensorSample, lens: Lens, exposure: Double, orientation: Int, unix: Double): Boolean {
         val image = CIImage.imageWithCVPixelBuffer(frame.capturedImage)
         val cg = ciContext.createCGImage(image, fromRect = image.extent) ?: return false
-        val stamp = NSDateFormatter().apply { dateFormat = "yyyy:MM:dd HH:mm:ss" }.stringFromDate(NSDate.dateWithTimeIntervalSince1970(unix))
+        val stamp = NSDateFormatter().apply { locale = NSLocale(localeIdentifier = "en_US_POSIX"); dateFormat = "yyyy:MM:dd HH:mm:ss" }      // whatever calendar and clock the phone shows
+            .stringFromDate(NSDate.dateWithTimeIntervalSince1970(unix))
         // as Foundation's own numbers and dictionaries, which is what ImageIO is sure to read
         fun n(x: Double) = NSNumber.numberWithDouble(x)
         fun n(x: Int) = NSNumber.numberWithInt(x)
         fun dict(m: Map<Any?, *>) = NSDictionary.dictionaryWithDictionary(m)
         val exif = mutableMapOf<Any?, Any?>(kCGImagePropertyExifUserComment.text() to comment, kCGImagePropertyExifDateTimeOriginal.text() to stamp,
             kCGImagePropertyExifExposureTime.text() to n(exposure), kCGImagePropertyExifFocalLenIn35mmFilm.text() to n((lens.fx / lens.w * 36.0).roundToInt()))
-        val props = mutableMapOf<Any?, Any?>(kCGImagePropertyOrientation.text() to n(6), kCGImageDestinationLossyCompressionQuality.text() to n(0.92), kCGImagePropertyExifDictionary.text() to dict(exif),
+        val props = mutableMapOf<Any?, Any?>(kCGImagePropertyOrientation.text() to n(orientation), kCGImageDestinationLossyCompressionQuality.text() to n(0.92), kCGImagePropertyExifDictionary.text() to dict(exif),
             kCGImagePropertyTIFFDictionary.text() to dict(mapOf<Any?, Any?>(kCGImagePropertyTIFFMake.text() to "Apple", kCGImagePropertyTIFFModel.text() to machine(), kCGImagePropertyTIFFSoftware.text() to "BoulderMesh ${IosStore.VERSION}")))
         val gps = mutableMapOf<Any?, Any?>()
         s.gps?.let { g ->
@@ -562,7 +569,13 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         val kept = ui.kept
         val go = {
             if (kept > 0) save() else app.store.deleteCapture(id)
-            dismissViewControllerAnimated(true) { done(if (kept > 0) id else null) }
+            dismissViewControllerAnimated(true) {
+                // each button holds what it does, which holds this screen, which holds the button: a ring Kotlin's memory can't
+                // see round, as part of it is Objective-C's. Taking the buttons away lets the screen, the camera and the mesh go
+                for (v in buttons.arrangedSubviews) (v as? UIView)?.removeFromSuperview()
+                buttonsFor = ""
+                done(if (kept > 0) id else null)
+            }
         }
         if (kept == 0) go()
         else confirm("Finish this capture?", "$kept photos kept" + (if (ui.total > 0 && ui.done < ui.total) ", with ${ui.total - ui.done} of ${ui.total} still to do. What's there is still worth sending." else "."),

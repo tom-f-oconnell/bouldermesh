@@ -82,10 +82,24 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
 
     /** Tightens the fit against points the phone's tracking has found in the world. Returns how it went, or null if it couldn't. */
     fun refine(worldPoints: List<Vec3>): Registration.Refined? {
-        val g = guide ?: return null; val n = nearest ?: return null; val f = fit ?: return null
-        val r = Registration.refine(f, worldPoints, g, n) ?: return null
+        val f = fit ?: return null
+        return refineWith(f, tighter(f, worldPoints) ?: return null)
+    }
+
+    /**
+     * The slow half of refine(): a tighter fit than `start` against these points. It reads nothing of this session that
+     * changes, so an app works it out off the thread its frames are drawn on, then hands it to refineWith().
+     */
+    fun tighter(start: Similarity, worldPoints: List<Vec3>): Registration.Refined? {
+        val g = guide ?: return null; val n = nearest ?: return null
+        return Registration.refine(start, worldPoints, g, n)
+    }
+
+    /** Takes a fit tighter() made from `start`, unless the fit has been set afresh since, or this one is more likely wrong than that was. */
+    fun refineWith(start: Similarity, r: Registration.Refined): Registration.Refined? {
+        if (fit != start) return null
         // a fit that moved the mesh a long way, or that few points agree with, is more likely wrong than the taps were
-        if (r.rmsM > 0.15 || r.fit.apply(Vec3.ZERO).distance(f.apply(Vec3.ZERO)) > 1.5) return null
+        if (r.rmsM > 0.15 || r.fit.apply(Vec3.ZERO).distance(start.apply(Vec3.ZERO)) > 1.5) return null
         refined = r
         setFit(r.fit)
         return r

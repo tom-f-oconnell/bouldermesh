@@ -51,10 +51,13 @@ Android, anywhere with a JDK (17 or later) and the Android SDK (`ANDROID_HOME`, 
     ./gradlew :android:assembleDebug        # android/build/outputs/apk/debug/android-debug.apk
     adb install -r android/build/outputs/apk/debug/android-debug.apk
 
-iPhone, on a Mac with Xcode 15 or later:
+iPhone, on a Mac with Xcode 15 or later (no Android SDK needed):
 
-    brew install xcodegen
+    brew install xcodegen && brew install --cask temurin       # XcodeGen, and a JDK for the Kotlin build Xcode runs
     cd ios/xcode && xcodegen && open BoulderMesh.xcodeproj     # set your team under Signing, then run on a phone
+
+To try either against a test server rather than the site, set its address in *Settings*. Plain `http://` works for one
+on your own network (a debug build on Android; local addresses on an iPhone); anything else has to be https.
 
 The iPhone app is Kotlin too (`ios/src/iosMain`, on UIKit, ARKit and SceneKit), started by a few lines of Swift, so
 all but its linking is checked on any machine: `./gradlew :ios:compileKotlinIosArm64`.

@@ -42,8 +42,14 @@ class IosSensors : NSObject(), CLLocationManagerDelegateProtocol {
         startMotion()
     }
 
-    /** Its attitude from true north needs to know where it is: used once location is allowed, and without north until then. */
+    /**
+     * Its attitude from true north needs to know where it is: used once location is allowed, and without north until
+     * then. Even allowed, iOS gives no attitude at all until it has a fix and a settled compass, which at a rock with
+     * no signal can take minutes: so the gyroscope and accelerometer are read on their own too, for until it does.
+     */
     private fun startMotion() {
+        if (motion.isGyroAvailable()) { motion.gyroUpdateInterval = 1.0 / 60; motion.startGyroUpdates() }
+        if (motion.isAccelerometerAvailable()) { motion.accelerometerUpdateInterval = 1.0 / 60; motion.startAccelerometerUpdates() }
         if (!motion.isDeviceMotionAvailable()) return
         val status = locations.authorizationStatus
         northKnown = status == 3 || status == 4     // allowed always, or while the app is in use
@@ -55,6 +61,8 @@ class IosSensors : NSObject(), CLLocationManagerDelegateProtocol {
     fun stop() {
         locations.stopUpdatingLocation()
         motion.stopDeviceMotionUpdates()
+        motion.stopGyroUpdates()
+        motion.stopAccelerometerUpdates()
     }
 
     override fun locationManager(manager: CLLocationManager, didUpdateLocations: List<*>) {
@@ -77,8 +85,10 @@ class IosSensors : NSObject(), CLLocationManagerDelegateProtocol {
     val locationAllowed: Boolean get() = locations.authorizationStatus.let { it == 3 || it == 4 }
     val locationRefused: Boolean get() = locations.authorizationStatus.let { it == 1 || it == 2 }
 
-    /** How fast the phone is turning, radians a second. */
-    fun gyro(): Double = motion.deviceMotion?.rotationRate?.useContents { Vec3(x, y, z).norm } ?: 0.0
+    private fun turning(): Vec3? = motion.deviceMotion?.rotationRate?.useContents { Vec3(x, y, z) } ?: motion.gyroData?.rotationRate?.useContents { Vec3(x, y, z) }
+
+    /** How fast the phone is turning, radians a second; as if turning fast when nothing says, so that no photo takes itself unjudged. */
+    fun gyro(): Double = turning()?.norm ?: UNKNOWN_TURNING
 
     /** The field its compass feels, in microtesla, with the phone's own part taken out by iOS; null until it has one. */
     fun field(): Vec3? = motion.deviceMotion?.magneticField?.useContents { if (accuracy < 0) null else Vec3(field.x, field.y, field.z) }
@@ -88,7 +98,11 @@ class IosSensors : NSObject(), CLLocationManagerDelegateProtocol {
 
     /** Everything as it is now, for a photo being taken. */
     fun sample(): SensorSample {
-        val m = motion.deviceMotion ?: return SensorSample(gps = fix, t = now())
+        val m = motion.deviceMotion
+        if (m == null) {    // no fused readings yet: what the sensors say by themselves, and no compass
+            val raw = motion.accelerometerData?.acceleration?.useContents { Vec3(x, y, z) * -Sensors.G }
+            return SensorSample(raw, turning(), gps = fix, t = now())
+        }
         val gravity = m.gravity.useContents { Vec3(x, y, z) }
         val accel = (gravity + m.userAcceleration.useContents { Vec3(x, y, z) }) * -Sensors.G
         val gyro = m.rotationRate.useContents { Vec3(x, y, z) }
@@ -101,3 +115,6 @@ class IosSensors : NSObject(), CLLocationManagerDelegateProtocol {
         return SensorSample(accel, gyro, field(), fieldAccuracy(), heading, null, fix, now())
     }
 }
+
+/** Radians a second: what an unread gyroscope is taken to say. */
+private const val UNKNOWN_TURNING = 1.0

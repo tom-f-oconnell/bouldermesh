@@ -27,6 +27,7 @@ import com.google.ar.core.Point
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.NotYetAvailableException
+import sh.boulderme.core.Axes
 import sh.boulderme.core.CameraPose
 import sh.boulderme.core.CaptureFlow
 import sh.boulderme.core.CaptureSession
@@ -86,6 +87,8 @@ class ArController(
     /** How far clockwise the camera's picture is turned to be shown upright on the screen as it is now. */
     private fun uprightDeg(): Int = ((sensorOrientation - rotation() * 90) % 360 + 360) % 360
     private var lastUi = 0.0
+    private var frames = 0
+    private var exposure = UNKNOWN_EXPOSURE_S      // the shutter time last read: asked for now and then, as each asking holds something of ARCore's
 
     // ---- from the screen ---------------------------------------------------------------------------------------------
     /** Starts or carries on tracking. Returns why it can't, in words, or null. */
@@ -120,7 +123,13 @@ class ArController(
     }
 
     fun pause() { session?.pause() }
-    fun close() { worker.shutdown(); session?.close(); session = null }
+    /** Lets the camera go. Closing ARCore's session takes seconds, so it's done after the photos still being saved, off the main thread. */
+    fun close() {
+        val s = session
+        session = null
+        worker.execute { s?.close() }
+        worker.shutdown()
+    }
 
     fun tap(x: Float, y: Float) { pendingTap = floatArrayOf(x, y) }     // met with the world on the drawing thread, in its next frame
     fun shutter() = synchronized(lock) { flow.shutter() }
@@ -137,7 +146,7 @@ class ArController(
 
     /** Writes the capture's record and what's to upload beside its photos: after each photo kept, so that one cut short isn't lost. */
     private fun save(): Int = synchronized(lock) {
-        core.place = sensors.place.result()
+        core.place = sensors.placed()
         File(dir, "capture.json").writeText(core.record(System.currentTimeMillis() / 1000.0).json())
         store.saveUpload(id, Store.Upload(name = name, mesh = plan?.mesh, photos = core.shotCount))
         core.shotCount
@@ -178,11 +187,13 @@ class ArController(
             Matrix.multiplyMM(viewProj, 0, proj, 0, view, 0)
             collect(frame)
         }
-        val exposure = runCatching { frame.imageMetadata.getLong(ImageMetadata.SENSOR_EXPOSURE_TIME) / 1e9 }.getOrNull() ?: (1.0 / 60)
+        if (frames++ % 10 == 0) runCatching { frame.imageMetadata.getLong(ImageMetadata.SENSOR_EXPOSURE_TIME) / 1e9 }.getOrNull()?.takeIf { it > 0 }?.let { exposure = it }
+        val exposure = exposure
         val gyro = sensors.gyro?.norm ?: 0.0
         val out = synchronized(lock) {
             if (tap != null && tracking) { val (from, along) = ray(tap[0], tap[1]); flow.tap(from, along) { hit(frame, tap) } }
-            flow.refineDue(now)?.let { points -> worker.execute { synchronized(lock) { flow.refine(points) } } }
+            // the slow half of tightening the fit holds no lock: frames go on being drawn meanwhile
+            flow.refineDue(now)?.let { work -> worker.execute { val found = flow.tighter(work); synchronized(lock) { flow.tightened(work, found) } } }
             flow.frame(pose, tracking, gyro, exposure, now, uprightDeg())
         }
         out.levels?.let { guideRenderer?.setLevels(it) }
@@ -252,17 +263,20 @@ class ArController(
         val w = image.width; val h = image.height
         val nv21 = try { toNv21(image) } finally { image.close() }
         val sample = sensors.sample()
-        val iso = runCatching { frame.imageMetadata.getInt(ImageMetadata.SENSOR_SENSITIVITY).toDouble() }.getOrNull()
-        val focus = runCatching { frame.imageMetadata.getFloat(ImageMetadata.LENS_FOCUS_DISTANCE).toDouble() }.getOrNull()?.takeIf { it > 0 }?.let { 1 / it }
+        val meta = runCatching { frame.imageMetadata }.getOrNull()
+        val shutter = meta?.let { m -> runCatching { m.getLong(ImageMetadata.SENSOR_EXPOSURE_TIME) / 1e9 }.getOrNull() }?.takeIf { it > 0 }?.also { this.exposure = it } ?: exposure
+        val iso = meta?.let { m -> runCatching { m.getInt(ImageMetadata.SENSOR_SENSITIVITY).toDouble() }.getOrNull() }
+        val focus = meta?.let { m -> runCatching { m.getFloat(ImageMetadata.LENS_FOCUS_DISTANCE).toDouble() }.getOrNull() }?.takeIf { it > 0 }?.let { 1 / it }
+        val upright = uprightDeg()
         val unix = System.currentTimeMillis() / 1000.0
         worker.execute {
             try {
                 val stats = Quality.imageStats(nv21, w, h, w)       // NV21 starts with its brightness, a byte a pixel
-                val out = synchronized(lock) { flow.shot(ShotIn(pose, sample, stats, exposure, iso, focus, true, arSession, now, unix, sensorOrientation, gyro)) }
+                val out = synchronized(lock) { flow.shot(ShotIn(pose, sample, stats, shutter, iso, focus, true, arSession, now, unix, sensorOrientation, gyro)) }
                 if (out.kept) {
                     val file = File(File(dir, "photos"), out.record.name)
                     FileOutputStream(file).use { YuvImage(nv21, ImageFormat.NV21, w, h, null).compressToJpeg(Rect(0, 0, w, h), 93, it) }
-                    writeExif(file, out.userComment, sample, pose.lens, unix)
+                    writeExif(file, out.userComment, sample, pose.lens, unix, Axes.exifOrientation(out.record.blob.down?.let { Vec3.of(it) }, upright))
                     save()
                 }
             } catch (e: Exception) {
@@ -286,13 +300,11 @@ class ArController(
         return out
     }
 
-    private fun writeExif(file: File, comment: String, s: sh.boulderme.core.SensorSample, lens: Lens, unix: Double) {
+    private fun writeExif(file: File, comment: String, s: sh.boulderme.core.SensorSample, lens: Lens, unix: Double, orientation: Int) {
         val exif = ExifInterface(file)
         exif.setAttribute(ExifInterface.TAG_USER_COMMENT, comment)
         // the pixels are as the sensor read them, which is what the server's tools use; this says how to show them upright
-        exif.setAttribute(ExifInterface.TAG_ORIENTATION, when (uprightDeg()) {
-            90 -> ExifInterface.ORIENTATION_ROTATE_90; 180 -> ExifInterface.ORIENTATION_ROTATE_180; 270 -> ExifInterface.ORIENTATION_ROTATE_270; else -> ExifInterface.ORIENTATION_NORMAL
-        }.toString())
+        exif.setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
         exif.setAttribute(ExifInterface.TAG_MAKE, Build.MANUFACTURER); exif.setAttribute(ExifInterface.TAG_MODEL, Build.MODEL)
         exif.setAttribute(ExifInterface.TAG_SOFTWARE, "BoulderMesh ${BuildInfo.VERSION}")
         exif.setAttribute(ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM, Math.round(lens.fx / lens.w * 36.0).toString())
@@ -309,6 +321,7 @@ class ArController(
         exif.saveAttributes()
     }
 
-    companion object { const val REFINE_POINTS = 2000 }
-
+    companion object {
+        const val UNKNOWN_EXPOSURE_S = 1.0 / 120     // until the camera says: about the longest it uses out of doors in daylight
+    }
 }

@@ -22,6 +22,18 @@ object Axes {
     }
 
     /**
+     * The EXIF Orientation that shows a photo upright: 1 as stored, 6 turned a quarter clockwise, 3 a half, 8 three
+     * quarters; from which way is down in its stored pixels, or from how the screen showed it (uprightDeg) if the camera
+     * was pointing too nearly straight up or down for that to say.
+     */
+    fun exifOrientation(down: Vec3?, uprightDeg: Int): Int {
+        val d = down?.unit()
+        val turn = if (d == null || abs(d.z) > 0.9) ((uprightDeg % 360) + 360) % 360
+            else if (abs(d.y) >= abs(d.x)) (if (d.y > 0) 0 else 180) else (if (d.x > 0) 90 else 270)      // down along its rows: on its side
+        return when (turn) { 90 -> 6; 180 -> 3; 270 -> 8; else -> 1 }
+    }
+
+    /**
      * The compass bearing the back camera points along, from how the phone is turned in a frame of east, north and up;
      * null when it points too nearly straight up or down to say.
      */

@@ -52,16 +52,22 @@ class FlowTest {
         assertNull(flow.refineDue(5.0), "nothing tracked yet")
         val rnd = kotlin.random.Random(3)
         repeat(900) { truth.apply(Vec3(rnd.nextDouble(-2.0, 2.0), rnd.nextDouble(0.0, 3.0), rnd.nextDouble(-0.01, 0.01))).let { flow.addPoint(it.x, it.y, it.z) } }
-        val points = assertNotNull(flow.refineDue(5.0))
-        assertTrue(points.size > 300 && flow.refineDue(6.0) == null, "${points.size} points, and not again at once")
-        flow.refine(points)
+        val work = assertNotNull(flow.refineDue(5.0))
+        assertTrue(work.points.size > 300 && flow.refineDue(6.0) == null && flow.refineDue(60.0) == null, "${work.points.size} points; and not again until that's back")
+        flow.tightened(work, flow.tighter(work))
         assertTrue("Fitted to" in flow.frame(pose, true, 0.0, 0.004, 6.5, 90).ui.note && near(flow.session.fit!!.scale, 1.25, 0.02))
+        // work handed out before the fit was set afresh comes back to nothing
+        val stale = assertNotNull(flow.refineDue(60.0))
+        val found = assertNotNull(flow.tighter(stale))
         flow.addSpot()
         assertEquals(Phase.GHOST, flow.phase)
         flow.restartAlign()
         assertTrue(flow.session.fit == null && flow.frame(pose, true, 0.0, 0.004, 7.0, 90).ui.pairs == 0)
         val again = assertNotNull(flow.frame(pose, true, 0.0, 0.004, 7.1, 90).guide)
         for (spot in listOf(a, b)) { flow.tap(eye, (again.apply(spot) - eye).unit()) { null }; flow.tap(eye, pose.forward) { truth.apply(spot) } }
+        val afresh = assertNotNull(flow.session.fit)
+        flow.tightened(stale, found)
+        assertTrue(flow.session.fit == afresh, "the fit tapped since stays as it is")
         flow.confirmFit()
         assertEquals(Phase.CAPTURE, flow.phase)
 

@@ -3,6 +3,7 @@ package sh.boulderme.ios
 import platform.AudioToolbox.AudioServicesPlaySystemSound
 import platform.UIKit.UIColor
 import platform.UIKit.UIModalPresentationFullScreen
+import platform.UIKit.UITextField
 import platform.UIKit.secondaryLabelColor
 import sh.boulderme.core.GpsAverager
 import sh.boulderme.core.MagCalibration
@@ -104,9 +105,14 @@ class Browse(private val app: App) : Form("Get meshes") {
         val all = rows
         error?.let { text(it, BAD) }
         if (all == null) { if (error == null) text("Listing them…"); return }
+        // the field stays as it is while the list under it changes, so that typing isn't cut off
+        lateinit var typing: UITextField
+        typing = field("Search by rock or climb", search) { search = it; shown = 40; clear(after = typing); list(all) }
+        list(all)
+    }
+
+    private fun list(all: List<MeshRow>) {
         val have = app.store.downloaded().map { it.mesh }.toSet()
-        val typing = field("Search by rock or climb", search) { search = it; shown = 40; rebuild() }
-        if (search.isNotEmpty()) typing.becomeFirstResponder()      // the list is built again at each letter: typing carries on
         val match = all.filter { r -> search.isBlank() || r.name.contains(search, true) || r.climbs.any { it.contains(search, true) } }
             .sortedWith(compareBy<MeshRow> { metres(it) ?: Double.MAX_VALUE }.thenBy { it.name.lowercase() })
         val near = match.filter { (metres(it) ?: 1e9) <= 2000 && it.id !in have && it.id !in busy }

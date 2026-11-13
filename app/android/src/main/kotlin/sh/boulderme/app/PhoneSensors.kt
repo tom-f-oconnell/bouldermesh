@@ -73,13 +73,16 @@ class PhoneSensors(private val context: Context) : SensorEventListener, Location
     override fun onLocationChanged(l: Location) {
         val f = GpsFix(l.latitude, l.longitude, if (l.hasAltitude()) l.altitude else null, if (l.hasAccuracy()) l.accuracy.toDouble() else 20.0, l.elapsedRealtimeNanos / 1e9)
         fix = f
-        place.add(f)
+        synchronized(place) { place.add(f) }
         declination = GeomagneticField(l.latitude.toFloat(), l.longitude.toFloat(), (if (l.hasAltitude()) l.altitude else 0.0).toFloat(), System.currentTimeMillis()).declination.toDouble()
     }
 
     @Deprecated("Deprecated in Java") override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
     override fun onProviderEnabled(provider: String) {}
     override fun onProviderDisabled(provider: String) {}
+
+    /** Its fixes so far as one place: asked for from the thread that saves photos, while fixes arrive on the main one. */
+    fun placed(): GpsAverager.Result? = synchronized(place) { place.result() }
 
     /** Everything as it is now, for a photo being taken. */
     fun sample(): SensorSample = SensorSample(accel, gyro, mag, magAccuracy, heading, null, fix, now())
