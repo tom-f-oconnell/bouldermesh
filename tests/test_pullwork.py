@@ -717,6 +717,21 @@ for j in (older, newer):
     j.input.unlink(missing_ok=True)
 print("meshing first OK")
 
+# --- ageing: a beta job that has waited AGE_FIRST goes ahead of meshing queued before it, but not of filtering ----------
+aged = board._new_job("scale", {"photos": job / "photos"}, {}, "size aged", image[0])
+mesh = board._new_job("reconstruct", {"photos": job / "photos"}, {"internet": True}, "mesh", image[0])
+filt = board._new_job("filter", {"photos": job / "photos"}, {"methods": None}, "filter", image[0], version=12)
+young = board._new_job("beta", {"photos": job / "photos"}, {}, "beta young", image[0])
+mesh.created = time.time() - pullwork.AGE_FIRST - 200
+aged.created = time.time() - pullwork.AGE_FIRST - 100
+taken = [board.work(board.machine(board.add(f"age-box-{i}")["token"]), "10.0.0.8", {"version": SCRIPT_VERSION})["job"]["id"]
+         for i in range(4)]
+assert taken == [filt.id, aged.id, mesh.id, young.id], taken
+for j in (aged, mesh, filt, young):
+    board.jobs.pop(j.id, None)
+    j.input.unlink(missing_ok=True)
+print("ageing OK")
+
 # --- a harvest's filtering: only to scripts that do it (version 12), before meshing; given up if none takes it in time ----
 mesh_job = board._new_job("reconstruct", {"photos": job / "photos"}, {"internet": True}, "mesh", image[0])
 filter_job = board._new_job("filter", {"photos": job / "photos"}, {"methods": None}, "filter", image[0], version=12)

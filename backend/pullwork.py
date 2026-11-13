@@ -58,6 +58,7 @@ MAX_OUTPUT = 4 * 2**30      # what a job may send back: a mesh, its textures, ca
 CONNECTED = 120             # seconds since a machine last asked or reported for it to count as there
 QUIET = 15 * 60             # a job whose machine hasn't been heard from for this long is lost
 POLL = 15                   # seconds a machine with nothing to do waits before asking again
+AGE_FIRST = 1800            # a beta or size job queued this long goes ahead of meshing (not of filtering), so it isn't starved
 GONE_AFTER = 600            # a machine not heard from for this long has left (presence.py), unless it said goodbye before
 GPU_NEED_PHOTOS = 20        # a reconstruction's GPU memory is reckoned for VGGT placing this many (it places fewer in less)
 OTHER_GPU_MB = 4000         # finding a mesh's beta or size
@@ -69,6 +70,10 @@ SCRIPT = Path(__file__).resolve().parents[1] / "worker" / "bouldermesh_worker.py
 TOP = ("out", "masks")      # what a job's results may hold
 # the admin page's settings by default (machines.* there): whether a provisional machine gets work, and how many may register
 RULES = {"provisional_work": False, "registrations_per_address": 5, "max_waiting": 30}
+
+
+class NotTaken(compute.ComputeUnavailable):
+    """No machine took a job within its take_within (Board.task()), though some are there."""
 
 
 @dataclass
@@ -390,9 +395,12 @@ class Board:
                 version = int(_number(client.get("version")) or 1)
                 could = [j for j in self.jobs.values() if j.state == "queued" and j.version <= version
                          and (not waiting or j.task == "reconstruct") and (tasks is None or j.task in tasks)]
-                # a harvest's filtering first (short, and the server waits for it), then meshing, then beta and size
-                mine = min((j for j in could if free is None or j.gpu_mb <= free),
-                           key=lambda j: (j.task != "filter", j.task != "reconstruct", j.created), default=None)
+                # a harvest's filtering first (short, and the server waits for it), then meshing, then beta and size;
+                # but beta and size that have waited AGE_FIRST go ahead of meshing
+                def rank(j):
+                    aged = j.task in ("beta", "scale") and now - j.created > AGE_FIRST
+                    return j.task != "filter", 0 if aged else 1 if j.task == "reconstruct" else 2, j.created
+                mine = min((j for j in could if free is None or j.gpu_mb <= free), key=rank, default=None)
                 if not mine and could:      # none fits in the GPU memory free there now
                     why = (f"its GPU has {free / 1024:.1f} GB free, and the next climb may need "
                            f"{min(j.gpu_mb for j in could) / 1024:.1f} GB")
@@ -696,7 +704,7 @@ class Board:
                 if state == "queued" and not self.connected():
                     raise compute.ComputeUnavailable(f"no machine has asked this server for work in the last {CONNECTED // 60} minutes")
                 if state == "queued" and take_within is not None and time.time() - job.created > take_within:
-                    raise compute.ComputeUnavailable(f"no machine took it within {take_within / 60:.0f} min")
+                    raise NotTaken(f"no machine took it within {take_within / 60:.0f} min")
                 if state == "running" and time.time() - touched > QUIET:
                     raise compute.ComputeUnavailable(f"lost {job.machine_name}: not heard from in {QUIET // 60} minutes")
                 if state == "failed":

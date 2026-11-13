@@ -1629,8 +1629,8 @@ print("route coordinates OK")
 # --- finding beta: its own queue, asked-for first, waiting out YouTube's refusals, stopped all at once -----------
 fresh()
 for i, mid in enumerate(("aaaaaaaaaaa1", "aaaaaaaaaaa2", "aaaaaaaaaaa3", "aaaaaaaaaaa4")):
-    server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES(?,?,?,?,?)", mid, f"m{i}", "mesh.glb", f"project:p{i}", i,
-             write=True)
+    server.q("INSERT INTO meshes(id,name,filename,source,created,rules) VALUES(?,?,?,?,?,?)", mid, f"m{i}", "mesh.glb", f"project:p{i}", i,
+             server.MESH_RULES, write=True)
     (server.MESHES / mid).mkdir(parents=True, exist_ok=True)
 beta_videos, server.beta_mod.videos = server.beta_mod.videos, lambda d: {} if d.name == "aaaaaaaaaaa4" else {"u": {}}
 server.beta_mod.save(server.MESHES / "aaaaaaaaaaa3", {"status": "done", "videos": []})
@@ -1650,6 +1650,18 @@ server.run_beta("aaaaaaaaaaa3")
 assert server.beta_mod.load(server.MESHES / "aaaaaaaaaaa3")["status"] == "queued", "waiting, not failed"
 assert server.stop_beta() == 3 and server.beta_queue() == [], "stopping unqueues them all"
 assert {server.beta_mod.load(server.MESHES / m)["status"] for m in ("aaaaaaaaaaa1", "aaaaaaaaaaa2", "aaaaaaaaaaa3")} == {"stopped"}
+# old meshes: not queued, and dropped from the queue, as one becomes old while queued
+server.beta_mod.find = lambda *a: None
+fresh()
+for mid, rules, old_data in (("bbbbbbbbbbb1", 0, None), ("bbbbbbbbbbb2", server.MESH_RULES, "newer"),
+                             ("bbbbbbbbbbb3", server.MESH_RULES, None)):
+    server.q("INSERT INTO meshes(id,name,filename,source,created,rules,old_data) VALUES(?,?,?,?,?,?,?)", mid, mid, "mesh.glb",
+             f"project:{mid}", 1, rules, old_data, write=True)
+    (server.MESHES / mid).mkdir(parents=True, exist_ok=True)
+assert server.beta_findable() == ["bbbbbbbbbbb3"], "old ones aren't found for"
+assert not server.queue_beta("bbbbbbbbbbb1") and not server.queue_beta("bbbbbbbbbbb2") and server.queue_beta("bbbbbbbbbbb3")
+server.q("UPDATE meshes SET old_data='newer' WHERE id='bbbbbbbbbbb3'", write=True)
+assert server.beta_queue() == [] and server.beta_mod.load(server.MESHES / "bbbbbbbbbbb3")["status"] == "stopped", "dropped once old"
 server.beta_mod.videos, server.beta_mod.find = beta_videos, find
 print("beta queue OK")
 
@@ -1668,13 +1680,13 @@ for name in ("yt_aaaaaaaa_000.jpg", "p.jpg"):
     (server.PROJECTS / pid / "photos" / name).write_bytes(b"jpg")
 (server.PROJECTS / pid / "masks").mkdir()
 (server.PROJECTS / pid / "masks" / "p.jpg.png").write_bytes(b"mask")
-server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES(?,?,?,?,?)", mid, "Gamma", "mesh.glb", f"project:{pid}", time.time(),
-         write=True)
+server.q("INSERT INTO meshes(id,name,filename,source,created,rules) VALUES(?,?,?,?,?,?)", mid, "Gamma", "mesh.glb", f"project:{pid}",
+         time.time(), server.MESH_RULES, write=True)
 url = "https://www.youtube.com/watch?v=aaaaaaaaaaa"
 sent = []
 
 
-def fake_task(kind, files, args, label, log):
+def fake_task(kind, files, args, label, log, take_within=None):
     sent.append((kind, files, args))
     back = pathlib.Path(tempfile.mkdtemp())
     (back / "out").mkdir()
@@ -1719,6 +1731,37 @@ server.requeue_waiting_scale()
 assert server.scale_mod.load(md)["status"] == "queued" and queued == [{"type": "scale", "mid": mid}], "again once one's there"
 server.run_beta(mid)
 assert server.beta_mod.load(md)["machine_wait"] > time.time() and not server.beta_ready(mid), "beta waits a while"
+# none takes it in time: put back at the back of the queue, saying so, not failed; the next goes ahead meanwhile
+other = "beefbeef0002"
+server.q("INSERT INTO meshes(id,name,filename,source,created,rules) VALUES(?,?,?,?,?,?)", other, "Delta", "mesh.glb", f"project:{pid}",
+         time.time(), server.MESH_RULES, write=True)
+(server.MESHES / other).mkdir()
+shutil.copy(md / "cameras.json", server.MESHES / other / "cameras.json")
+server.beta_mod.save(md, {"status": "queued", "videos": [], "queued": 1.0, "ahead": True})
+server.queue_beta(other)
+
+
+def not_taken(*a, **k):
+    assert k.get("take_within") == server.TAKE_WITHIN, k
+    raise server.pullwork.NotTaken("no machine took it within 60 min")
+
+
+server.MACHINES.task = not_taken
+assert server.beta_queue() == [mid, other]
+server.run_beta(mid)
+rec = server.beta_mod.load(md)
+assert rec["status"] == "queued" and "waited for a machine" in rec["note"] and rec["machine_wait"] > time.time(), rec
+assert server.beta_queue() == [other, mid] and [m for m in server.beta_queue() if server.beta_ready(m)] == [other], "the next goes first"
+server.run_scale(mid)
+assert server.scale_mod.load(md)["status"] == server.MACHINE_WAIT
+queued.clear()
+server.requeue_waiting_scale()
+assert queued == [], "a size none took isn't queued again at once"
+server.q("UPDATE meshes SET rules=0 WHERE id=?", mid, write=True)
+server.scale_mod.save(md, {"status": server.MACHINE_WAIT})
+server.requeue_waiting_scale()
+assert queued == [], "nor an old mesh's"
+shutil.rmtree(server.MESHES / other)
 (server.MACHINES.task, server.MACHINES.connected, server.beta_mod.videos, server._local_meshing, server._executor, server.queue_job) = saved
 shutil.rmtree(md)
 print("beta and size on machines OK")

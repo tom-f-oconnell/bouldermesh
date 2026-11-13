@@ -788,6 +788,13 @@ def mesh_is_old(row: dict) -> bool:
     return (row.get("source") or "").startswith("project:") and (row.get("rules") or 0) < MESH_RULES
 
 
+def mesh_old(mid: str) -> bool:
+    """Whether a mesh is old, as made under older rules (mesh_is_old()) or covered by a newer one (meshes.old_data), or
+    replaced: not worth finding beta or size in, as what replaces it gets them."""
+    row = q("SELECT source, rules, old_data, replaced_by FROM meshes WHERE id=?", mid, one=True)
+    return bool(row and (mesh_is_old(row) or row["old_data"] or row["replaced_by"]))
+
+
 SHARED = "same boulder as "   # how areas noted linking a climb to the mesh made for another climb on its boulder, before
                               # they meshed every climb on its own: shown as that other climb's, not this one's
 # The climb a shared link's mesh was made for, by the mesh's own link, as SQL beside a mesh_links l (binds SHARED + "%").
@@ -5563,6 +5570,11 @@ def run_beta(mid: str) -> None:
                 want(u)
             beta_mod.save(mesh_dir, {**rec, "status": "queued", "progress": None, "waiting_videos": missing})
             log(f"beta: {len(missing)} video(s) " + ("asked of volunteers" if want else "to wait for: there are no volunteers to ask"))
+    except pullwork.NotTaken as e:      # to the back of the queue, so the next isn't held up behind it
+        log(f"beta: {e}: tried again later")
+        beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "queued", "progress": None, "resume": True,
+                                 "queued": time.time(), "ahead": False, "machine_wait": time.time() + TAKE_BACKOFF,
+                                 "note": f"waited for a machine: {e}"})
     except compute.ComputeUnavailable as e:     # tried again in a while
         log(f"beta: waiting for a machine to find it on: {e}")
         beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "queued", "progress": None, "resume": True,
@@ -5587,7 +5599,7 @@ def queue_beta(mid: str, ahead: bool = False) -> bool:
     Args:
         ahead: before those queued for every mesh at once, as someone asked for this one.
     """
-    if (beta_mod.load(MESHES / mid) or {}).get("status") in ("queued", "running"):
+    if (beta_mod.load(MESHES / mid) or {}).get("status") in ("queued", "running") or mesh_old(mid):
         return False
     beta_mod.save(MESHES / mid, {"status": "queued", "videos": [], "progress": None, "queued": time.time(), "ahead": ahead})
     _beta_wake.set()
@@ -5610,11 +5622,14 @@ def beta_ready(mid: str) -> bool:
 
 
 def beta_queue() -> list[str]:
-    """Meshes queued to find beta in, in the order it'll take them: those asked for one at a time first."""
+    """Meshes queued to find beta in, in the order it'll take them: those asked for one at a time first. Old ones
+    (mesh_old()) are dropped from it, as what replaces them gets its own."""
     found = []
     for d in MESHES.iterdir() if MESHES.exists() else []:
         rec = beta_mod.load(d)
-        if rec and rec["status"] == "queued":
+        if rec and rec["status"] == "queued" and mesh_old(d.name):
+            beta_mod.save(d, {**rec, "status": "stopped", "progress": None, "note": "not looked for: the mesh is old"})
+        elif rec and rec["status"] == "queued":
             found.append(((not rec.get("ahead"), rec.get("queued", 0)), d.name))
     return [mid for _, mid in sorted(found)]
 
@@ -5622,7 +5637,9 @@ def beta_queue() -> list[str]:
 def beta_findable() -> list[str]:
     """Meshes with video frames placed in them, whose beta hasn't been found or isn't being: newest first."""
     out = []
-    for r in q("SELECT id FROM meshes WHERE source LIKE 'project:%' AND replaced_by IS NULL ORDER BY created DESC"):
+    for r in q("SELECT id, source, rules, old_data FROM meshes WHERE source LIKE 'project:%' AND replaced_by IS NULL ORDER BY created DESC"):
+        if mesh_is_old(r) or r["old_data"]:
+            continue
         status = (beta_mod.load(MESHES / r["id"]) or {}).get("status")
         if status not in ("done", "queued", "running") and beta_mod.videos(MESHES / r["id"]):
             out.append(r["id"])
@@ -5659,6 +5676,9 @@ def beta_worker() -> None:
             queued = [mid for mid in beta_queue() if beta_ready(mid)]
             if not queued:
                 break
+            if mesh_old(queued[0]):     # became old while queued
+                beta_queue()
+                continue
             _beta_now = {"mid": queued[0], "started": time.time(), "thread": threading.get_ident()}
             jobctl.begin(low_priority=True)
             try:
@@ -5863,6 +5883,10 @@ def run_scale(mid: str) -> None:
     if not m or not m["source"].startswith("project:"):
         return
     mesh_dir, pid = MESHES / mid, m["source"].split(":", 1)[1]
+    if mesh_old(mid):   # became old while queued: what replaces it gets its own
+        scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": "stopped", "progress": None,
+                                  "note": "not looked for: the mesh is old"})
+        return
 
     def log(line: str) -> None:
         with open(mesh_dir / "scale.log", "a") as f:
@@ -5876,9 +5900,10 @@ def run_scale(mid: str) -> None:
         else:
             scale_mod.estimate(mesh_dir, PROJECTS / pid / "photos", PROJECTS / pid / "masks", climbs, mesh_videos(mid), log,
                                known=known_object(pid))
-    except compute.ComputeUnavailable as e:     # queued again once a machine is there (beta_worker)
+    except compute.ComputeUnavailable as e:     # queued again once a machine is there (beta_worker); not at once if none took it
         log(f"scale: waiting for a machine to find it on: {e}")
-        scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": MACHINE_WAIT, "progress": None})
+        scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": MACHINE_WAIT, "progress": None,
+                                  "machine_wait": time.time() + TAKE_BACKOFF if isinstance(e, pullwork.NotTaken) else None})
     except Cancelled:
         scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": "stopped", "progress": None})
     except Exception as e:
@@ -5891,6 +5916,8 @@ def run_scale(mid: str) -> None:
 # ------------------------------------------------------------------ beta and size, on machines that connect here
 MESH_INPUT = {".glb", ".ply", ".json", ".bin"}   # what of a mesh's folder its beta and size need: not textures
 MACHINE_WAIT = "waiting for a machine"
+TAKE_WITHIN = 3600      # seconds a machine has to take a beta or size job, before it's put back for later (pullwork.NotTaken)
+TAKE_BACKOFF = 1800     # seconds one put back so waits before it's tried again
 
 
 def offloading() -> bool:
@@ -5947,7 +5974,7 @@ def remote_beta(mid: str, pid: str, log) -> None:
                 shutil.copy(src, dst)
             files[f"videos/{dst.name}"] = dst
         beta_mod.save(mesh_dir, {**rec, "status": "running", "progress": "on a machine that connects here", "started": time.time()})
-        _, back = MACHINES.task("beta", files, {}, f"beta: {mid}", log)
+        _, back = MACHINES.task("beta", files, {}, f"beta: {mid}", log, take_within=TAKE_WITHIN)
         try:
             log(f"beta: back from the machine: {', '.join(take_made(back, mid, 'beta')) or 'nothing'}")
         finally:
@@ -5962,7 +5989,7 @@ def remote_scale(mid: str, pid: str, climbs: list[dict], log) -> None:
     names = [c["name"] for c in json.loads((mesh_dir / "cameras.json").read_text())]
     scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": "running", "progress": "on a machine that connects here"})
     _, back = MACHINES.task("scale", mesh_inputs(mid, pid, names), {"climbs": climbs, "videos": mesh_videos(mid), "known": known_object(pid)},
-                            f"size: {mid}", log)
+                            f"size: {mid}", log, take_within=TAKE_WITHIN)
     try:
         log(f"scale: back from the machine: {', '.join(take_made(back, mid, 'scale')) or 'nothing'}")
     finally:
@@ -6068,7 +6095,8 @@ def requeue_waiting_scale() -> None:
     if not (offloading() and MACHINES.connected()):
         return
     for d in MESHES.iterdir() if MESHES.exists() else []:
-        if (scale_mod.load(d) or {}).get("status") == MACHINE_WAIT:
+        rec = scale_mod.load(d) or {}
+        if rec.get("status") == MACHINE_WAIT and (rec.get("machine_wait") or 0) <= time.time() and not mesh_old(d.name):
             queue_scale(d.name)
 
 
