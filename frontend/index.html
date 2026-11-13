@@ -4232,7 +4232,7 @@ let betaState = null;   // {mid, found, marked, available, shown: Set of video t
 let betaPoll = null;
 // what the colours are of, over them on hover (title), and on a phone, where there's no hover, under them on a tap
 $('#b-legend').onclick = () => { const n = $('#b-legend-note'); n.textContent = $('#b-legend').title; n.hidden = !n.hidden || !phone.matches; };
-$('#b-legend').innerHTML = Object.values(ROLES).map(r => `<span><span class="swatch" style="background:${r.color}"></span>${r.name}${r.note ? ` <small>(${r.note})</small>` : ''}</span>`).join('');
+$('#b-legend').innerHTML = Object.values(ROLES).map(r => `<span><span class="swatch" style="background:${r.color}"></span>${r.name}</span>`).join('');
 function videoCount(m){ return m.sources?.sources?.find(x => x.source === 'youtube')?.videos || 0; }
 const hhmm = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 function betaLine(m){
