@@ -167,9 +167,15 @@ def features(root: Path, kind: str, threads: int) -> dict:
         else:
             raise SystemExit(f"unknown features {kind}")
         rep.part("extract")
-        pycolmap.extract_features(str(db), str(root / "photos"), image_names=todo, camera_mode=pycolmap.CameraMode.PER_IMAGE,
-                                  reader_options=reader, extraction_options=ext,
-                                  device=pycolmap.Device.cuda if ext.use_gpu else pycolmap.Device.cpu)
+        # COLMAP fails a photo whose mask is missing, so those without one (a capture's: no people in them, or not
+        # looked for yet) are extracted in a call of their own, with no masks
+        masked = [n for n in todo if (root / "masks" / f"{n}.png").exists()] if reader.mask_path != "." else []
+        for names, mask_path in ((masked, reader.mask_path), ([n for n in todo if n not in masked], ".")):
+            if names:
+                reader.mask_path = mask_path
+                pycolmap.extract_features(str(db), str(root / "photos"), image_names=names, camera_mode=pycolmap.CameraMode.PER_IMAGE,
+                                          reader_options=reader, extraction_options=ext,
+                                          device=pycolmap.Device.cuda if ext.use_gpu else pycolmap.Device.cpu)
     now = db_images(db)
     return rep.save(kind=kind, extracted=len(todo), missing=sorted(set(todo) - set(now)), photos=len(now),
                     device="cuda" if todo and kind != "sift" else "cpu")

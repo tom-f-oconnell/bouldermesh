@@ -456,7 +456,8 @@ def capture_add(state_dir: Path, capture_dir: Path, former: Path | None, photos_
         bootstrap(state_dir, former, photos_of_former, masks, cond)
         if not st.State(state_dir).has_model():
             raise SystemExit(f"no state could be made from {former}: see {state_dir}/log")
-    rec = add(state_dir, expand([str(capture_dir / "photos")]), None, "auto", ba, "sift", cond, 0, True, True, capture=capture_dir)
+    cap_masks = capture_dir / "masks" if (capture_dir / "masks").is_dir() else None
+    rec = add(state_dir, expand([str(capture_dir / "photos")]), cap_masks, "auto", ba, "sift", cond, 0, True, True, capture=capture_dir)
     s = st.State(state_dir)
     if out and (s.root / "dense" / "scene_dense_mesh_texture.glb").exists():
         export(s, out, of=str(former.name if former else "former"), how="add")

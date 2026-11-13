@@ -169,6 +169,9 @@ def main(argv=None) -> None:
                 exif.get_ifd(0x8769)[0x9286] = b"ASCII\0\0\0" + ("BMSH1:" + json.dumps(blob, separators=(",", ":"))).encode()
                 exif[0x0112] = 1
                 im.save(out / "photos" / name, quality=95, exif=exif.tobytes())
+            if (a.state / "masks" / f"{n}.png").exists():       # its people mask, as the server would make one
+                (out / "masks").mkdir(exist_ok=True)
+                shutil.copyfile(a.state / "masks" / f"{n}.png", out / "masks" / f"{name}.png")
             shots.append({"name": name, "blob": blob, "kept": True, "why": [], "notes": [], "helped": []})
             truth_out["photos"][name] = {"was": n, "q": list(map(float, cp.qfrom_matrix(R))), "centre": c.tolist(), "spell": s}
         spell_info[s] = {"photos": len(group), "walked_m": round(walked, 2), "reset_at": jump_at,
