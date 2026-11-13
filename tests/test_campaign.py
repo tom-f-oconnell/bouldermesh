@@ -1838,6 +1838,61 @@ shutil.rmtree(server.MESHES / other)
 shutil.rmtree(md)
 print("beta and size on machines OK")
 
+# --- meshing on a machine outlasts a restart: run_reconstruct (which every climb's, boulder's and project's meshing
+# comes to) takes up the job kept from before it, if made under the same MESH_RULES and inputs fingerprint; else it's
+# dropped, and a new one made
+import tarfile  # noqa: E402
+fresh()
+saved = (server._local_meshing, server._executor, server.pullwork.POLL)
+server._local_meshing, server._executor, server.pullwork.POLL = False, server.MACHINES, 0.05
+board = server.MACHINES
+pid = server.new_id()
+pdir = server.PROJECTS / pid
+(pdir / "photos").mkdir(parents=True)
+(pdir / "photos" / "a.jpg").write_bytes(b"one")
+server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,'queued')", pid, "Kept (harvest)", time.time(), "harvest", write=True)
+fp = server.inputs_fingerprint(server.inputs_record(pid))
+assert fp and server.inputs_fingerprint(server.inputs_record(pid)) == fp and "fingerprint" not in server.inputs_record(pid)
+
+
+def kept(same: dict, state: str = "done"):
+    """A job as a restart leaves it: reloaded, nothing waiting for it; done, with its results come."""
+    j = board._new_job("reconstruct", {"photos": pdir / "photos"}, {"internet": True}, pid, "img", same=same)
+    j.owner, j.orphaned, j.state, j.machine, j.machine_name, j.taken = 0, time.time(), state, "m1", "hal-2", time.time() - 60
+    if state == "done":
+        made = pathlib.Path(tempfile.mkdtemp())
+        (made / "out").mkdir()
+        (made / "out" / "mesh.ply").write_text("kept ply")
+        with tarfile.open(j.output, "w") as tar:
+            tar.add(made / "out", arcname="out")
+        j.out_size, j.result_line = j.output.stat().st_size, '@@result {"mesh": "mesh.ply", "demo": false}'
+    board._save(j)
+    return j
+
+
+assert not [r for r in board.running() if r["label"] == pid]
+job = kept({"rules": server.MESH_RULES, "fingerprint": fp})
+assert board.q("SELECT live FROM machine_jobs WHERE id=?", job.id, one=True)["live"] == 1
+mid = server.run_reconstruct(pid, internet=True, resume=True)
+assert mid and (server.MESHES / mid / "mesh.ply").read_text() == "kept ply", mid
+assert job.id not in board.jobs and not job.output.exists() and not job.input.exists()
+assert board.q("SELECT live FROM machine_jobs WHERE id=?", job.id, one=True)["live"] == 0, "settled"
+assert f"taking up job {job.id}" in (pdir / "job.log").read_text()
+for why, same in (("MESH_RULES changed", {"rules": server.MESH_RULES - 1, "fingerprint": fp}),
+                  ("what it's made from changed", {"rules": server.MESH_RULES, "fingerprint": "0" * 40})):
+    job = kept(same, "running")
+    try:
+        server.run_reconstruct(pid, internet=True, resume=True)
+        raise AssertionError("no machine here to take the new job")
+    except server.compute.ComputeUnavailable:
+        pass
+    assert job.id not in board.jobs and not job.input.exists(), why
+    assert board.q("SELECT live, outcome FROM machine_jobs WHERE id=?", job.id, one=True) == {"live": 0, "outcome": "gone"}
+    assert f"dropping job {job.id} from before the restart: {why}" in (pdir / "job.log").read_text(), why
+assert not board.jobs, "and the new one, which no machine took, gone too"
+(server._local_meshing, server._executor, server.pullwork.POLL) = saved
+print("meshing on a machine taken up after a restart OK")
+
 # --- a harvest's filtering on a machine that connects here, when one with a new enough script is in touch; here
 # otherwise, or when none takes it in time; its rejections moved here, and the pairs it matched kept here
 fpid = "f1f1f1f1f1f1"
@@ -2729,6 +2784,12 @@ st = server.deploy_state()
 mesh = next(i for i in st["items"] if i["what"].startswith("meshing on"))
 assert mesh["costly"] and mesh["what"] == "meshing on hal-2" and 590 <= mesh["eta"] <= 610 and st["eta"] == mesh["eta"], st
 assert mesh["name"] == "Alpha (harvest)", "its project's name, not its id"
+# one kept over a restart (its MESH_RULES and inputs fingerprint known): it carries on, for its climb to take up after
+job.same = {"rules": server.MESH_RULES, "fingerprint": "f" * 40}
+st = server.deploy_state()
+kept_mesh = next(i for i in st["items"] if i["what"].startswith("meshing on"))
+assert not kept_mesh["costly"] and st["costly"] == 0 and kept_mesh["lost"].startswith("carries on on its machine, and its climb"), st
+job.same = None
 # a size found on a machine, from a job here: told once, as the machine's job, under its mesh's name; not costly while
 # it waits for a machine, as nothing's done yet, and while draining none takes it (Nov 11, 2026: it waited 90 min for that)
 mid = "5c" * 6

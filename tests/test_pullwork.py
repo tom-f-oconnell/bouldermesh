@@ -2,7 +2,8 @@
 """Machines that connect to the server for work: the board's jobs and machines, and the whole way through, from a climb
 waiting for a machine to its mesh coming back, with worker/bouldermesh_worker.py run against the board's port and a
 stand-in for docker that runs remote_job.py here. Also a failing job, a stopped climb, a lost machine, a machine giving
-a job back, and results that try to write outside their folder. Offline; needs Pillow for the photos.
+a job back, and results that try to write outside their folder; and the server restarting mid-job, which the script
+rides out, and whose climb takes up the job after. Offline; needs Pillow for the photos.
 
     python3 tests/test_pullwork.py
 """
@@ -158,7 +159,8 @@ image = ["ghcr.io/me/bouldermesh:abc123"]
 board = pullwork.Board(TMP / "data" / "compute" / "machines.sqlite", TMP / "data" / "compute" / "jobs", lambda: image[0], ctl)
 port = free_port()
 URL = f"http://127.0.0.1:{port}"
-assert pullwork.serve(board, "127.0.0.1", port, lambda line: None)
+httpd = pullwork.serve(board, "127.0.0.1", port, lambda line: None)
+assert httpd
 pullwork.POLL = 0.3     # the wait for a machine to turn up, after a restart here
 
 # --- machines and their tokens -----------------------------------------------------------------------------------------
@@ -856,4 +858,70 @@ assert not board.q("SELECT * FROM machines WHERE id=?", old["id"]) and not board
 assert not board.q("SELECT * FROM machine_states WHERE machine_id=?", old["id"]) and board.q("SELECT * FROM machines WHERE id=?", worked["id"])
 assert board.q("SELECT * FROM machines WHERE id=?", pat2["id"]), "one not revoked stays"
 print("forgetting gone machines OK")
+
+# --- the server restarting mid-job: the script carries on, keeping its log, and sends it and the mesh once the server's
+# back; the job was kept, and the climb, carrying on after, takes up what came while nothing waited for it. One kept
+# that was made under other rules, or from other inputs, is dropped instead, and one waiting isn't given out meanwhile
+board.rules, board.registered = lambda: pullwork.RULES, lambda m: None
+SAME = {"rules": 7, "fingerprint": "ab" * 20}
+p = project("restart")
+flag = TMP / "outage-over"
+logged = []
+board._touch(board.machine(hal["token"]))     # in touch, as it asks for work
+got = in_thread(board.reconstruct, p / "photos", p / "work", TMP / "out-restart", logged.append, True, True, None, SAME)
+time.sleep(0.5)
+p2 = project("waiting-one")
+waiting = board._new_job("reconstruct", {"photos": p2 / "photos"}, {}, "waiting-one", image[0], same=SAME)
+waiting.owner = -1      # a climb waiting for it: none takes it before the restart
+plain = board._new_job("beta", {}, {}, "beta: not kept", image[0])
+plain.owner = -1
+job_sh = ('echo before; while [ ! -e "$FLAG" ]; do sleep 0.2; done; echo during the outage; mkdir -p "$JOB/out"; '
+          'echo ply > "$JOB/out/mesh.ply"; echo \'@@result {"mesh": "mesh.ply", "demo": false}\'')
+proc = subprocess.Popen([sys.executable, str(SCRIPT), "--server", URL, "--token", hal["token"], "--home", str(TMP / "home"), "--gpu", "none",
+                         "--tasks", "reconstruct", "--image-prefix", "ghcr.io/me/", "--once"], env={**ENV, "FAKE_JOB": job_sh, "FLAG": str(flag)},
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+t0 = time.time()
+while not any(line == "before" for line in logged) and time.time() - t0 < 60:
+    time.sleep(0.2)
+assert any(line == "before" for line in logged), (logged, proc.kill(), proc.communicate()[0])
+kept_id = next(j.id for j in board.jobs.values() if j.label == "restart")
+httpd.shutdown()        # the server stops, as for a restart: the climb's thread here ends with it
+httpd.server_close()
+flag.touch()            # and the job finishes while it's away
+time.sleep(3)
+old_board = board
+board = pullwork.Board(TMP / "data" / "compute" / "machines.sqlite", TMP / "data" / "compute" / "jobs", lambda: image[0], ctl)
+assert {j.label: (j.state, j.owner) for j in board.jobs.values()} == {"restart": ("running", 0), "waiting-one": ("queued", 0)}, board.jobs
+assert board.jobs[kept_id].input.exists() and not plain.input.exists(), "a kept job's photos stay; another's go"
+assert "wait" in board.work(board.machine(order_box["token"]), "10.0.0.8", {"version": SCRIPT_VERSION}), "nothing to take it up: not given out"
+httpd = pullwork.serve(board, "127.0.0.1", port, lambda line: None)
+assert httpd
+out, _ = proc.communicate(timeout=120)
+assert proc.returncode == 0 and f"job {kept_id} done" in out, out
+assert "the job carries on, and its log is kept" in out and "reached" in out and "again after" in out, out
+assert board.jobs[kept_id].state == "done" and board.jobs[kept_id].output.exists(), "what came while nothing waited, kept"
+logged = []
+mesh, demo = board.reconstruct(p / "photos", p / "work", TMP / "out-restart2", logged.append, same=SAME)
+assert mesh.read_text() == "ply\n" and demo is False, mesh
+assert any(f"taking up job {kept_id}" in line for line in logged) and "during the outage" in logged, logged
+assert kept_id not in board.jobs and not list(p.glob("bm-remote-*"))
+assert board.q("SELECT live, outcome FROM machine_jobs WHERE id=?", kept_id, one=True) == {"live": 0, "outcome": "done"}
+# the one waiting, under other inputs now: dropped, and a new one made, which goes to a machine as usual
+logged = []
+got2 = in_thread(board.reconstruct, p2 / "photos", p2 / "work", TMP / "out-restart3", logged.append, same={**SAME, "fingerprint": "cd" * 20})
+time.sleep(0.5)
+assert waiting.id not in board.jobs and any(f"dropping job {waiting.id}" in line and "made from changed" in line for line in logged), logged
+assert board.q("SELECT live, outcome FROM machine_jobs WHERE id=?", waiting.id, one=True) == {"live": 0, "outcome": "gone"}
+fresh_job = next(j for j in board.jobs.values() if j.label == "waiting-one")
+assert fresh_job.id != waiting.id and fresh_job.lasting
+ctl.stop()
+got2["thread"].join(10)
+ctl.begin()
+assert isinstance(got2.get("error"), Cancelled) and not board.jobs, got2
+# and kept ones nothing takes up go after ORPHAN_AFTER
+orphan = board._new_job("reconstruct", {"photos": p / "photos"}, {}, "forgotten", image[0], same=SAME)
+orphan.owner, orphan.orphaned = 0, time.time() - pullwork.ORPHAN_AFTER - 1
+board.sweep()
+assert not board.jobs and not orphan.input.exists()
+print("a restart mid-job OK")
 print("ALL MACHINES TESTS PASSED")

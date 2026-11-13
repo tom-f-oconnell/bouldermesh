@@ -696,9 +696,10 @@ what a restart would cost (`cli.py deploy-check`), and then pulls and restarts i
 systemctl restart bouldermesh`), and ends by saying which version the server then runs. hal's worker needs no restart: `deploy/bouldermesh-worker.service` runs a downloaded
 copy of the script, which updates itself from the server, and every job runs in the server's own image. Only if the
 unit runs this repository's copy (which never updates itself) is it restarted, with sudo. When a restart would lose work in
-progress, it lists it with about how long each has left (`!` for what it would lose: a job on a machine, which starts
-over; a job asked for; beta or size found here; harvests, volunteers' uploads, and jobs no machine has taken yet only
-pause) and asks: restart **now**, or **after** what's in progress finishes, the server taking no new work meanwhile, or
+progress, it lists it with about how long each has left (`!` for what it would lose: a filtering, beta or size job on a
+machine, which starts over; a job asked for; beta or size found here; harvests, volunteers' uploads, and jobs no machine
+has taken yet only pause, and meshing on a machine carries on through the restart, for its climb to take up after,
+unless the new version changes `MESH_RULES` or what the climb is meshed from) and asks: restart **now**, or **after** what's in progress finishes, the server taking no new work meanwhile, or
 cancel (the new image is pulled, and runs at the next restart). Meanwhile machines still take a running harvest's
 filtering, only no new meshing, and the drain ends by itself if `deploy.sh` stops renewing it for 5 minutes (it does
 every 30 s), as when it dies or loses its connection. While it waits, it says what for every 30 s
@@ -709,7 +710,8 @@ answers these only from itself (`GET /api/deploy`, `POST /api/deploy/drain`), th
 - It builds what's committed, other sessions' commits too: `git log` first says what would go.
 - Changes to the database apply themselves when the server starts, and the Caddyfile and Compose files come with the
   pull. A change that needs a new setting in the server's `.env` says so; it goes in before the restart.
-- The restart cuts off work in progress: a climb hal is meshing starts over as a new job (up to an hour of hal's), areas'
+- The restart cuts off work in progress, but for meshing on machines: a climb hal is meshing carries on there, and its
+  climb takes up the mesh after (a project's own, on *Retry*), unless `MESH_RULES` or its inputs changed; areas'
   climbs pause and carry on, and jobs started by hand get 10 minutes. On the server,
   `docker compose exec -T bouldermesh python3 cli.py jobs` says what's running.
 - Changes only to what runs on hal (the worker script, `deploy/backup.sh`, the systemd units) need no deploy: restart the

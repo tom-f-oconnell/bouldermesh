@@ -16,8 +16,16 @@ and for those made on the admin page the tokens themselves, so that it can show 
 A machine that registered itself is provisional until approved, and gets no work meanwhile unless the admin page says
 it may. Then it's given only reconstructions, and what it makes is held (in held/, beside the database) rather than
 becoming a mesh: its climb waits, and takes the held mesh once the machine is approved, or is meshed again elsewhere if
-it's turned down. Jobs are kept only in memory: a restart here
-ends them anyway, the climbs carry on after it as new jobs, and a machine still running an old one is told it's gone.
+it's turned down.
+
+Meshing jobs outlast a restart here: each is kept in machine_jobs (its "spec", while "live") with the MESH_RULES and
+inputs fingerprint (meshinputs.py) its climb was meshed under, and reloaded as the server starts, unclaimed. A machine
+on one carries on (its script keeps its log while the server is away, and sends it after), and what it sends back is
+kept. When the climb carries on after the restart and asks to mesh its project again (reconstruct()), it takes up that
+job if the rules and fingerprint are still the same (_reattach()); otherwise the job is dropped, and its machine told
+it's gone, and a new one made, as before. An unclaimed job isn't given out while queued, and goes after ORPHAN_AFTER.
+The other jobs (filtering, beta, size) are kept only in memory: a restart ends them, and they run again after it, as
+their callers ask again; a machine still running one is told it's gone.
 
 A machine says which kinds of job it takes (worker script 13 on): one without a GPU only filters harvests' photos, by
 default, and is given a CPU image to run them in (cpu_image): the slim worker one (1.9 GB, x86-64 and ARM64) where built.
@@ -58,6 +66,7 @@ MAX_OUTPUT = 4 * 2**30      # what a job may send back: a mesh, its textures, ca
 CONNECTED = 120             # seconds since a machine last asked or reported for it to count as there
 QUIET = 15 * 60             # a job whose machine hasn't been heard from for this long is lost
 POLL = 15                   # seconds a machine with nothing to do waits before asking again
+ORPHAN_AFTER = 24 * 3600   # a meshing job kept over a restart that no climb takes up again in this long goes
 AGE_FIRST = 1800            # a beta or size job queued this long goes ahead of meshing (not of filtering), so it isn't starved
 GONE_AFTER = 600            # a machine not heard from for this long has left (presence.py), unless it said goodbye before
 GPU_NEED_PHOTOS = 20        # a reconstruction's GPU memory is reckoned for VGGT placing this many (it places fewer in less)
@@ -99,7 +108,15 @@ class Job:
     task: str = "reconstruct"       # or one of remote_job.py's other tasks: "beta", "scale"
     version: int = 1                # the oldest script that does it
     gpu_mb: int = 0                 # the GPU memory it may need (gpu_need_mb())
-    owner: int = field(default_factory=threading.get_ident)   # the thread that made it, which waits for it
+    owner: int = field(default_factory=threading.get_ident)   # the thread that made it, which waits for it; 0 for none
+    same: dict | None = None        # a meshing job's {"rules", "fingerprint"}: kept over a restart while it has both
+    result_line: str | None = None  # the "@@result" line its machine sent, kept for whoever takes it up after a restart
+    orphaned: float | None = None   # when it was reloaded after a restart, until a climb takes it up
+
+    @property
+    def lasting(self) -> bool:
+        """Whether it's kept over a restart, for its climb to take up again."""
+        return bool(self.same and self.same.get("fingerprint") and self.same.get("rules") is not None)
 
     @property
     def output(self) -> Path:
@@ -139,7 +156,6 @@ class Board:
         self.cond = threading.Condition(threading.RLock())
         self.seen: dict[str, float] = {}
         self.takes: dict[str, set[str] | None] = {}     # what each machine last said it takes (None: all), for able()
-        shutil.rmtree(files, ignore_errors=True)    # jobs from before a restart, which ended with it
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with self.db() as con:
             con.executescript("""
@@ -160,9 +176,94 @@ class Board:
             for col, kind in (("gpu_busy", "REAL"), ("gpu_name", "TEXT")):
                 if col not in {r[1] for r in con.execute("PRAGMA table_info(machine_jobs)")}:
                     con.execute(f"ALTER TABLE machine_jobs ADD COLUMN {col} {kind}")
+            for col, kind in (("live", "INTEGER"), ("spec", "TEXT")):     # meshing jobs kept over a restart (_save())
+                if col not in {r[1] for r in con.execute("PRAGMA table_info(machine_jobs)")}:
+                    con.execute(f"ALTER TABLE machine_jobs ADD COLUMN {col} {kind}")
             registration.migrate(con, "machines")
             presence.migrate(con, "machines", GONE_AFTER)
         os.chmod(db_path, 0o600)
+        self._reload()
+
+    # -- meshing jobs kept over a restart -------------------------------------------------------------------------------
+    def _save(self, j: Job) -> None:
+        """Keep a lasting job as it is now, to reload after a restart (_reload())."""
+        if not j.lasting:
+            return
+        spec = {"input": str(j.input), "size": j.size, "internet": j.internet, "image": j.image, "state": j.state,
+                "machine": j.machine, "machine_name": j.machine_name, "taken": j.taken, "out_size": j.out_size, "error": j.error,
+                "version": j.version, "gpu_mb": j.gpu_mb, "same": j.same, "result_line": j.result_line}
+        self.q("UPDATE machine_jobs SET live=1, spec=? WHERE id=?", json.dumps(spec), j.id)
+
+    def _settle(self, j: Job) -> None:
+        self.q("UPDATE machine_jobs SET live=0 WHERE id=?", j.id)
+
+    def _reload(self) -> None:
+        """After a restart: the lasting jobs from before it, unclaimed, that are still waiting, running or done but not
+        taken; and every other job's files gone, as those jobs ended with it."""
+        now, keep = time.time(), set()
+        self.q("UPDATE machine_jobs SET ended=?, outcome='gone' WHERE outcome IS NULL AND COALESCE(live, 0)=0", now)
+        for r in self.q("SELECT id, task, label, created, spec FROM machine_jobs WHERE live=1"):
+            try:
+                s = json.loads(r["spec"])
+                j = Job(id=r["id"], label=r["label"], input=Path(s["input"]), size=int(s["size"]), internet=bool(s["internet"]),
+                        image=s["image"], created=r["created"] or now, state=s["state"], machine=s.get("machine"),
+                        machine_name=s.get("machine_name"), taken=s.get("taken"), touched=now, out_size=s.get("out_size"),
+                        error=s.get("error"), task=r["task"], version=int(s.get("version") or 1), gpu_mb=int(s.get("gpu_mb") or 0),
+                        owner=0, same=s.get("same"), result_line=s.get("result_line"), orphaned=now)
+            except (TypeError, ValueError, KeyError):
+                self.q("UPDATE machine_jobs SET live=0, outcome=COALESCE(outcome, 'gone'), ended=COALESCE(ended, ?) WHERE id=?", now, r["id"])
+                continue
+            if j.out_size is not None and not j.output.exists():
+                j.out_size = None
+            ok = j.lasting and j.input.parent == self.files and (
+                j.input.exists() if j.state in ("queued", "running") else
+                j.out_size is not None and j.output.stat().st_size == j.out_size if j.state == "done" else j.state == "failed")
+            if not ok:
+                self._settle(j)
+                self._ended(j, "gone")
+                continue
+            self.jobs[j.id] = j
+            keep |= {j.input.name, j.output.name}
+        for f in self.files.iterdir() if self.files.is_dir() else []:   # what the jobs that ended with the restart left
+            if f.name not in keep:
+                shutil.rmtree(f, ignore_errors=True) if f.is_dir() else f.unlink(missing_ok=True)
+        if self.jobs:
+            self.log(f"machines: kept over the restart, for their climbs to take up again: "
+                     + ", ".join(f"{j.label} ({j.state}{' on ' + j.machine_name if j.machine_name else ''})" for j in self.jobs.values()))
+
+    def _drop(self, j: Job) -> None:
+        """End a job no one will take up: its machine hears it's gone the next time it reports."""
+        with self.cond:
+            self.jobs.pop(j.id, None)
+        self._ended(j, "gone")
+        self._settle(j)
+        j.input.unlink(missing_ok=True)
+        j.output.unlink(missing_ok=True)
+
+    def _reattach(self, kind: str, label: str, same: dict, log) -> Job | None:
+        """The job kept over a restart for this project, taken up by this thread, if it was made under the same
+        MESH_RULES and inputs fingerprint as same's; any other kept for it is dropped (_drop())."""
+        with self.cond:
+            old = sorted((j for j in self.jobs.values() if j.owner == 0 and j.task == kind and j.label == label),
+                         key=lambda j: j.created, reverse=True)
+            mine = None
+            for j in old:
+                if mine is None and j.lasting and same.get("fingerprint") and j.same == same:
+                    mine = j
+            if mine:
+                mine.owner, mine.orphaned = threading.get_ident(), None
+                if mine.state == "queued":
+                    mine.image = self.image() or mine.image     # it hasn't started: in this build's image
+                mine.lines[:0] = [f"remote: taking up job {mine.id} from before the restart ({mine.state}"
+                                  + (f" on {mine.machine_name}" if mine.state == "running" else "") + ")"] \
+                    + ([mine.result_line] if mine.result_line and mine.result_line not in mine.lines else [])
+        for j in old:
+            if j is not mine:
+                why = ("MESH_RULES changed" if (j.same or {}).get("rules") != same.get("rules") else
+                       "what it's made from can't be told now" if not same.get("fingerprint") else "what it's made from changed")
+                log(f"remote: dropping job {j.id} from before the restart: {why}")
+                self._drop(j)
+        return mine
 
     def db(self) -> sqlite3.Connection:
         con = dbconn.connect(self.db_path, timeout=30)
@@ -270,8 +371,14 @@ class Board:
         self.log(f"machines: {m['name']} {state}" + (f": {why}" if why else ""))
 
     def sweep(self) -> None:
-        """Mark machines that stopped asking as offline, from when they were last heard from (CONNECTED after it)."""
+        """Mark machines that stopped asking as offline, from when they were last heard from (CONNECTED after it); and drop
+        jobs kept over a restart that nothing took up in ORPHAN_AFTER."""
         now = time.time()
+        with self.cond:
+            stale = [j for j in self.jobs.values() if j.owner == 0 and j.orphaned and now - j.orphaned > ORPHAN_AFTER]
+        for j in stale:     # kept over a restart, and no climb took it up
+            self.log(f"machines: dropping {j.task} {j.label}, kept over a restart: nothing took it up in {ORPHAN_AFTER // 3600} h")
+            self._drop(j)
         for r in self.q("SELECT s.rowid, s.machine_id, m.name, m.last_seen FROM machine_states s JOIN machines m ON m.id=s.machine_id "
                         "WHERE s.end IS NULL AND s.state!='offline' AND COALESCE(m.last_seen, 0) < ?", now - CONNECTED):
             with self.cond:
@@ -400,9 +507,10 @@ class Board:
                 mine.lines.append(f"remote: {m['name']} started the job again")
                 mine.out_size = None
                 mine.output.unlink(missing_ok=True)
+                self._save(mine)
             else:
                 version = int(_number(client.get("version")) or 1)
-                could = [j for j in self.jobs.values() if j.state == "queued" and j.version <= version
+                could = [j for j in self.jobs.values() if j.state == "queued" and j.version <= version and j.owner != 0
                          and (not waiting or j.task == "reconstruct") and (tasks is None or j.task in tasks)
                          and (not self.paused or j.task in DRAIN_TASKS)]     # paused: only short jobs, as a harvest's filtering
                 if self.paused and not could:
@@ -429,6 +537,7 @@ class Board:
                 gpu = " (GPU)" if client.get("gpu") else ""
                 mine.state, mine.machine, mine.machine_name, mine.taken = "running", m["id"], m["name"], now
                 mine.lines.append(f"remote: {m['name']}{gpu} took it after {now - mine.created:.0f} s")
+                self._save(mine)
             mine.touched = now
             self.cond.notify_all()
             self.q("UPDATE machine_jobs SET machine_id=?, machine=?, taken=?, outcome=NULL WHERE id=?", m["id"], m["name"], now, mine.id)
@@ -463,9 +572,14 @@ class Board:
             raise ValueError(f"a list of at most {MAX_LINES} lines")
         with self.cond:
             j = self._mine(m, job_id)
-            j.lines.extend(str(line)[:2000] for line in lines)
+            new = [str(line)[:2000] for line in lines]
+            j.lines.extend(new)
             j.touched = time.time()
             self.cond.notify_all()
+            got = next((line for line in reversed(new) if line.startswith("@@result ")), None)
+            if got and j.lasting:   # for whoever takes it up, should the server restart before it's collected
+                j.result_line = got
+                self._save(j)
         self._touch(m)
         return {"ok": True}
 
@@ -495,7 +609,8 @@ class Board:
                 raise ValueError("more than the size it was started with")
             if j.out_size is None:
                 j.output.unlink(missing_ok=True)
-            j.out_size = size
+                j.out_size = size
+                self._save(j)
             with open(j.output, "ab") as out:
                 out.write(body)
             j.touched = time.time()
@@ -520,6 +635,7 @@ class Board:
                 j.state, j.error = "failed", str(report.get("error") or "failed on the machine")[:500]
             self.cond.notify_all()
             self._ended(j, j.state, j.error)
+            self._save(j)
             gpu = report.get("gpu") if isinstance(report.get("gpu"), dict) else {}
             busy = _number(gpu.get("busy_seconds"))
             if busy is not None:    # its share of the machine's GPU while it ran (the script's GpuWatch, from version 10)
@@ -539,10 +655,12 @@ class Board:
 
     def running(self) -> list[dict]:
         """The jobs machines are on now, and those waiting for one: {id, task, label, state, machine, created, taken,
-        owner (the thread waiting for it)}."""
+        owner (the thread waiting for it; 0 for one kept over a restart that nothing has taken up yet), lasting (whether
+        it's kept over a restart, for its climb to take up again: Job.lasting)}."""
         with self.cond:
             return [{"id": j.id, "task": j.task, "label": j.label, "state": j.state, "machine": j.machine_name,
-                     "created": j.created, "taken": j.taken, "owner": j.owner} for j in self.jobs.values() if j.state in ("queued", "running")]
+                     "created": j.created, "taken": j.taken, "owner": j.owner, "lasting": j.lasting}
+                    for j in self.jobs.values() if j.state in ("queued", "running")]
 
     def typical(self, task: str) -> float | None:
         """How long, in seconds, a machine has taken over the last 20 jobs of this task it finished (the median)."""
@@ -573,18 +691,22 @@ class Board:
                      + (f"; jobs {jobs}" if ended else "; no jobs"))
 
     def _requeue(self, j: Job, note: str) -> None:
-        j.state, j.machine, j.machine_name, j.taken, j.out_size = "queued", None, None, None, None
+        j.state, j.machine, j.machine_name, j.taken, j.out_size, j.result_line = "queued", None, None, None, None, None
         j.output.unlink(missing_ok=True)
         j.lines.append(note)
+        self._save(j)
         self.cond.notify_all()
 
     # -- the climb's side: what compute.RemoteExecutor does, for these machines ---------------------------------------
     def reconstruct(self, images: Path, work: Path, out_dir: Path, log, use_gpu: bool = True, internet: bool = False,
-                    tracker=None) -> tuple[Path, bool]:
+                    tracker=None, same: dict | None = None) -> tuple[Path, bool]:
         """Reconstruct a project's photos on a machine that connects here: what pipeline.reconstruct does, there.
 
         Args:
             images: the project's photos/, next to its masks/, which go too and come back with new ones.
+            same: {"rules": MESH_RULES, "fingerprint": its inputs' fingerprint (meshinputs.py), or None if unknown}: the
+                job is kept over a restart, and one kept from before it for this project is taken up if made under
+                the same (_reattach()), and dropped otherwise. Without it, nothing is kept or taken up.
 
         Returns:
             The mesh file and whether it's a demo, as pipeline.reconstruct does.
@@ -608,7 +730,7 @@ class Board:
             return mesh, bool(result.get("demo"))
         mapper = meshopts.given()     # an area's settings for COLMAP's mapper, sent as task.json
         result, back, job = self._run("reconstruct", files, {"internet": internet, **({"mapper": mapper} if mapper else {})},
-                                      project.name, project, log, tracker)
+                                      project.name, project, log, tracker, same=same)
         m = self.get(job.machine or "")
         if registration.provisional(m):     # held until its machine is approved
             shutil.rmtree(back, ignore_errors=True)
@@ -680,22 +802,25 @@ class Board:
         return result, back
 
     def _run(self, kind: str, files: dict[str, Path], args: dict, label: str, near: Path, log, tracker,
-             version: int | None = None, take_within: float | None = None) -> tuple[dict, Path, "Job"]:
+             version: int | None = None, take_within: float | None = None, same: dict | None = None) -> tuple[dict, Path, "Job"]:
         """Hand a job to a machine and follow it until it's done: its result, a new folder in near for its results,
-        and the job, whose output (a tar) is the caller's to unpack and delete."""
+        and the job, whose output (a tar) is the caller's to unpack and delete. With same (reconstruct()'s), one kept
+        from before a restart is taken up instead, if made under the same."""
         from progress import Tracker
         tracker = tracker or Tracker([])
-        until = time.time() + 3 * POLL     # as just after a restart here, before machines have asked again
-        while not self.connected():
-            if time.time() > until:
-                raise compute.ComputeUnavailable(f"no machine has asked this server for work in the last {CONNECTED // 60} minutes")
-            self.jobctl.check()
-            time.sleep(1)
-        image = self.image()
-        if not image:
-            raise compute.ComputeUnavailable("set the Docker image the machines run on the admin page")
-        job = self._new_job(kind, files, args, label, image, version)
-        log(f"remote: {job.size / 1e6:.0f} MB ready for the machines that connect here, job {job.id}")
+        job = self._reattach(kind, label, same, log) if same is not None else None
+        if job is None:
+            until = time.time() + 3 * POLL     # as just after a restart here, before machines have asked again
+            while not self.connected():
+                if time.time() > until:
+                    raise compute.ComputeUnavailable(f"no machine has asked this server for work in the last {CONNECTED // 60} minutes")
+                self.jobctl.check()
+                time.sleep(1)
+            image = self.image()
+            if not image:
+                raise compute.ComputeUnavailable("set the Docker image the machines run on the admin page")
+            job = self._new_job(kind, files, args, label, image, version, same)
+            log(f"remote: {job.size / 1e6:.0f} MB ready for the machines that connect here, job {job.id}")
         result, last, said, said_at = None, "", None, 0.0
         try:
             while True:
@@ -736,9 +861,11 @@ class Board:
                 self.jobs.pop(job.id, None)
                 if job.state not in ("done", "failed"):
                     self._ended(job, "gone")
+            self._settle(job)
             job.input.unlink(missing_ok=True)
 
-    def _new_job(self, kind: str, files: dict[str, Path], args: dict, label: str, image: str, version: int | None = None) -> Job:
+    def _new_job(self, kind: str, files: dict[str, Path], args: dict, label: str, image: str, version: int | None = None,
+                 same: dict | None = None) -> Job:
         jid = secrets.token_hex(6)
         self.files.mkdir(parents=True, exist_ok=True)
         path = self.files / f"{jid}.in.tar"
@@ -754,10 +881,12 @@ class Board:
         # a reconstruction sent task.json only goes to scripts that take one (version 2)
         photos = sum(1 for _ in files["photos"].iterdir()) if "photos" in files and files["photos"].is_dir() else 0
         job = Job(id=jid, label=label, input=path, size=path.stat().st_size, internet=bool(args.get("internet")), image=image,
-                  task=kind, version=max(2 if told else 1, version or 1), gpu_mb=gpu_need_mb(kind, photos))
+                  task=kind, version=max(2 if told else 1, version or 1), gpu_mb=gpu_need_mb(kind, photos),
+                  same=dict(same) if same and kind == "reconstruct" else None)
         with self.cond:
             self.jobs[jid] = job
         self.q("INSERT OR REPLACE INTO machine_jobs(id, task, label, created) VALUES(?,?,?,?)", jid, kind, label, job.created)
+        self._save(job)
         return job
 
     # -- for the admin page ---------------------------------------------------------------------------------------

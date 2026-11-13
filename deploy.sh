@@ -5,6 +5,9 @@
 # so that needs no restart.
 #
 #     ./deploy.sh            asks first, if a restart would lose work in progress (meshing on a machine, a job asked for)
+#                            (meshing on a machine that connects for work isn't lost: it carries on through the
+#                            restart, and its climb takes it up after, unless the new version changes MESH_RULES or
+#                            what it's made from)
 #     ./deploy.sh --now      restarts at once, whatever's in progress
 #     ./deploy.sh --after    waits for what's in progress to finish (taking no new work meanwhile), then restarts
 #

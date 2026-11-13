@@ -76,7 +76,8 @@ from pathlib import Path
 #     other harvests (more/) and what the server's cache knows of them (cache.sqlite)
 # 13: --tasks, and without a GPU, filtering alone by default
 # 14: without a GPU, finds beta too (the pose model runs on the CPU), in the slim image
-VERSION = 14
+# 15: rides out the server being away mid-job (a restart): the job carries on, its log kept and sent once it's back
+VERSION = 15
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
@@ -84,6 +85,10 @@ TASKS = ("reconstruct", "beta", "scale", "filter")    # remote_job.py's: meshing
 CPU_TASKS = ("filter", "beta")     # what a machine without a GPU takes, unless --tasks says otherwise
 INPUTS = ("photos", "masks", "mesh", "videos", "more", "cache.sqlite", "task.json")   # what a job's folder may hold
 SEND_EVERY = 5              # seconds between reports of a job's log, which also tell the server it's alive
+AWAY_MAX = 3600             # seconds a job carries on with the server out of reach (as it restarts) before it's given up
+AWAY_EVERY = 60             # the most seconds between tries to reach it again meanwhile
+KEPT_LINES = 20000          # a job's log kept meanwhile: the first line and the latest, beyond this
+AWAY_CODES = (502, 503, 504, 520, 521, 522, 523, 524)   # the server, or the way there (Cloudflare), is away
 JOB_ID = re.compile(r"[0-9a-f]{12}")
 GB = 2**30                  # as df -h counts them
 CLIMB_GB = 3.0              # a climb's job folder at its biggest: its photos, COLMAP's and OpenMVS's work, its results
@@ -568,12 +573,30 @@ class Server:
     def __init__(self, url: str, token: str):
         self.url, self.token = url.rstrip("/"), token
 
-    def call(self, path: str, body: dict | bytes | None = None, raw: bool = False, tries: int = 8):
+    def call(self, path: str, body: dict | bytes | None = None, raw: bool = False, tries: int = 8,
+             patience: float | None = None):
         """JSON from the server (or bytes, if raw), trying again after a dropped connection or its being away. An HTTP
-        error's JSON is raised as HTTPError with .answer set; Gone for a job the server no longer has."""
+        error's JSON is raised as HTTPError with .answer set; Gone for a job the server no longer has.
+
+        Args:
+            tries: how many times to try, 30 s more apart each time (at most 120 s).
+            patience: instead, try for up to this many seconds, backing off from 5 s to AWAY_EVERY apart, as through a
+                restart of the server.
+        """
         data, kind = (body, "application/octet-stream") if isinstance(body, bytes) else \
             (json.dumps(body).encode() if body is not None else None, "application/json")
-        for attempt in range(tries):
+        began, attempt = time.time(), 0
+
+        def again(why: str | None = None) -> bool:     # whether to try again, after waiting a while
+            wait = min(5 * 2 ** attempt, AWAY_EVERY) if patience is not None else min(30 * (attempt + 1), 120)
+            if (time.time() - began + wait > patience) if patience is not None else attempt >= tries - 1:
+                return False
+            if why and (patience is None or attempt % 10 == 0):
+                log(f"can't reach {self.url} ({why}); trying again")
+            time.sleep(wait)
+            return True
+
+        while True:
             req = urllib.request.Request(self.url + path, data=data, method="POST" if data is not None else "GET",
                                          headers={"Authorization": f"Bearer {self.token}", "Content-Type": kind,
                                                   "User-Agent": f"bouldermesh-worker/{VERSION}"})
@@ -588,16 +611,14 @@ class Server:
                     e.answer = {}
                 if e.code == 409 and e.answer.get("gone"):
                     raise Gone(e.answer.get("error")) from None
-                if e.code in (502, 503, 504, 520, 521, 522, 523, 524) and attempt < tries - 1:   # the server, or the way there, is away
-                    time.sleep(min(30 * (attempt + 1), 120))
+                if e.code in AWAY_CODES and again():
+                    attempt += 1
                     continue
                 raise
             except (urllib.error.URLError, OSError) as e:
-                if attempt == tries - 1:
+                if not again(str(e)):
                     raise
-                log(f"can't reach {self.url} ({e}); trying again")
-                time.sleep(min(30 * (attempt + 1), 120))
-        raise RuntimeError("unreachable")
+                attempt += 1
 
 
 def register(server: str, name: str | None, patient: bool = False) -> tuple[str, str]:
@@ -793,7 +814,8 @@ class Worker:
             used = {"gpu": self.watch.job_end()} if self.watch else {}
             self.container = None
             if code:
-                self.server.call(f"{api}/done", {"status": "failed", "error": last or f"the job exited with {code}", **used})
+                self.server.call(f"{api}/done", {"status": "failed", "error": last or f"the job exited with {code}", **used},
+                                 patience=AWAY_MAX)
                 log(f"job {jid} failed: {last}")
                 self.outcome = "failed"
                 return
@@ -802,7 +824,7 @@ class Worker:
                     if (work / "job" / part).is_dir():
                         tar.add(work / "job" / part, arcname=part)
             self.send(api, work / "output.tar")
-            self.server.call(f"{api}/done", {"status": "ok", **used})
+            self.server.call(f"{api}/done", {"status": "ok", **used}, patience=AWAY_MAX)
             log(f"job {jid} done")
             self.outcome = "done"
         except Gone as e:
@@ -835,7 +857,7 @@ class Worker:
         log(f"fetching {size / 1e6:.0f} MB of photos")
         with open(dest, "ab") as f:
             while f.tell() < size:
-                part = self.server.call(f"{api}/input?offset={f.tell()}", raw=True)
+                part = self.server.call(f"{api}/input?offset={f.tell()}", raw=True, patience=AWAY_MAX)
                 if not part:
                     raise RuntimeError("the server sent less than it said")
                 f.write(part)
@@ -844,12 +866,12 @@ class Worker:
         """The results in parts, carrying on from what the server has after a dropped connection."""
         size, part = path.stat().st_size, 64 * 2**20
         log(f"sending {size / 1e6:.0f} MB of results")
-        sent = self.server.call(f"{api}/output").get("received", 0)
+        sent = self.server.call(f"{api}/output", patience=AWAY_MAX).get("received", 0)
         with open(path, "rb") as f:
             while sent < size:
                 f.seek(sent)
                 try:
-                    sent = self.server.call(f"{api}/output?offset={sent}&size={size}", f.read(part))["received"]
+                    sent = self.server.call(f"{api}/output?offset={sent}&size={size}", f.read(part), patience=AWAY_MAX)["received"]
                 except urllib.error.HTTPError as e:
                     if e.code != 409 or "received" not in e.answer:
                         raise
@@ -857,7 +879,10 @@ class Worker:
 
     def stream(self, api: str, cmd: list[str], first: str) -> tuple[int, str]:
         """Run a command, sending what it prints to the server every few seconds (and saying it's alive even when it
-        prints nothing). Stops it if the server no longer wants the job.
+        prints nothing). Stops it if the server no longer wants the job. While the server is out of reach (as it
+        restarts), the command carries on, and what it prints is kept (KEPT_LINES), and sent once the server is back,
+        trying again ever less often (up to AWAY_EVERY apart). Once it's ended, its last lines must reach the server
+        within AWAY_MAX.
 
         Returns:
             Its exit code, and the last line it printed that wasn't progress.
@@ -872,6 +897,7 @@ class Worker:
 
         threading.Thread(target=read, daemon=True).start()
         pending, last, sent, ended = [first], "", 0.0, False
+        away, wait = None, SEND_EVERY     # since when the server's been out of reach, and the wait before trying again
         try:
             while not ended:
                 try:
@@ -883,14 +909,42 @@ class Worker:
                         last = line if line and not line.startswith("@@") else last
                 except queue.Empty:
                     pass
-                if ended or len(pending) >= 500 or time.time() - sent >= SEND_EVERY:
-                    self.server.call(f"{api}/log", {"lines": pending})
-                    pending, sent = [], time.time()
-            return proc.wait(), last
+                if ended or time.time() - sent >= wait or (len(pending) >= 500 and away is None):
+                    try:
+                        self.report(api, pending, patience=None)
+                    except (urllib.error.URLError, OSError) as e:
+                        if isinstance(e, urllib.error.HTTPError) and e.code not in AWAY_CODES:
+                            raise
+                        if away is None:
+                            away = time.time()
+                            log(f"can't reach {self.server.url} ({e}): the job carries on, and its log is kept to send once "
+                                "the server's back")
+                        sent, wait = time.time(), min(wait * 2, AWAY_EVERY)
+                        if len(pending) > KEPT_LINES:
+                            del pending[1:len(pending) - KEPT_LINES + 1]
+                        continue
+                    if away is not None:
+                        log(f"reached {self.server.url} again after {time.time() - away:.0f} s: sent what the job printed meanwhile")
+                    pending, sent, away, wait = [], time.time(), None, SEND_EVERY
+            code = proc.wait()
+            if pending:     # its last lines, and its result among them, whenever the server's back
+                self.report(api, pending, patience=max(AWAY_MAX - (time.time() - away if away else 0), SEND_EVERY))
+                if away is not None:
+                    log(f"reached {self.server.url} again after {time.time() - away:.0f} s: sent what the job printed meanwhile")
+            return code, last
         except BaseException:
             self.stop_container()
             proc.kill()
             raise
+
+    def report(self, api: str, lines: list[str], patience: float | None) -> None:
+        """Send lines of a job's log (taking them from the list as they're sent), in parts of at most 1000 (the server
+        takes 5000), each tried once (patience None) or for up to patience seconds (Server.call())."""
+        while True:     # those sent leave the list, so that a part that fails is sent again, and only it
+            self.server.call(f"{api}/log", {"lines": lines[:1000]}, tries=1, patience=patience)
+            del lines[:1000]
+            if not lines:
+                return
 
     # -- the loop -------------------------------------------------------------------------------------------------------
     def renew(self, e: urllib.error.HTTPError) -> None:

@@ -2671,6 +2671,11 @@ def inputs_record(pid: str, log=None) -> dict | None:
         return None
 
 
+def inputs_fingerprint(rec: dict | None) -> str | None:
+    """The fingerprint of inputs_record()'s record (meshinputs.fingerprint()), leaving it as it was; None if unknown."""
+    return meshinputs.finish(json.loads(json.dumps(rec)))["fingerprint"] if rec else None
+
+
 def backfill_inputs(mid: str) -> dict | None:
     """What a mesh made before inputs.json was kept was made from, as far as its project still tells: each field only
     where what holds it is unchanged since the mesh was made (photos, and the records of what was pooled and filtered,
@@ -3129,7 +3134,9 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             if st["state"] == "running" and not st.get("parallel"):
                 tracker.end(st["key"])
         tracker.at("machine" if remote else "server")
-        mesh_path, demo = build(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker)
+        # on machines that connect here, the job outlasts a restart, and is taken up again under the same rules and inputs
+        same = {"same": {"rules": MESH_RULES, "fingerprint": inputs_fingerprint(inputs)}} if remote and _executor is MACHINES else {}
+        mesh_path, demo = build(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker, **same)
         proj = q("SELECT name, climb_id, mesh_id, kind, boulder FROM projects WHERE id=?", pid, one=True)
         q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng,boulder,rules) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
           mid, mesh_name(proj["name"]), mesh_path.name, f"project:{pid}", time.time(), mesh_path.stat().st_size, int(demo),
@@ -6891,7 +6898,9 @@ KINDS = {"reconstruct": "meshing"}     # deploy_state()'s kinds of work, from ta
 def deploy_state() -> dict:
     """What a restart would cost now, for deploy.sh (cli.py deploy-check): each piece of work in progress, whether a
     restart loses much of it ("costly"), how long it's been going, and about how long it has left (eta, seconds, None
-    when there's no telling yet). Costly: jobs on machines, which end with a restart and start over; jobs people asked
+    when there's no telling yet). Costly: jobs on machines, which end with a restart and start over, but for meshing
+    kept over it (pullwork's Job.lasting: its climb takes it up again, as a restart changes neither MESH_RULES nor what
+    it's made from, unless the new version does); jobs people asked
     for, which it interrupts; a climb meshed on this server, which starts its step again; beta found here. Not costly:
     an area's climb being harvested (its downloads are kept, and it carries on), and a volunteer's upload (it carries
     on from what came). A job here that's handed its work to a machine is told as the machine's job: costly once a
@@ -6930,10 +6939,15 @@ def deploy_state() -> dict:
                 eta = typical - elapsed     # past the usual time, there's no telling
         if mine and mine["type"] != "scale":
             lost = "interrupted: runs again when asked again"
+        lasting = bool(j.get("lasting")) and j["task"] == "reconstruct"
+        if lasting:
+            lost = ("carries on on its machine, for Retry after the restart to take up" if mine else
+                    "carries on on its machine, and its climb takes it up after") + \
+                ", unless the new version changes MESH_RULES or what it's made from"
         items.append({"what": f"{task} on {j['machine']}" if j["state"] == "running" else f"{task}, waiting for a machine",
                       "name": mine["name"] if mine else beta_names[j["id"]] if j["id"] in beta_names else project["name"] if project else j["label"],
                       "kind": KINDS.get(j["task"], j["task"]), "project_id": j["label"] if project else (mine or {}).get("project_id"),
-                      "costly": j["state"] == "running", "elapsed": round(elapsed),
+                      "costly": j["state"] == "running" and not lasting, "elapsed": round(elapsed),
                       "eta": round(eta) if eta is not None else None, "lost": lost})
     for r in q("SELECT c.name area, i.name, i.project_id, i.updated, i.redo, i.boulder FROM campaign_items i "
                "JOIN campaigns c ON c.id=i.campaign_id WHERE i.status='running'"):

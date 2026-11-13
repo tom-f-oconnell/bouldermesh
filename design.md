@@ -1167,8 +1167,16 @@ opened into its network. It sends the same things SSH does, in the same image: a
 fetched in parts) and the mesh, cameras and masks back (sent in parts, under Cloudflare's 100 MB a request), with the
 job's log every 5 s, which is also how the server knows it's still there. A machine quiet for 15 minutes is taken as
 lost and the climb waits, as for a lost SSH machine; a climb stopped on the server is gone the next time the machine
-reports, and its container is ended. Jobs are kept only in memory, as a restart of the server ends the climbs' threads
-anyway and they carry on as new jobs. The script runs jobs as its own user, so their files are its to delete, with no
+reports, and its container is ended. Meshing jobs outlast a restart of the server: each is kept in the machines'
+database with the `MESH_RULES` and inputs fingerprint (meshinputs.py) it was handed out under, and reloaded unclaimed.
+The machine on it carries on, keeping its log while the server is away (script 15 on; older ones retry for about 11
+minutes) and sending it and the mesh once it's back, and what comes while nothing waits is kept. The climb carries on
+after the restart as before, and when it comes to meshing, it takes up the kept job if the rules and the fingerprint
+it would be meshed under now are the same; otherwise the job is dropped (its machine hears it's gone) and a new one made.
+"The same pipeline" is only those two: a new build in another image, with the same rules and inputs, still takes up a
+job running in the old one. A kept job waiting for a machine isn't given out until its climb takes it up, and one no
+climb takes up in 24 hours goes. Filtering, beta and size jobs are kept only in memory, as before: a restart ends them,
+and they run again as their callers ask again (a harvest's filtering, beta's and size's queues). The script runs jobs as its own user, so their files are its to delete, with no
 capabilities, and only the server's image (`--image-prefix` makes sure of that); the server only ever names an image,
 never a command. Machines' tokens are kept as they are, not only hashed as volunteers' are, so that the admin page can
 show a machine's command again: they're few, and the database is readable only by the server's user, though its

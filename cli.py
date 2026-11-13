@@ -321,13 +321,13 @@ def _item(i: dict) -> str:
 WIDTH = 101     # deploy-check's lines wrap at this
 # how heavy each kind of work is, and how much a restart loses of it, lightest/least first: listed in this order
 WEIGHT = ["video", "scale", "beta", "filter", "harvest", "area", "boulder", "meshing"]
-LOSS = ["queued again", "pauses", "starts", "interrupted", "lost", "ends"]
+LOSS = ["carries on", "queued again", "pauses", "starts", "interrupted", "lost", "ends"]
 # red, green, orange and yellow say how it's going (bad, good, warning, waiting), so kinds of work are other colours
 COLOR = {"meshing": "1;34", "harvest": "36", "area": "38;5;141", "scale": "35", "beta": "38;5;105", "filter": "38;5;73",
          "boulder": "38;5;183", "video": "38;5;153"}
 GREY = "90"     # what deploy.sh says as it waits, but for what's coloured otherwise
 STATUS = {"running": "32", "waiting for a machine": "33", "queued": "90", "!": "1;31"}
-VERB = {"ends": "31", "interrupted": "31", "lost": "31", "starts": "32", "pauses": "33", "queued": "90"}
+VERB = {"carries": "32", "ends": "31", "interrupted": "31", "lost": "31", "starts": "32", "pauses": "33", "queued": "90"}
 
 
 def _paint(s: str, code: str | None, color: bool) -> str:
@@ -464,7 +464,7 @@ def deploy_check(server: str, brief: bool = False, color: bool = False, source: 
         print("nothing in progress: a restart loses nothing")
         return 0
     if not st["costly"]:
-        print("in progress, which a restart only pauses, so there's nothing to wait for:")
+        print("in progress, which a restart only pauses or carries on with, so there's nothing to wait for:")
         _show(st, color)
         return 0
     print("in progress (marked !: a restart now loses much of it" +
