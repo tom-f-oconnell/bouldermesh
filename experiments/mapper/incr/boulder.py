@@ -11,6 +11,8 @@
     boulder.py simcap <project> <truth state> <seed> [--sim ...]                     a simulated capture of it, added
     boulder.py export <state> <out dir> <former mesh>       out/ as a remote job returns a mesh, with frame.json
     boulder.py details <state> <betasets.json|holds.json> [set id]   detail meshes of a set's holds, for printing
+    boulder.py simrefit <project> <sim dir>                 the same simulated capture, every photo afresh (refit)
+    boulder.py simstats [project]                           simulated captures' adds and refits against their truth
     boulder.py refit <state> <former mesh dir> <former photos> [<capture dir>]     every photo afresh, laid over the former
     boulder.py status <state dir>
     boulder.py first <project> <init> <seed> [...]          a first build of a benchmark boulder (every photo)
@@ -583,6 +585,60 @@ def details(s: st.State, holds: list[dict], cond: str = "dev", out: Path | None 
     return {**res, "wall": r["wall"], "rc": r["rc"]}
 
 
+def simstats(only: str | None = None) -> None:
+    """Each simulated capture's state (cap-* added, refit-* afresh) against what sim_capture.py made it from
+    (truth.json): capture photos placed and by what, the pairs matched against capture x all, their cameras against
+    the truth (laid over on the former's, which share the truth's frame), the level against the truth's down, the
+    capture's texture share, the times of its steps, and frame.json."""
+    import numpy as np
+    import capture as cp
+    cols = ["boulder", "run", "how", "capture", "placed", "by", "pairs", "new_x_all", "pos_median_m", "pos_p90_m", "deg_median",
+            "deg_p90", "level_err_deg", "level_spread_deg", "capture_share", "bad_spells", "add_s", "frame_rms", "spells"]
+    print("\t".join(cols))
+    for d in sorted(R.glob("*/cap-*")) + sorted(R.glob("*/refit-*")):
+        if only and d.parent.name != only or not (d / "manifest.json").exists():
+            continue
+        sim_name = d.name.split("-", 1)[1]
+        sim = BENCH / "incr" / "sim" / (sim_name if d.name.startswith("refit-") else f"{d.parent.name[:4]}-{sim_name}")
+        if not (sim / "truth.json").exists():
+            continue
+        truth = json.loads((sim / "truth.json").read_text())
+        man = json.loads((d / "manifest.json").read_text())
+        last = man["adds"][-1]
+        P = stats.poses(d / "model") if (d / "model" / "images.bin").exists() else {}
+        caps = set(truth["photos"])
+        placed = caps & set(P)
+        # the truth's cameras: the capture's under their new names, the former's as the former cameras.json has them
+        T = {n: (cp.qmatrix(t["q"]), -cp.qmatrix(t["q"]) @ np.asarray(t["centre"])) for n, t in truth["photos"].items()}
+        for c in json.loads((sim / "former" / "cameras.json").read_text()):
+            T[c["name"]] = (cp.qmatrix(c["q"]), np.asarray(c["t"]))
+        ag = stats.agreement(P, T, fit=set(P) - caps, report=placed) or {}
+        mpu = truth["metres_per_unit"]
+        lv = level_of(d)
+        level_err = None
+        if lv:
+            up = np.asarray(truth["up"])
+            level_err = round(float(np.degrees(np.arccos(np.clip(np.asarray(lv["down"]) @ -up, -1, 1)))), 3)
+        cap = last.get("capture") or {}
+        frame = json.loads((d / "out" / "frame.json").read_text()) if (d / "out" / "frame.json").exists() else {}
+        tex = None
+        for f in (d / "log").glob("add-*/texture.report.json"):
+            tex = (json.loads(f.read_text()).get("capture") or {}).get("capture_share", tex)
+        size = 1.0
+        if P:
+            C = np.array([-R_.T @ t for R_, t in P.values()])
+            size = float(np.sqrt(((C - C.mean(0)) ** 2).sum(1).mean()))
+        row = {"boulder": d.parent.name, "run": d.name, "how": frame.get("how", last["kind"]), "capture": len(caps), "placed": len(placed),
+               "by": cap.get("placed_by"), "pairs": (cap.get("pairs") or {}).get("chosen"), "new_x_all": (cap.get("pairs") or {}).get("new_x_all"),
+               "pos_median_m": round(ag["pos_median"] * size * mpu, 4) if ag.get("pos_median") is not None else "",
+               "pos_p90_m": round(ag["pos_p90"] * size * mpu, 4) if ag.get("pos_p90") is not None else "",
+               "deg_median": ag.get("deg_median", ""), "deg_p90": ag.get("deg_p90", ""), "level_err_deg": level_err,
+               "level_spread_deg": (lv or {}).get("spread_median_deg"), "capture_share": tex, "bad_spells": cap.get("bad_spells"),
+               "add_s": round(sum(r["wall"] for r in last.get("steps", {}).values())), "frame_rms": frame.get("rms"),
+               "spells": truth.get("spells")}
+        print("\t".join(str(row.get(c, "")) for c in cols))
+
+
 def write_cameras(model: Path, out: Path) -> int:
     """A model's cameras as the app's meshes keep them (backend/orientation.read_cameras: name, q, t, lens, seen)."""
     import orientation
@@ -818,7 +874,7 @@ def heldstats(only: str | None = None) -> None:
 def main(argv: list[str]) -> None:
     p = argparse.ArgumentParser()
     p.add_argument("command", choices=["add", "mesh", "status", "first", "held", "scenario", "queue", "table", "compare", "heldstats",
-                                        "bootstrap", "cameras", "boot", "capture", "export", "simcap", "refit", "details"])
+                                        "bootstrap", "cameras", "boot", "capture", "export", "simcap", "refit", "details", "simrefit", "simstats"])
     p.add_argument("args", nargs="*")
     p.add_argument("--masks", type=Path)
     p.add_argument("--init")
@@ -868,6 +924,15 @@ def main(argv: list[str]) -> None:
         remesh(s, s.root / "log" / "add-0000", a.cond)
         shutil.copyfile(s.root / "dense" / "scene_dense_mesh_texture.glb", sim / "former" / "mesh.glb")
         capture_add(d, sim, sim / "former", mine, masks, a.cond, a.ba, d / "out")
+    elif a.command == "simrefit":       # <project> <sim dir>: the same capture, every photo afresh, laid over the former
+        P, sim = a.args[0], Path(a.args[1])
+        d = R / P / f"refit-{sim.name}{suffix(a)}"
+        shutil.rmtree(d, ignore_errors=True)
+        photos, masks = project(P)
+        theirs = {c["name"] for c in json.loads((sim / "former" / "cameras.json").read_text())}
+        refit(d, sim / "former", [p_ for p_ in photos if p_.name in theirs], masks, sim, a.cond, a.ba, d / "out")
+    elif a.command == "simstats":       # [project]: each simulated capture's add or refit against its truth
+        simstats(a.args[0] if a.args else None)
     elif a.command == "cameras":        # <model dir> <out.json>
         print(write_cameras(Path(a.args[0]), Path(a.args[1])), "cameras")
     elif a.command == "boot":           # <project> <state with a model>: its cameras as a mesh's, and a state from them
