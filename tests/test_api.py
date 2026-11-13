@@ -100,7 +100,8 @@ def main() -> None:
     admin_port = free_port()
     ADMIN = f"http://127.0.0.1:{admin_port}"
     env = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(port), HOST="127.0.0.1", HTTP_MIN_INTERVAL="0", ADMIN_PORT=str(admin_port),
-               STOP_WAIT_MINUTES="0.2", HTTP_ALLOW_PRIVATE="1", TERRAIN_OFFLINE="1")     # the "web photos" are fetched from this server itself
+               STOP_WAIT_MINUTES="0.2", HTTP_ALLOW_PRIVATE="1", TERRAIN_OFFLINE="1",
+               YOUTUBE_OFFLINE="1")      # nothing asked of YouTube from here (hal's address is refused, and shouldn't ask)     # the "web photos" are fetched from this server itself
     env.pop("HARVEST_DDG", None)
     srv =subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -585,6 +586,7 @@ def run(B: str, tmp: Path) -> None:
     assert st == 202, hv
     pr = wait_project(B, hv["project_id"], timeout=300)
     assert pr["status"] == "done", pr["status"] + "\n" + pr["log"]
+    assert "youtube search: skipped (YOUTUBE_OFFLINE is set)" in pr["log"], "nothing asked of YouTube from here"
     h = pr["harvest"]
     print("harvest:", h["images"], "images; verdict", h["diversity"]["verdict"], "unique", h["diversity"]["unique_images"])
     assert pr["progress"]["overall"] == 100 and {s["state"] for s in pr["progress"]["steps"]} == {"done"}, pr["progress"]

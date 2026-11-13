@@ -58,6 +58,8 @@ VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 # "volunteers_when_refused", here unless YouTube is refusing this server, when volunteers are asked; or "volunteers",
 # never here (a cloud server, which YouTube refuses)
 via = "volunteers_when_refused"
+# set by tests that run a whole server: nothing at all is asked of YouTube (searches come back empty, downloads are refused)
+OFFLINE = os.environ.get("YOUTUBE_OFFLINE") == "1"
 _gate = threading.Lock()
 _last = 0.0
 
@@ -97,6 +99,9 @@ def call(cmd: list[str], video: bool = True, **kw) -> str:
         Refused: YouTube is refusing, or just did.
     """
     global _last
+    if OFFLINE:
+        raise Refused({"since": time.time(), "until": time.time() + 3600, "level": 0,
+                       "error": "YOUTUBE_OFFLINE is set: nothing is asked of YouTube"})
     if via == "volunteers":
         raise Refused({"since": time.time(), "until": time.time() + 3600, "level": 0, "volunteers": True,
                        "error": "this server doesn't ask YouTube for anything itself"})
@@ -295,6 +300,9 @@ def search(c: Climb, log: Log, known: set[str] = frozenset(), want: Callable[[st
         why = None
         if via == "volunteers":
             why = "this server leaves YouTube to volunteers"
+        elif OFFLINE:
+            log("youtube search: skipped (YOUTUBE_OFFLINE is set)")
+            return []
         elif not available():
             log("youtube search: skipped (needs yt-dlp)")
             return []
