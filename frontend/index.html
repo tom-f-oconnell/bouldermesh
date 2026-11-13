@@ -4299,6 +4299,10 @@ function renderBetaList(){
 }
 $('#b-only').onchange = renderBetaList;
 async function findBeta(mid){
+  // finding it again sets aside what was found at once, and a video YouTube won't give again, or that was pruned, comes
+  // back with nothing; holds marked by hand stay
+  if (meshesById[mid]?.beta?.status === 'done' && !await askDanger('Find its beta again?',
+    "What was found is replaced as soon as it starts: a video that can't be had again (YouTube refusing it, or deleted from the cache) then has none. Holds marked by hand stay.", 'Find again')) return;
   try { await api(`/api/meshes/${mid}/beta`, { method: 'POST' }); toast('Finding its beta: a few minutes for each video', 5000); }
   catch (e) { return toast(e.message, 6000); }
   await refreshMeshes();
