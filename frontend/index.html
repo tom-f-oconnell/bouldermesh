@@ -2895,7 +2895,20 @@ function closeClimb(){
 // A climb's meshes, a current one before an older version, newest first: its own, or (shared) those an area linked it to
 // that were made for another climb on its boulder
 const climbMeshes = (id, shared = false) => (meshesCache || []).filter(m => m.climbs.some(c => c.id === id && !!c.shared === shared))
-  .sort((a, b) => (a.replaced_by ? 1 : 0) - (b.replaced_by ? 1 : 0) || (b.created || 0) - (a.created || 0));
+  .sort((a, b) => (a.replaced_by ? 1 : 0) - (b.replaced_by ? 1 : 0) || (b.preferred || 0) - (a.preferred || 0) || (b.created || 0) - (a.created || 0));
+// A capture with the phone app makes a mesh beside the one it adds to (adds_to), not in its place. Those tied to a mesh
+// that way, itself among them, the one their climbs show first leading: the one an editor chose last, or else the newest
+const tieRoot = m => { let r = m; for (let i = 0; i < 8 && r.adds_to && meshesById[r.adds_to]; i++) r = meshesById[r.adds_to]; return r; };
+const tiedMeshes = m => { const root = tieRoot(m).id; return (meshesCache || []).filter(x => !x.replaced_by && tieRoot(x).id === root)
+  .sort((a, b) => (b.preferred || 0) - (a.preferred || 0) || (b.created || 0) - (a.created || 0)); };
+// what a capture's mesh says of itself: what took it, what it adds to, and how well the two are tied (the server's tie_capture())
+function captureLine(m){
+  const t = m.tie, of = meshesById[m.adds_to], device = m.orientation?.capture?.device;
+  const parts = [`From a capture with the app${device ? ` on ${device}` : ''}, adding to ${of ? meshTitle(of) : 'a mesh since deleted'}`];
+  if (t?.status === 'tied') parts.push(`tied to it by ${plural(t.shared, 'shared camera')}${t.rms_m != null ? `, to ${t.rms_m} m` : ''}; that mesh's up is ${t.tilt_deg}° from this one's`);
+  else if (t) parts.push(`not tied to it: ${t.why}`);
+  return parts.join(' · ');
+}
 // the current pooled mesh placing most of a climb's own photos (the one it counts toward), or else the newest listing it
 const boulderMeshOf = (id, ok = () => true) => {
   const on = (meshesCache || []).filter(m => !m.replaced_by && ok(m) && (m.boulder_climbs || []).some(c => c.id === id));
@@ -2910,6 +2923,8 @@ function pickClimbMesh(id, hide = {}){
   // a mesh of what its boulder's mesh left out isn't the climb's own: the boulder's may show it better
   const own = climbMeshes(id).find(m => ok(m) && !m.pooled?.rest_of), boulder = boulderMeshOf(id, ok);
   const shared = hide.via || statusCache.via_links === false ? null : climbMeshes(id, true).find(ok);
+  // a capture's mesh beside its boulder's: the boulder's, if an editor chose it since any choice of the other
+  if (own && boulder && own.adds_to && (boulder.preferred || 0) > (own.preferred || 0)) return { id: boulder.id, from: id };
   return own ? { id: own.id, from: null } : boulder ? { id: boulder.id, from: id } : shared ? { id: shared.id, from: null } : null;
 }
 async function viewClimbMesh(id, via = 'climb', hide = {}){
@@ -3983,6 +3998,20 @@ function renderMeshes(filter = true){
       b.title = 'Makes this the mesh its climbs link to again, instead of the rebuild that replaced it';
       b.onclick = async () => { await api(`/api/meshes/${m.id}/make-current`, { method: 'POST' }); await refreshMeshes(); refreshClimbs(); };
       d.querySelector('.chips').before(b);
+    }
+    const tied = m.replaced_by ? [] : tiedMeshes(m);    // a capture's mesh and the one it adds to, beside each other
+    if (tied.length > 1) {
+      const note = document.createElement('div'); note.className = 'meta';
+      note.textContent = m.adds_to ? captureLine(m) : `Added to by a capture with the app: ${tied.filter(x => x.id !== m.id).map(meshTitle).join(', ')}`;
+      d.querySelector('.chips').before(note);
+      if (editor) {
+        const first = tied[0].id === m.id;
+        const b = document.createElement('button'); b.className = 'sm sec w'; b.disabled = first;
+        b.textContent = first ? 'Shown first for its climbs' : 'Show this one first';
+        b.title = 'A capture\'s mesh and the mesh it adds to are both kept. This makes this one the one their climbs open; the other stays listed, and can be chosen back.';
+        b.onclick = async () => { await api(`/api/meshes/${m.id}/prefer`, { method: 'POST', json: {} }); await refreshMeshes(); refreshClimbs(); };
+        d.querySelector('.chips').before(b);
+      }
     }
     d.querySelector('.view').onclick = () => viewMesh(m.id, null, 'meshes');
     d.querySelector('.mthumb')?.addEventListener('click', () => viewMesh(m.id, null, 'meshes'));

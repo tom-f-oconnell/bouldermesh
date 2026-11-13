@@ -98,3 +98,23 @@ one to each 5 cm, 20,000 at most to a spell. Noisy to a centimetre or so, except
     "BMP1", uint32 how many
     float32 x, y, z, uint16 spell      for each: where, in the tracking's world (metres, +Y up), and which spell of
                                        tracking found it: 1 the first (photos' `ar.s` with no ".n"), 2 the one after ".2"
+
+## On the server, once a capture is meshed
+
+A capture's mesh is kept beside the mesh it added to (`meshes.adds_to`), never in its place, and tied to it by
+`frame.json` in its folder: how the former mesh's coordinates sit in its own. `backend/frames.py` has the format and
+the one function that finds it from the cameras two meshes share; the server writes it for a mesh made by meshing
+every photo afresh (`how: "cameras"`), and the incremental pipeline (experiments/mapper/incr) for its own (`"add"`,
+`"add+relevel"`, `"refit"`), so that either kind is treated alike.
+
+    v, of, how, made, note
+    status                "tied", or "untied" with why
+    scale, rot, shift     x_this = scale * rot @ x_of + shift   (rot: 3 rows)
+    shared, of_shared     the cameras that agreed, of those in common
+    rms, rms_m            how far those cameras are from where the tie puts them (this mesh's units; metres if known)
+    tilt_deg, rot_deg     the angle between the two meshes' ups; and the whole turn
+    carried               what was brought over from the former mesh through it (marked holds, climbs' views)
+
+Which of the tied meshes their climbs open is an editor's choice (`POST /api/meshes/<id>/prefer`, `meshes.preferred`),
+the newest until one is made. What took each upload's photos is kept as `projects.device` (and `app`): from the
+record for a capture, else from the photos' own EXIF.

@@ -243,7 +243,7 @@ orientation.save(server.MESHES / new_mid, {"method": "iphone", "iphone": {"statu
     "mesh": mid, "shots": [{"kept": True}, {"kept": False}, {"kept": True}], "down_agree_deg": 0.2345,
     "level": {"down": [0.01, -0.9999, 0.0], "tilt_deg": 0.5731, "offset": [0, 0.1, 0.2], "offset_deg": 1.31, "spread_deg": 0.1249, "sectors": 12, "samples": 300}}))
 kept = server.keep_capture_level(new_mid, mine, said.append)
-assert kept == {"photos": 2, "turn": {"tilt_deg": 0.57, "offset_deg": 1.31, "spread_deg": 0.12, "sectors": 12}, "down_agree_deg": 0.23}, kept
+assert kept == {"photos": 2, "device": None, "app": None, "turn": {"tilt_deg": 0.57, "offset_deg": 1.31, "spread_deg": 0.12, "sectors": 12}, "down_agree_deg": 0.23}, kept
 assert orientation.load(server.MESHES / new_mid)["capture"] == kept and "12 directions agree to 0.12°" in said[-1], said[-1]
 (server.PROJECTS / mine / server.CAPTURE_FILE).write_text(json.dumps({"mesh": mid, "shots": []}))
 assert server.keep_capture_level(new_mid, mine, said.append)["turn"] is None and "no turn on the spot" in said[-1]
@@ -252,6 +252,65 @@ points = b"BMP1" + struct.pack("<I", 2) + struct.pack("<fffH", 1.0, 2.0, 3.0, 1)
 assert server.save_capture_points(mine, points) == ({"kept": 2}, 200) and (server.PROJECTS / mine / server.CAPTURE_POINTS_FILE).read_bytes() == points
 assert server.save_capture_points(mine, points[:-3])[1] == 400 and server.save_capture_points(mine, b"nope")[1] == 400
 assert server.save_capture_points("0000", points)[1] == 404
+# --- the capture's mesh tied to the one it adds to: one's coordinates in the other's, from the cameras they share ---------
+import frames  # noqa: E402
+from capture_fixture import quat  # noqa: E402
+
+
+def moved(cam: dict, s: float, R, t) -> dict:
+    """The same camera in coordinates x' = s R x + t."""
+    Rc = frames._rotation(cam["q"]) @ R.T
+    return {**cam, "q": quat(Rc), "t": list(-Rc @ (s * R @ phonedata._centre(cam) + t))}
+
+
+turn = 0.4
+R_true = np.array([[math.cos(turn), 0, math.sin(turn)], [0, 1, 0], [-math.sin(turn), 0, math.cos(turn)]]) @ \
+    np.array([[1, 0, 0], [0, math.cos(0.12), -math.sin(0.12)], [0, math.sin(0.12), math.cos(0.12)]])       # turned, and tipped 6.9 degrees
+s_true, t_true = 1.7, np.array([3.0, -0.5, 2.0])
+theirs_cams = cams + [camera("only_old.jpg", [1, 1, 6], [0, 1.5, 0])]
+mine_cams = [moved(c, s_true, R_true, t_true) for c in cams] + [camera("cap_k1_001.jpg", [0, 1, 9], [0, 1.5, 0])]
+mine_cams[2] = {**mine_cams[2], "t": [9.0, 9.0, 9.0]}      # a photo one of the two placed wrongly
+found = frames.tie(theirs_cams, mine_cams)
+assert found["status"] == "tied" and found["shared"] == 8 and found["of_shared"] == 9, found
+assert abs(found["scale"] - s_true) < 1e-5 and np.allclose(found["rot"], R_true, atol=1e-6) and np.allclose(found["shift"], t_true, atol=1e-4), found
+assert abs(found["tilt_deg"] - math.degrees(0.12)) < 0.01 and found["rms"] < 1e-4 and found["rot_deg"] > 20, found
+assert np.allclose(frames.apply(found, [1, 2, 3]), s_true * R_true @ [1, 2, 3] + t_true, atol=1e-4) and np.allclose(frames.back(found, frames.apply(found, [1, 2, 3])), [1, 2, 3], atol=1e-5)
+line = [camera(f"l{i}.jpg", [i, 1.5, 6], [0, 1.5, 0]) for i in range(5)]      # cameras in a line say the turn all the same, by how they look
+inline = frames.tie(line, [moved(c, s_true, R_true, t_true) for c in line])
+assert np.allclose(inline["rot"], R_true, atol=1e-6) and abs(inline["scale"] - s_true) < 1e-5, inline
+assert frames.tie(cams[:3], mine_cams)["status"] == "untied"
+(server.MESHES / new_mid / "cameras.json").write_text(json.dumps(mine_cams))
+(mdir / "holds.json").write_text(json.dumps({"holds": [{"p": [0.0, 1.0, 2.0], "role": "start"}, {"p": [0.5, 2.2, 1.936], "role": "finish"}]}))
+(mdir / "views.json").write_text(json.dumps({"climbs": {"c1": {"eye": [0, 1.5, 6], "target": [0, 1.5, 2], "photos": 3}}, "created": 1.0}))
+server.link_capture(new_mid, mid, said.append)
+tied = frames.load(server.MESHES / new_mid)
+assert tied["of"] == mid and tied["how"] == "cameras" and tied["v"] == 1 and tied["status"] == "tied" and abs(tied["scale"] - s_true) < 1e-5, tied
+assert tied["carried"] == ["2 marked holds", "the views of 1 climb"] and "tied to mesh" in said[-1] and "6.88° from this one's" in said[-1], said[-1]
+carried = server.beta_mod.load_holds(server.MESHES / new_mid)["holds"]
+assert [h["role"] for h in carried] == ["start", "finish"] and np.allclose(carried[0]["p"], s_true * R_true @ [0.0, 1.0, 2.0] + t_true, atol=1e-4), carried
+assert np.allclose(json.loads((server.MESHES / new_mid / "views.json").read_text())["climbs"]["c1"]["eye"], s_true * R_true @ [0, 1.5, 6] + t_true, atol=1e-4)
+row = server.q("SELECT adds_to, preferred FROM meshes WHERE id=?", new_mid, one=True)
+assert row == {"adds_to": mid, "preferred": None} and server.mesh_tie(new_mid)["tilt_deg"] == tied["tilt_deg"], row
+server.beta_mod.save_holds(server.MESHES / new_mid, [{"p": [1.0, 1.0, 1.0], "role": "hand"}])
+server.tie_capture(new_mid, mid)
+assert server.beta_mod.load_holds(server.MESHES / new_mid)["holds"][0]["role"] == "hand", "holds it has of its own are left alone"
+# which of the two its climbs show first is chosen, and can be chosen back
+assert server.prefer_mesh(mid) and server.q("SELECT preferred FROM meshes WHERE id=?", mid, one=True)["preferred"] > 0 and not server.prefer_mesh("0000")
+assert server.prefer_mesh(mid, False) and server.q("SELECT preferred FROM meshes WHERE id=?", mid, one=True)["preferred"] is None
+print("captures' meshes tied to the mesh they add to OK")
+
+# --- what took a project's photos -----------------------------------------------------------------------------------------
+assert server.note_device(mine, "Google Pixel 8", "android 0.1.0") == "Google Pixel 8"
+assert server.q("SELECT device, app FROM projects WHERE id=?", mine, one=True) == {"device": "Google Pixel 8", "app": "android 0.1.0"}
+exif = Image.Exif()
+exif[0x010F], exif[0x0110] = "Apple", "iPhone 15 Pro"
+Image.new("RGB", (32, 24), (80, 80, 80)).save(server.PROJECTS / theirs / "photos" / "upload_1.jpg", exif=exif)
+plain = server.PROJECTS / theirs / "photos" / "mp_1.jpg"
+assert server.note_device(theirs, photos=[plain]) is None, "a photo that doesn't say"
+assert server.note_device(theirs, photos=[plain, server.PROJECTS / theirs / "photos" / "upload_1.jpg"]) == "Apple iPhone 15 Pro"
+assert server.note_device(mine, photos=[server.PROJECTS / theirs / "photos" / "upload_1.jpg"]) == "Google Pixel 8", "what an app's record said stays"
+(server.PROJECTS / theirs / "photos" / "upload_1.jpg").unlink()
+print("what took the photos OK")
 print("captures meshed with the mesh they add to OK")
 
 # --- the server's: a mesh put where its app photos' fixes say ---------------------------------------------------------------

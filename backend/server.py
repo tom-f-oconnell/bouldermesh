@@ -60,6 +60,7 @@ import terrain as terrain_mod  # noqa: E402
 import meshclean  # noqa: E402
 import dbconn  # noqa: E402
 import feedback as feedback_mod  # noqa: E402
+import frames  # noqa: E402
 import links as links_mod  # noqa: E402
 import thumbs as thumbs_mod  # noqa: E402
 import meshinputs  # noqa: E402
@@ -324,6 +325,15 @@ def init_db() -> None:
             con.execute("ALTER TABLE meshes ADD COLUMN rules INTEGER")      # the MESH_RULES it was made under
         if "old_data" not in {r[1] for r in con.execute("PRAGMA table_info(meshes)")}:    # a newer mesh under the same rules, from
             con.execute("ALTER TABLE meshes ADD COLUMN old_data TEXT")                    # more, covers its climbs (old_by_data())
+        cols = {r[1] for r in con.execute("PRAGMA table_info(meshes)")}
+        if "adds_to" not in cols:       # a capture's mesh: the mesh its photos were taken to add to, which stays beside it
+            con.execute("ALTER TABLE meshes ADD COLUMN adds_to TEXT")
+        if "preferred" not in cols:     # when an editor chose it to be the one its climbs show first, of those tied by adds_to
+            con.execute("ALTER TABLE meshes ADD COLUMN preferred REAL")
+        cols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
+        for c in ("device", "app"):     # what took its photos: the phone, and the app if one of ours (note_device())
+            if c not in cols:
+                con.execute(f"ALTER TABLE projects ADD COLUMN {c} TEXT")
         for n, since in sorted(MESH_RULES_SINCE.items()):     # those made before it was kept: by when they were made
             con.execute("UPDATE meshes SET rules=? WHERE rules IS NULL AND source LIKE 'project:%' AND created>=?", (n, since))
         # an area's climbs' boulders were their area paths joined by "/", which a name with one in it ("Drifter/Smoking
@@ -1730,18 +1740,113 @@ def merge_capture(pid: str, log) -> str | None:
     return target
 
 
+def note_device(pid: str, device: str | None = None, app: str | None = None, photos: list[Path] | None = None) -> str | None:
+    """Keep what took a project's photos (projects.device): the phone as an app of ours names it in its capture's
+    record, with the app; or else, for photos uploaded any other way, the make and model the first of them that has
+    any gives in its EXIF. Never replaces what a record said. Returns the device now kept."""
+    was = q("SELECT device, app FROM projects WHERE id=?", pid, one=True)
+    if not was:
+        return None
+    if device:
+        q("UPDATE projects SET device=?, app=? WHERE id=?", str(device)[:80], str(app)[:60] if app else None, pid, write=True)
+        return str(device)[:80]
+    if was["device"] or not photos:
+        return was["device"]
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    for f in photos[:5]:
+        try:
+            with Image.open(f) as im:
+                exif = im.getexif()
+            name = " ".join(str(x).strip("\0 ") for x in (exif.get(0x010F), exif.get(0x0110)) if x and str(x).strip("\0 "))
+        except Exception:
+            continue
+        if name:
+            if name.split()[0].lower() in name.split(" ", 1)[-1].lower() and " " in name:     # "Apple" + "Apple iPhone 15": once
+                name = name.split(" ", 1)[1]
+            q("UPDATE projects SET device=? WHERE id=?", name[:80], pid, write=True)
+            return name[:80]
+    return None
+
+
+def tie_capture(mid: str, target: str, log=None, how: str = "cameras") -> dict | None:
+    """Tie a capture's mesh to the mesh it adds to (frames.py): the scale, turn and shift taking that mesh's coordinates
+    to this one's, from the cameras of the photos both placed, kept in this one's frame.json. With it, whatever is known
+    of the former mesh in its coordinates carries over (its hand-marked holds and its climbs' views, here, where this
+    one has none of its own), the two can be laid over each other, and the angle between their ups says how far off
+    level the former is by this one's reckoning.
+
+    Args:
+        how: frames.HOW. "cameras": this mesh is a reconstruction of its own (every photo of both meshed afresh).
+
+    Returns:
+        The record kept (frames.py has its fields), "untied" with why if they share too few cameras; None if either
+        mesh's cameras weren't kept.
+    """
+    mine, theirs = MESHES / mid, MESHES / target
+    try:
+        new, old = json.loads((mine / "cameras.json").read_text()), json.loads((theirs / "cameras.json").read_text())
+    except (OSError, ValueError):
+        return None
+    found = frames.tie(old, new)
+    carried = []
+    if found["status"] == "tied":
+        size = metres_per_unit(mid)
+        found["rms_m"] = round(found["rms"] * size, 3) if size else None
+        move = lambda point: [round(x, 5) for x in frames.apply(found, point)]  # noqa: E731
+        marked = beta_mod.load_holds(theirs).get("holds") or []
+        if marked and not (beta_mod.load_holds(mine).get("holds") or []):
+            beta_mod.save_holds(mine, [{"p": move(h["p"]), "role": h["role"]} for h in marked if h.get("role") in beta_mod.ROLES])
+            carried.append(plural(len(marked), "marked hold"))
+        views = viewpoints.load(theirs)
+        if views and (views.get("climbs") or {}) and viewpoints.load(mine) is None:
+            moved = {cid: {**v, **{k: move(v[k]) for k in ("eye", "target") if isinstance(v.get(k), list)}} for cid, v in views["climbs"].items()}
+            (mine / viewpoints.FILE).write_text(json.dumps({**views, "climbs": moved, "created": time.time(), "from_mesh": target}))
+            carried.append(f"the views of {plural(len(moved), 'climb')}")
+    rec = frames.save(mine, target, how, found, carried=carried)
+    if log:
+        log(f"capture: not tied to mesh {target}: {rec['why']}" if rec["status"] != "tied" else
+            f"capture: tied to mesh {target} by {rec['shared']} of the {rec['of_shared']} cameras they share, to "
+            + (f"{rec['rms_m']} m" if rec["rms_m"] is not None else f"{rec['rms']} units") + f"; that mesh's up is {rec['tilt_deg']}° from this one's"
+            + (f"; carried over: {', '.join(carried)}" if carried else ""))
+    return rec
+
+
+def mesh_tie(mid: str) -> dict | None:
+    """How a capture's mesh is tied to the one it adds to (tie_capture()), for the mesh list."""
+    rec = frames.load(MESHES / mid)
+    return {k: rec.get(k) for k in ("of", "how", "status", "why", "shared", "of_shared", "rms_m", "tilt_deg", "scale", "rot", "shift")} if rec else None
+
+
 def link_capture(mid: str, target: str, log) -> None:
     """A mesh made from a capture's photos together with those of the mesh it added to (merge_capture()) is of that
-    mesh's climbs too: linked to each, and where that one is until its own photos say (place_from_phone()). The mesh
-    added to stays as it is, the current one of its own project: which of the two to keep is for whoever looks at them."""
+    mesh's climbs too: linked to each, where that one is until its own photos say (place_from_phone()), and tied to it
+    (tie_capture()). The mesh added to stays as it is, the current one of its own project, beside this one: which of
+    them its climbs show first is an editor's choice (prefer_mesh()), the newer until one is made."""
     old = q("SELECT boulder, lat, lng FROM meshes WHERE id=?", target, one=True)
     if not old:
         return
     climbs = sorted(mesh_climbs(target, old["boulder"]))
     for cid in climbs:
         link_mesh(mid, cid, f"{CAPTURE_LINK} {target}")
-    q("UPDATE meshes SET lat=COALESCE(lat,?), lng=COALESCE(lng,?) WHERE id=?", old["lat"], old["lng"], mid, write=True)
+    q("UPDATE meshes SET lat=COALESCE(lat,?), lng=COALESCE(lng,?), adds_to=? WHERE id=?", old["lat"], old["lng"], target, mid, write=True)
     log(f"capture: linked to the {plural(len(climbs), 'climb')} of mesh {target}, which it adds to; that mesh stays as it is, beside this")
+    try:
+        tie_capture(mid, target, log)
+    except Exception as e:
+        log(f"capture: tying it to mesh {target} failed ({type(e).__name__}: {e})")
+
+
+def prefer_mesh(mid: str, on: bool = True) -> bool:
+    """Make a mesh the one its climbs show first, of those tied to it (the mesh a capture added to, and the captures'
+    meshes): the last one chosen is, and with none chosen the newest. Returns whether there's such a mesh."""
+    if not q("SELECT 1 FROM meshes WHERE id=?", mid, one=True):
+        return False
+    q("UPDATE meshes SET preferred=? WHERE id=?", time.time() if on else None, mid, write=True)
+    meshes_changed()
+    return True
 
 
 def keep_capture_level(mid: str, pid: str, log=None) -> dict | None:
@@ -1755,6 +1860,7 @@ def keep_capture_level(mid: str, pid: str, log=None) -> dict | None:
     level = rec.get("level") if isinstance(rec.get("level"), dict) else None
     number = lambda v: round(float(v), 2) if isinstance(v, (int, float)) else None  # noqa: E731
     note = {"photos": sum(1 for s in rec.get("shots") or [] if isinstance(s, dict) and s.get("kept")),
+            "device": str(rec["device"])[:80] if rec.get("device") else None, "app": str(rec["app"])[:60] if rec.get("app") else None,
             "turn": {**{k: number(level.get(k)) for k in ("tilt_deg", "offset_deg", "spread_deg")}, "sectors": level.get("sectors")} if level else None,
             "down_agree_deg": number(rec.get("down_agree_deg"))}
     report = orientation.load(MESHES / mid)
@@ -3385,6 +3491,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
                 "the current one, and this is kept as an older version of it")
         elif before:
             supersede(before, mid)
+            q("UPDATE meshes SET preferred=(SELECT preferred FROM meshes WHERE id=?) WHERE id=?", before, mid, write=True)   # the choice made of it
             log(f"this replaces mesh {before}, which stays as an older version")
         current = before if worse else mid
         clean_mesh(mid, log)
@@ -8533,6 +8640,7 @@ class Handler(BaseHTTPRequestHandler):
                         r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
                         r["marked"] = len(beta_mod.load_holds(MESHES / r["id"])["holds"])
                         r["scale"] = scale_mod.summary(scale_mod.load(MESHES / r["id"]))
+                        r["tie"] = mesh_tie(r["id"]) if r.get("adds_to") else None
                     except Exception as e:
                         print(f"error: listing mesh {r['id']}: {type(e).__name__}: {e}", flush=True)
                     r["cameras_kept"] = (MESHES / r["id"] / orientation.CAMERAS_FILE).exists()
@@ -8882,6 +8990,11 @@ class Handler(BaseHTTPRequestHandler):
                 if videos:
                     append_log(pid, f"videos uploaded, to be turned into photos: {', '.join(videos)}")
                     _frames_wake.set()
+                if saved:   # what took them, by their own account, unless an app of ours says (its record comes after its photos)
+                    try:
+                        note_device(pid, photos=[PROJECTS / pid / "photos" / n for n in saved])
+                    except Exception as e:
+                        print(f"{pid}: reading what took its photos failed ({type(e).__name__}: {e})", flush=True)
                 return self.send_json({"saved": saved, "videos": videos})
 
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/capture", p)
@@ -8899,7 +9012,8 @@ class Handler(BaseHTTPRequestHandler):
                 tmp = PROJECTS / m[1] / (CAPTURE_FILE + ".part")
                 tmp.write_bytes(raw)
                 tmp.replace(PROJECTS / m[1] / CAPTURE_FILE)
-                append_log(m[1], f"capture: {len(record['shots'])} photos taken with the app ({str(record.get('app') or '?')[:60]})")
+                device = note_device(m[1], record.get("device") or "unknown phone", record.get("app"))
+                append_log(m[1], f"capture: {len(record['shots'])} photos taken with the app ({str(record.get('app') or '?')[:60]}) on {device}")
                 return self.send_json({"kept": len(record["shots"])})
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/capture/points", p)
             if m:   # and the points its tracking found, kept beside it for whatever places its photos
@@ -9159,6 +9273,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(beta_mod.save_holds(MESHES / m[1], self.read_json().get("holds") or []))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/prefer", p)
+            if m:   # {on: false} to take the choice back: of a capture's mesh and the one it adds to, which its climbs show first
+                on = self.read_json().get("on", True) is not False
+                return self.send_json({"preferred": on} if prefer_mesh(m[1], on) else {"error": "not found"}, 200 if q("SELECT 1 FROM meshes WHERE id=?", m[1], one=True) else 404)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/make-current", p)
             if m:
                 if not q("SELECT replaced_by FROM meshes WHERE id=? AND replaced_by IS NOT NULL", m[1]):

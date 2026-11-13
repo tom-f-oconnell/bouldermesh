@@ -1511,11 +1511,19 @@ ring partly in Objective-C's memory, which Kotlin's sweep can't see round, so a 
 it goes for good, or every capture would keep its camera and mesh.
 
 **On the server.** A project with a capture's record naming a mesh has that mesh's project's photos linked into it
-before it's meshed (`merge_capture()`), people masks and sources too; the mesh made is linked to that mesh's climbs
-and left beside it rather than replacing it, since swapping a boulder's mesh for one from another project touches
-everything that counts a boulder's meshes, and whether a capture's is better is easy to see and hard to compute. Once
-sized, a mesh whose app photos' fixes agree to 5 m (6 or more of them) is moved there (`place_from_phone()`), with
-where it was kept.
+before it's meshed (`merge_capture()`), people masks and sources too. The mesh made sits beside the one it adds to,
+never in its place: both stay linked to the climbs, and an editor chooses which the climbs open (the newer until
+then). They're integrated by a tie rather than by rewriting either (`tie_capture()`, frames.py): both placed the
+former's photos, so the turn between the two frames comes from how each has those cameras looking, and the scale and
+shift from where each has them standing, with cameras that disagree left out. That one small record carries the
+former's marked holds and climbs' views across, lets the two be laid over each other, and says how far apart their
+ups are: for a web mesh levelled by guess against a capture levelled by a turn on the spot, that's the former's
+levelling error, measured. Today a capture is fitted with all the former photos into a new reconstruction, which is
+the "fit everything into a new mesh" a person may want anyway; adding to the former mesh's own reconstruction, in its
+frame, is the incremental pipeline's job (experiments/mapper/incr), which writes the same record, so the server needn't
+know which made a mesh. Once sized, a mesh whose app photos' fixes agree to 5 m (6 or more of them) is moved there
+(`place_from_phone()`), with where it was kept. What took each upload is kept with its project, for whatever a phone
+model's lens or sensors turn out to need.
 
 **Not yet.** Neither app has run on a phone. Sharpness thresholds are guesses. There's no choosing which climbs to
 capture for (the core has it: `Scope.climbs`), no QR scan for pairing, and uploads are over the site's ordinary

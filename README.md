@@ -611,9 +611,13 @@ framed again. *Opaque* draws every surface solid.
 [app/](app/README.md) has Android and iPhone apps that guide photographing a boulder: they download a mesh and its
 holds, show over the camera what still needs photos, take and judge each one, and record with it which way was down,
 where the phone was and which way it faced. A capture uploaded from one is meshed together with the photos of the mesh
-it adds to (`merge_capture()`), linked to the same climbs beside it, levelled and sized by the phone's readings
-(orientation.py, scale.py), and put on the map where its photos' GPS fixes say once 6 of them agree to 5 m
-(`place_from_phone()`). Neither app has run on a phone yet.
+it adds to (`merge_capture()`), levelled and sized by the phone's readings (orientation.py, scale.py), and put on the
+map where its photos' GPS fixes say once 6 of them agree to 5 m (`place_from_phone()`). Its mesh is kept beside the one
+it adds to, linked to the same climbs and tied to it (`tie_capture()`, frames.py: one mesh's coordinates in the
+other's, from the cameras they share, with that mesh's marked holds and views carried over); the Meshes tab says how
+well, and has *Show this one first* to choose which of them their climbs open. Meshing a capture's project again fits
+all the photos into a new mesh. What took each upload's photos is kept with its project. Neither app has run on a phone
+yet.
 
 ## Run it as a service
 
@@ -1199,6 +1203,7 @@ Security, then WAF, then *Rate limiting rules* (or *Security rules*, then a rate
     frontend/index.html            UI: Climbs / Projects / Meshes tabs, three.js viewer, Leaflet map
     backend/captureplan.py         for the phone apps: what of a mesh to photograph, and a light copy of it to draw
     backend/phonedata.py           what the apps record in each photo, and a mesh's size and place from it
+    backend/frames.py              one mesh's coordinates in another's, from the cameras they share: a capture's mesh and the one it adds to
     app/                           the phone apps (Kotlin: shared logic, Android, iPhone); not sent to the image build
     cli.py                         command-line access to the same code
     deploy/                        systemd services and an installer, the public setup's Caddyfile, and ship.sh for a public server
@@ -1288,6 +1293,8 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     GET  /api/capture/guide/<mesh>.bin                 a light copy of it, to draw over the camera
     POST /api/projects/<id>/capture {…, shots}         the record of a capture whose photos the project holds (8 MB at most)
     POST /api/projects/<id>/capture/points             the points its tracking found, as a file (4 MB at most)
+    POST /api/meshes/<id>/prefer {on?}                 of a capture's mesh and the mesh it adds to, the one their climbs
+                                                       open first (on: false takes the choice back: then the newest)
 
 ## Development
 
