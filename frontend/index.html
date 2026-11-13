@@ -17,7 +17,7 @@
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;height:100vh;height:100dvh;display:grid;grid-template-rows:auto 1fr}
   header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
-  header h1{font-size:16px;margin:0;letter-spacing:.3px}
+  header h1{font-size:16px;margin:0;letter-spacing:.3px} header h1 a.home{color:inherit;text-decoration:none}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mute)}
   .pill.real{color:var(--ok);border-color:var(--ok)} .pill.demo,.pill.stopping{color:var(--warn);border-color:var(--warn)}
   .seg{display:inline-flex;margin-left:auto;border:1px solid var(--line);border-radius:6px;overflow:hidden}
@@ -120,6 +120,8 @@
   dialog.danger-ask{max-width:420px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:14px}
   dialog.danger-ask::backdrop{background:rgba(0,0,0,.45)} dialog.danger-ask p{color:var(--mute);font-size:13px} dialog.danger-ask .row{gap:8px}
   dialog.danger-ask .yes{background:var(--bad);color:#fff;border-color:var(--bad);font-weight:600}
+  .maplegend{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;display:flex;gap:10px}
+  .maplegend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px;opacity:.85}
   .areas-list{border-top:1px solid var(--line)}   /* where the box above (open or closed) ends and the areas begin */
   /* a climb's photos, from the boulder panel: beside the left column on a computer, the whole screen on a phone */
   #photopop{position:fixed;z-index:1900;left:408px;top:64px;bottom:12px;width:440px;max-width:calc(100vw - 420px);display:none;flex-direction:column;
@@ -184,7 +186,10 @@
   #viewer,#map{position:relative;min-height:0;display:none}
   #viewer.on,#map.on{display:block}
   #viewer canvas{display:block;width:100%;height:100%}
-  #viewer.quiet #hud,#viewer.quiet #viewnote,#viewer.quiet #pieces,#viewer.quiet #orient{display:none!important}
+  #viewer.quiet #hud,#viewer.quiet #viewnote,#viewer.quiet #pieces,#viewer.quiet #orient,#viewer.quiet #vclimb{display:none!important}
+  /* with the notes shown (the info button), as on a phone: how it's framed and scaled at the top left, a passing note
+     over that, its stray pieces at the bottom left, and Open climb at the top right */
+  #vclimb{position:absolute;top:12px;right:12px;z-index:3}
   #vtitle{display:none} #viewing .area{opacity:.8}
   #linkmenu{position:absolute;z-index:4;display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:8px;
     background:var(--overlay);border:1px solid var(--line);box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:calc(100% - 16px)}
@@ -237,6 +242,10 @@
   #nearby .note{color:var(--mute);margin-top:8px;line-height:1.4}
   #pieces .list{max-height:260px;overflow:auto;margin-top:6px;display:grid;grid-template-columns:1fr auto;gap:3px 8px;align-items:center}
   #orient{display:none;position:absolute;left:12px;bottom:12px;max-width:430px;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.45;z-index:2}
+  @media (min-width:861px){
+    #orient,#viewnote{top:60px;bottom:auto;left:12px;right:auto;max-width:430px;max-height:40%;overflow:auto} #viewnote{z-index:3}
+    #pieces{top:auto;bottom:12px;left:12px;right:auto;max-height:35%;overflow:auto}
+  }
   #vold{position:absolute;left:12px;bottom:12px;z-index:3;color:var(--warn);font-weight:700;font-size:13px;text-shadow:0 0 3px var(--bg),0 0 3px var(--bg)}
   #vold[hidden]{display:none}
   #vcorner{position:absolute;right:12px;bottom:12px;z-index:3;display:flex;align-items:flex-end;gap:6px}   /* Rate, then the notes' button */
@@ -340,6 +349,7 @@
     #pieces{top:auto;bottom:12px;left:8px;right:auto;max-width:calc(100% - 175px);max-height:35%;overflow:auto}
     #ratebtn{font-size:14px;padding:6px 12px} #vcorner #vinfo,#vcorner #vreport{padding:6px 10px}
     #vextra{bottom:56px} #vextra button{font-size:14px;padding:6px 12px} .mthumb{width:96px} #ratemenu .seg button{padding:7px 14px;font-size:14px} #ratecomment{font-size:16px}
+    #vclimb{top:6px;right:8px} #viewer:not(.quiet) #vtitle{max-width:calc(100% - 130px)!important}
     #vtitle:has(#vname:not(:empty)){display:block;position:absolute;top:6px;left:8px;max-width:calc(100% - 16px);font-size:12px;line-height:1.35;
       padding:2px 8px;border-radius:10px;background:var(--overlay-soft);color:var(--fg);pointer-events:none;z-index:2}
     #vname,#varea{white-space:nowrap;overflow:hidden;text-overflow:ellipsis} #varea{font-size:11px;color:var(--mute)} #varea:empty{display:none}
@@ -350,7 +360,7 @@
 <body>
 <header>
   <button class="sm phone" id="tofull" disabled title="Pick a climb's mesh first">Viewer</button>
-  <h1>boulderme.sh</h1>
+  <h1><a href="/" class="home" title="The site's start">boulderme.sh</a></h1>
   <span id="stopping" class="pill stopping" style="display:none"></span>
   <button class="sm" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random</button>
   <span id="viewonly" class="pill" style="display:none" title="This copy of the site can't be changed from a browser">view-only</span>
@@ -596,6 +606,7 @@
       <div id="linkmenu" hidden></div>
       <div id="viewnote"></div>
       <div id="pieces"></div>
+      <button class="sm sec" id="vclimb" hidden title="The climb this mesh is of, under Climbs, with its photos and details">Open climb</button>
       <div id="nearby" hidden></div>
       <div id="orient"></div>
       <div id="vold" hidden title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</div>
@@ -1790,6 +1801,7 @@ function showQuiet(){
   if (!quiet) $('#vinfo').classList.remove('dot');
 }
 showQuiet();
+$('#vclimb').onclick = () => { const id = viewedClimb || $('#vclimb').dataset.climb; if (id) openClimb(id); };
 $('#vinfo').onclick = () => {
   quiet = !quiet;
   if (quiet) { viewNote(''); setRateOpen(false); }
@@ -2635,6 +2647,14 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, att
 const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, attribution: '© OpenTopoMap' });
 L.control.layers({ 'OSM': map._layers[Object.keys(map._layers)[0]], 'OpenTopoMap': topo }).addTo(map);
 let geoLayer = null, mapFitted = false;
+// what the points' colours are, at the bottom left
+const legend = L.control({ position: 'bottomleft' });
+legend.onAdd = () => {
+  const d = L.DomUtil.create('div', 'maplegend');
+  d.innerHTML = '<span><i style="background:#5cc8ff"></i>a mesh</span><span><i style="background:#ff9f5c"></i>a climb</span>';
+  return d;
+};
+legend.addTo(map);
 const popupHtml = ({ properties: p }) => p.layer==='mesh'
   ? `<b>${esc(p.name)}</b><br><small>mesh</small><br><a href="#" data-mesh="${p.id}">view in 3D</a>`
   : `<b>${esc(named(p, true))}</b><br><small>${esc(p.boulder_name||'')} · ${esc(p.source)} · coords from ${esc(p.coord_source)}</small><br><a href="#" data-climb="${p.id}">open climb</a>`;
@@ -4160,6 +4180,8 @@ function viewMesh(id, from, via = '', climb = null){
   const own = m.climbs.filter(c => !c.shared), on = m.boulder_climbs || [];
   const label = soleClimb(m) ? meshTitle(m) : m.name + (own.length ? ` — ${own.map(c => c.name).join(', ')}` : on.length ? ` — ${plural(on.length, 'climb')}` : '');
   const pending = loadMeshUrl(`/meshes/${id}/${m.filename}`, m.filename, label, id);
+  const firstClimb = climb || from || own[0]?.id || on[0]?.id || null;
+  $('#vclimb').hidden = !firstClimb; $('#vclimb').dataset.climb = firstClimb || '';
   $('#vold').hidden = !(editor && (m.old || m.old_data));
   $('#vold').textContent = m.old ? 'old' : 'old (data)';
   $('#vold').title = m.old ? 'Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them'
