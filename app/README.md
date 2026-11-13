@@ -85,7 +85,8 @@ all but its linking is checked on any machine: `./gradlew :ios:compileKotlinIosA
 | the shared logic (`shared/`): lining up, coverage, hints, photo and sensor judging, a whole capture | tested (JVM) |
 | the server: plans, guides, readings in photos, size and place from them, captures meshed with their mesh | tested |
 | the files that pass between them | each side's tests read what the other really writes |
-| the Android app | compiles to an APK; never run on a phone |
+| the Android app's camera screen | starts ARCore and draws the camera's picture in the emulator; tracking never begins there (too few frames a second), so lining up, the overlay and taking photos are unchecked |
+| the Android app | never run on a phone |
 | the iPhone app | built and linked for the simulator on GitHub's Macs; never run on an iPhone |
 | both apps starting up, and every screen but the camera's | run in a simulator and an emulator on GitHub against a test server, a picture kept of each screen (`.github/workflows/apps.yml`): see its last run |
 

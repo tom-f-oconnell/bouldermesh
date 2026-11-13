@@ -36,8 +36,6 @@ class MainActivity : ComponentActivity() {
     lateinit var api: Api
     lateinit var sensors: PhoneSensors
     private var screen by mutableStateOf<Screen>(Screen.Home)
-    var smallFrames = false         // the camera's smallest pictures: only for an emulator too slow for ARCore otherwise (tryOut())
-        private set
 
     fun has(permission: String) = ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
@@ -72,12 +70,10 @@ class MainActivity : ComponentActivity() {
      * In a debug build, for trying it in an emulator with nobody to press anything (app/ci/screens-android.sh): extras
      * on the intent that starts it set the server (`--es server <address>`) and open a screen straight away (`--es
      * screen browse|settings|calibrate|capture`, with `--ez get true` to download the first mesh listed, and `--es
-     * mesh <id>` for the mesh to capture: the first downloaded if not given, `none` for a rock with no mesh; `--ez small
-     * true` for the camera's smallest pictures, which an emulator drawing everything in software needs to keep up).
+     * mesh <id>` for the mesh to capture: the first downloaded if not given, `none` for a rock with no mesh).
      */
     private fun tryOut() {
         intent.getStringExtra("server")?.let { store.server = it }
-        smallFrames = intent.getBooleanExtra("small", false)
         screen = when (intent.getStringExtra("screen")) {
             "browse" -> Screen.Browse(intent.getBooleanExtra("get", false))
             "settings" -> Screen.Settings

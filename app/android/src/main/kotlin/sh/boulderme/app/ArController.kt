@@ -55,7 +55,7 @@ import javax.microedition.khronos.opengles.GL10
  */
 class ArController(
     private val activity: Activity, private val store: Store, private val sensors: PhoneSensors,
-    private val plan: Plan?, guide: GuideMesh?, private val name: String, private val smallFrames: Boolean = false, private val onUi: (CaptureUi) -> Unit,
+    private val plan: Plan?, guide: GuideMesh?, private val name: String, private val onUi: (CaptureUi) -> Unit,
 ) : GLSurfaceView.Renderer {
     val id: String = java.lang.Long.toString(System.currentTimeMillis() / 1000, 36) + (100..999).random()
     private val dir = store.captureDir(id)
@@ -93,10 +93,8 @@ class ArController(
             if (session == null) {
                 if (ArCoreApk.getInstance().requestInstall(activity, !installAsked) == ArCoreApk.InstallStatus.INSTALL_REQUESTED) { installAsked = true; return null }
                 val s = Session(activity)
-                // the largest picture ARCore will read out while it tracks (the smallest only for an emulator that can't keep up)
-                val configs = s.getSupportedCameraConfigs(CameraConfigFilter(s))
-                (if (smallFrames) configs.minByOrNull { it.imageSize.width.toLong() * it.imageSize.height } else configs.maxByOrNull { it.imageSize.width.toLong() * it.imageSize.height })
-                    ?.let { s.cameraConfig = it }
+                // the largest picture ARCore will read out while it tracks
+                s.getSupportedCameraConfigs(CameraConfigFilter(s)).maxByOrNull { it.imageSize.width.toLong() * it.imageSize.height }?.let { s.cameraConfig = it }
                 s.configure(Config(s).apply {
                     focusMode = Config.FocusMode.AUTO          // holds are photographed from well under a metre
                     updateMode = Config.UpdateMode.BLOCKING    // a frame drawn for each the camera gives, and none twice
