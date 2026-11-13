@@ -241,6 +241,10 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS channels(
           channel_url TEXT PRIMARY KEY, channel_id TEXT, name TEXT, description TEXT, fetched REAL,
           height_cm REAL, wingspan_cm REAL, ape_index_cm REAL, first_person INTEGER, quotes TEXT);
+        -- what the admin page decided of a mesh and a newer one under the same rules over the same climbs, that fit
+        -- neither kind of old (old_by_data()): "old" (it's old by data after all) or "keep" (both stay current)
+        CREATE TABLE IF NOT EXISTS old_decisions(
+          mesh_id TEXT, newer TEXT, verdict TEXT, decided REAL, PRIMARY KEY(mesh_id, newer));
         """)
         con.execute(steptimes_mod.SCHEMA)   # how long each step of each run took, for estimates (steptimes.py)
         con.execute(offload_mod.SCHEMA)     # what's been offloaded to the backup, or marked to be (offload.py)
@@ -289,10 +293,12 @@ def init_db() -> None:
         # waiting_since: when it first waited for volunteers' YouTube searches and videos (status 'waiting')
         # own_tried: when it was meshed on its own after a pooled mesh hardly showed it (before keep_rest()), once;
         # pool: for redo "cluster", the pool it meshes (pools.key); paused: when someone paused it (pause_item()), so that
-        # it isn't taken until they resume it
+        # it isn't taken until they resume it; rerun_rules: the MESH_RULES under which it was queued again as its climb's
+        # meshes were old (queue_old()), once for each; old_rerun: that's still to go or in progress; blocked: why it
+        # can't go on (data lost from the backup) until it's approved on the admin page (lost_decide())
         for c, t in (("retry", "INTEGER DEFAULT 0"), ("redo", "TEXT"), ("was", "TEXT"), ("changed", "INTEGER DEFAULT 0"),
                      ("redo_started", "INTEGER DEFAULT 0"), ("waiting_since", "REAL"), ("own_tried", "REAL"), ("pool", "TEXT"),
-                     ("paused", "REAL")):
+                     ("paused", "REAL"), ("rerun_rules", "INTEGER"), ("old_rerun", "INTEGER DEFAULT 0"), ("blocked", "TEXT")):
             if c not in cols:
                 con.execute(f"ALTER TABLE campaign_items ADD COLUMN {c} {t}")
         # climbs queued to be harvested again from scratch for what volunteers fetched, not started yet: added to instead,
@@ -315,6 +321,8 @@ def init_db() -> None:
             con.execute("ALTER TABLE meshes ADD COLUMN replaced_by TEXT")   # a rebuild of the same photos' project
         if "rules" not in {r[1] for r in con.execute("PRAGMA table_info(meshes)")}:
             con.execute("ALTER TABLE meshes ADD COLUMN rules INTEGER")      # the MESH_RULES it was made under
+        if "old_data" not in {r[1] for r in con.execute("PRAGMA table_info(meshes)")}:    # a newer mesh under the same rules, from
+            con.execute("ALTER TABLE meshes ADD COLUMN old_data TEXT")                    # more, covers its climbs (old_by_data())
         for n, since in sorted(MESH_RULES_SINCE.items()):     # those made before it was kept: by when they were made
             con.execute("UPDATE meshes SET rules=? WHERE rules IS NULL AND source LIKE 'project:%' AND created>=?", (n, since))
         # an area's climbs' boulders were their area paths joined by "/", which a name with one in it ("Drifter/Smoking
@@ -352,6 +360,8 @@ def init_db() -> None:
         # (from before jobs were) is interrupted, for Retry to run.
         con.execute("UPDATE projects SET status='stopped' WHERE id IN (SELECT project_id FROM campaign_items "
                     "WHERE status='running' OR (status='pending' AND retry=1 AND redo IS NULL))")
+        # one meshed again as its meshes were old goes after the rest of its area's list, but once started, next
+        con.execute("UPDATE campaign_items SET retry=1 WHERE status='running' AND old_rerun=1")
         con.execute("UPDATE campaign_items SET status='pending', note='interrupted by a restart: carrying on from where it got to' WHERE status='running'")
         con.execute("UPDATE campaigns SET status='stopped', note=NULL WHERE status='stopping'")
         cut = con.execute("SELECT id, status, job FROM projects WHERE status IN ('queued','running','harvesting') "
@@ -799,8 +809,8 @@ def boulder_mesh_with(climb_id: str, area_path) -> str | None:
     boulder = boulder_of(area_path)
     if not boulder:
         return None
-    for m in q("SELECT id, source FROM meshes WHERE boulder=? AND replaced_by IS NULL ORDER BY created DESC", boulder):
-        if not (m["source"] or "").startswith("project:"):
+    for m in q("SELECT id, source, rules FROM meshes WHERE boulder=? AND replaced_by IS NULL ORDER BY created DESC", boulder):
+        if not (m["source"] or "").startswith("project:") or mesh_is_old(m):     # an old one is to be made again
             continue
         try:
             climbs = json.loads((PROJECTS / m["source"].split(":", 1)[1] / CLIMBS_FILE).read_text())["climbs"]
@@ -820,8 +830,8 @@ def boulder_unchanged(boulder: str) -> str | None:
     """
     proj = boulder_project(boulder)
     if not proj or proj["status"] != "done" or not proj["mesh_id"] or not q(
-            "SELECT 1 FROM meshes WHERE id=? AND replaced_by IS NULL", proj["mesh_id"]):
-        return None
+            f"SELECT 1 FROM meshes m WHERE id=? AND replaced_by IS NULL AND NOT {OLD_MESH}", proj["mesh_id"]):
+        return None     # nor an old one (MESH_RULES), made again under the rules from the same photos
     try:
         record = json.loads((PROJECTS / proj["id"] / CLIMBS_FILE).read_text())
         then, pooled_at = {c["id"]: sorted(c["projects"]) for c in record["climbs"]}, float(record["created"])
@@ -1237,6 +1247,7 @@ def make_current(mid: str) -> None:
     supersede(m["replaced_by"], mid)
     if m["source"].startswith("project:"):
         q("UPDATE projects SET mesh_id=? WHERE id=?", mid, m["source"].split(":", 1)[1], write=True)
+    meshes_changed()
 
 
 def clean_mesh(mid: str, log) -> None:
@@ -2226,26 +2237,44 @@ def untied_meshes() -> list[dict]:
     return out
 
 
-OLD_REPORT_EVERY = 60      # seconds old_mesh_report() is kept before it's worked out again
+OLD_REPORT_EVERY = 60      # seconds old_mesh_report() and old_climbs() are kept before they're worked out again
 _old_report: dict = {"at": 0.0, "report": None}
+_old_state: dict = {"at": 0.0, "state": None}
+ALREADY = "already %"       # an area's climb done with a mesh it had (run_campaign_item(), settle_boulder()): not tried
 
 
-def old_mesh_report(fresh: bool = False) -> dict:
-    """How far the meshes are from none old (MESH_RULES), for the admin page. The climbs of current old meshes (linked
-    to one as their own; a boulder's climbs, or a group's, for a boulder's or a group's mesh), and those linked only to
-    another climb's mesh, "via" it (SHARED), are each: remade, if a current mesh made under the rules is of it (linked to
-    it, or a boulder's or a group's placing it); missed, if under the rules an area finished it (done, skipped or failed)
-    or a project of it ran to an end, and yet no new mesh is of it, which is to be looked into; else waiting, not tried
-    under them yet. Worked out at most every OLD_REPORT_EVERY seconds.
+def old_changed() -> None:
+    """What's old has changed (a mesh made, replaced or deleted): old_climbs() and old_mesh_report() work it out again."""
+    _old_state["at"] = _old_report["at"] = 0.0
+
+
+def mesh_climbs(mid: str, boulder: str | None = None, shared: bool = False) -> set[str]:
+    """The climbs a mesh is of: those linked to it as their own (with shared, those linked "via" it too), and for a
+    boulder's, a group's or a rest's mesh, those it places (views.json)."""
+    out = {r["climb_id"] for r in q("SELECT climb_id FROM mesh_links WHERE mesh_id=?" + ("" if shared else " AND COALESCE(note,'') NOT LIKE ?"),
+                                    mid, *([] if shared else [SHARED + "%"]))}
+    if boulder:
+        out |= set((viewpoints.load(MESHES / mid) or {}).get("climbs") or {})
+    return out
+
+
+def old_climbs(fresh: bool = False) -> dict:
+    """Where the climbs of old meshes (MESH_RULES) are, as old_mesh_report() counts them: the climbs of current old
+    meshes (linked to one as their own; a boulder's climbs, or a group's, for a boulder's or a group's mesh), and those
+    linked only to another climb's mesh, "via" it (SHARED). Each is remade, if a current mesh made under the rules is of
+    it (linked to it, or a boulder's or a group's placing it); tried, if under the rules an area finished it (done,
+    skipped or failed, but not done with a mesh it already had) or queued it again for its old meshes and finished
+    that (queue_old()), or a project of it ran to an end; else still to be tried. Worked out at most every
+    OLD_REPORT_EVERY seconds, or when old_changed().
 
     Returns:
-        {rules, since, old_meshes, meshes (current ones made by areas and projects), climbs, remade, waiting, via,
-        missed: [{id, name, why}]}.
+        {old: [current old meshes], made: [current meshes areas and projects made], climbs, via, remade (sets of climb
+        ids), tried: {climb id: why}}.
     """
-    if not fresh and _old_report["report"] and time.time() - _old_report["at"] < OLD_REPORT_EVERY:
-        return _old_report["report"]
+    if not fresh and _old_state["state"] and time.time() - _old_state["at"] < OLD_REPORT_EVERY:
+        return _old_state["state"]
     since = MESH_RULES_SINCE[MESH_RULES]
-    made = q("SELECT id, source, rules, boulder FROM meshes m WHERE replaced_by IS NULL AND source LIKE 'project:%'")
+    made = q("SELECT id, source, rules, boulder, old_data FROM meshes m WHERE replaced_by IS NULL AND source LIKE 'project:%'")
     old = [m for m in made if mesh_is_old(m)]
     of_old = {r["climb_id"] for r in q(f"SELECT l.climb_id FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE m.replaced_by IS NULL "
                                        f"AND {OLD_MESH} AND COALESCE(l.note,'') NOT LIKE ?", SHARED + "%")}
@@ -2260,10 +2289,10 @@ def old_mesh_report(fresh: bool = False) -> dict:
     for m in made:      # a new boulder's or group's mesh: the climbs it places
         if m["boulder"] and not mesh_is_old(m):
             remade |= set(((viewpoints.load(MESHES / m["id"]) or {}).get("climbs") or {}))
-    climbs = of_old | via
     tried: dict[str, str] = {}
-    for r in q("SELECT climb_id, status, note FROM campaign_items WHERE climb_id IS NOT NULL AND updated>=? AND status IN "
-               "('done','skipped','failed') ORDER BY updated", since):
+    for r in q("SELECT climb_id, status, note FROM campaign_items WHERE climb_id IS NOT NULL AND status IN ('done','skipped','failed') "
+               "AND ((COALESCE(rerun_rules, 0)>=? AND COALESCE(old_rerun, 0)=0) OR (updated>=? AND COALESCE(note,'') NOT LIKE ?)) "
+               "ORDER BY updated", MESH_RULES, since, ALREADY):
         tried[r["climb_id"]] = f"{r['status']} in its area since" + (f": {r['note']}" if r["note"] else "")
     for r in q("SELECT climb_id, status, progress FROM projects WHERE climb_id IS NOT NULL AND status IN ('done','failed') AND progress IS NOT NULL"):
         try:
@@ -2272,13 +2301,242 @@ def old_mesh_report(fresh: bool = False) -> dict:
             continue
         if began >= since and r["climb_id"] not in tried:
             tried[r["climb_id"]] = f"its project {'made a mesh' if r['status'] == 'done' else 'failed'} since, none of it current"
+    state = {"old": old, "made": made, "climbs": of_old | via, "via": via, "remade": remade, "tried": tried}
+    _old_state.update(at=time.time(), state=state)
+    return state
+
+
+def old_waiting(fresh: bool = False) -> set[str]:
+    """Climbs of old meshes, or linked only via another climb's, that no new mesh is of and that haven't been tried under
+    the rules (old_climbs()): what areas queue again (queue_old())."""
+    st = old_climbs(fresh)
+    return {c for c in st["climbs"] if c not in st["remade"] and c not in st["tried"]}
+
+
+OLD_RERUN_NOTE = "its meshes are old (made before the rules for what an area meshes last changed)"
+
+
+def queue_old(camp: dict) -> int:
+    """Queue again a running area's climbs whose only meshes are old, or that are linked only via another climb's mesh,
+    not tried under the rules yet (old_waiting()), once for each MESH_RULES: after the rest of its list, in its order
+    (ordered_pending()). One with a harvest is queued to look in every source for new photos and mesh it again
+    ("new+rebuild", whatever it finds; on a boulder meshed whole, harvested for its boulder's mesh, made again once its
+    climbs are); one without is harvested and meshed as if new. An area stopped or done, or running only what was
+    retried, isn't touched. Returns how many."""
+    if camp.get("status") != "running" or camp.get("only_retries"):
+        return 0
+    waiting = old_waiting()
+    if not waiting:
+        return 0
+    rows = q("SELECT ci.source_id, ci.status, ci.climb_id, ci.project_id, p.status AS pstatus FROM campaign_items ci "
+             "LEFT JOIN projects p ON p.id=ci.project_id WHERE ci.campaign_id=? AND ci.status IN ('done','skipped','failed') "
+             "AND ci.redo IS NULL AND ci.climb_id IS NOT NULL AND COALESCE(ci.rerun_rules, 0)<? AND ci.blocked IS NULL",
+             camp["id"], MESH_RULES)
+    n = 0
+    for r in rows:
+        if r["climb_id"] not in waiting or r["pstatus"] in ("queued", "running", "harvesting"):
+            continue
+        if r["pstatus"] and (PROJECTS / r["project_id"]).is_dir():
+            set_item(camp["id"], r["source_id"], status="pending", retry=0, redo="new+rebuild", was=r["status"], redo_started=0,
+                     rerun_rules=MESH_RULES, old_rerun=1, note=f"queued to {REDO_NAMES['new+rebuild']}: {OLD_RERUN_NOTE}")
+        else:
+            set_item(camp["id"], r["source_id"], status="pending", retry=0, redo=None, project_id=None, rerun_rules=MESH_RULES,
+                     old_rerun=1, note=f"queued to harvest and mesh: {OLD_RERUN_NOTE}, or another climb's")
+        n += 1
+    return n
+
+
+def retire_covered(mid: str, log=print) -> list[str]:
+    """After a mesh made under the rules: each current old mesh (MESH_RULES lower) every one of whose climbs it's of
+    too (mesh_climbs(), those linked via the old one included) becomes an older version of it, as a rebuild's mesh
+    before does. Never one made under the same rules, which old_by_data() may call old instead. Their links to those
+    climbs go, as the new mesh is of them (linked to it, or for a boulder's, placing it); to a climb's own mesh they move
+    to it, as supersede() moves them. Returns the meshes it replaced."""
+    new = q("SELECT id, source, rules, boulder, replaced_by FROM meshes WHERE id=?", mid, one=True)
+    if not new or new["replaced_by"] or mesh_is_old(new) or not (new["source"] or "").startswith("project:"):
+        return []
+    covers = mesh_climbs(mid, new["boulder"])
+    if not covers:
+        return []
+    out = []
+    for m in q(f"SELECT id, boulder FROM meshes m WHERE replaced_by IS NULL AND id!=? AND {OLD_MESH}", mid):
+        if is_rest(m["boulder"]) and rest_parent(m["boulder"]) == mid:
+            continue
+        theirs = mesh_climbs(m["id"], m["boulder"], shared=True) or (
+            {c["id"] for c in boulder_climbs(m["boulder"])} if m["boulder"] and not is_rest(m["boulder"]) else set())
+        if not theirs or not theirs <= covers:
+            continue
+        if new["boulder"]:
+            q("DELETE FROM mesh_links WHERE mesh_id=?", m["id"], write=True)
+            q("UPDATE campaign_items SET mesh_id=? WHERE mesh_id=?", mid, m["id"], write=True)
+            q("UPDATE meshes SET replaced_by=? WHERE id=? OR replaced_by=?", mid, m["id"], m["id"], write=True)
+            for r in q("SELECT id, boulder FROM meshes WHERE boulder LIKE ? AND replaced_by IS NULL", f"%{REST_MARK}%"):
+                if is_rest(r["boulder"]) and rest_parent(r["boulder"]) == m["id"]:
+                    q("UPDATE meshes SET replaced_by=? WHERE id=?", mid, r["id"], write=True)
+                    q("DELETE FROM mesh_links WHERE mesh_id=? AND note=?", r["id"], REST_LINK, write=True)
+        else:
+            supersede(m["id"], mid)
+        out.append(m["id"])
+    if out:
+        old_changed()
+        log(f"old meshes {', '.join(out)}, made before the rules for what an area meshes last changed, of climbs this is of "
+            "too: older versions of this now")
+    return out
+
+
+def old_mesh_report(fresh: bool = False) -> dict:
+    """How far the meshes are from none old (MESH_RULES), for the admin page: the climbs of old meshes and those linked
+    only via another climb's (old_climbs()), each remade; missed, if tried under the rules and yet no new mesh is of it,
+    which is to be looked into; else waiting, not tried under them yet (queued again as their areas run: queue_old()).
+    Worked out at most every OLD_REPORT_EVERY seconds.
+
+    Old by data (old_by_data()) are counted apart, with the pairs to decide.
+
+    Returns:
+        {rules, since, old_meshes, meshes (current ones made by areas and projects), climbs, remade, waiting, via,
+        missed: [{id, name, why}], old_data (how many), decide: [{id, name, newer, newer_name, why}]}.
+    """
+    if not fresh and _old_report["report"] and time.time() - _old_report["at"] < OLD_REPORT_EVERY:
+        return _old_report["report"]
+    st = old_climbs(fresh)
+    climbs, remade, tried = st["climbs"], st["remade"], st["tried"]
     missed_ids = sorted(c for c in climbs if c in tried and c not in remade)
     names = {r["id"]: r["name"] for r in q(f"SELECT id, name FROM climbs WHERE id IN ({','.join('?' * len(missed_ids)) or 'NULL'})", *missed_ids)}
-    report = {"rules": MESH_RULES, "since": since, "old_meshes": len(old), "meshes": len(made), "climbs": len(climbs),
-              "remade": len(climbs & remade), "waiting": len([c for c in climbs if c not in tried and c not in remade]),
-              "via": len(via - remade), "missed": [{"id": c, "name": names.get(c, c), "why": tried[c]} for c in missed_ids]}
+    report = {"rules": MESH_RULES, "since": MESH_RULES_SINCE[MESH_RULES], "old_meshes": len(st["old"]), "meshes": len(st["made"]),
+              "climbs": len(climbs), "remade": len(climbs & remade), "waiting": len([c for c in climbs if c not in tried and c not in remade]),
+              "via": len(st["via"] - remade), "missed": [{"id": c, "name": names.get(c, c), "why": tried[c]} for c in missed_ids],
+              "old_data": len([m for m in st["made"] if m["old_data"] and not mesh_is_old(m)]), "decide": _old_data["decide"]}
     _old_report.update(at=time.time(), report=report)
     return report
+
+
+# ------------------------------------------------------------------ old by data: a newer mesh under the same rules, from more
+OLD_DATA_FIELDS = ("meshopts", "filter", "leaf_kind", "pool")   # what else told apart two meshes made from the same photos
+_old_data: dict = {"at": 0.0, "decide": [], "flagged": 0}
+
+
+def _photo_set(mid: str) -> tuple[set[str] | None, str]:
+    """A mesh's photos, to compare with another's: by content (SHA-1s, from inputs.json), or, where those weren't kept,
+    by name (from inputs.json, else photo_sources.json); and which ("sha1", "name", or "" for neither)."""
+    rec = meshinputs.load(MESHES / mid) or {}
+    files = (rec.get("photos") or {}).get("files") if isinstance(rec.get("photos"), dict) else None
+    if files:
+        return {v[1] for v in files.values()}, "sha1"
+    src = provenance.load(MESHES / mid)
+    if src and src.get("photos"):
+        return {p["file"] for p in src["photos"] if p.get("file")}, "name"
+    return None, ""
+
+
+def _compare_made(a: str, b: str) -> tuple[str, str]:
+    """Mesh a, against b, a newer one under the same rules of every climb a is of: ("old", why) if b was made from
+    photos a lacked (by inputs.json; without it, if a's photos are some of b's); else ("decide", why)."""
+    pa, ka = _photo_set(a)
+    pb, kb = _photo_set(b)
+    if pa is None or pb is None:
+        return "decide", "what it, or the newer one, was made from wasn't kept"
+    if ka == kb == "sha1":
+        if pb - pa:
+            return "old", f"the newer one was made from {plural(len(pb - pa), 'photo')} it lacked"
+        if pb == pa:
+            ra, rb = meshinputs.load(MESHES / a) or {}, meshinputs.load(MESHES / b) or {}
+            differ = [f for f in OLD_DATA_FIELDS if ra.get(f) != rb.get(f)]
+            return "decide", ("the same photos, with other " + ", ".join(differ) if differ else
+                              "the same photos and settings, and a different result")
+        return "decide", f"the newer one was made from {plural(len(pa - pb), 'photo')} fewer, and none it lacked"
+    if ka != kb:    # one by content and one by name: by name, from what each kept
+        pa = set(((meshinputs.load(MESHES / a) or {}).get("photos") or {}).get("files") or {}) or pa if ka == "sha1" else pa
+        pb = set(((meshinputs.load(MESHES / b) or {}).get("photos") or {}).get("files") or {}) or pb if kb == "sha1" else pb
+    if pa < pb:
+        return "old", f"its photos are {len(pa)} of the newer one's {len(pb)} (what they were made from wasn't kept)"
+    return "decide", ("the same photos by name" if pa == pb else "its photos aren't some of the newer one's") + \
+        " (what they were made from wasn't kept)"
+
+
+def old_by_data(log=print) -> dict:
+    """Which current meshes are old by data: a newer current mesh, made under the same rules (MESH_RULES), is of every climb
+    one is of (mesh_climbs()), and was made from photos it lacked (_compare_made()). Kept in meshes.old_data (the newer
+    one's id): hidden from visitors' lists, tagged for editors, never made an older version or deleted. A pair that fits
+    neither kind of old (the same photos and a different result, say) is to be decided on the admin page
+    (decide_old()), and what was decided stands. A mesh old by rules isn't looked at: it's old already.
+
+    Returns:
+        {flagged: how many are old by data, decide: [{id, name, newer, newer_name, why}]}.
+    """
+    rows = [m for m in q("SELECT id, name, source, rules, boulder, created, old_data FROM meshes m WHERE replaced_by IS NULL "
+                         "AND source LIKE 'project:%' ORDER BY created") if not mesh_is_old(m)]
+    climbs = {m["id"]: mesh_climbs(m["id"], m["boulder"]) for m in rows}
+    of: dict[str, list[dict]] = {}
+    for m in rows:
+        for c in climbs[m["id"]]:
+            of.setdefault(c, []).append(m)
+    decided = {(r["mesh_id"], r["newer"]): r["verdict"] for r in q("SELECT * FROM old_decisions")}
+    flags, decide = {}, []
+    for a in rows:
+        mine = climbs[a["id"]]
+        if not mine:
+            continue
+        first = next(iter(mine))
+        newer = [b for b in of.get(first, []) if b["created"] > a["created"] and (b["rules"] or 0) == (a["rules"] or 0)
+                 and mine <= climbs[b["id"]] and not (is_rest(b["boulder"]) and rest_parent(b["boulder"]) == a["id"])]
+        asks = []
+        for b in sorted(newer, key=lambda b: -b["created"]):
+            verdict = decided.get((a["id"], b["id"]))
+            why = "decided on the admin page" if verdict else ""
+            if not verdict:
+                verdict, why = _compare_made(a["id"], b["id"])
+            if verdict == "old":
+                flags[a["id"]] = b["id"]
+                break
+            if verdict == "decide":
+                asks.append({"id": a["id"], "name": a["name"], "newer": b["id"], "newer_name": b["name"], "why": why})
+        else:
+            decide += asks
+    for m in rows:
+        if (m["old_data"] or None) != flags.get(m["id"]):
+            q("UPDATE meshes SET old_data=? WHERE id=?", flags.get(m["id"]), m["id"], write=True)
+    q("UPDATE meshes SET old_data=NULL WHERE old_data IS NOT NULL AND (replaced_by IS NOT NULL OR source NOT LIKE 'project:%')", write=True)
+    _old_data.update(at=time.time(), decide=decide, flagged=len(flags))
+    if flags or decide:
+        log(f"old by data: {len(flags)} mesh(es) a newer one under the same rules was made from more for; {len(decide)} to decide")
+    return {"flagged": len(flags), "decide": decide}
+
+
+_old_data_lock = threading.Lock()
+_old_data_again = threading.Event()
+
+
+def meshes_changed() -> None:
+    """A mesh was made, replaced or deleted: what's old is worked out again (old_changed()), old by data in the
+    background, once at a time (a change while it runs has it run once more)."""
+    old_changed()
+    _old_data_again.set()
+    if not _old_data_lock.acquire(blocking=False):
+        return
+
+    def run() -> None:
+        try:
+            while _old_data_again.is_set():
+                _old_data_again.clear()
+                try:
+                    old_by_data()
+                except Exception as e:      # only costs that
+                    print(f"old by data: failed ({type(e).__name__}: {e})", flush=True)
+                old_changed()
+        finally:
+            _old_data_lock.release()
+    threading.Thread(target=run, daemon=True, name="old-by-data").start()
+
+
+def decide_old(mid: str, newer: str, verdict: str) -> dict:
+    """The admin page's answer for a pair old_by_data() couldn't tell: "old" (mid is old by data, as newer covers it) or
+    "keep" (both stay current). It stands until either is replaced or deleted."""
+    if verdict not in ("old", "keep"):
+        raise ValueError("verdict must be old or keep")
+    if not q("SELECT 1 FROM meshes WHERE id=?", mid) or not q("SELECT 1 FROM meshes WHERE id=?", newer):
+        raise KeyError(mid)
+    q("INSERT OR REPLACE INTO old_decisions(mesh_id, newer, verdict, decided) VALUES(?,?,?,?)", mid, newer, verdict, time.time(), write=True)
+    return old_by_data()
 
 
 def remesh_untied(log=print) -> dict:
@@ -2460,6 +2718,7 @@ def inputs_existing_meshes() -> None:
                 print(f"{m['id']}: backfilling what it was made from failed ({type(e).__name__}: {e})", flush=True)
     if n:
         print(f"recorded what {n} mesh{'' if n == 1 else 'es'} made before inputs.json were made from, as far as their projects tell", flush=True)
+    meshes_changed()    # which are old by data, now that what they were made from is known
 
 
 def _linked_as(names: dict[str, Path], where: Path) -> list[Path]:
@@ -2845,7 +3104,8 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             link_mesh(mid, proj["climb_id"], "auto-linked from reconstruction project")
             log(f"mesh linked to climb {proj['climb_id']}")
         before = proj["mesh_id"] if proj["mesh_id"] and proj["mesh_id"] != mid and q("SELECT id FROM meshes WHERE id=?", proj["mesh_id"]) else None
-        worse = fewer_placed(before, mid, pdir / "photos") if before and keep_better else None
+        worse = fewer_placed(before, mid, pdir / "photos") if before and keep_better and not mesh_is_old(
+            q("SELECT source, rules FROM meshes WHERE id=?", before, one=True)) else None      # never an old one over it
         if worse:
             supersede(mid, before)
             log(f"this placed {worse[0]} of its photos, fewer than the {worse[1]} mesh {before} placed from them: that one stays "
@@ -2859,6 +3119,9 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         record_sources(mid, pid, log)
         if proj["kind"] == "boulder" and not worse:
             place_climbs(mid, pid, log)
+        if not worse:
+            retire_covered(mid, log)
+        meshes_changed()
         keep_heading(mid, log)
         tracker.finish()     # before it's marked done, so that anything waiting for that sees it all finished
         keep_timings(mid, pid, started, log_from, tracker, remote)
@@ -3614,14 +3877,21 @@ UNFINISHED = ("pending", "running", "waiting", "harvested")
 def limit_scope(camp: dict) -> tuple[set[str] | None, int]:
     """What an area with a limit (max_meshes) works through: its climbs and boulders (_units()) in its order, until as
     many as its limit have made a mesh or may yet, or failed too if it counts failures (count_failures). One that
-    fails otherwise brings in the next. What's done stays within it, so that raising the limit only goes on.
+    fails otherwise brings in the next. What's done stays within it, so that raising the limit only goes on. One done
+    whose only meshes are old (or another climb's), not tried under the rules yet (old_waiting()), may yet make one,
+    rather than having made one: it's queued again (queue_old()).
 
     Returns:
         (the climbs within it, by source_id, or None without a limit; how many meshes they've made).
     """
     if not camp.get("max_meshes"):
         return None, 0
-    items = q("SELECT source_id, rank, stars, media, boulder, status FROM campaign_items WHERE campaign_id=?", camp["id"])
+    items = q("SELECT source_id, rank, stars, media, boulder, status, climb_id, rerun_rules FROM campaign_items WHERE campaign_id=?",
+              camp["id"])
+    stale = old_waiting()
+    for i in items:
+        if i["status"] == "done" and i["climb_id"] in stale and (i["rerun_rules"] or 0) < MESH_RULES:
+            i["status"] = "pending"
     scope, n, made = set(), 0, 0
     for unit in _units(camp, items):
         if n >= camp["max_meshes"]:
@@ -3645,8 +3915,8 @@ def following(item: dict) -> bool:
 
 def ordered_pending(camp: dict) -> list[dict]:
     """A campaign's waiting climbs, next first: within its limit, if it has one. Not those paused (pause_item())."""
-    items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry,redo,was,boulder,waiting_since FROM campaign_items "
-              "WHERE campaign_id=? AND status='pending' AND paused IS NULL ORDER BY rank", camp["id"])
+    items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry,redo,was,boulder,waiting_since,old_rerun FROM campaign_items "
+              "WHERE campaign_id=? AND status='pending' AND paused IS NULL AND blocked IS NULL ORDER BY rank", camp["id"])
     scope = in_scope(camp)
     if scope is None:
         items = _in_order(camp, items)
@@ -3654,8 +3924,9 @@ def ordered_pending(camp: dict) -> list[dict]:
                 # what follows from work done: meshing on their own those harvested for a boulder's mesh that won't be
                 # (settle_groups()) or that one hardly showed (before keep_rest()), and pools of climbs (settle_clusters())
         items = [i for unit in _units(camp, [i for i in items if i["source_id"] in scope or following(i)]) for i in unit]
-    # retries were asked for, and a climb that was interrupted comes next, to finish what it started
-    items.sort(key=lambda i: (not i["retry"], not i["project_id"]))
+    # retries were asked for, and a climb that was interrupted comes next, to finish what it started; those queued again as
+    # their meshes are old (queue_old()) after the rest
+    items.sort(key=lambda i: (not i["retry"], bool(i["old_rerun"]), not i["project_id"]))
     return items
 
 
@@ -3712,7 +3983,8 @@ def run_campaign_item(camp: dict, item: dict) -> None:
         full = q("SELECT data,climb_id,boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
         c = Climb.from_dict(json.loads(full["data"]))
         climb_id = full["climb_id"] or upsert_climb(c)
-        have = q("SELECT mesh_id FROM mesh_links WHERE climb_id=? AND COALESCE(note,'') NOT LIKE ? LIMIT 1", climb_id, SHARED + "%", one=True)
+        have = q(f"SELECT l.mesh_id FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=? AND COALESCE(l.note,'') "
+                 f"NOT LIKE ? AND NOT {OLD_MESH} LIMIT 1", climb_id, SHARED + "%", one=True)    # not one old, or another's
         made = q("SELECT id FROM meshes WHERE source=? LIMIT 1", f"project:{pid}", one=True) if resume else None
         with_boulder = (boulder_mesh_with(climb_id, c.area_path) if not (made or have) and settings().get("areas.meshes") == "boulders"
                         else None)
@@ -3777,7 +4049,8 @@ def run_campaign_item(camp: dict, item: dict) -> None:
             link_after(cid, sid)
         _outages.clear()
     finally:
-        q("UPDATE campaign_items SET retry=0 WHERE campaign_id=? AND source_id=? AND status NOT IN ('pending','running')", cid, sid, write=True)
+        q("UPDATE campaign_items SET retry=0, old_rerun=0 WHERE campaign_id=? AND source_id=? AND status NOT IN ('pending','running')",
+          cid, sid, write=True)
 
 
 HARVESTED_NOTE = "harvested for its boulder's mesh, made once the area's climbs on it are all harvested"
@@ -4221,6 +4494,7 @@ def _claim(w: Worker):
         if camp["ord"] == "data" and not camp["only_retries"] and not any(x.campaign for x in others):
             read_ahead(camp)
         settle_waiting(camp["id"])
+        queue_old(camp)
         for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND status='harvested'", camp["id"]):
             settle_boulder(camp["id"], b["boulder"])     # as after a restart between its last harvest and queueing its mesh
         for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND boulder IS NOT NULL "
@@ -4760,8 +5034,8 @@ def _boulder_again(cid: str, row: dict) -> dict:
 def run_redo(camp: dict, item: dict) -> None:
     """Harvest or rebuild again one of an area's climbs that has been through it before."""
     cid, sid = camp["id"], item["source_id"]
-    row = q("SELECT source_id,climb_id,project_id,mesh_id,redo,was,changed,redo_started,waiting_since,boulder,pool FROM campaign_items "
-            "WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
+    row = q("SELECT source_id,climb_id,project_id,mesh_id,redo,was,changed,redo_started,waiting_since,boulder,pool,old_rerun "
+            "FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
     row["was"] = row["was"] or "done"
     log = lambda s: append_log(row["project_id"], s)  # noqa: E731
     first, *then = row["redo"].split("+")
@@ -4786,9 +5060,10 @@ def run_redo(camp: dict, item: dict) -> None:
             if row["was"] == "waiting" and not row["mesh_id"] and unchecked(camp, row["project_id"]):   # tried again later
                 log("still not searched for on YouTube: not meshed yet")
                 return wait_for_volunteers(cid, sid, row["project_id"], None)
-            if pooled(cid, row["boulder"]) and (row["was"] in ("waiting", "harvested") or (then and end.get("changed"))):
+            remake = bool(row["old_rerun"])     # its meshes are old (queue_old()): made again, whatever was found
+            if pooled(cid, row["boulder"]) and (row["was"] in ("waiting", "harvested") or (then and (end.get("changed") or remake))):
                 end = {**end, "status": "harvested", "note": HARVESTED_NOTE}     # its boulder's mesh is made again with it
-            elif then and (end.get("changed") or (row["was"] == "waiting" and not row["mesh_id"])):
+            elif then and (end.get("changed") or remake or (row["was"] == "waiting" and not row["mesh_id"])):
                 set_item(cid, sid, changed=1)
                 harvested_note = end["note"].split("; ")[0]     # not "Rebuild changed will use them": it's being rebuilt
                 end = _rebuild(cid, {**row, "changed": 1}, log)
@@ -4805,7 +5080,7 @@ def run_redo(camp: dict, item: dict) -> None:
         raise
     except Exception as e:
         end = {"status": row["was"], "note": f"{REDO_NAMES[row['redo']]}: {type(e).__name__}: {e}"}
-    set_item(cid, sid, **end, redo=None, retry=0, redo_started=0)
+    set_item(cid, sid, **end, redo=None, retry=0, redo_started=0, old_rerun=0)
     if end.get("status") != "harvested":
         link_after(cid, sid)
 
@@ -4853,7 +5128,7 @@ def settle_clusters(camp_id: str, leaf: str) -> int:
             then = {c["id"] for c in json.loads((PROJECTS / proj["id"] / CLIMBS_FILE).read_text())["climbs"]} if proj else None
         except (OSError, ValueError, KeyError):
             then = None
-        if then == set(group):  # pooled from these climbs before, however it went
+        if then == set(group) and not old_pool(proj):  # pooled from these climbs before, however it went
             continue
         first = next(i for i in items if i["climb_id"] in group)
         set_item(camp_id, first["source_id"], status="pending", retry=1, redo="cluster", was=first["status"], redo_started=0, pool=key,
@@ -4908,6 +5183,24 @@ def _run_cluster_redo(camp: dict, row: dict) -> None:
 
 
 POOLED_LINK = "pooled with the climbs its photos match"     # a mesh_links note: a pool's mesh, linked to each of its climbs
+
+
+def began_since(progress: str | None) -> bool:
+    """Whether a project's last job began under the rules (MESH_RULES_SINCE), by its progress."""
+    try:
+        began = max((st.get("started") or 0 for st in json.loads(progress or "{}").get("steps") or []), default=0)
+    except (ValueError, AttributeError):
+        return False
+    return began >= MESH_RULES_SINCE[MESH_RULES]
+
+
+def old_pool(proj: dict | None) -> bool:
+    """Whether a pool's project (settle_clusters()) is to mesh again from the same climbs: its mesh is old (MESH_RULES),
+    and it hasn't tried under the rules."""
+    if not proj or not proj["mesh_id"] or began_since(proj.get("progress")):
+        return False
+    m = q("SELECT source, rules, replaced_by FROM meshes WHERE id=?", proj["mesh_id"], one=True)
+    return bool(m and not m["replaced_by"] and mesh_is_old(m))
 
 
 def adopt_old_pools(log=print) -> int:
@@ -5851,7 +6144,9 @@ def campaign_view(camp: dict) -> dict:
         made = limit_scope(camp)[1]
     last_mesh = q("SELECT MAX(updated) t FROM campaign_items WHERE campaign_id=? AND status='done' AND mesh_id IS NOT NULL",
                   cid, one=True)["t"]
-    return {**camp, "counts": counts, "again": again, "listed": listed, "worked": worked, "current": running[0] if running else None,
+    old_queued = q("SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND old_rerun=1 AND status IN ('pending','running')",
+                   cid, one=True)["n"]     # queued again as their meshes are old (queue_old())
+    return {**camp, "counts": counts, "again": again, "listed": listed, "old_queued": old_queued, "worked": worked, "current": running[0] if running else None,
             "running": running, "paused": paused, "next": pending[:10], "machine_wait": machine_wait(cid), "made": made, "last_mesh": last_mesh}
 
 
@@ -7581,7 +7876,7 @@ class Handler(BaseHTTPRequestHandler):
                     sets = boulder_mesh_sets(rows, kinds)
                     leaf_of = {mid: leaf for leaf, ids in sets.items() for mid in ids}
                     current = {r["id"] for r in rows if not r.get("replaced_by")}
-                    old = {r["id"] for r in rows if r["old"]}
+                    old = {r["id"] for r in rows if r["old"] or r.get("old_data")}     # either kind: left out for visitors
                     if any(c["id"] not in cnames for r in rows for c in r["climbs"]) or \
                             any(leaf not in bnames for leaf, ids in sets.items() if current.intersection(ids)):
                         cnames, bnames = link_names(force=True)     # one added since the last naming
@@ -8288,6 +8583,7 @@ class Handler(BaseHTTPRequestHandler):
             q("DELETE FROM mesh_links WHERE mesh_id=?", m[1], write=True)
             q("DELETE FROM mesh_ratings WHERE mesh_id=?", m[1], write=True)
             shutil.rmtree(MESHES / m[1], ignore_errors=True)
+            meshes_changed()
             return self.send_json({"deleted": m[1]})
         m = re.fullmatch(r"/api/projects/([0-9a-f]+)", p)
         if m:
@@ -8981,6 +9277,16 @@ def admin_measure(_: dict) -> dict:
     return {"result": f"the data takes {u['total'] / 2**30:.1f} GB" + (f" of {data_cap() / 2**30:g}" if data_cap() else "")}
 
 
+def admin_old_decide(body: dict) -> dict:
+    """The admin page's answer for a pair of meshes old_by_data() couldn't tell: {mesh, newer, verdict: old | keep}."""
+    try:
+        got = decide_old(str(body.get("mesh") or ""), str(body.get("newer") or ""), str(body.get("verdict") or ""))
+    except KeyError:
+        raise ValueError("no such mesh")
+    old_changed()
+    return {"result": ("called old by data" if body.get("verdict") == "old" else "kept as it is") + f"; {len(got['decide'])} left to decide"}
+
+
 def admin_remesh_untied(_: dict) -> dict:
     """Mesh again the boulders whose meshes were made before ties were recorded (remesh_untied()), in the background, as
     reading their areas' pages waits its turn with Mountain Project."""
@@ -9100,6 +9406,7 @@ def main() -> None:
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rest": admin_rest,
                                        "remesh-untied": admin_remesh_untied, "inputs-check": admin_inputs_check,
+                                       "old-decide": admin_old_decide,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,

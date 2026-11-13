@@ -270,6 +270,20 @@ meshes leave them out. The admin page says how many are left, and of their climb
 another climb's mesh) how many have a mesh made under the rules, how many wait to be tried, and, listed, those tried
 under the rules that no new mesh is of.
 
+A climb whose only meshes are old, or that's linked only via another climb's mesh, isn't done any more, nor counted
+among an area's first N meshes made. As its area runs, it's queued again after the rest of the area's list, in its
+order, once for each change of the rules: one harvested before is looked for in every source again, adding what's new,
+and meshed again whatever that finds (on a boulder meshed whole, its boulder's mesh is made again once its climbs are);
+one never harvested is harvested and meshed as if new. Areas stopped or done aren't started for it. The area's card
+counts those queued so. A new mesh becomes the current one in place of each old mesh whose climbs it's of too, which
+stays as an older version of it; one made under the same rules never does.
+
+A mesh is *old by data* when a newer one, made under the same rules, is of every climb it's of, and was made from photos
+it lacked (by what each was made from, `inputs.json`; where that wasn't kept, when its photos are some of the newer
+one's). It stays current, and isn't deleted, but visitors' lists of a boulder's meshes leave it out too, and editors see
+it tagged *old (data)*. The admin page counts these apart from the old ones, and lists in red, to decide, each pair that
+fits neither (the same photos and a different result, say): *Old* calls it old by data, *Keep* leaves both as they are.
+
 Each mesh keeps what it was made from in `inputs.json` (its photos and their hashes, what its boulder or pool was taken
 to be and which harvests it pooled, the filter's version and settings, the mapper's settings, `MESH_RULES`), shown at
 `/api/meshes/<id>/inputs`. Before raising `MESH_RULES`, `python3 cli.py inputs-check` (in Docker, `docker exec`), or the

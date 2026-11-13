@@ -2446,8 +2446,8 @@ made("mf", since - 1800)                            # cf's own, from before; cf 
 made("up", since - 9000, source="upload")           # uploaded: never old
 for mid, cid, note in (("mo", "ca", None), ("mn", "cb", None), ("mn", "cd", None), ("mf", "cf", None), ("mo", "ce", server.SHARED + "Climb ca")):
     server.link_mesh(mid, cid, note)
-server.q("INSERT INTO campaign_items(campaign_id, source_id, climb_id, name, status, note, updated) VALUES('k','f','cf','Climb cf','done',"
-         "'already had a mesh',?)", since + 120, write=True)
+server.q("INSERT INTO campaign_items(campaign_id, source_id, climb_id, name, status, note, updated) VALUES('k','f','cf','Climb cf','skipped',"
+         "'photos don''t show enough different viewpoints',?)", since + 120, write=True)
 server.init_db()
 rows = {r["id"]: r for r in server.q("SELECT * FROM meshes")}
 assert [mid for mid in sorted(rows) if server.mesh_is_old(rows[mid])] == ["bo", "mf", "mo"], rows
@@ -2457,7 +2457,11 @@ assert (got["ca"]["n_links"], got["ca"]["n_links_old"], got["cb"]["n_links"], go
 assert (got["cc"]["n_boulder"], got["cc"]["n_boulder_old"]) == (1, 1), got["cc"]
 r = server.old_mesh_report(fresh=True)
 assert (r["old_meshes"], r["meshes"], r["climbs"], r["remade"], r["waiting"], r["via"]) == (3, 4, 5, 1, 3, 1), r
-assert [(c["id"], c["why"]) for c in r["missed"]] == [("cf", "done in its area since: already had a mesh")], r["missed"]
+assert [(c["id"], c["why"]) for c in r["missed"]] == [("cf", "skipped in its area since: photos don't show enough different viewpoints")], r["missed"]
+# done since with the mesh it already had (an old one, before areas stopped counting those): not tried under the rules
+server.q("UPDATE campaign_items SET status='done', note='already had a mesh' WHERE climb_id='cf'", write=True)
+r = server.old_mesh_report(fresh=True)
+assert (r["waiting"], r["missed"]) == (4, []), r
 print("old meshes OK")
 
 # --- beta found in each new mesh with video frames placed in it; kept videos beta can't use, deleted once settled ------

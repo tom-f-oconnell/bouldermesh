@@ -816,6 +816,35 @@ more in 10 harvests (17 meshes changed, most of it dedupe reading the pooled pho
 backfill every record from scratch, hashing 1.2 GB of photos. Real photos are bigger, so dedupe and hashing take longer
 there, and INPUTS_BUDGET (120 s) bounds the first.
 
+## Old meshes, made again (`queue_old()`, `retire_covered()`)
+
+The goal (Nov 12) is no old meshes and no "via" links: every climb they're of tried under the rules, and any that
+attempt makes no mesh of listed prominently, rather than deleting anything.
+- **Not done any more.** A climb whose only meshes are old, or that's linked only via another climb's mesh, doesn't count
+  as done in `run_campaign_item()` (its "already had a mesh", and a boulder's mesh it's on), in `boulder_unchanged()` (an
+  old boulder's mesh is made again from the same photos), or towards an area's first N (`limit_scope()`).
+- **When.** As its area runs (`_claim()`), after anything already on the list, so that what an area was entered for
+  comes first; areas stopped or done aren't started for it, as their owner stopped them. Once for each `MESH_RULES`
+  (`campaign_items.rerun_rules`): a climb tried whose new attempt makes no mesh stays old and is listed in red on the
+  admin page, rather than being queued round and round.
+- **How.** One harvested before is queued as "new+rebuild", which looks in every source again, downloads only what it
+  hasn't had, keeps earlier verdicts, and is meshed again whatever it finds (on a boulder meshed whole, harvested and its
+  boulder meshed again, the existing path). One never harvested (via another's mesh) starts as if new. Interrupted by a
+  restart, it goes next, as other interrupted climbs do. "Keep the mesh before when a rebuild places fewer" never keeps
+  an old mesh over a new one.
+- **Replacing.** A new mesh takes over from each current old mesh (lower `MESH_RULES`) every one of whose climbs it's of
+  too, those linked via it included: the old one becomes an older version, as a rebuild's mesh before does. One made
+  under the same rules never does (see old by data); a rebuild in the same project replaces its mesh before as ever.
+- **Old by data** (`old_by_data()`, `meshes.old_data`). A newer mesh under the same rules, made from more, is of the same
+  climbs: as a climb's own mesh once its boulder's is made from every climb's photos, or one made again after volunteers
+  fetched more. Lower priority than old by rules, so nothing is replaced or deleted: it's only left out of visitors'
+  lists of a boulder's meshes and tagged for editors, worked out again whenever a mesh is made, replaced or deleted. Told
+  by the photos' SHA-1s in `inputs.json`: the newer one has photos it lacked (it may also lack some of this one's, as a
+  harvest again can drop some). Without them, by name: its photos (from `inputs.json`, else `photo_sources.json`, which
+  for meshes with cameras lists only those placed) are a strict subset of the newer one's. Anything else (the same photos
+  with a different result, or the newer one from fewer) is listed to decide, as neither kind fits it, and the answer is
+  kept in `old_decisions`.
+
 ## Videos found by searching, and climbers' sizes (`backend/climbs/youtube.py`)
 
 Only 120 of 317 fetched climb pages linked any video, and Relic's linked none. One YouTube search

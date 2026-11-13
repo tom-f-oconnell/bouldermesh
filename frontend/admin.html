@@ -307,9 +307,17 @@ function oldMeshesNote(o){
   const when = new Date(o.since * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
   const missed = o.missed.length ? `<div class="bad"><b>${o.missed.length} climb${o.missed.length === 1 ? '' : 's'} tried under the current rules that no new mesh is of:</b>
     <ul>${o.missed.map(c => `<li>${esc(c.name)} <small>(${esc(c.why)})</small></li>`).join('')}</ul></div>` : '';
-  return `${missed}<b class="${o.old_meshes ? 'warn' : 'ok'}">Old meshes: ${o.old_meshes} of ${o.meshes} current ones</b>, made before the rules for what
+  // a mesh and a newer one under the same rules of its climbs, that fit neither kind of old: one of them to decide
+  const decide = (o.decide || []).length ? `<div class="bad"><b>${o.decide.length} mesh${o.decide.length === 1 ? '' : 'es'} to decide on:</b> a newer one,
+    made under the same rules, is of every climb each is of, but not from photos it lacked. <i>Old</i> leaves it out of visitors' lists of a boulder's
+    meshes, as old by data; <i>Keep</i> leaves both as they are.<ul>${o.decide.map(d => `<li>${esc(d.name)} <small>(${esc(d.id)})</small>, against the newer
+    ${esc(d.newer_name)} <small>(${esc(d.newer)}): ${esc(d.why)}</small> <button class="sec" data-decide="old" data-mesh="${esc(d.id)}" data-newer="${esc(d.newer)}">Old</button>
+    <button class="sec" data-decide="keep" data-mesh="${esc(d.id)}" data-newer="${esc(d.newer)}">Keep</button></li>`).join('')}</ul></div>` : '';
+  return `${decide}${missed}<b class="${o.old_meshes ? 'warn' : 'ok'}">Old meshes: ${o.old_meshes} of ${o.meshes} current ones</b>, made before the rules for what
     an area meshes last changed (${esc(when)}). Of their climbs and those linked only to another climb's mesh (${o.climbs} in all, ${o.via} of them
-    "via" another), ${o.remade} have a mesh made under the rules, ${o.missed.length} were tried without one, and ${o.waiting} wait to be tried.`;
+    "via" another), ${o.remade} have a mesh made under the rules, ${o.missed.length} were tried without one, and ${o.waiting} wait to be tried
+    (each queued again as its area runs).<br><b>Old by data: ${o.old_data || 0}</b>, of climbs a newer mesh made under the same rules, from photos
+    they lacked, is of too: kept, and left out of visitors' lists of a boulder's meshes.`;
 }
 async function call(path, body){
   const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -684,6 +692,13 @@ $('#matcher').onchange = () => save({ 'relevance.matcher': $('#matcher').value }
 $('#beta-auto').onchange = () => save({ 'beta.auto': $('#beta-auto').checked });
 $('#prune-videos').onchange = () => save({ 'videos.prune_unplaced': $('#prune-videos').checked });
 $('#skyline-auto').onchange = () => save({ 'facing.skyline': $('#skyline-auto').checked });
+$('#old-meshes').onclick = async e => {
+  const b = e.target.closest('button[data-decide]');
+  if (!b) return;
+  b.disabled = true;
+  try { msg((await call('/api/admin/actions/old-decide', { mesh: b.dataset.mesh, newer: b.dataset.newer, verdict: b.dataset.decide })).result, 8000); refresh(); }
+  catch (err) { msg(err.message, 8000); b.disabled = false; }
+};
 $('#remesh-untied').onclick = async () => { try { msg((await call('/api/admin/actions/remesh-untied', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#rest-all').onclick = async () => { try { msg((await call('/api/admin/actions/rest', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#map-km').onchange = () => save({ 'site.map_km': +$('#map-km').value });
