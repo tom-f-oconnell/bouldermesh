@@ -535,7 +535,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         note.text = now.note
         note.hidden = now.note.isEmpty()
         note.textColor = if (now.note.startsWith("Not kept")) WARN else UIColor.whiteColor
-        val levelling = now.phase == Phase.LEVEL && failed == null
+        val levelling = now.phase == Phase.LEVEL && failed == null && now.tracking
         val capturing = now.phase == Phase.CAPTURE && now.total > 0
         bar.hidden = !capturing && !levelling
         counts.hidden = !capturing && !levelling

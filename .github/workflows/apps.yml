@@ -96,6 +96,13 @@ jobs:
           script: |
             adb install -r "$RUNNER_TEMP/arcore.apk" || true
             ONLY=capture PREFIX=android-room app/ci/screens-android.sh app/android/build/outputs/apk/debug/android-debug.apk "http://10.0.2.2:$PORT" screens
+            app/ci/capture-android.sh "http://10.0.2.2:$PORT" screens
+      - name: What the photos it took say of themselves
+        if: always()
+        run: |
+          for f in $(find screens/android-room-captures -name '*.jpg' 2>/dev/null | sort | head -40); do
+            "$RUNNER_TEMP/venv/bin/python" -c "import sys, json; sys.path.insert(0, 'backend'); import phonedata; from PIL import Image; b = phonedata.read(sys.argv[1]) or {}; im = Image.open(sys.argv[1]); print(sys.argv[1].split('/')[-1], im.size, 'orientation', im.getexif().get(0x0112), json.dumps({k: b.get(k) for k in ('down', 'down_src', 'turn', 'heading', 'k', 'q')}))" "$f"
+          done | tee screens/android-room-photos.txt
       - if: always()
         run: mkdir -p screens && cp "$RUNNER_TEMP/server.log" screens/android-server.log || true
       - if: always()

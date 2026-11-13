@@ -105,7 +105,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
             Column(Modifier.fillMaxWidth().background(SHADE, RoundedCornerShape(10.dp)).padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(failed ?: ui.text, color = if (failed != null) BAD else Color.White, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
                 if (ui.note.isNotEmpty()) Text(ui.note, color = if (ui.note.startsWith("Not kept")) WARN else Color.White, style = MaterialTheme.typography.bodySmall)
-                if (ui.phase == Phase.LEVEL && failed == null) {
+                if (ui.phase == Phase.LEVEL && failed == null && ui.tracking) {
                     LinearProgressIndicator(progress = { ui.done.toFloat() / ui.total.coerceAtLeast(1) }, modifier = Modifier.fillMaxWidth())
                     Text("${ui.done} of ${ui.total} directions faced", color = Color.White, style = MaterialTheme.typography.bodySmall)
                 }
