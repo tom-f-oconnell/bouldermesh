@@ -22,7 +22,7 @@ import struct
 import time
 from pathlib import Path
 
-VERSION = 1             # goes up when a plan or guide made before would be read wrongly, or should be made again
+VERSION = 2             # goes up when a plan or guide made before would be read wrongly, or should be made again
 DIR, PLAN_FILE, GUIDE_FILE = "capture", "plan.json", "guide.bin"
 GUIDE_FACES = 12000     # at most, in the light mesh
 PATCH_CELLS = 10        # a patch: a box this share of the mesh's size, and the way its faces face
@@ -35,7 +35,15 @@ HOLD_RADIUS_M = 0.15    # a hold's target: this far round it
 HOLD_SAME_M = 0.08      # holds nearer each other than this are one
 NEAR_HOLD_M = 0.75      # rock this near a hold matters as much as the climb does
 NEAR_CLIMB_M = 1.5      # and this near where a climb's own photos look
-NEED = {"hold": {"gsd_mm": 0.5, "views": 4}, "patch": {"gsd_mm": 1.5, "views": 3}, "edge": {"views": 3}}
+# ladder: on the way in to a hold, a photo at each step this many times coarser, up to how its photos see it now: close
+# photos at half a millimetre a pixel match web photos at 9 through those in between, not directly
+NEED = {"hold": {"gsd_mm": 0.5, "views": 4, "ladder": 2.0}, "patch": {"gsd_mm": 1.5, "views": 3}, "edge": {"views": 3}, "view": {"views": 1}}
+# views: where a few of its photos were taken, to photograph it from again first, which ties a capture's photos to them
+BRIDGE = {"within_m": 1.0, "deg": 20.0}     # how near one, and how nearly looking as it did, counts as the same view
+BRIDGE_MOST = 6
+BRIDGE_GAIN = 0.05          # a view that shows less than this share more of what its photos saw isn't asked for
+BRIDGE_HEIGHT_M = (0.4, 2.3)    # above the ground: where a person can hold a phone
+BRIDGE_FAR_M = 10.0
 UP = (0.0, 1.0, 0.0)    # in a levelled mesh
 
 
@@ -86,50 +94,61 @@ def geometry(V, F):
     return (a + b + c) / 3, cross / np.maximum(size, 1e-12)[:, None], size / 2
 
 
+def _sees(C, N, cam: dict):
+    """What one photo saw of the faces: which (a mask), how finely each (units a pixel), the way to the camera from each,
+    and where the camera was; or None if its camera can't be read or it saw none. A face is seen by a photo that has it
+    in frame, facing it, with nothing nearer in the way (by a coarse picture of how far each part of the photo is, from
+    the faces' centres)."""
+    import numpy as np
+    lens = cam.get("lens") or {}
+    try:
+        f, w, h = float(lens["params"][0]), float(lens["width"]), float(lens["height"])
+        pinhole = lens.get("model") in (1, 4, 5, 6)     # fx, fy, cx, cy first
+        cx, cy = (lens["params"][2], lens["params"][3]) if pinhole else (lens["params"][1], lens["params"][2])
+        R, t = _rotation(cam["q"]), np.asarray(cam["t"], float)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    if f <= 0 or w <= 0 or h <= 0:
+        return None
+    o = -R.T @ t
+    P = (C - o) @ R.T
+    z = P[:, 2]
+    front = z > 1e-9
+    zs = np.where(front, z, 1.0)
+    u, v = f * P[:, 0] / zs + cx, f * P[:, 1] / zs + cy
+    inside = front & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    if not inside.any():
+        return None
+    away = C - o
+    d = np.linalg.norm(away, axis=1)
+    toward = -away / np.maximum(d, 1e-12)[:, None]
+    cosang = np.einsum("ij,ij->i", N, toward)
+    gh = max(1, int(round(DEPTH_GRID * h / w)))
+    cell = (np.clip((v / h * gh).astype(np.int64), 0, gh - 1) * DEPTH_GRID + np.clip((u / w * DEPTH_GRID).astype(np.int64), 0, DEPTH_GRID - 1))
+    cell = np.where(inside, cell, 0)
+    nearest = np.full(DEPTH_GRID * gh, np.inf)
+    np.minimum.at(nearest, cell[inside], d[inside])
+    # one cell of the photo is this wide at that distance: a face a cell's width behind the nearest is beside it
+    seen = inside & (cosang > math.cos(math.radians(FACING_DEG))) & (d <= nearest[cell] * (1.05 + 2.0 * w / DEPTH_GRID / f))
+    if not seen.any():
+        return None
+    return seen, d / f / np.maximum(cosang, 0.2), toward, o, R.T @ np.array([0.0, 0.0, 1.0]), d
+
+
 def coverage(C, N, cams: list[dict]):
     """How each face was photographed: the finest it was seen at, in units a pixel (inf: never), and from how many
-    different directions. A face is seen by a photo that has it in frame, facing it, with nothing nearer in the way
-    (by a coarse picture of how far each part of the photo is, from the faces' centres)."""
+    different directions (_sees() has what counts as seen)."""
     import numpy as np
     n = len(C)
     best = np.full(n, np.inf)
     dirs = np.zeros((n, VIEWS_KEPT, 3))
     count = np.zeros(n, np.int64)
-    cos_face, cos_view = math.cos(math.radians(FACING_DEG)), math.cos(math.radians(VIEW_DEG))
+    cos_view = math.cos(math.radians(VIEW_DEG))
     for cam in cams:
-        lens = cam.get("lens") or {}
-        try:
-            f, w, h = float(lens["params"][0]), float(lens["width"]), float(lens["height"])
-            pinhole = lens.get("model") in (1, 4, 5, 6)     # fx, fy, cx, cy first
-            cx, cy = (lens["params"][2], lens["params"][3]) if pinhole else (lens["params"][1], lens["params"][2])
-            R, t = _rotation(cam["q"]), np.asarray(cam["t"], float)
-        except (KeyError, IndexError, TypeError, ValueError):
+        saw = _sees(C, N, cam)
+        if saw is None:
             continue
-        if f <= 0 or w <= 0 or h <= 0:
-            continue
-        o = -R.T @ t
-        P = (C - o) @ R.T
-        z = P[:, 2]
-        front = z > 1e-9
-        zs = np.where(front, z, 1.0)
-        u, v = f * P[:, 0] / zs + cx, f * P[:, 1] / zs + cy
-        inside = front & (u >= 0) & (u < w) & (v >= 0) & (v < h)
-        if not inside.any():
-            continue
-        away = C - o
-        d = np.linalg.norm(away, axis=1)
-        toward = -away / np.maximum(d, 1e-12)[:, None]
-        cosang = np.einsum("ij,ij->i", N, toward)
-        gh = max(1, int(round(DEPTH_GRID * h / w)))
-        cell = (np.clip((v / h * gh).astype(np.int64), 0, gh - 1) * DEPTH_GRID + np.clip((u / w * DEPTH_GRID).astype(np.int64), 0, DEPTH_GRID - 1))
-        cell = np.where(inside, cell, 0)
-        nearest = np.full(DEPTH_GRID * gh, np.inf)
-        np.minimum.at(nearest, cell[inside], d[inside])
-        # one cell of the photo is this wide at that distance: a face a cell's width behind the nearest is beside it
-        seen = inside & (cosang > cos_face) & (d <= nearest[cell] * (1.05 + 2.0 * w / DEPTH_GRID / f))
-        if not seen.any():
-            continue
-        gsd = d / f / np.maximum(cosang, 0.2)
+        seen, gsd, toward = saw[:3]
         best[seen] = np.minimum(best[seen], gsd[seen])
         idx = np.flatnonzero(seen)
         dots = np.einsum("ikj,ij->ik", dirs[idx], toward[idx])
@@ -139,6 +158,50 @@ def coverage(C, N, cams: list[dict]):
         dirs[add, count[add]] = toward[add]
         count[add] += 1
     return best, count
+
+
+def viewpoints(C, N, area, cams: list[dict], ground: float, mpu: float, rank: dict[str, float] | None = None) -> list[dict]:
+    """Where a few of its photos were taken, to photograph it from again: those that between them show the most of what
+    any photo saw, each from somewhere a person can stand and hold a phone (BRIDGE_HEIGHT_M above the ground, within
+    BRIDGE_FAR_M of what it shows). Chosen one at a time, each the one showing most not yet shown, until BRIDGE_MOST
+    or one adds less than BRIDGE_GAIN of it all.
+
+    Args:
+        ground: the ground's height in the mesh; mpu: metres a unit.
+        rank: how well tied in each photo is, by name (its verified matches with the others, say), if known: a view's
+            worth is what it adds times this, so that of two views showing the same, the better tied is asked for.
+
+    Returns:
+        [{name, c (where the camera was), d (the way it looked), share (of what any photo saw, that it adds)}]
+    """
+    import numpy as np
+    usable = []
+    for cam in cams:
+        saw = _sees(C, N, cam)
+        if saw is None:
+            continue
+        seen, _, _, o, look, d = saw
+        up = (float(o[1]) - ground) * mpu
+        if not BRIDGE_HEIGHT_M[0] <= up <= BRIDGE_HEIGHT_M[1] or float(np.median(d[seen])) * mpu > BRIDGE_FAR_M:
+            continue
+        usable.append((cam.get("name"), o, look, seen))
+    if not usable:
+        return []
+    every = np.zeros(len(C), bool)
+    for *_, seen in usable:
+        every |= seen
+    total = float(area[every].sum()) or 1.0
+    shown, out = np.zeros(len(C), bool), []
+    while len(out) < BRIDGE_MOST:
+        worth = [float(area[seen & ~shown].sum()) * float((rank or {}).get(name, 1.0)) for name, _, _, seen in usable]
+        i = int(np.argmax(worth))
+        name, o, look, seen = usable[i]
+        share = float(area[seen & ~shown].sum()) / total
+        if share < BRIDGE_GAIN:
+            break
+        out.append({"name": name, "c": [round(float(x), 5) for x in o], "d": [round(float(x), 4) for x in look], "share": round(share, 3)})
+        shown |= seen
+    return out
 
 
 def patches(C, N, area, lo, size):
@@ -172,7 +235,8 @@ def boundary(F):
     return e[once], face[once]
 
 
-def build(V, F, cams: list[dict], holds: list[dict], climbs: list[dict], metres_per_unit: float | None) -> tuple[dict, bytes]:
+def build(V, F, cams: list[dict], holds: list[dict], climbs: list[dict], metres_per_unit: float | None,
+          rank: dict[str, float] | None = None) -> tuple[dict, bytes]:
     """A mesh's plan and guide.
 
     Args:
@@ -181,6 +245,7 @@ def build(V, F, cams: list[dict], holds: list[dict], climbs: list[dict], metres_
         holds: [{p, role, from ("video" or "marked"), climbs: [climb ids]}], in its coordinates.
         climbs: [{id, name, grade, view: {eye, target} or None}], those it's of.
         metres_per_unit: its scale, if it was found.
+        rank: how well tied in each of its photos is, by name, if known (viewpoints()).
 
     Returns:
         The plan (without what only the server knows: its name, place and heading), and guide.bin's bytes.
@@ -296,6 +361,10 @@ def build(V, F, cams: list[dict], holds: list[dict], climbs: list[dict], metres_
                             "r": round(cell / 2, 5), "prio": 2 if close or not known else 1, "have_gsd": None, "have_views": 0, "climbs": on})
             n_edge += 1
 
+    for i, v in enumerate(viewpoints(C, N, area, cams, ground, mpu, rank)):
+        targets.append({"id": f"v{i}", "kind": "view", "p": v["c"], "n": v["d"], "r": round(BRIDGE["within_m"] / mpu, 5), "prio": 2,
+                        "from": v["name"], "have_gsd": None, "have_views": 0, "climbs": []})
+
     shown = []
     for cam in cams:
         try:
@@ -311,7 +380,7 @@ def build(V, F, cams: list[dict], holds: list[dict], climbs: list[dict], metres_
             "frame": {"up": list(UP), "ground_y": round(ground, 5), "size": round(size, 5), "height": round(height, 5),
                       "metres_per_unit": round(mpu, 6), "scale_guessed": guessed},
             "guide": {"vertices": len(V), "faces": len(F), "patches": n_patches, "sha1": hashlib.sha1(guide).hexdigest()[:16]},
-            "need": NEED, "view_deg": VIEW_DEG, "facing_deg": FACING_DEG,
+            "need": NEED, "bridge": BRIDGE, "view_deg": VIEW_DEG, "facing_deg": FACING_DEG,
             "cameras": shown, "targets": targets,
             "climbs": [{"id": c["id"], "name": c.get("name"), "grade": c.get("grade")} for c in climbs]}
     return plan, guide

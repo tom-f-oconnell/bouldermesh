@@ -1,4 +1,8 @@
 {
+ "bridge": {
+  "deg": 20.0,
+  "within_m": 1.0
+ },
  "cameras": [
   {
    "c": [
@@ -137,6 +141,7 @@
  },
  "guide_url": "/api/capture/guide/cacacacacaca.bin?v=a56339ce97764ada",
  "heading_deg": null,
+ "key": "0123456789ab",
  "lat": 34.0,
  "lng": -116.0,
  "made": 0,
@@ -148,11 +153,15 @@
   },
   "hold": {
    "gsd_mm": 0.5,
+   "ladder": 2.0,
    "views": 4
   },
   "patch": {
    "gsd_mm": 1.5,
    "views": 3
+  },
+  "view": {
+   "views": 1
   }
  },
  "targets": [
@@ -3463,8 +3472,28 @@
    ],
    "prio": 1,
    "r": 0.19839
+  },
+  {
+   "climbs": [],
+   "from": "cap_004.jpg",
+   "have_gsd": null,
+   "have_views": 0,
+   "id": "v0",
+   "kind": "view",
+   "n": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "p": [
+    0.0,
+    1.5,
+    6.0
+   ],
+   "prio": 2,
+   "r": 0.83333
   }
  ],
- "v": 1,
+ "v": 2,
  "view_deg": 15.0
 }

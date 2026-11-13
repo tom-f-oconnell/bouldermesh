@@ -28,6 +28,9 @@ class ServerFilesTest {
         assertTrue(plan.targets.any { it.isEdge && it.beyond != null })
         assertEquals(guide.patches, plan.targets.count { it.kind == "patch" }, "a target for each of the guide's patches")
         assertTrue(plan.cameras.size == 9 && plan.climbs.single().name == "Alpha")
+        assertTrue(plan.v == 2 && plan.key == "0123456789ab" && plan.needOf("hold").ladder == 2.0 && plan.bridge == Bridge(1.0, 20.0))
+        val view = plan.targets.single { it.isView }
+        assertTrue(view.from == "cap_004.jpg" && view.prio == 2 && view.normal.z < -0.8, "where one of its photos was taken, and the way it looked: $view")
 
         // and it can be captured against: lined up by two taps, asked what to do, and a photo counted
         val s = CaptureSession(plan, guide, "t", "test", "a phone", 0.0)

@@ -48,7 +48,7 @@ holds = [{"p": [0.0, 1.0, 2.0], "role": "start", "from": "video", "climbs": ["c1
          {"p": [0.5, 2.2, 1.936], "role": "finish", "from": "video", "climbs": ["c1"]}]
 plan, guide = captureplan.build(V, F, cams, holds, [{"id": "c1", "name": "Alpha", "grade": "V2", "view": None}], 1.2)
 T = plan["targets"]
-kinds = {k: [t for t in T if t["kind"] == k] for k in ("patch", "hold", "edge")}
+kinds = {k: [t for t in T if t["kind"] == k] for k in ("patch", "hold", "edge", "view")}
 assert len(kinds["hold"]) == 2 and all(t["prio"] == 3 and t["climbs"] == ["c1"] for t in kinds["hold"]), kinds["hold"]
 assert all(t["have_gsd"] and t["have_views"] >= 2 for t in kinds["hold"]), kinds["hold"]
 assert kinds["edge"] and all(t["out"][1] > -0.4 for t in kinds["edge"]), "its open sides and top are edges, its foot isn't"
@@ -56,6 +56,19 @@ near = [t for t in kinds["patch"] if t["prio"] == 2]
 assert near and all(min(np.linalg.norm(np.array(t["p"]) - np.array(h["p"])) for h in holds) * 1.2 < 1.5 for t in near), "by a hold"
 assert any(t["prio"] == 1 for t in kinds["patch"]), "the rest is rock all the same"
 assert plan["frame"]["metres_per_unit"] == 1.2 and not plan["frame"]["scale_guessed"] and plan["need"]["hold"]["gsd_mm"] < plan["need"]["patch"]["gsd_mm"]
+# where to photograph it from again: a few of the places its photos were taken, that between them show what they all saw
+assert plan["need"]["hold"]["ladder"] == 2.0 and plan["bridge"] == {"within_m": 1.0, "deg": 20.0} and plan["v"] == 2
+views = kinds["view"]
+assert 1 <= len(views) <= captureplan.BRIDGE_MOST and all(v["from"].startswith("cap_") and v["prio"] == 2 for v in views), views
+at = {c["name"]: phonedata._centre(c) for c in cams}
+assert all(np.allclose(v["p"], at[v["from"]], atol=1e-4) and abs(np.linalg.norm(v["n"]) - 1) < 1e-3 and v["n"][2] < -0.8 for v in views), "where it stood, the way it looked"
+assert abs(views[0]["r"] * 1.2 - 1.0) < 1e-3, "within a metre"
+found = captureplan.viewpoints(C, N, area, cams, 0.0, 1.2)
+assert found[0]["share"] > 0.5 and sum(v["share"] for v in found) <= 1.001 and all(a["share"] >= b["share"] for a, b in zip(found, found[1:])), found
+other = next(c["name"] for c in cams if c["name"] != found[0]["name"])
+assert captureplan.viewpoints(C, N, area, cams, 0.0, 1.2, rank={other: 50.0})[0]["name"] == other, "the better tied of two is asked for"
+assert captureplan.viewpoints(C, N, area, cams, -5.0, 1.2) == [], "none from where nobody could stand: 7.8 m up"
+assert captureplan.viewpoints(C, N, area, [camera("far.jpg", [0, 1.5, 30], [0, 1.5, 0])], 0.0, 1.2) == [], "nor from 34 m off"
 magic, nv, nf, npatch = struct.unpack("<4sIII", guide[:16])
 assert magic == b"BMG1" and (nv, nf) == (len(V), len(F)) and npatch == len(kinds["patch"])
 assert len(guide) == 16 + nv * 12 + nf * 12 + nf * 2 + nf * 4 + nf
@@ -71,7 +84,7 @@ print("plans and guides OK")
 # --- the same plan and guide, as the apps' own tests read them (app/shared/src/jvmTest) ---------------------------------
 # kept in the repository: if these no longer match, the format changed, and the apps have to change with it (app/FORMAT.md)
 FIXTURES = ROOT / "app" / "shared" / "src" / "jvmTest" / "resources"
-sent = {**plan, "made": 0, "mesh": "ca" * 6, "name": "A Wall", "lat": 34.0, "lng": -116.0, "heading_deg": None,
+sent = {**plan, "made": 0, "key": "0123456789ab", "mesh": "ca" * 6, "name": "A Wall", "lat": 34.0, "lng": -116.0, "heading_deg": None,
         "guide_url": f"/api/capture/guide/{'ca' * 6}.bin?v={plan['guide']['sha1']}"}
 if "--write-fixtures" in sys.argv:
     (FIXTURES / "server").mkdir(parents=True, exist_ok=True)
@@ -227,6 +240,11 @@ assert kept == {"photos": 2, "turn": {"tilt_deg": 0.57, "offset_deg": 1.31, "spr
 assert orientation.load(server.MESHES / new_mid)["capture"] == kept and "12 directions agree to 0.12°" in said[-1], said[-1]
 (server.PROJECTS / mine / server.CAPTURE_FILE).write_text(json.dumps({"mesh": mid, "shots": []}))
 assert server.keep_capture_level(new_mid, mine, said.append)["turn"] is None and "no turn on the spot" in said[-1]
+# and the points its tracking found are kept beside its record
+points = b"BMP1" + struct.pack("<I", 2) + struct.pack("<fffH", 1.0, 2.0, 3.0, 1) + struct.pack("<fffH", -4.0, 0.5, 0.25, 2)
+assert server.save_capture_points(mine, points) == ({"kept": 2}, 200) and (server.PROJECTS / mine / server.CAPTURE_POINTS_FILE).read_bytes() == points
+assert server.save_capture_points(mine, points[:-3])[1] == 400 and server.save_capture_points(mine, b"nope")[1] == 400
+assert server.save_capture_points("0000", points)[1] == 404
 print("captures meshed with the mesh they add to OK")
 
 # --- the server's: a mesh put where its app photos' fixes say ---------------------------------------------------------------

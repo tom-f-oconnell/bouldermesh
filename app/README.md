@@ -16,8 +16,10 @@ phone yet**: see [What's been checked](#whats-been-checked).
    - tap a spot on the model that you can find on the rock, then tap the same spot on the real rock;
    - do that once more, with a spot well to one side of the first;
    - the mesh is drawn over the rock. If it sits on it, press *It fits: start*. If not, *Add a spot* or *Start again*.
-4. **Follow the words at the top.** Red parts of the mesh still need photos, amber ones are part done, green ones
-   done; rings mark holds. The app takes a photo by itself when you're holding still somewhere useful, and says so
+4. **Follow the words at the top.** It first walks you to a few rings in the air: where earlier photos of the rock
+   were taken, to take one again from each, which is what ties your photos to those. Then red parts of the mesh still
+   need photos, amber ones are part done, green ones done; rings mark holds. On the way in to a hold it asks you to
+   stop for a photo at each halving of the distance. The app takes a photo by itself when you're holding still somewhere useful, and says so
    when one came out blurred or badly lit. *Skip this* leaves what can't be reached (too high, the back). *Take* takes
    one whatever.
 5. **Finish**, then *Upload* once you have signal. The server meshes your photos together with the mesh's own.

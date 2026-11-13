@@ -1586,6 +1586,24 @@ def keep_heading(mid: str, log=None) -> dict | None:
 _plan_lock = threading.Lock()
 CAPTURE_FILE = "capture.json"   # in a project: what the phone app that took its photos says of taking them (app/FORMAT.md)
 CAPTURE_MAX = 8 * 2**20
+CAPTURE_POINTS_FILE = "capture-points.bin"  # and the points the phone's tracking found in the world as it did (app/FORMAT.md)
+CAPTURE_POINTS_MAX = 4 * 2**20
+
+
+def save_capture_points(pid: str, raw: bytes) -> tuple[dict, int]:
+    """Keep the points a phone's tracking found during a capture, beside its record: "BMP1", how many, then 14 bytes
+    each (where, in the tracking's world, and which spell of tracking found it). Returns what to answer, and its code."""
+    if not q("SELECT 1 FROM projects WHERE id=?", pid, one=True):
+        return {"error": "not found"}, 404
+    if len(raw) > CAPTURE_POINTS_MAX:
+        return {"error": f"a capture's points are at most {CAPTURE_POINTS_MAX // 2**20} MB"}, 413
+    n = int.from_bytes(raw[4:8], "little") if len(raw) >= 8 else -1
+    if raw[:4] != b"BMP1" or len(raw) != 8 + 14 * n:
+        return {"error": "a capture's points are \"BMP1\", how many, and 14 bytes for each"}, 400
+    tmp = PROJECTS / pid / (CAPTURE_POINTS_FILE + ".part")
+    tmp.write_bytes(raw)
+    tmp.replace(PROJECTS / pid / CAPTURE_POINTS_FILE)
+    return {"kept": n}, 200
 
 
 def capture_plan(mid: str) -> dict | None:
@@ -8883,6 +8901,9 @@ class Handler(BaseHTTPRequestHandler):
                 tmp.replace(PROJECTS / m[1] / CAPTURE_FILE)
                 append_log(m[1], f"capture: {len(record['shots'])} photos taken with the app ({str(record.get('app') or '?')[:60]})")
                 return self.send_json({"kept": len(record["shots"])})
+            m = re.fullmatch(r"/api/projects/([0-9a-f]+)/capture/points", p)
+            if m:   # and the points its tracking found, kept beside it for whatever places its photos
+                return self.send_json(*save_capture_points(m[1], self.read_body()))
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/known-object", p)
             if m:   # {kind} or {what, height_cm, width_cm}, or {} for nothing: its mesh is sized again
                 proj = q("SELECT mesh_id FROM projects WHERE id=?", m[1], one=True)

@@ -1287,6 +1287,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     GET  /api/capture/plan/<mesh>                      what of a mesh to photograph: targets (holds first), what each has so far
     GET  /api/capture/guide/<mesh>.bin                 a light copy of it, to draw over the camera
     POST /api/projects/<id>/capture {…, shots}         the record of a capture whose photos the project holds (8 MB at most)
+    POST /api/projects/<id>/capture/points             the points its tracking found, as a file (4 MB at most)
 
 ## Development
 

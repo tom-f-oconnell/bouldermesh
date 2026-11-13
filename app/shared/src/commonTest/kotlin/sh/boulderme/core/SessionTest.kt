@@ -47,6 +47,63 @@ class SessionTest {
         assertEquals(Hint.Kind.DONE, o.hint(pose).kind, "every other side is out of reach")
     }
 
+    @Test fun whereEarlierPhotosWereTakenComesFirst() {
+        // an earlier photo was taken 4 units (5 m) out from the wall, looking at it
+        val from = Target("v0", "view", listOf(0.5, 1.2, 4.0), listOf(0.0, 0.0, -1.0), 0.8, prio = 2)
+        val cov = Coverage(TestWorld.plan().let { it.copy(targets = it.targets + from) }, TestWorld.guide())
+        val view = assertNotNull(cov.state("v0"))
+        val close = TestWorld.look(Vec3(-0.5, 1.0, 1.1), Vec3(-0.5, 1.0, 0.0))        // right at a hold
+        assertEquals("v0", assertNotNull(cov.pick(close)).target.id, "asked for before the hold in front of the phone")
+        val go = cov.hint(close, view, 90)
+        assertTrue(go.kind == Hint.Kind.GO && "Walk" in go.text && "behind you" in go.text && TestWorld.near(go.moveM, 1.25 * Vec3(0.5, 1.2, 4.0).distance(Vec3(-0.5, 1.0, 1.1)), 1e-6), go.text)
+        assertNull(cov.see(close, view))
+        val there = Vec3(0.6, 1.3, 3.8)       // within a metre of where it was taken
+        val away = TestWorld.look(there, there + Vec3(1.0, 0.0, 0.0))
+        assertTrue(cov.see(away, view) == null && cov.hint(away, view).kind == Hint.Kind.TURN && cov.gain(away) == 0, "there, but looking along the wall")
+        val asItDid = TestWorld.look(there, there + Vec3(0.1, 0.0, -1.0))
+        assertTrue(cov.hint(asItDid, view).kind == Hint.Kind.SHOOT && cov.gain(asItDid) > 0)
+        assertTrue("v0" in cov.addShot(asItDid) && cov.done(view) && cov.level(view) == Coverage.LEVEL_DONE)
+        assertTrue(assertNotNull(cov.pick(close)).target.isHold, "then the holds")
+        assertEquals(10, cov.progress().total)
+        // in a session, standing where the photo was taken isn't judged as if the rock were at arm's length
+        val s = CaptureSession(cov.plan, TestWorld.guide(), "t4", "test", "phone", 0.0)
+        val a = Vec3(-1.0, 0.5, 0.0); val b = Vec3(1.2, 2.0, 0.0)
+        s.tap(a, truth.apply(a)); s.tap(b, truth.apply(b))
+        val pose = TestWorld.look(truth.apply(there), truth.apply(there + Vec3(0.1, 0.0, -1.0)))
+        s.frame(FrameIn(pose, 0.0, 0.004, true, 0.0)); s.frame(FrameIn(pose, 0.0, 0.004, true, 0.5))
+        val out = s.frame(FrameIn(pose, 0.0, 0.004, true, 1.0))
+        assertTrue(out.shoot && out.hint.targetId == "v0" && out.blurPx < 0.5, "${out.hint.text} ${out.blurPx}")
+        assertTrue(s.markers().any { it.id == "v0" && it.radiusM == CaptureSession.VIEW_RING_M && it.current })
+    }
+
+    @Test fun aPhotoAtEachStepOnTheWayIn() {
+        // its earlier photos saw the hold at 2.5 mm a pixel and it needs 0.5: steps at 2 mm and 1 mm tie the two together
+        val cov = Coverage(TestWorld.plan().let { it.copy(need = it.need + ("hold" to Need(0.5, 4, ladder = 2.0))) }, TestWorld.guide())
+        val hold = assertNotNull(cov.state("h0"))
+        assertEquals(2, cov.rungCount(hold))
+        fun from(units: Double) = TestWorld.look(Vec3(-0.5, 1.0, units), Vec3(-0.5, 1.0, 0.0))
+        // 4.8 units is 6 m: 2 mm a pixel
+        assertTrue(cov.rungAt(hold, 0.002) == 2 && cov.rungAt(hold, 0.001) == 1 && cov.rungAt(hold, 0.0005) == null && cov.rungAt(hold, 0.006) == null)
+        var hint = cov.hint(from(4.8), hold)
+        assertTrue(hint.kind == Hint.Kind.SHOOT && "on the way in" in hint.text && cov.gain(from(4.8)) > 0, hint.text)
+        assertTrue("h0" in cov.addShot(from(4.8)) && hold.rungs == setOf(2))
+        hint = cov.hint(from(4.8), hold)
+        assertTrue(hint.kind == Hint.Kind.CLOSER && TestWorld.near(hint.moveM, 3.0, 0.01), "to the next step, 3 m off, not all the way: ${hint.text}")
+        hint = cov.hint(from(2.4), hold)
+        assertTrue(hint.kind == Hint.Kind.SHOOT && "on the way in" in hint.text)
+        cov.addShot(from(2.4))
+        hint = cov.hint(from(2.4), hold)
+        assertTrue(hold.rungs == setOf(1, 2) && hint.kind == Hint.Kind.CLOSER && TestWorld.near(hint.moveM, 1.5, 0.01), "and then all the way: ${hint.text}")
+        // going straight in isn't held up: the steps are wanted, not needed
+        val straight = Coverage(cov.plan, TestWorld.guide())
+        val h = assertNotNull(straight.state("h0"))
+        for (k in listOf(-2, -1, 0, 1, 2)) { val a = k * 20 * TestWorld.rad; straight.addShot(TestWorld.look(Vec3(-0.5 + 1.1 * sin(a), 1.0, 1.1 * cos(a)), Vec3(-0.5, 1.0, 0.0))) }
+        assertTrue(straight.done(h) && h.rungs.isEmpty())
+        // with no earlier photos of it, the ladder goes up to 8 mm a pixel
+        val unseen = Coverage(cov.plan.let { p -> p.copy(targets = p.targets.map { if (it.isHold) it.copy(haveGsd = null, haveViews = 0) else it }) }, null)
+        assertEquals(4, unseen.rungCount(assertNotNull(unseen.state("h0"))))
+    }
+
     @Test fun coverageOfAPlan() {
         val cov = Coverage(TestWorld.plan(), TestWorld.guide())
         val hold = assertNotNull(cov.state("h0"))
@@ -106,6 +163,7 @@ class SessionTest {
                 Hint.Kind.FACE -> { at = p + n * at.distance(p); aim = p }
                 Hint.Kind.ANGLE, Hint.Kind.EDGE -> { at += side * (if (out.hint.kind == Hint.Kind.EDGE) 0.6 else out.hint.moveM); aim = p }
                 Hint.Kind.SHOOT -> {}       // standing still, until the phone has settled
+                Hint.Kind.GO -> { at = p; aim = p + n }        // to where an earlier photo was taken, looking as it did
                 Hint.Kind.NONE -> { at += side * 0.3; aim = p }
                 Hint.Kind.DONE -> break
             }

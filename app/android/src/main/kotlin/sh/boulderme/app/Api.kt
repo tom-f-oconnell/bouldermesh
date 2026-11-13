@@ -77,6 +77,16 @@ class Api(private val store: Store) {
     }
 
     fun sendRecord(project: String, record: String) { postJson("/api/projects/$project/capture", record) }
+
+    /** The points the phone's tracking found during the capture, as CaptureFlow.points() wrote them. */
+    fun sendPoints(project: String, file: File) {
+        val c = open("/api/projects/$project/capture/points", "POST")
+        c.doOutput = true
+        c.setRequestProperty("Content-Type", "application/octet-stream")
+        c.setFixedLengthStreamingMode(file.length())
+        c.outputStream.use { out -> file.inputStream().use { it.copyTo(out) } }
+        read(c)
+    }
     fun reconstruct(project: String) { postJson("/api/projects/$project/reconstruct", "{}") }
 }
 

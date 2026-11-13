@@ -142,15 +142,17 @@ class ArController(
     fun blockSide() = synchronized(lock) { flow.blockSide() }
 
     /** Writes the capture's record and what's to upload beside its photos: after each photo kept, so that one cut short isn't lost. */
-    private fun save(): Int = synchronized(lock) {
+    private fun save(last: Boolean = false): Int = synchronized(lock) {
         core.place = sensors.placed()
         File(dir, "capture.json").writeText(core.record(System.currentTimeMillis() / 1000.0).json())
+        // and the points ARCore tracked, for whatever places the photos on the server: now and then, and at the end
+        if (last || core.shotCount % 8 == 1) File(dir, "points.bin").writeBytes(flow.points())
         store.saveUpload(id, Store.Upload(name = name, mesh = plan?.mesh, photos = core.shotCount))
         core.shotCount
     }
 
     /** Ends the capture. Returns how many photos were kept. */
-    fun finish(): Int = save()
+    fun finish(): Int = save(last = true)
 
     // ---- drawing, on the GL thread -----------------------------------------------------------------------------------
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -235,9 +237,8 @@ class ArController(
         return near to (far - near).unit()
     }
 
-    /** Hands the points ARCore tracks to the flow, for tightening the mesh's fit against. */
+    /** Hands the points ARCore tracks to the flow: for tightening the mesh's fit against, and to send with the capture. */
     private fun collect(frame: Frame) {
-        if (plan == null) return
         runCatching {
             frame.acquirePointCloud().use { pc ->
                 val b = pc.points

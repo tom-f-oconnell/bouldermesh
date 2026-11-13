@@ -318,7 +318,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         val camera = frame.camera
         val tracking = camera.trackingState == ARTrackingState.ARTrackingStateNormal
         val now = app.sensors.now()
-        if (tracking && plan != null && ticks % 6 == 0) frame.rawFeaturePoints?.let { cloud ->
+        if (tracking && ticks % 6 == 0) frame.rawFeaturePoints?.let { cloud ->
             val p = cloud.points
             if (p != null) for (i in 0 until cloud.count.toInt()) p[i].value.let { flow.addPoint(it.getFloatAt(0).toDouble(), it.getFloatAt(1).toDouble(), it.getFloatAt(2).toDouble()) }
         }
@@ -516,9 +516,11 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     }
 
     /** Writes the capture's record and what's to upload beside its photos: after each photo kept, so that one cut short isn't lost. */
-    private fun save() {
+    private fun save(last: Boolean = false) {
         core.place = app.sensors.place.result()
         Files.write("$dir/capture.json", core.record(NSDate().timeIntervalSince1970).json())
+        // and the points ARKit tracked, for whatever places the photos on the server: now and then, and at the end
+        if (last || core.shotCount % 8 == 1) Files.write("$dir/points.bin", flow.points())
         app.store.saveUpload(id, UploadState(name = "$name (capture)", mesh = plan?.mesh, photos = core.shotCount))
     }
 
@@ -578,7 +580,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     private fun leave() {
         val kept = ui.kept
         val go = {
-            if (kept > 0) save() else app.store.deleteCapture(id)
+            if (kept > 0) save(last = true) else app.store.deleteCapture(id)
             dismissViewControllerAnimated(true) {
                 // each button holds what it does, which holds this screen, which holds the button: a ring Kotlin's memory can't
                 // see round, as part of it is Objective-C's. Taking the buttons away lets the screen, the camera and the mesh go

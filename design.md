@@ -1450,6 +1450,16 @@ its photos saw it, since a mesh drawn at full size somewhere unknown can't be ta
 camera's picture instead (matching against the mesh's photos) would save the taps, but needs the server or a much
 heavier app, and fails in just the cases where the mesh is poor.
 
+**Tying new photos to old.** A hold at half a millimetre a pixel and a web photo of the whole rock at nine have nothing
+for feature matching to find in common, and they were taken in other light. Three things bridge them. The plan names a
+few places its own photos were taken (`viewpoints()`: those that between them show the most of what any photo saw,
+from where a person could stand), and the capture starts by walking to each and taking one the same way. On the way in
+to a hold the app asks for a photo at each halving of distance (the hold's ladder, from how its photos see it now down
+to what it needs): wanted and asked for, not required, since someone who can only get at it from close shouldn't be
+stuck. And every photo carries where the phone's tracking had it, so those that match nothing can still be placed
+from their neighbours. Tracking can lose its place and come back with its world elsewhere, so a photo's `ar.s` names
+its spell of tracking, a new one after any loss of over a second, and places are only compared within a spell.
+
 **Good enough, not all round.** A target is done when its finest view and its count of distinct directions meet its
 kind's need. Anything can be skipped, and *its climbs* (the default) leaves out rock no climb is on. A hold higher
 than a phone can be held near is asked for at what can be had from below. A rock with no mesh is twelve sectors round

@@ -42,7 +42,7 @@ class Store(context: Context) {
 
     @Serializable
     data class Upload(val name: String, val mesh: String? = null, val project: String? = null, val sent: List<String> = emptyList(),
-                      val recordSent: Boolean = false, val done: Boolean = false, val photos: Int = 0, val note: String = "")
+                      val recordSent: Boolean = false, val pointsSent: Boolean = false, val done: Boolean = false, val photos: Int = 0, val note: String = "")
 
     fun upload(id: String): Upload? = runCatching { json.decodeFromString(Upload.serializer(), File(captureDir(id), "upload.json").readText()) }.getOrNull()
     fun saveUpload(id: String, u: Upload) = File(captureDir(id), "upload.json").writeText(json.encodeToString(Upload.serializer(), u))

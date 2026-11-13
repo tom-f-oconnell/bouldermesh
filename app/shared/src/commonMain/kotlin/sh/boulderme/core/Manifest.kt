@@ -52,12 +52,13 @@ data class ShotRecord(val name: String, val blob: ShotBlob, val kept: Boolean, v
 /** A whole capture, as sent to the server beside its photos (POST /api/projects/<id>/capture). */
 @Serializable
 data class CaptureRecord(
-    val v: Int = 1,
+    val v: Int = 2,                         // 2: plan, level, down_agree_deg; `ar.s` changes when tracking was lost and came back; accel_bias gone
     val id: String,
     val app: String,
     val device: String,
     val mesh: String? = null,
     val climbs: List<String> = emptyList(),
+    val plan: RecordPlan? = null,           // which plan of that mesh the capture went by
     val started: Double,
     val ended: Double,
     val mode: String,                       // "plan" (guided by a mesh there already was) or "orbit" (a rock with none)
@@ -72,6 +73,9 @@ data class CaptureRecord(
 ) {
     fun json(): String = Plan.json.encodeToString(serializer(), this)
 }
+
+/** The plan a capture went by: what it was made from (its key), when, and its guide. A mesh's frame can change between a plan's download and a capture's upload. */
+@Serializable data class RecordPlan(val key: String, val made: Double, val guide: String)
 
 /** How the mesh was lined up with the world: metres a unit, how far off level it turned out, and how well it fitted. */
 @Serializable

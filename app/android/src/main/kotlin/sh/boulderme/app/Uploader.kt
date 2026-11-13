@@ -52,6 +52,12 @@ object Uploader {
                     api.sendRecord(project, File(dir, "capture.json").readText())
                     u = u.copy(recordSent = true); store.saveUpload(id, u)
                 }
+                val points = File(dir, "points.bin")
+                if (!u.pointsSent && points.exists()) {
+                    say(id, "Sending what its tracking found")
+                    api.sendPoints(project, points)
+                    u = u.copy(pointsSent = true); store.saveUpload(id, u)
+                }
                 say(id, "Asking for it to be meshed")
                 try { api.reconstruct(project) } catch (e: IOException) { if ("already running" !in (e.message ?: "")) throw e }      // asked before, and cut off
                 u = u.copy(done = true, note = ""); store.saveUpload(id, u)

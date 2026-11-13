@@ -143,6 +143,38 @@ class FlowTest {
         assertTrue(TestWorld.near(record.level!!.tiltDeg, 1.0, 0.05) && record.level!!.sectors == 12 && record.downAgreeDeg!! < 0.5 && "\"down_agree_deg\"" in record.json())
     }
 
+    @Test fun trackingLostAndBack() {
+        val plan = TestWorld.plan().copy(key = "abc123def456", made = 1.7e9, guide = GuideInfo(patches = 12, sha1 = "0123abcd"))
+        val flow = CaptureFlow(CaptureSession(plan, TestWorld.guide(), "f4", "test", "a phone", 0.0))
+        flow.skipLevel()
+        val eye = truth.apply(Vec3(0.0, 1.5, 4.0))
+        val pose = TestWorld.look(eye, truth.apply(Vec3(0.0, 1.5, 0.0)))
+        val ghost = assertNotNull(flow.frame(pose, true, 0.0, 0.004, 0.1, 90).guide)
+        for (spot in listOf(Vec3(-1.0, 0.5, 0.0), Vec3(1.2, 2.0, 0.0))) { flow.tap(eye, (ghost.apply(spot) - eye).unit()) { null }; flow.tap(eye, pose.forward) { truth.apply(spot) } }
+        flow.confirmFit()
+        flow.addPoint(1.0, 2.0, 3.0); flow.addPoint(1.01, 2.0, 3.0); flow.addPoint(1.5, 2.0, 3.0)
+        assertEquals(2, flow.pointCount, "one to each 5 cm")
+        fun take(t: Double): ShotOut { flow.shutter(); assertTrue(flow.frame(pose, true, 0.0, 0.004, t, 90).shoot); return flow.shot(shot(pose, t)) }
+        assertEquals("a", take(2.0).record.blob.ar!!.s)
+        // a blink of lost tracking keeps the same spell; two seconds of it starts another
+        flow.frame(pose, false, 0.0, 0.004, 3.0, 90); flow.frame(pose, true, 0.0, 0.004, 3.3, 90)
+        assertEquals("a", take(4.0).record.blob.ar!!.s)
+        flow.frame(pose, false, 0.0, 0.004, 5.0, 90); flow.frame(pose, false, 0.0, 0.004, 6.5, 90); flow.frame(pose, true, 0.0, 0.004, 7.0, 90)
+        assertEquals("a.2", take(8.0).record.blob.ar!!.s)
+        flow.addPoint(-4.0, 0.5, 0.25)
+        // the points go with the record, each with the spell that found it
+        val bytes = flow.points()
+        assertTrue(bytes.size == 8 + 3 * 14 && bytes.decodeToString(0, 4) == "BMP1" && bytes[4].toInt() == 3)
+        fun float(at: Int) = Float.fromBits((bytes[at].toInt() and 0xff) or ((bytes[at + 1].toInt() and 0xff) shl 8) or ((bytes[at + 2].toInt() and 0xff) shl 16) or ((bytes[at + 3].toInt() and 0xff) shl 24))
+        val last = 8 + 2 * 14
+        assertTrue(float(last) == -4.0f && float(last + 4) == 0.5f && float(last + 8) == 0.25f && bytes[last + 12].toInt() == 2 && bytes[8 + 12].toInt() == 1)
+        assertNull(flow.refineDue(100.0), "and the fit isn't tightened against points from before, whose world may not be this one")
+        // the record names the plan it went by
+        val record = flow.session.record(99.0)
+        assertTrue(record.v == 2 && record.plan == RecordPlan("abc123def456", 1.7e9, "0123abcd") && "\"plan\":{\"key\":\"abc123def456\"" in record.json(), record.json().take(300))
+        assertEquals(listOf("a", "a", "a.2"), record.shots.map { it.blob.ar!!.s })
+    }
+
     @Test fun aRockWithNoMesh() {
         val flow = CaptureFlow(CaptureSession(null, null, "f2", "test", "a phone", 0.0))
         flow.skipLevel()

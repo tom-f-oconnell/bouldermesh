@@ -124,7 +124,8 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             val progress = cov.progress()
             val target = cov.pick(inMesh, current)
             current = target?.target?.id
-            val far = target?.let { inMesh.centre.distance(it.target.point) * cov.metresPerUnit }
+            // how far off what's being photographed is; from a view to stand at, that's the rock, taken as a few metres off
+            val far = target?.let { if (it.target.isView) VIEW_FAR_M else inMesh.centre.distance(it.target.point) * cov.metresPerUnit }
             val blur = Quality.blurPx(f.gyroRadS, speed, f.exposureS, f.pose.lens.fx, far)
             if (target == null) return FrameOut(Hint(Hint.Kind.DONE, if (progress.total == 0) "Nothing to do here: widen what counts" else "Done: every part that counts is covered. Finish, or widen to the rest."), false, progress, blur)
             var hint = cov.hint(inMesh, target, f.uprightDeg)
@@ -152,7 +153,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         val cov = coverage; val orb = orbit; val fitNow = fit
         val inMesh = if (cov != null && fitNow != null) s.pose.into(fitNow) else null
         val far = when {
-            inMesh != null && cov != null -> current?.let { cov.state(it) }?.let { inMesh.centre.distance(it.target.point) * cov.metresPerUnit }
+            inMesh != null && cov != null -> current?.let { cov.state(it) }?.let { if (it.target.isView) VIEW_FAR_M else inMesh.centre.distance(it.target.point) * cov.metresPerUnit }
             orb != null -> s.pose.centre.distance(orb.centre)
             else -> null
         }
@@ -209,7 +210,8 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         if (cov != null && f != null) for (s in cov.states) {
             if (s.target.kind == "patch" && s.target.id != current) continue
             if (!cov.inScope(s) && s.target.kind != "hold") continue
-            out.add(Marker(s.target.id, f.apply(s.target.point), max(0.04, s.target.r * f.scale), cov.level(s), s.target.kind, s.target.id == current))
+            val radius = if (s.target.isView) VIEW_RING_M else max(0.04, s.target.r * f.scale)
+            out.add(Marker(s.target.id, f.apply(s.target.point), radius, cov.level(s), s.target.kind, s.target.id == current))
         }
         orbit?.spots?.forEach { s ->
             out.add(Marker(s.id, s.p, 0.08, if (s.skipped) Coverage.LEVEL_SKIPPED else if (s.done()) Coverage.LEVEL_DONE else if (s.dirs.isNotEmpty()) Coverage.LEVEL_PART else Coverage.LEVEL_TODO, "hold", false))
@@ -223,6 +225,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         val p = cov?.progress() ?: orbit?.progress()
         return CaptureRecord(
             id = id, app = app, device = device, mesh = plan?.mesh?.takeIf { it.isNotEmpty() }, climbs = cov?.scope?.climbs?.sorted() ?: emptyList(),
+            plan = plan?.let { RecordPlan(it.key, it.made, it.guide.sha1) },
             started = started, ended = ended, mode = mode,
             fit = fit?.let { RecordFit(it.scale, it.rot.toList(), it.shift.toList(), it.tiltDeg, taps.size, refined?.matched, refined?.rmsM) },
             place = place?.let { RecordPlace(it.lat, it.lng, it.alt, it.accM, it.n, it.seconds) },
@@ -241,6 +244,8 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         const val MIN_GAP_S = 0.6       // and no sooner than this after the last
         const val SPEED_SMOOTH_S = 0.15
         const val USUAL_FROM = 5        // photos kept before their sharpness says what's usual
+        const val VIEW_FAR_M = 3.0      // how far off the rock is taken to be from where an earlier photo was taken, for judging blur
+        const val VIEW_RING_M = 0.25    // the ring drawn where an earlier photo was taken
         const val DOWN_DOUBT_DEG = 1.5  // a photo's down by the turn on the spot and by its own accelerometer further apart than this is said
     }
 }

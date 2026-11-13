@@ -13,16 +13,22 @@ Each side's tests read files the other really wrote (`shared/src/jvmTest/resourc
 
 **The plan** (JSON). Lengths are the mesh's own units unless they say metres; +Y is up.
 
-    v, made, key          the format's version; when it was made; what it was made from
+    v, made, key          the format's version (2); when it was made; what it was made from: a capture's record gives
+                          its plan's key back, as a mesh's frame may have changed between the download and the upload
     mesh, name, lat, lng, heading_deg     the mesh, and where it is and faces as far as the server knows
     frame                 {up, ground_y, size, height, metres_per_unit, scale_guessed}: scale_guessed if its size isn't known
     guide                 {vertices, faces, patches, sha1} of the guide
-    need                  {hold: {gsd_mm, views}, patch: {gsd_mm, views}, edge: {views}}: what makes each kind of target done
+    need                  {hold: {gsd_mm, views, ladder}, patch: {gsd_mm, views}, edge: {views}, view: {views}}: what makes
+                          each kind of target done. ladder: on the way in to a hold, a photo wanted at each step that many
+                          times coarser than gsd_mm, up to how its photos see it now
+    bridge                {within_m, deg}: how near a view target, and how nearly looking as it did, a photo counts as it
     view_deg, facing_deg  views closer together than view_deg are one; a target more than facing_deg off square isn't seen
     cameras               [{c, d}]: where its photos were taken, and which way they looked
     targets               [{id, kind, p, n, r, prio, role?, from?, out?, have_gsd, have_views, climbs}]
-                          kind: hold (id h<i>), patch (p<k>, the guide's patch k) or edge (e<i>, with out: the way past it)
-                          prio: 3 a hold, 2 rock on a climb, 1 other rock, 0 the ground
+                          kind: hold (id h<i>), patch (p<k>, the guide's patch k), edge (e<i>, with out: the way past it)
+                          or view (v<i>): where one of its photos (from) was taken (p) and the way it looked (n, not a
+                          surface's normal), to photograph it from again first, which ties a capture's photos to the old
+                          prio: 3 a hold, 2 rock on a climb or a view, 1 other rock, 0 the ground
                           have_gsd (units a pixel) and have_views: what its photos so far gave it
     climbs                [{id, name, grade}]
 
@@ -40,6 +46,7 @@ Each side's tests read files the other really wrote (`shared/src/jvmTest/resourc
     POST /api/projects {name}                         a project for the capture
     POST /api/projects/<id>/photos                    its photos, one a request, as a form upload
     POST /api/projects/<id>/capture                   the record below
+    POST /api/projects/<id>/capture/points            the points below
     POST /api/projects/<id>/reconstruct               mesh it: with the photos of the mesh the record names, if it names one
 
 **Each photo** is a JPEG with its pixels as the sensor read them (EXIF Orientation says how to show it upright), named
@@ -53,15 +60,19 @@ EXIF UserComment, `BMSH1:` followed by JSON in plain ASCII:
                           a turn changed it. down_acc: this photo's accelerometer alone, less what the turn found the phone adds
     heading, heading_acc  where the camera pointed, degrees from true north, if the compass could be trusted
     gps                   {lat, lng, alt, acc, age}: the last fix, how far off it says it may be (m) and how old (s)
-    ar                    {s, p, q, track}: the tracking session; the camera's place (m) and turn (w, x, y, z; image axes to
-                          world) in its frame, +Y up; "normal" or "limited"
+    ar                    {s, p, q, track}: the spell of tracking; the camera's place (m) and turn (w, x, y, z; image axes to
+                          world) in its frame, +Y up; "normal" or "limited". s is the app's name for the capture's tracking,
+                          with ".2", ".3"… after each time tracking was lost for over a second and came back: its world
+                          may then be somewhere else, so places are only comparable within one s, and even there are a
+                          strong hint rather than exact (tracking drifts by about a hundredth of the way walked)
     k                     {fx, fy, cx, cy, w, h}: the lens, for this picture's size
     exp                   {t, iso, focus_m}
     q                     {sharp, blur_px, clip_hi, clip_lo, ok}: how it was judged
 
 **The record** (`capture.json`, kept whole in the project):
 
-    v, id, app, device, started, ended
+    v, id, app, device, started, ended     v is 2 (1: no plan, level or down_agree_deg; one `ar.s` whatever happened)
+    plan                  {key, made, guide}: the plan the capture went by, and its guide's sha1
     mesh, climbs          the mesh it adds to (none: a rock with no mesh), and the climbs it was kept to, if any
     mode                  "plan" or "orbit"
     fit                   {scale, rot, shift, tilt_deg, taps, matched, rms_m}: the mesh-to-world fit used; tilt_deg is how
@@ -76,3 +87,10 @@ EXIF UserComment, `BMSH1:` followed by JSON in plain ASCII:
     skipped               {target: why}
     progress              {total, done, skipped, holds, holds_done}
     shots                 [{name, blob, kept, why, notes, helped}]: every photo taken, kept or not, with its readings
+
+**The points** (`points.bin`, kept in the project as `capture-points.bin`): what the phone's tracking found of the world,
+one to each 5 cm, 20,000 at most to a spell. Noisy to a centimetre or so, except from a lidar.
+
+    "BMP1", uint32 how many
+    float32 x, y, z, uint16 spell      for each: where, in the tracking's world (metres, +Y up), and which spell of
+                                       tracking found it: 1 the first (photos' `ar.s` with no ".n"), 2 the one after ".2"

@@ -53,6 +53,10 @@ class Uploader(private val store: IosStore, private val api: IosApi) {
                 if (record == null) stop(id, "this capture's record is missing")
                 else api.sendRecord(project, record) { why -> if (why != null) stop(id, why) else { store.saveUpload(id, u.copy(recordSent = true)); next(id) } }
             }
+            !u.pointsSent && Files.exists("$dir/points.bin") -> {
+                say(id, "Sending what its tracking found")
+                api.sendPoints(project, "$dir/points.bin") { why -> if (why != null) stop(id, why) else { store.saveUpload(id, u.copy(pointsSent = true)); next(id) } }
+            }
             else -> {
                 say(id, "Asking for it to be meshed")
                 api.reconstruct(project) { why ->

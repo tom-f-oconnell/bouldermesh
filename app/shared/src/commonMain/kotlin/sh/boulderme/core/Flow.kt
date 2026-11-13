@@ -59,7 +59,11 @@ class CaptureFlow(val session: CaptureSession) {
     private var sensorNote = ""
     private var levelsDirty = true
     private var markers: List<Marker> = emptyList()
-    private val cloud = HashMap<Long, Vec3>()
+    private val cloud = HashMap<Long, Vec3>()       // what the tracking has found of the world, since it last lost its place
+    private val past = ArrayList<Pair<Vec3, Int>>() // and before that, each with which spell of tracking found it
+    private var block = 1                           // spells of tracking so far: a new one each time it was lost and came back
+    private var lostAt: Double? = null
+    private var tracked = false
     private var lastRefine = 0.0
     private var refining = false
     private var lastPose: CameraPose? = null
@@ -135,12 +139,31 @@ class CaptureFlow(val session: CaptureSession) {
     // ---- tightening the fit ------------------------------------------------------------------------------------------
     /** A point the phone's tracking has found in the world: kept, one to each 5 cm, for tightening the fit against. */
     fun addPoint(x: Double, y: Double, z: Double) {
-        if (plan == null || cloud.size >= CLOUD_MOST) return
+        if (cloud.size >= CLOUD_MOST) return
         val key = ((round(x / CELL_M).toLong() and 0x1fffff) shl 42) or ((round(y / CELL_M).toLong() and 0x1fffff) shl 21) or (round(z / CELL_M).toLong() and 0x1fffff)
         if (!cloud.containsKey(key)) cloud[key] = Vec3(x, y, z)
     }
 
-    val pointCount: Int get() = cloud.size
+    val pointCount: Int get() = cloud.size + past.size
+
+    /**
+     * Those points as a file to send with the capture's record (app/FORMAT.md): "BMP1", how many, then for each its
+     * place in the tracking's world (metres, +Y up: three float32) and which spell of tracking found it (uint16: 1 the
+     * first, as the photos' `ar.s` counts them), all little-endian.
+     */
+    fun points(): ByteArray {
+        val all = past + cloud.values.map { it to block }
+        val out = ByteArray(8 + all.size * 14)
+        "BMP1".forEachIndexed { i, c -> out[i] = c.code.toByte() }
+        var at = 4
+        fun put(v: Int, bytes: Int = 4) { for (b in 0 until bytes) out[at++] = (v shr (8 * b)).toByte() }
+        put(all.size)
+        for ((p, spell) in all) { put(p.x.toFloat().toRawBits()); put(p.y.toFloat().toRawBits()); put(p.z.toFloat().toRawBits()); put(spell, 2) }
+        return out
+    }
+
+    /** The name of the spell of tracking a photo was taken in: the app's own for the capture, with which spell after the first. */
+    private fun spell(base: String) = if (block > 1) "$base.$block" else base
 
     /** Tightening the fit, as a piece of work: the fit as it was and the points to tighten it against. */
     class Tighten(val start: Similarity, val points: List<Vec3>)
@@ -179,6 +202,12 @@ class CaptureFlow(val session: CaptureSession) {
     fun frame(pose: CameraPose, tracking: Boolean, gyroRadS: Double, exposureS: Double, t: Double, uprightDeg: Int,
               accel: Vec3? = null, sensorOrientation: Int = 90): FlowOut {
         lastPose = pose
+        // tracking that was lost for more than a moment may have come back with its world somewhere else: photos and points
+        // from then on are another spell's, tied to the earlier ones by what they show rather than by where the phone says it was
+        if (!tracking) { if (tracked && lostAt == null) lostAt = t } else {
+            if (lostAt?.let { t - it >= LOST_S } == true) { past += cloud.values.map { it to block }; cloud.clear(); block++ }
+            lostAt = null; tracked = true
+        }
         val base = ui.copy(phase = phase, kept = session.shotCount, rejected = rejected, note = note, sensors = sensorNote, auto = session.auto, wide = wide, marking = marking,
             pairs = session.taps.size, tracking = tracking)
         if (!tracking) {
@@ -247,7 +276,7 @@ class CaptureFlow(val session: CaptureSession) {
     /** The photo frame() asked for, taken. A photo not kept is to be deleted. */
     fun shot(s: ShotIn): ShotOut {
         inFlight = false
-        val out = session.shot(s)
+        val out = session.shot(s.copy(arSession = spell(s.arSession)))
         sensorNote = out.record.notes.joinToString(" · ")
         if (out.kept) { note = ""; levelsDirty = true } else { rejected++; note = "Not kept: ${out.why.joinToString("; ")}." }
         return out
@@ -280,6 +309,7 @@ class CaptureFlow(val session: CaptureSession) {
         const val REFINE_POINTS = 2000
         const val REFINE_LEAST = 150
         const val REFINE_EVERY_S = 3.0
+        const val LOST_S = 1.0              // tracking lost for longer than this starts a new spell: shorter is a blink, with its world kept
         const val LEVEL_SPREAD_MOST = 0.4   // degrees the directions of a turn on the spot may disagree by, for it to be believed
 
         private fun hundredths(x: Double) = kotlin.math.round(x * 100) / 100

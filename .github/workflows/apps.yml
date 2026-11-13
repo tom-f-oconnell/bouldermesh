@@ -67,7 +67,7 @@ jobs:
       - name: Every screen, in an emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 34
+          api-level: 30      # ARCore opens camera "0", which newer emulators' cameras aren't called
           arch: x86_64
           target: google_apis
           profile: pixel_6
@@ -86,7 +86,7 @@ jobs:
         continue-on-error: true
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 34
+          api-level: 30      # ARCore opens camera "0", which newer emulators' cameras aren't called
           arch: x86_64
           target: google_apis
           profile: pixel_6

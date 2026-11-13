@@ -8,6 +8,8 @@ import kotlinx.serialization.json.Json
 @Serializable
 data class Plan(
     val v: Int = 1,
+    val key: String = "",           // what it was made from: a capture's record names it, so the server knows which plan the capture went by
+    val made: Double = 0.0,
     val mesh: String = "",
     val name: String = "",
     val lat: Double? = null,
@@ -17,6 +19,7 @@ data class Plan(
     val frame: Frame = Frame(),
     val guide: GuideInfo = GuideInfo(),
     val need: Map<String, Need> = emptyMap(),
+    val bridge: Bridge = Bridge(),
     @SerialName("view_deg") val viewDeg: Double = 15.0,
     @SerialName("facing_deg") val facingDeg: Double = 75.0,
     val cameras: List<PlacedCamera> = emptyList(),
@@ -26,7 +29,7 @@ data class Plan(
     fun needOf(kind: String): Need = need[kind] ?: DEFAULT_NEED[kind] ?: Need()
 
     companion object {
-        val DEFAULT_NEED = mapOf("hold" to Need(0.5, 4), "patch" to Need(1.5, 3), "edge" to Need(null, 3))
+        val DEFAULT_NEED = mapOf("hold" to Need(0.5, 4), "patch" to Need(1.5, 3), "edge" to Need(null, 3), "view" to Need(null, 1))
         internal val json = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = true }
 
         /** Reads a plan. Throws SerializationException if it isn't one. */
@@ -47,9 +50,17 @@ data class Frame(
 @Serializable
 data class GuideInfo(val vertices: Int = 0, val faces: Int = 0, val patches: Int = 0, val sha1: String = "")
 
-/** What a target needs: seen at least this finely (millimetres of rock a pixel), from at least this many directions. */
+/**
+ * What a target needs: seen at least this finely (millimetres of rock a pixel), from at least this many directions.
+ * ladder: on the way in to it, a photo at each step this many times coarser, up to how its earlier photos saw it, so
+ * that the close photos tie to those through photos in between (wanted, and asked for on the way, but not needed).
+ */
 @Serializable
-data class Need(@SerialName("gsd_mm") val gsdMm: Double? = null, val views: Int = 3)
+data class Need(@SerialName("gsd_mm") val gsdMm: Double? = null, val views: Int = 3, val ladder: Double? = null)
+
+/** How near where an earlier photo was taken (a "view" target) a photo has to be taken to count as the same view again. */
+@Serializable
+data class Bridge(@SerialName("within_m") val withinM: Double = 1.0, val deg: Double = 20.0)
 
 @Serializable
 data class PlacedCamera(val c: List<Double>, val d: List<Double>)
@@ -58,8 +69,10 @@ data class PlacedCamera(val c: List<Double>, val d: List<Double>)
 data class PlanClimb(val id: String, val name: String? = null, val grade: String? = null)
 
 /**
- * Something to photograph, in the mesh's own coordinates: a hold, a patch of rock, or an edge where the mesh ends.
- * prio: 3 a hold, 2 rock on a climb, 1 other rock, 0 the ground. have: what its photos so far gave it.
+ * Something to photograph, in the mesh's own coordinates: a hold, a patch of rock, an edge where the mesh ends, or a
+ * view: where one of its earlier photos was taken (p) and the way it looked (n), to photograph it from again, which ties
+ * the new photos to the old.
+ * prio: 3 a hold, 2 rock on a climb or a view, 1 other rock, 0 the ground. have: what its photos so far gave it.
  */
 @Serializable
 data class Target(
@@ -81,4 +94,5 @@ data class Target(
     val beyond: Vec3? get() = out?.let { Vec3.of(it) }
     val isHold: Boolean get() = kind == "hold"
     val isEdge: Boolean get() = kind == "edge"
+    val isView: Boolean get() = kind == "view"
 }
