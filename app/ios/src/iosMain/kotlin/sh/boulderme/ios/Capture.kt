@@ -453,10 +453,12 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         dispatch_async(background) {
             val stats = lumaStats(buffer)
             dispatch_async(dispatch_get_main_queue()) {
-                val out = flow.shot(ShotIn(pose, sample, stats, exposure, iso, null, tracking, arSession, now, unix, SENSOR_ORIENTATION, sample.gyro?.norm ?: 0.0))
+                // stored upright (the sensor reads its picture out on its side), with the camera and its lens as that picture has them
+                val turn = Axes.uprightTurn(Axes.downInImage(pose), UPRIGHT_DEG)
+                val stored = pose.turned(turn)
+                val out = flow.shot(ShotIn(stored, sample, stats, exposure, iso, null, tracking, arSession, now, unix, SENSOR_ORIENTATION, sample.gyro?.norm ?: 0.0, turn))
                 if (out.kept) dispatch_async(background) {
-                    val upright = Axes.exifOrientation(out.record.blob.down?.let { Vec3.of(it) }, UPRIGHT_DEG)
-                    val ok = writeJpeg(frame, "$dir/photos/${out.record.name}", out.userComment, sample, pose.lens, exposure, upright, unix)
+                    val ok = writeJpeg(frame, "$dir/photos/${out.record.name}", out.userComment, sample, stored.lens, exposure, turn, unix)
                     dispatch_async(dispatch_get_main_queue()) { if (ok) save() else flow.say("A photo couldn't be saved.") }
                 }
             }
@@ -477,9 +479,10 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         }
     }
 
-    /** The picture as a JPEG, its pixels as the sensor read them, with its readings and how to show it upright in its EXIF. */
-    private fun writeJpeg(frame: ARFrame, path: String, comment: String, s: SensorSample, lens: Lens, exposure: Double, orientation: Int, unix: Double): Boolean {
-        val image = CIImage.imageWithCVPixelBuffer(frame.capturedImage)
+    /** The picture as a JPEG, turned upright (clockwise by `turn`), with its readings in its EXIF. `lens` is the stored picture's. */
+    private fun writeJpeg(frame: ARFrame, path: String, comment: String, s: SensorSample, lens: Lens, exposure: Double, turn: Int, unix: Double): Boolean {
+        // applying an EXIF orientation is Core Image's way of turning a picture so that it shows as that orientation says
+        val image = CIImage.imageWithCVPixelBuffer(frame.capturedImage).imageByApplyingOrientation(when (turn) { 90 -> 6; 180 -> 3; 270 -> 8; else -> 1 })
         val cg = ciContext.createCGImage(image, fromRect = image.extent) ?: return false
         val stamp = NSDateFormatter().apply { locale = NSLocale(localeIdentifier = "en_US_POSIX"); dateFormat = "yyyy:MM:dd HH:mm:ss" }      // whatever calendar and clock the phone shows
             .stringFromDate(NSDate.dateWithTimeIntervalSince1970(unix))
@@ -488,8 +491,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         fun n(x: Int) = NSNumber.numberWithInt(x)
         fun dict(m: Map<Any?, *>) = NSDictionary.dictionaryWithDictionary(m)
         val exif = mutableMapOf<Any?, Any?>(kCGImagePropertyExifUserComment.text() to comment, kCGImagePropertyExifDateTimeOriginal.text() to stamp,
-            kCGImagePropertyExifExposureTime.text() to n(exposure), kCGImagePropertyExifFocalLenIn35mmFilm.text() to n((lens.fx / lens.w * 36.0).roundToInt()))
-        val props = mutableMapOf<Any?, Any?>(kCGImagePropertyOrientation.text() to n(orientation), kCGImageDestinationLossyCompressionQuality.text() to n(0.92), kCGImagePropertyExifDictionary.text() to dict(exif),
+            kCGImagePropertyExifExposureTime.text() to n(exposure), kCGImagePropertyExifFocalLenIn35mmFilm.text() to n((lens.fx / maxOf(lens.w, lens.h) * 36.0).roundToInt()))
+        val props = mutableMapOf<Any?, Any?>(kCGImagePropertyOrientation.text() to n(1), kCGImageDestinationLossyCompressionQuality.text() to n(0.92), kCGImagePropertyExifDictionary.text() to dict(exif),
             kCGImagePropertyTIFFDictionary.text() to dict(mapOf<Any?, Any?>(kCGImagePropertyTIFFMake.text() to "Apple", kCGImagePropertyTIFFModel.text() to machine(), kCGImagePropertyTIFFSoftware.text() to "BoulderMesh ${IosStore.VERSION}")))
         val gps = mutableMapOf<Any?, Any?>()
         s.gps?.let { g ->

@@ -16,6 +16,7 @@ data class ShotBlob(
     @SerialName("down_src") val downSrc: String? = null,
     @SerialName("down_acc") val downAcc: List<Double>? = null,
     @SerialName("down_track") val downTrack: List<Double>? = null,
+    val turn: Int = 0,                      // how far clockwise the sensor's picture was turned to store it upright
     val heading: Double? = null,
     @SerialName("heading_acc") val headingAcc: Double? = null,
     val gps: BlobGps? = null,

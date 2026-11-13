@@ -49,8 +49,10 @@ Each side's tests read files the other really wrote (`shared/src/jvmTest/resourc
     POST /api/projects/<id>/capture/points            the points below
     POST /api/projects/<id>/reconstruct               mesh it: with the photos of the mesh the record names, if it names one
 
-**Each photo** is a JPEG with its pixels as the sensor read them (EXIF Orientation says how to show it upright), named
-`cap_<capture>_<nnn>.jpg`, with the usual GPS tags (GPSImgDirection from true north, GPSHPositioningError) and, in
+**Each photo** is a JPEG stored upright: a phone's sensor reads its picture out on its side, and the app turns it on
+the phone (by which way was down) and writes EXIF Orientation 1. So whatever reads it, whether or not it heeds that
+tag, sees the same pixels, and the networks trained on upright pictures see one. Everything below that's in "the
+stored pixels' axes" (`down`, `ar.q`, `k`) is for the picture as stored. It's named `cap_<capture>_<nnn>.jpg`, with the usual GPS tags (GPSImgDirection from true north, GPSHPositioningError) and, in
 EXIF UserComment, `BMSH1:` followed by JSON in plain ASCII:
 
     v, app, device, cap, i, t   the format's version; the app and phone; the capture; which photo of it; when (Unix seconds)
@@ -58,6 +60,7 @@ EXIF UserComment, `BMSH1:` followed by JSON in plain ASCII:
                           way the camera looks. down_src: "turn" (the phone's tracking, set right by the capture's turn on
                           the spot), "ar" (the tracking as it was: no turn) or "accel". down_track: the tracking's own, where
                           a turn changed it. down_acc: this photo's accelerometer alone, less what the turn found the phone adds
+    turn                  how far clockwise (0, 90, 180, 270) the sensor's picture was turned to store it
     heading, heading_acc  where the camera pointed, degrees from true north, if the compass could be trusted
     gps                   {lat, lng, alt, acc, age}: the last fix, how far off it says it may be (m) and how old (s)
     ar                    {s, p, q, track}: the spell of tracking; the camera's place (m) and turn (w, x, y, z; image axes to
@@ -80,7 +83,8 @@ EXIF UserComment, `BMSH1:` followed by JSON in plain ASCII:
     place                 {lat, lng, alt, acc_m, n, seconds}: its GPS fixes averaged, the phone moving about the rock
     level                 {down, tilt_deg, offset, offset_deg, spread_deg, sectors, samples}: which way is down in the
                           tracking's world, by a turn on the spot; how far the tracking's own was off; what the phone adds to
-                          its accelerometer (a photo's axes, m/s2) and how many degrees that's worth; and how far the
+                          its accelerometer (m/s2, in the axes of the picture as the sensor reads it: before any photo's
+                          `turn`) and how many degrees that's worth; and how far the
                           directions faced disagreed, which is how far to trust it. None if the turn was skipped
     down_agree_deg        how far each kept photo's down was from its own accelerometer's, in the middle
     calibration           {mag_offset, mag_field_ut, mag_rms_ut}

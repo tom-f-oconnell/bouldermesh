@@ -143,6 +143,15 @@ data class CameraPose(val centre: Vec3, val rot: Quat, val lens: Lens) {
         return CameraPose(inv.apply(centre), (inv.rot * rot).unit(), lens)
     }
 
+    /**
+     * The same camera for its picture turned clockwise by `deg` (a quarter, a half or three quarters): what a phone
+     * held upright stores, where its sensor reads the picture out on its side. The picture's axes turn with it.
+     */
+    fun turned(deg: Int): CameraPose = when (((deg % 360) + 360) % 360) {
+        0 -> this
+        else -> CameraPose(centre, (rot * Quat.axisAngle(Vec3(0.0, 0.0, 1.0), -deg * kotlin.math.PI / 180)).unit(), lens.turned(deg))
+    }
+
     companion object {
         /**
          * From a tracking pose given the OpenGL way (x right, y up, z towards the viewer, relative to the picture as
@@ -161,6 +170,14 @@ data class Lens(val fx: Double, val fy: Double, val cx: Double, val cy: Double, 
     fun scaledTo(width: Int, height: Int): Lens {
         val sx = width.toDouble() / w; val sy = height.toDouble() / h
         return Lens(fx * sx, fy * sy, cx * sx, cy * sy, width, height)
+    }
+
+    /** The same lens for the picture turned clockwise by a quarter (90), a half (180) or three quarters (270). */
+    fun turned(deg: Int): Lens = when (((deg % 360) + 360) % 360) {
+        90 -> Lens(fy, fx, h - cy, cx, h, w)
+        180 -> Lens(fx, fy, w - cx, h - cy, w, h)
+        270 -> Lens(fy, fx, cy, w - cx, h, w)
+        else -> this
     }
 }
 

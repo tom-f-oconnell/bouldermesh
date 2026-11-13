@@ -66,8 +66,9 @@ assert abs(views[0]["r"] * 1.2 - 1.0) < 1e-3, "within a metre"
 found = captureplan.viewpoints(C, N, area, cams, 0.0, 1.2)
 assert found[0]["share"] > 0.5 and sum(v["share"] for v in found) <= 1.001 and all(a["share"] >= b["share"] for a, b in zip(found, found[1:])), found
 other = next(c["name"] for c in cams if c["name"] != found[0]["name"])
-assert captureplan.viewpoints(C, N, area, cams, 0.0, 1.2, rank={other: 50.0})[0]["name"] == other, "the better tied of two is asked for"
+assert captureplan.viewpoints(C, N, area, cams, 0.0, 1.2, rank={other: 50.0, found[0]["name"]: 1.0})[0]["name"] == other, "the better tied of two is asked for"
 assert captureplan.viewpoints(C, N, area, cams, -5.0, 1.2) == [], "none from where nobody could stand: 7.8 m up"
+assert captureplan.viewpoints(C, N, area, cams, -5.0, 1.2, guessed=True) == found, "unless its size is a guess: then from as high as most photos were taken"
 assert captureplan.viewpoints(C, N, area, [camera("far.jpg", [0, 1.5, 30], [0, 1.5, 0])], 0.0, 1.2) == [], "nor from 34 m off"
 magic, nv, nf, npatch = struct.unpack("<4sIII", guide[:16])
 assert magic == b"BMG1" and (nv, nf) == (len(V), len(F)) and npatch == len(kinds["patch"])
@@ -183,6 +184,12 @@ assert server.capture_plan(mid)["made"] == first["made"] and (mdir / "capture" /
 (mdir / "holds.json").write_text(json.dumps({"holds": [{"p": [0.0, 1.0, 2.0], "role": "start"}]}))
 again = server.capture_plan(mid)
 assert [t["role"] for t in again["targets"] if t["kind"] == "hold"] == ["start"] and again["made"] != first["made"], "made again with its hold"
+# its cameras' own count of how well each is tied in chooses between views that show the same
+assert [t["from"] for t in again["targets"] if t["kind"] == "view"] == ["cap_004.jpg"] and again["frame"]["scale_guessed"], "the one in the middle shows the most"
+(mdir / "cameras.json").write_text(json.dumps([{**c, "seen": 4000 if c["name"] == "cap_001.jpg" else 40} for c in cams]))
+ranked = server.capture_plan(mid)
+assert [t["from"] for t in ranked["targets"] if t["kind"] == "view"][0] == "cap_001.jpg" and ranked["made"] != again["made"], "made again, from the best tied"
+(mdir / "cameras.json").write_text(json.dumps(cams))
 print("the server's plans OK")
 
 # --- the server's: the meshes a capture can add to, and a capture meshed together with the photos of the one it adds to ----

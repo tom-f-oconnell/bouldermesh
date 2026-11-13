@@ -160,7 +160,8 @@ def coverage(C, N, cams: list[dict]):
     return best, count
 
 
-def viewpoints(C, N, area, cams: list[dict], ground: float, mpu: float, rank: dict[str, float] | None = None) -> list[dict]:
+def viewpoints(C, N, area, cams: list[dict], ground: float, mpu: float, rank: dict[str, float] | None = None,
+               guessed: bool = False) -> list[dict]:
     """Where a few of its photos were taken, to photograph it from again: those that between them show the most of what
     any photo saw, each from somewhere a person can stand and hold a phone (BRIDGE_HEIGHT_M above the ground, within
     BRIDGE_FAR_M of what it shows). Chosen one at a time, each the one showing most not yet shown, until BRIDGE_MOST
@@ -168,38 +169,45 @@ def viewpoints(C, N, area, cams: list[dict], ground: float, mpu: float, rank: di
 
     Args:
         ground: the ground's height in the mesh; mpu: metres a unit.
-        rank: how well tied in each photo is, by name (its verified matches with the others, say), if known: a view's
-            worth is what it adds times this, so that of two views showing the same, the better tied is asked for.
+        guessed: its size isn't known, so heights and distances in metres aren't: a view is then one from no higher
+            than most of its photos were taken from (people stand to take photos), however far.
+        rank: how well tied in each photo is, by name, if known (cameras.json's "seen": how many of its features became
+            points of the model): of two views showing much the same, the better tied is asked for.
 
     Returns:
         [{name, c (where the camera was), d (the way it looked), share (of what any photo saw, that it adds)}]
     """
     import numpy as np
+    saw = [(cam.get("name"), _sees(C, N, cam)) for cam in cams]
+    saw = [(name, s) for name, s in saw if s is not None]
+    if not saw:
+        return []
+    most = float(np.percentile([float(s[3][1]) for _, s in saw], 75))
     usable = []
-    for cam in cams:
-        saw = _sees(C, N, cam)
-        if saw is None:
-            continue
-        seen, _, _, o, look, d = saw
+    for name, (seen, _, _, o, look, d) in saw:
         up = (float(o[1]) - ground) * mpu
-        if not BRIDGE_HEIGHT_M[0] <= up <= BRIDGE_HEIGHT_M[1] or float(np.median(d[seen])) * mpu > BRIDGE_FAR_M:
+        if (float(o[1]) > most + 1e-9) if guessed else (not BRIDGE_HEIGHT_M[0] <= up <= BRIDGE_HEIGHT_M[1] or float(np.median(d[seen])) * mpu > BRIDGE_FAR_M):
             continue
-        usable.append((cam.get("name"), o, look, seen))
+        usable.append((name, o, look, seen))
     if not usable:
         return []
     every = np.zeros(len(C), bool)
     for *_, seen in usable:
         every |= seen
     total = float(area[every].sum()) or 1.0
+    scores = [float((rank or {}).get(name) or 0.0) for name, *_ in usable]
+    usual = float(np.median([x for x in scores if x > 0])) if any(x > 0 for x in scores) else 0.0
+    # twice as well tied counts as showing 1.4 times as much: enough to choose between views, not to drown what they show
+    weight = [math.sqrt(x / usual) if usual and x > 0 else 1.0 for x in scores]
     shown, out = np.zeros(len(C), bool), []
     while len(out) < BRIDGE_MOST:
-        worth = [float(area[seen & ~shown].sum()) * float((rank or {}).get(name, 1.0)) for name, _, _, seen in usable]
+        share = [float(area[seen & ~shown].sum()) / total for *_, seen in usable]
+        worth = [sh * wt if sh >= BRIDGE_GAIN else -1.0 for sh, wt in zip(share, weight)]
         i = int(np.argmax(worth))
-        name, o, look, seen = usable[i]
-        share = float(area[seen & ~shown].sum()) / total
-        if share < BRIDGE_GAIN:
+        if worth[i] < 0:
             break
-        out.append({"name": name, "c": [round(float(x), 5) for x in o], "d": [round(float(x), 4) for x in look], "share": round(share, 3)})
+        name, o, look, seen = usable[i]
+        out.append({"name": name, "c": [round(float(x), 5) for x in o], "d": [round(float(x), 4) for x in look], "share": round(share[i], 3)})
         shown |= seen
     return out
 
@@ -361,7 +369,7 @@ def build(V, F, cams: list[dict], holds: list[dict], climbs: list[dict], metres_
                             "r": round(cell / 2, 5), "prio": 2 if close or not known else 1, "have_gsd": None, "have_views": 0, "climbs": on})
             n_edge += 1
 
-    for i, v in enumerate(viewpoints(C, N, area, cams, ground, mpu, rank)):
+    for i, v in enumerate(viewpoints(C, N, area, cams, ground, mpu, rank, guessed)):
         targets.append({"id": f"v{i}", "kind": "view", "p": v["c"], "n": v["d"], "r": round(BRIDGE["within_m"] / mpu, 5), "prio": 2,
                         "from": v["name"], "have_gsd": None, "have_views": 0, "climbs": []})
 
@@ -417,7 +425,9 @@ def make(mesh_dir: Path, holds: list[dict], climbs: list[dict], metres_per_unit:
         cams = json.loads((mesh_dir / "cameras.json").read_text())
     except (OSError, ValueError):
         cams = []
-    plan, guide = build(mesh.V, F, cams, holds, climbs, metres_per_unit)
+    # how well tied in each photo is, where the mesh's cameras say (those kept since orientation.read_cameras() counted it)
+    rank = {c["name"]: c["seen"] for c in cams if isinstance(c, dict) and isinstance(c.get("seen"), (int, float)) and c.get("name")}
+    plan, guide = build(mesh.V, F, cams, holds, climbs, metres_per_unit, rank or None)
     plan["key"] = made_from
     out = mesh_dir / DIR
     out.mkdir(exist_ok=True)

@@ -12,14 +12,29 @@ import kotlin.test.assertTrue
 import sh.boulderme.core.TestWorld.near
 
 class CalibrationTest {
-    @Test fun uprightFromDown() {
-        // a phone held upright reads its picture out on its side: down runs along the rows, and a quarter turn shows it right
-        assertEquals(6, Axes.exifOrientation(Axes.downFromAccel(Vec3(0.0, 9.81, 0.0)), 0))
-        assertEquals(1, Axes.exifOrientation(Vec3(0.0, 1.0, 0.0), 90), "held on its side, the picture is upright as stored")
-        assertEquals(3, Axes.exifOrientation(Vec3(0.1, -1.0, 0.2), 90))
-        assertEquals(8, Axes.exifOrientation(Vec3(-1.0, 0.0, 0.0), 90))
-        assertEquals(6, Axes.exifOrientation(Vec3(0.1, 0.1, 1.0), 90), "looking straight down: as the screen showed it")
-        assertEquals(1, Axes.exifOrientation(null, 0))
+    @Test fun storedUpright() {
+        // a phone held upright reads its picture out on its side: down runs along the rows, and a quarter turn stores it right
+        assertEquals(90, Axes.uprightTurn(Axes.downFromAccel(Vec3(0.0, 9.81, 0.0)), 0))
+        assertEquals(0, Axes.uprightTurn(Vec3(0.0, 1.0, 0.0), 90), "held on its side, the picture is upright as read")
+        assertEquals(180, Axes.uprightTurn(Vec3(0.1, -1.0, 0.2), 90))
+        assertEquals(270, Axes.uprightTurn(Vec3(-1.0, 0.0, 0.0), 90))
+        assertEquals(90, Axes.uprightTurn(Vec3(0.1, 0.1, 1.0), 90), "looking straight down: as the screen showed it")
+        assertEquals(0, Axes.uprightTurn(null, 0))
+        // turned, the same camera sees the same thing, where the turned picture has it; and down is down the picture
+        val lens = Lens(1450.0, 1440.0, 950.0, 530.0, 1920, 1080)
+        val sideways = CameraPose(Vec3(1.0, 1.5, 4.0), Quat.fromAxes(Vec3(0.0, -1.0, 0.0), Vec3(-1.0, 0.0, 0.0), Vec3(0.0, 0.0, -1.0)), lens)   // rows run down the world
+        assertTrue(near(Axes.downInImage(sideways), Vec3(1.0, 0.0, 0.0), 1e-9))
+        val point = Vec3(1.3, 1.1, 0.0)
+        val was = assertNotNull(sideways.project(point))
+        for (deg in listOf(90, 180, 270)) {
+            val now = sideways.turned(deg)
+            val at = assertNotNull(now.project(point))
+            val (u, v) = when (deg) { 90 -> (1080 - was.v) to was.u; 180 -> (1920 - was.u) to (1080 - was.v); else -> was.v to (1920 - was.u) }
+            assertTrue(near(at.u, u, 1e-6) && near(at.v, v, 1e-6) && near(at.depth, was.depth, 1e-9), "$deg: ${at.u}, ${at.v} for $u, $v")
+            assertTrue(near(Axes.downInImage(now), Axes.turn(Axes.downInImage(sideways), deg), 1e-9) && near(now.forward, sideways.forward, 1e-9))
+            assertTrue(now.lens.w == (if (deg == 180) 1920 else 1080) && now.turned(360 - deg).lens == lens)
+        }
+        assertTrue(near(Axes.downInImage(sideways.turned(90)), Vec3(0.0, 1.0, 0.0), 1e-9), "stored upright, down is down the picture")
     }
 
     /**

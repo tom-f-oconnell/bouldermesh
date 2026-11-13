@@ -31,15 +31,23 @@ object Axes {
     fun downFromAccel(accel: Vec3, sensorOrientation: Int = 90): Vec3 = -forceInImage(accel, sensorOrientation).unit()
 
     /**
-     * The EXIF Orientation that shows a photo upright: 1 as stored, 6 turned a quarter clockwise, 3 a half, 8 three
-     * quarters; from which way is down in its stored pixels, or from how the screen showed it (uprightDeg) if the camera
-     * was pointing too nearly straight up or down for that to say.
+     * How far clockwise (0, 90, 180 or 270 degrees) to turn the sensor's picture to store it upright: by which way is
+     * down in it, or by how the screen showed it (screenDeg) if the camera was pointing too nearly straight up or down
+     * for that to say. Photos are stored upright so that everything that reads them, the networks trained on upright
+     * pictures among them, sees what the reconstruction sees, whatever it makes of an EXIF Orientation.
      */
-    fun exifOrientation(down: Vec3?, uprightDeg: Int): Int {
+    fun uprightTurn(down: Vec3?, screenDeg: Int): Int {
         val d = down?.unit()
-        val turn = if (d == null || abs(d.z) > 0.9) ((uprightDeg % 360) + 360) % 360
+        return if (d == null || abs(d.z) > 0.9) ((screenDeg % 360) + 360) % 360
             else if (abs(d.y) >= abs(d.x)) (if (d.y > 0) 0 else 180) else (if (d.x > 0) 90 else 270)      // down along its rows: on its side
-        return when (turn) { 90 -> 6; 180 -> 3; 270 -> 8; else -> 1 }
+    }
+
+    /** A direction in a picture's axes, in the axes of the same picture turned clockwise by `deg`. */
+    fun turn(v: Vec3, deg: Int): Vec3 = when (((deg % 360) + 360) % 360) {
+        90 -> Vec3(-v.y, v.x, v.z)
+        180 -> Vec3(-v.x, -v.y, v.z)
+        270 -> Vec3(v.y, -v.x, v.z)
+        else -> v
     }
 
     /**
@@ -68,8 +76,9 @@ object Axes {
  *
  * @param down a unit vector in the tracking's world.
  * @param tiltDeg how far the tracking's own down (-Y) was from it.
- * @param offset what the phone adds of its own to its accelerometer's reading, in a photo's axes (m/s2): the sensor's
- *   zero error and how it sits against the camera, as far as the turn could tell them from gravity.
+ * @param offset what the phone adds of its own to its accelerometer's reading, in the axes of the camera's picture as its
+ *   sensor reads it out (before any turn to store it upright; m/s2): the sensor's zero error and how it sits against
+ *   the camera, as far as the turn could tell them from gravity.
  * @param spreadDeg how far the directions faced still disagree with that taken out: how good the answer is.
  */
 data class Level(val down: Vec3, val tiltDeg: Double, val offset: Vec3, val spreadDeg: Double, val sectors: Int, val samples: Int) {

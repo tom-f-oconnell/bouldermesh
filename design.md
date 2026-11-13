@@ -1433,6 +1433,13 @@ GPSImgDirection, and scale.py compares the tracked positions of a mesh's app pho
 tracking drifts however well it fits) and averages their GPS fixes after taking out each photo's own offset from the
 rock (`phonedata.position()`).
 
+**Stored upright.** A phone's sensor reads its picture out on its side, and a camera app normally stores it so, with an
+EXIF tag saying how to show it. COLMAP, OpenMVS and PIL ignore the tag; OpenCV's `imread` obeys it; so the same file is
+two different pictures depending on who opens it (bm2 found splat.py and scale.py's people step reading through OpenCV,
+2026-11-13), and the networks trained on upright pictures (VGGT, the people masks) would get every app photo sideways.
+The apps therefore turn each photo upright on the phone and write Orientation 1, with its camera, lens and `down` given
+for the picture as stored (`CameraPose.turned()`): cheap there, and nothing downstream has to know.
+
 **What to photograph: the plan.** For a mesh, `captureplan.py` makes a 12,000-face copy to draw (`guide.bin`) and
 targets, all in the mesh's own coordinates: the holds its beta found or an editor marked (0.5 mm of rock a pixel from 4
 directions), patches of rock (1.5 mm from 3; those by a hold or in a climb's view matter more than the rest, the ground

@@ -125,7 +125,8 @@ def read_lenses(model: Path) -> dict[int, dict]:
 
 def read_cameras(model: Path) -> list[dict]:
     """The placed photos of a COLMAP model, from its images.bin: name, rotation and translation
-    (world to camera), and the lens it was taken with, where cameras.bin has it."""
+    (world to camera), the lens it was taken with, where cameras.bin has it, and how many of its
+    features became points of the model ("seen": how well it's tied to the others)."""
     out, lenses = [], read_lenses(model)
     with open(model / "images.bin", "rb") as f:
         for _ in range(struct.unpack("<Q", f.read(8))[0]):
@@ -136,8 +137,9 @@ def read_cameras(model: Path) -> list[dict]:
             name = b""
             while (c := f.read(1)) != b"\0":
                 name += c
-            f.seek(24 * struct.unpack("<Q", f.read(8))[0], 1)
-            out.append({"name": name.decode(), "q": list(q), "t": list(t), **({"lens": lenses[cam_id]} if cam_id in lenses else {})})
+            features = f.read(24 * struct.unpack("<Q", f.read(8))[0])     # x, y, and the point each became (-1: none)
+            seen = sum(1 for _, _, point in struct.iter_unpack("<ddq", features) if point != -1)
+            out.append({"name": name.decode(), "q": list(q), "t": list(t), "seen": seen, **({"lens": lenses[cam_id]} if cam_id in lenses else {})})
     return out
 
 

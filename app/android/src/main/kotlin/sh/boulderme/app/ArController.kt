@@ -270,17 +270,47 @@ class ArController(
         worker.execute {
             try {
                 val stats = Quality.imageStats(nv21, w, h, w)       // NV21 starts with its brightness, a byte a pixel
-                val out = synchronized(lock) { flow.shot(ShotIn(pose, sample, stats, shutter, iso, focus, true, arSession, now, unix, sensorOrientation, gyro)) }
+                // stored upright (the sensor reads its picture out on its side), with the camera and its lens as that picture has them
+                val turn = Axes.uprightTurn(Axes.downInImage(pose), upright)
+                val stored = pose.turned(turn)
+                val out = synchronized(lock) { flow.shot(ShotIn(stored, sample, stats, shutter, iso, focus, true, arSession, now, unix, sensorOrientation, gyro, turn)) }
                 if (out.kept) {
                     val file = File(File(dir, "photos"), out.record.name)
-                    FileOutputStream(file).use { YuvImage(nv21, ImageFormat.NV21, w, h, null).compressToJpeg(Rect(0, 0, w, h), 93, it) }
-                    writeExif(file, out.userComment, sample, pose.lens, unix, Axes.exifOrientation(out.record.blob.down?.let { Vec3.of(it) }, upright))
+                    val pixels = turnNv21(nv21, w, h, turn)
+                    val (sw, sh) = if (turn == 90 || turn == 270) h to w else w to h
+                    FileOutputStream(file).use { YuvImage(pixels, ImageFormat.NV21, sw, sh, null).compressToJpeg(Rect(0, 0, sw, sh), 93, it) }
+                    writeExif(file, out.userComment, sample, stored.lens, unix)
                     save()
                 }
             } catch (e: Exception) {
                 synchronized(lock) { flow.say("A photo couldn't be saved: ${e.message}") }
             }
         }
+    }
+
+    /** NV21 pixels w wide and h high, turned clockwise by a quarter (90), a half or three quarters: then h wide and w high, for a quarter. */
+    private fun turnNv21(src: ByteArray, w: Int, h: Int, deg: Int): ByteArray {
+        if (deg != 90 && deg != 180 && deg != 270) return src
+        val out = ByteArray(src.size)
+        val nw = if (deg == 180) w else h
+        val cw = w / 2; val ch = h / 2; val ncw = nw / 2
+        val chroma = w * h      // where the colour starts: pairs of bytes, one pair to four pixels
+        when (deg) {
+            90 -> {     // (x, y) goes to (h - 1 - y, x)
+                for (y in 0 until h) { val nx = h - 1 - y; var from = y * w; for (x in 0 until w) out[x * nw + nx] = src[from++] }
+                for (y in 0 until ch) { val nx = ch - 1 - y; var from = chroma + y * cw * 2; for (x in 0 until cw) { val to = chroma + (x * ncw + nx) * 2; out[to] = src[from++]; out[to + 1] = src[from++] } }
+            }
+            180 -> {    // (x, y) goes to (w - 1 - x, h - 1 - y)
+                for (i in 0 until w * h) out[w * h - 1 - i] = src[i]
+                val pairs = cw * ch
+                for (i in 0 until pairs) { val to = chroma + (pairs - 1 - i) * 2; out[to] = src[chroma + i * 2]; out[to + 1] = src[chroma + i * 2 + 1] }
+            }
+            else -> {   // (x, y) goes to (y, w - 1 - x)
+                for (y in 0 until h) { var from = y * w; for (x in 0 until w) out[(w - 1 - x) * nw + y] = src[from++] }
+                for (y in 0 until ch) { var from = chroma + y * cw * 2; for (x in 0 until cw) { val to = chroma + ((cw - 1 - x) * ncw + y) * 2; out[to] = src[from++]; out[to + 1] = src[from++] } }
+            }
+        }
+        return out
     }
 
     private fun toNv21(image: Image): ByteArray {
@@ -298,14 +328,13 @@ class ArController(
         return out
     }
 
-    private fun writeExif(file: File, comment: String, s: sh.boulderme.core.SensorSample, lens: Lens, unix: Double, orientation: Int) {
+    private fun writeExif(file: File, comment: String, s: sh.boulderme.core.SensorSample, lens: Lens, unix: Double) {
         val exif = ExifInterface(file)
         exif.setAttribute(ExifInterface.TAG_USER_COMMENT, comment)
-        // the pixels are as the sensor read them, which is what the server's tools use; this says how to show them upright
-        exif.setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
+        exif.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())     // its pixels are upright as stored
         exif.setAttribute(ExifInterface.TAG_MAKE, Build.MANUFACTURER); exif.setAttribute(ExifInterface.TAG_MODEL, Build.MODEL)
         exif.setAttribute(ExifInterface.TAG_SOFTWARE, "BoulderMesh ${BuildInfo.VERSION}")
-        exif.setAttribute(ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM, Math.round(lens.fx / lens.w * 36.0).toString())
+        exif.setAttribute(ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM, Math.round(lens.fx / maxOf(lens.w, lens.h) * 36.0).toString())
         exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US).format(java.util.Date((unix * 1000).toLong())))
         s.gps?.let { g ->
             exif.setLatLong(g.lat, g.lng)

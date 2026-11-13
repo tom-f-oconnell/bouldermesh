@@ -15,10 +15,15 @@ data class FrameOut(val hint: Hint, val shoot: Boolean, val progress: Progress, 
 /** Something to draw in the world: a hold, an edge or a marked spot, coloured by how done it is (Coverage.LEVEL_*). */
 data class Marker(val id: String, val world: Vec3, val radiusM: Double, val level: Int, val kind: String, val current: Boolean)
 
-/** A photo just taken: where from (with the lens of the photo itself), the sensors then, and what its pixels say. */
+/**
+ * A photo just taken: where from, as stored (its pose and lens are the stored picture's: CameraPose.turned() of the
+ * tracking's, if the picture is turned upright to store it, by `turnedDeg` clockwise), the sensors then, and what its
+ * pixels say.
+ */
 data class ShotIn(
     val pose: CameraPose, val sensors: SensorSample, val stats: ImageStats?, val exposureS: Double?, val iso: Double?, val focusM: Double?,
     val tracking: Boolean, val arSession: String, val t: Double, val unix: Double, val sensorOrientation: Int = 90, val gyroRadS: Double = 0.0,
+    val turnedDeg: Int = 0,
 )
 
 /** The verdict on it: whether to keep its file, why not if not, what it helped, and the text to put in the file. */
@@ -173,7 +178,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         // a turn); and this photo's accelerometer alone, less what the turn found the phone adds, kept to check the others by
         val found = level
         val force = s.sensors.accel?.takeIf { grades.gravityOk }?.let { Axes.forceInImage(it, s.sensorOrientation) }
-        val downAcc = force?.let { -(if (found != null) it - found.offset else it).unit() }
+        val downAcc = force?.let { -Axes.turn(if (found != null) it - found.offset else it, s.turnedDeg).unit() }     // the offset is in the sensor's axes
         val downTrack = if (s.tracking) Axes.downInImage(s.pose) else null
         val downAr = if (s.tracking && found != null) Axes.downInImage(s.pose, found.down) else downTrack
         val down = downAr ?: downAcc
@@ -184,7 +189,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         val blob = ShotBlob(
             app = app, device = device, cap = id, i = shots.size + 1, t = s.unix,
             down = down?.toList(), downSrc = if (downAr != null) (if (found != null) "turn" else "ar") else if (downAcc != null) "accel" else null,
-            downAcc = downAcc?.toList(), downTrack = downTrack?.takeIf { found != null }?.toList(),
+            downAcc = downAcc?.toList(), downTrack = downTrack?.takeIf { found != null }?.toList(), turn = s.turnedDeg,
             heading = s.sensors.headingDeg?.takeIf { grades.headingOk }, headingAcc = s.sensors.headingAccDeg,
             gps = s.sensors.gps?.let { BlobGps(it.lat, it.lng, it.alt, it.accM, s.t - it.t) },
             ar = BlobAr(s.arSession, s.pose.centre.toList(), s.pose.rot.toList(), if (s.tracking) "normal" else "limited"),
