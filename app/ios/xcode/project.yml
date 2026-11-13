@@ -13,6 +13,7 @@ targets:
     type: application
     platform: iOS
     sources: [Sources]
+    scheme: {}        # a scheme kept with the project, so that xcodebuild finds one on a machine Xcode has never opened it on
     info:
       path: Info.plist
       properties:

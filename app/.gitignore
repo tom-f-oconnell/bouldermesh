@@ -5,4 +5,5 @@ local.properties
 .idea/
 .kotlin/
 ios/xcode/*.xcodeproj/
+ios/xcode/Info.plist
 ios/xcode/build/

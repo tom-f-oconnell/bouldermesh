@@ -4,7 +4,7 @@
 name: iOS app
 on:
   push:
-    paths: ["app/**"]
+    paths: ["app/**", ".github/workflows/ios.yml"]
   workflow_dispatch:
 jobs:
   build:
