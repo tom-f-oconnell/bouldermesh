@@ -116,6 +116,11 @@ Roughly in order of gain for the effort.
   (the app's Dockerfile uses all-major), and the native variant is hal's CPU only. Check the oldest NVIDIA driver
   CUDA 12.9 accepts, and how much cuDSS, cuDNN and ONNX Runtime add to the image volunteers download.
 - **Ceres is pinned to an unreleased commit.** Note it, and whether a release would do.
+- **Ceres master leaves SuiteSparse out unless asked** (`option(WITH_SUITESPARSE ... OFF)`): the first build (build-plain)
+  didn't pass `-DWITH_SUITESPARSE=ON`, so its config.h has `CERES_NO_SUITESPARSE` and COLMAP 4.2.1's sparse solves on
+  the CPU fall to Eigen's solver. Nothing went wrong in building it; the flag was missing. To do: build the ss variant
+  (build-inside.sh, `V=ss`), check config.h and COLMAP's solver summary show SuiteSparse, report plain against ss on
+  the boulders over 50 photos, and make any build that ships pass the flag and check for it.
 - **The GPU is shared.** Record each GPU step's peak memory (for `gpu_need_mb()` and GPU_MIN_FREE_MB), keep a CPU
   fallback for every step, and have the job report which device each step used, so the server can show a fallback.
 - **A gate by size is fine** (global mapper was slower than incremental at 33 photos), if it's automatic and
