@@ -407,6 +407,15 @@ def _photo_size(path: Path) -> tuple[int, int] | None:
         return None
 
 
+def _read_turned(entry: dict, photo: Path) -> bool:
+    """Whether people were found in this photo turned a quarter by its EXIF Orientation: what was recorded as its
+    size is its stored size, width and height swapped."""
+    size = entry.get("size") if isinstance(entry, dict) else None
+    if not isinstance(size, list) or len(size) != 2 or size[0] == size[1] or not photo.exists():
+        return False
+    return tuple(size) == tuple(reversed(_photo_size(photo) or ()))
+
+
 def _pose_model(log: Log):
     """beta.py's pose model, for single photos rather than a video's frames."""
     from rtmlib import BodyWithFeet
@@ -424,6 +433,8 @@ def find_poses(mesh_dir: Path, photos: Path, masks: Path | None, log: Log, progr
                look: bool = True) -> dict:
     """The people in each placed photo, kept in poses.json: photos already there aren't looked at again,
     and only those whose people mask (occlusion.py) found people are looked at, or all without masks.
+    People found in a photo as its EXIF Orientation turned it (as photos were read before) are in the wrong axes
+    for its camera: they're dropped, and looked for again.
 
     Args:
         look: False to only read what's there, as without the pose model.
@@ -436,6 +447,7 @@ def find_poses(mesh_dir: Path, photos: Path, masks: Path | None, log: Log, progr
         found = json.loads(path.read_text())["photos"]
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
         found = {}
+    found = {n: f for n, f in found.items() if not _read_turned(f, photos / n)}
     shares = {}
     if masks and (masks / "people.json").exists():
         shares = json.loads((masks / "people.json").read_text())
@@ -450,7 +462,7 @@ def find_poses(mesh_dir: Path, photos: Path, masks: Path | None, log: Log, progr
         jobctl.check()
         if i % 5 == 0:
             progress(f"people in photo {i + 1} of {len(todo)}")
-        im = cv2.imread(str(photos / n))
+        im = cv2.imread(str(photos / n), cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)    # COLMAP's pixels, as cameras.json has them
         if im is None:
             continue
         kps, scs = model(im)

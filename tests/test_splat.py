@@ -110,6 +110,13 @@ with tempfile.TemporaryDirectory() as td:
         m = np.full((400, 600), 255, np.uint8)
         m[:, 500:] = 0                  # a person on the right
         cv2.imwrite(str(masks / "a.jpg.png"), m)
+        try:        # a photo whose EXIF says to show it turned: COLMAP placed it, and its lens is, in the stored pixels
+            from PIL import Image
+            exif = Image.Exif()
+            exif[0x0112] = 6
+            Image.fromarray(img[:, :, ::-1]).save(photos / "turned.jpg", exif=exif.tobytes())
+        except ImportError:
+            pass
         lens = {"model": 1, "width": 600, "height": 400, "params": [500, 500, 300, 200]}
         (mesh / "cameras.json").write_text(json.dumps([{**c, "lens": lens} for c in cams] + [{"name": "gone.jpg", "q": [1, 0, 0, 0], "t": [0, 0, 0], "lens": lens}]))
         v = splat.views(mesh, photos, masks, max_side=300)
@@ -119,6 +126,11 @@ with tempfile.TemporaryDirectory() as td:
         assert a["image"][100, 10, 0] > .9 and a["image"][100, 10, 2] < .1, "RGB, not OpenCV's BGR"
         assert not a["valid"][100, 290] and a["valid"][100, 10] and v[1]["valid"].all(), "the masked person"
         assert np.allclose(a["K"], [[250, 0, 150], [0, 250, 100], [0, 0, 1]]) and np.allclose(a["viewmat"][:3, 3], [0, 0, 2])
+        if (photos / "turned.jpg").exists():
+            (mesh / "cameras.json").write_text(json.dumps([{"name": "turned.jpg", "q": [1, 0, 0, 0], "t": [0, 0, 2], "lens": lens}]))
+            t = splat.views(mesh, photos, None, max_side=300)[0]["image"]
+            assert t.shape == (200, 300, 3), t.shape
+            assert t[150, 10, 0] > .9 and t[50, 290, 0] < .1, "read as its EXIF Orientation turns it, not as stored (red on the left)"
         print("photos OK")
     else:
         print("OpenCV not installed: skipping the photos")

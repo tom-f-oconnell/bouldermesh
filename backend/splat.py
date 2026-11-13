@@ -84,7 +84,8 @@ def views(mesh_dir: Path, photos: Path, masks: Path | None, max_side: int = MAX_
     import numpy as np
     out = []
     for c in json.loads((mesh_dir / "cameras.json").read_text()):
-        img = cv2.imread(str(photos / c["name"]), cv2.IMREAD_COLOR)
+        # as COLMAP placed it: in the stored pixels, not turned by its EXIF Orientation as OpenCV would by default
+        img = cv2.imread(str(photos / c["name"]), cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
         lens = c.get("lens")
         if img is None or not lens:
             continue
@@ -95,7 +96,7 @@ def views(mesh_dir: Path, photos: Path, masks: Path | None, max_side: int = MAX_
         if np.any(dist):
             img = cv2.undistort(img, K, dist)
         valid = np.ones(img.shape[:2], np.uint8)
-        m = cv2.imread(str(masks / f"{c['name']}.png"), cv2.IMREAD_GRAYSCALE) if masks else None
+        m = cv2.imread(str(masks / f"{c['name']}.png"), cv2.IMREAD_GRAYSCALE | cv2.IMREAD_IGNORE_ORIENTATION) if masks else None
         if m is not None:           # COLMAP's masks: black where a person is
             valid = (cv2.resize(m, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST) > 127).astype(np.uint8)
             if np.any(dist):

@@ -292,4 +292,24 @@ with tempfile.TemporaryDirectory() as tmp:
     assert scale.carry_on(d) and scale.load(d)["status"] == "queued" and scale.load(d)["progress"] is None
     assert not scale.carry_on(d / "nothing"), "nothing to carry on"
 
+# ------------------------------------------------------------------ people found in a photo its EXIF Orientation turned
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+if Image is not None:
+    with tempfile.TemporaryDirectory() as tmp:
+        d = pathlib.Path(tmp)
+        (d / "photos").mkdir()
+        for n in ("turned.jpg", "upright.jpg"):
+            Image.new("RGB", (60, 40)).save(d / "photos" / n)       # stored 60 wide, 40 high
+        (d / "cameras.json").write_text(json.dumps([{"name": n, "q": [1, 0, 0, 0], "t": [0, 0, 0]} for n in ("turned.jpg", "upright.jpg", "gone.jpg")]))
+        person = [{"kp": [[1.0, 2.0]] * 6, "sc": [0.9] * 6}]
+        (d / scale.POSES_FILE).write_text(json.dumps({"photos": {"turned.jpg": {"size": [40, 60], "people": person},
+                                                                 "upright.jpg": {"size": [60, 40], "people": person},
+                                                                 "gone.jpg": {"size": [40, 60], "people": person}}}))
+        found = scale.find_poses(d, d / "photos", None, lambda s: None, look=False)
+        assert set(found) == {"upright.jpg", "gone.jpg"}, f"people found turned are dropped, to be found again: {sorted(found)}"
+    print("turned photos OK")
+
 print("ALL SCALE TESTS PASSED")
