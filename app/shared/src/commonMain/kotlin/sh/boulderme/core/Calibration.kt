@@ -1,25 +1,34 @@
 package sh.boulderme.core
 
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.sqrt
 
 /** Readings turned into the axes of a stored photo: x along its rows, y down its columns, z the way the camera looks. */
 object Axes {
-    /** Which way is down in a photo taken from a tracked pose (the tracking's world has +Y up). */
-    fun downInImage(pose: CameraPose): Vec3 = pose.rot.conj().rotate(Vec3(0.0, -1.0, 0.0)).unit()
+    /**
+     * Which way is down in a photo taken from a tracked pose.
+     *
+     * @param worldDown down in the tracking's world: its own -Y, unless a turn on the spot has found better (Level).
+     */
+    fun downInImage(pose: CameraPose, worldDown: Vec3 = Vec3(0.0, -1.0, 0.0)): Vec3 = pose.rot.conj().rotate(worldDown).unit()
 
     /**
-     * Which way is down in a photo from the accelerometer as it was taken (the phone's axes; it reads upwards at rest).
+     * What the accelerometer reads (the phone's axes: x to its right, y to its top, z out of its screen; at rest, 9.81
+     * m/s2 upwards) in a photo's axes.
      *
      * @param sensorOrientation how the back camera's sensor is mounted: 90 on iPhones and nearly every Android phone
      *   (its rows run down the phone), 270 on a few.
      */
-    fun downFromAccel(accel: Vec3, sensorOrientation: Int = 90): Vec3 {
-        val d = -accel.unit()
-        return if (sensorOrientation == 270) Vec3(d.y, d.x, -d.z) else Vec3(-d.y, -d.x, -d.z)
-    }
+    fun forceInImage(accel: Vec3, sensorOrientation: Int = 90): Vec3 =
+        if (sensorOrientation == 270) Vec3(accel.y, accel.x, -accel.z) else Vec3(-accel.y, -accel.x, -accel.z)
+
+    /** Which way is down in a photo from the accelerometer as it was taken, by that reading alone. */
+    fun downFromAccel(accel: Vec3, sensorOrientation: Int = 90): Vec3 = -forceInImage(accel, sensorOrientation).unit()
 
     /**
      * The EXIF Orientation that shows a photo upright: 1 as stored, 6 turned a quarter clockwise, 3 a half, 8 three
@@ -55,46 +64,99 @@ object Axes {
 }
 
 /**
- * The accelerometer's offsets, from three readings with the phone at rest: flat on its back; the same after half a
- * turn on the spot; and flipped onto its screen. The half turn cancels the surface's slope, so it needn't be level.
+ * Which way is truly down in the world the phone's tracking keeps, as a turn on the spot found it (LevelTurn).
+ *
+ * @param down a unit vector in the tracking's world.
+ * @param tiltDeg how far the tracking's own down (-Y) was from it.
+ * @param offset what the phone adds of its own to its accelerometer's reading, in a photo's axes (m/s2): the sensor's
+ *   zero error and how it sits against the camera, as far as the turn could tell them from gravity.
+ * @param spreadDeg how far the directions faced still disagree with that taken out: how good the answer is.
  */
-class AccelCalibration {
-    var flat: Vec3? = null
-    var turned: Vec3? = null
-    var flipped: Vec3? = null
-
-    /** The offsets (m/s2, the phone's axes) to take from every reading, once all three are in and they make sense. */
-    fun bias(): Vec3? {
-        val a = flat ?: return null; val b = turned ?: return null; val c = flipped ?: return null
-        if (a.z < 0.8 * Sensors.G || b.z < 0.8 * Sensors.G || c.z > -0.8 * Sensors.G) return null       // not flat, or not flipped
-        val out = Vec3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + c.z) / 2)
-        return if (out.norm < MAX_BIAS) out else null
-    }
-
-    /** How many degrees the offsets would have put "down" off by, with the phone upright: what calibrating gains. */
-    fun gainDeg(): Double? = bias()?.let { kotlin.math.atan2(hypot2(it.x, it.z), Sensors.G) * 180 / kotlin.math.PI }
-
-    private fun hypot2(a: Double, b: Double) = sqrt(a * a + b * b)
-
-    companion object { const val MAX_BIAS = 1.5 }
+data class Level(val down: Vec3, val tiltDeg: Double, val offset: Vec3, val spreadDeg: Double, val sectors: Int, val samples: Int) {
+    /** How far off one accelerometer reading alone would have put down, in degrees. */
+    val offsetDeg: Double get() = atan2(offset.norm, Sensors.G) * 180 / PI
 }
 
-/** The mean of readings taken while the phone was at rest, and whether it was. */
-class StillMean {
-    private var sum = Vec3.ZERO
-    private var n = 0
-    private var spread = 0.0
-    private var last: Vec3? = null
+/**
+ * Finding which way is down by reversal, as a spirit level is checked by turning it end for end. One accelerometer
+ * reading is off by the sensor's own zero error and by how it's mounted against the camera, each a degree or so and
+ * fixed to the phone; gravity is fixed to the world. So with the phone held as for a photo and turned all the way round
+ * on the spot, the phone's errors point every way in turn and gravity one way: fitted together over the turn (the
+ * tracking says how the phone was turned at each reading), they come apart. Nothing level or plumb is needed.
+ *
+ * Readings are kept by the direction faced, in `sectors` equal parts of the circle, each counting the same however
+ * long was spent facing it.
+ */
+class LevelTurn(val sectors: Int = 12) {
+    private class Sum { var n = 0; val r = DoubleArray(9); var m = Vec3.ZERO; var f = Vec3.ZERO }
+    private val sums = Array(sectors) { Sum() }
+    var samples = 0
+        private set
 
-    fun add(v: Vec3) {
-        last?.let { spread = max(spread, v.distance(it)) }
-        last = v; sum += v; n++
+    /** How many of the directions have readings enough. */
+    val filled: Int get() = sums.count { it.n >= PER_SECTOR_LEAST }
+
+    /**
+     * A reading as the phone turns: where the tracking has the camera, and what the accelerometer reads (the phone's
+     * axes, m/s2). Returns whether it was used: not while the camera points steeply up or down, turns fast or is jolted.
+     */
+    fun add(pose: CameraPose, accel: Vec3, sensorOrientation: Int = 90, gyroRadS: Double = 0.0): Boolean {
+        val ahead = pose.forward
+        if (abs(ahead.y) > MAX_PITCH || gyroRadS > MAX_TURNING || abs(accel.norm - Sensors.G) > MAX_JOLT) return false
+        val turn = (atan2(ahead.x, ahead.z) + 2 * PI) % (2 * PI)
+        val s = sums[floor(turn / (2 * PI / sectors)).toInt().coerceIn(0, sectors - 1)]
+        if (s.n >= PER_SECTOR_MOST) return false
+        val force = Axes.forceInImage(accel, sensorOrientation)
+        val cx = pose.rot.rotate(Vec3(1.0, 0.0, 0.0)); val cy = pose.rot.rotate(Vec3(0.0, 1.0, 0.0)); val cz = pose.rot.rotate(Vec3(0.0, 0.0, 1.0))
+        val cols = arrayOf(cx, cy, cz)
+        for (j in 0 until 3) { s.r[j] += cols[j].x; s.r[3 + j] += cols[j].y; s.r[6 + j] += cols[j].z }      // row-major: image axes to world
+        s.m += pose.rot.rotate(force); s.f += force
+        s.n++; samples++
+        return true
     }
 
-    val count: Int get() = n
-    fun mean(): Vec3? = if (n > 0) sum / n.toDouble() else null
-    fun still(limit: Double = 0.25): Boolean = n >= 10 && spread <= limit
-    fun reset() { sum = Vec3.ZERO; n = 0; spread = 0.0; last = null }
+    /**
+     * The answer, from the directions with readings enough; null with fewer than `least` of them, or readings that
+     * aren't gravity's.
+     *
+     * Each reading, turned into the world, is gravity's force u plus the phone's own offset c turned as the phone
+     * was: u + R c. Least squares over the directions' means gives both; the part of c along gravity can't be told
+     * from gravity's strength and is left at nothing, which changes no direction.
+     */
+    fun solve(least: Int = sectors): Level? {
+        val used = sums.filter { it.n >= PER_SECTOR_LEAST }
+        if (used.size < least || used.size < 3) return null
+        val k = used.size.toDouble()
+        val a = Array(6) { DoubleArray(6) }; val b = DoubleArray(6)
+        for (i in 0 until 3) { a[i][i] = k; a[3 + i][3 + i] = k * (1 + RIDGE) }
+        for (s in used) {
+            val n = s.n.toDouble()
+            for (i in 0 until 3) for (j in 0 until 3) { a[i][3 + j] += s.r[3 * i + j] / n; a[3 + j][i] += s.r[3 * i + j] / n }
+            val m = s.m / n; val f = s.f / n
+            b[0] += m.x; b[1] += m.y; b[2] += m.z; b[3] += f.x; b[4] += f.y; b[5] += f.z
+        }
+        val x = MagCalibration.solveLinear(a, b) ?: return null
+        val u = Vec3(x[0], x[1], x[2]); val c = Vec3(x[3], x[4], x[5])
+        if (abs(u.norm - Sensors.G) > 0.6) return null
+        var off = 0.0
+        for (s in used) {
+            val n = s.n.toDouble()
+            val rc = Vec3((s.r[0] * c.x + s.r[1] * c.y + s.r[2] * c.z) / n, (s.r[3] * c.x + s.r[4] * c.y + s.r[5] * c.z) / n, (s.r[6] * c.x + s.r[7] * c.y + s.r[8] * c.z) / n)
+            val e = s.m / n - u - rc
+            off += e dot e
+        }
+        val down = -u.unit()
+        return Level(down, angleDeg(down, Vec3(0.0, -1.0, 0.0)), c, atan2(sqrt(off / used.size), u.norm) * 180 / PI, used.size, samples)
+    }
+
+    companion object {
+        const val PER_SECTOR_LEAST = 5      // readings facing a direction for it to count
+        const val PER_SECTOR_MOST = 400     // and past which more add nothing
+        const val MAX_PITCH = 0.8           // of the view's direction, up or down: steeper than about 50 degrees isn't "as for a photo"
+        const val MAX_TURNING = 0.9         // radians a second: a turn quicker than about 7 seconds isn't read
+        const val MAX_JOLT = 1.0            // m/s2 from g
+        const val RIDGE = 1e-4
+    }
 }
 
 /**

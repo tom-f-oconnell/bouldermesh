@@ -37,7 +37,6 @@ import sh.boulderme.core.Lens
 import sh.boulderme.core.Plan
 import sh.boulderme.core.Quality
 import sh.boulderme.core.Quat
-import sh.boulderme.core.RecordCalibration
 import sh.boulderme.core.ShotIn
 import sh.boulderme.core.Vec3
 import java.io.File
@@ -61,10 +60,7 @@ class ArController(
     val id: String = java.lang.Long.toString(System.currentTimeMillis() / 1000, 36) + (100..999).random()
     private val dir = store.captureDir(id)
     private val guide = guide.takeIf { plan != null }
-    private val core = CaptureSession(plan, this.guide, id, BuildInfo.APP, "${Build.MANUFACTURER} ${Build.MODEL}", System.currentTimeMillis() / 1000.0).apply {
-        accelBias = store.accelBias
-        calibration = store.accelBias?.let { RecordCalibration(accelBias = it.toList()) }
-    }
+    private val core = CaptureSession(plan, this.guide, id, BuildInfo.APP, "${Build.MANUFACTURER} ${Build.MODEL}", System.currentTimeMillis() / 1000.0)
     private val flow = CaptureFlow(core)
     private val lock = Any()        // round every use of the flow: frames are drawn on one thread, photos judged on another
     private val main = Handler(Looper.getMainLooper())
@@ -132,6 +128,7 @@ class ArController(
     }
 
     fun tap(x: Float, y: Float) { pendingTap = floatArrayOf(x, y) }     // met with the world on the drawing thread, in its next frame
+    fun skipLevel() = synchronized(lock) { flow.skipLevel() }
     fun shutter() = synchronized(lock) { flow.shutter() }
     fun setAuto(on: Boolean) = synchronized(lock) { flow.setAuto(on) }
     fun skip() = synchronized(lock) { flow.skip() }
@@ -194,7 +191,7 @@ class ArController(
             if (tap != null && tracking) { val (from, along) = ray(tap[0], tap[1]); flow.tap(from, along) { hit(frame, tap) } }
             // the slow half of tightening the fit holds no lock: frames go on being drawn meanwhile
             flow.refineDue(now)?.let { work -> worker.execute { val found = flow.tighter(work); synchronized(lock) { flow.tightened(work, found) } } }
-            flow.frame(pose, tracking, gyro, exposure, now, uprightDeg())
+            flow.frame(pose, tracking, gyro, exposure, now, uprightDeg(), sensors.accel, sensorOrientation)
         }
         out.levels?.let { guideRenderer?.setLevels(it) }
         out.guide?.let { fit ->

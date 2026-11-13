@@ -15,6 +15,7 @@ data class ShotBlob(
     val down: List<Double>? = null,
     @SerialName("down_src") val downSrc: String? = null,
     @SerialName("down_acc") val downAcc: List<Double>? = null,
+    @SerialName("down_track") val downTrack: List<Double>? = null,
     val heading: Double? = null,
     @SerialName("heading_acc") val headingAcc: Double? = null,
     val gps: BlobGps? = null,
@@ -63,6 +64,8 @@ data class CaptureRecord(
     val fit: RecordFit? = null,
     val place: RecordPlace? = null,
     val calibration: RecordCalibration? = null,
+    val level: RecordLevel? = null,
+    @SerialName("down_agree_deg") val downAgreeDeg: Double? = null,
     val skipped: Map<String, String> = emptyMap(),
     val progress: RecordProgress? = null,
     val shots: List<ShotRecord>,
@@ -76,6 +79,9 @@ data class RecordFit(val scale: Double, val rot: List<Double>, val shift: List<D
                      val taps: Int, val matched: Int? = null, @SerialName("rms_m") val rmsM: Double? = null)
 
 @Serializable data class RecordPlace(val lat: Double, val lng: Double, val alt: Double? = null, @SerialName("acc_m") val accM: Double, val n: Int, val seconds: Double)
-@Serializable data class RecordCalibration(@SerialName("accel_bias") val accelBias: List<Double>? = null, @SerialName("mag_offset") val magOffset: List<Double>? = null,
+/** Which way is down, as a turn on the spot found it (Level): in the tracking's world, with how far the tracking's own was off and how well the turn's directions agreed. */
+@Serializable data class RecordLevel(val down: List<Double>, @SerialName("tilt_deg") val tiltDeg: Double, val offset: List<Double>, @SerialName("offset_deg") val offsetDeg: Double,
+                                     @SerialName("spread_deg") val spreadDeg: Double, val sectors: Int, val samples: Int)
+@Serializable data class RecordCalibration(@SerialName("mag_offset") val magOffset: List<Double>? = null,
                                            @SerialName("mag_field_ut") val magFieldUt: Double? = null, @SerialName("mag_rms_ut") val magRmsUt: Double? = null)
 @Serializable data class RecordProgress(val total: Int, val done: Int, val skipped: Int, val holds: Int, @SerialName("holds_done") val holdsDone: Int)

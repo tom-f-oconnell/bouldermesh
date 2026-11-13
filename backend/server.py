@@ -1726,6 +1726,30 @@ def link_capture(mid: str, target: str, log) -> None:
     log(f"capture: linked to the {plural(len(climbs), 'climb')} of mesh {target}, which it adds to; that mesh stays as it is, beside this")
 
 
+def keep_capture_level(mid: str, pid: str, log=None) -> dict | None:
+    """With a mesh made from photos the app took: how the app found which way is down, kept in the mesh's orientation
+    report as "capture". From the capture's record: its turn on the spot (how far the phone's tracking was off, how far
+    one accelerometer reading would have been, and how well the directions faced agreed: the last is how far to trust
+    it), and how far each photo's down was from its own accelerometer's, in the middle. None if its project has no record."""
+    rec = _read_json(PROJECTS / pid / CAPTURE_FILE)
+    if not isinstance(rec, dict):
+        return None
+    level = rec.get("level") if isinstance(rec.get("level"), dict) else None
+    number = lambda v: round(float(v), 2) if isinstance(v, (int, float)) else None  # noqa: E731
+    note = {"photos": sum(1 for s in rec.get("shots") or [] if isinstance(s, dict) and s.get("kept")),
+            "turn": {**{k: number(level.get(k)) for k in ("tilt_deg", "offset_deg", "spread_deg")}, "sectors": level.get("sectors")} if level else None,
+            "down_agree_deg": number(rec.get("down_agree_deg"))}
+    report = orientation.load(MESHES / mid)
+    if report is not None:
+        report["capture"] = note
+        orientation.save(MESHES / mid, report)
+    if log:
+        log("capture: down " + (f"by a turn on the spot whose {note['turn']['sectors']} directions agree to {note['turn']['spread_deg']}°; the phone's "
+                                f"tracking had it {note['turn']['tilt_deg']}° off" if note["turn"] else "as the phone's tracking had it: no turn on the spot")
+            + (f"; photos' accelerometers within {note['down_agree_deg']}° of it" if note["down_agree_deg"] is not None else ""))
+    return note
+
+
 def place_from_phone(mid: str, log=None) -> dict | None:
     """Put a mesh where the photos the app took of it say it is: scale.py's record of them (phonedata.position(), from
     their GPS fixes and the phone's own tracking of how it moved between them), once PHONE_PLACE_MIN fixes together say
@@ -3329,6 +3353,11 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             log(f"mesh linked to climb {proj['climb_id']}")
         if added_to:
             link_capture(mid, added_to, log)
+        if (pdir / CAPTURE_FILE).exists():
+            try:
+                keep_capture_level(mid, pid, log)
+            except Exception as e:
+                log(f"capture: keeping how its down was found failed ({type(e).__name__}: {e})")
         before = proj["mesh_id"] if proj["mesh_id"] and proj["mesh_id"] != mid and q("SELECT id FROM meshes WHERE id=?", proj["mesh_id"]) else None
         worse = fewer_placed(before, mid, pdir / "photos") if before and keep_better and not mesh_is_old(
             q("SELECT source, rules FROM meshes WHERE id=?", before, one=True)) else None      # never an old one over it

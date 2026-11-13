@@ -5,7 +5,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import sh.boulderme.core.GuideMesh
 import sh.boulderme.core.Plan
-import sh.boulderme.core.Vec3
 import java.io.File
 
 /** What the app keeps on the phone: its settings, the plans and guides downloaded for use with no signal, and captures. */
@@ -22,10 +21,6 @@ class Store(context: Context) {
         get() = prefs.getString("token", "") ?: ""
         set(v) = prefs.edit().putString("token", v.trim()).apply()
 
-    /** The accelerometer's offsets, as the Calibrate screen found them (m/s2, the phone's axes). */
-    var accelBias: Vec3?
-        get() = prefs.getString("accel_bias", null)?.split(",")?.mapNotNull { it.toDoubleOrNull() }?.takeIf { it.size == 3 }?.let { Vec3(it[0], it[1], it[2]) }
-        set(v) = prefs.edit().putString("accel_bias", v?.let { "${it.x},${it.y},${it.z}" }).apply()
     var magNote: String
         get() = prefs.getString("mag_note", "") ?: ""
         set(v) = prefs.edit().putString("mag_note", v).apply()

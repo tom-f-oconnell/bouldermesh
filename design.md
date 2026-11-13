@@ -1461,13 +1461,27 @@ size, the lesser of across and down so that blur in one direction shows; compare
 there are five, since phones sharpen differently. Clipping from every 8th pixel. A photo that fails is not kept and the
 screen says why.
 
-**Calibration.** What's worth a person's time is small. The accelerometer's offsets come from three rests (flat,
-turned half round, flipped), the half turn cancelling the table's slope; they matter only for a photo taken while
-tracking was lost, as tracking gives gravity otherwise, and an iPhone trims its own. The compass is checked rather
-than corrected: readings while the phone is turned every which way should lie on a sphere whose radius is the Earth's
-field, and the phone's own rating has to be at least medium; each photo's heading is then dropped if the field's
-strength is off this capture's usual by 15% (a bolt, a car). The lens needs nothing: both systems give each frame's
-own, and COLMAP refines it.
+**Which way is down.** It sets the steepness of every wall in the mesh, where a climb at 45° is far harder than one
+at 40°, so the aim is well under a degree. Meshes from the web don't come near: of 245 in the site's data on
+2026-11-13, 222 were levelled only by COLMAP's guess that photos are taken upright, and where one iPhone photo's own
+reading existed (23 of them), that guess was a median of 10° from it. A phone at the rock can do far better, but not by
+reading its accelerometer once: its zero is typically off by 0.5-2° worth, and it doesn't sit square to the camera.
+ARKit and ARCore estimate gravity themselves, and well, but nothing says how well on a given day. So each capture
+starts with a turn on the spot (`LevelTurn`): the phone's errors are fixed to the phone and gravity to the world, so
+with the tracking saying how the phone was turned at each reading, a fit over the whole circle separates the two
+(reversal, as a spirit level is checked by turning it end for end; it also cancels the inward pull of going round at
+arm's length). It needs no level ground and no plumb line, and it reports its own quality: how far the twelve
+directions disagree once fitted. In simulation, with a 1.8° accelerometer offset, half a degree of skew, the
+tracking's world 0.8° off and noise, it finds down within 0.1°. Each photo's down is then the tracking's pose with
+that correction, with the tracking's own and the photo's accelerometer reading kept beside it, so that a tracking
+world that shifts mid-capture shows as the two drifting apart. The mesh's report says which it got
+(`keep_capture_level()`). What the turn can't fix is the reconstruction bending a wall, which is a separate error.
+
+**Calibration.** The compass is checked rather than corrected: readings while the phone is turned every which way
+should lie on a sphere whose radius is the Earth's field, and the phone's own rating has to be at least medium; each
+photo's heading is then dropped if the field's strength is off this capture's usual by 15% (a bolt, a car). The lens
+needs nothing: both systems give each frame's own, and COLMAP refines it. An accelerometer calibration by three rests
+on a table was built first and taken out: nothing levelled a mesh by it.
 
 **The cameras.** ARCore gives only the frames it tracks with to an app that wants both tracking and pictures (1920 x
 1080 on most phones), and no control of the shutter; its shared-camera mode can take full-size stills, but only by

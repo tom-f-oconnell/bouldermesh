@@ -71,11 +71,31 @@ jobs:
           arch: x86_64
           target: google_apis
           profile: pixel_6
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back virtualscene
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back emulated
           disable-animations: true
           script: |
             adb install -r "$RUNNER_TEMP/arcore.apk" || echo "::warning::Google Play Services for AR didn't install: the capture screen will say it can't track"
             app/ci/screens-android.sh app/android/build/outputs/apk/debug/android-debug.apk "http://10.0.2.2:$PORT" screens
+      # ARCore tracks in an emulator only through its camera that shows a made-up room; whether an emulator with no window has
+      # one is what this finds out, without failing the run if it hasn't
+      - name: The emulator's camera as a room to look at
+        run: |
+          f="$HOME/.android/avd/test.avd/config.ini"
+          sed -i '/^hw.camera.back/d' "$f" && echo "hw.camera.back=virtualscene" >> "$f"
+      - name: The capture screen again, with that camera
+        continue-on-error: true
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back virtualscene
+          disable-animations: true
+          script: |
+            adb install -r "$RUNNER_TEMP/arcore.apk" || true
+            ONLY=capture PREFIX=android-room app/ci/screens-android.sh app/android/build/outputs/apk/debug/android-debug.apk "http://10.0.2.2:$PORT" screens
       - if: always()
         run: mkdir -p screens && cp "$RUNNER_TEMP/server.log" screens/android-server.log || true
       - if: always()

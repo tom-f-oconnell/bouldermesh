@@ -5,6 +5,7 @@ import kotlin.math.sin
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -21,24 +22,59 @@ class CalibrationTest {
         assertEquals(1, Axes.exifOrientation(null, 0))
     }
 
-    @Test fun accelerometer() {
-        val bias = Vec3(0.21, -0.14, 0.3)
-        // a table sloping 4 degrees: gravity as the phone reads it lying on it, after half a turn, and flipped over
-        val g = Sensors.G; val t = 4 * TestWorld.rad
-        val c = AccelCalibration()
-        assertNull(c.bias())
-        c.flat = Vec3(g * sin(t), 0.0, g * cos(t)) + bias
-        c.turned = Vec3(-g * sin(t), 0.0, g * cos(t)) + bias
-        c.flipped = Vec3(g * sin(t), 0.0, -g * cos(t)) + bias
-        assertTrue(near(assertNotNull(c.bias()), bias, 1e-9), "the slope cancels")
-        assertTrue(assertNotNull(c.gainDeg()) in 1.5..2.5)
-        c.flipped = c.flat
-        assertNull(c.bias(), "not flipped")
-        val still = StillMean()
-        repeat(20) { still.add(Vec3(0.01 * (it % 3), 0.0, g)) }
-        assertTrue(still.still() && near(assertNotNull(still.mean()).z, g, 1e-9))
-        still.add(Vec3(2.0, 0.0, g))
-        assertTrue(!still.still(), "moved")
+    /**
+     * What a phone's accelerometer reads facing `yaw` round the circle and looking `pitch` up, where the tracking's world
+     * has down as `down`: with the sensor's own zero error, sitting a little askew of the camera, and noise.
+     */
+    private fun reading(yaw: Double, pitch: Double, down: Vec3, bias: Vec3, askew: Quat, rnd: Random, extra: Vec3 = Vec3.ZERO): Pair<CameraPose, Vec3> {
+        val pose = TestWorld.look(Vec3.ZERO, Vec3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)))
+        val force = pose.rot.conj().rotate(-down * Sensors.G + extra)      // in the photo's axes
+        val noise = Vec3(rnd.nextDouble(-0.05, 0.05), rnd.nextDouble(-0.05, 0.05), rnd.nextDouble(-0.05, 0.05))
+        return pose to (askew.rotate(Axes.forceInImage(force)) + bias + noise)      // forceInImage() is its own inverse
+    }
+
+    @Test fun downByTurningOnTheSpot() {
+        val rnd = Random(11)
+        // the tracking's world is 0.8 degrees off level; the accelerometer reads 0.3 m/s2 off (1.8 degrees' worth) and
+        // sits half a degree askew of the camera
+        val down = Quat.axisAngle(Vec3(1.0, 0.0, 0.5), 0.8 * TestWorld.rad).rotate(Vec3(0.0, -1.0, 0.0))
+        val bias = Vec3(0.15, -0.1, 0.25); val askew = Quat.axisAngle(Vec3(0.3, 1.0, 0.2), 0.5 * TestWorld.rad)
+        val turn = LevelTurn()
+        assertNull(turn.solve())
+        var facingOneWay = Vec3.ZERO
+        for (i in 0 until 360) {
+            val yaw = i * TestWorld.rad
+            // held at arm's length, the phone goes round a circle: pulled inwards a little, the more the faster it turns
+            val inwards = Vec3(-sin(yaw), 0.0, -cos(yaw)) * 0.04
+            val (pose, accel) = reading(yaw, (10 + 5 * sin(3 * yaw)) * TestWorld.rad, down, bias, askew, rnd, inwards)
+            assertTrue(turn.add(pose, accel, gyroRadS = 0.3))
+            if (i < 30) facingOneWay += pose.rot.rotate(Axes.forceInImage(accel))
+        }
+        assertEquals(12, turn.filled)
+        val level = assertNotNull(turn.solve())
+        assertTrue(angleDeg(level.down, down) < 0.1, "down to ${angleDeg(level.down, down)} degrees")
+        assertTrue(near(level.tiltDeg, 0.8, 0.1) && level.spreadDeg < 0.2 && level.offsetDeg in 1.0..2.5, "$level")
+        assertTrue(angleDeg(-facingOneWay.unit(), down) > 1.0, "where readings facing one way alone are ${angleDeg(-facingOneWay.unit(), down)} degrees off")
+        // a photo's down, by the turn; and its accelerometer's alone, with what the turn found taken off, agrees with it
+        val (pose, accel) = reading(2.0, 0.3, down, bias, askew, rnd)
+        val truth = pose.rot.conj().rotate(down)
+        assertTrue(angleDeg(Axes.downInImage(pose, level.down), truth) < 0.1 && angleDeg(Axes.downInImage(pose), truth) > 0.7)
+        assertTrue(angleDeg(-(Axes.forceInImage(accel) - level.offset).unit(), truth) < 0.6 && angleDeg(Axes.downFromAccel(accel), truth) > 1.0)
+
+        // three quarters of the way round is enough, if asked; a third isn't
+        val part = LevelTurn()
+        for (i in 0 until 270) { val (p, a) = reading(i * TestWorld.rad, 0.15, down, bias, askew, rnd); part.add(p, a) }
+        assertTrue(part.filled == 9 && part.solve() == null)
+        assertTrue(angleDeg(assertNotNull(part.solve(least = 9)).down, down) < 0.25)
+        val little = LevelTurn()
+        for (i in 0 until 120) { val (p, a) = reading(i * TestWorld.rad, 0.15, down, bias, askew, rnd); little.add(p, a) }
+        assertNull(little.solve(least = 9))
+        // not read: looking steeply up, turning fast, or jolted
+        val (p, a) = reading(0.0, 1.2, down, bias, askew, rnd)
+        assertFalse(little.add(p, a), "looking steeply up")
+        val (q, c) = reading(0.0, 0.1, down, bias, askew, rnd)
+        assertFalse(little.add(q, c, gyroRadS = 2.0), "turning fast")
+        assertFalse(little.add(q, c * 1.2), "jolted")
     }
 
     @Test fun magnetometer() {

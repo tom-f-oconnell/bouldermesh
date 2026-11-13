@@ -161,9 +161,8 @@ class Settings(private val app: App) : Form("Settings") {
 
 // ---------------------------------------------------------------------------------------------------------- calibrate
 /**
- * An iPhone keeps its own accelerometer and gyroscope trimmed, so which way is down needs nothing done. Its compass
- * reads true only after being turned every which way, which is worth half a minute before a capture; and GPS needs
- * nothing but time under open sky.
+ * What's worth doing before a capture: the compass, which reads true only after being turned every which way. Which
+ * way is down is found at the start of each capture (a turn on the spot), and GPS needs nothing but time under open sky.
  */
 class Calibrate(private val app: App) : Form("Calibrate") {
     private var mag: MagCalibration? = null
@@ -198,8 +197,8 @@ class Calibrate(private val app: App) : Form("Calibrate") {
     }
 
     override fun build() {
-        section("Level")
-        text("Nothing to do: an iPhone keeps its own motion sensors trimmed, and each photo records which way was down from the phone's tracking.")
+        section("Which way is down")
+        text("Nothing to do here: each capture starts by asking for one slow turn on the spot, which finds it to a fraction of a degree whatever this phone's sensors are off by.")
 
         section("Compass · half a minute")
         text("Away from cars, bolts and crash pads' buckles: turn the phone every which way, a slow figure of 8 that also rolls it over, until the bar fills.")

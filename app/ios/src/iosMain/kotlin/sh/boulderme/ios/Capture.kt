@@ -172,6 +172,9 @@ private fun poseOf(camera: ARCamera): CameraPose {
 /** The camera reads its picture out on its side: a quarter turn clockwise shows it upright, with the phone held upright. */
 private const val UPRIGHT_DEG = 90
 
+/** How an iPhone's back camera is mounted, as Android would say it: its rows run down the phone. */
+private const val SENSOR_ORIENTATION = 90
+
 private fun machine(): String = memScoped { val u = alloc<utsname>(); uname(u.ptr); u.machine.toKString() }
 
 /**
@@ -227,6 +230,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         super.viewDidLoad()
         view.backgroundColor = UIColor.blackColor
         sceneView.translatesAutoresizingMaskIntoConstraints = false
+        sceneView.backgroundColor = UIColor.blackColor
         sceneView.automaticallyUpdatesLighting = false
         view.addSubview(sceneView)
         sceneView.addGestureRecognizer(UITapGestureRecognizer(target = this, action = NSSelectorFromString("tapped:")))
@@ -322,7 +326,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         flow.refineDue(now)?.let { work -> dispatch_async(background) { val found = flow.tighter(work); dispatch_async(dispatch_get_main_queue()) { flow.tightened(work, found) } } }
         val seen = poseOf(camera)
         val pose = stillWidth?.takeIf { it != seen.lens.w }?.let { w -> seen.copy(lens = seen.lens.scaledTo(w, (w.toDouble() * seen.lens.h / seen.lens.w).roundToInt())) } ?: seen
-        val out = flow.frame(pose, tracking, app.sensors.gyro(), camera.exposureDuration, now, UPRIGHT_DEG)
+        val out = flow.frame(pose, tracking, app.sensors.gyro(), camera.exposureDuration, now, UPRIGHT_DEG, app.sensors.accel(), SENSOR_ORIENTATION)
         out.levels?.let { levels = it; colour() }
         val fit = out.guide
         guideNode.hidden = fit == null
@@ -449,7 +453,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         dispatch_async(background) {
             val stats = lumaStats(buffer)
             dispatch_async(dispatch_get_main_queue()) {
-                val out = flow.shot(ShotIn(pose, sample, stats, exposure, iso, null, tracking, arSession, now, unix, UPRIGHT_DEG, sample.gyro?.norm ?: 0.0))
+                val out = flow.shot(ShotIn(pose, sample, stats, exposure, iso, null, tracking, arSession, now, unix, SENSOR_ORIENTATION, sample.gyro?.norm ?: 0.0))
                 if (out.kept) dispatch_async(background) {
                     val upright = Axes.exifOrientation(out.record.blob.down?.let { Vec3.of(it) }, UPRIGHT_DEG)
                     val ok = writeJpeg(frame, "$dir/photos/${out.record.name}", out.userComment, sample, pose.lens, exposure, upright, unix)
@@ -526,9 +530,14 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         note.text = now.note
         note.hidden = now.note.isEmpty()
         note.textColor = if (now.note.startsWith("Not kept")) WARN else UIColor.whiteColor
+        val levelling = now.phase == Phase.LEVEL && failed == null
         val capturing = now.phase == Phase.CAPTURE && now.total > 0
-        bar.hidden = !capturing
-        counts.hidden = !capturing
+        bar.hidden = !capturing && !levelling
+        counts.hidden = !capturing && !levelling
+        if (levelling) {
+            bar.progress = now.done.toFloat() / maxOf(1, now.total)
+            counts.text = "${now.done} of ${now.total} directions faced"
+        }
         if (capturing) {
             bar.progress = now.done.toFloat() / now.total
             counts.text = listOfNotNull("${now.done}/${now.total} ${if (now.guided) "parts" else "sides and spots"}", if (now.holds > 0 && now.guided) "${now.holdsDone}/${now.holds} holds" else null,
@@ -548,6 +557,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         for (v in buttons.arrangedSubviews) (v as? UIView)?.removeFromSuperview()
         val leave = makeButton(if (now.kept > 0) "Finish" else "Leave", if (now.kept > 0) Look.FILLED else Look.PLAIN, color = if (now.kept > 0) GOOD else UIColor.whiteColor) { leave() }
         when (now.phase) {
+            Phase.LEVEL -> buttons.addArrangedSubview(makeRow(makeButton("Skip: trust the phone's own", Look.PLAIN, color = UIColor.whiteColor) { flow.skipLevel() }, leave))
             Phase.GHOST, Phase.ROCK -> {
                 buttons.addArrangedSubview(makeRow(makeButton("Turn it") { flow.turnGhost(45.0) }, makeButton("Bring it here") { flow.bringGhost() }))
                 buttons.addArrangedSubview(if (now.pairs > 0 || now.phase == Phase.ROCK) makeRow(makeButton("Start again", Look.PLAIN) { flow.restartAlign() }, leave) else makeRow(leave))

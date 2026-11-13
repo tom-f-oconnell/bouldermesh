@@ -47,12 +47,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import sh.boulderme.core.AccelCalibration
 import sh.boulderme.core.GpsAverager
 import sh.boulderme.core.MagCalibration
 import sh.boulderme.core.MeshRow
 import sh.boulderme.core.Plan
-import sh.boulderme.core.StillMean
 import sh.boulderme.core.Vec3
 
 val GOOD = Color(0xFF58C27D)
@@ -110,7 +108,6 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
         Text("Photograph a boulder so that its mesh comes out whole, level, the right size and in the right place. " +
             "The app says where to stand and takes each photo when it's worth taking.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (refused) Text("Capturing needs the camera: allow it in the phone's settings for this app.", color = BAD)
-        if (a.store.accelBias == null) Text("Not calibrated yet: a minute in Calibrate makes which-way-is-up more exact.", color = WARN)
 
         Section("Add to a mesh")
         if (plans.isEmpty()) Text("None downloaded yet. Get the meshes you'll visit while you have signal: they work with none afterwards.")
@@ -269,61 +266,25 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
 private fun beep() = runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 90).startTone(ToneGenerator.TONE_PROP_BEEP, 200) }
 
 /**
- * Two things worth a minute each, once for a phone: its accelerometer's offsets, which are most of what "down" is off
- * by in a photo taken while the phone isn't tracking; and its compass, which reads true only after being turned every
- * which way. GPS needs nothing done but time under open sky, which a capture gives it.
+ * What's worth doing before a capture: the compass, which reads true only after being turned every which way. Which
+ * way is down is found at the start of each capture (a turn on the spot), and GPS needs nothing done but time under
+ * open sky, which a capture gives it.
  */
 @Composable
 fun CalibrateScreen(a: MainActivity, go: (Screen) -> Unit) {
     val scope = rememberCoroutineScope()
-    // level
-    val accel = remember { AccelCalibration() }
-    var step by remember { mutableIntStateOf(0) }           // 0 flat, 1 turned, 2 flipped, 3 done
-    var count by remember { mutableIntStateOf(0) }          // seconds left before it reads; 0 not waiting
-    var levelSaid by remember { mutableStateOf(a.store.accelBias?.let { "Calibrated before: offsets %.2f, %.2f, %.2f m/s².".format(it.x, it.y, it.z) } ?: "") }
-    var levelOk by remember { mutableStateOf(true) }
     // compass
     var mag by remember { mutableStateOf<MagCalibration?>(null) }
     var covered by remember { mutableStateOf(0.0) }
     var magSaid by remember { mutableStateOf(a.store.magNote) }
     var magOk by remember { mutableStateOf(true) }
     var fixes by remember { mutableIntStateOf(0) }
-    DisposableEffect(Unit) { onDispose { a.sensors.onAccel = null; a.sensors.onMag = null } }
+    DisposableEffect(Unit) { onDispose { a.sensors.onMag = null } }
     LaunchedEffect(Unit) { while (true) { fixes = a.sensors.place.count; delay(1000) } }
 
-    fun read() {
-        scope.launch {
-            for (k in 3 downTo 1) { count = k; delay(1000) }
-            count = 0
-            val mean = StillMean()
-            a.sensors.onAccel = { v: Vec3 -> mean.add(v) }
-            delay(1500)
-            a.sensors.onAccel = null
-            val v = mean.mean()
-            if (v == null || !mean.still()) { levelSaid = "The phone moved while it was read: try that one again."; levelOk = false; beep(); delay(250); beep(); return@launch }
-            when (step) { 0 -> accel.flat = v; 1 -> accel.turned = v; else -> accel.flipped = v }
-            beep()
-            if (step < 2) { step++; levelSaid = ""; levelOk = true; return@launch }
-            val bias = accel.bias()
-            if (bias == null) {
-                levelSaid = "Those don't fit together (was it flat, then turned half round, then face down?). Start again."; levelOk = false
-            } else {
-                a.store.accelBias = bias
-                levelSaid = "Done: offsets %.2f, %.2f, %.2f m/s², worth %.1f° of level.".format(bias.x, bias.y, bias.z, accel.gainDeg() ?: 0.0); levelOk = true
-            }
-            accel.flat = null; accel.turned = null; accel.flipped = null
-            step = 0
-        }
-    }
-
     Page("Calibrate", back = { go(Screen.Home) }) {
-        Section("Level · about a minute")
-        Text("Three readings with the phone lying still on something steady, like a table or a flat rock. It needn't be level. " +
-            "Each starts 3 seconds after you press, and beeps when it's read.")
-        Text(when (step) { 0 -> "1 of 3: lay it flat on its back, screen up."; 1 -> "2 of 3: turn it half a turn on the spot, still screen up."; else -> "3 of 3: flip it over, screen down." },
-            fontWeight = FontWeight.SemiBold)
-        Button(enabled = count == 0, onClick = { read() }) { Text(if (count > 0) "Reading in $count…" else "Read") }
-        if (levelSaid.isNotEmpty()) Text(levelSaid, color = if (levelOk) GOOD else BAD)
+        Section("Which way is down")
+        Text("Nothing to do here: each capture starts by asking for one slow turn on the spot, which finds it to a fraction of a degree whatever this phone's sensors are off by.")
 
         Section("Compass · half a minute")
         Text("Away from cars, bolts and crash pads' buckles: turn the phone every which way, a slow figure of 8 that also rolls it over, until the bar fills.")

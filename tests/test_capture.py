@@ -216,6 +216,17 @@ server.link_capture(new_mid, mid, said.append)
 assert link["climb_id"] == "c1" and link["note"] == f"{server.CAPTURE_LINK} {mid}", link
 assert server.q("SELECT lat, lng FROM meshes WHERE id=?", new_mid, one=True) == {"lat": 34.0, "lng": -116.0}, "where the mesh it adds to is, until its photos say"
 assert server.q("SELECT replaced_by FROM meshes WHERE id=?", mid, one=True)["replaced_by"] is None, "the mesh added to stays"
+# how the app found which way is down goes into the mesh's orientation report
+assert server.keep_capture_level(new_mid, theirs) is None, "no record: not a capture"
+orientation.save(server.MESHES / new_mid, {"method": "iphone", "iphone": {"status": "used"}})
+(server.PROJECTS / mine / server.CAPTURE_FILE).write_text(json.dumps({
+    "mesh": mid, "shots": [{"kept": True}, {"kept": False}, {"kept": True}], "down_agree_deg": 0.2345,
+    "level": {"down": [0.01, -0.9999, 0.0], "tilt_deg": 0.5731, "offset": [0, 0.1, 0.2], "offset_deg": 1.31, "spread_deg": 0.1249, "sectors": 12, "samples": 300}}))
+kept = server.keep_capture_level(new_mid, mine, said.append)
+assert kept == {"photos": 2, "turn": {"tilt_deg": 0.57, "offset_deg": 1.31, "spread_deg": 0.12, "sectors": 12}, "down_agree_deg": 0.23}, kept
+assert orientation.load(server.MESHES / new_mid)["capture"] == kept and "12 directions agree to 0.12°" in said[-1], said[-1]
+(server.PROJECTS / mine / server.CAPTURE_FILE).write_text(json.dumps({"mesh": mid, "shots": []}))
+assert server.keep_capture_level(new_mid, mine, said.append)["turn"] is None and "no turn on the spot" in said[-1]
 print("captures meshed with the mesh they add to OK")
 
 # --- the server's: a mesh put where its app photos' fixes say ---------------------------------------------------------------

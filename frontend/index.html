@@ -1722,6 +1722,9 @@ function plural(n, one, many){ return `${n} ${n === 1 ? one : many || one + 's'}
 function downSummary(o){
   if (!o) return '';
   const p = o.iphone;
+  const turn = o.capture?.turn;    // photos taken with the app, which found down by a turn on the spot: how well its directions agreed
+  if (p.status === 'used' && turn) return `down by the app's turn on the spot, whose directions agree to ${turn.spread_deg}°`;
+  if (p.status === 'used' && o.capture) return `down from the app's photos, as the phone's tracking had it`;
   if (p.status === 'used') return `down from iPhone, ${p.off_estimate_deg}° from the estimate`;
   if (p.status === 'rejected' || p.status === 'not_applied') return `down estimated, ${p.off_estimate_deg}° from iPhone`;
   if (p.status === 'no_cameras' && p.kept_with_readings) return `down estimated, ${plural(p.kept_with_readings, 'iPhone reading')} unusable`;

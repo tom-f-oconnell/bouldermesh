@@ -17,6 +17,8 @@ class FlowTest {
 
     @Test fun fromTheSmallModelToPhotos() {
         val flow = CaptureFlow(CaptureSession(TestWorld.plan(), TestWorld.guide(), "f1", "test", "a phone", 0.0))
+        assertEquals(Phase.LEVEL, flow.phase)
+        flow.skipLevel()
         assertEquals(Phase.GHOST, flow.phase)
         // standing 5 m back from the wall, looking at it
         val eye = truth.apply(Vec3(0.0, 1.5, 4.0))
@@ -99,8 +101,51 @@ class FlowTest {
         assertTrue(flow.session.record(99.0).skipped.isNotEmpty())
     }
 
+    @Test fun firstWhichWayIsDown() {
+        val flow = CaptureFlow(CaptureSession(null, null, "f3", "test", "a phone", 0.0))
+        // the tracking's world is a degree off level, and the accelerometer reads 0.2 m/s2 off sideways
+        val down = Quat.axisAngle(Vec3(0.0, 0.0, 1.0), 1.0 * TestWorld.rad).rotate(Vec3(0.0, -1.0, 0.0))
+        fun at(yaw: Double): Pair<CameraPose, Vec3> {
+            val pose = TestWorld.look(Vec3.ZERO, Vec3(kotlin.math.sin(yaw), 0.1, kotlin.math.cos(yaw)))
+            return pose to (Axes.forceInImage(pose.rot.conj().rotate(-down * Sensors.G)) + Vec3(0.2, 0.0, 0.1))
+        }
+        var t = 0.0
+        var out = flow.frame(at(0.0).first, true, 0.0, 0.004, t, 90)
+        assertTrue(out.ui.phase == Phase.LEVEL && "turn slowly" in out.ui.text && out.ui.total == 12 && out.ui.done == 0 && !out.shoot)
+        for (i in 0 until 180) {
+            val (pose, accel) = at(i * TestWorld.rad)
+            t += 0.05; out = flow.frame(pose, true, 0.3, 0.004, t, 90, accel)
+        }
+        assertTrue(out.ui.phase == Phase.LEVEL && out.ui.done == 6, "half way round: ${out.ui.done} of 12")
+        for (i in 180 until 360) {
+            val (pose, accel) = at(i * TestWorld.rad)
+            t += 0.05; out = flow.frame(pose, true, 0.3, 0.004, t, 90, accel)
+        }
+        val level = assertNotNull(flow.session.level)
+        assertTrue(flow.phase == Phase.CENTRE && angleDeg(level.down, down) < 0.05 && TestWorld.near(level.tiltDeg, 1.0, 0.05), "$level")
+        assertTrue("Down found" in flow.frame(at(0.0).first, true, 0.0, 0.004, t + 1, 90).ui.note)
+        // photos then carry down as the turn found it, with the tracking's own beside it; and the record says how it went
+        val mid = Vec3(0.0, 1.0, 3.0)
+        val pose = TestWorld.look(Vec3(0.0, 1.5, 0.0), mid)
+        flow.tap(pose.centre, pose.forward) { mid }
+        flow.shutter()
+        assertTrue(flow.frame(pose, true, 0.0, 0.004, t + 2, 90).shoot)
+        val accel = Axes.forceInImage(pose.rot.conj().rotate(-down * Sensors.G)) + Vec3(0.2, 0.0, 0.1)
+        val shot = flow.shot(ShotIn(pose, SensorSample(accel, Vec3.ZERO, t = t + 2), sharp, 0.004, 80.0, 1.3, true, "a", t + 2, 1.7e9))
+        val blob = shot.record.blob
+        assertTrue(shot.kept && blob.downSrc == "turn" && near(Vec3.of(blob.down!!), pose.rot.conj().rotate(down), 1e-3), "${blob.downSrc} ${blob.down}")
+        assertTrue(TestWorld.near(angleDeg(Vec3.of(blob.downTrack!!), Vec3.of(blob.down!!)), 1.0, 0.05), "the tracking's own, a degree off, is kept beside it")
+        // the accelerometer's own reading for the photo, less what the turn found the phone adds, agrees to a few tenths of
+        // a degree: not better, as the part of the phone's error that lay along gravity during the turn, and so couldn't be
+        // told from it, no longer does once the phone looks down from where it looked level
+        assertTrue(angleDeg(Vec3.of(blob.downAcc!!), Vec3.of(blob.down!!)) < 0.5, "${angleDeg(Vec3.of(blob.downAcc!!), Vec3.of(blob.down!!))}")
+        val record = flow.session.record(99.0)
+        assertTrue(TestWorld.near(record.level!!.tiltDeg, 1.0, 0.05) && record.level!!.sectors == 12 && record.downAgreeDeg!! < 0.5 && "\"down_agree_deg\"" in record.json())
+    }
+
     @Test fun aRockWithNoMesh() {
         val flow = CaptureFlow(CaptureSession(null, null, "f2", "test", "a phone", 0.0))
+        flow.skipLevel()
         assertEquals(Phase.CENTRE, flow.phase)
         val mid = Vec3(0.0, 1.0, 0.0)
         val pose = TestWorld.look(Vec3(0.0, 1.5, 4.0), mid)

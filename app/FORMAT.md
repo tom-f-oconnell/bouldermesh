@@ -48,7 +48,9 @@ EXIF UserComment, `BMSH1:` followed by JSON in plain ASCII:
 
     v, app, device, cap, i, t   the format's version; the app and phone; the capture; which photo of it; when (Unix seconds)
     down                  gravity, a unit vector in the stored pixels' axes: x along the rows, y down the columns, z the
-                          way the camera looks. down_src: "ar" (the phone's tracking) or "accel"; down_acc: the accelerometer's own
+                          way the camera looks. down_src: "turn" (the phone's tracking, set right by the capture's turn on
+                          the spot), "ar" (the tracking as it was: no turn) or "accel". down_track: the tracking's own, where
+                          a turn changed it. down_acc: this photo's accelerometer alone, less what the turn found the phone adds
     heading, heading_acc  where the camera pointed, degrees from true north, if the compass could be trusted
     gps                   {lat, lng, alt, acc, age}: the last fix, how far off it says it may be (m) and how old (s)
     ar                    {s, p, q, track}: the tracking session; the camera's place (m) and turn (w, x, y, z; image axes to
@@ -65,7 +67,12 @@ EXIF UserComment, `BMSH1:` followed by JSON in plain ASCII:
     fit                   {scale, rot, shift, tilt_deg, taps, matched, rms_m}: the mesh-to-world fit used; tilt_deg is how
                           far off level the mesh turned out to be, and scale its metres a unit
     place                 {lat, lng, alt, acc_m, n, seconds}: its GPS fixes averaged, the phone moving about the rock
-    calibration           {accel_bias, mag_offset, mag_field_ut, mag_rms_ut}
+    level                 {down, tilt_deg, offset, offset_deg, spread_deg, sectors, samples}: which way is down in the
+                          tracking's world, by a turn on the spot; how far the tracking's own was off; what the phone adds to
+                          its accelerometer (a photo's axes, m/s2) and how many degrees that's worth; and how far the
+                          directions faced disagreed, which is how far to trust it. None if the turn was skipped
+    down_agree_deg        how far each kept photo's down was from its own accelerometer's, in the middle
+    calibration           {mag_offset, mag_field_ut, mag_rms_ut}
     skipped               {target: why}
     progress              {total, done, skipped, holds, holds_done}
     shots                 [{name, blob, kept, why, notes, helped}]: every photo taken, kept or not, with its readings

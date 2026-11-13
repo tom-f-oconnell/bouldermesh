@@ -85,6 +85,9 @@ class IosSensors : NSObject(), CLLocationManagerDelegateProtocol {
     val locationAllowed: Boolean get() = locations.authorizationStatus.let { it == 3 || it == 4 }
     val locationRefused: Boolean get() = locations.authorizationStatus.let { it == 1 || it == 2 }
 
+    /** What the accelerometer reads by itself, as Android gives it: m/s2, 9.81 upwards at rest (the other way round from iOS, and not in g). */
+    fun accel(): Vec3? = motion.accelerometerData?.acceleration?.useContents { Vec3(x, y, z) * -Sensors.G }
+
     private fun turning(): Vec3? = motion.deviceMotion?.rotationRate?.useContents { Vec3(x, y, z) } ?: motion.gyroData?.rotationRate?.useContents { Vec3(x, y, z) }
 
     /** How fast the phone is turning, radians a second; as if turning fast when nothing says, so that no photo takes itself unjudged. */
@@ -100,11 +103,10 @@ class IosSensors : NSObject(), CLLocationManagerDelegateProtocol {
     fun sample(): SensorSample {
         val m = motion.deviceMotion
         if (m == null) {    // no fused readings yet: what the sensors say by themselves, and no compass
-            val raw = motion.accelerometerData?.acceleration?.useContents { Vec3(x, y, z) * -Sensors.G }
-            return SensorSample(raw, turning(), gps = fix, t = now())
+            return SensorSample(accel(), turning(), gps = fix, t = now())
         }
         val gravity = m.gravity.useContents { Vec3(x, y, z) }
-        val accel = (gravity + m.userAcceleration.useContents { Vec3(x, y, z) }) * -Sensors.G
+        val accel = accel() ?: ((gravity + m.userAcceleration.useContents { Vec3(x, y, z) }) * -Sensors.G)      // the sensor's own reading, as the turn on the spot's were
         val gyro = m.rotationRate.useContents { Vec3(x, y, z) }
         // which way the back camera looks, in the frame its attitude is from (x north, y west, z up). The matrix takes
         // one frame's vectors to the other's; which way round is settled by which gives gravity as the phone feels it

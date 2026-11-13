@@ -42,7 +42,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         private set
     val taps = ArrayList<Pair<Vec3, Vec3>>()
     var auto = true                     // photos take themselves when one's worth taking
-    var accelBias: Vec3? = null
+    var level: Level? = null            // which way is down, if a turn on the spot found it: else the tracking's own
     var calibration: RecordCalibration? = null
     var place: GpsAverager.Result? = null
     private val nearest: GuideMesh.Nearest? = guide?.let { g -> val (lo, hi) = g.bounds(); g.Nearest(max(1e-6, (hi - lo).norm / 40)) }
@@ -168,13 +168,22 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             orb != null -> orb.add(s.pose)
             else -> emptyList()
         }
-        val accel = s.sensors.accel?.let { a -> accelBias?.let { a - it } ?: a }
-        val downAcc = accel?.takeIf { grades.gravityOk }?.let { Axes.downFromAccel(it, s.sensorOrientation) }
-        val downAr = if (s.tracking) Axes.downInImage(s.pose) else null
+        // down three ways: the tracking's own; the tracking's with what a turn on the spot found (the one used, if there was
+        // a turn); and this photo's accelerometer alone, less what the turn found the phone adds, kept to check the others by
+        val found = level
+        val force = s.sensors.accel?.takeIf { grades.gravityOk }?.let { Axes.forceInImage(it, s.sensorOrientation) }
+        val downAcc = force?.let { -(if (found != null) it - found.offset else it).unit() }
+        val downTrack = if (s.tracking) Axes.downInImage(s.pose) else null
+        val downAr = if (s.tracking && found != null) Axes.downInImage(s.pose, found.down) else downTrack
         val down = downAr ?: downAcc
+        // the two should agree: where they don't, with the phone still, the tracking's world has shifted or the phone was knocked
+        val apart = if (downAr != null && downAcc != null) angleDeg(downAr, downAcc) else null
+        val notes = if (apart != null && apart > (if (found != null) DOWN_DOUBT_DEG else 2 * DOWN_DOUBT_DEG))
+            grades.notes + "down: the phone's tracking and its accelerometer are ${kotlin.math.round(apart * 10) / 10}° apart" else grades.notes
         val blob = ShotBlob(
             app = app, device = device, cap = id, i = shots.size + 1, t = s.unix,
-            down = down?.toList(), downSrc = if (downAr != null) "ar" else if (downAcc != null) "accel" else null, downAcc = downAcc?.toList(),
+            down = down?.toList(), downSrc = if (downAr != null) (if (found != null) "turn" else "ar") else if (downAcc != null) "accel" else null,
+            downAcc = downAcc?.toList(), downTrack = downTrack?.takeIf { found != null }?.toList(),
             heading = s.sensors.headingDeg?.takeIf { grades.headingOk }, headingAcc = s.sensors.headingAccDeg,
             gps = s.sensors.gps?.let { BlobGps(it.lat, it.lng, it.alt, it.accM, s.t - it.t) },
             ar = BlobAr(s.arSession, s.pose.centre.toList(), s.pose.rot.toList(), if (s.tracking) "normal" else "limited"),
@@ -182,7 +191,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             exp = BlobExposure(s.exposureS, s.iso, s.focusM),
             q = BlobQuality(s.stats?.sharp, blur, s.stats?.clipHigh, s.stats?.clipLow, verdict.ok),
         )
-        val record = ShotRecord(name, blob, verdict.ok, verdict.reasons, grades.notes, helped)
+        val record = ShotRecord(name, blob, verdict.ok, verdict.reasons, notes, helped)
         shots.add(record)
         if (verdict.ok) kept++
         return ShotOut(record, verdict.ok, verdict.reasons, helped, blob.userComment())
@@ -218,6 +227,9 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             fit = fit?.let { RecordFit(it.scale, it.rot.toList(), it.shift.toList(), it.tiltDeg, taps.size, refined?.matched, refined?.rmsM) },
             place = place?.let { RecordPlace(it.lat, it.lng, it.alt, it.accM, it.n, it.seconds) },
             calibration = calibration,
+            level = level?.let { RecordLevel(it.down.toList(), it.tiltDeg, it.offset.toList(), it.offsetDeg, it.spreadDeg, it.sectors, it.samples) },
+            downAgreeDeg = shots.filter { it.kept }.mapNotNull { r -> r.blob.down?.let { d -> r.blob.downAcc?.let { a -> angleDeg(Vec3.of(d), Vec3.of(a)) } } }
+                .sorted().let { if (it.isEmpty()) null else it[it.size / 2] },
             skipped = cov?.states?.filter { it.skipped != null }?.associate { it.target.id to it.skipped!! } ?: emptyMap(),
             progress = p?.let { RecordProgress(it.total, it.done, it.skipped, it.holds, it.holdsDone) },
             shots = shots.toList(),
@@ -229,5 +241,6 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         const val MIN_GAP_S = 0.6       // and no sooner than this after the last
         const val SPEED_SMOOTH_S = 0.15
         const val USUAL_FROM = 5        // photos kept before their sharpness says what's usual
+        const val DOWN_DOUBT_DEG = 1.5  // a photo's down by the turn on the spot and by its own accelerometer further apart than this is said
     }
 }

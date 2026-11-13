@@ -105,6 +105,10 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
             Column(Modifier.fillMaxWidth().background(SHADE, RoundedCornerShape(10.dp)).padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(failed ?: ui.text, color = if (failed != null) BAD else Color.White, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
                 if (ui.note.isNotEmpty()) Text(ui.note, color = if (ui.note.startsWith("Not kept")) WARN else Color.White, style = MaterialTheme.typography.bodySmall)
+                if (ui.phase == Phase.LEVEL && failed == null) {
+                    LinearProgressIndicator(progress = { ui.done.toFloat() / ui.total.coerceAtLeast(1) }, modifier = Modifier.fillMaxWidth())
+                    Text("${ui.done} of ${ui.total} directions faced", color = Color.White, style = MaterialTheme.typography.bodySmall)
+                }
                 if (ui.phase == Phase.CAPTURE && ui.total > 0) {
                     LinearProgressIndicator(progress = { ui.done.toFloat() / ui.total }, modifier = Modifier.fillMaxWidth())
                     Text(listOfNotNull("${ui.done}/${ui.total} ${if (ui.guided) "parts" else "sides and spots"}", if (ui.holds > 0 && ui.guided) "${ui.holdsDone}/${ui.holds} holds" else null,
@@ -115,6 +119,10 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
             }
             FlowRow(Modifier.fillMaxWidth().background(SHADE, RoundedCornerShape(10.dp)).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
                 when (ui.phase) {
+                    Phase.LEVEL -> {
+                        TextButton(onClick = { controller.skipLevel() }) { Text("Skip: trust the phone's own") }
+                        TextButton(onClick = { leaving = true }) { Text("Leave") }
+                    }
                     Phase.GHOST, Phase.ROCK -> {
                         FilledTonalButton(onClick = { controller.turnGhost(45.0) }) { Text("Turn it") }
                         FilledTonalButton(onClick = { controller.bringGhost() }) { Text("Bring it here") }

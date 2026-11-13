@@ -4,8 +4,8 @@ import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.round
 
-/** Where a capture is: lining the mesh up (a tap on the small model, then on the rock), checking the fit, or taking photos. */
-enum class Phase { STARTING, GHOST, ROCK, CONFIRM, CENTRE, CAPTURE, FAILED }
+/** Where a capture is: finding which way is down (a turn on the spot), lining the mesh up (a tap on the small model, then on the rock), checking the fit, or taking photos. */
+enum class Phase { STARTING, LEVEL, GHOST, ROCK, CONFIRM, CENTRE, CAPTURE, FAILED }
 
 /**
  * What the capture screen shows over the camera. `sensors`: what was wrong with the phone's readings at the last photo
@@ -40,8 +40,10 @@ class FlowOut(val ui: CaptureUi, val guide: Similarity?, val solid: Boolean, val
 class CaptureFlow(val session: CaptureSession) {
     private val plan = session.plan
     private val guide = session.guide
-    var phase = if (plan != null && guide != null) Phase.GHOST else Phase.CENTRE
+    private val afterLevel = if (plan != null && guide != null) Phase.GHOST else Phase.CENTRE
+    var phase = Phase.LEVEL
         private set
+    private var turn = LevelTurn()
     var marking = false
         private set
     var wide = false
@@ -65,6 +67,8 @@ class CaptureFlow(val session: CaptureSession) {
     private var ui = CaptureUi(phase = phase, guided = plan != null)
 
     // ---- from the screen ---------------------------------------------------------------------------------------------
+    /** Goes on without the turn on the spot: down is then as the phone's tracking has it. */
+    fun skipLevel() { if (phase == Phase.LEVEL) { phase = afterLevel; note = "" } }
     fun shutter() { wantShot = true }
     fun setAuto(on: Boolean) { session.auto = on }
     fun skip() { session.skipCurrent("skipped on the phone"); levelsDirty = true }
@@ -169,8 +173,11 @@ class CaptureFlow(val session: CaptureSession) {
     /**
      * @param pose the camera, in the world, with the lens of the photos it takes.
      * @param uprightDeg how far clockwise its picture is turned to be shown upright (90 for a phone held upright).
+     * @param accel what the accelerometer reads now (the phone's axes, m/s2, upwards at rest), for the turn on the spot.
+     * @param sensorOrientation how the camera's sensor is mounted (Axes.forceInImage()).
      */
-    fun frame(pose: CameraPose, tracking: Boolean, gyroRadS: Double, exposureS: Double, t: Double, uprightDeg: Int): FlowOut {
+    fun frame(pose: CameraPose, tracking: Boolean, gyroRadS: Double, exposureS: Double, t: Double, uprightDeg: Int,
+              accel: Vec3? = null, sensorOrientation: Int = 90): FlowOut {
         lastPose = pose
         val base = ui.copy(phase = phase, kept = session.shotCount, rejected = rejected, note = note, sensors = sensorNote, auto = session.auto, wide = wide, marking = marking,
             pairs = session.taps.size, tracking = tracking)
@@ -186,6 +193,24 @@ class CaptureFlow(val session: CaptureSession) {
             markers = session.markers()
         }
         when (phase) {
+            Phase.LEVEL -> {
+                if (accel != null) turn.add(pose, accel, sensorOrientation, gyroRadS)
+                if (turn.filled == turn.sectors) {
+                    val found = turn.solve()
+                    if (found != null && found.spreadDeg <= LEVEL_SPREAD_MOST) {
+                        session.level = found
+                        note = "Down found: the ${found.sectors} directions agree to ${hundredths(found.spreadDeg)}°. The phone's tracking had it ${hundredths(found.tiltDeg)}° off, " +
+                            "and one reading of its accelerometer would have been ${hundredths(found.offsetDeg)}° off."
+                        phase = afterLevel
+                    } else {
+                        turn = LevelTurn()
+                        note = "That turn was too unsteady to tell which way is down: once more, more slowly."
+                    }
+                }
+                ui = base.copy(phase = phase, note = note, turnX = 0.0, turnY = 0.0, total = turn.sectors, done = if (phase == Phase.LEVEL) turn.filled else turn.sectors,
+                    text = "To find which way is down: hold the phone upright, as for a photo, and turn slowly all the way round on the spot")
+                return FlowOut(ui, null, false, 0f, null, emptyList(), false)
+            }
             Phase.GHOST, Phase.ROCK -> {
                 val g = ghost ?: placeGhost(pose).also { ghost = it }
                 fresh()
@@ -255,5 +280,8 @@ class CaptureFlow(val session: CaptureSession) {
         const val REFINE_POINTS = 2000
         const val REFINE_LEAST = 150
         const val REFINE_EVERY_S = 3.0
+        const val LEVEL_SPREAD_MOST = 0.4   // degrees the directions of a turn on the spot may disagree by, for it to be believed
+
+        private fun hundredths(x: Double) = kotlin.math.round(x * 100) / 100
     }
 }

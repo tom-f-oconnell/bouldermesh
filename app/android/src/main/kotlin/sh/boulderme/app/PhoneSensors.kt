@@ -36,8 +36,7 @@ class PhoneSensors(private val context: Context) : SensorEventListener, Location
     @Volatile var fix: GpsFix? = null; private set
     @Volatile var declination = 0.0; private set
     val place = GpsAverager()
-    var onAccel: ((Vec3) -> Unit)? = null       // for the Calibrate screen
-    var onMag: ((Vec3) -> Unit)? = null
+    var onMag: ((Vec3) -> Unit)? = null         // for the Calibrate screen
 
     fun now(): Double = SystemClock.elapsedRealtimeNanos() / 1e9
 
@@ -56,7 +55,7 @@ class PhoneSensors(private val context: Context) : SensorEventListener, Location
 
     override fun onSensorChanged(e: SensorEvent) {
         when (e.sensor.type) {
-            Sensor.TYPE_ACCELEROMETER -> Vec3(e.values[0].toDouble(), e.values[1].toDouble(), e.values[2].toDouble()).let { accel = it; onAccel?.invoke(it) }
+            Sensor.TYPE_ACCELEROMETER -> accel = Vec3(e.values[0].toDouble(), e.values[1].toDouble(), e.values[2].toDouble())
             Sensor.TYPE_GYROSCOPE -> gyro = Vec3(e.values[0].toDouble(), e.values[1].toDouble(), e.values[2].toDouble())
             Sensor.TYPE_MAGNETIC_FIELD -> Vec3(e.values[0].toDouble(), e.values[1].toDouble(), e.values[2].toDouble()).let { mag = it; magAccuracy = e.accuracy; onMag?.invoke(it) }
             Sensor.TYPE_ROTATION_VECTOR -> {

@@ -9,9 +9,10 @@ phone yet**: see [What's been checked](#whats-been-checked).
 
 1. **While you have signal**, open *Get meshes…* and get the boulders you'll visit (nearest first; *Get the N within
    2 km* takes them all). They're kept on the phone, with their holds, and work with no signal.
-2. **Once for a phone**, *Calibrate*: about a minute, as the screen says. Do the compass part again at the rock if the
-   phone complains of it.
-3. **At the rock**, press *Capture* on its mesh. A small model of the mesh appears in front of you:
+2. **Before a capture**, *Calibrate* the compass: half a minute of turning the phone every which way, away from metal.
+3. **At the rock**, press *Capture* on its mesh. It first asks for **one slow turn all the way round on the spot**, with
+   the phone held upright as for a photo: that's how it finds which way is down (below). Then a small model of the
+   mesh appears in front of you:
    - tap a spot on the model that you can find on the rock, then tap the same spot on the real rock;
    - do that once more, with a spot well to one side of the first;
    - the mesh is drawn over the rock. If it sits on it, press *It fits: start*. If not, *Add a spot* or *Start again*.
@@ -33,6 +34,14 @@ Uploading needs the site's editing token (*Settings*: paste it, or the link from
   ends from 3. What the mesh's existing photos already gave counts. *Doing: its climbs / whole rock* switches between
   holds and the rock on climbs, and everything but the ground. A hold too high to be had that finely from the ground
   asks for the best a phone held up can do.
+- **Which way is down** sets how steep the mesh's walls are, and no one sensor reading can be trusted for it: an
+  accelerometer's zero is typically off by a degree or so, and it doesn't sit exactly square to the camera. Both are
+  fixed to the phone, though, and gravity to the world: so over a turn on the spot the phone's errors point every way in
+  turn and cancel, as a spirit level's does when it's turned end for end. Nothing level or plumb is needed. The screen
+  says afterwards how well the twelve directions agreed (a few tenths of a degree is good; it asks again if they
+  don't), how far the phone's own tracking had been off, and how far one reading would have been. Each photo then
+  carries down as the turn found it, and its own accelerometer's beside it, and the screen says if the two drift apart.
+  In simulation this finds down to under 0.1°; on a phone it hasn't been tried.
 - **A photo isn't kept** if the phone's own motion would have smeared it by more than 1.5 pixels (from its gyroscope,
   its speed and the shutter time), if it's much softer than this capture's others, if more than 5% of it is blown out
   or 25% black, or if the phone had lost track of where it was.
