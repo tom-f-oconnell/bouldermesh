@@ -103,6 +103,11 @@ def test_remesh_gate():
     assert not st.remesh_due(mesh, 42, 10000, 100)[0]       # cameras only
     assert st.remesh_due(mesh, 51, 10000, 0)[0]             # many more views
     assert not st.remesh_due(mesh, 0, 0, 0)[0]
+    # measured on the mesh, the coverage decides, not the point count
+    g = {"covered_before": 0.40, "covered_after": 0.41, "seen_before": 0.9, "seen_after": 0.9, "new_points": 900, "new_points_off_mesh": 10}
+    assert not st.remesh_due(mesh, 42, 10000, 900, g)[0]
+    assert st.remesh_due(mesh, 42, 10000, 900, {**g, "covered_after": 0.48})[0]
+    assert st.remesh_due(mesh, 42, 10000, 900, {**g, "new_points_off_mesh": 400})[0]
 
 
 if __name__ == "__main__":

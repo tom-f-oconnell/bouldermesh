@@ -73,7 +73,8 @@ def run_step(logdir: Path, name: str, tools: str, script: str, mounts: list[str]
     cname = f"bench-incr-{name}-{os.getpid()}-{int(time.time()) % 100000}"
     own = f"{os.getuid()}:{os.getgid()}"       # the container is root: hand what it made back
     script = f"trap 'chown -R {own} /s 2>/dev/null || true' EXIT\n{script}"
-    cmd, stop, really = bench.launch(cname, tools, script, mounts + [f"{HERE}:/incr:ro"], env or {}, cpus, nice)
+    backend = HERE.parents[2] / "backend"       # captureplan.py, read only
+    cmd, stop, really = bench.launch(cname, tools, script, mounts + [f"{HERE}:/incr:ro", f"{backend}:/backend:ro"], env or {}, cpus, nice)
     lock, asked = None, time.time()
     if gpu:
         lock = open(GPU_LOCK, "a")
@@ -122,7 +123,7 @@ def expand(photos: list[str]) -> list[Path]:
 
 def add(state_dir: Path | str, photos: list[Path], masks: Path | None = None, init: str = "auto", ba: str = "auto",
         feat: str = "sift", cond: str = "dev", seed: int = 0, mesh: bool = True, vggt: bool = True,
-        adopt: Path | None = None, die_after: str | None = None) -> dict:
+        adopt: Path | None = None, die_after: str | None = None, poses: Path | None = None) -> dict:
     """Adds photos to a boulder's state: a first build if it has no model yet.
 
     Args:
@@ -141,6 +142,7 @@ def add(state_dir: Path | str, photos: list[Path], masks: Path | None = None, in
         adopt: for a new state, a COLMAP database that has these photos' features and matches already (the
             benchmark's), so that only placement differs from the runs made from it.
         die_after: for the tests: stop, as if killed, after the step named.
+        poses: with init "poses", the starting cameras in vggt_cams.py's format ({chosen, placed}).
 
     Returns:
         The add's record, as kept in the manifest ({"kind": "none"} if there was nothing to do).
@@ -189,7 +191,10 @@ def add(state_dir: Path | str, photos: list[Path], masks: Path | None = None, in
     step("match", TOOLS, core("match", "/s", "--feat", feat, "--threads", threads), True)
     place_args = ["place", "/s", "--init", init, "--ba", ba, "--seed", seed, "--threads", threads]
     cams = root / "cache" / f"vggt-skeleton-{k:04d}.json"
-    if not s.has_model() and init in ("auto", "vggt") and vggt_step("vggt", "skeleton", cams):
+    if not s.has_model() and init == "poses" and poses:        # starting cameras from elsewhere (a phone's tracking)
+        shutil.copyfile(poses, root / "cache" / f"poses-{k:04d}.json")
+        place_args += ["--cameras", f"/s/cache/poses-{k:04d}.json"]
+    elif not s.has_model() and init in ("auto", "vggt") and vggt_step("vggt", "skeleton", cams):
         place_args += ["--vggt", f"/s/{cams.relative_to(root)}"]
     step("place", TOOLS, core(*place_args), ba != "cpu")
     rep = report("place")
@@ -337,17 +342,6 @@ def scenario(P: str, name: str, a) -> None:
         moved = max((abs(now[n][1][i] - was[n][1][i]) for n in was for i in range(3)), default=0)
         ok = not r["placed_new"] and set(now) == set(was) and moved < 1e-9
         r = {**r, "old_cameras_moved": moved}
-    elif name == "interrupted":     # an add killed after matching: the state must be the old one, and the add redoable
-        half = [p for p in photos if p.name not in before["photos"]] or photos[:0]
-        if not half:        # the base has every photo: take some out of a copy's manifest? No: use a held state
-            d2 = held(P, a.init or "auto", 0, 90, 1, a)
-            print(f"interrupted: needs photos the state lacks; see {d2} for a completed add")
-        try:
-            add(d, photos, masks, **kw, die_after="match")
-            r = {"kind": "not interrupted"}
-        except KeyboardInterrupt:
-            r = {"kind": "interrupted"}
-        ok = st.State(d).manifest == before and model() == was
     else:
         raise SystemExit(f"unknown scenario {name}")
     print(f"SCENARIO {P} {name}: {'OK' if ok else 'WRONG'} {json.dumps({k: v for k, v in r.items() if k != 'steps'}, default=str)[:600]}", flush=True)
@@ -415,8 +409,6 @@ def compare(only: str | None = None) -> None:
         names = sorted(poses)
         for i, x in enumerate(names):
             for y in names[i + 1:]:
-                if x.startswith("base:") and y.startswith("base:") and False:
-                    continue
                 ag = stats.agreement(poses[x], poses[y]) or {}
                 both = set(poses[x]) & set(poses[y])
                 print("\t".join(str(v) for v in [P, x, y, len(poses[x]), len(poses[y]), len(both), len(set(poses[x]) - both),

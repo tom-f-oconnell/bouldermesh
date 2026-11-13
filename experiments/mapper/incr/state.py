@@ -37,6 +37,10 @@ SETTINGS = {
     # since the last mesh (more views of the same rock still sharpen it)
     "remesh_new_points": 0.03,
     "remesh_growth": 0.25,
+    # with the mesh measured (core.surface_gain): new points off the mesh, as a share of the model's points; or the
+    # share of the mesh's area covered as backend/captureplan.py's NEED asks, up by this much
+    "remesh_off_mesh": 0.02,
+    "remesh_coverage": 0.05,
 }
 
 
@@ -207,14 +211,26 @@ def resolve_due(placed_before: int, placed_at_solve: int | None, tried_linked: i
     return False, "the model takes the new photos as it is"
 
 
-def remesh_due(mesh: dict | None, placed_now: int, points_before: int, points_new: int,
+def remesh_due(mesh: dict | None, placed_now: int, points_before: int, points_new: int, gain: dict | None = None,
                settings: dict = SETTINGS) -> tuple[bool, str]:
     """Whether the add calls for a new mesh, and why: mesh is the manifest's record of the last one (None: there is
-    none), points_before the model's 3D points before the add and points_new those the add made."""
+    none), points_before the model's 3D points before the add and points_new those the add made. gain, where the
+    mesh could be measured (core.surface_gain: the app's capture-plan coverage of the mesh before and after, and the
+    add's new points off the mesh), decides; without it, the count of new points does."""
     if placed_now == 0:
         return False, "no photo is placed"
     if not mesh:
         return True, "there is no mesh yet"
+    if gain:
+        off = gain["new_points_off_mesh"] / max(points_before, 1)
+        if off >= settings["remesh_off_mesh"]:
+            return True, f"{gain['new_points_off_mesh']} new 3D points off the mesh ({off:.1%} of the model's): rock it doesn't have"
+        more = gain["covered_after"] - gain["covered_before"]
+        if more >= settings["remesh_coverage"]:
+            return True, (f"the share of the mesh covered as the capture plan asks went from {gain['covered_before']:.1%} to "
+                          f"{gain['covered_after']:.1%}")
+        return False, (f"coverage {gain['covered_before']:.1%} -> {gain['covered_after']:.1%} and {gain['new_points_off_mesh']} "
+                       f"new points off the mesh: cameras only")
     if points_before and points_new >= points_before * settings["remesh_new_points"]:
         return True, f"{points_new} new 3D points, {points_new / points_before:.1%} more: the new photos show more surface"
     if placed_now >= mesh["placed"] * (1 + settings["remesh_growth"]):

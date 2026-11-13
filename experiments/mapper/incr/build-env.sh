@@ -22,7 +22,9 @@ fi
 for src in colmap $([ "$V" = full ] && echo ceres opencv openMVS vcglib cgal6); do
   if [ ! -d "$T/opt/$src" ]; then
     mkdir -p "$T/opt/$src"
-    (cd "$B/build-plain/opt/$src" && tar cf - --exclude='./build*' .) | (cd "$T/opt/$src" && tar xf -)
+    # build-* are the benchmark's build folders; build/ is one too, except in OpenMVS, whose build/ is its cmake code
+    X=(--exclude='./build-*'); [ "$src" = openMVS ] || X+=(--exclude='./build')
+    (cd "$B/build-plain/opt/$src" && tar cf - "${X[@]}" .) | (cd "$T/opt/$src" && tar xf -)
   fi
 done
 NAME=bench-incr-build-$V

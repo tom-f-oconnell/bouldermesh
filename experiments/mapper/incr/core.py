@@ -426,9 +426,10 @@ def register_loop(S: Session, mo, tri, refine_all: bool, how: str, placed: dict[
     return done
 
 
-def refine_added(mapper, rec, o, mo, tri, added: list[int], ba: str, rounds: int = 2) -> None:
-    """Refines the cameras just added and the points they see, with every other camera as it is: only they and those
-    points are in the problem, so its size follows the add, not the model."""
+def refine_added(mapper, rec, o, mo, tri, added: list[int], ba: str, rounds: int = 2, fixed_lenses: set[int] = frozenset()) -> None:
+    """Refines the cameras just added and the points they see, with every other camera as it is (pose and lens: the
+    lenses named are held even where a new photo shares one): only they and those points are in the problem, so its
+    size follows the add, not the model."""
     if not added:
         return
     for _ in range(rounds):
@@ -441,6 +442,8 @@ def refine_added(mapper, rec, o, mo, tri, added: list[int], ba: str, rounds: int
             points.update(p.point3D_id for p in rec.image(i).points2D if p.has_point3D())
         for p in points:
             config.add_variable_point(p)
+        for cid in fixed_lenses:
+            config.set_constant_cam_intrinsics(cid)
         b = ba_options(o, len(added), ba if len(added) >= GPU_MIN_IMAGES else "cpu")
         b.refine_principal_point = False
         pycolmap.create_default_bundle_adjuster(b, config, rec).solve()
@@ -579,20 +582,21 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
         names = set(ids)
         log(f"{'full re-solve' if resolve else 'first build'}: {len(names)} photos, start: {init}")
         rec, used, tried_starts = None, None, []
+        # "poses": cameras from a file in VGGT's format ({chosen, placed}), e.g. a phone's tracked poses: started as VGGT's are
         order = {"auto": ["vggt", "global", "incremental"], "vggt": ["vggt", "global", "incremental"],
-                 "global": ["global", "incremental"], "incremental": ["incremental"]}[init]
+                 "poses": ["poses", "global", "incremental"], "global": ["global", "incremental"], "incremental": ["incremental"]}[init]
         for kind in order:
             rep.part(f"start_{kind}")
             try:
-                if kind == "vggt":
+                if kind in ("vggt", "poses"):
                     if not vggt or not vggt.exists():
                         log("no VGGT cameras were given: trying the next start")
                         tried_starts.append("vggt: no cameras")
                         continue
                     cams = json.loads(vggt.read_text())
                     rec = start_from_cameras(open_cache(db, names), cams, o, ba, rep)
-                    rep.data["vggt"] = {k: cams.get(k) for k in ("seconds", "gpu_peak_mib", "device", "pairs_checked", "dropped")}
-                    rep.data["vggt"]["chosen"] = len(cams["chosen"])
+                    rep.data[kind] = {k: cams.get(k) for k in ("seconds", "gpu_peak_mib", "device", "pairs_checked", "dropped")}
+                    rep.data[kind]["chosen"] = len(cams["chosen"])
                 elif kind == "global":
                     rec, others = start_global(db, photos, names, o, ba, work)
                 else:
@@ -621,7 +625,7 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
         mo.abs_pose_min_num_inliers, mo.abs_pose_min_inlier_ratio = REST
         n2 = register_loop(S, mo, tri, True, "pnp-rest", placed)
         rep.part("final_adjust")
-        if S.since or used == "vggt":       # the other starts end on a refinement of their own
+        if S.since or used in ("vggt", "poses"):       # the other starts end on a refinement of their own
             S.refine(o.get_mapper(), tri, o.ba_global_max_refinements if S.since else 2)
         rep.part("polish")
         polished = S.polish(o.get_mapper(), tri)
@@ -650,7 +654,9 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
         S = Session(open_cache(db, was | set(cand)), rec, o, ba)
         mo, tri = o.get_mapper(), o.get_triangulation()
         mo.fix_existing_frames = True
-        mo.constant_cameras = set(S.anchor)
+        old_lenses = {old.image(i).camera_id for i in old.reg_image_ids()}
+        lens_before = {c: list(old.camera(c).params) for c in old_lenses}
+        mo.constant_cameras = set(old_lenses)
         added_ids = []
         for how, terms in (("pnp", None), ("pnp-rest", REST)):
             rep.part("register" if terms is None else "register_rest")
@@ -661,7 +667,7 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
             register_loop(S, mo, tri, False, how, placed)
             new_ids = [rec.find_image_with_name(n).image_id for n in placed if n not in before]
             rep.part("adjust_added")
-            refine_added(S.mapper, rec, o, mo, tri, new_ids, ba)
+            refine_added(S.mapper, rec, o, mo, tri, new_ids, ba, fixed_lenses=old_lenses)
             added_ids += new_ids
         S.mapper.filter_frames(mo)      # a new camera whose lens came out degenerate is not placed
         S.close()
@@ -669,6 +675,7 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
         after = poses(rec)
         rep.data["old_cameras_moved"] = max((float(np.abs(after[n][1] - t).max()) for n, (_, t) in old_poses.items() if n in after), default=0.0)
         rep.data["old_cameras_lost"] = sorted(was - set(after))
+        rep.data["old_lenses_changed"] = sum(1 for c, p in lens_before.items() if rec.exists_camera(c) and list(rec.camera(c).params) != p)
     rep.part("gates")
     now = {rec.image(i).name for i in rec.reg_image_ids()}
     left = sorted(n for n in ids if n not in now)
@@ -677,7 +684,15 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
     due, why = (False, "this was a full solve") if kind != "add" else st.resolve_due(
         len(now) - len(placed), (s.manifest.get("solve") or {}).get("placed"), len(tried_linked), len([n for n in tried_linked if n in placed]))
     points_new = max(0, rec.num_points3D() - points_before)
-    mesh_due, mesh_why = st.remesh_due(s.manifest.get("mesh") if kind == "add" else None, len(now), points_before, points_new)
+    gain = None
+    if kind == "add" and s.manifest.get("mesh"):
+        rep.part("coverage")
+        try:
+            gain = surface_gain(root, pycolmap.Reconstruction(str(root / "model")), rec)
+        except Exception as e:      # the gate then falls back on counting points
+            log(f"coverage of the mesh couldn't be measured: {type(e).__name__}: {e}")
+        log(f"coverage: {gain}")
+    mesh_due, mesh_why = st.remesh_due(s.manifest.get("mesh") if kind == "add" else None, len(now), points_before, points_new, gain)
     request = None
     if left_linked and kind in ("add", "first", "resolve"):
         request = {"names": left_linked, "anchors": anchors_for(left_linked, now, ids, link)}
@@ -730,6 +745,7 @@ def assist(root: Path, cams_file: Path, ba: str, threads: int) -> dict:
     ids = {im.name: i for i, im in cache.images.items()}
     todo = [n for n in todo if n in ids]
     rep.part("pose")
+    fixed = {rec.image(i).camera_id for i in rec.reg_image_ids()}
     for n in todo:
         R = v[n][0] @ Rs.T
         c = scale * Rs @ centre(n) + shift
@@ -747,7 +763,7 @@ def assist(root: Path, cams_file: Path, ba: str, threads: int) -> dict:
         for n in kept:
             mapper.triangulate_image(tri, ids[n])
         rep.part(f"adjust{k}")
-        refine_added(mapper, rec, o, mo, tri, [ids[n] for n in kept], ba, rounds=1)
+        refine_added(mapper, rec, o, mo, tri, [ids[n] for n in kept], ba, rounds=1, fixed_lenses=fixed)
         kept = [n for n in kept if rec.image(ids[n]).num_points3D >= (ASSIST_MIN_POINTS if k == len(ROUNDS) - 1 else 3)]
     for n in todo:
         if n not in kept and rec.image(ids[n]).has_pose:
@@ -758,6 +774,70 @@ def assist(root: Path, cams_file: Path, ba: str, threads: int) -> dict:
     log(f"assist: {len(kept)} of {len(todo)} photos kept {ASSIST_MIN_POINTS}+ points and are placed")
     return rep.save(placed={n: "vggt-assist" for n in kept}, tried=todo, anchors=len(anchors),
                     anchors_off=round(float(np.median(off) / size), 4), model=stats_of(rec))
+
+
+# ---------------------------------------------------------------- whether an add calls for a new mesh
+
+def read_ply(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Vertices and faces of OpenMVS's binary PLY mesh."""
+    import re as _re
+    data = path.read_bytes()
+    end = data.index(b"end_header\n") + len(b"end_header\n")
+    header = data[:end].decode()
+    nv = int(_re.search(r"element vertex (\d+)", header).group(1))
+    nf = int(_re.search(r"element face (\d+)", header).group(1))
+    vprops = _re.search(r"element vertex \d+\n(.*?)element face", header, _re.S).group(1).count("property")
+    V = np.frombuffer(data, "<f4", nv * vprops, end).reshape(nv, vprops)[:, :3].astype(np.float64)
+    F = np.frombuffer(data, np.dtype([("n", "u1"), ("i", "<i4", 3)]), nf, end + nv * vprops * 4)["i"].astype(np.int64)
+    return V, F
+
+
+def plan_cameras(rec: pycolmap.Reconstruction) -> list[dict]:
+    """The model's cameras as the app's cameras.json has them, for backend/captureplan.py's coverage()."""
+    out = []
+    for i in rec.reg_image_ids():
+        im = rec.image(i)
+        T = im.cam_from_world()
+        x, y, z, w = T.rotation.quat
+        cam = rec.camera(im.camera_id)
+        out.append({"name": im.name, "q": [w, x, y, z], "t": list(T.translation),
+                    "lens": {"model": int(cam.model.value), "params": list(cam.params), "width": cam.width, "height": cam.height}})
+    return out
+
+
+def surface_gain(root: Path, before: pycolmap.Reconstruction, after: pycolmap.Reconstruction) -> dict | None:
+    """What an add brings to the rock the mesh shows, measured as the app's capture plan measures it (captureplan.py's
+    coverage() and NEED, on the mesh cut down as it cuts it), and what it brings beyond it: the share of the mesh's
+    area covered well enough (NEED's patch: fine enough, from enough directions) by the cameras before and after,
+    and the share of the add's new 3D points that lie off the mesh (rock it doesn't have yet). None without a mesh.
+    The scale is unknown here, so it is taken as captureplan takes an unscaled mesh's (GUESS_ACROSS_M across)."""
+    ply = root / "dense" / "scene_dense_mesh.ply"
+    if not ply.exists():
+        return None
+    sys.path.insert(0, "/backend")
+    import captureplan as cp
+    V, F = cp.decimate(*read_ply(ply))
+    C, N, area = cp.geometry(V, F)
+    lo, hi = np.percentile(V, 5, axis=0), np.percentile(V, 95, axis=0)
+    size = float((hi - lo).max()) or 1.0
+    mpu = cp.GUESS_ACROSS_M / size
+    need = cp.NEED["patch"]
+
+    def covered(rec):
+        best, views = cp.coverage(C, N, plan_cameras(rec))
+        good = (best * mpu * 1000 <= need["gsd_mm"]) & (views >= need["views"])
+        return float(area[good].sum() / area.sum()), float(area[np.isfinite(best)].sum() / area.sum())
+    good0, seen0 = covered(before)
+    good1, seen1 = covered(after)
+    # new points off the mesh: in no cell (of 1/40 the mesh's size) next to one a face centre is in
+    cell = size / 40
+    occupied = {tuple(k) for k in np.floor(C / cell).astype(np.int64)}
+    near = {(a + i, b + j, c + k) for a, b, c in occupied for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)}
+    old_ids = set(before.point3D_ids())
+    new = np.array([p.xyz for pid, p in after.points3D.items() if pid not in old_ids]).reshape(-1, 3)
+    off = int(sum(1 for k in np.floor(new / cell).astype(np.int64) if tuple(k) not in near)) if len(new) else 0
+    return {"faces": len(F), "covered_before": round(good0, 4), "covered_after": round(good1, 4), "seen_before": round(seen0, 4),
+            "seen_after": round(seen1, 4), "new_points": len(new), "new_points_off_mesh": off}
 
 
 # ---------------------------------------------------------------- dense, mesh, texture
@@ -814,8 +894,8 @@ def main(argv: list[str]) -> None:
     p.add_argument("state", type=Path)
     p.add_argument("cameras", nargs="?", type=Path)
     p.add_argument("--feat", default="sift")
-    p.add_argument("--init", default="auto", choices=["auto", "vggt", "global", "incremental"])
-    p.add_argument("--vggt", type=Path)
+    p.add_argument("--init", default="auto", choices=["auto", "vggt", "poses", "global", "incremental"])
+    p.add_argument("--vggt", "--cameras", dest="vggt", type=Path, help="starting cameras: VGGT's, or poses from elsewhere")
     p.add_argument("--ba", default="auto", choices=["auto", "cpu", "gpu", "caspar"])
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--threads", type=int, default=-1)
