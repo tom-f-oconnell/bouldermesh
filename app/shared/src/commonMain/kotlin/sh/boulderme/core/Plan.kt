@@ -28,6 +28,15 @@ data class Plan(
     val targets: List<Target> = emptyList(),
     val climbs: List<PlanClimb> = emptyList(),
 ) {
+    /** What a role of hold is drawn in, as the site draws it: red, green and blue from 0 to 1; null if the plan doesn't say. */
+    fun roleColor(role: String?): List<Float>? {
+        val hex = roles[role ?: return null]?.removePrefix("#")?.takeIf { it.length == 6 } ?: return null
+        return (0..2).map { (hex.substring(2 * it, 2 * it + 2).toIntOrNull(16) ?: return null) / 255f }
+    }
+
+    /** Its sets of beta that have holds to capture: a capture can be for one of them. */
+    val setsWithHolds: List<PlanSet> get() = sets.filter { it.targets.isNotEmpty() }
+
     fun needOf(kind: String): Need = need[kind] ?: DEFAULT_NEED[kind] ?: Need()
 
     companion object {

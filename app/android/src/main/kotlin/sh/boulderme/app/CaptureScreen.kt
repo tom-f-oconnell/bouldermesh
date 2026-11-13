@@ -67,7 +67,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
         }
         return
     }
-    val controller = remember { ArController(a, a.store, a.sensors, plan, guide, what.name + " (capture)") { ui = it } }
+    val controller = remember { ArController(a, a.store, a.sensors, plan, guide, what.name + " (capture)", what.set) { ui = it } }
     val view = remember {
         GLSurfaceView(a).apply {
             preserveEGLContextOnPause = true
@@ -104,6 +104,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
             Column(Modifier.fillMaxWidth().background(SHADE, RoundedCornerShape(10.dp)).padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(failed ?: ui.text, color = if (failed != null) BAD else Color.White, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+                if (ui.target.isNotEmpty()) Text(ui.target, color = Color.White, style = MaterialTheme.typography.bodySmall)
                 if (ui.note.isNotEmpty()) Text(ui.note, color = if (ui.note.startsWith("Not kept")) WARN else Color.White, style = MaterialTheme.typography.bodySmall)
                 if (ui.phase == Phase.LEVEL && failed == null && ui.tracking) {
                     LinearProgressIndicator(progress = { ui.done.toFloat() / ui.total.coerceAtLeast(1) }, modifier = Modifier.fillMaxWidth())
@@ -138,7 +139,8 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                         FilledTonalButton(onClick = { controller.setAuto(!ui.auto) }) { Text(if (ui.auto) "Auto: on" else "Auto: off") }
                         if (plan != null) {
                             if (ui.canSkip) FilledTonalButton(onClick = { controller.skip() }) { Text("Skip this") }
-                            FilledTonalButton(onClick = { controller.toggleWide() }) { Text(if (ui.wide) "Doing: whole rock" else "Doing: its climbs") }
+                            FilledTonalButton(onClick = { controller.toggleWide() }) { Text("Doing: ${ui.reach}") }
+                            if (ui.canCard || ui.card) FilledTonalButton(onClick = { controller.toggleCard() }) { Text(if (ui.card) "No card" else "Card photo") }
                         } else {
                             FilledTonalButton(onClick = { controller.toggleMarking() }) { Text(if (ui.marking) "Tap the hold…" else "Mark a hold") }
                             FilledTonalButton(onClick = { controller.blockSide() }) { Text("Can't reach that side") }

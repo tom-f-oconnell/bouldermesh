@@ -27,7 +27,7 @@ sealed interface Screen {
     data object Settings : Screen
     data object Calibrate : Screen
     /** mesh: the mesh being added to, or null for a rock with none. */
-    data class Capture(val mesh: String?, val name: String) : Screen
+    data class Capture(val mesh: String?, val name: String, val set: String? = null) : Screen      // set: the set of beta it's for
     data class Done(val id: String) : Screen
 }
 
@@ -81,7 +81,7 @@ class MainActivity : ComponentActivity() {
             "capture" -> {
                 val asked = intent.getStringExtra("mesh")
                 val mesh = asked?.takeIf { it != "none" } ?: store.downloaded().firstOrNull()?.mesh?.takeIf { asked == null }
-                Screen.Capture(mesh, mesh?.let { store.plan(it)?.name } ?: "A rock")
+                Screen.Capture(mesh, mesh?.let { store.plan(it)?.name } ?: "A rock", intent.getStringExtra("set"))
             }
             else -> Screen.Home
         }

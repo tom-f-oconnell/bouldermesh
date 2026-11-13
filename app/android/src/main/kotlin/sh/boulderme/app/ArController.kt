@@ -30,6 +30,7 @@ import com.google.ar.core.exceptions.NotYetAvailableException
 import sh.boulderme.core.Axes
 import sh.boulderme.core.CameraPose
 import sh.boulderme.core.CaptureFlow
+import sh.boulderme.core.LICENCE
 import sh.boulderme.core.CaptureSession
 import sh.boulderme.core.CaptureUi
 import sh.boulderme.core.GuideMesh
@@ -55,13 +56,13 @@ import javax.microedition.khronos.opengles.GL10
  */
 class ArController(
     private val activity: Activity, private val store: Store, private val sensors: PhoneSensors,
-    private val plan: Plan?, guide: GuideMesh?, private val name: String, private val onUi: (CaptureUi) -> Unit,
+    private val plan: Plan?, guide: GuideMesh?, private val name: String, set: String?, private val onUi: (CaptureUi) -> Unit,
 ) : GLSurfaceView.Renderer {
     val id: String = java.lang.Long.toString(System.currentTimeMillis() / 1000, 36) + (100..999).random()
     private val dir = store.captureDir(id)
     private val guide = guide.takeIf { plan != null }
     private val core = CaptureSession(plan, this.guide, id, BuildInfo.APP, "${Build.MANUFACTURER} ${Build.MODEL}", System.currentTimeMillis() / 1000.0)
-    private val flow = CaptureFlow(core)
+    private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = store.credit.ifBlank { null } }, set)
     private val lock = Any()        // round every use of the flow: frames are drawn on one thread, photos judged on another
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -134,6 +135,7 @@ class ArController(
     fun skip() = synchronized(lock) { flow.skip() }
     fun toggleMarking() = synchronized(lock) { flow.toggleMarking() }
     fun toggleWide() = synchronized(lock) { flow.toggleWide() }
+    fun toggleCard() = synchronized(lock) { flow.toggleCard() }
     fun turnGhost(degrees: Double) = synchronized(lock) { flow.turnGhost(degrees) }
     fun bringGhost() = synchronized(lock) { flow.bringGhost() }
     fun confirmFit() = synchronized(lock) { flow.confirmFit() }
@@ -200,7 +202,7 @@ class ArController(
             Matrix.multiplyMM(mvp, 0, viewProj, 0, fit.matrix(), 0)
             guideRenderer?.draw(mvp, out.alpha, out.solid)
         }
-        markerRenderer?.draw(out.markers, viewProj, height * proj[5])       // a metre across at a metre off, in pixels
+        markerRenderer?.draw(out.markers, viewProj, height * proj[5], plan)       // a metre across at a metre off, in pixels
         if (out.shoot) takeStill(frame, pose, exposure, gyro, now)
         if (now - lastUi > 0.12) { lastUi = now; main.post { onUi(out.ui) } }
     }

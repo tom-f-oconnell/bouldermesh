@@ -102,6 +102,7 @@ import platform.SceneKit.SCNGeometrySourceSemanticColor
 import platform.SceneKit.SCNGeometrySourceSemanticVertex
 import platform.SceneKit.SCNLightingModelConstant
 import platform.SceneKit.SCNMaterial
+import platform.SceneKit.SCNSphere
 import platform.SceneKit.SCNMatrix4
 import platform.SceneKit.SCNNode
 import platform.SceneKit.SCNScene
@@ -137,6 +138,7 @@ import sh.boulderme.core.Coverage
 import sh.boulderme.core.GuideMesh
 import sh.boulderme.core.ImageStats
 import sh.boulderme.core.Lens
+import sh.boulderme.core.LICENCE
 import sh.boulderme.core.Marker
 import sh.boulderme.core.Phase
 import sh.boulderme.core.Quality
@@ -186,13 +188,13 @@ private fun machine(): String = memScoped { val u = alloc<utsname>(); uname(u.pt
  * memory is swept after each: a frame Kotlin has seen is kept until then, and ARKit stops giving pictures once many are.
  */
 @OptIn(NativeRuntimeApi::class)
-class CaptureController(private val app: App, mesh: String?, private val name: String, private val done: (String?) -> Unit) : UIViewController(nibName = null, bundle = null) {
+class CaptureController(private val app: App, mesh: String?, private val name: String, set: String? = null, private val done: (String?) -> Unit) : UIViewController(nibName = null, bundle = null) {
     private val plan = mesh?.let { app.store.plan(it) }
     private val guide: GuideMesh? = if (plan != null && mesh != null) app.store.guide(mesh) else null
     val id: String = (NSDate().timeIntervalSince1970.toLong()).toString(36) + (100..999).random()
     private val dir = app.store.captureDir(id)
     private val core = CaptureSession(plan.takeIf { guide != null }, guide, id, IosStore.APP, machine(), NSDate().timeIntervalSince1970)
-    private val flow = CaptureFlow(core)
+    private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = this@CaptureController.app.store.credit.ifBlank { null } }, set)
     private val arSession = "a" + (100000..999999).random()
     private val sceneView = ARSCNView()
     private val scene = SCNScene()
@@ -387,7 +389,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         val seen = HashSet<String>()
         for (m in markers) {
             seen.add(m.id)
-            val key = "${m.id}/${m.level}/${m.current}/${(m.radiusM * 100).roundToInt()}"
+            val role = core.plan?.roleColor(m.role)     // a hold: its ring is its role's colour, as the site draws it, with how done it is in its middle
+            val key = "${m.id}/${m.level}/${m.current}/${(m.radiusM * 100).roundToInt()}/${m.role}"
             var node = rings[m.id]
             if (node == null || node.name != key) {
                 node?.removeFromParentNode()
@@ -396,7 +399,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
                 val c = LEVEL_RGB[m.level.coerceIn(0, LEVEL_RGB.size - 1)]
                 val mat = SCNMaterial()
                 mat.lightingModelName = SCNLightingModelConstant
-                mat.diffuse.contents = if (m.current) UIColor.whiteColor else UIColor.colorWithRed(c[0].toDouble(), c[1].toDouble(), c[2].toDouble(), 1.0)
+                mat.diffuse.contents = if (role != null) UIColor.colorWithRed(role[0].toDouble(), role[1].toDouble(), role[2].toDouble(), 1.0)
+                    else if (m.current) UIColor.whiteColor else UIColor.colorWithRed(c[0].toDouble(), c[1].toDouble(), c[2].toDouble(), 1.0)
                 mat.readsFromDepthBuffer = false        // seen through the rock and the mesh, wherever they are
                 torus.materials = listOf(mat)
                 val ring = SCNNode.nodeWithGeometry(torus)
@@ -406,6 +410,17 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
                 node.name = key
                 node.constraints = listOf(SCNBillboardConstraint.billboardConstraint())
                 node.addChildNode(ring)
+                if (role != null) {
+                    val dot = SCNSphere.sphereWithRadius(r * 0.22)
+                    val inside = SCNMaterial()
+                    inside.lightingModelName = SCNLightingModelConstant
+                    inside.diffuse.contents = if (m.current) UIColor.whiteColor else UIColor.colorWithRed(c[0].toDouble(), c[1].toDouble(), c[2].toDouble(), 1.0)
+                    inside.readsFromDepthBuffer = false
+                    dot.materials = listOf(inside)
+                    val middle = SCNNode.nodeWithGeometry(dot)
+                    middle.renderingOrder = 10
+                    node.addChildNode(middle)
+                }
                 scene.rootNode.addChildNode(node)
                 rings[m.id] = node
             }
@@ -532,8 +547,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         ui = now
         hint.text = failed ?: now.text
         hint.textColor = if (failed != null) BAD else UIColor.whiteColor
-        note.text = now.note
-        note.hidden = now.note.isEmpty()
+        note.text = listOf(now.target, now.note).filter { it.isNotEmpty() }.joinToString("\n")
+        note.hidden = now.note.isEmpty() && now.target.isEmpty()
         note.textColor = if (now.note.startsWith("Not kept")) WARN else UIColor.whiteColor
         val levelling = now.phase == Phase.LEVEL && failed == null && now.tracking
         val capturing = now.phase == Phase.CAPTURE && now.total > 0
@@ -554,7 +569,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         val turn = now.phase == Phase.CAPTURE && hypot(now.turnX, now.turnY) > 0.3
         arrow.hidden = !turn
         if (turn) arrow.transform = CGAffineTransformMakeRotation(atan2(-now.turnY, now.turnX))     // the screen's y runs down
-        val want = "${now.phase}/${now.auto}/${now.canSkip}/${now.wide}/${now.marking}/${now.guided}/${now.pairs > 0}/${now.kept > 0}"
+        val want = "${now.phase}/${now.auto}/${now.canSkip}/${now.reach}/${now.canCard}/${now.card}/${now.marking}/${now.guided}/${now.pairs > 0}/${now.kept > 0}"
         if (want != buttonsFor) { buttonsFor = want; offer(now) }
     }
 
@@ -573,7 +588,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             }
             Phase.CAPTURE -> {
                 buttons.addArrangedSubview(makeRow(makeButton("Take", Look.FILLED) { flow.shutter() }, makeButton(if (now.auto) "Auto: on" else "Auto: off") { flow.setAuto(!now.auto) }, leave))
-                buttons.addArrangedSubview(if (now.guided) makeRow(makeButton("Skip this", enabled = now.canSkip) { flow.skip() }, makeButton(if (now.wide) "Doing: whole rock" else "Doing: its climbs") { flow.toggleWide() })
+                buttons.addArrangedSubview(if (now.guided) makeRow(makeButton("Skip this", enabled = now.canSkip) { flow.skip() }, makeButton("Doing: ${now.reach}") { flow.toggleWide() },
+                        *(if (now.canCard || now.card) arrayOf(makeButton(if (now.card) "No card" else "Card photo") { flow.toggleCard() }) else emptyArray()))
                     else makeRow(makeButton(if (now.marking) "Tap the hold…" else "Mark a hold") { flow.toggleMarking() }, makeButton("Can't reach that side") { flow.blockSide() }))
             }
             else -> buttons.addArrangedSubview(makeRow(leave))

@@ -7,13 +7,13 @@ Each side's tests read files the other really wrote (`shared/src/jvmTest/resourc
 
 ## From the server
 
-    GET /api/capture/meshes               [{id, name, lat, lng, climbs: ["name grade"], holds}]: current meshes a capture can add to
+    GET /api/capture/meshes               [{id, name, lat, lng, climbs: ["name grade"], holds, sets: [names]}]: current meshes a capture can add to
     GET /api/capture/plan/<mesh>          the plan below
     GET /api/capture/guide/<mesh>.bin     the guide below, at the plan's guide_url
 
 **The plan** (JSON). Lengths are the mesh's own units unless they say metres; +Y is up.
 
-    v, made, key          the format's version (2); when it was made; what it was made from: a capture's record gives
+    v, made, key          the format's version (3: sets, roles, need.detail and need.texture; a hold's sets, holds and detail_m); when it was made; what it was made from: a capture's record gives
                           its plan's key back, as a mesh's frame may have changed between the download and the upload
     mesh, name, lat, lng, heading_deg     the mesh, and where it is and faces as far as the server knows
     frame                 {up, ground_y, size, height, metres_per_unit, scale_guessed}: scale_guessed if its size isn't known
@@ -21,6 +21,15 @@ Each side's tests read files the other really wrote (`shared/src/jvmTest/resourc
     need                  {hold: {gsd_mm, views, ladder}, patch: {gsd_mm, views}, edge: {views}, view: {views}}: what makes
                           each kind of target done. ladder: on the way in to a hold, a photo wanted at each step that many
                           times coarser than gsd_mm, up to how its photos see it now
+                          detail: {close_m, views, view_deg, ladder, sides_deg, ties}: the holds of the set of beta a capture
+                          is for, in place of hold: from close enough that the hold (detail_m round it) fills the picture, no
+                          nearer than close_m; views at least view_deg apart; besides straight on, one from its left, right,
+                          above and below, sides_deg round, where a phone can get to; and ties steps of its ladder needed,
+                          not only asked for on the way in: they tie the close photos to the rest
+                          texture: {gsd_mm, views, facing_deg}: rock on no climb, in place of patch: one photo taken now,
+                          within facing_deg of square on. Every patch wants one such, whatever its earlier photos saw
+    sets                  [{id, name, climb, targets: [hold target ids]}]: the mesh's sets of beta (made on the site)
+    roles                 {start, hand, finish, foot: "#rrggbb"}: what a hold of each role is drawn in, as the site draws it
     bridge                {within_m, deg}: how near a view target, and how nearly looking as it did, a photo counts as it
     view_deg, facing_deg  views closer together than view_deg are one; a target more than facing_deg off square isn't seen
     cameras               [{c, d}]: where its photos were taken, and which way they looked
@@ -30,6 +39,9 @@ Each side's tests read files the other really wrote (`shared/src/jvmTest/resourc
                           surface's normal), to photograph it from again first, which ties a capture's photos to the old
                           prio: 3 a hold, 2 rock on a climb or a view, 1 other rock, 0 the ground
                           have_gsd (units a pixel) and have_views: what its photos so far gave it
+                          a hold: sets (the sets of beta it's in), holds (its ids in them, which outlast a plan and are
+                          kept when a set is copied or carried to another mesh) and detail_m (metres round it that are the
+                          hold, when it's wanted in detail)
     climbs                [{id, name, grade}]
 
 **The guide** (`guide.bin`, little-endian): a copy of the mesh of at most 12,000 faces, to draw and to cast rays at.
@@ -72,9 +84,15 @@ EXIF UserComment, `BMSH1:` followed by JSON in plain ASCII:
     exp                   {t, iso, focus_m}
     q                     {sharp, blur_px, clip_hi, clip_lo, ok}: how it was judged
 
+A photo's blob may also have: `ref: "id1-card"` with `ref_hold` (a bank card, 85.60 by 53.98 mm, lies flat on the rock
+beside that hold: for the hold's size, and to be left out of everything else); `still: 1` (a full-size still on a
+phone whose other photos are its tracking's frames) with `ar.span: {dt_s, moved_m, turned_deg}` (its pose is between
+the tracking's either side of it: how far apart those were), `ar.paused: 1` (tracking stopped for it: the pose is the
+last before) and `k_src: "derived"` (its lens was worked out from the tracking camera's: a start, to be refined).
+
 **The record** (`capture.json`, kept whole in the project):
 
-    v, id, app, device, started, ended     v is 2 (1: no plan, level or down_agree_deg; one `ar.s` whatever happened)
+    v, id, app, device, started, ended     v is 3 (1: no plan, level or down_agree_deg; one `ar.s` whatever happened; 2: no detail, licence or credit)
     plan                  {key, made, guide}: the plan the capture went by, and its guide's sha1
     mesh, climbs          the mesh it adds to (none: a rock with no mesh), and the climbs it was kept to, if any
     mode                  "plan" or "orbit"
@@ -89,6 +107,13 @@ EXIF UserComment, `BMSH1:` followed by JSON in plain ASCII:
     down_agree_deg        how far each kept photo's down was from its own accelerometer's, in the middle
     calibration           {mag_offset, mag_field_ut, mag_rms_ut}
     skipped               {target: why}
+    detail                {set, holds: [{target, ids, p, r_m, gsd_mm, views, views_of, sides, sides_of, ties, ties_of, card,
+                          done}]}: the set of beta it was for, if one was chosen, and what each of its holds got: its finest
+                          view, the directions that count of those needed, the sides with a close view (front, left, right,
+                          above, below) of those wanted, the tying photos, and whether one has a card beside it. p is in the
+                          plan's mesh's coordinates; ids are the holds' own (betasets.json)
+    licence, credit       what its photos are given under by whoever took them ("CC-BY-4.0") and who to credit; each
+                          photo's blob says the same (lic, by). The server keeps both with the mesh's record of its photos
     progress              {total, done, skipped, holds, holds_done}
     shots                 [{name, blob, kept, why, notes, helped}]: every photo taken, kept or not, with its readings
 

@@ -119,6 +119,11 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                     Button(onClick = { start(Screen.Capture(p.mesh, p.name.ifEmpty { p.mesh })) }) { Text("Capture") }
                     TextButton(onClick = { a.store.removePlan(p.mesh); tick++ }) { Text("Remove") }
                 }
+                // for one of its sets of beta: that set's holds from close, all round, as a replica of them needs
+                if (p.setsWithHolds.isNotEmpty()) Text("Or for a set of beta, its holds in detail:", style = MaterialTheme.typography.bodySmall)
+                for (set in p.setsWithHolds) OutlinedButton(onClick = { start(Screen.Capture(p.mesh, p.name.ifEmpty { p.mesh }, set.id)) }) {
+                    Text("${set.name ?: "Beta"} (${set.targets.size} hold${if (set.targets.size == 1) "" else "s"})")
+                }
             }
         }
         OutlinedButton(onClick = { go(Screen.Browse()) }, modifier = Modifier.fillMaxWidth()) { Text("Get meshes…") }
@@ -236,6 +241,7 @@ fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
 @Composable
 fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
     var server by remember { mutableStateOf(a.store.server) }
+    var credit by remember { mutableStateOf(a.store.credit) }
     var token by remember { mutableStateOf(a.store.token) }
     var code by remember { mutableStateOf("") }
     var said by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
@@ -244,6 +250,9 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
         OutlinedTextField(server, { server = it; a.store.server = it.ifBlank { Store.DEFAULT_SERVER } }, label = { Text("Server") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
         Section("Uploading")
+        OutlinedTextField(credit, { credit = it.take(80); a.store.credit = credit }, label = { Text("Credit my photos to") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Text("Photos you send are published under Creative Commons Attribution 4.0 (CC BY 4.0): the site and anyone else may use them, crediting this name.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Sending captures needs the site's editing token. Paste it, or paste the link or code from the admin page's \"Pair a phone\" QR, which gives it once.")
         OutlinedTextField(token, { token = it; a.store.token = it }, label = { Text("Editing token") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
@@ -333,6 +342,7 @@ fun DoneScreen(a: MainActivity, id: String, go: (Screen) -> Unit) {
         if (status != null) Text(status, color = if (u.done) GOOD else if (status.startsWith("Stopped")) BAD else Color.Unspecified)
         if (Uploader.busy(id)) LinearProgressIndicator(progress = { if (u.photos > 0) u.sent.size.toFloat() / u.photos else 0f }, modifier = Modifier.fillMaxWidth())
         if (!u.done) Button(enabled = !Uploader.busy(id) && u.photos >= 3, onClick = { Uploader.start(a.store, a.api, id) }) { Text(if (u.sent.isEmpty()) "Upload now" else "Carry on uploading") }
+        Text("Uploading publishes them under CC BY 4.0, credited to ${a.store.credit.ifBlank { "nobody by name (set one in Settings)" }}.", style = MaterialTheme.typography.bodySmall)
         if (a.store.token.isEmpty()) Text("Uploading needs the site's editing token: see Settings.", color = WARN)
         OutlinedButton(onClick = { go(Screen.Home) }) { Text(if (u.done) "Home" else "Later: it stays on the phone") }
     }

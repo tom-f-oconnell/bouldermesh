@@ -23,8 +23,8 @@ private fun beep() = AudioServicesPlaySystemSound(1113u)
 class Home(private val app: App) : Form("BoulderMesh") {
     override fun appear() { app.uploader.onChange = { rebuild() } }
 
-    fun capture(mesh: String?, name: String) {
-        val c = CaptureController(app, mesh, name) { id -> if (id != null) push(Done(app, id)) }
+    fun capture(mesh: String?, name: String, set: String? = null) {
+        val c = CaptureController(app, mesh, name, set) { id -> if (id != null) push(Done(app, id)) }
         c.modalPresentationStyle = UIModalPresentationFullScreen
         screen.presentViewController(c, animated = true, completion = null)
     }
@@ -40,6 +40,9 @@ class Home(private val app: App) : Form("BoulderMesh") {
             text(p.name.ifEmpty { p.mesh }, bold = true)
             text(summary(p), small = true)
             row(makeButton("Capture", Look.FILLED) { capture(p.mesh, p.name.ifEmpty { p.mesh }) }, makeButton("Remove", Look.PLAIN) { app.store.removePlan(p.mesh); rebuild() })
+            // for one of its sets of beta: that set's holds from close, all round, as a replica of them needs
+            if (p.setsWithHolds.isNotEmpty()) text("Or for a set of beta, its holds in detail:", small = true)
+            for (set in p.setsWithHolds) button("${set.name ?: "Beta"} (${set.targets.size} hold${if (set.targets.size == 1) "" else "s"})") { capture(p.mesh, p.name.ifEmpty { p.mesh }, set.id) }
         }
         button("Get meshes…") { push(Browse(app)) }
 
@@ -143,6 +146,8 @@ class Settings(private val app: App) : Form("Settings") {
 
     override fun build() {
         field("Server", app.store.server) { app.store.server = it.ifBlank { IosStore.DEFAULT_SERVER } }
+        field("Credit my photos to", app.store.credit) { app.store.credit = it.take(80) }
+        text("Photos you send are published under Creative Commons Attribution 4.0 (CC BY 4.0): the site and anyone else may use them, crediting this name.")
         section("Uploading")
         text("Sending captures needs the site's editing token. Paste it, or paste the link or code from the admin page's \"Pair a phone\" QR, which gives it once.")
         field("Editing token", app.store.token, secret = true) { app.store.token = it }
@@ -228,6 +233,7 @@ class Done(private val app: App, private val id: String) : Form("Captured") {
         app.uploader.state[id]?.let { text(it, if (u.done) GOOD else if (it.startsWith("Stopped")) BAD else null) }
         if (busy) progress(if (u.photos > 0) u.sent.size.toDouble() / u.photos else 0.0)
         if (!u.done) button(if (u.sent.isEmpty()) "Upload now" else "Carry on uploading", Look.FILLED, !busy && u.photos >= 3) { app.uploader.start(id); rebuild() }
+        text("Uploading publishes them under CC BY 4.0, credited to ${app.store.credit.ifBlank { "nobody by name (set one in Settings)" }}.")
         if (app.store.token.isEmpty()) text("Uploading needs the site's editing token: see Settings.", WARN)
         text(if (u.done) "It's on the server." else "It stays on the phone until it's sent: go back to carry on later.", UIColor.secondaryLabelColor, small = true)
     }

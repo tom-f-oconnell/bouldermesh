@@ -17,6 +17,9 @@ class IosStore {
     var server: String
         get() = prefs.stringForKey("server")?.takeIf { it.isNotBlank() } ?: DEFAULT_SERVER
         set(v) = prefs.setObject(v.trim().trimEnd('/'), forKey = "server")
+    var credit: String      // who photos are credited to, under the licence they're sent with
+        get() = prefs.stringForKey("credit") ?: ""
+        set(v) = prefs.setObject(v.trim(), forKey = "credit")
     var token: String
         get() = prefs.stringForKey("token") ?: ""
         set(v) = prefs.setObject(v.trim(), forKey = "token")

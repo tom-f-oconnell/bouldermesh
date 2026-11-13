@@ -14,6 +14,9 @@ class Store(context: Context) {
     private val plans = File(root, "plans").apply { mkdirs() }
     val captures = File(root, "captures").apply { mkdirs() }
 
+    var credit: String      // who photos are credited to, under the licence they're sent with
+        get() = prefs.getString("credit", "") ?: ""
+        set(v) = prefs.edit().putString("credit", v.trim()).apply()
     var server: String
         get() = prefs.getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER
         set(v) = prefs.edit().putString("server", v.trim().trimEnd('/')).apply()
