@@ -523,8 +523,10 @@ class Board:
                     return j.task != "filter", 0 if aged else 1 if j.task == "reconstruct" else 2, j.created
                 mine = min((j for j in could if free is None or j.gpu_mb <= free), key=rank, default=None)
                 if not mine and could:      # none fits in the GPU memory free there now
-                    why = (f"its GPU has {free / 1024:.1f} GB free, and the next climb may need "
-                           f"{min(j.gpu_mb for j in could) / 1024:.1f} GB")
+                    least, total = min(j.gpu_mb for j in could), _number(client.get("gpu_total_mb"))
+                    why = (f"its GPU ({total / 1024:.1f} GB in all) is too small for any job waiting: the least needs {least / 1024:.1f} GB"
+                           if total is not None and total < least else
+                           f"its GPU has {free / 1024:.1f} GB free, and the next job may need {least / 1024:.1f} GB")
                     self._state(m, "held back", why)
                     return {"wait": POLL, "why": f"held back: {why}", "held": True}
                 if not mine:

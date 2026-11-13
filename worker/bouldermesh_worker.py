@@ -77,11 +77,12 @@ from pathlib import Path
 # 13: --tasks, and without a GPU, filtering alone by default
 # 14: without a GPU, finds beta too (the pose model runs on the CPU), in the slim image
 # 15: rides out the server being away mid-job (a restart): the job carries on, its log kept and sent once it's back
-VERSION = 15
+VERSION = 16
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
                                                     # filtering a harvest's photos
+SMALL_GPU_MB = 4000         # a GPU with less memory than this in all fits no job (the least the server reckons one needs): the CPU does instead
 CPU_TASKS = ("filter", "beta")     # what a machine without a GPU takes, unless --tasks says otherwise
 INPUTS = ("photos", "masks", "mesh", "videos", "more", "cache.sqlite", "task.json")   # what a job's folder may hold
 SEND_EVERY = 5              # seconds between reports of a job's log, which also tell the server it's alive
@@ -223,6 +224,11 @@ class GpuWatch:
         """GPU memory free in the last sample without a job of this script's."""
         mine = [s for s in list(self.samples) if not s[4]]
         return mine[-1][3] - mine[-1][2] if mine else None
+
+    def total_mb(self) -> float | None:
+        """All the GPU's memory, as its last sample had it."""
+        last = list(self.samples)[-1:]
+        return last[0][3] if last else None
 
 
 def mem_available_gb() -> float | None:
@@ -679,6 +685,13 @@ class Worker:
         self.settings = Path(args.home).expanduser().resolve()              # config.json, and pulled.json
         self.server = Server(args.server, args.token)
         self.gpu = self.gpu_args(args.gpu)
+        self.small_gpu: str | None = None       # a GPU there is, too small for any job: what it is, for the server to say
+        if self.gpu:
+            card, total = GpuWatch.gpu_name(), (GpuWatch.sample() or (0, 0, None))[2]
+            if total is not None and total < SMALL_GPU_MB:
+                self.small_gpu = f"{card or 'its GPU'} ({total / 1024:.1f} GB)"
+                log(f"{self.small_gpu} has less memory than any job needs ({SMALL_GPU_MB / 1024:.1f} GB): working without it, on the CPU")
+                self.gpu = []
         self.tasks = tuple(t for t in TASKS if t in (args.tasks or "").split(",")) or (TASKS if self.gpu else CPU_TASKS)
         self.meshes = "reconstruct" in self.tasks    # what it needs room and memory for: a climb's, or less
         self.container: str | None = None
@@ -769,7 +782,7 @@ class Worker:
         return {"version": VERSION, "client": f"{socket.gethostname()}: docker {docker.stdout.strip()}, script {VERSION}"
                 + ("" if self.tasks == TASKS else f"; takes {', '.join(self.tasks)} only")
                 + (f"; won't update itself: {blocked.split(',')[0]}" if blocked else ""),
-                "gpu": bool(self.gpu), "cpus": self.args.cpus, "gpu_name": self.watch.name if self.watch else None,
+                "gpu": bool(self.gpu), "cpus": self.args.cpus, "gpu_name": self.watch.name if self.watch else None, "gpu_small": self.small_gpu,
                 "tasks": list(self.tasks)}
 
     # -- one job --------------------------------------------------------------------------------------------------------
@@ -996,7 +1009,7 @@ class Worker:
         while True:
             held = self.held_back()
             asking = {**client, "updates": updates, "held": held,
-                      "gpu_free_mb": self.watch.free_mb() if self.watch else None}
+                      "gpu_free_mb": self.watch.free_mb() if self.watch else None, "gpu_total_mb": self.watch.total_mb() if self.watch else None}
             try:
                 r = self.server.call("/worker/api/work", asking)
             except urllib.error.HTTPError as e:

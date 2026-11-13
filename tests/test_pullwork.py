@@ -580,7 +580,10 @@ for i in range(30):
 big = board._new_job("reconstruct", {"photos": many / "photos"}, {"internet": True}, "big", image[0])
 assert big.gpu_mb == 6300 + 1000 + 100 * 20 == pullwork.gpu_need_mb("reconstruct", 30) and pullwork.gpu_need_mb("reconstruct", 1) == 7600
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 5000})
-assert r["held"] and "its GPU has 4.9 GB free, and the next climb may need 9.1 GB" in r["why"] and big.state == "queued", r
+assert r["held"] and "its GPU has 4.9 GB free, and the next job may need 9.1 GB" in r["why"] and big.state == "queued", r
+small = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 1500, "gpu_total_mb": 3072})     # a card no job fits on, however free: said as that
+assert small["held"] and "its GPU (3.0 GB in all) is too small for any job waiting: the least needs 9.1 GB" in small["why"], small
+r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 5000, "gpu_total_mb": 24576})
 assert board.current(box["id"])["why"].startswith("its GPU has 4.9 GB"), "the same state: only the reason replaced"
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 12000})
 assert r["job"]["id"] == big.id and board.current(box["id"]) == {**board.current(box["id"]), "state": "working", "why": "big"}
