@@ -76,6 +76,6 @@ all but its linking is checked on any machine: `./gradlew :ios:compileKotlinIosA
 | the files that pass between them | each side's tests read what the other really writes |
 | the Android app | compiles to an APK; never run |
 | the iPhone app's Kotlin | compiles for iPhone and simulator; never linked or run |
-| the iPhone app's Swift and Xcode project | written blind; `ios/xcode/github-workflow-ios.yml` would build it on GitHub's Macs |
+| the iPhone app's Swift and Xcode project | built for the simulator on GitHub's Macs (`.github/workflows/ios.yml`), if its last run passed |
 
 The thresholds for sharpness are guesses until they've met real photos.

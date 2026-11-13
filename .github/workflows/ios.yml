@@ -1,6 +1,5 @@
-# Builds the iPhone app for the simulator on GitHub's Macs, which is the only check of its linking and of its Swift
-# that can be had without a Mac. Not in .github/workflows because pushing a workflow needs a token with the "workflow"
-# scope: copy it there (as .github/workflows/ios.yml) from an account that has one.
+# Builds the iPhone app (app/ios) for the simulator on GitHub's Macs: the only check of its linking, its Swift and its
+# Xcode project that can be had without a Mac. Also runs the shared logic's tests natively, as an iPhone would.
 name: iOS app
 on:
   push:
