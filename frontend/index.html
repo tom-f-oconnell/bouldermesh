@@ -17,7 +17,7 @@
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;height:100vh;height:100dvh;display:grid;grid-template-rows:auto 1fr}
   header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
-  header h1{font-size:16px;margin:0;letter-spacing:.3px} header h1 a.home{color:inherit;text-decoration:none}
+  header h1{font-size:16px;margin:0;letter-spacing:.3px} header h1 a.home{color:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:7px} header h1 .logo{width:22px;height:22px}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mute)}
   .pill.real{color:var(--ok);border-color:var(--ok)} .pill.demo,.pill.stopping{color:var(--warn);border-color:var(--warn)}
   .seg{display:inline-flex;margin-left:auto;border:1px solid var(--line);border-radius:6px;overflow:hidden}
@@ -369,7 +369,7 @@
 <body>
 <header>
   <span class="phone" id="tofullwrap"><button class="sm" id="tofull" disabled title="Pick a climb's mesh first">Viewer</button><small id="tofullname"></small></span>
-  <h1><a href="/" class="home" title="The site's start">boulderme.sh</a></h1>
+  <h1><a href="/" class="home" title="The site's start"><img src="/static/favicon.svg" alt="" class="logo">boulderme.sh</a></h1>
   <span id="stopping" class="pill stopping" style="display:none"></span>
   <button class="sm" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random</button>
   <span id="viewonly" class="pill" style="display:none" title="This copy of the site can't be changed from a browser">view-only</span>
