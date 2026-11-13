@@ -1,0 +1,18 @@
+# plain (Ceres without SuiteSparse) against complete: the small boulder (plain's runs are the preflight's), then two
+# larger ones, where sparse solves happen, CPU-side methods especially
+all e6de7747fab5 cpu421 0 --cond prod --build complete --post complete
+all e6de7747fab5 gpuba0 0 --cond prod --build complete
+all e6de7747fab5 caspar 0 --cond prod --build complete
+all e6de7747fab5 global0 0 --cond prod --build complete
+all 31de9a59303a cpu421 0 --cond prod
+all 31de9a59303a cpu421 0 --cond prod --build complete
+all 31de9a59303a global_cpu 0 --cond prod
+all 31de9a59303a global_cpu 0 --cond prod --build complete
+all 31de9a59303a gpuba 0 --cond prod
+all 31de9a59303a gpuba 0 --cond prod --build complete
+all 9f3b4b740847 cpu421 0 --cond prod
+all 9f3b4b740847 cpu421 0 --cond prod --build complete
+all 9f3b4b740847 global_cpu 0 --cond prod
+all 9f3b4b740847 global_cpu 0 --cond prod --build complete
+all 9f3b4b740847 dense421 0 --cond prod
+all 9f3b4b740847 dense421 0 --cond prod --build complete

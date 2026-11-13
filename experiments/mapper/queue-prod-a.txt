@@ -1,11 +1,7 @@
-# Production conditions, one job at a time: Drifter (ce7571e0a4a3, 234 photos) with every method, then the baseline
-# on the other boulders (38f31439985f 194 photos, 31de9a59303a 82, 9f3b4b740847 150; e6de7747fab5's is in the preflight)
+# Production conditions, one job at a time: the 3.9.1 baseline (the app's image) on Drifter (ce7571e0a4a3, 234 photos),
+# then on the other boulders (38f31439985f 194 photos, 31de9a59303a 82, 9f3b4b740847 150; e6de7747fab5's is in the
+# preflight). The 4.2.1 methods wait for the complete, verified build (coordinator, Nov 13): queues/ and chain.py.
 all ce7571e0a4a3 base 0 --cond prod --post app,plain
-all ce7571e0a4a3 global 0 --cond prod --post plain
-all ce7571e0a4a3 caspar 0 --cond prod --post plain
-all ce7571e0a4a3 gpuba 0 --cond prod --post plain
-all ce7571e0a4a3 vggt 0 --cond prod
-all ce7571e0a4a3 cpu421 0 --cond prod
-all 38f31439985f base 0 --cond prod --post app,plain
-all 31de9a59303a base 0 --cond prod --post app,plain
-all 9f3b4b740847 base 0 --cond prod --post app,plain
+all 38f31439985f base 0 --cond prod --post app
+all 31de9a59303a base 0 --cond prod --post app
+all 9f3b4b740847 base 0 --cond prod --post app

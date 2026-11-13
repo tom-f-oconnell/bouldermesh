@@ -4,9 +4,17 @@
 set -ex
 export DEBIAN_FRONTEND=noninteractive
 V=$1 JOBS=$2
-F="-O3" IPO=OFF SS=OFF
-[ "$V" = native ] && F="-O3 -march=native" IPO=ON
-[ "$V" = ss ] && SS=ON      # Ceres master leaves SuiteSparse out unless asked: without it, sparse solves on the CPU are Eigen's
+# plain: as first built (Ceres without SuiteSparse: Ceres master leaves it out unless asked). complete: plain with
+# SuiteSparse. v3: complete for x86-64-v3 (AVX2, FMA) with link-time optimization, which most machines since 2015 run.
+# native: complete for this CPU only, with link-time optimization.
+F="-O3" IPO=OFF SS=ON
+case "$V" in
+  plain) SS=OFF ;;
+  complete) ;;
+  v3) F="-O3 -march=x86-64-v3" IPO=ON ;;
+  native) F="-O3 -march=native" IPO=ON ;;
+  *) echo "unknown variant $V"; exit 2 ;;
+esac
 CUDSS=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss EIGEN=/usr/local/share/eigen3/cmake
 cd /opt
 if [ ! -e apt.done ]; then

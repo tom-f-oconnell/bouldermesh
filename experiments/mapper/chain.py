@@ -39,7 +39,7 @@ def queue(name: str, cores: int | None = None) -> dict:
             "status": (BENCH / name).with_suffix(".status")}
 
 
-def build(variant: str, cores: int = 12) -> dict:
+def build(variant: str, cores: int = 10) -> dict:
     """A tree of the newer tools (build.sh), built on that many cores."""
     return {"name": f"build-{variant}", "cmd": ["bash", str(HERE / "build.sh"), str(BENCH / f"build-{variant}"), variant],
             "cores": cores, "log": BENCH / f"build-{variant}.log", "jobs": True}
@@ -47,11 +47,12 @@ def build(variant: str, cores: int = 12) -> dict:
 
 PHASES = [
     ("preflight: the smallest boulder, every kind of step", [queue("queue-preflight.txt")]),
-    ("timed: Drifter with every method, and the baselines", [queue("queue-prod-a.txt")]),
-    ("untimed: the native and SuiteSparse builds, the baseline's and the global mapper's other seeds",
-     [build("native"), build("ss"), queue("queue-dev1.txt", 6), queue("queue-dev2.txt", 6), queue("queue-dev3.txt", 6),
-      queue("queue-dev4.txt", 6), queue("queue-dev5.txt", 6), queue("queue-dev6.txt", 6)]),
-    ("timed: everything else", [queue("queue-prod-b.txt")]),
+    ("timed: the 3.9.1 baselines (the app's image), Drifter first", [queue("queue-prod-a.txt")]),
+    ("untimed: the complete, v3 and native builds (each verified), the baseline's and global mapper's other seeds",
+     [build("complete"), build("v3"), build("native"), queue("queue-dev1.txt", 6), queue("queue-dev2.txt", 6),
+      queue("queue-dev3.txt", 6), queue("queue-dev4.txt", 6), queue("queue-dev5.txt", 6), queue("queue-dev6.txt", 6)]),
+    ("timed: plain against complete, the small boulder then two larger", [queue("queue-prod-c.txt")]),
+    ("timed: every 4.2.1 method on the complete build, and complete against v3 and native", [queue("queue-prod-b.txt")]),
     ("untimed: the long baseline runs on other seeds", [queue("queue-late1.txt", 6), queue("queue-late2.txt", 6)]),
 ]
 stopping = False

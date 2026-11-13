@@ -39,6 +39,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import gpusample  # noqa: E402
 import stats  # noqa: E402
+import verify_build  # noqa: E402
 
 BENCH = Path(os.environ.get("BENCH", "/data/tom/mapperbench"))
 R = BENCH / "r2"
@@ -48,6 +49,7 @@ CORES = int(os.environ.get("CORES", "6"))       # what a "dev" step gets: the on
 MEM = os.environ.get("MEM", "64g")
 MVS_APP, MVS_NEW = "/usr/local/bin/OpenMVS", "/usr/local/bin/OpenMVS"
 POOL_MIN_GB = 20        # a queue stops rather than start a job with less than this free on hal's root pool
+REFERENCE = {"plain"}      # trees timed although verify_build.py fails them: plain lacks SuiteSparse on purpose, to compare
 GPU_LOCK = BENCH / "gpu.lock"       # held (flock) through every step that uses the GPU: see step()
 LOCK_PATIENCE = 2 * 3600            # seconds a step waits for it before going ahead without (and saying so)
 CAP_FILE = BENCH / "cores-cap.txt"  # a number in it: the cores everything of the benchmark may use together
@@ -189,6 +191,9 @@ def launch(cname: str, tools: str, script: str, mounts: list[str], env: dict, cp
     # a dev step is niced right down, so that one going beside a production-condition run takes little from it
     if tools != "app" and not (BENCH / f"build-{tools}" / "usr/local/bin/colmap").exists():
         raise RuntimeError(f"build-{tools} has no COLMAP: build.sh hasn't made it (or failed)")
+    v = verify_build.current(tools, BENCH)
+    if tools not in REFERENCE and not (v and v["ok"]):
+        raise RuntimeError(f"build-{tools} hasn't passed verify_build.py: not timed")
     inner = 'TIMEFORMAT="BENCH_TIME %R %U %S"; time ' + ("nice -n 10 " if nice else "nice -n 19 ") + 'bash -ec "$1"'
     env = dict(env)
     mounts = mounts + [f"{HERE}:/bench:ro"]
@@ -300,6 +305,8 @@ def step(d: Path, name: str, tools: str, script: str, mounts: list[str], cond: s
            "wall": wall, "cpu_s": round(user + system, 1),
            "outer_wall": round(time.time() - started, 1), "started": time.strftime("%F %T", time.localtime(started)),
            "gpu_locked": lock is not None, "lock_wait": lock_wait,
+           "verify": {k: v for k, v in (verify_build.current("app" if really == "app" else tools, BENCH) or {}).items()
+                      if k in ("variant", "ok", "failed", "when")},
            "marks": {k: float(v) for k, v in re.findall(r"BENCH_MARK (\w+) ([\d.]+)", text)},
            "host": gpusample.summary(str(samples)) if samples.exists() else {}}
     rec_file.write_text(json.dumps(rec, indent=1))

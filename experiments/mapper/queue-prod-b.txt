@@ -1,79 +1,85 @@
-# Production conditions, one job at a time, after queue-prod-a.txt and the untimed block (chain.py).
+# Production conditions, one job at a time: every 4.2.1 method on the complete, verified build (Drifter's first).
+# Drifter, every 4.2.1 method
+all ce7571e0a4a3 global 0 --cond prod --build complete --post complete
+all ce7571e0a4a3 caspar 0 --cond prod --build complete --post complete
+all ce7571e0a4a3 gpuba 0 --cond prod --build complete --post complete
+all ce7571e0a4a3 cpu421 0 --cond prod --build complete
+all ce7571e0a4a3 vggt 0 --cond prod
 # The medium boulders, every method
-all 31de9a59303a global 0 --cond prod --post plain
-all 31de9a59303a caspar 0 --cond prod
-all 31de9a59303a gpuba 0 --cond prod
-all 31de9a59303a gpuba0 0 --cond prod
-all 31de9a59303a cpu421 0 --cond prod
+all 31de9a59303a global 0 --cond prod --post complete --build complete
+all 31de9a59303a caspar 0 --cond prod --build complete
+all 31de9a59303a gpuba 0 --cond prod --build complete
+all 31de9a59303a gpuba0 0 --cond prod --build complete
+all 31de9a59303a cpu421 0 --cond prod --build complete
 all 31de9a59303a vggt 0 --cond prod
 # adding photos to a finished model with the stock tools
 held 31de9a59303a base 0 90 --cond prod
-held 31de9a59303a gpuba 0 90 --cond prod
+held 31de9a59303a gpuba 0 90 --cond prod --build complete
 held 31de9a59303a base 0 70 --cond prod
-all 9f3b4b740847 global 0 --cond prod --post plain
-all 9f3b4b740847 caspar 0 --cond prod
-all 9f3b4b740847 gpuba 0 --cond prod
-all 9f3b4b740847 gpuba0 0 --cond prod
-all 9f3b4b740847 cpu421 0 --cond prod
+all 9f3b4b740847 global 0 --cond prod --post complete --build complete
+all 9f3b4b740847 caspar 0 --cond prod --build complete
+all 9f3b4b740847 gpuba 0 --cond prod --build complete
+all 9f3b4b740847 gpuba0 0 --cond prod --build complete
+all 9f3b4b740847 cpu421 0 --cond prod --build complete
 all 9f3b4b740847 vggt 0 --cond prod
-all 38f31439985f global 0 --cond prod --post plain
-all 38f31439985f caspar 0 --cond prod
-all 38f31439985f gpuba 0 --cond prod
-all 38f31439985f cpu421 0 --cond prod
+all 38f31439985f global 0 --cond prod --post complete --build complete
+all 38f31439985f caspar 0 --cond prod --build complete
+all 38f31439985f gpuba 0 --cond prod --build complete
+all 38f31439985f cpu421 0 --cond prod --build complete
 all 38f31439985f vggt 0 --cond prod
-# Ceres with SuiteSparse (build-ss) against without (plain): 4.2.1's sparse solves on the CPU
-all ce7571e0a4a3 cpu421 0 --cond prod --build ss
-all 9f3b4b740847 cpu421 0 --cond prod --build ss
-all 38f31439985f cpu421 0 --cond prod --build ss
-all 31de9a59303a cpu421 0 --cond prod --build ss
-all ce7571e0a4a3 gpuba 0 --cond prod --build ss
-all ce7571e0a4a3 global_cpu 0 --cond prod
-all ce7571e0a4a3 global_cpu 0 --cond prod --build ss
 # explicit thread counts against the default (48), and the settings-only variants on 3.9.1
 all 31de9a59303a base 0 --cond t8
 all 31de9a59303a base 0 --cond t16
 all 31de9a59303a base 0 --cond t24
-all 31de9a59303a cpu421 0 --cond t16
+all 31de9a59303a cpu421 0 --cond t16 --build complete
 all 31de9a59303a lessba 0 --cond prod
 all 31de9a59303a ref2 0 --cond prod
 all 9f3b4b740847 base 0 --cond t16
 all 9f3b4b740847 lessba 0 --cond prod
 all e6de7747fab5 base 0 --cond t8
 # solver choices on 4.2.1
-all 9f3b4b740847 dense421 0 --cond prod
-all 9f3b4b740847 gpudense 0 --cond prod
-all 9f3b4b740847 caspar_g 0 --cond prod
-all 9f3b4b740847 cpu421_ob1 0 --cond prod
+all 9f3b4b740847 dense421 0 --cond prod --build complete
+all 9f3b4b740847 gpudense 0 --cond prod --build complete
+all 9f3b4b740847 caspar_g 0 --cond prod --build complete
+all 9f3b4b740847 cpu421_ob1 0 --cond prod --build complete
 # features and matching under production's conditions, and the variants that can use the GPU
 feat ce7571e0a4a3 --cond prod
-feat ce7571e0a4a3 --feat sift421 --cond prod
-feat ce7571e0a4a3 --feat siftgpu421 --cond prod
-feat ce7571e0a4a3 --feat aliked421 --cond prod
+feat ce7571e0a4a3 --feat sift421 --cond prod --build complete
+feat ce7571e0a4a3 --feat siftgpu421 --cond prod --build complete
+feat ce7571e0a4a3 --feat aliked421 --cond prod --build complete
 feat 31de9a59303a --cond prod
-feat 31de9a59303a --feat sift421 --cond prod
-feat 31de9a59303a --feat siftgpu421 --cond prod
-feat 31de9a59303a --feat aliked421 --cond prod
-# the native build (-march=native, link-time optimization) against plain, end to end
-feat 31de9a59303a --feat sift421 --cond prod --build native
-all 31de9a59303a cpu421 0 --cond prod --build native --post native
-all 31de9a59303a gpuba 0 --cond prod --build native
-all ce7571e0a4a3 global 0 --cond prod --build native --post native
-all ce7571e0a4a3 cpu421 0 --cond prod --build native
+feat 31de9a59303a --feat sift421 --cond prod --build complete
+feat 31de9a59303a --feat siftgpu421 --cond prod --build complete
+feat 31de9a59303a --feat aliked421 --cond prod --build complete
+# complete against native and v3, end to end
+all 31de9a59303a cpu421 0 --cond prod --build complete
+all 31de9a59303a gpuba 0 --cond prod --build complete
+all ce7571e0a4a3 global 0 --cond prod --build complete
+all ce7571e0a4a3 cpu421 0 --cond prod --build complete
 # adding photos to a finished model: the smallest boulder and Drifter
 held e6de7747fab5 base 0 70 --cond prod
-held ce7571e0a4a3 gpuba 0 90 --cond prod
+held ce7571e0a4a3 gpuba 0 90 --cond prod --build complete
 held ce7571e0a4a3 base 0 90 --cond prod
 # repeats: other seeds
 all 31de9a59303a base 1 --cond prod
-all 31de9a59303a global 1 --cond prod
-all 31de9a59303a caspar 1 --cond prod
-all 31de9a59303a gpuba 1 --cond prod
-all 31de9a59303a cpu421 1 --cond prod
+all 31de9a59303a global 1 --cond prod --build complete
+all 31de9a59303a caspar 1 --cond prod --build complete
+all 31de9a59303a gpuba 1 --cond prod --build complete
+all 31de9a59303a cpu421 1 --cond prod --build complete
 all 9f3b4b740847 base 1 --cond prod
-all 9f3b4b740847 global 1 --cond prod
-all 9f3b4b740847 caspar 1 --cond prod
-all 9f3b4b740847 gpuba 1 --cond prod
-all ce7571e0a4a3 global 1 --cond prod
-all ce7571e0a4a3 caspar 1 --cond prod
-all ce7571e0a4a3 gpuba 1 --cond prod
+all 9f3b4b740847 global 1 --cond prod --build complete
+all 9f3b4b740847 caspar 1 --cond prod --build complete
+all 9f3b4b740847 gpuba 1 --cond prod --build complete
+all ce7571e0a4a3 global 1 --cond prod --build complete
+all ce7571e0a4a3 caspar 1 --cond prod --build complete
+all ce7571e0a4a3 gpuba 1 --cond prod --build complete
 held ce7571e0a4a3 base 0 70 --cond prod
+# complete against v3 and native (Drifter's global and cpu421, the medium boulder's cpu421 and gpuba)
+all ce7571e0a4a3 global 0 --cond prod --build v3
+all ce7571e0a4a3 cpu421 0 --cond prod --build v3
+all 31de9a59303a cpu421 0 --cond prod --build v3
+all 31de9a59303a gpuba 0 --cond prod --build v3
+all ce7571e0a4a3 global 0 --cond prod --build native
+all ce7571e0a4a3 cpu421 0 --cond prod --build native
+all 31de9a59303a cpu421 0 --cond prod --build native
+all 31de9a59303a gpuba 0 --cond prod --build native
