@@ -134,6 +134,28 @@ def test_rotate_glb():
         assert near(W, V @ R.T, 1e-6) and F.tolist() == [[0, 1, 2]]
 
 
+def test_card_scale():
+    """A card's corners seen from close cameras, half a pixel off, put back on its plane: the scale within 0.1%, its
+    shape a card's; a square of the card's width isn't one."""
+    import card
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        card.render(d, n=4, seed=3, size=(320, 240), f=300.0)
+        t = json.loads((d / "truth.json").read_text())
+        C = np.array(t["card"])
+        ests = []
+        for i, cam in enumerate(t["photos"].values()):
+            K, R, tt = np.array(cam["K"]), np.array(cam["R"]), np.array(cam["t"])
+            x = (K @ (R @ C.T + tt[:, None])).T
+            px = x[:, :2] / x[:, 2:] + np.random.default_rng(i).normal(0, 0.5, (4, 2)) * 0.2
+            o, dirs = card.rays(px, K, R, tt)
+            ests.append(card.scale(card.meet_plane(o, dirs, np.zeros(3), np.array([0.0, 1.0, 0.0]))))
+        c = card.combine(ests)
+        assert all(e["ok"] for e in ests) and abs(c["metres_per_unit"] / t["mpu"] - 1) < 1e-3
+        sq = np.array([[0, 0, 0], [4.28, 0, 0], [4.28, 0, 4.28], [0, 0, 4.28]])
+        assert not card.scale(sq)["ok"]
+
+
 if __name__ == "__main__":
     for name, f in sorted(globals().items()):
         if name.startswith("test_"):
