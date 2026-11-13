@@ -168,6 +168,18 @@ try:
     harvested.clear()
     run_all(c["id"])
     assert harvested == [] and server.campaign_status(c["id"]) == "done", "not queued again"
+    # an area running only what was queued again takes them too, after that, and then stops
+    make_old(got["Gamma"]["mesh_id"])
+    server.q("UPDATE campaign_items SET rerun_rules=NULL, updated=0 WHERE name='Gamma'", write=True)
+    outcome.clear()
+    server.q("UPDATE campaign_items SET status='failed', note='boom' WHERE name='Delta'", write=True)
+    server.retry_campaign(c["id"])
+    assert server.q("SELECT only_retries FROM campaigns WHERE id=?", c["id"], one=True)["only_retries"] == 1
+    harvested.clear()
+    run_all(c["id"])
+    assert [h[0] for h in harvested] == ["Gamma"] and items(c["id"])["Delta"]["status"] == "done", harvested     # Delta first: it had its mesh
+    assert server.campaign_status(c["id"]) == "done" and not server.q("SELECT only_retries FROM campaigns WHERE id=?", c["id"], one=True)["only_retries"]
+    assert mesh(items(c["id"])["Gamma"]["mesh_id"])["rules"] == server.MESH_RULES
     # an old one interrupted by a restart goes next when the server's back
     server.q("UPDATE campaign_items SET status='running', old_rerun=1, retry=0 WHERE name='Gamma'", write=True)
     server.init_db()

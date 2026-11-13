@@ -34,6 +34,8 @@
   #backupbanner.none{background:rgba(255,107,107,.14);border:1px solid var(--bad);color:var(--bad)}
   #backupbanner.late{background:rgba(255,159,67,.14);border:1px solid #ff9f43;color:#ff9f43}
   #backupbanner small{display:block;font-weight:400;color:var(--fg);margin-top:4px}
+  #lostblocks{margin:0 0 16px;padding:12px 16px;border-radius:8px;background:rgba(255,107,107,.14);border:1px solid var(--bad);line-height:1.5}
+  #lostblocks>b{color:var(--bad)} #lostblocks li{margin:6px 0} #lostblocks small{color:var(--mute)}
   #backupdays td{padding:2px 12px 2px 0;font-size:12px} #backupdays th{text-align:left;font-size:12px;color:var(--mute);padding-right:12px}
   code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}
   a{color:var(--acc);overflow-wrap:anywhere}
@@ -64,6 +66,7 @@
 <header><h1>BoulderMesh admin</h1><span class="note" id="where"></span></header>
 <main>
   <div id="backupbanner" hidden></div>
+  <div id="lostblocks" hidden></div>
   <section id="ranges" hidden>
     <h2>Cloudflare's addresses</h2>
     <div id="ranges-body"></div>
@@ -253,6 +256,7 @@
   <section id="backups">
     <h2>Backups</h2>
     <div class="note" id="backupnote"></div>
+    <div class="note" id="manifestnote"></div>
     <table id="backupdays"></table>
   </section>
 
@@ -316,7 +320,7 @@ function oldMeshesNote(o){
   return `${decide}${missed}<b class="${o.old_meshes ? 'warn' : 'ok'}">Old meshes: ${o.old_meshes} of ${o.meshes} current ones</b>, made before the rules for what
     an area meshes last changed (${esc(when)}). Of their climbs and those linked only to another climb's mesh (${o.climbs} in all, ${o.via} of them
     "via" another), ${o.remade} have a mesh made under the rules, ${o.missed.length} were tried without one, and ${o.waiting} wait to be tried
-    (each queued again as its area runs).<br><b>Old by data: ${o.old_data || 0}</b>, of climbs a newer mesh made under the same rules, from photos
+    (each queued again as its area runs)${o.needs_backup ? `, <span class="warn">${o.needs_backup} of which need data from the backup first</span>` : ''}.<br><b>Old by data: ${o.old_data || 0}</b>, of climbs a newer mesh made under the same rules, from photos
     they lacked, is of too: kept, and left out of visitors' lists of a boulder's meshes.`;
 }
 async function call(path, body){
@@ -369,8 +373,28 @@ function renderBackup(b){
     + rep.kept.slice().reverse().map(k => `<tr><td>${esc(k.day)}</td><td>${size(k.db || 0)}</td><td>${size(k.changed || 0)}</td></tr>`).join('') : '';
 }
 
+// What the backup's manifests say (offload.py): when the last came, what it confirmed and checked, and what it lost;
+// and the jobs that lost data blocks, at the top in red, each with its two answers
+function renderManifest(m, off, blocks){
+  const when = t => new Date(t * 1000).toLocaleString(), lost = (off && off.lost) || [];
+  $('#manifestnote').innerHTML = (m.received
+      ? `Its last manifest came ${when(m.received)}: ${(m.files || 0).toLocaleString()} file(s) it holds of what's offloaded, ${m.hashes || 0} read back to check their SHA-1s. `
+      : `It hasn't sent a manifest of what it holds yet (waiting since ${when(m.waiting_since)}). `)
+    + 'Nothing is deleted here until a manifest shows the backup holds it.'
+    + (m.quiet ? ` <span class="bad">${esc(m.quiet)}.</span>` : '') + (m.bad ? ` <span class="warn">${esc(m.bad)}.</span>` : '')
+    + (lost.length ? ` <span class="bad">Lost from the backup: ${lost.length} path(s)${lost.filter(r => r.approved).length ? `, ${lost.filter(r => r.approved).length} of them approved to go on without` : ''}.</span>` : '');
+  const box = $('#lostblocks');
+  box.hidden = !blocks.length;
+  box.innerHTML = !blocks.length ? '' : `<b>${blocks.length} job${blocks.length === 1 ? '' : 's'} blocked: what ${blocks.length === 1 ? 'it needs' : 'they need'} was lost from the backup.</b>
+    Nothing of ${blocks.length === 1 ? 'it' : 'them'} is made or replaced until you say. <i>Re-mesh without it</i> goes on with what's here (a current mesh may then be replaced by one from less); <i>Leave as is</i> keeps what there is.
+    <ul>${blocks.map(b => `<li><b>${esc(b.what)}</b><br><small>${b.paths.map(p => `${esc(p.path)}${p.kind ? ` (${esc(p.kind)})` : ''}${p.lost_why ? `: ${esc(p.lost_why)}` : ''}`).join('<br>')}</small><br>
+      <button class="sec" data-lost="remesh" data-campaign="${esc(b.campaign || '')}" data-source="${esc(b.source || '')}" data-path="${esc(b.path || '')}">Re-mesh without it</button>
+      <button class="sec" data-lost="leave" data-campaign="${esc(b.campaign || '')}" data-source="${esc(b.source || '')}" data-path="${esc(b.path || '')}">Leave as is</button></li>`).join('')}</ul>`;
+}
+
 function render(s){
   renderBackup(s.backup || {});
+  renderManifest(s.manifest || {}, s.offload || {}, s.lost_blocks || []);
   timings = s.timings || null;
   renderTimings();
   state = s;
@@ -457,7 +481,7 @@ function render(s){
     ? 'The backup hasn\'t confirmed a copy here yet, so nothing is offloaded: it needs the handshake\'s key (README, "Backups").'
     : `The backup last confirmed a copy begun ${new Date(off.backed_up * 1000).toLocaleString()}. `
       + (sum(off.away) ? `Offloaded to it: <b>${amount(sum(off.away))}</b> (${kinds(off.away)}). ` : 'Nothing is offloaded to it. ')
-      + (sum(off.marked) ? `Marked to go once its next copy is confirmed: ${amount(sum(off.marked))} (${kinds(off.marked)}). ` : '')
+      + (sum(off.marked) ? `Marked to go once a manifest from it shows it holds them: ${amount(sum(off.marked))} (${kinds(off.marked)})${off.confirmed ? `, ${off.confirmed} shown so` : ''}. ` : '')
       + (off.wanted ? `<span class="warn">${off.wanted} asked back by jobs that need them, which its next run sends.</span> ` : '')
       + 'It goes: photos the filter rejected (after 3 days), videos once their climbs are meshed and beta found, photos of climbs meshed 2 weeks ago or skipped a month ago, then older meshes\' files; and the web cache\'s month-old pages.';
   $('#room-warn-note').innerHTML = u.warn_at === undefined ? 'With a cap, and notifications on (below), your phone is told when the room left under it is less than this, and when it\'s reached.'
@@ -692,6 +716,15 @@ $('#matcher').onchange = () => save({ 'relevance.matcher': $('#matcher').value }
 $('#beta-auto').onchange = () => save({ 'beta.auto': $('#beta-auto').checked });
 $('#prune-videos').onchange = () => save({ 'videos.prune_unplaced': $('#prune-videos').checked });
 $('#skyline-auto').onchange = () => save({ 'facing.skyline': $('#skyline-auto').checked });
+$('#lostblocks').onclick = async e => {
+  const b = e.target.closest('button[data-lost]');
+  if (!b) return;
+  const d = b.dataset, body = d.campaign ? { verdict: d.lost, campaign: d.campaign, source: d.source } : { verdict: d.lost, path: d.path };
+  if (d.lost === 'remesh' && !confirm('Go on without what the backup lost? Its job may then replace a current mesh with one made from less.')) return;
+  b.disabled = true;
+  try { msg((await call('/api/admin/actions/lost-decide', body)).result, 8000); refresh(); }
+  catch (err) { msg(err.message, 8000); b.disabled = false; }
+};
 $('#old-meshes').onclick = async e => {
   const b = e.target.closest('button[data-decide]');
   if (!b) return;

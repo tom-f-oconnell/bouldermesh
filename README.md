@@ -274,7 +274,8 @@ A climb whose only meshes are old, or that's linked only via another climb's mes
 among an area's first N meshes made. As its area runs, it's queued again after the rest of the area's list, in its
 order, once for each change of the rules: one harvested before is looked for in every source again, adding what's new,
 and meshed again whatever that finds (on a boulder meshed whole, its boulder's mesh is made again once its climbs are);
-one never harvested is harvested and meshed as if new. Areas stopped or done aren't started for it. The area's card
+one never harvested is harvested and meshed as if new. Areas stopped or done aren't started for it; one running only what
+was queued again (as after *Retry*) takes them after that, and then stops. The area's card
 counts those queued so. A new mesh becomes the current one in place of each old mesh whose climbs it's of too, which
 stays as an older version of it; one made under the same rules never does.
 
@@ -815,10 +816,21 @@ weeks ago, or skipped a month ago, none of whose boulder's climbs is still to be
 older versions of meshes replaced 2 weeks ago. The web cache's month-old searches and pages go too (the photos it downloaded, in `cache/http-kept/`, stay). Meshes,
 the databases, and each climb's and mesh's records always stay. In two steps, so that nothing goes that the backup can't
 be shown to hold: what's to go is marked (`data/offload.list`, which the backup reads first, and keeps whatever the server
-does); it's deleted once the backup says a copy that began after the mark went well. A job that needs photos that went
-(rebuilding, a boulder's mesh pooling a climb's, finding beta or size) asks for them back and waits, as for a machine;
-the backup sends them back (into `data/restore-inbox/`, which the server puts in place). *Room for data* shows what's
-offloaded, marked, and asked back. That needs a second key on hal, which the server takes only for the handshake
+does), and each of its files recorded with its size, time and SHA-1; it's deleted once a manifest from the backup shows it
+holds each file as recorded. A job that needs photos that went (rebuilding, a boulder's mesh pooling a climb's, finding
+beta or size) asks for them back and waits, as for a machine; the backup sends them back (into `data/restore-inbox/`,
+which the server puts in place). Areas' cards, the boulder panels and the old meshes' report say ahead of time how many
+climbs need data from the backup. *Room for data* shows what's offloaded, marked, and asked back.
+
+**Checking the backup.** After each night's copy, backup.sh sends the server a manifest of every file it holds of what's
+offloaded or marked, with each one's size and time, and the SHA-1s of a few the server asks for (512 MB a night, those
+checked longest ago first, `data/offload-sample.list`). A file offloaded that the backup lacks, or holds with another
+size, time or SHA-1, is lost: your phone is told at once (urgently), and a job that needs it is blocked rather than left
+waiting, at the top of the admin page in red, with *Re-mesh without it* (it goes on with what's here, which may replace a
+current mesh with one made from less) and *Leave as is* (an area's climb goes back as it was). Nothing a blocked job
+would make or replace goes ahead before that. Without a good manifest for 26 h (counted from the first start with this
+check, before the first one), offloading pauses, and your phone is told once. hal's copy is the only copy of what's
+offloaded: a second copy, or a server big enough not to offload, is the real fix. That needs a second key on hal, which the server takes only for the handshake
 (`deploy/backup-handshake.py`: saying when a good copy began, what's wanted back, and sending it):
 
     ssh-keygen -t ed25519 -N '' -C 'bouldermesh backup handshake' -f ~/.ssh/bouldermesh_handshake

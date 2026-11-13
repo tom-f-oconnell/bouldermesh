@@ -118,10 +118,18 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
     (data / "projects" / "aaaaaaaaaaaa" / "photos" / "p.jpg").unlink()     # offloaded on the server
     (data / "cache" / "videos" / "vvvvvvvvvvv.mp4").unlink()
     (data / "meshes" / "m1" / "mesh.glb").unlink()                          # deleted, not offloaded
+    (data / "offload-sample.list").write_text("cache/videos/vvvvvvvvvvv.mp4\nprojects/aaaaaaaaaaaa/photos/../../x\n")
     began = time.time()
     r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), str(checkout)], env=henv, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
     cur = dest / "current" / "data"
+    # and a manifest of what it holds of what was offloaded, with the SHA-1s of the sample asked for
+    import hashlib
+    import offload
+    got = offload.read_manifest((data / "backup-manifest.txt").read_text())
+    assert got and set(got["files"]) == {"projects/aaaaaaaaaaaa/photos/p.jpg", "cache/videos/vvvvvvvvvvv.mp4"}, got
+    assert got["files"]["projects/aaaaaaaaaaaa/photos/p.jpg"][0] == len(b"jpg, kept") and began - 2 <= got["began"] <= time.time()
+    assert got["sha1"] == {"cache/videos/vvvvvvvvvvv.mp4": hashlib.sha1(b"video").hexdigest()}, got["sha1"]
     assert (cur / "projects" / "aaaaaaaaaaaa" / "photos" / "p.jpg").read_bytes() == b"jpg, kept" and (cur / "cache" / "videos" / "vvvvvvvvvvv.mp4").exists()
     assert not (cur / "meshes" / "m1" / "mesh.glb").exists(), "what wasn't offloaded follows the server, as before"
     assert began - 2 <= float((data / "backed-up").read_text()) <= time.time(), "when the copy began"
@@ -147,6 +155,12 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
     assert hs("rm", "-rf", "/").returncode and hs("wanted").stdout.decode().split() == ["projects/aaaaaaaaaaaa/photos"], "only valid paths"
     assert hs("report", stdin=b"[1]").returncode and hs("report", stdin=b'{"status": "fine"}').returncode, "not a report"
     assert hs("report", stdin=b'{"status": "ok", "x": "' + b"y" * 70000 + b'"}').returncode, "too long"
+    kept = (data / "backup-manifest.txt").read_bytes()
+    for bad in (b"began 1794500000\nf\t1\t2\tprojects/aaaaaaaaaaaa/photos/p.jpg\nend 2\n",      # not whole
+                b"began 1794500000\nf\t1\t2\t/etc/passwd\nend 1\n", b"nonsense\n"):
+        assert hs("manifest", stdin=bad).returncode, bad
+    assert (data / "backup-manifest.txt").read_bytes() == kept, "kept whole or not at all"
+    assert hs("sample").stdout.decode().split() == ["cache/videos/vvvvvvvvvvv.mp4"], "only valid files"
     import io
     import tarfile
     buf = io.BytesIO()

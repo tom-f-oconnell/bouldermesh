@@ -2063,11 +2063,13 @@ assert server.q("SELECT mapper_more FROM campaigns WHERE id=?", d["id"], one=Tru
 pipeline.reconstruct = fake_reconstruct
 print("the mapper's settings OK")
 
-# --- offloading to the backup (offload.py): marked, deleted only once the backup's copy began after, wanted back, put back
+# --- offloading to the backup (offload.py): marked, deleted only once a manifest from the backup shows it holds them,
+# wanted back, put back
 import offload  # noqa: E402
 
 fresh()
 server.q("DELETE FROM offloads", write=True)
+server.q("DELETE FROM offload_files", write=True)
 day, now = 86400, time.time()
 D = server.DATA
 
@@ -2133,9 +2135,10 @@ did = server.offload_step()
 listed = (D / "offload.list").read_text().split()
 assert sorted(listed) == sorted(got) and not did.get("freed"), "marked, not deleted: the backup hasn't copied them"
 assert did["cache"] == 1000 and not (D / "cache/http/old").exists(), "the web cache's old pages go at once"
-(D / "backed-up").write_text(str(time.time() - 3600))         # a copy that began before they were marked: not enough
+(D / "backed-up").write_text(str(time.time() + 1))             # a good copy alone isn't enough: a manifest has to show it
 assert not server.offload_step().get("freed") and (D / f"projects/{'d1' * 6}/photos/a.jpg").exists()
-(D / "backed-up").write_text(str(time.time() + 1))
+(D / offload.MANIFEST).write_text(offload.manifest_of(D, got))  # the backup holds each file as it is here
+os.utime(D / offload.MANIFEST, (time.time() + 1, time.time() + 1))
 did = server.offload_step()
 assert did["freed"] >= 5 * 2**20 and not (D / f"projects/{'d1' * 6}/photos/a.jpg").exists() and (D / f"projects/{'d1' * 6}/photos").is_dir()
 assert not (D / "cache/videos/v1aaaaaaaaa.mp4").exists() and (D / "cache/videos/v5aaaaaaaaa.mp4").exists()

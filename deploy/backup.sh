@@ -10,8 +10,11 @@
 # or has deleted (data/offload.list), this copy keeps whatever the server's copy does. After a good copy, a second key,
 # the handshake's (BACKUP_HANDSHAKE_KEY, ~/.ssh/bouldermesh_handshake), tells the server when the copy began, so that
 # what was marked before then may go, and sends back what the server wants back (deploy/backup-handshake.py;
-# BACKUP_HANDSHAKE replaces its command). Without that key, nothing is offloaded. --restore-only only sends back what's
-# wanted, which a more frequent timer runs (deploy/bouldermesh-restore.timer).
+# BACKUP_HANDSHAKE replaces its command). It then sends a manifest of what it holds of everything the server offloaded or
+# marked: each file's size and time, and the SHA-1s of the few the server asks for each night; the server deletes nothing
+# until a manifest shows this copy holds it, and finds from them what this copy has lost. Without that key, nothing is
+# offloaded. --restore-only only sends back what's wanted, which a more frequent timer runs
+# (deploy/bouldermesh-restore.timer).
 #
 # Into BACKUP_DIR (~/bouldermesh-backups):
 #   current/          the server's data/ as it is now, and its .env (which has the editing token and the key its saved
@@ -82,6 +85,28 @@ send_back() {   # what the server wants back, from this copy, through the handsh
     tar -C "$dest/current/data" -cf - -T "$tmp/have" | $handshake restore
 }
 
+send_manifest() {   # what this copy holds of what the server offloaded or marked (backend/offload.py, manifest_of())
+    [ -n "$handshake" ] || return 0
+    [ -f "$tmp/offload.list" ] || : > "$tmp/offload.list"     # nothing offloaded: a manifest of nothing, saying it's here
+    $handshake sample | grep -E '^(projects/[0-9a-f]{6,32}/(photos|masks|rejected)/|cache/videos/|meshes/[0-9a-f]{6,32}/)' \
+        | grep -v '\.\.' > "$tmp/sample" || true
+    {
+        echo "began $started"
+        grep -E "$valid" "$tmp/offload.list" | while read -r p; do
+            [ -e "$dest/current/data/$p" ] || continue
+            (cd "$dest/current/data" && find "$p" -type f -printf 'f\t%s\t%T@\t%p\n')
+        done > "$tmp/files"
+        cat "$tmp/files"
+        while read -r f; do
+            if [ -f "$dest/current/data/$f" ]; then
+                printf 'h\t%s\t%s\n' "$(sha1sum < "$dest/current/data/$f" | cut -d' ' -f1)" "$f"
+            fi
+        done < "$tmp/sample"
+        echo "end $(wc -l < "$tmp/files" | tr -d ' ')"
+    } > "$tmp/manifest"
+    $handshake manifest < "$tmp/manifest" > /dev/null || echo "couldn't send the server its manifest" >&2
+}
+
 if [ -n "$only_restore" ]; then
     send_back
     exit 0
@@ -132,6 +157,7 @@ done_ok=1
 echo "backed up $src to $dest/current ($(du -sh "$dest/current" | cut -f1)); databases kept in $dest/db/$day"
 if [ -n "$handshake" ]; then    # the server may now delete what it marked before this copy began, and gets back what it wants
     $handshake backed-up "$started"
+    send_manifest
     report ok ""
     send_back
 else

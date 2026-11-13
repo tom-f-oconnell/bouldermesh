@@ -824,7 +824,8 @@ attempt makes no mesh of listed prominently, rather than deleting anything.
   as done in `run_campaign_item()` (its "already had a mesh", and a boulder's mesh it's on), in `boulder_unchanged()` (an
   old boulder's mesh is made again from the same photos), or towards an area's first N (`limit_scope()`).
 - **When.** As its area runs (`_claim()`), after anything already on the list, so that what an area was entered for
-  comes first; areas stopped or done aren't started for it, as their owner stopped them. Once for each `MESH_RULES`
+  comes first; areas stopped or done aren't started for it, as their owner stopped them. One running only what was
+  queued again (`only_retries`, as Joshua Tree was on Nov 12) takes them as retries, after those: it's running. Once for each `MESH_RULES`
   (`campaign_items.rerun_rules`): a climb tried whose new attempt makes no mesh stays old and is listed in red on the
   admin page, rather than being queued round and round.
 - **How.** One harvested before is queued as "new+rebuild", which looks in every source again, downloads only what it
@@ -844,6 +845,26 @@ attempt makes no mesh of listed prominently, rather than deleting anything.
   for meshes with cameras lists only those placed) are a strict subset of the newer one's. Anything else (the same photos
   with a different result, or the newer one from fewer) is listed to decide, as neither kind fits it, and the answer is
   kept in `old_decisions`.
+
+## Knowing the backup still holds what was offloaded (`backend/offload.py`)
+
+Offloading deleted what the backup had copied by time alone: a good copy that began after the mark. The user's
+requirement (Nov 12) was to be able to tell, in time, when the backup has lost something, since hal's copy is then the
+only one.
+- **Confirmed, not assumed.** Each file of a path marked is recorded (size, time, SHA-1); it's deleted only once a
+  manifest from the backup lists each file with the same size and time (to the second, as rsync keeps them), and only
+  while the files here are still as recorded: one changed since is recorded again and waits for the next manifest.
+- **Lost.** Each manifest is compared with every path offloaded: a file missing, or held with another size or time, is
+  lost. Size and time cost the backup only a `find`; reading every file back each night would take hours for little, so
+  the SHA-1s are checked on a rotating sample (512 MB a night, those checked longest ago first): silent corruption is
+  found within days rather than at once. Paths offloaded before files were recorded take the first manifest's listing as
+  their record (and their SHA-1s from the first sample to read them), so loss before then can't be told apart, only a path
+  the backup holds nothing of.
+- **Quiet.** No good manifest for 26 h (a night's copy plus slack) pauses offloading, and says so once. Before the first
+  manifest, the clock starts when the server first runs this, so that deploying it doesn't alarm at once.
+- **Blocking.** A job needing a lost path (`need_back()`) raises `LostData`, not `PhotosAway`: waiting would never end.
+  An area's climb is held (`campaign_items.blocked`), not failed, so that its place, redo and mesh stand; nothing it would
+  make or replace runs until the admin page approves going on without it (`offloads.approved`) or leaves it as it was.
 
 ## Videos found by searching, and climbers' sizes (`backend/climbs/youtube.py`)
 

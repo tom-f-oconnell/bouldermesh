@@ -247,7 +247,7 @@ def init_db() -> None:
           mesh_id TEXT, newer TEXT, verdict TEXT, decided REAL, PRIMARY KEY(mesh_id, newer));
         """)
         con.execute(steptimes_mod.SCHEMA)   # how long each step of each run took, for estimates (steptimes.py)
-        con.execute(offload_mod.SCHEMA)     # what's been offloaded to the backup, or marked to be (offload.py)
+        offload_mod.migrate(con)            # what's been offloaded to the backup, or marked to be, and its files (offload.py)
         # migrations for databases created by v0.1
         cols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
         # job: the last job queued for it outside an area, to run again, as it was asked for, if a restart stops it;
@@ -2321,10 +2321,11 @@ def queue_old(camp: dict) -> int:
     not tried under the rules yet (old_waiting()), once for each MESH_RULES: after the rest of its list, in its order
     (ordered_pending()). One with a harvest is queued to look in every source for new photos and mesh it again
     ("new+rebuild", whatever it finds; on a boulder meshed whole, harvested for its boulder's mesh, made again once its
-    climbs are); one without is harvested and meshed as if new. An area stopped or done, or running only what was
-    retried, isn't touched. Returns how many."""
-    if camp.get("status") != "running" or camp.get("only_retries"):
+    climbs are); one without is harvested and meshed as if new. An area stopped or done isn't touched; one running only
+    what was queued again (only_retries) has these queued so too, after those, and then stops. Returns how many."""
+    if camp.get("status") != "running":
         return 0
+    retry = int(bool(camp.get("only_retries")))     # so that it takes them, after what it was running
     waiting = old_waiting()
     if not waiting:
         return 0
@@ -2337,10 +2338,10 @@ def queue_old(camp: dict) -> int:
         if r["climb_id"] not in waiting or r["pstatus"] in ("queued", "running", "harvesting"):
             continue
         if r["pstatus"] and (PROJECTS / r["project_id"]).is_dir():
-            set_item(camp["id"], r["source_id"], status="pending", retry=0, redo="new+rebuild", was=r["status"], redo_started=0,
+            set_item(camp["id"], r["source_id"], status="pending", retry=retry, redo="new+rebuild", was=r["status"], redo_started=0,
                      rerun_rules=MESH_RULES, old_rerun=1, note=f"queued to {REDO_NAMES['new+rebuild']}: {OLD_RERUN_NOTE}")
         else:
-            set_item(camp["id"], r["source_id"], status="pending", retry=0, redo=None, project_id=None, rerun_rules=MESH_RULES,
+            set_item(camp["id"], r["source_id"], status="pending", retry=retry, redo=None, project_id=None, rerun_rules=MESH_RULES,
                      old_rerun=1, note=f"queued to harvest and mesh: {OLD_RERUN_NOTE}, or another climb's")
         n += 1
     return n
@@ -2401,11 +2402,13 @@ def old_mesh_report(fresh: bool = False) -> dict:
     st = old_climbs(fresh)
     climbs, remade, tried = st["climbs"], st["remade"], st["tried"]
     missed_ids = sorted(c for c in climbs if c in tried and c not in remade)
+    waiting_ids = [c for c in climbs if c not in tried and c not in remade]
     names = {r["id"]: r["name"] for r in q(f"SELECT id, name FROM climbs WHERE id IN ({','.join('?' * len(missed_ids)) or 'NULL'})", *missed_ids)}
     report = {"rules": MESH_RULES, "since": MESH_RULES_SINCE[MESH_RULES], "old_meshes": len(st["old"]), "meshes": len(st["made"]),
               "climbs": len(climbs), "remade": len(climbs & remade), "waiting": len([c for c in climbs if c not in tried and c not in remade]),
               "via": len(st["via"] - remade), "missed": [{"id": c, "name": names.get(c, c), "why": tried[c]} for c in missed_ids],
-              "old_data": len([m for m in st["made"] if m["old_data"] and not mesh_is_old(m)]), "decide": _old_data["decide"]}
+              "old_data": len([m for m in st["made"] if m["old_data"] and not mesh_is_old(m)]), "decide": _old_data["decide"],
+              "needs_backup": _needs_backup(waiting_ids)}
     _old_report.update(at=time.time(), report=report)
     return report
 
@@ -2537,6 +2540,18 @@ def decide_old(mid: str, newer: str, verdict: str) -> dict:
         raise KeyError(mid)
     q("INSERT OR REPLACE INTO old_decisions(mesh_id, newer, verdict, decided) VALUES(?,?,?,?)", mid, newer, verdict, time.time(), write=True)
     return old_by_data()
+
+
+def _needs_backup(climb_ids) -> int:
+    """How many of these climbs have a harvest whose photos are offloaded, to be brought back from the backup before
+    they're meshed again (a boulder's climbs: any of them)."""
+    ids = list(climb_ids)
+    if not ids:
+        return 0
+    harvests = q(f"SELECT id, climb_id FROM projects WHERE kind='harvest' AND climb_id IN ({','.join('?' * len(ids))})", *ids)
+    away = {r["path"] for r in q("SELECT path FROM offloads WHERE done IS NOT NULL AND approved IS NULL AND lost IS NULL "
+                                 "AND path LIKE 'projects/%/photos'")}
+    return len({h["climb_id"] for h in harvests if f"projects/{h['id']}/photos" in away})
 
 
 def remesh_untied(log=print) -> dict:
@@ -3070,7 +3085,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
     log = lambda s: append_log(pid, s)  # noqa: E731
     try:
         need_back([pid], "meshing it")
-    except PhotosAway as e:     # it waits for them, as for a machine
+    except (PhotosAway, LostData) as e:     # it waits for them, as for a machine; or for the admin page, if they're lost
         log(str(e))
         q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
         raise
@@ -3567,7 +3582,7 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
     if not finished:    # the harvests it pools: back from the backup first, if any were offloaded
         try:
             need_back([h for c in boulder_climbs(boulder) for h in climb_harvests(c["id"])], f"pooling {boulder_name(boulder)}")
-        except PhotosAway as e:
+        except (PhotosAway, LostData) as e:
             append_log(pid, f"-- {e}")
             raise
     if resume:
@@ -4275,9 +4290,25 @@ class PhotosAway(compute.ComputeUnavailable):
     """What a job needs is in the backup: it's been asked for back, and the job waits for it, as for a machine."""
 
 
+class LostData(Exception):
+    """What a job needs was offloaded, and the backup has lost it (offload.check_manifest()): the job is blocked, not
+    waiting, until the admin page says to go on without it (lost_decide()). paths: those lost."""
+
+    def __init__(self, what: str, paths: list[str]):
+        super().__init__(f"{what}: lost from the backup: {', '.join(paths[:3])}{f' and {len(paths) - 3} more' if len(paths) > 3 else ''}")
+        self.paths = paths
+
+
 def need_back(pids, what: str) -> None:
-    """Ask for the photos and masks of these projects back, if they're offloaded, and raise PhotosAway if any were."""
-    asked = offload_mod.want(DATA, q, [f"projects/{p}/{part}" for p in pids for part in ("photos", "masks")])
+    """Ask for the photos and masks of these projects back, if they're offloaded, and raise PhotosAway if any were; or
+    LostData if any the backup lost, that nothing was approved to go on without, without asking for the rest."""
+    paths = [f"projects/{p}/{part}" for p in pids for part in ("photos", "masks")]
+    gone = offload_mod.lost(q, paths)
+    if gone:
+        for r in gone:
+            q("UPDATE offloads SET blocked=? WHERE path=?", what, r["path"], write=True)
+        raise LostData(what, [r["path"] for r in gone])
+    asked = offload_mod.want(DATA, q, paths)
     if asked:
         raise PhotosAway(f"{what}: its photos are in the backup, and have been asked for back, which the backup's next "
                          "run brings (half-hourly, with deploy/bouldermesh-restore.timer)")
@@ -4382,6 +4413,7 @@ def offload_step() -> dict:
     of the cap, delete what was marked before the backup's last good copy began and is still to go, the web cache's
     old pages, and mark more to go, down to that %. Returns what it did."""
     did = {"back": offload_mod.take_restores(DATA, q, log_server)}
+    did["manifest"] = take_manifest()
     cap, pct = data_cap(), settings().get("storage.offload_percent")
     marked = q("SELECT path, bytes FROM offloads WHERE done IS NULL")
     if not cap or not pct or "total" not in _usage:
@@ -4398,6 +4430,11 @@ def offload_step() -> dict:
         offload_mod.drop(q, [r["path"] for r in marked])
         offload_mod.write_lists(DATA, q)
         return did
+    quiet = manifest_quiet()
+    if quiet:       # nothing goes, nor is marked, until the backup says again what it holds
+        did["paused"] = quiet
+        offload_mod.write_lists(DATA, q)
+        return did
     eligible = {c[0]: c for c in offload_candidates()}
     did["freed"] = offload_mod.finish(DATA, q, lambda row: row["path"] in eligible, log_server, need)
     did["cache"] = prune_web_cache(need - did["freed"])
@@ -4412,6 +4449,158 @@ def offload_step() -> dict:
     if did["freed"] or did["cache"]:
         measure_usage()
     return did
+
+
+MANIFEST_HOURS = 26     # the backup sends a manifest each night: without a good one for longer, offloading pauses
+MANIFEST_DONE = DATA / "backup-manifest.json"   # what the last manifest taken said (take_manifest())
+MANIFEST_WAIT = DATA / "backup-manifest.since"  # when this server began waiting for one, before its first
+_manifest_told: dict = {"quiet": False}
+
+
+def manifest_state() -> dict:
+    """What the backup's manifests have said: {received (when the last good one came), began (when its copy began), files,
+    lost (paths newly lost by it), confirmed, hashes, bad (why the last one sent wasn't taken), waiting_since}."""
+    st = _read_json(MANIFEST_DONE) or {}
+    if not st.get("received"):
+        try:
+            st["waiting_since"] = float(MANIFEST_WAIT.read_text())
+        except (OSError, ValueError):
+            st["waiting_since"] = time.time()
+            try:
+                MANIFEST_WAIT.write_text(str(st["waiting_since"]))
+            except OSError:
+                pass
+    return st
+
+
+def manifest_quiet(now: float | None = None) -> str | None:
+    """Why offloading is paused, if the backup hasn't sent a good manifest for more than MANIFEST_HOURS (or, before its
+    first, since this server began waiting for one); else None."""
+    st, now = manifest_state(), time.time() if now is None else now
+    since = st.get("received") or st.get("waiting_since") or now
+    if now - since <= MANIFEST_HOURS * 3600:
+        return None
+    return (f"no manifest from the backup for {(now - since) / 3600:.0f} h" if st.get("received") else
+            f"no manifest from the backup yet, {(now - since) / 3600:.0f} h after waiting for one began") + \
+        ": offloading is paused, as what it holds can't be checked"
+
+
+def take_manifest() -> dict | None:
+    """Take the manifest the backup's handshake left (offload.MANIFEST), if it's new: compare it with what was offloaded
+    (offload.check_manifest()), and tell your phone at once of anything lost. Then, or if none came for MANIFEST_HOURS,
+    tell your phone once that offloading is paused. Returns what checking it found, or None."""
+    path = DATA / offload_mod.MANIFEST
+    out = None
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = None
+    st = manifest_state()
+    if mtime and mtime > (st.get("taken") or 0):
+        got = offload_mod.read_manifest(path.read_text(errors="replace"))
+        if got is None:
+            st.update(taken=mtime, bad=f"the manifest sent {time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime))} isn't whole: not taken")
+            log_server(f"offload: {st['bad']}")
+        else:
+            out = offload_mod.check_manifest(DATA, q, got)
+            st.update(taken=mtime, received=mtime, began=got["began"], bad=None,
+                      **{k: out[k] for k in ("files", "confirmed", "hashes")}, lost=out["lost"])
+            log_server(f"offload: the backup's manifest lists {out['files']} file(s): {out['confirmed']} path(s) marked confirmed, "
+                       f"{out['hashes']} SHA-1(s) checked, {len(out['lost'])} lost")
+            if out["lost"]:
+                threading.Thread(target=NOTIFIER.send, args=(
+                    "BoulderMesh: the backup lost offloaded data",
+                    f"{plural(len(out['lost']), 'path')} offloaded to the backup aren't held there as they were: "
+                    f"{', '.join(out['lost'][:4])}{' and more' if len(out['lost']) > 4 else ''}. Jobs that need them are blocked until "
+                    "the admin page's Backup section says what to do."), kwargs={"priority": 5, "tags": ["rotating_light"]},
+                    daemon=True).start()
+            offload_mod.write_lists(DATA, q)
+        tmp = MANIFEST_DONE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({k: v for k, v in st.items() if k != "waiting_since"}))
+        tmp.replace(MANIFEST_DONE)
+    quiet = manifest_quiet() if data_cap() and settings().get("storage.offload_percent") else None    # only while offloading
+    if quiet and not _manifest_told["quiet"]:
+        _manifest_told["quiet"] = True
+        threading.Thread(target=NOTIFIER.send, args=("BoulderMesh: no word from the backup", quiet + ". Is the nightly backup "
+                                                     "running, with the new deploy/backup.sh?"),
+                         kwargs={"priority": 4, "tags": ["warning"]}, daemon=True).start()
+    elif not quiet:
+        _manifest_told["quiet"] = False
+    return out
+
+
+def lost_blocks() -> list[dict]:
+    """What the backup lost blocks, for the admin page: each area's climb blocked (campaign_items.blocked), and each
+    other job a lost path blocked; each with the paths, what they are, and why they're lost."""
+    lost = {r["path"]: r for r in q("SELECT path, kind, ref, lost_why, blocked, approved FROM offloads WHERE lost IS NOT NULL")}
+    out, held = [], set()
+    for i in q("SELECT ci.campaign_id, ci.source_id, ci.name, ci.blocked, c.name AS area FROM campaign_items ci "
+               "JOIN campaigns c ON c.id=ci.campaign_id WHERE ci.blocked IS NOT NULL ORDER BY ci.updated"):
+        b = _block_of(i["blocked"])
+        held |= set(b["paths"])
+        out.append({"campaign": i["campaign_id"], "source": i["source_id"], "what": f"{i['area']}: {i['name']}", "why": b["why"],
+                    "paths": [{"path": p, "kind": (lost.get(p) or {}).get("kind"), "lost_why": (lost.get(p) or {}).get("lost_why")}
+                              for p in b["paths"]]})
+    for p, r in lost.items():
+        if r["blocked"] and not r["approved"] and p not in held:
+            out.append({"path": p, "what": r["blocked"], "why": f"{r['blocked']}: lost from the backup",
+                        "paths": [{"path": p, "kind": r["kind"], "lost_why": r["lost_why"]}]})
+    return out
+
+
+def _block_of(text: str | None) -> dict:
+    try:
+        b = json.loads(text or "")
+        return {"why": str(b.get("why") or ""), "paths": list(b.get("paths") or [])}
+    except (ValueError, AttributeError):
+        return {"why": text or "", "paths": []}
+
+
+def block_item(camp_id: str, source_id: str, e: LostData) -> None:
+    """An area's climb whose job needs what the backup lost: left to go, but not taken (ordered_pending()), until the admin
+    page says to re-mesh without it or leave it as it is (lost_decide()); nothing of it is made or replaced meanwhile."""
+    set_item(camp_id, source_id, status="pending", blocked=json.dumps({"why": str(e), "paths": e.paths}), note=str(e))
+
+
+def lost_decide(verdict: str, campaign: str | None = None, source: str | None = None, path: str | None = None) -> str:
+    """The admin page's answer for a job what the backup lost blocks: "remesh" goes on without it (the paths approved:
+    a job that needs them takes them as they are here, none), "leave" leaves it as it is (an area's climb back as it was,
+    not queued again for this; a path's block forgotten, so that it's asked again if another job needs it)."""
+    if verdict not in ("remesh", "leave"):
+        raise ValueError("verdict must be remesh or leave")
+    if campaign and source:
+        i = q("SELECT name, blocked, was, redo, status, mesh_id FROM campaign_items WHERE campaign_id=? AND source_id=?", campaign, source, one=True)
+        if not i or not i["blocked"]:
+            raise ValueError("that climb isn't blocked")
+        paths = _block_of(i["blocked"])["paths"]
+        if verdict == "remesh":
+            for p in paths:
+                q("UPDATE offloads SET approved=? WHERE path=?", time.time(), p, write=True)
+            set_item(campaign, source, blocked=None, note=f"to go on without what the backup lost ({', '.join(paths)}), as approved")
+            return f"{i['name']} goes on without what the backup lost"
+        for p in paths:     # answered: another job needing them asks again
+            q("UPDATE offloads SET blocked=NULL WHERE path=?", p, write=True)
+        status = i["was"] if i["redo"] else ("done" if i["mesh_id"] else "skipped")
+        set_item(campaign, source, blocked=None, status=status or "done", redo=None, retry=0, redo_started=0, old_rerun=0,
+                 note=f"left as it was: what it needs was lost from the backup ({', '.join(paths)})")
+        return f"{i['name']} left as it was"
+    if not path or not q("SELECT 1 FROM offloads WHERE path=? AND lost IS NOT NULL", path):
+        raise ValueError("no such path lost")
+    if verdict == "remesh":
+        q("UPDATE offloads SET approved=? WHERE path=?", time.time(), path, write=True)
+        return f"jobs that need {path} go on without it: try them again"
+    q("UPDATE offloads SET blocked=NULL WHERE path=?", path, write=True)
+    return f"left as it is; another job needing {path} asks again"
+
+
+def backup_needs(pids) -> int:
+    """How many of these projects' photos are offloaded, and so to be brought back from the backup before they're used."""
+    pids = [p for p in dict.fromkeys(pids) if p]
+    if not pids:
+        return 0
+    away = {r["path"] for r in q(f"SELECT path FROM offloads WHERE done IS NOT NULL AND approved IS NULL AND lost IS NULL AND path IN "
+                                 f"({','.join('?' * len(pids))})", *[f"projects/{p}/photos" for p in pids])}
+    return sum(f"projects/{p}/photos" in away for p in pids)
 
 
 def log_server(line: str) -> None:
@@ -4511,9 +4700,13 @@ def _claim(w: Worker):
                 held = q("SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND status='waiting'", camp["id"], one=True)["n"]
                 paused = q("SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND status='pending' AND paused IS NOT NULL",
                            camp["id"], one=True)["n"]
-                if held or paused:    # it carries on once volunteers have fetched what those wait for, or they're resumed
+                blocked = q("SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND status='pending' AND blocked IS NOT NULL "
+                            "AND paused IS NULL", camp["id"], one=True)["n"]
+                if held or paused or blocked:    # it carries on once volunteers have fetched what those wait for, they're
+                    # resumed, or the admin page says what to do without what the backup lost
                     note = "; ".join([f"{held} climb(s) waiting for volunteers' YouTube searches and videos"] * bool(held)
-                                     + [f"{paused} climb(s) {PAUSED_NOTE}"] * bool(paused))
+                                     + [f"{paused} climb(s) {PAUSED_NOTE}"] * bool(paused)
+                                     + [f"{blocked} climb(s) {BLOCKED_NOTE}"] * bool(blocked))
                     q("UPDATE campaigns SET note=? WHERE id=? AND COALESCE(note,'')!=?", note, camp["id"], note, write=True)
                 else:
                     q("UPDATE campaigns SET status=?, only_retries=0, note=NULL WHERE id=? AND status='running'",
@@ -4521,8 +4714,8 @@ def _claim(w: Worker):
             continue
         item = free[0]
         set_item(camp["id"], item["source_id"], status="running")
-        q("UPDATE campaigns SET note=NULL WHERE id=? AND (note LIKE '%waiting for volunteers%' OR note LIKE ?)", camp["id"],
-          f"%{PAUSED_NOTE}%", write=True)
+        q("UPDATE campaigns SET note=NULL WHERE id=? AND (note LIKE '%waiting for volunteers%' OR note LIKE ? OR note LIKE ?)", camp["id"],
+          f"%{PAUSED_NOTE}%", f"%{BLOCKED_NOTE}%", write=True)
         w.campaign, w.boulder, w.doing = camp["id"], item["boulder"] if pools_whole(item["boulder"]) else None, item["name"]
         w.item = item["source_id"]
         return camp, item
@@ -4552,6 +4745,8 @@ def next_campaign_step() -> bool:
         w.waiting = {"campaign": camp["id"], "climb": item["name"], "since": since, "why": str(e),
                      "boulder": (item.get("redo") or "").split("+")[0] in ("boulder", "pool")}
         set_item(camp["id"], item["source_id"], status="pending")
+    except LostData as e:       # what it needs was lost from the backup: blocked until the admin page says
+        block_item(camp["id"], item["source_id"], e)
     except Exception as e:
         set_item(camp["id"], item["source_id"], status="failed", note=f"{type(e).__name__}: {e}")
     finally:
@@ -5078,6 +5273,9 @@ def run_redo(camp: dict, item: dict) -> None:
         q("UPDATE projects SET status='stopped' WHERE id=?", row["project_id"], write=True)
         set_item(cid, sid, status="pending", note=f"waiting for a machine to mesh it on: {e}")
         raise
+    except LostData:    # blocked until the admin page says (next_campaign_step())
+        q("UPDATE projects SET status='stopped' WHERE id=? AND status IN ('harvesting','running')", row["project_id"], write=True)
+        raise
     except Exception as e:
         end = {"status": row["was"], "note": f"{REDO_NAMES[row['redo']]}: {type(e).__name__}: {e}"}
     set_item(cid, sid, **end, redo=None, retry=0, redo_started=0, old_rerun=0)
@@ -5176,6 +5374,8 @@ def _run_cluster_redo(camp: dict, row: dict) -> None:
         return
     except compute.ComputeUnavailable as e:
         set_item(cid, sid, status="pending", note=f"waiting for a machine to mesh it with the climbs its photos match on: {e}")
+        raise
+    except LostData:
         raise
     except Exception as e:
         end = {"status": row["was"], "note": f"{REDO_NAMES['cluster']}: {type(e).__name__}: {e}"}
@@ -5287,6 +5487,8 @@ def _run_own_redo(camp: dict, row: dict) -> None:
         q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
         set_item(cid, sid, status="pending", note=f"waiting for a machine to mesh it on: {e}")
         raise
+    except LostData:
+        raise
     except Exception as e:
         end = {"status": "done" if pooled_mesh else row["was"], "mesh_id": pooled_mesh, "note": f"{REDO_NAMES['own']}: {type(e).__name__}: {e}"}
     set_item(cid, sid, **end, redo=None, retry=0, redo_started=0, own_tried=time.time())
@@ -5310,6 +5512,8 @@ def _run_boulder_redo(camp: dict, row: dict) -> None:
         return
     except compute.ComputeUnavailable as e:
         set_item(cid, sid, status="pending", note=f"waiting for a machine to mesh its boulder on: {e}")
+        raise
+    except LostData:
         raise
     except Exception as e:
         end, failed = {"status": row["was"], "note": f"{REDO_NAMES['boulder']}: {type(e).__name__}: {e}"}, True
@@ -6072,6 +6276,7 @@ def with_typicals(progress: dict, harvest: str | None, pid: str | None = None) -
 
 
 PAUSED_NOTE = "paused, carrying on once resumed"    # in an area's note: how many of its climbs, with nothing else to take
+BLOCKED_NOTE = "blocked, as what they need was lost from the backup: the admin page says what to do"    # and so
 
 
 def pause_item(camp_id: str, source_id: str, on: bool = True) -> None:
@@ -6146,7 +6351,12 @@ def campaign_view(camp: dict) -> dict:
                   cid, one=True)["t"]
     old_queued = q("SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND old_rerun=1 AND status IN ('pending','running')",
                    cid, one=True)["n"]     # queued again as their meshes are old (queue_old())
-    return {**camp, "counts": counts, "again": again, "listed": listed, "old_queued": old_queued, "worked": worked, "current": running[0] if running else None,
+    # its climbs still to go whose photos are offloaded, to be brought back from the backup first; and those blocked as lost
+    needs_backup = backup_needs([r["project_id"] for r in q("SELECT project_id FROM campaign_items WHERE campaign_id=? AND status IN "
+                                                            "('pending','waiting','harvested') AND project_id IS NOT NULL", cid)])
+    blocked = q("SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND blocked IS NOT NULL", cid, one=True)["n"]
+    return {**camp, "counts": counts, "again": again, "listed": listed, "old_queued": old_queued, "needs_backup": needs_backup,
+            "blocked": blocked, "worked": worked, "current": running[0] if running else None,
             "running": running, "paused": paused, "next": pending[:10], "machine_wait": machine_wait(cid), "made": made, "last_mesh": last_mesh}
 
 
@@ -6239,7 +6449,8 @@ def boulder_panel(camp: dict, item: dict) -> dict | None:
         st.get("started") for st in (json.loads(whole["progress"]) if whole["progress"] else {}).get("steps", [])
         if st["key"] in {k[0] for k in pipeline.steps()}))
     out = {"name": boulder_name(key), "url": boulder_url(key), "pooled": False, "rows": rows, "own": None,
-           "harvested_at": harvested_at, "waiting": bool(harvested_at and not started)}
+           "harvested_at": harvested_at, "waiting": bool(harvested_at and not started),
+           "needs_backup": backup_needs([pid for r in rows for pid in r["projects"]])}     # harvests offloaded, to bring back
     proj = boulder_project(key) if (item.get("redo") or "").split("+")[0] in ("boulder", "pool") else None
     sources = PROJECTS / proj["id"] / "sources.json" if proj else None
     if sources and sources.exists() and sources.stat().st_mtime >= (item.get("updated") or 0) - 5:     # pooled this time
@@ -9253,7 +9464,8 @@ def admin_state() -> dict:
             "notify": NOTIFIER.state(), "pairing": pairing_state(), "feedback": feedback_mod.recent(FEEDBACK),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
             "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
-            "offload": offload_mod.state(DATA, q), "backup": backup_state()}
+            "offload": offload_mod.state(DATA, q), "backup": backup_state(),
+            "manifest": {**manifest_state(), "quiet": manifest_quiet(), "hours": MANIFEST_HOURS}, "lost_blocks": lost_blocks()}
 
 
 def admin_test(_: dict) -> dict:
@@ -9300,6 +9512,12 @@ def admin_clear_rejected(_: dict) -> dict:
 def admin_measure(_: dict) -> dict:
     u = measure_usage()
     return {"result": f"the data takes {u['total'] / 2**30:.1f} GB" + (f" of {data_cap() / 2**30:g}" if data_cap() else "")}
+
+
+def admin_lost_decide(body: dict) -> dict:
+    """The admin page's answer for a job what the backup lost blocks: {verdict: remesh | leave, and campaign and source
+    (an area's climb), or path}."""
+    return {"result": lost_decide(str(body.get("verdict") or ""), body.get("campaign"), body.get("source"), body.get("path"))}
 
 
 def admin_old_decide(body: dict) -> dict:
@@ -9431,7 +9649,7 @@ def main() -> None:
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rest": admin_rest,
                                        "remesh-untied": admin_remesh_untied, "inputs-check": admin_inputs_check,
-                                       "old-decide": admin_old_decide,
+                                       "old-decide": admin_old_decide, "lost-decide": admin_lost_decide,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,

@@ -10,6 +10,9 @@ here, through a key of its own whose forced command this is (README, "Backups"),
                             kept: [{day, db, changed}]}), for the admin page (data/backup-report.json)
     wanted                  the paths under data/ wanted back from it (data/offload-wanted.list)
     restore                 a tar of some of those on stdin, unpacked into data/restore-inbox/, which the server puts back
+    sample                  the files offloaded whose SHA-1s it's to read back tonight (data/offload-sample.list)
+    manifest                what it holds of the paths offloaded, on stdin (backend/offload.py's manifest_of() has its
+                            form), kept whole or not at all in data/backup-manifest.txt, which the server checks
 
 The command comes from SSH_ORIGINAL_COMMAND (over SSH) or the arguments (run here). The data folder is the checkout's
 data/, or BOULDERMESH_DATA.
@@ -28,6 +31,9 @@ PATH = re.compile(r"projects/[0-9a-f]{6,32}/(photos|masks|rejected)|cache/videos
                   r"|meshes/[0-9a-f]{6,32}/[A-Za-z0-9_.-]{1,120}")      # as backend/offload.py's
 MOST = 20 * 2**30       # the most a restore unpacks
 REPORT_MOST = 64 * 1024     # the most a report may be
+MANIFEST_MOST = 256 * 2**20     # the most a manifest may be
+FILE = re.compile(r"(projects/[0-9a-f]{6,32}/(photos|masks|rejected)/[^\t\n]+|cache/videos/[A-Za-z0-9_-]{11}\.[a-z0-9]{2,5}"
+                  r"|meshes/[0-9a-f]{6,32}/[A-Za-z0-9_.-]{1,120})")     # a file of one of those paths
 
 
 def wanted() -> list[str]:
@@ -83,6 +89,39 @@ def report() -> int:
     return 0
 
 
+def sample() -> list[str]:
+    try:
+        lines = (DATA / "offload-sample.list").read_text().splitlines()
+    except OSError:
+        return []
+    return [p for p in lines if FILE.fullmatch(p) and ".." not in p.split("/")]
+
+
+def manifest() -> int:
+    """Keep the manifest on stdin, if it's whole (a "began" line first, an "end <n>" line last with n its file lines, and
+    each line one of those): the server takes it from there."""
+    raw = sys.stdin.buffer.read(MANIFEST_MOST + 1)
+    if len(raw) > MANIFEST_MOST:
+        sys.exit("too long")
+    lines = raw.decode("utf-8", "replace").splitlines()
+    if len(lines) < 2 or not re.fullmatch(r"began \d{9,11}(\.\d+)?", lines[0]) or not re.fullmatch(r"end \d+", lines[-1]):
+        sys.exit("not a manifest: began <time> ... end <n>")
+    n = 0
+    for line in lines[1:-1]:
+        f = line.split("\t")
+        if len(f) == 4 and f[0] == "f" and f[1].isdigit() and re.fullmatch(r"\d+(\.\d+)?", f[2]) and FILE.fullmatch(f[3]):
+            n += 1
+        elif not (len(f) == 3 and f[0] == "h" and re.fullmatch(r"[0-9a-f]{40}", f[1]) and FILE.fullmatch(f[2])):
+            sys.exit(f"not a manifest's line: {line[:200]}")
+    if n != int(lines[-1][4:]):
+        sys.exit(f"{n} file line(s), but its end says {lines[-1][4:]}: not whole")
+    tmp = DATA / "backup-manifest.txt.tmp"
+    tmp.write_bytes(raw)
+    tmp.replace(DATA / "backup-manifest.txt")
+    print(f"manifest of {n} file(s) kept")
+    return 0
+
+
 def main() -> int:
     words = (os.environ.get("SSH_ORIGINAL_COMMAND") or " ".join(sys.argv[1:])).split()
     if len(words) == 2 and words[0] == "backed-up" and re.fullmatch(r"\d{9,11}(\.\d+)?", words[1]):
@@ -99,7 +138,12 @@ def main() -> int:
         return restore()
     if words == ["report"]:
         return report()
-    sys.exit("usage: backed-up <unix time> | wanted | restore | report")
+    if words == ["sample"]:
+        print("\n".join(sample()))
+        return 0
+    if words == ["manifest"]:
+        return manifest()
+    sys.exit("usage: backed-up <unix time> | wanted | restore | report | sample | manifest")
 
 
 if __name__ == "__main__":
