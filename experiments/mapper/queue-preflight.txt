@@ -1,0 +1,18 @@
+# the smallest boulder end to end with every kind of step, as a check of the scripts before the long runs
+feat e6de7747fab5
+feat 31de9a59303a
+feat 9f3b4b740847
+feat 38f31439985f
+feat ce7571e0a4a3
+all e6de7747fab5 base 0 --cond prod --post app,plain
+all e6de7747fab5 cpu421 0 --cond prod --post plain
+all e6de7747fab5 gpuba0 0 --cond prod
+all e6de7747fab5 caspar 0 --cond prod
+all e6de7747fab5 global0 0 --cond prod
+all e6de7747fab5 vggt 0 --cond prod
+held e6de7747fab5 base 0 90 --cond prod
+held e6de7747fab5 gpuba0 0 90 --cond prod
+feat e6de7747fab5 --cond prod
+feat e6de7747fab5 --feat sift421 --cond prod
+feat e6de7747fab5 --feat siftgpu421 --cond prod
+feat e6de7747fab5 --feat aliked421 --cond prod

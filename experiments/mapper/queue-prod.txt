@@ -1,0 +1,72 @@
+# production-condition timings, one at a time: Drifter and the baseline's long runs first
+all ce7571e0a4a3 base 0 --cond prod --post app,plain
+all ce7571e0a4a3 global 0 --cond prod --post plain
+all ce7571e0a4a3 caspar 0 --cond prod --post plain
+all ce7571e0a4a3 gpuba 0 --cond prod --post plain
+all ce7571e0a4a3 vggt 0 --cond prod
+all ce7571e0a4a3 cpu421 0 --cond prod
+all 38f31439985f base 0 --cond prod --post app,plain
+# the medium and small boulders, every method
+all 31de9a59303a base 0 --cond prod --post app,plain
+all 31de9a59303a global 0 --cond prod --post plain
+all 31de9a59303a caspar 0 --cond prod
+all 31de9a59303a gpuba 0 --cond prod
+all 31de9a59303a gpuba0 0 --cond prod
+all 31de9a59303a cpu421 0 --cond prod
+all 31de9a59303a vggt 0 --cond prod
+all 9f3b4b740847 base 0 --cond prod --post app,plain
+all 9f3b4b740847 global 0 --cond prod --post plain
+all 9f3b4b740847 caspar 0 --cond prod
+all 9f3b4b740847 gpuba 0 --cond prod
+all 9f3b4b740847 gpuba0 0 --cond prod
+all 9f3b4b740847 cpu421 0 --cond prod
+all 9f3b4b740847 vggt 0 --cond prod
+all 38f31439985f global 0 --cond prod --post plain
+all 38f31439985f caspar 0 --cond prod
+all 38f31439985f gpuba 0 --cond prod
+all 38f31439985f cpu421 0 --cond prod
+all 38f31439985f vggt 0 --cond prod
+# explicit thread counts against the default (48), and the settings-only variants on 3.9.1
+all 31de9a59303a base 0 --cond t8
+all 31de9a59303a base 0 --cond t16
+all 31de9a59303a base 0 --cond t24
+all 31de9a59303a cpu421 0 --cond t16
+all 31de9a59303a lessba 0 --cond prod
+all 31de9a59303a ref2 0 --cond prod
+all 9f3b4b740847 base 0 --cond t16
+all 9f3b4b740847 lessba 0 --cond prod
+# solver choices on 4.2.1
+all 9f3b4b740847 dense421 0 --cond prod
+all 9f3b4b740847 gpudense 0 --cond prod
+all 9f3b4b740847 caspar_g 0 --cond prod
+all 9f3b4b740847 cpu421_ob1 0 --cond prod
+# features and matching under production's conditions, and the variants that can use the GPU
+feat ce7571e0a4a3 --cond prod
+feat ce7571e0a4a3 --feat sift421 --cond prod
+feat ce7571e0a4a3 --feat siftgpu421 --cond prod
+feat ce7571e0a4a3 --feat aliked421 --cond prod
+feat 31de9a59303a --cond prod
+feat 31de9a59303a --feat sift421 --cond prod
+feat 31de9a59303a --feat siftgpu421 --cond prod
+feat 31de9a59303a --feat aliked421 --cond prod
+# adding photos to a finished model
+held 31de9a59303a base 0 90 --cond prod
+held 31de9a59303a base 0 70 --cond prod
+held 31de9a59303a gpuba 0 90 --cond prod
+held e6de7747fab5 base 0 70 --cond prod
+held ce7571e0a4a3 base 0 90 --cond prod
+held ce7571e0a4a3 gpuba 0 90 --cond prod
+held ce7571e0a4a3 base 0 70 --cond prod
+# repeats: other seeds
+all 31de9a59303a base 1 --cond prod
+all 31de9a59303a global 1 --cond prod
+all 31de9a59303a caspar 1 --cond prod
+all 31de9a59303a gpuba 1 --cond prod
+all 31de9a59303a cpu421 1 --cond prod
+all 9f3b4b740847 base 1 --cond prod
+all 9f3b4b740847 global 1 --cond prod
+all 9f3b4b740847 caspar 1 --cond prod
+all 9f3b4b740847 gpuba 1 --cond prod
+all ce7571e0a4a3 global 1 --cond prod
+all ce7571e0a4a3 caspar 1 --cond prod
+all ce7571e0a4a3 gpuba 1 --cond prod
