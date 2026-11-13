@@ -67,7 +67,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
         }
         return
     }
-    val controller = remember { ArController(a, a.store, a.sensors, plan, guide, what.name + " (capture)") { ui = it } }
+    val controller = remember { ArController(a, a.store, a.sensors, plan, guide, what.name + " (capture)", a.smallFrames) { ui = it } }
     val view = remember {
         GLSurfaceView(a).apply {
             preserveEGLContextOnPause = true

@@ -14,11 +14,12 @@ press() { adb shell input keyevent KEYCODE_TAB; sleep 0.5; adb shell input keyev
 macros="$ANDROID_HOME/emulator/resources/macros"
 ls "$macros" > "$OUT/android-room-macros.txt" 2>&1
 adb logcat -c
-adb shell am start -S -W -n $ID/.MainActivity --es server "$SERVER" --es screen capture > /dev/null
+adb shell am start -S -W -n $ID/.MainActivity --es server "$SERVER" --es screen capture --ez small true > /dev/null
 sleep 15; pic 1-started
 for walk in Track_horizontal_plane Track_vertical_plane; do
     adb emu automation play "$macros/$walk" >> "$OUT/android-room-macros.txt" 2>&1 || true
-    sleep 20
+    sleep 8; pic "2-during-$walk"
+    sleep 14
 done
 pic 2-walked
 press 3; pic 3-level-skipped
