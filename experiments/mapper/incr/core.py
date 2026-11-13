@@ -1301,6 +1301,145 @@ def retexture_former(root: Path, former_glb: Path, threads: int) -> dict:
     return rep.save(**r, capture_photos=len(caps))
 
 
+def detail(root: Path, holds_file: Path, threads: int, cards_file: Path | None = None, split: bool = True) -> dict:
+    """Detail meshes of a set's holds (details.py has the plan): for each hold {id, p, r_m}, its photos' full-size
+    dense cloud, a mesh cut to r_m about p, its split-half consistency, its tie to the rock mesh checked by ICP, its
+    scale (the capture's fit, or a card's where cards_file has corners for its photos), and a printable solid.
+    Writes details/<id>.ply/.stl/.3mf and details/details.json."""
+    import details as dt
+    rep = Report(root, "detail")
+    holds = json.loads(holds_file.read_text())
+    holds = holds.get("holds", holds) if isinstance(holds, dict) else holds
+    pri = json.loads((root / "cache" / "priors.json").read_text()) if (root / "cache" / "priors.json").exists() else {}
+    mpu_fit = pri.get("metres_per_unit")
+    cards = json.loads(cards_file.read_text()) if cards_file and cards_file.exists() else {}
+    rec = pycolmap.Reconstruction(str(root / "model"))
+    rock = root / "dense" / "scene_dense_mesh.ply"
+    Vr, Fr = read_ply(rock) if rock.exists() else (None, None)
+    out_dir = root / "details"
+    out_dir.mkdir(exist_ok=True)
+    results = []
+    for h in holds:
+        hid, p = h["id"], np.asarray(h["p"], float)
+        r_m = dt.radius(h)
+        mpu = mpu_fit or 1.0
+        r = r_m / mpu
+        rep.part(f"photos_{hid}")
+        near, dirs, gsd = [], [], []
+        for i in rec.reg_image_ids():
+            im, cam = rec.image(i), rec.camera(rec.image(i).camera_id)
+            T = im.cam_from_world()
+            x = T.rotation.matrix() @ p + T.translation
+            if x[2] <= 0:
+                continue
+            u, v = cam.img_from_cam(x) if hasattr(cam, "img_from_cam") else (cam.mean_focal_length() * x[0] / x[2] + cam.principal_point_x,
+                                                                               cam.mean_focal_length() * x[1] / x[2] + cam.principal_point_y)
+            dist_m = float(np.linalg.norm(x)) * mpu
+            if 0 <= u < cam.width and 0 <= v < cam.height and dist_m <= 2.0:
+                near.append(im.name)
+                dirs.append((im.projection_center() - p) / np.linalg.norm(im.projection_center() - p))
+                gsd.append(dist_m / cam.mean_focal_length() * 1000)
+        views = 0
+        kept_dirs = []
+        for dvec in dirs:
+            if all(float(dvec @ k) < math.cos(math.radians(20)) for k in kept_dirs):
+                kept_dirs.append(dvec)
+        views = len(kept_dirs)
+        res = {"id": hid, "p": [float(x) for x in p], "r_m": r_m, "views": views, "photos": len(near),
+               "gsd_mm": round(float(min(gsd)), 3) if gsd else None}
+        if len(near) < 3:
+            res.update(status="untied", why=f"{len(near)} photo(s) see it from within 2 m")
+            results.append(res)
+            continue
+
+        def mesh_from(names, tag):
+            d = out_dir / f"{hid}-{tag}"
+            shutil.rmtree(d, ignore_errors=True)
+            (d / "model").mkdir(parents=True)
+            sub = pycolmap.Reconstruction(str(root / "model"))
+            for cam in sub.cameras.values():
+                if cam.is_undistorted() and cam.model != pycolmap.CameraModelId.PINHOLE:
+                    cam.params = [cam.mean_focal_length(), cam.mean_focal_length(), cam.principal_point_x, cam.principal_point_y]
+                    cam.model = pycolmap.CameraModelId.PINHOLE
+            sub.write(str(d / "model"))
+            pycolmap.undistort_images(str(d / "dense"), str(d / "model"), str(root / "photos"), image_names=list(names),
+                                      output_type="COLMAP", num_threads=threads)
+            t = ["--max-threads", threads] if threads > 0 else []
+            run([f"{MVS}/InterfaceCOLMAP", "-i", "dense", "-o", "scene.mvs", "--image-folder", d / "dense" / "images", "-w", d], d)
+            run([f"{MVS}/DensifyPointCloud", "scene.mvs", "-w", d, "--resolution-level", "0", "--max-resolution", "8192",
+                 "--remove-dmaps", "1", *t], d)
+            run([f"{MVS}/ReconstructMesh", "scene_dense.mvs", "-w", d, *t], d)
+            V, F = read_ply(d / "scene_dense_mesh.ply")
+            return dt.cut(V, F, p, r * 1.2), d
+        try:
+            rep.part(f"dense_{hid}")
+            (V, F), d = mesh_from(near, "all")
+            res["faces"] = int(len(dt.cut(V, F, p, r)[1]))
+            if split and len(near) >= 6:
+                rep.part(f"split_{hid}")
+                (Va, Fa), _ = mesh_from(near[0::2], "a")
+                (Vb, Fb), _ = mesh_from(near[1::2], "b")
+                res["split_half_mm"] = round(dt.split_half(Va, Fa, Vb, Fb, r * 0.05) * mpu * 1000, 3)
+            if Vr is not None:
+                rep.part(f"tie_{hid}")
+                Rt, tt, rms0, rms1, used = dt.icp_point_to_plane(V, Vr, Fr, reach=r * 0.1)
+                res["status"], res["why"] = dt.tie_check(Rt, tt, rms1, p, mpu * 1000)
+                res["tie_rms_mm"] = round(rms1 * mpu * 1000, 3)
+            else:
+                res["status"], res["why"] = "untied", "there is no rock mesh to tie it to"
+            scale, err, src = mpu, (mpu or 0) * dt.TRACKING_SCALE_ERR, "tracking"
+            mine = [cards[n] for n in near if n in cards]
+            if mine:        # a card's corners: rays to the region's surface, its sides against the card's
+                import card as cd
+                ests = []
+                for c in mine:
+                    im = rec.find_image_with_name(c["photo"])
+                    cam = rec.camera(im.camera_id)
+                    K = np.array([[cam.mean_focal_length(), 0, cam.principal_point_x], [0, cam.mean_focal_length(), cam.principal_point_y], [0, 0, 1]])
+                    T = im.cam_from_world()
+                    o, dirs_ = cd.rays(np.array(c["corners"]), K, T.rotation.matrix(), np.array(T.translation))
+                    X = np.array([_ray_mesh(o, dd, V, F) for dd in dirs_])
+                    if np.isfinite(X).all():
+                        ests.append(cd.scale(X))
+                comb = cd.combine(ests)
+                if comb and comb["rel_err"] < dt.TRACKING_SCALE_ERR:
+                    scale, err, src = comb["metres_per_unit"], comb["err"], "card"
+                res["card"] = comb
+            res.update(scale=scale, scale_err=err, scale_from=src)
+            rep.part(f"solid_{hid}")
+            res.update(dt.printable(V, F, p, r, scale * 1000, out_dir / hid))
+            shutil.rmtree(out_dir / f"{hid}-a", ignore_errors=True)
+            shutil.rmtree(out_dir / f"{hid}-b", ignore_errors=True)
+        except Exception as e:      # one hold failing doesn't stop the others
+            res.update(status="untied", why=f"{type(e).__name__}: {e}")
+        if res.get("status") == "untied":       # never shipped misaligned
+            for ext in (".ply", ".stl", ".3mf"):
+                (out_dir / f"{hid}{ext}").unlink(missing_ok=True)
+        results.append(res)
+        log(f"detail {hid}: {res.get('status')} ({res.get('why')}); {res.get('faces')} faces, split-half {res.get('split_half_mm')} mm")
+    st.write_json(out_dir / "details.json", {"v": 1, "holds": results})
+    return rep.save(holds=results)
+
+
+def _ray_mesh(o: np.ndarray, d: np.ndarray, V: np.ndarray, F: np.ndarray) -> np.ndarray:
+    """Where a ray first meets a mesh (Moller-Trumbore over every face), or NaNs."""
+    a, b, c = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+    e1, e2 = b - a, c - a
+    pv = np.cross(d, e2)
+    det = np.einsum("ij,ij->i", e1, pv)
+    ok = np.abs(det) > 1e-12
+    inv = np.where(ok, 1 / np.where(ok, det, 1), 0)
+    tv = o - a
+    u = np.einsum("ij,ij->i", tv, pv) * inv
+    qv = np.cross(tv, e1)
+    v = (qv @ d) * inv
+    t = np.einsum("ij,ij->i", e2, qv) * inv
+    hit = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0)
+    if not hit.any():
+        return np.full(3, np.nan)
+    return o + d * float(t[hit].min())
+
+
 def capture_photos(root: Path) -> set[str]:
     """The state's photos that came from a phone capture: those cache/priors.json has readings for."""
     f = root / "cache" / "priors.json"
@@ -1378,6 +1517,8 @@ def main(argv: list[str]) -> None:
         match(a.state, not a.cpu, a.threads, a.feat, a.state / "cache" / "pairs.json" if a.pairs else None)
     elif a.step == "place":
         place(a.state, a.init, a.vggt, a.ba, a.seed, a.threads, a.resolve, not a.no_scenes)
+    elif a.step == "detail":
+        detail(a.state, a.cameras, a.threads, a.state / "cache" / "cards.json")
     elif a.step == "retexture":
         retexture_former(a.state, a.cameras, a.threads)
     elif a.step == "align":

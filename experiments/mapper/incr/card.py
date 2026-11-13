@@ -9,6 +9,7 @@ against the rock beside the hold, in close-ups the app marks (`ref: "card"` in a
     combine(estimates)           one region's metres a unit and its uncertainty, from every card photo of it
     mask(image shape, corners)   the card's quadrilateral (grown a little), to leave out of densifying and texturing
 
+    card.py corners <photos> <priors.json> <out.json>   the corners in the photos marked ref "card" (OpenCV)
     card.py render <out dir> [--n 8] [--seed 0]   synthetic close-ups: a textured rock plane with a card on it,
                                                   rendered from known cameras, with truth.json (for the test)
     card.py test <dir>                            find the card in each, scale from it, against the truth
@@ -211,8 +212,26 @@ def test(d: Path) -> dict:
     return out
 
 
+def corners_of(photos: Path, priors: Path, out: Path) -> dict:
+    """The card's corners in each capture photo its readings mark (`ref: "card"`), as {name: {photo, corners}}: for
+    core.py's detail step, which puts them on the region's surface. Runs where OpenCV is (the app's image)."""
+    from PIL import Image
+    pri = json.loads(priors.read_text())["photos"]
+    found = {}
+    for name, p in pri.items():
+        if p.get("ref") != "card" or not (photos / name).exists():
+            continue
+        q = find(np.asarray(Image.open(photos / name).convert("RGB")))
+        if q is not None:
+            found[name] = {"photo": name, "corners": q.tolist()}
+    out.write_text(json.dumps(found))
+    return found
+
+
 if __name__ == "__main__":
-    if sys.argv[1] == "render":
+    if sys.argv[1] == "corners":
+        print(len(corners_of(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]))), "cards found")
+    elif sys.argv[1] == "render":
         render(Path(sys.argv[2]), int(sys.argv[sys.argv.index("--n") + 1]) if "--n" in sys.argv else 8,
                int(sys.argv[sys.argv.index("--seed") + 1]) if "--seed" in sys.argv else 0)
     elif sys.argv[1] == "test":

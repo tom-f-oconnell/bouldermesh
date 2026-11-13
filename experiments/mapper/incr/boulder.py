@@ -10,6 +10,7 @@
     boulder.py capture <state> <capture dir> [<former mesh dir> <former photos>]   a phone capture added, out/ written
     boulder.py simcap <project> <truth state> <seed> [--sim ...]                     a simulated capture of it, added
     boulder.py export <state> <out dir> <former mesh>       out/ as a remote job returns a mesh, with frame.json
+    boulder.py details <state> <betasets.json|holds.json> [set id]   detail meshes of a set's holds, for printing
     boulder.py refit <state> <former mesh dir> <former photos> [<capture dir>]     every photo afresh, laid over the former
     boulder.py status <state dir>
     boulder.py first <project> <init> <seed> [...]          a first build of a benchmark boulder (every photo)
@@ -541,6 +542,47 @@ def refit(state_dir: Path, former: Path, photos: list[Path], masks: Path | None,
     return s.manifest["adds"][-1]
 
 
+def holds_of(betasets: Path | None, record: Path | None, set_id: str | None) -> list[dict]:
+    """The holds to make detail meshes of: a capture record's detail.holds (what the app was asked to photograph),
+    else a beta set of betasets.json (the one named, or the first), else holds.json as the first set. Each {id, p,
+    r_m}: ids are the server's stable ones (8 hex), never a plan's target ids."""
+    if record and record.exists():
+        det = json.loads(record.read_text()).get("detail") or {}
+        if det.get("holds"):
+            return [{"id": h["id"], "p": h["p"], "r_m": h.get("r_m")} for h in det["holds"]]
+    if betasets and betasets.exists():
+        data = json.loads(betasets.read_text())
+        sets = data.get("sets") if isinstance(data, dict) else None
+        if sets:
+            chosen = next((x for x in sets if x.get("id") == set_id), sets[0])
+            return [{"id": h.get("id") or f"{i:08x}", "p": h["p"], "r_m": h.get("r_m")} for i, h in enumerate(chosen["holds"])]
+        if isinstance(data, list):      # holds.json: [{p, role}]
+            return [{"id": h.get("id") or f"{i:08x}", "p": h["p"], "r_m": h.get("r_m")} for i, h in enumerate(data)]
+    return []
+
+
+def details(s: st.State, holds: list[dict], cond: str = "dev", out: Path | None = None) -> dict:
+    """Detail meshes of the holds (core.detail): the card corners found first where the capture marked card photos
+    (card.py, in the app's image, which has OpenCV), then the regions meshed in the tools. Copies details/ to out."""
+    root = s.root
+    st.write_json(root / "cache" / "holds.json", holds)
+    logdir = root / "log" / f"add-{s.next_id() - 1:04d}"
+    threads = bench.condition(cond)[1] or -1
+    if (root / "cache" / "priors.json").exists() and any(p.get("ref") == "card" for p in json.loads((root / "cache" / "priors.json").read_text())["photos"].values()):
+        run_step(logdir, "cards", "app", "python3 /incr/card.py corners /s/photos /s/cache/priors.json /s/cache/cards.json",
+                 [f"{root}:/s"], cond, None, False)
+    r = run_step(logdir, "detail", TOOLS, "python3 /incr/core.py " + bench.sh(["detail", "/s", "/s/cache/holds.json", "--threads", threads]),
+                 [f"{root}:/s"], cond, None, True)
+    res = json.loads((root / "details" / "details.json").read_text()) if (root / "details" / "details.json").exists() else {}
+    if out and res:
+        shutil.rmtree(out / "details", ignore_errors=True)
+        (out / "details").mkdir(parents=True)
+        for f in (root / "details").iterdir():
+            if f.is_file():
+                shutil.copyfile(f, out / "details" / f.name)
+    return {**res, "wall": r["wall"], "rc": r["rc"]}
+
+
 def write_cameras(model: Path, out: Path) -> int:
     """A model's cameras as the app's meshes keep them (backend/orientation.read_cameras: name, q, t, lens, seen)."""
     import orientation
@@ -776,7 +818,7 @@ def heldstats(only: str | None = None) -> None:
 def main(argv: list[str]) -> None:
     p = argparse.ArgumentParser()
     p.add_argument("command", choices=["add", "mesh", "status", "first", "held", "scenario", "queue", "table", "compare", "heldstats",
-                                        "bootstrap", "cameras", "boot", "capture", "export", "simcap", "refit"])
+                                        "bootstrap", "cameras", "boot", "capture", "export", "simcap", "refit", "details"])
     p.add_argument("args", nargs="*")
     p.add_argument("--masks", type=Path)
     p.add_argument("--init")
@@ -803,6 +845,10 @@ def main(argv: list[str]) -> None:
     elif a.command == "refit":          # <state> <former mesh dir> <former photos dir> [<capture dir>]
         refit(Path(a.args[0]), Path(a.args[1]), expand([a.args[2]]), a.masks, Path(a.args[3]) if len(a.args) > 3 else None,
               a.cond, a.ba, Path(a.args[0]) / "out")
+    elif a.command == "details":        # <state> <betasets.json or holds.json> [set id]
+        s = st.State(a.args[0])
+        hs = holds_of(Path(a.args[1]), s.root / "cache" / "capture.json", a.args[2] if len(a.args) > 2 else None)
+        print(json.dumps(details(s, hs, a.cond, s.root / "out"), indent=1))
     elif a.command == "export":         # <state> <out dir> <former mesh's name>
         print(json.dumps(export(st.State(a.args[0]), Path(a.args[1]), a.args[2])))
     elif a.command == "simcap":         # <project> <truth state> <seed>: a simulated capture of a boulder, added to it

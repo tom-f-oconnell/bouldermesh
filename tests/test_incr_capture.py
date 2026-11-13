@@ -156,6 +156,29 @@ def test_card_scale():
         assert not card.scale(sq)["ok"]
 
 
+def test_printable_solid():
+    """A bumpy patch cut to a radius, closed into a solid with a flat base: watertight, in millimetres, as STL and 3MF;
+    and ICP finds nothing to correct against the surface it came from."""
+    import details as dt
+    n = 30
+    xs, zs = np.meshgrid(np.linspace(-1, 1, n), np.linspace(-1, 1, n))
+    V = np.c_[xs.ravel(), 0.1 * np.sin(3 * xs.ravel()) * np.cos(2 * zs.ravel()), zs.ravel()]
+    F = []
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a, b, c, d = i * n + j, i * n + j + 1, (i + 1) * n + j, (i + 1) * n + j + 1
+            F += [[a, c, b], [b, c, d]]
+    F = np.array(F)
+    Vc, Fc = dt.cut(V, F, [0, 0, 0], 0.8)
+    S, T = dt.solid(Vc, Fc, base_mm=3, mm=100.0)
+    assert dt.is_watertight(T) and np.ptp(S[:, 0]) > 150
+    with tempfile.TemporaryDirectory() as d:
+        r = dt.printable(V, F, [0, 0, 0], 0.8, 100.0, Path(d) / "h")
+        assert r["watertight"] and (Path(d) / "h.stl").stat().st_size > 1000 and (Path(d) / "h.3mf").exists()
+    R, t, rms0, rms1, used = dt.icp_point_to_plane(Vc, V, F, reach=0.2)
+    assert rms1 < 1e-9 and dt.tie_check(R, t, rms1, [0, 0, 0], 100.0)[0] == "tied"
+
+
 if __name__ == "__main__":
     for name, f in sorted(globals().items()):
         if name.startswith("test_"):
