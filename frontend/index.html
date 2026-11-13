@@ -157,6 +157,9 @@
   .mesh{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
   .name{font-weight:600}
   small{color:var(--mute)}
+  details.vids{display:inline} details.vids summary{display:inline;cursor:pointer;text-decoration:underline dotted}
+  details.vids[open]{display:block} details.vids .vlist{display:flex;flex-direction:column;gap:2px;margin:4px 0 2px 12px}
+  details.vids .vlist a{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tag{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--warn-bg);color:var(--warn);margin-left:6px;white-space:nowrap}
   .meta.bad{color:var(--bad)} .meta.bad a{color:var(--bad)}
   .tag.climb{background:var(--climb-bg);color:var(--climb)} .tag.ok{background:var(--ok-bg);color:var(--ok)} .tag.bad{background:var(--bad-bg);color:var(--bad)} .tag.src{background:var(--src-bg);color:var(--acc)}
@@ -4249,12 +4252,28 @@ function betaLine(m){
   if (b?.status === 'queued' && b.waiting) return `waiting: YouTube is refusing this server's downloads until about ${hhmm(b.waiting)}`;
   if (b?.status === 'queued') return 'queued to find its beta';
   if (b?.status === 'running') return `finding its beta: ${esc(b.progress || '')}`;
-  if (b?.status === 'done') return b.note ? esc(b.note) : `${b.holds} holds found in ${b.videos} video${b.videos === 1 ? '' : 's'}`;
+  if (b?.status === 'done') return b.note ? esc(b.note) : `${b.holds} holds found in ${videosHtml(m, b.videos)}`;
   if (b) return esc(b.status);
   if (!m.source.startsWith('project:')) return 'an upload: holds can only be marked by hand';
   if (!m.cameras_kept) return 'rebuild it to find beta in its videos: where its photos were placed wasn\'t kept';
-  return n ? `${n} video${n === 1 ? '' : 's'} to find beta in` : 'no video frames placed in it';
+  return n ? `beta to find in ${videosHtml(m, n)}` : 'no video frames placed in it';
 }
+// "N videos", opening to a link to each of the mesh's YouTube videos (its photos' record: /api/meshes/<id>/sources)
+function videosHtml(m, n){
+  return `<details class="vids" data-mid="${esc(m.id)}"><summary>${n} video${n === 1 ? '' : 's'}</summary><span class="vlist">Loading…</span></details>`;
+}
+document.addEventListener('toggle', async ev => {     // toggle doesn't bubble: caught on the way down
+  const d = ev.target;
+  if (!d.matches?.('details.vids') || !d.open || d.dataset.loaded) return;
+  d.dataset.loaded = '1';
+  const list = d.querySelector('.vlist');
+  try {
+    const rec = await api(`/api/meshes/${d.dataset.mid}/sources`), seen = new Map();
+    for (const p of rec.photos || []) if (p.source === 'youtube' && p.url && !seen.has(p.url)) seen.set(p.url, p.title ? p.title + (p.credit ? ' · ' + p.credit : '') : p.credit || '');
+    list.innerHTML = seen.size ? [...seen].map(([url, name]) => `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(name || url)}</a>`).join('')
+      : 'None recorded';
+  } catch (e) { list.textContent = "Couldn't load them: " + e.message; delete d.dataset.loaded; }
+}, true);
 // finding beta in every mesh that has videos, one at a time, alongside meshing
 function renderBetaAll(){
   const el = $('#beta-all');
@@ -4293,7 +4312,7 @@ function renderBetaList(){
     const canFind = m.source.startsWith('project:') && m.cameras_kept && videoCount(m) && !['queued', 'running'].includes(m.beta?.status);
     d.innerHTML = `<div class="grow"><span class="name">${esc(meshTitle(m))}</span><br>
         <small>${m.marked ? `${m.marked} hold${m.marked === 1 ? '' : 's'} marked · ` : ''}${betaLine(m)}</small></div>
-      <div class="row" style="flex-direction:column;align-items:stretch;gap:4px"><button class="sm open">Open</button>
+      <div class="row" style="flex-direction:column;align-items:stretch;gap:4px"><button class="sm open">Beta</button>
         ${canFind ? `<button class="sm sec find">${m.beta?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}</div>`;
     d.querySelector('.open').onclick = () => openBeta(m.id);
     d.querySelector('.find')?.addEventListener('click', () => findBeta(m.id));
