@@ -758,20 +758,24 @@ function stepTiming(s){
   if (!s.started) return '';
   const t = stepLeft(s);
   return ` · going ${fmtDur(t.going)}` + (t.over ? `, usually ${fmtDur(t.usual)}` : t.left == null ? ', no estimate yet'
-    : `, about ${fmtDur(t.left)} left` + (t.usual ? ` (usually ${fmtDur(t.usual)})` : ''));
+    : `, ~${fmtDur(t.left)} left` + (t.usual ? ` (usually ${fmtDur(t.usual)})` : ''));
 }
 // the whole job's: going since its first step started, and its steps' time left, a step alongside the others (YouTube's)
-// running beside those before it while those after wait for it. "more than" where some step can't be told
+// running beside those before it while those after wait for it. Steps that can't be told yet are named, as what's
+// left is then the rest's time plus theirs, which could be anything
 function jobTiming(pr){
   const now = Date.now() / 1000, began = (pr?.steps || []).map(s => s.started).filter(Boolean);
-  let left = 0, unsure = false;
+  let left = 0;
+  const unknown = [];
   for (const s of pr?.steps || []) {
     const t = stepLeft(s, now);
-    if (t.left == null) unsure = true;
+    if (t.left == null) unknown.push(s.label);
     if (s.parallel) left = Math.max(left, t.left || 0); else left += t.left || 0;
   }
   const going = began.length ? ` · going ${fmtDur(now - Math.min(...began))}` : '';
-  return going + (unsure ? (left >= 60 ? `, more than ${fmtDur(left)} left` : ', no estimate yet') : `, about ${fmtDur(left)} left`);
+  const names = unknown.length > 2 ? `${unknown.slice(0, 2).join(', ')} and ${unknown.length - 2} more` : unknown.join(' and ');
+  return going + (!unknown.length ? `, ~${fmtDur(left)} left`
+    : left >= 60 ? `, ~${fmtDur(left)} left plus ${names} (no estimate yet)` : `, no estimate yet for ${names}`);
 }
 // how far the whole job is by time, in percent (what its steps took, have been going and have left; the time bar), or
 // null while some step still to finish can't be told. Gets better with every run (the server's step_runs)
