@@ -4517,7 +4517,8 @@ async function scanPairing(dlg){
 }
 function openEdit(){    // on a phone, Scan has the focus, rather than the token, which would bring up the keyboard
   const dlg = $('#editdlg');
-  dlg.innerHTML = `<p>Changing things here needs this site's editing token, which this browser then keeps.</p>
+  dlg.innerHTML = `<p>While it's in its first stage of development, this site is read-only, and only its developer can change things. Later, anyone will be able to add their own photos and videos.</p>
+    <p>Changing things here needs this site's editing token, which this browser then keeps.</p>
     <div class="row" style="gap:8px;margin:0 0 14px"><input type="password" class="tok" placeholder="Editing token" autocomplete="off" aria-label="Editing token"${phone.matches ? '' : ' autofocus'}><button class="sm use">Use it</button></div>
     <p>Or, on the admin page on your computer, press <i>Show a QR for a phone</i>, and scan it: <button class="sm sec scan"${phone.matches ? ' autofocus' : ''}>Scan</button></p>
     <p class="scanmsg"></p><video playsinline muted hidden></video>
