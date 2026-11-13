@@ -1480,6 +1480,26 @@ kind's need. Anything can be skipped, and *its climbs* (the default) leaves out 
 than a phone can be held near is asked for at what can be had from below. A rock with no mesh is twelve sectors round
 a tapped middle, two photos each, any of which can be marked out of reach.
 
+**Sets of beta, and holds in detail.** A mesh's hand-marked holds are sets (`betasets.json`: named, made blank or as a
+copy of another set or of what a video's climber used), and a hold has an id that outlasts copies, ties and plans, and
+a size (`r_m`: one hand's width round it by default, two at most). A capture can be for one set: then only that set's
+holds count as holds, and each is wanted as a replica of it would need (the plan's `detail` need). The phone goes as
+near as it takes for the hold's region to fill the picture, not nearer: at a phone's closest focus the depth of field
+is millimetres and a hold has centimetres of relief, so tiles from closer wouldn't be sharp across it. From there:
+straight on, then from its left, right, above and below (where a phone can get to: not in the ground, not past reach,
+not with rock in the way), six angles in all, then three photos from two, four and eight times as far, which tie the
+close ones to the rest. One more, by hand and optional, with a bank card flat beside the hold: tracking's size is good
+to a couple of percent, a card's to a fraction of a millimetre. What each hold got goes in the record (`detail`), keyed
+by the holds' ids, which is what the per-hold meshes made on the server are keyed by. A close photo that comes out soft
+with the phone still moves every close view a fifth further off: that phone doesn't focus as near as asked.
+
+**A texture of its own.** The site's textures come from whatever photos the web had. So a capture, by default, is of
+the whole rock: every patch wants one photo taken now, within 35 degrees of square at 2 mm a pixel (as square as can
+be had, for rock above reach), whatever its earlier photos saw. White balance is held once photos start, where the
+phone allows; exposure is left to follow the light, since a sunlit and a shaded side can't share one, and is recorded
+for evening out later. Photos go up as CC BY 4.0 credited to the name in the app's settings, said there and at upload,
+and kept in the mesh's record of its photos.
+
 **Judging a photo.** Before: the blur its own motion would cause, from the gyroscope, the tracked speed and the shutter
 time, in pixels; a photo takes itself only under 1. After: sharpness as fine detail over detail at a quarter of the
 size, the lesser of across and down so that blur in one direction shows; compared with this capture's own usual once

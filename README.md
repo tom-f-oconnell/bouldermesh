@@ -1247,6 +1247,8 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/meshes/{id}/make-current                  go back to an older version of a rebuilt mesh
     GET|POST /api/meshes/{id}/beta                      the holds found in its videos, and those marked; POST finds them
     POST /api/meshes/{id}/holds {holds: [{p, role}]}    the holds marked by hand, roles start, hand, finish or foot
+    POST /api/meshes/{id}/beta/sets {name, climb, author, from}   a new set of beta: blank, or from {set} or {video}
+    PATCH|DELETE /api/meshes/{id}/beta/sets/{set}       its name, climb, author or holds ([{id, p, role, r_m}]); or gone
     POST /api/meshes/{id}/scale                         find its size (scale.json: metres per unit, and each estimate)
     POST /api/meshes/scale-all {again}                  size every reconstructed mesh not yet sized, or all of them
     GET|POST|DELETE /api/meshes/{id}/cleanup · PATCH /api/meshes/{id}/cleanup {removed} · GET /meshes/{id}/mesh.glb?cleaned=1
