@@ -887,7 +887,7 @@ def main(argv: list[str]) -> None:
     p.add_argument("--no-vggt", action="store_true")
     p.add_argument("--adopt", nargs="?", const="bench", default=None)
     p.add_argument("--tag", default="")
-    p.add_argument("--sim", nargs="*", default=[], help="sim_capture.py's options, for simcap")
+    p.add_argument("--sim", default="", help="sim_capture.py's options, as one string, for simcap: --sim='--resets 2'")
     a = p.parse_args(argv)
     if a.command == "add":
         adopt = Path(a.adopt) if a.adopt and a.adopt != "bench" else None
@@ -910,7 +910,7 @@ def main(argv: list[str]) -> None:
     elif a.command == "simcap":         # <project> <truth state> <seed>: a simulated capture of a boulder, added to it
         P, truth, seed = a.args[0], Path(a.args[1]), int(a.args[2])
         sim = BENCH / "incr" / "sim" / f"{P[:4]}-{truth.name}-s{seed}"
-        subprocess.run(["/usr/bin/python3", str(HERE / "sim_capture.py"), str(truth), str(sim), "--seed", str(seed), *a.sim], check=True)
+        subprocess.run(["/usr/bin/python3", str(HERE / "sim_capture.py"), str(truth), str(sim), "--seed", str(seed), *shlex.split(a.sim)], check=True)
         d = R / P / f"cap-{truth.name}-s{seed}{suffix(a)}"
         shutil.rmtree(d, ignore_errors=True)
         photos, masks = project(P)
