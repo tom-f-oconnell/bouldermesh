@@ -554,6 +554,14 @@ Meshes keep their cameras from now on (`cameras.json`), as without them a readin
 The 27 made before this deleted theirs, so they can only say what their photos hold; rebuilding one makes a
 new mesh, which can be worse: Mystical Vibrations went from 191k faces to 34k.
 
+Since November 13 they also keep the reconstruction itself (`reconstruction.tar.gz`, reconstruction.py): the
+sparse model as levelled and the photo pairs COLMAP verified, so that photos taken later (the phone apps'
+captures) can be added to a mesh without placing its own again. COLMAP's features are left out: they're most of
+its database (about 1.6 of its 2 MB a photo, barely compressible, against 0.3-0.6 MB for the photo itself), and
+the same COLMAP extracts them again to the bit on the CPU, whatever its thread count (tested with 3.9.1 and
+4.2.1; the two find different features, so a model is only re-linked to features by the COLMAP that made it,
+which `build.json` names). What's kept comes to 0.1-0.25 MB a photo (Drifter: 31 MB for 234 photos).
+
 ## Stray pieces and sheets
 
 Each reconstruction hides its stray pieces (`backend/meshclean.py`), using the second rule below.

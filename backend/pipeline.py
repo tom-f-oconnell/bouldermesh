@@ -24,6 +24,7 @@ import diagnostics
 import meshopts
 import occlusion
 import orientation
+import reconstruction
 import vggt_place
 from climbs.common import Cancelled, jobctl
 from climbs.relevance import MIN_INLIERS
@@ -81,6 +82,18 @@ def colmap_has_cuda() -> bool:
         return False
 
 
+@functools.cache
+def colmap_build() -> str | None:
+    """Which COLMAP this is, as the first lines of its help say (version, commit, CUDA), for what a mesh keeps."""
+    if not COLMAP:
+        return None
+    try:
+        lines = subprocess.run([COLMAP, "-h"], capture_output=True, text=True, timeout=30).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return " ".join(l.strip() for l in lines[:3] if l.strip()) or None
+
+
 def gpu_choice(allowed: bool = True) -> tuple[bool, str]:
     """Whether a COLMAP step should use the GPU right now, and why or why not."""
     if not allowed:
@@ -123,7 +136,7 @@ def _run(cmd: list[str], cwd: Path, log: Log, watch: Callable[[str], None] | Non
 
 
 def _gpu_or_cpu(cmd: list[str], flag: str, allowed: bool, cwd: Path, log: Log, watch: Callable[[str], None] | None = None,
-                gpu_args: list[str] | None = None) -> None:
+                gpu_args: list[str] | None = None) -> str:
     """Run a COLMAP step on the GPU if it can be, otherwise on the CPU.
 
     The GPU is shared, and COLMAP aborts outright if it runs out of memory, which can happen at any
@@ -133,16 +146,20 @@ def _gpu_or_cpu(cmd: list[str], flag: str, allowed: bool, cwd: Path, log: Log, w
         flag: the option that turns the GPU on or off.
         allowed: False to stay on the CPU, for settings the GPU can't do or USE_GPU=0.
         gpu_args: further options for a run on the GPU.
+
+    Returns:
+        What it ran on: "gpu", "cpu", or "gpu+cpu" if the GPU failed partway.
     """
     gpu, why = gpu_choice(allowed)
     log(f"{cmd[1]}: using the {'GPU' if gpu else 'CPU'} ({why})")
     if gpu:
         try:
             _run(cmd + (gpu_args or []) + [flag, "1"], cwd, log, watch)
-            return
+            return "gpu"
         except RuntimeError as e:
             log(f"{cmd[1]}: GPU run failed ({e}), carrying on with the CPU")
     _run(cmd + [flag, "0"], cwd, log, watch)
+    return "gpu+cpu" if gpu else "cpu"
 
 
 def steps() -> list[tuple[str, str, float]]:
@@ -245,6 +262,7 @@ def _largest_model(sparse: Path) -> tuple[Path | None, int]:
 # matches with (left: {photo: {with, inliers}}, inliers 0 if it shares none).
 #   models.json   {models: [{name, photos}], main, left}
 MODELS_FILE = "models.json"
+EXTRACT_FILE = "extract.json"    # in work/: the feature extraction's options and device, for what the mesh keeps (reconstruction.py)
 MODEL_LEAST = 4                 # models placing fewer photos than this aren't worth recording
 TIE_LEAST = MIN_INLIERS         # verified matches two photos share for them to be tied: as the off-topic filter takes a match
 WATERMARK = 7                   # COLMAP's two-view configuration for matches that are an overlay in the same place in both
@@ -466,8 +484,9 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         log(f"== COLMAP: feature extraction ({'internet-collection' if internet else 'single-camera'} settings)")
         tracker.update("features", 0, f"0 of {n_images} photos")
         # COLMAP has no GPU version of the affine shape and domain-size pooling of the internet settings
-        _gpu_or_cpu(cmd, "--SiftExtraction.use_gpu", use_gpu and not internet, work, log,
-                    _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1)))
+        device = _gpu_or_cpu(cmd, "--SiftExtraction.use_gpu", use_gpu and not internet, work, log,
+                             _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1)))
+        (work / EXTRACT_FILE).write_text(json.dumps({"args": reconstruction.extract_args(cmd), "device": device}))
         _finish(work, "features")
 
     if not _finished(work, "matching"):
@@ -561,6 +580,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             shutil.copyfile(work / "vggt" / "placed.json", out_dir / "placement.json")
         if (work / MODELS_FILE).exists():
             shutil.copyfile(work / MODELS_FILE, out_dir / MODELS_FILE)
+        extract = json.loads((work / EXTRACT_FILE).read_text()) if (work / EXTRACT_FILE).exists() else None
+        reconstruction.keep(model, db, out_dir, log, colmap_build(), extract)
 
     if not _finished(work, "undistort"):
         log("== COLMAP: undistort")

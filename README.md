@@ -1306,6 +1306,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_relevance.py   # offline: relevance filter on synthetic photos, progress tracking (CLIP downloads its model)
     python3 tests/test_meshmetrics.py # offline: the Meshes tab's numbers: distinct viewpoints, coverage round the rock
     python3 tests/test_pipeline.py    # offline: reconstruction steps with COLMAP/OpenMVS stubbed, progress parsing
+    python3 tests/test_reconstruction.py  # offline: what a mesh keeps of its reconstruction: the model, verified pairs, no features
     python3 tests/test_vggt_place.py  # offline: which photos VGGT places, its cameras as a COLMAP model, the rounds after
     python3 tests/test_splat.py       # offline: splats' cameras and lenses, their file, the rock's box, photos for fitting
     python3 tests/test_campaign.py    # offline: meshing an area, with harvest and reconstruction stubbed: order, stopping, restarts, retries, boulders' meshes
