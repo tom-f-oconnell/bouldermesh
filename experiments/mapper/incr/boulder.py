@@ -7,6 +7,10 @@
     boulder.py bootstrap <state dir> <mesh dir> <photos...> [--masks dir]   a state from a finished mesh's cameras.json
     boulder.py cameras <model dir> <out.json>                a model's cameras as a mesh's cameras.json
     boulder.py boot <project> <state dir>                   the test: a state's cameras as a mesh's, and a state from them
+    boulder.py capture <state> <capture dir> [<former mesh dir> <former photos>]   a phone capture added, out/ written
+    boulder.py simcap <project> <truth state> <seed> [--sim ...]                     a simulated capture of it, added
+    boulder.py export <state> <out dir> <former mesh>       out/ as a remote job returns a mesh, with frame.json
+    boulder.py refit <state> <former mesh dir> <former photos> [<capture dir>]     every photo afresh, laid over the former
     boulder.py status <state dir>
     boulder.py first <project> <init> <seed> [...]          a first build of a benchmark boulder (every photo)
     boulder.py held <project> <init> <seed> <percent> [--batches N] [...]   one of a random <percent>%, the rest added
@@ -153,7 +157,8 @@ def expand(photos: list[str]) -> list[Path]:
 
 def add(state_dir: Path | str, photos: list[Path], masks: Path | None = None, init: str = "auto", ba: str = "auto",
         feat: str = "sift", cond: str = "dev", seed: int = 0, mesh: bool = True, vggt: bool = True,
-        adopt: Path | None = None, die_after: str | None = None, poses: Path | None = None) -> dict:
+        adopt: Path | None = None, die_after: str | None = None, poses: Path | None = None,
+        capture: Path | None = None) -> dict:
     """Adds photos to a boulder's state: a first build if it has no model yet.
 
     Args:
@@ -173,6 +178,9 @@ def add(state_dir: Path | str, photos: list[Path], masks: Path | None = None, in
             benchmark's), so that only placement differs from the runs made from it.
         die_after: for the tests: stop, as if killed, after the step named.
         poses: with init "poses", the starting cameras in vggt_cams.py's format ({chosen, placed}).
+        capture: a phone capture's folder (capture.json, capture-points.bin): its photos' readings are used as
+            priors (core.capture_priors): their lenses as first guesses, the pairs to match by what they see, and
+            their cameras for those registration leaves out (core.prior_place).
 
     Returns:
         The add's record, as kept in the manifest ({"kind": "none"} if there was nothing to do).
@@ -218,7 +226,15 @@ def add(state_dir: Path | str, photos: list[Path], masks: Path | None = None, in
         return r["rc"] == 0 and out.exists()
 
     step("features", TOOLS, core("features", "/s", "--feat", feat, "--threads", threads), feat != "sift")
-    step("match", TOOLS, core("match", "/s", "--feat", feat, "--threads", threads), True)
+    by_pairs = []
+    if capture:
+        shutil.copyfile(capture / "capture.json", root / "cache" / "capture.json")
+        if (capture / "capture-points.bin").exists():
+            shutil.copyfile(capture / "capture-points.bin", root / "cache" / "capture-points.bin")
+        step("priors", TOOLS, core("priors", "/s", "/s/cache/capture.json", "--threads", threads), False)
+        if s.has_model() and json.loads((root / "cache" / "pairs.json").read_text() or "[]"):
+            by_pairs = ["--pairs"]
+    step("match", TOOLS, core("match", "/s", "--feat", feat, "--threads", threads, *by_pairs), True)
     place_args = ["place", "/s", "--init", init, "--ba", ba, "--seed", seed, "--threads", threads]
     cams = root / "cache" / f"vggt-skeleton-{k:04d}.json"
     if not s.has_model() and init == "poses" and poses:        # starting cameras from elsewhere (a phone's tracking)
@@ -237,8 +253,14 @@ def add(state_dir: Path | str, photos: list[Path], masks: Path | None = None, in
         step("resolve", TOOLS, core(*args), ba != "cpu")
         rep = report("place")
         rep["resolve"] = {"due": True, "why": first["resolve"]["why"], "added_first": len(first.get("placed", {}))}
-    placed, assist_rep = dict(rep.get("placed", {})), {}
-    if rep.get("assist_request") and (root / "model.new" / "images.bin").exists():
+    placed, assist_rep, prior_rep = dict(rep.get("placed", {})), {}, {}
+    if capture and (root / "model.new" / "images.bin").exists() and (root / "cache" / "priors.json").exists():
+        step("prior_place", TOOLS, core("prior_place", "/s", "--ba", ba, "--threads", threads), False)
+        prior_rep = report("prior_place")
+        placed.update(prior_rep.get("placed", {}))
+        if rep.get("assist_request"):       # VGGT for what's still left out
+            rep["assist_request"]["names"] = [n for n in rep["assist_request"]["names"] if n not in placed]
+    if rep.get("assist_request") and rep["assist_request"]["names"] and (root / "model.new" / "images.bin").exists():
         req = root / "cache" / f"assist-request-{k:04d}.json"
         st.write_json(req, rep["assist_request"])
         out = root / "cache" / f"vggt-assist-{k:04d}.json"
@@ -254,11 +276,16 @@ def add(state_dir: Path | str, photos: list[Path], masks: Path | None = None, in
     record = s.commit({
         "kind": rep.get("kind", "none") if ok else "failed", "placed": placed if ok else {}, "tried": rep.get("tried", []),
         "duplicates": same, "tools": TOOLS, "build": verified(TOOLS), "init": init, "start": rep.get("start"), "starts": rep.get("starts"), "ba": ba, "cond": cond,
-        "seed": seed, "model": (assist_rep or rep).get("model"), "left": sorted(set(rep.get("left", [])) - set(placed)),
+        "seed": seed, "model": (assist_rep or prior_rep or rep).get("model"), "left": sorted(set(rep.get("left", [])) - set(placed)),
         "points_new": rep.get("points_new"), "other_models": rep.get("other_models"), "resolve": rep.get("resolve"),
         "remesh": rep.get("remesh"), "old_cameras_moved": rep.get("old_cameras_moved"),
         "assist": {"asked": len(rep["assist_request"]["names"]), "placed": len(assist_rep.get("placed", {})),
                    "anchors_off": assist_rep.get("anchors_off")} if rep.get("assist_request") else None,
+        "capture": {"photos": len(new), "placed_by": {how: sum(1 for v in placed.values() if v == how) for how in set(placed.values())},
+                    "pairs": json.loads((root / "log" / "current" / "priors.report.json").read_text()).get("pair_stats")
+                    if (logdir / "priors.report.json").exists() else None,
+                    "prior_refused": len(prior_rep.get("refused", {})), "bad_spells": prior_rep.get("bad_spells"),
+                    "spells": prior_rep.get("spells")} if capture else None,
         "steps": {n: brief(r) for n, r in steps.items()}})
     if mesh and ok and rep.get("remesh", {}).get("due") and s.placed():
         made = remesh(s, logdir, cond, steps)
@@ -288,10 +315,21 @@ def mesh_stats(ply: Path) -> dict:
 
 
 def bootstrap(state_dir: Path | str, mesh_dir: Path, photos: list[Path], masks: Path | None = None, cond: str = "dev",
-              feat: str = "sift") -> dict:
-    """A state for a mesh made before states were kept, from its folder's cameras.json and its project's photos:
-    features and matches as for any add, then the model from the mesh's own cameras (core.bootstrap), in its frame.
-    The mesh itself isn't made again; the manifest names it as the one later adds are measured against and tied to."""
+              feat: str = "sift", path: str | None = None) -> dict:
+    """A state for a finished mesh, from what its folder kept and its project's photos, in the mesh's own frame. The
+    mesh itself isn't made again; the manifest names it as the one later adds are measured against and tied to.
+    Three ways, chosen by what's there (or `path`):
+
+      "same":  reconstruction.tar.gz (backend/reconstruction.py), made by this COLMAP with features extracted on the
+               CPU: the features are extracted again with the arguments it kept, which gives the same ones to the bit,
+               checked by each photo's count against its points2D in the kept model; then that model and its
+               verified pairs are the state's as they are: no matching, no triangulating.
+      "pairs": reconstruction.tar.gz from another COLMAP (every mesh the app has made, with 3.9.1): features with
+               this one, matches of only the pairs it verified (they're known to overlap), then the model's cameras
+               set and triangulated with them held (core.bootstrap).
+      "cameras": no archive: features, every pair matched, then the same from cameras.json.
+    """
+    import reconstruction
     s = st.State(state_dir)
     if s.has_model():
         raise SystemExit(f"{s.root} has a model already")
@@ -306,12 +344,32 @@ def bootstrap(state_dir: Path | str, mesh_dir: Path, photos: list[Path], masks: 
         cur.unlink()
     cur.symlink_to(logdir.name)
     shutil.copyfile(mesh_dir / "cameras.json", root / "cache" / "former-cameras.json")
+    kept = root / "cache" / "former-reconstruction"
+    shutil.rmtree(kept, ignore_errors=True)
+    build = reconstruction.unpack(mesh_dir, kept)
+    mine = colmap_banner()
+    if path is None:
+        path = ("cameras" if not build else
+                "same" if build.get("colmap") == mine and (build.get("extract") or {}).get("device") == "cpu" else "pairs")
     threads = bench.condition(cond)[1] or -1
     core = lambda *a: "python3 /incr/core.py " + bench.sh(a)        # noqa: E731
+    if path == "same":      # the kept database, its features made again with the kept arguments, and the kept model
+        shutil.copyfile(kept / "pairs.db", root / "database.db")
+        args = [x.replace("<database>", "/s/database.db").replace("<photos>", "/s/photos").replace("<masks>", "/s/masks")
+                for x in build["extract"]["args"]]
+        plan = [("features", "colmap feature_extractor " + bench.sh(args), False),
+                ("bootstrap", core("adopt", "/s", "/s/cache/former-reconstruction/model", "--threads", threads), False)]
+    elif path == "pairs":
+        plan = [("features", core("features", "/s", "--feat", feat, "--threads", threads), feat != "sift"),
+                ("pairs", core("kept_pairs", "/s", "/s/cache/former-reconstruction/pairs.db"), False),
+                ("match", core("match", "/s", "--feat", feat, "--threads", threads, "--pairs"), True),
+                ("bootstrap", core("bootstrap", "/s", "/s/cache/former-cameras.json", "--threads", threads), False)]
+    else:
+        plan = [("features", core("features", "/s", "--feat", feat, "--threads", threads), feat != "sift"),
+                ("match", core("match", "/s", "--feat", feat, "--threads", threads), True),
+                ("bootstrap", core("bootstrap", "/s", "/s/cache/former-cameras.json", "--threads", threads), False)]
     steps = {}
-    for name, script, gpu in (("features", core("features", "/s", "--feat", feat, "--threads", threads), feat != "sift"),
-                              ("match", core("match", "/s", "--feat", feat, "--threads", threads), True),
-                              ("bootstrap", core("bootstrap", "/s", "/s/cache/former-cameras.json", "--threads", threads), False)):
+    for name, script, gpu in plan:
         steps[name] = run_step(logdir, name, TOOLS, script, [f"{root}:/s"], cond, None, gpu)
         if steps[name]["rc"] != 0:
             break
@@ -321,14 +379,118 @@ def bootstrap(state_dir: Path | str, mesh_dir: Path, photos: list[Path], masks: 
         shutil.rmtree(root / "model.new", ignore_errors=True)
     record = s.commit({"kind": "bootstrap" if ok else "failed", "placed": rep.get("placed", {}) if ok else {}, "tried": rep.get("tried", []),
                        "duplicates": same, "tools": TOOLS, "build": verified(TOOLS), "cond": cond, "model": rep.get("model"),
+                       "path": path, "kept_build": build, "features_match": rep.get("features_match"),
                        "former": {"mesh": str(mesh_dir), "cameras": len(json.loads((root / "cache" / "former-cameras.json").read_text()))},
                        "skipped": rep.get("skipped"), "moved_max": rep.get("moved_max"), "turned_max_deg": rep.get("turned_max_deg"),
                        "steps": {n: {"wall": round(r["wall"], 1), "cpu_s": r["cpu_s"], "rc": r["rc"], "ba": r["ba"]} for n, r in steps.items()}})
-    s.manifest["former"] = {"mesh": str(mesh_dir), "frame": "the state's model is in this mesh's frame"}
+    s.manifest["former"] = {"mesh": str(mesh_dir), "frame": "the state's model is in this mesh's frame", "path": path}
     st.write_json(s.manifest_path, s.manifest)
-    print(f"bootstrap: {record['placed_total']} cameras of {record['former']['cameras']} from {mesh_dir}; "
+    print(f"bootstrap ({path}): {record['placed_total']} cameras of {record['former']['cameras']} from {mesh_dir}; "
           f"{(rep.get('model') or {}).get('points')} points; steps {sum(r['wall'] for r in steps.values()):.0f} s", flush=True)
     return record
+
+
+def colmap_banner() -> str | None:
+    """The first line of `colmap -h` of the tree the steps run in, as reconstruction.py keeps a mesh's: from what
+    verify_build.py found of the tree (its "version, CUDA" row)."""
+    import verify_build
+    v = verify_build.current(TOOLS, BENCH)
+    return next((r["got"] for r in (v or {}).get("rows", []) if r.get("part") == "COLMAP" and r.get("item") == "version, CUDA"), None)
+
+
+def export(s: st.State, out: Path, of: str, how: str = "add", note: str = "") -> dict:
+    """The state's mesh as a remote job returns one (backend/compute.py take_results()): out/mesh.glb and its texture
+    pages, cameras.json (backend/orientation.read_cameras, with "seen"), and frame.json (backend/frames.save): for an
+    add, the identity, the model being in the former mesh's frame. Also level.json: which way is down in it by the
+    capture's readings, and result.json {mesh}. Returns frame.json's record."""
+    import frames
+    root = s.root
+    dense = root / "dense"
+    glb = dense / "scene_dense_mesh_texture.glb"
+    if not glb.exists():
+        raise SystemExit(f"{root} has no textured mesh to export")
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    shutil.copyfile(glb, out / "mesh.glb")
+    for f in dense.glob("scene_dense_mesh_texture_*"):
+        shutil.copyfile(f, out / f.name)
+    n = write_cameras(root / "model", out / "cameras.json")
+    former = json.loads((root / "cache" / "former-cameras.json").read_text()) if (root / "cache" / "former-cameras.json").exists() else []
+    if how == "add":        # made in the former's frame: nothing to measure but that its cameras are where they were
+        mine = {c["name"]: c for c in json.loads((out / "cameras.json").read_text())}
+        kept = [c["name"] for c in former if c["name"] in mine]
+        moved = max((max(abs(a - b) for a, b in zip(mine[n_]["t"], c["t"])) for c in former for n_ in [c["name"]] if n_ in mine), default=0.0)
+        found = {"status": "tied", "scale": 1.0, "rot": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], "shift": [0.0, 0.0, 0.0],
+                 "shared": len(kept), "of_shared": len(kept), "rms": round(float(moved), 9), "rms_m": None, "tilt_deg": 0.0, "rot_deg": 0.0}
+    else:
+        found = frames.tie(former, json.loads((out / "cameras.json").read_text()))
+    rec = frames.save(out, of, how, found, note=note or f"made by experiments/mapper/incr ({n} cameras)")
+    lv = level_of(root)
+    (out / "level.json").write_text(json.dumps(lv))
+    (out / "result.json").write_text(json.dumps({"mesh": "mesh.glb"}))
+    return rec
+
+
+def level_of(root: Path) -> dict | None:
+    """Which way is down in a state's model by its capture photos' readings (capture.level(): their downs turned
+    into the model by its registered cameras, their mean and spread)."""
+    import capture as cp
+    f = root / "cache" / "priors.json"
+    if not f.exists():
+        return None
+    pri = json.loads(f.read_text())["photos"]
+    P = stats.poses(root / "model")
+    downs = [cp.down_in_model(pri[n], R) for n, (R, _) in P.items() if n in pri and pri[n].get("down")]
+    return cp.level(downs)
+
+
+def capture_add(state_dir: Path, capture_dir: Path, former: Path | None, photos_of_former: list[Path], masks: Path | None,
+                cond: str = "dev", ba: str = "auto", out: Path | None = None) -> dict:
+    """A phone capture added to a mesh: a state for the mesh first if there isn't one (bootstrap(), from its
+    cameras.json and its photos), then add() with the capture's readings as priors, then out/ as a remote job
+    returns a mesh, with frame.json tying it to the former mesh."""
+    s = st.State(state_dir)
+    if not s.has_model():
+        if not former:
+            raise SystemExit("no state and no former mesh to start one from")
+        bootstrap(state_dir, former, photos_of_former, masks, cond)
+        if not st.State(state_dir).has_model():
+            raise SystemExit(f"no state could be made from {former}: see {state_dir}/log")
+    rec = add(state_dir, expand([str(capture_dir / "photos")]), None, "auto", ba, "sift", cond, 0, True, True, capture=capture_dir)
+    s = st.State(state_dir)
+    if out and (s.root / "dense" / "scene_dense_mesh_texture.glb").exists():
+        export(s, out, of=str(former.name if former else "former"), how="add")
+    return rec
+
+
+def refit(state_dir: Path, former: Path, photos: list[Path], masks: Path | None, capture: Path | None = None,
+          cond: str = "dev", ba: str = "auto", out: Path | None = None) -> dict:
+    """A first build over every photo (the former mesh's and a capture's), laid back over the former mesh's frame by
+    the cameras both place (core.align_to, backend/frames.py's tie()), then meshed: how "refit" in frame.json, with
+    the tie's rms. The capture's readings are used for its lenses (core.capture_priors); its cameras aren't needed
+    to place a model from nothing."""
+    s = st.State(state_dir)
+    if s.has_model():
+        raise SystemExit(f"{s.root} has a model already")
+    root = s.root
+    (root / "cache").mkdir(exist_ok=True)
+    shutil.copyfile(former / "cameras.json", root / "cache" / "former-cameras.json")
+    every = photos + (expand([str(capture / "photos")]) if capture else [])
+    rec = add(state_dir, every, masks, "auto", ba, "sift", cond, 0, mesh=False, capture=capture)
+    if rec["kind"] not in ("first", "resolve"):
+        return rec
+    logdir = root / "log" / f"add-{rec['id']:04d}"
+    r = run_step(logdir, "align", TOOLS, "python3 /incr/core.py " + bench.sh(["align", "/s", "/s/cache/former-cameras.json"]),
+                 [f"{root}:/s"], cond, None, False)
+    al = json.loads((logdir / "align.report.json").read_text()) if (logdir / "align.report.json").exists() else {}
+    s = st.State(state_dir)
+    s.manifest["adds"][-1]["align"] = {k: al.get(k) for k in ("tie", "after", "aligned")} | {"wall": r["wall"]}
+    st.write_json(s.manifest_path, s.manifest)
+    if al.get("aligned"):
+        remesh(s, logdir, cond)
+        if out:
+            export(st.State(state_dir), out, of=former.name, how="refit")
+    return s.manifest["adds"][-1]
 
 
 def write_cameras(model: Path, out: Path) -> int:
@@ -566,7 +728,7 @@ def heldstats(only: str | None = None) -> None:
 def main(argv: list[str]) -> None:
     p = argparse.ArgumentParser()
     p.add_argument("command", choices=["add", "mesh", "status", "first", "held", "scenario", "queue", "table", "compare", "heldstats",
-                                        "bootstrap", "cameras", "boot"])
+                                        "bootstrap", "cameras", "boot", "capture", "export", "simcap", "refit"])
     p.add_argument("args", nargs="*")
     p.add_argument("--masks", type=Path)
     p.add_argument("--init")
@@ -579,6 +741,7 @@ def main(argv: list[str]) -> None:
     p.add_argument("--no-vggt", action="store_true")
     p.add_argument("--adopt", nargs="?", const="bench", default=None)
     p.add_argument("--tag", default="")
+    p.add_argument("--sim", nargs="*", default=[], help="sim_capture.py's options, for simcap")
     a = p.parse_args(argv)
     if a.command == "add":
         adopt = Path(a.adopt) if a.adopt and a.adopt != "bench" else None
@@ -586,6 +749,23 @@ def main(argv: list[str]) -> None:
             not a.no_vggt, adopt)
     elif a.command == "bootstrap":      # <state> <mesh dir> <photos...>
         bootstrap(Path(a.args[0]), Path(a.args[1]), expand(a.args[2:]), a.masks, a.cond, a.feat)
+    elif a.command == "capture":        # <state> <capture dir> [<former mesh dir> <former photos dir>]
+        capture_add(Path(a.args[0]), Path(a.args[1]), Path(a.args[2]) if len(a.args) > 2 else None, expand(a.args[3:]),
+                    a.masks, a.cond, a.ba, Path(a.args[0]) / "out")
+    elif a.command == "refit":          # <state> <former mesh dir> <former photos dir> [<capture dir>]
+        refit(Path(a.args[0]), Path(a.args[1]), expand([a.args[2]]), a.masks, Path(a.args[3]) if len(a.args) > 3 else None,
+              a.cond, a.ba, Path(a.args[0]) / "out")
+    elif a.command == "export":         # <state> <out dir> <former mesh's name>
+        print(json.dumps(export(st.State(a.args[0]), Path(a.args[1]), a.args[2])))
+    elif a.command == "simcap":         # <project> <truth state> <seed>: a simulated capture of a boulder, added to it
+        P, truth, seed = a.args[0], Path(a.args[1]), int(a.args[2])
+        sim = BENCH / "incr" / "sim" / f"{P[:4]}-{truth.name}-s{seed}"
+        subprocess.run(["/usr/bin/python3", str(HERE / "sim_capture.py"), str(truth), str(sim), "--seed", str(seed), *a.sim], check=True)
+        d = R / P / f"cap-{truth.name}-s{seed}{suffix(a)}"
+        shutil.rmtree(d, ignore_errors=True)
+        photos, masks = project(P)
+        theirs = {c["name"] for c in json.loads((sim / "former" / "cameras.json").read_text())}
+        capture_add(d, sim, sim / "former", [p_ for p_ in photos if p_.name in theirs], masks, a.cond, a.ba, d / "out")
     elif a.command == "cameras":        # <model dir> <out.json>
         print(write_cameras(Path(a.args[0]), Path(a.args[1])), "cameras")
     elif a.command == "boot":           # <project> <state with a model>: its cameras as a mesh's, and a state from them

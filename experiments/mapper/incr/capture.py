@@ -221,3 +221,22 @@ def level(downs: list[np.ndarray]) -> dict | None:
             "spread_p90_deg": round(float(np.percentile(off, 90)), 3), "tilt_from_model_deg": round(tilt, 3),
             # how far the mean of n readings may be off, if each is off by about their spread
             "mean_err_deg": round(float(np.median(off) / math.sqrt(len(D))), 3)}
+
+
+def undo_tie(tie: dict) -> tuple[float, np.ndarray, np.ndarray]:
+    """The similarity taking a mesh's coordinates back to the one it's tied to: for a tie x_this = s R x_of + t
+    (backend/frames.py), x_of = (1/s) R^T x_this - (1/s) R^T t, as (scale, rotation, shift)."""
+    s, R, t = float(tie["scale"]), np.asarray(tie["rot"], float), np.asarray(tie["shift"], float)
+    return 1.0 / s, R.T, -(R.T @ t) / s
+
+
+def cameras_moved(cams: list[dict], sim: tuple[float, np.ndarray, np.ndarray]) -> list[dict]:
+    """cameras.json-style cameras (world to camera q, t) in the coordinates sim takes their world to: x' = s R x + t."""
+    s, R, t = sim
+    out = []
+    for c in cams:
+        Rc = qmatrix(c["q"])
+        centre = -Rc.T @ np.asarray(c["t"], float)
+        R2 = Rc @ R.T
+        out.append({**c, "q": list(map(float, qfrom_matrix(R2))), "t": list(map(float, -R2 @ (s * R @ centre + t)))})
+    return out

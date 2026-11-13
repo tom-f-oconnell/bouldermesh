@@ -175,8 +175,9 @@ def features(root: Path, kind: str, threads: int) -> dict:
                     device="cuda" if todo and kind != "sift" else "cpu")
 
 
-def match(root: Path, gpu: bool, threads: int, kind: str = "sift") -> dict:
-    """Matches and verifies the pairs of photos not tried yet: after an add, the new photos with every photo. The
+def match(root: Path, gpu: bool, threads: int, kind: str = "sift", only: Path | None = None) -> dict:
+    """Matches and verifies the pairs of photos not tried yet: after an add, the new photos with every photo, or only
+    the pairs `only` lists (a JSON list of name pairs: overlap_pairs()'s, for a capture with its cameras known). The
     pairs are listed for COLMAP, so the old ones are not looked at again; their rows are checked to be as they were."""
     rep = Report(root, "match")
     db = root / "database.db"
@@ -185,7 +186,12 @@ def match(root: Path, gpu: bool, threads: int, kind: str = "sift") -> dict:
     before = db_pairs(db)
     names = sorted(ids)
     todo = [(a, b) for i, a in enumerate(names) for b in names[i + 1:] if pair_id(ids[a], ids[b]) not in before]
-    log(f"match: {len(todo)} pair(s) to try of {len(names) * (len(names) - 1) // 2}; {len(before)} tried before")
+    every = len(todo)
+    if only and only.exists():
+        wanted = {tuple(sorted(x)) for x in json.loads(only.read_text())}
+        todo = [(a, b) for a, b in todo if (a, b) in wanted]
+        rep.data["pairs_new_x_all"] = every
+    log(f"match: {len(todo)} pair(s) to try of {len(names) * (len(names) - 1) // 2} ({every} not tried before); {len(before)} tried before")
     if todo:
         pairs_file = root / "log" / "current" / "pairs.txt"
         pairs_file.write_text("".join(f"{a} {b}\n" for a, b in todo))
@@ -812,6 +818,293 @@ def assist(root: Path, cams_file: Path, ba: str, threads: int) -> dict:
                     anchors_off=round(float(np.median(off) / size), 4), model=stats_of(rec))
 
 
+# ---------------------------------------------------------------- a state from a mesh's kept reconstruction
+
+def kept_pairs(root: Path, pairs_db: Path) -> dict:
+    """The pairs a mesh's kept database verified (backend/reconstruction.py's pairs.db: two_view_geometries with
+    enough inliers), by name, as cache/pairs.json for match --pairs: the only old pairs worth matching again."""
+    rep = Report(root, "pairs")
+    con = sqlite3.connect(f"file:{pairs_db}?mode=ro", uri=True)
+    try:
+        names = {i: n for i, n in con.execute("SELECT image_id, name FROM images")}
+        pairs = sorted({tuple(sorted((names[a], names[b])))
+                        for p, rows in con.execute("SELECT pair_id, rows FROM two_view_geometries WHERE rows >= ?", (MIN_MATCHES,))
+                        for a, b in [divmod(p, MAX_IMAGE_ID)] if a in names and b in names})
+    finally:
+        con.close()
+    st.write_json(root / "cache" / "pairs.json", pairs)
+    n = len(names)
+    log(f"kept pairs: {len(pairs)} verified, of {n * (n - 1) // 2} possible")
+    return rep.save(pairs=len(pairs), possible=n * (n - 1) // 2)
+
+
+def adopt(root: Path, model: Path, threads: int) -> dict:
+    """A mesh's kept model as the state's, once the features made again here are checked to be the ones it was made
+    with: each placed photo's keypoint count equal to its points2D in the model (a different extraction would give
+    different counts, and the model's observations would point at the wrong features). Writes model.new."""
+    rep = Report(root, "bootstrap")
+    rec = pycolmap.Reconstruction(str(model))
+    database = pycolmap.Database.open(str(root / "database.db"))
+    differ = {}
+    for i in rec.reg_image_ids():
+        im = rec.image(i)
+        n = database.num_keypoints_for_image(i) if database.exists_image(i) else -1
+        if n != im.num_points2D():
+            differ[im.name] = [n, im.num_points2D()]
+    database.close()
+    if differ:
+        log(f"adopt: {len(differ)} photos' features differ from the kept model's (e.g. {list(differ.items())[:3]}): not adopted")
+        return rep.save(kind="none", placed={}, features_match=False, differ=dict(list(differ.items())[:20]))
+    new = root / "model.new"
+    shutil.rmtree(new, ignore_errors=True)
+    shutil.copytree(model, new)
+    log(f"adopt: the kept model's {rec.num_reg_images()} cameras and {rec.num_points3D()} points, its features matched to the bit")
+    return rep.save(kind="bootstrap", placed={rec.image(i).name: "kept" for i in rec.reg_image_ids()}, features_match=True,
+                    model=stats_of(rec), moved_max=0.0, turned_max_deg=0.0)
+
+
+def align_to(root: Path, cameras: Path) -> dict:
+    """Lays the state's model over a former mesh's frame (its cameras.json) by the cameras both place, with
+    backend/frames.py's tie() (the turn from the cameras' own rotations, scale and shift from their centres, those
+    that don't fit left out): for a refit, a first build over every photo, so that it overlays the former mesh. The
+    model is transformed in place; the report has the tie as found (before) and the residual after."""
+    sys.path.insert(0, "/backend")
+    import frames
+    rep = Report(root, "align")
+    former = json.loads(cameras.read_text())
+    rec = pycolmap.Reconstruction(str(root / "model"))
+
+    def mine():
+        out = []
+        for n, (R, t) in poses(rec).items():
+            out.append({"name": n, "q": [float(x) for x in _quat(R)], "t": [float(x) for x in t]})
+        return out
+    tie = frames.tie(former, mine())        # x_mine = s R x_former + t
+    if tie.get("status") != "tied":
+        log(f"align: not tied ({tie.get('why')})")
+        return rep.save(tie=tie, aligned=False)
+    import capture as cp
+    sc, Ri, ti = cp.undo_tie(tie)
+    rec.transform(pycolmap.Sim3d(sc, pycolmap.Rotation3d(Ri), ti))
+    rec.write(str(root / "model"))
+    after = frames.tie(former, mine())
+    log(f"align: {tie['shared']} of {tie['of_shared']} shared cameras; laid over at {after.get('rms')} (units) rms")
+    return rep.save(tie=tie, after=after, aligned=True)
+
+
+def _quat(R):
+    """COLMAP's w, x, y, z for a rotation matrix."""
+    import capture as cp
+    return cp.qfrom_matrix(np.asarray(R))
+
+
+# ---------------------------------------------------------------- a capture's own readings as priors
+
+def capture_priors(root: Path, record: Path, threads: int) -> dict:
+    """The phone's own idea of each capture photo's camera, in the model's frame, from its BMSH1 readings and the
+    record's fit (capture.py, as the app's Geometry.kt); its lens as COLMAP's first guess (k, a pinhole: the
+    database's SIMPLE_RADIAL camera gets f = (fx + fy) / 2, cx, cy, no distortion, marked as a prior); and the pairs
+    worth matching: overlap_pairs(). Writes cache/priors.json and cache/pairs.json."""
+    import capture as cp
+    rep = Report(root, "priors")
+    rec = cp.record(record)
+    fit = rec.get("fit")
+    db = root / "database.db"
+    ids = db_images(db)
+    database = pycolmap.Database.open(str(db))
+    priors, lens_set = {}, 0
+    for sh in rec["shots"]:
+        b = sh.get("blob") or {}
+        if not sh.get("kept", True) or sh["name"] not in ids:
+            continue
+        cam = cp.pose(b)
+        entry = {"spell": cp.spell_of(b), "i": b.get("i"), "t": b.get("t"), "down": b.get("down"), "still": b.get("still"),
+                 "ref": b.get("ref")}
+        if cam is not None and fit:
+            q, t, lens = cp.colmap(cp.into(cam, fit))
+            entry.update(q=q, t=t, f=(lens["params"][0] + lens["params"][1]) / 2)
+        priors[sh["name"]] = entry
+        k = b.get("k")
+        if k:       # the phone's lens as the first guess, for the picture's own size
+            im = database.read_image(ids[sh["name"]])
+            c = database.read_camera(im.camera_id)
+            sx, sy = c.width / float(k["w"]), c.height / float(k["h"])
+            f = (k["fx"] * sx + k["fy"] * sy) / 2
+            params = list(c.params)
+            params[:3] = [f, k["cx"] * sx, k["cy"] * sy]
+            c.params = params
+            c.has_prior_focal_length = True
+            database.update_camera(c)
+            lens_set += 1
+    database.close()
+    out = {"fit": fit, "metres_per_unit": (fit or {}).get("scale"), "photos": priors}
+    st.write_json(root / "cache" / "priors.json", out)
+    rep.part("pairs")
+    pairs, stats = overlap_pairs(root, priors)
+    st.write_json(root / "cache" / "pairs.json", pairs)
+    log(f"priors: {sum(1 for p in priors.values() if 'q' in p)} of {len(priors)} capture photos have a camera from the phone; "
+        f"{lens_set} lenses set from k; {len(pairs)} pairs to match ({stats})")
+    return rep.save(photos=len(priors), posed=sum(1 for p in priors.values() if "q" in p), lenses=lens_set, pairs=len(pairs), pair_stats=stats)
+
+
+def overlap_pairs(root: Path, priors: dict, least: int = 25, sample: int = 6000) -> tuple[list, dict]:
+    """The pairs of photos worth matching for a capture: each capture photo with the model's photos and the capture's
+    others that see enough of the same rock (`least` of a sample of the model's 3D points in front of both and in both
+    pictures; the capture's photos where the phone put them), with the photos either side of it in its spell of
+    tracking whatever they see, and every capture photo the phone couldn't place with every photo. In place of
+    capture x all."""
+    import capture as cp
+    model = root / "model"
+    if not (model / "images.bin").exists():
+        return [], {"why": "no model"}
+    rec = pycolmap.Reconstruction(str(model))
+    pts = np.array([p.xyz for p in rec.points3D.values()])
+    if len(pts) > sample:
+        pts = pts[np.random.default_rng(0).choice(len(pts), sample, replace=False)]
+    seen = {}
+
+    def visible(R, t, w, h, f, cx, cy):
+        X = pts @ np.asarray(R).T + np.asarray(t)
+        z = X[:, 2]
+        ok = z > 1e-9
+        u, v = f * X[:, 0] / np.where(ok, z, 1) + cx, f * X[:, 1] / np.where(ok, z, 1) + cy
+        return set(np.flatnonzero(ok & (u >= 0) & (u < w) & (v >= 0) & (v < h)))
+    for i in rec.reg_image_ids():
+        im, c = rec.image(i), rec.camera(rec.image(i).camera_id)
+        T = im.cam_from_world()
+        seen[im.name] = visible(T.rotation.matrix(), T.translation, c.width, c.height, c.mean_focal_length(),
+                                c.principal_point_x, c.principal_point_y)
+    ids = db_images(root / "database.db")
+    database = pycolmap.Database.open(str(root / "database.db"))
+    new_seen, blind = {}, []
+    for n, p in priors.items():
+        if n in seen:
+            continue
+        if "q" not in p:
+            blind.append(n)
+            continue
+        c = database.read_camera(database.read_image(ids[n]).camera_id)
+        new_seen[n] = visible(cp.qmatrix(p["q"]), p["t"], c.width, c.height, p["f"] * c.width / c.width, c.params[1], c.params[2])
+    database.close()
+    pairs = set()
+    everyone = sorted(set(seen) | set(priors))
+    for n, v in new_seen.items():
+        for m, w in list(seen.items()) + list(new_seen.items()):
+            if m != n and len(v & w) >= least:
+                pairs.add(tuple(sorted((n, m))))
+    by_spell = {}
+    for n, p in sorted(priors.items(), key=lambda kv: (kv[1].get("i") or 0)):
+        by_spell.setdefault(p.get("spell"), []).append(n)
+    for names in by_spell.values():
+        for a, b in zip(names, names[1:]):
+            pairs.add(tuple(sorted((a, b))))
+        for a, b in zip(names, names[2:]):
+            pairs.add(tuple(sorted((a, b))))
+    for n in blind:
+        for m in everyone:
+            if m != n:
+                pairs.add(tuple(sorted((n, m))))
+    new = [n for n in priors if n not in seen]
+    every = len(new) * (len(everyone) - len(new)) + len(new) * (len(new) - 1) // 2
+    return sorted(pairs), {"capture": len(new), "model": len(seen), "chosen": len(pairs), "new_x_all": every,
+                           "unposed": len(blind)}
+
+
+def prior_place(root: Path, threads: int, ba: str, near: int = 6, max_off_m: float = 0.15, max_off_deg: float = 5.0) -> dict:
+    """Places the capture photos registration left out from where the phone put them (cache/priors.json), each
+    corrected by the photos of its own spell of tracking that registration did place: the similarity that lays the
+    phone's cameras of the `near` placed photos nearest it in the order taken onto where COLMAP put them, which follows
+    the tracking's drift and any jump it didn't flag. A photo whose neighbours don't agree among themselves (their
+    cameras more than max_off_m or max_off_deg off once laid over) isn't placed this way, and a spell where that's true
+    of most is reported as one not to trust. Then, as for VGGT's cameras (assist()): its matches triangulated over
+    tightening rounds, it and its points refined with the model's cameras held, kept if 15 of its points survive.
+    Works on model.new."""
+    import capture as cp
+    rep = Report(root, "prior_place")
+    pri = json.loads((root / "cache" / "priors.json").read_text())
+    mpu = pri.get("metres_per_unit") or 1.0         # the fit's scale: metres a unit of the model
+    rec = pycolmap.Reconstruction(str(root / "model.new"))
+    have = poses(rec)
+    phone = {n: (cp.qmatrix(p["q"]), np.asarray(p["t"])) for n, p in pri["photos"].items() if "q" in p}
+    order = {n: (p.get("spell"), p.get("i") or 0) for n, p in pri["photos"].items()}
+    todo = sorted(n for n in phone if n not in have)
+    spells = {}
+    placed_from, refused = {}, {}
+    for n in todo:
+        s, i = order[n]
+        mates = sorted((m for m in phone if m in have and order[m][0] == s), key=lambda m: abs(order[m][1] - i))[:near]
+        if len(mates) < 3:
+            refused[n] = f"{len(mates)} photo(s) of its spell were placed"
+            spells.setdefault(s, {"placed": 0, "refused": 0})["refused"] += 1
+            continue
+        sim = similarity(phone, have, mates)
+        centre = lambda m, P: -P[m][0].T @ P[m][1]        # noqa: E731
+        sc, Rs, sh = sim
+        off_m = [float(np.linalg.norm(sc * Rs @ centre(m, phone) + sh - centre(m, have))) * mpu for m in mates]
+        off_deg = [float(np.degrees(np.arccos(np.clip((np.trace(phone[m][0] @ Rs.T @ have[m][0].T) - 1) / 2, -1, 1)))) for m in mates]
+        if np.median(off_m) > max_off_m or np.median(off_deg) > max_off_deg:
+            refused[n] = f"its spell's placed neighbours disagree with the phone by {np.median(off_m):.2f} m, {np.median(off_deg):.1f} deg"
+            spells.setdefault(s, {"placed": 0, "refused": 0})["refused"] += 1
+            continue
+        R = phone[n][0] @ Rs.T
+        c = sc * Rs @ centre(n, phone) + sh
+        placed_from[n] = (R, -R @ c, pri["photos"][n]["f"])
+        spells.setdefault(s, {"placed": 0, "refused": 0})["placed"] += 1
+    rep.data["spells"] = spells
+    bad = sorted(s for s, v in spells.items() if v["refused"] > v["placed"])
+    if not placed_from:
+        log(f"prior_place: none of {len(todo)} photos could be placed from the phone's cameras; spells not to trust: {bad}")
+        return rep.save(placed={}, tried=todo, refused=refused, bad_spells=bad)
+    o = pipeline_options(threads, 0)
+    cache = open_cache(root / "database.db", set(have) | set(placed_from))
+    rec.load(cache)
+    ids = {im.name: i for i, im in cache.images.items()}
+    fixed = {rec.image(i).camera_id for i in rec.reg_image_ids()}
+    for n, (R, t, f) in placed_from.items():
+        set_pose(rec, ids[n], R, t, f if f else None)
+        rec.register_frame(rec.image(ids[n]).frame_id)
+    mapper = pycolmap.IncrementalMapper(cache)
+    mapper.begin_reconstruction(rec)
+    mo, tri = o.get_mapper(), o.get_triangulation()
+    kept = list(placed_from)
+    for k, (angle, err) in enumerate(ROUNDS):
+        rep.part(f"triangulate{k}")
+        tri.create_max_angle_error = tri.continue_max_angle_error = tri.re_max_angle_error = angle
+        tri.merge_max_reproj_error = tri.complete_max_reproj_error = err
+        mo.filter_max_reproj_error = err
+        for n in kept:
+            mapper.triangulate_image(tri, ids[n])
+        rep.part(f"adjust{k}")
+        refine_added(mapper, rec, o, mo, tri, [ids[n] for n in kept], ba, rounds=1, fixed_lenses=fixed)
+        kept = [n for n in kept if rec.image(ids[n]).num_points3D >= (ASSIST_MIN_POINTS if k == len(ROUNDS) - 1 else 3)]
+    for n in placed_from:
+        if n not in kept and rec.image(ids[n]).has_pose:
+            mapper.observation_manager.deregister_frame(rec.image(ids[n]).frame_id)
+    mapper.end_reconstruction(False)
+    rec.update_point_3d_errors()
+    rec.write(str(root / "model.new"))
+    log(f"prior_place: {len(kept)} of {len(todo)} photos placed from the phone's cameras ({len(refused)} refused); spells not to trust: {bad}")
+    return rep.save(placed={n: "phone" for n in kept}, tried=todo, refused=refused, bad_spells=bad, model=stats_of(rec))
+
+
+def level_report(root: Path, model: Path) -> dict | None:
+    """Which way is down in a model by its capture photos' readings (down, in each picture's axes, turned into the
+    model by its registered camera): capture.level()'s mean and spread."""
+    import capture as cp
+    f = root / "cache" / "priors.json"
+    if not f.exists():
+        return None
+    pri = json.loads(f.read_text())["photos"]
+    rec = pycolmap.Reconstruction(str(model))
+    downs = []
+    for i in rec.reg_image_ids():
+        im = rec.image(i)
+        p = pri.get(im.name)
+        if p and p.get("down"):
+            downs.append(cp.down_in_model(p, im.cam_from_world().rotation.matrix()))
+    return cp.level(downs)
+
+
 # ---------------------------------------------------------------- a state from a mesh that has none
 
 def bootstrap(root: Path, cameras: Path, threads: int) -> dict:
@@ -824,6 +1117,20 @@ def bootstrap(root: Path, cameras: Path, threads: int) -> dict:
     db, photos = root / "database.db", root / "photos"
     cams = json.loads(cameras.read_text())
     cams = cams.get("cameras", cams) if isinstance(cams, dict) else cams
+    # each photo's lens into the database first, as the mesh had it (model and all): COLMAP's triangulation reloads
+    # the cameras from there and wants them alike
+    database = pycolmap.Database.open(str(db))
+    by_db = {im.name: im for im in database.read_all_images()}
+    for c in cams:
+        lens, im = c.get("lens"), by_db.get(c["name"])
+        if lens and im:
+            cam = database.read_camera(im.camera_id)
+            if (lens["width"], lens["height"]) == (cam.width, cam.height):
+                cam.model = pycolmap.CameraModelId(int(lens["model"]))
+                cam.params = [float(x) for x in lens["params"]]
+                cam.has_prior_focal_length = True
+                database.update_camera(cam)
+    database.close()
     cache = open_cache(db, {c["name"] for c in cams})
     rec = pycolmap.Reconstruction()
     rec.load(cache)
@@ -998,13 +1305,24 @@ def main(argv: list[str]) -> None:
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--resolve", action="store_true")
     p.add_argument("--no-scenes", action="store_true")
+    p.add_argument("--pairs", action="store_true", help="match only cache/pairs.json's pairs (capture_priors())")
     a = p.parse_args(argv)
     if a.step == "features":
         features(a.state, a.feat, a.threads)
     elif a.step == "match":
-        match(a.state, not a.cpu, a.threads, a.feat)
+        match(a.state, not a.cpu, a.threads, a.feat, a.state / "cache" / "pairs.json" if a.pairs else None)
     elif a.step == "place":
         place(a.state, a.init, a.vggt, a.ba, a.seed, a.threads, a.resolve, not a.no_scenes)
+    elif a.step == "align":
+        align_to(a.state, a.cameras)
+    elif a.step == "kept_pairs":
+        kept_pairs(a.state, a.cameras)
+    elif a.step == "adopt":
+        adopt(a.state, a.cameras, a.threads)
+    elif a.step == "priors":
+        capture_priors(a.state, a.cameras, a.threads)
+    elif a.step == "prior_place":
+        prior_place(a.state, a.threads, a.ba)
     elif a.step == "bootstrap":
         bootstrap(a.state, a.cameras, a.threads)
     elif a.step == "assist":

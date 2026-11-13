@@ -86,6 +86,27 @@ def test_fixtures():
     assert list(cp.spells(r["shots"])) == ["a"]
 
 
+def test_refit_tie_undone():
+    """A model in its own frame, tied to the former by backend/frames.py, then laid back: the tie is then the identity."""
+    sys.path.insert(0, str(ROOT / "backend"))
+    import frames
+    rng = np.random.default_rng(1)
+    former = []
+    for i in range(12):
+        a = i * 0.5
+        cam = cp.look([4 * math.sin(a), 1.5 + 0.1 * i, 4 * math.cos(a)], [0, 1.2, 0], LENS)
+        q, t, _ = cp.colmap(cam)
+        former.append({"name": f"p{i}.jpg", "q": q, "t": t})
+    R = cp.qmatrix(cp.qunit([0.8, 0.3, -0.4, 0.2]))
+    theirs = cp.cameras_moved(former, (2.5, R, np.array([1.0, -3.0, 0.5])))
+    theirs[3]["t"] = list(np.asarray(theirs[3]["t"]) + 5.0)         # one placed wrongly: left out by the tie
+    tie = frames.tie(former, theirs)
+    assert tie["status"] == "tied" and abs(tie["scale"] - 2.5) < 1e-6 and tie["shared"] == 11
+    back = cp.cameras_moved(theirs, cp.undo_tie(tie))
+    again = frames.tie(former, back)
+    assert abs(again["scale"] - 1) < 1e-6 and again["rot_deg"] < 1e-4 and again["rms"] < 1e-5
+
+
 if __name__ == "__main__":
     for name, f in sorted(globals().items()):
         if name.startswith("test_"):
