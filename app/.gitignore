@@ -4,5 +4,5 @@ local.properties
 *.iml
 .idea/
 .kotlin/
-ios/*.xcodeproj/
-ios/build/
+ios/xcode/*.xcodeproj/
+ios/xcode/build/

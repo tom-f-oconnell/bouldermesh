@@ -606,6 +606,15 @@ the rock behind them through them, and they stay solid where there's nothing beh
 at also makes anything that comes between it and you see-through around it, as you turn the view, until the view is
 framed again. *Opaque* draws every surface solid.
 
+## Phone apps
+
+[app/](app/README.md) has Android and iPhone apps that guide photographing a boulder: they download a mesh and its
+holds, show over the camera what still needs photos, take and judge each one, and record with it which way was down,
+where the phone was and which way it faced. A capture uploaded from one is meshed together with the photos of the mesh
+it adds to (`merge_capture()`), linked to the same climbs beside it, levelled and sized by the phone's readings
+(orientation.py, scale.py), and put on the map where its photos' GPS fixes say once 6 of them agree to 5 m
+(`place_from_phone()`). Neither app has run on a phone yet.
+
 ## Run it as a service
 
 To have systemd start the Docker Compose stack at boot, restart it if it fails, and keep its log:
@@ -1188,6 +1197,9 @@ Security, then WAF, then *Rate limiting rules* (or *Security rules*, then a rate
     backend/climbs/diversity.py    de-dup + view-graph diversity estimate
     backend/climbs/htmlmini.py     tiny DOM on html.parser (no bs4 needed)
     frontend/index.html            UI: Climbs / Projects / Meshes tabs, three.js viewer, Leaflet map
+    backend/captureplan.py         for the phone apps: what of a mesh to photograph, and a light copy of it to draw
+    backend/phonedata.py           what the apps record in each photo, and a mesh's size and place from it
+    app/                           the phone apps (Kotlin: shared logic, Android, iPhone); not sent to the image build
     cli.py                         command-line access to the same code
     deploy/                        systemd services and an installer, the public setup's Caddyfile, and ship.sh for a public server
     data/                          created at runtime; DATA_DIR overrides
@@ -1271,6 +1283,11 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
                                                         viewing the site (not other sites' pages; 8 KB, 20 in 10 min an address):
                                                         kept in data/client-errors.jsonl; `python3 cli.py client-errors` lists them
 
+    GET  /api/capture/meshes                           for the phone apps (app/FORMAT.md): the meshes a capture can add to
+    GET  /api/capture/plan/<mesh>                      what of a mesh to photograph: targets (holds first), what each has so far
+    GET  /api/capture/guide/<mesh>.bin                 a light copy of it, to draw over the camera
+    POST /api/projects/<id>/capture {…, shots}         the record of a capture whose photos the project holds (8 MB at most)
+
 ## Development
 
 [design.md](design.md) has the measurements behind the relevance filter and people masking.
@@ -1303,6 +1320,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_notify.py      # offline: ntfy notifications, their signed Approve and Deny, following the replies
     python3 tests/test_backup.py      # offline: the server's database snapshots, and deploy/backup.sh copying a stand-in server
     python3 tests/test_admin.py       # offline: the admin page's settings, credentials and photo permissions
+    python3 tests/test_capture.py     # offline: plans and guides for the phone apps, readings in photos, size and place from them, captures merged
     python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job
     python3 tests/test_public.py      # the editing token and read-only modes, other sites' pages refused, the page's policy and headers, what's served how
     python3 tests/test_links.py       # offline: the names in climbs' and boulders' links, clashes, renames, deleted meshes

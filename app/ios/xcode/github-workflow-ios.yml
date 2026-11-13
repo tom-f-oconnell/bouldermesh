@@ -1,0 +1,25 @@
+# Builds the iPhone app for the simulator on GitHub's Macs, which is the only check of its linking and of its Swift
+# that can be had without a Mac. Not in .github/workflows because pushing a workflow needs a token with the "workflow"
+# scope: copy it there (as .github/workflows/ios.yml) from an account that has one.
+name: iOS app
+on:
+  push:
+    paths: ["app/**"]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21" }
+      - run: brew install xcodegen
+      - name: The shared logic's tests, on the simulator's processor too
+        working-directory: app
+        run: ./gradlew --no-daemon :shared:jvmTest :shared:iosSimulatorArm64Test
+      - name: Build the app
+        working-directory: app/ios/xcode
+        run: |
+          xcodegen
+          xcodebuild -project BoulderMesh.xcodeproj -scheme BoulderMesh -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build

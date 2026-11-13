@@ -5,4 +5,4 @@ dependencyResolutionManagement {
     repositories { google(); mavenCentral() }
 }
 rootProject.name = "bouldermesh-app"
-include(":shared", ":android")
+include(":shared", ":android", ":ios")

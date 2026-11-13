@@ -1,0 +1,39 @@
+# The Xcode project, made from this by XcodeGen (brew install xcodegen; then `xcodegen` here), so that none is kept in git.
+name: BoulderMesh
+options:
+  bundleIdPrefix: sh.boulderme
+  deploymentTarget:
+    iOS: "16.0"       # full-size photos while tracking (ARSession.captureHighResolutionFrame) came with iOS 16
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"     # the script below runs Gradle, which writes outside what Xcode would let it
+targets:
+  BoulderMesh:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: BoulderMesh
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities: [arkit]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSCameraUsageDescription: "To photograph the rock, and to track where the phone is as it does."
+        NSLocationWhenInUseUsageDescription: "So that each photo says where it was taken and which way it faced, which puts the mesh on the map."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sh.boulderme.app
+        TARGETED_DEVICE_FAMILY: "1"
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)"
+        # the Kotlin framework is a static one: what it uses of iOS is linked here
+        OTHER_LDFLAGS: "$(inherited) -framework BoulderMeshKit -framework ARKit -framework SceneKit -framework CoreMotion -framework CoreLocation -framework AVFoundation -framework ImageIO -framework CoreImage -framework CoreVideo -framework CoreMedia -framework AudioToolbox"
+    preBuildScripts:
+      - name: Build the Kotlin framework
+        basedOnDependencyAnalysis: false
+        script: |
+          cd "$SRCROOT/../.."
+          ./gradlew :ios:embedAndSignAppleFrameworkForXcode

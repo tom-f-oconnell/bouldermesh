@@ -1403,3 +1403,87 @@ priority, takes longer. A failure is kept with what it was drawn from, and not t
 Chromium and its libraries take about 0.6 GB of the server's image (`THUMBS=1`, the default); the machines' build
 leaves them out.
 
+
+## The phone apps (`app/`)
+
+Many meshes lack what only someone at the rock can give: which way is down and north, how big it is, where exactly it
+is, the sides and holds no photo online shows. The apps collect all of that in one visit, by guiding a capture.
+
+**What a website can't do.** A page can read GPS, the compass and tilt, and take photos, but it can't track the phone's
+own movement to the centimetre (ARKit, ARCore), which is what gives a mesh its size without anything of known size in
+the picture, shows where the gaps are over the live camera, and knows each photo's position before the server has seen
+it. Nor can it hold the camera's shutter time down, or work with no signal, which is most boulders.
+
+**One logic, two phones.** Everything that decides anything is Kotlin Multiplatform in `app/shared`, tested on the JVM
+(`./gradlew :shared:jvmTest`): lining the mesh up (Registration.kt), what's been photographed well enough and what to
+do next (Coverage.kt, Orbit.kt), judging a photo and the sensors (Quality.kt), calibration (Calibration.kt), one
+capture's bookkeeping (Session.kt) and its screen's steps (Flow.kt). The Android app (`app/android`: Compose, ARCore,
+OpenGL) and the iPhone app (`app/ios`: UIKit, ARKit, SceneKit) feed it frames and taps and draw what it answers. The
+iPhone app is Kotlin too, calling Apple's frameworks through Kotlin/Native, with a dozen lines of Swift to start it:
+that way all of it but the linking compiles on Linux (`:ios:compileKotlinIosArm64`), where Swift couldn't be checked
+at all. A Kotlin subclass of an Objective-C class can't itself be subclassed, hence a `Form` beside each
+`FormController`.
+
+**Readings travel in the photo.** Each photo's EXIF UserComment holds `BMSH1:` and JSON (app/FORMAT.md): gravity in the
+stored pixels' axes, the phone's tracked position and turn, its GPS fix, lens and exposure, and how it was judged. So a
+photo keeps them wherever it goes (a project, a machine's job, a pool), and the server's existing steps pick them up
+with no new plumbing: `orientation.reading()` takes its gravity as it takes an iPhone's own, heading.py its
+GPSImgDirection, and scale.py compares the tracked positions of a mesh's app photos with where COLMAP placed them
+(`phonedata.scale_estimates()`: a similarity fit for each tracking session, outliers trimmed, 2% as its floor, since
+tracking drifts however well it fits) and averages their GPS fixes after taking out each photo's own offset from the
+rock (`phonedata.position()`).
+
+**What to photograph: the plan.** For a mesh, `captureplan.py` makes a 12,000-face copy to draw (`guide.bin`) and
+targets, all in the mesh's own coordinates: the holds its beta found or an editor marked (0.5 mm of rock a pixel from 4
+directions), patches of rock (1.5 mm from 3; those by a hold or in a climb's view matter more than the rest, the ground
+not at all), and edges where the mesh stops (photos past them are what extend it). Each comes with what the mesh's own
+photos already gave it, from the cameras COLMAP placed: on real meshes that's about 9 mm a pixel on rock and 2 mm on
+holds, so nearly every hold starts undone. The numbers are judgement, not measurement: 0.5 mm is where a crimp's edge
+and texture show.
+
+**Lining the mesh up.** The phone's tracking and a levelled mesh both have up as +Y, so a turn about Y, a size and a
+shift are all that's unknown: two spots tapped on both give them (`Registration.fromTaps()`), and need not be
+accurate, because the fit is then tightened against the points the phone tracks on the rock (point-to-plane, the
+furthest quarter left out each round, the size free to change a tenth a round, and tilt allowed up to 20° for a mesh
+that wasn't quite level). Tapping the mesh happens on a small model of it put a metre in front of the phone, turned as
+its photos saw it, since a mesh drawn at full size somewhere unknown can't be tapped. Recognising the rock from the
+camera's picture instead (matching against the mesh's photos) would save the taps, but needs the server or a much
+heavier app, and fails in just the cases where the mesh is poor.
+
+**Good enough, not all round.** A target is done when its finest view and its count of distinct directions meet its
+kind's need. Anything can be skipped, and *its climbs* (the default) leaves out rock no climb is on. A hold higher
+than a phone can be held near is asked for at what can be had from below. A rock with no mesh is twelve sectors round
+a tapped middle, two photos each, any of which can be marked out of reach.
+
+**Judging a photo.** Before: the blur its own motion would cause, from the gyroscope, the tracked speed and the shutter
+time, in pixels; a photo takes itself only under 1. After: sharpness as fine detail over detail at a quarter of the
+size, the lesser of across and down so that blur in one direction shows; compared with this capture's own usual once
+there are five, since phones sharpen differently. Clipping from every 8th pixel. A photo that fails is not kept and the
+screen says why.
+
+**Calibration.** What's worth a person's time is small. The accelerometer's offsets come from three rests (flat,
+turned half round, flipped), the half turn cancelling the table's slope; they matter only for a photo taken while
+tracking was lost, as tracking gives gravity otherwise, and an iPhone trims its own. The compass is checked rather
+than corrected: readings while the phone is turned every which way should lie on a sphere whose radius is the Earth's
+field, and the phone's own rating has to be at least medium; each photo's heading is then dropped if the field's
+strength is off this capture's usual by 15% (a bolt, a car). The lens needs nothing: both systems give each frame's
+own, and COLMAP refines it.
+
+**The cameras.** ARCore gives only the frames it tracks with to an app that wants both tracking and pictures (1920 x
+1080 on most phones), and no control of the shutter; its shared-camera mode can take full-size stills, but only by
+interrupting the tracking that the guidance runs on. So Android photos are small and holds need to be shot
+from nearer. ARKit hands over full 12-megapixel frames while tracking (iOS 16), and the camera under it can be told to
+keep its shutter to 1/120 s. On the iPhone, frames are read by a timer 12 times a second and Kotlin's memory swept
+after each: ARKit starts dropping the camera's pictures once about a dozen frames are held, and Kotlin holds anything
+it has seen until its next sweep.
+
+**On the server.** A project with a capture's record naming a mesh has that mesh's project's photos linked into it
+before it's meshed (`merge_capture()`), people masks and sources too; the mesh made is linked to that mesh's climbs
+and left beside it rather than replacing it, since swapping a boulder's mesh for one from another project touches
+everything that counts a boulder's meshes, and whether a capture's is better is easy to see and hard to compute. Once
+sized, a mesh whose app photos' fixes agree to 5 m (6 or more of them) is moved there (`place_from_phone()`), with
+where it was kept.
+
+**Not yet.** Neither app has run on a phone. Sharpness thresholds are guesses. There's no choosing which climbs to
+capture for (the core has it: `Scope.climbs`), no QR scan for pairing, and uploads are over the site's ordinary
+routes, so a capture of a few hundred photos wants Wi-Fi.
