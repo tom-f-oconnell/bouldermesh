@@ -94,6 +94,7 @@ if [ "$check" -eq 3 ]; then
             st=$?
             set -e
             echo "${grey}$(date +%H:%M:%S)${plain} $left"
+            cli deploy-drain >/dev/null 2>&1 || true     # still here: the drain lasts 5 min unless renewed (DRAIN_LEASE)
             [ "$st" -eq 0 ] && break    # otherwise, something's left, or the server couldn't be asked just now
             if [ "$SECONDS" -ge "$deadline" ] && [ -z "$late" ]; then
                 [ -t 0 ] || { echo "still going after ${WAIT_MINUTES:-90} min: restarting anyway"; break; }

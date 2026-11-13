@@ -72,6 +72,9 @@ TOP = ("out", "masks")      # what a job's results may hold
 RULES = {"provisional_work": False, "registrations_per_address": 5, "max_waiting": 30}
 
 
+DRAIN_TASKS = ("filter",)    # what machines still take while paused: short, and a running harvest waits on it, here otherwise
+
+
 class NotTaken(compute.ComputeUnavailable):
     """No machine took a job within its take_within (Board.task()), though some are there."""
 
@@ -128,7 +131,7 @@ class Board:
         self.rules, self.registered, self.came_went, self.idle_why = rules, registered, came_went, idle_why
         self.downloaded = downloaded
         self._said: dict[str, tuple[str, float]] = {}   # each machine's reason for its state last logged, and when
-        self.paused: str | None = None      # why no new job is given out (the server about to restart); those running go on
+        self.paused: str | None = None      # why no new job is given out (the server about to restart), but DRAIN_TASKS; those running go on
         self._hour = int(time.time() // 3600)
         self.log = lambda line: log(line) if log is not print else print(line, flush=True)
         self.held = db_path.parent / "held"     # what provisional machines made, for climbs to take once they're approved
@@ -388,13 +391,14 @@ class Board:
                 mine.lines.append(f"remote: {m['name']} started the job again")
                 mine.out_size = None
                 mine.output.unlink(missing_ok=True)
-            elif self.paused:
-                self._state(m, "idle", self.paused)
-                return {"wait": POLL, "why": f"nothing for it: {self.paused}"}
             else:
                 version = int(_number(client.get("version")) or 1)
                 could = [j for j in self.jobs.values() if j.state == "queued" and j.version <= version
-                         and (not waiting or j.task == "reconstruct") and (tasks is None or j.task in tasks)]
+                         and (not waiting or j.task == "reconstruct") and (tasks is None or j.task in tasks)
+                         and (not self.paused or j.task in DRAIN_TASKS)]     # paused: only short jobs, as a harvest's filtering
+                if self.paused and not could:
+                    self._state(m, "idle", self.paused)
+                    return {"wait": POLL, "why": f"nothing for it: {self.paused}"}
                 # a harvest's filtering first (short, and the server waits for it), then meshing, then beta and size;
                 # but beta and size that have waited AGE_FIRST go ahead of meshing
                 def rank(j):

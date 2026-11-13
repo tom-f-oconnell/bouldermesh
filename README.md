@@ -693,7 +693,9 @@ unit runs this repository's copy (which never updates itself) is it restarted, w
 progress, it lists it with about how long each has left (`!` for what it would lose: a job on a machine, which starts
 over; a job asked for; beta or size found here; harvests, volunteers' uploads, and jobs no machine has taken yet only
 pause) and asks: restart **now**, or **after** what's in progress finishes, the server taking no new work meanwhile, or
-cancel (the new image is pulled, and runs at the next restart). While it waits, it says what for every 30 s
+cancel (the new image is pulled, and runs at the next restart). Meanwhile machines still take a running harvest's
+filtering, only no new meshing, and the drain ends by itself if `deploy.sh` stops renewing it for 5 minutes (it does
+every 30 s), as when it dies or loses its connection. While it waits, it says what for every 30 s
 (`cli.py deploy-check --brief`), stamped with hal's time, and `n` restarts now, `c` or Ctrl-C cancels. `./deploy.sh
 --now` and `--after` choose without asking; without a terminal it waits, for at most `WAIT_MINUTES` (90). The server
 answers these only from itself (`GET /api/deploy`, `POST /api/deploy/drain`), through `docker compose exec`.

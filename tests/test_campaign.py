@@ -2680,6 +2680,10 @@ sj.input.unlink(missing_ok=True)
 state = server.drain(True)
 assert state["draining"] and board.paused and server._draining and not server._draining["now"]
 assert server.drain(True, now=True) and server._draining["now"], "now too: a stop won't wait"
+server.drain(True)      # one deploy.sh stopped renewing ends by itself (drain_watch())
+assert server._draining["until"] - time.time() > server.DRAIN_LEASE - 5
+server._draining["until"] = time.time() - 1
+assert server.end_stale_drain() and server._draining is None and server.MACHINES.paused is None
 assert not server.drain(False)["draining"] and board.paused is None and server._draining is None
 board.jobs.pop(job.id, None)
 job.input.unlink(missing_ok=True)

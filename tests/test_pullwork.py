@@ -787,6 +787,11 @@ board.paused = "the server is about to restart, for a new version"
 r = board.work(board.machine(order_box["token"]), "10.0.0.8", {"version": SCRIPT_VERSION})
 assert "job" not in r and r["why"].endswith("about to restart, for a new version") and waiting_job.state == "queued", r
 assert [j["label"] for j in board.running() if j["state"] == "queued"] == ["paused"]
+short = board._new_job("filter", {}, {}, "filter: paused", image[0])     # a harvest's filtering still goes out
+r = board.work(board.machine(order_box["token"]), "10.0.0.8", {"version": SCRIPT_VERSION})
+assert r["job"]["id"] == short.id and waiting_job.state == "queued", r
+board.jobs.pop(short.id, None)
+short.input.unlink(missing_ok=True)
 board.paused = None
 assert board.work(board.machine(order_box["token"]), "10.0.0.8", {"version": SCRIPT_VERSION})["job"]["id"] == waiting_job.id
 board.jobs.pop(waiting_job.id, None)

@@ -6689,7 +6689,8 @@ def worker(w: Worker | None = None) -> None:
 # ------------------------------------------------------------------ stopping, and what it would interrupt
 STOP_WAIT = float(os.environ.get("STOP_WAIT_MINUTES", "10")) * 60   # docker-compose.yml's stop_grace_period is longer
 _stopping: dict | None = None    # once a stop has begun: {since, until, waiting_for}
-_draining: dict | None = None    # deploy.sh about to restart it: {since, now}: no new work taken; with now, no waiting on stop
+_draining: dict | None = None    # deploy.sh about to restart it: {since, now, until}: no new work taken; with now, no waiting on stop
+DRAIN_LEASE = 300   # seconds a drain lasts unless deploy.sh says so again (it does every 30 s as it waits): one it left behind ends
 AGAIN = {"reconstruct": "Retry on its project runs it", "harvest": "Retry on its project runs it", "retry": "Retry on its project runs it",
          "boulder": "Retry on its project runs it", "retexture": "Make textures... on the admin page runs it",
          "scale": "it's queued again by itself"}     # what runs a job after a restart interrupted it
@@ -6762,14 +6763,33 @@ def job_label(j: dict) -> str:
 def drain(on: bool, now: bool = False) -> dict:
     """For deploy.sh, before it restarts the server: with on, take no new work (areas' climbs, jobs people asked for,
     beta, a video's frames, and machines' jobs), while what's in progress goes on; with now too, a stop doesn't wait
-    for jobs to finish either (stop_when_idle()). Off, carry on as before. A restart clears it anyway."""
+    for jobs to finish either (stop_when_idle()). Off, carry on as before. A restart clears it anyway, and so does
+    DRAIN_LEASE passing without deploy.sh draining it again (drain_watch()), as when deploy.sh died without undoing it.
+    Machines still get short jobs meanwhile (pullwork's DRAIN_TASKS: a running harvest's filtering), only no new meshing."""
     global _draining
-    _draining = {"since": (_draining or {}).get("since") or time.time(), "now": now} if on else None
+    _draining = {"since": (_draining or {}).get("since") or time.time(), "now": now, "until": time.time() + DRAIN_LEASE} if on else None
     MACHINES.paused = "the server is about to restart, for a new version" if on else None
     if not on:
         _beta_wake.set()
         _frames_wake.set()
     return deploy_state()
+
+
+def drain_watch() -> None:
+    """End a drain deploy.sh hasn't renewed for DRAIN_LEASE (drain()): it died, or lost its connection, while waiting."""
+    while True:
+        time.sleep(30)
+        end_stale_drain()
+
+
+def end_stale_drain() -> bool:
+    """drain_watch()'s check: end the drain if its lease has passed; whether it did."""
+    d = _draining
+    if d and not d.get("now") and time.time() > d.get("until", float("inf")):
+        print(f"drain: not renewed for {DRAIN_LEASE // 60} min (deploy.sh gone?): taking work again", flush=True)
+        drain(False)
+        return True
+    return False
 
 
 def _left(pid: str, progress: dict | None, keys: set[str] | None = None) -> float | None:
@@ -9730,6 +9750,7 @@ def main() -> None:
     threading.Thread(target=beta_worker, daemon=True).start()
     threading.Thread(target=watch_usage, daemon=True).start()
     threading.Thread(target=snapshot_worker, daemon=True).start()
+    threading.Thread(target=drain_watch, daemon=True, name="drain-watch").start()
     threading.Thread(target=frames_worker, daemon=True).start()
     threading.Thread(target=prune_worker, daemon=True).start()
     threading.Thread(target=pack_worker, daemon=True).start()
