@@ -814,7 +814,18 @@ def estimate(mesh_dir: Path, photos: Path, masks: Path | None, climbs: list[dict
     return record
 
 
+RESULT = ("metres_per_unit", "low", "high", "method", "height_m", "estimates", "finished")    # what a finished search found
+
+
 def save(mesh_dir: Path, record: dict) -> None:
+    """Save a mesh's record. One without a size (queued, running, stopped, failed, or finding nothing) keeps the last
+    size found as its "previous", so that finding it again loses nothing until a new one is found (summary() and
+    the server's metres_per_unit() go by it meanwhile)."""
+    if not record.get("metres_per_unit") and "previous" not in record:
+        before = load(mesh_dir) or {}
+        prev = {k: before[k] for k in RESULT if k in before} if before.get("metres_per_unit") else before.get("previous")
+        if prev:
+            record = {**record, "previous": prev}
     tmp = mesh_dir / (FILE + ".tmp")
     tmp.write_text(json.dumps(record))
     tmp.replace(mesh_dir / FILE)
@@ -831,7 +842,9 @@ def summary(record: dict | None) -> dict | None:
     """For the list of meshes: how finding it got on, and what it found."""
     if not record:
         return None
-    out = {k: record.get(k) for k in ("status", "progress", "metres_per_unit", "low", "high", "method", "height_m")}
+    if not record.get("metres_per_unit") and record.get("previous"):    # the last size found, while looked for again
+        record = {**record, **record["previous"], "status": record.get("status"), "progress": record.get("progress"), "earlier": True}
+    out = {k: record.get(k) for k in ("status", "progress", "metres_per_unit", "low", "high", "method", "height_m", "earlier")}
     kinds = [e["kind"] for e in record.get("estimates") or []]
     out.update(videos=kinds.count("video"), photos="photos" in kinds, standing=next((e["n"] for e in record.get("estimates") or [] if e["kind"] == "standing"), 0),
                stated=next(({"m": e["stated_m"], "text": e["text"], "metres_per_unit": e["metres_per_unit"]}

@@ -2333,6 +2333,17 @@ rep = json.loads((server.PROJECTS / gp / "relevance.json").read_text())
 assert rep == {"kept": ["a.jpg", "b.jpg"], "rejected": {}, "put_back": ["b.jpg"]}, rep
 print("a climb's photos by source, and small copies OK")
 
+# finding a size again: the last one found stands, for the page and Nearby, until a new one is
+sdir = server.MESHES / ("0c" * 6)
+sdir.mkdir(parents=True, exist_ok=True)
+server.scale_mod.save(sdir, {"status": "done", "metres_per_unit": 0.5, "height_m": 3.0, "low": 0.4, "high": 0.6, "method": "people"})
+server.scale_mod.save(sdir, {"status": "queued", "progress": None})
+assert server.metres_per_unit("0c" * 6) == 0.5 and server.scale_mod.summary(server.scale_mod.load(sdir))["height_m"] == 3.0
+server.scale_mod.save(sdir, {**server.scale_mod.load(sdir), "status": "failed: x", "progress": None})
+assert server.metres_per_unit("0c" * 6) == 0.5, "a failure keeps it too"
+server.scale_mod.save(sdir, {"status": "done", "metres_per_unit": 0.7})
+assert server.metres_per_unit("0c" * 6) == 0.7 and "previous" not in server.scale_mod.load(sdir)
+
 # a pair of meshes Nearby left out as overlapping: kept for looking at later, only of meshes there are
 for mid_, name_ in (("0a" * 6, "Rock (boulder)"), ("0b" * 6, "Rock")):
     server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES(?,?,?,?,?)", mid_, name_, "m.glb", "project:x", time.time(), write=True)

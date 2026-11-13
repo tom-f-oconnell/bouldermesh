@@ -121,7 +121,7 @@
   .bpanel .ready{color:var(--ok)} .bpanel[open] .ready,.bpanel:not([open]) .full{display:none} .bpanel .when{color:var(--mute);margin-top:3px}
   .btoggle{background:none;border:0;padding:0;color:var(--mute);font-size:12px;cursor:pointer;margin-top:8px}
   dialog.danger-ask{max-width:420px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:14px}
-  dialog.danger-ask::backdrop{background:rgba(0,0,0,.45)} dialog.danger-ask p{color:var(--mute);font-size:13px} dialog.danger-ask .row{gap:8px}
+  dialog.danger-ask::backdrop{background:rgba(0,0,0,.45)} dialog.danger-ask p{color:var(--mute);font-size:13px;white-space:pre-line} dialog.danger-ask .row{gap:8px}
   dialog.danger-ask .yes{background:var(--bad);color:#fff;border-color:var(--bad);font-weight:600}
   .maplegend{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;display:flex;gap:10px}
   .maplegend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px;opacity:.85}
@@ -2988,6 +2988,8 @@ async function openClimb(id, focus=true){
     toast('Linked'); d.remove(); openClimb(id); refreshMeshes(); refreshClimbs();
   };
   d.querySelector('.harvest').onclick = async () => {
+    if (harvests.length && !await askDanger(`Harvest "${c.name}" again, from scratch?`,
+      "Its photos, video frames and the filter's rejects are deleted and gathered again (photos you put back stay put back); a video that can't be downloaded again loses its frames. Its meshes stay.", 'Harvest again')) return;
     const sources = [...d.querySelectorAll('input[name=src]:checked')].map(i => i.value);
     const r = await api(`/api/climbs/${id}/harvest`, { method: 'POST', json: { sources, reconstruct: d.querySelector('.autorec').checked, filter: d.querySelector('.relfilter').checked } });
     toast('Harvest queued → see Projects tab'); active = r.project_id;
@@ -2999,7 +3001,7 @@ async function openClimb(id, focus=true){
     try { await api('/api/climbs/import', { method: 'POST', json: { url: c.url, include_children: false } }); toast('Fetched'); d.remove(); openClimb(id); refreshClimbs(); }
     catch (e) { toast('Fetch failed: ' + e.message, 8000); }
   });
-  d.querySelector('.del').onclick = async () => { if (ask(`Delete climb "${c.name}" (meshes are kept)?`)) { await api('/api/climbs/' + id, { method: 'DELETE' }); closeClimb(); refreshClimbs(); refreshMeshes(); } };
+  d.querySelector('.del').onclick = async () => { if (await askDanger(`Delete climb "${c.name}"?`, 'Its meshes are kept.', 'Delete climb')) { await api('/api/climbs/' + id, { method: 'DELETE' }); closeClimb(); refreshClimbs(); refreshMeshes(); } };
   placeClimb(d, id);
   if (focus) d.scrollIntoView({ block: 'nearest' });
 }
@@ -3144,7 +3146,8 @@ async function projectSure(p, what){
   try { fx = (await api(`/api/projects/${p.id}/effects`))[what]; }
   catch (e) { toast(e.message, 8000); return false; }
   if (fx.blocked) { alert(`"${p.name}" can't be ${what === 'delete' ? 'deleted' : 'stopped'} now: ${fx.blocked}.`); return false; }
-  return confirm(`${what === 'delete' ? 'Delete' : 'Stop'} "${p.name}"?\n\n${fx.says.join('\n\n')}`);
+  if (what === 'delete') return askDanger(`Delete "${p.name}"?`, fx.says.join('\n\n'), 'Delete');
+  return confirm(`Stop "${p.name}"?\n\n${fx.says.join('\n\n')}`);
 }
 function progressHtml(p){
   const pr = p.progress;
@@ -3934,14 +3937,14 @@ function renderMeshes(filter = true){
     d.querySelector('.mthumb')?.addEventListener('click', () => viewMesh(m.id, null, 'meshes'));
     d.querySelector('.fly')?.addEventListener('click', () => flyTo(m.lat, m.lng));
     d.querySelector('.setll')?.addEventListener('click', async () => { const ll = parseLL(prompt('lat, lng')); if (!ll) return; await api('/api/meshes/'+m.id, {method:'PATCH', json:{lat:ll[0], lng:ll[1]}}); refreshMeshes(); });
-    d.querySelector('.del').onclick = async () => { if (ask(`Delete mesh "${meshTitle(m)}"?`)) { await api('/api/meshes/' + m.id, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); } };
+    d.querySelector('.del').onclick = async () => { if (await askDanger(`Delete mesh "${meshTitle(m)}"?`, 'Its files are deleted from the server (the nightly backup keeps a copy of what it last had for 30 days), and its climbs no longer show it.', 'Delete mesh')) { await api('/api/meshes/' + m.id, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); } };
     d.querySelectorAll('[data-climb]').forEach(ch => ch.onclick = ev => { if (ev.target.dataset.unlink) return; openClimb(ch.dataset.climb); });
     d.querySelector('details.mclimbs')?.addEventListener('toggle', ev => { ev.target.open ? climbListsOpen.add(m.id) : climbListsOpen.delete(m.id); });
     d.querySelectorAll('[data-from]').forEach(ch => ch.onclick = () => {
       const c = m.boulder_climbs.find(x => x.id === ch.dataset.from);
       c?.view ? viewMesh(m.id, c.id, 'meshes') : openClimb(ch.dataset.from);
     });
-    d.querySelectorAll('[data-unlink]').forEach(x => x.onclick = async ev => { ev.stopPropagation(); await api(`/api/meshes/${m.id}/links/${x.dataset.unlink}`, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); });
+    d.querySelectorAll('[data-unlink]').forEach(x => x.onclick = async ev => { ev.stopPropagation(); if (!ask('Take this climb off this mesh? Linking it again puts it back.')) return; await api(`/api/meshes/${m.id}/links/${x.dataset.unlink}`, {method:'DELETE'}); refreshMeshes(); refreshClimbs(); });
     const link = d.querySelector('.linksel');
     if (link) {     // its climbs listed only once it's opened: hundreds of options on every card made each sort take seconds
       const fill = () => { if (link.options.length > 1) return; link.insertAdjacentHTML('beforeend', climbsPick.map(c => `<option value="${c.id}">${esc(named(c, true))}</option>`).join('')); };

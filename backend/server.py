@@ -1669,7 +1669,8 @@ def skyline_progress() -> dict:
 
 def metres_per_unit(mid: str) -> float | None:
     """How many metres one of a mesh's units is, if its size was found (scale.py)."""
-    v = (scale_mod.load(MESHES / mid) or {}).get("metres_per_unit")
+    rec = scale_mod.load(MESHES / mid) or {}
+    v = rec.get("metres_per_unit") or (rec.get("previous") or {}).get("metres_per_unit")     # the last found, while found again
     return float(v) if isinstance(v, (int, float)) and v > 0 else None
 
 

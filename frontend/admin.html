@@ -6,6 +6,9 @@
 <title>BoulderMesh admin</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <style>
+  dialog.danger-ask{max-width:420px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:14px}
+  dialog.danger-ask::backdrop{background:rgba(0,0,0,.45)} dialog.danger-ask p{color:var(--mute);font-size:13px}
+  dialog.danger-ask .yes{background:var(--bad);color:#fff;border-color:var(--bad);font-weight:600}
   :root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#e6e8ee;--mute:#8b93a7;--acc:#5cc8ff;--ok:#5fd68a;--bad:#ff6b6b;--warn:#ffc857}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
@@ -322,6 +325,20 @@ function oldMeshesNote(o){
     "via" another), ${o.remade} have a mesh made under the rules, ${o.missed.length} were tried without one, and ${o.waiting} wait to be tried
     (each queued again as its area runs)${o.needs_backup ? `, <span class="warn">${o.needs_backup} of which need data from the backup first</span>` : ''}.<br><b>Old by data: ${o.old_data || 0}</b>, of climbs a newer mesh made under the same rules, from photos
     they lacked, is of too: kept, and left out of visitors' lists of a boulder's meshes.`;
+}
+// a confirmation for what can't be taken back: a dialog whose red button goes on (resolves true), as the site's page has
+function askDanger(title, body, go){
+  return new Promise(done => {
+    const dlg = document.createElement('dialog'); dlg.className = 'danger-ask';
+    dlg.innerHTML = `<b></b><p></p><div style="display:flex;gap:8px;justify-content:flex-end"><button class="sec no">Cancel</button><button class="yes"></button></div>`;
+    dlg.querySelector('b').textContent = title; dlg.querySelector('p').textContent = body; dlg.querySelector('.yes').textContent = go;
+    const end = v => { dlg.close(); dlg.remove(); done(v); };
+    dlg.querySelector('.no').onclick = () => end(false);
+    dlg.querySelector('.yes').onclick = () => end(true);
+    dlg.addEventListener('cancel', ev => { ev.preventDefault(); end(false); });
+    dlg.addEventListener('click', ev => { if (ev.target === dlg) end(false); });
+    document.body.append(dlg); dlg.showModal(); dlg.querySelector('.no').focus();
+  });
 }
 async function call(path, body){
   const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -708,7 +725,7 @@ $('#mach-list').addEventListener('click', async ev => {
 });
 $('#room-save').onclick = async () => { await save({ 'storage.cap_gb': +$('#room-cap').value, 'storage.warn_percent': +$('#room-warn-pct').value, 'storage.warn_gb': +$('#room-warn-gb').value, 'storage.offload_percent': +$('#room-offload').value }); try { await call('/api/admin/actions/measure', {}); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#room-measure').onclick = async () => { msg('Measuring…', 60000); try { msg((await call('/api/admin/actions/measure', {})).result); refresh(); } catch (e) { msg(e.message, 8000); } };
-$('#room-rejected').onclick = async () => { if (!confirm('Delete every photo the filter rejected, from every project not being harvested or meshed now? They can\'t be put back after.')) return; msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
+$('#room-rejected').onclick = async () => { if (!await askDanger('Delete every photo the filter rejected?', 'From every project not being harvested or meshed now. They can\'t be put back after, nor looked at to judge the filter.', 'Delete them')) return; msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#via').onchange = () => save({ 'youtube.via': $('#via').value });
 $('#area-meshes').onchange = () => save({ 'areas.meshes': $('#area-meshes').value });
