@@ -1626,7 +1626,8 @@ def capture_plan(mid: str) -> dict | None:
         return None
     scale = metres_per_unit(mid)
     stamp = "|".join(f"{f.name}:{f.stat().st_mtime_ns}" for f in sorted(d.iterdir())
-                     if f.name in ("mesh.glb", "mesh.ply", "cameras.json", "cleanup.json", viewpoints.FILE, beta_mod.FILE, beta_mod.HOLDS_FILE))
+                     if f.name in ("mesh.glb", "mesh.ply", "cameras.json", "cleanup.json", viewpoints.FILE, beta_mod.FILE, beta_mod.HOLDS_FILE,
+                                   beta_mod.SETS_FILE))
     want = captureplan.key(stamp, 0, scale)
     with _plan_lock:
         plan = captureplan.load(d, want)
@@ -1640,8 +1641,12 @@ def capture_plan(mid: str) -> dict | None:
             for v in (beta_mod.load(d) or {}).get("videos", []):
                 of = [r["climb_id"] for r in q("SELECT climb_id FROM climb_videos WHERE url=?", v.get("url"))]
                 holds += [{"p": h["p"], "role": h.get("role"), "from": "video", "climbs": [c for c in of if c in climbs]} for h in v.get("holds") or []]
-            holds += [{"p": h["p"], "role": h.get("role"), "from": "marked", "climbs": []} for h in beta_mod.load_holds(d).get("holds") or []]
-            plan = captureplan.make(d, holds, [{**c, "view": views.get(c["id"])} for c in climbs.values()], scale, want)
+            sets = beta_mod.load_sets(d)     # the sets of beta made by hand: each hold with the sets it's in, and its set's climb
+            for one in sets:
+                holds += [{"p": h["p"], "role": h.get("role"), "from": "marked", "sets": [one["id"]], "ids": [h.get("id") or beta_mod.hold_id(h["p"])],
+                           "r_m": h.get("r_m"), "climbs": [one["climb"]] if one.get("climb") in climbs else []} for h in one["holds"]]
+            plan = captureplan.make(d, holds, [{**c, "view": views.get(c["id"])} for c in climbs.values()], scale, want,
+                                    sets=[{"id": one["id"], "name": one["name"], "climb": one.get("climb")} for one in sets])
     facing = mesh_heading(mid)
     return {**plan, "mesh": mid, "name": m["name"], "lat": m["lat"], "lng": m["lng"], "heading_deg": facing["deg"] if facing else None,
             "guide_url": f"/api/capture/guide/{mid}.bin?v={plan['guide']['sha1']}"}
@@ -1667,10 +1672,12 @@ def capture_meshes() -> list[dict]:
                 on[m["boulder"]] = [" ".join(x for x in (c["name"], c["grade"]) if x) for c in boulder_climbs(m["boulder"])]
             climbs = on[m["boulder"]]
         try:
-            holds = len(beta_mod.load_holds(d).get("holds") or []) + sum(len(v.get("holds") or []) for v in (beta_mod.load(d) or {}).get("videos", []))
+            sets = beta_mod.load_sets(d)
+            holds = sum(len(one["holds"]) for one in sets) + sum(len(v.get("holds") or []) for v in (beta_mod.load(d) or {}).get("videos", []))
         except Exception:
-            holds = 0
-        out.append({"id": m["id"], "name": m["name"], "lat": m["lat"], "lng": m["lng"], "climbs": climbs or [], "holds": holds})
+            holds, sets = 0, []
+        out.append({"id": m["id"], "name": m["name"], "lat": m["lat"], "lng": m["lng"], "climbs": climbs or [], "holds": holds,
+                    "sets": [one["name"] for one in sets]})
     return out
 
 
@@ -1796,10 +1803,11 @@ def tie_capture(mid: str, target: str, log=None, how: str = "cameras") -> dict |
         size = metres_per_unit(mid)
         found["rms_m"] = round(found["rms"] * size, 3) if size else None
         move = lambda point: [round(x, 5) for x in frames.apply(found, point)]  # noqa: E731
-        marked = beta_mod.load_holds(theirs).get("holds") or []
-        if marked and not (beta_mod.load_holds(mine).get("holds") or []):
-            beta_mod.save_holds(mine, [{"p": move(h["p"]), "role": h["role"]} for h in marked if h.get("role") in beta_mod.ROLES])
-            carried.append(plural(len(marked), "marked hold"))
+        sets = beta_mod.load_sets(theirs)
+        if sets and not beta_mod.load_sets(mine):       # its sets of beta, each as it was, at the same spots of the rock
+            beta_mod.save_sets(mine, [{**one, "holds": [{**h, "id": h.get("id") or beta_mod.hold_id(h["p"]), "p": move(h["p"])} for h in one["holds"]],
+                                       "from": {"mesh": target, "set": one["id"]}} for one in sets])
+            carried.append(f"{plural(len(sets), 'set')} of beta ({plural(sum(len(one['holds']) for one in sets), 'hold')})")
         views = viewpoints.load(theirs)
         if views and (views.get("climbs") or {}) and viewpoints.load(mine) is None:
             moved = {cid: {**v, **{k: move(v[k]) for k in ("eye", "target") if isinstance(v.get(k), list)}} for cid, v in views["climbs"].items()}
@@ -8638,7 +8646,7 @@ class Handler(BaseHTTPRequestHandler):
                         r["orientation"] = orientation.load(MESHES / r["id"])
                         r["sources"] = provenance.summary(mesh_record(MESHES / r["id"]))
                         r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
-                        r["marked"] = len(beta_mod.load_holds(MESHES / r["id"])["holds"])
+                        r["marked"] = sum(len(one["holds"]) for one in beta_mod.load_sets(MESHES / r["id"]))
                         r["scale"] = scale_mod.summary(scale_mod.load(MESHES / r["id"]))
                         r["tie"] = mesh_tie(r["id"]) if r.get("adds_to") else None
                     except Exception as e:
@@ -8708,7 +8716,8 @@ class Handler(BaseHTTPRequestHandler):
                         v.pop("image", None)
                     if access == "hide":
                         v.update(url=None, title="a video that isn't clearly free to copy", uploader=None)
-                return self.send_json({"found": found, "marked": beta_mod.load_holds(MESHES / m[1]), "available": beta_mod.available()})
+                return self.send_json({"found": found, "marked": beta_mod.load_holds(MESHES / m[1]), "sets": beta_mod.load_sets(MESHES / m[1]),
+                                       "available": beta_mod.available()})
             if p == "/api/videos":   # every video known, and what it or its channel says about the climber's size
                 return self.send_json(q("""SELECT v.url,v.title,v.uploader,v.channel_url,v.duration,v.upload_date,v.license,
                       v.height_cm,v.wingspan_cm,v.ape_index_cm,v.first_person,v.quotes,
@@ -9265,8 +9274,17 @@ class Handler(BaseHTTPRequestHandler):
                 if not queue_scale(m[1]):
                     return self.send_json({"error": "already finding it"}, 409)
                 return self.send_json({"queued": True}, 202)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta/sets", p)
+            if m:   # a new set of beta: {name?, climb?, author?, from?: {set} or {video}}; blank unless it's a copy
+                if not (MESHES / m[1]).is_dir():
+                    return self.send_json({"error": "not found"}, 404)
+                body = self.read_json()
+                try:
+                    return self.send_json(beta_mod.new_set(MESHES / m[1], body.get("name"), body.get("climb"), body.get("author"), body.get("from")), 201)
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/holds", p)
-            if m:   # holds marked by hand: {holds: [{p, role}]}, replacing those there
+            if m:   # the holds of its first set of beta (what "marked by hand" were): {holds: [{p, role}]}, replacing those there
                 if not (MESHES / m[1]).is_dir():
                     return self.send_json({"error": "not found"}, 404)
                 try:
@@ -9355,6 +9373,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             body = self.read_json()
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta/sets/([0-9a-z]+)", p)
+            if m:   # a set of beta's name, climb, author or holds: those given
+                if not (MESHES / m[1]).is_dir():
+                    return self.send_json({"error": "not found"}, 404)
+                try:
+                    return self.send_json(beta_mod.update_set(MESHES / m[1], m[2], body if isinstance(body, dict) else {}))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 404 if "no such set" in str(e) else 400)
             m = re.fullmatch(r"/api/climbs/([0-9a-f]+)", p)
             if m:
                 allowed = {"name", "grade", "lat", "lng", "boulder_name", "kind", "url"}
@@ -9400,6 +9426,10 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         if self.refused():
             return
+        m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta/sets/([0-9a-z]+)", p)
+        if m:   # one set of beta, and its holds
+            gone = (MESHES / m[1]).is_dir() and beta_mod.delete_set(MESHES / m[1], m[2])
+            return self.send_json({"deleted": m[2]} if gone else {"error": "not found"}, 200 if gone else 404)
         m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)", p)
         if m:   # the list goes; meshes and projects it made stay
             stop_campaign(m[1])

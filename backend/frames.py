@@ -15,6 +15,7 @@ pipeline in experiments/mapper/incr both write it, so that the server treats the
                "refit": the same, by the incremental pipeline's first build over every photo
                "add": made in the other's frame, by adding photos to its reconstruction: the identity, but for drift
                "add+relevel": the same, then turned level by the capture's own readings: a rotation, scale 1
+               "texture": the other's own shape, textured again (from a capture's photos first): the identity
     status     "tied", or "untied" with why (too few shared cameras): the rest is then absent
     scale, rot (3 rows), shift     x_this = scale * rot @ x_of + shift
     shared, of_shared              the cameras that agreed, of those the two have in common
@@ -22,6 +23,7 @@ pipeline in experiments/mapper/incr both write it, so that the server treats the
                if its size is known)
     tilt_deg   the angle between the other's up (+Y) and this one's: how far off level one is by the other's reckoning
     rot_deg    the whole turn
+    capture_share   of its surface, the share textured from photos taken with an app of ours, if whoever made it says
     made, note
 """
 from __future__ import annotations
@@ -34,7 +36,7 @@ from pathlib import Path
 FILE = "frame.json"
 VERSION = 1
 LEAST = 4               # cameras two meshes have to share to be tied
-HOW = ("cameras", "refit", "add", "add+relevel")
+HOW = ("cameras", "refit", "add", "add+relevel", "texture")
 
 
 def _rotation(q):

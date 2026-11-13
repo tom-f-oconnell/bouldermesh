@@ -24,6 +24,12 @@ data class ShotBlob(
     val k: BlobLens? = null,
     val exp: BlobExposure? = null,
     val q: BlobQuality? = null,
+    val ref: String? = null,                // "id1-card": a bank card lies flat on the rock in it, for size; of which hold (ref_hold)
+    @SerialName("ref_hold") val refHold: String? = null,
+    val still: Int? = null,                 // 1: a full-size still, where the phone's other photos are its tracking's frames
+    @SerialName("k_src") val kSrc: String? = null,      // "derived": its lens (k) was worked out from the tracking camera's, not given
+    val lic: String? = null,                // the licence it's given under, and who to credit
+    val by: String? = null,
 ) {
     /** As it goes into the photo: plain ASCII, so that whatever writes the EXIF keeps it a byte a character. */
     fun userComment(): String = MARK + ascii(Plan.json.encodeToString(serializer(), this))
@@ -39,7 +45,10 @@ data class ShotBlob(
 }
 
 @Serializable data class BlobGps(val lat: Double, val lng: Double, val alt: Double? = null, val acc: Double, val age: Double)
-@Serializable data class BlobAr(val s: String, val p: List<Double>, val q: List<Double>, val track: String = "normal")
+@Serializable data class BlobAr(val s: String, val p: List<Double>, val q: List<Double>, val track: String = "normal",
+                                val span: BlobSpan? = null, val paused: Int? = null)
+/** A full-size still's pose is the tracking's either side of it: how long apart those were, and how far the phone moved and turned between. */
+@Serializable data class BlobSpan(@SerialName("dt_s") val dtS: Double, @SerialName("moved_m") val movedM: Double, @SerialName("turned_deg") val turnedDeg: Double)
 @Serializable data class BlobLens(val fx: Double, val fy: Double, val cx: Double, val cy: Double, val w: Int, val h: Int)
 @Serializable data class BlobExposure(val t: Double? = null, val iso: Double? = null, @SerialName("focus_m") val focusM: Double? = null)
 @Serializable data class BlobQuality(val sharp: Double? = null, @SerialName("blur_px") val blurPx: Double, @SerialName("clip_hi") val clipHi: Double? = null,
@@ -50,10 +59,28 @@ data class ShotBlob(
 data class ShotRecord(val name: String, val blob: ShotBlob, val kept: Boolean, val why: List<String> = emptyList(),
                       val notes: List<String> = emptyList(), val helped: List<String> = emptyList())
 
+/**
+ * What a capture got of a hold: its finest view (mm of rock a pixel), the directions that count of those it needs, and
+ * for one wanted in detail the sides it has close views from of those wanted, the photos from further off that tie
+ * them in, and whether one has a card beside it. `ids`: which holds of the mesh's sets of beta it is; p: where, in the
+ * mesh's coordinates; r_m: how far round it was wanted in detail.
+ */
+@Serializable
+data class RecordHold(
+    val target: String, val ids: List<String> = emptyList(), val p: List<Double> = emptyList(), @SerialName("r_m") val rM: Double? = null,
+    @SerialName("gsd_mm") val gsdMm: Double? = null, val views: Int = 0, @SerialName("views_of") val viewsOf: Int = 0,
+    val sides: List<String> = emptyList(), @SerialName("sides_of") val sidesOf: List<String> = emptyList(),
+    val ties: Int = 0, @SerialName("ties_of") val tiesOf: Int = 0, val card: Boolean = false, val done: Boolean = false,
+)
+
+/** The set of beta a capture was for, and what it got of each of its holds. */
+@Serializable data class RecordDetail(val set: String, val holds: List<RecordHold>)
+
 /** A whole capture, as sent to the server beside its photos (POST /api/projects/<id>/capture). */
 @Serializable
 data class CaptureRecord(
-    val v: Int = 2,                         // 2: plan, level, down_agree_deg; `ar.s` changes when tracking was lost and came back; accel_bias gone
+    val v: Int = 3,                         // 2: plan, level, down_agree_deg; `ar.s` changes when tracking was lost and came back; accel_bias gone
+                                            // 3: detail, licence, credit; a photo's ref, still, ar.span
     val id: String,
     val app: String,
     val device: String,
@@ -70,6 +97,9 @@ data class CaptureRecord(
     @SerialName("down_agree_deg") val downAgreeDeg: Double? = null,
     val skipped: Map<String, String> = emptyMap(),
     val progress: RecordProgress? = null,
+    val detail: RecordDetail? = null,       // the set of beta it was for, if one was chosen
+    val licence: String? = null,            // what its photos are given under by whoever took them, and who to credit
+    val credit: String? = null,
     val shots: List<ShotRecord>,
 ) {
     fun json(): String = Plan.json.encodeToString(serializer(), this)

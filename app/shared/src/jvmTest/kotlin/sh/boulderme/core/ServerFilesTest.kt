@@ -28,7 +28,13 @@ class ServerFilesTest {
         assertTrue(plan.targets.any { it.isEdge && it.beyond != null })
         assertEquals(guide.patches, plan.targets.count { it.kind == "patch" }, "a target for each of the guide's patches")
         assertTrue(plan.cameras.size == 9 && plan.climbs.single().name == "Alpha")
-        assertTrue(plan.v == 2 && plan.key == "0123456789ab" && plan.needOf("hold").ladder == 2.0 && plan.bridge == Bridge(1.0, 20.0))
+        assertTrue(plan.v == 3 && plan.key == "0123456789ab" && plan.needOf("hold").ladder == 2.0 && plan.bridge == Bridge(1.0, 20.0))
+        // its sets of beta, what its roles are drawn in, and what a capture for a set asks of its holds
+        assertEquals(listOf(PlanSet("s1", "The line", "c1", listOf("h0")), PlanSet("s2", "Empty", null, emptyList())), plan.sets)
+        assertTrue(plan.roles["start"] == "#19d23c" && plan.roles.size == 4)
+        assertEquals(Need(null, 6, 2.0, closeM = 0.15, viewDeg = 20.0, sidesDeg = 40.0, ties = 3), plan.needOf("detail"))
+        assertEquals(Need(2.0, 1, facingDeg = 35.0), plan.needOf("texture"))
+        assertTrue(holds[0].sets == listOf("s1") && holds[0].holds == listOf("0a0b0c0d") && holds[0].detailM == 0.12 && holds[1].sets.isEmpty() && holds[1].detailM == 0.075)
         val view = plan.targets.single { it.isView }
         assertTrue(view.from == "cap_004.jpg" && view.prio == 2 && view.normal.z < -0.8, "where one of its photos was taken, and the way it looked: $view")
 
@@ -48,6 +54,53 @@ class ServerFilesTest {
         assertTrue(f.hint.targetId != null && f.progress.total > 0, f.hint.text)
         val shot = s.shot(ShotIn(pose, SensorSample(Vec3(0.0, 9.81, 0.0), Vec3.ZERO, t = 1.0), ImageStats(1.0, 8.0, 0.0, 0.0, 120.0), 0.002, 80.0, 0.5, true, "a", 1.0, 1.7e9))
         assertTrue(shot.kept && hold.id in shot.helped, "${shot.why} ${shot.helped}")
+    }
+
+    /** A capture for a set of beta: its holds in detail (close, from every side, tied in from further off), the other holds left, and the rest for its texture. */
+    @Test fun aSetOfBetaInDetail() {
+        val plan = Plan.parse(bytes("server/plan.json").decodeToString())
+        val guide = GuideMesh.parse(bytes("server/guide.bin"))
+        val cov = Coverage(plan, guide)
+        cov.scope = Scope(minPrio = 1, set = "s1")
+        val h = cov.state("h0")!!; val other = cov.state("h1")!!
+        assertTrue(cov.detail(h) && cov.inScope(h) && !cov.inScope(other), "only the set's holds")
+        // its region (12 cm round it) fills the picture: further off than the lens's nearest, and about a tenth of a millimetre a pixel
+        val close = cov.closeM(h)!!
+        assertTrue(TestWorld.near(close, 0.12 * 1.1 / 0.5, 1e-6) && TestWorld.near(cov.needGsdM(h)!!, close / 3000, 1e-9), "$close")
+        assertEquals(setOf(0, 1, 2, 3, 4), cov.sidesWanted(h)); assertEquals(1..3, cov.tiesWanted(h))
+        val p = h.target.point; val mpu = cov.metresPerUnit
+        fun from(side: Int, k: Double = 0.95) = TestWorld.look(p + (cov.sideSpot(h, side) - p) * k, p)
+        val far = TestWorld.look(p + h.target.normal * (2.0 / mpu), p)
+        assertEquals(Hint.Kind.SHOOT, cov.hint(far, h).kind, "a step of its ladder, on the way in: ${cov.hint(far, h).text}")
+        cov.addShot(far)
+        assertTrue(cov.hint(far, h).let { it.kind == Hint.Kind.CLOSER && "fill the picture" in it.text })
+        assertEquals(Hint.Kind.FACE, cov.hint(from(Coverage.SIDE_LEFT), h).kind, "straight on first")
+        assertEquals(Hint.Kind.BACK, cov.hint(from(0, 0.5), h).kind)
+        assertEquals(Hint.Kind.SHOOT, cov.hint(from(0), h).kind)
+        cov.addShot(from(0))
+        val next = cov.hint(from(0), h)
+        assertTrue(next.kind == Hint.Kind.ANGLE && "from" in next.text, next.text)
+        for (side in 1..4) { assertEquals(Hint.Kind.SHOOT, cov.hint(from(side), h).kind, "side $side"); cov.addShot(from(side)) }
+        assertTrue(h.sides.size == 5 && !cov.done(h) && cov.goodViews(h) == 5)
+        // a sixth angle, between the others
+        val between = TestWorld.look(p + ((cov.sideSpot(h, 1) - p) + (cov.sideSpot(h, 3) - p)).unit() * (close * 0.9 / mpu), p)
+        assertEquals(Hint.Kind.SHOOT, cov.hint(between, h).kind, cov.hint(between, h).text); cov.addShot(between)
+        // then the photos from further off that tie the close ones in
+        val back = cov.hint(from(0), h)
+        assertTrue(back.kind == Hint.Kind.BACK && "ties" in back.text && !cov.done(h), back.text)
+        for (k in 1..3) cov.addShot(TestWorld.look(p + h.target.normal * (close * Math.pow(2.0, k.toDouble()) / mpu), p))
+        assertTrue(cov.done(h), cov.status(h))
+        val got = cov.reached().single()
+        assertTrue(got.done && got.ids == listOf("0a0b0c0d") && got.rM == 0.12 && got.sides.size == 5 && got.ties == 3 && got.gsdMm!! < 0.1, "$got")
+        // a phone that turns out not to focus that near: asked for from further off
+        cov.backOff(); assertTrue(TestWorld.near(cov.closeM(h)!!, close * 1.2, 1e-9))
+        // rock on no climb: one photo of the capture's own, nearly square on, at 2 mm a pixel, whatever its earlier photos saw
+        val rock = cov.states.first { it.target.kind == "patch" && it.target.prio == 1 && it.target.haveViews > 0 && (it.target.p[1] - plan.frame.groundY) * mpu < 2.0 }
+        assertTrue(cov.inScope(rock) && !cov.done(rock) && cov.needViews(rock) == 1)
+        val q = rock.target.point
+        val slant = TestWorld.look(q + (rock.target.normal + Vec3(0.0, 1.0, 0.0).cross(rock.target.normal).unit() * 1.2).unit() * (3.0 / mpu), q)
+        cov.addShot(slant); assertFalse(rock.textured, "too far round to texture it with")
+        cov.addShot(TestWorld.look(q + rock.target.normal * (3.0 / mpu), q)); assertTrue(rock.textured && cov.done(rock))
     }
 
     @Test fun writesWhatTheServerReads() {

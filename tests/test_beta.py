@@ -86,13 +86,54 @@ with tempfile.TemporaryDirectory() as td:
     d = pathlib.Path(td)
     assert beta.load_holds(d) == {"holds": []}
     saved = beta.save_holds(d, [{"p": [1, 2, 3], "role": "start"}, {"p": [0.5, 0, 0], "role": "foot"}])
-    assert beta.load_holds(d)["holds"] == saved["holds"] == [{"p": [1.0, 2.0, 3.0], "role": "start"}, {"p": [0.5, 0.0, 0.0], "role": "foot"}]
+    bare = lambda holds: [{"p": h["p"], "role": h["role"]} for h in holds]      # noqa: E731
+    assert beta.load_holds(d)["holds"] == saved["holds"] and bare(saved["holds"]) == [{"p": [1.0, 2.0, 3.0], "role": "start"}, {"p": [0.5, 0.0, 0.0], "role": "foot"}]
+    # each hold has an id, the same whenever a hold there is read, and kept when it's given; how far round it reaches is kept within limits
+    assert [h["id"] for h in saved["holds"]] == [beta.hold_id([1, 2, 3]), beta.hold_id([0.5, 0, 0])] and len(saved["holds"][0]["id"]) == 8
+    again = beta._checked([{"p": [1, 2, 3.5], "role": "hand", "id": saved["holds"][0]["id"], "r_m": 0.5}, {"p": [1, 2, 3.5], "role": "hand", "id": saved["holds"][0]["id"]},
+                           {"p": [4, 4, 4], "role": "foot", "id": "not an id", "r_m": 0.05}])
+    assert again[0]["id"] == saved["holds"][0]["id"] and again[0]["r_m"] == beta.HOLD_R_MOST and again[1]["id"] != again[0]["id"] and "r_m" not in again[1]
+    assert again[2]["id"] == beta.hold_id([4, 4, 4]) and again[2]["r_m"] == 0.05
     for bad in ([{"p": [1, 2], "role": "start"}], [{"p": [1, 2, 3], "role": "crimp"}], [{"p": "x", "role": "hand"}]):
         try:
             beta.save_holds(d, bad)
             raise AssertionError(f"accepted {bad}")
         except ValueError:
             pass
+    # sets of beta: the holds marked before there were sets are the first; new ones blank, or copies of a set or of a video's
+    (first,) = beta.load_sets(d)
+    assert first["name"] == "Marked holds" and first["holds"] == saved["holds"] and (d / beta.SETS_FILE).exists()
+    with tempfile.TemporaryDirectory() as old:
+        old = pathlib.Path(old)
+        (old / beta.HOLDS_FILE).write_text(json.dumps({"holds": [{"p": [1, 2, 3], "role": "hand"}], "updated": 5.0}))
+        (legacy,) = beta.load_sets(old)
+        assert legacy["id"] == "marked" and bare(legacy["holds"]) == [{"p": [1.0, 2.0, 3.0], "role": "hand"}] and not (old / beta.SETS_FILE).exists(), "read as a set, not rewritten"
+        assert beta.save_holds(old, [])["holds"] == [] and beta.load_sets(old)[0]["id"] == "marked" and (old / beta.SETS_FILE).exists(), "kept as one once changed"
+    blank = beta.new_set(d, author="  tom  ")
+    assert blank["name"] == "Beta" and blank["holds"] == [] and blank["author"] == "tom" and blank["from"] is None and len(blank["id"]) == 8
+    assert beta.new_set(d)["name"] == "Beta 2" and beta.new_set(d, name="Sit start", climb="c1")["climb"] == "c1"
+    copy = beta.new_set(d, source={"set": first["id"]})
+    assert copy["name"] == "Marked holds (copy)" and copy["holds"] == first["holds"] and copy["from"] == {"set": first["id"]} and copy["holds"] is not first["holds"]
+    beta.save(d, {"status": "done", "videos": [{"url": "https://example.org/v", "tag": "abcd1234", "title": "A send",
+                                                "holds": [{"p": [0, 1, 2], "role": "start", "limbs": ["lh"]}, {"p": [0, 2, 2], "role": "odd"}]}]})
+    seen = beta.new_set(d, source={"video": "abcd1234"})
+    assert seen["name"] == "From A send" and bare(seen["holds"]) == [{"p": [0.0, 1.0, 2.0], "role": "start"}] and seen["from"] == {"video": "https://example.org/v"}
+    for bad in ({"set": "nope"}, {"video": "nope"}):
+        try:
+            beta.new_set(d, source=bad)
+            raise AssertionError(f"copied {bad}")
+        except ValueError:
+            pass
+    changed = beta.update_set(d, copy["id"], {"name": "Left exit", "holds": copy["holds"] + [{"p": [9, 9, 9], "role": "finish"}], "climb": "c2"})
+    assert changed["name"] == "Left exit" and len(changed["holds"]) == 3 and changed["climb"] == "c2" and changed["updated"] >= copy["updated"]
+    assert beta.load_holds(d)["holds"] == saved["holds"], "the first set is untouched by the others"
+    try:
+        beta.update_set(d, copy["id"], {"holds": [{"p": [1], "role": "start"}]})
+        raise AssertionError("accepted a bad hold")
+    except ValueError:
+        pass
+    assert [s["name"] for s in beta.load_sets(d)] == ["Marked holds", "Beta", "Beta 2", "Sit start", "Left exit", "From A send"]
+    assert beta.delete_set(d, blank["id"]) and not beta.delete_set(d, blank["id"]) and len(beta.load_sets(d)) == 5
     beta.save(d, {"status": "running", "videos": [{"holds": [{}, {}]}]})
     assert beta.summary(beta.load(d)) == {"status": "running", "progress": None, "at": None, "note": None, "waiting": None, "videos": 1, "holds": 2}
     beta.carry_on(d)

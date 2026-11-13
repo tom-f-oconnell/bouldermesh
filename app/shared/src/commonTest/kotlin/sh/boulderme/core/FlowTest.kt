@@ -79,7 +79,7 @@ class FlowTest {
         var t = 20.0
         out = flow.frame(close, true, 0.0, 0.004, t, 90)
         while (!out.shoot && t < 30.0) { t += 0.2; out = flow.frame(close, true, 0.0, 0.004, t, 90) }
-        assertTrue(out.shoot && out.ui.total == 9 && out.ui.holds == 2 && out.ui.guided, "${out.ui}")
+        assertTrue(out.shoot && out.ui.total == 15 && out.ui.holds == 2 && out.ui.guided && out.ui.wide && out.ui.reach == "whole rock", "${out.ui}")
         assertFalse(flow.frame(close, true, 0.0, 0.004, t + 0.1, 90).shoot, "one at a time")
         flow.shutter()
         assertFalse(flow.frame(close, true, 0.0, 0.004, t + 0.2, 90).shoot, "even by the button")
@@ -95,8 +95,10 @@ class FlowTest {
         flow.noShot("The camera gave no picture.")
         assertTrue("no picture" in flow.frame(close, true, 0.0, 0.004, t + 4.0, 90).ui.note)
         flow.toggleWide()
-        assertEquals(15, flow.frame(close, true, 0.0, 0.004, t + 5.0, 90).ui.total)
+        assertTrue(flow.frame(close, true, 0.0, 0.004, t + 5.0, 90).ui.let { it.total == 9 && it.reach == "its climbs" && !it.wide })
+        flow.toggleWide(); assertTrue(flow.wide, "with no set of beta chosen: the whole rock, or its climbs")
         assertTrue(ui.canSkip)
+        flow.frame(close, true, 0.0, 0.004, t + 6.0, 90)
         flow.skip()
         assertTrue(flow.session.record(99.0).skipped.isNotEmpty())
     }
@@ -171,7 +173,7 @@ class FlowTest {
         assertNull(flow.refineDue(100.0), "and the fit isn't tightened against points from before, whose world may not be this one")
         // the record names the plan it went by
         val record = flow.session.record(99.0)
-        assertTrue(record.v == 2 && record.plan == RecordPlan("abc123def456", 1.7e9, "0123abcd") && "\"plan\":{\"key\":\"abc123def456\"" in record.json(), record.json().take(300))
+        assertTrue(record.v == 3 && record.plan == RecordPlan("abc123def456", 1.7e9, "0123abcd") && "\"plan\":{\"key\":\"abc123def456\"" in record.json(), record.json().take(300))
         assertEquals(listOf("a", "a", "a.2"), record.shots.map { it.blob.ar!!.s })
     }
 

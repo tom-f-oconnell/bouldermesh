@@ -148,6 +148,14 @@
  "mesh": "cacacacacaca",
  "name": "A Wall",
  "need": {
+  "detail": {
+   "close_m": 0.15,
+   "ladder": 2.0,
+   "sides_deg": 40.0,
+   "ties": 3,
+   "view_deg": 20.0,
+   "views": 6
+  },
   "edge": {
    "views": 3
   },
@@ -160,10 +168,37 @@
    "gsd_mm": 1.5,
    "views": 3
   },
+  "texture": {
+   "facing_deg": 35.0,
+   "gsd_mm": 2.0,
+   "views": 1
+  },
   "view": {
    "views": 1
   }
  },
+ "roles": {
+  "finish": "#ff2a2a",
+  "foot": "#f53dff",
+  "hand": "#2f6bff",
+  "start": "#19d23c"
+ },
+ "sets": [
+  {
+   "climb": "c1",
+   "id": "s1",
+   "name": "The line",
+   "targets": [
+    "h0"
+   ]
+  },
+  {
+   "climb": null,
+   "id": "s2",
+   "name": "Empty",
+   "targets": []
+  }
+ ],
  "targets": [
   {
    "climbs": [],
@@ -3071,9 +3106,13 @@
    "climbs": [
     "c1"
    ],
+   "detail_m": 0.12,
    "from": "video",
    "have_gsd": 0.001352,
    "have_views": 5,
+   "holds": [
+    "0a0b0c0d"
+   ],
    "id": "h0",
    "kind": "hold",
    "n": [
@@ -3088,15 +3127,20 @@
    ],
    "prio": 3,
    "r": 0.125,
-   "role": "start"
+   "role": "start",
+   "sets": [
+    "s1"
+   ]
   },
   {
    "climbs": [
     "c1"
    ],
+   "detail_m": 0.075,
    "from": "video",
    "have_gsd": 0.0013853,
    "have_views": 5,
+   "holds": [],
    "id": "h1",
    "kind": "hold",
    "n": [
@@ -3111,7 +3155,8 @@
    ],
    "prio": 3,
    "r": 0.125,
-   "role": "finish"
+   "role": "finish",
+   "sets": []
   },
   {
    "climbs": [],
@@ -3494,6 +3539,6 @@
    "r": 0.83333
   }
  ],
- "v": 2,
+ "v": 3,
  "view_deg": 15.0
 }

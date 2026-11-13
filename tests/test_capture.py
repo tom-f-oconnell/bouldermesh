@@ -20,6 +20,7 @@ import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "tests"))
+import beta  # noqa: E402
 import captureplan  # noqa: E402
 from capture_fixture import camera, cameras, wall  # noqa: E402
 import orientation  # noqa: E402
@@ -44,9 +45,10 @@ assert not np.isfinite(captureplan.coverage(C, N, behind)[0]).any(), "nothing is
 print("coverage OK")
 
 holds = [{"p": [0.0, 1.0, 2.0], "role": "start", "from": "video", "climbs": ["c1"]},
-         {"p": [0.02, 1.0, 2.0], "role": "start", "from": "marked", "climbs": []},        # the same hold, marked too
+         {"p": [0.02, 1.0, 2.0], "role": "start", "from": "marked", "climbs": [], "sets": ["s1"], "ids": ["0a0b0c0d"], "r_m": 0.12},  # the same hold, in a set of beta too
          {"p": [0.5, 2.2, 1.936], "role": "finish", "from": "video", "climbs": ["c1"]}]
-plan, guide = captureplan.build(V, F, cams, holds, [{"id": "c1", "name": "Alpha", "grade": "V2", "view": None}], 1.2)
+plan, guide = captureplan.build(V, F, cams, holds, [{"id": "c1", "name": "Alpha", "grade": "V2", "view": None}], 1.2,
+                                sets=[{"id": "s1", "name": "The line", "climb": "c1"}, {"id": "s2", "name": "Empty", "climb": None}])
 T = plan["targets"]
 kinds = {k: [t for t in T if t["kind"] == k] for k in ("patch", "hold", "edge", "view")}
 assert len(kinds["hold"]) == 2 and all(t["prio"] == 3 and t["climbs"] == ["c1"] for t in kinds["hold"]), kinds["hold"]
@@ -57,7 +59,14 @@ assert near and all(min(np.linalg.norm(np.array(t["p"]) - np.array(h["p"])) for 
 assert any(t["prio"] == 1 for t in kinds["patch"]), "the rest is rock all the same"
 assert plan["frame"]["metres_per_unit"] == 1.2 and not plan["frame"]["scale_guessed"] and plan["need"]["hold"]["gsd_mm"] < plan["need"]["patch"]["gsd_mm"]
 # where to photograph it from again: a few of the places its photos were taken, that between them show what they all saw
-assert plan["need"]["hold"]["ladder"] == 2.0 and plan["bridge"] == {"within_m": 1.0, "deg": 20.0} and plan["v"] == 2
+assert plan["need"]["hold"]["ladder"] == 2.0 and plan["bridge"] == {"within_m": 1.0, "deg": 20.0} and plan["v"] == 3
+# its sets of beta, each with its holds among the targets; and what a capture for one of them asks of its holds
+assert [t["sets"] for t in kinds["hold"]] == [["s1"], []] and plan["sets"] == [
+    {"id": "s1", "name": "The line", "climb": "c1", "targets": [kinds["hold"][0]["id"]]}, {"id": "s2", "name": "Empty", "climb": None, "targets": []}], plan["sets"]
+assert plan["need"]["detail"] == {"close_m": 0.15, "views": 6, "view_deg": 20.0, "ladder": 2.0, "sides_deg": 40.0, "ties": 3}
+assert plan["need"]["texture"] == {"gsd_mm": 2.0, "views": 1, "facing_deg": 35.0} and plan["roles"]["start"] == "#19d23c" and set(plan["roles"]) == set(beta.ROLES)
+# a hold says which holds of the sets it is (their ids outlast a plan) and how far round it is wanted in detail
+assert [(t["holds"], t["detail_m"]) for t in kinds["hold"]] == [(["0a0b0c0d"], 0.12), ([], captureplan.HOLD_DETAIL_M)], kinds["hold"]
 views = kinds["view"]
 assert 1 <= len(views) <= captureplan.BRIDGE_MOST and all(v["from"].startswith("cap_") and v["prio"] == 2 for v in views), views
 at = {c["name"]: phonedata._centre(c) for c in cams}
@@ -95,7 +104,7 @@ assert json.loads((FIXTURES / "server" / "plan.json").read_text()) == json.loads
     "a plan or guide isn't what the apps' tests have: if the format was meant to change, run this with --write-fixtures and change the apps"
 # and what the apps write, as their tests check they still do: a photo's readings and a capture's record
 theirs = phonedata.parse((FIXTURES / "app" / "shot.txt").read_text())
-assert theirs["v"] == 1 and theirs["ar"] == {"s": "a", "p": [1.0, 2.0, 3.0], "q": [1.0, 0.0, 0.0, 0.0], "track": "normal"}, theirs
+assert theirs["v"] == 1 and theirs["ar"] == {"s": "a", "p": [1.0, 2.0, 3.0], "q": [1.0, 0.0, 0.0, 0.0], "track": "normal", "span": None, "paused": None}, theirs
 assert theirs["gps"]["acc"] == 3.0 and theirs["down_src"] == "ar" and theirs["k"]["fx"] == 3000.0 and theirs["q"]["ok"] is True, theirs
 assert phonedata.down(theirs) and abs(phonedata.down(theirs)[1] - 0.98 / math.hypot(0.98, 0.2)) < 1e-9
 sent_record = json.loads((FIXTURES / "app" / "capture.json").read_text())
@@ -190,6 +199,15 @@ assert [t["from"] for t in again["targets"] if t["kind"] == "view"] == ["cap_004
 ranked = server.capture_plan(mid)
 assert [t["from"] for t in ranked["targets"] if t["kind"] == "view"][0] == "cap_001.jpg" and ranked["made"] != again["made"], "made again, from the best tied"
 (mdir / "cameras.json").write_text(json.dumps(cams))
+# its sets of beta are in its plan, each hold with the sets it's in, and the plan is made again when one changes
+one = beta.new_set(mdir, name="Sit start", climb="c1")
+beta.update_set(mdir, one["id"], {"holds": [{"p": [0.5, 2.2, 1.936], "role": "finish"}, {"p": [0.0, 1.0, 2.0], "role": "start"}]})
+with_sets = server.capture_plan(mid)
+assert [s["name"] for s in with_sets["sets"]] == ["Marked holds", "Sit start"] and len(with_sets["sets"][1]["targets"]) == 2, with_sets["sets"]
+both = next(t for t in with_sets["targets"] if t["kind"] == "hold" and len(t["sets"]) == 2)
+assert both["role"] == "start" and with_sets["made"] != ranked["made"], "the hold both sets have is one target, in both"
+assert both["holds"] == [beta.hold_id([0.0, 1.0, 2.0])] and both["detail_m"] == beta.HOLD_R_M == captureplan.HOLD_DETAIL_M, both
+beta.delete_set(mdir, one["id"])
 print("the server's plans OK")
 
 # --- the server's: the meshes a capture can add to, and a capture meshed together with the photos of the one it adds to ----
@@ -280,13 +298,14 @@ inline = frames.tie(line, [moved(c, s_true, R_true, t_true) for c in line])
 assert np.allclose(inline["rot"], R_true, atol=1e-6) and abs(inline["scale"] - s_true) < 1e-5, inline
 assert frames.tie(cams[:3], mine_cams)["status"] == "untied"
 (server.MESHES / new_mid / "cameras.json").write_text(json.dumps(mine_cams))
-(mdir / "holds.json").write_text(json.dumps({"holds": [{"p": [0.0, 1.0, 2.0], "role": "start"}, {"p": [0.5, 2.2, 1.936], "role": "finish"}]}))
+beta.save_holds(mdir, [{"p": [0.0, 1.0, 2.0], "role": "start"}, {"p": [0.5, 2.2, 1.936], "role": "finish"}])
 (mdir / "views.json").write_text(json.dumps({"climbs": {"c1": {"eye": [0, 1.5, 6], "target": [0, 1.5, 2], "photos": 3}}, "created": 1.0}))
 server.link_capture(new_mid, mid, said.append)
 tied = frames.load(server.MESHES / new_mid)
 assert tied["of"] == mid and tied["how"] == "cameras" and tied["v"] == 1 and tied["status"] == "tied" and abs(tied["scale"] - s_true) < 1e-5, tied
-assert tied["carried"] == ["2 marked holds", "the views of 1 climb"] and "tied to mesh" in said[-1] and "6.88° from this one's" in said[-1], said[-1]
+assert tied["carried"] == ["1 set of beta (2 holds)", "the views of 1 climb"] and "tied to mesh" in said[-1] and "6.88° from this one's" in said[-1], said[-1]
 carried = server.beta_mod.load_holds(server.MESHES / new_mid)["holds"]
+assert [h["id"] for h in carried] == [beta.hold_id([0.0, 1.0, 2.0]), beta.hold_id([0.5, 2.2, 1.936])], "a hold carried to another mesh is the same hold"
 assert [h["role"] for h in carried] == ["start", "finish"] and np.allclose(carried[0]["p"], s_true * R_true @ [0.0, 1.0, 2.0] + t_true, atol=1e-4), carried
 assert np.allclose(json.loads((server.MESHES / new_mid / "views.json").read_text())["climbs"]["c1"]["eye"], s_true * R_true @ [0, 1.5, 6] + t_true, atol=1e-4)
 row = server.q("SELECT adds_to, preferred FROM meshes WHERE id=?", new_mid, one=True)
@@ -323,4 +342,22 @@ assert put["was"] == [34.0, -116.0] and 20 < put["moved_m"] < 24 and "21 m from"
 assert server.q("SELECT lat, lng FROM meshes WHERE id=?", new_mid, one=True) == {"lat": 34.0001, "lng": -116.0002}
 assert scale.load(server.MESHES / new_mid)["phone"]["placed"]["was"] == [34.0, -116.0] and server.place_from_phone(new_mid) is None, "once"
 print("placed by its app photos OK")
+
+# --- whose its photos are: a capture's, under the licence its record gives, credited as it says ---------------------------
+import policy  # noqa: E402
+import provenance  # noqa: E402
+with tempfile.TemporaryDirectory() as tmp:
+    pdir, mdir2 = pathlib.Path(tmp) / "p", pathlib.Path(tmp) / "m"
+    pdir.mkdir(), mdir2.mkdir()
+    (mdir2 / "cameras.json").write_text(json.dumps([{"name": "cap_001.jpg"}, {"name": "mine.jpg"}, {"name": "mountainproject_1.jpg"}]))
+    (pdir / "capture.json").write_text(json.dumps({"licence": "CC-BY-4.0", "credit": "A. Climber", "shots": [{"name": "cap_001.jpg"}, {"name": "cap_002.jpg"}]}))
+    got = {x["file"]: x for x in provenance.save(mdir2, pdir)["photos"]}
+    assert got["cap_001.jpg"] == {"file": "cap_001.jpg", "source": "upload", "license": "CC-BY-4.0", "credit": "A. Climber"}, got
+    assert got["mine.jpg"]["license"] == "the user's own photo" and "credit" not in got["mine.jpg"] and got["mountainproject_1.jpg"]["license"] is None
+    assert policy.permitted(got["cap_001.jpg"]) and not policy.permitted(got["mountainproject_1.jpg"])
+    up = next(x for x in provenance.summary(provenance.load(mdir2))["sources"] if x["source"] == "upload")
+    assert up["credits"] == ["A. Climber"] and up["licenses"] == {"CC-BY-4.0": 1, "the user's own photo": 1}, up
+    (pdir / "capture.json").write_text(json.dumps({"shots": [{"name": "cap_001.jpg"}]}))
+    assert provenance.captured(pdir) == {}, "a record from before captures said: as any upload"
+print("a capture's licence OK")
 print("ALL CAPTURE TESTS PASSED")

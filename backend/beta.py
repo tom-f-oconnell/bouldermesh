@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import re
 import importlib.util
 import json
+import secrets
 import shutil
 import time
 from pathlib import Path
@@ -718,21 +720,156 @@ def find(mesh_dir: Path, photos: Path, log: Log, report: Callable[[str, dict], N
     return record
 
 
-def load_holds(mesh_dir: Path) -> dict:
+# ---------------------------------------------------------------------------------------------- sets of beta, by hand
+# A mesh has any number of sets of beta made by hand: each a name, perhaps the climb it's for, and its holds in order
+# (a point on the mesh, in its coordinates, and a role). A new one starts blank, or as a copy of another set or of what
+# a video's climber was found to use. They're kept together in SETS_FILE. Before there were sets a mesh had one lot of
+# hand-marked holds (HOLDS_FILE): that reads as its first set, and becomes one in SETS_FILE when anything is changed.
+SETS_FILE = "betasets.json"
+SET_NAME_MAX, SET_AUTHOR_MAX, SETS_MOST, SET_HOLDS_MOST = 60, 40, 60, 500
+
+
+# r_m: how far round its point a hold reaches, in metres: the part of the rock a close capture of it is of, and a
+# replica of it is made from. Two large hands side by side at most, one by default.
+HOLD_R_M, HOLD_R_LEAST, HOLD_R_MOST = 0.075, 0.03, 0.15
+
+
+def hold_id(p) -> str:
+    """What a hold with no id of its own goes by: from where it is, so the same whenever it's read."""
+    return hashlib.sha1(",".join(f"{float(x):.4f}" for x in p).encode()).hexdigest()[:8]
+
+
+def _checked(marked) -> list[dict]:
+    """Holds as they're kept: each a point and a role, with an id (kept if it has one: a hold copied into another set,
+    or carried to another mesh, is the same hold) and, if given, how far round it reaches (r_m). Raises ValueError
+    otherwise."""
+    if not isinstance(marked, list) or len(marked) > SET_HOLDS_MOST:
+        raise ValueError(f"holds are a list of at most {SET_HOLDS_MOST}")
+    out, seen = [], set()
+    for h in marked:
+        p, role = (h.get("p"), h.get("role")) if isinstance(h, dict) else (None, None)
+        if role not in ROLES or not isinstance(p, list) or len(p) != 3 or not all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in p):
+            raise ValueError("each hold needs p: [x, y, z] and a role: " + ", ".join(ROLES))
+        hid = h.get("id")
+        if not (isinstance(hid, str) and re.fullmatch(r"[0-9a-f]{6,16}", hid)):
+            hid = hold_id(p)
+        if hid in seen:     # two holds of a set are two holds
+            hid = secrets.token_hex(4)
+        seen.add(hid)
+        one = {"id": hid, "p": [float(x) for x in p], "role": role}
+        r = h.get("r_m")
+        if isinstance(r, (int, float)) and not isinstance(r, bool):
+            one["r_m"] = round(min(max(float(r), HOLD_R_LEAST), HOLD_R_MOST), 4)
+        out.append(one)
+    return out
+
+
+def load_sets(mesh_dir: Path) -> list[dict]:
+    """A mesh's sets of beta, in the order they were made: [{id, name, climb, author, created, updated, from, holds}]."""
     try:
-        return json.loads((mesh_dir / HOLDS_FILE).read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"holds": []}
+        sets = json.loads((mesh_dir / SETS_FILE).read_text()).get("sets")
+        return [s for s in sets if isinstance(s, dict) and s.get("id")] if isinstance(sets, list) else []
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:    # from before there were sets
+        old = json.loads((mesh_dir / HOLDS_FILE).read_text())
+        holds = _checked(old.get("holds") or [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [{"id": "marked", "name": "Marked holds", "climb": None, "author": None, "created": old.get("updated"), "updated": old.get("updated"),
+             "from": None, "holds": holds}] if holds else []
+
+
+def save_sets(mesh_dir: Path, sets: list[dict]) -> list[dict]:
+    tmp = mesh_dir / (SETS_FILE + ".partial")
+    tmp.write_text(json.dumps({"sets": sets, "updated": time.time()}))
+    tmp.replace(mesh_dir / SETS_FILE)
+    return sets
+
+
+def _text(value, most: int) -> str | None:
+    text = " ".join(str(value).split())[:most] if isinstance(value, str) else ""
+    return text or None
+
+
+def new_set(mesh_dir: Path, name=None, climb=None, author=None, source: dict | None = None) -> dict:
+    """Add a set of beta to a mesh: blank, or a copy of another of its sets ({"set": id}) or of the holds a video's
+    climber was found to use ({"video": its url or tag}).
+
+    Returns:
+        The set made.
+
+    Raises:
+        ValueError: there's no such set or video to copy, or the mesh has SETS_MOST sets already.
+    """
+    sets = load_sets(mesh_dir)
+    if len(sets) >= SETS_MOST:
+        raise ValueError(f"a mesh has at most {SETS_MOST} sets of beta")
+    holds, came, like = [], None, None
+    if isinstance(source, dict) and source.get("set"):
+        other = next((s for s in sets if s["id"] == source["set"]), None)
+        if other is None:
+            raise ValueError("there's no such set to copy")
+        holds, came, like = [dict(h) for h in other["holds"]], {"set": other["id"]}, f"{other['name']} (copy)"
+        climb = climb if climb is not None else other.get("climb")
+    elif isinstance(source, dict) and source.get("video"):
+        video = next((v for v in (load(mesh_dir) or {}).get("videos", []) if source["video"] in (v.get("url"), v.get("tag"))), None)
+        if video is None:
+            raise ValueError("there's no such video's beta to copy")
+        holds = _checked([{"p": h["p"], "role": h.get("role")} for h in video.get("holds") or [] if h.get("role") in ROLES])
+        came, like = {"video": video.get("url")}, f"From {video.get('title') or 'a video'}"
+    taken = {s["name"] for s in sets}
+    base = _text(name, SET_NAME_MAX) or _text(like, SET_NAME_MAX) or "Beta"
+    label, n = base, 1
+    while label in taken:       # "Beta", "Beta 2", "Beta 3"
+        n += 1
+        label = f"{base[:SET_NAME_MAX - 4]} {n}"
+    now = time.time()
+    made = {"id": secrets.token_hex(4), "name": label, "climb": _text(climb, 80), "author": _text(author, SET_AUTHOR_MAX), "created": now, "updated": now,
+            "from": came, "holds": holds}
+    save_sets(mesh_dir, sets + [made])
+    return made
+
+
+def update_set(mesh_dir: Path, sid: str, changes: dict) -> dict:
+    """Change a set's name, climb, author or holds (those given). Returns it. Raises ValueError: no such set, or bad holds."""
+    sets = load_sets(mesh_dir)
+    one = next((s for s in sets if s["id"] == sid), None)
+    if one is None:
+        raise ValueError("there's no such set")
+    if "holds" in changes:
+        one["holds"] = _checked(changes["holds"])
+    if "name" in changes:
+        one["name"] = _text(changes["name"], SET_NAME_MAX) or one["name"]
+    for field, most in (("climb", 80), ("author", SET_AUTHOR_MAX)):
+        if field in changes:
+            one[field] = _text(changes[field], most)
+    one["updated"] = time.time()
+    save_sets(mesh_dir, sets)
+    return one
+
+
+def delete_set(mesh_dir: Path, sid: str) -> bool:
+    sets = load_sets(mesh_dir)
+    kept = [s for s in sets if s["id"] != sid]
+    if len(kept) == len(sets):
+        return False
+    save_sets(mesh_dir, kept)
+    return True
+
+
+def load_holds(mesh_dir: Path) -> dict:
+    """The holds of a mesh's first set of beta: what "the holds marked by hand" were before there were sets."""
+    sets = load_sets(mesh_dir)
+    return {"holds": sets[0]["holds"], "updated": sets[0].get("updated")} if sets else {"holds": []}
 
 
 def save_holds(mesh_dir: Path, marked: list) -> dict:
-    """Keep holds marked by hand, checking each is a point and a role."""
-    out = []
-    for h in marked:
-        p, role = h.get("p"), h.get("role")
-        if role not in ROLES or not isinstance(p, list) or len(p) != 3 or not all(isinstance(x, (int, float)) for x in p):
-            raise ValueError("each hold needs p: [x, y, z] and a role: " + ", ".join(ROLES))
-        out.append({"p": [float(x) for x in p], "role": role})
-    record = {"holds": out, "updated": time.time()}
-    (mesh_dir / HOLDS_FILE).write_text(json.dumps(record))
-    return record
+    """Keep holds marked by hand as a mesh's first set of beta (made if it has none), checking each is a point and a role."""
+    holds = _checked(marked)
+    sets = load_sets(mesh_dir)
+    if sets:
+        return {"holds": update_set(mesh_dir, sets[0]["id"], {"holds": holds})["holds"], "updated": time.time()}
+    now = time.time()
+    save_sets(mesh_dir, [{"id": secrets.token_hex(4), "name": "Marked holds", "climb": None, "author": None, "created": now, "updated": now, "from": None, "holds": holds}])
+    return {"holds": holds, "updated": now}

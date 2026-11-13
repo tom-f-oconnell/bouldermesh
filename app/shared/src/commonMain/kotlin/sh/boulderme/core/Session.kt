@@ -3,17 +3,23 @@ package sh.boulderme.core
 import kotlin.math.max
 
 /**
+ * `stillLens`: holds wanted in detail are taken as full-size stills with it (FrameOut.still).
+ *
  * What the phone knows as each camera frame arrives: where it is in the world (with the lens of the photos it takes),
  * how fast it's turning, its shutter time, and how far clockwise its picture is turned to be shown upright (90 for a
  * phone held upright), which is what makes a hint's left and right the screen's.
  */
-data class FrameIn(val pose: CameraPose, val gyroRadS: Double, val exposureS: Double, val tracking: Boolean, val t: Double, val uprightDeg: Int = 0)
+data class FrameIn(val pose: CameraPose, val gyroRadS: Double, val exposureS: Double, val tracking: Boolean, val t: Double, val uprightDeg: Int = 0,
+                   val stillLens: Lens? = null)     // the lens of a full-size still, on a phone whose photos are otherwise its tracking's frames
 
 /** What to show and do for a frame: the hint, whether to take a photo now, and how far along the capture is. */
-data class FrameOut(val hint: Hint, val shoot: Boolean, val progress: Progress, val blurPx: Double)
+data class FrameOut(val hint: Hint, val shoot: Boolean, val progress: Progress, val blurPx: Double,
+                    val still: Boolean = false,     // a photo taken now should be a full-size still: it's of a hold wanted in detail
+                    val status: String = "")        // how that hold stands, in a line
 
 /** Something to draw in the world: a hold, an edge or a marked spot, coloured by how done it is (Coverage.LEVEL_*). */
-data class Marker(val id: String, val world: Vec3, val radiusM: Double, val level: Int, val kind: String, val current: Boolean)
+data class Marker(val id: String, val world: Vec3, val radiusM: Double, val level: Int, val kind: String, val current: Boolean,
+                  val role: String? = null)     // a hold's: what it's drawn in is the plan's colour for it, as the site draws it
 
 /**
  * A photo just taken: where from, as stored (its pose and lens are the stored picture's: CameraPose.turned() of the
@@ -24,6 +30,9 @@ data class ShotIn(
     val pose: CameraPose, val sensors: SensorSample, val stats: ImageStats?, val exposureS: Double?, val iso: Double?, val focusM: Double?,
     val tracking: Boolean, val arSession: String, val t: Double, val unix: Double, val sensorOrientation: Int = 90, val gyroRadS: Double = 0.0,
     val turnedDeg: Int = 0,
+    val still: Boolean = false,         // a full-size still (FrameOut.still), its pose the tracking's either side of it (span)
+    val span: BlobSpan? = null, val paused: Boolean = false, val lensDerived: Boolean = false,
+    val card: Boolean = false,          // a bank card lies beside the hold being photographed: kept for its size, and counted for nothing else
 )
 
 /** The verdict on it: whether to keep its file, why not if not, what it helped, and the text to put in the file. */
@@ -50,6 +59,9 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     var level: Level? = null            // which way is down, if a turn on the spot found it: else the tracking's own
     var calibration: RecordCalibration? = null
     var place: GpsAverager.Result? = null
+    var set: String? = null             // the set of beta the capture is for, if one was chosen: its holds are wanted in detail
+    var licence: String? = null         // what its photos are given under, and who to credit: as the app's settings say
+    var credit: String? = null
     private val nearest: GuideMesh.Nearest? = guide?.let { g -> val (lo, hi) = g.bounds(); g.Nearest(max(1e-6, (hi - lo).norm / 40)) }
     private val shots = ArrayList<ShotRecord>()
     private val fields = ArrayList<Double>()
@@ -125,19 +137,22 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         if (cov != null) {
             if (fitNow == null) return FrameOut(Hint(Hint.Kind.NONE, "Line the mesh up with the rock first"), false, cov.progress(), 0.0)
             val inMesh = f.pose.into(fitNow)
-            cov.refFx = f.pose.lens.fx
+            cov.lens(f.pose.lens); cov.detailLens = f.stillLens
             val progress = cov.progress()
             val target = cov.pick(inMesh, current)
             current = target?.target?.id
+            val close = target != null && cov.detail(target)
+            val still = close && f.stillLens != null
+            val eye = if (still) inMesh.copy(lens = f.stillLens!!) else inMesh      // as the photo taken now would see it
             // how far off what's being photographed is; from a view to stand at, that's the rock, taken as a few metres off
             val far = target?.let { if (it.target.isView) VIEW_FAR_M else inMesh.centre.distance(it.target.point) * cov.metresPerUnit }
-            val blur = Quality.blurPx(f.gyroRadS, speed, f.exposureS, f.pose.lens.fx, far)
+            val blur = Quality.blurPx(f.gyroRadS, speed, f.exposureS, eye.lens.fx, far)
             if (target == null) return FrameOut(Hint(Hint.Kind.DONE, if (progress.total == 0) "Nothing to do here: widen what counts" else "Done: every part that counts is covered. Finish, or widen to the rest."), false, progress, blur)
-            var hint = cov.hint(inMesh, target, f.uprightDeg)
+            var hint = cov.hint(eye, target, f.uprightDeg)
             val steady = blur <= STEADY_PX
-            val worth = cov.gain(inMesh) > 0
+            val worth = cov.gain(eye) > 0
             if (hint.kind == Hint.Kind.SHOOT && !steady) hint = hint.copy(text = "Hold still: the phone is moving")
-            return FrameOut(hint, auto && steady && worth && f.t - lastShotT >= MIN_GAP_S, progress, blur)
+            return FrameOut(hint, auto && steady && worth && f.t - lastShotT >= MIN_GAP_S, progress, blur, still, if (close) cov.status(target!!) else "")
         }
         if (orb != null) {
             val blur = Quality.blurPx(f.gyroRadS, speed, f.exposureS, f.pose.lens.fx, f.pose.centre.distance(orb.centre))
@@ -169,7 +184,16 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         s.sensors.mag?.norm?.let { fields.add(it) }
         val usualField = if (fields.size >= 8) fields.sorted()[fields.size / 2] else null
         val grades = Sensors.grade(s.sensors, usualField, s.t)
-        val helped = if (!verdict.ok) emptyList() else when {
+        // the hold a card photo is of: the one being asked for, if it's wanted in detail
+        val cardOf = if (s.card) current?.let { cov?.state(it) }?.takeIf { cov?.detail(it) == true } else null
+        if (verdict.ok) cardOf?.card = true
+        // a close photo of a hold that came out soft, with the phone still: nearer than this phone focuses
+        if (!verdict.ok && cov != null && inMesh != null && blur <= Quality.BLUR_PX && verdict.reasons.any { "soft" in it })
+            current?.let { cov.state(it) }?.takeIf { cov.detail(it) }?.let { t ->
+                val close = cov.closeM(t)
+                if (close != null && inMesh.centre.distance(t.target.point) * cov.metresPerUnit < close * 1.15) cov.backOff()
+            }
+        val helped = if (!verdict.ok || s.card) emptyList() else when {
             inMesh != null && cov != null -> cov.addShot(inMesh)
             orb != null -> orb.add(s.pose)
             else -> emptyList()
@@ -192,10 +216,12 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             downAcc = downAcc?.toList(), downTrack = downTrack?.takeIf { found != null }?.toList(), turn = s.turnedDeg,
             heading = s.sensors.headingDeg?.takeIf { grades.headingOk }, headingAcc = s.sensors.headingAccDeg,
             gps = s.sensors.gps?.let { BlobGps(it.lat, it.lng, it.alt, it.accM, s.t - it.t) },
-            ar = BlobAr(s.arSession, s.pose.centre.toList(), s.pose.rot.toList(), if (s.tracking) "normal" else "limited"),
+            ar = BlobAr(s.arSession, s.pose.centre.toList(), s.pose.rot.toList(), if (s.tracking) "normal" else "limited", s.span, if (s.paused) 1 else null),
             k = s.pose.lens.let { BlobLens(it.fx, it.fy, it.cx, it.cy, it.w, it.h) },
             exp = BlobExposure(s.exposureS, s.iso, s.focusM),
             q = BlobQuality(s.stats?.sharp, blur, s.stats?.clipHigh, s.stats?.clipLow, verdict.ok),
+            ref = if (s.card) CARD else null, refHold = if (s.card) cardOf?.target?.holds?.firstOrNull() ?: cardOf?.target?.id else null,
+            still = if (s.still) 1 else null, kSrc = if (s.lensDerived) "derived" else null, lic = licence, by = credit,
         )
         val record = ShotRecord(name, blob, verdict.ok, verdict.reasons, notes, helped)
         shots.add(record)
@@ -206,7 +232,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     /** Leaves the target being asked for (out of reach, or not wanted), and goes on to the next. */
     fun skipCurrent(why: String) { current?.let { coverage?.skip(it, why) }; current = null }
 
-    fun setScope(scope: Scope) { coverage?.scope = scope; current = null }
+    fun setScope(scope: Scope) { coverage?.scope = scope.copy(set = set); current = null }
 
     /** The holds, edges and marked spots to draw, in the world. */
     fun markers(): List<Marker> {
@@ -216,7 +242,8 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             if (s.target.kind == "patch" && s.target.id != current) continue
             if (!cov.inScope(s) && s.target.kind != "hold") continue
             val radius = if (s.target.isView) VIEW_RING_M else max(0.04, s.target.r * f.scale)
-            out.add(Marker(s.target.id, f.apply(s.target.point), radius, cov.level(s), s.target.kind, s.target.id == current))
+            val mine = if (cov.detail(s)) (s.target.detailM ?: radius) else radius      // a hold wanted in detail: the part of the rock that's wanted
+            out.add(Marker(s.target.id, f.apply(s.target.point), mine, cov.level(s), s.target.kind, s.target.id == current, s.target.role.takeIf { s.target.isHold }))
         }
         orbit?.spots?.forEach { s ->
             out.add(Marker(s.id, s.p, 0.08, if (s.skipped) Coverage.LEVEL_SKIPPED else if (s.done()) Coverage.LEVEL_DONE else if (s.dirs.isNotEmpty()) Coverage.LEVEL_PART else Coverage.LEVEL_TODO, "hold", false))
@@ -240,11 +267,13 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
                 .sorted().let { if (it.isEmpty()) null else it[it.size / 2] },
             skipped = cov?.states?.filter { it.skipped != null }?.associate { it.target.id to it.skipped!! } ?: emptyMap(),
             progress = p?.let { RecordProgress(it.total, it.done, it.skipped, it.holds, it.holdsDone) },
+            detail = set?.let { id -> cov?.let { RecordDetail(id, it.reached()) } }, licence = licence, credit = credit,
             shots = shots.toList(),
         )
     }
 
     companion object {
+        const val CARD = "id1-card"     // a photo's ref: a bank card (ID-1, 85.60 by 53.98 mm) flat on the rock in it
         const val STEADY_PX = 1.0       // a photo takes itself only when the phone's own motion would smear it less than this
         const val MIN_GAP_S = 0.6       // and no sooner than this after the last
         const val SPEED_SMOOTH_S = 0.15

@@ -16,6 +16,10 @@ data class CaptureUi(
     val total: Int = 0, val done: Int = 0, val holds: Int = 0, val holdsDone: Int = 0, val kept: Int = 0, val rejected: Int = 0,
     val note: String = "", val tracking: Boolean = false, val auto: Boolean = true, val canSkip: Boolean = false, val wide: Boolean = false,
     val marking: Boolean = false, val pairs: Int = 0, val guided: Boolean = true, val sensors: String = "",
+    val reach: String = "",         // what counts, in words: "whole rock", "its climbs", or "the holds of <a set of beta>"
+    val target: String = "",        // how the hold being photographed in detail stands
+    val canCard: Boolean = false,   // a photo with a bank card beside that hold can be asked for; card: the next photo is it
+    val card: Boolean = false,
 )
 
 /**
@@ -24,9 +28,14 @@ data class CaptureUi(
  * @param guide where to draw the guide mesh (its mesh-to-world fit), or null for not at all; solid: as a thing of its
  *   own (the small model) rather than a wash over the rock; alpha: how much of each face's see-throughness to keep.
  * @param levels how done each of the guide's patches is (Coverage.LEVEL_*), when that's changed since the last frame.
+ * `set`: the set of beta the capture is for, if any (an id of the plan's sets): its holds are photographed in detail,
+ * as a replica of them needs, and the other holds are left.
+ *
  * @param shoot take a photo now, and hand it to shot() (or say noShot() if it couldn't be taken).
  */
-class FlowOut(val ui: CaptureUi, val guide: Similarity?, val solid: Boolean, val alpha: Float, val levels: IntArray?, val markers: List<Marker>, val shoot: Boolean)
+class FlowOut(val ui: CaptureUi, val guide: Similarity?, val solid: Boolean, val alpha: Float, val levels: IntArray?, val markers: List<Marker>, val shoot: Boolean,
+              val still: Boolean = false,      // the photo to take is a full-size still, where the phone can: of a hold wanted in detail
+              val card: Boolean = false)       // and it's the one with a card in it: say so in shot() (ShotIn.card)
 
 /**
  * A capture as its screen goes through it, for both phones' apps: they tell it each camera frame, each tap and each
@@ -37,7 +46,7 @@ class FlowOut(val ui: CaptureUi, val guide: Similarity?, val solid: Boolean, val
  * tapped on the real rock, twice, line the mesh up (GHOST, ROCK); the fit is shown over the rock to check (CONFIRM), and
  * tightens against the points the phone tracks; then photos (CAPTURE). With none: the rock's middle is tapped (CENTRE).
  */
-class CaptureFlow(val session: CaptureSession) {
+class CaptureFlow(val session: CaptureSession, val set: String? = null) {
     private val plan = session.plan
     private val guide = session.guide
     private val afterLevel = if (plan != null && guide != null) Phase.GHOST else Phase.CENTRE
@@ -46,8 +55,13 @@ class CaptureFlow(val session: CaptureSession) {
     private var turn = LevelTurn()
     var marking = false
         private set
-    var wide = false
+    /** What counts: 1 the whole rock (what a texture of the capture's own needs), 2 its climbs, 3 only the holds of the capture's set of beta. */
+    var reach = 1
         private set
+    val wide: Boolean get() = reach == 1
+    private val setName = set?.let { id -> plan?.sets?.firstOrNull { it.id == id }?.let { it.name ?: "this beta" } }
+    private var cardNext = false
+    private var cardShot = false
     private var ghost: Similarity? = null
     private var ghostTurn = 0.0
     private var meshTap: Vec3? = null
@@ -70,6 +84,8 @@ class CaptureFlow(val session: CaptureSession) {
     private var lastTarget: String? = null
     private var ui = CaptureUi(phase = phase, guided = plan != null)
 
+    init { session.set = set.takeIf { setName != null }; session.setScope(Scope(minPrio = reach)) }
+
     // ---- from the screen ---------------------------------------------------------------------------------------------
     /** Goes on without the turn on the spot: down is then as the phone's tracking has it. */
     fun skipLevel() { if (phase == Phase.LEVEL) { phase = afterLevel; note = "" } }
@@ -77,7 +93,10 @@ class CaptureFlow(val session: CaptureSession) {
     fun setAuto(on: Boolean) { session.auto = on }
     fun skip() { session.skipCurrent("skipped on the phone"); levelsDirty = true }
     fun toggleMarking() { marking = !marking }
-    fun toggleWide() { wide = !wide; session.setScope(Scope(minPrio = if (wide) 1 else 2)); levelsDirty = true }
+    /** What counts, round to the next: the whole rock, its climbs, and (for a set of beta) only its holds. */
+    fun toggleWide() { reach = if (reach >= (if (setName != null) 3 else 2)) 1 else reach + 1; session.setScope(Scope(minPrio = reach)); levelsDirty = true }
+    /** The next photo taken is one with a bank card flat on the rock beside the hold: its size, to a fraction of a millimetre. */
+    fun toggleCard() { cardNext = !cardNext }
     fun turnGhost(degrees: Double) { ghostTurn += degrees * PI / 180; ghost = null }
     fun bringGhost() { ghost = null }
     fun confirmFit() { if (phase == Phase.CONFIRM) { phase = Phase.CAPTURE; levelsDirty = true; note = "" } }
@@ -200,7 +219,7 @@ class CaptureFlow(val session: CaptureSession) {
      * @param sensorOrientation how the camera's sensor is mounted (Axes.forceInImage()).
      */
     fun frame(pose: CameraPose, tracking: Boolean, gyroRadS: Double, exposureS: Double, t: Double, uprightDeg: Int,
-              accel: Vec3? = null, sensorOrientation: Int = 90): FlowOut {
+              accel: Vec3? = null, sensorOrientation: Int = 90, stillLens: Lens? = null): FlowOut {
         lastPose = pose
         // tracking that was lost for more than a moment may have come back with its world somewhere else: photos and points
         // from then on are another spell's, tied to the earlier ones by what they show rather than by where the phone says it was
@@ -209,6 +228,7 @@ class CaptureFlow(val session: CaptureSession) {
             lostAt = null; tracked = true
         }
         val base = ui.copy(phase = phase, kept = session.shotCount, rejected = rejected, note = note, sensors = sensorNote, auto = session.auto, wide = wide, marking = marking,
+            reach = when (reach) { 1 -> "whole rock"; 2 -> "its climbs"; else -> "the holds of $setName" }, card = cardNext, target = "", canCard = false,
             pairs = session.taps.size, tracking = tracking)
         if (!tracking) {
             ui = base.copy(text = "Hold on: the phone is finding where it is. Move it slowly, looking at the rock.", turnX = 0.0, turnY = 0.0)
@@ -259,15 +279,17 @@ class CaptureFlow(val session: CaptureSession) {
                 return FlowOut(ui, null, false, 0f, null, emptyList(), false)
             }
             Phase.CAPTURE -> {
-                val out = session.frame(FrameIn(pose, gyroRadS, exposureS, true, t, uprightDeg))
+                val out = session.frame(FrameIn(pose, gyroRadS, exposureS, true, t, uprightDeg, stillLens))
                 if (out.hint.targetId != lastTarget) { lastTarget = out.hint.targetId; levelsDirty = true }      // the ring round what's asked for moves
                 fresh()
                 val p = out.progress
                 ui = base.copy(text = out.hint.text, turnX = out.hint.turnX, turnY = out.hint.turnY, total = p.total, done = p.done + p.skipped, holds = p.holds,
-                    holdsDone = p.holdsDone, canSkip = plan != null && out.hint.targetId != null)
-                val shoot = (out.shoot || wantShot) && !inFlight
-                if (shoot) { inFlight = true; wantShot = false }
-                return FlowOut(ui, session.fit, false, 0.75f, levels, markers, shoot)
+                    holdsDone = p.holdsDone, canSkip = plan != null && out.hint.targetId != null, target = out.status, canCard = out.status.isNotEmpty())
+                if (cardNext) ui = ui.copy(text = "Hold a bank card flat on the rock beside the hold, all of it in the picture and out of any glare, and press the shutter")
+                // a card photo is taken by hand: it waits for the card to be there
+                val shoot = (if (cardNext) wantShot else out.shoot || wantShot) && !inFlight
+                if (shoot) { inFlight = true; wantShot = false; cardShot = cardNext }
+                return FlowOut(ui, session.fit, false, 0.75f, levels, markers, shoot, out.still, shoot && cardNext)
             }
             else -> { ui = base; return FlowOut(ui, null, false, 0f, null, emptyList(), false) }
         }
@@ -276,7 +298,9 @@ class CaptureFlow(val session: CaptureSession) {
     /** The photo frame() asked for, taken. A photo not kept is to be deleted. */
     fun shot(s: ShotIn): ShotOut {
         inFlight = false
-        val out = session.shot(s.copy(arSession = spell(s.arSession)))
+        val out = session.shot(s.copy(arSession = spell(s.arSession), card = s.card || cardShot))
+        if (cardShot && out.kept) { cardNext = false; levelsDirty = true }
+        cardShot = false
         sensorNote = out.record.notes.joinToString(" · ")
         if (out.kept) { note = ""; levelsDirty = true } else { rejected++; note = "Not kept: ${out.why.joinToString("; ")}." }
         return out

@@ -22,7 +22,7 @@ import struct
 import time
 from pathlib import Path
 
-VERSION = 2             # goes up when a plan or guide made before would be read wrongly, or should be made again
+VERSION = 3             # goes up when a plan or guide made before would be read wrongly, or should be made again
 DIR, PLAN_FILE, GUIDE_FILE = "capture", "plan.json", "guide.bin"
 GUIDE_FACES = 12000     # at most, in the light mesh
 PATCH_CELLS = 10        # a patch: a box this share of the mesh's size, and the way its faces face
@@ -33,11 +33,22 @@ VIEWS_KEPT = 8          # directions counted for a face, at most
 GUESS_ACROSS_M = 8.0    # a mesh whose size wasn't found is taken as this far across (as the viewer's Nearby does)
 HOLD_RADIUS_M = 0.15    # a hold's target: this far round it
 HOLD_SAME_M = 0.08      # holds nearer each other than this are one
+HOLD_DETAIL_M = 0.075   # the part of the rock that is a hold, when it's wanted in detail: this far round it, unless it says (beta.HOLD_R_M)
 NEAR_HOLD_M = 0.75      # rock this near a hold matters as much as the climb does
 NEAR_CLIMB_M = 1.5      # and this near where a climb's own photos look
 # ladder: on the way in to a hold, a photo at each step this many times coarser, up to how its photos see it now: close
 # photos at half a millimetre a pixel match web photos at 9 through those in between, not directly
-NEED = {"hold": {"gsd_mm": 0.5, "views": 4, "ladder": 2.0}, "patch": {"gsd_mm": 1.5, "views": 3}, "edge": {"views": 3}, "view": {"views": 1}}
+NEED = {"hold": {"gsd_mm": 0.5, "views": 4, "ladder": 2.0}, "patch": {"gsd_mm": 1.5, "views": 3}, "edge": {"views": 3}, "view": {"views": 1},
+        # the holds of the set of beta a capture is for: as fine as the phone's lens goes (from as close as it focuses, taken as
+        # close_m, rather than a number of millimetres) and from more directions, further apart, for a hold's every face:
+        # enough to make a replica of it from
+        # enough to make a replica of it from. Its whole region (a hold's r_m) is in each close picture, so the phone is
+        # as near as its lens focuses or as far as that takes; sides_deg: besides straight on, a view from its left, right,
+        # above and below this far round, wherever a phone can get to; ties: this many steps of its ladder aren't only
+        # asked for on the way in but needed, as they tie the close photos to the rest
+        "detail": {"close_m": 0.15, "views": 6, "view_deg": 20.0, "ladder": 2.0, "sides_deg": 40.0, "ties": 3},
+        # the rock that's on no climb, when the whole of it is wanted: one view, nearly square on, fine enough to texture it with
+        "texture": {"gsd_mm": 2.0, "views": 1, "facing_deg": 35.0}}
 # views: where a few of its photos were taken, to photograph it from again first, which ties a capture's photos to them
 BRIDGE = {"within_m": 1.0, "deg": 20.0}     # how near one, and how nearly looking as it did, counts as the same view
 BRIDGE_MOST = 6
@@ -45,6 +56,8 @@ BRIDGE_GAIN = 0.05          # a view that shows less than this share more of wha
 BRIDGE_HEIGHT_M = (0.4, 2.3)    # above the ground: where a person can hold a phone
 BRIDGE_FAR_M = 10.0
 UP = (0.0, 1.0, 0.0)    # in a levelled mesh
+# what each role of hold is drawn in, as the site draws it (beta.COLORS, which is blue-green-red)
+ROLE_COLORS = {"start": "#19d23c", "hand": "#2f6bff", "finish": "#ff2a2a", "foot": "#f53dff"}
 
 
 def _rotation(q):
@@ -244,16 +257,19 @@ def boundary(F):
 
 
 def build(V, F, cams: list[dict], holds: list[dict], climbs: list[dict], metres_per_unit: float | None,
-          rank: dict[str, float] | None = None) -> tuple[dict, bytes]:
+          rank: dict[str, float] | None = None, sets: list[dict] | None = None) -> tuple[dict, bytes]:
     """A mesh's plan and guide.
 
     Args:
         V, F: its vertices and faces, levelled (+Y up), stray pieces left out.
         cams: its cameras.json.
-        holds: [{p, role, from ("video" or "marked"), climbs: [climb ids]}], in its coordinates.
+        holds: [{p, role, from ("video" or "marked"), climbs: [climb ids], sets: [ids of the sets of beta it's in],
+            ids: [its own id in those sets], r_m: how far round it reaches, in metres, if it says}], in
+            its coordinates.
         climbs: [{id, name, grade, view: {eye, target} or None}], those it's of.
         metres_per_unit: its scale, if it was found.
         rank: how well tied in each of its photos is, by name, if known (viewpoints()).
+        sets: its sets of beta made by hand, [{id, name, climb}], for the plan to list with the targets of each.
 
     Returns:
         The plan (without what only the server knows: its name, place and heading), and guide.bin's bytes.
@@ -277,8 +293,11 @@ def build(V, F, cams: list[dict], holds: list[dict], climbs: list[dict], metres_
         same = next((x for x in merged if float(np.linalg.norm(np.asarray(x["p"], float) - p)) * mpu < HOLD_SAME_M), None)
         if same:
             same["climbs"] = sorted(set(same.get("climbs") or []) | set(h.get("climbs") or []))
+            same["sets"] = sorted(set(same.get("sets") or []) | set(h.get("sets") or []))
+            same["ids"] = same["ids"] + [i for i in h.get("ids") or [] if i not in same["ids"]]
+            same["r_m"] = max(same.get("r_m") or 0.0, h.get("r_m") or 0.0) or None
         else:
-            merged.append({**h, "climbs": list(h.get("climbs") or [])})
+            merged.append({**h, "climbs": list(h.get("climbs") or []), "sets": list(h.get("sets") or []), "ids": list(h.get("ids") or [])})
     holds = merged
     hold_p = np.array([h["p"] for h in holds], float).reshape(-1, 3)
     climb_p = [(c["id"], np.asarray(c["view"]["target"], float)) for c in climbs if (c.get("view") or {}).get("target")]
@@ -340,7 +359,8 @@ def build(V, F, cams: list[dict], holds: list[dict], climbs: list[dict], metres_
         targets.append({"id": f"h{i}", "kind": "hold", "role": h.get("role"), "from": h.get("from"),
                         "p": [round(float(x), 5) for x in p], "n": [round(float(x), 4) for x in normal], "r": round(radius, 5),
                         "prio": 3, "have_gsd": None if gsd is None else round(gsd, 7), "have_views": seen,
-                        "climbs": sorted(h.get("climbs") or [])})
+                        "climbs": sorted(h.get("climbs") or []), "sets": sorted(h.get("sets") or []),
+                        "holds": h["ids"], "detail_m": round(float(h.get("r_m") or HOLD_DETAIL_M), 4)})
 
     edges, edge_face = boundary(F) if len(F) else (np.zeros((0, 2), np.int64), np.zeros(0, np.int64))
     if len(edges):
@@ -389,6 +409,9 @@ def build(V, F, cams: list[dict], holds: list[dict], climbs: list[dict], metres_
                       "metres_per_unit": round(mpu, 6), "scale_guessed": guessed},
             "guide": {"vertices": len(V), "faces": len(F), "patches": n_patches, "sha1": hashlib.sha1(guide).hexdigest()[:16]},
             "need": NEED, "bridge": BRIDGE, "view_deg": VIEW_DEG, "facing_deg": FACING_DEG,
+            "sets": [{"id": one["id"], "name": one.get("name"), "climb": one.get("climb"),
+                      "targets": [t["id"] for t in targets if t["kind"] == "hold" and one["id"] in t["sets"]]} for one in sets or []],
+            "roles": ROLE_COLORS,
             "cameras": shown, "targets": targets,
             "climbs": [{"id": c["id"], "name": c.get("name"), "grade": c.get("grade")} for c in climbs]}
     return plan, guide
@@ -410,7 +433,8 @@ def load(mesh_dir: Path, want: str | None = None) -> dict | None:
     return plan
 
 
-def make(mesh_dir: Path, holds: list[dict], climbs: list[dict], metres_per_unit: float | None, made_from: str) -> dict:
+def make(mesh_dir: Path, holds: list[dict], climbs: list[dict], metres_per_unit: float | None, made_from: str,
+         sets: list[dict] | None = None) -> dict:
     """Make and keep a mesh's plan and guide, from its mesh (its stray pieces left out) and cameras.
 
     Raises:
@@ -427,7 +451,7 @@ def make(mesh_dir: Path, holds: list[dict], climbs: list[dict], metres_per_unit:
         cams = []
     # how well tied in each photo is, where the mesh's cameras say (those kept since orientation.read_cameras() counted it)
     rank = {c["name"]: c["seen"] for c in cams if isinstance(c, dict) and isinstance(c.get("seen"), (int, float)) and c.get("name")}
-    plan, guide = build(mesh.V, F, cams, holds, climbs, metres_per_unit, rank or None)
+    plan, guide = build(mesh.V, F, cams, holds, climbs, metres_per_unit, rank or None, sets)
     plan["key"] = made_from
     out = mesh_dir / DIR
     out.mkdir(exist_ok=True)

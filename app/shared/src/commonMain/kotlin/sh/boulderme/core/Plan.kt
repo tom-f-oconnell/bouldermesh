@@ -20,6 +20,8 @@ data class Plan(
     val guide: GuideInfo = GuideInfo(),
     val need: Map<String, Need> = emptyMap(),
     val bridge: Bridge = Bridge(),
+    val sets: List<PlanSet> = emptyList(),              // its sets of beta, each with its holds among the targets
+    val roles: Map<String, String> = emptyMap(),        // what each role of hold is drawn in, as the site draws it: "#rrggbb"
     @SerialName("view_deg") val viewDeg: Double = 15.0,
     @SerialName("facing_deg") val facingDeg: Double = 75.0,
     val cameras: List<PlacedCamera> = emptyList(),
@@ -29,7 +31,8 @@ data class Plan(
     fun needOf(kind: String): Need = need[kind] ?: DEFAULT_NEED[kind] ?: Need()
 
     companion object {
-        val DEFAULT_NEED = mapOf("hold" to Need(0.5, 4), "patch" to Need(1.5, 3), "edge" to Need(null, 3), "view" to Need(null, 1))
+        val DEFAULT_NEED = mapOf("hold" to Need(0.5, 4), "patch" to Need(1.5, 3), "edge" to Need(null, 3), "view" to Need(null, 1),
+            "detail" to Need(null, 6, 2.0, closeM = 0.15, viewDeg = 20.0, sidesDeg = 40.0, ties = 3))
         internal val json = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = true }
 
         /** Reads a plan. Throws SerializationException if it isn't one. */
@@ -52,11 +55,22 @@ data class GuideInfo(val vertices: Int = 0, val faces: Int = 0, val patches: Int
 
 /**
  * What a target needs: seen at least this finely (millimetres of rock a pixel), from at least this many directions.
+ * closeM, in place of gsdMm (the "detail" need, of the holds of the set of beta a capture is for): as finely as the
+ * phone's own lens gives from as close as it focuses, taken as this far off; viewDeg: its directions this far apart.
+ * sidesDeg: besides straight on, a close view from its left, right, above and below, this far round, where a phone can
+ * get to; ties: this many steps of its ladder are needed, not only asked for on the way in. facingDeg (the "texture"
+ * need, of rock on no climb): its one view within this of square on, taken now.
  * ladder: on the way in to it, a photo at each step this many times coarser, up to how its earlier photos saw it, so
  * that the close photos tie to those through photos in between (wanted, and asked for on the way, but not needed).
  */
 @Serializable
-data class Need(@SerialName("gsd_mm") val gsdMm: Double? = null, val views: Int = 3, val ladder: Double? = null)
+data class Need(@SerialName("gsd_mm") val gsdMm: Double? = null, val views: Int = 3, val ladder: Double? = null,
+                @SerialName("close_m") val closeM: Double? = null, @SerialName("view_deg") val viewDeg: Double? = null,
+                @SerialName("sides_deg") val sidesDeg: Double? = null, val ties: Int = 0, @SerialName("facing_deg") val facingDeg: Double? = null)
+
+/** A set of beta made by hand on the site: its name, the climb it's for if it says, and which of the plan's targets are its holds. */
+@Serializable
+data class PlanSet(val id: String, val name: String? = null, val climb: String? = null, val targets: List<String> = emptyList())
 
 /** How near where an earlier photo was taken (a "view" target) a photo has to be taken to count as the same view again. */
 @Serializable
@@ -88,6 +102,9 @@ data class Target(
     @SerialName("have_gsd") val haveGsd: Double? = null,
     @SerialName("have_views") val haveViews: Int = 0,
     val climbs: List<String> = emptyList(),
+    val sets: List<String> = emptyList(),       // a hold: the sets of beta it's in,
+    val holds: List<String> = emptyList(),      // which holds of theirs it is (ids that outlast a plan),
+    @SerialName("detail_m") val detailM: Double? = null,    // and how far round it reaches, in metres: what a close capture of it is of
 ) {
     val point: Vec3 get() = Vec3.of(p)
     val normal: Vec3 get() = Vec3.of(n)

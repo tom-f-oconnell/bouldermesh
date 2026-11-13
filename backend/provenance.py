@@ -70,6 +70,19 @@ def _by_name(name: str) -> dict:
     return {"file": name, "source": "upload", "license": "the user's own photo"}
 
 
+def captured(project_dir: Path) -> dict[str, dict]:
+    """The photos an app of ours took for a project (its capture's record names them), each with the licence the
+    person who took them gives them under and who to credit: {} if its record gives no licence, or there's none."""
+    try:
+        record = json.loads((project_dir / "capture.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(record, dict) or not record.get("licence"):
+        return {}
+    entry = {"source": "upload", "license": str(record["licence"])[:40], "credit": str(record["credit"])[:80] if record.get("credit") else None}
+    return {s["name"]: entry for s in record.get("shots") or [] if isinstance(s, dict) and s.get("name")}
+
+
 def save(mesh_dir: Path, project_dir: Path) -> dict:
     """Record where a mesh's photos came from.
 
@@ -81,9 +94,9 @@ def save(mesh_dir: Path, project_dir: Path) -> dict:
     photos = project_dir / "photos"
     names = placed if placed is not None else sorted(
         p.name for p in (photos.iterdir() if photos.exists() else []) if p.suffix.lower() in PHOTO_EXT)
-    known = harvested(project_dir)
+    known, own = harvested(project_dir), captured(project_dir)
     record = {"basis": "placed" if placed is not None else "given", "created": time.time(),
-              "photos": [describe(n, known) for n in names]}
+              "photos": [{**describe(n, known), **own.get(n, {})} for n in names]}
     (mesh_dir / FILE).write_text(json.dumps(record, indent=1))
     return record
 
@@ -121,15 +134,18 @@ def summary(record: dict | None) -> dict | None:
     """Photos per source, with the licences recorded for them and, for video frames, how many videos.
 
     Returns:
-        {basis, total, sources: [{source, photos, licenses: {licence: photos}, videos}]}, sources
+        {basis, total, sources: [{source, photos, licenses: {licence: photos}, videos, credits: who to credit for
+        photos taken with an app of ours}]}, sources
         most photos first, or None without a record.
     """
     if not record:
         return None
     by: dict[str, dict] = {}
     for p in record["photos"]:
-        s = by.setdefault(p["source"], {"source": p["source"], "photos": 0, "licenses": collections.Counter(), "videos": set()})
+        s = by.setdefault(p["source"], {"source": p["source"], "photos": 0, "licenses": collections.Counter(), "videos": set(), "credits": []})
         s["photos"] += 1
+        if p["source"] == "upload" and p.get("credit") and p["credit"] not in s["credits"]:
+            s["credits"].append(p["credit"])
         s["licenses"][p.get("license") or "not recorded"] += 1
         if p["source"] == "youtube" and p.get("url"):
             s["videos"].add(p["url"])
