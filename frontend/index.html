@@ -320,6 +320,9 @@
   .swatch{display:inline-block;width:11px;height:11px;border-radius:50%;border:1px solid var(--swatch-line)}
   .bvid{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
   .bvid img{width:100%;border-radius:6px;margin-top:6px;display:block}
+  .bholds{max-height:230px;overflow:auto;margin-top:6px}
+  .bhold{gap:6px;padding:2px 4px;border-radius:5px;font-size:12px;cursor:pointer} .bhold.on{outline:1px solid var(--acc);outline-offset:-1px}
+  .bhold select{width:auto;padding:2px 4px;font-size:12px}
   #vmark.on{background:var(--acc);color:var(--acc-fg)}
   .phone{display:none}
   /* A phone's progress loading a mesh, over whichever view is showing until the mesh is ready to see */
@@ -4321,7 +4324,13 @@ const ROLES = {
   foot: { name: 'Foot only', color: '#f53dff' },
 };
 const ROLE_CYCLE = ['start', 'hand', 'finish', 'foot'];
-let betaState = null;   // {mid, found, marked, available, shown: Set of video tags, marking, group, node, markers}
+// {mid, found, sets: its sets of beta, sid: the one chosen, marked: that one's holds (those shown and edited), sel: the
+//  index of the hold selected, available, shown: Set of video tags, marking, group, node, markers}
+let betaState = null;
+// how far round its point a hold reaches, in metres (beta.py's r_m): what a close capture of it covers
+const HOLD_R = [['small', 0.04], ['one hand', 0.075], ['two hands', 0.15]], HOLD_R_M = 0.075;
+let betaChosen = {};    // the set chosen on each mesh, for this session
+try { betaChosen = JSON.parse(sessionStorage.getItem('bm_betaset')) || {}; } catch {}
 let betaPoll = null;
 // what the colours are of, over them on hover (title), and on a phone, where there's no hover, under them on a tap
 $('#b-legend').onclick = () => { const n = $('#b-legend-note'); n.textContent = $('#b-legend').title; n.hidden = !n.hidden || !phone.matches; };
@@ -4457,7 +4466,11 @@ async function findBeta(mid){
 async function loadBeta(){
   const r = await api(`/api/meshes/${betaState.mid}/beta`);
   const fresh = !betaState.found || (r.found?.videos || []).length !== (betaState.found?.videos || []).length;
-  Object.assign(betaState, { found: r.found, marked: r.marked.holds || [], available: r.available });
+  Object.assign(betaState, { found: r.found, available: r.available });
+  if (!betaState.unsaved) {     // not over holds on their way to the server
+    betaState.sets = r.sets || [];
+    chooseSet(betaState.sets.some(s => s.id === betaState.sid) ? betaState.sid : betaChosen[betaState.mid], false);
+  }
   if (fresh) betaState.shown = new Set((r.found?.videos || []).slice(0, 1).map(v => v.tag));   // one at a time is clearer
   drawBeta(); renderBetaPanel();
 }
@@ -4473,7 +4486,7 @@ async function openBeta(mid){
   document.querySelector('.tabs button[data-tab=beta]').click();
   await viewMesh(mid, null, 'beta');
   if (!current) return;
-  betaState = { mid, found: null, marked: [], shown: new Set(), marking: false };
+  betaState = { mid, found: null, sets: [], sid: null, marked: [], sel: null, shown: new Set(), marking: false };
   await loadBeta();
   if (['queued', 'running'].includes(betaState.found?.status)) watchBeta();
   renderBetaList();
@@ -4505,6 +4518,14 @@ function ringTexture(thick){
 const RING = { found: ringTexture(12), marked: ringTexture(22) };
 const HOLD_SIZE = { found: 0.028, marked: 0.032 };   // ring diameters, as shares of the boulder's size
 const RING_LIFT = 0.12;                               // also a share of the boulder's size
+const REACH = (() => {      // a sphere of radius 1 as three circles, one about each axis
+  const pts = [], n = 48;
+  for (let axis = 0; axis < 3; axis++) for (let i = 0; i < n; i++) for (const k of [i, i + 1]) {
+    const a = 2 * Math.PI * k / n, p = [0, 0, 0];
+    p[(axis + 1) % 3] = Math.cos(a); p[(axis + 2) % 3] = Math.sin(a); pts.push(new THREE.Vector3(...p));
+  }
+  return new THREE.BufferGeometry().setFromPoints(pts);
+})();
 function drawBeta(){
   if (!betaState || !current) return;
   if (betaState.group) betaState.group.parent?.remove(betaState.group);
@@ -4527,7 +4548,19 @@ function drawBeta(){
     }
     for (const h of v.holds || []) ring(h.p, h.role, 'found');
   }
-  betaState.markers = betaState.marked.map((h, i) => { const sprite = ring(h.p, h.role, 'marked'); sprite.userData.marked = i; return sprite; });
+  // how far round a hold reaches, as three circles about it (lines: nothing that goes through the meshes sees them),
+  // where the mesh's size is known: the selected hold's, and those given a size
+  const mpu = meshesById[betaState.mid]?.scale?.metres_per_unit;
+  betaState.markers = betaState.marked.map((h, i) => {
+    const sprite = ring(h.p, h.role, 'marked'), on = i === betaState.sel;
+    sprite.userData.marked = i;
+    if (on) sprite.userData.size *= 1.4;
+    if (mpu > 0 && (on || h.r_m)) {
+      const reach = new THREE.LineSegments(REACH, new THREE.LineBasicMaterial({ color: ROLES[h.role].color, transparent: true, opacity: on ? .95 : .45 }));
+      reach.position.fromArray(h.p); reach.scale.setScalar((h.r_m || HOLD_R_M) / mpu); reach.userData.beta = true; g.add(reach);
+    }
+    return sprite;
+  });
   node.add(g);
   Object.assign(betaState, { group: g, node, rings: g.children.filter(o => o.isSprite) });
   liftRings();
@@ -4552,12 +4585,25 @@ function renderBetaPanel(){
   const m = meshesById[b.mid], f = b.found, n = videoCount(m || {});
   const busy = ['queued', 'running'].includes(f?.status);
   const canFind = m?.source.startsWith('project:') && m.cameras_kept && n && b.available && !busy;
+  const set = chosenSet(b), scrolled = el.querySelector('.bholds')?.scrollTop;
+  const count = k => `${k} hold${k === 1 ? '' : 's'}`;
+  const sizeOf = h => { const r = h.r_m ?? HOLD_R_M; return HOLD_R.find(([, v]) => v === r)?.[0] || `${+(r * 100).toFixed(1)} cm`; };
+  const sizes = h => { const r = h.r_m ?? HOLD_R_M; return (HOLD_R.some(([, v]) => v === r) ? HOLD_R : [...HOLD_R, [sizeOf(h), r]]).map(([name, v]) => `<option value="${v}" ${v === r ? 'selected' : ''}>${name}</option>`).join(''); };
   el.innerHTML = `<div class="card active">
     <div class="row"><b class="grow">${esc(m?.name || '')}</b><button class="sm sec close">✕ close</button></div>
-    <div class="meta" style="margin-top:6px"><b>Yours:</b> ${roleCounts(b.marked)}</div>
+    <div class="meta" style="margin-top:6px"><b>Sets of beta:</b>${b.sets.length ? '' : ' none'}</div>
+    ${b.sets.length ? `<select class="bset" style="margin-top:4px" title="The set whose holds are shown">${b.sets.map(s => `<option value="${esc(s.id)}" ${s.id === b.sid ? 'selected' : ''}>${esc(s.name)} · ${count(s.holds.length)}</option>`).join('')}</select>` : ''}
+    <div class="row w" style="margin-top:4px;gap:4px;flex-wrap:wrap"><button class="sm sec setnew" title="A set with no holds yet">New</button>
+      ${set ? `<button class="sm sec setdup" title="A copy of this set, to change">Duplicate</button><button class="sm sec setname">Rename</button><button class="sm sec setdel">Delete</button>` : ''}</div>
+    <div class="meta" style="margin-top:6px"><b>Its holds:</b> ${roleCounts(b.marked)}</div>
     <div class="row" style="margin-top:4px"><button class="sm mark">${b.marking ? 'Stop marking' : 'Mark holds'}</button>
-      ${b.marked.length ? '<button class="sm sec clearmine">Clear yours</button>' : ''}</div>
-    <div class="notice w" style="margin-top:6px">Marking: click the rock to add a start hold, then click a hold again for hand, finish, foot, then none.</div>
+      ${b.marked.length ? '<button class="sm sec clearmine">Clear its holds</button>' : ''}</div>
+    <div class="notice w" style="margin-top:6px">Marking: click the rock to add a start hold, then click a hold again for hand, finish, foot, then none. A hold's size is how much of the rock round it is the hold.</div>
+    <div class="bholds">${b.marked.map((h, i) => `<div class="row bhold${i === b.sel ? ' on' : ''}" data-i="${i}">
+      <span class="swatch" style="background:${ROLES[h.role].color}"></span><span class="grow">${i + 1}${editor ? '' : ` · ${ROLES[h.role].name} · ${sizeOf(h)}`}</span>
+      <select class="w role" title="What it's for">${ROLE_CYCLE.map(r => `<option value="${r}" ${r === h.role ? 'selected' : ''}>${ROLES[r].name}</option>`).join('')}</select>
+      <select class="w size" title="How far round its point the hold reaches: what a close capture of it covers">${sizes(h)}</select>
+      <button class="sm sec w unmark" title="Remove this hold">✕</button></div>`).join('')}</div>
     <div class="meta" style="margin-top:8px"><b>From videos:</b> ${busy ? (f.status === 'queued' ? 'queued…' : f.at ? `finding it${f.at.where === 'machine' ? ' on a machine' : ''}…` : `${esc(f.progress || 'starting')}…`) : m ? betaLine(m) : ''}
       ${canFind ? `<button class="sm sec find" style="margin-left:6px">${f?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}
       ${f?.status === 'running' ? betaBarHtml(f.at) : ''}</div>
@@ -4565,14 +4611,28 @@ function renderBetaPanel(){
     ${(f?.videos || []).map(v => `<div class="bvid">
       <label class="row" style="gap:6px"><input type="checkbox" data-tag="${v.tag}" ${b.shown.has(v.tag) ? 'checked' : ''}>
         <span class="grow"><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.title || v.url)}</a>${v.uploader ? ` <small>· ${esc(v.uploader)}</small>` : ''}</span></label>
-      <div class="meta">${v.holds ? roleCounts(v.holds) : ''} ${v.frames ? `<small>· climber in ${v.with_climber} of ${v.frames} frames, ${v.placed_frames} placed on the mesh${v.approximate_lens ? ', lens approximate' : ''}</small>` : ''}
+      <div class="meta">${v.holds ? roleCounts(v.holds) : ''} ${v.holds?.length ? `<button class="sm sec w tocopy" data-video="${esc(v.url)}" title="A set of these holds, to change" style="margin-left:4px">Copy to a set</button>` : ''} ${v.frames ? `<small>· climber in ${v.with_climber} of ${v.frames} frames, ${v.placed_frames} placed on the mesh${v.approximate_lens ? ', lens approximate' : ''}</small>` : ''}
         ${v.status && v.status !== 'done' ? `<small>· ${esc(v.status)}</small>` : ''}</div>
       ${v.image ? `<img src="/meshes/${b.mid}/${v.image}?v=${f.finished || ''}" alt="" title="The climber's hands (white) and feet (yellow), and the holds they stayed on, drawn on this video's frame placed in the mesh">` : ''}
     </div>`).join('')}
   </div>`;
   el.querySelector('.close').onclick = () => { closeBeta(null); };
   el.querySelector('.mark').onclick = () => setMarking(!b.marking);
-  el.querySelector('.clearmine')?.addEventListener('click', () => { if (ask('Remove the holds you marked on this mesh?')) { b.marked = []; saveMarked(); } });
+  el.querySelector('.clearmine')?.addEventListener('click', () => { if (ask('Remove the holds of this set?')) { b.marked.length = 0; b.sel = null; saveMarked(); } });
+  if (scrolled) el.querySelector('.bholds').scrollTop = scrolled;
+  el.querySelector('.bset')?.addEventListener('change', ev => { chooseSet(ev.target.value); drawBeta(); renderBetaPanel(); });
+  el.querySelector('.setnew').onclick = () => setDo('new');
+  el.querySelector('.setdup')?.addEventListener('click', () => setDo('new', { set: b.sid }));
+  el.querySelector('.setname')?.addEventListener('click', () => setDo('rename'));
+  el.querySelector('.setdel')?.addEventListener('click', () => setDo('delete'));
+  el.querySelectorAll('.tocopy').forEach(c => c.onclick = () => setDo('new', { video: c.dataset.video }));
+  el.querySelectorAll('.bhold').forEach(row => {
+    const i = +row.dataset.i, h = b.marked[i];
+    row.onclick = ev => { if (ev.target.closest('select, button')) return; b.sel = b.sel === i ? null : i; drawBeta(); renderBetaPanel(); };
+    row.querySelector('.role').onchange = ev => { h.role = ev.target.value; b.sel = i; saveMarked(); };
+    row.querySelector('.size').onchange = ev => { h.r_m = +ev.target.value; b.sel = i; saveMarked(); };
+    row.querySelector('.unmark').onclick = () => { b.marked.splice(i, 1); b.sel = null; saveMarked(); };
+  });
   el.querySelector('.find')?.addEventListener('click', () => findBeta(b.mid));
   el.querySelectorAll('[data-tag]').forEach(c => c.onchange = () => { c.checked ? b.shown.add(c.dataset.tag) : b.shown.delete(c.dataset.tag); drawBeta(); });
   showMarkButton();
@@ -4589,28 +4649,103 @@ function setMarking(on){
   betaState.marking = on; renderBetaPanel();
 }
 $('#vmark').onclick = () => setMarking(!betaState?.marking);
-async function saveMarked(){
+const chosenSet = b => b.sets.find(s => s.id === b.sid) || null;
+function rememberSet(b){
+  betaChosen[b.mid] = b.sid;
+  try { sessionStorage.setItem('bm_betaset', JSON.stringify(betaChosen)); } catch {}
+}
+// its holds become the ones shown and edited; the mesh's first set if there's no such one
+function chooseSet(sid, remember = true){
+  const b = betaState, s = b.sets.find(s => s.id === sid) || b.sets[0] || null;
+  if ((s?.id || null) !== b.sid) b.sel = null;
+  b.sid = s?.id || null; b.marked = s ? s.holds : [];
+  if (s && remember) rememberSet(b);
+}
+function betaCount(b){
+  const m = meshesById[b.mid];
+  if (m) { m.marked = b.sets.reduce((n, s) => n + s.holds.length, 0); renderBetaList(); }
+}
+// A set the server keeps as one, to change: `s`, or one made for holds marked on a mesh with none. Holds from before
+// there were sets read as a set "marked", which the old route for holds makes a real one of (once: it keeps that id)
+const betaKept = new Set();
+async function realSet(b, s){
+  if (!s) {
+    s = await api(`/api/meshes/${b.mid}/beta/sets`, { method: 'POST', json: {} });
+    s.holds = b.marked; b.sets.push(s);
+  } else if (s.id === 'marked' && !betaKept.has(b.mid)) {
+    await api(`/api/meshes/${b.mid}/holds`, { method: 'POST', json: { holds: s.holds } });
+    Object.assign(s, (await api(`/api/meshes/${b.mid}/beta`)).sets[0], { holds: s.holds });
+    betaKept.add(b.mid);
+  } else return s;
+  b.sid = s.id; rememberSet(b);
+  return s;
+}
+// the chosen set's holds, to the server: one save at a time, each with the whole list as it then is (ids and sizes kept)
+function saveMarked(){
+  const b = betaState, set = chosenSet(b);
   drawBeta(); renderBetaPanel();
+  b.edits = (b.edits || 0) + 1; b.unsaved = (b.unsaved || 0) + 1;
+  return b.saving = (b.saving || Promise.resolve()).then(async () => {
+    try {
+      const s = await realSet(b, b.sets.includes(set) ? set : chosenSet(b)), at = b.edits;
+      const kept = (await api(`/api/meshes/${b.mid}/beta/sets/${s.id}`, { method: 'PATCH', json: { holds: s.holds } })).holds;
+      if (b.edits === at) { s.holds = kept; if (b.sid === s.id) b.marked = kept; }    // else a later save follows, with those changes
+    }
+    catch (e) { toast('Couldn\'t save the holds: ' + e.message, 6000); }
+    b.unsaved--;
+    if (betaState === b) { betaCount(b); renderBetaPanel(); }
+  });
+}
+// a new set (blank, or from: {set} or {video}), or the chosen one renamed or deleted
+async function setDo(what, from){
+  const b = betaState;
   try {
-    betaState.marked = (await api(`/api/meshes/${betaState.mid}/holds`, { method: 'POST', json: { holds: betaState.marked } })).holds;
-    if (meshesById[betaState.mid]) { meshesById[betaState.mid].marked = betaState.marked.length; renderBetaList(); }
+    await b.saving;
+    let s = chosenSet(b);
+    if (what === 'new') {
+      if (from?.set) from = { set: (await realSet(b, s)).id };
+      const made = await api(`/api/meshes/${b.mid}/beta/sets`, { method: 'POST', json: from ? { from } : {} });
+      b.sets.push(made); chooseSet(made.id);
+    }
+    else if (!s) return;
+    else if (what === 'rename') {
+      const name = prompt('Its name:', s.name);
+      if (!name?.trim()) return;
+      s = await realSet(b, s);
+      s.name = (await api(`/api/meshes/${b.mid}/beta/sets/${s.id}`, { method: 'PATCH', json: { name } })).name;
+    }
+    else if (what === 'delete') {
+      const n = s.holds.length;
+      if (!await askDanger(`Delete "${s.name}"?`, n ? `Its ${n} hold${n === 1 ? ' goes' : 's go'} with it.` : 'It has no holds.', 'Delete')) return;
+      s = await realSet(b, s);
+      await api(`/api/meshes/${b.mid}/beta/sets/${s.id}`, { method: 'DELETE' });
+      b.sets = b.sets.filter(x => x !== s); chooseSet(null);
+    }
   }
-  catch (e) { toast('Couldn\'t save the holds: ' + e.message, 6000); }
+  catch (e) { toast(e.message, 6000); }
+  if (betaState === b) { betaCount(b); drawBeta(); renderBetaPanel(); }
 }
 renderer.domElement.addEventListener('click', ev => {
   const b = betaState;
-  if (!b?.marking || !current || ev.detail > 1 || !pressedAt || Math.hypot(ev.clientX - pressedAt[0], ev.clientY - pressedAt[1]) > 5) return;
+  if (!b || !current || ev.detail > 1 || !pressedAt || Math.hypot(ev.clientX - pressedAt[0], ev.clientY - pressedAt[1]) > 5) return;
+  if (!b.marking && !b.markers?.length) return;
   const r = renderer.domElement.getBoundingClientRect();
   raycaster.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, 1 - (ev.clientY - r.top) / r.height * 2), camera);
   const onMarker = raycaster.intersectObjects(b.markers || [], false)[0];
+  if (!b.marking) {   // a click on a hold selects it, for its row in the panel
+    if (!onMarker) return;
+    b.sel = onMarker.object.userData.marked; drawBeta(); renderBetaPanel();
+    return $('#beta-open .bhold.on')?.scrollIntoView({ block: 'nearest' });
+  }
   if (onMarker) {     // the next role, as the Tension Board app cycles them, and then off
     const i = onMarker.object.userData.marked, next = ROLE_CYCLE[ROLE_CYCLE.indexOf(b.marked[i].role) + 1];
-    if (next) b.marked[i].role = next; else b.marked.splice(i, 1);
+    if (next) { b.marked[i].role = next; b.sel = i; } else { b.marked.splice(i, 1); b.sel = null; }
     return saveMarked();
   }
   const hit = surfaceUnder(ev);
   if (!hit) return;
   b.marked.push({ p: b.node.worldToLocal(hit.point.clone()).toArray().map(x => +x.toFixed(6)), role: ROLE_CYCLE[0] });
+  b.sel = b.marked.length - 1;
   saveMarked();
 });
 
