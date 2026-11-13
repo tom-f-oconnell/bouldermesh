@@ -404,6 +404,8 @@ def export(s: st.State, out: Path, of: str, how: str = "add", note: str = "") ->
     add, the identity, the model being in the former mesh's frame. Also level.json: which way is down in it by the
     capture's readings, and result.json {mesh}. Returns frame.json's record."""
     import frames
+    import numpy as np
+    import capture as cp
     root = s.root
     dense = root / "dense"
     glb = dense / "scene_dense_mesh_texture.glb"
@@ -424,8 +426,18 @@ def export(s: st.State, out: Path, of: str, how: str = "add", note: str = "") ->
                  "shared": len(kept), "of_shared": len(kept), "rms": round(float(moved), 9), "rms_m": None, "tilt_deg": 0.0, "rot_deg": 0.0}
     else:
         found = frames.tie(former, json.loads((out / "cameras.json").read_text()))
-    rec = frames.save(out, of, how, found, note=note or f"made by experiments/mapper/incr ({n} cameras)")
     lv = level_of(root)
+    turn = cp.relevel(lv) if how == "add" else None
+    if turn is not None:        # the capture's readings say the former mesh wasn't level: turn mesh and cameras level
+        import texture as tx
+        tx.rotate_glb(out / "mesh.glb", out / "mesh.glb", turn)
+        cams = cp.cameras_moved(json.loads((out / "cameras.json").read_text()), (1.0, turn, np.zeros(3)))
+        (out / "cameras.json").write_text(json.dumps(cams))
+        how = "add+relevel"
+        ang = float(np.degrees(np.arccos(np.clip((np.trace(turn) - 1) / 2, -1, 1))))
+        found.update(rot=[[round(float(x), 8) for x in row] for row in turn], tilt_deg=round(ang, 3), rot_deg=round(ang, 3))
+    rec = frames.save(out, of, how, found, note=note or f"made by experiments/mapper/incr ({n} cameras)",
+                      level={k: lv.get(k) for k in ("n", "spread_median_deg", "spread_p90_deg", "tilt_from_model_deg", "mean_err_deg")} if lv else None)
     (out / "level.json").write_text(json.dumps(lv))
     (out / "result.json").write_text(json.dumps({"mesh": "mesh.glb"}))
     return rec

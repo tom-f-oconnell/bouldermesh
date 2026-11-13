@@ -107,6 +107,33 @@ def test_refit_tie_undone():
     assert abs(again["scale"] - 1) < 1e-6 and again["rot_deg"] < 1e-4 and again["rms"] < 1e-5
 
 
+def test_relevel():
+    """Readings all saying down is 2 degrees off -Y call for the turn that puts it back; spread or few readings don't."""
+    tilt = cp.qmatrix(cp.axis_angle([1, 0, 0], math.radians(2)))
+    d = tilt @ np.array([0.0, -1.0, 0.0])
+    downs = [d + np.random.default_rng(i).normal(size=3) * 0.002 for i in range(20)]
+    lv = cp.level([x / np.linalg.norm(x) for x in downs])
+    turn = cp.relevel(lv)
+    assert turn is not None and near(turn @ np.asarray(lv["down"]), [0, -1, 0], 1e-5) and abs(lv["tilt_from_model_deg"] - 2) < 0.1
+    assert cp.relevel({**lv, "n": 3}) is None and cp.relevel({**lv, "spread_median_deg": 8.0}) is None
+    assert cp.relevel({**lv, "tilt_from_model_deg": 0.2}) is None
+
+
+def test_rotate_glb():
+    """A GLB's vertices turned, its faces and textures as they were."""
+    import texture as tx
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        from PIL import Image
+        Image.new("RGB", (8, 8), (10, 20, 30)).save(d / "t.png")
+        V = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], float)
+        tx.write_glb(d / "a.glb", [{"V": V, "UV": [[0, 0], [1, 0], [0, 1]], "I": [[0, 1, 2]], "image": d / "t.png"}])
+        R = cp.qmatrix(cp.axis_angle([0, 0, 1], math.pi / 2))
+        tx.rotate_glb(d / "a.glb", d / "b.glb", R)
+        W, F = tx.glb_geometry(d / "b.glb")
+        assert near(W, V @ R.T, 1e-6) and F.tolist() == [[0, 1, 2]]
+
+
 if __name__ == "__main__":
     for name, f in sorted(globals().items()):
         if name.startswith("test_"):

@@ -240,3 +240,21 @@ def cameras_moved(cams: list[dict], sim: tuple[float, np.ndarray, np.ndarray]) -
         R2 = Rc @ R.T
         out.append({**c, "q": list(map(float, qfrom_matrix(R2))), "t": list(map(float, -R2 @ (s * R @ centre + t)))})
     return out
+
+
+def relevel(lv: dict | None, least: int = 5, max_spread_deg: float = 3.0, min_tilt_deg: float = 0.5) -> np.ndarray | None:
+    """The turn that levels a model by its capture photos' readings (level()'s), or None when they don't call for
+    one: fewer than `least`, spread wider than max_spread_deg (median), or a tilt under min_tilt_deg or under three
+    times what the mean of so many readings may be off by. The shortest turn taking their mean down to -Y."""
+    if not lv or lv["n"] < least or lv["spread_median_deg"] > max_spread_deg:
+        return None
+    if lv["tilt_from_model_deg"] < max(min_tilt_deg, 3 * lv["mean_err_deg"]):
+        return None
+    d = np.asarray(lv["down"], float)
+    d /= np.linalg.norm(d)
+    t = -UP
+    v, c = np.cross(d, t), float(d @ t)
+    if c < -0.999999:
+        return np.diag([1.0, -1.0, -1.0])
+    K = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + K + K @ K / (1 + c)

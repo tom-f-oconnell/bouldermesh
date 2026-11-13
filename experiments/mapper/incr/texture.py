@@ -198,6 +198,41 @@ def glb_geometry(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return np.vstack(Vs), np.vstack(Fs)
 
 
+def rotate_glb(src: Path, dst: Path, R: np.ndarray) -> None:
+    """A GLB with every vertex position (and normal) turned by R about the origin, its textures as they were: for a
+    mesh re-levelled by a capture's readings."""
+    data = bytearray(Path(src).read_bytes())
+    n = struct.unpack_from("<I", data, 12)[0]
+    g = json.loads(bytes(data[20:20 + n]))
+    bin_start = 20 + n + 8
+    R = np.asarray(R, float)
+    done = set()
+    for mesh in g["meshes"]:
+        for prim in mesh["primitives"]:
+            for attr in ("POSITION", "NORMAL"):
+                i = prim["attributes"].get(attr)
+                if i is None or i in done:
+                    continue
+                done.add(i)
+                a = g["accessors"][i]
+                v = g["bufferViews"][a["bufferView"]]
+                if a["componentType"] != 5126 or v.get("byteStride", 12) != 12:
+                    raise ValueError("only tightly packed float32 positions and normals are turned")
+                start = bin_start + v.get("byteOffset", 0) + a.get("byteOffset", 0)
+                X = np.frombuffer(bytes(data[start:start + 12 * a["count"]]), "<f4").reshape(-1, 3).astype(np.float64)
+                Y = (X @ R.T).astype("<f4")
+                data[start:start + 12 * a["count"]] = Y.tobytes()
+                if attr == "POSITION":
+                    a["min"], a["max"] = Y.min(axis=0).tolist(), Y.max(axis=0).tolist()
+    js = json.dumps(g, separators=(",", ":")).encode()
+    js += b" " * ((-len(js)) % 4)
+    rest = bytes(data[20 + n:])
+    with open(dst, "wb") as f:
+        f.write(struct.pack("<III", 0x46546C67, 2, 12 + 8 + len(js) + len(rest)))
+        f.write(struct.pack("<II", len(js), 0x4E4F534A) + js)
+        f.write(rest)
+
+
 def write_ply(path: Path, V: np.ndarray, F: np.ndarray) -> None:
     """A binary PLY of a mesh, as OpenMVS reads one."""
     with open(path, "wb") as f:
