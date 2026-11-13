@@ -63,6 +63,9 @@ CASPAR = ["--Mapper.ba_local_backend", "CASPAR", "--Mapper.ba_global_backend", "
 METHODS = {
     # COLMAP 3.9.1 (the app's)
     "base": ("app", "mapper", [], {}),
+    # the same with OpenBLAS (Ubuntu 24.04's, mounted at /ob from build-plain) in place of the image's reference BLAS
+    "base_ob": ("app", "mapper", [], {"LD_LIBRARY_PATH": "/ob"}),
+    "base_ob1": ("app", "mapper", [], {"LD_LIBRARY_PATH": "/ob", "OPENBLAS_NUM_THREADS": "1"}),
     "lessba": ("app", "mapper", ["--Mapper.ba_global_images_ratio", "1.4", "--Mapper.ba_global_points_ratio", "1.4",
                                  "--Mapper.ba_global_max_num_iterations", "25"], {}),
     "ref2": ("app", "mapper", ["--Mapper.ba_global_max_refinements", "2", "--Mapper.ba_local_max_refinements", "1"], {}),
@@ -192,9 +195,14 @@ def launch(cname: str, tools: str, script: str, mounts: list[str], env: dict, cp
     if tools != "app" and not (BENCH / f"build-{tools}" / "usr/local/bin/colmap").exists():
         raise RuntimeError(f"build-{tools} has no COLMAP: build.sh hasn't made it (or failed)")
     v = verify_build.current(tools, BENCH)
-    if tools not in REFERENCE and not (v and v["ok"]):
+    if tools != "app" and tools not in REFERENCE and not (v and v["ok"]):     # the app's image is the baseline as shipped
         raise RuntimeError(f"build-{tools} hasn't passed verify_build.py: not timed")
-    inner = 'TIMEFORMAT="BENCH_TIME %R %U %S"; time ' + ("nice -n 10 " if nice else "nice -n 19 ") + 'bash -ec "$1"'
+    # a dev step is niced right down, so that one going beside a production-condition run takes little from it. The
+    # first COLMAP process's BLAS and LAPACK, as loaded (its /proc/<pid>/maps), are logged as BENCH_BLAS lines.
+    inner = ('(for i in $(seq 300); do for f in /proc/[0-9]*/comm; do if [ "$(cat $f 2>/dev/null)" = colmap ]; then '
+             'grep -oE "/[^ ]*(blas|lapack)[^ ]*" ${f%/comm}/maps 2>/dev/null | sort -u | sed "s/^/BENCH_BLAS /"; exit; fi; '
+             'done; sleep 1; done) & '
+             'TIMEFORMAT="BENCH_TIME %R %U %S"; time ' + ("nice -n 10 " if nice else "nice -n 19 ") + 'bash -ec "$1"')
     env = dict(env)
     mounts = mounts + [f"{HERE}:/bench:ro"]
     (BENCH / "cache").mkdir(exist_ok=True)      # the learned models COLMAP downloads
@@ -207,6 +215,7 @@ def launch(cname: str, tools: str, script: str, mounts: list[str], env: dict, cp
         if tools == "app":
             image = APP
             env["HOME"] = "/tmp"
+            mounts += [f"{BENCH}/build-plain/usr/lib/x86_64-linux-gnu/openblas-pthread:/ob:ro"]     # for base_ob
         else:
             tree = BENCH / f"build-{tools}"
             image = CUDA_IMAGE
@@ -308,6 +317,7 @@ def step(d: Path, name: str, tools: str, script: str, mounts: list[str], cond: s
            "verify": {k: v for k, v in (verify_build.current("app" if really == "app" else tools, BENCH) or {}).items()
                       if k in ("variant", "ok", "failed", "when")},
            "marks": {k: float(v) for k, v in re.findall(r"BENCH_MARK (\w+) ([\d.]+)", text)},
+           "blas": sorted(set(re.findall(r"^BENCH_BLAS (\S+)", text, re.M))),
            "host": gpusample.summary(str(samples)) if samples.exists() else {}}
     rec_file.write_text(json.dumps(rec, indent=1))
     print(f"{time.strftime('%T')} {d.relative_to(R)} {name}: {wall:.0f} s, rc {rc}, {rec['cpu_s']:.0f} CPU-s, "
@@ -543,7 +553,8 @@ def rest(P: str, run: str, feat: str) -> None:
               + sh(["colmap", "bundle_adjuster", *log, "--input_path", "rest", "--output_path", "rest",
                     *(["--BundleAdjustmentCeres.use_gpu", "1"] if new else [])])
               + "\necho BENCH_MARK done $(date +%s.%N)\n" + drop("rest", "rest2", "drop2.txt"))
-    rec = step(o, "rest", tools, script, mounts, cond, gpu=new)
+    env = METHODS[method][3] if made_by == "app" and METHODS[method][1] == "mapper" else {}     # base_ob's BLAS here too
+    rec = step(o, "rest", tools, script, mounts, cond, env, gpu=new)
     (o / "db.db").unlink(missing_ok=True)
     placed = sorted(stats.images(o / "rest2")) if rec["rc"] == 0 and (o / "rest2").exists() else []
     (o / "placed.json").write_text(json.dumps(placed))
@@ -618,7 +629,7 @@ def table() -> None:
     cols = ["boulder", "photos", "feat", "run", "sub", "step", "tools", "cond", "rc", "wall_s", "cpu_s", "cores",
             "started", "flags", "own_gpu_mib", "gpu_util_own", "gpu_share", "load", "ba_cuda", "ba_cpu", "gp_cuda", "gp_cpu",
             "ba_fallbacks", "models", "placed", "after_rest", "points", "track", "vs_base_cams", "vs_base_pos", "vs_base_deg",
-            "lock_wait"]
+            "lock_wait", "blas"]
     print("\t".join(cols))
     for rec_file in sorted(R.glob("*/*/**/*.json")):
         if rec_file.name in ("models.json", "placed.json") or ".stale" in str(rec_file):
@@ -637,7 +648,8 @@ def table() -> None:
                "cores": round(rec["cpu_s"] / rec["wall"], 1) if rec["wall"] else "", "started": rec["started"],
                "flags": flags(host), "own_gpu_mib": host.get("own_mib_max", ""), "gpu_util_own": host.get("util_mean_own", ""),
                "gpu_share": host.get("own_gpu_share", ""), "load": host.get("load_mean", ""),
-               "lock_wait": rec.get("lock_wait", "")}
+               "lock_wait": rec.get("lock_wait", ""),
+               "blas": "+".join(Path(b).name for b in rec.get("blas", []))}
         log = rec_file.with_suffix(".log")
         if rec["step"] in ("map", "rest") and log.exists():
             text = log.read_text(errors="replace")

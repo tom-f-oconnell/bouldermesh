@@ -1,3 +1,11 @@
+# The app image's BLAS, mapper and rest steps: as it is (the reference BLAS, libblas3 3.12) against OpenBLAS 0.3.26 in
+# its place (base_ob; base_ob1 with one OpenBLAS thread), each beside a repeat of the baseline. BENCH_BLAS lines in each
+# step's log, and the table's blas column, say which loaded.
+all 9f3b4b740847 base_ob 0 --cond prod
+all 9f3b4b740847 base 0 --cond prod --rep 2
+all 9f3b4b740847 base_ob1 0 --cond prod
+all ce7571e0a4a3 base_ob 0 --cond prod
+all ce7571e0a4a3 base 0 --cond prod --rep 2
 # plain (Ceres without SuiteSparse) against complete: the small boulder (plain's runs are the preflight's), then two
 # larger ones, where sparse solves happen, CPU-side methods especially
 all e6de7747fab5 cpu421 0 --cond prod --build complete --post complete
