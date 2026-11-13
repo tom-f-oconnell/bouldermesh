@@ -2542,6 +2542,42 @@ r = server.old_mesh_report(fresh=True)
 assert (r["waiting"], r["missed"]) == (4, []), r
 print("old meshes OK")
 
+# --- the Climbs tab's "Hide old meshes" and "Hide meshes from a neighbouring climb": those don't count for a climb ------
+made("md", since + 120)                         # cb's, under the rules, but covered by a newer one from more photos
+server.q("UPDATE meshes SET old_data='mn', rules=? WHERE id='md'", server.MESH_RULES, write=True)
+known("cg")
+server.link_mesh("md", "cb", None)
+server.link_mesh("mn", "cg", server.SHARED + "Climb cb")
+look = ["ca", "cb", "cc", "cd", "ce", "cf", "cg"]
+counts = lambda **kw: {r["id"]: (r["n_links"], r["n_links_old"], r["n_boulder"], r["n_shared"]) for r in server.climb_rows(look, **kw)}
+assert counts() == {"ca": (1, 1, 0, 0), "cb": (2, 0, 0, 0), "cc": (0, 0, 1, 0), "cd": (1, 0, 1, 0), "ce": (0, 0, 0, 1),
+                    "cf": (1, 1, 0, 0), "cg": (0, 0, 0, 1)}, counts()
+assert counts(no_old=True) == {"ca": (0, 0, 0, 0), "cb": (1, 0, 0, 0), "cc": (0, 0, 0, 0), "cd": (1, 0, 0, 0), "ce": (0, 0, 0, 0),
+                               "cf": (0, 0, 0, 0), "cg": (0, 0, 0, 1)}, counts(no_old=True)
+assert counts(no_via=True)["cg"] == (0, 0, 0, 0) and server.climb_rows(["cg"], no_via=True)[0]["shared_of"] is None
+assert server.climb_rows(["cg"])[0]["shared_of"] == "Climb cb"
+many = lambda no_old: {r["id"] for r in server.q(f"SELECT id FROM climbs WHERE {server.mesh_count(no_old)} > 1", server.SHARED + "%")}
+assert many(False) == {"cb", "cd"} and many(True) == set(), "old ones don't make more than one mesh"
+import http.server  # noqa: E402
+import urllib.request  # noqa: E402
+web = http.server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+threading.Thread(target=web.serve_forever, daemon=True).start()
+
+
+def climbs_found(query: str) -> set:
+    with urllib.request.urlopen(f"http://127.0.0.1:{web.server_port}/api/climbs?{query}") as r:
+        return {c["id"] for c in json.loads(r.read())} & set(look)
+
+
+assert climbs_found("meshed=1") == set(look)
+assert climbs_found("meshed=1&no_old=1") == {"cb", "cd", "cg"}, "a climb whose only meshes are old drops out"
+assert climbs_found("meshed=1&no_via=1") == set(look) - {"ce", "cg"}
+assert climbs_found("meshed=1&no_old=1&no_via=1") == {"cb", "cd"}
+with urllib.request.urlopen(f"http://127.0.0.1:{web.server_port}/api/climbs?meshed=1&no_old=1&no_via=1") as r:
+    assert {c["id"]: c["n_links"] for c in json.loads(r.read()) if c["id"] in look} == {"cb": 1, "cd": 1}
+web.shutdown()
+print("hiding old and neighbours' meshes OK")
+
 # --- beta found in each new mesh with video frames placed in it; kept videos beta can't use, deleted once settled ------
 fresh()
 server.q("DELETE FROM offloads", write=True)

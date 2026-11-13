@@ -544,7 +544,10 @@ as it needs CUDA builds of torch and gsplat, and the few photos most meshes are 
 
 The climbs list hides climbs without meshes until that box is unticked. Under *More options*, it can show only climbs
 whose coordinates look wrong, or pick out those with more than one mesh (their own, pools of them with others, and their
-boulder's), first in the list. Each climb's *View* opens its mesh, and the one
+boulder's), first in the list. *Hide old meshes* (made under older rules for what an area meshes, or covered by a
+newer mesh of the same climbs from more photos) and *Hide meshes from a neighbouring climb* (the "via" ones) leave those
+out of each climb's tags and counts, of hiding climbs without meshes, and of what *View* opens; both are remembered in
+the browser. Each climb's *View* opens its mesh, and the one
 in view is blue. *Random* opens any mesh; it's blue until one is in view.
 
 On a phone, the page shows either the controls or the view. The controls' header holds *Viewer* (grey until a mesh is

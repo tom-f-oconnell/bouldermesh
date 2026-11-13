@@ -430,7 +430,9 @@
         <details id="c-more" style="margin-bottom:8px"><summary>More options</summary>
           <div class="checks" style="margin-top:6px;flex-direction:column;gap:4px">
             <label title="Their page's GPS is far from their area's, or they're far from the other climbs on their boulder: put them right where they came from, then import them again"><input type="checkbox" id="c-doubtful" autocomplete="off"> Only climbs whose coordinates look wrong <span id="c-doubtful-n"></span></label>
-            <label title="Climbs with more than one mesh: of their own, with others whose photos match, or of their boulder. They come first, marked."><input type="checkbox" id="c-multi" autocomplete="off"> Highlight climbs with more than one mesh <span id="c-multi-n"></span></label></div>
+            <label title="Climbs with more than one mesh: of their own, with others whose photos match, or of their boulder. They come first, marked."><input type="checkbox" id="c-multi" autocomplete="off"> Highlight climbs with more than one mesh <span id="c-multi-n"></span></label>
+            <label title="Meshes made under older rules for what an area meshes, or covered by a newer mesh of the same climbs from more photos, don't count for a climb: not in its tags, nor for hiding climbs without meshes, nor for more than one mesh, nor for which one View shows"><input type="checkbox" id="c-no-old" autocomplete="off"> Hide old meshes</label>
+            <label title="Meshes an area linked a climb to that were made for another climb on its boulder (the &quot;via&quot; tag) don't count for it, as above"><input type="checkbox" id="c-no-via" autocomplete="off"> Hide meshes from a neighbouring climb</label></div>
         </details>
         <div id="climb-open"></div>
         <div id="climbs"></div>
@@ -2770,6 +2772,8 @@ function climbQuery(){
   if ($('#c-meshed').checked) q.set('meshed', '1');
   if ($('#c-doubtful').checked) q.set('doubtful', '1');
   if ($('#c-multi').checked) q.set('multi', '1');
+  if ($('#c-no-old').checked) q.set('no_old', '1');
+  if ($('#c-no-via').checked) q.set('no_via', '1');
   return q.toString();
 }
 let searchSeq = 0, searchT;
@@ -2826,7 +2830,7 @@ function climbCard(c){
     <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
     <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
     ${c.coords_doubt ? `<div class="meta bad">Coordinates look wrong: ${esc(c.coords_doubt.why)}.${c.url ? ` <a href="${esc(c.url)}" target="_blank" rel="noopener">Put them right on ${esc(SOURCE_NAME[c.source] || c.source)} ↗</a>, then paste its link above to import it again.` : ''}</div>` : ''}`;
-  d.querySelector('.viewmesh').onclick = ev => { ev.stopPropagation(); viewClimbMesh(c.id); };
+  d.querySelector('.viewmesh').onclick = ev => { ev.stopPropagation(); viewClimbMesh(c.id, 'climb', climbHides()); };
   d.onclick = ev => { if (ev.target.closest('button, a, select, input, label')) return; c.id === openClimbId && openClimbEl ? closeClimb() : openClimb(c.id); };
   return d;
 }
@@ -2844,6 +2848,12 @@ $('#c-filter').oninput = () => { clearTimeout(searchT); searchT = setTimeout(sea
 $('#c-meshed').onchange = () => searchClimbs();
 $('#c-doubtful').onchange = () => searchClimbs();
 $('#c-multi').onchange = () => searchClimbs();
+// the two meshes left out of the climbs' list, kept for next time
+for (const [id, key] of [['#c-no-old', 'bm_no_old'], ['#c-no-via', 'bm_no_via']]) {
+  try { $(id).checked = localStorage.getItem(key) === '1'; } catch {}
+  $(id).onchange = () => { try { localStorage.setItem(key, $(id).checked ? '1' : '0'); } catch {} searchClimbs(); };
+}
+const climbHides = () => ({ old: $('#c-no-old').checked, via: $('#c-no-via').checked });
 $('#m-older').onchange = refreshMeshes;
 
 // what a video or its uploader's channel says about the climber: "178 cm (5'10"), ape index +5 cm"
@@ -2876,21 +2886,24 @@ function closeClimb(){
 const climbMeshes = (id, shared = false) => (meshesCache || []).filter(m => m.climbs.some(c => c.id === id && !!c.shared === shared))
   .sort((a, b) => (a.replaced_by ? 1 : 0) - (b.replaced_by ? 1 : 0) || (b.created || 0) - (a.created || 0));
 // the current pooled mesh placing most of a climb's own photos (the one it counts toward), or else the newest listing it
-const boulderMeshOf = id => {
-  const on = (meshesCache || []).filter(m => !m.replaced_by && (m.boulder_climbs || []).some(c => c.id === id));
+const boulderMeshOf = (id, ok = () => true) => {
+  const on = (meshesCache || []).filter(m => !m.replaced_by && ok(m) && (m.boulder_climbs || []).some(c => c.id === id));
   const n = m => m.boulder_climbs.find(c => c.id === id).view?.photos || 0;
   return on.sort((a, b) => n(b) - n(a))[0];
 };
 // The mesh a climb opens (its View button, its /c/ link): its own, else its boulder's placing most of its photos (seen
-// from it), else one an area linked it to; {id, from}, or null
-function pickClimbMesh(id){
+// from it), else one an area linked it to; {id, from}, or null. hide: {old, via}, the Climbs tab's meshes left out (old
+// ones of either kind, and those an area linked it to)
+function pickClimbMesh(id, hide = {}){
+  const ok = m => !(hide.old && (m.old || m.old_data));
   // a mesh of what its boulder's mesh left out isn't the climb's own: the boulder's may show it better
-  const own = climbMeshes(id).find(m => !m.pooled?.rest_of), boulder = boulderMeshOf(id), shared = climbMeshes(id, true)[0];
+  const own = climbMeshes(id).find(m => ok(m) && !m.pooled?.rest_of), boulder = boulderMeshOf(id, ok);
+  const shared = hide.via ? null : climbMeshes(id, true).find(ok);
   return own ? { id: own.id, from: null } : boulder ? { id: boulder.id, from: id } : shared ? { id: shared.id, from: null } : null;
 }
-async function viewClimbMesh(id, via = 'climb'){
-  if (!pickClimbMesh(id)) await refreshMeshes();
-  const p = pickClimbMesh(id);
+async function viewClimbMesh(id, via = 'climb', hide = {}){
+  if (!pickClimbMesh(id, hide)) await refreshMeshes();
+  const p = pickClimbMesh(id, hide);
   if (p) { await viewMesh(p.id, p.from, via, id); return true; }
   toast('No mesh is linked to this climb yet.');
   return false;
