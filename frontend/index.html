@@ -76,6 +76,7 @@
   .pane{display:none;overflow:auto;padding:14px;flex:1;flex-direction:column;gap:16px}
   .pane.on{display:flex}
   section h2{font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:var(--mute);margin:0 0 8px}
+  section h2 a.byname{text-transform:none;letter-spacing:0;font-size:12px;font-weight:400;color:var(--acc)}
   .card{border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--bg);margin-bottom:8px}
   .card.active{border-color:var(--acc)}
   #climbs>.card{cursor:pointer}
@@ -548,7 +549,7 @@
     <!-- ============================ MESHES ============================ -->
     <div class="pane" id="pane-meshes">
       <section>
-        <h2>Meshes <small id="m-count"></small></h2>
+        <h2 class="row" style="align-items:baseline"><span class="grow">Meshes <small id="m-count"></small></span><a href="#" id="m-byname" class="byname" title="Find a climb by its name, boulder, area or grade, on the Climbs tab">Search by name</a></h2>
         <div class="row w" style="margin-bottom:8px">
           <label class="file"><button class="sec" type="button">Upload mesh (.ply .obj .glb .stl)</button>
             <input type="file" id="meshfile" multiple accept=".ply,.obj,.mtl,.glb,.gltf,.stl,.png,.jpg"></label>
@@ -2846,6 +2847,8 @@ function renderClimbs(){
 }
 $('#c-filter').oninput = () => { clearTimeout(searchT); searchT = setTimeout(searchClimbs, 250); };
 $('#c-meshed').onchange = () => searchClimbs();
+// the Meshes tab's "Search by name": the Climbs tab, its search box ready to type in
+$('#m-byname').onclick = ev => { ev.preventDefault(); document.querySelector('.tabs button[data-tab=climbs]').click(); $('#c-filter').focus(); };
 $('#c-doubtful').onchange = () => searchClimbs();
 $('#c-multi').onchange = () => searchClimbs();
 // the two meshes left out of the climbs' list, kept for next time
