@@ -54,6 +54,4 @@ if [ "$V" = full ]; then
   cmake --install openMVS/build-full > /dev/null
   ldconfig
 fi
-set +e
-bash /incr/verify-env.sh "$V" 2>&1 | tee /opt/verify-$V.txt
-exit "${PIPESTATUS[0]}"
+# build-env.sh then checks the tree with the benchmark's verify_build.py

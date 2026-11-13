@@ -297,8 +297,16 @@ def remesh(s: st.State, logdir: Path, cond: str, steps: dict | None = None) -> b
             return False
     shutil.rmtree(root / "dense", ignore_errors=True)
     os.replace(root / "dense.new", root / "dense")
+    # not kept: depth maps (6 MB a photo at resolution level 2) and the undistorted photos. OpenMVS reuses depth maps
+    # only with its geometric pass off, an add changes which photos are each one's neighbours, and densifying on the
+    # GPU takes seconds: they're cheaper made again than stored.
+    kept_mb = sum(f.stat().st_size for f in (root / "dense").glob("*.dmap")) / 2 ** 20
+    for f in (root / "dense").glob("*.dmap"):
+        f.unlink()
+    shutil.rmtree(root / "dense" / "dense", ignore_errors=True)
     m = mesh_stats(root / "dense" / "scene_dense_mesh.ply")
-    s.meshed({"faces": m.get("faces"), "one_piece": m.get("one_piece"), "pieces": m.get("pieces"),
+    m["dmap_mb_dropped"] = round(kept_mb, 1)
+    s.meshed({"faces": m.get("faces"), "one_piece": m.get("one_piece"), "pieces": m.get("pieces"), "dmap_mb_dropped": m["dmap_mb_dropped"],
               "seconds": {n: round(steps[n]["wall"], 1) for n in ("undistort", "import", "dense", "mesh", "texture")}})
     return True
 
