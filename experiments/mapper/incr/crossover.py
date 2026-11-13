@@ -2,6 +2,8 @@
 (Ceres, its own solver choice) and on the GPU (Ceres with CUDA; Caspar), the median of three runs each.
 
     crossover.py <out.json> [threads] [sizes...]        (in the pipeline's tools: inenv.sh -g python3 /incr/crossover.py ..)
+    crossover.py real <out.json> <threads> <model dir>...   the same on real models (a state's model/), with each
+                                                            backend's result compared with the CPU's
 
 The models are COLMAP's synthetic ones (synthesize_dataset), with points and noise like a boulder's: 300 points
 seen per photo, 1 px of noise. A real boulder's model can solve differently (its cameras see each other's points
@@ -62,6 +64,47 @@ def main(out: str, threads: int, sizes: list[int]) -> None:
         json.dump({"threads": threads, "rows": rows}, f, indent=1)
 
 
+def real(out: str, threads: int, models: list[str]) -> None:
+    """Each model bundle adjusted on each device from the same start, timed, with the reprojection error after and
+    how far each backend's cameras end from the CPU's (Caspar solves in float32)."""
+    import numpy as np
+    rows = []
+    for path in models:
+        base = pycolmap.Reconstruction(path)
+        row = {"model": path, "images": base.num_reg_images(), "points": base.num_points3D(), "observations": base.compute_num_observations()}
+        results = {}
+        for how in ("cpu", "gpu", "caspar"):
+            times, r = [], None
+            for _ in range(3):
+                r = copy.deepcopy(base)
+                b = pycolmap.BundleAdjustmentOptions()
+                b.print_summary = False
+                b.refine_principal_point = False
+                b.ceres.solver_options.num_threads = threads
+                if how == "gpu":
+                    b.ceres.use_gpu, b.ceres.min_num_images_gpu_solver = True, 0
+                elif how == "caspar":
+                    b.backend = pycolmap.BundleAdjustmentBackend.CASPAR
+                t = time.time()
+                pycolmap.bundle_adjustment(r, b)
+                times.append(time.time() - t)
+            results[how] = r
+            row[how] = round(statistics.median(times), 3)
+            row[how + "_err_px"] = round(r.compute_mean_reprojection_error(), 4)
+        ref = results["cpu"]
+        for how in ("gpu", "caspar"):
+            d = [float(np.linalg.norm(results[how].image(i).projection_center() - ref.image(i).projection_center())) for i in ref.reg_image_ids()]
+            spread = float(np.sqrt(np.var([ref.image(i).projection_center() for i in ref.reg_image_ids()], axis=0).sum()))
+            row[how + "_vs_cpu_median"] = round(float(np.median(d)) / spread, 6)
+        print(json.dumps(row), flush=True)
+        rows.append(row)
+    with open(out, "w") as f:
+        json.dump({"threads": threads, "rows": rows}, f, indent=1)
+
+
 if __name__ == "__main__":
+    if sys.argv[1] == "real":
+        real(sys.argv[2], int(sys.argv[3]), sys.argv[4:])
+        sys.exit()
     main(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 6,
          [int(x) for x in sys.argv[3:]] or [10, 20, 35, 50, 80, 120, 200, 300])

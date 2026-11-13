@@ -41,6 +41,9 @@ def main(mode: str, db: Path, photos: Path, out: Path, request: Path | None = No
     if why:
         raise SystemExit(f"VGGT can't run here: {why}")
     device, limit = vggt_place.capacity()
+    if device != "cuda":        # never quietly on the CPU, where it takes minutes
+        raise SystemExit(f"VGGT would run on {device}, not CUDA: torch {torch.__version__}, CUDA available: {torch.cuda.is_available()}")
+    print(f"torch {torch.__version__} on {torch.cuda.get_device_name(0)}, cuDNN {torch.backends.cudnn.version()}", flush=True)
     extra = {}
     if mode == "skeleton":
         chosen = vggt_place.choose(db, limit)

@@ -33,6 +33,9 @@ SETTINGS = {
     # or under this share of at least resolve_min_tried new photos that are linked to placed ones could be placed
     "resolve_min_placed_share": 0.5,
     "resolve_min_tried": 6,
+    # or this many photos (and this share of those placed) are joined to the model by verified matches but left out
+    "resolve_min_joined": 3,
+    "resolve_joined_share": 0.1,
     # a new mesh: the add made at least this share more 3D points, or the placed photos have grown by this share
     # since the last mesh (more views of the same rock still sharpen it)
     "remesh_new_points": 0.03,
@@ -198,16 +201,20 @@ class State:
 
 
 def resolve_due(placed_before: int, placed_at_solve: int | None, tried_linked: int, placed_linked: int,
-                settings: dict = SETTINGS) -> tuple[bool, str]:
+                left_joined: int = 0, placed_now: int = 0, settings: dict = SETTINGS) -> tuple[bool, str]:
     """Whether to solve everything again, not add to the model, and why. Before the add: placed_before photos placed,
     placed_at_solve of them at the last full solve. Of the photos the add tried, tried_linked share verified matches
-    with placed ones, and placed_linked of those could be placed."""
+    with placed ones, and placed_linked of those could be placed. left_joined: photos left out although verified
+    matches now join them to the model (through photos of this add, often), of placed_now placed."""
     if placed_at_solve and placed_before + placed_linked > placed_at_solve * (1 + settings["resolve_growth"]):
         return True, (f"{placed_before + placed_linked} photos placed against {placed_at_solve} at the last full solve: "
                       f"more than {settings['resolve_growth']:.0%} grown")
     if tried_linked >= settings["resolve_min_tried"] and placed_linked < tried_linked * settings["resolve_min_placed_share"]:
         return True, (f"only {placed_linked} of {tried_linked} photos linked to placed ones could be placed "
                       f"(under {settings['resolve_min_placed_share']:.0%})")
+    if left_joined >= max(settings["resolve_min_joined"], settings["resolve_joined_share"] * placed_now):
+        return True, (f"{left_joined} photos joined to the model by verified matches are left out ({placed_now} placed): "
+                      f"a full solve takes them together")
     return False, "the model takes the new photos as it is"
 
 

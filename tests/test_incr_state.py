@@ -94,6 +94,8 @@ def test_resolve_gate():
     assert not st.resolve_due(70, 60, 0, 0)[0]
     assert st.resolve_due(70, 60, 10, 3)[0]                 # most linked photos failed to register
     assert not st.resolve_due(70, 60, 4, 0)[0]              # too few tried to judge
+    assert st.resolve_due(24, 23, 1, 1, left_joined=8, placed_now=24)[0]       # an add joined photos it couldn't place
+    assert not st.resolve_due(24, 23, 1, 1, left_joined=2, placed_now=24)[0]
 
 
 def test_remesh_gate():

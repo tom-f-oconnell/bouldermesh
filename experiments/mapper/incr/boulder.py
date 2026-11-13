@@ -11,6 +11,7 @@
     boulder.py queue <file>                                 a file of the three above, one a line, one at a time
     boulder.py table                                        every step of every state under <BENCH>/incr/r
     boulder.py compare [project]                            first builds and adds laid over each other and the baseline
+    boulder.py heldstats [project]                          held-out states against the from-scratch build of every photo
 
 add() copies in the photos the state doesn't have (by content), then runs the steps, each in its own container, timed
 and with the machine sampled as the mapper benchmark's are (bench.py's launch() and gpusample.py): features for the
@@ -42,6 +43,7 @@ HERE = Path(__file__).resolve().parent
 BENCH = Path(os.environ.get("BENCH", "/data/tom/mapperbench"))
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(BENCH / "scripts" if (BENCH / "scripts" / "bench.py").exists() else HERE.parent))
+sys.path.insert(0, str(HERE.parents[2] / "backend"))       # meshclean, for stats.mesh_stats
 import bench  # noqa: E402
 import gpusample  # noqa: E402
 import stats  # noqa: E402
@@ -54,14 +56,18 @@ TOOLS = os.environ.get("INCR_TOOLS", "incr-full")      # the tree (build-<TOOLS>
 
 
 def verified(tools: str) -> str:
-    """What verify-env.sh found when the tree was built: "VERIFIED full", or what it lacks."""
+    """What the benchmark's verify_build.py found of a tree, as of the binaries there now: "verified" with the BLAS and
+    sparse libraries its run loaded, or what it lacks."""
     if tools == "app":
-        return "the app's image"
-    out = [f for f in (BENCH / f"build-{tools}" / "opt").glob("verify-*.txt")]
-    if not out:
-        return "not checked"
-    lines = out[0].read_text().split("\n")
-    return "; ".join([l for l in lines if l.startswith(("VERIFIED", "NOT VERIFIED"))] + [l for l in lines if l.startswith("MISSING")])
+        return "the app's image: torch only (on CUDA, checked by the step)"
+    import verify_build
+    v = verify_build.current(tools, BENCH)
+    if not v:
+        return "not verified (no verify.json of these binaries)"
+    rows = v.get("rows", [])
+    loaded = sorted({r["got"] for r in rows if "loaded" in r.get("item", "") and r.get("ok")})
+    bad = [f"{r['part']}: {r['item']}" for r in rows if r.get("ok") is False]
+    return ("verified" if v["ok"] else "NOT verified: " + "; ".join(bad)) + (f" (loaded: {', '.join(loaded)})" if loaded else "")
 
 
 def run_step(logdir: Path, name: str, tools: str, script: str, mounts: list[str], cond: str, env: dict | None = None,
@@ -74,7 +80,11 @@ def run_step(logdir: Path, name: str, tools: str, script: str, mounts: list[str]
     own = f"{os.getuid()}:{os.getgid()}"       # the container is root: hand what it made back
     script = f"trap 'chown -R {own} /s 2>/dev/null || true' EXIT\n{script}"
     backend = HERE.parents[2] / "backend"       # captureplan.py, read only
-    cmd, stop, really = bench.launch(cname, tools, script, mounts + [f"{HERE}:/incr:ro", f"{backend}:/backend:ro"], env or {}, cpus, nice)
+    mounts = mounts + [f"{HERE}:/incr:ro", f"{backend}:/backend:ro"]
+    if tools == "app":      # VGGT: only the image's torch is used, which the step checks is on CUDA (vggt_cams.py)
+        cmd, stop, really = launch_app(cname, script, mounts, env or {}, cpus, nice), ["docker", "stop", cname], "app"
+    else:       # the tree, which bench.launch refuses unless verify_build.py passed it
+        cmd, stop, really = bench.launch(cname, tools, script, mounts, env or {}, cpus, nice)
     lock, asked = None, time.time()
     if gpu:
         lock = open(GPU_LOCK, "a")
@@ -112,6 +122,23 @@ def run_step(logdir: Path, name: str, tools: str, script: str, mounts: list[str]
     print(f"{time.strftime('%T')} {logdir.parent.parent.name}/{logdir.name} {name}: {wall:.0f} s, rc {rc}, {rec['cpu_s']:.0f} CPU-s, "
           f"{bench.flags(rec['host']) or 'quiet'}", flush=True)
     return rec
+
+
+def launch_app(cname: str, script: str, mounts: list[str], env: dict, cpus: int | None, nice: bool) -> list[str]:
+    """A step in the app's -gpu image, as bench.launch runs one. bench.launch refuses the image for timing, as
+    verify_build.py fails its Ceres (the reference BLAS); the VGGT steps use none of COLMAP or Ceres, only torch,
+    and vggt_cams.py fails rather than run VGGT anywhere but on CUDA."""
+    inner = 'TIMEFORMAT="BENCH_TIME %R %U %S"; time ' + ("nice -n 10 " if nice else "nice -n 19 ") + 'bash -ec "$1"'
+    cmd = ["docker", "run", "--rm", "--name", cname, "--log-driver", "none", "--tmpfs", "/tmp:exec,size=8g", "--memory", bench.MEM,
+           "--memory-swap", bench.MEM, "--pids-limit", "512", "--gpus", "all", "-w", "/tmp", "-e", "HOME=/tmp",
+           "-v", f"{bench.HERE}:/bench:ro"]
+    if cpus:
+        cmd += ["--cpus", str(cpus)]
+    for k, v in env.items():
+        cmd += ["-e", f"{k}={v}"]
+    for m in mounts:
+        cmd += ["-v", m]
+    return cmd + ["--entrypoint", "bash", bench.APP, "-c", inner, "_", script]
 
 
 def expand(photos: list[str]) -> list[Path]:
@@ -241,6 +268,22 @@ def add(state_dir: Path | str, photos: list[Path], masks: Path | None = None, in
     return record
 
 
+def mesh_stats(ply: Path) -> dict:
+    """Faces, and the share of the surface in the largest connected piece, of OpenMVS's mesh (stats.mesh_stats reads
+    only the type names OpenMVS 2.3 writes)."""
+    import numpy as np
+    import meshclean
+    from core import read_ply
+    if not ply.exists():
+        return {}
+    V, F = read_ply(ply)
+    roots = meshclean._components(F, len(V))[F[:, 0]]
+    _, labels = np.unique(roots, return_inverse=True)
+    area = np.linalg.norm(np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]]), axis=1) / 2
+    areas = np.bincount(labels.ravel(), weights=area)
+    return {"faces": int(len(F)), "one_piece": round(float(areas.max() / areas.sum()), 4), "pieces": int(len(areas))}
+
+
 def remesh(s: st.State, logdir: Path, cond: str, steps: dict | None = None) -> bool:
     """The dense steps on a state's model as it is: undistorted photos, OpenMVS's scene, depth maps and their fusion
     (on the GPU), mesh and texture, in dense.new, which takes dense's place if every step worked. Without the people
@@ -254,7 +297,7 @@ def remesh(s: st.State, logdir: Path, cond: str, steps: dict | None = None) -> b
             return False
     shutil.rmtree(root / "dense", ignore_errors=True)
     os.replace(root / "dense.new", root / "dense")
-    m = stats.mesh_stats(root / "dense" / "scene_dense_mesh.ply") or {}
+    m = mesh_stats(root / "dense" / "scene_dense_mesh.ply")
     s.meshed({"faces": m.get("faces"), "one_piece": m.get("one_piece"), "pieces": m.get("pieces"),
               "seconds": {n: round(steps[n]["wall"], 1) for n in ("undistort", "import", "dense", "mesh", "texture")}})
     return True
@@ -416,9 +459,49 @@ def compare(only: str | None = None) -> None:
                                                  ag.get("deg_median", ""), ag.get("deg_p90", "")]))
 
 
+def heldstats(only: str | None = None) -> None:
+    """Each held-out state against the first build of every photo with the same start and seed: time (the first
+    build, each add after it, and the from-scratch build), photos placed (by each, and which), whether the cameras
+    placed before an add moved, how far the added cameras are from the from-scratch build's once laid over it
+    (fitted on the cameras both place), and the meshes."""
+    import numpy as np
+    cols = ["boulder", "run", "adds", "kinds", "first_s", "adds_s", "scratch_s", "placed", "scratch_placed", "both", "only_held",
+            "only_scratch", "old_moved_max", "vs_scratch_pos_median", "vs_scratch_pos_p90", "vs_scratch_deg_median",
+            "vs_scratch_deg_p90", "remeshed", "faces", "scratch_faces", "assist_placed", "resolves"]
+    print("\t".join(cols))
+    for d in sorted(R.glob("*/held*")):
+        if only and d.parent.name != only or not (d / "manifest.json").exists():
+            continue
+        m = re.fullmatch(r"held(\d+)-b(\d+)-(\w+)-s(\d+)(.*)", d.name)
+        scratch = d.parent / f"first-{m.group(3)}-s{m.group(4)}{m.group(5)}"
+        man = json.loads((d / "manifest.json").read_text())
+        adds = man["adds"]
+        secs = lambda a: sum(r["wall"] for r in a.get("steps", {}).values())       # noqa: E731
+        row = {"boulder": d.parent.name, "run": d.name, "adds": len(adds), "kinds": "+".join(a["kind"] for a in adds),
+               "first_s": round(secs(adds[0])) if adds else "", "adds_s": "+".join(str(round(secs(a))) for a in adds[1:]),
+               "placed": adds[-1]["placed_total"] if adds else 0,
+               "remeshed": "".join("y" if a.get("meshed") else "n" for a in adds),
+               "faces": (man.get("mesh") or {}).get("faces", ""),
+               "assist_placed": sum((a.get("assist") or {}).get("placed", 0) for a in adds),
+               "resolves": sum(1 for a in adds if a["kind"] == "resolve")}
+        moved = [a.get("old_cameras_moved") for a in adds[1:] if a.get("old_cameras_moved") is not None]
+        row["old_moved_max"] = max(moved) if moved else ""
+        mine = stats.poses(d / "model") if (d / "model" / "images.bin").exists() else {}
+        if (scratch / "manifest.json").exists() and (scratch / "model" / "images.bin").exists():
+            sm = json.loads((scratch / "manifest.json").read_text())
+            theirs = stats.poses(scratch / "model")
+            row.update(scratch_s=round(sum(secs(a) for a in sm["adds"])), scratch_placed=len(theirs), both=len(set(mine) & set(theirs)),
+                       only_held=len(set(mine) - set(theirs)), only_scratch=len(set(theirs) - set(mine)),
+                       scratch_faces=(sm.get("mesh") or {}).get("faces", ""))
+            ag = stats.agreement(mine, theirs) or {}
+            row.update(vs_scratch_pos_median=ag.get("pos_median", ""), vs_scratch_pos_p90=ag.get("pos_p90", ""),
+                       vs_scratch_deg_median=ag.get("deg_median", ""), vs_scratch_deg_p90=ag.get("deg_p90", ""))
+        print("\t".join(str(row.get(c, "")) for c in cols))
+
+
 def main(argv: list[str]) -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("command", choices=["add", "mesh", "status", "first", "held", "scenario", "queue", "table", "compare"])
+    p.add_argument("command", choices=["add", "mesh", "status", "first", "held", "scenario", "queue", "table", "compare", "heldstats"])
     p.add_argument("args", nargs="*")
     p.add_argument("--masks", type=Path)
     p.add_argument("--init")
@@ -454,6 +537,8 @@ def main(argv: list[str]) -> None:
         table()
     elif a.command == "compare":
         compare(a.args[0] if a.args else None)
+    elif a.command == "heldstats":
+        heldstats(a.args[0] if a.args else None)
     elif a.command == "queue":      # read again before each job, so that jobs can be added while it runs
         done = 0
         while True:

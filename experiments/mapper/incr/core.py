@@ -30,7 +30,10 @@ import time
 from pathlib import Path
 
 import numpy as np
-import pycolmap
+try:
+    import pycolmap
+except ImportError:     # read_ply alone, outside the tools
+    pycolmap = None
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -56,6 +59,7 @@ ANCHORS = 12                # placed photos sent to VGGT with the unplaced ones,
 VGGT_MIN_KEPT = 0.6         # VGGT's start is used if at least this share of its cameras pass the rotation check,
 VGGT_MIN_PLACED = 0.6       # and this share of them end up with points after the rounds
 SMALL = 6                   # fewer cameras than this is no start
+MIN_TRI_ANGLE = float(os.environ.get("INCR_MIN_TRI_ANGLE", "1.0"))     # pipeline_options()
 LENS_DRIFT = 1.3            # a refinement of everything may move a focal length this far, either way (Session)
 
 
@@ -258,9 +262,13 @@ def set_pose(rec: pycolmap.Reconstruction, image_id: int, R, t, focal: float | N
 
 
 def pipeline_options(threads: int, seed: int) -> pycolmap.IncrementalPipelineOptions:
-    """COLMAP's incremental mapper options with the app's settings."""
+    """COLMAP's incremental mapper options with the app's settings, but for the least angle a 3D point must be seen
+    across: MIN_TRI_ANGLE (1 degree, as the app's VGGT rounds have it) for COLMAP's 1.5, as boulders photographed
+    from about one place lose most of their points at 1.5 (on the 33-photo boulder, 15,400 of them to under 600)
+    and photos added later have nothing to register against."""
     o = pycolmap.IncrementalPipelineOptions()
     o.min_num_matches, o.min_model_size, o.ba_refine_principal_point = MIN_MATCHES, MIN_MODEL, True
+    o.mapper.filter_min_tri_angle = o.triangulation.min_angle = MIN_TRI_ANGLE
     o.num_threads, o.random_seed = threads, seed
     o.mapper.num_threads, o.mapper.random_seed = threads, seed
     o.extract_colors = False
@@ -539,6 +547,20 @@ def linked_to(names: list[str], placed: set[str], ids: dict[str, int], link: dic
     return [n for n in names if n in ids and placed_ids & set(link.get(ids[n], {}))]
 
 
+def joined(names: list[str], placed: set[str], ids: dict[str, int], link: dict) -> list[str]:
+    """Those of the photos named that verified matches join to a placed one, directly or through other photos."""
+    by_id = {i: n for n, i in ids.items()}
+    seen = {ids[n] for n in placed if n in ids}
+    todo = list(seen)
+    while todo:
+        i = todo.pop()
+        for j in link.get(i, {}):
+            if j in by_id and j not in seen:
+                seen.add(j)
+                todo.append(j)
+    return [n for n in names if n in ids and ids[n] in seen]
+
+
 def anchors_for(names: list[str], placed: set[str], ids: dict[str, int], link: dict, limit: int = ANCHORS) -> list[str]:
     """The placed photos that tie the photos named to the model best: by their verified matches with them, each one
     taken counting less the matches of photos that have an anchor already; made up to `limit` with the placed photos
@@ -556,8 +578,9 @@ def anchors_for(names: list[str], placed: set[str], ids: dict[str, int], link: d
         for u in want:
             if link.get(best, {}).get(u):
                 want[u] *= 0.5
+    # VGGT's frame is laid over the model's through these, so the rest are made up of the photos most linked overall
     rest = sorted(placed_ids - set(chosen), key=lambda p: -sum(link.get(p, {}).values()))
-    chosen += rest[:max(0, min(limit, 3) - len(chosen))]
+    chosen += rest[:max(0, limit - len(chosen))]
     return [by_id[i] for i in chosen]
 
 
@@ -681,8 +704,10 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
     left = sorted(n for n in ids if n not in now)
     left_linked = linked_to(left, now, ids, link)
     tried_linked = linked_to(tried, now - set(placed), ids, link) if kind == "add" else []
+    left_joined = joined(left, now, ids, link)
     due, why = (False, "this was a full solve") if kind != "add" else st.resolve_due(
-        len(now) - len(placed), (s.manifest.get("solve") or {}).get("placed"), len(tried_linked), len([n for n in tried_linked if n in placed]))
+        len(now) - len(placed), (s.manifest.get("solve") or {}).get("placed"), len(tried_linked), len([n for n in tried_linked if n in placed]),
+        len(left_joined), len(now))
     points_new = max(0, rec.num_points3D() - points_before)
     gain = None
     if kind == "add" and s.manifest.get("mesh"):
@@ -710,7 +735,7 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
     shutil.rmtree(work, ignore_errors=True)
     log(f"{kind}: placed {len(placed)} this time, {len(now)} in all, {len(left)} left out ({len(left_linked)} of them linked to the model)")
     log(f"full re-solve due: {due} ({why}); new mesh due: {mesh_due} ({mesh_why})")
-    return rep.save(kind=kind, placed=placed, tried=tried, left=left, left_linked=left_linked, model=stats_of(rec),
+    return rep.save(kind=kind, placed=placed, tried=tried, left=left, left_linked=left_linked, left_joined=left_joined, model=stats_of(rec),
                     points_before=points_before, points_new=points_new, other_models=[m.num_reg_images() for m in others],
                     resolve={"due": due, "why": why}, remesh={"due": mesh_due, "why": mesh_why}, assist_request=request,
                     added_ids=added_ids)
@@ -764,6 +789,7 @@ def assist(root: Path, cams_file: Path, ba: str, threads: int) -> dict:
             mapper.triangulate_image(tri, ids[n])
         rep.part(f"adjust{k}")
         refine_added(mapper, rec, o, mo, tri, [ids[n] for n in kept], ba, rounds=1, fixed_lenses=fixed)
+        log(f"assist round {k + 1}: points per photo " + ", ".join(f"{n}: {rec.image(ids[n]).num_points3D}" for n in kept))
         kept = [n for n in kept if rec.image(ids[n]).num_points3D >= (ASSIST_MIN_POINTS if k == len(ROUNDS) - 1 else 3)]
     for n in todo:
         if n not in kept and rec.image(ids[n]).has_pose:
@@ -788,7 +814,7 @@ def read_ply(path: Path) -> tuple[np.ndarray, np.ndarray]:
     nf = int(_re.search(r"element face (\d+)", header).group(1))
     vprops = _re.search(r"element vertex \d+\n(.*?)element face", header, _re.S).group(1).count("property")
     V = np.frombuffer(data, "<f4", nv * vprops, end).reshape(nv, vprops)[:, :3].astype(np.float64)
-    F = np.frombuffer(data, np.dtype([("n", "u1"), ("i", "<i4", 3)]), nf, end + nv * vprops * 4)["i"].astype(np.int64)
+    F = np.frombuffer(data, np.dtype([("n", "u1"), ("i", "<u4", 3)]), nf, end + nv * vprops * 4)["i"].astype(np.int64)
     return V, F
 
 
