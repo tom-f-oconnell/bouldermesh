@@ -138,6 +138,7 @@
   #tip{position:fixed;z-index:2700;max-width:260px;background:var(--panel);color:var(--fg);border:1px solid var(--acc);border-radius:8px;
     padding:10px 12px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.35)} #tip .row{gap:8px;margin-top:8px;justify-content:flex-end}
   #tip::before{content:'';position:absolute;left:var(--ax,20px);width:10px;height:10px;background:var(--panel);border:1px solid var(--acc);transform:rotate(45deg)}
+  #tip.flat::before{display:none}
   #tip.below::before{top:-6px;border-right:0;border-bottom:0} #tip.above::before{bottom:-6px;border-left:0;border-top:0}
   .tip-target{outline:2px solid var(--acc);outline-offset:2px;border-radius:6px}
   .bpanel .brow{display:grid;grid-template-columns:12px 1fr auto;gap:6px;align-items:center;color:var(--mute)}
@@ -2092,6 +2093,7 @@ async function loadMeshUrl(url, filename, label, id){
     showObject(obj, label, !!id && meshesById[id]?.source !== 'upload');
     toast(note ? 'Loaded, with a problem: see the note on the view' : 'Loaded ' + label, note ? 5000 : 1500);
     if (id) reportView(id, via, (performance.now() - began) / 1000, note);
+    if (id) setTimeout(controlsTip, 1000);     // the first mesh a browser shows: how to move round it, once it's settled
     viewNote(note, note ? again : null);
     renderPieces();
     renderOrientation(id ? meshesById[id] : null);
@@ -4689,6 +4691,21 @@ function showTips(){
   tip.querySelector('.skip')?.addEventListener('click', () => done(true));
 }
 setTimeout(showTips, 1500);     // once the page has settled
+// how to move round a mesh, the first time one's shown in a browser (bm_tips_v1's controls), for a computer or a phone;
+// after any other tip that's showing, and not over a hidden viewer
+function controlsTip(tries = 0){
+  if (tipsSeen().controls) return;
+  const v = $('#viewer'), r = v.getBoundingClientRect();
+  if (document.querySelector('#tip') || !r.width) { if (tries < 30) setTimeout(() => controlsTip(tries + 1), 2000); return; }
+  const tip = document.createElement('div'); tip.id = 'tip'; tip.setAttribute('role', 'dialog'); tip.className = 'flat';
+  tip.innerHTML = `<div>${phone.matches ? '<b>Moving round it:</b> drag with one finger to turn it · pinch to zoom · drag with two fingers to move it'
+    : '<b>Moving round it:</b> drag to turn it · scroll to zoom to the pointer · double-click a spot to centre on it · right-drag to move it'}</div>
+    <div class="row"><button class="sm next">Got it</button></div>`;
+  document.body.append(tip);
+  tip.style.left = Math.max(8, r.left + r.width / 2 - tip.offsetWidth / 2) + 'px';
+  tip.style.top = Math.max(8, r.top + r.height * .35 - tip.offsetHeight / 2) + 'px';
+  tip.querySelector('.next').onclick = () => { tipSeen('controls'); tip.remove(); };
+}
 // the first time the climbs' search is used: what's in it so far, and how to ask for more (shown once, like the tips)
 $('#c-filter').addEventListener('focus', () => {
   if (tipsSeen().search || document.querySelector('#tip')) return;
