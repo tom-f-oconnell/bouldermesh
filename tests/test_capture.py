@@ -19,7 +19,9 @@ os.environ["DATA_DIR"] = str(tmp)
 import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
 
+sys.path.insert(0, str(ROOT / "tests"))
 import captureplan  # noqa: E402
+from capture_fixture import camera, cameras, wall  # noqa: E402
 import orientation  # noqa: E402
 import phonedata  # noqa: E402
 import scale  # noqa: E402
@@ -27,43 +29,11 @@ import scale  # noqa: E402
 rng = np.random.default_rng(7)
 
 
-def quat(R) -> list[float]:
-    """A rotation matrix as w, x, y, z."""
-    w = math.sqrt(max(0.0, 1 + R[0, 0] + R[1, 1] + R[2, 2])) / 2
-    if w > 1e-6:
-        return [w, (R[2, 1] - R[1, 2]) / (4 * w), (R[0, 2] - R[2, 0]) / (4 * w), (R[1, 0] - R[0, 1]) / (4 * w)]
-    i = int(np.argmax(np.diag(R)))
-    j, k = (i + 1) % 3, (i + 2) % 3
-    s = math.sqrt(max(1e-12, 1 + R[i, i] - R[j, j] - R[k, k])) * 2
-    q = [0.0, 0.0, 0.0, 0.0]
-    q[0], q[1 + i], q[1 + j], q[1 + k] = (R[k, j] - R[j, k]) / s, s / 4, (R[j, i] + R[i, j]) / s, (R[k, i] + R[i, k]) / s
-    return q
-
-
-def camera(name: str, centre, target, f: float = 3000.0, size=(4000, 3000)) -> dict:
-    """A photo placed at centre, looking at target, upright: as cameras.json has them (world to camera, +Z the way it looks)."""
-    c, fwd = np.asarray(centre, float), np.asarray(target, float) - np.asarray(centre, float)
-    fwd = fwd / np.linalg.norm(fwd)
-    right = np.cross(fwd, [0.0, 1.0, 0.0])
-    right = right / np.linalg.norm(right)
-    R = np.array([right, np.cross(fwd, right), fwd])
-    return {"name": name, "q": quat(R), "t": list(-R @ c), "lens": {"model": 2, "width": size[0], "height": size[1],
-                                                                  "params": [f, size[0] / 2, size[1] / 2, 0.0]}}
-
-
 # --- a wall of rock: part of a cylinder 2 units in radius and 3 tall, facing +Z, open at its sides and top -------------
-A, H = 25, 16
-angles, heights = np.linspace(-1.0, 1.0, A), np.linspace(0.0, 3.0, H)
-V = np.array([[2 * math.sin(a), y, 2 * math.cos(a)] for a in angles for y in heights])
-F = []
-for i in range(A - 1):
-    for j in range(H - 1):
-        a, b, c, d = i * H + j, (i + 1) * H + j, (i + 1) * H + j + 1, i * H + j + 1
-        F += [[a, b, c], [a, c, d]]
-F = np.array(F)
+V, F = wall()
 C, N, area = captureplan.geometry(V, F)
 assert float((N * C * [1, 0, 1]).sum(axis=1).min()) > 0, "its faces face outward"
-cams = [camera(f"cap_{i:03d}.jpg", [6 * math.sin(a), 1.5, 6 * math.cos(a)], [0, 1.5, 0]) for i, a in enumerate(np.linspace(-0.5, 0.5, 9))]
+cams = cameras()
 best, views = captureplan.coverage(C, N, cams)
 front = np.abs(np.arctan2(C[:, 0], C[:, 2])) < 0.4
 assert np.isfinite(best[front]).all() and views[front].min() >= 2, "what faces the cameras is seen, from more than one direction"

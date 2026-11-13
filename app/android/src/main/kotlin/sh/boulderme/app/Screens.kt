@@ -124,7 +124,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                 }
             }
         }
-        OutlinedButton(onClick = { go(Screen.Browse) }, modifier = Modifier.fillMaxWidth()) { Text("Get meshes…") }
+        OutlinedButton(onClick = { go(Screen.Browse()) }, modifier = Modifier.fillMaxWidth()) { Text("Get meshes…") }
 
         Section("A rock with no mesh")
         OutlinedButton(onClick = { naming = true }, modifier = Modifier.fillMaxWidth()) { Text("Capture a new rock…") }
@@ -172,7 +172,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
 
 // ------------------------------------------------------------------------------------------------------------- browse
 @Composable
-fun BrowseScreen(a: MainActivity, go: (Screen) -> Unit) {
+fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
     var rows by remember { mutableStateOf<List<MeshRow>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var search by remember { mutableStateOf("") }
@@ -199,6 +199,8 @@ fun BrowseScreen(a: MainActivity, go: (Screen) -> Unit) {
             }
         }
     }
+    var gotFirst by remember { mutableStateOf(!getFirst) }
+    LaunchedEffect(rows) { val first = rows?.firstOrNull(); if (!gotFirst && first != null) { gotFirst = true; get(listOf(first)) } }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {

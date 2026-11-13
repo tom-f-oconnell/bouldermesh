@@ -23,7 +23,7 @@ private fun beep() = AudioServicesPlaySystemSound(1113u)
 class Home(private val app: App) : Form("BoulderMesh") {
     override fun appear() { app.uploader.onChange = { rebuild() } }
 
-    private fun capture(mesh: String?, name: String) {
+    fun capture(mesh: String?, name: String) {
         val c = CaptureController(app, mesh, name) { id -> if (id != null) push(Done(app, id)) }
         c.modalPresentationStyle = UIModalPresentationFullScreen
         screen.presentViewController(c, animated = true, completion = null)
@@ -72,7 +72,7 @@ class Home(private val app: App) : Form("BoulderMesh") {
 }
 
 // ------------------------------------------------------------------------------------------------------------- browse
-class Browse(private val app: App) : Form("Get meshes") {
+class Browse(private val app: App, private var getFirst: Boolean = false) : Form("Get meshes") {
     private var rows: List<MeshRow>? = null
     private var error: String? = null
     private var search = ""
@@ -100,7 +100,11 @@ class Browse(private val app: App) : Form("Get meshes") {
     override fun build() {
         if (!asked) {
             asked = true
-            app.api.meshes { got, why -> rows = got; error = why?.let { "Couldn't list the meshes: $it" }; rebuild() }
+            app.api.meshes { got, why ->
+                rows = got; error = why?.let { "Couldn't list the meshes: $it" }
+                rebuild()
+                if (getFirst) { getFirst = false; got?.firstOrNull()?.let { get(listOf(it)) } }
+            }
         }
         val all = rows
         error?.let { text(it, BAD) }

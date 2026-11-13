@@ -1,0 +1,83 @@
+# The phone apps (app/), as far as they can be checked with no phone: the shared logic's tests on the JVM and natively
+# as an iPhone runs them; both apps built; and each run against a test server with one made-up mesh, the iPhone app in a
+# simulator and the Android app in an emulator, with a picture kept of every screen (the run's artifacts).
+name: Phone apps
+on:
+  push:
+    paths: ["app/**", ".github/workflows/apps.yml", "tests/capture_fixture.py"]
+  workflow_dispatch:
+defaults:
+  run:
+    shell: bash       # with pipefail: a build piped through tail still fails the step
+env:
+  PORT: "47613"
+  ADMIN_PORT: "47614"
+jobs:
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "21" }
+      - run: brew install xcodegen
+      - name: The shared logic's tests, on the simulator's processor too
+        working-directory: app
+        run: ./gradlew --no-daemon :shared:jvmTest :shared:iosSimulatorArm64Test
+      - name: Build the app
+        working-directory: app/ios/xcode
+        run: |
+          xcodegen
+          xcodebuild -project BoulderMesh.xcodeproj -scheme BoulderMesh -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/derived" CODE_SIGNING_ALLOWED=NO build | tail -40
+      - name: A test server with one mesh
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv" && "$RUNNER_TEMP/venv/bin/pip" install -q numpy pillow
+          "$RUNNER_TEMP/venv/bin/python" tests/capture_fixture.py "$RUNNER_TEMP/data"
+          DATA_DIR="$RUNNER_TEMP/data" HOST=127.0.0.1 nohup "$RUNNER_TEMP/venv/bin/python" backend/server.py > "$RUNNER_TEMP/server.log" 2>&1 &
+          for i in $(seq 30); do curl -sf "http://127.0.0.1:$PORT/api/capture/meshes" && break; sleep 1; done
+      - name: Every screen, in a simulator
+        run: app/ci/screens-ios.sh "$RUNNER_TEMP/derived/Build/Products/Debug-iphonesimulator/BoulderMesh.app" "http://127.0.0.1:$PORT" screens
+      - if: always()
+        run: mkdir -p screens && cp "$RUNNER_TEMP/server.log" screens/ios-server.log || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: ios-screens, path: screens }
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "21" }
+      - name: Build the app
+        working-directory: app
+        run: ./gradlew --no-daemon :shared:jvmTest :android:assembleDebug
+      - name: A test server with one mesh
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv" && "$RUNNER_TEMP/venv/bin/pip" install -q numpy pillow
+          "$RUNNER_TEMP/venv/bin/python" tests/capture_fixture.py "$RUNNER_TEMP/data"
+          DATA_DIR="$RUNNER_TEMP/data" nohup "$RUNNER_TEMP/venv/bin/python" backend/server.py > "$RUNNER_TEMP/server.log" 2>&1 &
+          for i in $(seq 30); do curl -sf "http://127.0.0.1:$PORT/api/capture/meshes" && break; sleep 1; done
+      - name: Let the emulator use this machine's virtualisation
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Google Play Services for AR, as made for emulators
+        run: curl -sfL -o "$RUNNER_TEMP/arcore.apk" https://github.com/google-ar/arcore-android-sdk/releases/download/1.57.0/Google_Play_Services_for_AR_1.57.0_x86_for_emulator.apk
+      - name: Every screen, in an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back virtualscene
+          disable-animations: true
+          script: |
+            adb install -r "$RUNNER_TEMP/arcore.apk" || echo "::warning::Google Play Services for AR didn't install: the capture screen will say it can't track"
+            app/ci/screens-android.sh app/android/build/outputs/apk/debug/android-debug.apk "http://10.0.2.2:$PORT" screens
+      - if: always()
+        run: mkdir -p screens && cp "$RUNNER_TEMP/server.log" screens/android-server.log || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: android-screens, path: screens }
