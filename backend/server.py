@@ -6734,7 +6734,8 @@ def job_info(job: dict, run: dict | None = None) -> dict:
     in all, which while a step says nothing of its progress (a boulder harvesting a climb) grew without end."""
     table, key = ("projects", "pid") if job.get("pid") else ("meshes", "mid")
     row = q(f"SELECT name FROM {table} WHERE id=?", job.get(key), one=True)
-    out = {"type": job["type"], ("project_id" if key == "pid" else "mesh_id"): job.get(key), "name": row["name"] if row else job.get(key)}
+    out = {"type": job["type"], ("project_id" if key == "pid" else "mesh_id"): job.get(key), "name": row["name"] if row else job.get(key),
+           **({"why": job["why"]} if job.get("why") else {})}     # what queued it, if not someone asking
     if run:
         now, at = job_progress(job), time.time()
         if now is not None and now != run.get("moved", (None,))[0]:
@@ -6881,7 +6882,7 @@ def deploy_state() -> dict:
         if j["machine_job"]:
             continue    # told as its machine's job, above
         sizing = j["type"] == "scale"
-        items.append({"what": "scale here" if sizing else f"{j['type']}, asked for", "name": j["name"], "costly": True,
+        items.append({"what": "scale here" if sizing else f"{j['type']}, {j.get('why') or 'asked for'}", "name": j["name"], "costly": True,
                       "kind": KINDS.get(j["type"], j["type"]), "project_id": j.get("project_id"),
                       "elapsed": round(now - j.get("started", now)), "eta": j.get("eta"),
                       "lost": "starts again after" if sizing else "interrupted: runs again when asked again"})
@@ -9414,7 +9415,8 @@ def reharvest_with_videos(pid: str) -> bool:
         return True
     append_log(pid, "volunteers fetched the videos this harvest couldn't have: adding them to its photos (Reconstruct uses them)")
     q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
-    queue_job({"type": "harvest", "pid": pid, "sources": sorted(HARVEST_SOURCES), "reconstruct": False, "again": True, "add": True})
+    queue_job({"type": "harvest", "pid": pid, "sources": sorted(HARVEST_SOURCES), "reconstruct": False, "again": True, "add": True,
+               "why": "for volunteers' videos"})     # not asked for by anyone: said so in deploy.sh's list
     return True
 
 
