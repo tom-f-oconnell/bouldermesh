@@ -78,6 +78,7 @@ class FlowTest {
         assertTrue(flow.shot(shot(close, t + 0.3)).kept)
         out = flow.frame(close, true, 0.0, 0.004, t + 0.4, 90)
         assertTrue(out.shoot && out.ui.kept == 1 && out.levels != null, "the button's photo, now the first is back; and the mesh coloured afresh")
+        assertTrue("GPS: no fix" in out.ui.sensors && "compass" !in out.ui.sensors, "kept, but the phone had no fix: ${out.ui.sensors}")
         assertFalse(flow.shot(shot(close, t + 0.5, ImageStats(0.05, 8.0, 0.0, 0.0, 120.0))).kept)
         val ui = flow.frame(close, true, 0.0, 0.004, t + 2.0, 90).ui
         assertTrue(ui.kept == 1 && ui.rejected == 1 && ui.note.startsWith("Not kept") && "soft" in ui.note, ui.note)

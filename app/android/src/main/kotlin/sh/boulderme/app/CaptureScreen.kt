@@ -110,6 +110,8 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                     Text(listOfNotNull("${ui.done}/${ui.total} ${if (ui.guided) "parts" else "sides and spots"}", if (ui.holds > 0 && ui.guided) "${ui.holdsDone}/${ui.holds} holds" else null,
                         "${ui.kept} photos", if (ui.rejected > 0) "${ui.rejected} not kept" else null).joinToString(" · "), color = Color.White, style = MaterialTheme.typography.bodySmall)
                 }
+                // what the last photo's readings lacked, which it was kept in spite of
+                if (ui.phase == Phase.CAPTURE && ui.sensors.isNotEmpty()) Text(ui.sensors, color = WARN, style = MaterialTheme.typography.bodySmall)
             }
             FlowRow(Modifier.fillMaxWidth().background(SHADE, RoundedCornerShape(10.dp)).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
                 when (ui.phase) {

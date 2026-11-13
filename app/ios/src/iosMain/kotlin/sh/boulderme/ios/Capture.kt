@@ -211,6 +211,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     private val hint = makeLabel("Starting the camera…", UIColor.whiteColor, bold = true, size = 18.0)
     private val note = makeLabel("", UIColor.whiteColor, size = 13.0)
     private val counts = makeLabel("", UIColor.whiteColor, size = 13.0)
+    private val readings = makeLabel("", WARN, size = 13.0)       // what the last photo's readings lacked, which it was kept in spite of
     private val bar = UIProgressView(progressViewStyle = UIProgressViewStyle.UIProgressViewStyleDefault)
     private val arrow = makeLabel("➤", UIColor.whiteColor, bold = true, size = 72.0)
     private val buttons = UIStackView()
@@ -232,7 +233,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         val top = UIStackView()
         top.axis = UILayoutConstraintAxisVertical
         top.spacing = 4.0
-        for (v in listOf(hint, note, bar, counts)) top.addArrangedSubview(v)
+        for (v in listOf(hint, note, bar, counts, readings)) top.addArrangedSubview(v)
         buttons.axis = UILayoutConstraintAxisVertical
         buttons.spacing = 6.0
         arrow.textAlignment = NSTextAlignmentCenter
@@ -526,6 +527,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             counts.text = listOfNotNull("${now.done}/${now.total} ${if (now.guided) "parts" else "sides and spots"}", if (now.holds > 0 && now.guided) "${now.holdsDone}/${now.holds} holds" else null,
                 "${now.kept} photos", if (now.rejected > 0) "${now.rejected} not kept" else null).joinToString(" · ")
         }
+        readings.text = now.sensors
+        readings.hidden = !(now.phase == Phase.CAPTURE && now.sensors.isNotEmpty())
         // which way to turn, when what's wanted is out of the picture
         val turn = now.phase == Phase.CAPTURE && hypot(now.turnX, now.turnY) > 0.3
         arrow.hidden = !turn

@@ -7,12 +7,15 @@ import kotlin.math.round
 /** Where a capture is: lining the mesh up (a tap on the small model, then on the rock), checking the fit, or taking photos. */
 enum class Phase { STARTING, GHOST, ROCK, CONFIRM, CENTRE, CAPTURE, FAILED }
 
-/** What the capture screen shows over the camera. */
+/**
+ * What the capture screen shows over the camera. `sensors`: what was wrong with the phone's readings at the last photo
+ * (its compass, its GPS, how still it was), which the photo was kept in spite of; empty if nothing was.
+ */
 data class CaptureUi(
     val phase: Phase = Phase.STARTING, val text: String = "Starting the camera…", val turnX: Double = 0.0, val turnY: Double = 0.0,
     val total: Int = 0, val done: Int = 0, val holds: Int = 0, val holdsDone: Int = 0, val kept: Int = 0, val rejected: Int = 0,
     val note: String = "", val tracking: Boolean = false, val auto: Boolean = true, val canSkip: Boolean = false, val wide: Boolean = false,
-    val marking: Boolean = false, val pairs: Int = 0, val guided: Boolean = true,
+    val marking: Boolean = false, val pairs: Int = 0, val guided: Boolean = true, val sensors: String = "",
 )
 
 /**
@@ -51,6 +54,7 @@ class CaptureFlow(val session: CaptureSession) {
     private var inFlight = false
     private var rejected = 0
     private var note = ""
+    private var sensorNote = ""
     private var levelsDirty = true
     private var markers: List<Marker> = emptyList()
     private val cloud = HashMap<Long, Vec3>()
@@ -155,7 +159,7 @@ class CaptureFlow(val session: CaptureSession) {
      */
     fun frame(pose: CameraPose, tracking: Boolean, gyroRadS: Double, exposureS: Double, t: Double, uprightDeg: Int): FlowOut {
         lastPose = pose
-        val base = ui.copy(phase = phase, kept = session.shotCount, rejected = rejected, note = note, auto = session.auto, wide = wide, marking = marking,
+        val base = ui.copy(phase = phase, kept = session.shotCount, rejected = rejected, note = note, sensors = sensorNote, auto = session.auto, wide = wide, marking = marking,
             pairs = session.taps.size, tracking = tracking)
         if (!tracking) {
             ui = base.copy(text = "Hold on: the phone is finding where it is. Move it slowly, looking at the rock.", turnX = 0.0, turnY = 0.0)
@@ -206,6 +210,7 @@ class CaptureFlow(val session: CaptureSession) {
     fun shot(s: ShotIn): ShotOut {
         inFlight = false
         val out = session.shot(s)
+        sensorNote = out.record.notes.joinToString(" · ")
         if (out.kept) { note = ""; levelsDirty = true } else { rejected++; note = "Not kept: ${out.why.joinToString("; ")}." }
         return out
     }
