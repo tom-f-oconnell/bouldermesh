@@ -29,7 +29,8 @@ import zlib
 from math import cos, pi, sin, sqrt
 from pathlib import Path
 
-MARCH = {"plain": None, "complete": None, "v3": "x86-64-v3", "native": "native"}       # what each variant is built for
+MARCH = {"plain": None, "complete": None, "v3": "x86-64-v3", "native": "native",
+         "incr-full": "x86-64-v3"}     # the incremental-pipeline agent's tree (experiments/mapper/incr)       # what each variant is built for
 WORK = Path("/tmp/verify")
 
 
@@ -185,6 +186,43 @@ def ba(k: Checks, part: str, name: str, more: str, env: dict, want: dict, libs_w
         k.add(part, f"run: {name}: {what} loaded", pattern, ", ".join(hit) or "none", bool(hit))
 
 
+PYCOLMAP = r"""
+import os, re, sys
+import pycolmap
+print("HAS_CUDA", pycolmap.has_cuda, pycolmap.get_num_cuda_devices(), pycolmap.__version__)
+s = pycolmap.SyntheticDatasetOptions()
+s.num_cameras_per_rig = 1; s.num_frames_per_rig = 60; s.num_points3D = 2000
+rec = pycolmap.synthesize_dataset(s)
+pycolmap.logging.set_log_destination(pycolmap.logging.INFO, sys.argv[1])
+for gpu in (False, True):
+    b = pycolmap.BundleAdjustmentOptions(); b.print_summary = False
+    b.ceres.use_gpu = gpu; b.ceres.min_num_images_gpu_solver = 0
+    b.ceres.max_num_images_direct_dense_cpu_solver = 10; b.ceres.max_num_images_direct_dense_gpu_solver = 10
+    pycolmap.bundle_adjustment(rec, b)
+"""
+
+
+def pycolmap(k: Checks) -> None:
+    """pycolmap, where the tree has one (the incremental-pipeline agent's): a CUDA build, and sparse bundle
+    adjustments that the patched COLMAP under it logs as SuiteSparse on the CPU and cuDSS on the GPU."""
+    rc, out = sh("python3 -c 'import pycolmap' 2>&1")
+    if rc:
+        k.add("pycolmap", "installed", "recorded (only some trees have it)", "no", None)
+        return
+    (WORK / "pycolmap.py").write_text(PYCOLMAP)
+    log = WORK / "pycolmap.log"
+    rc, out = sh(f"rm -f {log}; python3 {WORK}/pycolmap.py {log}", timeout=900)
+    has = re.search(r"HAS_CUDA (\S+) (\d+) (\S+)", out)
+    k.add("pycolmap", "a CUDA build that sees the GPU", "has_cuda True, 1+ devices",
+          f"{has.group(3)}: has_cuda {has.group(1)}, {has.group(2)} device(s)" if has else out[-200:],
+          bool(has) and has.group(1) == "True" and int(has.group(2)) > 0)
+    lines = re.findall(r"BENCH_BA.*", log.read_text(errors="replace") if log.exists() else "")
+    cpu = next((l for l in lines if "device=cpu" in l), "no BENCH_BA line on the CPU" + (f" (exit {rc})" if rc else ""))
+    gpu = next((l for l in lines if "device=cuda" in l), "no BENCH_BA line on the GPU" + (f" (exit {rc})" if rc else ""))
+    k.add("pycolmap", "run: sparse solve on the CPU", "sparse=SUITE_SPARSE", cpu, "sparse=SUITE_SPARSE" in cpu)
+    k.add("pycolmap", "run: sparse solve on the GPU", "device=cuda sparse=CUDA_SPARSE", gpu, "sparse=CUDA_SPARSE" in gpu)
+
+
 def tree(variant: str) -> Checks:
     k, V = Checks(), variant
     lock = gpu_lock()
@@ -266,6 +304,7 @@ def tree(variant: str) -> Checks:
           f"loaded {', '.join(hit) or 'neither'}; {feats} keypoints; exit {rc}; GPU memory in use before {before} MiB"
           + (f"; {complaint[0][-160:]}" if complaint else ""),
           rc == 0 and any("providers_cuda" in n for n in hit) and any("cudnn" in n for n in hit) and not complaint and feats.isdigit())
+    pycolmap(k)
     # --- OpenMVS
     c = cache(f"/opt/openMVS/build-{V}/CMakeCache.txt")
     k.flags("OpenMVS", c, V, "OpenMVS_ENABLE_IPO")
