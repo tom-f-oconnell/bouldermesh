@@ -22,7 +22,10 @@
   .pill.real{color:var(--ok);border-color:var(--ok)} .pill.demo,.pill.stopping{color:var(--warn);border-color:var(--warn)}
   .seg{display:inline-flex;margin-left:auto;border:1px solid var(--line);border-radius:6px;overflow:hidden}
   #hspace{flex:1} header .seg{flex:none}   /* Random and the editing token's buttons at the left; the rest at the right */
-  #tofull small{display:block;color:inherit;opacity:.9;font-size:10px;font-weight:400;line-height:1.1;max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* on a phone, the climb in view under the Viewer button, in room made for it below the header's row: the button keeps its size */
+  #tofullwrap{position:relative;overflow:visible!important} #tofullname{position:absolute;left:0;top:100%;margin-top:2px;font-size:10px;line-height:1.1;color:var(--mute);
+    max-width:45vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none}
+  #tofullname:empty{display:none} header.named{padding-bottom:16px;row-gap:16px}
   #tofull:disabled{background:var(--line);color:var(--mute);opacity:1}
   /* the settings open from a button, at the right of the view's bar (and on a phone in the header too), as a panel over the page */
   #prefs{position:fixed;z-index:2600;display:none;grid-template-columns:auto auto;gap:10px 12px;align-items:center;padding:12px;
@@ -360,7 +363,7 @@
 </head>
 <body>
 <header>
-  <button class="sm phone" id="tofull" disabled title="Pick a climb's mesh first">Viewer</button>
+  <span class="phone" id="tofullwrap"><button class="sm" id="tofull" disabled title="Pick a climb's mesh first">Viewer</button><small id="tofullname"></small></span>
   <h1><a href="/" class="home" title="The site's start">boulderme.sh</a></h1>
   <span id="stopping" class="pill stopping" style="display:none"></span>
   <button class="sm" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random</button>
@@ -4161,7 +4164,8 @@ function markShown(){
   const name = picked ? named(picked) : $('#vname').textContent || m?.name || '';
   b.disabled = !has;
   b.title = has ? 'Back to the mesh' : 'Pick a climb\'s mesh first';
-  b.innerHTML = 'Viewer' + (has && name ? `<small>${esc(name)}</small>` : '');
+  $('#tofullname').textContent = has && name ? name : '';
+  document.querySelector('header').classList.toggle('named', !!(has && name) && phone.matches);
   $('#random').classList.toggle('sec', has);
   const on = shownClimbs();
   document.querySelectorAll('#climbs .card').forEach(d => d.querySelector('.viewmesh')?.classList.toggle('sec', !on.has(d.dataset.id)));
