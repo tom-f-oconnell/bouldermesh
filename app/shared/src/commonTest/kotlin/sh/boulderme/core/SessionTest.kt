@@ -26,6 +26,27 @@ class SessionTest {
     private fun take(s: CaptureSession, pose: CameraPose, t: Double, stats: ImageStats? = this.stats, gyro: Double = 0.0) =
         s.shot(ShotIn(pose, sensors(t), stats, 0.004, 80.0, 2.0, true, "ar1", t, 1.7e9 + t, gyroRadS = gyro))
 
+    @Test fun hintsAreTheScreens() {
+        val cov = Coverage(TestWorld.plan(), TestWorld.guide())
+        val hold = assertNotNull(cov.state("h0"))
+        val aside = TestWorld.look(Vec3(-0.5, 1.0, 4.0), Vec3(9.0, 1.0, 0.0))     // the hold is off the picture's left
+        assertTrue("left" in cov.hint(aside, hold).text && cov.hint(aside, hold).turnX < -0.9)
+        // a phone held upright shows its picture a quarter turn clockwise: the picture's left is the screen's top
+        val up = cov.hint(aside, hold, 90)
+        assertTrue("up" in up.text && up.turnY > 0.9, up.text)
+    }
+
+    @Test fun orbitBlocksTheSideAskedFor() {
+        val o = Orbit(Vec3.ZERO)
+        val pose = TestWorld.look(Vec3(0.0, 1.0, 3.0), Vec3(0.0, 1.0, 0.0))
+        repeat(Orbit.SECTOR_SHOTS) { o.add(pose) }
+        assertEquals(Hint.Kind.FACE, o.hint(pose).kind)
+        assertTrue(o.blockNext(pose))
+        assertEquals(1, o.ring.count { it.blocked })
+        repeat(20) { o.blockNext(pose) }
+        assertEquals(Hint.Kind.DONE, o.hint(pose).kind, "every other side is out of reach")
+    }
+
     @Test fun coverageOfAPlan() {
         val cov = Coverage(TestWorld.plan(), TestWorld.guide())
         val hold = assertNotNull(cov.state("h0"))

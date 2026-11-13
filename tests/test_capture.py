@@ -98,6 +98,26 @@ big_v, big_f = captureplan.decimate(np.repeat(V, 1, axis=0), np.concatenate([F] 
 assert len(big_f) <= 200 and big_f.max() < len(big_v)
 print("plans and guides OK")
 
+# --- the same plan and guide, as the apps' own tests read them (app/shared/src/jvmTest) ---------------------------------
+# kept in the repository: if these no longer match, the format changed, and the apps have to change with it (app/FORMAT.md)
+FIXTURES = ROOT / "app" / "shared" / "src" / "jvmTest" / "resources"
+sent = {**plan, "made": 0, "mesh": "ca" * 6, "name": "A Wall", "lat": 34.0, "lng": -116.0, "heading_deg": None,
+        "guide_url": f"/api/capture/guide/{'ca' * 6}.bin?v={plan['guide']['sha1']}"}
+if "--write-fixtures" in sys.argv:
+    (FIXTURES / "server").mkdir(parents=True, exist_ok=True)
+    (FIXTURES / "server" / "plan.json").write_text(json.dumps(sent, indent=1, sort_keys=True) + "\n")
+    (FIXTURES / "server" / "guide.bin").write_bytes(guide)
+assert json.loads((FIXTURES / "server" / "plan.json").read_text()) == json.loads(json.dumps(sent)) and (FIXTURES / "server" / "guide.bin").read_bytes() == guide, \
+    "a plan or guide isn't what the apps' tests have: if the format was meant to change, run this with --write-fixtures and change the apps"
+# and what the apps write, as their tests check they still do: a photo's readings and a capture's record
+theirs = phonedata.parse((FIXTURES / "app" / "shot.txt").read_text())
+assert theirs["v"] == 1 and theirs["ar"] == {"s": "a", "p": [1.0, 2.0, 3.0], "q": [1.0, 0.0, 0.0, 0.0], "track": "normal"}, theirs
+assert theirs["gps"]["acc"] == 3.0 and theirs["down_src"] == "ar" and theirs["k"]["fx"] == 3000.0 and theirs["q"]["ok"] is True, theirs
+assert phonedata.down(theirs) and abs(phonedata.down(theirs)[1] - 0.98 / math.hypot(0.98, 0.2)) < 1e-9
+sent_record = json.loads((FIXTURES / "app" / "capture.json").read_text())
+assert sent_record["mesh"] == "ca" * 6 and sent_record["shots"][0]["name"] == "cap_k1_001.jpg" and sent_record["shots"][0]["blob"] == theirs, sent_record
+print("what the apps read and write OK")
+
 # --- a photo's readings, in its own file --------------------------------------------------------------------------------
 photos = tmp / "photos"
 photos.mkdir()
@@ -180,4 +200,61 @@ assert server.capture_plan(mid)["made"] == first["made"] and (mdir / "capture" /
 again = server.capture_plan(mid)
 assert [t["role"] for t in again["targets"] if t["kind"] == "hold"] == ["start"] and again["made"] != first["made"], "made again with its hold"
 print("the server's plans OK")
+
+# --- the server's: the meshes a capture can add to, and a capture meshed together with the photos of the one it adds to ----
+(row,) = server.capture_meshes()
+assert row["id"] == mid and row["name"] == "A Wall" and row["holds"] == 1 and row["climbs"] == [], row
+server.q("INSERT INTO climbs(id,source,source_id,name,grade,created) VALUES('c1','test','1','Alpha','V2',1.0)", write=True)
+server.link_mesh(mid, "c1", None)
+assert server.capture_meshes()[0]["climbs"] == ["Alpha V2"]
+theirs, mine = "aa" * 6, "bb" * 6
+for pid, names in ((theirs, ["mp_1.jpg", "yt_abc_0001.jpg", "notes.txt"]), (mine, ["cap_k1_001.jpg", "cap_k1_002.jpg", "cap_k1_003.jpg"])):
+    (server.PROJECTS / pid / "photos").mkdir(parents=True)
+    for n in names:
+        if n.endswith(".jpg"):
+            Image.new("RGB", (32, 24), (80, 80, 80)).save(server.PROJECTS / pid / "photos" / n)
+        else:
+            (server.PROJECTS / pid / "photos" / n).write_text("not a photo")
+    server.q("INSERT INTO projects(id,name,created,kind) VALUES(?,?,?,'user')", pid, pid, 1.0, write=True)
+(server.PROJECTS / theirs / "masks").mkdir()
+(server.PROJECTS / theirs / "masks" / "mp_1.jpg.png").write_bytes(b"mask")
+(server.PROJECTS / theirs / "sources.json").write_text(json.dumps({"files": [{"file": "mp_1.jpg", "source": "mountainproject", "url": "https://example.org/1"}]}))
+server.q("UPDATE meshes SET source=? WHERE id=?", f"project:{theirs}", mid, write=True)
+said = []
+assert server.merge_capture(mine, said.append) is None and not said, "no record: not a capture"
+(server.PROJECTS / mine / server.CAPTURE_FILE).write_text(json.dumps({"mesh": "0123456789ab", "shots": []}))
+assert server.merge_capture(mine, said.append) is None and "on their own" in said[-1], "a mesh that's gone: meshed on its own"
+(server.PROJECTS / mine / server.CAPTURE_FILE).write_text(json.dumps({"mesh": mid, "shots": []}))
+assert server.merge_capture(mine, said.append) == mid, said
+now = sorted(f.name for f in (server.PROJECTS / mine / "photos").iterdir())
+assert now == ["cap_k1_001.jpg", "cap_k1_002.jpg", "cap_k1_003.jpg", "mp_1.jpg", "yt_abc_0001.jpg"], now
+assert (server.PROJECTS / mine / "masks" / "mp_1.jpg.png").read_bytes() == b"mask"
+merged = json.loads((server.PROJECTS / mine / server.MERGED_FILE).read_text())
+assert merged["mesh"] == mid and merged["project"] == theirs and merged["photos"] == ["mp_1.jpg", "yt_abc_0001.jpg"], merged
+came = {f["file"]: f for f in json.loads((server.PROJECTS / mine / "sources.json").read_text())["files"]}
+assert came["mp_1.jpg"]["url"] == "https://example.org/1" and came["yt_abc_0001.jpg"]["source"] == "youtube", came
+assert "3 photos taken with the app" in said[-1] and "2 photos of that mesh's" in said[-1], said[-1]
+Image.new("RGB", (32, 24), (80, 80, 80)).save(server.PROJECTS / theirs / "photos" / "mp_2.jpg")
+assert server.merge_capture(mine, said.append) == mid and "1 joined just now" in said[-1], said[-1]
+assert json.loads((server.PROJECTS / mine / server.MERGED_FILE).read_text())["photos"] == ["mp_1.jpg", "mp_2.jpg", "yt_abc_0001.jpg"]
+new_mid = "cb" * 6
+(server.MESHES / new_mid).mkdir()
+server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES(?,?,?,?,?)", new_mid, "A Wall (capture)", "mesh.ply", f"project:{mine}", 2.0, write=True)
+server.link_capture(new_mid, mid, said.append)
+(link,) = server.q("SELECT climb_id, note FROM mesh_links WHERE mesh_id=?", new_mid)
+assert link["climb_id"] == "c1" and link["note"] == f"{server.CAPTURE_LINK} {mid}", link
+assert server.q("SELECT lat, lng FROM meshes WHERE id=?", new_mid, one=True) == {"lat": 34.0, "lng": -116.0}, "where the mesh it adds to is, until its photos say"
+assert server.q("SELECT replaced_by FROM meshes WHERE id=?", mid, one=True)["replaced_by"] is None, "the mesh added to stays"
+print("captures meshed with the mesh they add to OK")
+
+# --- the server's: a mesh put where its app photos' fixes say ---------------------------------------------------------------
+assert server.place_from_phone(new_mid) is None, "no size found yet: nothing to go by"
+scale.save(server.MESHES / new_mid, {"status": "done", "metres_per_unit": 1.2, "phone": {"photos": 9, "position": {"lat": 34.0001, "lng": -116.0002, "acc_m": 9.0, "n": 9}}})
+assert server.place_from_phone(new_mid) is None, "fixes that only say to within 9 m don't move it"
+scale.save(server.MESHES / new_mid, {"status": "done", "metres_per_unit": 1.2, "phone": {"photos": 9, "position": {"lat": 34.0001, "lng": -116.0002, "acc_m": 1.4, "n": 9}}})
+put = server.place_from_phone(new_mid, said.append)
+assert put["was"] == [34.0, -116.0] and 20 < put["moved_m"] < 24 and "21 m from" in said[-1].replace("22 m", "21 m"), (put, said[-1])
+assert server.q("SELECT lat, lng FROM meshes WHERE id=?", new_mid, one=True) == {"lat": 34.0001, "lng": -116.0002}
+assert scale.load(server.MESHES / new_mid)["phone"]["placed"]["was"] == [34.0, -116.0] and server.place_from_phone(new_mid) is None, "once"
+print("placed by its app photos OK")
 print("ALL CAPTURE TESTS PASSED")

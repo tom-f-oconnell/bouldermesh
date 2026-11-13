@@ -74,6 +74,25 @@ class Orbit(val centre: Vec3, val sectors: Int = 12) {
             spots.count { it.skipped }, spots.size, spots.count { it.done() && !it.skipped })
     }
 
+    /** The nearest side still to do from sector `here`: which way round it is (to the left the sector number falls) and how many sectors off; `sectors` off if none. */
+    private fun next(here: Int): Pair<Int, Int> {
+        var best = -1; var bestSteps = sectors
+        for (k in 1 until sectors) for (sign in intArrayOf(-1, 1)) {
+            val s = ((here + sign * k) % sectors + sectors) % sectors
+            if (!ring[s].blocked && ring[s].shots < SECTOR_SHOTS && k < bestSteps) { best = sign; bestSteps = k }
+        }
+        return best to bestSteps
+    }
+
+    /** Marks the side hint() is sending you round to as out of reach. Returns whether there was one. */
+    fun blockNext(pose: CameraPose): Boolean {
+        val here = sectorOf(pose.centre)
+        val (sign, steps) = next(here)
+        if (steps == sectors) return false
+        block(((here + sign * steps) % sectors + sectors) % sectors)
+        return true
+    }
+
     fun hint(pose: CameraPose): Hint {
         spots.firstOrNull { !it.done() && seesSpot(pose, it) != null }?.let { s ->
             val dm = pose.centre.distance(s.p)
@@ -87,13 +106,8 @@ class Orbit(val centre: Vec3, val sectors: Int = 12) {
         if (!looksAtRock(pose)) return Hint(Hint.Kind.TURN, "Point the camera at the rock")
         val here = sectorOf(pose.centre)
         if (ring[here].shots < SECTOR_SHOTS && !ring[here].blocked) return Hint(Hint.Kind.SHOOT, "Hold still")
-        // the nearest side still to do, and which way round it is: to the left the sector number falls
-        var best = -1; var bestSteps = sectors
-        for (k in 1 until sectors) for (sign in intArrayOf(-1, 1)) {
-            val s = ((here + sign * k) % sectors + sectors) % sectors
-            if (!ring[s].blocked && ring[s].shots < SECTOR_SHOTS && k < bestSteps) { best = sign; bestSteps = k }
-        }
-        if (best == 0 || bestSteps == sectors) {
+        val (best, bestSteps) = next(here)
+        if (bestSteps == sectors) {
             val left = spots.count { !it.done() }
             return if (left > 0) Hint(Hint.Kind.TURN, "Now the ${if (left == 1) "spot" else "$left spots"} you marked: go up close")
             else Hint(Hint.Kind.DONE, "All round done. Finish, or mark holds for close-ups")

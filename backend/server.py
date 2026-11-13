@@ -1619,6 +1619,140 @@ def capture_plan(mid: str) -> dict | None:
             "guide_url": f"/api/capture/guide/{mid}.bin?v={plan['guide']['sha1']}"}
 
 
+def capture_meshes() -> list[dict]:
+    """The meshes a capture with the phone apps can add to: the current ones made from photos whose cameras are known
+    (what a plan is made from), each with where it is, the climbs it's of and how many holds are known on it. Light, for
+    a phone with little signal to list and pick from."""
+    of: dict[str, list[str]] = {}
+    for l in q("SELECT l.mesh_id, c.name, c.grade FROM mesh_links l JOIN climbs c ON c.id=l.climb_id WHERE COALESCE(l.note,'') NOT LIKE ? "
+               "ORDER BY c.name", SHARED + "%"):
+        of.setdefault(l["mesh_id"], []).append(" ".join(x for x in (l["name"], l["grade"]) if x))
+    on: dict[str, list[str]] = {}
+    out = []
+    for m in q("SELECT id, name, lat, lng, boulder FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%' ORDER BY name"):
+        d = MESHES / m["id"]
+        if not (d / "cameras.json").exists():
+            continue
+        climbs = of.get(m["id"])
+        if not climbs and m["boulder"] and not is_rest(m["boulder"]):
+            if m["boulder"] not in on:
+                on[m["boulder"]] = [" ".join(x for x in (c["name"], c["grade"]) if x) for c in boulder_climbs(m["boulder"])]
+            climbs = on[m["boulder"]]
+        try:
+            holds = len(beta_mod.load_holds(d).get("holds") or []) + sum(len(v.get("holds") or []) for v in (beta_mod.load(d) or {}).get("videos", []))
+        except Exception:
+            holds = 0
+        out.append({"id": m["id"], "name": m["name"], "lat": m["lat"], "lng": m["lng"], "climbs": climbs or [], "holds": holds})
+    return out
+
+
+MERGED_FILE = "merged.json"     # in a capture's project: the photos of the mesh it added to, which it's meshed together with
+CAPTURE_LINK = "from a capture with the app, adding to mesh"   # how a mesh_links note starts for such a mesh's climbs
+PHONE_PLACE_M = 5.0     # a mesh is put where its app photos' GPS fixes say, if together they say so to within this
+PHONE_PLACE_MIN = 6     # and at least this many of them went into it
+
+
+def _link_or_copy(src: Path, dest: Path) -> None:
+    try:
+        os.link(src, dest)
+    except OSError:
+        shutil.copy2(src, dest)
+
+
+def merge_capture(pid: str, log) -> str | None:
+    """Before a project of photos taken with the app is meshed: if they were taken to add to a mesh there already was
+    (its record, CAPTURE_FILE, names it), that mesh's project's photos join them, as links, and the two are meshed
+    together. The capture's photos were taken of what those lacked, and can tie in ones that couldn't be placed before.
+    Its people masks come too, and where each photo came from (sources.json). What joined is kept in MERGED_FILE. A
+    photo the project has already, by name, is left as it is, so asking again adds only what's new.
+
+    Returns:
+        The mesh added to, or None if the record names none whose photos are still here: it's then meshed on its own.
+
+    Raises:
+        PhotosAway, LostData: that mesh's project's photos are in the backup (need_back()).
+    """
+    rec = _read_json(PROJECTS / pid / CAPTURE_FILE)
+    target = rec.get("mesh") if isinstance(rec, dict) else None
+    if not isinstance(target, str) or not re.fullmatch(r"[0-9a-f]+", target):
+        return None
+    m = q("SELECT source FROM meshes WHERE id=?", target, one=True)
+    ppid = m["source"].split(":", 1)[1] if m and (m["source"] or "").startswith("project:") else None
+    if not ppid or ppid == pid or not (PROJECTS / ppid / "photos").is_dir():
+        log(f"capture: the mesh its photos were taken to add to ({target}) or that mesh's photos aren't here: meshing them on their own")
+        return None
+    need_back([ppid], "meshing a capture together with the photos of the mesh it adds to")
+    pdir, src = PROJECTS / pid, PROJECTS / ppid
+    have = {f.name for f in (pdir / "photos").iterdir()}
+    joined = []
+    for f in sorted((src / "photos").iterdir()):
+        if f.suffix.lower() not in PHOTO_EXT or f.name in have or not f.is_file():
+            continue
+        _link_or_copy(f, pdir / "photos" / f.name)
+        joined.append(f.name)
+        mask = src / "masks" / f"{f.name}.png"
+        if mask.is_file():
+            (pdir / "masks").mkdir(exist_ok=True)
+            if not (pdir / "masks" / mask.name).exists():
+                _link_or_copy(mask, pdir / "masks" / mask.name)
+    was = _read_json(pdir / MERGED_FILE) or {}
+    names = sorted(set(was.get("photos") or []) | set(joined)) if was.get("mesh") == target else joined
+    if joined:
+        try:    # where each came from, as that project recorded it, for this mesh's own record (provenance.save())
+            known = provenance.harvested(src)
+            mine = _read_json(pdir / "sources.json") or {}
+            files = [f for f in mine.get("files") or [] if f.get("file") not in set(joined)] + [provenance.describe(n, known) for n in joined]
+            (pdir / "sources.json").write_text(json.dumps({**mine, "files": files}))
+        except Exception as e:
+            log(f"capture: recording where the photos it joins came from failed ({type(e).__name__}: {e})")
+    (pdir / MERGED_FILE).write_text(json.dumps({"mesh": target, "project": ppid, "photos": names, "at": time.time()}))
+    own = len(have - set(names))
+    log(f"capture: {plural(own, 'photo')} taken with the app to add to mesh {target}, meshed together with "
+        f"{plural(len(names), 'photo')} of that mesh's" + (f" ({len(joined)} joined just now)" if len(joined) != len(names) else ""))
+    return target
+
+
+def link_capture(mid: str, target: str, log) -> None:
+    """A mesh made from a capture's photos together with those of the mesh it added to (merge_capture()) is of that
+    mesh's climbs too: linked to each, and where that one is until its own photos say (place_from_phone()). The mesh
+    added to stays as it is, the current one of its own project: which of the two to keep is for whoever looks at them."""
+    old = q("SELECT boulder, lat, lng FROM meshes WHERE id=?", target, one=True)
+    if not old:
+        return
+    climbs = sorted(mesh_climbs(target, old["boulder"]))
+    for cid in climbs:
+        link_mesh(mid, cid, f"{CAPTURE_LINK} {target}")
+    q("UPDATE meshes SET lat=COALESCE(lat,?), lng=COALESCE(lng,?) WHERE id=?", old["lat"], old["lng"], mid, write=True)
+    log(f"capture: linked to the {plural(len(climbs), 'climb')} of mesh {target}, which it adds to; that mesh stays as it is, beside this")
+
+
+def place_from_phone(mid: str, log=None) -> dict | None:
+    """Put a mesh where the photos the app took of it say it is: scale.py's record of them (phonedata.position(), from
+    their GPS fixes and the phone's own tracking of how it moved between them), once PHONE_PLACE_MIN fixes together say
+    so to within PHONE_PLACE_M. That's closer than a climb's page gives, which is where a mesh is put otherwise. Where
+    it was before is kept in the record. Returns what it did, or None if it left the mesh where it was."""
+    rec = scale_mod.load(MESHES / mid) or {}
+    phone = rec.get("phone") or {}
+    pos = phone.get("position") or {}
+    if not isinstance(pos.get("lat"), (int, float)) or not isinstance(pos.get("lng"), (int, float)):
+        return None
+    if (pos.get("acc_m") or 1e9) > PHONE_PLACE_M or (pos.get("n") or 0) < PHONE_PLACE_MIN:
+        return None
+    m = q("SELECT lat, lng FROM meshes WHERE id=?", mid, one=True)
+    if not m or (m["lat"], m["lng"]) == (pos["lat"], pos["lng"]):
+        return None
+    moved = _km(m["lat"], m["lng"], pos["lat"], pos["lng"]) * 1000 if m["lat"] is not None and m["lng"] is not None else None
+    q("UPDATE meshes SET lat=?, lng=? WHERE id=?", pos["lat"], pos["lng"], mid, write=True)
+    placed = {"lat": pos["lat"], "lng": pos["lng"], "acc_m": pos["acc_m"], "was": [m["lat"], m["lng"]], "moved_m": round(moved, 1) if moved is not None else None,
+              "at": time.time()}
+    scale_mod.save(MESHES / mid, {**rec, "phone": {**phone, "placed": placed}})
+    meshes_changed()
+    if log:
+        log(f"place: put where its {pos['n']} app photos' GPS fixes say, good to {pos['acc_m']} m"
+            + (f": {moved:.0f} m from where its climb's page had it" if moved is not None else ""))
+    return placed
+
+
 def mesh_heading(mid: str) -> dict | None:
     """Which way a mesh faces, as best known ({deg, source, detail}), worked out first if it hasn't been since
     heading.py last changed; None if not known."""
@@ -3153,8 +3287,11 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
     q("UPDATE projects SET status='running' WHERE id=?", pid, write=True)
     started, log_from = time.time(), (pdir / "job.log").stat().st_size if (pdir / "job.log").exists() else 0
     log = lambda s: append_log(pid, s)  # noqa: E731
+    added_to = None
     try:
         need_back([pid], "meshing it")
+        if (pdir / CAPTURE_FILE).exists():      # photos taken with the app, perhaps to add to a mesh: with that mesh's photos
+            added_to = merge_capture(pid, log)
     except (PhotosAway, LostData) as e:     # it waits for them, as for a machine; or for the admin page, if they're lost
         log(str(e))
         q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
@@ -3190,6 +3327,8 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         if proj["climb_id"]:
             link_mesh(mid, proj["climb_id"], "auto-linked from reconstruction project")
             log(f"mesh linked to climb {proj['climb_id']}")
+        if added_to:
+            link_capture(mid, added_to, log)
         before = proj["mesh_id"] if proj["mesh_id"] and proj["mesh_id"] != mid and q("SELECT id FROM meshes WHERE id=?", proj["mesh_id"]) else None
         worse = fewer_placed(before, mid, pdir / "photos") if before and keep_better and not mesh_is_old(
             q("SELECT source, rules FROM meshes WHERE id=?", before, one=True)) else None      # never an old one over it
@@ -6069,6 +6208,10 @@ def run_scale(mid: str) -> None:
     except Exception as e:
         log(f"FAILED: {type(e).__name__}: {e}")
         scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": f"failed: {type(e).__name__}: {e}", "progress": None})
+    try:
+        place_from_phone(mid, log)      # photos the app took say where it is, too
+    except Exception as e:
+        log(f"place: putting it where its app photos say failed ({type(e).__name__}: {e})")
     if skyline_wanted(mid):     # its skyline's parallax check needed its size
         queue_skyline(mid)
 
@@ -8386,6 +8529,8 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     print(f"error: meshes' links: {type(e).__name__}: {e}", flush=True)
                 return self.send_json(rows)
+            if p == "/api/capture/meshes":   # for the phone apps: the meshes a capture can add to
+                return self.send_json(capture_meshes())
             m = re.fullmatch(r"/api/capture/plan/([0-9a-f]+)", p)
             if m:   # for the phone apps: what of a mesh to photograph (capture_plan())
                 try:

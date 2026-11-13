@@ -175,8 +175,13 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
         return best
     }
 
-    /** What to do about a target from here, in words. */
-    fun hint(pose: CameraPose, s: State): Hint {
+    /**
+     * What to do about a target from here, in words.
+     *
+     * @param uprightDeg how far clockwise the picture is turned to be shown upright on the screen (90 for a phone held
+     *   upright, whose camera reads its picture out on its side): left, right, up and down are the screen's.
+     */
+    fun hint(pose: CameraPose, s: State, uprightDeg: Int = 0): Hint {
         val t = s.target
         val c = pose.rot.conj().rotate(t.point - pose.centre)
         val d = c.norm
@@ -184,9 +189,10 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
         val mx = pose.lens.w * FRAME_MARGIN; val my = pose.lens.h * FRAME_MARGIN
         val what = if (t.isHold) "the ${t.role ?: ""} hold".replace("  ", " ") else if (t.isEdge) "the edge" else "this part"
         if (at == null || at.u < mx || at.u > pose.lens.w - mx || at.v < my || at.v > pose.lens.h - my) {
-            if (c.z < 0 && hypot(c.x, c.y) < -c.z) return Hint(Hint.Kind.TURN, "Turn round: $what is behind you", t.id, turnX = if (c.x >= 0) 1.0 else -1.0)
-            val n = hypot(c.x, c.y).let { if (it > 1e-9) it else 1.0 }
-            val across = c.x / n; val down = c.y / n       // image y runs down
+            val (sx, sy) = toScreen(c.x, c.y, uprightDeg)
+            if (c.z < 0 && hypot(c.x, c.y) < -c.z) return Hint(Hint.Kind.TURN, "Turn round: $what is behind you", t.id, turnX = if (sx >= 0) 1.0 else -1.0)
+            val n = hypot(sx, sy).let { if (it > 1e-9) it else 1.0 }
+            val across = sx / n; val down = sy / n       // y runs down the screen
             val word = if (kotlin.math.abs(across) >= kotlin.math.abs(down)) (if (across > 0) "right" else "left") else (if (down > 0) "down" else "up")
             return Hint(Hint.Kind.TURN, "Point the camera $word, at $what", t.id, turnX = across, turnY = -down)
         }
@@ -199,7 +205,10 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
         if (facing < cosFacing) {
             // where facing it would be: out along its normal; which side of the view that is
             val want = pose.rot.conj().rotate(t.point + t.normal * d - pose.centre)
-            return Hint(Hint.Kind.FACE, "Move ${if (want.x > 0) "right" else "left"} to face $what more squarely", t.id, turnX = if (want.x > 0) 1.0 else -1.0, u = at.u, v = at.v)
+            val (wx, wy) = toScreen(want.x, want.y, uprightDeg)
+            val word = if (kotlin.math.abs(wx) >= kotlin.math.abs(wy)) (if (wx > 0) "right" else "left") else (if (wy > 0) "lower" else "higher")
+            val n = hypot(wx, wy).let { if (it > 1e-9) it else 1.0 }
+            return Hint(Hint.Kind.FACE, "Move $word to face $what more squarely", t.id, turnX = wx / n, turnY = -wy / n, u = at.u, v = at.v)
         }
         if (dm < TOO_CLOSE_M) return Hint(Hint.Kind.BACK, "Too close to focus: move back a little", t.id, moveM = TOO_CLOSE_M - dm, u = at.u, v = at.v)
         val need = needGsdM(s)
@@ -245,6 +254,14 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
         const val REACH_M = 2.2             // as high as a phone is held, from the ground
         const val GOOD_ENOUGH = 1.5         // a view this many times coarser than needed still counts as a direction
         const val LEVEL_OUT = 0; const val LEVEL_TODO = 1; const val LEVEL_PART = 2; const val LEVEL_DONE = 3; const val LEVEL_SKIPPED = 4
+
+        /** Across and down the screen, from across and down the picture, for a picture shown turned uprightDeg clockwise. */
+        fun toScreen(x: Double, y: Double, uprightDeg: Int): Pair<Double, Double> = when (((uprightDeg % 360) + 360) % 360) {
+            90 -> -y to x
+            180 -> -x to -y
+            270 -> y to -x
+            else -> x to y
+        }
 
         internal fun metres(m: Double): String = if (m < 0.95) "${max(5, ((m * 100).roundToInt() / 5) * 5)} cm" else "${(m * 10).roundToInt() / 10.0} m"
     }

@@ -2,8 +2,12 @@ package sh.boulderme.core
 
 import kotlin.math.max
 
-/** What the phone knows as each camera frame arrives: where it is in the world, how fast it's turning, its shutter time. */
-data class FrameIn(val pose: CameraPose, val gyroRadS: Double, val exposureS: Double, val tracking: Boolean, val t: Double)
+/**
+ * What the phone knows as each camera frame arrives: where it is in the world (with the lens of the photos it takes),
+ * how fast it's turning, its shutter time, and how far clockwise its picture is turned to be shown upright (90 for a
+ * phone held upright), which is what makes a hint's left and right the screen's.
+ */
+data class FrameIn(val pose: CameraPose, val gyroRadS: Double, val exposureS: Double, val tracking: Boolean, val t: Double, val uprightDeg: Int = 0)
 
 /** What to show and do for a frame: the hint, whether to take a photo now, and how far along the capture is. */
 data class FrameOut(val hint: Hint, val shoot: Boolean, val progress: Progress, val blurPx: Double)
@@ -102,13 +106,14 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         if (cov != null) {
             if (fitNow == null) return FrameOut(Hint(Hint.Kind.NONE, "Line the mesh up with the rock first"), false, cov.progress(), 0.0)
             val inMesh = f.pose.into(fitNow)
+            cov.refFx = f.pose.lens.fx
             val progress = cov.progress()
             val target = cov.pick(inMesh, current)
             current = target?.target?.id
             val far = target?.let { inMesh.centre.distance(it.target.point) * cov.metresPerUnit }
             val blur = Quality.blurPx(f.gyroRadS, speed, f.exposureS, f.pose.lens.fx, far)
             if (target == null) return FrameOut(Hint(Hint.Kind.DONE, if (progress.total == 0) "Nothing to do here: widen what counts" else "Done: every part that counts is covered. Finish, or widen to the rest."), false, progress, blur)
-            var hint = cov.hint(inMesh, target)
+            var hint = cov.hint(inMesh, target, f.uprightDeg)
             val steady = blur <= STEADY_PX
             val worth = cov.gain(inMesh) > 0
             if (hint.kind == Hint.Kind.SHOOT && !steady) hint = hint.copy(text = "Hold still: the phone is moving")
