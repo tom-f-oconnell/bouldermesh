@@ -1080,7 +1080,23 @@ function resize(){
   const w=vEl.clientWidth, h=vEl.clientHeight;
   if (!w||!h || drawn === `${w}x${h}x${devicePixelRatio}`) return;
   drawn = `${w}x${h}x${devicePixelRatio}`;
-  renderer.setPixelRatio(devicePixelRatio); renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix();
+  drawRatio = devicePixelRatio; renderer.setPixelRatio(drawRatio); renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix();
+}
+// While the view moves on a machine that can't keep up (frames slower than SLOW_MS apart, on average), it's drawn at half
+// the screen's pixels, and at full again once it's been still for SETTLE_MS: the usual trade of busy 3D viewers, which keeps
+// zooming and turning a big mesh smooth on a slow laptop, at the cost of a softer picture only while it moves
+const SLOW_MS = 28, SETTLE_MS = 300;
+let drawRatio = devicePixelRatio, frameAt = 0, frameGap = 16, wasMoving = false, lastInput = 0;
+// moving: being dragged, scrolled or pinched, not the slow end of the damping after (long, on a slow machine)
+for (const ev of ['pointerdown', 'pointermove', 'wheel']) renderer.domElement.addEventListener(ev, e => { if (ev !== 'pointermove' || e.buttons || e.pointerType === 'touch') lastInput = performance.now(); }, { passive: true });
+function pickRatio(now){
+  const gap = now - frameAt, awake = now - lastMove < STILL_MS; frameAt = now;
+  if (awake && wasMoving) frameGap = .7 * frameGap + .3 * gap;     // between frames drawn one after another, not the still ones
+  wasMoving = awake;
+  const moving = now - lastInput < Math.min(1000, Math.max(SETTLE_MS, 2.5 * frameGap));    // a slow machine's frames can be further apart than that
+  const low = Math.max(.5, devicePixelRatio / 2);     // and once lowered, kept so till it's still, rather than flickering
+  const want = moving && (drawRatio === low || frameGap > SLOW_MS) ? low : devicePixelRatio;
+  if (want !== drawRatio) { drawRatio = want; renderer.setPixelRatio(want); renderer.setSize(vEl.clientWidth, vEl.clientHeight, false); }
 }
 new ResizeObserver(resize).observe(vEl); resize();
 // ---- swaying the view a few degrees around where it is, as if dragging it gently back and forth
@@ -1128,6 +1144,7 @@ renderer.setAnimationLoop(now => {
   if (near !== camera.near) { camera.near = near; camera.updateProjectionMatrix(); }
   syncBacks();
   updateXray();
+  pickRatio(now);
   renderer.render(scene, camera);
 });
 
