@@ -132,6 +132,12 @@
     text-align:center;align-content:center}
   #photopop .grid img{width:100%;height:100%;object-fit:cover;display:block}
   @media (max-width:860px){ #photopop{inset:0;width:auto;max-width:none;border-radius:0;border:0} }
+  /* first-visit tips: a bubble by the control it's about, which is ringed meanwhile */
+  #tip{position:fixed;z-index:2700;max-width:260px;background:var(--panel);color:var(--fg);border:1px solid var(--acc);border-radius:8px;
+    padding:10px 12px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.35)} #tip .row{gap:8px;margin-top:8px;justify-content:flex-end}
+  #tip::before{content:'';position:absolute;left:var(--ax,20px);width:10px;height:10px;background:var(--panel);border:1px solid var(--acc);transform:rotate(45deg)}
+  #tip.below::before{top:-6px;border-right:0;border-bottom:0} #tip.above::before{bottom:-6px;border-left:0;border-top:0}
+  .tip-target{outline:2px solid var(--acc);outline-offset:2px;border-radius:6px}
   .bpanel .brow{display:grid;grid-template-columns:12px 1fr auto;gap:6px;align-items:center;color:var(--mute)}
   .bpanel .brow i{width:8px;height:8px;border-radius:50%;background:var(--mute);display:inline-block}
   .bpanel .brow.in{color:var(--ok)} .bpanel .brow.in i{background:var(--ok)}
@@ -486,6 +492,7 @@
           tabs, or try <b>Random</b>, to open one in the viewer.</p>
         <p>In the viewer: drag to turn it, pinch or scroll to zoom, and use two fingers (or the right mouse button) to move it.
           <b>Nearby</b> and <b>Map</b> show what's around it.</p>
+        <p><button class="sm sec" id="tips-again">Show the tips again</button></p>
       </section>
       <section>
         <h2>Comments and bug reports</h2>
@@ -4578,6 +4585,47 @@ $('#vothers').onclick = async () => {
   const b = meshesById[shownMesh]?.boulder_link;
   if (b) try { pickBoulder(await api(`/api/links/b/${b.slug}`)); } catch (e) { toast(e.message, 6000); }
 };
+
+// ---- first-visit tips, one after another, each shown once per browser (bm_tips_v1: those seen; bump the version to show
+// changed tips again). A private window starts with none seen, so it sees them each time; storage that throws: the same
+const TIPS = [
+  { key: 'random', at: ['#vrandom', '#random'], text: '<b>Random</b> opens a mesh picked at random: a quick way to see what\'s here.' },
+  { key: 'settings', at: ['#vprefs', '#prefsbtn'], text: '<b>Settings</b> (⚙︎) change how a mesh looks: its colours, background and detail.' },
+];
+const TIPS_KEY = 'bm_tips_v1';
+const tipsSeen = () => { try { return JSON.parse(localStorage.getItem(TIPS_KEY) || '{}'); } catch { return {}; } };
+const tipSeen = (key, all = false) => {
+  try { localStorage.setItem(TIPS_KEY, JSON.stringify(all ? Object.fromEntries(TIPS.map(t => [t.key, 1])) : { ...tipsSeen(), [key]: 1 })); } catch {}
+};
+function showTips(){
+  document.querySelector('#tip')?.remove();
+  document.querySelectorAll('.tip-target').forEach(x => x.classList.remove('tip-target'));
+  const seen = tipsSeen();
+  const todo = TIPS.map(t => ({ ...t, el: t.at.map(q => document.querySelector(q)).find(x => x && x.getClientRects().length) }))
+    .filter(t => !seen[t.key] && t.el);
+  const t = todo[0];
+  if (!t) return;
+  const tip = document.createElement('div'); tip.id = 'tip'; tip.setAttribute('role', 'dialog');
+  tip.innerHTML = `<div>${t.text}</div><div class="row">${todo.length > 1 ? '<button class="sm sec skip">Skip tips</button>' : ''}<button class="sm next">${todo.length > 1 ? 'Next' : 'Got it'}</button></div>`;
+  document.body.append(tip);
+  t.el.classList.add('tip-target');
+  const place = () => {
+    const r = t.el.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+    const below = r.bottom + h + 14 < innerHeight;
+    const left = Math.max(8, Math.min(innerWidth - w - 8, r.left + r.width / 2 - w / 2));
+    tip.className = below ? 'below' : 'above';
+    tip.style.left = left + 'px';
+    tip.style.top = (below ? r.bottom + 10 : r.top - h - 10) + 'px';
+    tip.style.setProperty('--ax', Math.max(10, Math.min(w - 20, r.left + r.width / 2 - left - 5)) + 'px');
+  };
+  place();
+  addEventListener('resize', place);
+  const done = all => { tipSeen(t.key, all); removeEventListener('resize', place); tip.remove(); t.el.classList.remove('tip-target'); if (!all) setTimeout(showTips, 300); };
+  tip.querySelector('.next').onclick = () => done(false);
+  tip.querySelector('.skip')?.addEventListener('click', () => done(true));
+}
+setTimeout(showTips, 1500);     // once the page has settled
+$('#tips-again').onclick = () => { try { localStorage.removeItem(TIPS_KEY); } catch {} document.querySelector('.tabs button[data-tab]')?.click(); setTimeout(showTips, 300); };
 </script>
 </body>
 </html>
