@@ -20,7 +20,7 @@ it's turned down. Jobs are kept only in memory: a restart here
 ends them anyway, the climbs carry on after it as new jobs, and a machine still running an old one is told it's gone.
 
 A machine says which kinds of job it takes (worker script 13 on): one without a GPU only filters harvests' photos, by
-default, and is given a CPU image to run them in (cpu_image): the slim worker one (1.7 GB, x86-64 and ARM64) where built.
+default, and is given a CPU image to run them in (cpu_image): the slim worker one (1.9 GB, x86-64 and ARM64) where built.
 A machine whose owner's work keeps its GPU busy, or whose memory is short, says it's held back, and gets no job; one
 whose GPU hasn't memory free for the next job's (gpu_need_mb()) is held back too. Each machine's state as it asks
 (working, idle, held back, awaiting approval, or offline once it stops asking) is kept as it changes, in machine_states,
@@ -138,6 +138,7 @@ class Board:
         self.jobs: dict[str, Job] = {}
         self.cond = threading.Condition(threading.RLock())
         self.seen: dict[str, float] = {}
+        self.takes: dict[str, set[str] | None] = {}     # what each machine last said it takes (None: all), for able()
         shutil.rmtree(files, ignore_errors=True)    # jobs from before a restart, which ended with it
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with self.db() as con:
@@ -328,6 +329,12 @@ class Board:
         with self.cond:
             return any(t > cut for t in self.seen.values())
 
+    def able(self, task: str) -> int:
+        """How many machines in touch lately take this task, as they last said when asking for work."""
+        cut = time.time() - CONNECTED
+        with self.cond:
+            return sum(1 for i, t in self.seen.items() if t > cut and i in self.takes and (self.takes[i] is None or task in self.takes[i]))
+
     def can(self, version: int) -> bool:
         """Whether a machine whose script is this version or newer (as it last said, "script N") has been in touch lately."""
         cut = time.time() - CONNECTED
@@ -375,6 +382,8 @@ class Board:
             return {"wait": 300, "why": "waiting for approval by whoever runs this site", "provisional": True}
         tasks = client.get("tasks")     # what it takes (worker script 13 on): all, before; without a GPU, filtering alone
         tasks = {str(t) for t in tasks} if isinstance(tasks, list) else None
+        with self.cond:     # a provisional machine takes only meshing, if anything
+            self.takes[m["id"]] = ({"reconstruct"} & (tasks or {"reconstruct"})) if waiting else tasks
         if waiting and tasks is not None and "reconstruct" not in tasks:   # only meshing waits for approval, held
             self._state(m, "awaiting approval")
             return {"wait": 300, "why": "waiting for approval by whoever runs this site: only approved machines filter photos, "

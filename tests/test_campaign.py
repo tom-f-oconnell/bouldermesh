@@ -1638,7 +1638,7 @@ assert server.beta_findable() == ["aaaaaaaaaaa2", "aaaaaaaaaaa1"], "newest first
 assert [server.queue_beta(m) for m in server.beta_findable()] == [True, True]
 assert server.queue_beta("aaaaaaaaaaa3", ahead=True) and not server.queue_beta("aaaaaaaaaaa3"), "once"
 assert server.beta_queue() == ["aaaaaaaaaaa3", "aaaaaaaaaaa2", "aaaaaaaaaaa1"], "the one asked for on its own goes first"
-assert server.jobs_state()["beta"] == {"running": None, "queued": 3, "youtube": None, "at": None, "mid": None}
+assert server.jobs_state()["beta"] == {"running": None, "queued": 3, "youtube": None, "at": None, "mid": None, "runs": []}
 refusal = {"since": 0, "until": time.time() + 3600, "level": 0, "error": "not a bot"}
 
 
@@ -1664,6 +1664,66 @@ server.q("UPDATE meshes SET old_data='newer' WHERE id='bbbbbbbbbbb3'", write=Tru
 assert server.beta_queue() == [] and server.beta_mod.load(server.MESHES / "bbbbbbbbbbb3")["status"] == "stopped", "dropped once old"
 server.beta_mod.videos, server.beta_mod.find = beta_videos, find
 print("beta queue OK")
+
+# --- several beta workers, as many as machines take beta (up to beta.parallel): no mesh taken twice, each with its bar,
+# and all stopped at once
+import threading  # noqa: E402
+
+fresh()
+for i in range(4):
+    mid = f"cccccccccc{i:02d}"
+    server.q("INSERT INTO meshes(id,name,filename,source,created,rules) VALUES(?,?,?,?,?,?)", mid, f"par{i}", "mesh.glb", f"project:{mid}", i,
+             server.MESH_RULES, write=True)
+    (server.MESHES / mid).mkdir(parents=True, exist_ok=True)
+    assert server.queue_beta(mid)
+par_saved = (server.offloading, server.MACHINES.able, server.run_beta, server.requeue_waiting_scale)
+taken, release = [], threading.Event()
+
+
+def slow_beta(mid):
+    taken.append(mid)
+    at = server.beta_mod.progress_at(0, 2, (5, 10), time.time(), 0.0)
+    server.beta_mod.save(server.MESHES / mid, {**server.beta_mod.load(server.MESHES / mid), "status": "running", "at": at})
+    try:
+        while not release.wait(0.02):
+            server.jobctl.check()
+    except server.Cancelled:
+        server.beta_mod.save(server.MESHES / mid, {**server.beta_mod.load(server.MESHES / mid), "status": "stopped", "at": None})
+
+
+server.offloading, server.run_beta, server.requeue_waiting_scale = lambda: True, slow_beta, lambda: None
+server.MACHINES.able = lambda task: 0
+assert server.beta_slots() == 1, "at least one, with no machine there"
+server.MACHINES.able = lambda task: 5
+server.settings().update({"beta.parallel": 2})
+try:
+    assert server.beta_slots() == 2, "no more than beta.parallel"
+    server.MACHINES.able = lambda task: 2 if task == "beta" else 0
+    server._beta_spawn()
+    server._beta_spawn()    # twice: no more workers than slots
+    server._beta_wake.set()
+    deadline = time.time() + 10
+    while len(taken) < 2 and time.time() < deadline:
+        time.sleep(0.02)
+    time.sleep(0.3)
+    assert len(taken) == 2 and len(set(taken)) == 2 and server._beta_started == 2, taken
+    assert sorted(taken) == ["cccccccccc00", "cccccccccc01"], "the first two in the queue"
+    st = server.jobs_state()["beta"]
+    assert sorted(r["mid"] for r in st["runs"]) == sorted(taken) and st["queued"] == 2, st
+    assert all(r["at"]["frac"] == 0.25 and r["name"].startswith("par") for r in st["runs"]), "each running mesh has its bar"
+    assert st["running"] == st["runs"][0]["name"] and st["at"] == st["runs"][0]["at"], "as before, the first of them"
+    assert server.stop_beta() == 2, "the two still queued"
+    deadline = time.time() + 10
+    while server._beta_now and time.time() < deadline:
+        time.sleep(0.02)
+    assert not server._beta_now and {server.beta_mod.load(server.MESHES / m)["status"] for m in taken} == {"stopped"}, "both stopped"
+    assert server.jobs_state()["beta"]["runs"] == [] and len(taken) == 2, "and nothing more taken"
+finally:
+    release.set()
+    server.beta_slots = lambda: 0       # the workers stay, idle, out of the way of the tests below
+    server.settings().update({"beta.parallel": 3})
+    server.offloading, server.MACHINES.able, server.run_beta, server.requeue_waiting_scale = par_saved
+print("parallel beta OK")
 
 # --- finding beta and size on machines that connect here, when this server meshes nothing itself ------------------------
 import shutil  # noqa: E402

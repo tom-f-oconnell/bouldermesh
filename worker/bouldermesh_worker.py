@@ -23,11 +23,11 @@ Stop it with Ctrl-C: the climb it was on goes back to the server, for this or an
 It keeps a record of its time in usage.jsonl in ~/.bouldermesh-worker (each job, and each change between working, waiting
 for climbs and held back), and says once an hour how the hour went.
 
-A machine without an NVIDIA GPU only filters harvests' photos by default (--tasks), which needs no GPU, a few GB of
-memory and disk, and a slim CPU image (1.7 GB, for x86-64 and ARM64): meshing on a CPU alone takes hours a climb.
+A machine without an NVIDIA GPU only filters harvests' photos and finds beta by default (--tasks), which need no GPU, a
+few GB of memory and disk, and a slim CPU image (1.9 GB, for x86-64 and ARM64): meshing on a CPU alone takes hours a climb.
 
 It takes no climbs while others keep the GPU busy (over 50% as a median over 3 minutes, until it's quiet again for 5;
---busy-gpu-util), or while less than 24 GB of memory is free (--need-ram-gb; 4 GB for filtering alone), and only those whose GPU memory fits in
+--busy-gpu-util), or while less than 24 GB of memory is free (--need-ram-gb; 4 GB for filtering and beta alone), and only those whose GPU memory fits in
 what's free; it tells the server why, which keeps a record of how often each machine works, waits or is held back. A
 climb it has started, it finishes. Its CPU use is held down by --nice and --cpus.
 
@@ -74,12 +74,14 @@ from pathlib import Path
 # 11: --setup installs Docker and NVIDIA's container toolkit where they're missing; says what's wrong with Docker at once
 # 12: filters a harvest's photos for those of other rocks (remote_job.py --task filter), sent its photos, the anchors from
 #     other harvests (more/) and what the server's cache knows of them (cache.sqlite)
-VERSION = 13
+# 13: --tasks, and without a GPU, filtering alone by default
+# 14: without a GPU, finds beta too (the pose model runs on the CPU), in the slim image
+VERSION = 14
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
                                                     # filtering a harvest's photos
-CPU_TASKS = ("filter",)     # what a machine without a GPU takes, unless --tasks says otherwise
+CPU_TASKS = ("filter", "beta")     # what a machine without a GPU takes, unless --tasks says otherwise
 INPUTS = ("photos", "masks", "mesh", "videos", "more", "cache.sqlite", "task.json")   # what a job's folder may hold
 SEND_EVERY = 5              # seconds between reports of a job's log, which also tell the server it's alive
 JOB_ID = re.compile(r"[0-9a-f]{12}")
@@ -438,7 +440,7 @@ def setup() -> int:
     if sys.platform == "darwin":
         print("--setup installs only on Debian and Ubuntu. On a Mac, install Docker Desktop "
               "(https://docs.docker.com/desktop/setup/install/mac-install/), OrbStack or Colima, start it, and give it at least "
-              "4 GB of memory (Docker Desktop: Settings, Resources). A Mac only filters photos: Docker can't use its GPU.")
+              "4 GB of memory (Docker Desktop: Settings, Resources). A Mac only filters photos and finds beta: Docker can't use its GPU.")
         return 1
     if not st["linux"] or not st["debian"]:
         print(f"--setup installs only on Debian, Ubuntu and systems based on them. Here, install them yourself: {INSTALL_DOCS}")

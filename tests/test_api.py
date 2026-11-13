@@ -253,7 +253,7 @@ def run(B: str, tmp: Path) -> None:
     assert m["marked"] == 0, m["marked"]
     st, jb = req(B, "GET", "/api/jobs")
     assert st == 200 and set(jb) == {"running", "queued", "area_climbs", "beta", "stopping"} and jb["stopping"] is None, jb
-    assert jb["beta"] == {"running": None, "queued": 0, "youtube": None, "at": None, "mid": None}, jb["beta"]
+    assert jb["beta"] == {"running": None, "queued": 0, "youtube": None, "at": None, "mid": None, "runs": []}, jb["beta"]
     st, r = req(B, "POST", "/api/meshes/beta-all")
     assert (st, r) == (202, {"queued": 0}) or st == 501, (st, r)   # a demo mesh keeps no cameras; 501 without the pose model
     assert req(B, "POST", "/api/meshes/beta-stop") == (200, {"unqueued": 0})

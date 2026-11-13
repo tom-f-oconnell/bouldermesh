@@ -434,7 +434,10 @@ meshes have no video frames to look in.
 
 *Find beta in all N not done* queues every mesh with video frames whose beta hasn't been found, and *Stop
 finding beta* unqueues them. The one being found has a bar, as the Areas tab's do: how far through its videos and the
-frames of the one it's on, and its time going and left, whether it runs here or on a machine that connects here. Beta is found one mesh at a time, on a thread of its own at the lowest CPU
+frames of the one it's on, and its time going and left, whether it runs here or on a machine that connects here. Beta is found one mesh at a time here, and on machines that
+connect here as many at once as there are machines taking it (with or without a GPU: the pose model runs on the CPU,
+about 1.4 s a frame on 4 cores, so 5 to 10 minutes a video), up to *Meshes to find beta in at once* on the admin page
+(3), each with its own bar. Each runs on a thread of its own at the lowest CPU
 priority, so it never holds up meshing, and a restart only pauses it. 148 meshes had 364 videos to look
 at (Nov 2026): about 10 hours on the CPU, more while meshing runs alongside.
 
@@ -660,15 +663,15 @@ The image isn't built there: compiling COLMAP wants cores and memory a small ser
 one built elsewhere. On a machine with the meshes to show:
 
     deploy/build.sh                          # from the commit checked out: bouldermesh:public (2.5 GB), bouldermesh:gpu (10.4 GB),
-                                             # and <registry>:<commit>-cpu (1.7 GB), for machines without a GPU
+                                             # and <registry>:<commit>-cpu (1.9 GB), for machines without a GPU
     deploy/ship.sh you@boulders.example.com bouldermesh:public   # pushes both, the server pulls its own; meshes, database
 
 The server's image has torch's CPU build, as it meshes nothing itself. The GPU one, with the CUDA libraries VGGT needs, is
 for the machines that mesh (see "Running reconstructions elsewhere"). The server pulls its image from the
 registry, so a ship moves only the layers that changed, usually a few MB. Its earlier builds' images go once nothing runs
 them. `NO_PUSH=1` sends the image whole instead. `GPU=0 deploy/build.sh` builds only the server's and the CPU workers'.
-Those, from `deploy/worker-cpu.Dockerfile`, hold only what filtering photos needs (Python, OpenCV, CLIP on torch's CPU
-build), for x86-64 and, where Docker here can run ARM64 images, ARM64 too, for Apple Silicon Macs, under one name;
+Those, from `deploy/worker-cpu.Dockerfile`, hold only what filtering photos and finding beta need (Python, OpenCV, CLIP on torch's CPU
+build, ffmpeg, and rtmlib's pose model on onnxruntime, which downloads 150 MB the first time), for x86-64 and, where Docker here can run ARM64 images, ARM64 too, for Apple Silicon Macs, under one name;
 `CPU=0` skips them. Building the ARM64 half on an x86-64 machine needs QEMU registered with the kernel, once per boot:
 `docker run --privileged --rm tonistiigi/binfmt --install arm64` (build.sh says so when it's missing, and builds x86-64 only).
 
@@ -944,9 +947,9 @@ machine. *Run more on* adds up to that many machines (2 by default):
   and SSM's GetParameter. *Test the connection* checks them without starting anything.
 - **Machines that connect here for work**: for any this server can't reach, such as one behind a lab's firewall. On the
   machine, which needs Python 3.9, Docker you may use, and NVIDIA's container toolkit for the GPU, run the commands
-  below. One without an NVIDIA GPU only filters harvests' photos (`--tasks`, which also picks what one with a GPU
-  takes), in a slim CPU image (1.7 GB, for x86-64 and ARM64), needing about 4 GB of memory free; meshing on a CPU alone would take
-  hours a climb. Filtering goes only to approved machines, as what it keeps is what's meshed.
+  below. One without an NVIDIA GPU only filters harvests' photos and finds beta (`--tasks`, which also picks what one
+  with a GPU takes), in a slim CPU image (1.9 GB, for x86-64 and ARM64), needing about 4 GB of memory free; meshing on a CPU alone would take
+  hours a climb. Filtering and beta go only to approved machines, as what filtering keeps is what's meshed, and beta is shown to all.
 
       curl -O https://<site>/worker/bouldermesh_worker.py      # or worker/bouldermesh_worker.py in this repository
       python3 bouldermesh_worker.py --setup                    # Debian or Ubuntu: Docker and NVIDIA's toolkit, if missing

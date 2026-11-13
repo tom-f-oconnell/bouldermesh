@@ -3570,13 +3570,14 @@ $('#campaigns').addEventListener('click', ev => {
 });
 let campaignTimer = null;
 // while the server waits for jobs to finish before it restarts, say so, as nothing new starts meanwhile
-let betaJobs = null;   // /api/jobs' beta: {running, mid, at, queued, youtube}
+let betaJobs = null;   // /api/jobs' beta: {running, mid, at, runs: [{mid, name, at}], queued, youtube}
+const betaMids = b => (b?.runs || []).map(r => r.mid).join(' ');
 async function showStopping(){
   const jobs = await api('/api/jobs').catch(() => null), s = jobs?.stopping, el = $('#stopping');
   if (jobs && JSON.stringify(jobs.beta) !== JSON.stringify(betaJobs)) {
-    const was = betaJobs?.mid;
+    const was = betaMids(betaJobs);
     betaJobs = jobs.beta; renderBetaAll();
-    if (was !== betaJobs.mid && $('#pane-beta').classList.contains('on')) refreshMeshes();  // one started or finished: its card says so
+    if (was !== betaMids(betaJobs) && $('#pane-beta').classList.contains('on')) refreshMeshes();  // one started or finished: its card says so
     else betaBars();
   }
   el.style.display = s ? '' : 'none';
@@ -4297,8 +4298,8 @@ function betaLine(m){
   if (!m.cameras_kept) return 'rebuild it to find beta in its videos: where its photos were placed wasn\'t kept';
   return n ? `beta to find in ${videosHtml(m, n)}` : 'no video frames placed in it';
 }
-// how far finding a mesh's beta is (beta.progress_at()): the running one's from /api/jobs (followed every 5 s), else its card's
-const betaAt = m => m.beta?.status !== 'running' ? null : betaJobs?.mid === m.id && betaJobs.at ? betaJobs.at : m.beta.at;
+// how far finding a mesh's beta is (beta.progress_at()): a running one's from /api/jobs (followed every 5 s), else its card's
+const betaAt = m => m.beta?.status !== 'running' ? null : (betaJobs?.runs || []).find(r => r.mid === m.id)?.at || m.beta.at;
 // its bar, as the Areas tab's are: percent, the video it's on and its frame, and the time going and left, by its pace
 // since it started (videos done before a restart don't count), with a time bar once it's been going a while
 function betaBarHtml(at){
@@ -4345,10 +4346,10 @@ function renderBetaAll(){
   if (!el || !$('#pane-beta').classList.contains('on')) return;
   const todo = (meshesCache || []).filter(m => !m.replaced_by && m.source.startsWith('project:') && m.cameras_kept && videoCount(m)
     && !['done', 'queued', 'running'].includes(m.beta?.status)).length;
-  const b = betaJobs || {}, busy = b.running || b.queued;
+  const b = betaJobs || {}, busy = b.running || b.queued, runs = b.runs || [];
   el.innerHTML = (todo ? `<button class="sm sec findall" title="Queues every mesh with frames of videos whose beta hasn't been found. They're done one at a time, alongside meshing, at the lowest priority: a few minutes a video.">Find beta in all ${todo} not done</button>` : '')
-    + (busy ? `<button class="sm sec stopall">Stop finding beta</button><small class="grow">${b.running ? `finding it in ${esc(b.running)}; ` : ''}${b.queued} queued</small>` : '')
-    + (b.running && b.at ? `<div style="width:100%">${betaBarHtml(b.at)}</div>` : '')
+    + (busy ? `<button class="sm sec stopall">Stop finding beta</button><small class="grow">${runs.length ? `finding it in ${esc(runs.map(r => r.name).join(', '))}; ` : ''}${b.queued} queued</small>` : '')
+    + runs.filter(r => r.at).map(r => `<div style="width:100%" class="brun">${runs.length > 1 ? `<small>${esc(r.name)}</small>` : ''}${betaBarHtml(r.at)}</div>`).join('')
     + (b.youtube ? `<div class="meta bad" style="width:100%">YouTube is refusing this server's downloads (its bot check) until about ${hhmm(b.youtube.until)}: finding beta waits until then, and harvests meanwhile skip videos.</div>` : '');
   el.querySelector('.findall')?.addEventListener('click', async () => {
     try { const r = await api('/api/meshes/beta-all', { method: 'POST' }); toast(`Queued ${r.queued} mesh${r.queued === 1 ? '' : 'es'} to find beta in`, 5000); }

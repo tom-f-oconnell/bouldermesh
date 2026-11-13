@@ -733,7 +733,8 @@ def script_fetch(handler: BaseHTTPRequestHandler) -> dict:
 
 # What a computer without an NVIDIA GPU does for the site (the worker script's CPU_TASKS, by remote_job.py's --task):
 # the volunteer page's Compute helper says each, so keep it in step with them (tests/test_volunteers.py checks).
-HELPER_JOBS = {"filter": "sorts each climb's photos from the web into those that show its boulder and those that don't"}
+HELPER_JOBS = {"filter": "sorts each climb's photos from the web into those that show its boulder and those that don't",
+               "beta": "finds the holds climbers use in each boulder's videos, from where their hands and feet go"}
 
 
 def helper_jobs_text() -> str:
@@ -876,7 +877,7 @@ loginctl enable-linger "$USER"</pre><button class="copy" title="Copy" aria-label
 <section id="helper">
 <h2>Help as a compute helper</h2>
 <p>The same script as for meshes, on a computer without an NVIDIA GPU, does the work for meshes that
-needs only a processor: it {helper_list}. It runs in this site's small Docker image for it (about 1.7 GB, for Intel and AMD
+needs only a processor: it {helper_list}. It runs in this site's small Docker image for it (about 1.9 GB, for Intel and AMD
 processors and for Apple Silicon), one job at a time, each a few minutes. Only your computer connects out, over HTTPS;
 nothing needs to reach it. Ctrl-C stops it, and the job goes to another computer. It takes no jobs until whoever runs
 this site approves it, as what it keeps is what gets meshed.</p>

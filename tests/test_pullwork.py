@@ -778,6 +778,17 @@ assert r["provisional"] and "only approved machines filter photos" in r["why"], 
 for j in (mesh_job, filter_job):
     board.jobs.pop(j.id, None)
     j.input.unlink(missing_ok=True)
+# from script 14 on, one without a GPU finds beta too, in the CPU image; a provisional one doesn't count as able to
+beta_job = board._new_job("beta", {"mesh": job / "photos"}, {}, "cpu beta", image[0] + "-gpu")
+asks14 = {**asks, "client": "cpu-box: docker 29, script 14", "tasks": ["filter", "beta"]}
+beta_box = board.add("cpu-box-3")
+able_before = board.able("beta"), board.able("filter")
+r = board.work(board.machine(beta_box["token"]), "10.0.0.13", asks14)
+assert r["job"]["id"] == beta_job.id and r["job"]["image"] == image[0], r
+assert (board.able("beta"), board.able("filter")) == (able_before[0] + 1, able_before[1] + 1), "counted as able to"
+assert board.able("reconstruct") < board.able("filter"), "the CPU boxes don't count for meshing"
+board.jobs.pop(beta_job.id, None)
+beta_job.input.unlink(missing_ok=True)
 board.cpu_image = lambda name: name
 print("machines without a GPU OK")
 

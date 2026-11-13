@@ -117,6 +117,8 @@
       <small>(its script version 12 or newer; it takes them before meshing, and they're filtered here, one at a time, if none takes one within 3 minutes, as when the only machine is meshing. An earlier run's verdicts stand either way: a boulder pooled again only judges what's new)</small></label>
     <label class="choice"><input type="checkbox" id="beta-auto"> Find beta in each new mesh with video frames placed in it
       <small>(while its videos are still here; on a machine, after meshing)</small></label>
+    <div class="grid"><div><label>Meshes to find beta in at once, on as many machines that take it <small>(one at a time on this server)</small></label>
+      <input type="number" id="beta-parallel" min="1" max="16"></div></div>
     <label class="choice"><input type="checkbox" id="skyline-auto"> Work out which way each mesh faces from the skyline in its photos, where distant mountains show
       <small>(to about 10°, as a start for turning it by hand in Nearby; in the background, once its size is known)</small></label>
     <div class="note" id="skyline-note"></div>
@@ -480,6 +482,7 @@ function render(s){
   $('#remesh-untied').disabled = !s.untied_meshes;
   $('#old-meshes').innerHTML = oldMeshesNote(s.old_meshes);
   $('#rest-auto').checked = v['boulders.rest_auto'];
+  if (document.activeElement !== $('#beta-parallel')) $('#beta-parallel').value = v['beta.parallel'];
   if (document.activeElement !== $('#placed-percent')) $('#placed-percent').value = v['boulders.placed_percent'];
   $('#placed-note').innerHTML = placedNote(s.boulder_shares || [], v['boulders.placed_percent']);
   const u = s.usage || {}, gb = b => (b / 2 ** 30).toFixed(1) + ' GB';
@@ -752,6 +755,7 @@ $('#old-meshes').onclick = async e => {
 $('#remesh-untied').onclick = async () => { try { msg((await call('/api/admin/actions/remesh-untied', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#rest-all').onclick = async () => { try { msg((await call('/api/admin/actions/rest', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#map-km').onchange = () => save({ 'site.map_km': +$('#map-km').value });
+$('#beta-parallel').onchange = () => save({ 'beta.parallel': +$('#beta-parallel').value });
 $('#placed-percent').onchange = () => save({ 'boulders.placed_percent': +$('#placed-percent').value });
 $('#rest-auto').onchange = () => save({ 'boulders.rest_auto': $('#rest-auto').checked });
 $('#filter-machines').onchange = () => save({ 'relevance.machines': $('#filter-machines').checked });

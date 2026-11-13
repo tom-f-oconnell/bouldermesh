@@ -72,6 +72,8 @@ DEFAULTS = {
     # find beta in each new mesh with video frames placed in it, while its videos are still in the cache; and delete
     # cached videos none of whose frames is placed in any mesh, once the climbs that used them are settled
     "beta.auto": True,
+    # at most this many meshes' beta found at once, on as many machines that connect here and take beta (one, here)
+    "beta.parallel": 3,
     # work out which way each mesh faces from the skyline in its photos (skyline.py), where distant mountains show;
     # elsewhere it stops at its place's horizon, in about a second
     "facing.skyline": True,
@@ -108,7 +110,7 @@ DEFAULTS = {
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
            "areas.meshes": ("boulders", "climbs"), "relevance.matcher": ("brute", "flann"), "leaderboard.names": ("new", "all", "none")}
-LIMITS = {"site.map_km": (0.05, 2000), "boulders.placed_percent": (0, 100), "viewer.preview_faces": (0, 5_000_000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.processing_cores": (1, os.cpu_count() or 1), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
+LIMITS = {"site.map_km": (0.05, 2000), "boulders.placed_percent": (0, 100), "beta.parallel": (1, 16), "viewer.preview_faces": (0, 5_000_000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.processing_cores": (1, os.cpu_count() or 1), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 200),
           "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 200),
           "registration.per_address_day": (1, 100), "registration.max_waiting": (1, 1000)}

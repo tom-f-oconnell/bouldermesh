@@ -5639,11 +5639,34 @@ def run_beta(mid: str) -> None:
         beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": f"failed: {type(e).__name__}: {e}", "progress": None, "at": None})
 
 
-# ------------------------------------------------------------------ finding beta, on a thread of its own
+# ------------------------------------------------------------------ finding beta, on threads of its own
 BETA_NICE = 19
-_beta_control = JobControl()
-_beta_wake = threading.Event()
-_beta_now: dict | None = None    # the mesh it's finding beta in: {mid, started, thread}
+
+
+class _Wake:
+    """Wakes every beta worker at once: each waits on an event of its own, which another's clear() doesn't touch."""
+
+    def __init__(self):
+        self._events: list[threading.Event] = []
+        self._lock = threading.Lock()
+
+    def event(self) -> threading.Event:
+        e = threading.Event()
+        with self._lock:
+            self._events.append(e)
+        return e
+
+    def set(self) -> None:
+        with self._lock:
+            for e in self._events:
+                e.set()
+
+
+_beta_wake = _Wake()
+_beta_lock = threading.Lock()
+_beta_controls: list[JobControl] = []     # each beta worker's, for stop_beta()
+_beta_started = 0       # beta workers started (_beta_spawn())
+_beta_now: dict[str, dict] = {}     # the meshes they're finding beta in: mid -> {mid, started, thread}
 
 
 def queue_beta(mid: str, ahead: bool = False) -> bool:
@@ -5705,41 +5728,77 @@ def stop_beta() -> int:
     for mid in queued:
         rec = beta_mod.load(MESHES / mid) or {}
         beta_mod.save(MESHES / mid, {**rec, "status": "stopped", "progress": None, "at": None, "waiting": None, "resume": None})
-    _beta_control.stop()
+    with _beta_lock:
+        controls = list(_beta_controls)
+    for c in controls:
+        c.stop()
     return len(queued)
 
 
-def beta_worker() -> None:
-    """Finds beta in queued meshes, one at a time, alongside the workers' meshing. It's on its own thread so that
-    it never holds up an area, at the lowest CPU priority (the pose model's threads inherit it), as it can make do
-    with what meshing leaves. While YouTube is refusing downloads, it takes only meshes whose videos are all in the
-    cache, as volunteers fetched them (beta_ready())."""
-    global _beta_now
+def beta_slots() -> int:
+    """How many meshes' beta may be found at once: one here, or, offloading, one for each connected machine that takes
+    beta, up to the beta.parallel setting, and at least one."""
+    if not offloading():
+        return 1
+    cap = max(1, int(settings().get("beta.parallel") or 1))
+    return max(1, min(cap, MACHINES.able("beta")))
+
+
+def _beta_take() -> str | None:
+    """The next queued mesh ready to find beta in that no other beta worker has, now this one's (in _beta_now)."""
+    with _beta_lock:
+        mid = next((m for m in beta_queue() if m not in _beta_now and beta_ready(m) and not mesh_old(m)), None)
+        if mid:
+            _beta_now[mid] = {"mid": mid, "started": time.time(), "thread": threading.get_ident()}
+        return mid
+
+
+def _beta_spawn() -> None:
+    """Start beta workers up to beta_slots(); those beyond it, once started, wait without taking any."""
+    global _beta_started
+    want = beta_slots()
+    with _beta_lock:
+        have, _beta_started = _beta_started, max(_beta_started, want)
+    for slot in range(have, want):
+        threading.Thread(target=beta_worker, args=(slot,), daemon=True, name=f"beta-{slot}").start()
+
+
+def beta_worker(slot: int = 0) -> None:
+    """Finds beta in queued meshes, one at a time, alongside the workers' meshing; slot 0 also starts the others
+    (_beta_spawn()), and those past beta_slots() take none. Each is on its own thread so that it never holds up an
+    area, at the lowest CPU priority (the pose model's threads inherit it), as it can make do with what meshing leaves.
+    While YouTube is refusing downloads, they take only meshes whose videos are all in the cache, as volunteers fetched
+    them (beta_ready())."""
     os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
-    use_control(_beta_control)
+    control, wake = JobControl(), _beta_wake.event()
+    with _beta_lock:
+        _beta_controls.append(control)
+    use_control(control)
     while True:
-        _beta_wake.wait(timeout=60)
-        _beta_wake.clear()
+        wake.wait(timeout=60)
+        wake.clear()
         use_processing_cores()
-        try:
-            requeue_waiting_scale()
-        except Exception as e:  # never let the thread die
-            print(f"scale requeue error: {e!r}", flush=True)
-        while not _stopping and not _draining:
-            queued = [mid for mid in beta_queue() if beta_ready(mid)]
-            if not queued:
+        if slot == 0:
+            try:
+                requeue_waiting_scale()
+                _beta_spawn()
+            except Exception as e:  # never let the thread die
+                print(f"scale requeue error: {e!r}", flush=True)
+        while not _stopping and not _draining and slot < beta_slots():
+            mid = _beta_take()
+            if not mid:
                 break
-            if mesh_old(queued[0]):     # became old while queued
-                beta_queue()
-                continue
-            _beta_now = {"mid": queued[0], "started": time.time(), "thread": threading.get_ident()}
+            if slot == 0:
+                _beta_spawn()   # others for what's left in the queue, if machines can take more
+                _beta_wake.set()
             jobctl.begin(low_priority=True)
             try:
-                run_beta(queued[0])
+                run_beta(mid)
             except Exception as e:  # never let the thread die
-                print(f"beta error on {queued[0]}: {e!r}", flush=True)
+                print(f"beta error on {mid}: {e!r}", flush=True)
             finally:
-                _beta_now = None
+                with _beta_lock:
+                    _beta_now.pop(mid, None)
 
 
 _frames_wake = threading.Event()
@@ -6755,8 +6814,11 @@ def jobs_state(board: list[dict] | None = None) -> dict:
         waiting = list(jobs.queue)
     runs = [w.job for w in list(_workers)]
     by_thread = {j["owner"]: j for j in (MACHINES.running() if board is None else board)}
-    bn = _beta_now
-    now = bn and q("SELECT name FROM meshes WHERE id=?", bn["mid"], one=True)
+    with _beta_lock:
+        betas = sorted(_beta_now.values(), key=lambda b: b["started"])
+    names = {mid: (q("SELECT name FROM meshes WHERE id=?", mid, one=True) or {}).get("name") or mid for mid in (b["mid"] for b in betas)}
+    running_beta = [{"mid": b["mid"], "name": names[b["mid"]], "at": (beta_mod.load(MESHES / b["mid"]) or {}).get("at")} for b in betas]
+    first = running_beta[0] if running_beta else {}
 
     def running(r: dict) -> dict:
         mj = by_thread.get(r.get("thread"))
@@ -6764,8 +6826,9 @@ def jobs_state(board: list[dict] | None = None) -> dict:
     return {"running": [running(r) for r in runs if r], "queued": [job_info(j) for j in waiting],
             "area_climbs": q("SELECT c.name AS area, i.name, i.project_id FROM campaign_items i JOIN campaigns c ON c.id=i.campaign_id "
                              "WHERE i.status='running' ORDER BY i.updated"),
-            "beta": {"running": now["name"] if now else None, "mid": bn["mid"] if now else None, "queued": len(beta_queue()),
-                     "youtube": youtube_mod.refused(), "at": (beta_mod.load(MESHES / bn["mid"]) or {}).get("at") if now else None},
+            # running, mid and at: the first of those running (as before there could be several), runs all of them
+            "beta": {"running": first.get("name"), "mid": first.get("mid"), "at": first.get("at"), "runs": running_beta,
+                     "queued": len([m for m in beta_queue() if m not in names]), "youtube": youtube_mod.refused()},
             "stopping": _stopping}
 
 
@@ -6841,10 +6904,17 @@ def deploy_state() -> dict:
     board = MACHINES.running()
     asked = jobs_state(board)["running"]
     for_job = {j["machine_job"]["id"]: j for j in asked if j["machine_job"]}    # a machine's job -> the job here waiting for it
-    beta_name = beta_job = None
-    if _beta_now:
-        beta_name = (q("SELECT name FROM meshes WHERE id=?", _beta_now["mid"], one=True) or {}).get("name", _beta_now["mid"])
-        beta_job = next((j["id"] for j in board if j["owner"] == _beta_now.get("thread")), None)
+    with _beta_lock:
+        betas = list(_beta_now.values())
+    beta_names = {}     # a machine's job -> the name of the mesh whose beta it finds
+    beta_here = []      # those found here, not on a machine
+    for b in betas:
+        name = (q("SELECT name FROM meshes WHERE id=?", b["mid"], one=True) or {}).get("name", b["mid"])
+        job = next((j["id"] for j in board if j["owner"] == b.get("thread")), None)
+        if job:
+            beta_names[job] = name
+        else:
+            beta_here.append((name, b))
     for j in board:
         elapsed = now - (j["taken"] or j["created"])
         typical = MACHINES.typical(j["task"])
@@ -6861,7 +6931,7 @@ def deploy_state() -> dict:
         if mine and mine["type"] != "scale":
             lost = "interrupted: runs again when asked again"
         items.append({"what": f"{task} on {j['machine']}" if j["state"] == "running" else f"{task}, waiting for a machine",
-                      "name": mine["name"] if mine else beta_name if j["id"] == beta_job else project["name"] if project else j["label"],
+                      "name": mine["name"] if mine else beta_names[j["id"]] if j["id"] in beta_names else project["name"] if project else j["label"],
                       "kind": KINDS.get(j["task"], j["task"]), "project_id": j["label"] if project else (mine or {}).get("project_id"),
                       "costly": j["state"] == "running", "elapsed": round(elapsed),
                       "eta": round(eta) if eta is not None else None, "lost": lost})
@@ -6886,9 +6956,9 @@ def deploy_state() -> dict:
                       "kind": KINDS.get(j["type"], j["type"]), "project_id": j.get("project_id"),
                       "elapsed": round(now - j.get("started", now)), "eta": j.get("eta"),
                       "lost": "starts again after" if sizing else "interrupted: runs again when asked again"})
-    if _beta_now and not beta_job:
+    for beta_name, b in beta_here:
         items.append({"what": "finding beta here", "name": beta_name, "costly": True, "kind": "beta", "project_id": None,
-                      "elapsed": round(now - _beta_now["started"]),
+                      "elapsed": round(now - b["started"]),
                       "eta": None, "lost": "starts again after"})
     for j in jobs_state(board)["queued"]:     # nothing done yet: a project's is queued again as the server starts
         items.append({"what": f"{j['type']}, queued", "name": j["name"], "costly": False, "elapsed": None, "eta": None,
@@ -9773,7 +9843,7 @@ def main() -> None:
         beta_mod.carry_on(d)        # finding beta and size carry on after a restart, like areas
         if scale_mod.carry_on(d):
             queue_job({"type": "scale", "mid": d.name})
-    threading.Thread(target=beta_worker, daemon=True).start()
+    _beta_spawn()
     threading.Thread(target=watch_usage, daemon=True).start()
     threading.Thread(target=snapshot_worker, daemon=True).start()
     threading.Thread(target=drain_watch, daemon=True, name="drain-watch").start()
