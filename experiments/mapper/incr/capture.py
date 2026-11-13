@@ -148,8 +148,8 @@ def readings(photo: Path) -> dict | None:
 
 def record(path: Path) -> dict:
     r = json.loads(Path(path).read_text())
-    if r.get("v") not in (1, 2):
-        raise ValueError(f"a capture record of version {r.get('v')}: this reads 1 and 2")
+    if r.get("v") not in (1, 2, 3):
+        raise ValueError(f"a capture record of version {r.get('v')}: this reads 1 to 3")
     return r
 
 
@@ -258,3 +258,11 @@ def relevel(lv: dict | None, least: int = 5, max_spread_deg: float = 3.0, min_ti
         return np.diag([1.0, -1.0, -1.0])
     K = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
     return np.eye(3) + K + K @ K / (1 + c)
+
+
+CARD_REFS = ("id1-card", "card")        # a photo of a bank card beside a hold (the app's ref; "card" as first proposed)
+
+
+def is_card(blob: dict) -> bool:
+    """Whether a photo is a card photo: for a hold region's scale only, never for dense or texture."""
+    return (blob or {}).get("ref") in CARD_REFS

@@ -1,5 +1,5 @@
 """The size of a hold's region from a bank card in the photo: an ID-1 card (ISO/IEC 7810, 85.60 x 53.98 mm) held flat
-against the rock beside the hold, in close-ups the app marks (`ref: "card"` in a photo's readings).
+against the rock beside the hold, in close-ups the app marks (`ref: "id1-card"` and `ref_hold`, the hold's id, in a photo's readings).
 
     find(image)                  the card's four corners in a photo (OpenCV), or None
     corners_3d(...)              those corners on the reconstructed surface: each corner's ray from its camera, met
@@ -9,7 +9,7 @@ against the rock beside the hold, in close-ups the app marks (`ref: "card"` in a
     combine(estimates)           one region's metres a unit and its uncertainty, from every card photo of it
     mask(image shape, corners)   the card's quadrilateral (grown a little), to leave out of densifying and texturing
 
-    card.py corners <photos> <priors.json> <out.json>   the corners in the photos marked ref "card" (OpenCV)
+    card.py corners <photos> <priors.json> <out.json>   the corners in the card photos (OpenCV), with their holds
     card.py render <out dir> [--n 8] [--seed 0]   synthetic close-ups: a textured rock plane with a card on it,
                                                   rendered from known cameras, with truth.json (for the test)
     card.py test <dir>                            find the card in each, scale from it, against the truth
@@ -219,11 +219,11 @@ def corners_of(photos: Path, priors: Path, out: Path) -> dict:
     pri = json.loads(priors.read_text())["photos"]
     found = {}
     for name, p in pri.items():
-        if p.get("ref") != "card" or not (photos / name).exists():
+        if not p.get("card") or not (photos / name).exists():
             continue
         q = find(np.asarray(Image.open(photos / name).convert("RGB")))
         if q is not None:
-            found[name] = {"photo": name, "corners": q.tolist()}
+            found[name] = {"photo": name, "corners": q.tolist(), "hold": p.get("ref_hold")}
     out.write_text(json.dumps(found))
     return found
 

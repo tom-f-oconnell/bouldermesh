@@ -925,7 +925,9 @@ def capture_priors(root: Path, record: Path, threads: int) -> dict:
             continue
         cam = cp.pose(b)
         entry = {"spell": cp.spell_of(b), "i": b.get("i"), "t": b.get("t"), "down": b.get("down"), "still": b.get("still"),
-                 "ref": b.get("ref")}
+                 "ref": b.get("ref"), "ref_hold": b.get("ref_hold"), "card": cp.is_card(b), "lic": b.get("lic") or rec.get("licence"),
+                 "by": b.get("by") or rec.get("credit"), "k_src": b.get("k_src"), "span": (b.get("ar") or {}).get("span"),
+                 "paused": (b.get("ar") or {}).get("paused")}
         if cam is not None and fit:
             q, t, lens = cp.colmap(cp.into(cam, fit))
             entry.update(q=q, t=t, f=(lens["params"][0] + lens["params"][1]) / 2)
@@ -1273,6 +1275,8 @@ def texture_capture_first(d: Path, scene: str, mesh: str, out: Path, caps: list[
         other = d / "tex_all.obj"
     rep.part("composite")
     r = tx.split(d / "tex_capture.obj", other, out)
+    root = d.parent if (d.parent / "cache").exists() else d.parent.parent
+    r["capture_photos"] = credits(root, caps)
     log(f"texture: the capture's {len(caps)} photos textured {r['capture_share']:.1%} of the surface")
     return r
 
@@ -1331,7 +1335,9 @@ def retexture_former(root: Path, former_glb: Path, threads: int) -> dict:
             cam.params = [cam.mean_focal_length(), cam.mean_focal_length(), cam.principal_point_x, cam.principal_point_y]
             cam.model = pycolmap.CameraModelId.PINHOLE
     rec.write(str(d / "model"))
-    pycolmap.undistort_images(str(d / "dense"), str(d / "model"), str(root / "photos"), output_type="COLMAP", num_threads=threads)
+    cards = card_photos(root)
+    pycolmap.undistort_images(str(d / "dense"), str(d / "model"), str(root / "photos"), output_type="COLMAP", num_threads=threads,
+                              image_names=[im.name for im in rec.images.values() if im.has_pose and im.name not in cards])
     rep.part("import")
     run([f"{MVS}/InterfaceCOLMAP", "-i", "dense", "-o", "scene.mvs", "--image-folder", d / "dense" / "images", "-w", d], d)
     tx.write_ply(d / "former.ply", *tx.glb_geometry(former_glb))
@@ -1354,6 +1360,7 @@ def detail(root: Path, holds_file: Path, threads: int, cards_file: Path | None =
     mpu_fit = pri.get("metres_per_unit")
     cards = json.loads(cards_file.read_text()) if cards_file and cards_file.exists() else {}
     rec = pycolmap.Reconstruction(str(root / "model"))
+    card_names = card_photos(root)
     rock = root / "dense" / "scene_dense_mesh.ply"
     Vr, Fr = read_ply(rock) if rock.exists() else (None, None)
     out_dir = root / "details"
@@ -1361,6 +1368,7 @@ def detail(root: Path, holds_file: Path, threads: int, cards_file: Path | None =
     results = []
     for h in holds:
         hid, p = h["id"], np.asarray(h["p"], float)
+        h.setdefault("ids", [hid])
         r_m = dt.radius(h)
         mpu = mpu_fit or 1.0
         r = r_m / mpu
@@ -1375,7 +1383,7 @@ def detail(root: Path, holds_file: Path, threads: int, cards_file: Path | None =
             u, v = cam.img_from_cam(x) if hasattr(cam, "img_from_cam") else (cam.mean_focal_length() * x[0] / x[2] + cam.principal_point_x,
                                                                                cam.mean_focal_length() * x[1] / x[2] + cam.principal_point_y)
             dist_m = float(np.linalg.norm(x)) * mpu
-            if 0 <= u < cam.width and 0 <= v < cam.height and dist_m <= 2.0:
+            if 0 <= u < cam.width and 0 <= v < cam.height and dist_m <= 2.0 and im.name not in card_names:
                 near.append(im.name)
                 dirs.append((im.projection_center() - p) / np.linalg.norm(im.projection_center() - p))
                 gsd.append(dist_m / cam.mean_focal_length() * 1000)
@@ -1385,7 +1393,7 @@ def detail(root: Path, holds_file: Path, threads: int, cards_file: Path | None =
             if all(float(dvec @ k) < math.cos(math.radians(20)) for k in kept_dirs):
                 kept_dirs.append(dvec)
         views = len(kept_dirs)
-        res = {"id": hid, "p": [float(x) for x in p], "r_m": r_m, "views": views, "photos": len(near),
+        res = {"id": hid, "ids": h["ids"], "target": h.get("target"), "p": [float(x) for x in p], "r_m": r_m, "views": views, "photos": len(near),
                "gsd_mm": round(float(min(gsd)), 3) if gsd else None}
         if len(near) < 3:
             res.update(status="untied", why=f"{len(near)} photo(s) see it from within 2 m")
@@ -1429,12 +1437,14 @@ def detail(root: Path, holds_file: Path, threads: int, cards_file: Path | None =
             else:
                 res["status"], res["why"] = "untied", "there is no rock mesh to tie it to"
             scale, err, src = mpu, (mpu or 0) * dt.TRACKING_SCALE_ERR, "tracking"
-            mine = [cards[n] for n in near if n in cards]
+            mine = [c for n, c in cards.items() if c.get("hold") in h.get("ids", [hid]) or n in near]
             if mine:        # a card's corners: rays to the region's surface, its sides against the card's
                 import card as cd
                 ests = []
                 for c in mine:
                     im = rec.find_image_with_name(c["photo"])
+                    if im is None or not im.has_pose:       # a card photo the model couldn't place says nothing
+                        continue
                     cam = rec.camera(im.camera_id)
                     K = np.array([[cam.mean_focal_length(), 0, cam.principal_point_x], [0, cam.mean_focal_length(), cam.principal_point_y], [0, 0, 1]])
                     T = im.cam_from_world()
@@ -1503,10 +1513,25 @@ def _ray_mesh(o: np.ndarray, d: np.ndarray, V: np.ndarray, F: np.ndarray) -> np.
     return o + d * float(t[hit].min())
 
 
-def capture_photos(root: Path) -> set[str]:
-    """The state's photos that came from a phone capture: those cache/priors.json has readings for."""
+def capture_photos(root: Path, cards: bool = False) -> set[str]:
+    """The state's photos that came from a phone capture: those cache/priors.json has readings for; card photos
+    (a bank card beside a hold, for its scale only) left out unless asked for."""
     f = root / "cache" / "priors.json"
-    return set(json.loads(f.read_text())["photos"]) if f.exists() else set()
+    if not f.exists():
+        return set()
+    return {n for n, p in json.loads(f.read_text())["photos"].items() if cards or not p.get("card")}
+
+
+def card_photos(root: Path) -> set[str]:
+    f = root / "cache" / "priors.json"
+    return {n for n, p in json.loads(f.read_text())["photos"].items() if p.get("card")} if f.exists() else set()
+
+
+def credits(root: Path, names) -> list[dict]:
+    """Who to credit for photos, from the capture's readings (lic, by): for the record of which photos textured a mesh."""
+    f = root / "cache" / "priors.json"
+    pri = json.loads(f.read_text())["photos"] if f.exists() else {}
+    return [{"name": n, "licence": pri[n].get("lic"), "credit": pri[n].get("by")} for n in sorted(names) if n in pri]
 
 
 def run(cmd: list, cwd: Path) -> None:
@@ -1529,7 +1554,11 @@ def undistort(root: Path, threads: int) -> dict:
             plain += 1
     rec.write(str(out / "model"))
     rep.data["cameras_without_distortion"] = plain
-    pycolmap.undistort_images(str(out / "dense"), str(out / "model"), str(root / "photos"), output_type="COLMAP", num_threads=threads)
+    cards = card_photos(root)
+    names = [im.name for im in rec.images.values() if im.has_pose and im.name not in cards]
+    rep.data["card_photos_left_out"] = len(cards & {im.name for im in rec.images.values()})
+    pycolmap.undistort_images(str(out / "dense"), str(out / "model"), str(root / "photos"), image_names=names, output_type="COLMAP",
+                              num_threads=threads)
     return rep.save(images=len(list((out / "dense" / "images").iterdir())))
 
 

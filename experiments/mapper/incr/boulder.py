@@ -439,11 +439,27 @@ def export(s: st.State, out: Path, of: str, how: str = "add", note: str = "") ->
         how = "add+relevel"
         ang = float(np.degrees(np.arccos(np.clip((np.trace(turn) - 1) / 2, -1, 1))))
         found.update(rot=[[round(float(x), 8) for x in row] for row in turn], tilt_deg=round(ang, 3), rot_deg=round(ang, 3))
+    tex = textured_by(root)
+    if tex:
+        found["capture_share"] = tex["capture_share"]
     rec = frames.save(out, of, how, found, note=note or f"made by experiments/mapper/incr ({n} cameras)",
                       level={k: lv.get(k) for k in ("n", "spread_median_deg", "spread_p90_deg", "tilt_from_model_deg", "mean_err_deg")} if lv else None)
     (out / "level.json").write_text(json.dumps(lv))
+    tex = textured_by(root)
+    if tex:
+        (out / "textured.json").write_text(json.dumps(tex))
     (out / "result.json").write_text(json.dumps({"mesh": "mesh.glb"}))
     return rec
+
+
+def textured_by(root: Path) -> dict | None:
+    """Which photos textured the state's mesh, capture-first: the share of its surface the capture's photos
+    textured, and each of them with its licence and credit (the capture's, CC BY), from the texture step's report."""
+    f = max((root / "log").glob("add-*/texture.report.json"), default=None, key=lambda p: p.stat().st_mtime)
+    if not f:
+        return None
+    cap = json.loads(f.read_text()).get("capture")
+    return {"capture_share": cap.get("capture_share"), "capture_photos": cap.get("capture_photos")} if cap else None
 
 
 def level_of(root: Path) -> dict | None:
@@ -482,6 +498,7 @@ def retexture(s: st.State, former: Path, out: Path, cond: str = "dev") -> dict |
     found = {"status": "tied", "scale": 1.0, "rot": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], "shift": [0.0, 0.0, 0.0],
              "shared": rep.get("faces"), "of_shared": rep.get("faces"), "rms": 0.0, "rms_m": None, "tilt_deg": 0.0, "rot_deg": 0.0}
     more = {"capture_share": rep.get("capture_share"), "note": "the former mesh's own shape, textured again from the capture's photos first"}
+    (out / "textured.json").write_text(json.dumps({"capture_share": rep.get("capture_share"), "capture_photos": rep.get("capture_photos")}))
     if "texture" in frames.HOW:
         rec = frames.save(out, former.name, "texture", found, **more)
     else:       # until backend/frames.py knows the kind: the same record, written as it would write it
@@ -545,21 +562,21 @@ def refit(state_dir: Path, former: Path, photos: list[Path], masks: Path | None,
 
 
 def holds_of(betasets: Path | None, record: Path | None, set_id: str | None) -> list[dict]:
-    """The holds to make detail meshes of: a capture record's detail.holds (what the app was asked to photograph),
-    else a beta set of betasets.json (the one named, or the first), else holds.json as the first set. Each {id, p,
-    r_m}: ids are the server's stable ones (8 hex), never a plan's target ids."""
+    """The holds to make detail meshes of, each {id, ids, target, p, r_m}: a capture record's detail.holds (what the
+    app was asked to photograph: a target there may merge several of the set's holds, whose ids it lists; the first
+    names the files), else a set of a mesh's betasets.json (backend/beta.py load_sets(), which reads an old
+    holds.json as its first set): the one named, or the first. Ids are the holds' own (8 hex), never a plan's targets'."""
+    import beta
     if record and record.exists():
         det = json.loads(record.read_text()).get("detail") or {}
         if det.get("holds"):
-            return [{"id": h["id"], "p": h["p"], "r_m": h.get("r_m")} for h in det["holds"]]
+            return [{"id": (h.get("ids") or [h.get("id") or beta.hold_id(h["p"])])[0], "ids": h.get("ids") or [h.get("id")],
+                     "target": h.get("target"), "p": h["p"], "r_m": h.get("r_m")} for h in det["holds"]]
     if betasets and betasets.exists():
-        data = json.loads(betasets.read_text())
-        sets = data.get("sets") if isinstance(data, dict) else None
+        sets = beta.load_sets(betasets.parent if betasets.is_file() else betasets)
         if sets:
             chosen = next((x for x in sets if x.get("id") == set_id), sets[0])
-            return [{"id": h.get("id") or f"{i:08x}", "p": h["p"], "r_m": h.get("r_m")} for i, h in enumerate(chosen["holds"])]
-        if isinstance(data, list):      # holds.json: [{p, role}]
-            return [{"id": h.get("id") or f"{i:08x}", "p": h["p"], "r_m": h.get("r_m")} for i, h in enumerate(data)]
+            return [{"id": h["id"], "ids": [h["id"]], "target": None, "p": h["p"], "r_m": h.get("r_m")} for h in chosen["holds"]]
     return []
 
 

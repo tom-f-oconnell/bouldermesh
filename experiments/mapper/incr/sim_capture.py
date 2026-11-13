@@ -159,10 +159,13 @@ def main(argv=None) -> None:
             down = cp.qrot(small_turn(rng, a.accel_deg), down_img)
             i += 1
             name = f"cap_{cap_id}_{i:03d}.jpg"
+            still = i % 2 == 0      # half full-size stills with their own pose (an iPhone's), half tracking frames
             blob = {"v": 1, "app": "sim 0", "device": "simulated", "cap": cap_id, "i": i, "t": 1.8e9 + i * 3,
+                    "lic": "CC-BY-4.0", "by": "Simulated Climber", "still": 1 if still else None, "k_src": None,
                     "down": [round(float(x), 6) for x in down / np.linalg.norm(down)], "down_src": "turn", "down_acc": None,
                     "down_track": None, "turn": 0, "heading": None, "heading_acc": None, "gps": None,
-                    "ar": {"s": s, "p": [round(float(x), 5) for x in pc], "q": [round(float(x), 7) for x in cp.qunit(pr)], "track": "normal"},
+                    "ar": {"s": s, "p": [round(float(x), 5) for x in pc], "q": [round(float(x), 7) for x in cp.qunit(pr)], "track": "normal",
+                           **({"span": {"dt_s": 0.0, "moved_m": 0.0, "turned_deg": 0.0}} if still else {})},
                     "k": {kk: (round(float(v), 3) if kk not in ("w", "h") else int(v)) for kk, v in k.items()},
                     "exp": None, "q": {"sharp": 1.0, "blur_px": 0.0, "clip_hi": 0.0, "clip_lo": 0.0, "ok": True}}
             with Image.open(src_photos / n) as im:
@@ -178,7 +181,8 @@ def main(argv=None) -> None:
         spell_info[s] = {"photos": len(group), "walked_m": round(walked, 2), "reset_at": jump_at,
                          "drift_end_m": round(float(np.linalg.norm(drift_t)), 3)}
     truth_out["spells"] = spell_info
-    rec = {"v": 2, "id": cap_id, "app": "sim 0", "device": "simulated", "started": 1.8e9, "ended": 1.8e9 + i * 3,
+    rec = {"v": 3, "id": cap_id, "app": "sim 0", "device": "simulated", "started": 1.8e9, "ended": 1.8e9 + i * 3,
+           "licence": "CC-BY-4.0", "credit": "Simulated Climber",
            "plan": None, "mesh": "former", "climbs": [], "mode": "plan",
            "fit": {"scale": found.scale, "rot": list(map(float, found.rot)), "shift": found.shift.tolist(),
                    "tilt_deg": None, "taps": 4, "matched": 4, "rms_m": a.fit_err_m},
@@ -201,8 +205,23 @@ def main(argv=None) -> None:
         pt = ahead[np.argmin(off)] if len(ahead) else c + fwd
         if any(np.linalg.norm(pt - np.array(h["p"])) < 2 * 0.075 / scale for h in holds):     # a hold apart from the others
             continue
-        holds.append({"id": f"{random.Random(a.seed * 100 + j).getrandbits(32):08x}", "ids": [], "target": f"h{j}",
-                      "p": [round(float(x), 6) for x in pt], "r_m": 0.075, "views": None, "done": False})
+        hid = f"{random.Random(a.seed * 100 + j).getrandbits(32):08x}"
+        holds.append({"target": f"h{j}", "ids": [hid], "p": [round(float(x), 6) for x in pt], "r_m": 0.075, "gsd_mm": None,
+                      "views": None, "views_of": 6, "sides": None, "sides_of": 5, "ties": None, "ties_of": 3, "card": False, "done": False,
+                      "_photo": n})
+    # one photo of the first hold's marked as its card photo (no card in it here: it tests that such a photo is kept
+    # out of dense and texture, and that a card that isn't found leaves the tracking's scale)
+    if holds:
+        sh = next(x for x in shots if truth_out["photos"][x["name"]]["was"] == holds[0]["_photo"])
+        sh["blob"].update(ref="id1-card", ref_hold=holds[0]["ids"][0])
+        holds[0]["card"] = True
+        with Image.open(out / "photos" / sh["name"]) as im:     # its readings again, with the card's marks
+            exif = im.getexif()
+            exif.get_ifd(0x8769)[0x9286] = b"ASCII\0\0\0" + ("BMSH1:" + json.dumps(sh["blob"], separators=(",", ":"))).encode()
+            im.load()
+            im.save(out / "photos" / sh["name"], quality=95, exif=exif.tobytes())
+    for h in holds:
+        h.pop("_photo")
     rec["detail"] = {"set": "sim", "holds": holds}
     (out / "capture.json").write_text(json.dumps(rec, indent=1))
     # the tracking's points: the model's, in the world, a centimetre of noise, the first spell's

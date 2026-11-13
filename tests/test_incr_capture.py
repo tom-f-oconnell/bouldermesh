@@ -79,11 +79,34 @@ def test_points_file():
 def test_fixtures():
     """The record and readings the app's tests write."""
     r = cp.record(FIXTURES / "app" / "capture.json")
-    assert r["v"] == 2 and r["shots"][0]["name"] == "cap_k1_001.jpg"
+    assert r["v"] in (2, 3) and r["shots"][0]["name"] == "cap_k1_001.jpg"
     blob = json.loads((FIXTURES / "app" / "shot.txt").read_text().split("BMSH1:", 1)[1])
     cam = cp.pose(blob)
     assert near(cam.centre, [1.0, 2.0, 3.0], 1e-12) and cam.lens["w"] == 4000
     assert list(cp.spells(r["shots"])) == ["a"]
+    assert cp.is_card({"ref": "id1-card", "ref_hold": "0a1b2c3d"}) and not cp.is_card(blob)
+
+
+def test_holds_of_record_and_sets():
+    """Detail holds from a v3 record's detail (a target merging several holds: the first id names its files), and from
+    a mesh's betasets.json through backend/beta.py, with r_m left to the server's default."""
+    import os
+    os.environ.setdefault("BENCH", "/data/tom/mapperbench")
+    sys.path.insert(0, "/data/tom/mapperbench/scripts")
+    try:
+        import boulder
+    except Exception:       # no benchmark here: boulder.py imports its harness
+        return
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "capture.json").write_text(json.dumps({"v": 3, "detail": {"set": "s1", "holds": [
+            {"target": "h0", "ids": ["0a1b2c3d", "1111aaaa"], "p": [1, 2, 3], "r_m": 0.1}]}}))
+        hs = boulder.holds_of(None, d / "capture.json", None)
+        assert hs == [{"id": "0a1b2c3d", "ids": ["0a1b2c3d", "1111aaaa"], "target": "h0", "p": [1, 2, 3], "r_m": 0.1}]
+        (d / "betasets.json").write_text(json.dumps({"sets": [{"id": "s1", "name": "A", "holds": [{"id": "2222bbbb", "p": [0, 1, 0], "role": "start"}]},
+                                                              {"id": "s2", "name": "B", "holds": [{"id": "3333cccc", "p": [0, 0, 1], "role": "hand", "r_m": 0.05}]}]}))
+        assert boulder.holds_of(d / "betasets.json", None, "s2")[0]["id"] == "3333cccc"
+        assert boulder.holds_of(d / "betasets.json", None, None)[0]["r_m"] is None
 
 
 def test_refit_tie_undone():

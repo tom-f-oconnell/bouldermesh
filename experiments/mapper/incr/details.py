@@ -32,7 +32,12 @@ from pathlib import Path
 import numpy as np
 
 VERSION = 1
-R_DEFAULT, R_MIN, R_MAX = 0.075, 0.03, 0.15
+try:        # the server's own limits on a hold's reach (backend/beta.py), where it's there to read
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "backend"))
+    import beta as _beta
+    R_DEFAULT, R_MIN, R_MAX = _beta.HOLD_R_M, _beta.HOLD_R_LEAST, _beta.HOLD_R_MOST
+except Exception:       # in the tools' container, which has no backend: the same numbers
+    R_DEFAULT, R_MIN, R_MAX = 0.075, 0.03, 0.15
 MAX_TIE_SHIFT_MM, MAX_TIE_TURN_DEG, MAX_TIE_RMS_MM = 5.0, 2.0, 6.0
 TRACKING_SCALE_ERR = 0.02           # the phone's tracking's scale floor (the coordinator's 2%)
 
