@@ -6,7 +6,10 @@
   COLMAP_BENCH_MIN_GPU_IMAGES (50: below this many images a solve stays on the CPU even with ba_use_gpu),
   COLMAP_BENCH_DENSE_CPU (50), COLMAP_BENCH_SPARSE_CPU (1000), COLMAP_BENCH_DENSE_GPU (200) and
   COLMAP_BENCH_SPARSE_GPU (4000): up to this many images a solve uses dense Schur, then sparse Schur, then iterative.
-Does nothing to a tree already patched.
+- Bitmap::Write leaves out a photo's empty text metadata: OpenImageIO 2.4 aborts the whole program writing a JPEG's
+  IPTC block when a field it puts there is an empty string (web photos often carry Artist "" and Copyright "" beside
+  an IPTC rating), which killed image_undistorter on Drifter's photos.
+Each change is made once: a tree already patched is left as it is, and one with only the first changes gets the rest.
 """
 import sys
 from pathlib import Path
@@ -30,7 +33,29 @@ def edit(path: Path, *pairs: tuple[str, str]) -> None:
     path.write_text(s)
 
 
+def bitmap(path: Path) -> None:
+    if "BENCH_EMPTY_STRINGS" in path.read_text():
+        return
+    edit(path, ('''  if (!output->open(utf8_path, meta_data.image_spec)) {
+''', '''  // BENCH_EMPTY_STRINGS: OpenImageIO 2.4 aborts (encode_iptc_iim's assertion) writing an empty string to a
+  // JPEG's IPTC block, as for the Artist "" and Copyright "" of many web photos: leave empty strings out.
+  {
+    auto& attribs = meta_data.image_spec.extra_attribs;
+    for (auto it = attribs.end(); it != attribs.begin();) {
+      --it;
+      if (it->type() == OIIO::TypeString && it->nvalues() == 1 &&
+          (*static_cast<const char* const*>(it->data()) == nullptr ||
+           **static_cast<const char* const*>(it->data()) == '\\0')) {
+        it = attribs.erase(it);
+      }
+    }
+  }
+  if (!output->open(utf8_path, meta_data.image_spec)) {
+'''))
+
+
 def main(colmap: Path) -> None:
+    bitmap(colmap / "src/colmap/sensor/bitmap.cc")
     est = colmap / "src/colmap/estimators"
     if "BENCH_BA" in (est / "bundle_adjustment_ceres.cc").read_text():
         return

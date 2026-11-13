@@ -186,6 +186,45 @@ def ba(k: Checks, part: str, name: str, more: str, env: dict, want: dict, libs_w
         k.add(part, f"run: {name}: {what} loaded", pattern, ", ".join(hit) or "none", bool(hit))
 
 
+def empty_metadata_jpeg(src: Path, out: Path) -> None:
+    """out: the JPEG src with what made OpenImageIO 2.4 abort writing some of Drifter's web photos (13 Nov): an EXIF
+    Artist and Copyright that are empty strings, and an XMP rating, which OIIO reads as IPTC:Rating and so writes an
+    IPTC block holding those two."""
+    data = src.read_bytes()
+    entries = [(0x013B, 2, 1, b"\0\0\0\0"), (0x8298, 2, 1, b"\0\0\0\0")]
+    ifd = struct.pack("<H", len(entries)) + b"".join(struct.pack("<HHI", t, ty, n) + v for t, ty, n, v in entries) + struct.pack("<I", 0)
+    exif = b"Exif\0\0" + b"II*\0" + struct.pack("<I", 8) + ifd
+    xmp = (b"http://ns.adobe.com/xap/1.0/\0<?xpacket begin='' id='W5M0MpCehiHzreSzNTczkc9d'?><x:xmpmeta xmlns:x='adobe:ns:meta/'>"
+           b"<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><rdf:Description rdf:about='' "
+           b"xmlns:xmp='http://ns.adobe.com/xap/1.0/' xmp:Rating='0'/></rdf:RDF></x:xmpmeta><?xpacket end='w'?>")
+    seg = lambda body: b"\xff\xe1" + struct.pack(">H", len(body) + 2) + body      # noqa: E731
+    out.write_bytes(data[:2] + seg(exif) + seg(xmp) + data[2:])
+
+
+def undistort_metadata(k: Checks) -> None:
+    """image_undistorter on a photo with empty text metadata beside an IPTC rating, which stock COLMAP 4.2.1 on
+    OpenImageIO 2.4 aborts on (patch_colmap.py's BENCH_EMPTY_STRINGS)."""
+    d = WORK / "undistort"
+    for sub in ("images", "model", "out"):
+        (d / sub).mkdir(parents=True, exist_ok=True)
+    png(d / "plain.png", 320, 240, seed=3)
+    rc, out = sh(f"oiiotool {d}/plain.png -o {d}/plain.jpg")
+    if rc:
+        k.add("COLMAP", "run: undistorts a photo with empty text metadata", "exit 0", f"couldn't make the photo: {out[-120:]}", False)
+        return
+    empty_metadata_jpeg(d / "plain.jpg", d / "images" / "empty.jpg")
+    (d / "model" / "cameras.txt").write_text("1 SIMPLE_RADIAL 320 240 300 160 120 0.05\n")
+    (d / "model" / "images.txt").write_text("1 1 0 0 0 0 0 0 1 empty.jpg\n\n")
+    (d / "model" / "points3D.txt").write_text("")
+    rc, out = sh(f"colmap image_undistorter --image_path {d}/images --input_path {d}/model --output_path {d}/out "
+                 "--output_type COLMAP")
+    written = d / "out" / "images" / "empty.jpg"
+    size = written.stat().st_size if written.exists() else 0
+    why = (re.findall(r"Assertion[^\n]*", out) or [""])[0]
+    k.add("COLMAP", "run: undistorts a photo with empty text metadata", "exit 0, the photo written",
+          f"exit {rc}, {size} bytes written" + (f"; {why}" if why else ""), rc == 0 and size > 0)
+
+
 PYCOLMAP = r"""
 import os, re, sys
 import pycolmap
@@ -306,6 +345,7 @@ def tree(variant: str) -> Checks:
           f"loaded {', '.join(hit) or 'neither'}; {feats} keypoints; exit {rc}; GPU memory in use before {before} MiB"
           + (f"; {complaint[0][-160:]}" if complaint else ""),
           rc == 0 and any("providers_cuda" in n for n in hit) and any("cudnn" in n for n in hit) and not complaint and feats.isdigit())
+    undistort_metadata(k)
     pycolmap(k)
     # --- OpenMVS
     c = cache(f"/opt/openMVS/build-{V}/CMakeCache.txt")
