@@ -210,6 +210,8 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         val apart = if (downAr != null && downAcc != null) angleDeg(downAr, downAcc) else null
         val notes = if (apart != null && apart > (if (found != null) DOWN_DOUBT_DEG else 2 * DOWN_DOUBT_DEG))
             grades.notes + "down: the phone's tracking and its accelerometer are ${kotlin.math.round(apart * 10) / 10}° apart" else grades.notes
+        // sunlit and shaded rock in one picture: fine for placing it, poor for a texture
+        val light = s.stats?.takeIf { it.clipHigh > HARSH_CLIP && it.clipLow > HARSH_CLIP }?.let { "harsh light: sunlit and shaded rock in one picture. Cloud or full shade textures better" }
         val blob = ShotBlob(
             app = app, device = device, cap = id, i = shots.size + 1, t = s.unix,
             down = down?.toList(), downSrc = if (downAr != null) (if (found != null) "turn" else "ar") else if (downAcc != null) "accel" else null,
@@ -223,7 +225,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             ref = if (s.card) CARD else null, refHold = if (s.card) cardOf?.target?.holds?.firstOrNull() ?: cardOf?.target?.id else null,
             still = if (s.still) 1 else null, kSrc = if (s.lensDerived) "derived" else null, lic = licence, by = credit,
         )
-        val record = ShotRecord(name, blob, verdict.ok, verdict.reasons, notes, helped)
+        val record = ShotRecord(name, blob, verdict.ok, verdict.reasons, if (light != null) notes + light else notes, helped)
         shots.add(record)
         if (verdict.ok) kept++
         return ShotOut(record, verdict.ok, verdict.reasons, helped, blob.userComment())
@@ -274,6 +276,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
 
     companion object {
         const val CARD = "id1-card"     // a photo's ref: a bank card (ID-1, 85.60 by 53.98 mm) flat on the rock in it
+        const val HARSH_CLIP = 0.01     // this share of a picture blown out and as much black: lit and shaded rock together
         const val STEADY_PX = 1.0       // a photo takes itself only when the phone's own motion would smear it less than this
         const val MIN_GAP_S = 0.6       // and no sooner than this after the last
         const val SPEED_SMOOTH_S = 0.15

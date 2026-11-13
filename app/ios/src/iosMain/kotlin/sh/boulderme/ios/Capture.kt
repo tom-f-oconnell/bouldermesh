@@ -26,7 +26,10 @@ import platform.ARKit.ARSceneReconstructionMesh
 import platform.ARKit.ARTrackingState
 import platform.ARKit.ARWorldTrackingConfiguration
 import platform.AVFoundation.AVCaptureDevice
+import platform.AVFoundation.AVCaptureWhiteBalanceModeLocked
 import platform.AVFoundation.AVMediaTypeVideo
+import platform.AVFoundation.isWhiteBalanceModeSupported
+import platform.AVFoundation.setWhiteBalanceMode
 import platform.AVFoundation.authorizationStatusForMediaType
 import platform.AVFoundation.setActiveMaxExposureDuration
 import platform.CoreFoundation.CFDictionaryRef
@@ -226,6 +229,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     private val buttons = UIStackView()
     private var buttonsFor = ""
     private var ui = CaptureUi()
+    private var whiteLocked = false
 
     // ---- the screen ---------------------------------------------------------------------------------------------------
     override fun viewDidLoad() {
@@ -307,6 +311,19 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         device.setActiveMaxExposureDuration(CMTimeMake(1, 120))
         device.unlockForConfiguration()
         cameraSet = true
+    }
+
+    /**
+     * Holds the camera's white balance as it is, once photos start: one rock photographed with one balance textures as
+     * one rock, not a patchwork. Its exposure is left to follow the light (a sunlit side and a shaded one can't share one),
+     * and each photo says what its own was.
+     */
+    private fun lockWhite() {
+        whiteLocked = true
+        val device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera ?: return
+        if (!device.isWhiteBalanceModeSupported(AVCaptureWhiteBalanceModeLocked) || !device.lockForConfiguration(null)) return
+        device.setWhiteBalanceMode(AVCaptureWhiteBalanceModeLocked)
+        device.unlockForConfiguration()
     }
 
     // ---- each look at ARKit's latest frame -----------------------------------------------------------------------------
@@ -545,6 +562,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     // ---- what's said and offered ---------------------------------------------------------------------------------------
     private fun show(now: CaptureUi) {
         ui = now
+        if (now.phase == Phase.CAPTURE && !whiteLocked) lockWhite()
         hint.text = failed ?: now.text
         hint.textColor = if (failed != null) BAD else UIColor.whiteColor
         note.text = listOf(now.target, now.note).filter { it.isNotEmpty() }.joinToString("\n")
