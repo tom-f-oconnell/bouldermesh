@@ -444,6 +444,38 @@ def level_of(root: Path) -> dict | None:
     return cp.level(downs)
 
 
+def retexture(s: st.State, former: Path, out: Path, cond: str = "dev") -> dict | None:
+    """The former mesh's own shape (its mesh.glb) textured again with the capture's photos first (core.
+    retexture_former), as a mesh of its own tied to it: out/ with mesh.glb, cameras.json and frame.json, how
+    "texture", the identity, and the share of its surface the capture textured."""
+    import frames
+    if not (former / "mesh.glb").exists():
+        return None
+    root = s.root
+    logdir = root / "log" / f"add-{s.next_id() - 1:04d}"
+    threads = bench.condition(cond)[1] or -1
+    shutil.copyfile(former / "mesh.glb", root / "cache" / "former-mesh.glb")
+    r = run_step(logdir, "retexture", TOOLS, "python3 /incr/core.py " + bench.sh(["retexture", "/s", "/s/cache/former-mesh.glb", "--threads", threads]),
+                 [f"{root}:/s"], cond, None, True)
+    rep = json.loads((logdir / "retexture.report.json").read_text()) if (logdir / "retexture.report.json").exists() else {}
+    if r["rc"] != 0 or not (root / "retex" / "mesh.glb").exists():
+        return {"failed": r["rc"]}
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    shutil.copyfile(root / "retex" / "mesh.glb", out / "mesh.glb")
+    write_cameras(root / "model", out / "cameras.json")
+    found = {"status": "tied", "scale": 1.0, "rot": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], "shift": [0.0, 0.0, 0.0],
+             "shared": rep.get("faces"), "of_shared": rep.get("faces"), "rms": 0.0, "rms_m": None, "tilt_deg": 0.0, "rot_deg": 0.0}
+    more = {"capture_share": rep.get("capture_share"), "note": "the former mesh's own shape, textured again from the capture's photos first"}
+    if "texture" in frames.HOW:
+        rec = frames.save(out, former.name, "texture", found, **more)
+    else:       # until backend/frames.py knows the kind: the same record, written as it would write it
+        rec = {"v": frames.VERSION, "of": former.name, "how": "texture", "made": time.time(), **found, **more}
+        (out / frames.FILE).write_text(json.dumps(rec))
+    (out / "result.json").write_text(json.dumps({"mesh": "mesh.glb"}))
+    return {**rec, "wall": r["wall"], "parts": rep.get("parts")}
+
+
 def capture_add(state_dir: Path, capture_dir: Path, former: Path | None, photos_of_former: list[Path], masks: Path | None,
                 cond: str = "dev", ba: str = "auto", out: Path | None = None) -> dict:
     """A phone capture added to a mesh: a state for the mesh first if there isn't one (bootstrap(), from its
@@ -461,6 +493,9 @@ def capture_add(state_dir: Path, capture_dir: Path, former: Path | None, photos_
     s = st.State(state_dir)
     if out and (s.root / "dense" / "scene_dense_mesh_texture.glb").exists():
         export(s, out, of=str(former.name if former else "former"), how="add")
+    if out and former:      # and the former mesh's own shape, textured again from the capture first
+        s.manifest["adds"][-1]["retexture"] = retexture(s, former, out.parent / (out.name + "-texture"), cond)
+        st.write_json(s.manifest_path, s.manifest)
     return rec
 
 
@@ -766,7 +801,15 @@ def main(argv: list[str]) -> None:
         shutil.rmtree(d, ignore_errors=True)
         photos, masks = project(P)
         theirs = {c["name"] for c in json.loads((sim / "former" / "cameras.json").read_text())}
-        capture_add(d, sim, sim / "former", [p_ for p_ in photos if p_.name in theirs], masks, a.cond, a.ba, d / "out")
+        mine = [p_ for p_ in photos if p_.name in theirs]
+        # the former mesh, as the app would have made it from its own photos: the state for it, meshed
+        bootstrap(d, sim / "former", mine, masks, a.cond)
+        s = st.State(d)
+        if not s.has_model():
+            raise SystemExit(f"no state could be made from {sim / 'former'}")
+        remesh(s, s.root / "log" / "add-0000", a.cond)
+        shutil.copyfile(s.root / "dense" / "scene_dense_mesh_texture.glb", sim / "former" / "mesh.glb")
+        capture_add(d, sim, sim / "former", mine, masks, a.cond, a.ba, d / "out")
     elif a.command == "cameras":        # <model dir> <out.json>
         print(write_cameras(Path(a.args[0]), Path(a.args[1])), "cameras")
     elif a.command == "boot":           # <project> <state with a model>: its cameras as a mesh's, and a state from them

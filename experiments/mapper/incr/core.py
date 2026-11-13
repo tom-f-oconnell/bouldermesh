@@ -1254,6 +1254,59 @@ def surface_gain(root: Path, before: pycolmap.Reconstruction, after: pycolmap.Re
 MVS = "/usr/local/bin/OpenMVS"
 
 
+def texture_capture_first(d: Path, scene: str, mesh: str, out: Path, caps: list[str], t: list, rep: Report) -> dict:
+    """TextureMesh in two passes (texture.py): the capture's photos alone, then every photo for the faces they left,
+    and one GLB of the two. Returns texture.split()'s numbers."""
+    import texture as tx
+    (d / "capture-views.txt").write_text("".join(f"{n}\n" for n in caps))
+    rep.part("texture_capture")
+    run([f"{MVS}/TextureMesh", scene, "-m", mesh, "-o", "tex_capture.mvs", "-w", d, "--export-type", "obj",
+         "--empty-color", str(0xFF00FF), "--max-texture-size", "4096", "--views-file", "capture-views.txt", *t], d)
+    a = tx.read_obj(d / "tex_capture.obj")
+    other = None
+    if not tx.covered(a).all():
+        rep.part("texture_rest")
+        run([f"{MVS}/TextureMesh", scene, "-m", mesh, "-o", "tex_all.mvs", "-w", d, "--export-type", "obj",
+             "--empty-color", str(0x808080), "--max-texture-size", "4096", *t], d)
+        other = d / "tex_all.obj"
+    rep.part("composite")
+    r = tx.split(d / "tex_capture.obj", other, out)
+    log(f"texture: the capture's {len(caps)} photos textured {r['capture_share']:.1%} of the surface")
+    return r
+
+
+def retexture_former(root: Path, former_glb: Path, threads: int) -> dict:
+    """The former mesh's own shape textured again, the capture's photos first (registered into its frame by the
+    add): its geometry unchanged, a new texture. Works in retex/: the model's photos undistorted, OpenMVS's scene,
+    the former shape as a PLY, then texture_capture_first(). Writes retex/mesh.glb."""
+    import texture as tx
+    rep = Report(root, "retexture")
+    d = root / "retex"
+    shutil.rmtree(d, ignore_errors=True)
+    (d / "model").mkdir(parents=True)
+    rep.part("undistort")
+    rec = pycolmap.Reconstruction(str(root / "model"))
+    for cam in rec.cameras.values():
+        if cam.is_undistorted() and cam.model != pycolmap.CameraModelId.PINHOLE:
+            cam.params = [cam.mean_focal_length(), cam.mean_focal_length(), cam.principal_point_x, cam.principal_point_y]
+            cam.model = pycolmap.CameraModelId.PINHOLE
+    rec.write(str(d / "model"))
+    pycolmap.undistort_images(str(d / "dense"), str(d / "model"), str(root / "photos"), output_type="COLMAP", num_threads=threads)
+    rep.part("import")
+    run([f"{MVS}/InterfaceCOLMAP", "-i", "dense", "-o", "scene.mvs", "--image-folder", d / "dense" / "images", "-w", d], d)
+    tx.write_ply(d / "former.ply", *tx.glb_geometry(former_glb))
+    caps = sorted(capture_photos(root) & {im.name for im in rec.images.values()})
+    t = ["--max-threads", threads] if threads > 0 else []
+    r = texture_capture_first(d, "scene.mvs", "former.ply", d / "mesh.glb", caps, t, rep) if caps else {"capture_share": 0.0}
+    return rep.save(**r, capture_photos=len(caps))
+
+
+def capture_photos(root: Path) -> set[str]:
+    """The state's photos that came from a phone capture: those cache/priors.json has readings for."""
+    f = root / "cache" / "priors.json"
+    return set(json.loads(f.read_text())["photos"]) if f.exists() else set()
+
+
 def run(cmd: list, cwd: Path) -> None:
     print("+", " ".join(str(c) for c in cmd), flush=True)
     subprocess.run([str(c) for c in cmd], cwd=cwd, check=True)
@@ -1290,8 +1343,14 @@ def mvs(root: Path, step: str, threads: int, cpu: bool) -> dict:
     elif step == "mesh":
         run([f"{MVS}/ReconstructMesh", "scene_dense.mvs", "-w", d, *t], d)
     elif step == "texture":
-        run([f"{MVS}/TextureMesh", "scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o", "scene_dense_mesh_texture.mvs", "-w", d,
-             "--export-type", "glb", "--empty-color", str(0x808080), "--max-texture-size", "4096", *t], d)
+        caps = capture_photos(root)
+        placed = {im.name for im in pycolmap.Reconstruction(str(root / "model")).images.values()} if caps else set()
+        caps = sorted(caps & placed)
+        if caps:        # the capture's photos first (texture.py): they texture what they see, the rest the rest
+            rep.data["capture"] = texture_capture_first(d, "scene_dense.mvs", "scene_dense_mesh.ply", d / "scene_dense_mesh_texture.glb", caps, t, rep)
+        else:
+            run([f"{MVS}/TextureMesh", "scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o", "scene_dense_mesh_texture.mvs", "-w", d,
+                 "--export-type", "glb", "--empty-color", str(0x808080), "--max-texture-size", "4096", *t], d)
         dmaps = sum(f.stat().st_size for f in d.glob("*.dmap"))
         rep.data["dmap_mb"] = round(dmaps / 2 ** 20, 1)
     return rep.save()
@@ -1319,6 +1378,8 @@ def main(argv: list[str]) -> None:
         match(a.state, not a.cpu, a.threads, a.feat, a.state / "cache" / "pairs.json" if a.pairs else None)
     elif a.step == "place":
         place(a.state, a.init, a.vggt, a.ba, a.seed, a.threads, a.resolve, not a.no_scenes)
+    elif a.step == "retexture":
+        retexture_former(a.state, a.cameras, a.threads)
     elif a.step == "align":
         align_to(a.state, a.cameras)
     elif a.step == "kept_pairs":
