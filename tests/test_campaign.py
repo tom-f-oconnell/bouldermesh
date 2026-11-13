@@ -2287,6 +2287,15 @@ rep = json.loads((server.PROJECTS / gp / "relevance.json").read_text())
 assert rep == {"kept": ["a.jpg", "b.jpg"], "rejected": {}, "put_back": ["b.jpg"]}, rep
 print("a climb's photos by source, and small copies OK")
 
+# a pair of meshes Nearby left out as overlapping: kept for looking at later, only of meshes there are
+for mid_, name_ in (("0a" * 6, "Rock (boulder)"), ("0b" * 6, "Rock")):
+    server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES(?,?,?,?,?)", mid_, name_, "m.glb", "project:x", time.time(), write=True)
+server.NEARBY_OVERLAPS.unlink(missing_ok=True)
+assert server.record_overlap({"mesh": "0a" * 6, "other": "0b" * 6, "why": "bounds", "share": 0.8, "distance_m": 3.2}, "1.2.3.4", False)
+line = json.loads(server.NEARBY_OVERLAPS.read_text().splitlines()[-1])
+assert (line["mesh_name"], line["other_name"], line["why"], line["share"]) == ("Rock (boulder)", "Rock", "bounds", 0.8), line
+assert server.record_overlap({"mesh": "0a" * 6, "other": "nope"}, "1.2.3.4", False) is None
+
 # --- how long each step takes, for the time left of the bars and deploy.sh: kept for every run (step_runs), filled at
 # first from projects' last jobs, and estimated from the runs most like it: same kind, same machine, nearest in photos
 fresh()

@@ -7060,7 +7060,7 @@ def admin_machine_deny(body: dict) -> dict:
 CLIENT_ERRORS = DATA / "client-errors.jsonl"   # one report a line; the one before it, client-errors.jsonl.1, once it's full
 CLIENT_ERRORS_BYTES = 2 * 2**20                # how big the file gets before that
 CLIENT_REPORT_MAX = 8192                       # the largest report taken
-CLIENT_REPORTS = {"error": (20, 600), "view": (120, 600), "rating": (120, 3600), "feedback": (5, 3600)}  # at most this many of each from one address in this many seconds
+CLIENT_REPORTS = {"overlap": (30, 600), "error": (20, 600), "view": (120, 600), "rating": (120, 3600), "feedback": (5, 3600)}  # at most this many of each from one address in this many seconds
 MESH_VIEWS = DATA / "mesh-views.jsonl"       # each mesh shown in a visitor's browser, and how it was asked for
 _client_reports: dict[tuple[str, str], list[float]] = {}
 _client_lock = threading.Lock()
@@ -7107,6 +7107,30 @@ def record_client_error(report: dict, sender: str, user_agent: str, editor: bool
     if not _client_report("error", sender, CLIENT_ERRORS, line):
         return False
     print(f"browser error ({line['kind']}){' in mesh ' + line['mesh'] if line['mesh'] else ''}: {(line['message'] or '')[:200]}", flush=True)
+    return True
+
+
+NEARBY_OVERLAPS = DATA / "nearby-overlaps.jsonl"   # meshes Nearby wouldn't show, as they'd overlap the one in view
+
+
+def record_overlap(report: dict, sender: str, editor: bool) -> bool | None:
+    """Keep a pair of meshes the viewer's Nearby left out as overlapping (at the same point, or their placed bounds
+    mostly in one another), for looking at later: as often the same rock meshed twice. None if either isn't a mesh;
+    False if that address has sent too many lately."""
+    a, b = str(report.get("mesh") or "")[:40], str(report.get("other") or "")[:40]
+    names = {r["id"]: r["name"] for r in q("SELECT id, name FROM meshes WHERE id IN (?, ?)", a, b)}
+    if a not in names or b not in names:
+        return None
+    try:
+        share = round(float(report.get("share")), 3) if report.get("share") is not None else None
+        dist = round(float(report.get("distance_m")), 2) if report.get("distance_m") is not None else None
+    except (TypeError, ValueError):
+        share = dist = None
+    line = {"mesh": a, "mesh_name": names[a], "other": b, "other_name": names[b], "why": str(report.get("why") or "")[:40] or None,
+            "share": share, "distance_m": dist, "editor": editor}
+    if not _client_report("overlap", sender, NEARBY_OVERLAPS, line):
+        return False
+    print(f"nearby: {names[b]} ({b}) overlaps {names[a]} ({a}): {line['why']}, not shown", flush=True)
     return True
 
 
@@ -7569,6 +7593,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "a report is a JSON object"}, 400)
         editor = not READ_ONLY and (not EDIT_TOKEN or self.is_editor())
         kept = (record_client_error(report, self.address_string(), self.headers.get("User-Agent") or "", editor) if kind == "error"
+                else record_overlap(report, self.address_string(), editor) if kind == "overlap"
                 else record_mesh_view(report, self.address_string(), editor))
         if kept is None:
             return self.send_json({"error": "no such mesh"}, 404)
@@ -8110,8 +8135,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "only from the server itself"}, 403)
             b = self.read_json()
             return self.send_json(drain(bool(b.get("on", True)), bool(b.get("now"))))
-        if p in ("/api/client-errors", "/api/mesh-views"):    # from any visitor, not only editors
-            return self.client_report("error" if p == "/api/client-errors" else "view")
+        if p in ("/api/client-errors", "/api/mesh-views", "/api/nearby-overlaps"):    # from any visitor, not only editors
+            return self.client_report({"/api/client-errors": "error", "/api/mesh-views": "view"}.get(p, "overlap"))
         if p == "/api/feedback":    # also from any visitor
             return self.feedback()
         if p == "/api/pair":    # also from any visitor: the code is what's checked

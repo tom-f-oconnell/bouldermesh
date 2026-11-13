@@ -228,6 +228,7 @@
     background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12px;box-shadow:0 4px 16px rgba(0,0,0,.3)}
   #nearby[hidden]{display:none} #nearby .row{gap:6px;flex-wrap:wrap;align-items:center} #nearby .head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
   #nearby .head b{flex:1;font-size:13px} #nearby input[type=number]{width:72px}
+  #nearby .warn{color:var(--warn)}
   #nearby .list{display:grid;grid-template-columns:auto 1fr auto;gap:4px 8px;margin-top:8px;align-items:center}
   #nearby .list .name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap} #nearby .list .name.picked{color:var(--acc);font-weight:600}
   #nearby .list small{grid-column:2/-1;color:var(--mute);margin-top:-3px}
@@ -824,7 +825,7 @@ const COUNTED = /(?:(photo|video|block|frame|climb)s? )?(\d+) of (\d+)(?: (photo
 function stepDone(s){
   const c = s.state === 'done' ? null : stepCount(s);
   const detail = esc(s.detail || '').replace(new RegExp(COUNTED, 'g'), (_, one, x, y, many) => `${x}/${y}${many || one ? ' ' + (many || one + 's') : ''}`);
-  const said = s.count ? `${c.x}/${c.y} ${c.what}` + (detail ? ' · ' + detail : '') : c ? detail
+  const said = c && s.count ? `${c.x}/${c.y} ${c.what}` + (detail ? ' · ' + detail : '') : c ? detail
     : `${(100 * s.frac).toFixed(0)}%` + (detail ? ' · ' + detail : '');
   return { fill: c && c.y ? c.x / c.y : s.frac, said };
 }
@@ -2473,20 +2474,50 @@ async function showNearby(radius){
   for (const it of mine.items) {
     if (nearby !== mine) return;
     if (it.state !== 'waiting') continue;
-    it.state = 'loading'; renderNearby();
-    try {
-      const obj = await loadNeighbour(it.n);
-      if (nearby !== mine) { obj.traverse(o => { if (o.isMesh) { o.geometry.dispose(); o.material?.map?.dispose(); o.material?.dispose(); } }); return; }
-      it.local = ownMeasure(obj);
-      it.m = it.n.metres_per_unit || NEARBY_GUESS_M / it.local.extent;
-      it.wrap = new THREE.Group(); it.wrap.add(obj); it.wrap.userData.nearby = it.n.id;
-      mine.group.add(it.wrap); it.state = 'shown';
-      placeNearby();
-      if (mine.items.filter(x => x.state === 'shown').length === 1) seeAllNearby();
-    } catch (e) { it.state = 'failed'; it.error = e.message; }
-    renderNearby();
+    if (it.n.distance_m < .5) { overlapped(mine, it, 'same point'); continue; }    // the cheapest check: no need to load it
+    await loadNearbyItem(mine, it);
   }
   mine.loading = false; renderNearby();
+  const left = mine.items.filter(x => x.overlap && !x.anyway);
+  if (left.length && nearby === mine)
+    toast(`${left.length === 1 ? `${left[0].n.name} isn't` : `${left.length} meshes aren't`} shown: ${left.length === 1 ? 'it' : 'they'} would overlap ${left.length === 1 ? 'this one or another' : 'this one or each other'}, as the same rock meshed twice often does (a climb's mesh and its boulder's). Nearby's list can show ${left.length === 1 ? 'it' : 'them'} anyway.`, 10000);
+}
+// a neighbour loaded and placed; if its bounds then lie mostly within this mesh's or another shown one's, seen from
+// above, it's taken out again unless it was asked for anyway (overlapped())
+async function loadNearbyItem(mine, it, anyway = false){
+  it.state = 'loading'; renderNearby();
+  try {
+    const obj = await loadNeighbour(it.n);
+    if (nearby !== mine) { obj.traverse(o => { if (o.isMesh) { o.geometry.dispose(); o.material?.map?.dispose(); o.material?.dispose(); } }); return; }
+    it.local = ownMeasure(obj);
+    it.m = it.n.metres_per_unit || NEARBY_GUESS_M / it.local.extent;
+    it.wrap = new THREE.Group(); it.wrap.add(obj); it.wrap.userData.nearby = it.n.id;
+    mine.group.add(it.wrap); it.state = 'shown';
+    placeNearby();
+    const hit = anyway ? null : overlapOf(mine, it);
+    if (hit) { mine.group.remove(it.wrap); overlapped(mine, it, 'bounds', hit); woke(); }
+    else if (mine.items.filter(x => x.state === 'shown').length === 1) seeAllNearby();
+  } catch (e) { it.state = 'failed'; it.error = e.message; }
+  renderNearby();
+}
+const OVERLAP_SHARE = .25;     // of the smaller one's footprint, seen from above, over which two meshes overlap
+function overlapOf(mine, it){
+  const box = mainBox(it.wrap), others = [{ id: mine.id, box: mainBox(current) }]
+    .concat(mine.items.filter(x => x !== it && x.state === 'shown' && x.wrap?.parent).map(x => ({ id: x.n.id, box: mainBox(x.wrap) })));
+  const area = b => Math.max(0, b.max.x - b.min.x) * Math.max(0, b.max.z - b.min.z);
+  for (const o of others) {
+    const w = Math.min(box.max.x, o.box.max.x) - Math.max(box.min.x, o.box.min.x), d = Math.min(box.max.z, o.box.max.z) - Math.max(box.min.z, o.box.min.z);
+    const share = w > 0 && d > 0 ? w * d / Math.max(1e-9, Math.min(area(box), area(o.box))) : 0;
+    if (share > OVERLAP_SHARE) return { other: o.id, share };
+  }
+  return null;
+}
+// one Nearby leaves out as overlapping: said in its list (with Show anyway), and told to the site for looking at later
+function overlapped(mine, it, why, hit = null){
+  it.state = 'overlaps'; it.overlap = { why, other: hit?.other || mine.id, share: hit?.share };
+  fetch('/api/nearby-overlaps', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ mesh: it.overlap.other, other: it.n.id, why, share: hit?.share, distance_m: it.n.distance_m }) }).catch(() => {});
+  renderNearby();
 }
 function nearbyItem(id){ return id === nearby?.id ? null : nearby?.items.find(it => it.n.id === id); }
 function renderNearby(){
@@ -2495,10 +2526,10 @@ function renderNearby(){
   const nb = nearby?.id === shownMesh ? nearby : null, m = meshesById[shownMesh];
   const list = (nb?.items || []).map(it => {
     const n = it.n, same = n.distance_m < .5;
-    return `<input type="checkbox" data-show="${n.id}" ${it.wrap?.visible === false ? '' : 'checked'} ${it.wrap ? '' : 'disabled'} aria-label="Show ${esc(n.name)}">
+    return `<input type="checkbox" data-show="${n.id}" ${it.wrap?.visible === false || it.state !== 'shown' ? '' : 'checked'} ${it.wrap && it.state === 'shown' ? '' : 'disabled'} aria-label="Show ${esc(n.name)}">
       <span class="name${nb.picked === n.id ? ' picked' : ''}" title="${esc(n.name)}">${esc(n.name)}</span>
-      <span class="row"><button class="sm sec" data-pick="${n.id}" ${it.wrap ? '' : 'disabled'}>Turn</button><button class="sm sec" data-open="${n.id}">Open</button></span>
-      <small>${same ? 'at the same point (shared coordinates)' : `${Math.round(n.distance_m)} m away`} · ${it.state === 'shown' ? facingText(it.saved) : it.state === 'failed' ? `failed to load: ${esc(it.error || '')}` : it.state}${n.metres_per_unit ? '' : ' · size guessed'}</small>`;
+      <span class="row">${it.state === 'overlaps' ? `<button class="sm sec" data-anyway="${n.id}" title="Show it where it would overlap, to turn it or compare">Show anyway</button>` : `<button class="sm sec" data-pick="${n.id}" ${it.wrap ? '' : 'disabled'}>Turn</button>`}<button class="sm sec" data-open="${n.id}">Open</button></span>
+      <small>${same ? 'at the same point (shared coordinates)' : `${Math.round(n.distance_m)} m away`} · ${it.state === 'shown' ? facingText(it.saved) : it.state === 'failed' ? `failed to load: ${esc(it.error || '')}` : it.state === 'overlaps' ? `<span class="warn">not shown: it would overlap ${it.overlap.other === nb.id ? 'this mesh' : 'another shown'}${it.overlap.why === 'same point' ? ' (at the same point)' : ''}, probably the same rock</span>` : it.state}${n.metres_per_unit ? '' : ' · size guessed'}</small>`;
   }).join('');
   const picked = nb?.picked, it = picked && picked !== nb.id ? nearbyItem(picked) : null, isSelf = picked && picked === nb?.id;
   const turning = nb?.self && (it || isSelf) ? (() => {
@@ -2564,6 +2595,13 @@ $('#nearby').addEventListener('click', ev => {
   else if (b.dataset.hide !== undefined) clearNearby();
   else if (b.dataset.all !== undefined) seeAllNearby();
   else if (b.dataset.open) viewMesh(b.dataset.open, null, 'nearby');
+  else if (b.dataset.anyway) {    // an overlapping one, shown all the same, to turn it or compare
+    const it = nearbyItem(b.dataset.anyway);
+    if (!it) return;
+    it.anyway = true;
+    if (it.wrap) { nearby.group.add(it.wrap); it.state = 'shown'; placeNearby(); woke(); renderNearby(); }
+    else loadNearbyItem(nearby, it, true);
+  }
   else if (b.dataset.pick) { nearby.picked = nearby.picked === b.dataset.pick ? null : b.dataset.pick; renderNearby(); }
   else if (b.dataset.turn) { const nb = nearby, it = nearbyItem(nb.picked); setTurn((nb.picked === nb.id ? nb.self.h : it.h) + +b.dataset.turn); }
   else if (b.dataset.save !== undefined) saveTurn();
