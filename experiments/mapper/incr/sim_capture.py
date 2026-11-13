@@ -92,6 +92,7 @@ def main(argv=None) -> None:
     p.add_argument("--metres-across", type=float, default=8.0)
     p.add_argument("--fit-err-deg", type=float, default=1.0)
     p.add_argument("--fit-err-m", type=float, default=0.05)
+    p.add_argument("--holds", type=int, default=2, help="holds for detail meshes, where the closest photos look")
     a = p.parse_args(argv)
     rng = np.random.default_rng(a.seed)
     truth, P = read_model(a.state / "model")
@@ -185,6 +186,24 @@ def main(argv=None) -> None:
            "level": {"down": [0.0, -1.0, 0.0], "tilt_deg": 0.0, "offset": None, "offset_deg": None, "spread_deg": a.accel_deg,
                      "sectors": None, "samples": None},
            "down_agree_deg": a.accel_deg, "skipped": {}, "progress": None, "shots": shots}
+    # holds to make detail meshes of: where the capture's closest photos look, on the model's points (as the app's
+    # record carries a beta set's holds, by the server's ids, in the mesh's frame)
+    near = sorted(take, key=lambda n: float(np.median(np.linalg.norm(P - truth[n][1], axis=1))))
+    holds = []
+    for n in near:
+        if len(holds) >= a.holds:
+            break
+        j = len(holds)
+        R, c, k = truth[n]
+        fwd = R.T @ np.array([0.0, 0.0, 1.0])
+        ahead = P[(P - c) @ fwd > 0]
+        off = np.linalg.norm(np.cross(ahead - c, fwd), axis=1)
+        pt = ahead[np.argmin(off)] if len(ahead) else c + fwd
+        if any(np.linalg.norm(pt - np.array(h["p"])) < 2 * 0.075 / scale for h in holds):     # a hold apart from the others
+            continue
+        holds.append({"id": f"{random.Random(a.seed * 100 + j).getrandbits(32):08x}", "ids": [], "target": f"h{j}",
+                      "p": [round(float(x), 6) for x in pt], "r_m": 0.075, "views": None, "done": False})
+    rec["detail"] = {"set": "sim", "holds": holds}
     (out / "capture.json").write_text(json.dumps(rec, indent=1))
     # the tracking's points: the model's, in the world, a centimetre of noise, the first spell's
     W = np.array([fit.apply(x) for x in P[rng.choice(len(P), min(len(P), 20000), replace=False)]]) + rng.normal(size=(min(len(P), 20000), 3)) * 0.01
