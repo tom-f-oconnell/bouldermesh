@@ -1,0 +1,73 @@
+package sh.boulderme.core
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+/** What goes into each photo's own file, in its EXIF UserComment after MARK (app/FORMAT.md; backend/phonedata.py reads it). */
+@Serializable
+data class ShotBlob(
+    val v: Int = 1,
+    val app: String,
+    val device: String,
+    val cap: String,
+    val i: Int,
+    val t: Double,
+    val down: List<Double>? = null,
+    @SerialName("down_src") val downSrc: String? = null,
+    @SerialName("down_acc") val downAcc: List<Double>? = null,
+    val heading: Double? = null,
+    @SerialName("heading_acc") val headingAcc: Double? = null,
+    val gps: BlobGps? = null,
+    val ar: BlobAr? = null,
+    val k: BlobLens? = null,
+    val exp: BlobExposure? = null,
+    val q: BlobQuality? = null,
+) {
+    fun userComment(): String = MARK + Plan.json.encodeToString(serializer(), this)
+
+    companion object { const val MARK = "BMSH1:" }
+}
+
+@Serializable data class BlobGps(val lat: Double, val lng: Double, val alt: Double? = null, val acc: Double, val age: Double)
+@Serializable data class BlobAr(val s: String, val p: List<Double>, val q: List<Double>, val track: String = "normal")
+@Serializable data class BlobLens(val fx: Double, val fy: Double, val cx: Double, val cy: Double, val w: Int, val h: Int)
+@Serializable data class BlobExposure(val t: Double? = null, val iso: Double? = null, @SerialName("focus_m") val focusM: Double? = null)
+@Serializable data class BlobQuality(val sharp: Double? = null, @SerialName("blur_px") val blurPx: Double, @SerialName("clip_hi") val clipHi: Double? = null,
+                                     @SerialName("clip_lo") val clipLo: Double? = null, val ok: Boolean)
+
+/** A photo in a capture's record: its file, its readings, the verdict on it and the targets it helped. */
+@Serializable
+data class ShotRecord(val name: String, val blob: ShotBlob, val kept: Boolean, val why: List<String> = emptyList(),
+                      val notes: List<String> = emptyList(), val helped: List<String> = emptyList())
+
+/** A whole capture, as sent to the server beside its photos (POST /api/projects/<id>/capture). */
+@Serializable
+data class CaptureRecord(
+    val v: Int = 1,
+    val id: String,
+    val app: String,
+    val device: String,
+    val mesh: String? = null,
+    val climbs: List<String> = emptyList(),
+    val started: Double,
+    val ended: Double,
+    val mode: String,                       // "plan" (guided by a mesh there already was) or "orbit" (a rock with none)
+    val fit: RecordFit? = null,
+    val place: RecordPlace? = null,
+    val calibration: RecordCalibration? = null,
+    val skipped: Map<String, String> = emptyMap(),
+    val progress: RecordProgress? = null,
+    val shots: List<ShotRecord>,
+) {
+    fun json(): String = Plan.json.encodeToString(serializer(), this)
+}
+
+/** How the mesh was lined up with the world: metres a unit, how far off level it turned out, and how well it fitted. */
+@Serializable
+data class RecordFit(val scale: Double, val rot: List<Double>, val shift: List<Double>, @SerialName("tilt_deg") val tiltDeg: Double,
+                     val taps: Int, val matched: Int? = null, @SerialName("rms_m") val rmsM: Double? = null)
+
+@Serializable data class RecordPlace(val lat: Double, val lng: Double, val alt: Double? = null, @SerialName("acc_m") val accM: Double, val n: Int, val seconds: Double)
+@Serializable data class RecordCalibration(@SerialName("accel_bias") val accelBias: List<Double>? = null, @SerialName("mag_offset") val magOffset: List<Double>? = null,
+                                           @SerialName("mag_field_ut") val magFieldUt: Double? = null, @SerialName("mag_rms_ut") val magRmsUt: Double? = null)
+@Serializable data class RecordProgress(val total: Int, val done: Int, val skipped: Int, val holds: Int, @SerialName("holds_done") val holdsDone: Int)
