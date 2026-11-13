@@ -1638,7 +1638,7 @@ assert server.beta_findable() == ["aaaaaaaaaaa2", "aaaaaaaaaaa1"], "newest first
 assert [server.queue_beta(m) for m in server.beta_findable()] == [True, True]
 assert server.queue_beta("aaaaaaaaaaa3", ahead=True) and not server.queue_beta("aaaaaaaaaaa3"), "once"
 assert server.beta_queue() == ["aaaaaaaaaaa3", "aaaaaaaaaaa2", "aaaaaaaaaaa1"], "the one asked for on its own goes first"
-assert server.jobs_state()["beta"] == {"running": None, "queued": 3, "youtube": None}
+assert server.jobs_state()["beta"] == {"running": None, "queued": 3, "youtube": None, "at": None, "mid": None}
 refusal = {"since": 0, "until": time.time() + 3600, "level": 0, "error": "not a bot"}
 
 
@@ -1683,11 +1683,18 @@ for name in ("yt_aaaaaaaa_000.jpg", "p.jpg"):
 server.q("INSERT INTO meshes(id,name,filename,source,created,rules) VALUES(?,?,?,?,?,?)", mid, "Gamma", "mesh.glb", f"project:{pid}",
          time.time(), server.MESH_RULES, write=True)
 url = "https://www.youtube.com/watch?v=aaaaaaaaaaa"
-sent = []
+sent, heard = [], []
 
 
-def fake_task(kind, files, args, label, log, take_within=None):
+def fake_task(kind, files, args, label, log, tracker=None, take_within=None):
     sent.append((kind, files, args))
+    if kind == "beta":  # the machine's progress lines (remote_job.py) go to the mesh's beta.json as they come
+        at = server.beta_mod.progress_at(0, 2, (30, 120), 0.0, 0.0)
+        server.compute.follow("@@progress beta 0.1250 " + json.dumps({**at, "text": "video 1 of 2: frame 31 of 120"}), tracker, log)
+        heard.append(server.beta_mod.load(md))
+        server.compute.follow("@@progress beta 0.7500 " + json.dumps({**server.beta_mod.progress_at(1, 2, (60, 120), 0.0, 0.0),
+                                                                        "text": "video 2 of 2: frame 61 of 120"}), tracker, log)
+        heard.append(server.beta_mod.load(md))
     back = pathlib.Path(tempfile.mkdtemp())
     (back / "out").mkdir()
     (back / "out" / ("beta.json" if kind == "beta" else "scale.json")).write_text(json.dumps({"status": "done", "videos": []}))
@@ -1712,6 +1719,11 @@ kind, files, args = sent[-1]
 assert kind == "beta" and {"mesh/mesh.glb", "mesh/cameras.json", "photos/yt_aaaaaaaa_000.jpg", "videos/aaaaaaaaaaa.mp4"} <= set(files), files
 assert "mesh/texture.png" not in files and "photos/p.jpg" not in files, "only the mesh, and the video frames placed in it"
 assert server.beta_mod.load(md)["status"] == "done" and not (md / "page.html").exists(), "only what the job may make comes back"
+first, last = heard[0], heard[-1]
+assert first["status"] == "running" and first["at"]["frac"] == 0.125 and first["at"]["frames"] == 120, first
+assert first["at"]["started"] > 1e9 and first["at"]["where"] == "machine" and "on a machine" in first["progress"], \
+    "timed from when the machine first says, here"
+assert last["at"]["frac"] == 0.75 and last["at"]["done_videos"] == 1 and last["progress"].startswith("video 2 of 2"), last
 server.run_scale(mid)
 kind, files, args = sent[-1]
 assert kind == "scale" and "masks/p.jpg.png" in files and set(args) == {"climbs", "videos", "known"} and server.scale_mod.load(md)["status"] == "done"

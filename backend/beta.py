@@ -506,12 +506,13 @@ def _pose_model(log: Log):
 
 
 def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, tracker, tmp: Path, log: Log,
-                  progress: Callable[[str], None] = lambda s: None) -> dict:
+                  progress: Callable[..., None] = lambda s, frame=None: None) -> dict:
     """The holds a video's climber used on a mesh.
 
     Args:
         placed: the video's frames placed in the mesh: their cameras.json entries, by file name.
         photos: where those frames are.
+        progress: told how far it is, as text, and with frame: (frames done, of how many).
 
     Returns:
         {frames, with_climber, placed_frames, approximate_lens, holds, tracks, reference, poses}: tracks are
@@ -530,7 +531,7 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
     for i, (t, path) in enumerate(frames):
         jobctl.check()
         if i % 10 == 0:
-            progress(f"frame {i + 1} of {len(frames)}")
+            progress(f"frame {i + 1} of {len(frames)}", (i, len(frames)))
         im = cv2.imread(str(path))
         kps, scs = tracker(im)
         who = climber(kps, scs, prev) if len(kps) else None
@@ -627,7 +628,7 @@ def summary(record: dict | None) -> dict | None:
     """For the list of meshes: how far finding it got, and what it found."""
     if not record:
         return None
-    return {"status": record["status"], "progress": record.get("progress"), "note": record.get("note"),
+    return {"status": record["status"], "progress": record.get("progress"), "at": record.get("at"), "note": record.get("note"),
             "waiting": record.get("waiting"), "videos": len(record["videos"]), "holds": sum(len(v.get("holds") or []) for v in record["videos"])}
 
 
@@ -635,13 +636,25 @@ def carry_on(mesh_dir: Path) -> None:
     """Queue again a search that a restart stopped, as finding beta carries on after one."""
     record = load(mesh_dir)
     if record and record["status"] == "running":
-        record.update(status="queued", progress=None, resume=True)
+        record.update(status="queued", progress=None, at=None, resume=True)
         save(mesh_dir, record)
 
 
-def find(mesh_dir: Path, photos: Path, log: Log) -> dict:
+def progress_at(done: int, videos: int, frame: tuple[int, int] | None, started: float, frac0: float) -> dict:
+    """How far a search is, for the page's bar: {done_videos, videos, frame, frames, frac, started, frac0}, frac0 being
+    where it started (videos done before a restart), so the time left is from its pace since."""
+    i, n = frame or (0, 0)
+    frac = (done + (i / n if n else 0.0)) / videos if videos else 1.0
+    return {"done_videos": done, "videos": videos, "frame": i, "frames": n, "frac": round(min(frac, 1.0), 4),
+            "started": started, "frac0": round(frac0, 4)}
+
+
+def find(mesh_dir: Path, photos: Path, log: Log, report: Callable[[str, dict], None] | None = None) -> dict:
     """Find the beta in each of a mesh's videos, saving beta.json as it goes, so the page can follow it.
     Videos already done by a search that YouTube's refusal or a restart stopped partway aren't done again.
+
+    Args:
+        report: also told how far it is, as the record's progress (text) and at (progress_at()).
 
     Returns:
         The record saved.
@@ -653,7 +666,7 @@ def find(mesh_dir: Path, photos: Path, log: Log) -> dict:
     found = videos(mesh_dir)
     before = load(mesh_dir) or {}
     kept = [v for v in before.get("videos", []) if before.get("resume") and v["url"] in found and v["status"] in ("done", "no holds found")]
-    record = {"status": "running", "started": time.time(), "videos": kept, "progress": None}
+    record = {"status": "running", "started": time.time(), "videos": kept, "progress": None, "at": None}
     if not found:
         record.update(status="done", note="none of its photos are frames of videos, or where they were placed wasn't kept")
         save(mesh_dir, record)
@@ -665,14 +678,18 @@ def find(mesh_dir: Path, photos: Path, log: Log) -> dict:
         poses = {u: p for u, p in json.loads((mesh_dir / POSES_FILE).read_text()).items() if u in {v["url"] for v in kept}}
     except (FileNotFoundError, json.JSONDecodeError):
         poses = {}
-    for n, (url, v) in enumerate(found.items()):
+    for url, v in found.items():
         if url in {k["url"] for k in kept}:
             continue
         entry = {"url": url, "tag": v["tag"], "title": v["title"], "uploader": v["uploader"], "placed": len(v["frames"])}
 
-        def progress(s, n=n):
-            record["progress"] = f"video {n + 1} of {len(found)}: {s}"
+        def progress(s, frame=None):
+            done = len(record["videos"])
+            record["progress"] = f"video {done + 1} of {len(found)}: {s}"
+            record["at"] = progress_at(done, len(found), frame, record["started"], len(kept) / len(found))
             save(mesh_dir, record)
+            if report:
+                report(record["progress"], record["at"])
         progress("downloading")
         try:
             result = analyse_video(url, v["frames"], photos, mesh, tracker, mesh_dir / "beta_tmp", log, progress)
@@ -686,7 +703,7 @@ def find(mesh_dir: Path, photos: Path, log: Log) -> dict:
                 f"{result['placed_frames']} placed")
         except youtube.Refused as e:
             log(f"beta: {e}: waiting")
-            record.update(status="queued", progress=None, waiting=e.state["until"], resume=True)
+            record.update(status="queued", progress=None, at=None, waiting=e.state["until"], resume=True)
             save(mesh_dir, record)
             raise
         except Exception as e:
@@ -696,7 +713,7 @@ def find(mesh_dir: Path, photos: Path, log: Log) -> dict:
             shutil.rmtree(mesh_dir / "beta_tmp", ignore_errors=True)
         record["videos"].append(entry)
         save(mesh_dir, record)
-    record.update(status="done", progress=None, finished=time.time())
+    record.update(status="done", progress=None, at=None, finished=time.time())
     save(mesh_dir, record)
     return record
 

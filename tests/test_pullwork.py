@@ -460,7 +460,8 @@ job = TMP / "remote-job"
 (job / "photos").mkdir()
 (job / "task.json").write_text(json.dumps({"climbs": [{"name": "Alpha"}], "videos": {}, "known": None}))
 seen = {}
-beta.find = lambda mesh, photos, log: [(mesh / "beta.json").write_text("{}"), (mesh / "beta_0123abcd.jpg").write_bytes(b"j"),
+beta.find = lambda mesh, photos, log, report: [report("video 1 of 2: frame 1 of 8", beta.progress_at(0, 2, (0, 8), 5.0, 0.0)),
+                                               (mesh / "beta.json").write_text("{}"), (mesh / "beta_0123abcd.jpg").write_bytes(b"j"),
                                        (mesh / "notes.html").write_text("x"), seen.update(via=youtube.via, cache=youtube.VIDEO_CACHE)]
 scale.estimate = lambda mesh, photos, masks, climbs, videos, log, known=None: [(mesh / "scale.json").write_text("{}"),
                                                                               seen.update(climbs=climbs, masks=masks)]
@@ -469,6 +470,8 @@ with contextlib.redirect_stdout(printed):
     assert remote_job.task(job, "beta", lambda line: None) == 0
     assert remote_job.task(job, "scale", lambda line: None) == 0
 assert sorted(f.name for f in (job / "out").iterdir()) == ["beta.json", "beta_0123abcd.jpg", "scale.json"]
+told = [ln for ln in printed.getvalue().splitlines() if ln.startswith("@@progress beta ")]
+assert len(told) == 1 and json.loads(told[0].split(" ", 3)[3])["text"] == "video 1 of 2: frame 1 of 8", told
 assert '"files": ["beta.json", "beta_0123abcd.jpg"]' in printed.getvalue() and '"files": ["scale.json"]' in printed.getvalue()
 assert seen == {"via": "volunteers", "cache": job / "videos", "climbs": [{"name": "Alpha"}], "masks": None}, "never YouTube from there"
 youtube.via = "volunteers_when_refused"

@@ -5603,22 +5603,22 @@ def run_beta(mid: str) -> None:
         if missing:     # it waits for them, which volunteers, if any, are asked for
             for u in missing if want else []:
                 want(u)
-            beta_mod.save(mesh_dir, {**rec, "status": "queued", "progress": None, "waiting_videos": missing})
+            beta_mod.save(mesh_dir, {**rec, "status": "queued", "progress": None, "at": None, "waiting_videos": missing})
             log(f"beta: {len(missing)} video(s) " + ("asked of volunteers" if want else "to wait for: there are no volunteers to ask"))
     except pullwork.NotTaken as e:      # to the back of the queue, so the next isn't held up behind it
         log(f"beta: {e}: tried again later")
-        beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "queued", "progress": None, "resume": True,
+        beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "queued", "progress": None, "at": None, "resume": True,
                                  "queued": time.time(), "ahead": False, "machine_wait": time.time() + TAKE_BACKOFF,
                                  "note": f"waited for a machine: {e}"})
     except compute.ComputeUnavailable as e:     # tried again in a while
         log(f"beta: waiting for a machine to find it on: {e}")
-        beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "queued", "progress": None, "resume": True,
+        beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "queued", "progress": None, "at": None, "resume": True,
                                  "machine_wait": time.time() + COMPUTE_WAIT})
     except Cancelled:
-        beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "stopped", "progress": None})
+        beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "stopped", "progress": None, "at": None})
     except Exception as e:
         log(f"FAILED: {type(e).__name__}: {e}")
-        beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": f"failed: {type(e).__name__}: {e}", "progress": None})
+        beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": f"failed: {type(e).__name__}: {e}", "progress": None, "at": None})
 
 
 # ------------------------------------------------------------------ finding beta, on a thread of its own
@@ -5636,7 +5636,7 @@ def queue_beta(mid: str, ahead: bool = False) -> bool:
     """
     if (beta_mod.load(MESHES / mid) or {}).get("status") in ("queued", "running") or mesh_old(mid):
         return False
-    beta_mod.save(MESHES / mid, {"status": "queued", "videos": [], "progress": None, "queued": time.time(), "ahead": ahead})
+    beta_mod.save(MESHES / mid, {"status": "queued", "videos": [], "progress": None, "at": None, "queued": time.time(), "ahead": ahead})
     _beta_wake.set()
     return True
 
@@ -5663,7 +5663,7 @@ def beta_queue() -> list[str]:
     for d in MESHES.iterdir() if MESHES.exists() else []:
         rec = beta_mod.load(d)
         if rec and rec["status"] == "queued" and mesh_old(d.name):
-            beta_mod.save(d, {**rec, "status": "stopped", "progress": None, "note": "not looked for: the mesh is old"})
+            beta_mod.save(d, {**rec, "status": "stopped", "progress": None, "at": None, "note": "not looked for: the mesh is old"})
         elif rec and rec["status"] == "queued":
             found.append(((not rec.get("ahead"), rec.get("queued", 0)), d.name))
     return [mid for _, mid in sorted(found)]
@@ -5686,7 +5686,7 @@ def stop_beta() -> int:
     queued = beta_queue()
     for mid in queued:
         rec = beta_mod.load(MESHES / mid) or {}
-        beta_mod.save(MESHES / mid, {**rec, "status": "stopped", "progress": None, "waiting": None, "resume": None})
+        beta_mod.save(MESHES / mid, {**rec, "status": "stopped", "progress": None, "at": None, "waiting": None, "resume": None})
     _beta_control.stop()
     return len(queued)
 
@@ -5982,6 +5982,26 @@ def take_made(back: Path, mid: str, kind: str) -> list[str]:
     return moved
 
 
+class _BetaProgress:
+    """A remote beta job's progress (compute.follow() gives it a tracker, remote_job.py's detail being beta.progress_at()
+    with its text) to the mesh's beta.json, as beta.find() keeps it when it runs here. Its time is counted from the
+    first the machine says, not from when it was sent."""
+
+    def __init__(self, mesh_dir: Path):
+        self.mesh_dir, self.started = mesh_dir, None
+
+    def update(self, key: str, frac: float = 0.0, detail=None) -> None:
+        if key != "beta" or not isinstance(detail, dict):
+            return
+        self.started = self.started or time.time()
+        rec = beta_mod.load(self.mesh_dir) or {"videos": []}
+        if rec.get("status") != "running":
+            return
+        at = {k: detail[k] for k in ("done_videos", "videos", "frame", "frames", "frac", "frac0") if k in detail}
+        rec.update(progress=f"{detail.get('text') or 'running'} (on a machine)", at={**at, "started": self.started, "where": "machine"})
+        beta_mod.save(self.mesh_dir, rec)
+
+
 def remote_beta(mid: str, pid: str, log) -> None:
     """beta_mod.find(), on a machine that connects here: with its videos from the cache, cut to the seconds it looks at.
 
@@ -6008,8 +6028,8 @@ def remote_beta(mid: str, pid: str, log) -> None:
             except Exception:
                 shutil.copy(src, dst)
             files[f"videos/{dst.name}"] = dst
-        beta_mod.save(mesh_dir, {**rec, "status": "running", "progress": "on a machine that connects here", "started": time.time()})
-        _, back = MACHINES.task("beta", files, {}, f"beta: {mid}", log, take_within=TAKE_WITHIN)
+        beta_mod.save(mesh_dir, {**rec, "status": "running", "progress": "on a machine that connects here", "at": None, "started": time.time()})
+        _, back = MACHINES.task("beta", files, {}, f"beta: {mid}", log, tracker=_BetaProgress(mesh_dir), take_within=TAKE_WITHIN)
         try:
             log(f"beta: back from the machine: {', '.join(take_made(back, mid, 'beta')) or 'nothing'}")
         finally:
@@ -6715,7 +6735,8 @@ def jobs_state(board: list[dict] | None = None) -> dict:
         waiting = list(jobs.queue)
     runs = [w.job for w in list(_workers)]
     by_thread = {j["owner"]: j for j in (MACHINES.running() if board is None else board)}
-    now = _beta_now and q("SELECT name FROM meshes WHERE id=?", _beta_now["mid"], one=True)
+    bn = _beta_now
+    now = bn and q("SELECT name FROM meshes WHERE id=?", bn["mid"], one=True)
 
     def running(r: dict) -> dict:
         mj = by_thread.get(r.get("thread"))
@@ -6723,7 +6744,8 @@ def jobs_state(board: list[dict] | None = None) -> dict:
     return {"running": [running(r) for r in runs if r], "queued": [job_info(j) for j in waiting],
             "area_climbs": q("SELECT c.name AS area, i.name, i.project_id FROM campaign_items i JOIN campaigns c ON c.id=i.campaign_id "
                              "WHERE i.status='running' ORDER BY i.updated"),
-            "beta": {"running": now["name"] if now else None, "queued": len(beta_queue()), "youtube": youtube_mod.refused()},
+            "beta": {"running": now["name"] if now else None, "mid": bn["mid"] if now else None, "queued": len(beta_queue()),
+                     "youtube": youtube_mod.refused(), "at": (beta_mod.load(MESHES / bn["mid"]) or {}).get("at") if now else None},
             "stopping": _stopping}
 
 

@@ -427,11 +427,14 @@ admin page's *Areas*); on machines that connect here, meshing comes first, then 
 again makes it a hand hold, then a finish hold, then a foot hold, then removes it, as setting a climb in
 the Tension Board app does. These are saved with the mesh, apart from those found in videos.
 
-The tab lists meshes with the most holds marked by hand first, then those with the most found in videos.
-*Only show meshes with beta* hides those with neither.
+The tab lists only meshes with beta, those with the most holds marked by hand first, then those with the most found
+in videos. Above them it counts climbs: those checked (a current mesh of theirs, not an old one, has had its videos
+looked through, whatever was found), those not yet (no mesh, only old ones, or not looked through), and those whose
+meshes have no video frames to look in.
 
 *Find beta in all N not done* queues every mesh with video frames whose beta hasn't been found, and *Stop
-finding beta* unqueues them. Beta is found one mesh at a time, on a thread of its own at the lowest CPU
+finding beta* unqueues them. The one being found has a bar, as the Areas tab's do: how far through its videos and the
+frames of the one it's on, and its time going and left, whether it runs here or on a machine that connects here. Beta is found one mesh at a time, on a thread of its own at the lowest CPU
 priority, so it never holds up meshing, and a restart only pauses it. 148 meshes had 364 videos to look
 at (Nov 2026): about 10 hours on the CPU, more while meshing runs alongside.
 

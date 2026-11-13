@@ -587,7 +587,7 @@
       </section>
       <section>
         <h2>Meshes</h2>
-        <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="b-only"> Only show meshes with beta</label></div>
+        <div id="b-count" class="meta" style="margin-bottom:8px"></div>
         <div id="beta-all" class="row" style="margin-bottom:8px;flex-wrap:wrap;gap:6px"></div>
         <div id="beta-list"></div>
       </section>
@@ -876,7 +876,7 @@ document.querySelectorAll('label.file > button').forEach(b => b.onclick = () => 
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x===b));
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + b.dataset.tab));
-  if (b.dataset.tab === 'beta') renderBetaList();
+  if (b.dataset.tab === 'beta') { renderBetaList(); betaLoop(); }    // its bars every 5 s while beta's found and it shows
   if (b.dataset.tab === 'projects') poll();          // followed while it shows
   if (b.dataset.tab === 'areas') campaignLoop();     // every 5 s while it shows
 });
@@ -3554,10 +3554,15 @@ $('#campaigns').addEventListener('click', ev => {
 });
 let campaignTimer = null;
 // while the server waits for jobs to finish before it restarts, say so, as nothing new starts meanwhile
-let betaJobs = null;   // /api/jobs' beta: {running, queued, youtube}
+let betaJobs = null;   // /api/jobs' beta: {running, mid, at, queued, youtube}
 async function showStopping(){
   const jobs = await api('/api/jobs').catch(() => null), s = jobs?.stopping, el = $('#stopping');
-  if (jobs && JSON.stringify(jobs.beta) !== JSON.stringify(betaJobs)) { betaJobs = jobs.beta; renderBetaAll(); }
+  if (jobs && JSON.stringify(jobs.beta) !== JSON.stringify(betaJobs)) {
+    const was = betaJobs?.mid;
+    betaJobs = jobs.beta; renderBetaAll();
+    if (was !== betaJobs.mid && $('#pane-beta').classList.contains('on')) refreshMeshes();  // one started or finished: its card says so
+    else betaBars();
+  }
   el.style.display = s ? '' : 'none';
   if (!s) return;
   const n = s.waiting_for.length;
@@ -4269,12 +4274,38 @@ function betaLine(m){
   const b = m.beta, n = videoCount(m);
   if (b?.status === 'queued' && b.waiting) return `waiting: YouTube is refusing this server's downloads until about ${hhmm(b.waiting)}`;
   if (b?.status === 'queued') return 'queued to find its beta';
-  if (b?.status === 'running') return `finding its beta: ${esc(b.progress || '')}`;
+  if (b?.status === 'running') return betaAt(m) ? `finding its beta${betaAt(m).where === 'machine' ? ' on a machine' : ''}` : `finding its beta: ${esc(b.progress || '')}`;
   if (b?.status === 'done') return b.note ? esc(b.note) : `${b.holds} holds found in ${videosHtml(m, b.videos)}`;
   if (b) return esc(b.status);
   if (!m.source.startsWith('project:')) return 'an upload: holds can only be marked by hand';
   if (!m.cameras_kept) return 'rebuild it to find beta in its videos: where its photos were placed wasn\'t kept';
   return n ? `beta to find in ${videosHtml(m, n)}` : 'no video frames placed in it';
+}
+// how far finding a mesh's beta is (beta.progress_at()): the running one's from /api/jobs (followed every 5 s), else its card's
+const betaAt = m => m.beta?.status !== 'running' ? null : betaJobs?.mid === m.id && betaJobs.at ? betaJobs.at : m.beta.at;
+// its bar, as the Areas tab's are: percent, the video it's on and its frame, and the time going and left, by its pace
+// since it started (videos done before a restart don't count), with a time bar once it's been going a while
+function betaBarHtml(at){
+  if (!at) return '';
+  const f0 = at.frac0 || 0, pace = { state: 'running', started: at.started, frac: f0 < 1 ? Math.max(0, (at.frac - f0) / (1 - f0)) : 1 };
+  const frame = at.frames ? `, frame ${at.frame + 1}/${at.frames}` : at.done_videos < at.videos ? ', downloading' : '', heavy = isHeavy(pace);
+  return `<div class="bbar">${countBar(at.frac, 'running')}<small>${(100 * at.frac).toFixed(0)}% · video ${Math.min(at.done_videos + 1, at.videos)} of ${at.videos}${frame}${heavy ? '' : stepTiming(pace)}</small>`
+    + (heavy ? `${stepTimeBar(pace).bar}<small class="time">${stepTimeBar(pace).said}</small>` : '') + '</div>';
+}
+// the cards' bars again, without drawing the list again (which closes its open lists of videos)
+function betaBars(){
+  document.querySelectorAll('#beta-list [data-bbar]').forEach(el => {
+    const m = meshesById[el.dataset.bbar];
+    el.innerHTML = m ? betaBarHtml(betaAt(m)) : '';
+  });
+}
+let betaTimer = null;
+// while the Beta tab shows and beta's being found, how far, every 5 s
+async function betaLoop(){
+  clearTimeout(betaTimer);
+  if (!$('#pane-beta').classList.contains('on')) return;
+  if (!document.hidden) await showStopping();
+  if (betaJobs?.running || betaJobs?.queued) betaTimer = setTimeout(betaLoop, 5000);
 }
 // "N videos", opening to a link to each of the mesh's YouTube videos (its photos' record: /api/meshes/<id>/sources)
 function videosHtml(m, n){
@@ -4301,11 +4332,12 @@ function renderBetaAll(){
   const b = betaJobs || {}, busy = b.running || b.queued;
   el.innerHTML = (todo ? `<button class="sm sec findall" title="Queues every mesh with frames of videos whose beta hasn't been found. They're done one at a time, alongside meshing, at the lowest priority: a few minutes a video.">Find beta in all ${todo} not done</button>` : '')
     + (busy ? `<button class="sm sec stopall">Stop finding beta</button><small class="grow">${b.running ? `finding it in ${esc(b.running)}; ` : ''}${b.queued} queued</small>` : '')
+    + (b.running && b.at ? `<div style="width:100%">${betaBarHtml(b.at)}</div>` : '')
     + (b.youtube ? `<div class="meta bad" style="width:100%">YouTube is refusing this server's downloads (its bot check) until about ${hhmm(b.youtube.until)}: finding beta waits until then, and harvests meanwhile skip videos.</div>` : '');
   el.querySelector('.findall')?.addEventListener('click', async () => {
     try { const r = await api('/api/meshes/beta-all', { method: 'POST' }); toast(`Queued ${r.queued} mesh${r.queued === 1 ? '' : 'es'} to find beta in`, 5000); }
     catch (e) { return toast(e.message, 6000); }
-    await refreshMeshes(); showStopping();
+    await refreshMeshes(); betaLoop();
   });
   el.querySelector('.stopall')?.addEventListener('click', async () => {
     if (!ask('Stop finding beta, and unqueue the meshes waiting for it?')) return;
@@ -4314,22 +4346,39 @@ function renderBetaAll(){
     await refreshMeshes(); showStopping();
   });
 }
+// how many climbs have been checked for beta: those with a current mesh (not an older version, nor old) whose videos have
+// all been looked through, whatever was found. Of the rest, those whose current meshes have no video frames placed to
+// look in, and the others (no mesh, only old ones, or not looked through yet). All a mesh is of counts: its own climbs,
+// those linked as on the same boulder, and a pooled mesh's
+function betaCounts(meshes){
+  const state = new Map();     // climb id: 'checked', 'novideo' or 'todo', the best of its meshes
+  const rank = { checked: 2, todo: 1, novideo: 0 };
+  for (const m of meshes) {
+    if (m.old) continue;
+    const s = m.beta?.status === 'done' ? 'checked' : m.source.startsWith('project:') && m.cameras_kept && videoCount(m) ? 'todo' : 'novideo';
+    for (const c of [...m.climbs, ...(m.boulder_climbs || [])]) if (!state.has(c.id) || rank[s] > rank[state.get(c.id)]) state.set(c.id, s);
+  }
+  const n = s => [...state.values()].filter(x => x === s).length, checked = n('checked'), novideo = n('novideo');
+  const total = Math.max(climbsTotal ?? 0, state.size), unchecked = total - checked - novideo;
+  const cl = k => `${k} climb${k === 1 ? '' : 's'}`;
+  return `${cl(checked)} checked for beta in their videos, ${cl(unchecked)} not yet` + (novideo ? `, and ${novideo} with no video to check` : '');
+}
 function renderBetaList(){
   const el = $('#beta-list');
   if (!el || !$('#pane-beta').classList.contains('on')) return;
   renderBetaAll();
-  // most holds marked by hand first, then most found in videos, then newest
-  const all = (meshesCache || []).filter(m => !m.replaced_by)
+  // only meshes with beta: most holds marked by hand first, then most found in videos, then newest
+  const all = (meshesCache || []).filter(m => !m.replaced_by);
+  const list = all.filter(m => m.marked || m.beta?.holds)
     .sort((a, b) => (b.marked || 0) - (a.marked || 0) || (b.beta?.holds || 0) - (a.beta?.holds || 0));
-  const withBeta = all.filter(m => m.marked || m.beta?.holds);
-  $('#b-only').parentNode.lastChild.textContent = ` Only show meshes with beta (${withBeta.length})`;
-  const list = $('#b-only').checked ? withBeta : all;
+  $('#b-count').textContent = betaCounts(all);
   el.innerHTML = list.length ? '' : `<div class="status">${all.length ? 'No meshes have holds marked or found yet.' : 'No meshes yet.'}</div>`;
   for (const m of list) {
     const d = document.createElement('div'); d.className = 'card mesh' + (betaState?.mid === m.id ? ' active' : '');
     const canFind = m.source.startsWith('project:') && m.cameras_kept && videoCount(m) && !['queued', 'running'].includes(m.beta?.status);
     d.innerHTML = `<div class="grow"><span class="name">${esc(meshTitle(m))}</span><br>
-        <small>${m.marked ? `${m.marked} hold${m.marked === 1 ? '' : 's'} marked · ` : ''}${betaLine(m)}</small></div>
+        <small>${m.marked ? `${m.marked} hold${m.marked === 1 ? '' : 's'} marked · ` : ''}${betaLine(m)}</small>
+        ${m.beta?.status === 'running' ? `<div data-bbar="${esc(m.id)}">${betaBarHtml(betaAt(m))}</div>` : ''}</div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px"><button class="sm open">Beta</button>
         ${canFind ? `<button class="sm sec find">${m.beta?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}</div>`;
     d.querySelector('.open').onclick = () => openBeta(m.id);
@@ -4337,7 +4386,6 @@ function renderBetaList(){
     el.appendChild(d);
   }
 }
-$('#b-only').onchange = renderBetaList;
 async function findBeta(mid){
   // finding it again sets aside what was found at once, and a video YouTube won't give again, or that was pruned, comes
   // back with nothing; holds marked by hand stay
@@ -4345,7 +4393,7 @@ async function findBeta(mid){
     "What was found is replaced as soon as it starts: a video that can't be had again (YouTube refusing it, or deleted from the cache) then has none. Holds marked by hand stay.", 'Find again')) return;
   try { await api(`/api/meshes/${mid}/beta`, { method: 'POST' }); toast('Finding its beta: a few minutes for each video', 5000); }
   catch (e) { return toast(e.message, 6000); }
-  await refreshMeshes();
+  await refreshMeshes(); betaLoop();
   if (betaState?.mid === mid) { await loadBeta(); watchBeta(); }
 }
 async function loadBeta(){
@@ -4452,8 +4500,9 @@ function renderBetaPanel(){
     <div class="row" style="margin-top:4px"><button class="sm mark">${b.marking ? 'Stop marking' : 'Mark holds'}</button>
       ${b.marked.length ? '<button class="sm sec clearmine">Clear yours</button>' : ''}</div>
     <div class="notice w" style="margin-top:6px">Marking: click the rock to add a start hold, then click a hold again for hand, finish, foot, then none.</div>
-    <div class="meta" style="margin-top:8px"><b>From videos:</b> ${busy ? `${f.status === 'queued' ? 'queued' : esc(f.progress || 'starting')}…` : m ? betaLine(m) : ''}
-      ${canFind ? `<button class="sm sec find" style="margin-left:6px">${f?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}</div>
+    <div class="meta" style="margin-top:8px"><b>From videos:</b> ${busy ? (f.status === 'queued' ? 'queued…' : f.at ? `finding it${f.at.where === 'machine' ? ' on a machine' : ''}…` : `${esc(f.progress || 'starting')}…`) : m ? betaLine(m) : ''}
+      ${canFind ? `<button class="sm sec find" style="margin-left:6px">${f?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}
+      ${f?.status === 'running' ? betaBarHtml(f.at) : ''}</div>
     ${!b.available && n ? '<div class="notice">Finding beta needs rtmlib and onnxruntime, which the Docker image has.</div>' : ''}
     ${(f?.videos || []).map(v => `<div class="bvid">
       <label class="row" style="gap:6px"><input type="checkbox" data-tag="${v.tag}" ${b.shown.has(v.tag) ? 'checked' : ''}>

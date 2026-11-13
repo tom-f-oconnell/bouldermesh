@@ -74,7 +74,8 @@ def task(job: Path, kind: str, log) -> int:
     try:
         if kind == "beta":
             import beta
-            beta.find(mesh, photos, log)
+            tracker = PrintedTracker([("beta", "Find its beta", 1)])
+            beta.find(mesh, photos, log, report=lambda text, at: tracker.update("beta", at["frac"], {**at, "text": text}))
         else:
             import scale
             args = json.loads((job / "task.json").read_text())

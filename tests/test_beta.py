@@ -94,7 +94,7 @@ with tempfile.TemporaryDirectory() as td:
         except ValueError:
             pass
     beta.save(d, {"status": "running", "videos": [{"holds": [{}, {}]}]})
-    assert beta.summary(beta.load(d)) == {"status": "running", "progress": None, "note": None, "waiting": None, "videos": 1, "holds": 2}
+    assert beta.summary(beta.load(d)) == {"status": "running", "progress": None, "at": None, "note": None, "waiting": None, "videos": 1, "holds": 2}
     beta.carry_on(d)
     assert beta.load(d)["status"] == "queued" and beta.load(d)["resume"], "a restart queues it again, keeping what's done"
     assert beta.videos(d) == {}, "no record of its photos"
@@ -126,6 +126,8 @@ with tempfile.TemporaryDirectory() as td:
     done, refuse = [], {urls[1]}
 
     def analyse(url, *a, **k):
+        a[-1]("frame 1 of 4", (0, 4))
+        a[-1]("frame 3 of 4", (2, 4))
         if url in refuse:
             raise youtube.Refused({"since": 0, "until": 1e10, "level": 0, "error": "not a bot"})
         done.append(url)
@@ -139,7 +141,14 @@ with tempfile.TemporaryDirectory() as td:
     rec = beta.load(d)
     assert rec["status"] == "queued" and rec["waiting"] == 1e10 and [v["url"] for v in rec["videos"]] == urls[:1], rec
     refuse.clear()
-    rec = beta.find(d, d, lambda s: None)
+    told = []
+    rec = beta.find(d, d, lambda s: None, report=lambda text, at: told.append((text, at)))
     assert done == [urls[0], urls[1], urls[2]] and rec["status"] == "done" and len(rec["videos"]) == 3, (done, rec)
     assert set(json.loads((d / beta.POSES_FILE).read_text())) == set(urls), "the first video's skeletons are kept too"
+    # how far it got, for the bar: videos done (one before the refusal), and frames of the one it's on
+    texts, ats = [t for t, _ in told], [a for _, a in told]
+    assert texts[:3] == ["video 2 of 3: downloading", "video 2 of 3: frame 1 of 4", "video 2 of 3: frame 3 of 4"], texts
+    assert [a["frac"] for a in ats] == [0.3333, 0.3333, 0.5, 0.6667, 0.6667, 0.8333], [a["frac"] for a in ats]
+    assert ats[2] == {"done_videos": 1, "videos": 3, "frame": 2, "frames": 4, "frac": 0.5, "started": ats[2]["started"], "frac0": 0.3333}
+    assert rec["at"] is None, "none once done"
 print("ALL BETA TESTS PASSED")
