@@ -81,8 +81,13 @@ def down_in_image(v: list[float], tag: int | None) -> list[float] | None:
 
 
 def reading(path: Path) -> dict | None:
-    """A photo's iPhone gravity reading: "down" in image axes, and how far it looked up, in degrees."""
+    """A photo's gravity reading, as BoulderMesh's apps record it with theirs (phonedata.py) or else an iPhone's own:
+    "down" in image axes, and how far it looked up, in degrees."""
     from PIL import Image
+    import phonedata
+    down = phonedata.down(phonedata.read(path))
+    if down:
+        return {"down": down, "pitch": math.degrees(math.asin(max(-1.0, min(1.0, -down[2])))), "from": "app"}
     try:
         with Image.open(path) as im:
             exif = im.getexif()

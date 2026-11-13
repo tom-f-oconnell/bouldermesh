@@ -49,6 +49,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 sys.path.insert(0, str(Path(__file__).parent))
 import admin as admin_mod  # noqa: E402
 import beta as beta_mod  # noqa: E402
+import captureplan  # noqa: E402
 import scale as scale_mod  # noqa: E402
 import compute  # noqa: E402
 import diagnostics  # noqa: E402
@@ -1580,6 +1581,42 @@ def keep_heading(mid: str, log=None) -> dict | None:
     except Exception as e:
         (log or print)(f"{mid}: working out which way it faces failed ({type(e).__name__}: {e})")
         return None
+
+
+_plan_lock = threading.Lock()
+CAPTURE_FILE = "capture.json"   # in a project: what the phone app that took its photos says of taking them (app/FORMAT.md)
+CAPTURE_MAX = 8 * 2**20
+
+
+def capture_plan(mid: str) -> dict | None:
+    """A mesh's plan for the phone apps (captureplan.py): what of it to photograph, its holds closest, and a light copy
+    of it to draw over the camera. Made when first asked for, and again once its mesh, cameras, holds or scale have
+    changed; with what only this server knows of it (its name, place and heading). None if there's no such mesh."""
+    m = q("SELECT id, name, lat, lng, boulder, source FROM meshes WHERE id=?", mid, one=True)
+    d = MESHES / mid
+    if not m or not d.is_dir():
+        return None
+    scale = metres_per_unit(mid)
+    stamp = "|".join(f"{f.name}:{f.stat().st_mtime_ns}" for f in sorted(d.iterdir())
+                     if f.name in ("mesh.glb", "mesh.ply", "cameras.json", "cleanup.json", viewpoints.FILE, beta_mod.FILE, beta_mod.HOLDS_FILE))
+    want = captureplan.key(stamp, 0, scale)
+    with _plan_lock:
+        plan = captureplan.load(d, want)
+        if plan is None:
+            views = (viewpoints.load(d) or {}).get("climbs") or {}
+            climbs = {c["id"]: c for c in q("SELECT c.id, c.name, c.grade FROM mesh_links l JOIN climbs c ON c.id=l.climb_id WHERE l.mesh_id=? "
+                                             "AND COALESCE(l.note,'') NOT LIKE ?", mid, SHARED + "%")}
+            for c in boulder_climbs(m["boulder"]) if m["boulder"] else []:
+                climbs.setdefault(c["id"], {"id": c["id"], "name": c["name"], "grade": c["grade"]})
+            holds = []
+            for v in (beta_mod.load(d) or {}).get("videos", []):
+                of = [r["climb_id"] for r in q("SELECT climb_id FROM climb_videos WHERE url=?", v.get("url"))]
+                holds += [{"p": h["p"], "role": h.get("role"), "from": "video", "climbs": [c for c in of if c in climbs]} for h in v.get("holds") or []]
+            holds += [{"p": h["p"], "role": h.get("role"), "from": "marked", "climbs": []} for h in beta_mod.load_holds(d).get("holds") or []]
+            plan = captureplan.make(d, holds, [{**c, "view": views.get(c["id"])} for c in climbs.values()], scale, want)
+    facing = mesh_heading(mid)
+    return {**plan, "mesh": mid, "name": m["name"], "lat": m["lat"], "lng": m["lng"], "heading_deg": facing["deg"] if facing else None,
+            "guide_url": f"/api/capture/guide/{mid}.bin?v={plan['guide']['sha1']}"}
 
 
 def mesh_heading(mid: str) -> dict | None:
@@ -8349,6 +8386,16 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     print(f"error: meshes' links: {type(e).__name__}: {e}", flush=True)
                 return self.send_json(rows)
+            m = re.fullmatch(r"/api/capture/plan/([0-9a-f]+)", p)
+            if m:   # for the phone apps: what of a mesh to photograph (capture_plan())
+                try:
+                    plan = capture_plan(m[1])
+                except ValueError as e:
+                    return self.send_json({"error": f"no plan for this mesh: {e}"}, 409)
+                return self.send_json(plan) if plan else self.send_json({"error": "not found"}, 404)
+            m = re.fullmatch(r"/api/capture/guide/([0-9a-f]+)\.bin", p)
+            if m:   # and the light copy of it they draw, by the version its plan names
+                return self.send_file(MESHES / m[1] / captureplan.DIR / captureplan.GUIDE_FILE, cache="public, max-age=31536000, immutable")
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
             if m:   # what each video's climber did, and the holds marked by hand
                 if not (MESHES / m[1]).is_dir():
@@ -8645,6 +8692,23 @@ class Handler(BaseHTTPRequestHandler):
                     _frames_wake.set()
                 return self.send_json({"saved": saved, "videos": videos})
 
+            m = re.fullmatch(r"/api/projects/([0-9a-f]+)/capture", p)
+            if m:   # what the phone app that took its photos says of taking them: kept beside them, whole
+                if not q("SELECT 1 FROM projects WHERE id=?", m[1], one=True):
+                    return self.send_json({"error": "not found"}, 404)
+                raw = self.read_body()
+                if len(raw) > CAPTURE_MAX:
+                    return self.send_json({"error": f"a capture's record is at most {CAPTURE_MAX // 2**20} MB"}, 413)
+                try:
+                    record = json.loads(raw)
+                    assert isinstance(record, dict) and isinstance(record.get("shots"), list)
+                except (ValueError, AssertionError):
+                    return self.send_json({"error": "a capture's record is a JSON object with its shots"}, 400)
+                tmp = PROJECTS / m[1] / (CAPTURE_FILE + ".part")
+                tmp.write_bytes(raw)
+                tmp.replace(PROJECTS / m[1] / CAPTURE_FILE)
+                append_log(m[1], f"capture: {len(record['shots'])} photos taken with the app ({str(record.get('app') or '?')[:60]})")
+                return self.send_json({"kept": len(record["shots"])})
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/known-object", p)
             if m:   # {kind} or {what, height_cm, width_cm}, or {} for nothing: its mesh is sized again
                 proj = q("SELECT mesh_id FROM projects WHERE id=?", m[1], one=True)

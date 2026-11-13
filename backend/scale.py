@@ -533,6 +533,7 @@ DEPTH_AGREE = 0.15    # a person's depth: their nearest hand or foot on the mesh
 MIN_SEGMENT = 5       # measurements a segment needs, in one video, to count
 METHOD_SD = {"video": 0.12, "photos": 0.25, "standing": 0.3, "stated": 0.33, "span": 0.2,   # log sd of one estimate; see design.md
              "object": 0.1}
+PHONE_FLOOR_SD = 0.015
 FLOOR_SD = 0.05       # however many agree: what's common to them all (proportions, depth), as a log sd
 
 
@@ -733,10 +734,11 @@ def combine(estimates: list[dict]) -> dict | None:
     sd = 1 / np.sqrt(w.sum())
     if len(logs) > 1:
         sd *= max(1.0, np.sqrt(float(np.sum(w * (logs - middle) ** 2)) / (len(logs) - 1)))
-    sd = float(np.hypot(sd, FLOOR_SD))
     weight = {}
     for e, wi in zip(estimates, w):
         weight[e["kind"]] = weight.get(e["kind"], 0) + wi
+    # the floor is what estimates from people share (proportions, depth): not a phone's own measure of how far it moved
+    sd = float(np.hypot(sd, PHONE_FLOOR_SD if max(weight, key=weight.get) == "phone" else FLOOR_SD))
     return {"metres_per_unit": round(float(np.exp(middle)), 6), "low": round(float(np.exp(middle - sd)), 6),
             "high": round(float(np.exp(middle + sd)), 6), "sd": round(sd, 4), "method": max(weight, key=weight.get)}
 
@@ -788,6 +790,13 @@ def estimate(mesh_dir: Path, photos: Path, masks: Path | None, climbs: list[dict
     rows = measure(mesh, cams, poses, sources, beta_poses, photos, check=jobctl.check)
     (mesh_dir / MEASURED_FILE).write_text(json.dumps(rows))
     estimates = people_estimates(rows, videos)
+    import phonedata    # photos BoulderMesh's apps took say how far apart they were taken, and where
+    taken = phonedata.blobs(photos, list(cams))
+    by_phone = phonedata.scale_estimates(list(cams.values()), taken) if taken else []
+    if taken:
+        log(f"scale: {len(taken)} placed photos taken with the app" + (f": {', '.join(str(e['metres_per_unit']) for e in by_phone)} m per unit "
+            f"by the phone's motion tracking, from {sum(e['n'] for e in by_phone)} of them" if by_phone else ", too few tracked to size it by"))
+    estimates += by_phone
     obj = known_object(known)
     if obj:
         found = find_objects(mesh_dir, photos, list(cams), log, step, detect)
@@ -808,6 +817,11 @@ def estimate(mesh_dir: Path, photos: Path, masks: Path | None, climbs: list[dict
               "people": len(rows), "estimates": estimates + ([stated] if stated else []), "checks": checks, **(final or {})}
     if final and measured.get("around"):
         record["height_m"] = round(measured["around"] * final["metres_per_unit"], 2)
+    if taken:   # and where it is, from their GPS fixes, if they say
+        import heading
+        north = heading.best(heading.load(mesh_dir))
+        record["phone"] = {"photos": len(taken), "position": phonedata.position(
+            list(cams.values()), taken, final["metres_per_unit"], measured.get("focus"), north["deg"] if north else None) if final else None}
     save(mesh_dir, record)
     log(f"scale: {len(rows)} people measured, {len(estimates)} estimates from them" + (", and Mountain Project's height" if stated else "")
         + (f": {final['metres_per_unit']:.4g} m per unit ({final['low']:.4g} to {final['high']:.4g}), by {final['method']}" if final else ": nothing to go by"))
@@ -844,7 +858,7 @@ def summary(record: dict | None) -> dict | None:
         return None
     if not record.get("metres_per_unit") and record.get("previous"):    # the last size found, while looked for again
         record = {**record, **record["previous"], "status": record.get("status"), "progress": record.get("progress"), "earlier": True}
-    out = {k: record.get(k) for k in ("status", "progress", "metres_per_unit", "low", "high", "method", "height_m", "earlier")}
+    out = {k: record.get(k) for k in ("status", "progress", "metres_per_unit", "low", "high", "method", "height_m", "earlier", "phone")}
     kinds = [e["kind"] for e in record.get("estimates") or []]
     out.update(videos=kinds.count("video"), photos="photos" in kinds, standing=next((e["n"] for e in record.get("estimates") or [] if e["kind"] == "standing"), 0),
                stated=next(({"m": e["stated_m"], "text": e["text"], "metres_per_unit": e["metres_per_unit"]}
