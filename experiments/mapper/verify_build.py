@@ -209,14 +209,16 @@ def pycolmap(k: Checks) -> None:
     if rc:
         k.add("pycolmap", "installed", "recorded (only some trees have it)", "no", None)
         return
-    (WORK / "pycolmap.py").write_text(PYCOLMAP)
+    (WORK / "probe_pycolmap.py").write_text(PYCOLMAP)      # not pycolmap.py: its own folder comes first on sys.path
     log = WORK / "pycolmap.log"
-    rc, out = sh(f"rm -f {log}; python3 {WORK}/pycolmap.py {log}", timeout=900)
+    rc, out = sh(f"rm -f {log}*; python3 {WORK}/probe_pycolmap.py {log}", timeout=900)
     has = re.search(r"HAS_CUDA (\S+) (\d+) (\S+)", out)
     k.add("pycolmap", "a CUDA build that sees the GPU", "has_cuda True, 1+ devices",
           f"{has.group(3)}: has_cuda {has.group(1)}, {has.group(2)} device(s)" if has else out[-200:],
           bool(has) and has.group(1) == "True" and int(has.group(2)) > 0)
-    lines = re.findall(r"BENCH_BA.*", log.read_text(errors="replace") if log.exists() else "")
+    # glog names the file from that path as a prefix (adding the date and pid), or writes to stderr
+    text = out + "".join(f.read_text(errors="replace") for f in WORK.glob(f"{log.name}*") if f.is_file())
+    lines = re.findall(r"BENCH_BA.*", text)
     cpu = next((l for l in lines if "device=cpu" in l), "no BENCH_BA line on the CPU" + (f" (exit {rc})" if rc else ""))
     gpu = next((l for l in lines if "device=cuda" in l), "no BENCH_BA line on the GPU" + (f" (exit {rc})" if rc else ""))
     k.add("pycolmap", "run: sparse solve on the CPU", "sparse=SUITE_SPARSE", cpu, "sparse=SUITE_SPARSE" in cpu)
