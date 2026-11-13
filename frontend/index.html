@@ -4598,8 +4598,7 @@ const tipSeen = (key, all = false) => {
   try { localStorage.setItem(TIPS_KEY, JSON.stringify(all ? Object.fromEntries(TIPS.map(t => [t.key, 1])) : { ...tipsSeen(), [key]: 1 })); } catch {}
 };
 function showTips(){
-  document.querySelector('#tip')?.remove();
-  document.querySelectorAll('.tip-target').forEach(x => x.classList.remove('tip-target'));
+  if (document.querySelector('#tip')) return;     // one at a time (the search's may be showing)
   const seen = tipsSeen();
   const todo = TIPS.map(t => ({ ...t, el: t.at.map(q => document.querySelector(q)).find(x => x && x.getClientRects().length) }))
     .filter(t => !seen[t.key] && t.el);
@@ -4625,7 +4624,28 @@ function showTips(){
   tip.querySelector('.skip')?.addEventListener('click', () => done(true));
 }
 setTimeout(showTips, 1500);     // once the page has settled
-$('#tips-again').onclick = () => { try { localStorage.removeItem(TIPS_KEY); } catch {} document.querySelector('.tabs button[data-tab]')?.click(); setTimeout(showTips, 300); };
+// the first time the climbs' search is used: what's in it so far, and how to ask for more (shown once, like the tips)
+$('#c-filter').addEventListener('focus', () => {
+  if (tipsSeen().search || document.querySelector('#tip')) return;
+  const el = $('#c-filter'), tip = document.createElement('div'); tip.id = 'tip'; tip.setAttribute('role', 'dialog');
+  tip.innerHTML = `<div>So far there are only the climbs of the <a href="#" class="go-areas">areas</a> added by hand. To ask for another
+    area, <a href="#" class="go-comment">leave a comment</a>.</div><div class="row"><button class="sm next">Got it</button></div>`;
+  document.body.append(tip);
+  const r = el.getBoundingClientRect();
+  tip.className = 'below';
+  tip.style.left = Math.max(8, Math.min(innerWidth - tip.offsetWidth - 8, r.left)) + 'px';
+  tip.style.top = r.bottom + 10 + 'px';
+  const done = () => { tipSeen('search'); tip.remove(); };
+  tip.querySelector('.next').onclick = done;
+  tip.querySelector('.go-areas').onclick = ev => { ev.preventDefault(); done(); document.querySelector('.tabs button[data-tab=areas]').click(); };
+  tip.querySelector('.go-comment').onclick = ev => {
+    ev.preventDefault(); done();
+    document.querySelector('.tabs button[data-tab=help]').click();
+    const c = document.querySelector('input[name=fbkind][value=comment]'); if (c) c.checked = true;
+    $('#fb-text').focus();
+  };
+});
+$('#tips-again').onclick = () => { try { localStorage.removeItem(TIPS_KEY); } catch {} document.querySelector('#tip')?.remove(); document.querySelector('.tabs button[data-tab]')?.click(); setTimeout(showTips, 300); };
 </script>
 </body>
 </html>
