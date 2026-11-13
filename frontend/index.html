@@ -306,7 +306,7 @@
   #srctip .key{width:12px;height:3px;margin-top:8px}
   #srctip .lic{color:var(--mute)}
   .legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;margin-top:6px}
-  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .legend span{display:inline-flex;align-items:center;gap:5px} #b-legend{cursor:help}
   .swatch{display:inline-block;width:11px;height:11px;border-radius:50%;border:1px solid var(--swatch-line)}
   .bvid{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
   .bvid img{width:100%;border-radius:6px;margin-top:6px;display:block}
@@ -576,9 +576,8 @@
     <div class="pane" id="pane-beta">
       <section>
         <h2>Beta</h2>
-        <div class="notice">Where climbers put their hands and feet, found in the videos each mesh was built from, and holds you
-          mark yourself, in the Tension Board app's colours:</div>
-        <div class="legend" id="b-legend"></div>
+        <div class="legend" id="b-legend" tabindex="0" title="Where climbers put their hands and feet, found in the videos each mesh was built from, and holds you mark yourself, in the Tension Board app's colours"></div>
+        <div class="notice" id="b-legend-note" hidden></div>
         <div id="beta-open" style="margin-top:10px"></div>
       </section>
       <section>
@@ -4231,6 +4230,8 @@ const ROLES = {
 const ROLE_CYCLE = ['start', 'hand', 'finish', 'foot'];
 let betaState = null;   // {mid, found, marked, available, shown: Set of video tags, marking, group, node, markers}
 let betaPoll = null;
+// what the colours are of, over them on hover (title), and on a phone, where there's no hover, under them on a tap
+$('#b-legend').onclick = () => { const n = $('#b-legend-note'); n.textContent = $('#b-legend').title; n.hidden = !n.hidden || !phone.matches; };
 $('#b-legend').innerHTML = Object.values(ROLES).map(r => `<span><span class="swatch" style="background:${r.color}"></span>${r.name}${r.note ? ` <small>(${r.note})</small>` : ''}</span>`).join('');
 function videoCount(m){ return m.sources?.sources?.find(x => x.source === 'youtube')?.videos || 0; }
 const hhmm = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
