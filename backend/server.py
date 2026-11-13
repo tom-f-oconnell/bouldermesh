@@ -2419,18 +2419,22 @@ def old_mesh_report(fresh: bool = False) -> dict:
 
     Returns:
         {rules, since, old_meshes, meshes (current ones made by areas and projects), climbs, remade, waiting, via,
-        missed: [{id, name, why}], old_data (how many), decide: [{id, name, newer, newer_name, why}]}.
+        missed: [{id, name, why}] (of those with an old mesh of their own), via_tried (the same, of those only ever linked
+        via another climb's mesh, never judged on their own photos before: no loss), old_data (how many), decide: [{id, name, newer, newer_name, why}]}.
     """
     if not fresh and _old_report["report"] and time.time() - _old_report["at"] < OLD_REPORT_EVERY:
         return _old_report["report"]
     st = old_climbs(fresh)
     climbs, remade, tried = st["climbs"], st["remade"], st["tried"]
-    missed_ids = sorted(c for c in climbs if c in tried and c not in remade)
+    missed_all = sorted(c for c in climbs if c in tried and c not in remade)
+    # one only ever linked via another climb's mesh was never judged on its own photos: making none now isn't a loss
+    missed_ids, via_tried = [c for c in missed_all if c not in st["via"]], [c for c in missed_all if c in st["via"]]
     waiting_ids = [c for c in climbs if c not in tried and c not in remade]
-    names = {r["id"]: r["name"] for r in q(f"SELECT id, name FROM climbs WHERE id IN ({','.join('?' * len(missed_ids)) or 'NULL'})", *missed_ids)}
+    names = {r["id"]: r["name"] for r in q(f"SELECT id, name FROM climbs WHERE id IN ({','.join('?' * len(missed_all)) or 'NULL'})", *missed_all)}
     report = {"rules": MESH_RULES, "since": MESH_RULES_SINCE[MESH_RULES], "old_meshes": len(st["old"]), "meshes": len(st["made"]),
               "climbs": len(climbs), "remade": len(climbs & remade), "waiting": len([c for c in climbs if c not in tried and c not in remade]),
               "via": len(st["via"] - remade), "missed": [{"id": c, "name": names.get(c, c), "why": tried[c]} for c in missed_ids],
+              "via_tried": [{"id": c, "name": names.get(c, c), "why": tried[c]} for c in via_tried],
               "old_data": len([m for m in st["made"] if m["old_data"] and not mesh_is_old(m)]), "decide": _old_data["decide"],
               "needs_backup": _needs_backup(waiting_ids)}
     _old_report.update(at=time.time(), report=report)
@@ -8172,7 +8176,7 @@ class Handler(BaseHTTPRequestHandler):
                                        "known_objects": {k: v[2] for k, v in scale_mod.KNOWN.items()},
                                        "opencv": _has("cv2"), "pillow": _has("PIL"),
                                        "policy": {"textures": settings().get("site.textures"), "sources": settings().get("site.sources")},
-                                       "map_km": settings().get("site.map_km"),
+                                       "map_km": settings().get("site.map_km"), "via_links": settings().get("site.via_links"),
                                        "donate_url": settings().get("site.donate_url") or None,   # the "?" tab's Donate button
                                        # the volunteers' page, for the header's Volunteer button, where this server takes them
                                        "volunteer_url": VOLUNTEER_URL if VOLUNTEER_PORT else None,
@@ -8507,7 +8511,7 @@ class Handler(BaseHTTPRequestHandler):
                     conds.append("source=?")
                     args.append(qs["source"][0])
                 # meshes left out: old ones of either kind, and those an area linked it to made for another climb
-                no_old, no_via = bool(qs.get("no_old")), bool(qs.get("no_via"))
+                no_old, no_via = bool(qs.get("no_old")), bool(qs.get("no_via")) or not settings().get("site.via_links")
                 fresh = f" AND NOT {OLD_ANY}" if no_old else ""
                 if qs.get("meshed"):
                     conds.append(f"(id IN (SELECT l.climb_id FROM mesh_links l LEFT JOIN meshes m ON m.id=l.mesh_id WHERE 1{fresh}"

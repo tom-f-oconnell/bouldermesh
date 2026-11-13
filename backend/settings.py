@@ -45,6 +45,7 @@ DEFAULTS = {
     # what the main site shows
     "site.textures": "all",                # all | permitted (only from clearly licensed photos) | none
     "site.sources": "all",                 # all | link (non-permitted ones only as links) | permitted
+    "site.via_links": True,                # a climb never meshed on its own opens the mesh made for another on its boulder ("via")
     "site.small_thumbs": True,             # with sources link/permitted: small copies of the rest anyway, linking to where they came from
     "site.map_km": 1.0,                    # how many km across (its narrower side) the map opens around a boulder
     "site.donate_url": "",                 # where the "?" tab's Donate button goes (https://…); none while empty (DONATE_URL starts it)

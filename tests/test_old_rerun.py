@@ -207,6 +207,15 @@ try:
     assert got["Gamma"]["project_id"] and server.climb_row(gamma)["n_links"] == 1 and mesh("bm")["replaced_by"] is None
     r = server.old_mesh_report(fresh=True)
     assert (r["via"], r["waiting"], r["climbs"]) == (0, 0, 0), r
+    # tried and making none: one only ever linked via another's isn't a loss (via_tried), one with its own old mesh is (missed)
+    real = server.old_climbs
+    server.old_climbs = lambda fresh=False: {"climbs": {beta, gamma}, "remade": set(), "tried": {beta: "failed", gamma: "too few viewpoints"},
+                                             "via": {gamma}, "old": [], "made": []}
+    try:
+        r = server.old_mesh_report(fresh=True)
+    finally:
+        server.old_climbs = real
+    assert [m["id"] for m in r["missed"]] == [beta] and [(m["id"], m["why"]) for m in r["via_tried"]] == [(gamma, "too few viewpoints")], r
     print("climbs linked only via another's mesh OK")
 
     # --- the first N meshes of an area: one done whose only mesh is old may yet make one, rather than having made one;

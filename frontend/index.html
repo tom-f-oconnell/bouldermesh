@@ -256,6 +256,10 @@
     #orient,#viewnote{top:60px;bottom:auto;left:12px;right:auto;max-width:430px;max-height:40%;overflow:auto} #viewnote{z-index:3}
     #pieces{top:auto;bottom:12px;left:12px;right:auto;max-height:35%;overflow:auto}
   }
+  /* a climb never meshed on its own, opened on the mesh made for another on its boulder: said over the view, always */
+  #vvia{position:absolute;left:50%;transform:translateX(-50%);top:12px;z-index:3;max-width:min(560px,calc(100% - 24px));background:var(--warn-bg);
+    color:var(--warn);border:1px solid var(--warn-line);border-radius:6px;padding:5px 10px;font-size:13px;text-align:center}
+  @media (max-width:860px){ #vvia{top:auto;bottom:100px;left:12px;right:12px;transform:none;max-width:none} }
   #vold{position:absolute;left:12px;bottom:12px;z-index:3;color:var(--warn);font-weight:700;font-size:13px;text-shadow:0 0 3px var(--bg),0 0 3px var(--bg)}
   #vold[hidden]{display:none}
   #vcorner{position:absolute;right:12px;bottom:12px;z-index:3;display:flex;align-items:flex-end;gap:6px}   /* Rate, then the notes' button */
@@ -620,6 +624,7 @@
       <button class="sm sec" id="vclimb" hidden title="The climb this mesh is of, under Climbs, with its photos and details">Open climb</button>
       <div id="nearby" hidden></div>
       <div id="orient"></div>
+      <div id="vvia" hidden></div>
       <div id="vold" hidden title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</div>
       <div id="vextra">
         <button class="sm sec" id="vnewest" hidden title="This is an older version of this mesh, as its link was to: show the newest">Newest</button>
@@ -2826,7 +2831,7 @@ function climbCard(c){
   const oldN = editor ? (c.n_links_old || 0) + (c.n_boulder_old || 0) : 0;
   const ownN = (c.n_links || 0) - (editor ? c.n_links_old || 0 : 0), boulderN = (c.n_boulder || 0) - (editor ? c.n_boulder_old || 0 : 0);
   const d = document.createElement('div'); d.className = 'card' + (c.id === openClimbId ? ' open' : '') + (multi ? ' multi' : ''); d.dataset.id = c.id;
-  d.innerHTML = `<div class="row"><span class="name grow">${esc(namedParts(c).name)} <small>${esc(gradeLeft(c))}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${ownN>0?`<span class="tag ok">${ownN} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">via ${esc(c.shared_of)}</span>`:''}${boulderN>0?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${oldN?`<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">${oldN} old mesh${oldN === 1 ? '' : 'es'}</span>`:''}${multi?`<span class="tag" title="Its own meshes, and pools of it with others: ${c.n_links}; its boulder's: ${c.n_boulder}">${meshes} meshes</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
+  d.innerHTML = `<div class="row"><span class="name grow">${esc(namedParts(c).name)} <small>${esc(gradeLeft(c))}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${ownN>0?`<span class="tag ok">${ownN} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">no mesh of its own · via ${esc(c.shared_of)}</span>`:''}${boulderN>0?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${oldN?`<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">${oldN} old mesh${oldN === 1 ? '' : 'es'}</span>`:''}${multi?`<span class="tag" title="Its own meshes, and pools of it with others: ${c.n_links}; its boulder's: ${c.n_boulder}">${meshes} meshes</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
       <button class="sm ${shownClimbs().has(c.id) ? '' : 'sec '}viewmesh" ${c.n_links || c.n_boulder || c.n_shared ? '' : 'disabled'} title="${c.n_links ? 'Show its newest mesh' : c.n_boulder ? 'Show its boulder\'s mesh, from where its own photos were taken' : c.n_shared ? 'Show the mesh of another climb on its boulder' : 'No mesh is linked to it yet'}">View</button></div>
     <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
     <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
@@ -2856,7 +2861,7 @@ for (const [id, key] of [['#c-no-old', 'bm_no_old'], ['#c-no-via', 'bm_no_via']]
   try { $(id).checked = localStorage.getItem(key) === '1'; } catch {}
   $(id).onchange = () => { try { localStorage.setItem(key, $(id).checked ? '1' : '0'); } catch {} searchClimbs(); };
 }
-const climbHides = () => ({ old: $('#c-no-old').checked, via: $('#c-no-via').checked });
+const climbHides = () => ({ old: $('#c-no-old').checked, via: $('#c-no-via').checked || statusCache.via_links === false });
 $('#m-older').onchange = refreshMeshes;
 
 // what a video or its uploader's channel says about the climber: "178 cm (5'10"), ape index +5 cm"
@@ -2901,7 +2906,7 @@ function pickClimbMesh(id, hide = {}){
   const ok = m => !(hide.old && (m.old || m.old_data));
   // a mesh of what its boulder's mesh left out isn't the climb's own: the boulder's may show it better
   const own = climbMeshes(id).find(m => ok(m) && !m.pooled?.rest_of), boulder = boulderMeshOf(id, ok);
-  const shared = hide.via ? null : climbMeshes(id, true).find(ok);
+  const shared = hide.via || statusCache.via_links === false ? null : climbMeshes(id, true).find(ok);
   return own ? { id: own.id, from: null } : boulder ? { id: boulder.id, from: id } : shared ? { id: shared.id, from: null } : null;
 }
 async function viewClimbMesh(id, via = 'climb', hide = {}){
@@ -4239,6 +4244,10 @@ function viewMesh(id, from, via = '', climb = null){
   const pending = loadMeshUrl(`/meshes/${id}/${m.filename}`, m.filename, label, id);
   const firstClimb = climb || from || own[0]?.id || on[0]?.id || null;
   $('#vclimb').hidden = !firstClimb; $('#vclimb').dataset.climb = firstClimb || '';
+  // opened for a climb only linked to it via another's ("same boulder as"): no mesh of that climb, and whose this is
+  const viaOf = climb && !own.some(c => c.id === climb) && !on.some(c => c.id === climb) ? m.climbs.find(c => c.id === climb && c.shared) : null;
+  $('#vvia').hidden = !viaOf;
+  if (viaOf) $('#vvia').innerHTML = `No mesh of <b>${esc(named(viaOf))}</b> yet: this is the mesh of <b>${esc(viewTitle(m))}</b>, on the same boulder, which may not show its side`;
   $('#vold').hidden = !(editor && (m.old || m.old_data));
   $('#vold').textContent = m.old ? 'old' : 'old (data)';
   $('#vold').title = m.old ? 'Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them'
@@ -4739,6 +4748,7 @@ if (pairCode) {    // the phone's camera app opened the admin page's QR: the cod
 if (thumbMode) document.body.classList.add('thumb');
 let statusCache = { env: {} };
 statusCache = await api('/api/status');
+if (statusCache.via_links === false) $('#c-no-via').closest('label').hidden = true;     // none shown anyway (the admin page's setting)
 editor = !!statusCache.editor;
 document.body.classList.toggle('readonly', !editor);
 if (statusCache.editing === 'none') $('#viewonly').style.display = '';

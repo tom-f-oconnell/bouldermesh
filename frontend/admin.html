@@ -86,6 +86,7 @@
     <label class="choice"><input type="radio" name="src" value="all"> Show all <small>(as now)</small></label>
     <label class="choice"><input type="radio" name="src" value="link"> Show those free to copy, and only link to the rest <small>(their copies here aren't shown)</small></label>
     <label class="choice"><input type="radio" name="src" value="permitted"> Show only those free to copy <small>(the rest aren't shown or linked)</small></label>
+    <label class="choice"><input type="checkbox" id="via-links"> A climb never meshed on its own opens the mesh made for another climb on its boulder <small>(the "via" links of areas before boulder meshes: saying it has no mesh of its own, and which it shows)</small></label>
     <label class="choice"><input type="checkbox" id="small-thumbs"> With either of those, still show the rest as small copies <small>(at most 160 px, linking to where each came from, as image search engines do)</small></label>
     <div class="grid" style="margin-top:14px"><div><label>The map opens around a boulder this many km across <small>(its narrower side)</small></label><input type="number" id="map-km" min="0.05" step="0.25"></div>
       <div><label>A mesh opens first as a simplified copy of about this many faces <small>(0: none)</small></label><input type="number" id="preview-faces" min="0" max="5000000" step="10000">
@@ -316,13 +317,17 @@ function oldMeshesNote(o){
   const when = new Date(o.since * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
   const missed = o.missed.length ? `<div class="bad"><b>${o.missed.length} climb${o.missed.length === 1 ? '' : 's'} tried under the current rules that no new mesh is of:</b>
     <ul>${o.missed.map(c => `<li>${esc(c.name)} <small>(${esc(c.why)})</small></li>`).join('')}</ul></div>` : '';
+  // those only ever linked via another climb's mesh: never judged on their own photos before, so making none isn't a loss
+  const via = (o.via_tried || []).length ? `<details><summary>${o.via_tried.length} climb${o.via_tried.length === 1 ? '' : 's'} only ever linked via another climb's mesh
+    ${o.via_tried.length === 1 ? 'was' : 'were'} tried under the rules and made none of ${o.via_tried.length === 1 ? 'its' : 'their'} own (no loss: never judged on their own photos before)</summary>
+    <ul>${o.via_tried.map(c => `<li>${esc(c.name)} <small>(${esc(c.why)})</small></li>`).join('')}</ul></details>` : '';
   // a mesh and a newer one under the same rules of its climbs, that fit neither kind of old: one of them to decide
   const decide = (o.decide || []).length ? `<div class="bad"><b>${o.decide.length} mesh${o.decide.length === 1 ? '' : 'es'} to decide on:</b> a newer one,
     made under the same rules, is of every climb each is of, but not from photos it lacked. <i>Old</i> leaves it out of visitors' lists of a boulder's
     meshes, as old by data; <i>Keep</i> leaves both as they are.<ul>${o.decide.map(d => `<li>${esc(d.name)} <small>(${esc(d.id)})</small>, against the newer
     ${esc(d.newer_name)} <small>(${esc(d.newer)}): ${esc(d.why)}</small> <button class="sec" data-decide="old" data-mesh="${esc(d.id)}" data-newer="${esc(d.newer)}">Old</button>
     <button class="sec" data-decide="keep" data-mesh="${esc(d.id)}" data-newer="${esc(d.newer)}">Keep</button></li>`).join('')}</ul></div>` : '';
-  return `${decide}${missed}<b class="${o.old_meshes ? 'warn' : 'ok'}">Old meshes: ${o.old_meshes} of ${o.meshes} current ones</b>, made before the rules for what
+  return `${decide}${missed}${via}<b class="${o.old_meshes ? 'warn' : 'ok'}">Old meshes: ${o.old_meshes} of ${o.meshes} current ones</b>, made before the rules for what
     an area meshes last changed (${esc(when)}). Of their climbs and those linked only to another climb's mesh (${o.climbs} in all, ${o.via} of them
     "via" another), ${o.remade} have a mesh made under the rules, ${o.missed.length} were tried without one, and ${o.waiting} wait to be tried
     (each queued again as its area runs)${o.needs_backup ? `, <span class="warn">${o.needs_backup} of which need data from the backup first</span>` : ''}.<br><b>Old by data: ${o.old_data || 0}</b>, of climbs a newer mesh made under the same rules, from photos
@@ -425,7 +430,7 @@ function render(s){
     : 'This server\'s image wasn\'t made by deploy/build.sh, so name the one the machines run.';
   for (const r of document.querySelectorAll('input[name=tex]')) r.checked = r.value === v['site.textures'];
   for (const r of document.querySelectorAll('input[name=src]')) r.checked = r.value === v['site.sources'];
-  $('#small-thumbs').checked = v['site.small_thumbs'];
+  $('#small-thumbs').checked = v['site.small_thumbs']; $('#via-links').checked = v['site.via_links'];
   const c = s.policy;
   $('#tex-counts').textContent = `${c.meshes} meshes: ${c.all_permitted} only from photos free to copy, ${c.variant} with a texture made from those, ${c.hidden_if_permitted} that would be plain grey`;
   $('#retex-note').textContent = `${c.can_retexture} can be, ${c.need_rebuild} need rebuilding first` + (s.retexture_queued ? `; ${s.retexture_queued} queued` : '');
@@ -685,6 +690,7 @@ $('#compute').addEventListener('input', ev => { if (ev.target.id === 'mach-name'
 document.querySelectorAll('input[name=tex]').forEach(r => r.onchange = () => save({ 'site.textures': r.value }));
 document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => save({ 'site.sources': r.value }));
 $('#small-thumbs').onchange = () => save({ 'site.small_thumbs': $('#small-thumbs').checked });
+$('#via-links').onchange = () => save({ 'site.via_links': $('#via-links').checked });
 $('#provider').onchange = () => { document.body.className = 'p-' + $('#provider').value; };
 $('#save').onclick = () => save({
   'compute.local_workers': +$('#local').value, 'compute.provider': $('#provider').value, 'compute.remote_workers': +$('#remote').value,
