@@ -1,19 +1,14 @@
 package sh.boulderme.app
 
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import sh.boulderme.core.MeshRow
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
-
-/** A mesh as the server lists it for capturing more of (its /api/capture/meshes). */
-@Serializable
-data class MeshRow(val id: String, val name: String = "", val lat: Double? = null, val lng: Double? = null,
-                   val climbs: List<String> = emptyList(), val holds: Int = 0)
 
 /** The server, as the app talks to it. Every call blocks: call from a background thread. Failures are IOExceptions, in words. */
 class Api(private val store: Store) {

@@ -32,6 +32,11 @@ def parse(comment) -> dict | None:
     """The readings in an EXIF UserComment, as bytes or text (with or without its 8-byte character code)."""
     raw = comment.encode("utf-8", "replace") if isinstance(comment, str) else bytes(comment or b"")
     at = raw.find(MARK)
+    for codec in ("utf-16-le", "utf-16-be") if at < 0 else ():     # written as Unicode: two bytes a character, either way round
+        wide = raw.find(MARK.decode().encode(codec))
+        if wide >= 0:
+            raw, at = raw[wide:].decode(codec, "replace").encode("utf-8", "replace"), 0
+            break
     if at < 0:
         return None
     try:

@@ -32,10 +32,13 @@ object Axes {
     }
 
     /** The same, for a frame of north, west and up (as an iPhone's attitude with x to true north has). */
-    fun headingOfViewNwu(phoneToNwu: Quat): Double? {
-        val f = phoneToNwu.rotate(Vec3(0.0, 0.0, -1.0))
-        if (abs(f.z) > 0.94) return null
-        return bearingDeg(-f.y, f.x)
+    fun headingOfViewNwu(phoneToNwu: Quat): Double? = headingOfNwu(phoneToNwu.rotate(Vec3(0.0, 0.0, -1.0)))
+
+    /** The compass bearing of a direction given as north, west and up; null when it's too nearly straight up or down to say. */
+    fun headingOfNwu(f: Vec3): Double? {
+        val u = f.unit()
+        if (abs(u.z) > 0.94) return null
+        return bearingDeg(-u.y, u.x)
     }
 }
 

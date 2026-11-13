@@ -134,6 +134,7 @@ def save(name: str, blob: dict | None, code: bytes = b"ASCII\0\0\0") -> pathlib.
 p = save("cap_000.jpg", {"v": 1, "down": [0.0, 0.98, 0.2], "ar": {"s": "a", "p": [1, 2, 3]}})
 assert phonedata.read(p)["ar"]["p"] == [1, 2, 3] and phonedata.read(save("plain.jpg", None)) is None
 assert phonedata.parse("BMSH1:{\"down\": [0, 1, 0]}\0\0") == {"down": [0, 1, 0]} and phonedata.parse(b"BMSH1:not json") is None
+assert phonedata.parse(b"UNICODE\0" + 'BMSH1:{"down": [0, 1, 0]}'.encode("utf-16-le")) == {"down": [0, 1, 0]}, "a comment written two bytes a character"
 r = orientation.reading(p)
 assert r["from"] == "app" and abs(np.linalg.norm(r["down"]) - 1) < 1e-9 and abs(r["pitch"] + math.degrees(math.asin(0.2 / math.hypot(0.98, 0.2)))) < 0.01, r
 assert phonedata.down({"down": [0, 0, 0]}) is None and phonedata.down({"down": "x"}) is None and orientation.reading(photos / "plain.jpg") is None

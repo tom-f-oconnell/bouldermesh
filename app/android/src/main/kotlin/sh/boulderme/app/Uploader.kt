@@ -53,7 +53,7 @@ object Uploader {
                     u = u.copy(recordSent = true); store.saveUpload(id, u)
                 }
                 say(id, "Asking for it to be meshed")
-                api.reconstruct(project)
+                try { api.reconstruct(project) } catch (e: IOException) { if ("already running" !in (e.message ?: "")) throw e }      // asked before, and cut off
                 u = u.copy(done = true, note = ""); store.saveUpload(id, u)
                 say(id, "Sent: the server is meshing it")
             } catch (e: Exception) {

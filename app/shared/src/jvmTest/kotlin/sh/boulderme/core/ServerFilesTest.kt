@@ -54,6 +54,9 @@ class ServerFilesTest {
         val record = CaptureRecord(id = "k1", app = "test 0.1", device = "a phone", mesh = "cacacacacaca", started = 1.0, ended = 2.0, mode = "plan",
             shots = listOf(ShotRecord("cap_k1_001.jpg", blob, true)))
         same("app/shot.txt", blob.userComment())
+        val odd = blob.copy(device = "Téléphone 📱").userComment()
+        assertTrue(odd.all { it.code < 128 } && "T\\u00e9l\\u00e9phone \\ud83d\\udcf1" in odd, odd)
+        assertEquals("Téléphone 📱", Plan.json.decodeFromString(ShotBlob.serializer(), odd.removePrefix(ShotBlob.MARK)).device, "and it reads back as it was")
         same("app/capture.json", record.json())
     }
 

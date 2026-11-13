@@ -23,9 +23,17 @@ data class ShotBlob(
     val exp: BlobExposure? = null,
     val q: BlobQuality? = null,
 ) {
-    fun userComment(): String = MARK + Plan.json.encodeToString(serializer(), this)
+    /** As it goes into the photo: plain ASCII, so that whatever writes the EXIF keeps it a byte a character. */
+    fun userComment(): String = MARK + ascii(Plan.json.encodeToString(serializer(), this))
 
-    companion object { const val MARK = "BMSH1:" }
+    companion object {
+        const val MARK = "BMSH1:"
+
+        /** JSON with every character past ASCII written as its escape (they're only ever inside its strings). */
+        internal fun ascii(json: String): String = if (json.all { it.code < 128 }) json else buildString {
+            for (c in json) if (c.code < 128) append(c) else append("\\u").append(c.code.toString(16).padStart(4, '0'))
+        }
+    }
 }
 
 @Serializable data class BlobGps(val lat: Double, val lng: Double, val alt: Double? = null, val acc: Double, val age: Double)

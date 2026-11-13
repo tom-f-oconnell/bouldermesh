@@ -50,6 +50,7 @@ import kotlinx.coroutines.withContext
 import sh.boulderme.core.AccelCalibration
 import sh.boulderme.core.GpsAverager
 import sh.boulderme.core.MagCalibration
+import sh.boulderme.core.MeshRow
 import sh.boulderme.core.Plan
 import sh.boulderme.core.StillMean
 import sh.boulderme.core.Vec3
@@ -101,7 +102,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
     }
     val start: (Screen.Capture) -> Unit = { c ->
         if (a.has(Manifest.permission.CAMERA) && a.has(Manifest.permission.ACCESS_FINE_LOCATION)) go(c)
-        else { wanted = c; ask.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION)) }
+        else { wanted = c; ask.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
     }
     LaunchedEffect(sending) { tick++ }
 
@@ -182,7 +183,7 @@ fun BrowseScreen(a: MainActivity, go: (Screen) -> Unit) {
         try { rows = withContext(Dispatchers.IO) { a.api.meshes() } } catch (e: Exception) { error = "Couldn't list the meshes: ${e.message}" }
     }
     val here = a.sensors.fix
-    fun metres(r: MeshRow): Double? = if (here != null && r.lat != null && r.lng != null) GpsAverager.metresApart(here.lat, here.lng, r.lat, r.lng) else null
+    fun metres(r: MeshRow): Double? { val lat = r.lat; val lng = r.lng; return if (here != null && lat != null && lng != null) GpsAverager.metresApart(here.lat, here.lng, lat, lng) else null }
     val shown = (rows ?: emptyList()).filter { r -> search.isBlank() || r.name.contains(search, true) || r.climbs.any { it.contains(search, true) } }
         .sortedWith(compareBy<MeshRow> { metres(it) ?: Double.MAX_VALUE }.thenBy { it.name.lowercase() })
     fun get(list: List<MeshRow>) {     // one after another: the server makes each mesh's plan as it's first asked for

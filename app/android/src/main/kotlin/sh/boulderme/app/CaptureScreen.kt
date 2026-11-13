@@ -41,6 +41,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import sh.boulderme.core.CaptureUi
+import sh.boulderme.core.Phase
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -105,7 +107,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                 if (ui.note.isNotEmpty()) Text(ui.note, color = if (ui.note.startsWith("Not kept")) WARN else Color.White, style = MaterialTheme.typography.bodySmall)
                 if (ui.phase == Phase.CAPTURE && ui.total > 0) {
                     LinearProgressIndicator(progress = { ui.done.toFloat() / ui.total }, modifier = Modifier.fillMaxWidth())
-                    Text(listOfNotNull("${ui.done}/${ui.total} ${if (plan != null) "parts" else "sides and spots"}", if (ui.holds > 0 && plan != null) "${ui.holdsDone}/${ui.holds} holds" else null,
+                    Text(listOfNotNull("${ui.done}/${ui.total} ${if (ui.guided) "parts" else "sides and spots"}", if (ui.holds > 0 && ui.guided) "${ui.holdsDone}/${ui.holds} holds" else null,
                         "${ui.kept} photos", if (ui.rejected > 0) "${ui.rejected} not kept" else null).joinToString(" · "), color = Color.White, style = MaterialTheme.typography.bodySmall)
                 }
             }
