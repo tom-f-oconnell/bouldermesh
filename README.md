@@ -70,6 +70,7 @@ and imports files you already hold.
     python cli.py relevance ./out/photos [--anchors DIR] [--move]   # which are of the boulder? (report only without --move)
     python cli.py jobs [--server URL]                   # what restarting the running server would interrupt
     python cli.py offtopic-split [--limit N]            # sort photos rejected before CLIP into bouldering or not
+    python cli.py inputs-check [--budget S] [--json]    # which meshes the code now would make from other inputs (no meshing)
 
 Records are `climbs.common.Climb` dataclasses (`to_dict()` → JSON): name, kind, grade(s),
 fa, rating, lat/lng + `coord_source` (route | area | parent-area | manual), elevation,
@@ -268,6 +269,13 @@ meshes, and a climb's card counts its old meshes apart from its green count of n
 meshes leave them out. The admin page says how many are left, and of their climbs (with those linked only "via"
 another climb's mesh) how many have a mesh made under the rules, how many wait to be tried, and, listed, those tried
 under the rules that no new mesh is of.
+
+Each mesh keeps what it was made from in `inputs.json` (its photos and their hashes, what its boulder or pool was taken
+to be and which harvests it pooled, the filter's version and settings, the mapper's settings, `MESH_RULES`), shown at
+`/api/meshes/<id>/inputs`. Before raising `MESH_RULES`, `python3 cli.py inputs-check` (in Docker, `docker exec`), or the
+admin API's `inputs-check` action, says which current meshes the code now would make from other inputs, and what
+changed, from caches alone, with no meshing; and which it can't tell for, and why (design.md, "What each mesh was made
+from").
 
 *Retry N failed* tries an area's failed climbs again, each from the last step it finished. If the area
 is running they go next, and if it isn't, only they run.

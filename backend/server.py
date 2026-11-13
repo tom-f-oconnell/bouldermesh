@@ -61,6 +61,7 @@ import dbconn  # noqa: E402
 import feedback as feedback_mod  # noqa: E402
 import links as links_mod  # noqa: E402
 import thumbs as thumbs_mod  # noqa: E402
+import meshinputs  # noqa: E402
 import meshmetrics  # noqa: E402
 import meshopts  # noqa: E402
 import offload as offload_mod  # noqa: E402
@@ -2310,6 +2311,363 @@ def remesh_untied(log=print) -> dict:
     return out
 
 
+# ------------------------------------------------------------------ what each mesh was made from (meshinputs.py)
+INPUTS_CHECK = DATA / "inputs-check.json"   # the last dry run's report (inputs_check())
+INPUTS_BUDGET = 120     # seconds into a dry run after which it starts no more dedupe or filtering from caches
+_inputs_lock = threading.Lock()     # one dry run at a time
+
+
+def _read_json(path: Path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def inputs_kind(proj: dict | None) -> str:
+    """What a project's mesh is, for meshinputs: a "boulder"'s, a "pool"'s, a "rest" (what a boulder's mesh left out),
+    a "climb"'s own, or "other" (photos uploaded, or its project gone)."""
+    if proj and proj["kind"] == "boulder" and proj["boulder"]:
+        return "rest" if is_rest(proj["boulder"]) else "pool" if is_pool(proj["boulder"]) else "boulder"
+    return "climb" if proj and proj["climb_id"] else "other"
+
+
+def _climbs_pooled(pdir: Path) -> dict | None:
+    try:
+        return {c["id"]: sorted(c.get("projects") or []) for c in _read_json(pdir / CLIMBS_FILE)["climbs"]}
+    except (TypeError, KeyError):
+        return None
+
+
+def _pooled_names(pdir: Path) -> list[str] | None:
+    record = _read_json(pdir / "sources.json")
+    return None if record is None else sorted(f["file"] for f in record.get("files") or [] if f.get("pooled_from"))
+
+
+def current_filter() -> dict:
+    """The off-topic filter as this code has it, as meshinputs records one."""
+    return {"version": relevance_mod.VERSION, "settings": relevance_mod.settings_key(), "methods": sorted(relevance_mod.METHODS)}
+
+
+def inputs_record(pid: str, log=None) -> dict | None:
+    """What a project's mesh is about to be made from (meshinputs.py), read before it's made; None, said in the log,
+    if that fails, which only costs the record."""
+    try:
+        proj = q("SELECT kind, climb_id, boulder FROM projects WHERE id=?", pid, one=True)
+        pdir, kind = PROJECTS / pid, inputs_kind(proj)
+        rec = {"project": pid, "kind": kind, "photos": meshinputs.photo_files(meshinputs.photos_in(pdir / "photos")),
+               "filter": meshinputs.filter_of(_read_json(pdir / "relevance.json")), "meshopts": meshopts.mapper(),
+               "mesh_rules": MESH_RULES, "unknown": {}}
+        if kind in ("boulder", "pool"):
+            rec["leaf"] = pool_leaf(proj["boulder"])
+            rec["leaf_kind"] = leaf_kind(rec["leaf"]) or "unread"
+            rec["climbs"], rec["pooled"] = _climbs_pooled(pdir), _pooled_names(pdir)
+            if kind == "pool":
+                rec["pool"] = sorted(rec["climbs"]) if rec["climbs"] is not None else None
+            for f in ("climbs", "pooled", "pool"):
+                if f in rec and rec[f] is None:
+                    rec["unknown"][f] = "its project kept no record of it"
+        return rec
+    except Exception as e:
+        if log:
+            log(f"reading what it's made from failed ({type(e).__name__}: {e})")
+        return None
+
+
+def backfill_inputs(mid: str) -> dict | None:
+    """What a mesh made before inputs.json was kept was made from, as far as its project still tells: each field only
+    where what holds it is unchanged since the mesh was made (photos, and the records of what was pooled and filtered,
+    written before then; its area's page read before then), and unknown otherwise. COLMAP's mapper settings weren't
+    kept, so are unknown. None for a mesh not made from a project."""
+    m = q("SELECT id, source, created, rules FROM meshes WHERE id=?", mid, one=True)
+    if not m or not (m["source"] or "").startswith("project:") or not (MESHES / mid).is_dir():
+        return None
+    pid, made = m["source"].split(":", 1)[1], m["created"] or 0
+    proj = q("SELECT kind, climb_id, boulder FROM projects WHERE id=?", pid, one=True)
+    pdir, kind = PROJECTS / pid, inputs_kind(proj)
+    unknown: dict[str, str] = {"meshopts": "COLMAP's mapper settings weren't kept before inputs.json"}
+    rec = {"mesh": mid, "project": pid, "kind": kind, "made": made, "backfilled": True, "mesh_rules": m["rules"] or 0,
+           "unknown": unknown}
+    if not proj or not pdir.is_dir():
+        for f in ("photos", "filter"):
+            unknown[f] = "its project is gone"
+        return rec
+    folder = pdir / "photos"
+    if photos_away(pid):
+        unknown["photos"] = "its photos are offloaded to the backup"
+    else:
+        paths = meshinputs.photos_in(folder)
+        if not folder.is_dir() or folder.stat().st_mtime > made or any(p.stat().st_mtime > made for p in paths):
+            unknown["photos"] = "its project's photos changed after it was made"
+        else:
+            rec["photos"] = meshinputs.photo_files(paths)
+    rel = pdir / "relevance.json"
+    if not rel.exists():
+        rec["filter"] = "none"
+    elif rel.stat().st_mtime <= made:
+        rec["filter"] = meshinputs.filter_of(_read_json(rel))
+    else:
+        unknown["filter"] = "its filter's report was written again after it was made"
+    if kind in ("boulder", "pool"):
+        leaf = rec["leaf"] = pool_leaf(proj["boulder"])
+        row = q("SELECT kind, checked FROM boulders WHERE key=?", leaf, one=True)
+        if leaf_kind(leaf, {}) == "group":     # by its name
+            if kind == "pool":
+                rec["leaf_kind"] = "group"
+            else:
+                unknown["leaf_kind"] = "its name says it holds several boulders now; what was made of it then wasn't kept"
+        elif not row or not row["kind"]:
+            rec["leaf_kind"] = "unread"
+        elif (row["checked"] or 0) <= made:
+            rec["leaf_kind"] = row["kind"]
+        else:
+            unknown["leaf_kind"] = "its area's page was read after it was made"
+        climbs = _read_json(pdir / CLIMBS_FILE)
+        if climbs and (climbs.get("created") or 0) <= made and _climbs_pooled(pdir) is not None:
+            rec["climbs"] = _climbs_pooled(pdir)
+            if kind == "pool":
+                rec["pool"] = sorted(rec["climbs"])
+        else:
+            unknown["climbs"] = "its climbs were pooled again after it was made" if climbs else "its project kept no record of it"
+            if kind == "pool":
+                unknown["pool"] = unknown["climbs"]
+        sources = _read_json(pdir / "sources.json")
+        if sources and (sources.get("created") or 0) <= made:
+            rec["pooled"] = _pooled_names(pdir)
+        else:
+            unknown["pooled"] = "its photos were pooled again after it was made" if sources else "its project kept no record of it"
+    return rec
+
+
+def inputs_of(mid: str) -> dict | None:
+    """A mesh's inputs.json, backfilled (backfill_inputs()) and kept if it had none."""
+    rec = meshinputs.load(MESHES / mid)
+    if rec is None:
+        rec = backfill_inputs(mid)
+        if rec is not None:
+            rec = meshinputs.save(MESHES / mid, rec)
+    return rec
+
+
+def inputs_existing_meshes() -> None:
+    """Backfill inputs.json for each mesh made from a project before it was kept (backfill_inputs())."""
+    n = 0
+    for m in q("SELECT id FROM meshes WHERE source LIKE 'project:%' ORDER BY created DESC"):
+        if meshinputs.load(MESHES / m["id"]) is None and (MESHES / m["id"]).is_dir():
+            try:
+                n += inputs_of(m["id"]) is not None
+            except Exception as e:
+                print(f"{m['id']}: backfilling what it was made from failed ({type(e).__name__}: {e})", flush=True)
+    if n:
+        print(f"recorded what {n} mesh{'' if n == 1 else 'es'} made before inputs.json were made from, as far as their projects tell", flush=True)
+
+
+def _linked_as(names: dict[str, Path], where: Path) -> list[Path]:
+    """Symbolic links to these files, under the names given, in a new folder: photos as a step would see them."""
+    where.mkdir(parents=True)
+    out = []
+    for name, src in sorted(names.items()):
+        (where / name).symlink_to(src.resolve())
+        out.append(where / name)
+    return out
+
+
+def _filtered_now(names: dict[str, Path], prior: dict | None, deadline: float, dedupe: bool,
+                  more: list[Path] | None = None) -> dict[str, Path]:
+    """Which of these photos ({name: file}) dedupe (if asked) and the off-topic filter would keep now, from the filter's
+    cache and earlier verdicts (prior) alone (relevance.filter_photos()'s cache_only). Raises relevance.Uncached where
+    that needs working out, or TimeoutError past the deadline."""
+    if time.time() > deadline:
+        raise TimeoutError
+    stage = Path(tempfile.mkdtemp(prefix="bm-inputs-", dir=DATA / "compute" if (DATA / "compute").is_dir() else None))
+    try:
+        paths = _linked_as(names, stage / "photos")
+        quiet = lambda s: None  # noqa: E731
+        if dedupe:
+            paths = diversity_mod.dedupe(stage / "photos", quiet)
+        report = relevance_mod.filter_photos(paths, None, quiet, prior=prior, more_anchors=more, cache_only=True)
+        return {n: names[n] for n in report["kept"]}
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
+def _mapper_now(kind: str, rec: dict, proj: dict | None) -> dict | None:
+    """COLMAP's mapper settings a mesh would be made with now: of the areas that list its climb (or its boulder's
+    climbs), the defaults if none does, or None if they differ."""
+    if kind in ("boulder", "pool"):
+        rows = q("SELECT DISTINCT campaign_id FROM campaign_items WHERE boulder=?", rec.get("leaf"))
+    elif proj and proj["climb_id"]:
+        rows = q("SELECT DISTINCT campaign_id FROM campaign_items WHERE climb_id=?", proj["climb_id"])
+    else:
+        rows = []
+    found = {json.dumps(mapper_of(c), sort_keys=True) for r in rows
+             for c in [q("SELECT * FROM campaigns WHERE id=?", r["campaign_id"], one=True)] if c}
+    if len(found) > 1:
+        return None
+    return {**meshopts.MAPPER, **json.loads(found.pop())} if found else dict(meshopts.MAPPER)
+
+
+def _pool_now(leaf: str, members: list[str]) -> tuple[list[str] | None, str | None]:
+    """The climbs that would pool with these now (settle_clusters()): of the lowest area's climbs with harvests, the
+    group linked by their photos that holds most of them; or None, and what telling would need, where a climb with photos
+    of its own was never compared with any other."""
+    ids = [r["id"] for r in q("SELECT id FROM climbs WHERE area_path=?", leaf) if climb_harvests(r["id"])]
+    linked = {x for r in q(f"SELECT a, b FROM climb_links WHERE a IN ({','.join('?' * len(ids)) or 'NULL'})", *ids)
+              if r["b"] in ids for x in (r["a"], r["b"])}
+    unlinked = [c for c in ids if c not in linked and any(viewpoints.own_photos(PROJECTS / h) for h in climb_harvests(c))]
+    if unlinked and len(ids) > 1:
+        return None, f"matching the photos of {plural(len(unlinked), 'climb')} of its area with the others' (link_climbs())"
+    groups = clusters(ids) if len(ids) >= 2 else [[c] for c in ids]
+    best = max(groups, key=lambda g: (len(set(g) & set(members)), -len(g)), default=[])
+    return (sorted(best) if len(best) >= 2 and set(best) & set(members) else []), None
+
+
+def inputs_would(rec: dict, deadline: float) -> tuple[dict, dict, list[str]]:
+    """What a mesh would be made from now (its inputs.json's fields), from the database, its project's and harvests'
+    folders and the off-topic filter's cache and earlier verdicts: nothing downloaded, no CLIP, matching or COLMAP.
+
+    Returns:
+        The fields as now (meshinputs.compare()'s now), {field: what telling it would need}, and notes.
+    """
+    pid, kind = rec["project"], rec["kind"]
+    proj = q("SELECT kind, climb_id, boulder FROM projects WHERE id=?", pid, one=True)
+    pdir = PROJECTS / pid
+    now: dict = {"mesh_rules": MESH_RULES}
+    needs: dict[str, str] = {}
+    notes: list[str] = []
+    if not proj or not pdir.is_dir():
+        return now, {"photos": "its project, which is gone"}, notes
+    if kind == "rest":
+        return now, {"photos": "meshing its boulder again: its photos are what that mesh left out"}, notes
+    mapper = _mapper_now(kind, rec, proj)
+    if mapper is None:
+        needs["meshopts"] = "knowing which of the areas that list it meshes it, as their mapper settings differ"
+    else:
+        now["meshopts"] = mapper
+    pooling = kind in ("boulder", "pool")
+    was_filter = rec.get("filter")
+    now["filter"] = "none" if was_filter == "none" and not pooling else current_filter()
+    filter_changed = isinstance(was_filter, dict) and any(
+        was_filter.get(k) is not None and was_filter.get(k) != now["filter"][k] for k in ("version", "settings", "methods"))
+    photos = rec.get("photos") if isinstance(rec.get("photos"), dict) else None
+    if not pooling:
+        if photos_away(pid):
+            needs["photos"] = "bringing its photos back from the backup"
+            return now, needs, notes
+        have = {p.name: p for p in meshinputs.photos_in(pdir / "photos")}
+        if filter_changed and photos:   # judged again from scratch: what the filter rejected too, but not dedupe
+            rejected = pdir / "rejected"
+            out = {f.name.split("_", 1)[1]: f for f in (sorted(rejected.iterdir()) if rejected.is_dir() else [])
+                   if f.name.split("_", 1)[0] in relevance_mod.REASONS and "_" in f.name}
+            more = harvest_mod.anchors_of(boulder_projects(proj["climb_id"], pid)) if proj["climb_id"] else []
+            try:
+                have = _filtered_now({**out, **have}, _read_json(pdir / "relevance.json"), deadline, False, more)
+            except relevance_mod.Uncached as e:
+                needs["photos"] = str(e)
+            except TimeoutError:
+                needs["photos"] = "the off-topic filter from its cache (this check's time ran out)"
+        if photos and "photos" not in needs:
+            diff = meshinputs.same_photos(photos, have)
+            now["photos"] = {"changed": diff} if diff else {"same": True}
+        return now, needs, notes
+
+    leaf = rec.get("leaf") or pool_leaf(proj["boulder"])
+    now["leaf"] = leaf
+    kind_now = leaf_kind(leaf)
+    if kind_now is None:
+        needs["leaf_kind"] = "reading its area's Mountain Project page"
+    else:
+        now["leaf_kind"] = kind_now
+    if kind == "pool":
+        members, why = _pool_now(leaf, rec.get("pool") or sorted(_climbs_pooled(pdir) or []))
+        if kind_now == "boulder":
+            members, why = [], None
+            notes.append("its area is one boulder now: meshed whole, not pooled")
+        if why:
+            needs["pool"] = needs["climbs"] = needs["pooled"] = needs["photos"] = why
+            return now, needs, notes
+        now["pool"] = members
+        if not members:
+            notes.append("its climbs wouldn't be pooled now")
+        ids = members
+    else:
+        ids = [c["id"] for c in boulder_climbs(leaf)]
+        if kind_now not in (None, *meshinputs.WHOLE):
+            notes.append("its area isn't one boulder now: its climbs are pooled by their photos, not meshed whole")
+    names = {r["id"]: r["name"] for r in q(f"SELECT id, name FROM climbs WHERE id IN ({','.join('?' * len(ids)) or 'NULL'})", *ids)}
+    ordered = sorted(ids, key=lambda c: (names.get(c) or "", c))   # boulder_climbs()' order
+    now["climbs"] = {c: climb_harvests(c) for c in ordered}
+    unharvested = [c for c in ordered if not now["climbs"][c]]
+    if unharvested:
+        notes.append(f"{plural(len(unharvested), 'climb')} of it never harvested, which meshing it with fetching would harvest first")
+    others = [PROJECTS / h for c in ordered for h in now["climbs"][c]]
+    away = [o.name for o in others if photos_away(o.name)]
+    if away:
+        needs["pooled"] = needs["photos"] = f"bringing the photos of {plural(len(away), 'harvest')} back from the backup"
+        return now, needs, notes
+    picked = harvest_mod.pool_candidates(others)[0]
+    now["pooled"] = sorted(name for _, name, _ in picked)
+    if not photos:
+        return now, needs, notes
+    sources = {name: src for src, name, _ in picked}
+    if rec.get("pooled") is not None and sorted(rec["pooled"]) == now["pooled"] and not filter_changed:
+        kept = {n: sources[n] for n in photos["files"] if n in sources}     # the same photos, judged as before
+    else:
+        try:
+            kept = _filtered_now(sources, _read_json(pdir / "relevance.json"), deadline, True)
+        except relevance_mod.Uncached as e:
+            needs["photos"] = str(e)
+            return now, needs, notes
+        except TimeoutError:
+            needs["photos"] = "dedupe and the off-topic filter from its cache (this check's time ran out)"
+            return now, needs, notes
+    diff = meshinputs.same_photos(photos, kept)
+    now["photos"] = {"changed": diff} if diff else {"same": True}
+    return now, needs, notes
+
+
+def inputs_check(budget: float = INPUTS_BUDGET, log=None) -> dict:
+    """The dry run: for each current mesh made by areas and projects, whether it would be made from the same inputs now
+    (inputs_would(), meshinputs.compare()), with no meshing, downloading, CLIP or matching. Records missing are
+    backfilled first. Kept in INPUTS_CHECK.
+
+    Args:
+        budget: seconds into it after which it starts no more dedupe or filtering from caches, for meshes whose
+            photos or filter changed: their photos are then reported as needing that.
+
+    Returns:
+        {at, took, meshes, rules, filter (as now), counts, changed: [{id, name, kind, changed, unknown, notes}],
+        unknown: [same], same: [{id, name, kind}]}.
+    """
+    with _inputs_lock:
+        began = time.time()
+        deadline = began + budget
+        rows = q("SELECT id, name FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%' ORDER BY created")
+        out: dict[str, list] = {"changed": [], "unknown": [], "same": []}
+        for i, m in enumerate(rows):
+            if log and i and i % 50 == 0:
+                log(f"{i} of {len(rows)} meshes checked")
+            rec = inputs_of(m["id"])
+            if rec is None:
+                out["unknown"].append({"id": m["id"], "name": m["name"], "kind": None, "changed": {}, "notes": [],
+                                       "unknown": {"photos": "its folder is gone"}})
+                continue
+            try:
+                now, needs, notes = inputs_would(rec, deadline)
+            except Exception as e:
+                now, needs, notes = {}, {"photos": f"working it out, which failed ({type(e).__name__}: {e})"}, []
+            got = meshinputs.compare(rec, now, needs)
+            entry = {"id": m["id"], "name": m["name"], "kind": rec.get("kind")}
+            out[got["status"]].append(entry if got["status"] == "same" else {**entry, **{k: got[k] for k in ("changed", "unknown")}, "notes": notes})
+        report = {"at": began, "took": round(time.time() - began, 1), "meshes": len(rows), "rules": MESH_RULES,
+                  "filter": current_filter(), "counts": {k: len(v) for k, v in out.items()}, **out}
+        try:
+            INPUTS_CHECK.write_text(json.dumps(report, indent=1))
+        except OSError:
+            pass
+        return report
+
+
 def rest_deleted(mid: str, key: str) -> None:
     """A mesh of what a boulder's mesh left out was deleted: while that boulder's mesh is current, its scene is meshed
     again from the same photos (linked from the boulder's project, as kept: nothing is fetched again), and its card stays
@@ -2468,6 +2826,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             raise compute.ComputeUnavailable("this server meshes nothing itself (Reconstructions at once on this server is 0), "
                                              "and no other machines are set up")
         build = _executor.reconstruct if remote else pipeline.reconstruct
+        inputs = inputs_record(pid, log)
         for st in tracker.snapshot()["steps"]:      # the harvest's last, which was left running until a next one began
             if st["state"] == "running" and not st.get("parallel"):
                 tracker.end(st["key"])
@@ -2477,6 +2836,11 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng,boulder,rules) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
           mid, mesh_name(proj["name"]), mesh_path.name, f"project:{pid}", time.time(), mesh_path.stat().st_size, int(demo),
           *boulder_place(proj["boulder"]), proj["boulder"] if proj["kind"] == "boulder" else None, MESH_RULES, write=True)
+        if inputs:
+            try:
+                meshinputs.save(MESHES / mid, {**inputs, "mesh": mid, "made": time.time()})
+            except OSError as e:
+                log(f"keeping what it was made from failed ({e})")
         if proj["climb_id"]:
             link_mesh(mid, proj["climb_id"], "auto-linked from reconstruction project")
             log(f"mesh linked to climb {proj['climb_id']}")
@@ -7250,6 +7614,12 @@ class Handler(BaseHTTPRequestHandler):
                       (SELECT GROUP_CONCAT(cv.climb_id || ':' || cv.found_by || ':' || COALESCE(cv.frames,'')) FROM climb_videos cv
                        WHERE cv.url=v.url) AS climbs
                     FROM videos v LEFT JOIN channels c ON c.channel_url=v.channel_url ORDER BY v.url"""))
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/inputs", p)
+            if m:   # what it was made from (meshinputs.py): ?files=1 with each photo's size and SHA-1
+                record = inputs_of(m[1]) if (MESHES / m[1]).is_dir() else None
+                if not record:
+                    return self.send_json({"error": "not made from a project, or no such mesh"}, 404)
+                return self.send_json(record if qs.get("files") == ["1"] else meshinputs.brief(record))
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/sources", p)
             if m:   # every photo, with where it came from: what crediting or re-hosting a mesh needs
                 record = mesh_record(MESHES / m[1])
@@ -8625,6 +8995,23 @@ def admin_remesh_untied(_: dict) -> dict:
                       f"each shows in Projects once queued"}
 
 
+def admin_inputs_check(_: dict) -> dict:
+    """Start the dry run of what each mesh would be made from now (inputs_check()), in the background; or, while one
+    runs, say so. Either way, what the last one found."""
+    last = _read_json(INPUTS_CHECK)
+    said = (f"; the last, {time.strftime('%Y-%m-%d %H:%M', time.localtime(last['at']))}, found "
+            + ", ".join(f"{n} {k}" for k, n in last["counts"].items()) + f" (in {INPUTS_CHECK})") if last else ""
+    if _inputs_lock.locked():
+        return {"result": "a check of what meshes would be made from now is running" + said}
+
+    def run() -> None:
+        got = inputs_check()
+        print(f"admin: what meshes would be made from now: " + ", ".join(f"{n} {k}" for k, n in got["counts"].items())
+              + f", in {got['took']} s", flush=True)
+    threading.Thread(target=run, daemon=True, name="inputs-check").start()
+    return {"result": f"checking what each mesh would be made from now, in the background: the report goes to {INPUTS_CHECK}" + said}
+
+
 def admin_rest(_: dict) -> dict:
     """Queue meshing each scene tied to a current boulder's mesh that it left out, where that was never tried, or was
     cut short."""
@@ -8679,6 +9066,7 @@ def main() -> None:
     threading.Thread(target=adopt_old_pools, daemon=True).start()
     threading.Thread(target=rest_existing_meshes, daemon=True).start()
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
+    threading.Thread(target=inputs_existing_meshes, daemon=True, name="inputs-backfill").start()
     threading.Thread(target=backfill_step_runs, daemon=True).start()
     for d in MESHES.iterdir() if MESHES.exists() else []:
         beta_mod.carry_on(d)        # finding beta and size carry on after a restart, like areas
@@ -8709,7 +9097,7 @@ def main() -> None:
     in_docker = Path("/.dockerenv").exists()
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rest": admin_rest,
-                                       "remesh-untied": admin_remesh_untied,
+                                       "remesh-untied": admin_remesh_untied, "inputs-check": admin_inputs_check,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,

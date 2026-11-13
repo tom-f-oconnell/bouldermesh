@@ -775,6 +775,47 @@ Could more be scraped per photo? Sampled Nov 2:
 So a video's licence is worth recording (yt-dlp has it at download time, and backfilling is one
 metadata request per video), while a web image's is almost never stated anywhere.
 
+## What each mesh was made from (`backend/meshinputs.py`)
+
+`MESH_RULES` marks old every mesh made before a rules change, by date, whether or not the change touches it. So each
+mesh also keeps `inputs.json`: its photos (names, sizes and SHA-1s, and one digest over them), and for a boulder's or a
+pool's mesh what its lowest area was taken to be (`leaf_kind`), the climbs pooled and each one's harvests (from
+`climbs.json`), and the photos those harvests gave before dedupe and the filter; the filter's `relevance.VERSION`,
+`settings_key()` and methods, from the report of the run that judged the photos; the mapper's settings; `MESH_RULES`;
+and a fingerprint over all of it. It's read before the mesh is made, as the photos may change while it's made.
+
+Meshes from before have what their projects still tell (`backfill_inputs()`, at start and when asked for): each field
+only where what holds it hasn't been written since the mesh was made (the photos and their folder, `relevance.json`,
+`climbs.json`, `sources.json`, the area's row in `boulders`), and unknown otherwise, never guessed. The mapper's
+settings were never kept, so they're always unknown there, and the filter's version too, which its reports didn't have
+before; those meshes can be told changed, but never the same.
+
+The dry run (`inputs_check()`, `cli.py inputs-check`, the admin action) works out each current mesh's fields as the
+code now would have them and compares: the area's kind from `boulders`; a pool's climbs from `climb_links` as
+`settle_clusters()` groups them (a climb with photos of its own never compared with the others can't be told without
+matching); a boulder's climbs and their harvests from the database; what those harvests give, from their folders
+(`harvest.pool_candidates()`, which `pool()` itself uses); and the photos. A climb's own mesh is made from its harvest's
+photos as they are, so those are compared as they stand; unless the filter changed, when they're judged again with
+what it rejected. A boulder's are what pooling gives, deduped and filtered with its last report's verdicts standing, as
+`run_boulder()` would: when neither those photos nor the filter changed, that's what it had, and otherwise dedupe runs
+(it reads the photos) and the filter runs with `cache_only`, which raises `Uncached` instead of running CLIP, reading
+SIFT features or matching a pair the cache doesn't know: the mesh's photos are then reported as needing that. Nothing
+is downloaded, and nothing goes to COLMAP. Files whose size and time haven't changed since they were recorded are taken
+to hold what they did.
+
+Raising `relevance.VERSION` marks the meshes judged under another version changed, by their filter, but doesn't make
+the filter judge photos again (`reusable()` ignores it, as photos aren't to be filtered again for it): the photos those
+meshes would be made from stay as they were, and the dry run says so.
+
+Its limits: which machine filters (and so whether CLIP runs) isn't known, so the filter is taken to run every method; a
+harvest's own filter isn't run again for a boulder, whose pooling takes its harvests as they are (as pooling does); a
+pool's climbs come from all of its area's harvested climbs, not one area's list; and a mesh of what a boulder's mesh
+left out (`rest`) can't be told without meshing that boulder again. On a fixture the size of the public server's
+(300 meshes, 12,000 photos, on 2 of hal's cores while it was busy): 3 s with nothing changed; 17 s with a photo
+more in 10 harvests (17 meshes changed, most of it dedupe reading the pooled photos of 7 boulders again); 8 s to
+backfill every record from scratch, hashing 1.2 GB of photos. Real photos are bigger, so dedupe and hashing take longer
+there, and INPUTS_BUDGET (120 s) bounds the first.
+
 ## Videos found by searching, and climbers' sizes (`backend/climbs/youtube.py`)
 
 Only 120 of 317 fetched climb pages linked any video, and Relic's linked none. One YouTube search

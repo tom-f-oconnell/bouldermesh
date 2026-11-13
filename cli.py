@@ -28,6 +28,10 @@
                                                        the address, roughly where (and a map), and with what
   python cli.py mesh-ratings [-n N] [--data DIR]       visitors' ratings of meshes (bad, OK, good), each mesh's, and
                                                        the last N comments on them, newest last
+  python cli.py inputs-check [--budget S] [--json] [--data DIR]
+                                                       which current meshes would be made from other inputs by the code
+                                                       now (photos, pooling, filter, mapper settings, MESH_RULES), from
+                                                       caches, with no meshing (server.inputs_check()); exits 1 if any
   python cli.py splat <mesh_id> [--steps N] [--out FILE] [--data DIR]
                                                        fit the splat of what's around a reconstructed mesh, for the
                                                        viewer's Scene background (needs CUDA torch and gsplat: splat.py)
@@ -103,6 +107,8 @@ def main():
     mv.add_argument("--data")
     mr = sub.add_parser("mesh-ratings"); mr.add_argument("-n", type=int, default=30); mr.add_argument("--data")
     sd = sub.add_parser("script-downloads"); sd.add_argument("-n", type=int, default=30); sd.add_argument("--data")
+    ic = sub.add_parser("inputs-check"); ic.add_argument("--budget", type=float, default=120); ic.add_argument("--json", action="store_true")
+    ic.add_argument("--data")
     sp = sub.add_parser("splat"); sp.add_argument("mesh_id"); sp.add_argument("--steps", type=int, default=7000)
     sp.add_argument("--out"); sp.add_argument("--data")
     a = ap.parse_args()
@@ -133,6 +139,8 @@ def main():
             bundle.export(Path(a.bundle).resolve(), a.boulder, since)
         return
 
+    if a.cmd == "inputs-check":
+        sys.exit(inputs_check(a.data, a.budget, a.json))
     if a.cmd == "jobs":
         sys.exit(jobs(a.server))
     if a.cmd == "deploy-check":
@@ -463,6 +471,41 @@ def deploy_check(server: str, brief: bool = False, color: bool = False, source: 
           (f"; waiting for them would take about {_mins(st['eta'])}):" if st["eta"] is not None else "):"))
     _show(st, color)
     return 3
+
+
+def inputs_check(data: str | None, budget: float, as_json: bool) -> int:
+    """Print what server.inputs_check() finds: each mesh whose inputs would change, and how; those that can't be told,
+    and why; and how many stay the same.
+
+    Returns:
+        1 if any mesh's inputs would change, else 0.
+    """
+    if data:
+        os.environ["DATA_DIR"] = str(Path(data).resolve())
+    import server
+    server.init_db()
+    server.relevance_mod.MATCHER = server.settings().get("relevance.matcher")
+    report = server.inputs_check(budget, log=lambda s: print(s, file=sys.stderr, flush=True))
+    if as_json:
+        print(json.dumps(report, indent=1))
+        return 1 if report["changed"] else 0
+
+    def short(v) -> str:
+        text = json.dumps(v)
+        return text if len(text) <= 160 else text[:157] + "..."
+    for what in ("changed", "unknown"):
+        print(f"== {len(report[what])} {'would change' if what == 'changed' else 'unknown'}")
+        for m in report[what]:
+            print(f"{m['id']}  {m['kind'] or '?':8} {m['name']}")
+            for f, how in m["changed"].items():
+                print(f"    changed {f}: {short(how)}")
+            for f, why in m["unknown"].items():
+                print(f"    unknown {f}: {why}")
+            for note in m["notes"]:
+                print(f"    note: {note}")
+    print(f"== {len(report['same'])} the same")
+    print(f"{report['meshes']} meshes checked in {report['took']} s; the report is in {server.INPUTS_CHECK}")
+    return 1 if report["changed"] else 0
 
 
 def offtopic_split(limit: int = 0) -> int:

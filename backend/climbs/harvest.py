@@ -412,10 +412,39 @@ def pool(project_dir: Path, others: list[Path], log: Log, limit: int = POOL_MAX)
         The sources.json entries of the photos added, each with pooled_from: the first project it came
         from, and also_in: any others that had it too.
     """
-    from .relevance import is_trusted
     photos = project_dir / "photos"
     photos.mkdir(parents=True, exist_ok=True)
-    have = {p.name for p in photos.iterdir()}
+    picked, entries, found_in = pool_candidates(others, limit, {p.name for p in photos.iterdir()})
+    added = []
+    for src, name, o in picked:
+        try:
+            os.link(src, photos / name)
+        except OSError:
+            shutil.copy2(src, photos / name)
+        entry = {**(entries.get(name) or {"file": name}), "pooled_from": o.name}
+        also = [p for p in dict.fromkeys(found_in.get(name, [])) if p != o.name]
+        if also:
+            entry["also_in"] = also
+        added.append(entry)
+    if others:
+        log(f"pooled {len(added)} photo(s) from {len(others)} other harvest(s) of this boulder")
+    return added
+
+
+def pool_candidates(others: list[Path], limit: int = POOL_MAX, have: set[str] | None = None
+                    ) -> tuple[list[tuple[Path, str, Path]], dict[str, dict], dict[str, list[str]]]:
+    """What pool() takes from other harvests, in its order, without linking anything: as what a boulder's mesh would be
+    made from now (meshinputs.py) needs too.
+
+    Args:
+        have: names already in the pooling harvest's photos, not taken again.
+
+    Returns:
+        Each photo taken, as (its file, the name it takes, the harvest it's from); the harvests' sources.json entries,
+        by name; and the harvests each name is in.
+    """
+    from .relevance import is_trusted
+    have = set(have or ())
     entries: dict[str, dict] = {}
     found_in: dict[str, list[str]] = {}
     own, kept, unmatched = ({o.name: [] for o in others} for _ in range(3))
@@ -437,25 +466,15 @@ def pool(project_dir: Path, others: list[Path], log: Log, limit: int = POOL_MAX)
                     found_in.setdefault(f.name.split("_", 1)[1], []).append(o.name)
     def turns(by: dict[str, list]) -> list:
         return [x for row in itertools.zip_longest(*by.values()) for x in row if x]
-    added = []
+    picked = []
     for src, name, o in turns(own) + turns(kept) + turns(unmatched):
-        if len(added) >= limit:
+        if len(picked) >= limit:
             break
         if name in have or not src.is_file():
             continue
-        try:
-            os.link(src, photos / name)
-        except OSError:
-            shutil.copy2(src, photos / name)
         have.add(name)
-        entry = {**(entries.get(name) or {"file": name}), "pooled_from": o.name}
-        also = [p for p in dict.fromkeys(found_in.get(name, [])) if p != o.name]
-        if also:
-            entry["also_in"] = also
-        added.append(entry)
-    if others:
-        log(f"pooled {len(added)} photo(s) from {len(others)} other harvest(s) of this boulder")
-    return added
+        picked.append((src, name, o))
+    return picked, entries, found_in
 
 
 def anchors_of(others: list[Path]) -> list[Path]:

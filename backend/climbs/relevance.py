@@ -22,6 +22,10 @@ contents (Cache, in the data's cache folder): a pair's matches, by matcher, and 
 or a boulder pooling its climbs' photos, works out only what's new. MATCHER chooses brute-force matching (the
 original, and the default) or FLANN's approximate nearest neighbours, 1.6 times as fast but missing about a tenth of
 the search photos brute force matches (design.md), from the admin page's setting.
+
+VERSION goes up with each change to how the filter judges photos that settings_key() doesn't say, and is kept in its
+reports, so that the meshes made from photos judged before can be told apart (meshinputs.py). It doesn't stop earlier
+verdicts being used again (reusable()): photos aren't filtered again for it.
 """
 from __future__ import annotations
 
@@ -40,6 +44,8 @@ Log = Callable[[str], None]
 Progress = Callable[..., None]   # progress(fraction, detail)
 
 UNTRUSTED = ("commons", "flickr", "google", "ddg", "web")   # file name prefixes of area-wide / search sources
+VERSION = 1
+METHODS = ("cards", "boulder", "same-rock")     # every method, as a machine with everything installed runs them
 REASONS = {"card": "title card or blank frame", "notboulder": "doesn't look like a boulder",
            "nomatch": "doesn't match known photos of this boulder"}
 NOMATCH_CLIPPED = "looks like bouldering, but doesn't match known photos of this boulder"   # with the boulder check run
@@ -67,6 +73,10 @@ OTHER_PROMPTS = ["a photo of a car or truck", "a photo of a bird or wild animal"
                  "a climber on a high multi-pitch big wall with a rope", "a pile of many small rocks",
                  "a black screen with white title text"]
 _clip = None
+
+
+class Uncached(Exception):
+    """Raised by filter_photos(cache_only=True) where an answer would need working something out: what, in words."""
 
 
 class Cache:
@@ -202,9 +212,10 @@ def _clip_key() -> str:
     return f"{CLIP_MODEL}/{CLIP_WEIGHTS}/" + hashlib.sha1("|".join(BOULDER_PROMPTS + OTHER_PROMPTS).encode()).hexdigest()[:12]
 
 
-def boulder_probability(paths: list[Path], log: Log, progress: Progress | None = None) -> dict[Path, float]:
-    """CLIP's probability, for each photo, that one of the boulder prompts fits it best."""
-    import torch
+def boulder_probability(paths: list[Path], log: Log, progress: Progress | None = None,
+                        cache_only: bool = False) -> dict[Path, float]:
+    """CLIP's probability, for each photo, that one of the boulder prompts fits it best. With cache_only, from the
+    cache alone, raising Uncached for any it doesn't know."""
     from PIL import Image
     store = cache()
     model_key = _clip_key()
@@ -212,7 +223,10 @@ def boulder_probability(paths: list[Path], log: Log, progress: Progress | None =
     known = store.get("clip", "p", "model", model_key, list(digests.values())) if store else {}
     out = {p: known[digests[p]] for p in paths if digests.get(p) in known}
     todo = [p for p in paths if p not in out]
+    if todo and cache_only:
+        raise Uncached(f"CLIP's check of {len(todo)} photo(s)")
     if todo:
+        import torch
         model, prep, text, device = _load_clip(log)
         torch.set_num_threads(native_threads())
     for i, p in enumerate(todo):
@@ -305,9 +319,13 @@ def _threads() -> int:
 
 def _map(fn, items: list, progress: Progress | None, what: str) -> list:
     """fn over items in threads (OpenCV releases the GIL), reporting progress."""
-    import cv2
-    threads_before = cv2.getNumThreads()
-    cv2.setNumThreads(1)
+    try:
+        import cv2
+    except ImportError:     # nothing to match with, but the cache may know (filter_photos()'s cache_only)
+        cv2 = None
+    threads_before = cv2.getNumThreads() if cv2 else 0
+    if cv2:
+        cv2.setNumThreads(1)
     out = []
     try:
         with ThreadPoolExecutor(_threads()) as ex:
@@ -316,7 +334,8 @@ def _map(fn, items: list, progress: Progress | None, what: str) -> list:
                 if progress:
                     progress(len(out) / max(1, len(items)), f"{what}: {len(out)} of {len(items)}")
     finally:
-        cv2.setNumThreads(threads_before)
+        if cv2:
+            cv2.setNumThreads(threads_before)
     return out
 
 
@@ -336,8 +355,8 @@ class _Photos:
     enough keypoints to match (from the cache, where it's known, without reading it), and pairs' matches, from the
     cache or worked out and kept for it (save())."""
 
-    def __init__(self, paths: list[Path], store: Cache | None):
-        self.store, how = store, _how()
+    def __init__(self, paths: list[Path], store: Cache | None, cache_only: bool = False):
+        self.store, how, self.cache_only = store, _how(), cache_only
         self.digest = {p: store.digest(p) for p in paths} if store else {}
         self.feats: dict[Path, object] = {}
         self.locks = {p: threading.Lock() for p in paths}
@@ -348,6 +367,8 @@ class _Photos:
         self.worked = 0     # pairs matched here, not found in the cache
 
     def feat(self, p: Path):
+        if self.cache_only:
+            raise Uncached("reading SIFT features of photos the cache doesn't know")
         with self.locks[p]:
             if p not in self.feats:
                 f = self.feats[p] = _features(p)
@@ -363,6 +384,8 @@ class _Photos:
         key = (self.digest.get(p), self.digest.get(a))
         if self.store and key in self.known:
             return self.known[key]
+        if self.cache_only:
+            raise Uncached("matching pairs of photos the cache doesn't know")
         fp, fa = self.feat(p), self.feat(a)
         r = match(fp, fa) if fp is not None and fa is not None else (0, 0.0)
         self.worked += 1
@@ -406,7 +429,8 @@ def _self_anchors(paths: list[Path], photos: _Photos, ok: dict, log: Log, progre
 
 
 def same_rock(candidates: list[Path], anchors: list[Path], log: Log, progress: Progress | None = None,
-              confirmed: list[Path] | None = None, tried: dict[Path, set[str]] | None = None) -> dict[Path, dict]:
+              confirmed: list[Path] | None = None, tried: dict[Path, set[str]] | None = None,
+              cache_only: bool = False) -> dict[Path, dict]:
     """For each candidate, its best match found: {"inliers":, "coverage":, "match":}.
 
     Without anchors the candidates' own largest matching group stands in for them. Returns {}
@@ -417,11 +441,12 @@ def same_rock(candidates: list[Path], anchors: list[Path], log: Log, progress: P
         confirmed: photos known to show the rock already (an earlier run kept them): matched against as the photos
             confirmed in a round are, from the first, beyond the anchors' cap.
         tried: {candidate: names of photos it was matched against before, without passing}, not matched again.
+        cache_only: raise Uncached rather than read or match a photo the cache doesn't know.
     """
     anchors = _spaced(anchors, MAX_ANCHORS)
     confirmed = [c for c in confirmed or [] if c not in anchors]
     everything = list(dict.fromkeys(anchors + confirmed + candidates))
-    photos = _Photos(everything, cache())
+    photos = _Photos(everything, cache(), cache_only)
     try:
         ok = dict(zip(everything, _map(photos.usable, everything, (lambda f, d=None: progress(0.2 * f, d)) if progress else None,
                                        "reading photos")))
@@ -645,7 +670,7 @@ def reusable(prior: dict | None) -> bool:
 
 def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: list[str] | None = None,
                   anchors: list[Path] | None = None, progress: Progress | None = None,
-                  more_anchors: list[Path] | None = None, prior: dict | None = None) -> dict:
+                  more_anchors: list[Path] | None = None, prior: dict | None = None, cache_only: bool = False) -> dict:
     """Filter photos, moving the rejected ones to `rejected` (None: only report).
 
     Args:
@@ -661,13 +686,15 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
             or not a boulder, which depend only on the photo. One it found matching nothing is matched only against
             photos it wasn't then (anchors and photos kept since), and kept if one matches. Its "put_back", photos
             someone put back by hand, are kept whatever, even when the rest of it can't be used.
+        cache_only: work out nothing that isn't in the cache (CLIP, SIFT, matching), raising Uncached where that's
+            needed, as for what a mesh would be made from now (meshinputs.py). Every method counts as installed.
 
     Returns:
-        A JSON-able report: methods run, kept file names, rejected {name: reason}, per-photo scores, the settings,
+        A JSON-able report: the filter's VERSION, methods run, kept file names, rejected {name: reason}, per-photo scores, the settings,
         whether every photo would have been rejected (fallback), the other anchors' names, and how many verdicts
         stood from before (reused).
     """
-    can = available()
+    can = list(METHODS) if cache_only else available()
     methods = [m for m in (methods if methods is not None else can) if m in can]
     missing = [m for m in ("cards", "boulder", "same-rock") if m not in can]
     scores: dict[str, dict] = {p.name: {} for p in paths}
@@ -709,11 +736,14 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
         alive = [p for p in alive if p.name not in why]
     if "boulder" in methods and ([p for p in alive if p.name not in again] or unclipped):
         try:
-            for p, prob in boulder_probability([p for p in alive if p.name not in again] + unclipped, log, sub(0.0, 0.3)).items():
+            for p, prob in boulder_probability([p for p in alive if p.name not in again] + unclipped, log, sub(0.0, 0.3),
+                                               **({"cache_only": True} if cache_only else {})).items():
                 scores[p.name]["boulder"] = round(prob, 3)
                 if prob < BOULDER_MIN_P:
                     why[p.name] = "notboulder"
             alive = [p for p in alive if p.name not in why]
+        except Uncached:
+            raise
         except Exception as e:  # e.g. the model can't be downloaded: only costs this method
             log(f"relevance: CLIP check failed ({e}); skipping it")
     kept_before = [p for p in paths if p.name in stood and stood[p.name] is None and p.name not in why]
@@ -728,7 +758,8 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
         if candidates:
             seen_then = set((before or {}).get("scores") or {}) | set((before or {}).get("more") or [])
             tried = {p: seen_then for p in candidates if p.name in again}
-            for p, r in same_rock(candidates, anchor_list, log, sub(0.3, 1.0), confirmed=kept_before, tried=tried).items():
+            for p, r in same_rock(candidates, anchor_list, log, sub(0.3, 1.0), confirmed=kept_before, tried=tried,
+                                  cache_only=cache_only).items():
                 if p.name in again and not r["match"]:     # nothing new to match against: as it was
                     scores[p.name] = dict((before.get("scores") or {}).get(p.name) or {})
                 else:
@@ -755,6 +786,6 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
     counts = {r: sum(1 for w in why.values() if w == r) for r in REASONS}
     log(f"relevance: kept {len(paths) - len(why)} of {len(paths)}"
         + "".join(f", {n} rejected: {REASONS[r]}" for r, n in counts.items() if n))
-    return {"methods": methods, "kept": [p.name for p in paths if p.name not in why], "rejected": why, "counts": counts,
+    return {"version": VERSION, "methods": methods, "kept": [p.name for p in paths if p.name not in why], "rejected": why, "counts": counts,
             "scores": scores, "settings": settings_key(), "fallback": fallback, "more": sorted({p.name for p in more_anchors or []}),
             "reused": len(stood), **({"put_back": sorted(held)} if held else {})}
