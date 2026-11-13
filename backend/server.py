@@ -5817,6 +5817,8 @@ def campaign_view(camp: dict) -> dict:
     listed = {"climbs": sum(r["n"] for r in leaves), "boulders": found.count("boulder"), "groups": found.count("group"),
               "unread": len(found) - found.count("boulder") - found.count("group")}    # its lowest areas, as MP says
     again["triable"] = len(triable(cid))
+    again["old"] = q(f"SELECT COUNT(*) n FROM campaign_items ci JOIN meshes m ON m.id=ci.mesh_id WHERE ci.campaign_id=? AND {OLD_MESH}",
+                     cid, one=True)["n"]     # climbs whose mesh was made before the rules (MESH_RULES): not done yet
     worked = q("SELECT rank,name,grade,stars,url,climb_id,mesh_id,project_id,status,note,updated FROM campaign_items "
                "WHERE campaign_id=? AND status NOT IN ('pending','running') ORDER BY updated DESC LIMIT 300", cid)
     running = q("SELECT rank,name,grade,stars,project_id,source_id,boulder,redo,pool,updated,paused FROM campaign_items "

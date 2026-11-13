@@ -1129,7 +1129,7 @@ log = server.read_log(got["Beta"]["project_id"])
 assert "-- harvesting again" in log and log.index("done") < log.index("-- harvesting again"), "its log is added to"
 assert server.q("SELECT status FROM projects WHERE id=?", got["Beta"]["project_id"], one=True)["status"] == "done"
 view = server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))
-assert view["again"] == {"changed": 2, "queued": 0, "boulders": 1, "triable": 0}, view["again"]
+assert view["again"] == {"changed": 2, "queued": 0, "boulders": 1, "triable": 0, "old": 0}, view["again"]
 
 # rebuilding the changed ones: a new mesh takes over the old one's climbs, which stays as an older version
 assert server.queue_redo(c["id"], "rebuild-changed") == 2

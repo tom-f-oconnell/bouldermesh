@@ -410,7 +410,7 @@
     <!-- ============================ AREAS ============================ -->
     <div class="pane" id="pane-areas">
       <section class="w">
-        <details id="ca-box" open><summary><h2>Mesh a whole area</h2></summary>
+        <details id="ca-box" open><summary><h2>Start a job</h2></summary>
         <textarea id="ca-area" rows="3" style="width:100%" placeholder="MP area URLs, one a line, meshed in the order listed, e.g. mountainproject.com/area/105720495/joshua-tree-national-park"></textarea>
         <div class="row" style="margin-top:8px">
           <label>Order
@@ -456,7 +456,7 @@
         </details>
       </section>
       <section class="areas-list">
-        <h2>Areas</h2>
+        <h2>Areas <small class="meta" id="areas-tally" style="text-transform:none;font-weight:normal"></small></h2>
         <div id="campaigns"></div>
       </section>
     </div>
@@ -3297,6 +3297,12 @@ async function refreshCampaigns(){
     for (const c of list) { const n = el.querySelector(`[data-camp="${c.id}"] .now`); if (n) n.innerHTML = currentHtml(c); }
   } else {
     campaignShown = key;
+    // in progress: any of its climbs still to go (queued again too); done: every climb considered (none past a limit),
+    // every boulder meshed that can be, and no mesh older than the rules (MESH_RULES)
+    const togo = c => { const n = c.counts; return (n.pending || 0) + (n.running || 0) + (n.waiting || 0) + (n.harvested || 0); };
+    const going = list.filter(c => togo(c)).length;
+    const done = list.filter(c => !togo(c) && !c.counts.beyond && !c.again.old && !c.again.boulders).length;
+    $('#areas-tally').textContent = list.length ? `· ${going} in progress · ${done} done` : '';
     const open = new Set([...el.querySelectorAll('details[open]')].map(d => d.dataset.list));
     el.innerHTML = list.length ? '' : '<div class="status">Nothing yet.</div>';
     for (const c of list) {
