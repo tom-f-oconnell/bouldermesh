@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Runs inside the nvidia/cuda devel image, with a tree's /usr, /var, /etc, /opt and /tmp mounted over its own
-# (build.sh): build-inside.sh <plain|native> <jobs>. Each part is skipped once built in that tree for that variant.
+# (build.sh): build-inside.sh <plain|native|ss> <jobs>. Each part is skipped once built in that tree for that variant.
 set -ex
 export DEBIAN_FRONTEND=noninteractive
 V=$1 JOBS=$2
-F="-O3" IPO=OFF
+F="-O3" IPO=OFF SS=OFF
 [ "$V" = native ] && F="-O3 -march=native" IPO=ON
+[ "$V" = ss ] && SS=ON      # Ceres master leaves SuiteSparse out unless asked: without it, sparse solves on the CPU are Eigen's
 CUDSS=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss EIGEN=/usr/local/share/eigen3/cmake
 cd /opt
 if [ ! -e apt.done ]; then
@@ -52,6 +53,7 @@ if [ ! -e ceres/build-$V/done ]; then
   rm -rf "ceres/build-$V"
   cmake -S ceres -B ceres/build-$V -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="$F" \
     -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=$IPO -DUSE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 -Dcudss_DIR=$CUDSS \
+    -DWITH_SUITESPARSE=$SS \
     -DEigen3_DIR=$EIGEN -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_SHARED_LIBS=ON
   cmake --build ceres/build-$V -j "$JOBS" && touch ceres/build-$V/done
 fi
@@ -101,7 +103,7 @@ fi
 cmake --install openMVS/build-$V > /dev/null
 
 ldconfig
-{ echo "variant $V: CXX flags '$F', link-time optimization $IPO"
+{ echo "variant $V: CXX flags '$F', link-time optimization $IPO, Ceres with SuiteSparse $SS"
   LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/libcudss/12 colmap -h 2>&1 | head -1
   grep -hE "define CERES_(NO|USE)_" /usr/local/include/ceres/internal/config.h
   update-alternatives --display libblas.so.3-x86_64-linux-gnu | sed -n 2p

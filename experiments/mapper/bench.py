@@ -11,14 +11,19 @@
     bench.py table                                         every step so far, tab-separated (see also stats.py)
     bench.py agree [project]                               every pair of a boulder's models, laid over each other
 
-Tools are the app's image ("app": COLMAP 3.9.1 and OpenMVS 2.3 on the CPU) or a tree build.sh made ("plain" or
-"native": COLMAP 4.2.1 and OpenMVS 2.4 with CUDA). Conditions: "dev" gives a step CORES cores and as many threads,
+Tools are the app's image ("app": COLMAP 3.9.1 and OpenMVS 2.3 on the CPU) or a tree build.sh made ("plain", "native"
+or "ss": COLMAP 4.2.1 and OpenMVS 2.4 with CUDA). Conditions: "dev" gives a step CORES cores and as many threads,
 for runs where only what is placed matters; "prod" is how the live worker runs a job (no core limit, the tools'
-own default thread count, nice 10); "t<N>" is prod with N threads asked for. Results go to <BENCH>/r2/<project>/
+own default thread count, nice 10); "t<N>" is prod with N threads asked for; "c<N>" is prod held to N cores with N
+threads (how a job would run while BoulderMesh may only use N of hal's cores), "c<N>t<M>" that with M threads. While
+<BENCH>/cores-cap.txt holds a number, a queue runs its production-condition jobs as "c<that>" instead (capped()).
+Results go to <BENCH>/r2/<project>/
 <feature set>/<run>/: per step a log, a .json (seconds, CPU seconds, exit code, what else was running) and the
-samples (gpusample.py). A step whose .json exists isn't run again: delete it to redo the step.
+samples (gpusample.py). A step whose .json exists isn't run again: delete it to redo the step. Steps that use the GPU
+hold <BENCH>/gpu.lock (flock) while they run, so that other GPU work on hal can keep clear of them by taking it too.
 """
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -43,6 +48,9 @@ CORES = int(os.environ.get("CORES", "6"))       # what a "dev" step gets: the on
 MEM = os.environ.get("MEM", "64g")
 MVS_APP, MVS_NEW = "/usr/local/bin/OpenMVS", "/usr/local/bin/OpenMVS"
 POOL_MIN_GB = 20        # a queue stops rather than start a job with less than this free on hal's root pool
+GPU_LOCK = BENCH / "gpu.lock"       # held (flock) through every step that uses the GPU: see step()
+LOCK_PATIENCE = 2 * 3600            # seconds a step waits for it before going ahead without (and saying so)
+CAP_FILE = BENCH / "cores-cap.txt"  # a number in it: the cores everything of the benchmark may use together
 
 # The app's settings for photos from the internet (pipeline.py), in each COLMAP's spelling
 INC = ["--Mapper.min_model_size", "6", "--Mapper.ba_refine_principal_point", "1", "--Mapper.min_num_matches", "20"]
@@ -77,6 +85,8 @@ METHODS = {
     # VGGT's cameras for up to 80 well-linked photos, then COLMAP's triangulation and bundle adjustment (vggt_start.py)
     "vggt": ("app", "vggt", [], {}),
 }
+GPU_METHODS = {"gpuba", "gpuba0", "gpudense", "caspar", "caspar_g", "global", "global0", "global_caspar", "global_def", "vggt"}
+assert GPU_METHODS <= set(METHODS)
 # feature set: (COLMAP family, extractor arguments, matcher arguments)
 SIFT = ["--ImageReader.camera_model", "SIMPLE_RADIAL", "--ImageReader.single_camera", "0", "--ImageReader.mask_path", "/p/masks"]
 AFFINE = ["--SiftExtraction.estimate_affine_shape", "1", "--SiftExtraction.domain_size_pooling", "1"]
@@ -103,13 +113,36 @@ REST_ARGS = ["--Mapper.abs_pose_min_num_inliers", "15", "--Mapper.abs_pose_min_i
 
 
 def condition(cond: str) -> tuple[int | None, int | None, bool]:
-    """(core limit, thread count to ask for, whether niced) of a condition."""
+    """(core limit, thread count to ask for, whether niced as production is) of a condition."""
     if cond == "dev":
         return CORES, CORES, False
     if cond == "prod":
         return None, None, True
-    assert re.fullmatch(r"t\d+", cond), cond
-    return None, int(cond[1:]), True
+    m = re.fullmatch(r"(?:c(\d+))?(?:t(\d+))?", cond)
+    assert cond and m, cond
+    cpus = int(m.group(1)) if m.group(1) else None
+    return cpus, int(m.group(2)) if m.group(2) else cpus, True
+
+
+def cap() -> int | None:
+    """The cores the benchmark may use in all right now (CAP_FILE), or None while there's no such limit."""
+    try:
+        return int(CAP_FILE.read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def capped(job: list[str], n: int) -> list[str] | None:
+    """A queue's job as it is run while only n cores may be used: "prod" becomes "c<n>" and "t<M>" "c<n>t<M>", so
+    the results are kept apart from those taken with every core. None for a job asking for more threads than n."""
+    cond = job[job.index("--cond") + 1] if "--cond" in job else "dev"
+    if cond == "dev" or cond.startswith("c"):
+        return job
+    if cond != "prod" and int(cond[1:]) > n:
+        return None
+    out = list(job)
+    out[out.index("--cond") + 1] = f"c{n}" if cond == "prod" else f"c{n}{cond}"
+    return out
 
 
 def threads(cond: str, flag: str) -> list[str]:
@@ -126,12 +159,16 @@ _DOCKER = None
 
 def docker_works() -> bool:
     """Whether Docker can start a container (it couldn't on 2026-11-13, while hal's root pool was full). Asked once
-    per process, so that a queue's steps all run the same way. RUNNER=bwrap skips Docker."""
+    per process, so that a queue's steps all run the same way. RUNNER=bwrap skips Docker; RUNNER=docker fails a job
+    rather than do without it."""
     global _DOCKER
     if _DOCKER is None:
         _DOCKER = os.environ.get("RUNNER") != "bwrap" and subprocess.run(
             ["docker", "run", "--rm", "--log-driver", "none", "--entrypoint", "true", CUDA_IMAGE],
             capture_output=True).returncode == 0
+        if not _DOCKER and os.environ.get("RUNNER") == "docker":
+            _DOCKER = None
+            raise RuntimeError("Docker can't start a container, and RUNNER=docker says not to do without it")
     return _DOCKER
 
 
@@ -150,6 +187,8 @@ def launch(cname: str, tools: str, script: str, mounts: list[str], env: dict, cp
     <BENCH>/nvlibs (copied from the host); the "app" tools are then Ubuntu 24.04's own COLMAP 3.9.1 package in the
     plain tree (/usr/bin, "u391"): the same version and Ceres as the app's, but not its binary."""
     # a dev step is niced right down, so that one going beside a production-condition run takes little from it
+    if tools != "app" and not (BENCH / f"build-{tools}" / "usr/local/bin/colmap").exists():
+        raise RuntimeError(f"build-{tools} has no COLMAP: build.sh hasn't made it (or failed)")
     inner = 'TIMEFORMAT="BENCH_TIME %R %U %S"; time ' + ("nice -n 10 " if nice else "nice -n 19 ") + 'bash -ec "$1"'
     env = dict(env)
     mounts = mounts + [f"{HERE}:/bench:ro"]
@@ -196,9 +235,20 @@ def launch(cname: str, tools: str, script: str, mounts: list[str], env: dict, cp
             "u391" if tools == "app" else tools)
 
 
+def on_gpu(args: list[str]) -> bool:
+    """Whether a COLMAP command's arguments ask for the GPU."""
+    return any(a.endswith("use_gpu") and str(b) == "1" for a, b in zip(args, args[1:]))
+
+
 def step(d: Path, name: str, tools: str, script: str, mounts: list[str], cond: str, env: dict | None = None,
-         timeout: float = 8 * 3600) -> dict:
+         timeout: float = 8 * 3600, gpu: bool = False) -> dict:
     """Runs a bash script as one timed step with the tools named, unless d/<name>.json says it was.
+
+    A step that uses the GPU (gpu) first takes GPU_LOCK, as anyone else's GPU tests on hal that mustn't overlap a
+    timed run do (`flock <BENCH>/gpu.lock <command>`); the wait isn't in its time, and is recorded as lock_wait.
+    After LOCK_PATIENCE it goes ahead without the lock (gpu_locked false in its record), rather than hang a queue
+    on a holder that never lets go. A container Docker couldn't start leaves no record, so the step is made again.
+
     Returns the step's record."""
     rec_file = d / f"{name}.json"
     if rec_file.exists():
@@ -210,6 +260,22 @@ def step(d: Path, name: str, tools: str, script: str, mounts: list[str], cond: s
     log = d / f"{name}.log"
     samples = d / f"{name}.gpu.jsonl"
     samples.unlink(missing_ok=True)
+    lock, asked, said = None, time.time(), time.time()
+    while gpu and lock is None and time.time() - asked < LOCK_PATIENCE:
+        lock = open(GPU_LOCK, "a")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock.close()
+            lock = None
+            if time.time() - said > 600:
+                said = time.time()
+                print(f"{time.strftime('%T')} {d.relative_to(R)} {name}: waiting {(said - asked) / 60:.0f} min for gpu.lock",
+                      flush=True)
+            time.sleep(2)
+    if gpu and lock is None:
+        print(f"{time.strftime('%T')} {d.relative_to(R)} {name}: gpu.lock never came free, going ahead without it", flush=True)
+    lock_wait = round(time.time() - asked, 1)
     sampler = subprocess.Popen([sys.executable, str(HERE / "gpusample.py"), str(samples), cname])
     started = time.time()
     try:
@@ -223,12 +289,17 @@ def step(d: Path, name: str, tools: str, script: str, mounts: list[str], cond: s
     finally:
         sampler.terminate()
         subprocess.run(stop, capture_output=True)
+        if lock:
+            lock.close()
     text = log.read_text(errors="replace")
+    if rc == 125 and docker_works():
+        raise RuntimeError(f"Docker couldn't start the container: {text[-300:]!r}")
     t = re.findall(r"BENCH_TIME ([\d.]+) ([\d.]+) ([\d.]+)", text)
     wall, user, system = (float(x) for x in t[-1]) if t else (time.time() - started, 0.0, 0.0)
     rec = {"step": name, "tools": really, "runner": "docker" if docker_works() else "bwrap", "cond": cond, "rc": rc,
            "wall": wall, "cpu_s": round(user + system, 1),
            "outer_wall": round(time.time() - started, 1), "started": time.strftime("%F %T", time.localtime(started)),
+           "gpu_locked": lock is not None, "lock_wait": lock_wait,
            "marks": {k: float(v) for k, v in re.findall(r"BENCH_MARK (\w+) ([\d.]+)", text)},
            "host": gpusample.summary(str(samples)) if samples.exists() else {}}
     rec_file.write_text(json.dumps(rec, indent=1))
@@ -255,7 +326,7 @@ def flags(host: dict) -> str:
 
 
 def feat_dir(P: str, feat: str, cond: str = "dev", build: str = "plain") -> Path:
-    name = feat + ("+native" if build == "native" and FEATS[feat][0] == "new" else "") + (f"@{cond}" if cond != "dev" else "")
+    name = feat + (f"+{build}" if build != "plain" and FEATS[feat][0] == "new" else "") + (f"@{cond}" if cond != "dev" else "")
     return R / P / name
 
 
@@ -278,21 +349,21 @@ def features(P: str, feat: str, cond: str, build: str) -> Path:
     mounts = [f"{BENCH}/projects/{P}:/p:ro", f"{d}:/w"]
     step(d, "extract", tools, sh(["colmap", "feature_extractor", *log, "--database_path", "/w/database.db",
                                   "--image_path", "/p/photos", *extract, *threads(cond, f"--{spell}Extraction.num_threads")]),
-         mounts, cond)
+         mounts, cond, gpu=on_gpu(extract))
     step(d, "match", tools, sh(["colmap", "exhaustive_matcher", *log, "--database_path", "/w/database.db", *MATCH, *match,
-                                *threads(cond, f"--{spell}Matching.num_threads")]), mounts, cond)
+                                *threads(cond, f"--{spell}Matching.num_threads")]), mounts, cond, gpu=on_gpu(match))
     return d
 
 
 def run_name(method: str, seed: int, cond: str, build: str, rep: int) -> str:
-    return (f"{method}-s{seed}" + ("+native" if build == "native" and METHODS[method][0] == "new" else "")
+    return (f"{method}-s{seed}" + (f"+{build}" if build != "plain" and METHODS[method][0] == "new" else "")
             + (f"@{cond}" if cond != "dev" else "") + (f"-r{rep}" if rep > 1 else "") + ("" if docker_works() else "~bw"))
 
 
 def run_parts(run: str) -> tuple[str, str, str]:
     """(method, build, condition) of a run's name."""
-    m = re.fullmatch(r"(\w+?)-s\d+(\+native)?(?:@(\w+))?(?:-r\d+)?(?:~bw)?", run)
-    return m.group(1), "native" if m.group(2) else "plain", m.group(3) or "dev"
+    m = re.fullmatch(r"(\w+?)-s\d+(?:\+([a-z]+))?(?:@(\w+))?(?:-r\d+)?(?:~bw)?", run)
+    return m.group(1), m.group(2) or "plain", m.group(3) or "dev"
 
 
 def mapper_script(method: str, seed: int, cond: str, more: list[str], out: str = "/r/sparse") -> str:
@@ -326,6 +397,8 @@ def mapper(P: str, method: str, seed: int, feat: str, cond: str, build: str, rep
     if (d / "map.json").exists():
         return run
     shutil.rmtree(d, ignore_errors=True)
+    if d.exists():      # an interrupted run's files that its container wrote as root: put aside, as they can't be deleted
+        d.rename(d.with_name(f"{d.name}.stale{int(time.time())}"))
     (d / "sparse").mkdir(parents=True)
     shutil.copyfile(feat_dir(P, feat) / "database.db", d / "database.db")     # COLMAP 4 rewrites a 3.9.1 database
     mounts = [f"{BENCH}/projects/{P}/photos:/photos:ro", f"{d}:/r"]
@@ -335,7 +408,8 @@ def mapper(P: str, method: str, seed: int, feat: str, cond: str, build: str, rep
             shutil.copytree("/data/tom/data/cache/models/huggingface", cache / "huggingface", symlinks=True)
         mounts.append(f"{cache}:/data/cache/models")
         env = {"DATA_DIR": "/data", "HF_HUB_OFFLINE": "1"}
-    step(d, "map", tools, mapper_script(method, seed, cond, []), mounts, cond, env, timeout=14 * 3600)
+    step(d, "map", tools, mapper_script(method, seed, cond, []), mounts, cond, env, timeout=14 * 3600,
+         gpu=method in GPU_METHODS)
     (d / "database.db").unlink(missing_ok=True)
     (d / "models.json").write_text(json.dumps(models_of(d / "sparse")))
     return run
@@ -366,7 +440,8 @@ def held(P: str, method: str, seed: int, percent: int, feat: str, cond: str, bui
         (d / "sparse").mkdir(exist_ok=True)
     mounts = [f"{BENCH}/projects/{P}/photos:/photos:ro", f"{d}:/r"]
     listed = ["--Mapper.image_list_path" if new else "--image_list_path", "/r/kept.txt"]
-    step(d, "map", tools, mapper_script(method, seed, cond, listed), mounts, cond, env, timeout=14 * 3600)
+    step(d, "map", tools, mapper_script(method, seed, cond, listed), mounts, cond, env, timeout=14 * 3600,
+         gpu=method in GPU_METHODS)
     models = models_of(d / "sparse")
     (d / "models.json").write_text(json.dumps(models))
     if not models:
@@ -376,14 +451,15 @@ def held(P: str, method: str, seed: int, percent: int, feat: str, cond: str, bui
     log = ["--log_target", "stderr"] if new else []
     for name, more in (("add_fixed", fix), ("add_free", [])):
         step(d, name, tools, f"mkdir -p /r/{name}\n" + mapper_script(method, seed, cond, ["--input_path", f"/r/sparse/{best}", *more],
-                                                                    f"/r/{name}"), mounts, cond, env, timeout=14 * 3600)
+                                                                    f"/r/{name}"), mounts, cond, env, timeout=14 * 3600,
+             gpu=method in GPU_METHODS)
     step(d, "add_reg", tools, "mkdir -p /r/add_reg\necho BENCH_MARK register $(date +%s.%N)\n"
          + sh(["colmap", "image_registrator", *log, "--database_path", "/r/database.db", "--input_path", f"/r/sparse/{best}",
                "--output_path", "/r/add_reg", *REST_ARGS, *threads(cond, "--Mapper.num_threads")])
          + "\necho BENCH_MARK adjust $(date +%s.%N)\n"
          + sh(["colmap", "bundle_adjuster", *log, "--input_path", "/r/add_reg", "--output_path", "/r/add_reg",
                *(["--BundleAdjustmentCeres.use_gpu", "1"] if new else [])])
-         + "\necho BENCH_MARK done $(date +%s.%N)", mounts, cond, env)
+         + "\necho BENCH_MARK done $(date +%s.%N)", mounts, cond, env, gpu=new)
     (d / "database.db").unlink(missing_ok=True)
 
 
@@ -452,14 +528,15 @@ def rest(P: str, run: str, feat: str) -> None:
     drop = lambda src, dst, names: (f"python3 /bench/stats.py unrefined db.db {src} > {names}\n"      # noqa: E731
                                     f"if [ -s {names} ]; then mkdir -p {dst}; colmap image_deleter {sh(log)} --input_path {src} "
                                     f"--output_path {dst} --image_names_path {names}; else cp -r {src} {dst}; fi\n")
-    script = ("cd /r/rest\n" + drop("txt", "kept", "drop.txt") + "mkdir -p rest\necho BENCH_MARK register $(date +%s.%N)\n"
+    script = ("cd /r/rest\nrm -rf kept rest rest2 drop.txt drop2.txt\n"         # an interrupted attempt's
+              + drop("txt", "kept", "drop.txt") + "mkdir -p rest\necho BENCH_MARK register $(date +%s.%N)\n"
               + sh(["colmap", "image_registrator", *log, "--database_path", "db.db", "--input_path", "kept",
                     "--output_path", "rest", *REST_ARGS, *threads(cond, "--Mapper.num_threads")])
               + "\necho BENCH_MARK adjust $(date +%s.%N)\n"
               + sh(["colmap", "bundle_adjuster", *log, "--input_path", "rest", "--output_path", "rest",
                     *(["--BundleAdjustmentCeres.use_gpu", "1"] if new else [])])
               + "\necho BENCH_MARK done $(date +%s.%N)\n" + drop("rest", "rest2", "drop2.txt"))
-    rec = step(o, "rest", tools, script, mounts, cond)
+    rec = step(o, "rest", tools, script, mounts, cond, gpu=new)
     (o / "db.db").unlink(missing_ok=True)
     placed = sorted(stats.images(o / "rest2")) if rec["rc"] == 0 and (o / "rest2").exists() else []
     (o / "placed.json").write_text(json.dumps(placed))
@@ -480,15 +557,18 @@ def post(P: str, run: str, feat: str, tools: str, cond: str) -> None:
     steps = [
         ("undistort", sh(["colmap", "image_undistorter", *log, "--image_path", "/photos", "--input_path", "/model",
                           "--output_path", "/o/dense", "--output_type", "COLMAP"])),
-        ("import", sh([f"{mvs}/InterfaceCOLMAP", "-i", "dense", "-o", "scene.mvs", "--image-folder", "dense/images", "-w", "/o"])),
-        ("dense", sh([f"{mvs}/DensifyPointCloud", "scene.mvs", "-w", "/o", "--resolution-level", "2", *t])),
+        # the folder in full, as the app gives it: OpenMVS 2.4 takes a relative one from the input folder, 2.3 from -w
+        ("import", sh([f"{mvs}/InterfaceCOLMAP", "-i", "dense", "-o", "scene.mvs", "--image-folder", "/o/dense/images", "-w", "/o"])),
+        # without an interrupted attempt's depth maps, which it would take up rather than make
+        ("dense", "rm -f depth*.dmap scene_dense*\n"
+         + sh([f"{mvs}/DensifyPointCloud", "scene.mvs", "-w", "/o", "--resolution-level", "2", *t])),
         ("mesh", sh([f"{mvs}/ReconstructMesh", "scene_dense.mvs", "-w", "/o", *t])),
         ("texture", sh([f"{mvs}/TextureMesh", "scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o",
                         "scene_dense_mesh_texture.mvs", "-w", "/o", "--export-type", "glb", "--empty-color", str(0x808080),
                         "--max-texture-size", "4096", *t])),
     ]
-    for name, script in steps:
-        if step(o, name, tools, "cd /o\n" + script, mounts, cond, timeout=4 * 3600)["rc"] != 0:
+    for name, script in steps:      # the newer OpenMVS is built with CUDA; the app's, and undistorting, are CPU only
+        if step(o, name, tools, "cd /o\n" + script, mounts, cond, timeout=4 * 3600, gpu=new and name != "undistort")["rc"] != 0:
             break
 
 
@@ -504,6 +584,8 @@ def agree(only: str | None = None) -> None:
             continue
         models = {}
         for d in sorted(R.glob(f"{P}/*/*")):
+            if ".stale" in d.name:
+                continue
             if (d / "rest" / "rest2" / "images.bin").exists():
                 models[f"{d.parent.name}/{d.name}+rest"] = d / "rest" / "rest2"
             elif (d / "sparse").is_dir() and stats.largest(d / "sparse")[0]:
@@ -528,10 +610,11 @@ def table() -> None:
     """Every step recorded so far, one row each."""
     cols = ["boulder", "photos", "feat", "run", "sub", "step", "tools", "cond", "rc", "wall_s", "cpu_s", "cores",
             "started", "flags", "own_gpu_mib", "gpu_util_own", "gpu_share", "load", "ba_cuda", "ba_cpu", "gp_cuda", "gp_cpu",
-            "ba_fallbacks", "models", "placed", "after_rest", "points", "track", "vs_base_cams", "vs_base_pos", "vs_base_deg"]
+            "ba_fallbacks", "models", "placed", "after_rest", "points", "track", "vs_base_cams", "vs_base_pos", "vs_base_deg",
+            "lock_wait"]
     print("\t".join(cols))
     for rec_file in sorted(R.glob("*/*/**/*.json")):
-        if rec_file.name in ("models.json", "placed.json"):
+        if rec_file.name in ("models.json", "placed.json") or ".stale" in str(rec_file):
             continue
         rec = json.loads(rec_file.read_text())
         if "wall" not in rec:
@@ -546,7 +629,8 @@ def table() -> None:
                "wall_s": round(rec["wall"], 1), "cpu_s": rec["cpu_s"],
                "cores": round(rec["cpu_s"] / rec["wall"], 1) if rec["wall"] else "", "started": rec["started"],
                "flags": flags(host), "own_gpu_mib": host.get("own_mib_max", ""), "gpu_util_own": host.get("util_mean_own", ""),
-               "gpu_share": host.get("own_gpu_share", ""), "load": host.get("load_mean", "")}
+               "gpu_share": host.get("own_gpu_share", ""), "load": host.get("load_mean", ""),
+               "lock_wait": rec.get("lock_wait", "")}
         log = rec_file.with_suffix(".log")
         if rec["step"] in ("map", "rest") and log.exists():
             text = log.read_text(errors="replace")
@@ -566,7 +650,7 @@ def table() -> None:
                 n, track = stats.points(d / "rest" / "rest2")
                 row["points"], row["track"] = n, round(track, 2)
                 # against the baseline's model for the same seed and condition, after the app's rest step in both
-                ref = d.parent / re.sub(r"^\w+?-s", "base-s", run).replace("+native", "") / "rest" / "rest2"
+                ref = d.parent / re.sub(r"\+[a-z]+", "", re.sub(r"^\w+?-s", "base-s", run)) / "rest" / "rest2"
                 if ref != d / "rest" / "rest2" and (ref / "images.bin").exists():
                     ag = stats.agreement(stats.poses(d / "rest" / "rest2"), stats.poses(ref)) or {}
                     row["vs_base_cams"], row["vs_base_pos"], row["vs_base_deg"] = (ag.get("cameras", ""), ag.get("pos_median", ""),
@@ -607,20 +691,33 @@ def main(argv: list[str]) -> None:
     elif a.command == "agree":
         agree(a.args[0] if a.args else None)
     elif a.command == "queue":      # read again before each job, so that jobs can be added to the file while it runs
-        done = 0
+        done, status = 0, Path(a.args[0]).with_suffix(".status")      # the job it is on, for anyone looking
         while True:
             lines = [l for l in Path(a.args[0]).read_text().split("\n") if l.strip() and not l.startswith("#")]
             if done >= len(lines):
+                status.write_text(f"finished {time.strftime('%F %T')} ({len(lines)} jobs)\n")
                 break
             room = pool_room()
             if room is not None and room < POOL_MIN_GB:
                 print(f"{time.strftime('%T')} STOPPED before \"{lines[done]}\": {room:.0f} GB free on rpool", flush=True)
+                status.write_text(f"stopped {time.strftime('%F %T')} at job {done + 1} of {len(lines)}: rpool nearly full\n")
                 sys.exit(3)
-            try:
-                main(shlex.split(lines[done]))
-            except Exception as e:      # one failing job doesn't stop the rest
-                print(f"{time.strftime('%T')} FAILED {lines[done]}: {e!r}", flush=True)
+            job, n = shlex.split(lines[done]), cap()
+            job = capped(job, n) if n else job
             done += 1
+            if job is None:
+                print(f"{time.strftime('%T')} SKIPPED under the {n}-core cap: {lines[done - 1]}", flush=True)
+                continue
+            status.write_text(f"job {done} of {len(lines)} since {time.strftime('%F %T')}: {sh(job)}\n")
+            print(f"{time.strftime('%T')} JOB {done}/{len(lines)} of {Path(a.args[0]).name}: {sh(job)}", flush=True)
+            try:
+                main(job)
+            except Exception as e:      # one failing job doesn't stop the rest
+                print(f"{time.strftime('%T')} FAILED {sh(job)}: {e!r}", flush=True)
+            except SystemExit as e:
+                if e.code != 2:         # 2: a line argparse couldn't read
+                    raise
+                print(f"{time.strftime('%T')} FAILED {sh(job)}: not a job bench.py knows", flush=True)
 
 
 if __name__ == "__main__":

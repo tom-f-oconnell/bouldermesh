@@ -1,0 +1,15 @@
+# Untimed (dev): the baseline on other seeds, then the global mapper's (on the GPU: each takes gpu.lock)
+all e6de7747fab5 base 1
+all e6de7747fab5 base 2
+all e6de7747fab5 base 3
+all e6de7747fab5 base 4
+all ce7571e0a4a3 global 1
+all ce7571e0a4a3 global 2
+all 38f31439985f global 1
+all 38f31439985f global 2
+all 9f3b4b740847 global 1
+all 9f3b4b740847 global 2
+all 31de9a59303a global 1
+all 31de9a59303a global 2
+all e6de7747fab5 global0 1
+all e6de7747fab5 global0 2
