@@ -4655,6 +4655,7 @@ $('#vothers').onclick = async () => {
 const TIPS = [
   { key: 'random', at: ['#vrandom', '#random'], text: '<b>Random</b> opens a mesh picked at random: a quick way to see what\'s here.' },
   { key: 'settings', at: ['#vprefs', '#prefsbtn'], text: '<b>Settings</b> (⚙︎) change how a mesh looks: its colours, background and detail.' },
+  { key: 'help', at: ['.tabs button[data-tab=help]'], text: 'The <b>?</b> tab is where to leave a comment or report a bug, and to support the site.' },
 ];
 const TIPS_KEY = 'bm_tips_v1';
 const tipsSeen = () => { try { return JSON.parse(localStorage.getItem(TIPS_KEY) || '{}'); } catch { return {}; } };
