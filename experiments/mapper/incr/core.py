@@ -1259,6 +1259,8 @@ def texture_capture_first(d: Path, scene: str, mesh: str, out: Path, caps: list[
     and one GLB of the two. Returns texture.split()'s numbers."""
     import texture as tx
     (d / "capture-views.txt").write_text("".join(f"{n}\n" for n in caps))
+    rep.part("exposure")
+    rep.data["exposure"] = level_exposure(d, caps)
     rep.part("texture_capture")
     run([f"{MVS}/TextureMesh", scene, "-m", mesh, "-o", "tex_capture.mvs", "-w", d, "--export-type", "obj",
          "--empty-color", str(0xFF00FF), "--max-texture-size", "4096", "--views-file", "capture-views.txt", *t], d)
@@ -1273,6 +1275,44 @@ def texture_capture_first(d: Path, scene: str, mesh: str, out: Path, caps: list[
     r = tx.split(d / "tex_capture.obj", other, out)
     log(f"texture: the capture's {len(caps)} photos textured {r['capture_share']:.1%} of the surface")
     return r
+
+
+def level_exposure(d: Path, caps: list[str]) -> dict:
+    """Brings the capture's undistorted photos to one brightness before texturing: white balance is locked through a
+    capture, exposure isn't, and each photo's readings say what it was (exp: t seconds, iso). Each photo's linear
+    light is scaled by the median exposure over its own (t x iso), in place in the scene's images. Photos without
+    readings are left."""
+    from PIL import Image
+    pri_file = d.parent / "cache" / "priors.json" if (d.parent / "cache" / "priors.json").exists() else d.parent.parent / "cache" / "priors.json"
+    if not pri_file.exists():
+        return {"levelled": 0}
+    pri = json.loads(pri_file.read_text())["photos"]
+    rec_file = pri_file.parent / "capture.json"
+    exp = {}
+    if rec_file.exists():
+        for sh in json.loads(rec_file.read_text()).get("shots", []):
+            e = (sh.get("blob") or {}).get("exp") or {}
+            if e.get("t") and e.get("iso"):
+                exp[sh["name"]] = float(e["t"]) * float(e["iso"])
+    have = {n: v for n, v in exp.items() if n in caps}
+    if len(have) < 2:
+        return {"levelled": 0}
+    ref = float(np.median(list(have.values())))
+    images = d / "dense" / "images" if (d / "dense" / "images").exists() else d / "images"
+    done, gains = 0, []
+    for n, v in have.items():
+        f = images / n
+        if not f.exists():
+            continue
+        gain = ref / v
+        if abs(gain - 1) < 0.02:
+            continue
+        a = np.asarray(Image.open(f).convert("RGB"), np.float32) / 255
+        lin = np.where(a <= 0.04045, a / 12.92, ((a + 0.055) / 1.055) ** 2.4) * gain
+        srgb = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * np.power(np.clip(lin, 0, None), 1 / 2.4) - 0.055)
+        Image.fromarray((np.clip(srgb, 0, 1) * 255 + 0.5).astype(np.uint8)).save(f, quality=95)
+        done, gains = done + 1, gains + [gain]
+    return {"levelled": done, "gain_min": round(min(gains), 3) if gains else None, "gain_max": round(max(gains), 3) if gains else None}
 
 
 def retexture_former(root: Path, former_glb: Path, threads: int) -> dict:
@@ -1365,9 +1405,10 @@ def detail(root: Path, holds_file: Path, threads: int, cards_file: Path | None =
             pycolmap.undistort_images(str(d / "dense"), str(d / "model"), str(root / "photos"), image_names=list(names),
                                       output_type="COLMAP", num_threads=threads)
             t = ["--max-threads", threads] if threads > 0 else []
+            masks = card_masks(d, sub, [n for n in names if n in cards], cards)
             run([f"{MVS}/InterfaceCOLMAP", "-i", "dense", "-o", "scene.mvs", "--image-folder", d / "dense" / "images", "-w", d], d)
             run([f"{MVS}/DensifyPointCloud", "scene.mvs", "-w", d, "--resolution-level", "0", "--max-resolution", "8192",
-                 "--remove-dmaps", "1", *t], d)
+                 "--remove-dmaps", "1", *(["--mask-path", masks, "--ignore-mask-label", "0"] if masks else []), *t], d)
             run([f"{MVS}/ReconstructMesh", "scene_dense.mvs", "-w", d, *t], d)
             V, F = read_ply(d / "scene_dense_mesh.ply")
             return dt.cut(V, F, p, r * 1.2), d
@@ -1419,6 +1460,28 @@ def detail(root: Path, holds_file: Path, threads: int, cards_file: Path | None =
         log(f"detail {hid}: {res.get('status')} ({res.get('why')}); {res.get('faces')} faces, split-half {res.get('split_half_mm')} mm")
     st.write_json(out_dir / "details.json", {"v": 1, "holds": results})
     return rep.save(holds=results)
+
+
+def card_masks(d: Path, rec: pycolmap.Reconstruction, names: list[str], cards: dict) -> Path | None:
+    """Masks leaving the card out of the dense cloud (it's a flat print, not rock): for each photo with a card, its
+    corners carried from the photo's pixels into the undistorted picture's, the card's quadrilateral (grown a little)
+    0 and the rest 255, as OpenMVS's <image>.mask.png. Returns the folder, or None with no card."""
+    if not names:
+        return None
+    import card as cd
+    from PIL import Image
+    und = pycolmap.Reconstruction(str(d / "dense" / "sparse"))
+    out = d / "masks"
+    out.mkdir(exist_ok=True)
+    for n in names:
+        im, im2 = rec.find_image_with_name(n), und.find_image_with_name(n)
+        if im is None or im2 is None:
+            continue
+        cam, cam2 = rec.camera(im.camera_id), und.camera(im2.camera_id)
+        q = np.array([cam2.img_from_cam(np.append(cam.cam_from_img(np.asarray(c, float)), 1.0)) for c in cards[n]["corners"]])
+        keep = ~cd.mask((cam2.height, cam2.width), q[:, :2])
+        Image.fromarray((keep * 255).astype(np.uint8)).save(out / f"{Path(n).stem}.mask.png")
+    return out
 
 
 def _ray_mesh(o: np.ndarray, d: np.ndarray, V: np.ndarray, F: np.ndarray) -> np.ndarray:
