@@ -78,11 +78,11 @@ server.init_db()
 server.settings().update({"areas.meshes": "climbs"})
 
 
-def run_all(camp_id: str, limit: int = 30) -> None:
+def run_all(camp_id: str | None = None, limit: int = 30) -> None:
+    """Until no worker has anything to take: old climbs too, at low priority, whatever their areas' status."""
     for _ in range(limit):
-        if server.campaign_status(camp_id) != "running":
+        if not server.next_campaign_step():
             return
-        server.next_campaign_step()
 
 
 def items(camp_id: str) -> dict[str, dict]:
@@ -131,17 +131,14 @@ try:
     server.q("DELETE FROM meshes WHERE id=?", delta0, write=True)
     server.q("UPDATE campaign_items SET status='pending', mesh_id=NULL, project_id=NULL WHERE name='Delta'", write=True)
     assert server.old_mesh_report(fresh=True)["waiting"] == 2
-    # a stopped area stays as it is
-    server.q("UPDATE campaigns SET status='stopped' WHERE id=?", c["id"], write=True)
-    assert server.queue_old(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True)) == 0
-    assert not server.next_campaign_step() and items(c["id"])["Beta"]["redo"] is None, "not started"
     start(c["id"])
     harvested.clear()
     assert server.queue_old(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True)) == 2
     got = items(c["id"])
     assert (got["Beta"]["redo"], got["Beta"]["retry"], got["Beta"]["old_rerun"], got["Beta"]["rerun_rules"]) == ("new+rebuild", 0, 1, 1), got["Beta"]
-    order = [i["name"] for i in server.ordered_pending(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))]
+    order = [i["name"] for i in server.ordered_pending(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True), old=True)]
     assert order == ["Delta", "Beta", "Gamma"], order
+    assert [i["name"] for i in server.ordered_pending(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))] == ["Delta"]
     camp = server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))
     assert camp["old_queued"] == 2, camp
     run_all(c["id"])
@@ -179,6 +176,7 @@ try:
     run_all(c["id"])
     assert [h[0] for h in harvested] == ["Gamma"] and items(c["id"])["Delta"]["status"] == "done", harvested     # Delta first: it had its mesh
     assert server.campaign_status(c["id"]) == "done" and not server.q("SELECT only_retries FROM campaigns WHERE id=?", c["id"], one=True)["only_retries"]
+    assert [h[0] for h in harvested] == ["Gamma"]
     assert mesh(items(c["id"])["Gamma"]["mesh_id"])["rules"] == server.MESH_RULES
     # an old one interrupted by a restart goes next when the server's back
     server.q("UPDATE campaign_items SET status='running', old_rerun=1, retry=0 WHERE name='Gamma'", write=True)
@@ -359,6 +357,68 @@ try:
     got = server.old_by_data(log=lambda s: None)
     assert [(d["id"], d["newer"]) for d in got["decide"]] == [("xa", "xc")] and "fewer" in got["decide"][0]["why"], got
     print("old by data OK")
+
+    # --- lowest priority overall: an area's own climbs, even another area's started by hand, go before any old one; old
+    # ones of stopped and done areas run only once nothing else is, and their areas' status and own lists stay as they are
+    fresh()
+    a = server.create_campaign("", "popularity", HEAD + row(1, "Beta", "Beta Boulder") + row(2, "Gamma", "Gamma Boulder"))
+    run_all()
+    made_a = items(a["id"])
+    make_old(made_a["Beta"]["mesh_id"], made_a["Gamma"]["mesh_id"])
+    server.q("UPDATE campaign_items SET status='pending', mesh_id=NULL, project_id=NULL WHERE campaign_id=? AND name='Gamma'", a["id"], write=True)
+    server.q("UPDATE campaigns SET status='stopped' WHERE id=?", a["id"], write=True)      # Gamma: its own, still to go
+    m = server.create_campaign("", "popularity", HEAD + row(4, "Eps", "Eps Boulder") + row(5, "Zeta", "Zeta Boulder"))   # by hand, running
+    harvested.clear()
+    camp_of = lambda cid: server.q("SELECT * FROM campaigns WHERE id=?", cid, one=True)  # noqa: E731
+    w = server.current_worker()
+    with server._claim_lock:
+        got = server._claim(w)
+    assert got and got[1]["name"] == "Eps", "the running area's own first"
+    server.set_item(m["id"], got[1]["source_id"], status="pending")
+    w.campaign = w.boulder = w.doing = w.item = None
+    assert items(a["id"])["Beta"]["redo"] is None, "nothing queued again while other work is to take"
+    statuses = []
+    for _ in range(20):
+        if not server.next_campaign_step():
+            break
+        statuses.append((server.campaign_status(a["id"]), server.campaign_status(m["id"])))
+    assert [h[0] for h in harvested] == ["Eps", "Zeta", "Beta"], harvested
+    got = items(a["id"])
+    assert server.campaign_status(a["id"]) == "stopped" and got["Gamma"]["status"] == "pending" and got["Gamma"]["redo"] is None, got
+    assert got["Beta"]["status"] == "done" and mesh(got["Beta"]["mesh_id"])["rules"] == server.MESH_RULES and not got["Beta"]["old_rerun"]
+    assert all(s[0] == "stopped" for s in statuses), statuses
+    assert server.campaign_status(m["id"]) == "done"
+    # the area card counts it apart, while it's still to go, and it's low priority in the Projects tab
+    server.q("UPDATE campaign_items SET status='pending', old_rerun=1, redo='new+rebuild', was='done' WHERE campaign_id=? AND name='Beta'",
+             a["id"], write=True)
+    v = server.campaign_view(camp_of(a["id"]))
+    assert v["old_queued"] == 1 and v["counts"]["pending"] == 1 and [i["name"] for i in v["old_next"]] == ["Beta"], v
+    assert [i["name"] for i in v["next"]] == ["Gamma"]
+    assert any(x.get("old_rerun") for x in server.project_areas()[got["Beta"]["project_id"]])
+    server.q("UPDATE campaign_items SET status='running' WHERE campaign_id=? AND name='Beta'", a["id"], write=True)
+    listed = {c["id"]: c for c in server.campaigns_listed()}
+    assert listed[a["id"]]["state"] == "low priority" and listed[a["id"]]["current"]["old_rerun"], listed[a["id"]]
+    server.q("UPDATE campaign_items SET status='done', old_rerun=0, redo=NULL WHERE campaign_id=? AND name='Beta'", a["id"], write=True)
+    # a done area: its old one remade, the area still done
+    make_old(got["Beta"]["mesh_id"])
+    server.q("UPDATE campaign_items SET rerun_rules=NULL, updated=0 WHERE campaign_id=? AND name='Beta'", a["id"], write=True)
+    server.q("UPDATE campaigns SET status='done' WHERE id=?", a["id"], write=True)
+    harvested.clear()
+    run_all()
+    assert [h[0] for h in harvested] == ["Beta"] and server.campaign_status(a["id"]) == "done", harvested
+    assert mesh(items(a["id"])["Beta"]["mesh_id"])["rules"] == server.MESH_RULES and items(a["id"])["Gamma"]["status"] == "pending"
+    print("old climbs at low priority, whatever their areas' status OK")
+
+    # --- first N: an area with a limit, done, only its old one within it remade; the next not started ----------------
+    fresh()
+    c = server.create_campaign("", "popularity", HEAD + row(1, "Beta", "Beta Boulder") + row(2, "Gamma", "Gamma Boulder"), max_meshes=1)
+    run_all()
+    make_old(items(c["id"])["Beta"]["mesh_id"])
+    harvested.clear()
+    run_all()
+    assert [h[0] for h in harvested] == ["Beta"] and items(c["id"])["Gamma"]["status"] == "pending" and server.campaign_status(c["id"]) == "done"
+    assert server.limit_scope(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True)) == ({"1"}, 1)
+    print("first N unaffected OK")
     print("ALL OLD RERUN TESTS PASSED")
 finally:
     import shutil

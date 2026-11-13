@@ -2324,15 +2324,13 @@ OLD_RERUN_NOTE = "its meshes are old (made before the rules for what an area mes
 
 
 def queue_old(camp: dict) -> int:
-    """Queue again a running area's climbs whose only meshes are old, or that are linked only via another climb's mesh,
-    not tried under the rules yet (old_waiting()), once for each MESH_RULES: after the rest of its list, in its order
-    (ordered_pending()). One with a harvest is queued to look in every source for new photos and mesh it again
-    ("new+rebuild", whatever it finds; on a boulder meshed whole, harvested for its boulder's mesh, made again once its
-    climbs are); one without is harvested and meshed as if new. An area stopped or done isn't touched; one running only
-    what was queued again (only_retries) has these queued so too, after those, and then stops. Returns how many."""
-    if camp.get("status") != "running":
-        return 0
-    retry = int(bool(camp.get("only_retries")))     # so that it takes them, after what it was running
+    """Queue again an area's climbs whose only meshes are old, or that are linked only via another climb's mesh, not
+    tried under the rules yet (old_waiting()), once for each MESH_RULES, whatever the area's status: at low priority,
+    taken only when no area has anything else to take (_claim_old()), and never starting or resuming the area's own
+    list. One with a harvest is queued to look in every source for new photos and mesh it again ("new+rebuild",
+    whatever it finds; on a boulder meshed whole, harvested for its boulder's mesh, made again once its climbs are); one
+    without is harvested and meshed as if new. Returns how many."""
+    retry = 0
     waiting = old_waiting()
     if not waiting:
         return 0
@@ -3935,10 +3933,12 @@ def following(item: dict) -> bool:
     return item.get("redo") in ("own", "cluster") or (item.get("redo") == "rebuild" and item.get("was") == "harvested")
 
 
-def ordered_pending(camp: dict) -> list[dict]:
-    """A campaign's waiting climbs, next first: within its limit, if it has one. Not those paused (pause_item())."""
+def ordered_pending(camp: dict, old: bool = False) -> list[dict]:
+    """A campaign's waiting climbs, next first: within its limit, if it has one. Not those paused (pause_item()), nor
+    (unless old) those queued again as their meshes are old (queue_old()), which go at low priority (_claim_old())."""
     items = q("SELECT rank,source_id,name,grade,stars,url,media,project_id,retry,redo,was,boulder,waiting_since,old_rerun FROM campaign_items "
-              "WHERE campaign_id=? AND status='pending' AND paused IS NULL AND blocked IS NULL ORDER BY rank", camp["id"])
+              "WHERE campaign_id=? AND status='pending' AND paused IS NULL AND blocked IS NULL "
+              f"{'' if old else 'AND COALESCE(old_rerun, 0)=0 '}ORDER BY rank", camp["id"])
     scope = in_scope(camp)
     if scope is None:
         items = _in_order(camp, items)
@@ -3948,7 +3948,7 @@ def ordered_pending(camp: dict) -> list[dict]:
         items = [i for unit in _units(camp, [i for i in items if i["source_id"] in scope or following(i)]) for i in unit]
     # retries were asked for, and a climb that was interrupted comes next, to finish what it started; those queued again as
     # their meshes are old (queue_old()) after the rest
-    items.sort(key=lambda i: (not i["retry"], bool(i["old_rerun"]), not i["project_id"]))
+    items.sort(key=lambda i: (bool(i["old_rerun"]), not i["retry"], not i["project_id"]))
     return items
 
 
@@ -4071,8 +4071,8 @@ def run_campaign_item(camp: dict, item: dict) -> None:
             link_after(cid, sid)
         _outages.clear()
     finally:
-        q("UPDATE campaign_items SET retry=0, old_rerun=0 WHERE campaign_id=? AND source_id=? AND status NOT IN ('pending','running')",
-          cid, sid, write=True)
+        q("UPDATE campaign_items SET retry=0, old_rerun=CASE WHEN status IN ('harvested','waiting') THEN old_rerun ELSE 0 END "
+          "WHERE campaign_id=? AND source_id=? AND status NOT IN ('pending','running')", cid, sid, write=True)    # those go on at low priority
 
 
 HARVESTED_NOTE = "harvested for its boulder's mesh, made once the area's climbs on it are all harvested"
@@ -4095,11 +4095,13 @@ def settle_boulder(camp_id: str, boulder: str | None) -> bool:
     """
     if not boulder or not pools_whole(boulder):
         return False
-    items = q("SELECT source_id, status FROM campaign_items WHERE campaign_id=? AND boulder=? ORDER BY rank", camp_id, boulder)
+    items = q("SELECT source_id, status, old_rerun FROM campaign_items WHERE campaign_id=? AND boulder=? ORDER BY rank", camp_id, boulder)
     camp = q("SELECT * FROM campaigns WHERE id=?", camp_id, one=True) or {}
     scope = in_scope(camp)
     if scope is not None:   # those past an area's limit (as after lowering it) aren't waited for
         items = [i for i in items if i["source_id"] in scope or i["status"] in ("running", "waiting", "harvested")]
+    if camp.get("status") != "running":     # one not running remakes only its old meshes: its own list isn't waited for
+        items = [i for i in items if i["old_rerun"] or i["status"] not in ("pending", "waiting")]
     if any(i["status"] in ("pending", "running", "waiting") for i in items):
         return False
     harvested = [i for i in items if i["status"] == "harvested"]
@@ -4129,7 +4131,7 @@ def boulder_meshed(camp_id: str, source_id: str, end: dict, failed: bool) -> dic
         status, mesh = ("skipped" if not failed and proj and proj["status"] == "harvested" else "failed"), None
     note = (f"meshed with its boulder: {end['note'].removeprefix('its boulder meshed from ')}"
             if status == "done" and end["note"].startswith("its boulder meshed from ") else end["note"])
-    q("UPDATE campaign_items SET status=?, mesh_id=COALESCE(?, mesh_id), note=?, retry=0, updated=? "
+    q("UPDATE campaign_items SET status=?, mesh_id=COALESCE(?, mesh_id), note=?, retry=0, old_rerun=0, updated=? "
       "WHERE campaign_id=? AND boulder=? AND status='harvested' AND source_id!=?", status, mesh, note, time.time(), camp_id, boulder,
       source_id, write=True)
     return {**end, "status": status, "note": note, **({"mesh_id": mesh} if mesh else {})}
@@ -4167,10 +4169,11 @@ def wait_for_volunteers(cid: str, sid: str, pid: str, since: float | None) -> No
     VOLUNTEERS.resettle("harvest", pid)
 
 
-def settle_waiting(camp_id: str) -> None:
-    """An area's climbs that have waited for volunteers for VOLUNTEER_WAIT: harvested again and meshed with what's come."""
+def settle_waiting(camp_id: str, only_old: bool = False) -> None:
+    """An area's climbs that have waited for volunteers for VOLUNTEER_WAIT: harvested again and meshed with what's come.
+    Only those queued again as their meshes are old (queue_old()) if only_old."""
     q("UPDATE campaign_items SET status='pending', retry=1, redo='more+rebuild', was='waiting', redo_started=0, note=? "
-      "WHERE campaign_id=? AND status='waiting' AND waiting_since<?",
+      f"WHERE campaign_id=? AND status='waiting' AND waiting_since<?{' AND old_rerun=1' if only_old else ''}",
       f"waited {VOLUNTEER_WAIT / 3600:.0f} h for volunteers: meshing it with what's come", camp_id, time.time() - VOLUNTEER_WAIT,
       write=True)
 
@@ -4690,7 +4693,6 @@ def _claim(w: Worker):
         if camp["ord"] == "data" and not camp["only_retries"] and not any(x.campaign for x in others):
             read_ahead(camp)
         settle_waiting(camp["id"])
-        queue_old(camp)
         for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND status='harvested'", camp["id"]):
             settle_boulder(camp["id"], b["boulder"])     # as after a restart between its last harvest and queueing its mesh
         for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND boulder IS NOT NULL "
@@ -4704,11 +4706,12 @@ def _claim(w: Worker):
         free = [i for i in items if not (i["boulder"] and i["boulder"] in taken)]
         if not free:
             if not items and not any(x.campaign == camp["id"] for x in others):
-                held = q("SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND status='waiting'", camp["id"], one=True)["n"]
-                paused = q("SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND status='pending' AND paused IS NOT NULL",
+                own = "AND COALESCE(old_rerun, 0)=0"     # what's queued again at low priority doesn't hold it up
+                held = q(f"SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND status='waiting' {own}", camp["id"], one=True)["n"]
+                paused = q(f"SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND status='pending' AND paused IS NOT NULL {own}",
                            camp["id"], one=True)["n"]
                 blocked = q("SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND status='pending' AND blocked IS NOT NULL "
-                            "AND paused IS NULL", camp["id"], one=True)["n"]
+                            f"AND paused IS NULL {own}", camp["id"], one=True)["n"]
                 if held or paused or blocked:    # it carries on once volunteers have fetched what those wait for, they're
                     # resumed, or the admin page says what to do without what the backup lost
                     note = "; ".join([f"{held} climb(s) waiting for volunteers' YouTube searches and videos"] * bool(held)
@@ -4726,7 +4729,35 @@ def _claim(w: Worker):
         w.campaign, w.boulder, w.doing = camp["id"], item["boulder"] if pools_whole(item["boulder"]) else None, item["name"]
         w.item = item["source_id"]
         return camp, item
-    return None
+    return _claim_old(w, others)
+
+
+def _claim_old(w: Worker, others: list[Worker]):
+    """With nothing else for any area to take: the next of every area's climbs queued again as their meshes are old
+    (queue_old()), whatever the area's status, one interrupted first, then by the areas' order and each one's own. The
+    area's status and its own list stay as they are: a stopped or done one runs only these, in the background.
+
+    Returns:
+        (area, climb), or None.
+    """
+    if shutil.disk_usage(DATA).free < CAMPAIGN_MIN_FREE:
+        return None
+    camps = q("SELECT * FROM campaigns ORDER BY priority, created")
+    for camp in camps:
+        queue_old(camp)
+        settle_waiting(camp["id"], only_old=True)
+        for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND status='harvested' AND old_rerun=1", camp["id"]):
+            settle_boulder(camp["id"], b["boulder"])
+    taken = {x.boulder for x in others if x.boulder}
+    items = [(camp, i) for camp in camps for i in ordered_pending(camp, old=True) if i["old_rerun"]]
+    items = [(c, i) for c, i in items if not (i["boulder"] and i["boulder"] in taken)]
+    if not items:
+        return None
+    camp, item = min(items, key=lambda ci: not ci[1]["retry"])     # stable: else in the areas' order
+    set_item(camp["id"], item["source_id"], status="running")
+    w.campaign, w.boulder, w.doing = camp["id"], item["boulder"] if pools_whole(item["boulder"]) else None, item["name"]
+    w.item = item["source_id"]
+    return camp, item
 
 
 def next_campaign_step() -> bool:
@@ -4859,7 +4890,7 @@ def redo_head(redo: str | None) -> str:
 def _area_items(where: str = "1", *args) -> list[dict]:
     """Areas' climbs, with their areas' names."""
     return q("SELECT ci.campaign_id, c.name AS area, ci.source_id, ci.name, ci.status, ci.paused, ci.redo, ci.was, ci.mesh_id, "
-             "ci.project_id, ci.boulder, ci.pool, ci.climb_id FROM campaign_items ci JOIN campaigns c ON c.id=ci.campaign_id "
+             "ci.project_id, ci.boulder, ci.pool, ci.climb_id, ci.old_rerun FROM campaign_items ci JOIN campaigns c ON c.id=ci.campaign_id "
              f"WHERE {where} ORDER BY c.created, ci.rank", *args)
 
 
@@ -4877,7 +4908,8 @@ def project_areas() -> dict[str, list[dict]]:
                 by[k].setdefault(i[k], []).append(i)
         if i["project_id"]:
             out.setdefault(i["project_id"], []).append({"id": i["campaign_id"], "name": i["area"], "kind": "climb", "climb": i["name"],
-                                                        "status": i["status"], "paused": bool(i["paused"])})
+                                                        "status": i["status"], "paused": bool(i["paused"]),
+                                                        **({"old_rerun": True} if i["old_rerun"] else {})})
     for p in q("SELECT id, boulder FROM projects WHERE kind='boulder' AND boulder IS NOT NULL"):
         key = p["boulder"]
         if is_rest(key):
@@ -4889,7 +4921,9 @@ def project_areas() -> dict[str, list[dict]]:
             kind, on = "boulder", by["boulder"].get(key, [])
         for area in dict.fromkeys(i["campaign_id"] for i in on):
             mine = [i for i in on if i["campaign_id"] == area]
-            out.setdefault(p["id"], []).append({"id": area, "name": mine[0]["area"], "kind": kind, "climbs": len(mine)})
+            old = any(i["old_rerun"] and i["status"] in UNFINISHED for i in mine)
+            out.setdefault(p["id"], []).append({"id": area, "name": mine[0]["area"], "kind": kind, "climbs": len(mine),
+                                                **({"old_rerun": True} if old else {})})
     return out
 
 
@@ -5285,7 +5319,7 @@ def run_redo(camp: dict, item: dict) -> None:
         raise
     except Exception as e:
         end = {"status": row["was"], "note": f"{REDO_NAMES[row['redo']]}: {type(e).__name__}: {e}"}
-    set_item(cid, sid, **end, redo=None, retry=0, redo_started=0, old_rerun=0)
+    set_item(cid, sid, **end, redo=None, retry=0, redo_started=0, **({} if end.get("status") in ("harvested", "waiting") else {"old_rerun": 0}))
     if end.get("status") != "harvested":
         link_after(cid, sid)
 
@@ -6336,7 +6370,7 @@ def campaign_view(camp: dict) -> dict:
     cid = camp["id"]
     counts = {r["status"]: r["n"] for r in q("SELECT status,COUNT(*) n FROM campaign_items WHERE campaign_id=? GROUP BY status", cid)}
     again = {key: q(f"SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND {where}", cid, one=True)["n"]
-             for key, where in (("changed", "changed=1"), ("queued", "redo IS NOT NULL AND status IN ('pending','running')"))}
+             for key, where in (("changed", "changed=1"), ("queued", "redo IS NOT NULL AND status IN ('pending','running') AND COALESCE(old_rerun, 0)=0"))}
     again["boulders"] = len(boulders_to_mesh(cid))
     kinds, leaves = boulder_kinds(), q("SELECT boulder, COUNT(*) n FROM campaign_items WHERE campaign_id=? GROUP BY boulder", cid)
     found = [leaf_kind(r["boulder"], kinds) for r in leaves if r["boulder"]]
@@ -6347,7 +6381,7 @@ def campaign_view(camp: dict) -> dict:
                      cid, one=True)["n"]     # climbs whose mesh was made before the rules (MESH_RULES): not done yet
     worked = q("SELECT rank,name,grade,stars,url,climb_id,mesh_id,project_id,status,note,updated FROM campaign_items "
                "WHERE campaign_id=? AND status NOT IN ('pending','running') ORDER BY updated DESC LIMIT 300", cid)
-    running = q("SELECT rank,name,grade,stars,project_id,source_id,boulder,redo,pool,updated,paused FROM campaign_items "
+    running = q("SELECT rank,name,grade,stars,project_id,source_id,boulder,redo,pool,updated,paused,old_rerun FROM campaign_items "
                 "WHERE campaign_id=? AND status='running' ORDER BY updated", cid)
     for r in running:
         # one meshing its boulder (or a group its photos matched) is on that project, not its own harvest, which is done
@@ -6370,6 +6404,13 @@ def campaign_view(camp: dict) -> dict:
     if paused:
         counts["paused"] = len(paused)
     pending = ordered_pending(camp)
+    # queued again as their meshes are old (queue_old()): at low priority, counted and listed apart from its own
+    old_next = [i for i in ordered_pending(camp, old=True) if i["old_rerun"]]
+    old_counts = {r["status"]: r["n"] for r in q("SELECT status, COUNT(*) n FROM campaign_items WHERE campaign_id=? AND old_rerun=1 "
+                                                  "AND status IN ('pending','running','waiting','harvested') AND paused IS NULL "
+                                                  "GROUP BY status", cid)}
+    for k, n in old_counts.items():
+        counts[k] = counts.get(k, 0) - n
     made = None
     if camp.get("max_meshes"):      # those past its limit aren't to go
         counts["beyond"] = counts.get("pending", 0) - len(paused) - len(pending)
@@ -6377,15 +6418,14 @@ def campaign_view(camp: dict) -> dict:
         made = limit_scope(camp)[1]
     last_mesh = q("SELECT MAX(updated) t FROM campaign_items WHERE campaign_id=? AND status='done' AND mesh_id IS NOT NULL",
                   cid, one=True)["t"]
-    old_queued = q("SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND old_rerun=1 AND status IN ('pending','running')",
-                   cid, one=True)["n"]     # queued again as their meshes are old (queue_old())
+    old_queued = sum(old_counts.values())
     # its climbs still to go whose photos are offloaded, to be brought back from the backup first; and those blocked as lost
     needs_backup = backup_needs([r["project_id"] for r in q("SELECT project_id FROM campaign_items WHERE campaign_id=? AND status IN "
                                                             "('pending','waiting','harvested') AND project_id IS NOT NULL", cid)])
     blocked = q("SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND blocked IS NOT NULL", cid, one=True)["n"]
     return {**camp, "counts": counts, "again": again, "listed": listed, "old_queued": old_queued, "needs_backup": needs_backup,
             "blocked": blocked, "worked": worked, "current": running[0] if running else None,
-            "running": running, "paused": paused, "next": pending[:10], "machine_wait": machine_wait(cid), "made": made, "last_mesh": last_mesh}
+            "running": running, "paused": paused, "next": pending[:10], "old_next": old_next[:10], "machine_wait": machine_wait(cid), "made": made, "last_mesh": last_mesh}
 
 
 def active_areas(camps: list[dict]) -> set[str]:
@@ -6416,9 +6456,12 @@ def campaigns_listed() -> list[dict]:
         v = campaign_view(c)
         v["state"] = (("running" if c["id"] in active else "queued" if v["next"] else "waiting") if c["status"] == "running"
                       else c["status"])
+        own_going = c["status"] == "stopping" or (c["status"] == "running" and v["next"])
+        if v["running"] and all(r["old_rerun"] for r in v["running"]) and not own_going:
+            v["state"] = "low priority"     # only remaking its old meshes (queue_old()), whatever its status
         v["place"] = order.index(c["id"]) + 1 if c["id"] in order else None
         out.append(v)
-    rank = {"running": 0, "stopping": 0, "queued": 1, "waiting": 1}
+    rank = {"running": 0, "stopping": 0, "low priority": 0, "queued": 1, "waiting": 1}
     out.sort(key=lambda v: (rank.get(v["state"], 2), -(v["last_mesh"] or 0) if rank.get(v["state"]) == 0 else
                             v["place"] if rank.get(v["state"]) == 1 else -v["created"]))
     return out
@@ -8004,6 +8047,8 @@ class Handler(BaseHTTPRequestHandler):
                 for r in rows:
                     if r["id"] in areas:
                         r["areas"] = areas[r["id"]]
+                        # remaking an old mesh (queue_old()): after everything else
+                        r["low_priority"] = any(a.get("old_rerun") for a in r["areas"])
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/effects", p)
             if m:   # what stopping or deleting it would do, to say first

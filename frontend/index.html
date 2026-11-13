@@ -160,6 +160,7 @@
   .tag{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--warn-bg);color:var(--warn);margin-left:6px;white-space:nowrap}
   .meta.bad{color:var(--bad)} .meta.bad a{color:var(--bad)}
   .tag.climb{background:var(--climb-bg);color:var(--climb)} .tag.ok{background:var(--ok-bg);color:var(--ok)} .tag.bad{background:var(--bad-bg);color:var(--bad)} .tag.src{background:var(--src-bg);color:var(--acc)}
+  .tag.low{background:var(--line);color:var(--mute)} .lowp{color:var(--mute)}
   .chips{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
   .chip{font-size:11px;padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--fg);cursor:pointer}
   .chip:hover{border-color:var(--acc)}
@@ -3059,7 +3060,7 @@ async function refreshProjects(){
   for (const p of list) {
     const d = document.createElement('div'); d.className = 'card' + (p.id===active ? ' active' : '');
     const busy = BUSY.includes(p.status);
-    d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':p.kind==='boulder'?'<span class="tag climb" title="Every photo its climbs\' harvests found, together">boulder</span>':''}</b><span class="status ${p.status}">${p.status}${p.demo?' (demo)':''}</span></div>
+    d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':p.kind==='boulder'?'<span class="tag climb" title="Every photo its climbs\' harvests found, together">boulder</span>':''}</b><span class="status ${p.status}">${p.status}${p.demo?' (demo)':''}</span>${p.low_priority ? `<span class="tag low" title="${LOW_TIP}">low priority</span>` : ''}</div>
       ${projectAreasHtml(p)}
       <div class="row" style="margin-top:8px">
         <label class="file"><button class="sec sm" type="button">Add photos or videos</button><input type="file" multiple accept="image/jpeg,image/png,video/*"></label>
@@ -3119,6 +3120,7 @@ async function refreshProjects(){
     if (projectCards.size <= 15 || busy || p.id === active) loadDetail(p.id, d);   // the rest load when clicked: an area can make hundreds
   }
 }
+const LOW_TIP = 'Remaking an old mesh: made before the rules for what an area meshes last changed, or another climb\'s. It runs only when no area has anything else to take, and never starts or resumes its area\'s own list.';
 const BUSY = ['queued', 'running', 'harvesting'], RETRYABLE = ['failed', 'stopped', 'interrupted'];
 // a project made for an area: which, and what it is there (a climb's own harvest, with how that climb stands on the
 // list, or the mesh of its boulder, a group of its climbs, or what a boulder's mesh left out)
@@ -3354,7 +3356,7 @@ function currentHtml(c){
       : c.status === 'running' || c.status === 'stopping' ? `<button class="sm sec pause" data-pause="${esc(cur.source_id)}" data-name="${esc(cur.name)}" title="Stops this climb alone, now; the area goes on with its others. When you resume it, it carries on from the last step it finished.">Pause</button>` : '';
     // one meshing its boulder, or a group its photos matched: the bars are that project's, as its own harvest is done
     const whole = cur.meshing ? ` <small>· meshing its ${cur.meshing.kind}: <a href="#" data-proj="${esc(cur.meshing.project_id)}" title="Its project">${esc(cur.meshing.name)}</a></small>` : '';
-    return `<div class="row" style="margin-top:8px"><span class="meta grow">Now: <b>${esc(named(cur, true))}</b> <small>#${cur.rank}</small>${whole}</span>${pause}</div>
+    return `<div class="row" style="margin-top:8px"><span class="meta grow">Now: <b>${esc(named(cur, true))}</b> <small>#${cur.rank}</small>${cur.old_rerun ? `<span class="tag low" title="${LOW_TIP}">low priority</span>` : ''}${whole}</span>${pause}</div>
       ${!pr ? '' : overallHtml(pr, true) + now.map(s => `<div style="margin-top:4px">${countBar(stepDone(s).fill, 'running')}</div><small>${said(s)}</small>`
           + (isHeavy(s) ? `${stepTimeBar(s).bar}<small class="time">${stepTimeBar(s).said}</small>` : '')).join('')}
       ${boulderPanelHtml(cur.boulder_panel, c)}`;
@@ -3389,11 +3391,12 @@ async function refreshCampaigns(){
         <span>${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
       const state = c.state || c.status;
       const tip = { queued: 'Running, but waiting its turn: no worker is free for it. Areas are taken in the order they were entered, top first.',
+                    'low priority': `Only remaking its old meshes, in the background, as no area has anything else to take. ${c.status === 'running' ? 'Its own list has nothing left to go.' : `Its own list stays ${c.status}.`}`,
                     waiting: 'Running, but with no climb to take now: its climbs wait for volunteers\' YouTube searches and videos, or for the rest of their boulder\'s, or are paused. Workers go on to the next area meanwhile.' }[state];
-      d.innerHTML = `<div class="row"><span class="grow campname">${title}</span>${c.place ? `<small class="meta" title="Its place in the order areas are taken: as entered, top first">#${c.place}</small>` : ''}<span class="status ${['stopped', 'queued', 'waiting'].includes(state) ? '' : state === 'done' ? 'done' : 'running'}"${tip ? ` title="${esc(tip)}"` : ''}>${esc(state)}</span></div>
+      d.innerHTML = `<div class="row"><span class="grow campname">${title}</span>${c.place ? `<small class="meta" title="Its place in the order areas are taken: as entered, top first">#${c.place}</small>` : ''}<span class="status ${['stopped', 'queued', 'waiting'].includes(state) ? '' : state === 'low priority' ? 'lowp' : state === 'done' ? 'done' : 'running'}"${tip ? ` title="${esc(tip)}"` : ''}>${esc(state === 'low priority' ? 'low priority: remaking old meshes' : state)}</span></div>
         <div class="meta">${ORDER_NAMES[c.ord] || ''}${c.max_meshes ? `, up to ${c.max_meshes} mesh${c.max_meshes === 1 ? '' : 'es'}${c.count_failures ? ` or failure${c.max_meshes === 1 ? '' : 's'}` : ''} (${c.made} made)` : ''}</div>
         ${c.listed ? `<div class="meta" title="As Mountain Project lists them. Whether a lowest area is one boulder is read from its page as its climbs come up.">${plural(c.listed.climbs, 'climb')} on MP: ${plural(c.listed.boulders, 'boulder')}, ${plural(c.listed.groups, 'area')} of several rocks${c.listed.unread ? `, ${plural(c.listed.unread, 'lowest area')} not read yet` : ''}</div>` : ''}
-        <div class="meta" style="margin-top:6px"><b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${n.paused ? ` · ${n.paused} paused` : ''}${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${c.old_queued ? ` · <span title="Their only meshes were made before the rules for what an area meshes last changed, or are another climb's: looked for new photos and meshed again, after the rest of the list">${c.old_queued} queued again, as their meshes are old</span>` : ''}${c.needs_backup ? ` · <span style="color:var(--warn)" title="Their photos were offloaded to the backup to make room: each is asked for back as its turn comes, and waits for it (the backup sends them within half an hour)">needs data from the backup (${c.needs_backup})</span>` : ''}${c.blocked ? ` · <span style="color:var(--bad)" title="What they need was lost from the backup: nothing of them is made or replaced until the admin page says to mesh them again without it, or leave them as they are">${c.blocked} blocked: data lost from the backup</span>` : ''}${n.beyond ? ` · ${n.beyond} more past the limit` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
+        <div class="meta" style="margin-top:6px"><b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${n.paused ? ` · ${n.paused} paused` : ''}${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${c.old_queued ? ` · <span class="lowp" title="Their only meshes were made before the rules for what an area meshes last changed, or are another climb's: looked for new photos and meshed again, only when no area has anything else to take. This never starts or resumes the area's own list.">${plural(c.old_queued, 'old mesh', 'old meshes')} being remade, at low priority</span>` : ''}${c.needs_backup ? ` · <span style="color:var(--warn)" title="Their photos were offloaded to the backup to make room: each is asked for back as its turn comes, and waits for it (the backup sends them within half an hour)">needs data from the backup (${c.needs_backup})</span>` : ''}${c.blocked ? ` · <span style="color:var(--bad)" title="What they need was lost from the backup: nothing of them is made or replaced until the admin page says to mesh them again without it, or leave them as they are">${c.blocked} blocked: data lost from the backup</span>` : ''}${n.beyond ? ` · ${n.beyond} more past the limit` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
         ${(() => { const fin = (n.done || 0) + (n.skipped || 0) + (n.failed || 0), all = fin + left + (n.waiting || 0) + (n.harvested || 0);
           return all ? `${countBar(fin / all)}<small>${fin}/${all} climbs finished (meshed, skipped or failed)</small>` : ''; })()}
         ${c.note ? `<div class="notice" style="margin-top:6px">${esc(c.note)}</div>` : ''}
@@ -3413,7 +3416,8 @@ async function refreshCampaigns(){
           <button class="danger sm del" title="Remove this list; its meshes stay">✕</button>
         </div>
         ${c.worked.length ? `<details data-list="${c.id}-done"><summary class="meta">Worked through (${c.worked.length}${c.worked.length === 300 ? ' most recent' : ''})</summary><div class="crows">${c.worked.map(row).join('')}</div></details>` : ''}
-        ${c.next.length ? `<details data-list="${c.id}-next"><summary class="meta">Up next</summary><div class="crows">${c.next.map(row).join('')}</div></details>` : ''}`;
+        ${c.next.length ? `<details data-list="${c.id}-next"><summary class="meta">Up next</summary><div class="crows">${c.next.map(row).join('')}</div></details>` : ''}
+        ${(c.old_next || []).length ? `<details data-list="${c.id}-old"><summary class="meta lowp">Old meshes to remake, at low priority</summary><div class="crows">${c.old_next.map(row).join('')}</div></details>` : ''}`;
       const post = async (what, json) => { await api(`/api/campaigns/${c.id}/${what}`, { method: 'POST', json: json || {} }); campaignLoop(); };
       d.querySelector('.stopnow')?.addEventListener('click', () => { if (ask(`Stop now? The climb in progress pauses, and carries on from its last finished step when you resume. Finished meshes stay.`)) post('stop', { now: true }); });
       d.querySelector('.stoplater')?.addEventListener('click', () => post('stop', { now: false }));
