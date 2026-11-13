@@ -4,6 +4,9 @@
                    [--ba auto|cpu|gpu|caspar] [--feat sift|siftgpu|aliked] [--cond dev|prod|tN] [--seed N]
                    [--no-mesh] [--no-vggt] [--adopt database.db]
     boulder.py mesh <state dir> [--cond ..]                 the mesh again, of the model as it is
+    boulder.py bootstrap <state dir> <mesh dir> <photos...> [--masks dir]   a state from a finished mesh's cameras.json
+    boulder.py cameras <model dir> <out.json>                a model's cameras as a mesh's cameras.json
+    boulder.py boot <project> <state dir>                   the test: a state's cameras as a mesh's, and a state from them
     boulder.py status <state dir>
     boulder.py first <project> <init> <seed> [...]          a first build of a benchmark boulder (every photo)
     boulder.py held <project> <init> <seed> <percent> [--batches N] [...]   one of a random <percent>%, the rest added
@@ -284,6 +287,59 @@ def mesh_stats(ply: Path) -> dict:
     return {"faces": int(len(F)), "one_piece": round(float(areas.max() / areas.sum()), 4), "pieces": int(len(areas))}
 
 
+def bootstrap(state_dir: Path | str, mesh_dir: Path, photos: list[Path], masks: Path | None = None, cond: str = "dev",
+              feat: str = "sift") -> dict:
+    """A state for a mesh made before states were kept, from its folder's cameras.json and its project's photos:
+    features and matches as for any add, then the model from the mesh's own cameras (core.bootstrap), in its frame.
+    The mesh itself isn't made again; the manifest names it as the one later adds are measured against and tied to."""
+    s = st.State(state_dir)
+    if s.has_model():
+        raise SystemExit(f"{s.root} has a model already")
+    root = s.root
+    new, same = s.plan(photos)
+    s.manifest["settings"].setdefault("features", feat)
+    j = s.begin(new, masks)
+    logdir = root / "log" / f"add-{j['id']:04d}"
+    logdir.mkdir(parents=True, exist_ok=True)
+    cur = root / "log" / "current"
+    if cur.is_symlink() or cur.exists():
+        cur.unlink()
+    cur.symlink_to(logdir.name)
+    shutil.copyfile(mesh_dir / "cameras.json", root / "cache" / "former-cameras.json")
+    threads = bench.condition(cond)[1] or -1
+    core = lambda *a: "python3 /incr/core.py " + bench.sh(a)        # noqa: E731
+    steps = {}
+    for name, script, gpu in (("features", core("features", "/s", "--feat", feat, "--threads", threads), feat != "sift"),
+                              ("match", core("match", "/s", "--feat", feat, "--threads", threads), True),
+                              ("bootstrap", core("bootstrap", "/s", "/s/cache/former-cameras.json", "--threads", threads), False)):
+        steps[name] = run_step(logdir, name, TOOLS, script, [f"{root}:/s"], cond, None, gpu)
+        if steps[name]["rc"] != 0:
+            break
+    rep = json.loads((logdir / "bootstrap.report.json").read_text()) if (logdir / "bootstrap.report.json").exists() else {}
+    ok = rep.get("kind") == "bootstrap"
+    if not ok:
+        shutil.rmtree(root / "model.new", ignore_errors=True)
+    record = s.commit({"kind": "bootstrap" if ok else "failed", "placed": rep.get("placed", {}) if ok else {}, "tried": rep.get("tried", []),
+                       "duplicates": same, "tools": TOOLS, "build": verified(TOOLS), "cond": cond, "model": rep.get("model"),
+                       "former": {"mesh": str(mesh_dir), "cameras": len(json.loads((root / "cache" / "former-cameras.json").read_text()))},
+                       "skipped": rep.get("skipped"), "moved_max": rep.get("moved_max"), "turned_max_deg": rep.get("turned_max_deg"),
+                       "steps": {n: {"wall": round(r["wall"], 1), "cpu_s": r["cpu_s"], "rc": r["rc"], "ba": r["ba"]} for n, r in steps.items()}})
+    s.manifest["former"] = {"mesh": str(mesh_dir), "frame": "the state's model is in this mesh's frame"}
+    st.write_json(s.manifest_path, s.manifest)
+    print(f"bootstrap: {record['placed_total']} cameras of {record['former']['cameras']} from {mesh_dir}; "
+          f"{(rep.get('model') or {}).get('points')} points; steps {sum(r['wall'] for r in steps.values()):.0f} s", flush=True)
+    return record
+
+
+def write_cameras(model: Path, out: Path) -> int:
+    """A model's cameras as the app's meshes keep them (backend/orientation.read_cameras: name, q, t, lens, seen)."""
+    import orientation
+    cams = orientation.read_cameras(model)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(cams))
+    return len(cams)
+
+
 def remesh(s: st.State, logdir: Path, cond: str, steps: dict | None = None) -> bool:
     """The dense steps on a state's model as it is: undistorted photos, OpenMVS's scene, depth maps and their fusion
     (on the GPU), mesh and texture, in dense.new, which takes dense's place if every step worked. Without the people
@@ -509,7 +565,8 @@ def heldstats(only: str | None = None) -> None:
 
 def main(argv: list[str]) -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("command", choices=["add", "mesh", "status", "first", "held", "scenario", "queue", "table", "compare", "heldstats"])
+    p.add_argument("command", choices=["add", "mesh", "status", "first", "held", "scenario", "queue", "table", "compare", "heldstats",
+                                        "bootstrap", "cameras", "boot"])
     p.add_argument("args", nargs="*")
     p.add_argument("--masks", type=Path)
     p.add_argument("--init")
@@ -527,6 +584,18 @@ def main(argv: list[str]) -> None:
         adopt = Path(a.adopt) if a.adopt and a.adopt != "bench" else None
         add(Path(a.args[0]), expand(a.args[1:]), a.masks, a.init or "auto", a.ba, a.feat, a.cond, a.seed, not a.no_mesh,
             not a.no_vggt, adopt)
+    elif a.command == "bootstrap":      # <state> <mesh dir> <photos...>
+        bootstrap(Path(a.args[0]), Path(a.args[1]), expand(a.args[2:]), a.masks, a.cond, a.feat)
+    elif a.command == "cameras":        # <model dir> <out.json>
+        print(write_cameras(Path(a.args[0]), Path(a.args[1])), "cameras")
+    elif a.command == "boot":           # <project> <state with a model>: its cameras as a mesh's, and a state from them
+        P, src = a.args[0], Path(a.args[1])
+        mesh = R / P / f"mesh-of-{src.name}"
+        write_cameras(src / "model", mesh / "cameras.json")
+        d = R / P / f"boot-{src.name}{suffix(a)}"
+        shutil.rmtree(d, ignore_errors=True)
+        photos, masks = project(P)
+        bootstrap(d, mesh, photos, masks, a.cond, a.feat)
     elif a.command == "mesh":       # the mesh again, of the model as it is
         s = st.State(a.args[0])
         remesh(s, s.root / "log" / f"add-{max(0, s.next_id() - 1):04d}", a.cond)

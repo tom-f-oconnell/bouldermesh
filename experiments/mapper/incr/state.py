@@ -173,7 +173,7 @@ class State:
         m = self.manifest
         for name, rec in j["photos"].items():
             m["photos"].setdefault(name, {"sha": rec["sha"], "add": k, "placed": False, "tries": 0})
-        if report.get("kind") in ("first", "resolve"):      # a full solve decides afresh which photos are placed
+        if report.get("kind") in ("first", "resolve", "bootstrap"):      # a full solve decides afresh which photos are placed
             for p in m["photos"].values():
                 p["placed"] = False
         for name in report.get("tried", []):
@@ -188,7 +188,7 @@ class State:
                   **{key: v for key, v in report.items() if key not in ("placed", "tried")},
                   "placed_new": sorted(report.get("placed", {})), "placed_total": len(self.placed())}
         m["adds"].append(record)
-        if report.get("kind") in ("first", "resolve"):
+        if report.get("kind") in ("first", "resolve", "bootstrap"):
             m["solve"] = {"add": k, "placed": len(self.placed())}
         write_json(self.manifest_path, m)
         self.journal_path.unlink(missing_ok=True)

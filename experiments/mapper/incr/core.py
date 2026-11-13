@@ -52,8 +52,9 @@ ROUNDS = ((8, 150), (3, 20), (2, 4))
 # together, so less often does (README: what was measured).
 GLOBAL_RATIO = float(os.environ.get("INCR_GLOBAL_RATIO", "1.4"))
 GLOBAL_REFINEMENTS = int(os.environ.get("INCR_GLOBAL_REFINEMENTS", "3"))
-# From this many images a bundle adjustment goes to the GPU, when --ba auto (README: the crossover measured on hal)
-GPU_MIN_IMAGES = int(os.environ.get("INCR_GPU_MIN_IMAGES", "50"))
+# From this many images a refinement of everything goes to Caspar, with --ba auto or caspar (ba_options)
+CASPAR_MIN_IMAGES = int(os.environ.get("INCR_CASPAR_MIN_IMAGES", "20"))
+GPU_MIN_IMAGES = 50         # an add's own refinement goes to --ba's solver from this many added photos
 ASSIST_MIN_POINTS = 15      # a photo placed from VGGT's camera stays if this many of its points survive refinement
 ANCHORS = 12                # placed photos sent to VGGT with the unplaced ones, to tie its frame to the model's
 VGGT_MIN_KEPT = 0.6         # VGGT's start is used if at least this share of its cameras pass the rotation check,
@@ -275,16 +276,26 @@ def pipeline_options(threads: int, seed: int) -> pycolmap.IncrementalPipelineOpt
     return o
 
 
-def ba_options(o: pycolmap.IncrementalPipelineOptions, images: int, ba: str, local: bool = False) -> pycolmap.BundleAdjustmentOptions:
-    """A bundle adjustment's options for a problem of so many images, on the device --ba asks for: "auto" is the GPU
-    (Ceres with CUDA, its dense or sparse solver by size) from GPU_MIN_IMAGES images up, where that pays."""
+def ba_options(o: pycolmap.IncrementalPipelineOptions, images: int, ba: str, local: bool = False,
+               final: bool = False) -> pycolmap.BundleAdjustmentOptions:
+    """A bundle adjustment's options for a problem of so many images, on what --ba asks for.
+
+    "auto": Caspar (COLMAP's GPU solver, float32) for every refinement of everything from CASPAR_MIN_IMAGES images up,
+    but the final one (final), which is Ceres's on the CPU (SuiteSparse): on the 82-photo boulder, from the same VGGT
+    start, placement took 26 s with Caspar throughout, 181 s with Ceres on the CPU and 211 s with Ceres on the GPU
+    (cuDSS), all placing the same 72 photos. Caspar's cameras end 0.34 degrees (median; 3.5 at the 90th percentile)
+    from Ceres's, and a final Ceres refinement does not take them back (0.34 and 2.9 after it; 0.10 from Caspar's
+    own): the two solvers settle in slightly different places from the start on, at reprojection errors of 0.64 and
+    0.66 px. Which is nearer the truth is for the benchmark's seed-to-seed spread to say, so the final refinement on
+    Ceres is kept, as the more exact solver, at one round. "caspar", "cpu" and "gpu" (Ceres with CUDA) use the one
+    throughout."""
     b = o.get_local_bundle_adjustment() if local else o.get_global_bundle_adjustment()
     b.print_summary = False
-    if ba == "caspar" and images >= GPU_MIN_IMAGES:
+    gpu_there = pycolmap.has_cuda and pycolmap.get_num_cuda_devices() > 0
+    if gpu_there and not local and images >= CASPAR_MIN_IMAGES and (ba == "caspar" or ba == "auto" and not final):
         b.backend = pycolmap.BundleAdjustmentBackend.CASPAR
-    elif ba in ("gpu", "auto") and pycolmap.has_cuda and pycolmap.get_num_cuda_devices() > 0:
-        b.ceres.use_gpu = ba == "gpu" or images >= GPU_MIN_IMAGES
-        b.ceres.min_num_images_gpu_solver = 0 if ba == "gpu" else GPU_MIN_IMAGES
+    elif ba == "gpu" and gpu_there:
+        b.ceres.use_gpu, b.ceres.min_num_images_gpu_solver = True, 0
     else:
         b.ceres.use_gpu = False
     return b
@@ -350,8 +361,8 @@ class Session:
         self.mapper = pycolmap.IncrementalMapper(self.cache)
         self.mapper.begin_reconstruction(self.rec)
 
-    def _solve(self, mo, tri, refinements: int, principal_point: bool) -> None:
-        b = ba_options(self.o, self.rec.num_reg_images(), self.ba)
+    def _solve(self, mo, tri, refinements: int, principal_point: bool, final: bool = False) -> None:
+        b = ba_options(self.o, self.rec.num_reg_images(), self.ba, final=final)
         b.refine_principal_point = principal_point
         mo.constant_cameras = set(self.anchor) if self.lenses_held else set()
         self.mapper.iterative_global_refinement(refinements, self.o.ba_global_max_refinement_change, mo, b, tri, True)
@@ -365,17 +376,17 @@ class Session:
         self.mapper.begin_reconstruction(before)
         self.undone += 1
 
-    def refine(self, mo, tri, refinements: int = GLOBAL_REFINEMENTS) -> None:
-        """Refines every camera, point and lens together, under the guard."""
+    def refine(self, mo, tri, refinements: int = GLOBAL_REFINEMENTS, final: bool = False) -> None:
+        """Refines every camera, point and lens together, under the guard (final: on the most exact solver)."""
         before, had = copy.deepcopy(self.rec), set(self.rec.reg_image_ids())
-        self._solve(mo, tri, refinements, False)
+        self._solve(mo, tri, refinements, False, final)
         lost, drift = had - set(self.rec.reg_image_ids()), self.drifted()
         if (lost or drift) and not self.lenses_held:
             log(f"a refinement of everything lost {len(lost)} camera(s) and walked {len(drift)} lens(es) off: undone, "
                 f"and done again with the {len(self.anchor)} lenses refined before held")
             self._undo(before)
             self.lenses_held = True
-            self._solve(mo, tri, refinements, False)
+            self._solve(mo, tri, refinements, False, final)
         self.note_lenses()
         mo.constant_cameras = set(self.anchor) if self.lenses_held else set()
         self.since = 0
@@ -647,11 +658,10 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
         S.restart()
         mo.abs_pose_min_num_inliers, mo.abs_pose_min_inlier_ratio = REST
         n2 = register_loop(S, mo, tri, True, "pnp-rest", placed)
-        rep.part("final_adjust")
-        if S.since or used in ("vggt", "poses"):       # the other starts end on a refinement of their own
-            S.refine(o.get_mapper(), tri, o.ba_global_max_refinements if S.since else 2)
-        rep.part("polish")
+        rep.part("polish")      # principal points too, if that holds up; then the last word on the most exact solver
         polished = S.polish(o.get_mapper(), tri)
+        rep.part("final_adjust")
+        S.refine(o.get_mapper(), tri, 1, final=True)
         rec = S.close()
         rep.data["refinements"] = {"solves": S.solves, "undone": S.undone, "lenses_held": S.lenses_held, "principal_points": polished}
         placed = {n: how for n, how in placed.items() if has_pose(rec, n)}
@@ -802,6 +812,66 @@ def assist(root: Path, cams_file: Path, ba: str, threads: int) -> dict:
                     anchors_off=round(float(np.median(off) / size), 4), model=stats_of(rec))
 
 
+# ---------------------------------------------------------------- a state from a mesh that has none
+
+def bootstrap(root: Path, cameras: Path, threads: int) -> dict:
+    """A model from a finished mesh's cameras.json (each placed photo's world-to-camera q, t and its lens, in the
+    mesh's own frame), for a mesh made before states were kept: the cameras are set as they are, COLMAP's verified
+    matches triangulated from them, and the points refined with every camera held, so that the model is in the
+    mesh's frame exactly and later adds keep to it. Writes model.new; photos cameras.json names that the database
+    lacks (or whose lens doesn't fit) are left out and reported."""
+    rep = Report(root, "bootstrap")
+    db, photos = root / "database.db", root / "photos"
+    cams = json.loads(cameras.read_text())
+    cams = cams.get("cameras", cams) if isinstance(cams, dict) else cams
+    cache = open_cache(db, {c["name"] for c in cams})
+    rec = pycolmap.Reconstruction()
+    rec.load(cache)
+    by_name = {im.name: i for i, im in cache.images.items()}
+    set_, skipped = [], {}
+    rep.part("cameras")
+    for c in cams:
+        i = by_name.get(c["name"])
+        if i is None:
+            skipped[c["name"]] = "not in the database (no features, or no verified matches)"
+            continue
+        cam = rec.camera(rec.image(i).camera_id)
+        lens = c.get("lens")
+        if lens:
+            if (lens["width"], lens["height"]) != (cam.width, cam.height):
+                skipped[c["name"]] = f"its lens is for {lens['width']}x{lens['height']}, the photo is {cam.width}x{cam.height}"
+                continue
+            cam.model = pycolmap.CameraModelId(int(lens["model"]))
+            cam.params = [float(x) for x in lens["params"]]
+        w, x, y, z = c["q"]
+        im = rec.image(i)
+        rec.frame(im.frame_id).set_cam_from_world(im.camera_id, pycolmap.Rigid3d(pycolmap.Rotation3d([x, y, z, w]), np.array(c["t"], float)))
+        rec.register_frame(im.frame_id)
+        set_.append(c["name"])
+    if len(set_) < 2:
+        return rep.save(kind="none", placed={}, skipped=skipped, why="fewer than two of its cameras are in the database")
+    rep.part("triangulate")
+    o = pipeline_options(threads, 0)
+    out = root / "log" / "current" / "work-bootstrap"
+    out.mkdir(parents=True, exist_ok=True)
+    before = poses(rec)
+    rec = pycolmap.triangulate_points(rec, str(db), str(photos), str(out), clear_points=True, options=o, refine_intrinsics=False)
+    after = poses(rec)
+    moved = max(float(np.abs(after[n][1] - t).max()) for n, (_, t) in before.items() if n in after)
+    turned = max(float(np.degrees(np.arccos(np.clip((np.trace(after[n][0] @ R.T) - 1) / 2, -1, 1)))) for n, (R, _) in before.items() if n in after)
+    rep.part("write")
+    new = root / "model.new"
+    shutil.rmtree(new, ignore_errors=True)
+    new.mkdir()
+    rec.update_point_3d_errors()
+    rec.write(str(new))
+    shutil.rmtree(out, ignore_errors=True)
+    log(f"bootstrap: {len(set_)} cameras set ({len(skipped)} skipped), {rec.num_points3D()} points, "
+        f"{rec.compute_mean_reprojection_error():.2f} px; cameras moved at most {moved:.2e} (units), turned {turned:.2e} deg")
+    return rep.save(kind="bootstrap", placed={n: "cameras.json" for n in after}, tried=sorted(by_name), skipped=skipped,
+                    model=stats_of(rec), moved_max=moved, turned_max_deg=turned)
+
+
 # ---------------------------------------------------------------- whether an add calls for a new mesh
 
 def read_ply(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -935,6 +1005,8 @@ def main(argv: list[str]) -> None:
         match(a.state, not a.cpu, a.threads, a.feat)
     elif a.step == "place":
         place(a.state, a.init, a.vggt, a.ba, a.seed, a.threads, a.resolve, not a.no_scenes)
+    elif a.step == "bootstrap":
+        bootstrap(a.state, a.cameras, a.threads)
     elif a.step == "assist":
         assist(a.state, a.cameras, a.ba, a.threads)
     elif a.step == "undistort":
