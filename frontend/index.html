@@ -3705,8 +3705,10 @@ function renderMeshFilter(all){
     b.nextElementSibling.textContent = `${KIND_NAMES[b.dataset.kind]} (${kinds[b.dataset.kind] || 0})`;
   });
   const areas = [...new Set(all.flatMap(meshAreas))].sort((a, b) => (a === NO_AREA) - (b === NO_AREA) || a.localeCompare(b));
+  const inArea = {};     // how many meshes each area has (one made for two areas counts in each)
+  for (const m of all) for (const a of new Set(meshAreas(m))) inArea[a] = (inArea[a] || 0) + 1;
   $('#m-areas').innerHTML = areas.length > 1 ? '<span class="meta">Areas: </span>' + areas.map(a =>
-    `<label><input type="checkbox" data-area="${esc(a)}" ${meshView.hidden.includes(a) ? '' : 'checked'}>${esc(a)}</label>`).join('') : '';
+    `<label><input type="checkbox" data-area="${esc(a)}" ${meshView.hidden.includes(a) ? '' : 'checked'}>${esc(a)} <small class="meta">(${inArea[a] || 0})</small></label>`).join('') : '';
   $('#m-areas').querySelectorAll('[data-area]').forEach(b => b.onchange = () => {
     meshView.hidden = [...$('#m-areas').querySelectorAll('[data-area]')].filter(x => !x.checked).map(x => x.dataset.area);
     saveMeshView(); renderMeshes();
