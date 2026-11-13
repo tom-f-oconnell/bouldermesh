@@ -157,9 +157,6 @@
   .mesh{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
   .name{font-weight:600}
   small{color:var(--mute)}
-  details.vids{display:inline} details.vids summary{display:inline;cursor:pointer;text-decoration:underline dotted}
-  details.vids[open]{display:block} details.vids .vlist{display:flex;flex-direction:column;gap:2px;margin:4px 0 2px 12px}
-  details.vids .vlist a{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tag{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--warn-bg);color:var(--warn);margin-left:6px;white-space:nowrap}
   .meta.bad{color:var(--bad)} .meta.bad a{color:var(--bad)}
   .tag.climb{background:var(--climb-bg);color:var(--climb)} .tag.ok{background:var(--ok-bg);color:var(--ok)} .tag.bad{background:var(--bad-bg);color:var(--bad)} .tag.src{background:var(--src-bg);color:var(--acc)}
@@ -2965,7 +2962,7 @@ async function openClimb(id, focus=true){
       <div class="checks" style="margin-top:6px"><label title="Drops title cards and photos that don't match this boulder; you can put any back afterwards"><input type="checkbox" class="relfilter" ${st.relevance_methods?.length?'checked':'disabled'}> filter off-topic photos ${st.relevance_methods?.length?`<small>(${esc(st.relevance_methods.join(', '))})</small>`:'(needs numpy)'}</label>
         <label><input type="checkbox" class="autorec" checked> reconstruct if diverse enough</label></div>
       <div class="row" style="margin-top:6px"><span class="grow"></span>
-        <button class="sm harvest" ${harvesting?'disabled':''}>${harvesting?'Harvesting…':harvests.length?'Harvest again':'Harvest photos'}</button><button class="sm danger del">Delete climb</button></div>
+        ${harvests.length ? `<button class="sm sec harvest scratch" ${harvesting?'disabled':''} title="A new harvest of it, from scratch, beside the one it has (which stays)">Harvest from scratch</button>` : ''}<button class="sm harvest" ${harvesting?'disabled':''} ${harvests.length ? 'title="Looks in the sources ticked again, adding only what its last harvest hadn\'t found; its photos and the filter\'s verdicts stay"' : ''}>${harvesting?'Harvesting…':harvests.length?'Check for new photos':'Harvest photos'}</button><button class="sm danger del">Delete climb</button></div>
       <div class="notice" style="margin-top:6px">Downloaded photos stay on this server for reconstruction only; most are copyrighted by their photographers. Provenance is written to sources.json.</div>
     </div>`;
   d.querySelector('.close').onclick = closeClimb;
@@ -2990,15 +2987,15 @@ async function openClimb(id, focus=true){
     await api(`/api/meshes/${ev.target.value}/links`, { method: 'POST', json: { climb_id: id } });
     toast('Linked'); d.remove(); openClimb(id); refreshMeshes(); refreshClimbs();
   };
-  d.querySelector('.harvest').onclick = async () => {
-    if (harvests.length && !await askDanger(`Harvest "${c.name}" again, from scratch?`,
-      "Its photos, video frames and the filter's rejects are deleted and gathered again (photos you put back stay put back); a video that can't be downloaded again loses its frames. Its meshes stay.", 'Harvest again')) return;
+  // with a harvest already: Check for new photos adds to it (incremental), Harvest from scratch makes another beside it
+  d.querySelectorAll('.harvest').forEach(b => b.onclick = async () => {
     const sources = [...d.querySelectorAll('input[name=src]:checked')].map(i => i.value);
-    const r = await api(`/api/climbs/${id}/harvest`, { method: 'POST', json: { sources, reconstruct: d.querySelector('.autorec').checked, filter: d.querySelector('.relfilter').checked } });
+    const r = await api(`/api/climbs/${id}/harvest`, { method: 'POST', json: { sources, reconstruct: d.querySelector('.autorec').checked, filter: d.querySelector('.relfilter').checked,
+                                                                              new_only: !!harvests.length && !b.classList.contains('scratch') } });
     toast('Harvest queued → see Projects tab'); active = r.project_id;
     openClimb(id, false);
     document.querySelector('.tabs button[data-tab=projects]').click(); poll();
-  };
+  });
   d.querySelector('.details')?.addEventListener('click', async () => {
     toast('Fetching… (Mountain Project asks for up to a minute between pages)', 120000);
     try { await api('/api/climbs/import', { method: 'POST', json: { url: c.url, include_children: false } }); toast('Fetched'); d.remove(); openClimb(id); refreshClimbs(); }
@@ -4252,28 +4249,12 @@ function betaLine(m){
   if (b?.status === 'queued' && b.waiting) return `waiting: YouTube is refusing this server's downloads until about ${hhmm(b.waiting)}`;
   if (b?.status === 'queued') return 'queued to find its beta';
   if (b?.status === 'running') return `finding its beta: ${esc(b.progress || '')}`;
-  if (b?.status === 'done') return b.note ? esc(b.note) : `${b.holds} holds found in ${videosHtml(m, b.videos)}`;
+  if (b?.status === 'done') return b.note ? esc(b.note) : `${b.holds} holds found in ${b.videos} video${b.videos === 1 ? '' : 's'}`;
   if (b) return esc(b.status);
   if (!m.source.startsWith('project:')) return 'an upload: holds can only be marked by hand';
   if (!m.cameras_kept) return 'rebuild it to find beta in its videos: where its photos were placed wasn\'t kept';
-  return n ? `beta to find in ${videosHtml(m, n)}` : 'no video frames placed in it';
+  return n ? `${n} video${n === 1 ? '' : 's'} to find beta in` : 'no video frames placed in it';
 }
-// "N videos", opening to a link to each of the mesh's YouTube videos (its photos' record: /api/meshes/<id>/sources)
-function videosHtml(m, n){
-  return `<details class="vids" data-mid="${esc(m.id)}"><summary>${n} video${n === 1 ? '' : 's'}</summary><span class="vlist">Loading…</span></details>`;
-}
-document.addEventListener('toggle', async ev => {     // toggle doesn't bubble: caught on the way down
-  const d = ev.target;
-  if (!d.matches?.('details.vids') || !d.open || d.dataset.loaded) return;
-  d.dataset.loaded = '1';
-  const list = d.querySelector('.vlist');
-  try {
-    const rec = await api(`/api/meshes/${d.dataset.mid}/sources`), seen = new Map();
-    for (const p of rec.photos || []) if (p.source === 'youtube' && p.url && !seen.has(p.url)) seen.set(p.url, p.title ? p.title + (p.credit ? ' · ' + p.credit : '') : p.credit || '');
-    list.innerHTML = seen.size ? [...seen].map(([url, name]) => `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(name || url)}</a>`).join('')
-      : 'None recorded';
-  } catch (e) { list.textContent = "Couldn't load them: " + e.message; delete d.dataset.loaded; }
-}, true);
 // finding beta in every mesh that has videos, one at a time, alongside meshing
 function renderBetaAll(){
   const el = $('#beta-all');
@@ -4312,7 +4293,7 @@ function renderBetaList(){
     const canFind = m.source.startsWith('project:') && m.cameras_kept && videoCount(m) && !['queued', 'running'].includes(m.beta?.status);
     d.innerHTML = `<div class="grow"><span class="name">${esc(meshTitle(m))}</span><br>
         <small>${m.marked ? `${m.marked} hold${m.marked === 1 ? '' : 's'} marked · ` : ''}${betaLine(m)}</small></div>
-      <div class="row" style="flex-direction:column;align-items:stretch;gap:4px"><button class="sm open">Beta</button>
+      <div class="row" style="flex-direction:column;align-items:stretch;gap:4px"><button class="sm open">Open</button>
         ${canFind ? `<button class="sm sec find">${m.beta?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}</div>`;
     d.querySelector('.open').onclick = () => openBeta(m.id);
     d.querySelector('.find')?.addEventListener('click', () => findBeta(m.id));

@@ -6621,7 +6621,7 @@ def run_job(job: dict) -> None:
             run_reconstruct(job["pid"], job.get("internet", False), resume=job.get("resume", False))
         elif job["type"] == "harvest":
             run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True), resume=job.get("resume", False),
-                        again=job.get("again", False), add=job.get("add", False))
+                        again=job.get("again", False), add=job.get("add", False), refresh=job.get("refresh", False))
         elif job["type"] == "retry":
             run_retry(job["pid"])
         elif job["type"] == "boulder":
@@ -8795,6 +8795,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "not found"}, 404)
                 body = self.read_json()
                 sources = [s for s in (body.get("sources") or HARVEST_SOURCES) if s in HARVEST_SOURCES]
+                had = climb_harvests(cid) if body.get("new_only") else []
+                if had:     # added to its newest harvest: every source looked at again, only what's new downloaded
+                    if q("SELECT 1 FROM projects WHERE id=? AND status IN ('queued','running','harvesting')", had[0]):
+                        return self.send_json({"error": "its harvest is queued or running already"}, 409)
+                    q("UPDATE projects SET status='queued' WHERE id=?", had[0], write=True)
+                    queue_job({"type": "harvest", "pid": had[0], "sources": sources, "reconstruct": bool(body.get("reconstruct", True)),
+                               "filter": bool(body.get("filter", True)), "again": True, "add": True, "refresh": True})
+                    return self.send_json({"project_id": had[0], "queued": True}, 202)
                 pid = new_id()
                 (PROJECTS / pid / "photos").mkdir(parents=True)
                 name = f"{r['name']} (harvest)"[:80]

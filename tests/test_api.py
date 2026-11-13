@@ -593,6 +593,11 @@ def run(B: str, tmp: Path) -> None:
     assert h["diversity"]["unique_images"] == 14, h["diversity"]
     if HAVE_CV:
         assert h["diversity"]["verdict"] == "good" and h["diversity"]["view_graph"]["largest_component"] >= 12, h["diversity"]
+    # checking for new photos adds to that harvest, rather than making another
+    st, again = req(B, "POST", f"/api/climbs/{cid}/harvest", {"sources": ["climb"], "reconstruct": False, "new_only": True})
+    assert st == 202 and again["project_id"] == hv["project_id"], again
+    pr2 = wait_project(B, hv["project_id"], timeout=300)
+    assert "looking in every source again" in pr2["log"] and "found before: only the rest are downloaded" in pr2["log"], pr2["log"][-1500:]
     rej = sorted(p.name for p in (tmp / "data" / "projects" / hv["project_id"] / "rejected").iterdir())
     assert any(n.startswith("dup_") for n in rej) and any(n.startswith("small_") for n in rej), rej
     st, meshes = req(B, "GET", "/api/meshes")
