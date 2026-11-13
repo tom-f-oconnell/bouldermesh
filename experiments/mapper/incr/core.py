@@ -795,7 +795,7 @@ def mvs(root: Path, step: str, threads: int, cpu: bool) -> dict:
     rep, d = Report(root, step), root / "dense.new"
     t = ["--max-threads", threads] if threads > 0 else []
     if step == "import":
-        run([f"{MVS}/InterfaceCOLMAP", "-i", "dense", "-o", "scene.mvs", "--image-folder", "dense/images", "-w", d], d)
+        run([f"{MVS}/InterfaceCOLMAP", "-i", "dense", "-o", "scene.mvs", "--image-folder", d / "dense" / "images", "-w", d], d)
     elif step == "dense":
         run([f"{MVS}/DensifyPointCloud", "scene.mvs", "-w", d, "--resolution-level", "2", *t, *(["--cuda-device", "-2"] if cpu else [])], d)
     elif step == "mesh":
