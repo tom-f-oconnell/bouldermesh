@@ -2626,7 +2626,7 @@ $('#nearby').addEventListener('click', ev => {
   else if (b.dataset.turn) { const nb = nearby, it = nearbyItem(nb.picked); setTurn((nb.picked === nb.id ? nb.self.h : it.h) + +b.dataset.turn); }
   else if (b.dataset.save !== undefined) saveTurn();
   else if (b.dataset.done !== undefined) { nearby.picked = null; renderNearby(); }
-  else if (b.dataset.unedit !== undefined) saveTurn(true);
+  else if (b.dataset.unedit !== undefined) { if (ask('Reset this mesh to the default facing? The one set by hand is lost: the default comes from a dubious estimate (photos\' compass readings, Mountain Project\'s text, or the skyline), often well off.')) saveTurn(true); }
   else if (b.dataset.undo !== undefined) {
     const nb = nearby, it = nearbyItem(nb.picked);
     setTurn((nb.picked === nb.id ? nb.self.saved : it?.saved)?.deg ?? 0);
