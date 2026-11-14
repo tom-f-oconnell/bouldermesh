@@ -113,7 +113,7 @@ with tempfile.TemporaryDirectory() as tmp:
         assert req(B, "PATCH", f"/api/meshes/{mid}/beta/sets/{mine['id']}", {"holds": hold, "author": "X"}, ANA)[2]["author"] == "Ana"
         assert req(B, "PATCH", f"/api/meshes/{mid}/beta/sets/{site['id']}", {"holds": hold}, ANA)[0] == 403
         assert req(B, "DELETE", f"/api/meshes/{mid}/beta/sets/{site['id']}", headers=ANA)[0] == 403
-        for method, path in (("POST", f"/api/meshes/{mid}/holds"), ("POST", "/api/projects"), ("DELETE", f"/api/meshes/{mid}"), ("PATCH", f"/api/meshes/{mid}")):
+        for method, path in (("POST", f"/api/meshes/{mid}/holds"), ("POST", "/api/campaigns"), ("POST", "/api/projects/retry-interrupted"), ("DELETE", f"/api/meshes/{mid}"), ("PATCH", f"/api/meshes/{mid}")):
             assert req(B, method, path, {"holds": []}, ANA)[0] == 401, f"{method} {path} is the owner's"
         assert req(B, "POST", f"/api/meshes/{mid}/beta/sets", {"name": "x"})[0] == 401, "and nobody's without a token"
         # a set not shared: its owner's and the site's owner's to see; and not to copy by anyone else
@@ -141,4 +141,69 @@ with tempfile.TemporaryDirectory() as tmp:
         out = srv.stop()
     assert "account made: Ana (user)" in out
 print("the server's accounts OK")
+
+# --- what an account adds: its own, within its quota, meshed last until approved, deleted only by marking -----------------
+import io  # noqa: E402
+import zipfile  # noqa: E402
+import urllib.request  # noqa: E402
+from test_public import PNG  # noqa: E402
+
+with tempfile.TemporaryDirectory() as tmp:
+    tmp = Path(tmp)
+    srv = Server(tmp, EDIT_TOKEN="an-editing-token", READ_ONLY="auto", CONTRIBUTION_PUMP_SECONDS="1", CAMPAIGN_MIN_FREE_GB="0")
+    try:
+        B, A = srv.url, f"http://127.0.0.1:{srv.admin_port}"
+        admin = lambda name, body: req(A, "POST", f"/api/admin/actions/{name}", body)[2]       # noqa: E731
+
+        def join(name: str) -> tuple[dict, dict]:
+            made = req(B, "POST", "/api/account/join", {"invite": admin("user-invite", {})["invite"]["code"], "name": name})[2]
+            h = {"Authorization": f"Bearer {made['token']}"}
+            req(B, "POST", "/api/account/terms", {"version": accounts.TERMS_VERSION}, h)
+            return made["user"], h
+        ana, ANA = join("Ana")
+        bo, BO = join("Bo")
+        st, _, proj = req(B, "POST", "/api/projects", {"name": "Ana's rock"}, ANA)
+        pid = proj["id"]
+        photo = lambda i: ("files", f"p{i}.png", PNG + bytes([i]) * 2000)       # noqa: E731
+        st, _, up = req(B, "POST", f"/api/projects/{pid}/photos", headers=ANA, files=[photo(i) for i in range(3)])
+        assert st == 200 and len(up["saved"]) == 3, up
+        mine = req(B, "GET", "/api/account/projects", headers=ANA)[2]
+        assert [x["id"] for x in mine["projects"]] == [pid] and mine["projects"][0]["approved"] == 0 and 6000 < mine["used"] < 9000 and mine["quota"] == 4000 * 2**20, mine
+        # it's Ana's: not Bo's to add to, mesh or delete; seen in the list by Ana and the owner, not by Bo or a visitor
+        assert req(B, "POST", f"/api/projects/{pid}/photos", headers=BO, files=[photo(9)])[0] == 403
+        assert req(B, "POST", f"/api/projects/{pid}/reconstruct", {}, BO)[0] == 403 and req(B, "DELETE", f"/api/projects/{pid}", headers=BO)[0] == 403
+        listed = lambda h=None: [x["id"] for x in req(B, "GET", "/api/projects", headers=h)[2]]     # noqa: E731
+        assert listed(ANA) == [pid] == listed(AUTH) and listed(BO) == [] == listed()
+        assert req(B, "GET", "/api/submissions", headers=ANA)[0] == 401 and [x["id"] for x in req(B, "GET", "/api/submissions", headers=AUTH)[2]["added"]] == [pid]
+        # its quota: lowered by the owner, the next upload is refused; approved, it no longer counts
+        admin("user-change", {"id": ana["id"], "quota_mb": 0.008})
+        st, _, r = req(B, "POST", f"/api/projects/{pid}/photos", headers=ANA, files=[photo(4)])
+        assert st == 413 and "MB you have left" in r["error"], r
+        assert req(B, "POST", "/api/projects", {"name": "Another"}, ANA)[0] == 201, "under the limit still: a new one may start"
+        # asked for a mesh: held, as nothing has approved it; the owner's phone would be told
+        st, _, r = req(B, "POST", f"/api/projects/{pid}/reconstruct", {}, ANA)
+        assert st == 202 and r["held"] and req(B, "POST", f"/api/projects/{pid}/reconstruct", {}, ANA)[0] == 409, r
+        # the export: its own files, as a zip
+        with urllib.request.urlopen(urllib.request.Request(B + f"/api/account/projects/{pid}/export", headers=ANA)) as z:
+            names = zipfile.ZipFile(io.BytesIO(z.read())).namelist()
+        assert names == ["photos/p0.png", "photos/p1.png", "photos/p2.png"], names
+        assert req(B, "GET", f"/api/account/projects/{pid}/export", headers=BO)[0] == 404
+        # approved by the owner: counted against Ana no more, and Bo can't approve anything
+        assert req(B, "POST", f"/api/submissions/{pid}/approve", {}, BO)[0] == 403
+        st, _, done = req(B, "POST", f"/api/submissions/{pid}/approve", {}, AUTH)
+        assert st == 200 and done["approved"] == 1 and done["approved_by"] == "the owner", done
+        assert req(B, "GET", "/api/account/projects", headers=ANA)[2]["used"] == 0 and pid in listed()
+        # deleting marks: gone from Ana's list and her quota, still the owner's to see, keep or remove
+        other = req(B, "GET", "/api/account/projects", headers=ANA)[2]["projects"][0]["id"]
+        assert other != pid and req(B, "DELETE", f"/api/projects/{other}", headers=ANA)[2] == {"deleted": other, "kept_for_now": True}
+        assert [x["id"] for x in req(B, "GET", "/api/account/projects", headers=ANA)[2]["projects"]] == [pid]
+        assert (tmp / "data" / "projects" / other).is_dir() and req(B, "POST", f"/api/projects/{other}/photos", headers=ANA, files=[photo(5)])[0] == 403
+        state = admin("submission", {"id": other, "do": "keep"})
+        kept = next(x for x in state["users"]["added"] if x["id"] == other)
+        assert kept["deleted_at"] is None and kept["approved"] == 1 and state["users"]["list"][0]["used"] == 0
+        admin("submission", {"id": other, "do": "remove"})
+        assert not (tmp / "data" / "projects" / other).exists()
+    finally:
+        out = srv.stop()
+print("what accounts add OK")
 print("ALL ACCOUNTS TESTS PASSED")

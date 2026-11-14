@@ -257,7 +257,10 @@ def init_db() -> None:
         # boulder: for a boulder's project, the area path of its climbs (as climbs.area_path has it)
         # job_at: when that job was queued, to queue again those a restart found waiting in the order they were
         for c, t in (("kind", "TEXT DEFAULT 'user'"), ("climb_id", "TEXT"), ("harvest", "TEXT"), ("progress", "TEXT"), ("job", "TEXT"),
-                     ("boulder", "TEXT"), ("job_at", "REAL")):
+                     ("boulder", "TEXT"), ("job_at", "REAL"),
+                     # what an account added (accounts.py): whose; approved: 0 not yet, 1 yes, -1 declined (NULL: the site's
+                     # own); and when its account deleted it, which only marks it (user_delete_project())
+                     ("user_id", "TEXT"), ("approved", "INTEGER"), ("approved_by", "TEXT"), ("approved_at", "REAL"), ("deleted_at", "REAL")):
             if c not in cols:
                 con.execute(f"ALTER TABLE projects ADD COLUMN {c} {t}")
         cols = {r[1] for r in con.execute("PRAGMA table_info(meshes)")}
@@ -3485,10 +3488,13 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
                 meshinputs.save(MESHES / mid, {**inputs, "mesh": mid, "made": time.time()})
             except OSError as e:
                 log(f"keeping what it was made from failed ({e})")
-        if proj["climb_id"]:
+        waits = q("SELECT 1 FROM projects WHERE id=? AND user_id IS NOT NULL AND COALESCE(approved, 0)<>1", pid, one=True)
+        if waits:       # what an account added: linked to nothing until it's approved (link_contribution())
+            log("not linked or shown yet: it waits to be approved")
+        if proj["climb_id"] and not waits:
             link_mesh(mid, proj["climb_id"], "auto-linked from reconstruction project")
             log(f"mesh linked to climb {proj['climb_id']}")
-        if added_to:
+        if added_to and not waits:
             link_capture(mid, added_to, log)
         if (pdir / CAPTURE_FILE).exists():
             try:
@@ -5146,7 +5152,8 @@ def next_campaign_step() -> bool:
         return False
     camp, item = picked
     try:
-        with meshopts.using(mapper_of(camp)):    # for its meshes, here or on a machine elsewhere
+        # for its meshes, here or on a machine elsewhere; one made again as its mesh is old goes after what people added
+        with meshopts.using(mapper_of(camp)), pullwork.priority(pullwork.PRIO_BACKFILL if item.get("old_rerun") else pullwork.PRIO_OWNER):
             run_campaign_item(camp, item)
         w.error = w.waiting = None
         settle_boulder(camp["id"], item.get("boulder"))
@@ -7073,7 +7080,8 @@ def run_job(job: dict) -> None:
         elif job["type"] == "retexture":
             run_retexture(job["mid"])
         elif job["type"] == "reconstruct":
-            run_reconstruct(job["pid"], job.get("internet", False), resume=job.get("resume", False))
+            with pullwork.priority(contribution_prio(q("SELECT user_id, approved FROM projects WHERE id=?", job["pid"], one=True) or {})):
+                run_reconstruct(job["pid"], job.get("internet", False), resume=job.get("resume", False))
         elif job["type"] == "harvest":
             run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True), resume=job.get("resume", False),
                         again=job.get("again", False), add=job.get("add", False), refresh=job.get("refresh", False))
@@ -7785,7 +7793,10 @@ ACCOUNTS = accounts_mod.Accounts(DATA / "accounts.sqlite")
 # what an account's token may change (a method and a path): anything else needs the site's owner. The account's own
 # routes (/api/account/...) check for themselves.
 USER_MAY = (("POST", r"/api/meshes/[0-9a-f]+/beta/sets"), ("PATCH", r"/api/meshes/[0-9a-f]+/beta/sets/[0-9a-z]+"),
-            ("DELETE", r"/api/meshes/[0-9a-f]+/beta/sets/[0-9a-z]+"))
+            ("DELETE", r"/api/meshes/[0-9a-f]+/beta/sets/[0-9a-z]+"),
+            # what it adds: a project of its own (photos, videos, an app's capture), meshed when its turn comes
+            ("POST", r"/api/projects"), ("POST", r"/api/projects/[0-9a-f]+/(photos|capture|capture/points|reconstruct)"),
+            ("DELETE", r"/api/projects/[0-9a-f]+"), ("POST", r"/api/submissions/[0-9a-f]+/(approve|decline)"))
 OWNER = {"id": None, "name": None, "role": "owner", "areas": ["*"], "accepted": True, "quota_mb": None, "created": None}
 JOIN_TRIES, JOIN_WINDOW = 10, 3600      # invites and pairing codes one address may try in an hour
 _join_tries: dict[str, list[float]] = {}
@@ -7799,6 +7810,210 @@ def join_allowed(ip: str) -> bool:
         _join_tries.clear()
     tries.append(now)
     return len(tries) <= JOIN_TRIES
+
+
+# ---- what accounts add: theirs until approved ------------------------------------------------------------------------
+# A project made with an account's token is that account's (projects.user_id), and waits to be approved (approved 0)
+# by the site's owner or a moderator of its climb's area. Until then it counts against the account's quota, its mesh
+# (made when there's nothing else to mesh: PRIO_UNAPPROVED) is seen only by the account and whoever may approve it, and
+# is linked to no climb. Approved, it's the site's: no longer counted, meshed ahead of the backfill, linked and shown.
+HELD = "held"       # a project's status: its account asked for a mesh, which waits for nothing else to be wanting one
+PUMP_EVERY = float(os.environ.get("CONTRIBUTION_PUMP_SECONDS", "60"))
+
+
+def project_bytes(pid: str) -> int:
+    """What a project holds of its own: files that are only its (a capture's project also has links to the photos of
+    the mesh it adds to, which are that mesh's)."""
+    total = 0
+    for f in (PROJECTS / pid).rglob("*"):
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        if f.is_file() and st.st_nlink == 1:
+            total += st.st_size
+    return total
+
+
+def user_used(uid: str) -> int:
+    """Bytes an account holds against its quota: what it added that isn't approved, and that it hasn't deleted."""
+    return sum(project_bytes(r["id"]) for r in q("SELECT id FROM projects WHERE user_id=? AND COALESCE(approved, 0)<>1 AND deleted_at IS NULL", uid))
+
+
+def user_quota(user: dict) -> int:
+    mb = user.get("quota_mb")
+    return int((settings().get("users.quota_mb") if mb is None else mb) * 2**20)
+
+
+def areas_of_project(proj: dict) -> list[str]:
+    """The areas a project's climb is in: whose moderators may approve it."""
+    if not proj.get("climb_id"):
+        return []
+    return [r["campaign_id"] for r in q("SELECT DISTINCT campaign_id FROM campaign_items WHERE climb_id=?", proj["climb_id"])]
+
+
+def may_approve(user: dict | None, proj: dict) -> bool:
+    return bool(user) and (user["role"] == "owner" or any(accounts_mod.may_moderate(user, a) for a in areas_of_project(proj)))
+
+
+def contribution_prio(proj: dict) -> int:
+    """Whose work a project's mesh is (pullwork.PRIO_*): the owner's unless an account added it."""
+    if not proj.get("user_id"):
+        return pullwork.PRIO_OWNER
+    if proj.get("approved") != 1:
+        return pullwork.PRIO_UNAPPROVED
+    user = ACCOUNTS.get(proj["user_id"]) or {}
+    return pullwork.PRIO_MODERATOR if user.get("role") in ("moderator", "owner") else pullwork.PRIO_USER
+
+
+def submit_reconstruct(pid: str) -> dict:
+    """An account asks for its project's mesh: queued if it's approved, or else held until nothing else wants meshing
+    (contribution_pump()); the owner's phone is told there's something to look at."""
+    proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
+    internet = proj["kind"] in ("harvest", "boulder")
+    if proj.get("approved") == 1:
+        q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
+        queue_job({"type": "reconstruct", "pid": pid, "internet": internet})
+        return {"queued": True}
+    q("UPDATE projects SET status=?, progress=NULL, job=?, job_at=? WHERE id=?", HELD, json.dumps({"type": "reconstruct", "pid": pid, "internet": internet}),
+      time.time(), pid, write=True)
+    who = (ACCOUNTS.get(proj["user_id"]) or {}).get("name") or "someone"
+    photos = PROJECTS / pid / "photos"
+    n = sum(1 for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.exists() else 0
+    threading.Thread(target=NOTIFIER.send, args=("Something added, to look at", f"{who} added {plural(n, 'photo')} as \"{proj['name']}\". "
+                     "It will be meshed when nothing else is waiting, or sooner once approved (the admin page's People).", None, 3, ["inbox_tray"]), daemon=True).start()
+    return {"queued": False, "held": True, "why": "it will be meshed when the machines have nothing else to do, or sooner once it's approved"}
+
+
+def link_contribution(pid: str) -> None:
+    """Link an approved project's mesh as any project's is when it's made: to its climb, and to the mesh its capture added to."""
+    proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
+    mid = proj and proj.get("mesh_id")
+    if not mid or not q("SELECT 1 FROM meshes WHERE id=?", mid, one=True):
+        return
+    log = lambda s: append_log(pid, s)  # noqa: E731
+    if proj["climb_id"]:
+        link_mesh(mid, proj["climb_id"], "linked when what was added was approved")
+    target = (_read_json(PROJECTS / pid / CAPTURE_FILE) or {}).get("mesh")
+    if target and q("SELECT 1 FROM meshes WHERE id=?", target, one=True):
+        link_capture(mid, target, log)
+
+
+def approve_project(pid: str, by: dict, ok: bool = True) -> dict:
+    """Approve or decline what an account added. Approved: it's no longer counted against the account, its mesh is linked
+    and shown, and a mesh still to make moves ahead of the backfill.
+
+    Raises:
+        ValueError: there's no such thing added, or `by` may not approve it.
+    """
+    proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
+    if not proj or not proj.get("user_id"):
+        raise ValueError("there's nothing an account added by that id")
+    if not may_approve(by, proj):
+        raise ValueError("that isn't yours to approve")
+    q("UPDATE projects SET approved=?, approved_by=?, approved_at=?, deleted_at=NULL WHERE id=?", 1 if ok else -1, by.get("name") or "the owner", time.time(), pid, write=True)
+    append_log(pid, f"{'approved' if ok else 'declined'} by {by.get('name') or 'the owner'}")
+    if ok:
+        proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
+        MACHINES.reprioritise(pid, contribution_prio(proj))     # a mesh of it already waiting for a machine
+        if proj["status"] == HELD:
+            q("UPDATE projects SET status='queued' WHERE id=?", pid, write=True)
+            queue_job(json.loads(proj["job"]))
+        else:
+            link_contribution(pid)
+    return submission_row(q("SELECT * FROM projects WHERE id=?", pid, one=True))
+
+
+def user_delete_project(pid: str, user: dict) -> dict:
+    """An account deletes what it added: only marked (deleted_at), which frees its quota at once. Its files go later,
+    if room is needed (purge_deleted()) or the owner says; and where a mesh was already made from it, never without the
+    owner, whose phone is told now: it cost compute, and may be worth keeping."""
+    proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
+    q("UPDATE projects SET deleted_at=?, status=CASE WHEN status=? THEN 'new' ELSE status END WHERE id=?", time.time(), HELD, pid, write=True)
+    append_log(pid, f"deleted by {user['name']}: kept until room is needed" + (", and its mesh until the owner says" if proj.get("mesh_id") else ""))
+    if proj.get("mesh_id"):
+        threading.Thread(target=NOTIFIER.send, args=("A mesh's capture was deleted by its owner", f"{user['name']} deleted \"{proj['name']}\", which "
+                         "already has a mesh. Nothing is gone: keep it for the site or remove it, on the admin page's People.", None, 4, ["wastebasket"]),
+                         daemon=True).start()
+    return {"deleted": pid, "kept_for_now": True}
+
+
+def purge_deleted(need: int = 0) -> list[str]:
+    """Really delete what accounts deleted, oldest first, until `need` bytes are freed (all of it, with need < 0): only
+    what no mesh was made from. Returns the projects gone."""
+    gone, freed = [], 0
+    for r in q("SELECT id FROM projects WHERE deleted_at IS NOT NULL AND mesh_id IS NULL AND status NOT IN ('queued','running') ORDER BY deleted_at"):
+        if need >= 0 and freed >= need:
+            break
+        size = project_bytes(r["id"])
+        answer, code = delete_project(r["id"])
+        if code == 200:
+            gone.append(r["id"])
+            freed += size
+    return gone
+
+
+def submission_row(proj: dict) -> dict:
+    user = ACCOUNTS.get(proj["user_id"]) or {}
+    photos = PROJECTS / proj["id"] / "photos"
+    capture = _read_json(PROJECTS / proj["id"] / CAPTURE_FILE) or {}
+    return {"id": proj["id"], "name": proj["name"], "created": proj["created"], "status": proj["status"], "user": user.get("name"), "user_id": proj["user_id"],
+            "approved": proj.get("approved"), "approved_by": proj.get("approved_by"), "deleted_at": proj.get("deleted_at"), "mesh": proj.get("mesh_id"),
+            "climb_id": proj.get("climb_id"), "adds_to": capture.get("mesh"), "device": proj.get("device"),
+            "photos": sum(1 for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.exists() else 0, "bytes": project_bytes(proj["id"])}
+
+
+def submissions(user: dict | None = None, mine: str | None = None) -> list[dict]:
+    """What accounts added, newest first: one account's (mine), or what `user` may approve."""
+    if mine:
+        rows = q("SELECT * FROM projects WHERE user_id=? AND deleted_at IS NULL ORDER BY created DESC", mine)
+    else:
+        rows = [r for r in q("SELECT * FROM projects WHERE user_id IS NOT NULL ORDER BY created DESC") if may_approve(user, r)]
+    return [submission_row(r) for r in rows]
+
+
+def unapproved_meshes() -> dict[str, str]:
+    """Meshes made from what accounts added that isn't approved: {mesh: the account}. Shown to that account and to whoever may approve."""
+    return {r["mesh_id"]: r["user_id"] for r in q("SELECT mesh_id, user_id FROM projects WHERE user_id IS NOT NULL AND COALESCE(approved, 0)<>1 AND mesh_id IS NOT NULL")}
+
+
+def contribution_pump() -> None:
+    """A thread: when nothing else is asking for a mesh (no job queued or running here, none waiting for a machine),
+    queues the oldest held project of an account's, one at a time; and frees room from what accounts deleted when the
+    disk is short."""
+    while True:
+        time.sleep(PUMP_EVERY)
+        try:
+            if _stopping or _draining:
+                continue
+            if shutil.disk_usage(DATA).free < CAMPAIGN_MIN_FREE:
+                gone = purge_deleted(CAMPAIGN_MIN_FREE)
+                if gone:
+                    print(f"room was short: {plural(len(gone), 'project')} that accounts had deleted are gone", flush=True)
+            busy = (not jobs.empty() or q("SELECT 1 FROM projects WHERE status IN ('queued','running') LIMIT 1")
+                    or any(j["state"] == "queued" for j in MACHINES.running()))
+            if busy:
+                continue
+            held = q("SELECT id, job FROM projects WHERE status=? AND user_id IS NOT NULL AND deleted_at IS NULL ORDER BY job_at LIMIT 1", HELD, one=True)
+            if held and held["job"]:
+                q("UPDATE projects SET status='queued' WHERE id=?", held["id"], write=True)
+                queue_job(json.loads(held["job"]))
+        except Exception as e:
+            print(f"contributions: {type(e).__name__}: {e}", flush=True)
+
+
+def admin_submission(body: dict) -> dict:
+    """What an account added: {id, do: "approve" | "decline" | "keep" (undo its account's delete, as the site's) | "remove" (gone for good)}."""
+    pid, do = str(body.get("id")), body.get("do")
+    if do in ("approve", "decline", "keep"):
+        approve_project(pid, OWNER, do != "decline")
+    elif do == "remove":
+        answer, code = delete_project(pid)
+        if code != 200:
+            raise ValueError(answer.get("error") or "it couldn't be removed")
+    else:
+        raise ValueError("do is approve, decline, keep or remove")
+    return admin_state()
 
 
 def admin_user_invite(body: dict) -> dict:
@@ -8413,6 +8628,43 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": why}, code, headers=headers)
         return bool(why)
 
+    def export_project(self, proj: dict) -> None:
+        """Send a project whole, as a zip made as it goes: its photos and videos, its capture's record and points, and its
+        mesh's files if it has one."""
+        import zipfile
+        files: list[tuple[Path, str]] = []
+        pdir = PROJECTS / proj["id"]
+        for part in ("photos", "videos"):
+            if (pdir / part).is_dir():
+                files += [(f, f"{part}/{f.name}") for f in sorted((pdir / part).iterdir()) if f.is_file() and f.stat().st_nlink == 1]
+        files += [(pdir / n, n) for n in (CAPTURE_FILE, CAPTURE_POINTS_FILE, "sources.json") if (pdir / n).is_file()]
+        if proj.get("mesh_id") and (MESHES / proj["mesh_id"]).is_dir():
+            files += [(f, f"mesh/{f.name}") for f in sorted((MESHES / proj["mesh_id"]).iterdir()) if f.is_file()]
+        name = re.sub(r"[^A-Za-z0-9._-]+", "-", proj["name"]).strip("-")[:60] or proj["id"]
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", f'attachment; filename="{name}.zip"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            with zipfile.ZipFile(self.wfile, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
+                for path, arc in files:
+                    z.write(path, arc)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def own_project(self, p: str) -> bool:
+        """Whether whoever asks may change the project a path names: the site's owner any, an account its own (and not
+        one it deleted). True for paths that name none."""
+        m = re.fullmatch(r"/api/projects/([0-9a-f]+)(/.*)?", p)
+        me = self.who() or OWNER
+        if not m or me["id"] is None:
+            return True
+        proj = q("SELECT user_id, deleted_at FROM projects WHERE id=?", m[1], one=True)
+        return proj is None or (proj["user_id"] == me["id"] and proj["deleted_at"] is None)
+
     def own_set(self, mid: str, sid: str) -> bool:
         """Whether whoever asks may change a set of beta: the site's owner any, an account its own."""
         me = self.who() or OWNER
@@ -8642,7 +8894,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(deploy_state())
             # ---- projects
             if p == "/api/projects":
-                rows, areas = q("SELECT id,name,created,status,mesh_id,demo,kind,climb_id FROM projects ORDER BY created DESC"), project_areas()
+                rows, areas = q("SELECT id,name,created,status,mesh_id,demo,kind,climb_id,user_id,approved,deleted_at FROM projects ORDER BY created DESC"), project_areas()
+                me = self.who()     # what an account added and nobody approved is its own and the owner's to see; what it deleted, the owner's
+                rows = [r for r in rows if not r["user_id"] or (r["approved"] == 1 and not r["deleted_at"]) or
+                        (me and (me["role"] == "owner" or (r["user_id"] == me["id"] and not r["deleted_at"])))]
                 for r in rows:
                     if r["id"] in areas:
                         r["areas"] = areas[r["id"]]
@@ -8713,6 +8968,13 @@ class Handler(BaseHTTPRequestHandler):
             # ---- meshes
             if p == "/api/meshes":
                 rows = q("SELECT * FROM meshes ORDER BY created DESC")
+                waiting = unapproved_meshes()       # made from what an account added, not yet approved: its account's and the owner's to see
+                if waiting:
+                    me = self.who()
+                    rows = [r for r in rows if r["id"] not in waiting or (me and (me["role"] == "owner" or waiting[r["id"]] == me["id"]))]
+                    for r in rows:
+                        if r["id"] in waiting:
+                            r["awaits_approval"] = True
                 links = q("SELECT l.mesh_id, l.note, c.id, c.name, c.grade, c.url, c.area_path FROM mesh_links l JOIN climbs c ON c.id=l.climb_id")
                 by, leaves = {}, {}
                 for l in links:     # shared: an area linked it as on the same boulder as the climb the mesh was made for
@@ -8827,6 +9089,23 @@ class Handler(BaseHTTPRequestHandler):
                 sets = beta_mod.visible(beta_mod.load_sets(MESHES / m[1]), (me or {}).get("id"), bool(me) and me["role"] == "owner")
                 return self.send_json({"found": found, "marked": {"holds": sets[0]["holds"], "updated": sets[0].get("updated")} if sets else {"holds": []},
                                        "sets": sets, "available": beta_mod.available()})
+            if p == "/api/account/projects":    # what this account added, and what it holds against its quota
+                me = self.who()
+                if not me or me["id"] is None:
+                    return self.send_json({"error": "that needs an account's own token"}, 401)
+                return self.send_json({"projects": submissions(mine=me["id"]), "used": user_used(me["id"]), "quota": user_quota(me)})
+            m = re.fullmatch(r"/api/account/projects/([0-9a-f]+)/export", p)
+            if m:   # all of one, as a zip: for its account to keep before deleting it here
+                me = self.who()
+                proj = q("SELECT * FROM projects WHERE id=?", m[1], one=True)
+                if not me or not proj or (me["role"] != "owner" and proj["user_id"] != me["id"]):
+                    return self.send_json({"error": "not found"}, 404)
+                return self.export_project(proj)
+            if p == "/api/submissions":     # what accounts added that whoever asks may approve
+                me = self.who()
+                if not me or me["role"] == "user":
+                    return self.send_json({"error": "that's for the site's owner and its moderators"}, 401)
+                return self.send_json({"added": submissions(me)})
             if p == "/api/account":     # who this browser or phone is signed in as, and the terms as they stand
                 me = self.who()
                 return self.send_json({"user": accounts_mod.public(me) if me and me["id"] else None, "owner": bool(me) and me["role"] == "owner",
@@ -9059,16 +9338,27 @@ class Handler(BaseHTTPRequestHandler):
             return self.rate(m[1])
         if self.refused():
             return
+        me = self.who() or OWNER
+        if not self.own_project(p):
+            return self.send_json({"error": "that isn't yours to change"}, 403)
         try:
             # ---- projects
             if p == "/api/projects":
                 body = self.read_json()
                 pid = new_id()
                 name = (body.get("name") or f"project {pid}").strip()[:80]
+                if me["id"] is not None and user_used(me["id"]) >= user_quota(me):
+                    return self.send_json({"error": "you're at your storage limit: export and delete something you added, or wait for it to be approved"}, 413)
                 (PROJECTS / pid / "photos").mkdir(parents=True)
-                q("INSERT INTO projects(id,name,created,kind,climb_id) VALUES(?,?,?,?,?)", pid, name, time.time(),
-                  "user", body.get("climb_id"), write=True)
+                q("INSERT INTO projects(id,name,created,kind,climb_id,user_id,approved) VALUES(?,?,?,?,?,?,?)", pid, name, time.time(),
+                  "user", body.get("climb_id"), me["id"], None if me["id"] is None else int(me["role"] in ("moderator", "owner")), write=True)
                 return self.send_json({"id": pid, "name": name}, 201)
+            m = re.fullmatch(r"/api/submissions/([0-9a-f]+)/(approve|decline)", p)
+            if m:   # what an account added, by the owner or a moderator of its area
+                try:
+                    return self.send_json(approve_project(m[1], me, m[2] == "approve"))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 403)
 
             if p == "/api/uploads":    # {name, size}: a file to come in parts of at most PART_MAX
                 body = self.read_json()
@@ -9100,6 +9390,11 @@ class Handler(BaseHTTPRequestHandler):
                 pid = m[1]
                 if not q("SELECT 1 FROM projects WHERE id=?", pid, one=True):
                     return self.send_json({"error": "not found"}, 404)
+                if me["id"] is not None:    # an account's: within what it may hold
+                    room = user_quota(me) - user_used(me["id"])
+                    if int(self.headers.get("Content-Length") or 0) > room:
+                        return self.send_json({"error": f"that's more than the {max(0, room) // 2**20} MB you have left: export and delete something "
+                                                        "you added, or wait for it to be approved", "left": max(0, room)}, 413)
                 _, files = self.read_files()
                 saved, videos = [], []
                 for fname, data in files:
@@ -9166,11 +9461,13 @@ class Handler(BaseHTTPRequestHandler):
                 proj = q("SELECT status, kind FROM projects WHERE id=?", pid, one=True)
                 if not proj:
                     return self.send_json({"error": "not found"}, 404)
-                if proj["status"] in ("queued", "running", "harvesting"):
-                    return self.send_json({"error": "already running"}, 409)
+                if proj["status"] in ("queued", "running", "harvesting", HELD):
+                    return self.send_json({"error": "already running" if proj["status"] != HELD else "already waiting its turn"}, 409)
                 n = len([f for f in (PROJECTS / pid / "photos").iterdir() if f.suffix.lower() in PHOTO_EXT])
                 if n < (1 if not pipeline.real_pipeline_ready() else 3):
                     return self.send_json({"error": "upload at least 3 overlapping photos"}, 400)
+                if q("SELECT 1 FROM projects WHERE id=? AND user_id IS NOT NULL", pid, one=True):
+                    return self.send_json(submit_reconstruct(pid), 202)     # an account's: in its turn
                 q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
                 queue_job({"type": "reconstruct", "pid": pid, "internet": proj["kind"] in ("harvest", "boulder")})
                 return self.send_json({"queued": True, "position": jobs.qsize()}, 202)
@@ -9597,6 +9894,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"deleted": m[1]})
         m = re.fullmatch(r"/api/projects/([0-9a-f]+)", p)
         if m:
+            me = self.who() or OWNER
+            if not self.own_project(p):
+                return self.send_json({"error": "that isn't yours to delete"}, 403)
+            if me["id"] is not None:    # an account's own: marked, not destroyed
+                if not q("SELECT 1 FROM projects WHERE id=?", m[1], one=True):
+                    return self.send_json({"error": "not found"}, 404)
+                return self.send_json(user_delete_project(m[1], me))
             return self.send_json(*delete_project(m[1]))
         m = re.fullmatch(r"/api/climbs/([0-9a-f]+)", p)
         if m:
@@ -10231,7 +10535,8 @@ def admin_state() -> dict:
             found, why = retexture.usable(d, PROJECTS / m["source"].split(":", 1)[1] / "photos", video_info)
             counts["can_retexture"] += bool(found)
             counts["need_rebuild"] += bool(why and "rebuild" in why)
-    return {"users": {"list": ACCOUNTS.users(), "invites": ACCOUNTS.invites(), "on": bool(EDIT_TOKEN) and not READ_ONLY},
+    return {"users": {"list": [{**u, "used": user_used(u["id"]), "quota": user_quota(u)} for u in ACCOUNTS.users()], "invites": ACCOUNTS.invites(),
+                      "on": bool(EDIT_TOKEN) and not READ_ONLY, "added": submissions(OWNER)},
             "settings": settings().all(), "secrets": settings().secrets_status(), "compute": compute_state(),
             "policy": counts, "retexture_queued": len(_retexturing), "site_port": int(os.environ.get("PORT", "8470")),
             "proxy_ranges": RANGES.state() if RANGES else None, "version": VERSION,
@@ -10384,6 +10689,7 @@ def main() -> None:
     if again:
         print(f"{plural(again, 'job')} people asked for, still waiting when the server stopped, queued again", flush=True)
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=contribution_pump, daemon=True).start()
     threading.Thread(target=reap_machines, daemon=True).start()
     threading.Thread(target=clean_existing_meshes, daemon=True).start()
     threading.Thread(target=orient_existing_meshes, daemon=True).start()
@@ -10430,7 +10736,7 @@ def main() -> None:
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
-                                       "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-change": admin_user_change, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
+                                       "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-change": admin_user_change, "submission": admin_submission, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
                                        "machine-revoke": admin_machine_revoke, "clear-rejected": admin_clear_rejected,
                                        "volunteers-forget": lambda _: {"result": f"forgot {VOLUNTEERS.forget_gone()} volunteer(s)"},
                                        "machines-forget": lambda _: {"result": f"forgot {MACHINES.forget_gone()} machine(s)"},

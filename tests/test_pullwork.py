@@ -589,6 +589,22 @@ r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 12000})
 assert r["job"]["id"] == big.id and board.current(box["id"]) == {**board.current(box["id"]), "state": "working", "why": "big"}
 del board.jobs[big.id]
 big.input.unlink()
+# whose work goes first: a job made later for the owner is taken before one waiting that an account added and nobody
+# approved; approving that one moves it ahead of a mesh being made again because it's old
+with pullwork.priority(pullwork.PRIO_UNAPPROVED):
+    added = board._new_job("reconstruct", {"photos": many / "photos"}, {"internet": True}, "added-by-ana", image[0])
+with pullwork.priority(pullwork.PRIO_BACKFILL):
+    again = board._new_job("reconstruct", {"photos": many / "photos"}, {"internet": True}, "old-again", image[0])
+mine = board._new_job("reconstruct", {"photos": many / "photos"}, {"internet": True}, "the-owners", image[0])
+assert (added.prio, again.prio, mine.prio) == (4, 3, 0) and board.reprioritise("added-by-ana", pullwork.PRIO_USER) == 1 and added.prio == 2
+took = []
+for _ in range(3):
+    r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 12000})
+    took.append(board.jobs[r["job"]["id"]].label)
+    del board.jobs[r["job"]["id"]]
+assert took == ["the-owners", "added-by-ana", "old-again"], took
+for j in (added, again, mine):
+    j.input.unlink()
 # gone quiet: offline from CONNECTED after it was last heard from, by the sweep or when it asks again
 board.q("UPDATE machines SET last_seen=? WHERE id=?", time.time() - 600, box["id"])
 board.seen[box["id"]] = time.time() - 600

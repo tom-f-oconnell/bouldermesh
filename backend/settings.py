@@ -54,6 +54,7 @@ DEFAULTS = {
     "viewer.preview_faces": 150_000,
     "youtube.via": "volunteers_when_refused",   # here | volunteers_when_refused | volunteers (never here: a cloud server)
     # the most the data may take, in GB (0: no limit): over it, volunteers and areas wait for room (DATA_CAP_GB starts it)
+    "users.quota_mb": 4000.0,              # what an account may hold at once of what it added that isn't approved yet
     "storage.cap_gb": 0.0,
     # notify (notify.py) when less than this % of the cap is left, as about 5 climbs' or boulders' worth at 60 GB, or this
     # many GB if set (0: the %)
@@ -111,7 +112,7 @@ DEFAULTS = {
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
            "areas.meshes": ("boulders", "climbs"), "relevance.matcher": ("brute", "flann"), "leaderboard.names": ("new", "all", "none")}
-LIMITS = {"site.map_km": (0.05, 2000), "boulders.placed_percent": (0, 100), "beta.parallel": (1, 16), "viewer.preview_faces": (0, 5_000_000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.processing_cores": (1, os.cpu_count() or 1), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
+LIMITS = {"users.quota_mb": (0, 1_000_000), "site.map_km": (0.05, 2000), "boulders.placed_percent": (0, 100), "beta.parallel": (1, 16), "viewer.preview_faces": (0, 5_000_000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.processing_cores": (1, os.cpu_count() or 1), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 200),
           "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 200),
           "registration.per_address_day": (1, 100), "registration.max_waiting": (1, 1000)}

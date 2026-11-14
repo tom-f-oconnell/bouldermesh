@@ -72,6 +72,25 @@ GONE_AFTER = 600            # a machine not heard from for this long has left (p
 GPU_NEED_PHOTOS = 20        # a reconstruction's GPU memory is reckoned for VGGT placing this many (it places fewer in less)
 OTHER_GPU_MB = 4000         # finding a mesh's beta or size
 STATES = ("working", "idle", "held back", "awaiting approval", "offline")
+# whose work a job is, and so which goes first: what the site's owner asked for or started (areas' climbs too), then
+# moderators', then what users added that's been approved, then meshes made again as theirs are old, then what users
+# added that nobody has approved yet (meshed for them to see, when there's nothing else to do)
+PRIO_OWNER, PRIO_MODERATOR, PRIO_USER, PRIO_BACKFILL, PRIO_UNAPPROVED = range(5)
+_prio = threading.local()
+
+
+class priority:
+    """Jobs this thread makes, within the block, are for whoever has this priority (PRIO_*)."""
+
+    def __init__(self, prio: int):
+        self.prio = prio
+
+    def __enter__(self):
+        self.was = getattr(_prio, "value", PRIO_OWNER)
+        _prio.value = self.prio
+
+    def __exit__(self, *exc):
+        _prio.value = self.was
 SEND_EVERY = 5              # seconds between a running job's reports, which are also how it's known to be alive
 MAX_LINES = 5000            # lines in one report
 CLIENT_VERSION = 1          # the oldest script that speaks to this
@@ -111,6 +130,7 @@ class Job:
     owner: int = field(default_factory=threading.get_ident)   # the thread that made it, which waits for it; 0 for none
     same: dict | None = None        # a meshing job's {"rules", "fingerprint"}: kept over a restart while it has both
     result_line: str | None = None  # the "@@result" line its machine sent, kept for whoever takes it up after a restart
+    prio: int = 0                   # whose work it is (PRIO_*): lower goes first, among jobs of its kind
     orphaned: float | None = None   # when it was reloaded after a restart, until a climb takes it up
 
     @property
@@ -191,8 +211,17 @@ class Board:
             return
         spec = {"input": str(j.input), "size": j.size, "internet": j.internet, "image": j.image, "state": j.state,
                 "machine": j.machine, "machine_name": j.machine_name, "taken": j.taken, "out_size": j.out_size, "error": j.error,
-                "version": j.version, "gpu_mb": j.gpu_mb, "same": j.same, "result_line": j.result_line}
+                "version": j.version, "gpu_mb": j.gpu_mb, "same": j.same, "result_line": j.result_line, "prio": j.prio}
         self.q("UPDATE machine_jobs SET live=1, spec=? WHERE id=?", json.dumps(spec), j.id)
+
+    def reprioritise(self, label: str, prio: int) -> int:
+        """Give the waiting jobs whose label has this in it another priority (what a user added was approved). Returns how many."""
+        with self.cond:
+            mine = [j for j in self.jobs.values() if j.state == "queued" and label in j.label]
+            for j in mine:
+                j.prio = prio
+                self._save(j)
+        return len(mine)
 
     def _settle(self, j: Job) -> None:
         self.q("UPDATE machine_jobs SET live=0 WHERE id=?", j.id)
@@ -209,7 +238,7 @@ class Board:
                         image=s["image"], created=r["created"] or now, state=s["state"], machine=s.get("machine"),
                         machine_name=s.get("machine_name"), taken=s.get("taken"), touched=now, out_size=s.get("out_size"),
                         error=s.get("error"), task=r["task"], version=int(s.get("version") or 1), gpu_mb=int(s.get("gpu_mb") or 0),
-                        owner=0, same=s.get("same"), result_line=s.get("result_line"), orphaned=now)
+                        owner=0, same=s.get("same"), result_line=s.get("result_line"), orphaned=now, prio=int(s.get("prio") or 0))
             except (TypeError, ValueError, KeyError):
                 self.q("UPDATE machine_jobs SET live=0, outcome=COALESCE(outcome, 'gone'), ended=COALESCE(ended, ?) WHERE id=?", now, r["id"])
                 continue
@@ -520,7 +549,7 @@ class Board:
                 # but beta and size that have waited AGE_FIRST go ahead of meshing
                 def rank(j):
                     aged = j.task in ("beta", "scale") and now - j.created > AGE_FIRST
-                    return j.task != "filter", 0 if aged else 1 if j.task == "reconstruct" else 2, j.created
+                    return j.task != "filter", j.prio, 0 if aged else 1 if j.task == "reconstruct" else 2, j.created
                 mine = min((j for j in could if free is None or j.gpu_mb <= free), key=rank, default=None)
                 if not mine and could:      # none fits in the GPU memory free there now
                     least, total = min(j.gpu_mb for j in could), _number(client.get("gpu_total_mb"))
@@ -884,7 +913,7 @@ class Board:
         photos = sum(1 for _ in files["photos"].iterdir()) if "photos" in files and files["photos"].is_dir() else 0
         job = Job(id=jid, label=label, input=path, size=path.stat().st_size, internet=bool(args.get("internet")), image=image,
                   task=kind, version=max(2 if told else 1, version or 1), gpu_mb=gpu_need_mb(kind, photos),
-                  same=dict(same) if same and kind == "reconstruct" else None)
+                  same=dict(same) if same and kind == "reconstruct" else None, prio=getattr(_prio, "value", PRIO_OWNER))
         with self.cond:
             self.jobs[jid] = job
         self.q("INSERT OR REPLACE INTO machine_jobs(id, task, label, created) VALUES(?,?,?,?)", jid, kind, label, job.created)
