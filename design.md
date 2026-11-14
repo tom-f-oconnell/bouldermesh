@@ -1446,8 +1446,23 @@ spots with no name, role or set (`anon`), so that whoever adds to a mesh photogr
   (meshed last, so its contributor can see it; approval moves it up).
 - What an account deletes isn't destroyed at once: marked, kept while there's room or until it's backed up, and where a
   mesh was already made from it the owner is told first, to judge whether it's worth keeping.
-- Not built yet: the queue of what's added and its approval, quotas, export, that marking for deletion, the apps'
-  sign-in and their terms screen, the page's sign-in.
+- Not built yet: the apps signing in by scanning a code rather than pasting one; uploads in parts from the apps (a
+  video); Google or Apple sign-in; limits on how fast an account may upload.
+- Not run anywhere real: all of this has been tried only against test servers and in a headless browser.
+
+**What's added.** A project made with an account's token is that account's, and waits to be approved by the owner or
+a moderator of its climb's area. Until then it counts against the account's quota (`users.quota_mb`, or the account's
+own), its mesh is made only when nothing else wants one, is linked to no climb, and is listed only for its account
+and the owner. Approved, it stops counting, is linked and shown, and a mesh still to make moves ahead of the backfill:
+machines take jobs by whose they are (`pullwork.PRIO_*`). An account can download any of its projects whole as a zip.
+Deleting one only marks it: its room is the account's again at once, but the files stay until room is short, and where
+a mesh was already made the owner's phone is told and nothing goes without the owner (the admin page's People: keep
+for the site, or remove for good).
+
+**In the apps.** The terms are shown first and nothing works until they're accepted (kept on the phone, so it works
+with no signal, and sent with the next upload). A phone signs in by pasting an invite link, a code from "Sign in
+another device", or the admin page's pairing link. Holds of sets kept private are left until everything else is done,
+then asked about once; a setting asks for them from the start.
 
 ## The phone apps (`app/`)
 

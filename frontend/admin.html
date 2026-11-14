@@ -284,6 +284,23 @@
     <div id="fb-list"></div>
   </section>
 
+  <section id="people" hidden>
+    <h2>People</h2>
+    <div class="note">Accounts, each made from an invite: whoever opens its link picks a name, accepts the terms, and may then make their
+      own sets of beta. A moderator's areas are the ids of the areas they may approve additions to, or <code>*</code> for all.</div>
+    <div id="people-list"></div>
+    <div class="inline" style="margin-top:8px">An account may hold at most <input type="number" id="users-quota" min="0" step="100" style="width:100px"> MB of what it
+      added <small class="note">(approved things don't count; an account's own quota, in the table, goes before this)</small></div>
+    <div id="added-list"></div>
+    <div class="grid">
+      <div><label>Invite as</label><select id="inv-role"><option value="user">a user</option><option value="moderator">a moderator</option></select></div>
+      <div><label>A note, for you <small>(who it's for)</small></label><input type="text" id="inv-note" maxlength="200"></div>
+    </div>
+    <div class="row"><button id="inv-make">Invite</button></div>
+    <div id="inv-new"></div>
+    <div id="inv-list"></div>
+  </section>
+
   <section id="pairing">
     <h2>Editing from a phone</h2>
     <div class="note" id="pair-note"></div>
@@ -621,6 +638,8 @@ function render(s){
       : 'Make new topics first: two long random names, one for notifications and one for the buttons\' replies.')
     + (nt.last_error ? `<div class="bad">${esc(nt.last_error)}</div>` : '') + (nt.waiting_summary ? `<div>${nt.waiting_summary} registration(s) waiting for the next summary.</div>` : '');
   renderPairing(s.pairing);
+  renderPeople(s.users);
+  keep('#users-quota', v['users.quota_mb']);
   const cr = s.secrets;
   $('#cred-note').innerHTML = cr.can_save ? 'Credentials can be saved here, encrypted with BOULDERMESH_SECRETS_KEY.'
     : '<span class="warn">Credentials can\'t be saved here until BOULDERMESH_SECRETS_KEY is set (in .env, outside the data directory). Until then, give them as environment variables, such as AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.</span>'
@@ -819,6 +838,84 @@ $('#ntfy-test').onclick = async () => { try { msg((await call('/api/admin/action
 for (const [b, action, ask] of [['#vol-skipped', 'volunteers-skipped'], ['#vol-details', 'volunteers-details'], ['#vol-cancel', 'volunteers-cancel', 'Drop every video and detail still queued for volunteers?']])
   $(b).onclick = async () => { if (ask && !confirm(ask)) return; try { msg((await call(`/api/admin/actions/${action}`, {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
 let pairMade = 0;    // when the QR showing was made (the server's clock), if one is
+// People: the accounts, the invites not yet used, and one account's role, areas and quota being changed
+let peopleEditing = null, peopleDrawnFor = null;     // the account being changed: the table isn't redrawn meanwhile
+function renderPeople(u){
+  $('#people').hidden = !(u && u.on);
+  if (!u || !u.on) return;
+  const when = t => t ? new Date(t * 1000).toLocaleString() : 'never', areas = a => (a || []).includes('*') ? 'all' : (a || []).join(', ') || '–';
+  // in the quota's own megabytes: 4000 MB reads 4.0 GB
+  const size = b => b >= 1000 * 2 ** 20 ? (b / 2 ** 20 / 1000).toFixed(1) + ' GB' : `${(b / 2 ** 20).toFixed(b < 10 * 2 ** 20 ? 1 : 0)} MB`;
+  const used = x => x.used == null ? '–' : `${size(x.used)} of ${size(x.quota)}`;
+  // what accounts added: those waiting to be approved first, then those their owners deleted, then the rest; newest first in each
+  const rank = x => x.deleted_at ? 1 : x.approved ? 2 : 0, added = [...(u.added || [])].sort((a, b) => rank(a) - rank(b) || b.created - a.created);
+  const made = x => x.mesh ? 'meshed' : ({ held: 'waiting its turn to be meshed', queued: 'queued to be meshed', running: 'being meshed', failed: 'its mesh failed', new: 'not meshed yet' }[x.status] || x.status);
+  const state = x => (x.deleted_at ? `<span class="warn">deleted by its owner</span> ${when(x.deleted_at)}; was ` : '')
+    + (x.approved === 1 ? `approved by ${esc(x.approved_by || 'the owner')}` : x.approved === -1 ? `<span class="bad">declined</span> by ${esc(x.approved_by || 'the owner')}` : '<span class="warn">waiting to be approved</span>')
+    + `<div class="note">${esc(made(x))}${x.adds_to ? ` · adds to mesh ${esc(x.adds_to)}` : ''}</div>`;
+  $('#added-list').innerHTML = added.length ? `<table><tr><th>Added by people</th><th>By</th><th>When</th><th>State</th><th>Photos</th><th>Size</th><th></th></tr>${
+    added.map(x => `<tr><td>${esc(x.name)}${x.device ? `<div class="note">${esc(x.device)}</div>` : ''}</td><td>${esc(x.user || '(no account)')}</td><td>${when(x.created)}</td><td>${state(x)}</td><td>${x.photos}</td><td>${size(x.bytes)}</td>
+      <td>${x.deleted_at ? `<button class="sec" data-sub="keep" data-id="${esc(x.id)}" title="Undo its owner's delete: it becomes the site's, approved">Keep for the site</button> <button class="danger" data-sub="remove" data-id="${esc(x.id)}" data-name="${esc(x.name)}">Remove for good</button>`
+        : !x.approved ? `<button data-sub="approve" data-id="${esc(x.id)}">Approve</button> <button class="sec" data-sub="decline" data-id="${esc(x.id)}">Decline</button>` : ''}</td></tr>`).join('')}</table>`
+    : '<div class="note">Nothing added by people yet.</div>';
+  if (!peopleEditing || peopleDrawnFor !== peopleEditing) {
+    peopleDrawnFor = peopleEditing;
+    $('#people-list').innerHTML = u.list.length ? `<table><tr><th>Name</th><th>Role</th><th>Areas</th><th>Quota (MB)</th><th title="What it added that isn't approved, of what it may hold">Used</th><th>Accepted the terms</th><th>Devices</th><th>Last seen</th><th>Closed</th><th></th></tr>${
+      u.list.map(x => x.id === peopleEditing ? `<tr><td>${esc(x.name)}</td>
+        <td><select id="pe-role" style="width:auto">${[...new Set(['user', 'moderator', x.role])].map(r => `<option ${r === x.role ? 'selected' : ''}>${esc(r)}</option>`).join('')}</select></td>
+        <td><input type="text" id="pe-areas" value="${esc((x.areas || []).join(', '))}" placeholder="ids, or *" title="The ids of the areas a moderator may approve additions to, with commas between; * for all" style="width:120px"></td>
+        <td><input type="number" id="pe-quota" min="0" value="${x.quota_mb ?? ''}" placeholder="default" title="Blank: the site's default" style="width:90px"></td><td>${used(x)}</td>
+        <td>${x.accepted ? 'yes' : 'no'}</td><td>${x.devices}</td><td>${when(x.last_seen)}</td><td>${x.disabled ? 'yes' : '–'}</td>
+        <td><button data-pesave="${esc(x.id)}">Save</button> <button class="sec" data-pecancel="1">Cancel</button></td></tr>`
+      : `<tr><td>${esc(x.name)}</td><td>${esc(x.role)}</td><td>${esc(areas(x.areas))}</td><td>${x.quota_mb ?? 'default'}</td><td class="${x.quota != null && x.used >= x.quota ? 'warn' : ''}">${used(x)}</td>
+        <td class="${x.accepted ? '' : 'warn'}">${x.accepted ? 'yes' : 'not yet'}</td><td>${x.devices}</td><td>${when(x.last_seen)}</td><td class="${x.disabled ? 'bad' : ''}">${x.disabled ? 'closed' : '–'}</td>
+        <td><button class="sec" data-pedit="${esc(x.id)}">Change</button> ${x.devices ? `<button class="sec" data-pout="${esc(x.id)}" data-name="${esc(x.name)}">Sign out everywhere</button> ` : ''}${
+          x.disabled ? `<button class="sec" data-popen="${esc(x.id)}">Reopen</button>` : `<button class="danger" data-pclose="${esc(x.id)}" data-name="${esc(x.name)}">Close</button>`}</td></tr>`).join('')}</table>`
+      : '<div class="note">No accounts yet.</div>';
+  }
+  $('#inv-list').innerHTML = u.invites.length ? `<table><tr><th>Open invites</th><th>For</th><th>Made</th><th>Good until</th></tr>${
+    u.invites.map(i => `<tr><td>${esc(i.note || '(no note)')}</td><td>a ${esc(i.role)}</td><td>${when(i.created)}</td><td>${when(i.expires)}</td></tr>`).join('')}</table>
+    <div class="note">An invite's link is shown only when it's made. One not used runs out by itself.</div>` : '';
+}
+$('#inv-make').onclick = async () => {
+  try {
+    const r = await call('/api/admin/actions/user-invite', { role: $('#inv-role').value, areas: [], note: $('#inv-note').value.trim() });
+    const i = r.invite;
+    $('#inv-note').value = '';
+    $('#inv-new').innerHTML = `<div class="note ok">An invite for a ${esc(i.role)}. ${i.url ? 'Send them this link' : 'Send them this code, to put after <code>/?invite=</code> on the site\'s address'}:</div>
+      <div class="row"><code id="inv-link" style="user-select:all">${esc(i.url || i.code)}</code><button class="sec" id="inv-copy">Copy</button></div>
+      <div class="note">It's shown only now. It works once, and lasts two weeks (until ${new Date(i.expires * 1000).toLocaleString()}).${
+        i.url ? '' : ' Set <code>SITE_URL</code> (the address people reach the site at) for a whole link here.'}</div>`;
+    $('#inv-copy').onclick = async ev => {
+      try { await navigator.clipboard.writeText(i.url || i.code); ev.target.textContent = 'Copied'; }
+      catch { getSelection().selectAllChildren($('#inv-link')); ev.target.textContent = 'Selected: copy it'; }     // no clipboard over plain HTTP
+    };
+    render(r);
+  } catch (e) { msg(e.message, 8000); }
+};
+$('#users-quota').onchange = () => save({ 'users.quota_mb': +$('#users-quota').value });
+$('#added-list').addEventListener('click', async ev => {
+  const d = ev.target.dataset;
+  if (!d.sub) return;
+  if (d.sub === 'remove' && !await askDanger(`Remove "${d.name}" for good?`, 'Everything in it is deleted from this server. It can\'t be put back.', 'Remove for good')) return;
+  try { render(await call('/api/admin/actions/submission', { id: d.id, do: d.sub })); msg({ approve: 'Approved', decline: 'Declined', keep: 'Kept for the site', remove: 'Removed' }[d.sub]); }
+  catch (e) { msg(e.message, 8000); }
+});
+$('#people-list').addEventListener('click', async ev => {
+  const d = ev.target.dataset, redraw = id => { peopleEditing = id; peopleDrawnFor = undefined; };
+  if (d.pedit || d.pecancel) { redraw(d.pedit || null); return refresh(); }
+  let body = null;
+  if (d.pesave) {
+    const q = $('#pe-quota').value.trim();
+    body = { id: d.pesave, role: $('#pe-role').value, areas: $('#pe-areas').value.split(',').map(a => a.trim()).filter(Boolean), quota_mb: q === '' ? null : +q };
+  }
+  else if (d.pout) { if (!confirm(`Sign ${d.name} out everywhere? Each of their devices then needs a new invite's account, or a code from one signed in again.`)) return; body = { id: d.pout, sign_out: true }; }
+  else if (d.pclose) { if (!await askDanger(`Close ${d.name}'s account?`, 'Its devices are signed out, and it can add or change nothing until it\'s reopened. What it added stays.', 'Close')) return; body = { id: d.pclose, disabled: true }; }
+  else if (d.popen) body = { id: d.popen, disabled: false };
+  if (!body) return;
+  try { const r = await call('/api/admin/actions/user-change', body); if (d.pesave) redraw(null); msg('Saved'); render(r); }
+  catch (e) { msg(e.message, 8000); }
+});
 function renderPairing(pr){
   $('#pair-show').disabled = pr.editing !== 'token';
   $('#pair-note').innerHTML = pr.editing === 'none' ? 'The main site is view-only (READ_ONLY), so nothing there can be changed from a browser.'

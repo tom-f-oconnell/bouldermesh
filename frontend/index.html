@@ -49,6 +49,16 @@
   #editdlg input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);color:var(--fg);padding:7px 9px;border-radius:6px;font:inherit}
   #editdlg video{display:block;width:100%;max-height:50vh;object-fit:cover;border-radius:6px;background:#000;margin:0 0 10px}
   #editdlg video[hidden]{display:none}
+  #editdlg summary{font-size:13px;cursor:pointer;margin:0 0 10px} #editdlg .err,#acctdlg .err{color:var(--bad)} #editdlg .err:empty,#acctdlg .err:empty{display:none}
+  /* an account's: joining from an invite, the terms, its devices */
+  #acctdlg{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;width:min(480px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;box-sizing:border-box;padding:16px}
+  #acctdlg::backdrop{background:rgba(0,0,0,.5)}
+  #acctdlg p{font-size:13px;margin:0 0 10px} #acctdlg label{display:block;font-size:13px;margin:0 0 10px}
+  #acctdlg input{display:block;width:100%;box-sizing:border-box;margin-top:4px;background:var(--bg);border:1px solid var(--line);color:var(--fg);padding:7px 9px;border-radius:6px;font:inherit}
+  #acctdlg .terms{white-space:pre-line;font-size:12px;color:var(--mute);border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:0 0 10px;max-height:40vh;overflow:auto}
+  #acctdlg .paircode{font:600 20px ui-monospace,Menlo,Consolas,monospace;letter-spacing:1px;user-select:all;overflow-wrap:anywhere}
+  #acctdlg .added{border-top:1px solid var(--line);padding:6px 0;font-size:13px;gap:6px;flex-wrap:wrap} #acctdlg .added small{color:var(--mute)}
+  #me{max-width:12em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #bpick{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;width:min(520px,calc(100vw - 32px));box-sizing:border-box;padding:16px;max-height:calc(100vh - 48px)}
   #bpick::backdrop{background:rgba(0,0,0,.5)} #bpick p{font-size:13px;margin:0 0 10px} #bpick a{color:var(--acc)} #bpick .note{color:var(--mute)}
   #bpick .bitem{display:grid;grid-template-columns:auto 1fr;grid-auto-flow:dense;align-items:center;gap:3px 10px;width:100%;text-align:left;margin:0 0 8px;padding:9px 11px;
@@ -101,7 +111,7 @@
   body.readonly .rec,body.readonly .retry,body.readonly #p-interrupted,body.readonly button.back,body.readonly button.all,body.readonly label.file,
   body.readonly .stopnow,body.readonly .stoplater,body.readonly .resume,body.readonly .retryfailed,body.readonly .checknew,body.readonly .refilter,body.readonly .rebuildchanged,
   body.readonly .rebuildall,body.readonly .boulders,body.readonly .meshboulder,body.readonly .setll,body.readonly #pieces .edit,body.readonly #pieces .redo,body.readonly .rebuild,
-  body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly button.mark,body.readonly .clearmine,body.readonly #vmark,
+  body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly:not(.account) button.mark,body.readonly:not(.account) .clearmine,body.readonly:not(.account) #vmark,
   body.readonly .tryskipped,body.readonly .editopt,body.readonly .pause,body.readonly .unpause,body.readonly #pieces .undo,
   body.readonly #nearby [data-save],body.readonly #nearby [data-unedit],
   body.readonly .tabs button[data-tab=projects],body.readonly .projs{display:none!important}
@@ -382,6 +392,7 @@
   <button class="sm" id="random" title="Shows a mesh picked at random. Those with more faces come up more often: the most detailed twice as often as the least.">Random</button>
   <span id="viewonly" class="pill" style="display:none" title="This copy of the site can't be changed from a browser">view-only</span>
   <button class="sm sec" id="edit" style="display:none"></button>
+  <button class="sm sec" id="me" style="display:none" title="Your account: sign in another device, or sign out"></button>
   <button class="sm sec phone prefsbtn" id="prefsbtn" title="Settings: the mesh's look, its background, detail and colours" aria-label="Settings" aria-expanded="false"><span class="gear" aria-hidden="true">⚙︎</span></button>
   <span id="hspace"></span>
   <span id="hbreak"></span>
@@ -393,6 +404,7 @@
 </header>
 <dialog id="admindlg"></dialog>
 <dialog id="editdlg"></dialog>
+<dialog id="acctdlg"></dialog>
 <dialog id="bpick"></dialog>
 <main>
   <aside>
@@ -686,6 +698,15 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 const $ = s => document.querySelector(s);
 // whether this copy of the site may be changed from here: open, or with its editing token (kept in this browser)
 let editor = true, token = null;
+// Who this browser is signed in as, on a site with accounts (/api/account's user, and all it said): an account isn't an
+// editor, but may make sets of beta and change its own, once it has accepted the terms
+let account = null, accountInfo = null;
+const mayBeta = () => editor || !!account?.accepted;
+// whether a set of beta is this browser's to change; with none, whether marking may make one
+const maySet = s => editor || (!!account?.accepted && (!s || s.owner === account.id));
+// the changes api() sends from a browser that isn't an editor's: an account's own, its sets of beta, and what it added
+// (deleted from its panel)
+const accountMay = url => /^\/api\/account\//.test(url) || (!!account && /^\/api\/(meshes\/[0-9a-f]+\/beta\/sets(\/|$)|projects\/[0-9a-f]+$)/.test(url));
 // the server's renderer drawing a mesh's picture (backend/thumbs.py), at /m/<id>?thumb=auto or ?thumb=<a camera, as
 // JSON>: the view alone, its whole size, with no controls, notes or reports, from its preview copy without a splat
 const thumbMode = new URLSearchParams(location.search).get('thumb'), thumbFit = !!new URLSearchParams(location.search).get('fit');
@@ -697,9 +718,10 @@ function viewOnlyNote(){
     : 'This copy of the site is view-only: nothing can be changed from a browser.';
 }
 // a confirmation for what replaces or removes data: a dialog whose red button goes on (resolves true); Esc, Cancel
-// or a click outside it doesn't. On a copy this browser can't change, says why instead
-function askDanger(title, body, go){
-  if (!editor) { alert(viewOnlyNote()); return Promise.resolve(false); }
+// or a click outside it doesn't. On a copy this browser can't change, says why instead (may: whether it can, when
+// that isn't an editor's alone)
+function askDanger(title, body, go, may = editor){
+  if (!may) { alert(viewOnlyNote()); return Promise.resolve(false); }
   return new Promise(done => {
     const dlg = document.createElement('dialog'); dlg.className = 'danger-ask';
     dlg.innerHTML = `<b></b><p></p><div class="row"><span class="grow"></span><button class="sec no">Cancel</button><button class="danger yes"></button></div>`;
@@ -713,14 +735,14 @@ function askDanger(title, body, go){
   });
 }
 // confirm() for a change: on a copy this browser can't change, says why instead, and goes no further
-function ask(msg){
-  if (!editor) { alert(viewOnlyNote()); return false; }
+function ask(msg, may = editor){
+  if (!may) { alert(viewOnlyNote()); return false; }
   return confirm(msg);
 }
 try { token = localStorage.getItem('bm_token'); } catch {}
 const api = async (url, opt={}) => {
   if (opt.json) { opt.body = JSON.stringify(opt.json); opt.headers = {'Content-Type':'application/json'}; delete opt.json; }
-  if (!editor && opt.method && opt.method !== 'GET') throw new Error(viewOnlyNote());
+  if (!editor && opt.method && opt.method !== 'GET' && !accountMay(url)) throw new Error(viewOnlyNote());
   if (token) opt.headers = { ...(opt.headers || {}), Authorization: 'Bearer ' + token };
   const r = await fetch(url, opt);
   const j = await r.json().catch(()=>({}));
@@ -3985,7 +4007,7 @@ function renderMeshes(filter = true){
     const chips = (m.boulder_climbs || []).map(c => `<span class="chip" data-from="${c.id}" title="${c.view ? `Look at it from where ${esc(c.name)}'s own photos were taken (${plural(c.view.photos, 'photo')})` : `None of ${esc(c.name)}'s own photos were placed in it: opens the climb`}">${c.view ? '👁 ' : ''}${esc(named(c, true))}</span>`).join('')
       + m.climbs.filter(c => editor || (c !== sole && !pooledIds.has(c.id))).map(c=>`<span class="chip${c.shared ? ' shared' : ''}" data-climb="${c.id}" ${c.shared ? 'title="Linked by an area as on the same boulder as the climb this was made for: it may not show this climb\'s side"' : ''}>${esc(named(c, true))}${c.shared ? ' <small>same boulder</small>' : ''} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('');
     const n = new Set([...pooledIds, ...m.climbs.map(c => c.id)]).size;
-    d.innerHTML = `${m.thumb ? `<img class="mthumb" loading="lazy" alt="" src="/meshes/${m.id}/thumb.small.jpg?v=${m.thumb.v}" title="View it">` : ''}<div class="grow"><span class="name">${meshNameHtml(m)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${editor && m.old ? '<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</span>' : ''}${editor && m.old_data && !m.old ? `<span class="tag" title="A newer mesh, made under the same rules from photos this one lacked, is of every climb this one is of: kept, but left out of visitors' lists of a boulder's meshes">old (data)</span>` : ''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
+    d.innerHTML = `${m.thumb ? `<img class="mthumb" loading="lazy" alt="" src="/meshes/${m.id}/thumb.small.jpg?v=${m.thumb.v}" title="View it">` : ''}<div class="grow"><span class="name">${meshNameHtml(m)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${m.awaits_approval ? '<span class="tag" title="Made from what an account added, which hasn\'t been approved yet: only that account and the site\'s owner see it">waiting to be approved</span>' : ''}${editor && m.old ? '<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</span>' : ''}${editor && m.old_data && !m.old ? `<span class="tag" title="A newer mesh, made under the same rules from photos this one lacked, is of every climb this one is of: kept, but left out of visitors' lists of a boulder's meshes">old (data)</span>` : ''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
         <div class="chips">${several ? `<details class="mclimbs"${climbListsOpen.has(m.id) ? ' open' : ''}><summary>${plural(n, 'climb')}</summary><div class="chips">${chips}</div></details>` : chips}
           ${editor ? '<select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option></select>' : ''}</div></div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px">
@@ -4586,24 +4608,28 @@ function renderBetaPanel(){
   const busy = ['queued', 'running'].includes(f?.status);
   const canFind = m?.source.startsWith('project:') && m.cameras_kept && n && b.available && !busy;
   const set = chosenSet(b), scrolled = el.querySelector('.bholds')?.scrollTop;
+  // can: this set's holds, name and sharing are this browser's to change; make: it may make sets (so copy any shown)
+  const can = maySet(set), make = mayBeta(), w = can ? '' : ' w';
   const count = k => `${k} hold${k === 1 ? '' : 's'}`;
   const sizeOf = h => { const r = h.r_m ?? HOLD_R_M; return HOLD_R.find(([, v]) => v === r)?.[0] || `${+(r * 100).toFixed(1)} cm`; };
   const sizes = h => { const r = h.r_m ?? HOLD_R_M; return (HOLD_R.some(([, v]) => v === r) ? HOLD_R : [...HOLD_R, [sizeOf(h), r]]).map(([name, v]) => `<option value="${v}" ${v === r ? 'selected' : ''}>${name}</option>`).join(''); };
   el.innerHTML = `<div class="card active">
     <div class="row"><b class="grow">${esc(m?.name || '')}</b><button class="sm sec close">✕ close</button></div>
     <div class="meta" style="margin-top:6px"><b>Sets of beta:</b>${b.sets.length ? '' : ' none'}</div>
-    ${b.sets.length ? `<select class="bset" style="margin-top:4px" title="The set whose holds are shown">${b.sets.map(s => `<option value="${esc(s.id)}" ${s.id === b.sid ? 'selected' : ''}>${esc(s.name)} · ${count(s.holds.length)}</option>`).join('')}</select>` : ''}
-    <div class="row w" style="margin-top:4px;gap:4px;flex-wrap:wrap"><button class="sm sec setnew" title="A set with no holds yet">New</button>
-      ${set ? `<button class="sm sec setdup" title="A copy of this set, to change">Duplicate</button><button class="sm sec setname">Rename</button><button class="sm sec setdel">Delete</button>` : ''}</div>
+    ${b.sets.length ? `<select class="bset" style="margin-top:4px" title="The set whose holds are shown">${b.sets.map(s => `<option value="${esc(s.id)}" ${s.id === b.sid ? 'selected' : ''}>${esc(s.name)}${s.author ? ` · by ${esc(s.author)}` : ''} · ${count(s.holds.length)}${s.shared === false ? ' · not shared' : ''}</option>`).join('')}</select>` : ''}
+    <div class="row${make ? '' : ' w'}" style="margin-top:4px;gap:4px;flex-wrap:wrap"><button class="sm sec setnew" title="A set with no holds yet${account ? ', of your own' : ''}">New</button>
+      ${set ? `<button class="sm sec setdup" title="A copy of this set, ${account ? 'of your own, ' : ''}to change">Duplicate</button>${can ? '<button class="sm sec setname">Rename</button><button class="sm sec setdel">Delete</button>' : ''}` : ''}</div>
+    ${set && can ? `<label class="row" style="margin-top:6px;gap:6px;font-size:12px" title="Unticked, only ${account ? 'you and the site\'s owner see' : 'the site\'s owner sees'} it: its holds are still used, unnamed, to guide captures"><input type="checkbox" class="setshared" ${set.shared === false ? '' : 'checked'}> Shared with everyone</label>` : ''}
+    ${set && make && !can ? `<div class="notice" style="margin-top:6px">This set is ${set.author ? esc(set.author) + '\'s' : 'the site\'s'}: Duplicate it for a copy of your own to change.</div>` : ''}
     <div class="meta" style="margin-top:6px"><b>Its holds:</b> ${roleCounts(b.marked)}</div>
-    <div class="row" style="margin-top:4px"><button class="sm mark">${b.marking ? 'Stop marking' : 'Mark holds'}</button>
-      ${b.marked.length ? '<button class="sm sec clearmine">Clear its holds</button>' : ''}</div>
-    <div class="notice w" style="margin-top:6px">Marking: click the rock to add a start hold, then click a hold again for hand, finish, foot, then none. A hold's size is how much of the rock round it is the hold.</div>
+    <div class="row" style="margin-top:4px">${can ? `<button class="sm mark">${b.marking ? 'Stop marking' : 'Mark holds'}</button>` : ''}
+      ${b.marked.length && can ? '<button class="sm sec clearmine">Clear its holds</button>' : ''}</div>
+    <div class="notice${w}" style="margin-top:6px">Marking: click the rock to add a start hold, then click a hold again for hand, finish, foot, then none. A hold's size is how much of the rock round it is the hold.</div>
     <div class="bholds">${b.marked.map((h, i) => `<div class="row bhold${i === b.sel ? ' on' : ''}" data-i="${i}">
-      <span class="swatch" style="background:${ROLES[h.role].color}"></span><span class="grow">${i + 1}${editor ? '' : ` · ${ROLES[h.role].name} · ${sizeOf(h)}`}</span>
-      <select class="w role" title="What it's for">${ROLE_CYCLE.map(r => `<option value="${r}" ${r === h.role ? 'selected' : ''}>${ROLES[r].name}</option>`).join('')}</select>
-      <select class="w size" title="How far round its point the hold reaches: what a close capture of it covers">${sizes(h)}</select>
-      <button class="sm sec w unmark" title="Remove this hold">✕</button></div>`).join('')}</div>
+      <span class="swatch" style="background:${ROLES[h.role].color}"></span><span class="grow">${i + 1}${can ? '' : ` · ${ROLES[h.role].name} · ${sizeOf(h)}`}</span>
+      <select class="role${w}" title="What it's for">${ROLE_CYCLE.map(r => `<option value="${r}" ${r === h.role ? 'selected' : ''}>${ROLES[r].name}</option>`).join('')}</select>
+      <select class="size${w}" title="How far round its point the hold reaches: what a close capture of it covers">${sizes(h)}</select>
+      <button class="sm sec unmark${w}" title="Remove this hold">✕</button></div>`).join('')}</div>
     <div class="meta" style="margin-top:8px"><b>From videos:</b> ${busy ? (f.status === 'queued' ? 'queued…' : f.at ? `finding it${f.at.where === 'machine' ? ' on a machine' : ''}…` : `${esc(f.progress || 'starting')}…`) : m ? betaLine(m) : ''}
       ${canFind ? `<button class="sm sec find" style="margin-left:6px">${f?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}
       ${f?.status === 'running' ? betaBarHtml(f.at) : ''}</div>
@@ -4611,14 +4637,15 @@ function renderBetaPanel(){
     ${(f?.videos || []).map(v => `<div class="bvid">
       <label class="row" style="gap:6px"><input type="checkbox" data-tag="${v.tag}" ${b.shown.has(v.tag) ? 'checked' : ''}>
         <span class="grow"><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.title || v.url)}</a>${v.uploader ? ` <small>· ${esc(v.uploader)}</small>` : ''}</span></label>
-      <div class="meta">${v.holds ? roleCounts(v.holds) : ''} ${v.holds?.length ? `<button class="sm sec w tocopy" data-video="${esc(v.url)}" title="A set of these holds, to change" style="margin-left:4px">Copy to a set</button>` : ''} ${v.frames ? `<small>· climber in ${v.with_climber} of ${v.frames} frames, ${v.placed_frames} placed on the mesh${v.approximate_lens ? ', lens approximate' : ''}</small>` : ''}
+      <div class="meta">${v.holds ? roleCounts(v.holds) : ''} ${v.holds?.length ? `<button class="sm sec tocopy${make ? '' : ' w'}" data-video="${esc(v.url)}" title="A set of these holds, to change" style="margin-left:4px">Copy to a set</button>` : ''} ${v.frames ? `<small>· climber in ${v.with_climber} of ${v.frames} frames, ${v.placed_frames} placed on the mesh${v.approximate_lens ? ', lens approximate' : ''}</small>` : ''}
         ${v.status && v.status !== 'done' ? `<small>· ${esc(v.status)}</small>` : ''}</div>
       ${v.image ? `<img src="/meshes/${b.mid}/${v.image}?v=${f.finished || ''}" alt="" title="The climber's hands (white) and feet (yellow), and the holds they stayed on, drawn on this video's frame placed in the mesh">` : ''}
     </div>`).join('')}
   </div>`;
   el.querySelector('.close').onclick = () => { closeBeta(null); };
-  el.querySelector('.mark').onclick = () => setMarking(!b.marking);
-  el.querySelector('.clearmine')?.addEventListener('click', () => { if (ask('Remove the holds of this set?')) { b.marked.length = 0; b.sel = null; saveMarked(); } });
+  el.querySelector('.mark')?.addEventListener('click', () => setMarking(!b.marking));
+  el.querySelector('.setshared')?.addEventListener('change', ev => setDo('share', ev.target.checked));
+  el.querySelector('.clearmine')?.addEventListener('click', () => { if (ask('Remove the holds of this set?', can)) { b.marked.length = 0; b.sel = null; saveMarked(); } });
   if (scrolled) el.querySelector('.bholds').scrollTop = scrolled;
   el.querySelector('.bset')?.addEventListener('change', ev => { chooseSet(ev.target.value); drawBeta(); renderBetaPanel(); });
   el.querySelector('.setnew').onclick = () => setDo('new');
@@ -4639,12 +4666,12 @@ function renderBetaPanel(){
 }
 function showMarkButton(){
   const btn = $('#vmark');
-  btn.style.display = betaState ? '' : 'none';
+  btn.style.display = betaState && maySet(chosenSet(betaState)) ? '' : 'none';
   btn.classList.toggle('on', !!betaState?.marking);
   btn.textContent = betaState?.marking ? 'Stop marking' : 'Mark holds';
 }
 function setMarking(on){
-  if (!betaState) return;
+  if (!betaState || (on && !maySet(chosenSet(betaState)))) return;
   if (on && pieces?.editing) { pieces.editing = false; applyPieces(); renderPieces(); }
   betaState.marking = on; renderBetaPanel();
 }
@@ -4659,6 +4686,7 @@ function chooseSet(sid, remember = true){
   const b = betaState, s = b.sets.find(s => s.id === sid) || b.sets[0] || null;
   if ((s?.id || null) !== b.sid) b.sel = null;
   b.sid = s?.id || null; b.marked = s ? s.holds : [];
+  if (!maySet(s)) b.marking = false;      // another's set: shown, not marked on
   if (s && remember) rememberSet(b);
 }
 function betaCount(b){
@@ -4671,7 +4699,7 @@ const betaKept = new Set();
 async function realSet(b, s){
   if (!s) {
     s = await api(`/api/meshes/${b.mid}/beta/sets`, { method: 'POST', json: {} });
-    s.holds = b.marked; b.sets.push(s);
+    s.holds = b.marked; b.sets.push(s); sharedNotice();
   } else if (s.id === 'marked' && !betaKept.has(b.mid)) {
     await api(`/api/meshes/${b.mid}/holds`, { method: 'POST', json: { holds: s.holds } });
     Object.assign(s, (await api(`/api/meshes/${b.mid}/beta`)).sets[0], { holds: s.holds });
@@ -4696,16 +4724,28 @@ function saveMarked(){
     if (betaState === b) { betaCount(b); renderBetaPanel(); }
   });
 }
-// a new set (blank, or from: {set} or {video}), or the chosen one renamed or deleted
+// once, to an account, when it first makes a set of beta: that it's shared unless they say not (kept in this browser)
+let sharedTold = false;
+function sharedNotice(){
+  if (!account || sharedTold) return;
+  sharedTold = true;
+  try { if (localStorage.getItem('bm_shared_told')) return; localStorage.setItem('bm_shared_told', '1'); } catch {}
+  const dlg = document.createElement('dialog'); dlg.className = 'danger-ask';
+  dlg.innerHTML = `<p style="margin-top:0">Your beta is shared with everyone by default, under your name. Untick 'Shared with everyone' on a set to keep it to yourself: its holds are still used, unnamed, to guide captures.</p><div class="row"><span class="grow"></span><button class="sm">OK</button></div>`;
+  dlg.querySelector('button').onclick = () => dlg.close();
+  dlg.onclose = () => dlg.remove();
+  document.body.append(dlg); dlg.showModal();
+}
+// a new set (blank, or from: {set} or {video}), the chosen one renamed, shared or not (from: which), or deleted
 async function setDo(what, from){
   const b = betaState;
   try {
     await b.saving;
     let s = chosenSet(b);
     if (what === 'new') {
-      if (from?.set) from = { set: (await realSet(b, s)).id };
+      if (from?.set) from = { set: maySet(s) ? (await realSet(b, s)).id : s.id };
       const made = await api(`/api/meshes/${b.mid}/beta/sets`, { method: 'POST', json: from ? { from } : {} });
-      b.sets.push(made); chooseSet(made.id);
+      b.sets.push(made); chooseSet(made.id); sharedNotice();
     }
     else if (!s) return;
     else if (what === 'rename') {
@@ -4714,9 +4754,14 @@ async function setDo(what, from){
       s = await realSet(b, s);
       s.name = (await api(`/api/meshes/${b.mid}/beta/sets/${s.id}`, { method: 'PATCH', json: { name } })).name;
     }
+    else if (what === 'share') {      // from: whether everyone sees it
+      s = await realSet(b, s);
+      s.shared = (await api(`/api/meshes/${b.mid}/beta/sets/${s.id}`, { method: 'PATCH', json: { shared: !!from } })).shared;
+      toast(s.shared === false ? 'Not shared now: its holds still guide captures, unnamed.' : 'Shared with everyone now.', 5000);
+    }
     else if (what === 'delete') {
       const n = s.holds.length;
-      if (!await askDanger(`Delete "${s.name}"?`, n ? `Its ${n} hold${n === 1 ? ' goes' : 's go'} with it.` : 'It has no holds.', 'Delete')) return;
+      if (!await askDanger(`Delete "${s.name}"?`, n ? `Its ${n} hold${n === 1 ? ' goes' : 's go'} with it.` : 'It has no holds.', 'Delete', maySet(s))) return;
       s = await realSet(b, s);
       await api(`/api/meshes/${b.mid}/beta/sets/${s.id}`, { method: 'DELETE' });
       b.sets = b.sets.filter(x => x !== s); chooseSet(null);
@@ -4895,7 +4940,19 @@ function openEdit(){    // on a phone, Scan has the focus, rather than the token
     <div class="row" style="gap:8px;margin:0 0 14px"><input type="password" class="tok" placeholder="Editing token" autocomplete="off" aria-label="Editing token"${phone.matches ? '' : ' autofocus'}><button class="sm use">Use it</button></div>
     <p>Or, on the admin page on your computer, press <i>Show a QR for a phone</i>, and scan it: <button class="sm sec scan"${phone.matches ? ' autofocus' : ''}>Scan</button></p>
     <p class="scanmsg"></p><video playsinline muted hidden></video>
+    ${accountInfo?.accounts ? `<details><summary>I have a code</summary>
+      <p>To sign in to your account here: on a device where you're signed in, press your name at the top of the page, then <i>Sign in another device</i>, and enter the code it shows.</p>
+      <div class="row" style="gap:8px;margin:0 0 10px"><input type="text" class="code" placeholder="Code" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Code from a signed-in device"><button class="sm takecode">Sign in</button></div>
+      <p class="err codemsg"></p></details>` : ''}
     <div class="row" style="justify-content:flex-end"><button class="sm sec close">Cancel</button></div>`;
+  const take = async () => {
+    const code = dlg.querySelector('.code').value.trim(), say = dlg.querySelector('.codemsg');
+    if (!code) return;
+    try { const r = await api('/api/account/pair/take', { method: 'POST', json: { code } }); if (keepToken(r.token)) location.reload(); }
+    catch (e) { say.textContent = sentence(e.message); }
+  };
+  dlg.querySelector('.takecode')?.addEventListener('click', take);
+  dlg.querySelector('.code')?.addEventListener('keydown', ev => { if (ev.key === 'Enter') take(); });
   const use = () => { const t = dlg.querySelector('.tok').value.trim(); if (t && keepToken(t)) location.reload(); };
   dlg.querySelector('.use').onclick = use;
   dlg.querySelector('.tok').onkeydown = ev => { if (ev.key === 'Enter') use(); };
@@ -4903,6 +4960,146 @@ function openEdit(){    // on a phone, Scan has the focus, rather than the token
   dlg.querySelector('.close').onclick = () => dlg.close();
   dlg.onclose = stopCamera;
   dlg.showModal();
+}
+
+// ---------------------------------------------------------------- accounts
+// An account is made from an invite (?invite=<code>, a link from the admin page): its token is kept as the editing
+// token is, in its place. Its name is in the header, with a panel for signing in another device and signing out.
+const sentence = t => t ? t[0].toUpperCase() + t.slice(1) : t;      // the server's reasons start in lower case
+function acctDlg(html){
+  const dlg = $('#acctdlg');
+  dlg.innerHTML = html;
+  dlg.querySelector('.close')?.addEventListener('click', () => dlg.close());
+  if (!dlg.open) dlg.showModal();
+  return dlg;
+}
+const termsHtml = () => `<div class="terms" tabindex="0">${esc(accountInfo.terms.text)}</div>`;
+function stripInvite(){
+  const u = new URL(location.href);
+  u.searchParams.delete('invite');
+  history.replaceState(null, '', u.pathname + u.search + u.hash);
+}
+// the header's button, and what the page shows an account; the open mesh's beta again, as some sets are its alone to see
+function showAccount(){
+  const b = $('#me');
+  document.body.classList.toggle('account', !!account?.accepted);
+  b.style.display = account ? '' : 'none';
+  if (!account) return;
+  b.textContent = account.name; b.onclick = openAccount;
+  $('#edit').style.display = 'none';
+  if (betaState) loadBeta().catch(() => {});
+}
+async function acceptTerms(){
+  account = (await api('/api/account/terms', { method: 'POST', json: { version: accountInfo.terms.version } })).user;
+  showAccount();
+}
+async function signOut(){
+  try { await api('/api/account/signout', { method: 'POST', json: {} }); } catch {}
+  try { localStorage.removeItem('bm_token'); } catch {}
+  location.reload();
+}
+function openJoin(invite){
+  const dlg = acctDlg(`<p><b>You've been invited to add to this site.</b> Its terms:</p>${termsHtml()}
+    <label>The name your photos are credited to<input type="text" class="name" maxlength="40" autocomplete="nickname" autofocus></label>
+    ${editor && statusCache.editing === 'token' ? '<p>This browser keeps the site\'s editing token: joining replaces it here with the account\'s.</p>' : ''}
+    <p class="err"></p>
+    <div class="row" style="gap:8px;justify-content:flex-end"><button class="sm sec close">Not now</button><button class="sm join">Accept and join</button></div>`);
+  const go = dlg.querySelector('.join'), name = dlg.querySelector('.name'), say = dlg.querySelector('.err'), was = editor;
+  const join = async () => {
+    go.disabled = true; say.textContent = '';
+    try {
+      const made = await api('/api/account/join', { method: 'POST', json: { invite, name: name.value } });
+      token = made.token; account = made.user;
+      const kept = keepToken(token);
+      stripInvite();      // it works once
+      try { await acceptTerms(); } catch (e) { toast(sentence(e.message), 8000); }
+      if (was && kept) return location.reload();      // no longer the editor here
+      dlg.close(); showAccount();
+      if (account.accepted) toast(`Welcome, ${account.name}. Your name is at the top of the page.`, 6000); else openTerms();
+    }
+    catch (e) { say.textContent = sentence(e.message); go.disabled = false; }
+  };
+  go.onclick = join;
+  name.onkeydown = ev => { if (ev.key === 'Enter') join(); };
+}
+// the terms, to an account that hasn't accepted them as they stand: nothing of its own is taken until it does
+function openTerms(){
+  const dlg = acctDlg(`<p><b>Before you add anything, ${esc(account.name)}:</b> the site's terms.</p>${termsHtml()}
+    <p class="err"></p>
+    <div class="row" style="gap:8px;justify-content:flex-end"><button class="sm sec out">Sign out</button><button class="sm accept" autofocus>Accept</button></div>`);
+  dlg.querySelector('.out').onclick = signOut;
+  dlg.querySelector('.accept').onclick = async ev => {
+    ev.target.disabled = true;
+    try { await acceptTerms(); dlg.close(); }
+    catch (e) { dlg.querySelector('.err').textContent = sentence(e.message); ev.target.disabled = false; }
+  };
+}
+// what a thing an account added is waiting for, or has become, in words
+function addedState(x){
+  const made = { held: 'waiting its turn to be meshed', queued: 'queued to be meshed', running: 'being meshed', failed: 'its mesh failed',
+                 interrupted: 'its meshing was interrupted', new: 'not meshed yet', done: 'meshed' }[x.status] || x.status;
+  return [x.mesh && x.status !== 'done' ? 'meshed' : made, x.approved === 1 ? 'approved' : x.approved === -1 ? 'declined' : 'waiting to be approved'].join(', ');
+}
+// a file only this account may have (its token goes in a header, so not a plain link): fetched whole, then saved
+async function saveFile(url, name){
+  const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  const named = (r.headers.get('Content-Disposition') || '').match(/filename="?([^";]+)"?/);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await r.blob()); a.download = named ? named[1] : name;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+// the account panel's list of what it added (GET /api/account/projects), each to download or delete
+async function showAdded(dlg){
+  const el = dlg.querySelector('.mine'), gb = b => (b / 2 ** 20 / 1000).toFixed(1);     // as the quota is set: 4000 MB reads 4.0 GB
+  let r;
+  try { r = await api('/api/account/projects'); }
+  catch (e) { if (el.isConnected) el.innerHTML = `<p class="err">${esc(sentence(e.message))}</p>`; return; }
+  if (!el.isConnected) return;
+  el.innerHTML = `<p>${gb(r.used)} of ${gb(r.quota)} GB used; approved things don't count.</p>`
+    + (r.projects.length ? r.projects.map(x => `<div class="row added" data-id="${esc(x.id)}">
+      <span class="grow"><b>${esc(x.name)}</b>${x.adds_to ? ` <small>· adds to ${esc(meshesById[x.adds_to]?.name || 'a mesh')}</small>` : ''}<br>
+        <small>${esc(addedState(x))} · ${x.photos} photo${x.photos === 1 ? '' : 's'} · ${fmtSize(x.bytes)} · ${fmtWhen(x.created)}</small></span>
+      <button class="sm sec dl" title="All of it, as a zip, to keep">Download</button><button class="sm sec rm">Delete</button></div>`).join('')
+      : '<p>Nothing yet: what you capture with the app or upload is listed here.</p>');
+  el.querySelectorAll('.added').forEach(row => {
+    const x = r.projects.find(p => p.id === row.dataset.id);
+    row.querySelector('.dl').onclick = async ev => {
+      ev.target.disabled = true; ev.target.textContent = 'Fetching…';
+      try { await saveFile(`/api/account/projects/${x.id}/export`, x.name.replace(/[^\w.-]+/g, '_') + '.zip'); }
+      catch (e) { toast('Couldn\'t download it: ' + e.message, 8000); dlg.querySelector('.err').textContent = sentence(e.message); }
+      ev.target.disabled = false; ev.target.textContent = 'Download';
+    };
+    row.querySelector('.rm').onclick = async () => {
+      if (!await askDanger(`Delete "${x.name}"?`, 'Its space is yours again at once.' + (x.mesh ? ' A mesh was already made from it, so the site may keep a copy.' : ' If a mesh was already made from it, the site may keep a copy.') + ' Download it first if you want one.', 'Delete', true)) return;
+      try { await api(`/api/projects/${x.id}`, { method: 'DELETE' }); refreshMeshes().catch(() => {}); }
+      catch (e) { dlg.querySelector('.err').textContent = sentence(e.message); }
+      showAdded(dlg);
+    };
+  });
+}
+function openAccount(){
+  const role = account.role === 'user' ? '' : ` (${esc(account.role)})`;
+  const dlg = acctDlg(`<p>Signed in as <b>${esc(account.name)}</b>${role}: what you add is credited to this name.</p>
+    ${account.accepted ? '' : '<p>You haven\'t accepted the site\'s terms yet, so nothing can be added. <button class="sm sec toterms">Read them</button></p>'}
+    <p style="margin-bottom:4px"><b>What I've added</b></p><div class="mine" style="margin:0 0 10px"><p>Loading…</p></div>
+    <div class="pair"></div><p class="err"></p>
+    <div class="row" style="gap:8px;justify-content:flex-end;flex-wrap:wrap"><button class="sm sec pairgo">Sign in another device</button><button class="sm sec out">Sign out</button><button class="sm close">Close</button></div>`);
+  dlg.querySelector('.toterms')?.addEventListener('click', openTerms);
+  showAdded(dlg);
+  dlg.querySelector('.out').onclick = () => { if (confirm('Sign out of this browser? Signing in again needs a code from another of your devices, or a new invite.')) signOut(); };
+  dlg.querySelector('.pairgo').onclick = async ev => {
+    ev.target.disabled = true; dlg.querySelector('.err').textContent = '';
+    try {
+      const r = await api('/api/account/pair', { method: 'POST', json: {} });
+      dlg.querySelector('.pair').innerHTML = `<p>On the other device, enter this code: in the phone app, or on this site under <i>Edit…</i>, <i>I have a code</i>.</p>
+        <p class="paircode">${esc(r.code)}</p><p>It works once, and lasts 10 minutes (until ${hhmm(r.expires)}).</p>`;
+      ev.target.textContent = 'A new code';
+    }
+    catch (e) { dlg.querySelector('.err').textContent = sentence(e.message); }
+    ev.target.disabled = false;
+  };
 }
 
 // ---------------------------------------------------------------- boot
@@ -4918,10 +5115,15 @@ statusCache = await api('/api/status');
 if (statusCache.via_links === false) $('#c-no-via').closest('label').hidden = true;     // none shown anyway (the admin page's setting)
 editor = !!statusCache.editor;
 document.body.classList.toggle('readonly', !editor);
+const inviteCode = new URLSearchParams(location.search).get('invite');
+if (statusCache.editing === 'token' && !thumbMode) {      // accounts are only on a site with an editing token
+  try { accountInfo = await api('/api/account'); } catch {}
+  if (accountInfo?.accounts) account = accountInfo.user || null; else accountInfo = null;
+}
 if (statusCache.editing === 'none') $('#viewonly').style.display = '';
 if (statusCache.editing === 'token') {
   const b = $('#edit');      // Edit… without a token; with one accepted, only Forget edit token says so
-  b.style.display = editor ? 'none' : '';
+  b.style.display = editor || account ? 'none' : '';
   b.textContent = 'Edit…';
   b.title = 'This copy of the site is view-only. Enter its editing token to change things from here.';
   b.onclick = openEdit;
@@ -4934,8 +5136,15 @@ if (statusCache.editing === 'token') {
       location.reload();
     };
   }
-  if (token && !editor) toast('The editing token kept in this browser wasn\'t accepted.', 6000);
+  if (token && !editor && !account) toast(accountInfo ? 'This browser is no longer signed in: its token wasn\'t accepted.' : 'The editing token kept in this browser wasn\'t accepted.', 6000);
 }
+if (accountInfo) {
+  showAccount();
+  if (account && inviteCode) { stripInvite(); toast(`This browser is already signed in, as ${account.name}: the invite wasn't used.`, 8000); }
+  if (account && !account.accepted) openTerms();
+  else if (inviteCode && !account) openJoin(inviteCode);
+}
+else if (inviteCode && !thumbMode) toast('This copy of the site has no accounts to join.', 8000);
 if (statusCache.admin) { $('#admin').style.display = ''; $('#admin').onclick = openAdmin; }
 if (/^https:\/\/\S+$/.test(statusCache.donate_url || '')) { $('#donate').href = $('#hdonate').href = statusCache.donate_url; $('#donatebox').hidden = $('#hdonate').hidden = false; }   // the admin page's site.donate_url
 if (statusCache.volunteer_url) { $('#volunteer').dataset.base = statusCache.volunteer_url + '/volunteer/'; volunteerLink(); $('#volunteer').style.display = ''; }
