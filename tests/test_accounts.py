@@ -183,10 +183,16 @@ with tempfile.TemporaryDirectory() as tmp:
         # asked for a mesh: held, as nothing has approved it; the owner's phone would be told
         st, _, r = req(B, "POST", f"/api/projects/{pid}/reconstruct", {}, ANA)
         assert st == 202 and r["held"] and req(B, "POST", f"/api/projects/{pid}/reconstruct", {}, ANA)[0] == 409, r
+        # how the capture went on the phone, and a crash's report: kept with it, and in its export
+        log = b'{"t":0.0,"e":"start"}\n{"t":1.5,"e":"phase","to":"LEVEL"}\n'
+        assert req(B, "POST", f"/api/projects/{pid}/capture/log", log, ANA)[2] == {"kept": "capture-log.jsonl", "lines": 2}
+        assert req(B, "POST", f"/api/projects/{pid}/capture/crash", b"java.lang.IllegalStateException: boom\n at x", ANA)[2]["kept"].startswith("crashes/crash-")
+        assert req(B, "POST", f"/api/projects/{pid}/capture/log", b"", ANA)[0] == 400 and req(B, "POST", f"/api/projects/{pid}/capture/log", log, BO)[0] == 403
+        assert (tmp / "data" / "projects" / pid / "capture-log.jsonl").read_bytes() == log
         # the export: its own files, as a zip
         with urllib.request.urlopen(urllib.request.Request(B + f"/api/account/projects/{pid}/export", headers=ANA)) as z:
             names = zipfile.ZipFile(io.BytesIO(z.read())).namelist()
-        assert names == ["photos/p0.png", "photos/p1.png", "photos/p2.png"], names
+        assert names[:4] == ["photos/p0.png", "photos/p1.png", "photos/p2.png", "capture-log.jsonl"] and names[4].startswith("crashes/crash-"), names
         assert req(B, "GET", f"/api/account/projects/{pid}/export", headers=BO)[0] == 404
         # approved by the owner: counted against Ana no more, and Bo can't approve anything
         assert req(B, "POST", f"/api/submissions/{pid}/approve", {}, BO)[0] == 403

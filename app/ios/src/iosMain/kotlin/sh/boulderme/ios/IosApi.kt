@@ -113,6 +113,13 @@ class IosApi(private val store: IosStore) {
     }
 
     /** The points the phone's tracking found during the capture, as CaptureFlow.points() wrote them. Answers why it failed, or null. */
+    /** How a capture went on the phone (its log), or a crash's report: kind "log" or "crash". */
+    fun sendLog(project: String, kind: String, path: String, done: (String?) -> Unit) {
+        val file = NSData.dataWithContentsOfFile(path)
+        if (file == null) done("it can't be read")
+        else call("/api/projects/$project/capture/$kind", "POST", file, "text/plain; charset=utf-8") { bytes, why -> done(if (bytes != null) null else why ?: "it wasn't taken") }
+    }
+
     fun sendPoints(project: String, path: String, done: (String?) -> Unit) {
         val file = NSData.dataWithContentsOfFile(path)
         if (file == null) done("its points can't be read")

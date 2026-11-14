@@ -44,6 +44,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = Store(this); api = Api(store); sensors = PhoneSensors(this)
+        Crashes.watch(store.crashes)
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) tryOut()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {

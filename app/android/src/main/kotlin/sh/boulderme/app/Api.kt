@@ -93,6 +93,16 @@ class Api(private val store: Store) {
     fun sendRecord(project: String, record: String) { postJson("/api/projects/$project/capture", record) }
 
     /** The points the phone's tracking found during the capture, as CaptureFlow.points() wrote them. */
+    /** How a capture went on the phone (its log), or a crash's report: kind "log" or "crash". */
+    fun sendLog(project: String, kind: String, file: File) {
+        val c = open("/api/projects/$project/capture/$kind", "POST")
+        c.doOutput = true
+        c.setRequestProperty("Content-Type", "text/plain; charset=utf-8")
+        c.setFixedLengthStreamingMode(file.length())
+        c.outputStream.use { out -> file.inputStream().use { it.copyTo(out) } }
+        read(c)
+    }
+
     fun sendPoints(project: String, file: File) {
         val c = open("/api/projects/$project/capture/points", "POST")
         c.doOutput = true

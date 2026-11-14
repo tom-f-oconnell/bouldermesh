@@ -85,34 +85,53 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     private var lastPose: CameraPose? = null
     private var lastTarget: String? = null
     private var ui = CaptureUi(phase = phase, guided = plan != null)
+    /** How the capture went, as it went (EventLog): sent with it. */
+    val log = EventLog()
+    private var now = 0.0                   // the last frame's time: what the screen's own actions are logged at
+    private var said: Phase? = null         // what the log last had of the phase, the tracking, the hint and the words on the screen
+    private var saidTracking: Boolean? = null
+    private var saidHint: Pair<Hint.Kind, String?>? = null
+    private var saidText = ""
+    private var lastHint: Hint? = null
+    private var spanFrom = -1.0             // frames since then: how many, the longest gap between two, and how many untracked
+    private var spanFrames = 0
+    private var spanGap = 0.0
+    private var spanLost = 0
+    private var lastFrameT = -1.0
 
     init { session.set = set.takeIf { setName != null }; session.anon = anonFromStart; session.setScope(Scope(minPrio = reach)) }
 
+    /** Something the app itself wants in the log (how its camera was set up, an error it caught): what, and what else of it. */
+    fun event(e: String, vararg fields: Pair<String, Any?>) = log.add(now, e, *fields)
+
+    /** The log as it stands, a JSON line each. */
+    fun logText(): String = log.text()
+
     /** The answer to "photograph the holds others marked privately too?" (CaptureUi.askMore): asked once. */
-    fun more(yes: Boolean) { askedMore = true; if (yes) { session.anon = true; session.setScope(Scope(minPrio = reach)); levelsDirty = true } }
+    fun more(yes: Boolean) { event("more", "yes" to yes); askedMore = true; if (yes) { session.anon = true; session.setScope(Scope(minPrio = reach)); levelsDirty = true } }
 
     // ---- from the screen ---------------------------------------------------------------------------------------------
     /** Goes on without the turn on the spot: down is then as the phone's tracking has it. */
-    fun skipLevel() { if (phase == Phase.LEVEL) { phase = afterLevel; note = "" } }
-    fun shutter() { wantShot = true }
-    fun setAuto(on: Boolean) { session.auto = on }
-    fun skip() { session.skipCurrent("skipped on the phone"); levelsDirty = true }
-    fun toggleMarking() { marking = !marking }
+    fun skipLevel() { if (phase == Phase.LEVEL) { event("level_skipped", "filled" to turn.filled); phase = afterLevel; note = "" } }
+    fun shutter() { event("shutter"); wantShot = true }
+    fun setAuto(on: Boolean) { event("auto", "on" to on); session.auto = on }
+    fun skip() { event("skip", "target" to session.currentTarget); session.skipCurrent("skipped on the phone"); levelsDirty = true }
+    fun toggleMarking() { marking = !marking; event("marking", "on" to marking) }
     /** What counts, round to the next: the whole rock, its climbs, and (for a set of beta) only its holds. */
-    fun toggleWide() { reach = if (reach >= (if (setName != null) 3 else 2)) 1 else reach + 1; session.setScope(Scope(minPrio = reach)); levelsDirty = true }
+    fun toggleWide() { event("reach", "from" to reach); reach = if (reach >= (if (setName != null) 3 else 2)) 1 else reach + 1; session.setScope(Scope(minPrio = reach)); levelsDirty = true }
     /** The next photo taken is one with a bank card flat on the rock beside the hold: its size, to a fraction of a millimetre. */
-    fun toggleCard() { cardNext = !cardNext }
-    fun turnGhost(degrees: Double) { ghostTurn += degrees * PI / 180; ghost = null }
-    fun bringGhost() { ghost = null }
-    fun confirmFit() { if (phase == Phase.CONFIRM) { phase = Phase.CAPTURE; levelsDirty = true; note = "" } }
-    fun restartAlign() { if (plan == null) return; session.clearTaps(); tapMarks.clear(); meshTap = null; ghost = null; phase = Phase.GHOST; note = "" }
-    fun addSpot() { if (phase == Phase.CONFIRM) { phase = Phase.GHOST; ghost = null; note = "" } }
+    fun toggleCard() { cardNext = !cardNext; event("card", "on" to cardNext) }
+    fun turnGhost(degrees: Double) { event("ghost_turn", "deg" to degrees); ghostTurn += degrees * PI / 180; ghost = null }
+    fun bringGhost() { event("ghost_bring"); ghost = null }
+    fun confirmFit() { if (phase == Phase.CONFIRM) { event("fit_confirmed", "taps" to session.taps.size, "refined_rms_m" to session.refined?.rmsM); phase = Phase.CAPTURE; levelsDirty = true; note = "" } }
+    fun restartAlign() { if (plan == null) return; event("align_restart", "phase" to phase.name); session.clearTaps(); tapMarks.clear(); meshTap = null; ghost = null; phase = Phase.GHOST; note = "" }
+    fun addSpot() { if (phase == Phase.CONFIRM) { event("align_add_spot"); phase = Phase.GHOST; ghost = null; note = "" } }
 
     /** With no mesh: the side the hint is sending you round to can't be reached. */
-    fun blockSide() { lastPose?.let { session.orbit?.blockNext(it) } }
+    fun blockSide() { event("block_side"); lastPose?.let { session.orbit?.blockNext(it) } }
 
     /** Something went wrong the person should know of (a photo that couldn't be saved). */
-    fun say(what: String) { note = what }
+    fun say(what: String) { event("error", "what" to what); note = what }
 
     /**
      * A tap on the screen.
@@ -128,7 +147,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 val inv = g.inverse()
                 val o = inv.apply(from); val d = inv.dir(along).unit()
                 val t = mesh.raycast(o, d)
-                if (t == null) { note = "That tap missed the model."; return }
+                if (t == null) { event("tap_model", "hit" to false); note = "That tap missed the model."; return }
+                event("tap_model", "hit" to true)
                 val spot = o + d * t
                 meshTap = spot
                 tapMarks.add(Marker("m${tapMarks.size}", g.apply(spot), 0.03, Coverage.LEVEL_PART, "hold", true))
@@ -137,9 +157,11 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
             Phase.ROCK -> {
                 val spot = meshTap ?: return
                 val world = hit()
-                if (world == null) { note = "The phone hasn't made out the rock there yet: move a little and tap again."; return }
+                if (world == null) { event("tap_rock", "hit" to false); note = "The phone hasn't made out the rock there yet: move a little and tap again."; return }
                 tapMarks.add(Marker("w${tapMarks.size}", world, 0.05, Coverage.LEVEL_DONE, "hold", false))
                 val fit = session.tap(spot, world)
+                event("tap_rock", "hit" to true, "pairs" to session.taps.size, "fit" to (fit != null), "scale" to fit?.scale, "tilt_deg" to fit?.tiltDeg,
+                    "scale_vs_server" to session.scaleAgainstServer())
                 note = ""
                 phase = if (fit != null) { tapMarks.clear(); levelsDirty = true; Phase.CONFIRM } else {
                     if (session.taps.size >= 2) note = "Those are too nearly one above the other to tell which way it's turned."
@@ -211,7 +233,10 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
 
     fun tightened(work: Tighten, found: Registration.Refined?) {
         refining = false
-        val r = found?.let { session.refineWith(work.start, it) } ?: return
+        val r = found?.let { session.refineWith(work.start, it) }
+        event("refine", "points" to work.points.size, "found" to (found != null), "taken" to (r != null), "matched" to found?.matched, "rms_m" to found?.rmsM,
+            "moved_m" to found?.fit?.apply(Vec3.ZERO)?.distance(work.start.apply(Vec3.ZERO)))
+        r ?: return
         if (phase == Phase.CONFIRM) note = "Fitted to ${r.matched} points the phone tracks, ${(r.rmsM * 1000).toInt() / 10.0} cm off."
         levelsDirty = true
     }
@@ -225,11 +250,38 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
      */
     fun frame(pose: CameraPose, tracking: Boolean, gyroRadS: Double, exposureS: Double, t: Double, uprightDeg: Int,
               accel: Vec3? = null, sensorOrientation: Int = 90, stillLens: Lens? = null): FlowOut {
+        now = t
+        if (said == null) event("start", "guided" to (plan != null), "mesh" to plan?.mesh, "plan" to plan?.key, "set" to set, "reach" to reach,
+            "lens" to "${pose.lens.w}x${pose.lens.h} fx ${pose.lens.fx.toInt()}", "still" to stillLens?.let { "${it.w}x${it.h} fx ${it.fx.toInt()}" })
+        // how frames are coming: every SPAN_S, how many, the longest wait between two, and how many untracked
+        if (lastFrameT >= 0) spanGap = kotlin.math.max(spanGap, t - lastFrameT)
+        lastFrameT = t; spanFrames++; if (!tracking) spanLost++
+        if (spanFrom < 0) spanFrom = t
+        if (t - spanFrom >= SPAN_S) {
+            event("frames", "fps" to spanFrames / (t - spanFrom), "gap_max_s" to spanGap, "untracked" to spanLost, "exposure_s" to exposureS, "gyro" to gyroRadS)
+            spanFrom = t; spanFrames = 0; spanGap = 0.0; spanLost = 0
+        }
+        val out = frameAt(pose, tracking, gyroRadS, exposureS, t, uprightDeg, accel, sensorOrientation, stillLens)
+        if (tracking != saidTracking) { event("tracking", "on" to tracking); saidTracking = tracking }
+        if (phase != said) { event("phase", "to" to phase.name); said = phase }
+        val h = lastHint
+        if (phase == Phase.CAPTURE && h != null) {
+            val key = h.kind to h.targetId
+            if (key != saidHint) { event("hint", "kind" to h.kind.name, "target" to h.targetId, "text" to h.text, "move_m" to h.moveM.takeIf { it != 0.0 },
+                "done" to out.ui.done, "total" to out.ui.total); saidHint = key }
+            lastHint = null
+        } else if (phase != Phase.CAPTURE && out.ui.text != saidText && tracking) { event("says", "text" to out.ui.text); saidText = out.ui.text }
+        if (out.ui.askMore > 0 && "askMore" != saidText) { event("ask_more", "left" to out.ui.askMore); saidText = "askMore" }
+        return out
+    }
+
+    private fun frameAt(pose: CameraPose, tracking: Boolean, gyroRadS: Double, exposureS: Double, t: Double, uprightDeg: Int,
+                        accel: Vec3?, sensorOrientation: Int, stillLens: Lens?): FlowOut {
         lastPose = pose
         // tracking that was lost for more than a moment may have come back with its world somewhere else: photos and points
         // from then on are another spell's, tied to the earlier ones by what they show rather than by where the phone says it was
         if (!tracking) { if (tracked && lostAt == null) lostAt = t } else {
-            if (lostAt?.let { t - it >= LOST_S } == true) { past += cloud.values.map { it to block }; cloud.clear(); block++ }
+            if (lostAt?.let { t - it >= LOST_S } == true) { event("spell", "n" to block + 1, "lost_s" to t - lostAt!!); past += cloud.values.map { it to block }; cloud.clear(); block++ }
             lostAt = null; tracked = true
         }
         val base = ui.copy(phase = phase, kept = session.shotCount, rejected = rejected, note = note, sensors = sensorNote, auto = session.auto, wide = wide, marking = marking,
@@ -251,6 +303,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 if (accel != null) turn.add(pose, accel, sensorOrientation, gyroRadS)
                 if (turn.filled == turn.sectors) {
                     val found = turn.solve()
+                    event("level", "found" to (found != null), "spread_deg" to found?.spreadDeg, "tilt_deg" to found?.tiltDeg, "offset_deg" to found?.offsetDeg,
+                        "samples" to found?.samples, "taken" to (found != null && found.spreadDeg <= LEVEL_SPREAD_MOST))
                     if (found != null && found.spreadDeg <= LEVEL_SPREAD_MOST) {
                         session.level = found
                         note = "Down found: the ${found.sectors} directions agree to ${hundredths(found.spreadDeg)}°. The phone's tracking had it ${hundredths(found.tiltDeg)}° off, " +
@@ -285,6 +339,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
             }
             Phase.CAPTURE -> {
                 val out = session.frame(FrameIn(pose, gyroRadS, exposureS, true, t, uprightDeg, stillLens))
+                lastHint = out.hint
                 if (out.hint.targetId != lastTarget) { lastTarget = out.hint.targetId; levelsDirty = true }      // the ring round what's asked for moves
                 fresh()
                 val p = out.progress
@@ -295,7 +350,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 if (cardNext) ui = ui.copy(text = "Hold a bank card flat on the rock beside the hold, all of it in the picture and out of any glare, and press the shutter")
                 // a card photo is taken by hand: it waits for the card to be there
                 val shoot = (if (cardNext) wantShot else out.shoot || wantShot) && !inFlight
-                if (shoot) { inFlight = true; wantShot = false; cardShot = cardNext }
+                if (shoot) { inFlight = true; wantShot = false; cardShot = cardNext; event("shoot", "auto" to out.shoot, "still" to out.still, "card" to cardNext, "blur_px" to out.blurPx) }
                 return FlowOut(ui, session.fit, false, 0.75f, levels, markers, shoot, out.still, shoot && cardNext)
             }
             else -> { ui = base; return FlowOut(ui, null, false, 0f, null, emptyList(), false) }
@@ -306,6 +361,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     fun shot(s: ShotIn): ShotOut {
         inFlight = false
         val out = session.shot(s.copy(arSession = spell(s.arSession), card = s.card || cardShot))
+        event("shot", "name" to out.record.name, "kept" to out.kept, "why" to out.why.joinToString("; ").ifEmpty { null }, "helped" to out.helped.size,
+            "notes" to out.record.notes.joinToString("; ").ifEmpty { null }, "sharp" to s.stats?.sharp, "exposure_s" to s.exposureS, "iso" to s.iso, "focus_m" to s.focusM)
         if (cardShot && out.kept) { cardNext = false; levelsDirty = true }
         cardShot = false
         sensorNote = out.record.notes.joinToString(" · ")
@@ -314,7 +371,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     }
 
     /** The photo frame() asked for couldn't be taken. */
-    fun noShot(why: String? = null) { inFlight = false; if (why != null) note = why }
+    fun noShot(why: String? = null) { event("no_shot", "why" to why); inFlight = false; if (why != null) note = why }
 
     /** The small model, a metre in front and a little below the eye, the side its photos were taken from towards the phone. */
     private fun placeGhost(pose: CameraPose): Similarity {
@@ -341,6 +398,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         const val REFINE_LEAST = 150
         const val REFINE_EVERY_S = 3.0
         const val LOST_S = 1.0              // tracking lost for longer than this starts a new spell: shorter is a blink, with its world kept
+        const val SPAN_S = 5.0              // how often how frames are coming is logged
         const val LEVEL_SPREAD_MOST = 0.4   // degrees the directions of a turn on the spot may disagree by, for it to be believed
 
         private fun hundredths(x: Double) = kotlin.math.round(x * 100) / 100

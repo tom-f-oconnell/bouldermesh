@@ -101,6 +101,15 @@ class FlowTest {
         flow.frame(close, true, 0.0, 0.004, t + 6.0, 90)
         flow.skip()
         assertTrue(flow.session.record(99.0).skipped.isNotEmpty())
+        // and how it went, a line for each change: JSON with its time from the first frame
+        flow.event("camera", "image" to "1920x1080", "fps" to 30)
+        val lines = flow.logText().trim().lines()
+        val kinds = lines.map { Regex("\"e\":\"(\\w+)\"").find(it)!!.groupValues[1] }
+        assertTrue(lines.all { it.startsWith("{\"t\":") && it.endsWith("}") } && lines.first().startsWith("{\"t\":0.0,"), lines.take(3).joinToString("\n"))
+        for (k in listOf("start", "phase", "tracking", "tap_model", "tap_rock", "fit_confirmed", "hint", "shoot", "shot", "shutter", "no_shot", "reach", "skip", "camera"))
+            assertTrue(k in kinds, "$k: $kinds")
+        assertTrue(lines.any { "\"kept\":false" in it && "soft" in it }, "a photo not kept, and why")
+        assertTrue(kinds.count { it == "phase" } < 10 && lines.size < 80, "a line a change, not a line a frame: ${lines.size}")
     }
 
     @Test fun firstWhichWayIsDown() {

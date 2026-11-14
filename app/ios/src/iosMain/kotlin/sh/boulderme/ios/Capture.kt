@@ -289,6 +289,10 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             if (ARWorldTrackingConfiguration.supportsSceneReconstruction(ARSceneReconstructionMesh)) config.sceneReconstruction = ARSceneReconstructionMesh   // with lidar, taps land on bare rock
             sceneView.session.runWithConfiguration(config)
             cameraSet = false
+            val f = config.videoFormat
+            flow.event("camera", "device" to machine(), "ios" to UIDevice.currentDevice.systemVersion, "app" to IosStore.APP,
+                "image" to f.imageResolution.useContents { "${width.toInt()}x${height.toInt()}" }, "fps" to f.framesPerSecond, "still_w" to stillWidth,
+                "scene_mesh" to ARWorldTrackingConfiguration.supportsSceneReconstruction(ARSceneReconstructionMesh))
         }
         timer = NSTimer.scheduledTimerWithTimeInterval(1.0 / 12, repeats = true) { _ -> tick() }
     }
@@ -554,9 +558,10 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     private fun save(last: Boolean = false) {
         core.place = app.sensors.place.result()
         Files.write("$dir/capture.json", core.record(NSDate().timeIntervalSince1970).json())
+        Files.write("$dir/capture-log.jsonl", flow.logText())
         // and the points ARKit tracked, for whatever places the photos on the server: now and then, and at the end
         if (last || core.shotCount % 8 == 1) Files.write("$dir/points.bin", flow.points())
-        app.store.saveUpload(id, UploadState(name = "$name (capture)", mesh = plan?.mesh, photos = core.shotCount))
+        app.store.saveUpload(id, UploadState(name = "$name (capture)", mesh = plan?.mesh, photos = core.shotCount))     // nothing's sent before it's finished
     }
 
     // ---- what's said and offered ---------------------------------------------------------------------------------------

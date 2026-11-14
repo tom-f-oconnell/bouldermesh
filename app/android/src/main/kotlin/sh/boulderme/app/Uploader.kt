@@ -59,9 +59,17 @@ object Uploader {
                     api.sendPoints(project, points)
                     u = u.copy(pointsSent = true); store.saveUpload(id, u)
                 }
+                // how it went on the phone, and any crash since: for working out what happened; neither holds the rest up
+                val log = File(dir, "capture-log.jsonl")
+                if (!u.logSent && log.exists()) runCatching {
+                    say(id, "Sending how it went")
+                    api.sendLog(project, "log", log)
+                    u = u!!.copy(logSent = true); store.saveUpload(id, u!!)
+                }
+                for (crash in store.crashes.listFiles().orEmpty().sortedBy { it.name }) runCatching { api.sendLog(project, "crash", crash); crash.delete() }
                 say(id, "Asking for it to be meshed")
                 try { api.reconstruct(project) } catch (e: IOException) { if ("already running" !in (e.message ?: "")) throw e }      // asked before, and cut off
-                u = u.copy(done = true, note = ""); store.saveUpload(id, u)
+                u = u!!.copy(done = true, note = ""); store.saveUpload(id, u)
                 say(id, "Sent: the server is meshing it")
             } catch (e: Exception) {
                 val why = e.message ?: e.javaClass.simpleName

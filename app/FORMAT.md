@@ -126,6 +126,16 @@ one to each 5 cm, 20,000 at most to a spell. Noisy to a centimetre or so, except
     float32 x, y, z, uint16 spell      for each: where, in the tracking's world (metres, +Y up), and which spell of
                                        tracking found it: 1 the first (photos' `ar.s` with no ".n"), 2 the one after ".2"
 
+**How it went** (`capture-log.jsonl`, sent last, to `POST /api/projects/<id>/capture/log`; kept in the project as
+`capture-log.jsonl`): JSON lines, each {t: seconds since the capture's first frame, e: what, ...}, written as the
+capture runs (app/shared EventLog.kt), a line for each change and not each frame: `start`, `camera` (how the app set
+its camera up), `phase`, `tracking`, `says` and `hint` (when what's asked for changes), `frames` (every 5 s: fps, the
+longest gap, untracked frames), `level`, `tap_model`, `tap_rock`, `refine`, `fit_confirmed`, `spell`, `shoot`,
+`shot`, `no_shot`, `error`, `start_failed`, and the screen's buttons. Its upload never holds the rest up.
+
+**Crashes**: what the app wrote as it crashed, one file each, sent with the next capture uploaded to
+`POST /api/projects/<id>/capture/crash` and kept in its project's `crashes/`; the owner's phone is told.
+
 ## On the server, once a capture is meshed
 
 A capture's mesh is kept beside the mesh it added to (`meshes.adds_to`), never in its place, and tied to it by

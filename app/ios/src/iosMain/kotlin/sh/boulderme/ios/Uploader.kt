@@ -57,6 +57,15 @@ class Uploader(private val store: IosStore, private val api: IosApi) {
                 say(id, "Sending what its tracking found")
                 api.sendPoints(project, "$dir/points.bin") { why -> if (why != null) stop(id, why) else { store.saveUpload(id, u.copy(pointsSent = true)); next(id) } }
             }
+            // how it went on the phone, and any crash since: for working out what happened; neither holds the rest up
+            !u.logSent && Files.exists("$dir/capture-log.jsonl") -> {
+                say(id, "Sending how it went")
+                api.sendLog(project, "log", "$dir/capture-log.jsonl") { _ -> store.saveUpload(id, u.copy(logSent = true)); next(id) }
+            }
+            Files.list(Crashes.dir).isNotEmpty() -> {
+                val crash = Files.list(Crashes.dir).first()
+                api.sendLog(project, "crash", "${Crashes.dir}/$crash") { _ -> Files.delete("${Crashes.dir}/$crash"); next(id) }
+            }
             else -> {
                 say(id, "Asking for it to be meshed")
                 api.reconstruct(project) { why ->

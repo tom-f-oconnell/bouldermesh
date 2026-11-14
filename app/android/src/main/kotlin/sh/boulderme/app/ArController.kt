@@ -102,6 +102,13 @@ class ArController(
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     if (s.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) depthMode = Config.DepthMode.AUTOMATIC     // taps then land on bare rock
                 })
+                val cfg = s.cameraConfig
+                synchronized(lock) {
+                    flow.event("camera", "device" to "${Build.MANUFACTURER} ${Build.MODEL}", "android" to Build.VERSION.SDK_INT, "app" to BuildInfo.APP,
+                        "image" to "${cfg.imageSize.width}x${cfg.imageSize.height}", "texture" to "${cfg.textureSize.width}x${cfg.textureSize.height}",
+                        "fps" to "${cfg.fpsRange.lower}-${cfg.fpsRange.upper}", "depth_sensor" to cfg.depthSensorUsage.name,
+                        "depth" to s.isDepthModeSupported(Config.DepthMode.AUTOMATIC), "configs" to s.getSupportedCameraConfigs(CameraConfigFilter(s)).size)
+                }
                 sensorOrientation = runCatching {
                     (activity.getSystemService(Context.CAMERA_SERVICE) as CameraManager).getCameraCharacteristics(s.cameraConfig.cameraId).get(CameraCharacteristics.SENSOR_ORIENTATION)
                 }.getOrNull() ?: 90
@@ -110,6 +117,7 @@ class ArController(
             session?.resume()
             return null
         } catch (e: Exception) {
+            synchronized(lock) { flow.event("start_failed", "what" to e.javaClass.simpleName, "message" to e.message) }
             return when (e.javaClass.simpleName) {
                 "UnavailableDeviceNotCompatibleException" -> "This phone can't track its own position (it doesn't support ARCore), which guided capture needs."
                 "UnavailableUserDeclinedInstallationException", "UnavailableArcoreNotInstalledException" -> "Guided capture needs Google Play Services for AR installed."
@@ -148,6 +156,7 @@ class ArController(
     private fun save(last: Boolean = false): Int = synchronized(lock) {
         core.place = sensors.placed()
         File(dir, "capture.json").writeText(core.record(System.currentTimeMillis() / 1000.0).json())
+        File(dir, "capture-log.jsonl").writeText(flow.logText())
         // and the points ARCore tracked, for whatever places the photos on the server: now and then, and at the end
         if (last || core.shotCount % 8 == 1) File(dir, "points.bin").writeBytes(flow.points())
         store.saveUpload(id, Store.Upload(name = name, mesh = plan?.mesh, photos = core.shotCount))

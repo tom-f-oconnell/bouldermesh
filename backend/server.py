@@ -1600,8 +1600,36 @@ def keep_heading(mid: str, log=None) -> dict | None:
 _plan_lock = threading.Lock()
 CAPTURE_FILE = "capture.json"   # in a project: what the phone app that took its photos says of taking them (app/FORMAT.md)
 CAPTURE_MAX = 8 * 2**20
+CAPTURE_LOG_FILE = "capture-log.jsonl"     # how the capture went on the phone (app/shared EventLog.kt), a JSON line each
+CAPTURE_LOG_MAX, CRASH_MAX, CRASHES_MOST = 8 * 2**20, 256 * 2**10, 20
 CAPTURE_POINTS_FILE = "capture-points.bin"  # and the points the phone's tracking found in the world as it did (app/FORMAT.md)
 CAPTURE_POINTS_MAX = 4 * 2**20
+
+
+def save_capture_log(pid: str, kind: str, body: bytes) -> tuple[dict, int]:
+    """Keep what a phone app sent of how its capture went: its log (kind "log", replacing any before) or a crash's
+    report (kind "crash", one more, CRASHES_MOST at most), which the owner's phone is told of."""
+    if not (PROJECTS / pid).is_dir():
+        return {"error": "not found"}, 404
+    most = CAPTURE_LOG_MAX if kind == "log" else CRASH_MAX
+    if not 0 < len(body) <= most:
+        return {"error": f"that's 1 byte to {most // 2**10} KB"}, 400
+    if kind == "log":
+        tmp = PROJECTS / pid / (CAPTURE_LOG_FILE + ".part")
+        tmp.write_bytes(body)
+        tmp.replace(PROJECTS / pid / CAPTURE_LOG_FILE)
+        return {"kept": CAPTURE_LOG_FILE, "lines": body.count(b"\n")}, 200
+    crashes = PROJECTS / pid / "crashes"
+    crashes.mkdir(exist_ok=True)
+    if sum(1 for _ in crashes.iterdir()) >= CRASHES_MOST:
+        return {"error": "it has as many crash reports as it keeps"}, 409
+    name = f"crash-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}.txt"
+    (crashes / name).write_bytes(body)
+    first = body.decode("utf-8", "replace").strip().splitlines()[:2]
+    append_log(pid, f"the app sent a crash report: {name}")
+    threading.Thread(target=NOTIFIER.send, args=("The app crashed", f"A report came with project {pid}: {' / '.join(first)[:200]}", None, 3, ["boom"]),
+                     daemon=True).start()
+    return {"kept": f"crashes/{name}"}, 200
 
 
 def save_capture_points(pid: str, raw: bytes) -> tuple[dict, int]:
@@ -7795,7 +7823,7 @@ ACCOUNTS = accounts_mod.Accounts(DATA / "accounts.sqlite")
 USER_MAY = (("POST", r"/api/meshes/[0-9a-f]+/beta/sets"), ("PATCH", r"/api/meshes/[0-9a-f]+/beta/sets/[0-9a-z]+"),
             ("DELETE", r"/api/meshes/[0-9a-f]+/beta/sets/[0-9a-z]+"),
             # what it adds: a project of its own (photos, videos, an app's capture), meshed when its turn comes
-            ("POST", r"/api/projects"), ("POST", r"/api/projects/[0-9a-f]+/(photos|capture|capture/points|reconstruct)"),
+            ("POST", r"/api/projects"), ("POST", r"/api/projects/[0-9a-f]+/(photos|capture|capture/points|capture/log|capture/crash|reconstruct)"),
             ("DELETE", r"/api/projects/[0-9a-f]+"), ("POST", r"/api/submissions/[0-9a-f]+/(approve|decline)"))
 OWNER = {"id": None, "name": None, "role": "owner", "areas": ["*"], "accepted": True, "quota_mb": None, "created": None}
 JOIN_TRIES, JOIN_WINDOW = 10, 3600      # invites and pairing codes one address may try in an hour
@@ -8637,7 +8665,9 @@ class Handler(BaseHTTPRequestHandler):
         for part in ("photos", "videos"):
             if (pdir / part).is_dir():
                 files += [(f, f"{part}/{f.name}") for f in sorted((pdir / part).iterdir()) if f.is_file() and f.stat().st_nlink == 1]
-        files += [(pdir / n, n) for n in (CAPTURE_FILE, CAPTURE_POINTS_FILE, "sources.json") if (pdir / n).is_file()]
+        files += [(pdir / n, n) for n in (CAPTURE_FILE, CAPTURE_POINTS_FILE, CAPTURE_LOG_FILE, "sources.json") if (pdir / n).is_file()]
+        if (pdir / "crashes").is_dir():
+            files += [(f, f"crashes/{f.name}") for f in sorted((pdir / "crashes").iterdir()) if f.is_file()]
         if proj.get("mesh_id") and (MESHES / proj["mesh_id"]).is_dir():
             files += [(f, f"mesh/{f.name}") for f in sorted((MESHES / proj["mesh_id"]).iterdir()) if f.is_file()]
         name = re.sub(r"[^A-Za-z0-9._-]+", "-", proj["name"]).strip("-")[:60] or proj["id"]
@@ -9436,6 +9466,9 @@ class Handler(BaseHTTPRequestHandler):
                 device = note_device(m[1], record.get("device") or "unknown phone", record.get("app"))
                 append_log(m[1], f"capture: {len(record['shots'])} photos taken with the app ({str(record.get('app') or '?')[:60]}) on {device}")
                 return self.send_json({"kept": len(record["shots"])})
+            m = re.fullmatch(r"/api/projects/([0-9a-f]+)/capture/(log|crash)", p)
+            if m:   # how the capture went on the phone (its EventLog, JSON lines), or what an app wrote as it crashed, sent with the next upload
+                return self.send_json(*save_capture_log(m[1], m[2], self.read_body()))
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/capture/points", p)
             if m:   # and the points its tracking found, kept beside it for whatever places its photos
                 return self.send_json(*save_capture_points(m[1], self.read_body()))

@@ -25,6 +25,7 @@ class App {
  * `-server <address>`, which iOS itself reads into the setting of that name for that launch.
  */
 fun rootViewController(): UIViewController {
+    Crashes.watch()
     val app = App()
     app.sensors.start()
     val home = Home(app)
