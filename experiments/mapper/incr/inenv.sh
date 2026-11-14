@@ -6,7 +6,7 @@ set -euo pipefail
 B=${BENCH:-/data/tom/mapperbench} T=${BENCH:-/data/tom/mapperbench}/build-incr
 HERE=$(cd "$(dirname "$0")" && pwd)
 GPU=() LOCK=()
-if [ "${1:-}" = -g ]; then shift; GPU=(--gpus all); LOCK=(flock "$B/gpu.lock"); fi
+if [ "${1:-}" = -g ]; then shift; GPU=(--gpus all); docker info -f '{{json .CDISpecDirs}}' | grep -q cdi && GPU=(--device nvidia.com/gpu=all); LOCK=(flock "$B/gpu.lock"); fi
 NAME=bench-incr-dev-$$
 trap 'docker stop "$NAME" >/dev/null 2>&1 || true' EXIT
 "${LOCK[@]}" docker run --rm --name "$NAME" --log-driver none --tmpfs /tmp:exec,size=8g --cpus "${CORES:-6}" \

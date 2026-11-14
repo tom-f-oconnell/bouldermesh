@@ -483,7 +483,7 @@ def outside(target: str) -> int:
     tools = "app" if is_app else Path(target).resolve().name.removeprefix("build-")
     name = f"bench-verify-{tools}-{os.getpid()}"
     cmd = ["docker", "run", "--rm", "--name", name, "--log-driver", "none", "--tmpfs", "/tmp:exec,size=4g", "--memory", "16g",
-           "--memory-swap", "16g", "--pids-limit", "512", "--cpus", "6", "--gpus", "all", "-w", "/tmp",
+           "--memory-swap", "16g", "--pids-limit", "512", "--cpus", "6", *bench.gpu_args(), "-w", "/tmp",
            "-v", f"{bench.HERE}:/bench:ro", "-v", f"{bench.GPU_LOCK}:/gpu.lock", "-v", f"{bench.BENCH}/cache:/cache"]
     if is_app:
         cmd += ["-e", "HOME=/tmp", "--entrypoint", "python3", bench.APP]

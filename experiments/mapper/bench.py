@@ -187,6 +187,29 @@ def pool_room() -> float | None:
     return int(out.stdout) / 2 ** 30 if out.returncode == 0 and out.stdout.strip().isdigit() else None
 
 
+_GPU_ARGS = None
+# what a step's log says when its container couldn't reach the GPU (not a result of the method: the step is made again)
+GPU_LOST = r"No CUDA devices available|no CUDA-capable device is detected|Failed to initialize NVML"
+
+
+def gpu_args() -> list[str]:
+    """Docker's arguments that give a container the GPU: the GPU as a CDI device where Docker has CDI on and the
+    toolkit's spec is there, else --gpus all (the toolkit's hook). A device the hook added is dropped from a running
+    container whenever systemd reloads its units (NVIDIA's troubleshooting page): on atlas on 2026-11-14 a snap
+    refresh did that during a global mapper, which then aborted on "No CUDA devices available". CDI's devices are
+    in the container's own spec, so they survive. Asked once per process."""
+    global _GPU_ARGS
+    if _GPU_ARGS is None:
+        out = subprocess.run(["docker", "info", "--format", "{{json .CDISpecDirs}}"], capture_output=True, text=True).stdout
+        try:
+            dirs = json.loads(out) or []
+        except ValueError:
+            dirs = []
+        cdi = any(Path(d, "nvidia.yaml").exists() for d in dirs)
+        _GPU_ARGS = ["--device", "nvidia.com/gpu=all"] if cdi else ["--gpus", "all"]
+    return _GPU_ARGS
+
+
 def launch(cname: str, tools: str, script: str, mounts: list[str], env: dict, cpus: int | None, nice: bool) -> tuple[list[str], list[str], str]:
     """(command, command that stops it, what the tools really were) for a step's script.
 
@@ -212,7 +235,7 @@ def launch(cname: str, tools: str, script: str, mounts: list[str], env: dict, cp
     if docker_works():
         # nothing of a step's goes to Docker's own storage (hal's root pool): no log kept, /tmp in memory
         cmd = ["docker", "run", "--rm", "--name", cname, "--log-driver", "none", "--tmpfs", "/tmp:exec,size=8g",
-               "--memory", MEM, "--memory-swap", MEM, "--pids-limit", "512", "--gpus", "all", "-w", "/tmp"]
+               "--memory", MEM, "--memory-swap", MEM, "--pids-limit", "512", *gpu_args(), "-w", "/tmp"]
         if cpus:
             cmd += ["--cpus", str(cpus)]
         if tools == "app":
@@ -258,13 +281,15 @@ def on_gpu(args: list[str]) -> bool:
 
 
 def step(d: Path, name: str, tools: str, script: str, mounts: list[str], cond: str, env: dict | None = None,
-         timeout: float = 8 * 3600, gpu: bool = False) -> dict:
+         timeout: float = 8 * 3600, gpu: bool = False, again: bool = True) -> dict:
     """Runs a bash script as one timed step with the tools named, unless d/<name>.json says it was.
 
     A step that uses the GPU (gpu) first takes GPU_LOCK, as anyone else's GPU tests on hal that mustn't overlap a
     timed run do (`flock <BENCH>/gpu.lock <command>`); the wait isn't in its time, and is recorded as lock_wait.
     After LOCK_PATIENCE it goes ahead without the lock (gpu_locked false in its record), rather than hang a queue
     on a holder that never lets go. A container Docker couldn't start leaves no record, so the step is made again.
+    A GPU step that failed because its container lost the GPU (GPU_LOST) is made again once (again), its log kept
+    as <name>.gpu-lost.log.
 
     Returns the step's record."""
     rec_file = d / f"{name}.json"
@@ -309,11 +334,17 @@ def step(d: Path, name: str, tools: str, script: str, mounts: list[str], cond: s
         if lock:
             lock.close()
     text = log.read_text(errors="replace")
+    if gpu and rc != 0 and again and re.search(GPU_LOST, text):
+        log.rename(log.with_suffix(".gpu-lost.log"))
+        print(f"{time.strftime('%T')} {d.relative_to(R)} {name}: the container lost the GPU (rc {rc}), making it again",
+              flush=True)
+        return step(d, name, tools, script, mounts, cond, env, timeout, gpu, again=False)
     if rc == 125 and docker_works():
         raise RuntimeError(f"Docker couldn't start the container: {text[-300:]!r}")
     t = re.findall(r"BENCH_TIME ([\d.]+) ([\d.]+) ([\d.]+)", text)
     wall, user, system = (float(x) for x in t[-1]) if t else (time.time() - started, 0.0, 0.0)
     rec = {"step": name, "tools": really, "runner": "docker" if docker_works() else "bwrap", "cond": cond, "rc": rc,
+           "gpu_via": ("cdi" if "--device" in gpu_args() else "hook") if docker_works() else "",
            "wall": wall, "cpu_s": round(user + system, 1),
            "outer_wall": round(time.time() - started, 1), "started": time.strftime("%F %T", time.localtime(started)),
            "gpu_locked": lock is not None, "lock_wait": lock_wait,

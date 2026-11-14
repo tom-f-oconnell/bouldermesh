@@ -81,9 +81,10 @@ def verified(tools: str) -> str:
 
 
 def run_step(logdir: Path, name: str, tools: str, script: str, mounts: list[str], cond: str, env: dict | None = None,
-             gpu: bool = False, timeout: float = 6 * 3600) -> dict:
+             gpu: bool = False, timeout: float = 6 * 3600, again: bool = True) -> dict:
     """One timed step in a container, as bench.py's step(): its log, a record (seconds, CPU seconds, exit code, what
-    else ran on the machine, and which device each bundle adjustment in it used) and the machine's samples."""
+    else ran on the machine, and which device each bundle adjustment in it used) and the machine's samples. Made
+    again once if its container lost the GPU (bench.GPU_LOST)."""
     logdir.mkdir(parents=True, exist_ok=True)
     cpus, _, nice = bench.condition(cond)
     cname = f"bench-incr-{name}-{os.getpid()}-{int(time.time()) % 100000}"
@@ -118,10 +119,16 @@ def run_step(logdir: Path, name: str, tools: str, script: str, mounts: list[str]
         if lock:
             lock.close()
     text = log.read_text(errors="replace")
+    if gpu and rc != 0 and again and re.search(bench.GPU_LOST, text):
+        log.rename(log.with_suffix(".gpu-lost.log"))
+        print(f"{time.strftime('%T')} {logdir.parent.parent.name}/{logdir.name} {name}: the container lost the GPU, making it again",
+              flush=True)
+        return run_step(logdir, name, tools, script, mounts, cond, env, gpu, timeout, again=False)
     t = re.findall(r"BENCH_TIME ([\d.]+) ([\d.]+) ([\d.]+)", text)
     wall, user, system = (float(x) for x in t[-1]) if t else (time.time() - started, 0.0, 0.0)
     count = lambda pat: len(re.findall(pat, text))      # noqa: E731
-    rec = {"step": name, "tools": really, "build": verified(really), "cond": cond, "rc": rc, "wall": wall, "cpu_s": round(user + system, 1),
+    rec = {"step": name, "tools": really, "build": verified(really), "cond": cond, "rc": rc,
+           "gpu_via": "cdi" if "--device" in bench.gpu_args() else "hook", "wall": wall, "cpu_s": round(user + system, 1),
            "started": time.strftime("%F %T", time.localtime(started)), "gpu_locked": gpu, "lock_wait": lock_wait,
            "marks": {k: float(v) for k, v in re.findall(r"BENCH_MARK (\w+) ([\d.]+)", text)},
            "ba": {"cuda": count(r"BENCH_BA .*device=cuda"), "cpu": count(r"BENCH_BA .*device=cpu"),
@@ -140,7 +147,7 @@ def launch_app(cname: str, script: str, mounts: list[str], env: dict, cpus: int 
     and vggt_cams.py fails rather than run VGGT anywhere but on CUDA."""
     inner = 'TIMEFORMAT="BENCH_TIME %R %U %S"; time ' + ("nice -n 10 " if nice else "nice -n 19 ") + 'bash -ec "$1"'
     cmd = ["docker", "run", "--rm", "--name", cname, "--log-driver", "none", "--tmpfs", "/tmp:exec,size=8g", "--memory", bench.MEM,
-           "--memory-swap", bench.MEM, "--pids-limit", "512", "--gpus", "all", "-w", "/tmp", "-e", "HOME=/tmp",
+           "--memory-swap", bench.MEM, "--pids-limit", "512", *bench.gpu_args(), "-w", "/tmp", "-e", "HOME=/tmp",
            "-v", f"{bench.HERE}:/bench:ro"]
     if cpus:
         cmd += ["--cpus", str(cpus)]

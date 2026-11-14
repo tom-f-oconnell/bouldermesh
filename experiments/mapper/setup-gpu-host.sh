@@ -6,7 +6,11 @@
 # Run it as yourself (it calls sudo), once before a reboot and once after:
 #   setup-gpu-host.sh [BENCH dir]       DRIVER=<apt package> (nvidia-driver-595-open, hal's driver version)
 # The first run installs and asks for a reboot (the driver can't replace nouveau under a running desktop). The run
-# after the reboot installs nothing: it checks the driver, then a GPU container, and makes the BENCH folder.
+# after the reboot turns on CDI in Docker if it isn't (restarting Docker, and stopping and then resuming the
+# benchmark's chain if it is running), checks the driver, then a GPU container, and makes the BENCH folder.
+# CDI: with --gpus, the toolkit's hook adds the GPU to a container behind the runtime's back, and systemd drops it
+# again whenever it reloads its units (a snap refresh, an apt upgrade): a running step loses the GPU. With CDI the
+# device is in the container's own spec and survives that (bench.py gpu_args()).
 set -euo pipefail
 BENCH=${1:-/mnt/d0/mapperbench} DRIVER=${DRIVER:-nvidia-driver-595-open}
 IMG=nvidia/cuda:12.9.1-devel-ubuntu24.04
@@ -33,14 +37,29 @@ fi
 
 echo "== driver"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
-if ! docker info 2> /dev/null | grep -q 'Runtimes:.*nvidia'; then
-  echo "Docker doesn't list the nvidia runtime yet: sudo systemctl restart docker (stops its running containers)"
-  exit 1
+RESUME=
+if ! docker info -f '{{json .CDISpecDirs}}' | grep -q cdi || ! docker info 2> /dev/null | grep -q 'Runtimes:.*nvidia'; then
+  echo "== CDI in Docker, and Docker restarted (its containers restart with it if their restart policy says so)"
+  if systemctl --user is-active -q bm-bench; then
+    RESUME=$(grep -oP 'to carry on after a stop, from where it stopped: \K.*' "$BENCH/STATE.txt" || true)
+    echo "stopping the benchmark's chain first (its current job is made again when it resumes)"
+    systemctl --user stop bm-bench
+  fi
+  if docker ps --format '{{.Names}}' | grep -q '^bench-'; then
+    echo "benchmark containers are still running: stop them first (docker ps)"; exit 1
+  fi
+  sudo nvidia-ctk runtime configure --runtime=docker --cdi.enabled
+  sudo systemctl restart docker
+  nvidia-ctk cdi list | grep -q 'nvidia.com/gpu=all' || { echo "no CDI spec for the GPU: sudo systemctl restart nvidia-cdi-refresh"; exit 1; }
 fi
-echo "== a GPU container (the first run downloads the 10 GB image the benchmark's tools run in)"
-docker run --rm --gpus all --memory 4g --memory-swap 4g --pids-limit 512 $IMG \
+echo "== a GPU container through CDI (the first run downloads the 10 GB image the benchmark's tools run in)"
+docker run --rm --device nvidia.com/gpu=all --memory 4g --memory-swap 4g --pids-limit 512 $IMG \
   nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
 mkdir -p "$BENCH"
 echo "== room"
 df -h --output=target,avail "$BENCH" "$(docker info -f '{{.DockerRootDir}}')"
 echo "All good. BENCH=$BENCH"
+if [ -n "$RESUME" ]; then
+  echo "== resuming the benchmark's chain: $RESUME"
+  (cd "$(dirname "$0")" && eval "$RESUME")
+fi

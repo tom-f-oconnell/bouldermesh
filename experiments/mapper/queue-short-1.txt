@@ -13,3 +13,5 @@ all 31de9a59303a cpu421 0 --cond prod --build complete
 all 31de9a59303a vggt 0 --cond prod
 all 31de9a59303a base 0 --cond prod --rep 2
 all 31de9a59303a base_ob 0 --cond prod
+# again: its first run lost the GPU when a snap refresh reloaded systemd (00:07:54), aborting in global positioning
+all 31de9a59303a global 0 --cond prod --build complete --post complete

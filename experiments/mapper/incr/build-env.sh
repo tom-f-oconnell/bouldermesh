@@ -31,10 +31,12 @@ for src in colmap $([ "$V" = full ] && echo ceres opencv openMVS vcglib cgal6); 
     (cd "$B/build-plain/opt/$src" && tar cf - "${X[@]}" .) | (cd "$T/opt/$src" && tar xf -)
   fi
 done
+# the GPU as a CDI device where Docker has CDI on (bench.py gpu_args())
+GPU=(--gpus all); docker info -f '{{json .CDISpecDirs}}' | grep -q cdi && GPU=(--device nvidia.com/gpu=all)
 NAME=bench-incr-build-$V
 trap 'docker stop "$NAME" >/dev/null 2>&1 || true' EXIT
 timeout 6h docker run --rm --name "$NAME" --log-driver none --cpus "$JOBS" --memory "${MEM:-48g}" --memory-swap "${MEM:-48g}" \
-  --pids-limit 512 --gpus all -v "$T/usr:/usr" -v "$T/var:/var" -v "$T/etc:/etc" -v "$T/opt:/opt" -v "$T/tmp:/tmp" \
+  --pids-limit 512 "${GPU[@]}" -v "$T/usr:/usr" -v "$T/var:/var" -v "$T/etc:/etc" -v "$T/opt:/opt" -v "$T/tmp:/tmp" \
   -v "$HERE:/incr:ro" -e LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/libcudss/12 -e CMAKE_BUILD_PARALLEL_LEVEL="$JOBS" \
   -e DEBIAN_FRONTEND=noninteractive -e V="$V" -e JOBS="$JOBS" --entrypoint bash $IMG /incr/build-env-inside.sh
 python3 "$HERE/../verify_build.py" "$T"     # exits 1 if anything that matters for speed is missing
