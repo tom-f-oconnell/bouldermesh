@@ -28,6 +28,7 @@ data class ShotBlob(
     @SerialName("ref_hold") val refHold: String? = null,
     val still: Int? = null,                 // 1: a full-size still, where the phone's other photos are its tracking's frames
     @SerialName("k_src") val kSrc: String? = null,      // "derived": its lens (k) was worked out from the tracking camera's, not given
+    val feat: BlobFeat? = null,             // whether it looks likely to match the photos near it (Features): for warnings and tuning only
     val lic: String? = null,                // the licence it's given under, and who to credit
     val by: String? = null,
 ) {
@@ -47,6 +48,14 @@ data class ShotBlob(
 @Serializable data class BlobGps(val lat: Double, val lng: Double, val alt: Double? = null, val acc: Double, val age: Double)
 @Serializable data class BlobAr(val s: String, val p: List<Double>, val q: List<Double>, val track: String = "normal",
                                 val span: BlobSpan? = null, val paused: Int? = null)
+/**
+ * A photo's corners (n), the photos near it it was matched against (tried) and the most matches it shares with one of
+ * them that agree with the tracking (best, with `to`); and the points the phone's tracking was following as it was taken
+ * (ar_pts) and those it had found, all told, in what the photo shows (ar_cells, one to each 5 cm).
+ */
+@Serializable data class BlobFeat(val n: Int, val tried: Int = 0, val best: Int? = null, val to: String? = null,
+                                  @SerialName("ar_pts") val arPts: Int? = null, @SerialName("ar_cells") val arCells: Int? = null)
+
 /** A full-size still's pose is the tracking's either side of it: how long apart those were, and how far the phone moved and turned between. */
 @Serializable data class BlobSpan(@SerialName("dt_s") val dtS: Double, @SerialName("moved_m") val movedM: Double, @SerialName("turned_deg") val turnedDeg: Double)
 @Serializable data class BlobLens(val fx: Double, val fy: Double, val cx: Double, val cy: Double, val w: Int, val h: Int)

@@ -141,6 +141,7 @@ import sh.boulderme.core.Coverage
 import sh.boulderme.core.GuideMesh
 import sh.boulderme.core.ImageStats
 import sh.boulderme.core.Lens
+import sh.boulderme.core.Features
 import sh.boulderme.core.LICENCE
 import sh.boulderme.core.Marker
 import sh.boulderme.core.Phase
@@ -344,6 +345,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         if (tracking && ticks % 6 == 0) frame.rawFeaturePoints?.let { cloud ->
             val p = cloud.points
             if (p != null) for (i in 0 until cloud.count.toInt()) p[i].value.let { flow.addPoint(it.getFloatAt(0).toDouble(), it.getFloatAt(1).toDouble(), it.getFloatAt(2).toDouble()) }
+            flow.tracked(cloud.count.toInt())
         }
         // the slow half of tightening the fit, off the main thread; its answer taken back on it
         flow.refineDue(now)?.let { work -> dispatch_async(background) { val found = flow.tighter(work); dispatch_async(dispatch_get_main_queue()) { flow.tightened(work, found) } } }
@@ -486,13 +488,14 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         val now = app.sensors.now()
         val unix = NSDate().timeIntervalSince1970
         val buffer = frame.capturedImage
+        // stored upright (the sensor reads its picture out on its side), with the camera and its lens as that picture has them
+        val turn = Axes.uprightTurn(Axes.downInImage(pose), UPRIGHT_DEG)
         dispatch_async(background) {
-            val stats = lumaStats(buffer)
+            val (stats, features) = lumaStats(buffer, turn)
             dispatch_async(dispatch_get_main_queue()) {
-                // stored upright (the sensor reads its picture out on its side), with the camera and its lens as that picture has them
-                val turn = Axes.uprightTurn(Axes.downInImage(pose), UPRIGHT_DEG)
                 val stored = pose.turned(turn)
-                val out = flow.shot(ShotIn(stored, sample, stats, exposure, iso, null, tracking, arSession, now, unix, SENSOR_ORIENTATION, sample.gyro?.norm ?: 0.0, turn))
+                val out = flow.shot(ShotIn(stored, sample, stats, exposure, iso, null, tracking, arSession, now, unix, SENSOR_ORIENTATION, sample.gyro?.norm ?: 0.0, turn,
+                    features = features))
                 if (out.kept) dispatch_async(background) {
                     val ok = writeJpeg(frame, "$dir/photos/${out.record.name}", out.userComment, sample, stored.lens, exposure, turn, unix)
                     dispatch_async(dispatch_get_main_queue()) { if (ok) save() else flow.say("A photo couldn't be saved.") }
@@ -501,15 +504,16 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         }
     }
 
-    /** A photo's stats from its brightness: the first plane of the camera's picture. */
-    private fun lumaStats(buffer: CVPixelBufferRef?): ImageStats? {
-        if (buffer == null || CVPixelBufferGetPlaneCount(buffer) < 1uL) return null
+    /** A photo's stats from its brightness (the first plane of the camera's picture), and its corners (Features), for a picture stored turned by `turn`. */
+    private fun lumaStats(buffer: CVPixelBufferRef?, turn: Int): Pair<ImageStats?, Features?> {
+        if (buffer == null || CVPixelBufferGetPlaneCount(buffer) < 1uL) return null to null
         CVPixelBufferLockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly)
         try {
             val w = CVPixelBufferGetWidthOfPlane(buffer, 0u).toInt(); val h = CVPixelBufferGetHeightOfPlane(buffer, 0u).toInt()
             val stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0u).toInt()
-            val base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0u) ?: return null
-            return Quality.imageStats(base.readBytes(stride * (h - 1) + w), w, h, stride)
+            val base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0u) ?: return null to null
+            val luma = base.readBytes(stride * (h - 1) + w)
+            return Quality.imageStats(luma, w, h, stride) to runCatching { Features.of(luma, w, h, stride, turn) }.getOrNull()
         } finally {
             CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly)
         }

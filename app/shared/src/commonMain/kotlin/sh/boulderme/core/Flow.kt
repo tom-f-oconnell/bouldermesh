@@ -184,6 +184,10 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
 
     // ---- tightening the fit ------------------------------------------------------------------------------------------
     /** A point the phone's tracking has found in the world: kept, one to each 5 cm, for tightening the fit against. */
+    /** How many points the tracking is following in this frame: said with each batch of them the app gives addPoint(). */
+    fun tracked(n: Int) { trackedNow = n }
+    private var trackedNow: Int? = null
+
     fun addPoint(x: Double, y: Double, z: Double) {
         if (cloud.size >= CLOUD_MOST) return
         val key = ((round(x / CELL_M).toLong() and 0x1fffff) shl 42) or ((round(y / CELL_M).toLong() and 0x1fffff) shl 21) or (round(z / CELL_M).toLong() and 0x1fffff)
@@ -258,7 +262,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         lastFrameT = t; spanFrames++; if (!tracking) spanLost++
         if (spanFrom < 0) spanFrom = t
         if (t - spanFrom >= SPAN_S) {
-            event("frames", "fps" to spanFrames / (t - spanFrom), "gap_max_s" to spanGap, "untracked" to spanLost, "exposure_s" to exposureS, "gyro" to gyroRadS)
+            event("frames", "fps" to spanFrames / (t - spanFrom), "gap_max_s" to spanGap, "untracked" to spanLost, "exposure_s" to exposureS, "gyro" to gyroRadS,
+                "ar_pts" to trackedNow, "cloud" to cloud.size)
             spanFrom = t; spanFrames = 0; spanGap = 0.0; spanLost = 0
         }
         val out = frameAt(pose, tracking, gyroRadS, exposureS, t, uprightDeg, accel, sensorOrientation, stillLens)
@@ -360,9 +365,13 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     /** The photo frame() asked for, taken. A photo not kept is to be deleted. */
     fun shot(s: ShotIn): ShotOut {
         inFlight = false
-        val out = session.shot(s.copy(arSession = spell(s.arSession), card = s.card || cardShot))
+        // the points found of what it shows, all told, one to each 5 cm: how much of it the tracking could make out
+        val cells = cloud.values.count { p -> s.pose.project(p)?.let { it.depth in 0.1..12.0 && it.u in 0.0..s.pose.lens.w.toDouble() && it.v in 0.0..s.pose.lens.h.toDouble() } == true }
+        val out = session.shot(s.copy(arSession = spell(s.arSession), card = s.card || cardShot, arPoints = s.arPoints ?: trackedNow, arCells = cells))
         event("shot", "name" to out.record.name, "kept" to out.kept, "why" to out.why.joinToString("; ").ifEmpty { null }, "helped" to out.helped.size,
-            "notes" to out.record.notes.joinToString("; ").ifEmpty { null }, "sharp" to s.stats?.sharp, "exposure_s" to s.exposureS, "iso" to s.iso, "focus_m" to s.focusM)
+            "notes" to out.record.notes.joinToString("; ").ifEmpty { null }, "sharp" to s.stats?.sharp, "exposure_s" to s.exposureS, "iso" to s.iso, "focus_m" to s.focusM,
+            "corners" to out.record.blob.feat?.n, "tried" to out.record.blob.feat?.tried, "best_links" to out.record.blob.feat?.best, "ar_pts" to out.record.blob.feat?.arPts,
+            "ar_cells" to out.record.blob.feat?.arCells)
         if (cardShot && out.kept) { cardNext = false; levelsDirty = true }
         cardShot = false
         sensorNote = out.record.notes.joinToString(" · ")

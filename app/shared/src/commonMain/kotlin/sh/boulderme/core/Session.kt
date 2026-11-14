@@ -33,6 +33,9 @@ data class ShotIn(
     val still: Boolean = false,         // a full-size still (FrameOut.still), its pose the tracking's either side of it (span)
     val span: BlobSpan? = null, val paused: Boolean = false, val lensDerived: Boolean = false,
     val card: Boolean = false,          // a bank card lies beside the hold being photographed: kept for its size, and counted for nothing else
+    val features: Features? = null,     // its corners (Features.of()), to match against the photos near it: for a warning only
+    val arPoints: Int? = null,          // the points the tracking was following as it was taken, and those it had found in what it shows
+    val arCells: Int? = null,
 )
 
 /** The verdict on it: whether to keep its file, why not if not, what it helped, and the text to put in the file. */
@@ -66,6 +69,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     private val shots = ArrayList<ShotRecord>()
     private val fields = ArrayList<Double>()
     private val sharps = ArrayList<Double>()
+    private val matched = ArrayDeque<Triple<String, CameraPose, Features>>()      // kept photos' corners, the latest MATCHED_MOST
     private var current: String? = null
     private var lastPose: CameraPose? = null
     private var lastT = 0.0
@@ -193,6 +197,13 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
                 val close = cov.closeM(t)
                 if (close != null && inMesh.centre.distance(t.target.point) * cov.metresPerUnit < close * 1.15) cov.backOff()
             }
+        // whether meshing is likely to match it with the photos near it: a warning, never a reason not to keep it
+        val matching = s.features?.let { f -> Matching(f.size, neighbours(s.pose).map { (n, p, g) -> n to Features.links(f, s.pose, g, p) }) }
+        val warn = ArrayList<String>()
+        if (matching != null && matching.features < FEW_CORNERS) warn.add("little texture here for meshing to match (${matching.features} corners)")
+        else if (matching?.best != null && matching.best!! < FEW_LINKS) warn.add("few matches with the photos near it (best ${matching.best}): meshing may not join it up")
+        if (s.arPoints != null && s.arPoints < FEW_AR_POINTS) warn.add("the phone's tracking sees few points here (${s.arPoints})")
+        if (verdict.ok && !s.card && s.features != null) { matched.addLast(Triple(name, s.pose, s.features)); if (matched.size > MATCHED_MOST) matched.removeFirst() }
         val helped = if (!verdict.ok || s.card) emptyList() else when {
             inMesh != null && cov != null -> cov.addShot(inMesh)
             orb != null -> orb.add(s.pose)
@@ -223,12 +234,25 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             exp = BlobExposure(s.exposureS, s.iso, s.focusM),
             q = BlobQuality(s.stats?.sharp, blur, s.stats?.clipHigh, s.stats?.clipLow, verdict.ok),
             ref = if (s.card) CARD else null, refHold = if (s.card) cardOf?.target?.holds?.firstOrNull() ?: cardOf?.target?.id else null,
+            feat = if (matching == null && s.arPoints == null) null else BlobFeat(matching?.features ?: 0, matching?.links?.size ?: 0, matching?.best,
+                matching?.links?.maxByOrNull { it.second }?.first, s.arPoints, s.arCells),
             still = if (s.still) 1 else null, kSrc = if (s.lensDerived) "derived" else null, lic = licence, by = credit,
         )
-        val record = ShotRecord(name, blob, verdict.ok, verdict.reasons, if (light != null) notes + light else notes, helped)
+        val record = ShotRecord(name, blob, verdict.ok, verdict.reasons, notes + listOfNotNull(light) + warn, helped)
         shots.add(record)
         if (verdict.ok) kept++
         return ShotOut(record, verdict.ok, verdict.reasons, helped, blob.userComment())
+    }
+
+    /**
+     * The kept photos to match one taken from `pose` against: looking within NEAR_DEG of the same way, nearest first
+     * (a degree counted as a centimetre), the last one kept always among them if it looked that way too.
+     */
+    private fun neighbours(pose: CameraPose): List<Triple<String, CameraPose, Features>> {
+        val near = matched.filter { angleDeg(it.second.forward, pose.forward) < NEAR_DEG }
+        val ranked = near.sortedBy { it.second.centre.distance(pose.centre) * 100 + angleDeg(it.second.forward, pose.forward) }.take(NEIGHBOURS)
+        val last = matched.lastOrNull()?.takeIf { it in near && it !in ranked }
+        return if (last != null) ranked + last else ranked
     }
 
     /** Leaves the target being asked for (out of reach, or not wanted), and goes on to the next. */
@@ -277,6 +301,14 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
 
     companion object {
         const val CARD = "id1-card"     // a photo's ref: a bank card (ID-1, 85.60 by 53.98 mm) flat on the rock in it
+        // warnings that a photo may not join up with the others when meshed: low, as they're only said, and to be tuned
+        // against which photos meshing did place (the capture's log and record have every photo's numbers)
+        const val FEW_CORNERS = 40      // of up to Features' 768
+        const val FEW_LINKS = 8         // matches agreeing with the tracking, with the best of the photos near it
+        const val FEW_AR_POINTS = 10
+        const val NEAR_DEG = 75.0
+        const val NEIGHBOURS = 5
+        const val MATCHED_MOST = 300
         const val HARSH_CLIP = 0.01     // this share of a picture blown out and as much black: lit and shaded rock together
         const val STEADY_PX = 1.0       // a photo takes itself only when the phone's own motion would smear it less than this
         const val MIN_GAP_S = 0.6       // and no sooner than this after the last

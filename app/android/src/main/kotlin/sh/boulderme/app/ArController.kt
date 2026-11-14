@@ -30,6 +30,7 @@ import com.google.ar.core.exceptions.NotYetAvailableException
 import sh.boulderme.core.Axes
 import sh.boulderme.core.CameraPose
 import sh.boulderme.core.CaptureFlow
+import sh.boulderme.core.Features
 import sh.boulderme.core.LICENCE
 import sh.boulderme.core.CaptureSession
 import sh.boulderme.core.CaptureUi
@@ -255,10 +256,12 @@ class ArController(
             frame.acquirePointCloud().use { pc ->
                 val b = pc.points
                 synchronized(lock) {
+                    var n = 0
                     while (b.remaining() >= 4) {
                         val x = b.get(); val y = b.get(); val z = b.get(); val conf = b.get()
-                        if (conf >= 0.3f) flow.addPoint(x.toDouble(), y.toDouble(), z.toDouble())
+                        if (conf >= 0.3f) { flow.addPoint(x.toDouble(), y.toDouble(), z.toDouble()); n++ }
                     }
+                    flow.tracked(n)
                 }
             }
         }
@@ -285,7 +288,8 @@ class ArController(
                 // stored upright (the sensor reads its picture out on its side), with the camera and its lens as that picture has them
                 val turn = Axes.uprightTurn(Axes.downInImage(pose), upright)
                 val stored = pose.turned(turn)
-                val out = synchronized(lock) { flow.shot(ShotIn(stored, sample, stats, shutter, iso, focus, true, arSession, now, unix, sensorOrientation, gyro, turn)) }
+                val features = runCatching { Features.of(nv21, w, h, w, turn) }.getOrNull()     // for a warning if it won't match the photos near it
+                val out = synchronized(lock) { flow.shot(ShotIn(stored, sample, stats, shutter, iso, focus, true, arSession, now, unix, sensorOrientation, gyro, turn, features = features)) }
                 if (out.kept) {
                     val file = File(File(dir, "photos"), out.record.name)
                     val pixels = turnNv21(nv21, w, h, turn)

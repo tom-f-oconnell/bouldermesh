@@ -126,6 +126,13 @@ one to each 5 cm, 20,000 at most to a spell. Noisy to a centimetre or so, except
     float32 x, y, z, uint16 spell      for each: where, in the tracking's world (metres, +Y up), and which spell of
                                        tracking found it: 1 the first (photos' `ar.s` with no ".n"), 2 the one after ".2"
 
+`feat` (in a photo's blob, and its `shot` line in the log): whether it looks likely to match the photos near it when
+meshed, for warnings only (a photo is never left out for it) and for tuning those warnings against which photos
+meshing placed. {n: corners found on a 640-pixel copy (app/shared Features.kt), tried: the kept photos near it it was
+matched against, best: the most matches with one of them that agree with where the tracking put both, to: that photo,
+ar_pts: points the tracking was following as it was taken, ar_cells: points it had found in what the photo shows, one
+to each 5 cm}. The warnings (Session's FEW_CORNERS, FEW_LINKS, FEW_AR_POINTS) are in the photo's notes.
+
 **How it went** (`capture-log.jsonl`, sent last, to `POST /api/projects/<id>/capture/log`; kept in the project as
 `capture-log.jsonl`): JSON lines, each {t: seconds since the capture's first frame, e: what, ...}, written as the
 capture runs (app/shared EventLog.kt), a line for each change and not each frame: `start`, `camera` (how the app set
