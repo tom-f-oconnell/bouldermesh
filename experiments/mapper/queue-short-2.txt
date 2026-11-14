@@ -1,0 +1,9 @@
+# The short plan (chain.py short), production conditions, one job at a time. The 150-photo boulder:
+# the baseline first, the methods the 82-photo boulder didn't rule out, then the baseline's repeat and OpenBLAS
+all 9f3b4b740847 base 0 --cond prod --post app
+all 9f3b4b740847 global 0 --cond prod --build complete --post complete
+all 9f3b4b740847 caspar 0 --cond prod --build complete
+all 9f3b4b740847 cpu421 0 --cond prod --build complete
+all 9f3b4b740847 vggt 0 --cond prod
+all 9f3b4b740847 base 0 --cond prod --rep 2
+all 9f3b4b740847 base_ob 0 --cond prod

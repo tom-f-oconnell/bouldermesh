@@ -1,0 +1,3 @@
+# The pipeline's first builds, production conditions (chain.py short)
+first e6de7747fab5 auto 0 --cond prod
+first 31de9a59303a auto 0 --cond prod

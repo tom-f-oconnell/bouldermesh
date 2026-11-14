@@ -7,6 +7,10 @@ whose results exist is skipped, a step cut short is made again):
         -E PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin python3 chain.py
     systemctl --user stop bm-bench          # stops its running containers too
 
+chain.py short runs the SHORT plan in place of the whole benchmark (PLANS): the smallest set of jobs that answers the
+main questions, small boulders first, so that a method that is clearly worse can be taken out of the later phases'
+queue files before they start. CORES_FREE and MEM (bench.py) in the environment fit it to a machine smaller than hal.
+
 PHASES run in order. A timed phase is one queue (bench.py queue): a job at a time, with nothing else of the benchmark
 going. An untimed phase runs several things side by side, each given some cores, as many at once as fit in CORES_FREE,
 or in what <BENCH>/cores-cap.txt says while that holds a number (timed jobs then run as their "c<N>" variants:
@@ -28,14 +32,18 @@ import bench  # noqa: E402
 
 BENCH = bench.BENCH
 LOG, STATE, NOTES = BENCH / "chain.log", BENCH / "STATE.txt", BENCH / "STATE.notes.txt"
-CORES_FREE = 36         # what an untimed phase may use in all while there is no cap
+CORES_FREE = int(os.environ.get("CORES_FREE", 36))      # what an untimed phase may use in all while there is no cap
+PLAN = sys.argv[1] if len(sys.argv) > 1 else "full"
 START = ("systemd-run --user --unit bm-bench --collect -p WorkingDirectory=" + str(HERE)
-         + " -E PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin python3 chain.py")
+         + " -E PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+         + "".join(f" -E {k}={os.environ[k]}" for k in ("BENCH", "CORES_FREE", "MEM") if k in os.environ)
+         + f" {sys.executable} chain.py {PLAN}")
 
 
-def queue(name: str, cores: int | None = None) -> dict:
-    """A queue file as a thing to run: alone when cores is None (a timed queue), else beside others on that many."""
-    return {"name": name, "cmd": [sys.executable, str(HERE / "bench.py"), "queue", str(BENCH / name)], "cores": cores,
+def queue(name: str, cores: int | None = None, script: str = "bench.py") -> dict:
+    """A queue file as a thing to run: alone when cores is None (a timed queue), else beside others on that many.
+    script is whose queue it is: bench.py's, or incr/boulder.py's (the incremental pipeline)."""
+    return {"name": name, "cmd": [sys.executable, str(HERE / script), "queue", str(BENCH / name)], "cores": cores,
             "status": (BENCH / name).with_suffix(".status")}
 
 
@@ -45,7 +53,13 @@ def build(variant: str, cores: int = 10) -> dict:
             "cores": cores, "log": BENCH / f"build-{variant}.log", "jobs": True}
 
 
-PHASES = [
+def build_incr(cores: int = 6) -> dict:
+    """The incremental pipeline's tree (incr/build-env.sh: build-incr-full), from build-plain's sources."""
+    return {"name": "build-incr-full", "cmd": ["bash", str(HERE / "incr/build-env.sh"), str(BENCH), "full"],
+            "cores": cores, "log": BENCH / "build-incr-full.log", "jobs": True}
+
+
+FULL = [
     ("preflight: the smallest boulder, every kind of step", [queue("queue-preflight.txt")]),
     ("timed: the 3.9.1 baselines (the app's image), Drifter first", [queue("queue-prod-a.txt")]),
     ("untimed: the complete, v3 and native builds (each verified), the baseline's and global mapper's other seeds",
@@ -55,6 +69,18 @@ PHASES = [
     ("timed: every 4.2.1 method on the complete build, and complete against v3 and native", [queue("queue-prod-b.txt")]),
     ("untimed: the long baseline runs on other seeds", [queue("queue-late1.txt", 6), queue("queue-late2.txt", 6)]),
 ]
+# The short plan: per boulder the baseline twice (its spread is the yardstick), global, caspar, cpu421 and vggt on
+# the complete build, the app's image with OpenBLAS, then the pipeline's first build. A phase's two queues run one
+# after the other. Lines can be taken out of a later phase's files while an earlier phase runs.
+SHORT = [
+    ("untimed: the complete build and the pipeline's tree (each verified)", [build("complete", 6), build_incr(6)]),
+    ("timed: the 33-photo boulder (a check of every kind of step), then the 82-photo one",
+     [queue("queue-short-1.txt"), queue("queue-short-1-incr.txt", script="incr/boulder.py")]),
+    ("timed: the 150-photo boulder", [queue("queue-short-2.txt"), queue("queue-short-2-incr.txt", script="incr/boulder.py")]),
+    ("timed: Drifter (234 photos)", [queue("queue-short-3.txt"), queue("queue-short-3-incr.txt", script="incr/boulder.py")]),
+]
+PLANS = {"full": FULL, "short": SHORT}
+PHASES = PLANS[PLAN]
 stopping = False
 
 

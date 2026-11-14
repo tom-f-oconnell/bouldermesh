@@ -1,0 +1,15 @@
+# The short plan's first timed phase (chain.py short): production conditions, one job at a time.
+# The 33-photo boulder: every kind of step once, as a check of the setup (minutes each)
+all e6de7747fab5 base 0 --cond prod --post app
+all e6de7747fab5 cpu421 0 --cond prod --build complete --post complete
+all e6de7747fab5 caspar 0 --cond prod --build complete
+all e6de7747fab5 global0 0 --cond prod --build complete
+all e6de7747fab5 vggt 0 --cond prod
+# The 82-photo boulder: what the later phases' methods are judged on before those start
+all 31de9a59303a base 0 --cond prod --post app
+all 31de9a59303a global 0 --cond prod --build complete --post complete
+all 31de9a59303a caspar 0 --cond prod --build complete
+all 31de9a59303a cpu421 0 --cond prod --build complete
+all 31de9a59303a vggt 0 --cond prod
+all 31de9a59303a base 0 --cond prod --rep 2
+all 31de9a59303a base_ob 0 --cond prod

@@ -1,0 +1,9 @@
+# The short plan (chain.py short), production conditions, one job at a time. Drifter (234 photos):
+# the baseline first, the methods the 82-photo boulder didn't rule out, then the baseline's repeat and OpenBLAS
+all ce7571e0a4a3 base 0 --cond prod --post app
+all ce7571e0a4a3 global 0 --cond prod --build complete --post complete
+all ce7571e0a4a3 caspar 0 --cond prod --build complete
+all ce7571e0a4a3 cpu421 0 --cond prod --build complete
+all ce7571e0a4a3 vggt 0 --cond prod
+all ce7571e0a4a3 base 0 --cond prod --rep 2
+all ce7571e0a4a3 base_ob 0 --cond prod
