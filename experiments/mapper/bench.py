@@ -416,6 +416,8 @@ def mapper(P: str, method: str, seed: int, feat: str, cond: str, build: str, rep
     d = feat_dir(P, feat) / run
     if (d / "map.json").exists():
         return run
+    if not (feat_dir(P, feat) / "database.db").exists():      # the queue had no feat line for it: made (or adopted) here
+        features(P, feat, "dev", build)
     shutil.rmtree(d, ignore_errors=True)
     if d.exists():      # an interrupted run's files that its container wrote as root: put aside, as they can't be deleted
         d.rename(d.with_name(f"{d.name}.stale{int(time.time())}"))
@@ -451,6 +453,8 @@ def held(P: str, method: str, seed: int, percent: int, feat: str, cond: str, bui
         return
     d.mkdir(parents=True, exist_ok=True)
     db = feat_dir(P, feat) / "database.db"
+    if not db.exists():
+        features(P, feat, "dev", build)
     if not (d / "kept.txt").exists():
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         names = sorted(n for n, in con.execute("select name from images"))
