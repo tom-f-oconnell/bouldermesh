@@ -72,11 +72,15 @@ FULL = [
 # The short plan: per boulder the baseline twice (its spread is the yardstick), global, caspar, cpu421 and vggt on
 # the complete build, the app's image with OpenBLAS, then the pipeline's first build. A phase's two queues run one
 # after the other. Lines can be taken out of a later phase's files while an earlier phase runs.
+# Builds take every core in turn (two side by side can need more memory than a 45 GB machine has), and the
+# pipeline's waits until the benchmark's first results are in.
 SHORT = [
-    ("untimed: the complete build and the pipeline's tree (each verified)", [build("complete", 6), build_incr(6)]),
-    ("timed: the 33-photo boulder (a check of every kind of step), then the 82-photo one",
-     [queue("queue-short-1.txt"), queue("queue-short-1-incr.txt", script="incr/boulder.py")]),
-    ("timed: the 150-photo boulder", [queue("queue-short-2.txt"), queue("queue-short-2-incr.txt", script="incr/boulder.py")]),
+    ("untimed: the complete build (verified)", [build("complete", CORES_FREE)]),
+    ("timed: the 33-photo boulder (a check of every kind of step), then the 82-photo one", [queue("queue-short-1.txt")]),
+    ("untimed: the pipeline's tree (verified)", [build_incr(CORES_FREE)]),
+    ("timed: the pipeline's first builds of the 33- and 82-photo boulders, then the 150-photo boulder",
+     [queue("queue-short-1-incr.txt", script="incr/boulder.py"), queue("queue-short-2.txt"),
+      queue("queue-short-2-incr.txt", script="incr/boulder.py")]),
     ("timed: Drifter (234 photos)", [queue("queue-short-3.txt"), queue("queue-short-3-incr.txt", script="incr/boulder.py")]),
 ]
 PLANS = {"full": FULL, "short": SHORT}

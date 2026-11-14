@@ -180,7 +180,10 @@ def docker_works() -> bool:
 def pool_room() -> float | None:
     """GB free on hal's root pool, which Docker's own storage is on and which filled up on 2026-11-13 (the
     benchmark keeps everything else on /data). None where there is no such pool."""
-    out = subprocess.run(["zfs", "list", "-Hp", "-o", "avail", "rpool"], capture_output=True, text=True)
+    try:
+        out = subprocess.run(["zfs", "list", "-Hp", "-o", "avail", "rpool"], capture_output=True, text=True)
+    except FileNotFoundError:      # no ZFS at all (atlas)
+        return None
     return int(out.stdout) / 2 ** 30 if out.returncode == 0 and out.stdout.strip().isdigit() else None
 
 
