@@ -5,6 +5,8 @@ import platform.UIKit.UIColor
 import platform.UIKit.UIModalPresentationFullScreen
 import platform.UIKit.UITextField
 import platform.UIKit.secondaryLabelColor
+import sh.boulderme.core.TERMS
+import sh.boulderme.core.TERMS_VERSION
 import sh.boulderme.core.GpsAverager
 import sh.boulderme.core.MagCalibration
 import sh.boulderme.core.MeshRow
@@ -30,6 +32,13 @@ class Home(private val app: App) : Form("BoulderMesh") {
     }
 
     override fun build() {
+        if (app.store.terms < TERMS_VERSION) {      // the terms, before anything else: the app goes no further until they're accepted
+            section("Before you start")
+            text(TERMS)
+            button("I agree", Look.FILLED) { app.store.terms = TERMS_VERSION; rebuild() }
+            text("Without this the app can't be used.", small = true)
+            return
+        }
         text("Photograph a boulder so that its mesh comes out whole, level, the right size and in the right place. " +
             "The app says where to stand and takes each photo when it's worth taking.", UIColor.secondaryLabelColor)
 
@@ -149,12 +158,15 @@ class Settings(private val app: App) : Form("Settings") {
         field("Credit my photos to", app.store.credit) { app.store.credit = it.take(80) }
         text("Photos you send are published under Creative Commons Attribution 4.0 (CC BY 4.0): the site and anyone else may use them, crediting this name.")
         section("Uploading")
-        text("Sending captures needs the site's editing token. Paste it, or paste the link or code from the admin page's \"Pair a phone\" QR, which gives it once.")
-        field("Editing token", app.store.token, secret = true) { app.store.token = it }
+        button(if (app.store.anonFirst) "Holds others marked privately: asked for from the start" else "Holds others marked privately: asked about at the end", Look.PLAIN) {
+            app.store.anonFirst = !app.store.anonFirst; rebuild()
+        }
+        text("Sending captures needs an account, or the site's own token. Paste an invite link, a code from \"Sign in another device\" on the site, or the admin page's pairing link.")
+        field("Token", app.store.token, secret = true) { app.store.token = it }
         field("Pairing link or code", code) { code = it }
         button("Pair", Look.FILLED) {
             if (code.isBlank()) return@button
-            app.api.pair(code) { token, why ->
+            app.api.pair(code, app.store.credit) { token, why ->
                 said = if (token != null) { app.store.token = token; code = ""; "Paired: this phone can upload now." to true } else "Pairing failed: $why" to false
                 rebuild()
             }

@@ -72,9 +72,26 @@ class IosApi(private val store: IosStore) {
         else call(url) { guide, whyNot -> if (guide != null) done(text, guide, null) else done(null, null, whyNot) }
     }
 
-    /** The editing token for a pairing code or link from the admin page's QR. */
-    fun pair(codeOrLink: String, done: (String?, String?) -> Unit) {
+    /**
+     * A token for this phone, from what was pasted: an invite link (an account is made, under `name`), a code from an
+     * account's "Sign in another device", or the admin page's pairing code or link, which gives the site's own token.
+     */
+    fun pair(codeOrLink: String, name: String, done: (String?, String?) -> Unit) {
+        fun token(obj: kotlinx.serialization.json.JsonObject?) = obj?.get("token")?.jsonPrimitive?.content
+        val invite = Regex("invite=([\\w-]{16,})").find(codeOrLink)?.groupValues?.get(1)
+        if (invite != null) {
+            if (name.isBlank()) return done(null, "set the name your photos are credited to first: the account is made under it")
+            return post("/api/account/join", "{\"invite\":${quoted(invite)},\"name\":${quoted(name)}}") { obj, why -> token(obj)?.let { done(it, null) } ?: done(null, why ?: "the server gave no token") }
+        }
         val code = Regex("pair=([\\w-]{16,})").find(codeOrLink)?.groupValues?.get(1) ?: codeOrLink.trim()
+        if ("pair=" in codeOrLink) return pairSite(code, done)
+        post("/api/account/pair/take", "{\"code\":${quoted(code)},\"label\":\"iPhone\"}") { obj, _ -> token(obj)?.let { done(it, null) } ?: pairSite(code, done) }
+    }
+
+    /** Tells the server this phone's account accepts the terms, as it did on the phone: nothing, for the site's own token. */
+    fun acceptTerms(done: () -> Unit) = post("/api/account/terms", "{\"version\":${sh.boulderme.core.TERMS_VERSION}}") { _, _ -> done() }
+
+    private fun pairSite(code: String, done: (String?, String?) -> Unit) {
         post("/api/pair", "{\"code\":${quoted(code)}}") { obj, why -> val t = obj?.get("token")?.jsonPrimitive?.content; if (t != null) done(t, null) else done(null, why ?: "the server gave no token") }
     }
 

@@ -253,4 +253,25 @@ class SessionTest {
         assertTrue(spot.done() && orbit.progress().finished && s.record(t).mode == "orbit")
         assertTrue(s.markers().single().level == Coverage.LEVEL_DONE)
     }
+
+    /** Holds of sets their owners keep private: spots with no name, left out until they're asked for. */
+    @Test fun privateHoldsWaitToBeAskedFor() {
+        val base = TestWorld.plan()
+        val plan = base.copy(targets = base.targets + Target("h2", "hold", listOf(0.0, 2.2, 0.0), listOf(0.0, 0.0, 1.0), 0.12, prio = 3, anon = true))
+        val cov = Coverage(plan, TestWorld.guide())
+        val quiet = cov.state("h2")!!
+        assertTrue(!cov.inScope(quiet) && cov.progress().holds == 2 && cov.anonLeft() == 1)
+        cov.scope = Scope(anon = true)
+        assertTrue(cov.inScope(quiet) && cov.progress().holds == 3)
+        // a flow asks once everything else is done, and only once
+        val flow = CaptureFlow(CaptureSession(plan, TestWorld.guide(), "f9", "test", "a phone", 0.0))
+        flow.more(false)
+        assertEquals(1, flow.session.coverage!!.anonLeft()); assertTrue(!flow.session.anon)
+        val keen = CaptureFlow(CaptureSession(plan, TestWorld.guide(), "f8", "test", "a phone", 0.0), anonFromStart = true)
+        assertTrue(keen.session.anon && keen.session.coverage!!.scope.anon)
+        val later = CaptureFlow(CaptureSession(plan, TestWorld.guide(), "f7", "test", "a phone", 0.0))
+        later.more(true)
+        assertTrue(later.session.anon && later.session.coverage!!.inScope(later.session.coverage!!.state("h2")!!))
+        assertTrue(TERMS_VERSION >= 1 && "CC BY 4.0" in TERMS)
+    }
 }

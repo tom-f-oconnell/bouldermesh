@@ -23,11 +23,12 @@ shot() {    # shot <name> [launch arguments]
     local name=$1; shift
     xcrun simctl terminate "$UDID" "$ID" 2>/dev/null
     local pid
-    pid=$(xcrun simctl launch "$UDID" "$ID" -server "$SERVER" "$@" | awk '{print $NF}')
+    pid=$(xcrun simctl launch "$UDID" "$ID" -server "$SERVER" -terms "${TERMS:-1}" "$@" | awk '{print $NF}')
     sleep "${WAIT:-8}"
     xcrun simctl io "$UDID" screenshot "$OUT/ios-$name.png"
     if ! kill -0 "$pid" 2>/dev/null; then echo "::error::the iPhone app died showing $name"; fail=1; fi
 }
+TERMS=0 shot terms
 shot home
 shot settings -screen settings
 shot calibrate -screen calibrate

@@ -1,5 +1,6 @@
 package sh.boulderme.app
 
+import sh.boulderme.core.TERMS_VERSION
 import android.Manifest
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -48,7 +50,9 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize()) {
                     val go: (Screen) -> Unit = { screen = it }
                     BackHandler(enabled = screen != Screen.Home && screen !is Screen.Capture) { screen = Screen.Home }
-                    when (val s = screen) {
+                    var accepted by remember { mutableStateOf(store.terms >= TERMS_VERSION) }
+                    if (!accepted) TermsScreen { store.terms = TERMS_VERSION; accepted = true }
+                    else when (val s = screen) {
                         is Screen.Capture -> CaptureScreen(this, s, go)       // the camera, edge to edge
                         else -> Box(Modifier.fillMaxSize().safeDrawingPadding()) {
                             when (s) {
@@ -74,6 +78,7 @@ class MainActivity : ComponentActivity() {
      */
     private fun tryOut() {
         intent.getStringExtra("server")?.let { store.server = it }
+        store.terms = if (intent.getStringExtra("terms") == "show") 0 else TERMS_VERSION      // the terms' own screen is looked at too
         screen = when (intent.getStringExtra("screen")) {
             "browse" -> Screen.Browse(intent.getBooleanExtra("get", false))
             "settings" -> Screen.Settings

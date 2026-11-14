@@ -234,7 +234,8 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     /** Leaves the target being asked for (out of reach, or not wanted), and goes on to the next. */
     fun skipCurrent(why: String) { current?.let { coverage?.skip(it, why) }; current = null }
 
-    fun setScope(scope: Scope) { coverage?.scope = scope.copy(set = set); current = null }
+    var anon = false                    // holds of sets kept private count too: from the start if the app's setting says, or once asked at the end
+    fun setScope(scope: Scope) { coverage?.scope = scope.copy(set = set, anon = anon); current = null }
 
     /** The holds, edges and marked spots to draw, in the world. */
     fun markers(): List<Marker> {

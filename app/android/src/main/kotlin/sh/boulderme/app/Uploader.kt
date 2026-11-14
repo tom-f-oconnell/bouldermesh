@@ -38,6 +38,7 @@ object Uploader {
                 var project = u.project
                 if (project == null) {
                     say(id, "Starting…")
+                    api.acceptTerms()
                     project = api.createProject(u.name)
                     u = u.copy(project = project); store.saveUpload(id, u)
                 }

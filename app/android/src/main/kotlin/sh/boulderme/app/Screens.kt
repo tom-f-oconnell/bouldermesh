@@ -50,6 +50,8 @@ import kotlinx.coroutines.withContext
 import sh.boulderme.core.GpsAverager
 import sh.boulderme.core.MagCalibration
 import sh.boulderme.core.MeshRow
+import sh.boulderme.core.TERMS
+import androidx.compose.foundation.layout.safeDrawingPadding
 import sh.boulderme.core.Plan
 import sh.boulderme.core.Vec3
 
@@ -238,10 +240,22 @@ fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
 }
 
 // ----------------------------------------------------------------------------------------------------------- settings
+/** The terms, before anything else: the app goes no further until they're accepted. */
+@Composable
+fun TermsScreen(accept: () -> Unit) {
+    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(20.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text("Before you start", style = MaterialTheme.typography.headlineSmall)
+        Text(TERMS)
+        Button(onClick = accept, modifier = Modifier.fillMaxWidth()) { Text("I agree") }
+        Text("Without this the app can't be used.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
 @Composable
 fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
     var server by remember { mutableStateOf(a.store.server) }
     var credit by remember { mutableStateOf(a.store.credit) }
+    var anonFirst by remember { mutableStateOf(a.store.anonFirst) }
     var token by remember { mutableStateOf(a.store.token) }
     var code by remember { mutableStateOf("") }
     var said by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
@@ -253,14 +267,17 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
         OutlinedTextField(credit, { credit = it.take(80); a.store.credit = credit }, label = { Text("Credit my photos to") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Text("Photos you send are published under Creative Commons Attribution 4.0 (CC BY 4.0): the site and anyone else may use them, crediting this name.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("Sending captures needs the site's editing token. Paste it, or paste the link or code from the admin page's \"Pair a phone\" QR, which gives it once.")
-        OutlinedTextField(token, { token = it; a.store.token = it }, label = { Text("Editing token") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+        TextButton(onClick = { anonFirst = !anonFirst; a.store.anonFirst = anonFirst }) {
+            Text(if (anonFirst) "Holds others marked privately: asked for from the start" else "Holds others marked privately: asked about at the end")
+        }
+        Text("Sending captures needs an account, or the site's own token. Paste an invite link, a code from \"Sign in another device\" on the site, or the admin page's pairing link.")
+        OutlinedTextField(token, { token = it; a.store.token = it }, label = { Text("Token") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
         OutlinedTextField(code, { code = it }, label = { Text("Pairing link or code") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Button(enabled = code.isNotBlank(), onClick = {
             scope.launch {
                 said = try {
-                    token = withContext(Dispatchers.IO) { a.api.pair(code) }
+                    token = withContext(Dispatchers.IO) { a.api.pair(code, a.store.credit) }
                     a.store.token = token; code = ""
                     "Paired: this phone can upload now." to true
                 } catch (e: Exception) { "Pairing failed: ${e.message}" to false }

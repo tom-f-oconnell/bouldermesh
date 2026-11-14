@@ -15,9 +15,9 @@ import kotlin.math.tan
  * Which targets count: those that matter at least `minPrio` (2: holds and the rock on climbs), of these climbs if any
  * are named. set: the set of beta the capture is for: its holds are asked for in detail (as finely as the phone can,
  * from all round: Need.closeM), as a replica of a hold needs; the other holds count as holds do, unless minPrio is 3,
- * which leaves only the set's own.
+ * which leaves only the set's own. anon: holds of sets their owners keep to themselves count too (they're left for last).
  */
-data class Scope(val minPrio: Int = 2, val climbs: Set<String> = emptySet(), val set: String? = null)
+data class Scope(val minPrio: Int = 2, val climbs: Set<String> = emptySet(), val set: String? = null, val anon: Boolean = false)
 
 /** How a target was seen in one photo. */
 data class Seen(val gsdM: Double, val distanceM: Double, val cosFacing: Double, val towards: Vec3, val u: Double, val v: Double)
@@ -77,6 +77,7 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
 
     fun inScope(s: State): Boolean {
         val set = scope.set
+        if (s.target.anon && !scope.anon) return false
         // only the set's own holds, when that's all that's asked for; otherwise every hold known counts, the set's in detail
         if (set != null && s.target.isHold && scope.minPrio >= 3) return set in s.target.sets
         if (s.target.isView) return scope.minPrio <= 3      // the views that tie a capture to its mesh's photos: whatever else counts
@@ -334,6 +335,9 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
         }
         return n
     }
+
+    /** Holds of sets kept private that are still to photograph: asked about once the rest is done. */
+    fun anonLeft(): Int = states.count { it.target.anon && it.skipped == null && !done(it) }
 
     fun skip(id: String, why: String) { byId[id]?.skipped = why }
     fun unskip(id: String) { byId[id]?.skipped = null }

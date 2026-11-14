@@ -135,6 +135,10 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                         TextButton(onClick = { controller.restartAlign() }) { Text("Start again") }
                     }
                     Phase.CAPTURE -> {
+                        if (ui.askMore > 0) {
+                            Button(onClick = { controller.more(true) }) { Text("Photograph ${if (ui.askMore == 1) "it" else "them"} too") }
+                            FilledTonalButton(onClick = { controller.more(false) }) { Text("No") }
+                        }
                         Button(onClick = { controller.shutter() }) { Text("Take") }
                         FilledTonalButton(onClick = { controller.setAuto(!ui.auto) }) { Text(if (ui.auto) "Auto: on" else "Auto: off") }
                         if (plan != null) {

@@ -42,6 +42,8 @@ Each side's tests read files the other really wrote (`shared/src/jvmTest/resourc
                           a hold: sets (the sets of beta it's in), holds (its ids in them, which outlast a plan and are
                           kept when a set is copied or carried to another mesh) and detail_m (metres round it that are the
                           hold, when it's wanted in detail)
+                          anon: a hold of a set its owner keeps private: a spot to photograph, with no role, set or id;
+                          the apps leave these until the rest is done, then ask
     climbs                [{id, name, grade}]
 
 **The guide** (`guide.bin`, little-endian): a copy of the mesh of at most 12,000 faces, to draw and to cast rays at.

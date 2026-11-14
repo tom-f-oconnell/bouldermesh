@@ -29,9 +29,9 @@ class Uploader(private val store: IosStore, private val api: IosApi) {
         if (store.token.isEmpty()) return stop(id, "the server's editing token isn't set (Settings)")
         if (u.project != null) return next(id)
         say(id, "Starting…")
-        api.createProject(u.name) { project, why ->
+        api.acceptTerms { api.createProject(u.name) { project, why ->
             if (project == null) stop(id, why ?: "no project") else { store.saveUpload(id, u.copy(project = project)); next(id) }
-        }
+        } }
     }
 
     /** The next thing still to send, then this again once it's gone. */

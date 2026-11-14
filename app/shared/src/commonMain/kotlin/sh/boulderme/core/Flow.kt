@@ -18,6 +18,7 @@ data class CaptureUi(
     val marking: Boolean = false, val pairs: Int = 0, val guided: Boolean = true, val sensors: String = "",
     val reach: String = "",         // what counts, in words: "whole rock", "its climbs", or "the holds of <a set of beta>"
     val target: String = "",        // how the hold being photographed in detail stands
+    val askMore: Int = 0,           // everything asked for is done, and this many holds others marked privately are left: photograph them too?
     val canCard: Boolean = false,   // a photo with a bank card beside that hold can be asked for; card: the next photo is it
     val card: Boolean = false,
 )
@@ -46,7 +47,7 @@ class FlowOut(val ui: CaptureUi, val guide: Similarity?, val solid: Boolean, val
  * tapped on the real rock, twice, line the mesh up (GHOST, ROCK); the fit is shown over the rock to check (CONFIRM), and
  * tightens against the points the phone tracks; then photos (CAPTURE). With none: the rock's middle is tapped (CENTRE).
  */
-class CaptureFlow(val session: CaptureSession, val set: String? = null) {
+class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFromStart: Boolean = false) {
     private val plan = session.plan
     private val guide = session.guide
     private val afterLevel = if (plan != null && guide != null) Phase.GHOST else Phase.CENTRE
@@ -60,6 +61,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null) {
         private set
     val wide: Boolean get() = reach == 1
     private val setName = set?.let { id -> plan?.sets?.firstOrNull { it.id == id }?.let { it.name ?: "this beta" } }
+    private var askedMore = anonFromStart
     private var cardNext = false
     private var cardShot = false
     private var ghost: Similarity? = null
@@ -84,7 +86,10 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null) {
     private var lastTarget: String? = null
     private var ui = CaptureUi(phase = phase, guided = plan != null)
 
-    init { session.set = set.takeIf { setName != null }; session.setScope(Scope(minPrio = reach)) }
+    init { session.set = set.takeIf { setName != null }; session.anon = anonFromStart; session.setScope(Scope(minPrio = reach)) }
+
+    /** The answer to "photograph the holds others marked privately too?" (CaptureUi.askMore): asked once. */
+    fun more(yes: Boolean) { askedMore = true; if (yes) { session.anon = true; session.setScope(Scope(minPrio = reach)); levelsDirty = true } }
 
     // ---- from the screen ---------------------------------------------------------------------------------------------
     /** Goes on without the turn on the spot: down is then as the phone's tracking has it. */
@@ -228,7 +233,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null) {
             lostAt = null; tracked = true
         }
         val base = ui.copy(phase = phase, kept = session.shotCount, rejected = rejected, note = note, sensors = sensorNote, auto = session.auto, wide = wide, marking = marking,
-            reach = when (reach) { 1 -> "whole rock"; 2 -> "its climbs"; else -> "only the holds of $setName" }, card = cardNext, target = "", canCard = false,
+            reach = when (reach) { 1 -> "whole rock"; 2 -> "its climbs"; else -> "only the holds of $setName" }, card = cardNext, target = "", canCard = false, askMore = 0,
             pairs = session.taps.size, tracking = tracking)
         if (!tracking) {
             ui = base.copy(text = "Hold on: the phone is finding where it is. Move it slowly, looking at the rock.", turnX = 0.0, turnY = 0.0)
@@ -285,6 +290,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null) {
                 val p = out.progress
                 ui = base.copy(text = out.hint.text, turnX = out.hint.turnX, turnY = out.hint.turnY, total = p.total, done = p.done + p.skipped, holds = p.holds,
                     holdsDone = p.holdsDone, canSkip = plan != null && out.hint.targetId != null, target = out.status, canCard = out.status.isNotEmpty())
+                val left = if (out.hint.kind == Hint.Kind.DONE && !askedMore) session.coverage?.anonLeft() ?: 0 else 0
+                if (left > 0) ui = ui.copy(askMore = left, text = "Done. $left more hold${if (left == 1) " has" else "s have"} been marked here by others, privately. Photograph ${if (left == 1) "it" else "them"} too?")
                 if (cardNext) ui = ui.copy(text = "Hold a bank card flat on the rock beside the hold, all of it in the picture and out of any glare, and press the shutter")
                 // a card photo is taken by hand: it waits for the card to be there
                 val shoot = (if (cardNext) wantShot else out.shoot || wantShot) && !inFlight

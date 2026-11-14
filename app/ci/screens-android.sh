@@ -21,6 +21,7 @@ shot() {    # shot <name> [extras for the intent]
     if [ -z "$(adb shell pidof $ID)" ]; then echo "::error::the Android app died showing $name"; adb logcat -d -b crash | tail -80; fail=1; fi
 }
 if [ "$ONLY" != capture ]; then
+    shot terms --es terms show
     shot home
     shot settings --es screen settings
     shot calibrate --es screen calibrate

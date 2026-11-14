@@ -206,4 +206,10 @@ with tempfile.TemporaryDirectory() as tmp:
     finally:
         out = srv.stop()
 print("what accounts add OK")
+
+
+# the apps carry the same terms, to show with no signal
+kt = (ROOT / "app/shared/src/commonMain/kotlin/sh/boulderme/core/Terms.kt").read_text()
+assert f"const val TERMS_VERSION = {accounts.TERMS_VERSION}\n" in kt and all(para.replace('"', '\\"') in kt for para in accounts.TERMS.split("\n\n")), "app/shared Terms.kt isn't the server's terms"
+print("the apps' terms are the server's OK")
 print("ALL ACCOUNTS TESTS PASSED")

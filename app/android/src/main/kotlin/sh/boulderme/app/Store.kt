@@ -14,6 +14,12 @@ class Store(context: Context) {
     private val plans = File(root, "plans").apply { mkdirs() }
     val captures = File(root, "captures").apply { mkdirs() }
 
+    var terms: Int          // the version of the terms accepted on this phone (0: none): nothing else works until the current one is
+        get() = prefs.getInt("terms", 0)
+        set(v) = prefs.edit().putInt("terms", v).apply()
+    var anonFirst: Boolean  // holds others marked privately are asked for from the start of a capture, not at its end
+        get() = prefs.getBoolean("anon_first", false)
+        set(v) = prefs.edit().putBoolean("anon_first", v).apply()
     var credit: String      // who photos are credited to, under the licence they're sent with
         get() = prefs.getString("credit", "") ?: ""
         set(v) = prefs.edit().putString("credit", v.trim()).apply()

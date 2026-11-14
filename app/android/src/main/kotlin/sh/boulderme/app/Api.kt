@@ -51,12 +51,26 @@ class Api(private val store: Store) {
         return text to read(open(url))
     }
 
-    /** The editing token for a pairing code or link from the admin page's QR. */
-    fun pair(codeOrLink: String): String {
+    /**
+     * A token for this phone, from what was pasted: an invite link (an account is made, under `name`), a code from an
+     * account's "Sign in another device", or the admin page's pairing code or link, which gives the site's own token.
+     */
+    fun pair(codeOrLink: String, name: String): String {
+        fun q(s: String) = Json.encodeToString(kotlinx.serialization.serializer<String>(), s)
+        Regex("invite=([\\w-]{16,})").find(codeOrLink)?.groupValues?.get(1)?.let { invite ->
+            if (name.isBlank()) throw IOException("set the name your photos are credited to first: the account is made under it")
+            return postJson("/api/account/join", "{\"invite\":${q(invite)},\"name\":${q(name)}}")["token"]?.jsonPrimitive?.content ?: throw IOException("the server gave no token")
+        }
         val code = Regex("pair=([\\w-]{16,})").find(codeOrLink)?.groupValues?.get(1) ?: codeOrLink.trim()
+        if ("pair=" !in codeOrLink) runCatching {
+            postJson("/api/account/pair/take", "{\"code\":${q(code)},\"label\":${q(android.os.Build.MODEL)}}")["token"]?.jsonPrimitive?.content
+        }.getOrNull()?.let { return it }
         return postJson("/api/pair", "{\"code\":${Json.encodeToString(kotlinx.serialization.serializer<String>(), code)}}")["token"]?.jsonPrimitive?.content
             ?: throw IOException("the server gave no token")
     }
+
+    /** Tells the server this phone's account accepts the terms, as it did on the phone: nothing, for the site's own token. */
+    fun acceptTerms() { runCatching { postJson("/api/account/terms", "{\"version\":${sh.boulderme.core.TERMS_VERSION}}") } }
 
     fun createProject(name: String): String =
         postJson("/api/projects", "{\"name\":${Json.encodeToString(kotlinx.serialization.serializer<String>(), name)}}")["id"]?.jsonPrimitive?.content

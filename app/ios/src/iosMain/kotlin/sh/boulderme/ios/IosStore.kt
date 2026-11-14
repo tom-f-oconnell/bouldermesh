@@ -17,6 +17,12 @@ class IosStore {
     var server: String
         get() = prefs.stringForKey("server")?.takeIf { it.isNotBlank() } ?: DEFAULT_SERVER
         set(v) = prefs.setObject(v.trim().trimEnd('/'), forKey = "server")
+    var terms: Int          // the version of the terms accepted on this phone (0: none): nothing else works until the current one is
+        get() = prefs.integerForKey("terms").toInt()
+        set(v) = prefs.setInteger(v.toLong(), forKey = "terms")
+    var anonFirst: Boolean  // holds others marked privately are asked for from the start of a capture, not at its end
+        get() = prefs.boolForKey("anon_first")
+        set(v) = prefs.setBool(v, forKey = "anon_first")
     var credit: String      // who photos are credited to, under the licence they're sent with
         get() = prefs.stringForKey("credit") ?: ""
         set(v) = prefs.setObject(v.trim(), forKey = "credit")

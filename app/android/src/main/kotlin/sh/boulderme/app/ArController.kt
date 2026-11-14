@@ -62,7 +62,7 @@ class ArController(
     private val dir = store.captureDir(id)
     private val guide = guide.takeIf { plan != null }
     private val core = CaptureSession(plan, this.guide, id, BuildInfo.APP, "${Build.MANUFACTURER} ${Build.MODEL}", System.currentTimeMillis() / 1000.0)
-    private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = store.credit.ifBlank { null } }, set)
+    private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = store.credit.ifBlank { null } }, set, store.anonFirst)
     private val lock = Any()        // round every use of the flow: frames are drawn on one thread, photos judged on another
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -136,6 +136,7 @@ class ArController(
     fun toggleMarking() = synchronized(lock) { flow.toggleMarking() }
     fun toggleWide() = synchronized(lock) { flow.toggleWide() }
     fun toggleCard() = synchronized(lock) { flow.toggleCard() }
+    fun more(yes: Boolean) = synchronized(lock) { flow.more(yes) }
     fun turnGhost(degrees: Double) = synchronized(lock) { flow.turnGhost(degrees) }
     fun bringGhost() = synchronized(lock) { flow.bringGhost() }
     fun confirmFit() = synchronized(lock) { flow.confirmFit() }

@@ -113,6 +113,7 @@ data class Target(
     val climbs: List<String> = emptyList(),
     val sets: List<String> = emptyList(),       // a hold: the sets of beta it's in,
     val holds: List<String> = emptyList(),      // which holds of theirs it is (ids that outlast a plan),
+    val anon: Boolean = false,                  // a hold of a set someone keeps to themselves: a spot to photograph, with no role, set or name
     @SerialName("detail_m") val detailM: Double? = null,    // and how far round it reaches, in metres: what a close capture of it is of
 ) {
     val point: Vec3 get() = Vec3.of(p)
