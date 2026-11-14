@@ -63,7 +63,10 @@ class ServerFilesTest {
         val cov = Coverage(plan, guide)
         cov.scope = Scope(minPrio = 1, set = "s1")
         val h = cov.state("h0")!!; val other = cov.state("h1")!!
-        assertTrue(cov.detail(h) && cov.inScope(h) && !cov.inScope(other), "only the set's holds")
+        assertTrue(cov.detail(h) && cov.inScope(h) && cov.inScope(other) && !cov.detail(other), "its holds in detail, and every other hold as a hold")
+        assertTrue(TestWorld.near(cov.needGsdM(other)!!, 0.0005, 1e-9) && cov.needViews(other) == 4)
+        cov.scope = Scope(minPrio = 3, set = "s1"); assertTrue(cov.inScope(h) && !cov.inScope(other), "or only the set's holds, when that's what's asked")
+        cov.scope = Scope(minPrio = 1, set = "s1")
         // its region (12 cm round it) fills the picture: further off than the lens's nearest, and about a tenth of a millimetre a pixel
         val close = cov.closeM(h)!!
         assertTrue(TestWorld.near(close, 0.12 * 1.1 / 0.5, 1e-6) && TestWorld.near(cov.needGsdM(h)!!, close / 3000, 1e-9), "$close")

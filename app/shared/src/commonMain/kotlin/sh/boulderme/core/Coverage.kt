@@ -13,8 +13,9 @@ import kotlin.math.tan
 
 /**
  * Which targets count: those that matter at least `minPrio` (2: holds and the rock on climbs), of these climbs if any
- * are named. set: the set of beta the capture is for: of holds, only its own then count, and they're asked for in
- * detail (as finely as the phone can, from all round: Need.closeM), as a replica of a hold needs.
+ * are named. set: the set of beta the capture is for: its holds are asked for in detail (as finely as the phone can,
+ * from all round: Need.closeM), as a replica of a hold needs; the other holds count as holds do, unless minPrio is 3,
+ * which leaves only the set's own.
  */
 data class Scope(val minPrio: Int = 2, val climbs: Set<String> = emptySet(), val set: String? = null)
 
@@ -76,7 +77,8 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
 
     fun inScope(s: State): Boolean {
         val set = scope.set
-        if (set != null && s.target.isHold) return set in s.target.sets
+        // only the set's own holds, when that's all that's asked for; otherwise every hold known counts, the set's in detail
+        if (set != null && s.target.isHold && scope.minPrio >= 3) return set in s.target.sets
         if (s.target.isView) return scope.minPrio <= 3      // the views that tie a capture to its mesh's photos: whatever else counts
         return s.target.prio >= scope.minPrio && (scope.climbs.isEmpty() || s.target.climbs.any { it in scope.climbs })
     }
@@ -193,7 +195,7 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
     }
 
     /** What each hold in scope has got so far, for the capture's record and its screen. */
-    fun reached(): List<RecordHold> = states.filter { it.target.isHold && inScope(it) }.map { s ->
+    fun reached(): List<RecordHold> = states.filter { it.target.isHold && (if (scope.set != null) detail(it) else inScope(it)) }.map { s ->
         val sides = sidesWanted(s); val ties = tiesWanted(s)
         RecordHold(s.target.id, s.target.holds, s.target.p, if (detail(s)) s.target.detailM else null, bestGsdM(s)?.let { kotlin.math.round(it * 1e5) / 100 },
             goodViews(s), needViews(s), s.sides.sorted().map { SIDE_NAMES[it] }, sides.sorted().map { SIDE_NAMES[it] }, ties.count { it in s.rungs }, ties.count(),

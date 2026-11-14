@@ -228,7 +228,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null) {
             lostAt = null; tracked = true
         }
         val base = ui.copy(phase = phase, kept = session.shotCount, rejected = rejected, note = note, sensors = sensorNote, auto = session.auto, wide = wide, marking = marking,
-            reach = when (reach) { 1 -> "whole rock"; 2 -> "its climbs"; else -> "the holds of $setName" }, card = cardNext, target = "", canCard = false,
+            reach = when (reach) { 1 -> "whole rock"; 2 -> "its climbs"; else -> "only the holds of $setName" }, card = cardNext, target = "", canCard = false,
             pairs = session.taps.size, tracking = tracking)
         if (!tracking) {
             ui = base.copy(text = "Hold on: the phone is finding where it is. Move it slowly, looking at the rock.", turnX = 0.0, turnY = 0.0)

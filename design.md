@@ -1482,8 +1482,8 @@ a tapped middle, two photos each, any of which can be marked out of reach.
 
 **Sets of beta, and holds in detail.** A mesh's hand-marked holds are sets (`betasets.json`: named, made blank or as a
 copy of another set or of what a video's climber used), and a hold has an id that outlasts copies, ties and plans, and
-a size (`r_m`: one hand's width round it by default, two at most). A capture can be for one set: then only that set's
-holds count as holds, and each is wanted as a replica of it would need (the plan's `detail` need). The phone goes as
+a size (`r_m`: one hand's width round it by default, two at most). A capture can be for one set: every hold known still counts as a hold (so that whoever adds to a mesh
+photographs all that may matter, unless they ask for the set's alone), and each of that set's is wanted as a replica of it would need (the plan's `detail` need). The phone goes as
 near as it takes for the hold's region to fill the picture, not nearer: at a phone's closest focus the depth of field
 is millimetres and a hold has centimetres of relief, so tiles from closer wouldn't be sharp across it. From there:
 straight on, then from its left, right, above and below (where a phone can get to: not in the ground, not past reach,
