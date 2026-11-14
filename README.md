@@ -821,6 +821,12 @@ machine (hal), copies it each night over SSH, with nothing connecting to that ma
 - `changed/<date>/`: whatever that night's copy replaced or deleted in `current/`, so a mesh deleted on the server can be
   had back. Both kept 30 days (`KEEP_DAYS`).
 
+The server is in use while it copies, so a file can go between rsync listing it and copying it (replaced by a newer
+version, moved to `rejected/`, deleted). That leaves this copy's file as it was, so nothing is lost, and the copy runs
+once more straight away to take what those became. Kept files (meshes, photos, masks, videos) that went both times are
+named in that night's report, and the admin page shows them in orange; the next night's copy brings them. A job's
+staging folders (`data/compute/bm-*`) aren't copied. Any other error fails the night.
+
 It uses a key of its own with no passphrase, which the server takes only for reading its checkout with rsync. On hal:
 
     ssh-keygen -t ed25519 -N '' -C 'bouldermesh backup' -f ~/.ssh/bouldermesh_backup

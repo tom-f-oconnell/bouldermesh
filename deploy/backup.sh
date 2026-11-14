@@ -129,6 +129,7 @@ cat "$tmp/protect" - > "$tmp/filter" <<'RULES'
 - /data/cache/terrarium/
 - /data/uploads/
 - /data/compute/jobs/
+- /data/compute/bm-*/
 - /data/volunteers/
 - /data/tunnel/
 - /data/projects/*/work/
@@ -142,8 +143,35 @@ cat "$tmp/protect" - > "$tmp/filter" <<'RULES'
 RULES
 # data/ there first, before anything here is deleted to match: a copy of the wrong folder would move all of current/ aside
 rsync -e "$ssh" --list-only "${from}data/" > /dev/null 2>&1 || fail "no data/ at $src: is that the server's checkout? nothing copied"
-rsync -a --delete --delete-excluded --backup --backup-dir="$dest/changed/$day" --info=stats1 -e "$ssh" \
-    --filter="merge $tmp/filter" "$from" "$dest/current/"
+# The server is in use while this copies, so files can go between rsync listing them and copying them (exit 24): one
+# replaced by a newer version (written under another name, then renamed over it), a photo moved to rejected/, a mesh
+# deleted. rsync then leaves this copy's file as it was, so nothing is lost, but it's a night behind. So it goes once
+# more straight away, which takes what those became; what still went, of what's kept (meshes, photos, masks, videos),
+# is named in the night's report, for the admin page. Any other error stops the night.
+copy() {
+    rc=0
+    rsync -a --delete --delete-excluded --backup --backup-dir="$dest/changed/$day" --info=stats1 -e "$ssh" \
+        --filter="merge $tmp/filter" "$from" "$dest/current/" 2> "$tmp/copy.err" || rc=$?
+    cat "$tmp/copy.err" >&2
+}
+copy
+if [ "$rc" = 24 ]; then
+    echo "some files went on the server while they were copied: copying again, for what they became" >&2
+    copy
+fi
+gone=
+case "$rc" in
+    0) ;;
+    24) gone=$(sed -n 's/^file has vanished: "\(.*\)"$/\1/p' "$tmp/copy.err" | sed 's|^.*/data/|data/|' \
+                   | grep -E '^data/(meshes/|projects/[^/]+/(photos|masks|rejected)/|cache/videos/)' | sort -u || true) ;;
+    *) fail "the copy stopped (rsync exit $rc): $(grep -v '^ *$' "$tmp/copy.err" | tail -1)" ;;
+esac
+note=
+if [ -n "$gone" ]; then
+    n=$(printf '%s\n' "$gone" | wc -l | tr -d ' ')
+    note="$n kept file(s) went on the server while they were copied, twice: kept here as the night before had them; the next night's copy follows them: $(printf '%s\n' "$gone" | head -5 | tr '\n' ' ')"
+    echo "$note" >&2
+fi
 [ -d "$dest/current/data" ] || fail "no data/ came from $src: is that the server's checkout?"
 for snap in "$dest/current/data/snapshots/"*.backup; do
     [ -e "$snap" ] || continue
@@ -158,7 +186,7 @@ echo "backed up $src to $dest/current ($(du -sh "$dest/current" | cut -f1)); dat
 if [ -n "$handshake" ]; then    # the server may now delete what it marked before this copy began, and gets back what it wants
     $handshake backed-up "$started"
     send_manifest
-    report ok ""
+    report ok "$note"
     send_back
 else
     echo "no handshake key ($hkey): the server offloads nothing (README, \"Backups\")"

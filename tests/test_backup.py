@@ -48,7 +48,7 @@ try:
                       ("projects/aaaaaaaaaaaa/sources.json", b"{}"), ("cache/videos/vvvvvvvvvvv.mp4", b"video"),
                       ("cache/http/page", b"html"), ("cache/http-kept/ab/photo", b"jpg"), ("cache/models/w.pt", b"weights"), ("uploads/u.part", b"up"),
                       ("cache/terrain/0123456789abcdef.bin", b"heights"), ("cache/terrarium/10/176/398.png", b"png"),
-                      ("compute/jobs/j.in.tar", b"tar"), ("bouldermesh.sqlite-wal", b"wal"), ("mesh-views.jsonl", b"{}\n")):
+                      ("compute/jobs/j.in.tar", b"tar"), ("compute/bm-beta-abc123/v.mp4", b"staged"), ("compute/server_id", b"0123abcd"), ("bouldermesh.sqlite-wal", b"wal"), ("mesh-views.jsonl", b"{}\n")):
         (data / rel).parent.mkdir(parents=True, exist_ok=True)
         (data / rel).write_bytes(body)
     (checkout / ".env").write_text("EDIT_TOKEN=secret\n")
@@ -62,7 +62,7 @@ try:
     got = {str(p.relative_to(dest / "current")) for p in (dest / "current").rglob("*") if p.is_file()}
     assert got == {".env", "data/meshes/m1/mesh.glb", "data/meshes/m2/mesh.glb", "data/projects/aaaaaaaaaaaa/photos/p.jpg",
                    "data/projects/aaaaaaaaaaaa/rejected/r.jpg", "data/projects/aaaaaaaaaaaa/sources.json", "data/cache/videos/vvvvvvvvvvv.mp4",
-                   "data/cache/http/page", "data/cache/http-kept/ab/photo", "data/mesh-views.jsonl", "data/snapshots/bouldermesh.sqlite.backup", "data/snapshots/volunteers.sqlite.backup",
+                   "data/cache/http/page", "data/cache/http-kept/ab/photo", "data/mesh-views.jsonl", "data/compute/server_id", "data/snapshots/bouldermesh.sqlite.backup", "data/snapshots/volunteers.sqlite.backup",
                    "data/snapshots/machines.sqlite.backup"}, sorted(got)
     nights = list((dest / "db").iterdir())
     assert len(nights) == 1 and {p.name for p in nights[0].iterdir()} >= {"bouldermesh.sqlite.backup"}
@@ -173,6 +173,50 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
     assert r.returncode == 0 and b"restored 1 file(s)" in r.stdout, r
     assert not (data / "restore-inbox" / "projects" / "bbbbbbbbbbbb").exists() and not (data / "x").exists(), "only what's wanted"
     print("offloading's handshake OK")
+
+    # files that go on the server while they're copied (rsync's exit 24, as a job's staged video did on Nov 13, 2026): the
+    # copy goes once more; what's kept and went both times is named in a good night's report; any other error stops it
+    real = shutil.which("rsync")
+    shim = TMP / "bin"
+    shim.mkdir()
+    (shim / "rsync").write_text(f"""#!/bin/sh
+# rsync, but the night's main copy (the one with --backup-dir) says a file went, as FAKE_VANISH asks
+case "$*" in *--backup-dir*) ;; *) exec {real} "$@" ;; esac
+echo x >> {TMP}/copies
+case "$FAKE_VANISH" in
+    error) echo "rsync error: some files/attrs were not transferred (code 23)" >&2; exit 23 ;;
+esac
+{real} "$@" || exit $?
+case "$FAKE_VANISH" in
+    once) [ "$(wc -l < {TMP}/copies)" -gt 1 ] && exit 0
+          echo 'file has vanished: "{data}/compute/bm-beta-zzz/v.mp4"' >&2; exit 24 ;;
+    kept) echo 'file has vanished: "{data}/meshes/m9/mesh.glb"' >&2
+          echo 'file has vanished: "{data}/mesh-views.jsonl"' >&2; exit 24 ;;
+esac
+""")
+    (shim / "rsync").chmod(0o755)
+    venv = {**henv, "PATH": f"{shim}:{os.environ['PATH']}"}
+    night = lambda mode: subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), str(checkout)],  # noqa: E731
+                                        env={**venv, "FAKE_VANISH": mode}, capture_output=True, text=True)
+    copies = lambda: len((TMP / "copies").read_text().split()) if (TMP / "copies").exists() else 0  # noqa: E731
+    r = night("once")
+    assert r.returncode == 0 and copies() == 2 and "copying again" in r.stderr, r.stdout + r.stderr
+    rep = json.loads((data / "backup-report.json").read_text())
+    assert rep["status"] == "ok" and rep["why"] == "", "a staged file that went, then nothing: a good night, nothing to say"
+    (TMP / "copies").unlink()
+    r = night("kept")
+    assert r.returncode == 0 and copies() == 2, r.stdout + r.stderr
+    rep = json.loads((data / "backup-report.json").read_text())
+    assert rep["status"] == "ok" and rep["why"].startswith("1 kept file(s) went") and "data/meshes/m9/mesh.glb" in rep["why"], rep
+    assert "mesh-views" not in rep["why"], "only what's kept is named"
+    (TMP / "copies").unlink()
+    before = (data / "backed-up").read_text()
+    r = night("error")
+    assert r.returncode == 1 and copies() == 1, r.stdout + r.stderr
+    rep = json.loads((data / "backup-report.json").read_text())
+    assert rep["status"] == "failed" and "rsync exit 23" in rep["why"] and "(code 23)" in rep["why"], rep
+    assert (data / "backed-up").read_text() == before, "a failed night says nothing of a good copy"
+    print("files going during the copy OK")
     print("ALL BACKUP TESTS PASSED")
 finally:
     shutil.rmtree(TMP, ignore_errors=True)

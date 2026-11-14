@@ -384,6 +384,9 @@ function renderBackup(b){
   } else if (why && rep.ended > b.confirmed) {
     level = 'late';
     say = `The latest backup, ${ago(rep.ended)} ago, failed.<small>${why}. The last good one began ${ago(b.confirmed)} ago.</small>`;
+  } else if (rep?.status === 'ok' && rep.why && rep.ended >= b.confirmed) {   // good, but some kept files changed as it ran
+    level = 'late';
+    say = `The latest backup, ${ago(rep.ended)} ago, is good, but some files changed on the server while it copied them.<small>${esc(rep.why)}</small>`;
   }
   const banner = $('#backupbanner');
   banner.hidden = !level;
