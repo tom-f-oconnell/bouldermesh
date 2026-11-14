@@ -1412,6 +1412,43 @@ Chromium and its libraries take about 0.6 GB of the server's image (`THUMBS=1`, 
 leaves them out.
 
 
+## Accounts (`backend/accounts.py`)
+
+**What they're for.** Friends adding to the site: photos and videos for climbs, captures from the apps, their own beta.
+The owner approves what's added, and later an area's moderators can. A handful of people at first, built in the shape
+it would have with many.
+
+**Signing in.** An account comes from an invite: a link from the admin page, good once, for two weeks. Whoever opens it
+picks a name (what their photos are credited to) and the browser is given a token, kept there and sent as the site's
+own editing token is. No passwords and no email: the domain sends no mail. Another device signs in with a ten-minute
+code a signed-in one asks for. Only hashes are kept. Google or Apple sign-in would be one more way to reach the same
+account: neither needs email, Apple's needs the paid developer membership, and an iPhone app that offers Google's has
+to offer Apple's too.
+
+**What a token may do.** The owner is whoever holds EDIT_TOKEN. An account's token may change only what's on a short
+list (`USER_MAY` in server.py), and only once it has accepted the terms: everything else stays the owner's, so a route
+added later is closed to accounts until it's put on the list. Roles are owner, moderator (with the areas they're given)
+and user; `RANK` is whose work goes first.
+
+**The terms.** Accepted once, before anything is sent (`TERMS`, versioned): everything captured or uploaded, and what
+is made from it alone, is CC BY 4.0 credited to the account's name. A mesh that also draws on web photos stays under
+those photos' terms, which is why the wording says "from it alone". The apps are to refuse to go on without it.
+
+**Beta.** A set made with an account's token is its own (`owner`), under its name; ten sets a mesh for each account
+and a hundred holds a set (which also keeps anyone from writing with them). A set is shared unless its owner says
+not; one not shared is seen by its owner and the site's owner only, but its holds still go into the capture plan as
+spots with no name, role or set (`anon`), so that whoever adds to a mesh photographs every hold that may matter.
+
+**To come back to.**
+- A hundred holds a set is thought very high (the owner, 2026-11-13). If sets ever come near it, look again: at the
+  limit, and at what those sets are.
+- The order work is taken in: the owner's, moderators', users' approved, the backfill, then what isn't approved yet
+  (meshed last, so its contributor can see it; approval moves it up).
+- What an account deletes isn't destroyed at once: marked, kept while there's room or until it's backed up, and where a
+  mesh was already made from it the owner is told first, to judge whether it's worth keeping.
+- Not built yet: the queue of what's added and its approval, quotas, export, that marking for deletion, the apps'
+  sign-in and their terms screen, the page's sign-in.
+
 ## The phone apps (`app/`)
 
 Many meshes lack what only someone at the rock can give: which way is down and north, how big it is, where exactly it

@@ -48,6 +48,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
 import admin as admin_mod  # noqa: E402
+import accounts as accounts_mod  # noqa: E402
 import beta as beta_mod  # noqa: E402
 import captureplan  # noqa: E402
 import scale as scale_mod  # noqa: E402
@@ -1643,8 +1644,12 @@ def capture_plan(mid: str) -> dict | None:
                 holds += [{"p": h["p"], "role": h.get("role"), "from": "video", "climbs": [c for c in of if c in climbs]} for h in v.get("holds") or []]
             sets = beta_mod.load_sets(d)     # the sets of beta made by hand: each hold with the sets it's in, and its set's climb
             for one in sets:
+                if not one.get("shared", True):     # not shared: its holds are still worth photographing, as spots with no name, role or set
+                    holds += [{"p": h["p"], "role": None, "from": "private", "sets": [], "ids": [], "climbs": [], "anon": True} for h in one["holds"]]
+                    continue
                 holds += [{"p": h["p"], "role": h.get("role"), "from": "marked", "sets": [one["id"]], "ids": [h.get("id") or beta_mod.hold_id(h["p"])],
                            "r_m": h.get("r_m"), "climbs": [one["climb"]] if one.get("climb") in climbs else []} for h in one["holds"]]
+            sets = [one for one in sets if one.get("shared", True)]
             plan = captureplan.make(d, holds, [{**c, "view": views.get(c["id"])} for c in climbs.values()], scale, want,
                                     sets=[{"id": one["id"], "name": one["name"], "climb": one.get("climb")} for one in sets])
     facing = mesh_heading(mid)
@@ -1677,7 +1682,7 @@ def capture_meshes() -> list[dict]:
         except Exception:
             holds, sets = 0, []
         out.append({"id": m["id"], "name": m["name"], "lat": m["lat"], "lng": m["lng"], "climbs": climbs or [], "holds": holds,
-                    "sets": [one["name"] for one in sets]})
+                    "sets": [one["name"] for one in sets if one.get("shared", True)]})
     return out
 
 
@@ -7776,6 +7781,46 @@ def came_went(kind: str):
     return tell
 
 
+ACCOUNTS = accounts_mod.Accounts(DATA / "accounts.sqlite")
+# what an account's token may change (a method and a path): anything else needs the site's owner. The account's own
+# routes (/api/account/...) check for themselves.
+USER_MAY = (("POST", r"/api/meshes/[0-9a-f]+/beta/sets"), ("PATCH", r"/api/meshes/[0-9a-f]+/beta/sets/[0-9a-z]+"),
+            ("DELETE", r"/api/meshes/[0-9a-f]+/beta/sets/[0-9a-z]+"))
+OWNER = {"id": None, "name": None, "role": "owner", "areas": ["*"], "accepted": True, "quota_mb": None, "created": None}
+JOIN_TRIES, JOIN_WINDOW = 10, 3600      # invites and pairing codes one address may try in an hour
+_join_tries: dict[str, list[float]] = {}
+
+
+def join_allowed(ip: str) -> bool:
+    """Whether an address may try another invite or pairing code yet: guessing them is slowed to JOIN_TRIES an hour."""
+    now = time.time()
+    tries = _join_tries[ip] = [t for t in _join_tries.get(ip, []) if now - t < JOIN_WINDOW]
+    if len(_join_tries) > 5000:
+        _join_tries.clear()
+    tries.append(now)
+    return len(tries) <= JOIN_TRIES
+
+
+def admin_user_invite(body: dict) -> dict:
+    """An invite to make an account with: {role?, areas?, note?}. The link is shown this once."""
+    try:
+        made = ACCOUNTS.invite(body.get("role") or "user", body.get("areas"), body.get("note"))
+    except accounts_mod.Refused as e:
+        raise ValueError(str(e))
+    return {**admin_state(), "invite": {**made, "url": f"{SITE_URL.rstrip('/')}/?invite={made['code']}" if SITE_URL else None}}
+
+
+def admin_user_change(body: dict) -> dict:
+    """An account's role, areas, quota, name, or whether it's closed: {id, ...those to change}; sign_out: forget its devices."""
+    try:
+        ACCOUNTS.change(str(body.get("id")), {k: body[k] for k in ("role", "areas", "quota_mb", "disabled", "name") if k in body})
+        if body.get("sign_out"):
+            ACCOUNTS.sign_out(str(body.get("id")))
+    except accounts_mod.Refused as e:
+        raise ValueError(str(e))
+    return admin_state()
+
+
 MACHINES = pullwork.Board(DATA / "compute" / "machines.sqlite", DATA / "compute" / "jobs", lambda: compute_settings()["compute.image"],
                           jobctl, machine_rules, lambda m: NOTIFIER.registered("machine", m, f" ({m['client'] or 'a worker script'})"),
                           came_went=came_went("machine"), idle_why=lambda: machines_idle_why(), downloaded=script_downloaded("worker"),
@@ -8298,6 +8343,56 @@ class Handler(BaseHTTPRequestHandler):
         got = self.headers.get("Authorization", "")
         return bool(EDIT_TOKEN) and hmac.compare_digest(got.encode(), f"Bearer {EDIT_TOKEN}".encode())
 
+    def who(self) -> dict | None:
+        """Who a request is from: the site's owner (its editing token, or anyone where there's none), an account (by
+        its token), or nobody. A view-only site has no accounts."""
+        if READ_ONLY:
+            return None
+        if not EDIT_TOKEN or self.is_editor():
+            return OWNER
+        got = self.headers.get("Authorization", "")
+        return ACCOUNTS.user_for(got[7:]) if got.startswith("Bearer ") else None
+
+    def user_may(self) -> bool:
+        """Whether this change is one an account's token may make (USER_MAY), sent by an account that has accepted the terms."""
+        path = urlparse(self.path).path
+        if not any(method == self.command and re.fullmatch(r, path) for method, r in USER_MAY):
+            return False
+        user = self.who()
+        return user is not None and user["accepted"]
+
+    def account(self, p: str) -> None:
+        """POST /api/account/...: join {invite, name}, pair/take {code} (from anyone: the invite or code is what's
+        checked), and for an account's own token: terms {version}, pair, signout {everywhere?}."""
+        if READ_ONLY:
+            return self.send_json({"error": "this copy of the site is view-only"}, 403)
+        if self.cross_site():
+            return self.send_json({"error": "refused: sent from another site's page"}, 403)
+        body = self.read_json()
+        label = (self.headers.get("User-Agent") or "")[:60]
+        try:
+            if p in ("/api/account/join", "/api/account/pair/take"):
+                if not join_allowed(self.address_string()):
+                    return self.send_json({"error": "too many tries from here: wait an hour"}, 429)
+                made = (ACCOUNTS.join(body.get("invite"), body.get("name"), label) if p.endswith("join")
+                        else ACCOUNTS.take_pair(body.get("code"), str(body.get("label") or label)))
+                if p.endswith("join"):
+                    print(f"account made: {made['user']['name']} ({made['user']['role']}) from {self.address_string()}", flush=True)
+                return self.send_json({"token": made["token"], "user": accounts_mod.public(made["user"])}, 201)
+            user = self.who()
+            if user is None or user["id"] is None:
+                return self.send_json({"error": "that needs an account's own token"}, 401)
+            if p == "/api/account/terms":
+                return self.send_json({"user": accounts_mod.public(ACCOUNTS.accept(user["id"], body.get("version")))})
+            if p == "/api/account/pair":
+                return self.send_json(ACCOUNTS.pair_code(user["id"]))
+            if p == "/api/account/signout":
+                ACCOUNTS.sign_out(user["id"], None if body.get("everywhere") else self.headers.get("Authorization", "")[7:])
+                return self.send_json({"signed_out": True})
+        except accounts_mod.Refused as e:
+            return self.send_json({"error": str(e)}, 400)
+        self.send_json({"error": "not found"}, 404)
+
     def refused(self) -> bool:
         """Refuse a change, before its body is read: every change on a read-only site (READ_ONLY=1); any without the
         editing token when one is set (EDIT_TOKEN); and any that another site's page sent, with an Origin that isn't this
@@ -8305,14 +8400,26 @@ class Handler(BaseHTTPRequestHandler):
         why, code, headers = None, 403, None
         if READ_ONLY:
             why = "this copy of the site is view-only"
-        elif EDIT_TOKEN and not self.is_editor():
-            why, code, headers = "editing this site needs its token", 401, {"WWW-Authenticate": 'Bearer realm="BoulderMesh"'}
+        elif EDIT_TOKEN and not self.is_editor() and not self.user_may():
+            user = self.who()
+            if user is not None and not user["accepted"] and any(re.fullmatch(r, urlparse(self.path).path) for _, r in USER_MAY):
+                why = "accept the site's terms first (your account's page)"
+            else:
+                why, code, headers = "editing this site needs its token", 401, {"WWW-Authenticate": 'Bearer realm="BoulderMesh"'}
         elif self.cross_site():
             why = "refused: sent from another site's page"
         if why:
             print(f"refused {self.command} {self.path} from {self.address_string()}: {why}", flush=True)
             self.send_json({"error": why}, code, headers=headers)
         return bool(why)
+
+    def own_set(self, mid: str, sid: str) -> bool:
+        """Whether whoever asks may change a set of beta: the site's owner any, an account its own."""
+        me = self.who() or OWNER
+        if me["role"] == "owner":
+            return True
+        one = next((s for s in beta_mod.load_sets(MESHES / mid) if s["id"] == sid), None) if (MESHES / mid).is_dir() else None
+        return one is None or one.get("owner") == me["id"]     # a set that isn't there: said as not found, further on
 
     def cross_site(self) -> bool:
         """Whether another site's page sent this: its Origin isn't this host, or the browser says so."""
@@ -8716,8 +8823,16 @@ class Handler(BaseHTTPRequestHandler):
                         v.pop("image", None)
                     if access == "hide":
                         v.update(url=None, title="a video that isn't clearly free to copy", uploader=None)
-                return self.send_json({"found": found, "marked": beta_mod.load_holds(MESHES / m[1]), "sets": beta_mod.load_sets(MESHES / m[1]),
-                                       "available": beta_mod.available()})
+                me = self.who()     # sets not shared are their owner's alone to see, and the site's owner's
+                sets = beta_mod.visible(beta_mod.load_sets(MESHES / m[1]), (me or {}).get("id"), bool(me) and me["role"] == "owner")
+                return self.send_json({"found": found, "marked": {"holds": sets[0]["holds"], "updated": sets[0].get("updated")} if sets else {"holds": []},
+                                       "sets": sets, "available": beta_mod.available()})
+            if p == "/api/account":     # who this browser or phone is signed in as, and the terms as they stand
+                me = self.who()
+                return self.send_json({"user": accounts_mod.public(me) if me and me["id"] else None, "owner": bool(me) and me["role"] == "owner",
+                                       "accounts": not READ_ONLY and bool(EDIT_TOKEN),
+                                       "terms": {"version": accounts_mod.TERMS_VERSION, "text": accounts_mod.TERMS, "licence": accounts_mod.LICENCE},
+                                       "limits": {"sets": beta_mod.SETS_PER_USER, "holds": beta_mod.SET_HOLDS_MOST}})
             if p == "/api/videos":   # every video known, and what it or its channel says about the climber's size
                 return self.send_json(q("""SELECT v.url,v.title,v.uploader,v.channel_url,v.duration,v.upload_date,v.license,
                       v.height_cm,v.wingspan_cm,v.ape_index_cm,v.first_person,v.quotes,
@@ -8937,6 +9052,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.feedback()
         if p == "/api/pair":    # also from any visitor: the code is what's checked
             return self.pair()
+        if p.startswith("/api/account/"):    # an account's own: joining, its terms, its devices
+            return self.account(p)
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/rating", p)
         if m:   # also from any visitor
             return self.rate(m[1])
@@ -9278,9 +9395,15 @@ class Handler(BaseHTTPRequestHandler):
             if m:   # a new set of beta: {name?, climb?, author?, from?: {set} or {video}}; blank unless it's a copy
                 if not (MESHES / m[1]).is_dir():
                     return self.send_json({"error": "not found"}, 404)
-                body = self.read_json()
-                try:
-                    return self.send_json(beta_mod.new_set(MESHES / m[1], body.get("name"), body.get("climb"), body.get("author"), body.get("from")), 201)
+                body, me = self.read_json(), self.who() or OWNER
+                source = body.get("from")
+                if me["id"] is not None and isinstance(source, dict) and source.get("set"):    # a copy only of a set it may see
+                    seen = beta_mod.visible(beta_mod.load_sets(MESHES / m[1]), me["id"])
+                    if not any(one["id"] == source["set"] for one in seen):
+                        return self.send_json({"error": "there's no such set to copy"}, 400)
+                try:    # an account's set is its own, under its name
+                    return self.send_json(beta_mod.new_set(MESHES / m[1], body.get("name"), body.get("climb"), me["name"] or body.get("author"), source,
+                                                           owner=me["id"], shared=body.get("shared", True) is not False), 201)
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/holds", p)
@@ -9377,8 +9500,13 @@ class Handler(BaseHTTPRequestHandler):
             if m:   # a set of beta's name, climb, author or holds: those given
                 if not (MESHES / m[1]).is_dir():
                     return self.send_json({"error": "not found"}, 404)
+                changes = body if isinstance(body, dict) else {}
+                if not self.own_set(m[1], m[2]):
+                    return self.send_json({"error": "that set of beta isn't yours to change"}, 403)
+                if (self.who() or OWNER)["id"] is not None:
+                    changes = {k: v for k, v in changes.items() if k in ("name", "climb", "holds", "shared")}    # its author is its account
                 try:
-                    return self.send_json(beta_mod.update_set(MESHES / m[1], m[2], body if isinstance(body, dict) else {}))
+                    return self.send_json(beta_mod.update_set(MESHES / m[1], m[2], changes))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 404 if "no such set" in str(e) else 400)
             m = re.fullmatch(r"/api/climbs/([0-9a-f]+)", p)
@@ -9428,6 +9556,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta/sets/([0-9a-z]+)", p)
         if m:   # one set of beta, and its holds
+            if not self.own_set(m[1], m[2]):
+                return self.send_json({"error": "that set of beta isn't yours to delete"}, 403)
             gone = (MESHES / m[1]).is_dir() and beta_mod.delete_set(MESHES / m[1], m[2])
             return self.send_json({"deleted": m[2]} if gone else {"error": "not found"}, 200 if gone else 404)
         m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)", p)
@@ -10101,7 +10231,8 @@ def admin_state() -> dict:
             found, why = retexture.usable(d, PROJECTS / m["source"].split(":", 1)[1] / "photos", video_info)
             counts["can_retexture"] += bool(found)
             counts["need_rebuild"] += bool(why and "rebuild" in why)
-    return {"settings": settings().all(), "secrets": settings().secrets_status(), "compute": compute_state(),
+    return {"users": {"list": ACCOUNTS.users(), "invites": ACCOUNTS.invites(), "on": bool(EDIT_TOKEN) and not READ_ONLY},
+            "settings": settings().all(), "secrets": settings().secrets_status(), "compute": compute_state(),
             "policy": counts, "retexture_queued": len(_retexturing), "site_port": int(os.environ.get("PORT", "8470")),
             "proxy_ranges": RANGES.state() if RANGES else None, "version": VERSION,
             "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE, "machines_image": MACHINES_IMAGE,
@@ -10299,7 +10430,7 @@ def main() -> None:
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
-                                       "volunteers-cancel": admin_volunteers_cancel, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
+                                       "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-change": admin_user_change, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
                                        "machine-revoke": admin_machine_revoke, "clear-rejected": admin_clear_rejected,
                                        "volunteers-forget": lambda _: {"result": f"forgot {VOLUNTEERS.forget_gone()} volunteer(s)"},
                                        "machines-forget": lambda _: {"result": f"forgot {MACHINES.forget_gone()} machine(s)"},

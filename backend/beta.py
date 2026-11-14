@@ -726,7 +726,8 @@ def find(mesh_dir: Path, photos: Path, log: Log, report: Callable[[str, dict], N
 # a video's climber was found to use. They're kept together in SETS_FILE. Before there were sets a mesh had one lot of
 # hand-marked holds (HOLDS_FILE): that reads as its first set, and becomes one in SETS_FILE when anything is changed.
 SETS_FILE = "betasets.json"
-SET_NAME_MAX, SET_AUTHOR_MAX, SETS_MOST, SET_HOLDS_MOST = 60, 40, 60, 500
+SET_NAME_MAX, SET_AUTHOR_MAX, SETS_MOST, SET_HOLDS_MOST = 60, 40, 60, 100
+SETS_PER_USER = 10          # sets of beta one account may have on a mesh
 
 
 # r_m: how far round its point a hold reaches, in metres: the part of the rock a close capture of it is of, and a
@@ -792,7 +793,13 @@ def _text(value, most: int) -> str | None:
     return text or None
 
 
-def new_set(mesh_dir: Path, name=None, climb=None, author=None, source: dict | None = None) -> dict:
+def visible(sets: list[dict], user: str | None = None, every: bool = False) -> list[dict]:
+    """The sets someone may see: those shared, their own, or (the site's owner) every one."""
+    return [s for s in sets if every or s.get("shared", True) or (user is not None and s.get("owner") == user)]
+
+
+def new_set(mesh_dir: Path, name=None, climb=None, author=None, source: dict | None = None, owner: str | None = None,
+            shared: bool = True) -> dict:
     """Add a set of beta to a mesh: blank, or a copy of another of its sets ({"set": id}) or of the holds a video's
     climber was found to use ({"video": its url or tag}).
 
@@ -800,11 +807,14 @@ def new_set(mesh_dir: Path, name=None, climb=None, author=None, source: dict | N
         The set made.
 
     Raises:
-        ValueError: there's no such set or video to copy, or the mesh has SETS_MOST sets already.
+        ValueError: there's no such set or video to copy, or the mesh has SETS_MOST sets already, or its owner (an
+            account's id; None for the site's own) SETS_PER_USER.
     """
     sets = load_sets(mesh_dir)
-    if len(sets) >= SETS_MOST:
-        raise ValueError(f"a mesh has at most {SETS_MOST} sets of beta")
+    if owner is not None and sum(s.get("owner") == owner for s in sets) >= SETS_PER_USER:
+        raise ValueError(f"you have {SETS_PER_USER} sets of beta on this mesh already: delete one first")
+    if len(sets) >= SETS_MOST + (SETS_PER_USER if owner is not None else 0):
+        raise ValueError(f"this mesh has as many sets of beta as it can hold")
     holds, came, like = [], None, None
     if isinstance(source, dict) and source.get("set"):
         other = next((s for s in sets if s["id"] == source["set"]), None)
@@ -826,13 +836,13 @@ def new_set(mesh_dir: Path, name=None, climb=None, author=None, source: dict | N
         label = f"{base[:SET_NAME_MAX - 4]} {n}"
     now = time.time()
     made = {"id": secrets.token_hex(4), "name": label, "climb": _text(climb, 80), "author": _text(author, SET_AUTHOR_MAX), "created": now, "updated": now,
-            "from": came, "holds": holds}
+            "from": came, "holds": holds[:SET_HOLDS_MOST], "owner": owner, "shared": bool(shared)}
     save_sets(mesh_dir, sets + [made])
     return made
 
 
 def update_set(mesh_dir: Path, sid: str, changes: dict) -> dict:
-    """Change a set's name, climb, author or holds (those given). Returns it. Raises ValueError: no such set, or bad holds."""
+    """Change a set's name, climb, author, holds or whether it's shared (those given). Returns it. Raises ValueError: no such set, or bad holds."""
     sets = load_sets(mesh_dir)
     one = next((s for s in sets if s["id"] == sid), None)
     if one is None:
@@ -841,6 +851,8 @@ def update_set(mesh_dir: Path, sid: str, changes: dict) -> dict:
         one["holds"] = _checked(changes["holds"])
     if "name" in changes:
         one["name"] = _text(changes["name"], SET_NAME_MAX) or one["name"]
+    if "shared" in changes:
+        one["shared"] = bool(changes["shared"])
     for field, most in (("climb", 80), ("author", SET_AUTHOR_MAX)):
         if field in changes:
             one[field] = _text(changes[field], most)

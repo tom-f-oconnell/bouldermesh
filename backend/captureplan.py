@@ -295,6 +295,8 @@ def build(V, F, cams: list[dict], holds: list[dict], climbs: list[dict], metres_
             same["climbs"] = sorted(set(same.get("climbs") or []) | set(h.get("climbs") or []))
             same["sets"] = sorted(set(same.get("sets") or []) | set(h.get("sets") or []))
             same["ids"] = same["ids"] + [i for i in h.get("ids") or [] if i not in same["ids"]]
+            if same.get("anon") and not h.get("anon"):      # a hold someone shares too: as theirs
+                same.update(role=h.get("role"), anon=False, **{"from": h.get("from")})
             same["r_m"] = max(same.get("r_m") or 0.0, h.get("r_m") or 0.0) or None
         else:
             merged.append({**h, "climbs": list(h.get("climbs") or []), "sets": list(h.get("sets") or []), "ids": list(h.get("ids") or [])})
@@ -360,7 +362,8 @@ def build(V, F, cams: list[dict], holds: list[dict], climbs: list[dict], metres_
                         "p": [round(float(x), 5) for x in p], "n": [round(float(x), 4) for x in normal], "r": round(radius, 5),
                         "prio": 3, "have_gsd": None if gsd is None else round(gsd, 7), "have_views": seen,
                         "climbs": sorted(h.get("climbs") or []), "sets": sorted(h.get("sets") or []),
-                        "holds": h["ids"], "detail_m": round(float(h.get("r_m") or HOLD_DETAIL_M), 4)})
+                        "holds": h["ids"], "detail_m": round(float(h.get("r_m") or HOLD_DETAIL_M), 4),
+                        **({"anon": True} if h.get("anon") else {})})
 
     edges, edge_face = boundary(F) if len(F) else (np.zeros((0, 2), np.int64), np.zeros(0, np.int64))
     if len(edges):

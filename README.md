@@ -1247,6 +1247,9 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/meshes/{id}/make-current                  go back to an older version of a rebuilt mesh
     GET|POST /api/meshes/{id}/beta                      the holds found in its videos, and those marked; POST finds them
     POST /api/meshes/{id}/holds {holds: [{p, role}]}    the holds marked by hand, roles start, hand, finish or foot
+    GET /api/account                                    who this token is, the terms as they stand, the limits
+    POST /api/account/join {invite, name} · /pair/take {code}     an account from an invite; a device from a pairing code
+    POST /api/account/terms {version} · /pair · /signout           with an account's token: accept the terms, a code, sign out
     POST /api/meshes/{id}/beta/sets {name, climb, author, from}   a new set of beta: blank, or from {set} or {video}
     PATCH|DELETE /api/meshes/{id}/beta/sets/{set}       its name, climb, author or holds ([{id, p, role, r_m}]); or gone
     POST /api/meshes/{id}/scale                         find its size (scale.json: metres per unit, and each estimate)
