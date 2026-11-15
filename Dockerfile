@@ -7,6 +7,11 @@
 # for VGGT placing photos where COLMAP's mapper can't (backend/vggt_place.py), which needs a GPU; everything else of
 # torch's runs on the CPU. --build-arg TORCH=cpu makes the 2.5 GB image a server that meshes nothing needs (build.sh).
 
+# Which COLMAP 4, for the global mapper (the colmap4 stages below). cuda: with CUDA and cuDSS, as the mapper benchmark
+# measured it, so its solves run on a GPU where one has room, for machines with one. cpu: on Ubuntu's Ceres, without
+# CUDA, about 2 GB smaller, for the server's image (deploy/build.sh), which never has a GPU.
+ARG COLMAP4=cuda
+
 # Which OpenMVS. 23: v2.3.0 for the CPU, which every mesh so far was made with. 24 (--build-arg MVS=24): v2.4.0, built
 # twice: for the CPU, and with CUDA for depth maps on a GPU (5 times faster in experiments/mapper), which pipeline.py
 # uses for that one step when a GPU has room. Not the default until an image built with it has made meshes.
@@ -30,13 +35,81 @@ RUN git clone --depth 1 --branch 3.9.1 https://github.com/colmap/colmap.git /opt
 
 # COLMAP 4.2.1, for its global mapper only (pipeline.py, MAPPER): on the mapper benchmark's boulders it placed the cameras
 # 6-14 times faster than 3.9.1's incremental mapper, with as many photos placed (design.md, "The global mapper").
-# Everything else (features, matching, the rest step, levelling, undistorting) stays on 3.9.1 above. Built on Ubuntu's
-# Ceres (2.2: SuiteSparse, no CUDA), so its solves are on the CPU in this first version, and with
-# experiments/mapper/patch_colmap.py, whose BENCH_BA lines in a job's log say which device and solver each solve used.
+# Everything else (features, matching, the rest step, levelling, undistorting) stays on 3.9.1 above. Either stage has
+# experiments/mapper/patch_colmap.py, whose BENCH_BA / BENCH_GP lines in a job's log say which device and solver each
+# solve used (pipeline.py counts them, and says so loudly when the GPU was chosen and a large solve ran on the CPU).
 # Its binary and every library it loads but glibc's, libstdc++'s, libgcc's and the GPU driver's go to /opt/colmap4, run
-# through a wrapper (colmap4) that points at them, so that 3.9.1's colmap and its libraries are left as they are. What
-# this adds to the image is still to be measured (atlas, Nov 14).
-FROM ubuntu:24.04 AS colmap4
+# through a wrapper (colmap4) that points at them, so that 3.9.1's colmap and its libraries are left as they are.
+#
+# COLMAP4=cuda: built as the benchmark built the COLMAP 4 every timing behind the switch came from
+# (experiments/mapper/build-inside.sh, "complete"): Ceres from an unreleased commit of master, as no release has cuDSS
+# (CUDA's sparse Cholesky) yet, with CUDA, cuDSS (1.0.0, as there) and SuiteSparse, on the Abseil and Eigen 5 it was
+# built with; COLMAP with CUDA, for every NVIDIA generation. Global positioning and the bundle adjustments of 50 photos
+# or more then solve on the GPU. The stage fails unless Ceres says it has CUDA, cuDSS and SuiteSparse and COLMAP says it
+# has CUDA and links cuDSS, and the image's last stage checks that it starts without a GPU. CUDA's libraries it needs
+# (cuBLAS, cuSPARSE, cuSOLVER, cuDSS: about 2 GB) come with it; the driver's comes from the machine.
+FROM nvidia/cuda:12.9.1-devel-ubuntu24.04 AS colmap4-cuda
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git cmake build-essential ninja-build ca-certificates pkg-config python3 \
+    libcudss1-cuda-12=1.0.0.35-1 libcudss1-dev-cuda-12=1.0.0.35-1 libcudss1-static-cuda-12=1.0.0.35-1 \
+    libopenblas-dev liblapack-dev libsuitesparse-dev \
+    libboost-program-options-dev libboost-filesystem-dev libboost-graph-dev libboost-system-dev \
+    libeigen3-dev libflann-dev libfreeimage-dev libmetis-dev libgoogle-glog-dev libgflags-dev libsqlite3-dev \
+    libglew-dev libcgal-dev libopenimageio-dev openimageio-tools libjpeg-dev libpng-dev libtiff-dev libwebp-dev \
+    libgtest-dev libgmock-dev libssl-dev libcurl4-openssl-dev \
+ && rm -rf /var/lib/apt/lists/*
+# cuDSS's cmake config looks for its headers only in /usr/include, and OpenImageIO's names a folder of OpenCV's headers;
+# Ceres master logs through Abseil, newer than Ubuntu's; CGAL's FindEigen3 (which COLMAP's PoseLib ends up using) can't
+# read Eigen 5's version, so it defers to Eigen's own config
+RUN ln -sf /usr/include/libcudss/12/*.h /usr/include/ && mkdir -p /usr/include/opencv4 \
+ && echo /usr/lib/x86_64-linux-gnu/libcudss/12 > /etc/ld.so.conf.d/cudss.conf && ldconfig \
+ && git clone -q --depth 1 --branch 20250512.1 https://github.com/abseil/abseil-cpp.git /opt/absl \
+ && cmake -S /opt/absl -B /opt/absl/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -DABSL_PROPAGATE_CXX_STD=ON \
+      -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=ON -DABSL_BUILD_TESTING=OFF \
+ && cmake --build /opt/absl/build -j "$(( $(nproc) / 2 + 1 ))" && cmake --install /opt/absl/build > /dev/null \
+ && git clone -q --depth 1 --branch 5.0.1 https://gitlab.com/libeigen/eigen.git /opt/eigen \
+ && cmake -S /opt/eigen -B /opt/eigen/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DEIGEN_BUILD_DOC=OFF \
+      -DEIGEN_BUILD_BLAS=OFF -DEIGEN_BUILD_LAPACK=OFF > /dev/null && cmake --install /opt/eigen/build > /dev/null \
+ && printf '%s\n' 'find_package(Eigen3 CONFIG REQUIRED PATHS /usr/local/share/eigen3/cmake NO_DEFAULT_PATH)' 'set(EIGEN3_FOUND TRUE)' \
+      'get_target_property(EIGEN3_INCLUDE_DIR Eigen3::Eigen INTERFACE_INCLUDE_DIRECTORIES)' 'set(EIGEN3_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIR})' \
+      > /usr/lib/x86_64-linux-gnu/cmake/CGAL/FindEigen3.cmake
+RUN mkdir /opt/ceres && cd /opt/ceres && git init -q && git remote add origin https://github.com/ceres-solver/ceres-solver.git \
+ && git fetch -q --depth 1 origin e831bfef06ebd7a8daac7d76a1ca8bd33b47fa72 && git checkout -q FETCH_HEAD \
+ && cmake -S /opt/ceres -B /opt/ceres/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-O3 -DUSE_CUDA=ON \
+      -DCMAKE_CUDA_ARCHITECTURES=all-major -Dcudss_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss -DWITH_SUITESPARSE=ON \
+      -DEigen3_DIR=/usr/local/share/eigen3/cmake -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_SHARED_LIBS=ON \
+ && cmake --build /opt/ceres/build -j "$(( $(nproc) / 2 + 1 ))" && cmake --install /opt/ceres/build > /dev/null && ldconfig \
+ && grep -E "define CERES_(NO|USE)_" /usr/local/include/ceres/internal/config.h \
+ && for f in CUDA CUDSS SUITESPARSE; do grep -qx "// #define CERES_NO_$f" /usr/local/include/ceres/internal/config.h \
+      || { echo "Ceres was built without $f" >&2; exit 1; }; done
+COPY experiments/mapper/patch_colmap.py /opt/patch_colmap.py
+RUN git clone -q --depth 1 --branch 4.2.1 https://github.com/colmap/colmap.git /opt/colmap \
+ && python3 /opt/patch_colmap.py /opt/colmap \
+ && cmake -S /opt/colmap -B /opt/colmap/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-O3 \
+      -DCMAKE_INSTALL_PREFIX=/opt/colmap4-built -DCUDA_ENABLED=ON -DCMAKE_CUDA_ARCHITECTURES=all-major \
+      -Dcudss_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss -DEigen3_DIR=/usr/local/share/eigen3/cmake \
+      -DONNX_ENABLED=OFF -DGUI_ENABLED=OFF -DOPENGL_ENABLED=OFF -DMVS_ENABLED=OFF -DTESTS_ENABLED=OFF -DCASPAR_ENABLED=OFF \
+      -DDOWNLOAD_ENABLED=OFF \
+ && cmake --build /opt/colmap/build -j "$(( $(nproc) / 2 + 1 ))" && cmake --install /opt/colmap/build
+# only the binary goes on (its static libraries and headers stay here), with the shared libraries it loads, and NVRTC's
+# builtins, which NVRTC opens by name when it's used
+RUN mkdir -p /opt/colmap4/bin /opt/colmap4/lib && cp /opt/colmap4-built/bin/colmap /opt/colmap4/bin/colmap \
+ && ! ldd /opt/colmap4/bin/colmap | grep "not found" \
+ && ldd /opt/colmap4/bin/colmap | grep -q libcudss \
+ && ldd /opt/colmap4/bin/colmap | awk '/=> \// {print $3}' \
+  | grep -vE '/(libc|libm|libmvec|libpthread|libdl|librt|libresolv|libutil|ld-linux[^/]*|libstdc\+\+|libgcc_s|libcuda|libnvidia[^/]*)\.so' \
+  | xargs -r cp -L -t /opt/colmap4/lib \
+ && if ls /opt/colmap4/lib/libnvrtc.so* > /dev/null 2>&1; then cp -L /usr/local/cuda/lib64/libnvrtc-builtins.so.12* /opt/colmap4/lib/; fi \
+ && printf '#!/bin/sh\nLD_LIBRARY_PATH=/opt/colmap4/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} exec /opt/colmap4/bin/colmap "$@"\n' \
+      > /opt/colmap4/colmap4 \
+ && chmod +x /opt/colmap4/colmap4 \
+ && /opt/colmap4/colmap4 -h | head -1 | grep "COLMAP 4.2.1" | grep -q "with CUDA" \
+ && /opt/colmap4/colmap4 global_mapper -h | grep -q GlobalMapper.gp_use_gpu \
+ && du -sh /opt/colmap4
+
+# COLMAP4=cpu: on Ubuntu's Ceres (2.2: SuiteSparse, no CUDA), so its solves are on the CPU
+FROM ubuntu:24.04 AS colmap4-cpu
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git cmake build-essential ninja-build ca-certificates pkg-config python3 \
@@ -65,6 +138,8 @@ RUN mkdir -p /opt/colmap4/bin /opt/colmap4/lib && cp /opt/colmap4-built/bin/colm
  && chmod +x /opt/colmap4/colmap4 \
  && /opt/colmap4/colmap4 -h | head -1 | grep -q "COLMAP 4.2.1" \
  && /opt/colmap4/colmap4 global_mapper -h | grep -q GlobalMapper.min_model_size
+
+FROM colmap4-${COLMAP4} AS colmap4
 
 FROM ubuntu:24.04 AS build
 ENV DEBIAN_FRONTEND=noninteractive
@@ -181,10 +256,13 @@ RUN if [ "$THUMBS" = 1 ]; then \
    && chmod -R a+rX $PLAYWRIGHT_BROWSERS_PATH && rm -rf /var/lib/apt/lists/*; fi
 # Ubuntu's colmap package is only there for the libraries this one links to: /usr/local/bin comes first
 COPY --from=colmap /opt/colmap-cuda/bin/colmap /usr/local/bin/colmap
-# COLMAP 4.2.1 beside it, for the global mapper (the colmap4 stage): checked here to start in this image, without its
-# libraries reaching anything else (they are found only through the wrapper)
+# COLMAP 4.2.1 beside it, for the global mapper (the colmap4 stages): checked here to start in this image, without a GPU
+# and without its libraries reaching anything else (they are found only through the wrapper), and to have CUDA when
+# it's the cuda one
+ARG COLMAP4
 COPY --from=colmap4 /opt/colmap4 /opt/colmap4
-RUN ln -s /opt/colmap4/colmap4 /usr/local/bin/colmap4 && colmap4 -h | head -1 | grep -q "COLMAP 4.2.1"
+RUN ln -s /opt/colmap4/colmap4 /usr/local/bin/colmap4 && colmap4 -h | head -1 | grep -q "COLMAP 4.2.1" \
+ && { [ "$COLMAP4" != cuda ] || colmap4 -h | head -1 | grep -q "with CUDA"; }
 ENV COLMAP4_BIN=/usr/local/bin/colmap4
 COPY --from=mvs /usr/local/bin/OpenMVS /usr/local/bin/OpenMVS
 # with MVS=24: its CUDA build for depth maps, and the OpenCV both its builds link (empty folders otherwise)

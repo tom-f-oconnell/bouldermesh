@@ -2,9 +2,11 @@
 # Builds the images the public setup and remote machines run, from the commit checked out here as committed (nothing
 # uncommitted goes in), and records in them which commit that is:
 #     deploy/build.sh [image] [GPU image]
-# - The server's, with torch's CPU build (2.5 GB): it meshes nothing itself, so it has no use for a GPU. Tagged
-#   bouldermesh:public, or [image], and <registry>:<commit>, the name deploy/ship.sh pushes it under.
-# - The machines', with torch's CUDA build, for VGGT placing photos where COLMAP can't (10.4 GB). Tagged bouldermesh:gpu,
+# - The server's, with torch's CPU build (2.5 GB) and COLMAP 4 without CUDA (the Dockerfile's COLMAP4=cpu): it meshes
+#   nothing itself, so it has no use for a GPU. Tagged bouldermesh:public, or [image], and <registry>:<commit>, the
+#   name deploy/ship.sh pushes it under.
+# - The machines', with torch's CUDA build, for VGGT placing photos where COLMAP can't, and COLMAP 4 with CUDA, for the
+#   global mapper's solves (10.4 GB before COLMAP 4's 2 GB or so). Tagged bouldermesh:gpu,
 #   or [GPU image], and <registry>:<commit>-gpu: remote machines pull it by that name, and hal runs it.
 # - Machines without a GPU's, which only filter photos (deploy/worker-cpu.Dockerfile: no COLMAP, OpenMVS or CUDA), for
 #   x86-64 and, where Docker here can run ARM64 (QEMU's binfmt), ARM64 too, for Apple Silicon Macs: <registry>:<commit>-cpu.
@@ -45,7 +47,7 @@ if [ "${CPU:-1}" != 0 ]; then
         -t "$cpu" "$tmp"
     echo "built $cpu, for $platforms"
 fi
-docker build --build-arg TORCH=cpu --build-arg MVS="${MVS:-24}" --build-arg BOULDERMESH_COMMIT="$commit" --build-arg BOULDERMESH_IMAGE="$REGISTRY:$commit" \
+docker build --build-arg TORCH=cpu --build-arg COLMAP4=cpu --build-arg MVS="${MVS:-24}" --build-arg BOULDERMESH_COMMIT="$commit" --build-arg BOULDERMESH_IMAGE="$REGISTRY:$commit" \
     --build-arg BOULDERMESH_WORKER_IMAGE="$machines" --build-arg BOULDERMESH_WORKER_CPU_IMAGE="$cpu" -t "$image" -t "$REGISTRY:$commit" "$tmp"
 echo "built $image, which is $REGISTRY:$commit"
 if [ "${GPU:-1}" != 0 ]; then

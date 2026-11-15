@@ -61,6 +61,11 @@ COLMAP = shutil.which("colmap")
 MAPPER = os.environ.get("MAPPER", "global")
 COLMAP4 = os.environ.get("COLMAP4_BIN") or shutil.which("colmap4")
 UNTIED = 15             # a camera the global mapper leaves seeing fewer of its model's points than this is taken out
+# The global mapper solves on the GPU (global positioning, and bundle adjustments of 50 photos or more: COLMAP's own
+# threshold) when its COLMAP 4 has CUDA and this much GPU memory is free, as in every benchmark run behind the switch.
+# Its peak is still to be measured (atlas); 2 GB is OpenMVS's depth maps' allowance.
+GLOBAL_GPU_MIN_FREE_MB = 2000
+SOLVE = re.compile(r"BENCH_(BA|GP) images=(\d+)\b.*?device=(\w+)")     # each solve, as the image's patched COLMAP 4 logs it
 MAPPER_FILE = "mapper.json"     # in work/, then beside the mesh: which mapper placed its cameras, and why (_global_mapper())
 # OpenMVS binaries are usually installed under /usr/local/bin/OpenMVS
 _MVS_DIRS = [os.environ.get("OPENMVS_BIN", ""), "/usr/local/bin/OpenMVS", "/usr/local/bin", "/usr/bin"]
@@ -504,15 +509,49 @@ def _place_rest(db: Path, model: Path, work: Path, log: Log, tracker: Tracker, p
     return model, n
 
 
-def global_args(min_registered: int, internet: bool) -> list[str]:
+def global_args(min_registered: int, internet: bool, gpu: bool = False) -> list[str]:
     """The global mapper's options: the app's own for the incremental mapper, in its spelling (models down to what a
     mesh can be made from; for photos from the internet each lens's principal point refined and pairs of 20 matches
-    or more), on the CPU (the image's COLMAP 4 is built on Ubuntu's Ceres, which has no CUDA), from seed 0."""
+    or more), its solves on the GPU or the CPU, from seed 0."""
     args = ["--log_target", "stderr", "--default_random_seed", "0", "--GlobalMapper.random_seed", "0",
             "--GlobalMapper.min_model_size", str(min_registered)]
     if internet:
         args += ["--GlobalMapper.ba_refine_principal_point", "1", "--GlobalMapper.min_num_matches", "20"]
-    return args + ["--GlobalMapper.gp_use_gpu", "0", "--GlobalMapper.ba_ceres_use_gpu", "0"]
+    on = "1" if gpu else "0"
+    return args + ["--GlobalMapper.gp_use_gpu", on, "--GlobalMapper.ba_ceres_use_gpu", on]
+
+
+@functools.cache
+def colmap4_has_cuda() -> bool:
+    """Whether the image's COLMAP 4 was built with CUDA (the Dockerfile's colmap4-cuda stage)."""
+    build = colmap_build(COLMAP4) if COLMAP4 else None
+    return bool(build and "with CUDA" in build)
+
+
+def global_gpu_choice(allowed: bool = True) -> tuple[bool, str]:
+    """Whether the global mapper should solve on the GPU right now, and why or why not."""
+    if not allowed:
+        return False, "USE_GPU=0"
+    if not colmap4_has_cuda():
+        return False, "this COLMAP 4 was built without CUDA"
+    free = gpu_free_mb()
+    if free is None:
+        return False, "no GPU visible"
+    if free < GLOBAL_GPU_MIN_FREE_MB:
+        return False, f"only {free} MB of GPU memory free, and it needs {GLOBAL_GPU_MIN_FREE_MB}"
+    return True, f"{free} MB of GPU memory free"
+
+
+def _solves(lines: list[str]) -> dict:
+    """What the global mapper's solves ran on, from its log: {cuda: n, cpu: n, cpu_large: n}, cpu_large counting
+    those of 50 photos or more, which COLMAP puts on the GPU when it's asked to."""
+    out = {"cuda": 0, "cpu": 0, "cpu_large": 0}
+    for line in lines:
+        if m := SOLVE.search(line):
+            device = "cuda" if m[3] == "cuda" else "cpu"
+            out[device] += 1
+            out["cpu_large"] += device == "cpu" and int(m[2]) >= 50
+    return out
 
 
 def _set_aside(sparse: Path, work: Path, prefix: str) -> None:
@@ -523,7 +562,7 @@ def _set_aside(sparse: Path, work: Path, prefix: str) -> None:
 
 
 def _global_mapper(db: Path, images: Path, sparse: Path, work: Path, log: Log, tracker: Tracker, n_images: int,
-                   min_registered: int, internet: bool) -> tuple[dict | None, str]:
+                   min_registered: int, internet: bool, use_gpu: bool = False) -> tuple[dict | None, str]:
     """The cameras placed by COLMAP 4.2.1's global mapper, where MAPPER is "global" and the image has it (COLMAP4).
 
     On a copy of the database (COLMAP 4 changes a 3.9.1 database into its own layout as it opens it), into
@@ -531,10 +570,12 @@ def _global_mapper(db: Path, images: Path, sparse: Path, work: Path, log: Log, t
     as 3.9.1's mapper would have left it, so that every later step sees what it always has. In its largest model, the
     cameras that see fewer than UNTIED of its points are then taken out: the global mapper keeps cameras whose every
     observation it filtered out, and those were its wrong ones (12-20 degrees off the others' in the benchmark). The
-    rest step then tries them like any other photo the mapper left out.
+    rest step then tries them like any other photo the mapper left out. It solves on the GPU where it can
+    (global_gpu_choice()), and if that fails, starts again on the CPU. Its log says what each solve ran on, and a
+    large one left on the CPU when the GPU was chosen is said loudly: that's a build or a COLMAP that ignores it.
 
     Returns:
-        What it did, for mapper.json ({mapper: "global", colmap4, args, untied, placed, seconds}), or None and why
+        What it did, for mapper.json ({mapper: "global", colmap4, args, device, solves, untied, placed, seconds}), or None and why
         not, with sparse/ left empty for the incremental mapper: MAPPER isn't "global", COLMAP 4 isn't here, the global
         mapper failed, its largest model places fewer than min_registered photos, or its models couldn't be converted.
     """
@@ -544,23 +585,51 @@ def _global_mapper(db: Path, images: Path, sparse: Path, work: Path, log: Log, t
         return None, "this image has no COLMAP 4 (colmap4) for the global mapper"
     log("== COLMAP 4: sparse reconstruction (global mapper)")
     tracker.update("mapper", 0, "the global mapper")
-    out, copy, args = work / "sparse_global", work / "global.db", global_args(min_registered, internet)
+    out, copy = work / "sparse_global", work / "global.db"
     done = work / "global.json"
-    if not _finished(work, "global"):
+
+    def attempt(gpu: bool) -> tuple[list[str], list[str]]:
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir()
         for f in work.glob(copy.name + "*"):
             f.unlink()
+        shutil.copyfile(db, copy)
+        args, lines, progress = global_args(min_registered, internet, gpu), [], _global(tracker)
+
+        def watch(line: str) -> None:
+            progress(line)
+            if "BENCH_" in line:
+                lines.append(line)
+        _run([COLMAP4, "global_mapper", "--database_path", str(copy), "--image_path", str(images), "--output_path", str(out),
+              *args], work, log, watch)
+        return args, lines
+
+    if not _finished(work, "global"):
         start = time.time()
+        gpu, why = global_gpu_choice(use_gpu)
+        log(f"global_mapper: solving on the {'GPU' if gpu else 'CPU'} ({why})")
+        device = "gpu" if gpu else "cpu"
         try:
-            shutil.copyfile(db, copy)
-            _run([COLMAP4, "global_mapper", "--database_path", str(copy), "--image_path", str(images), "--output_path", str(out),
-                  *args], work, log, _global(tracker))
+            try:
+                args, lines = attempt(gpu)
+            except RuntimeError as e:
+                if not gpu:
+                    raise
+                log(f"global_mapper: GPU run failed ({e}), starting it again on the CPU")
+                device = "gpu+cpu"
+                args, lines = attempt(False)
         except (RuntimeError, OSError) as e:
             return None, f"the global mapper failed ({e})"
-        done.write_text(json.dumps({"seconds": round(time.time() - start, 1)}))
+        solves = _solves(lines)
+        log(f"global_mapper: {solves['cuda']} solve(s) on the GPU and {solves['cpu']} on the CPU")
+        if device == "gpu" and solves["cpu_large"]:
+            log(f"WARNING: global_mapper: the GPU was chosen, but {solves['cpu_large']} solve(s) of 50 photos or more ran on "
+                f"the CPU: is this COLMAP 4's Ceres built with CUDA and cuDSS?")
+        done.write_text(json.dumps({"seconds": round(time.time() - start, 1), "args": args, "device": device,
+                                    "device_why": why, "solves": solves}))
         _finish(work, "global")
-    seconds = json.loads(done.read_text())["seconds"] if done.exists() else None
+    ran = json.loads(done.read_text()) if done.exists() else {}
+    seconds, args = ran.get("seconds"), ran.get("args") or global_args(min_registered, internet)
     models = sorted((m for m in out.iterdir() if (m / "images.bin").exists()), key=lambda m: m.name) if out.exists() else []
     if not models:
         return None, "the global mapper made no model"
@@ -608,6 +677,7 @@ def _global_mapper(db: Path, images: Path, sparse: Path, work: Path, log: Log, t
         return None, f"its largest model places only {placed} of {n_images} photos (need {min_registered})"
     log(f"global mapper: {placed} of {n_images} photos placed in its largest model, of {len(models)} model(s)")
     return {"mapper": "global", "why": "MAPPER is 'global'", "colmap4": colmap_build(COLMAP4), "args": args,
+            "device": ran.get("device"), "device_why": ran.get("device_why"), "solves": ran.get("solves"),
             "untied": untied, "untied_least": UNTIED, "models": len(models), "placed": placed, "seconds": seconds}, ""
 
 
@@ -779,7 +849,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         if any(sparse.iterdir()):   # what an interrupted run left may be half written, and it'll be made again
             sparse.rename(work / f"interrupted_sparse{len(list(work.glob('interrupted_sparse*')))}")
             sparse.mkdir()
-        how, why = _global_mapper(db, images, sparse, work, log, tracker, n_images, min_registered, internet)
+        how, why = _global_mapper(db, images, sparse, work, log, tracker, n_images, min_registered, internet, use_gpu)
         if how is None:
             if MAPPER == "global":
                 log(f"placing the cameras with COLMAP 3.9.1's incremental mapper instead: {why}")

@@ -642,13 +642,17 @@ fails, or when its largest model places fewer than 6 photos that see enough of i
 why ("placing the cameras with COLMAP 3.9.1's incremental mapper instead: ..."), and so does `mapper.json`.
 
 **Not known yet:**
-- Its speed in this image. The benchmark's global mapper solved on the GPU (Ceres with cuDSS); this one is built on
-  Ubuntu's Ceres, which has no CUDA, so it solves on the CPU. The benchmark's `global_cpu` runs and the app's own
-  end-to-end runs on the new image say what that costs.
+- Its speed in this image. The benchmark's global mapper solved on the GPU (Ceres with cuDSS), and so does the image's
+  (the Dockerfile's `colmap4-cuda` stage, built as the benchmark's was), where the GPU has room: the app's own
+  end-to-end runs on the new image say whether it matches. Its first version (5d242d3) was built on Ubuntu's Ceres,
+  without CUDA, to save building Ceres from source, which would have shipped something none of the timings behind the
+  switch measured; that build is now only the server's (`COLMAP4=cpu`), which never has a GPU. On the CPU, the
+  benchmark's `global_tied_cpu` runs say what it costs.
+- How much GPU memory it takes (`GLOBAL_GPU_MIN_FREE_MB` is 2 GB, OpenMVS's depth maps' allowance, until measured).
 - Drifter's surface at about three times 3.9.1's own spread: whether that is the global mapper's steady level or one
   seed's (its seeds 1 and 2 are queued), and which of the two is nearer the rock.
 - 9f3b, which no method solves.
-- What the `colmap4` stage adds to the image's size.
+- What the `colmap4` stage adds to the image's size: CUDA's libraries alone are about 2 GB.
 
 ## Stray pieces and sheets
 

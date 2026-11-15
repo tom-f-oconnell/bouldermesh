@@ -812,11 +812,13 @@ def model_bin(path: pathlib.Path, seen: dict[str, int]) -> None:
 
 
 def global_run(tmp: pathlib.Path, models: dict | None = None, fails: str | None = None, mapper: str = "global",
-               colmap4: str | None = "colmap4", n: int = 10, interrupt: str | None = None):
+               colmap4: str | None = "colmap4", n: int = 10, interrupt: str | None = None, gpu: bool = False,
+               solves: tuple[str, ...] = (), gpu_fails: bool = False):
     """reconstruct_colmap_openmvs() up to levelling, with the global mapper making `models` ({name: {photo: points
     seen}}) and the incremental one, if it runs, a model of 7. fails: the step that fails ("colmap4 global_mapper",
-    "colmap4 model_converter", "image_deleter"); interrupt: the one a restart stops at. Returns the commands, what
-    was logged, the model levelling was given, and mapper.json."""
+    "colmap4 model_converter", "image_deleter"); interrupt: the one a restart stops at. gpu: a CUDA COLMAP 4 and a GPU
+    with room, for the global mapper alone; solves: its BENCH_ lines; gpu_fails: it fails when asked to use the GPU.
+    Returns the commands, what was logged, the model levelling was given, and mapper.json."""
     images, work, cmds, logged = tmp / "images", tmp / "work", [], []
     images.mkdir(exist_ok=True)
     for i in range(n):
@@ -833,8 +835,11 @@ def global_run(tmp: pathlib.Path, models: dict | None = None, fails: str | None 
         if what == interrupt:
             raise Stop("interrupted")
         if what == "colmap4 global_mapper":
+            if gpu_fails and cmd[cmd.index("--GlobalMapper.gp_use_gpu") + 1] == "1":
+                raise RuntimeError("colmap4 exited with -6 (CUDA out of memory)")
             if watch:
-                for line in ("=== Reconstructing component 1 / 2 with 9 images ===", "=== Running global positioning ==="):
+                for line in ("=== Reconstructing component 1 / 2 with 9 images ===", "=== Running global positioning ===",
+                             *solves):
                     watch(line)
             for name in models:
                 d = pathlib.Path(cmd[cmd.index("--output_path") + 1]) / name
@@ -852,17 +857,19 @@ def global_run(tmp: pathlib.Path, models: dict | None = None, fails: str | None 
             model(work / "sparse", "0", 7)
         if what == "model_orientation_aligner":
             raise Stop(cmd[cmd.index("--input_path") + 1])
-    saved = pipeline._run, pipeline.COLMAP, pipeline.COLMAP4, pipeline.MAPPER
+    saved = pipeline._run, pipeline.COLMAP, pipeline.COLMAP4, pipeline.MAPPER, pipeline.colmap4_has_cuda, pipeline.colmap_has_cuda, pipeline.gpu_free_mb
     pipeline._run, pipeline.COLMAP, pipeline.COLMAP4, pipeline.MAPPER = fake_run, "colmap", colmap4, mapper
+    pipeline.colmap4_has_cuda, pipeline.colmap_has_cuda, pipeline.gpu_free_mb = (lambda: gpu), (lambda: False), (lambda: 8000 if gpu else None)
     given = None
     try:
         with meshopts.using({"retry_below": 0, "more": 0}):
-            pipeline.reconstruct_colmap_openmvs(images, work, tmp / "out", logged.append, False, internet=True,
+            pipeline.reconstruct_colmap_openmvs(images, work, tmp / "out", logged.append, gpu, internet=True,
                                                 tracker=Tracker([("mapper", "Place cameras", 1)]))
     except Stop as e:
         given = e.args[0]
     finally:
-        pipeline._run, pipeline.COLMAP, pipeline.COLMAP4, pipeline.MAPPER = saved
+        (pipeline._run, pipeline.COLMAP, pipeline.COLMAP4, pipeline.MAPPER, pipeline.colmap4_has_cuda, pipeline.colmap_has_cuda,
+         pipeline.gpu_free_mb) = saved
     record = json.loads((work / pipeline.MAPPER_FILE).read_text()) if (work / pipeline.MAPPER_FILE).exists() else None
     return cmds, logged, given, record
 
@@ -883,7 +890,7 @@ with tempfile.TemporaryDirectory() as td:
     assert g[g.index("--database_path") + 1].endswith("work/global.db") and (tmp / "work" / "database.db").exists(), g
     assert (tmp / "work" / "global.db").exists(), "on a copy of the database"
     for flag, value in (("--GlobalMapper.min_model_size", "6"), ("--GlobalMapper.ba_refine_principal_point", "1"),
-                        ("--GlobalMapper.min_num_matches", "20"), ("--GlobalMapper.gp_use_gpu", "0"),
+                        ("--GlobalMapper.min_num_matches", "20"), ("--GlobalMapper.gp_use_gpu", "0"),   # no GPU here
                         ("--GlobalMapper.ba_ceres_use_gpu", "0"), ("--GlobalMapper.random_seed", "0")):
         assert g[g.index(flag) + 1] == value, (flag, g)
     conv4, conv3 = cmds[i + 1], cmds[i + 2]
@@ -913,7 +920,32 @@ with tempfile.TemporaryDirectory() as td:
 with tempfile.TemporaryDirectory() as td:
     cmds, logged, given, record = global_run(pathlib.Path(td), models={"0": {f"{i}.jpg": 100 for i in range(10)}})
     assert "image_deleter" not in names_of(cmds) and "image_registrator" not in names_of(cmds) and record["untied"] == [], names_of(cmds)
+    assert record["device"] == "cpu" and record["device_why"] == "USE_GPU=0", record
 print("global mapper OK")
+
+# on the GPU where its COLMAP 4 has CUDA and there's room, each solve's device counted; a GPU failure goes again on the CPU
+GPU_SOLVES = ("BENCH_GP images=82 device=cuda solver=SPARSE_SCHUR sparse=CUDA_SPARSE",
+              "BENCH_BA images=82 residuals=90000 device=cuda solver=SPARSE_SCHUR dense=CUDA sparse=CUDA_SPARSE threads=6",
+              "BENCH_BA images=12 residuals=900 device=cpu solver=DENSE_SCHUR dense=EIGEN sparse=SUITE_SPARSE threads=6")
+with tempfile.TemporaryDirectory() as td:
+    cmds, logged, given, record = global_run(pathlib.Path(td), gpu=True, solves=GPU_SOLVES)
+    g = [c for c in cmds if c[:2] == ["colmap4", "global_mapper"]]
+    assert len(g) == 1 and g[0][g[0].index("--GlobalMapper.gp_use_gpu") + 1] == "1", g
+    assert g[0][g[0].index("--GlobalMapper.ba_ceres_use_gpu") + 1] == "1", g
+    assert record["device"] == "gpu" and record["solves"] == {"cuda": 2, "cpu": 1, "cpu_large": 0}, record
+    assert record["args"][record["args"].index("--GlobalMapper.gp_use_gpu") + 1] == "1", record
+    assert any("solving on the GPU" in l for l in logged) and not any("WARNING" in l for l in logged), logged
+with tempfile.TemporaryDirectory() as td:
+    cmds, logged, given, record = global_run(pathlib.Path(td), gpu=True, gpu_fails=True)
+    g = [c[c.index("--GlobalMapper.gp_use_gpu") + 1] for c in cmds if c[:2] == ["colmap4", "global_mapper"]]
+    assert g == ["1", "0"] and record["device"] == "gpu+cpu" and record["mapper"] == "global", (g, record)
+    assert record["args"][record["args"].index("--GlobalMapper.gp_use_gpu") + 1] == "0", record
+    assert any("GPU run failed" in l for l in logged), logged
+# the GPU chosen, but a large solve on the CPU: said loudly
+with tempfile.TemporaryDirectory() as td:
+    cmds, logged, given, record = global_run(pathlib.Path(td), gpu=True, solves=(GPU_SOLVES[0].replace("cuda", "cpu"),))
+    assert record["solves"]["cpu_large"] == 1 and any(l.startswith("WARNING") and "cuDSS" in l for l in logged), logged
+print("global mapper on the GPU OK")
 
 # today's incremental mapper, with VGGT after it, wherever the global mapper can't be had or doesn't give enough
 for case, kwargs, said in (

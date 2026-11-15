@@ -489,7 +489,9 @@ the settings used for photos from the internet. `GPU_SIFT=1` trades those for pl
 different features and so places different photos: it's there to be compared (experiments/mapper), not yet to use.
 
 **Which mapper places the cameras.** COLMAP 4.2.1's global mapper, built into the image as `colmap4`, places them by
-default: on the mapper benchmark's boulders it was 6-14 times faster than 3.9.1's incremental mapper. COLMAP 3.9.1 still
+default: on the mapper benchmark's boulders it was 6-14 times faster than 3.9.1's incremental mapper. It solves on the
+GPU where one has 2 GB free (it's built with CUDA and cuDSS, as the benchmark's was), and on the CPU otherwise or if the
+GPU run fails; the job's log and `mapper.json` say which, and how many of its solves ran on each. COLMAP 3.9.1 still
 does everything else. `MAPPER=incremental` goes back to 3.9.1's mapper, which is also what runs whenever the global
 mapper can't be used, fails, or places fewer than 6 photos. Each mesh has a `mapper.json` beside it saying which mapper
 placed its cameras, and why.

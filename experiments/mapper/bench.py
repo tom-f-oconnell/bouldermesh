@@ -94,7 +94,7 @@ METHODS = {
     # global, with the cameras it leaves seeing next to none of the model's points taken out before the app's rest step,
     # which then places them as it does any photo left out (rest(), UNTIED): those are its cameras that are wrong
     "global_tied": ("new", "global_mapper", GLOBAL, {}),
-    # global_tied on the CPU alone: the app's first version of it, on Ubuntu's Ceres, has no GPU solve
+    # global_tied on the CPU alone: the app's, on a machine without a GPU or with too little of it free
     "global_tied_cpu": ("new", "global_mapper", GLOBAL + ["--GlobalMapper.gp_use_gpu", "0", "--GlobalMapper.ba_ceres_use_gpu", "0"], {}),
     # VGGT's cameras for up to 80 well-linked photos, then COLMAP's triangulation and bundle adjustment (vggt_start.py)
     "vggt": ("app", "vggt", [], {}),
