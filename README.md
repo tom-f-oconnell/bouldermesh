@@ -483,6 +483,11 @@ It's used if COLMAP has CUDA, and has 4 GB of its memory free when matching star
 it runs out partway, matching uses the CPU, so a shared GPU is fine. The top of the page says which
 it would use now, and each job's log says which it did. `USE_GPU=0` keeps it on the CPU.
 
+Finding people runs on the GPU too, where the image's torch has CUDA and 1.5 GB of its memory is free (8 times
+faster than 4 CPU threads; `PEOPLE_GPU=0` keeps it off). Finding features doesn't: COLMAP has no GPU version of
+the settings used for photos from the internet. `GPU_SIFT=1` trades those for plain SIFT on the GPU, which finds
+different features and so places different photos: it's there to be compared (experiments/mapper), not yet to use.
+
 **When COLMAP can't place the photos** (its mapper places fewer than 6), VGGT places them instead, and COLMAP refines
 that. This needs the GPU with about 7 GB of its memory free. The first time, it downloads its 4.7 GB of weights into
 `data/cache/models`. A mesh made that way has a `placement.json` beside it. `VGGT_FALLBACK=0` turns it off.

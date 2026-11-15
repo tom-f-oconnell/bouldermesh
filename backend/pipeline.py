@@ -42,6 +42,11 @@ GPU_MIN_FREE_MB = 4000  # matching 113 photos peaked at about 3 GB
 # COLMAP's minimum of 15 raw matches, on the GPU. Its matcher finds about 4% fewer, which would drop
 # borderline pairs before guided matching can rescue them; design.md has the measurements.
 GPU_MATCH_ARGS = ["--TwoViewGeometry.min_num_inliers", "12"]
+# GPU_SIFT=1: features for photos from the internet on the GPU. COLMAP has no GPU version of the affine shape and
+# domain-size pooling those use, so the GPU's are plain SIFT, which changes which photos are placed (a MESH_RULES
+# matter): off unless set, until the mapper benchmark has compared them. With no GPU to be had, features are today's.
+GPU_SIFT = os.environ.get("GPU_SIFT") == "1"
+AFFINE_SIFT = ["--SiftExtraction.estimate_affine_shape", "1", "--SiftExtraction.domain_size_pooling", "1"]
 MAX_TEXTURE = 4096      # larger atlases get split: an 8192 x 8192 one takes 270 MB in a browser, which can refuse it
 MIN_FACES = 1000        # a mesh with fewer isn't one: harvests' empty meshes had 0-574, real ones 3,870 and up (design.md)
 MIN_REGISTERED = 6      # photos COLMAP must place together for a mesh to be made from them
@@ -474,8 +479,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     cmd = [COLMAP, "feature_extractor", "--database_path", str(db), "--image_path", str(images),
            "--ImageReader.camera_model", "SIMPLE_RADIAL"]
     if internet:
-        cmd += ["--ImageReader.single_camera", "0", "--SiftExtraction.estimate_affine_shape", "1",
-                "--SiftExtraction.domain_size_pooling", "1", "--SiftExtraction.max_image_size", "2400"]
+        cmd += ["--ImageReader.single_camera", "0", "--SiftExtraction.max_image_size", "2400"]
     else:
         cmd += ["--ImageReader.single_camera", "1"]
     if masks:
@@ -483,9 +487,23 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     if not _finished(work, "features"):
         log(f"== COLMAP: feature extraction ({'internet-collection' if internet else 'single-camera'} settings)")
         tracker.update("features", 0, f"0 of {n_images} photos")
-        # COLMAP has no GPU version of the affine shape and domain-size pooling of the internet settings
-        device = _gpu_or_cpu(cmd, "--SiftExtraction.use_gpu", use_gpu and not internet, work, log,
-                             _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1)))
+        watch = _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1))
+        device = None
+        if internet and GPU_SIFT and use_gpu:      # plain SIFT, all on the GPU or not at all: the two find different features
+            gpu, why = gpu_choice(True)
+            log(f"feature_extractor: GPU_SIFT is set: {'plain SIFT on the GPU' if gpu else 'not this time'} ({why})")
+            if gpu:
+                try:
+                    _run(cmd + ["--SiftExtraction.use_gpu", "1"], work, log, watch)
+                    device = "gpu"
+                except RuntimeError as e:
+                    log(f"feature_extractor: GPU run failed ({e}): starting again on the CPU, with its usual features")
+                    for f in work.glob(db.name + "*"):
+                        f.unlink()
+        if device is None:
+            # COLMAP has no GPU version of the affine shape and domain-size pooling of the internet settings
+            cmd += AFFINE_SIFT if internet else []
+            device = _gpu_or_cpu(cmd, "--SiftExtraction.use_gpu", use_gpu and not internet, work, log, watch)
         (work / EXTRACT_FILE).write_text(json.dumps({"args": reconstruction.extract_args(cmd), "device": device}))
         _finish(work, "features")
 

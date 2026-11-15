@@ -486,6 +486,21 @@ for cuda, free, why in ((False, 17000, "without CUDA"), (True, None, "no GPU vis
 assert pipeline.gpu_choice(False)[0] is False
 cmds, logged = gpu_run(True, 17000, fails=("exhaustive_matcher",))   # out of memory partway: carries on, then on to the mapper
 assert flags(cmds, "exhaustive_matcher", MATCH) == ["1", "0"] and any(c[1] == "mapper" for c in cmds), cmds
+# GPU_SIFT (off unless set): internet photos' features as plain SIFT on the GPU; with no GPU, or if it fails, today's
+pipeline.GPU_SIFT = True
+try:
+    sift_cmds, sift_logged = gpu_run(True, 17000)
+    extract = next(c for c in sift_cmds if c[1] == "feature_extractor")
+    assert flags(sift_cmds, "feature_extractor", EXTRACT) == ["1"] and "--SiftExtraction.estimate_affine_shape" not in extract, sift_cmds
+    sift_cmds, sift_logged = gpu_run(True, 228)
+    extract = next(c for c in sift_cmds if c[1] == "feature_extractor")
+    assert flags(sift_cmds, "feature_extractor", EXTRACT) == ["0"] and "--SiftExtraction.estimate_affine_shape" in extract, sift_cmds
+    sift_cmds, sift_logged = gpu_run(True, 17000, fails=("feature_extractor",))
+    first, second = [c for c in sift_cmds if c[1] == "feature_extractor"]
+    assert "--SiftExtraction.domain_size_pooling" not in first and "--SiftExtraction.domain_size_pooling" in second and second[-1] == "0", sift_cmds
+    assert any("starting again on the CPU" in l for l in sift_logged), sift_logged
+finally:
+    pipeline.GPU_SIFT = False
 gpu_cmd, cpu_cmd = [c for c in cmds if c[1] == "exhaustive_matcher"]
 assert gpu_cmd[gpu_cmd.index("--TwoViewGeometry.min_num_inliers") + 1] == "12", gpu_cmd
 assert "--TwoViewGeometry.min_num_inliers" not in cpu_cmd, "its lower minimum is only for the GPU's matcher"
