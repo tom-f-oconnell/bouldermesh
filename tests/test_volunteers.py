@@ -1088,6 +1088,26 @@ def youtube_health():
     st = {v["name"]: v for v in b.state()["volunteers"]}
     assert st["Ann"]["health"] == "throttled" and st["Cat"]["health"] == "degraded" and st["Cat"]["yt_dlp"] == "2099.01.01"
     assert b.state()["trouble"] is None, "one degraded of the two heard from: no longer many"
+    # every report kept in youtube_log, summed up by yt-dlp version and volunteer, and by day, with the latest troubles
+    report(c, "failed", error="ERROR: [youtube] x: Private video")
+    log = b.youtube_log()
+    ann = next(r for r in log["by_version"] if r["volunteer"] == "Ann")
+    assert (ann["yt_dlp"], ann["nightly"], ann["tasks"], ann["ok"], ann["throttled"], ann["refused"], ann["degraded"]) == \
+        ("2099.01.01", False, 8, 1, 3, 2, 2), ann
+    assert ann["kbps_median"] == 900, ann
+    cat = next(r for r in log["by_version"] if r["volunteer"] == "Cat")
+    assert (cat["tasks"], cat["degraded"], cat["failed"]) == (3, 2, 1), cat
+    assert len(log["by_day"]) == 1 and log["by_day"][0]["tasks"] == 11, log["by_day"]
+    assert log["latest"][0]["health"] == "throttled" and log["latest"][0]["volunteer"] == "Ann", log["latest"][0]
+    assert any(r["health"] == "refused" and r["detail"] == "HTTP Error 429: Too Many Requests" for r in log["latest"]), log["latest"]
+    assert b.q("SELECT detail FROM youtube_log ORDER BY at DESC LIMIT 1", one=True)["detail"] == "ERROR: [youtube] x: Private video"
+    b.q("UPDATE youtube_log SET yt_dlp='2026.11.14.232655' WHERE volunteer=?", c["id"])
+    assert next(r for r in b.youtube_log()["by_version"] if r["volunteer"] == "Cat")["nightly"], "four parts: a nightly"
+    b.q("UPDATE youtube_log SET at=at-? WHERE volunteer=?", (volunteers.LOG_DAYS + 1) * 86400, c["id"])
+    b.q("UPDATE volunteers SET refused_until=NULL WHERE id=?", a["id"])
+    report(b.get(a["id"]), "ok")
+    assert not b.q("SELECT 1 FROM youtube_log WHERE volunteer=?", c["id"]), "older than LOG_DAYS: gone"
+    assert "youtube" in b.state()
     print("YouTube's signs, unit OK")
 
 

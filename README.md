@@ -1112,7 +1112,10 @@ volunteers and for connecting the public site to whichever server harvests.
   a day: the first at once, the rest summed up a day later, though a refusal whose rest has grown to 4 h comes at once.
   A refusal's notification quotes the line that made it one (a bot check, HTTP 429). When several are degraded at once,
   which is likely YouTube changing something that a newer yt-dlp fixes, the page says so. Warnings when a fetch worked
-  are only noted.
+  are only noted. Every task's outcome is kept for 180 days (`youtube_log` in `data/volunteers.sqlite`: when, who,
+  which task, worked or throttled, refused, degraded or failed, the line that said so, yt-dlp's version and the speed),
+  and *How YouTube treated them* under the list sums the last 7 days up by yt-dlp version and volunteer (nightlies
+  tagged), and by day, with the latest troubles: what shows whether a yt-dlp build helps.
 - **Which yt-dlp:** the scripts (version 11 on) install yt-dlp's nightly builds, which follow YouTube's changes days or
   weeks before a release does, and update them daily. The admin page's Volunteers section switches them to stable, to
   roll back (`volunteers.yt_dlp`); each script switches at its next ask for work.

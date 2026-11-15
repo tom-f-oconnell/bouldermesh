@@ -51,6 +51,7 @@ RULES = {"per_hour": PER_HOUR, "per_day": PER_DAY, "provisional_per_hour": 3, "p
 BLOCK_HOURS = (1, 2, 4, 8)  # a volunteer YouTube refused rests this long, longer each time it's still refused
 THROTTLE_REST = 3600        # a volunteer YouTube throttled rests this long (seconds), without the refusals' growing rests
 TROUBLE = ("refused", "throttled", "degraded")   # how YouTube treats a volunteer, as its script sees it, worst first
+LOG_DAYS = 180              # youtube_log keeps every task's outcome this long, to compare yt-dlp versions and days by
 # what a script's error says when YouTube refuses it (the script's own REFUSAL): the line a notification quotes
 REFUSAL = re.compile(r"not a bot|HTTP Error 429|Too Many Requests|content isn.t available, try again later", re.I)
 WIDESPREAD = (6 * 3600, 2, 0.5)     # degraded for at least 2 volunteers, and half of those heard from, within 6 h: YouTube's
@@ -180,6 +181,9 @@ class Broker:
                 CREATE TABLE IF NOT EXISTS wants(task TEXT, purpose TEXT, ref TEXT, created REAL, applied INTEGER DEFAULT 0,
                   PRIMARY KEY(task, purpose, ref));
                 CREATE TABLE IF NOT EXISTS given(volunteer TEXT, ip TEXT, at REAL);
+                CREATE TABLE IF NOT EXISTS youtube_log(at REAL, volunteer TEXT, kind TEXT, status TEXT, health TEXT,
+                  detail TEXT, yt_dlp TEXT, kbps REAL);
+                CREATE INDEX IF NOT EXISTS youtube_log_at ON youtube_log(at);
             """)
             if "kind" not in {r[1] for r in con.execute("PRAGMA table_info(given)")}:   # rows from before count as videos
                 con.execute("ALTER TABLE given ADD COLUMN kind TEXT")
@@ -451,7 +455,7 @@ class Broker:
                 self.q("UPDATE tasks SET state='queued', volunteer=NULL WHERE id=?", task_id)
                 f.unlink(missing_ok=True)
                 return {"ok": True}
-            health = self._health(v, status, report)
+            health = self._health(v, status, report, t["kind"])
             if status == "refused":
                 level = min(len(BLOCK_HOURS) - 1, (v.get("refusal_level") if v.get("refusal_level") is not None else -1) + 1)
                 until = now + BLOCK_HOURS[level] * 3600
@@ -501,11 +505,12 @@ class Broker:
             self._settle(task_id)
         return {"ok": True}
 
-    def _health(self, v: dict, status: str, report: dict) -> str | None:
+    def _health(self, v: dict, status: str, report: dict, kind: str | None = None) -> str | None:
         """Record how YouTube treats a volunteer, from what its script reported with a task (its "health": {"signs":
         [{"kind": one of TROUBLE, or "note" for a warning when it worked, "what": the line yt-dlp said}], "kbps",
         "yt_dlp"}; scripts before version 5 send none): refused if the task was, else the worst sign, else ok if it
         worked; a failure without signs (a private video) says nothing. Calls troubled() when that's worse than before, and widespread() when many are degraded.
+        Every report goes in youtube_log too (kind: the task's), kept LOG_DAYS, whatever it said of its health.
 
         Returns:
             Its health now, or None if this said nothing of it.
@@ -529,6 +534,11 @@ class Broker:
         ytdlp = str(h.get("yt_dlp") or "")[:40] or None
         now = time.time()
         self.q("UPDATE volunteers SET kbps=COALESCE(?, kbps), yt_dlp=COALESCE(?, yt_dlp) WHERE id=?", kbps, ytdlp, v["id"])
+        failed = [l.strip() for l in str(report.get("error") or "").strip().splitlines() if l.strip()]
+        self.q("INSERT INTO youtube_log(at, volunteer, kind, status, health, detail, yt_dlp, kbps) VALUES(?,?,?,?,?,?,?,?)", now, v["id"],
+               kind, str(status or "")[:20], health, (why or (failed[-1] if failed and status != "ok" else ""))[:300] or None,
+               ytdlp or v.get("yt_dlp"), kbps)
+        self.q("DELETE FROM youtube_log WHERE at<?", now - LOG_DAYS * 86400)
         if health is None:
             return None
         self.q("UPDATE volunteers SET health=?, health_detail=?, health_at=? WHERE id=?", health, why[:300], now, v["id"])
@@ -646,6 +656,33 @@ class Broker:
                   "registered": rows[vid]["registered_ip"] is not None, **c} for vid, c in out.items() if vid in rows]
         return sorted(board, key=lambda b: (-b["videos"], -b["searches"], -b["details"], b["created"] or 0))
 
+    def youtube_log(self, days: float = 7, latest: int = 20) -> dict:
+        """What volunteers' scripts said of YouTube over the last days, summed up: by yt-dlp version and volunteer, and
+        by day, the tasks that worked, were throttled, refused or degraded, or failed otherwise (a private video), with
+        the median speed of whole videos; and the latest troubles themselves. A nightly yt-dlp's version has four parts
+        (2026.11.14.232655), a release's three."""
+        rows = self.q("SELECT l.*, v.name FROM youtube_log l LEFT JOIN volunteers v ON v.id=l.volunteer WHERE l.at>? ORDER BY l.at",
+                      time.time() - days * 86400)
+
+        def sums(group: list[dict]) -> dict:
+            out = {k: 0 for k in ("tasks", "ok", *TROUBLE, "failed")}
+            for r in group:
+                out["tasks"] += 1
+                out[r["health"] if r["health"] in TROUBLE else "ok" if r["status"] == "ok" else "failed"] += 1
+            speeds = sorted(r["kbps"] for r in group if r["kbps"])
+            out["kbps_median"] = round(speeds[len(speeds) // 2]) if speeds else None
+            return out
+        by_version, by_day = {}, {}
+        for r in rows:
+            by_version.setdefault((r["yt_dlp"] or "?", r["name"] or r["volunteer"]), []).append(r)
+            by_day.setdefault(time.strftime("%Y-%m-%d", time.localtime(r["at"])), []).append(r)
+        return {"days": days,
+                "by_version": [{"yt_dlp": k[0], "nightly": k[0].count(".") >= 3, "volunteer": k[1], **sums(g)}
+                               for k, g in sorted(by_version.items(), key=lambda kv: (kv[0][0], kv[0][1]), reverse=True)],
+                "by_day": [{"day": d, **sums(g)} for d, g in sorted(by_day.items(), reverse=True)],
+                "latest": [{"at": r["at"], "volunteer": r["name"], "kind": r["kind"], "health": r["health"], "detail": r["detail"],
+                            "yt_dlp": r["yt_dlp"]} for r in rows if r["health"] in TROUBLE][-latest:][::-1]}
+
     def state(self) -> dict:
         now = time.time()
         vols = []
@@ -685,7 +722,8 @@ class Broker:
         recent = self.q("SELECT kind, video_id, state, error, finished FROM tasks WHERE state IN ('done','failed') "
                         "ORDER BY finished DESC LIMIT 8")
         return {"volunteers": vols, "counts": counts, "wanted": wanted, "recent": recent,
-                "connected": sum(v["status"] in ("fetching", "waiting for work") for v in vols), "trouble": self.trouble()}
+                "connected": sum(v["status"] in ("fetching", "waiting for work") for v in vols), "trouble": self.trouble(),
+                "youtube": self.youtube_log()}
 
 
 class OffsetError(Exception):

@@ -201,6 +201,7 @@
       <option value="here">Only here</option><option value="volunteers">Only through volunteers (for a cloud server, which YouTube refuses)</option></select>
     <div id="vol-trouble"></div>
     <div id="vol-list"></div>
+    <div id="vol-youtube"></div>
     <div class="grid">
       <div><label>New volunteer's name</label><input type="text" id="vol-name" placeholder="who it is, for you"></div>
       <div><label>Its own limits, if any: videos an hour, and a day <small>(blank: the site's, below, as they change)</small></label>
@@ -376,7 +377,7 @@ async function call(path, body){
 }
 const fmtFbTime = t => { const d = new Date(t); return isNaN(d) ? '' : d.toLocaleString(); };
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-let timings = null, machChangesOpen = false;
+let timings = null, machChangesOpen = false, volYoutubeOpen = false;
 function renderTimings(){
   const t = timings, rows = t ? t[$('#times-since').value] : null;
   const fmt = (x, unit = '') => x == null ? '–' : `${x}${unit}`;
@@ -624,6 +625,17 @@ function render(s){
       : `<div class="note">${vs.volunteers.length ? 'No volunteers but revoked or turned-down ones.' : 'No volunteers yet.'}</div>`;
     $('#vol-list').innerHTML += goneLine('vol', vs.volunteers.filter(x => gone(x.status)), 'volunteer');
   }
+  // every task's outcome as volunteers' scripts said (youtube_log): by yt-dlp version, by day, and the latest troubles
+  const ylog = vs.youtube;
+  if (ylog && (ylog.by_day || []).length) {
+    const cells = r => `<td>${r.tasks}</td><td>${r.ok}</td><td class="${r.throttled ? 'warn' : ''}">${r.throttled}</td><td class="${r.refused ? 'bad' : ''}">${r.refused}</td><td class="${r.degraded ? 'warn' : ''}">${r.degraded}</td><td>${r.failed}</td><td>${r.kbps_median ?? '–'}</td>`;
+    const head = first => `<tr><th>${first}</th><th>Tasks</th><th>Worked</th><th>Throttled</th><th>Refused</th><th>Degraded</th><th title="Failed otherwise: a private or removed video">Failed</th><th title="Median speed of whole videos">KB/s</th></tr>`;
+    $('#vol-youtube').innerHTML = `<details${volYoutubeOpen ? ' open' : ''} id="vol-yt"><summary class="note">How YouTube treated them, the last ${ylog.days} days</summary>
+      <table>${head('yt-dlp, volunteer')}${ylog.by_version.map(r => `<tr><td>${esc(r.yt_dlp)}${r.nightly ? ' <span class="tag">nightly</span>' : ''}, ${esc(r.volunteer)}</td>${cells(r)}</tr>`).join('')}</table>
+      <table>${head('Day')}${ylog.by_day.map(r => `<tr><td>${esc(r.day)}</td>${cells(r)}</tr>`).join('')}</table>${
+      ylog.latest.length ? `<div class="note">The latest troubles:</div><table>${ylog.latest.map(r => `<tr><td>${when(r.at)}</td><td>${esc(r.volunteer || '')}</td><td class="${r.health === 'refused' ? 'bad' : 'warn'}">${esc(r.health)}</td><td>${esc(r.kind || '')}</td><td>${esc(r.detail || '')}</td><td class="note">${esc(r.yt_dlp || '')}</td></tr>`).join('')}</table>` : ''}</details>`;
+    $('#vol-yt').addEventListener('toggle', ev => { volYoutubeOpen = ev.target.open; });
+  } else $('#vol-youtube').innerHTML = '';
   const vc = vs.counts, n = k => vc[k] || 0, active = vs.volunteers.some(x => x.status !== 'revoked');
   $('#vol-queue').innerHTML = `Wanted: ${n('queued_video') + n('assigned_video')} video(s)${vs.wanted.harvest ? `, ${vs.wanted.harvest} for harvests` : ''}${vs.wanted.beta ? `, ${vs.wanted.beta} for finding beta` : ''}; `
     + `${n('queued_search') + n('assigned_search')} search(es); ${n('queued_details') + n('assigned_details')} video(s)' details; ${n('queued_channel') + n('assigned_channel')} channel(s). `
