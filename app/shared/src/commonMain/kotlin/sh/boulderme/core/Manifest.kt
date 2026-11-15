@@ -85,11 +85,21 @@ data class RecordHold(
 /** The set of beta a capture was for, and what it got of each of its holds. */
 @Serializable data class RecordDetail(val set: String, val holds: List<RecordHold>)
 
+/**
+ * A frame for the scenery round the rock (SceneryWalk, PanoTurn), not for its mesh: its file (in the capture's
+ * scenery/, never with its photos), "walk" or "pano", when, where the tracking had it (ar, as a photo's: for the
+ * picture as stored, turned by `turn`), its lens (k), and how sharp it was and how much the phone's turning smeared it.
+ */
+@Serializable
+data class SceneryShot(val name: String, val kind: String, val t: Double, val ar: BlobAr, val k: BlobLens, val turn: Int = 0,
+                       val sharp: Double? = null, @SerialName("blur_px") val blurPx: Double? = null)
+
 /** A whole capture, as sent to the server beside its photos (POST /api/projects/<id>/capture). */
 @Serializable
 data class CaptureRecord(
-    val v: Int = 3,                         // 2: plan, level, down_agree_deg; `ar.s` changes when tracking was lost and came back; accel_bias gone
+    val v: Int = 4,                         // 2: plan, level, down_agree_deg; `ar.s` changes when tracking was lost and came back; accel_bias gone
                                             // 3: detail, licence, credit; a photo's ref, still, ar.span
+                                            // 4: scenery
     val id: String,
     val app: String,
     val device: String,
@@ -110,6 +120,7 @@ data class CaptureRecord(
     val licence: String? = null,            // what its photos are given under by whoever took them, and who to credit
     val credit: String? = null,
     val shots: List<ShotRecord>,
+    val scenery: List<SceneryShot> = emptyList(),   // frames of what's around the rock, for the site's backdrop
 ) {
     fun json(): String = Plan.json.encodeToString(serializer(), this)
 }

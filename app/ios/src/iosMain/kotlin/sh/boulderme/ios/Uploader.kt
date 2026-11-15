@@ -66,15 +66,26 @@ class Uploader(private val store: IosStore, private val api: IosApi) {
                 val crash = Files.list(Crashes.dir).first()
                 api.sendLog(project, "crash", "${Crashes.dir}/$crash") { _ -> Files.delete("${Crashes.dir}/$crash"); next(id) }
             }
-            else -> {
+            !u.meshAsked -> {
                 say(id, "Asking for it to be meshed")
                 api.reconstruct(project) { why ->
-                    if (why != null && "already running" !in why) stop(id, why) else {
-                        store.saveUpload(id, u.copy(done = true, note = ""))
-                        running.remove(id)
-                        say(id, "Sent: the server is meshing it")
-                    }
+                    if (why != null && "already running" !in why) stop(id, why) else { store.saveUpload(id, u.copy(meshAsked = true)); next(id) }
                 }
+            }
+            // then the scenery round the rock, last, as it's the most to send and only a backdrop
+            store.scenery(id).any { it !in u.scenerySent } -> {
+                val all = store.scenery(id)
+                val frame = all.first { it !in u.scenerySent }
+                say(id, "Sending the scenery: ${u.scenerySent.size + 1} of ${all.size}")
+                api.uploadScenery(project, "$dir/scenery/$frame", frame) { why -> if (why != null) stop(id, why) else { store.saveUpload(id, u.copy(scenerySent = u.scenerySent + frame)); next(id) } }
+            }
+            store.scenery(id).isNotEmpty() && !u.sceneryDone -> api.sceneryDone(project) { why ->
+                if (why != null) stop(id, why) else { store.saveUpload(id, u.copy(sceneryDone = true)); next(id) }
+            }
+            else -> {
+                store.saveUpload(id, u.copy(done = true, note = ""))
+                running.remove(id)
+                say(id, "Sent: the server is meshing it")
             }
         }
     }

@@ -77,9 +77,11 @@ class Api(private val store: Store) {
             ?: throw IOException("the server made no project")
 
     /** One photo, as a form upload. */
-    fun uploadPhoto(project: String, file: File) {
+    fun uploadPhoto(project: String, file: File) = uploadTo("/api/projects/$project/photos", file)
+
+    private fun uploadTo(path: String, file: File) {
         val boundary = "----bouldermesh${System.nanoTime()}"
-        val c = open("/api/projects/$project/photos", "POST")
+        val c = open(path, "POST")
         c.doOutput = true
         c.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
         val head = "--$boundary\r\nContent-Disposition: form-data; name=\"photos\"; filename=\"${file.name}\"\r\nContent-Type: image/jpeg\r\n\r\n".toByteArray()
@@ -102,6 +104,12 @@ class Api(private val store: Store) {
         c.outputStream.use { out -> file.inputStream().use { it.copyTo(out) } }
         read(c)
     }
+
+    /** A frame of the scenery round the rock (CaptureFlow's grab), kept apart from the photos it's meshed from. */
+    fun uploadScenery(project: String, file: File) = uploadTo("/api/projects/$project/scenery", file)
+
+    /** All the scenery's frames are there: the server fits the backdrop once its mesh is made. */
+    fun sceneryDone(project: String) { postJson("/api/projects/$project/scenery/done", "{}") }
 
     fun sendPoints(project: String, file: File) {
         val c = open("/api/projects/$project/capture/points", "POST")

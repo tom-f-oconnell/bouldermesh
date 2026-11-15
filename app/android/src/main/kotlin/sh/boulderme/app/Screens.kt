@@ -355,6 +355,8 @@ fun DoneScreen(a: MainActivity, id: String, go: (Screen) -> Unit) {
         Text(u.name, fontWeight = FontWeight.SemiBold)
         Text("${u.photos} photos kept, each with which way was down, where the phone was and which way it faced.")
         if (u.photos < 3) Text("That's too few to mesh.", color = BAD)
+        val scenery = (java.io.File(a.store.captureDir(id), "scenery").listFiles() ?: emptyArray()).filter { it.name.endsWith(".jpg") }
+        if (scenery.isNotEmpty()) Text("And ${scenery.size} frames of the scenery round the rock (${scenery.sumOf { it.length() } / 1_000_000} MB), sent last: Wi-Fi is best for them.")
         val status = sending[id]
         if (status != null) Text(status, color = if (u.done) GOOD else if (status.startsWith("Stopped")) BAD else Color.Unspecified)
         if (Uploader.busy(id)) LinearProgressIndicator(progress = { if (u.photos > 0) u.sent.size.toFloat() / u.photos else 0f }, modifier = Modifier.fillMaxWidth())

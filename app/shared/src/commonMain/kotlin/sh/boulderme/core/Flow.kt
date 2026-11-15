@@ -4,8 +4,12 @@ import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.round
 
-/** Where a capture is: finding which way is down (a turn on the spot), lining the mesh up (a tap on the small model, then on the rock), checking the fit, or taking photos. */
-enum class Phase { STARTING, LEVEL, GHOST, ROCK, CONFIRM, CENTRE, CAPTURE, FAILED }
+/**
+ * Where a capture is: finding which way is down (a turn on the spot), lining the mesh up (a tap on the small model, then
+ * on the rock), checking the fit, taking photos, or walking round for the scenery (SceneryWalk), which can be started
+ * from taking photos and goes back to it.
+ */
+enum class Phase { STARTING, LEVEL, GHOST, ROCK, CONFIRM, CENTRE, CAPTURE, SCENERY, FAILED }
 
 /**
  * What the capture screen shows over the camera. `sensors`: what was wrong with the phone's readings at the last photo
@@ -16,6 +20,7 @@ data class CaptureUi(
     val total: Int = 0, val done: Int = 0, val holds: Int = 0, val holdsDone: Int = 0, val kept: Int = 0, val rejected: Int = 0,
     val note: String = "", val tracking: Boolean = false, val auto: Boolean = true, val canSkip: Boolean = false, val wide: Boolean = false,
     val marking: Boolean = false, val pairs: Int = 0, val guided: Boolean = true, val sensors: String = "",
+    val scenery: Int = 0,           // frames kept for the scenery round the rock
     val reach: String = "",         // what counts, in words: "whole rock", "its climbs", or "the holds of <a set of beta>"
     val target: String = "",        // how the hold being photographed in detail stands
     val askMore: Int = 0,           // everything asked for is done, and this many holds others marked privately are left: photograph them too?
@@ -36,7 +41,8 @@ data class CaptureUi(
  */
 class FlowOut(val ui: CaptureUi, val guide: Similarity?, val solid: Boolean, val alpha: Float, val levels: IntArray?, val markers: List<Marker>, val shoot: Boolean,
               val still: Boolean = false,      // the photo to take is a full-size still, where the phone can: of a hold wanted in detail
-              val card: Boolean = false)       // and it's the one with a card in it: say so in shot() (ShotIn.card)
+              val card: Boolean = false,       // and it's the one with a card in it: say so in shot() (ShotIn.card)
+              val grab: String? = null)        // keep this frame, as the tracking has it, for the scenery ("walk" or "pano"): hand it to scenery()
 
 /**
  * A capture as its screen goes through it, for both phones' apps: they tell it each camera frame, each tap and each
@@ -63,6 +69,9 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     private val setName = set?.let { id -> plan?.sets?.firstOrNull { it.id == id }?.let { it.name ?: "this beta" } }
     private var askedMore = anonFromStart
     private var cardNext = false
+    private val pano = PanoTurn()           // frames of what's far off, from the turn on the spot
+    private var walk: SceneryWalk? = null   // the walk round for the scenery, once started
+    private var grabbing = false
     private var cardShot = false
     private var ghost: Similarity? = null
     private var ghostTurn = 0.0
@@ -111,6 +120,45 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     fun more(yes: Boolean) { event("more", "yes" to yes); askedMore = true; if (yes) { session.anon = true; session.setScope(Scope(minPrio = reach)); levelsDirty = true } }
 
     // ---- from the screen ---------------------------------------------------------------------------------------------
+    /**
+     * Starts the walk round for the scenery, from taking photos: round the rock's middle (the mesh lined up, or the one
+     * tapped). Returns why it can't, or null.
+     */
+    fun startScenery(): String? {
+        if (phase != Phase.CAPTURE) return "Start taking photos first."
+        val w = walk ?: run {
+            val fit = session.fit; val g = guide; val orb = session.orbit
+            when {
+                fit != null && g != null -> {
+                    val (lo, hi) = g.bounds()
+                    SceneryWalk(fit.apply((lo + hi) / 2.0), kotlin.math.hypot(hi.x - lo.x, hi.z - lo.z) / 2 * fit.scale)
+                }
+                orb != null -> SceneryWalk(orb.centre, ORBIT_ROCK_M)
+                else -> return "Line the mesh up with the rock first."
+            }
+        }
+        walk = w; phase = Phase.SCENERY; note = ""
+        event("scenery_start", "ring_m" to w.ringM, "rock_m" to w.rockM, "frames" to w.frames)
+        return null
+    }
+
+    /** Back to taking photos of the rock. */
+    fun endScenery() { if (phase == Phase.SCENERY) { event("scenery_end", "frames" to walk?.frames, "done" to walk?.done); phase = Phase.CAPTURE; levelsDirty = true } }
+
+    /**
+     * The frame FlowOut.grab asked for, as stored (`pose` turned by `turnedDeg`, as a photo's is). Returns its record,
+     * whose name is the file to write it to in the capture's scenery/; noGrab() if it couldn't be had.
+     */
+    fun scenery(kind: String, pose: CameraPose, t: Double, arSession: String, turnedDeg: Int, stats: ImageStats?, gyroRadS: Double, exposureS: Double): SceneryShot {
+        grabbing = false
+        if (kind == "pano") pano.add(pose) else walk?.add(pose, t)
+        val shot = session.sceneryShot(kind, pose, t, spell(arSession), turnedDeg, stats, sceneryBlurPx(gyroRadS, exposureS, pose.lens.fx))
+        event("scenery", "kind" to kind, "name" to shot.name, "sharp" to stats?.sharp, "blur_px" to shot.blurPx, "out" to walk?.outward(pose))
+        return shot
+    }
+
+    fun noGrab(why: String? = null) { grabbing = false; if (why != null) event("no_grab", "why" to why) }
+
     /** Goes on without the turn on the spot: down is then as the phone's tracking has it. */
     fun skipLevel() { if (phase == Phase.LEVEL) { event("level_skipped", "filled" to turn.filled); phase = afterLevel; note = "" } }
     fun shutter() { event("shutter"); wantShot = true }
@@ -270,12 +318,12 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         if (tracking != saidTracking) { event("tracking", "on" to tracking); saidTracking = tracking }
         if (phase != said) { event("phase", "to" to phase.name); said = phase }
         val h = lastHint
-        if (phase == Phase.CAPTURE && h != null) {
+        if ((phase == Phase.CAPTURE || phase == Phase.SCENERY) && h != null) {
             val key = h.kind to h.targetId
             if (key != saidHint) { event("hint", "kind" to h.kind.name, "target" to h.targetId, "text" to h.text, "move_m" to h.moveM.takeIf { it != 0.0 },
                 "done" to out.ui.done, "total" to out.ui.total); saidHint = key }
             lastHint = null
-        } else if (phase != Phase.CAPTURE && out.ui.text != saidText && tracking) { event("says", "text" to out.ui.text); saidText = out.ui.text }
+        } else if (phase != Phase.CAPTURE && phase != Phase.SCENERY && out.ui.text != saidText && tracking) { event("says", "text" to out.ui.text); saidText = out.ui.text }
         if (out.ui.askMore > 0 && "askMore" != saidText) { event("ask_more", "left" to out.ui.askMore); saidText = "askMore" }
         return out
     }
@@ -289,7 +337,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
             if (lostAt?.let { t - it >= LOST_S } == true) { event("spell", "n" to block + 1, "lost_s" to t - lostAt!!); past += cloud.values.map { it to block }; cloud.clear(); block++ }
             lostAt = null; tracked = true
         }
-        val base = ui.copy(phase = phase, kept = session.shotCount, rejected = rejected, note = note, sensors = sensorNote, auto = session.auto, wide = wide, marking = marking,
+        val base = ui.copy(phase = phase, kept = session.shotCount, scenery = session.sceneryCount, rejected = rejected, note = note, sensors = sensorNote, auto = session.auto, wide = wide, marking = marking,
             reach = when (reach) { 1 -> "whole rock"; 2 -> "its climbs"; else -> "only the holds of $setName" }, card = cardNext, target = "", canCard = false, askMore = 0,
             pairs = session.taps.size, tracking = tracking)
         if (!tracking) {
@@ -322,7 +370,10 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 }
                 ui = base.copy(phase = phase, note = note, turnX = 0.0, turnY = 0.0, total = turn.sectors, done = if (phase == Phase.LEVEL) turn.filled else turn.sectors,
                     text = "To find which way is down: hold the phone upright, as for a photo, and turn slowly all the way round on the spot")
-                return FlowOut(ui, null, false, 0f, null, emptyList(), false)
+                // and a frame for each step of the turn, for a panorama of what's far off
+                val grab = if (!grabbing && pano.wanted(pose, sceneryBlurPx(gyroRadS, exposureS, pose.lens.fx) <= STEADY_SCENERY_PX)) "pano" else null
+                if (grab != null) grabbing = true
+                return FlowOut(ui, null, false, 0f, null, emptyList(), false, grab = grab)
             }
             Phase.GHOST, Phase.ROCK -> {
                 val g = ghost ?: placeGhost(pose).also { ghost = it }
@@ -337,6 +388,15 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 fresh()
                 ui = base.copy(turnX = 0.0, turnY = 0.0, text = "Is the coloured mesh sitting on the rock? It tightens by itself as you look it over.")
                 return FlowOut(ui, session.fit, false, 0.8f, levels, markers, false)
+            }
+            Phase.SCENERY -> {
+                val w = walk!!
+                val h = w.hint(pose, uprightDeg)
+                lastHint = h
+                val grab = if (!grabbing && w.wanted(pose, t, sceneryBlurPx(gyroRadS, exposureS, pose.lens.fx) <= STEADY_SCENERY_PX)) "walk" else null
+                if (grab != null) grabbing = true
+                ui = base.copy(text = h.text, turnX = h.turnX, turnY = h.turnY, total = w.total, done = w.done, canSkip = false, target = "", canCard = false)
+                return FlowOut(ui, session.fit, false, 0.3f, null, emptyList(), false, grab = grab)
             }
             Phase.CENTRE -> {
                 ui = base.copy(text = "Tap the middle of the rock")
@@ -407,6 +467,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         const val REFINE_LEAST = 150
         const val REFINE_EVERY_S = 3.0
         const val LOST_S = 1.0              // tracking lost for longer than this starts a new spell: shorter is a blink, with its world kept
+        const val STEADY_SCENERY_PX = 1.5   // a scenery frame is kept only with the phone turning less than smears it this much
+        const val ORBIT_ROCK_M = 2.0        // how far a rock with no mesh is taken to reach from its middle, for the walk round it
         const val SPAN_S = 5.0              // how often how frames are coming is logged
         const val LEVEL_SPREAD_MOST = 0.4   // degrees the directions of a turn on the spot may disagree by, for it to be believed
 

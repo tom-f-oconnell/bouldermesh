@@ -95,7 +95,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
     Box(Modifier.fillMaxSize()) {
         AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
         // which way to turn, when what's wanted is out of the picture
-        if (ui.phase == Phase.CAPTURE && hypot(ui.turnX, ui.turnY) > 0.3) Canvas(Modifier.align(Alignment.Center).size(120.dp)) {
+        if ((ui.phase == Phase.CAPTURE || ui.phase == Phase.SCENERY) && hypot(ui.turnX, ui.turnY) > 0.3) Canvas(Modifier.align(Alignment.Center).size(120.dp)) {
             val angle = atan2(-ui.turnY, ui.turnX).toFloat()        // the screen's y runs down
             val c = Offset(size.width / 2, size.height / 2); val r = size.width * 0.45f
             fun at(da: Float, k: Float) = Offset(c.x + r * k * cos(angle + da), c.y + r * k * sin(angle + da))
@@ -114,6 +114,11 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                     LinearProgressIndicator(progress = { ui.done.toFloat() / ui.total }, modifier = Modifier.fillMaxWidth())
                     Text(listOfNotNull("${ui.done}/${ui.total} ${if (ui.guided) "parts" else "sides and spots"}", if (ui.holds > 0 && ui.guided) "${ui.holdsDone}/${ui.holds} holds" else null,
                         "${ui.kept} photos", if (ui.rejected > 0) "${ui.rejected} not kept" else null).joinToString(" · "), color = Color.White, style = MaterialTheme.typography.bodySmall)
+                }
+                if (ui.phase == Phase.SCENERY) {
+                    LinearProgressIndicator(progress = { ui.done.toFloat() / ui.total.coerceAtLeast(1) }, modifier = Modifier.fillMaxWidth())
+                    Text("${ui.done}/${ui.total} directions round the rock · ${ui.scenery} frames of the scenery (a backdrop: they needn't be perfect)",
+                        color = Color.White, style = MaterialTheme.typography.bodySmall)
                 }
                 // what the last photo's readings lacked, which it was kept in spite of
                 if (ui.phase == Phase.CAPTURE && ui.sensors.isNotEmpty()) Text(ui.sensors, color = WARN, style = MaterialTheme.typography.bodySmall)
@@ -149,6 +154,11 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                             FilledTonalButton(onClick = { controller.toggleMarking() }) { Text(if (ui.marking) "Tap the hold…" else "Mark a hold") }
                             FilledTonalButton(onClick = { controller.blockSide() }) { Text("Can't reach that side") }
                         }
+                        FilledTonalButton(onClick = { controller.startScenery() }) { Text(if (ui.scenery > 0) "Scenery (${ui.scenery})" else "Scenery") }
+                        Button(onClick = { leaving = true }, colors = ButtonDefaults.buttonColors(containerColor = GOOD)) { Text("Finish") }
+                    }
+                    Phase.SCENERY -> {
+                        FilledTonalButton(onClick = { controller.endScenery() }) { Text("Back to the rock") }
                         Button(onClick = { leaving = true }, colors = ButtonDefaults.buttonColors(containerColor = GOOD)) { Text("Finish") }
                     }
                     else -> TextButton(onClick = { leaving = true }) { Text("Leave") }

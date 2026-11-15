@@ -241,6 +241,7 @@ class Done(private val app: App, private val id: String) : Form("Captured") {
         val busy = app.uploader.busy(id)
         text(u.name, bold = true)
         text("${u.photos} photos kept, each with which way was down, where the phone was and which way it faced.")
+        app.store.scenery(id).size.takeIf { it > 0 }?.let { text("And $it frames of the scenery round the rock, sent last: Wi-Fi is best for them.") }
         if (u.photos < 3) text("That's too few to mesh.", BAD)
         app.uploader.state[id]?.let { text(it, if (u.done) GOOD else if (it.startsWith("Stopped")) BAD else null) }
         if (busy) progress(if (u.photos > 0) u.sent.size.toDouble() / u.photos else 0.0)

@@ -67,6 +67,8 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     var credit: String? = null
     private val nearest: GuideMesh.Nearest? = guide?.let { g -> val (lo, hi) = g.bounds(); g.Nearest(max(1e-6, (hi - lo).norm / 40)) }
     private val shots = ArrayList<ShotRecord>()
+    private val scenery = ArrayList<SceneryShot>()
+    val sceneryCount: Int get() = scenery.size
     private val fields = ArrayList<Double>()
     private val sharps = ArrayList<Double>()
     private val matched = ArrayDeque<Triple<String, CameraPose, Features>>()      // kept photos' corners, the latest MATCHED_MOST
@@ -166,6 +168,19 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             return FrameOut(hint, auto && steady && orb.useful(f.pose) && f.t - lastShotT >= MIN_GAP_S, orb.progress(), blur)
         }
         return FrameOut(Hint(Hint.Kind.NONE, "Tap the middle of the rock to start"), false, none, 0.0)
+    }
+
+    /**
+     * Counts a frame of the scenery (kind "walk" or "pano"), as stored: its pose is the stored picture's (turned by
+     * `turnedDeg`). Returns its record, whose name is the file to write it to in the capture's scenery/.
+     */
+    fun sceneryShot(kind: String, pose: CameraPose, t: Double, arSession: String, turnedDeg: Int, stats: ImageStats?, blurPx: Double?): SceneryShot {
+        val n = scenery.count { it.kind == kind } + 1
+        val name = if (kind == "pano") "pano_${id}_${n.toString().padStart(2, '0')}.jpg" else "scn_${id}_${n.toString().padStart(3, '0')}.jpg"
+        val shot = SceneryShot(name, kind, t, BlobAr(arSession, pose.centre.toList(), pose.rot.toList()), pose.lens.let { BlobLens(it.fx, it.fy, it.cx, it.cy, it.w, it.h) },
+            turnedDeg, stats?.sharp, blurPx)
+        scenery.add(shot)
+        return shot
     }
 
     fun nextName(): String = "cap_${id}_${(shots.size + 1).toString().padStart(3, '0')}.jpg"
@@ -295,7 +310,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             skipped = cov?.states?.filter { it.skipped != null }?.associate { it.target.id to it.skipped!! } ?: emptyMap(),
             progress = p?.let { RecordProgress(it.total, it.done, it.skipped, it.holds, it.holdsDone) },
             detail = set?.let { id -> cov?.let { RecordDetail(id, it.reached()) } }, licence = licence, credit = credit,
-            shots = shots.toList(),
+            shots = shots.toList(), scenery = scenery.toList(),
         )
     }
 

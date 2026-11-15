@@ -50,6 +50,7 @@ class IosStore {
     fun saveUpload(id: String, u: UploadState) { Files.write("${captureDir(id)}/upload.json", json.encodeToString(UploadState.serializer(), u)) }
     fun captureIds(): List<String> = Files.list(captures).filter { Files.exists("$captures/$it/upload.json") }.sortedByDescending { Files.modified("$captures/$it/upload.json") }
     fun photos(id: String): List<String> = Files.list("$captures/$id/photos").filter { it.endsWith(".jpg") }
+    fun scenery(id: String): List<String> = Files.list("$captures/$id/scenery").filter { it.endsWith(".jpg") }
     fun deleteCapture(id: String) { Files.delete("$captures/$id") }
 
     companion object {

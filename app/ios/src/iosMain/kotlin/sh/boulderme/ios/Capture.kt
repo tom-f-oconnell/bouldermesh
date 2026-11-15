@@ -364,6 +364,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         if (out.markers != drawn) { drawn = out.markers; mark(out.markers) }
         show(out.ui)
         if (out.shoot) takeStill()
+        else out.grab?.let { grab(frame, seen, it, now) }
         GC.collect()        // lets go of the frame just read
     }
 
@@ -504,8 +505,33 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         }
     }
 
+    /**
+     * Keeps the frame the tracking has now for the scenery round the rock (CaptureFlow's grab), with the tracking's own
+     * lens (`pose`, not a still's): stored upright as a photo is, in the capture's scenery/, never with its photos.
+     */
+    private fun grab(frame: ARFrame, pose: CameraPose, kind: String, now: Double) {
+        val buffer = frame.capturedImage
+        val sample = app.sensors.sample()
+        val exposure = frame.camera.exposureDuration
+        val gyro = app.sensors.gyro()
+        val unix = NSDate().timeIntervalSince1970
+        val turn = Axes.uprightTurn(Axes.downInImage(pose), UPRIGHT_DEG)
+        dispatch_async(background) {
+            val (stats, _) = lumaStats(buffer, turn, features = false)
+            dispatch_async(dispatch_get_main_queue()) {
+                val stored = pose.turned(turn)
+                val shot = flow.scenery(kind, stored, now, arSession, turn, stats, gyro, exposure)
+                Files.mkdirs("$dir/scenery")
+                dispatch_async(background) {
+                    val ok = writeJpeg(frame, "$dir/scenery/${shot.name}", "", sample, stored.lens, exposure, turn, unix, SCENERY_QUALITY)
+                    dispatch_async(dispatch_get_main_queue()) { if (!ok) flow.say("A frame of the scenery couldn't be saved.") }
+                }
+            }
+        }
+    }
+
     /** A photo's stats from its brightness (the first plane of the camera's picture), and its corners (Features), for a picture stored turned by `turn`. */
-    private fun lumaStats(buffer: CVPixelBufferRef?, turn: Int): Pair<ImageStats?, Features?> {
+    private fun lumaStats(buffer: CVPixelBufferRef?, turn: Int, features: Boolean = true): Pair<ImageStats?, Features?> {
         if (buffer == null || CVPixelBufferGetPlaneCount(buffer) < 1uL) return null to null
         CVPixelBufferLockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly)
         try {
@@ -513,14 +539,15 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             val stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0u).toInt()
             val base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0u) ?: return null to null
             val luma = base.readBytes(stride * (h - 1) + w)
-            return Quality.imageStats(luma, w, h, stride) to runCatching { Features.of(luma, w, h, stride, turn) }.getOrNull()
+            return Quality.imageStats(luma, w, h, stride) to if (features) runCatching { Features.of(luma, w, h, stride, turn) }.getOrNull() else null
         } finally {
             CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly)
         }
     }
 
     /** The picture as a JPEG, turned upright (clockwise by `turn`), with its readings in its EXIF. `lens` is the stored picture's. */
-    private fun writeJpeg(frame: ARFrame, path: String, comment: String, s: SensorSample, lens: Lens, exposure: Double, turn: Int, unix: Double): Boolean {
+    private fun writeJpeg(frame: ARFrame, path: String, comment: String, s: SensorSample, lens: Lens, exposure: Double, turn: Int, unix: Double,
+                          quality: Double = 0.92): Boolean {
         // applying an EXIF orientation is Core Image's way of turning a picture so that it shows as that orientation says
         val image = CIImage.imageWithCVPixelBuffer(frame.capturedImage).imageByApplyingOrientation(when (turn) { 90 -> 6; 180 -> 3; 270 -> 8; else -> 1 })
         val cg = ciContext.createCGImage(image, fromRect = image.extent) ?: return false
@@ -532,7 +559,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         fun dict(m: Map<Any?, *>) = NSDictionary.dictionaryWithDictionary(m)
         val exif = mutableMapOf<Any?, Any?>(kCGImagePropertyExifUserComment.text() to comment, kCGImagePropertyExifDateTimeOriginal.text() to stamp,
             kCGImagePropertyExifExposureTime.text() to n(exposure), kCGImagePropertyExifFocalLenIn35mmFilm.text() to n((lens.fx / maxOf(lens.w, lens.h) * 36.0).roundToInt()))
-        val props = mutableMapOf<Any?, Any?>(kCGImagePropertyOrientation.text() to n(1), kCGImageDestinationLossyCompressionQuality.text() to n(0.92), kCGImagePropertyExifDictionary.text() to dict(exif),
+        val props = mutableMapOf<Any?, Any?>(kCGImagePropertyOrientation.text() to n(1), kCGImageDestinationLossyCompressionQuality.text() to n(quality), kCGImagePropertyExifDictionary.text() to dict(exif),
             kCGImagePropertyTIFFDictionary.text() to dict(mapOf<Any?, Any?>(kCGImagePropertyTIFFMake.text() to "Apple", kCGImagePropertyTIFFModel.text() to machine(), kCGImagePropertyTIFFSoftware.text() to "BoulderMesh ${IosStore.VERSION}")))
         val gps = mutableMapOf<Any?, Any?>()
         s.gps?.let { g ->
@@ -579,8 +606,13 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         note.textColor = if (now.note.startsWith("Not kept")) WARN else UIColor.whiteColor
         val levelling = now.phase == Phase.LEVEL && failed == null && now.tracking
         val capturing = now.phase == Phase.CAPTURE && now.total > 0
-        bar.hidden = !capturing && !levelling
-        counts.hidden = !capturing && !levelling
+        val walking = now.phase == Phase.SCENERY
+        bar.hidden = !capturing && !levelling && !walking
+        counts.hidden = !capturing && !levelling && !walking
+        if (walking) {
+            bar.progress = now.done.toFloat() / maxOf(1, now.total)
+            counts.text = "${now.done}/${now.total} directions round the rock · ${now.scenery} frames of the scenery (a backdrop: they needn't be perfect)"
+        }
         if (levelling) {
             bar.progress = now.done.toFloat() / maxOf(1, now.total)
             counts.text = "${now.done} of ${now.total} directions faced"
@@ -593,10 +625,10 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         readings.text = now.sensors
         readings.hidden = !(now.phase == Phase.CAPTURE && now.sensors.isNotEmpty())
         // which way to turn, when what's wanted is out of the picture
-        val turn = now.phase == Phase.CAPTURE && hypot(now.turnX, now.turnY) > 0.3
+        val turn = (now.phase == Phase.CAPTURE || now.phase == Phase.SCENERY) && hypot(now.turnX, now.turnY) > 0.3
         arrow.hidden = !turn
         if (turn) arrow.transform = CGAffineTransformMakeRotation(atan2(-now.turnY, now.turnX))     // the screen's y runs down
-        val want = "${now.phase}/${now.auto}/${now.canSkip}/${now.reach}/${now.canCard}/${now.card}/${now.askMore}/${now.marking}/${now.guided}/${now.pairs > 0}/${now.kept > 0}"
+        val want = "${now.phase}/${now.auto}/${now.canSkip}/${now.reach}/${now.canCard}/${now.card}/${now.askMore}/${now.scenery > 0}/${now.marking}/${now.guided}/${now.pairs > 0}/${now.kept > 0}"
         if (want != buttonsFor) { buttonsFor = want; offer(now) }
     }
 
@@ -619,7 +651,9 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
                 buttons.addArrangedSubview(if (now.guided) makeRow(makeButton("Skip this", enabled = now.canSkip) { flow.skip() }, makeButton("Doing: ${now.reach}") { flow.toggleWide() },
                         *(if (now.canCard || now.card) arrayOf(makeButton(if (now.card) "No card" else "Card photo") { flow.toggleCard() }) else emptyArray()))
                     else makeRow(makeButton(if (now.marking) "Tap the hold…" else "Mark a hold") { flow.toggleMarking() }, makeButton("Can't reach that side") { flow.blockSide() }))
+                buttons.addArrangedSubview(makeRow(makeButton(if (now.scenery > 0) "Scenery (more)" else "Scenery") { flow.startScenery()?.let { flow.say(it) } }))
             }
+            Phase.SCENERY -> buttons.addArrangedSubview(makeRow(makeButton("Back to the rock", Look.FILLED) { flow.endScenery() }, leave))
             else -> buttons.addArrangedSubview(makeRow(leave))
         }
     }
@@ -641,3 +675,4 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             "Finish", "Carry on") { go() }
     }
 }
+private const val SCENERY_QUALITY = 0.85      // JPEG quality of the scenery's frames: a backdrop, not the rock

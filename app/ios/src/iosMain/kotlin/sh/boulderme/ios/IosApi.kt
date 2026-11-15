@@ -99,7 +99,15 @@ class IosApi(private val store: IosStore) {
         post("/api/projects", "{\"name\":${quoted(name)}}") { obj, why -> val id = obj?.get("id")?.jsonPrimitive?.content; if (id != null) done(id, null) else done(null, why ?: "the server made no project") }
 
     /** One photo, as a form upload. Answers why it failed, or null. */
-    fun uploadPhoto(project: String, path: String, name: String, done: (String?) -> Unit) {
+    fun uploadPhoto(project: String, path: String, name: String, done: (String?) -> Unit) = uploadTo("/api/projects/$project/photos", path, name, done)
+
+    /** A frame of the scenery round the rock (CaptureFlow's grab), kept apart from the photos it's meshed from. */
+    fun uploadScenery(project: String, path: String, name: String, done: (String?) -> Unit) = uploadTo("/api/projects/$project/scenery", path, name, done)
+
+    /** All the scenery's frames are there: the server fits the backdrop once its mesh is made. */
+    fun sceneryDone(project: String, done: (String?) -> Unit) = post("/api/projects/$project/scenery/done", "{}") { obj, why -> done(if (obj != null) null else why ?: "it wasn't taken") }
+
+    private fun uploadTo(route: String, path: String, name: String, done: (String?) -> Unit) {
         val file = NSData.dataWithContentsOfFile(path)
         if (file == null) { done("$name can't be read"); return }
         val boundary = "----bouldermesh${name.hashCode().toUInt()}${file.length}"
@@ -107,7 +115,7 @@ class IosApi(private val store: IosStore) {
         body.appendData("--$boundary\r\nContent-Disposition: form-data; name=\"photos\"; filename=\"$name\"\r\nContent-Type: image/jpeg\r\n\r\n".encodeToByteArray().toData())
         body.appendData(file)
         body.appendData("\r\n--$boundary--\r\n".encodeToByteArray().toData())
-        call("/api/projects/$project/photos", "POST", body, "multipart/form-data; boundary=$boundary") { bytes, why ->
+        call(route, "POST", body, "multipart/form-data; boundary=$boundary") { bytes, why ->
             done(if (bytes == null) why ?: "it wasn't sent" else if (name !in bytes.decodeToString()) "the server didn't keep $name" else null)
         }
     }

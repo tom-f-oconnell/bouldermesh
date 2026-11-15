@@ -133,6 +133,14 @@ matched against, best: the most matches with one of them that agree with where t
 ar_pts: points the tracking was following as it was taken, ar_cells: points it had found in what the photo shows, one
 to each 5 cm}. The warnings (Session's FEW_CORNERS, FEW_LINKS, FEW_AR_POINTS) are in the photo's notes.
 
+**Scenery** (record v 4, `scenery`): frames of what's around the rock, for the site's backdrop, never meshed: those of
+a walk round it (kind "walk", `scn_<capture>_<nnn>.jpg`) and of the turn on the spot (kind "pano",
+`pano_<capture>_<nn>.jpg`), each {name, kind, t, ar: {s, p, q} as a photo's, k: its lens, turn, sharp, blur_px}, for the
+picture as stored (upright, EXIF Orientation 1, no readings in its EXIF). Sent after the request to mesh, each to
+`POST /api/projects/<id>/scenery` (multipart, kept in the project's scenery/), then `POST /api/projects/<id>/scenery/done`;
+the server fits them once the capture's mesh is made (backend/splat.py) and puts `scene.splat`, `scene-small.splat`,
+`scene-pano.webp` and `scene.json` in its folder.
+
 **How it went** (`capture-log.jsonl`, sent last, to `POST /api/projects/<id>/capture/log`; kept in the project as
 `capture-log.jsonl`): JSON lines, each {t: seconds since the capture's first frame, e: what, ...}, written as the
 capture runs (app/shared EventLog.kt), a line for each change and not each frame: `start`, `camera` (how the app set

@@ -145,6 +145,8 @@ class ArController(
     fun toggleMarking() = synchronized(lock) { flow.toggleMarking() }
     fun toggleWide() = synchronized(lock) { flow.toggleWide() }
     fun toggleCard() = synchronized(lock) { flow.toggleCard() }
+    fun startScenery() = synchronized(lock) { flow.startScenery()?.let { flow.say(it) } }
+    fun endScenery() = synchronized(lock) { flow.endScenery() }
     fun more(yes: Boolean) = synchronized(lock) { flow.more(yes) }
     fun turnGhost(degrees: Double) = synchronized(lock) { flow.turnGhost(degrees) }
     fun bringGhost() = synchronized(lock) { flow.bringGhost() }
@@ -215,6 +217,7 @@ class ArController(
         }
         markerRenderer?.draw(out.markers, viewProj, height * proj[5], plan)       // a metre across at a metre off, in pixels
         if (out.shoot) takeStill(frame, pose, exposure, gyro, now)
+        else out.grab?.let { grabFrame(frame, pose, exposure, gyro, now, it) }
         if (now - lastUi > 0.12) { lastUi = now; main.post { onUi(out.ui) } }
     }
 
@@ -304,6 +307,43 @@ class ArController(
         }
     }
 
+    /**
+     * Keeps the frame the tracking has now for the scenery round the rock (CaptureFlow's grab): stored upright as a photo
+     * is, in the capture's scenery/, never with its photos.
+     */
+    private fun grabFrame(frame: Frame, pose: CameraPose, exposure: Double, gyro: Double, now: Double, kind: String) {
+        val image: Image = try { frame.acquireCameraImage() } catch (e: Exception) {
+            synchronized(lock) { flow.noGrab(e.javaClass.simpleName) }
+            return
+        }
+        val w = image.width; val h = image.height
+        val nv21 = try { toNv21(image) } finally { image.close() }
+        val upright = uprightDeg()
+        val unix = System.currentTimeMillis() / 1000.0
+        worker.execute {
+            try {
+                val stats = Quality.imageStats(nv21, w, h, w)
+                val turn = Axes.uprightTurn(Axes.downInImage(pose), upright)
+                val stored = pose.turned(turn)
+                val shot = synchronized(lock) { flow.scenery(kind, stored, now, arSession, turn, stats, gyro, exposure) }
+                val folder = File(dir, "scenery").apply { mkdirs() }
+                val file = File(folder, shot.name)
+                val pixels = turnNv21(nv21, w, h, turn)
+                val (sw, sh) = if (turn == 90 || turn == 270) h to w else w to h
+                FileOutputStream(file).use { YuvImage(pixels, ImageFormat.NV21, sw, sh, null).compressToJpeg(Rect(0, 0, sw, sh), SCENERY_QUALITY, it) }
+                ExifInterface(file).apply {
+                    setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
+                    setAttribute(ExifInterface.TAG_MAKE, Build.MANUFACTURER); setAttribute(ExifInterface.TAG_MODEL, Build.MODEL)
+                    setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US).format(java.util.Date((unix * 1000).toLong())))
+                    saveAttributes()
+                }
+                if (kind == "walk" && synchronized(lock) { flow.session.sceneryCount } % 20 == 1) save()
+            } catch (e: Exception) {
+                synchronized(lock) { flow.noGrab("${e.javaClass.simpleName}: ${e.message}") }
+            }
+        }
+    }
+
     /** NV21 pixels w wide and h high, turned clockwise by a quarter (90), a half or three quarters: then h wide and w high, for a quarter. */
     private fun turnNv21(src: ByteArray, w: Int, h: Int, deg: Int): ByteArray {
         if (deg != 90 && deg != 180 && deg != 270) return src
@@ -365,6 +405,7 @@ class ArController(
     }
 
     companion object {
+        const val SCENERY_QUALITY = 85     // JPEG quality of the scenery's frames: a backdrop, not the rock
         const val UNKNOWN_EXPOSURE_S = 1.0 / 120     // until the camera says: about the longest it uses out of doors in daylight
     }
 }
