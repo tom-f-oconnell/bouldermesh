@@ -214,6 +214,9 @@ def pool_room() -> float | None:
 _GPU_ARGS = None
 # what a step's log says when its container couldn't reach the GPU (not a result of the method: the step is made again)
 GPU_LOST = r"No CUDA devices available|no CUDA-capable device is detected|Failed to initialize NVML"
+# what Docker says when two containers on one tree start in the same second: the NVIDIA hook runs ldconfig in each, on
+# the /etc they both mount (atlas, 14 Nov, two jobs side by side). Not the step's doing: it is started again.
+START_RACE = r"ldcache error|ldconfig failed"
 
 
 def gpu_args() -> list[str]:
@@ -305,7 +308,7 @@ def on_gpu(args: list[str]) -> bool:
 
 
 def step(d: Path, name: str, tools: str, script: str, mounts: list[str], cond: str, env: dict | None = None,
-         timeout: float = 8 * 3600, gpu: bool = False, again: bool = True) -> dict:
+         timeout: float = 8 * 3600, gpu: bool = False, again: bool = True, starts: int = 2) -> dict:
     """Runs a bash script as one timed step with the tools named, unless d/<name>.json says it was.
 
     A step that uses the GPU (gpu) first takes GPU_LOCK, as anyone else's GPU tests on hal that mustn't overlap a
@@ -313,7 +316,8 @@ def step(d: Path, name: str, tools: str, script: str, mounts: list[str], cond: s
     After LOCK_PATIENCE it goes ahead without the lock (gpu_locked false in its record), rather than hang a queue
     on a holder that never lets go. A container Docker couldn't start leaves no record, so the step is made again.
     A GPU step that failed because its container lost the GPU (GPU_LOST) is made again once (again), its log kept
-    as <name>.gpu-lost.log.
+    as <name>.gpu-lost.log. A container that couldn't start because another was starting on the same tree at that
+    moment (START_RACE) is started again after a few seconds, up to `starts` times, its log kept as <name>.no-start.log.
 
     Returns the step's record."""
     rec_file = d / f"{name}.json"
@@ -364,6 +368,14 @@ def step(d: Path, name: str, tools: str, script: str, mounts: list[str], cond: s
               flush=True)
         return step(d, name, tools, script, mounts, cond, env, timeout, gpu, again=False)
     if rc == 125 and docker_works():
+        if starts and re.search(START_RACE, text):
+            import random
+            log.rename(log.with_suffix(".no-start.log"))
+            wait = 3 + 6 * random.random()      # not the same wait as the container it collided with
+            print(f"{time.strftime('%T')} {d.relative_to(R)} {name}: the container couldn't start beside another on its "
+                  f"tree, starting it again in {wait:.0f} s", flush=True)
+            time.sleep(wait)
+            return step(d, name, tools, script, mounts, cond, env, timeout, gpu, again, starts - 1)
         raise RuntimeError(f"Docker couldn't start the container: {text[-300:]!r}")
     t = re.findall(r"BENCH_TIME ([\d.]+) ([\d.]+) ([\d.]+)", text)
     wall, user, system = (float(x) for x in t[-1]) if t else (time.time() - started, 0.0, 0.0)

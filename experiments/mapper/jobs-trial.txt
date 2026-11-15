@@ -1,0 +1,5 @@
+# together's check: three whole jobs that end with a mesh in minutes (bench.py together 2 jobs-trial.txt). On the
+# 82-photo boulder: e6de's baseline makes a model of 6 photos when held to 6 cores, which is nothing to mesh.
+all 31de9a59303a global_tied 0 --build complete --post complete
+all 31de9a59303a global_tied 1 --build complete --post complete
+all 31de9a59303a global_tied 2 --build complete --post complete

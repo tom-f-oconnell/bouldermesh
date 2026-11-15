@@ -8,6 +8,7 @@ import shlex
 import struct
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -184,6 +185,65 @@ class Wrapped(unittest.TestCase):
         self.assertEqual(bench.features("p", "sift391_lens", "prod", "plain"), bench.R / "p" / "sift391_lens")
 
 
+class Starting(unittest.TestCase):
+    """bench.step() when Docker can't start a step's container because another was starting on the same tree."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self.tmp.name)
+        self.saved = (bench.R, bench.launch, bench.docker_works, bench.gpu_args, bench.subprocess.Popen, bench.time.sleep,
+                      bench.verify_build.current)
+        bench.R, bench.docker_works, bench.gpu_args = tmp, (lambda: True), (lambda: ["--gpus", "all"])
+        bench.verify_build.current = lambda tools, b: {}
+        real = bench.subprocess.Popen
+
+        class Popen(real):          # everything but the sampler (gpusample.py), which would ask Docker and the GPU
+            def __new__(cls, args, *a, **k):
+                if len(args) > 1 and str(args[1]).endswith("gpusample.py"):
+                    return type("sampler", (), {"terminate": lambda self: None})()
+                return real(args, *a, **k)
+        bench.subprocess.Popen = Popen
+        self.slept = []
+        bench.time.sleep = self.slept.append
+        self.count = tmp / "count"
+
+        def launch(cname, tools, script, mounts, env, cpus, nice):       # fails to start `script` times, then runs
+            return (["bash", "-c", f"echo x >> {self.count}; if [ $(wc -l < {self.count}) -le {script} ]; then "
+                     "echo 'nvidia-container-cli: ldcache error: process /sbin/ldconfig failed with error code: 1'; exit 125; fi; "
+                     "echo 'BENCH_TIME 2.5 1.0 0.5'"], ["true"], tools)
+        bench.launch = launch
+
+    def tearDown(self):
+        (bench.R, bench.launch, bench.docker_works, bench.gpu_args, bench.subprocess.Popen, bench.time.sleep,
+         bench.verify_build.current) = self.saved
+        self.tmp.cleanup()
+
+    def quiet(self, f):
+        out, sys.stdout = sys.stdout, io.StringIO()
+        try:
+            return f(), sys.stdout.getvalue()
+        finally:
+            sys.stdout = out
+
+    def test_it_is_started_again_and_the_step_recorded_once(self):
+        d = bench.R / "p" / "sift391" / "run"
+        rec, said = self.quiet(lambda: bench.step(d, "map", "app", "2", [], "prod"))
+        self.assertEqual((rec["rc"], rec["wall"], rec["cpu_s"]), (0, 2.5, 1.5))
+        self.assertEqual(len(self.count.read_text().split()), 3)
+        waits = [w for w in self.slept if w >= 1]           # (subprocess's own short sleeps land here too)
+        self.assertEqual(len(waits), 2)
+        self.assertTrue(all(3 <= w <= 9 for w in waits), waits)
+        self.assertEqual(said.count("couldn't start beside another"), 2)
+        self.assertTrue((d / "map.no-start.log").exists() and (d / "map.json").exists())
+
+    def test_a_container_that_never_starts_leaves_no_record(self):
+        d = bench.R / "p" / "sift391" / "run"
+        with self.assertRaises(RuntimeError):
+            self.quiet(lambda: bench.step(d, "map", "app", "9", [], "prod"))
+        self.assertEqual(len(self.count.read_text().split()), 3)          # the first try and two more
+        self.assertFalse((d / "map.json").exists())
+
+
 class Reports(unittest.TestCase):
     def test_attempts_in_a_391_log(self):
         first, last, models = variants.attempts(OLD)
@@ -289,61 +349,83 @@ class Pieces(unittest.TestCase):
                 (run / sub).mkdir(parents=True, exist_ok=True)
                 (run / sub / f"{step}.json").write_text(json.dumps({"step": step, "wall": wall, "rc": rc, "lock_wait": wait}))
             (run / "models.json").write_text("{}")
+            (run / "rest" / "placed.json").write_text(json.dumps([f"im{i}.jpg" for i in range(40)]))
             other = root / "p" / "sift391" / "global-s0+complete@c4"
             other.mkdir()
             (other / "map.json").write_text(json.dumps({"step": "map", "wall": 999, "rc": 1}))
-            r = variants.job_result(root, shlex.split("all p global 1 --build complete --post complete --cond c4"))
-            self.assertEqual(r, {"steps": {"map": 100, "rest": 10, "dense": 50, "texture": 70}, "steps_s": 230, "lock_wait_s": 35,
-                                 "failed": [], "mesh": True})
+            job = shlex.split("all p global 1 --build complete --post complete --cond c4")
+            self.assertEqual(variants.job_result(root, job), {
+                "steps": {"map": 100, "rest": 10, "dense": 50, "texture": 70}, "steps_s": 230, "lock_wait_s": 35, "failed": [],
+                "placed": 40, "mesh": True, "why_no_mesh": ""})
+            # why a job made no mesh: a step failed on a model of a usual size; a model too small to mesh; no container
             (run / "post-complete@c4" / "texture.json").write_text(json.dumps({"step": "texture", "wall": 3, "rc": 1}))
-            r = variants.job_result(root, shlex.split("all p global 1 --build complete --post complete --cond c4"))
-            self.assertEqual((r["mesh"], r["failed"]), (False, ["texture"]))
+            r = variants.job_result(root, job)
+            self.assertEqual((r["mesh"], r["failed"], r["why_no_mesh"]), (False, ["texture"], "texture failed (rc 1), on a model of 40 photos"))
+            (run / "rest" / "placed.json").write_text(json.dumps(["a.jpg"] * 6))
+            self.assertEqual(variants.job_result(root, job)["why_no_mesh"],
+                             "its model has only 6 photos at this core count: nothing to texture (rc 1)")
             r = variants.job_result(root, shlex.split("all p global 0 --build complete --cond c4"))
-            self.assertEqual((r["mesh"], r["failed"]), (False, ["map"]))
+            self.assertEqual((r["mesh"], r["failed"], r["why_no_mesh"]), (False, ["map"], "map failed (rc 1)"))
+            r = variants.job_result(root, shlex.split("all p cpu421 0 --build complete --post complete --cond c4"),
+                                    {"no_start": True, "tries": 3, "last_line": "RuntimeError"})
+            self.assertEqual((r["mesh"], r["steps"], r["why_no_mesh"]), (False, {}, "its container couldn't be started (3 tries)"))
+            r = variants.job_result(root, shlex.split("all p cpu421 0 --post app --cond c4"), {"last_line": "KeyError: 'x'"})
+            self.assertEqual(r["why_no_mesh"], "the mapper never ran: KeyError: 'x'")
 
     def test_together_runs_a_batch_in_its_own_folder_and_counts_meshes(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            saved = (bench.BENCH, bench.R, bench.CAP_FILE, variants.subprocess.run)
+            saved = (bench.BENCH, bench.R, bench.CAP_FILE, variants.subprocess.run, variants.STAGGER, variants.RETRY_WAIT)
             bench.BENCH, bench.R, bench.CAP_FILE = tmp, tmp / "r2", tmp / "cores-cap.txt"
+            variants.STAGGER, variants.RETRY_WAIT = 0.2, 0.01
             bench.CAP_FILE.write_text("8\n")
             for P in ("a", "b"):
                 (bench.R / P / "sift391").mkdir(parents=True)
                 (bench.R / P / "sift391" / "database.db").write_bytes(b"db")
                 (bench.R / P / "sift391" / "match.json").write_text("{}")
             jobs = tmp / "jobs-x.txt"
-            jobs.write_text("# two jobs\nall a base 0 --post app\nall b base 0 --post app --cond prod\nall a base 1\n")
-            ran = []
+            jobs.write_text("# three jobs\nall a base 0 --post app\nall b base 0 --post app --cond prod\nall a base 1\n")
+            ran, starts = [], []
 
             def fake(cmd, stdout=None, stderr=None, env=None):
                 words = cmd[2:]
+                starts.append(time.time())
                 ran.append((words, env["BENCH_R"], env["MEM"]))
                 run = Path(env["BENCH_R"], words[1], "sift391", f"base-s{words[3]}@c4")
                 self.assertTrue((run.parent / "database.db").is_symlink())
-                for sub, step, rc in (("", "map", 0), ("post-app@c4", "texture", 1 if words[1] == "b" else 0)):
+                if words[3] == "1" and sum(1 for w, _, _ in ran if w[3] == "1") == 1:        # this job's first try: no container
+                    stdout.write("RuntimeError: Docker couldn't start the container: 'ldcache error'\n")
+                    stdout.flush()
+                    return type("done", (), {"returncode": 1})()
+                small = words[1] == "b"                                                    # b's model comes out too small
+                for sub, step, rc in (("", "map", 0), ("post-app@c4", "texture", 1 if small else 0)):
                     (run / sub).mkdir(parents=True, exist_ok=True)
                     if sub == "" or "--post" in words:
                         (run / sub / f"{step}.json").write_text(json.dumps({"step": step, "wall": 5.0, "rc": rc}))
+                (run / "rest").mkdir(exist_ok=True)
+                (run / "rest" / "placed.json").write_text(json.dumps(["x"] * (6 if small else 40)))
                 return type("done", (), {"returncode": 0})()
             variants.subprocess.run = fake
             out, sys.stdout = sys.stdout, io.StringIO()
             try:
                 variants.together(2, jobs)
                 root = tmp / "together" / "jobs-x-n2"
-                saved_batch = json.loads((root / "together.json").read_text())
+                batch = json.loads((root / "together.json").read_text())
                 variants.together(2, jobs)                      # made already: printed again, nothing run
                 text = sys.stdout.getvalue()
             finally:
                 sys.stdout = out
-                bench.BENCH, bench.R, bench.CAP_FILE, variants.subprocess.run = saved
-            self.assertEqual(len(ran), 3)
+                bench.BENCH, bench.R, bench.CAP_FILE, variants.subprocess.run, variants.STAGGER, variants.RETRY_WAIT = saved
+            self.assertEqual(len(ran), 4)                                                   # three jobs, one of them twice
             self.assertTrue(all(w[-2:] == ["--cond", "c4"] and w.count("--cond") == 1 for w, _, _ in ran))      # 8 cores, 2 at a time
             self.assertTrue(all(r == str(root) for _, r, _ in ran))
-            self.assertEqual((saved_batch["at_a_time"], saved_batch["cores_each"], saved_batch["meshes"]), (2, 4, 2))
-            self.assertEqual([j["mesh"] for j in saved_batch["jobs"]], [True, False, True])      # b's texture failed
-            self.assertEqual(saved_batch["jobs"][1]["failed"], ["texture"])
-            self.assertIn("meshes_per_hour", text)
-            self.assertEqual(text.count("jobs-x-n2\t2\t4\t3\t2"), 2)
+            self.assertGreaterEqual(starts[1] - starts[0], 0.19)                            # not in the same moment
+            self.assertEqual((batch["at_a_time"], batch["cores_each"], batch["meshes"], batch["jobs_ran"]), (2, 4, 2, 3))
+            self.assertEqual([(j["mesh"], j["tries"]) for j in batch["jobs"]], [(True, 1), (False, 1), (True, 2)])
+            self.assertEqual(batch["jobs"][1]["why_no_mesh"], "its model has only 6 photos at this core count: nothing to texture (rc 1)")
+            self.assertIn("# try 2", (root / "job2.log").read_text())
+            self.assertIn("why_no_mesh", text)
+            self.assertEqual(text.count("jobs-x-n2\t2\t4\t3\t2\t"), 2)
 
     def test_texture_variants_change_only_what_they_name(self):
         for name, (args, only_new) in variants.TEXTURE.items():

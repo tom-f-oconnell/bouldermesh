@@ -5,6 +5,7 @@ imports this, takes its METHODS and FEATS entries, and hands it the commands in 
     bench.py together <N> <jobs file> | report          N whole jobs at once, each on cores/N: meshes an hour
     bench.py texture <project> <run> <variant> | report   TextureMesh again on a finished post's mesh, one thing changed
     bench.py people <project> [run] [cpu]               the app's people masks, timed: the photos, or a run's undistorted ones
+                                                        (the same on the CPU or not in an image with no GPU masks: b5607e9)
     bench.py breakdown                                  every part of a job in one row, people masks to texture
 
 What each new method and feature set changes about which photos are placed is said where it is defined, for the
@@ -19,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -99,6 +101,14 @@ UNTIED = {m: UNTIED_LEAST for m in GPU_METHODS}
 #   lens       One lens per video: a video's frames of one size share one camera (focal length, distortion, centre)
 #              where the app gives each frame its own. Fewer unknowns, and frames can't each drift to their own focal
 #              length; a video that zooms is then modelled wrongly, and its frames may be placed worse or not at all.
+#              In hal's five databases no video has frames of two sizes, and every frame starts from the same guess
+#              (1.2 x the long side, no prior). The baseline's own models say when sharing is right: where they are
+#              good, a video's frames agree to a few percent (Drifter, 31de), and where they aren't the frames of one
+#              video run from 0.09 to 4.6 x the long side (9f3b). The incremental mapper treats a shared camera
+#              differently, though: once one frame is placed, the others are placed with the shared focal length
+#              held, not estimated (incremental_mapper.cc, "Camera already refined"), so a first guess far off the
+#              truth (e6de's main video: 0.35 against the 1.2 guessed) costs it time and photos. The global mapper
+#              has no such step.
 #   dedup<P>   Without a video's frames that repeat a kept one: P% or more of the pair's verified matches explained
 #              by a shift, turn and zoom (backend/climbs/diversity.py's measure of a pair with no parallax, which it
 #              puts at 90% and only discounts). The dropped frames are in no later step: fewer photos placed by
@@ -334,6 +344,12 @@ def sidemodels(folder: Path | None = None) -> None:
 
 # ---------------------------------------------------------------------------------------------- jobs side by side
 
+STAGGER = 5             # seconds between one job's start and the next's in a batch (two containers starting on one tree
+#                         in the same second can fail to start: bench.py's START_RACE, which step() also tries again)
+NO_START = "Docker couldn't start the container"
+RETRY_WAIT = 15         # seconds before a job that ended that way is run again (twice at most; its made steps are kept)
+SMALL = 10              # a model of fewer photos than this that then fails a post step had nothing to make a mesh of
+
 def job_parts(line: str, cond: str) -> tuple[list[str], str, str, str]:
     """(a job line's words with its condition replaced, its project, feature set and build)."""
     words = shlex.split(line)
@@ -353,7 +369,10 @@ def together(n: int, jobs_file: Path) -> None:
 
     Saves and prints: the seconds from the first job's start to the last one's end, the jobs that ended with a mesh
     (a textured one where the job asked for the post steps, else a model), meshes an hour, and each job's own
-    steps. A batch already made is only printed again: move its folder away to make it again.
+    steps. A job that made no mesh says why (job_result()): a boulder whose model comes out too small at this
+    core count isn't the batch failing, and jobs_per_hour counts every job that ran to its end. Jobs start STAGGER
+    seconds apart, and one whose container couldn't be started is run again (up to twice), keeping its made steps.
+    A batch already made is only printed again: move its folder away to make it again.
     """
     jobs = [l for l in jobs_file.read_text().split("\n") if l.strip() and not l.startswith("#")]
     root = B.BENCH / "together" / f"{jobs_file.stem}-n{n}"
@@ -384,63 +403,104 @@ def together(n: int, jobs_file: Path) -> None:
     print(f"{time.strftime('%T')} together: {len(jobs)} jobs, {n} at a time, {per} of {cores} cores and {mem} GB each, in {root}",
           flush=True)
 
+    gate, last = threading.Lock(), [0.0]
+
     def one(i: int) -> dict:
-        start = time.time()
-        with open(root / f"job{i}.log", "w") as f:
-            rc = subprocess.run([sys.executable, str(HERE / "bench.py"), *commands[i]], stdout=f, stderr=subprocess.STDOUT,
-                                env=env).returncode
+        with gate:              # no two jobs' first containers in the same second
+            time.sleep(max(0.0, last[0] + STAGGER - time.time()))
+            last[0] = time.time()
+        start, log, tries = time.time(), root / f"job{i}.log", 0
+        while True:
+            tries += 1
+            with open(log, "a") as f:
+                f.write(f"# try {tries}: {B.sh(commands[i])}\n")
+                f.flush()
+                rc = subprocess.run([sys.executable, str(HERE / "bench.py"), *commands[i]], stdout=f, stderr=subprocess.STDOUT,
+                                    env=env).returncode
+            text = log.read_text(errors="replace").rsplit("# try ", 1)[-1]
+            if rc == 0 or tries > 2 or NO_START not in text:
+                break
+            print(f"{time.strftime('%T')} together: job {i + 1}'s container couldn't be started; again in {RETRY_WAIT} s", flush=True)
+            time.sleep(RETRY_WAIT)
         print(f"{time.strftime('%T')} together: job {i + 1} of {len(jobs)} done in {time.time() - start:.0f} s (exit {rc}): "
               f"{B.sh(commands[i])}", flush=True)
-        return {"job": B.sh(commands[i]), "start": start, "end": time.time(), "exit": rc}
+        return {"job": B.sh(commands[i]), "start": start, "end": time.time(), "exit": rc, "tries": tries,
+                "no_start": rc != 0 and NO_START in text, "last_line": ([l for l in text.split("\n") if l.strip()] or [""])[-1][-200:]}
 
     with ThreadPoolExecutor(n) as pool:
         done = list(pool.map(one, range(len(jobs))))
     wall = max(j["end"] for j in done) - min(j["start"] for j in done)
     for j, words in zip(done, commands):
-        j.update(job_result(root, words))
-    meshes = sum(j["mesh"] for j in done)
+        j.update(job_result(root, words, j))
+    meshes, ran = sum(j["mesh"] for j in done), sum(j["exit"] == 0 for j in done)
     (root / "together.json").write_text(json.dumps({
         "jobs_file": str(jobs_file), "at_a_time": n, "cores_each": per, "cores": cores, "memory_gb_each": mem,
         "wall": round(wall, 1), "meshes": meshes, "meshes_per_hour": round(meshes / wall * 3600, 2) if wall else 0,
+        "jobs_ran": ran, "jobs_per_hour": round(ran / wall * 3600, 2) if wall else 0,
         "when": time.strftime("%F %T"), "jobs": done}, indent=1))
     together_report([root])
 
 
-def job_result(root: Path, words: list[str]) -> dict:
+def job_result(root: Path, words: list[str], ended: dict | None = None) -> dict:
     """What a finished job left in a batch's folder: its steps' seconds, the seconds its GPU steps waited for the
-    lock, and whether it ended with what it was asked for (a textured mesh if it had post steps, else a model)."""
-    steps, waited, failed = {}, 0.0, []
+    lock, the photos its model places after the rest step, whether it ended with what it was asked for (a textured
+    mesh if it had post steps, else a model), and if not, why (ended: how its process ended, from together())."""
+    steps, waited, failed = {}, 0.0, {}
     P, method, seed = words[1], words[2], words[3]
     wants_mesh = "--post" in words
-    textured = False
+    textured, placed = False, None
     for rec_file in sorted((root / P).glob("*/*/**/*.json")):
         if not re.match(rf"{re.escape(method)}-s{seed}\b", rec_file.relative_to(root / P).parts[1]):
             continue
         rec = json.loads(rec_file.read_text())
+        if rec_file.name == "placed.json":
+            placed = len(rec)
         if not isinstance(rec, dict) or "wall" not in rec or rec["step"] == "full":      # full: within a thin run's map
             continue
         steps[rec["step"]] = round(steps.get(rec["step"], 0) + rec["wall"], 1)
         waited += rec.get("lock_wait", 0) or 0
         if rec["rc"] != 0:
-            failed.append(rec["step"])
+            failed[rec["step"]] = rec["rc"]
         textured |= rec["step"] == "texture" and rec["rc"] == 0
-    return {"steps": steps, "steps_s": round(sum(steps.values()), 1), "lock_wait_s": round(waited, 1), "failed": failed,
-            "mesh": bool(textured if wants_mesh else steps.get("map") and "map" not in failed)}
+    mesh = bool(textured if wants_mesh else steps.get("map") and "map" not in failed)
+    why = ""
+    if not mesh:
+        ended = ended or {}
+        first = next(iter(failed), None)
+        if ended.get("no_start"):
+            why = f"its container couldn't be started ({ended.get('tries', 1)} tries)"
+        elif "map" not in steps:
+            why = f"the mapper never ran: {ended.get('last_line', '')}".rstrip(": ")
+        elif first in ("dense", "mesh", "texture") and placed is not None and placed < SMALL:
+            why = f"its model has only {placed} photos at this core count: nothing to {first} (rc {failed[first]})"
+        elif first:
+            why = f"{first} failed (rc {failed[first]})" + (f", on a model of {placed} photos" if placed is not None else "")
+        elif placed == 0:
+            why = "no photos placed"
+        else:
+            why = f"stopped before texture: {ended.get('last_line', '')}".rstrip(": ")
+    return {"steps": steps, "steps_s": round(sum(steps.values()), 1), "lock_wait_s": round(waited, 1), "failed": list(failed),
+            "placed": placed, "mesh": mesh, "why_no_mesh": why}
 
 
 def together_report(roots: list[Path] | None = None) -> None:
-    """Every batch (or those given): its jobs, how many at a time, the wall time, meshes an hour, then each job."""
+    """Every batch (or those given): how many jobs at a time, the wall time, meshes an hour and jobs an hour (every job
+    that ran to its end, mesh or not), then each job with, where it made no mesh, why."""
     roots = roots or sorted(p.parent for p in (B.BENCH / "together").glob("*/together.json"))
-    print("batch\tat_a_time\tcores_each\tjobs\tmeshes\twall_s\tmeshes_per_hour\tjobs_steps_s\tlock_wait_s")
+    print("batch\tat_a_time\tcores_each\tjobs\tmeshes\twall_s\tmeshes_per_hour\tjobs_ran\tjobs_per_hour\tjobs_steps_s\tlock_wait_s")
     saved = [(r, json.loads((r / "together.json").read_text())) for r in roots]
     for r, t in saved:
+        ran = t.get("jobs_ran", sum(j.get("exit") == 0 for j in t["jobs"]))
         print("\t".join(str(x) for x in [r.name, t["at_a_time"], t["cores_each"], len(t["jobs"]), t["meshes"], t["wall"],
-                                         t["meshes_per_hour"], round(sum(j["steps_s"] for j in t["jobs"]), 1),
+                                         t["meshes_per_hour"], ran, t.get("jobs_per_hour", round(ran / t["wall"] * 3600, 2) if t["wall"] else 0),
+                                         round(sum(j["steps_s"] for j in t["jobs"]), 1),
                                          round(sum(j["lock_wait_s"] for j in t["jobs"]), 1)]))
-    print("\nbatch\tjob\ttook_s\tmesh\tfailed\tlock_wait_s\tsteps")
+    print("\nbatch\tjob\ttook_s\ttries\tplaced\tmesh\twhy_no_mesh\tlock_wait_s\tsteps")
     for r, t in saved:
         for j in t["jobs"]:
-            print("\t".join(str(x) for x in [r.name, j["job"], round(j["end"] - j["start"], 1), j["mesh"], ",".join(j["failed"]),
+            why = j.get("why_no_mesh") or ("" if j["mesh"] else "failed: " + ",".join(j.get("failed", [])))
+            print("\t".join(str(x) for x in [r.name, j["job"], round(j["end"] - j["start"], 1), j.get("tries", 1),
+                                             "" if j.get("placed") is None else j["placed"], "yes" if j["mesh"] else "no", why,
                                              j["lock_wait_s"], " ".join(f"{k}={v}" for k, v in j["steps"].items())]))
 
 
@@ -519,8 +579,11 @@ def people(P: str, run: str | None, device: str, feat: str, tools: str, cond: st
     """The app's people masks as a timed step, with the app image's own code (people_step.py): for a boulder's
     photos (the step "people" in <project>/people-<device>[@cond]/), or for a run's undistorted photos (the app's
     second pass: "people2" in the run's post folder, its masks kept apart in people2-<device>/). device "gpu" lets
-    the app choose as it does live (the GPU if it has room), "cpu" keeps it off (PEOPLE_GPU=0). The model's loading
-    (and, once, its 42 MB download) is in the step's time and also marked on its own (BENCH_MARK loaded)."""
+    the app choose as it does (the GPU if it has room), "cpu" keeps it off (PEOPLE_GPU=0). The image in use decides
+    what that means: the live one (b5607e9) has no GPU path for masks, so both are its CPU pass and take the same
+    time (atlas, 14 Nov); the GPU pass needs an image built from e0898a3 or later, named with APP=<image>. Each
+    step's log says where it ran (BENCH_PEOPLE device=). The model's loading (and, once, its 42 MB download) is in
+    the step's time and also marked on its own (BENCH_MARK loaded)."""
     assert device in ("gpu", "cpu"), device
     env = {"DATA_DIR": "/data", "PEOPLE_GPU": "1" if device == "gpu" else "0"}
     cache = B.BENCH / "cache" / "models"

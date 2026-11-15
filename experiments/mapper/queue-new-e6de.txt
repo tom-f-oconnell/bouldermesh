@@ -27,4 +27,4 @@ people e6de7747fab5 --cond prod
 people e6de7747fab5 cpu --cond prod
 people e6de7747fab5 cpu421-s0+complete@prod --tools complete --cond prod
 post e6de7747fab5 cpu421-s0+complete@prod --tools complete --cond t2
-together 2 jobs-e6de.txt
+together 2 jobs-trial.txt
