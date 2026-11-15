@@ -1,0 +1,4 @@
+# The app's own pipeline on e6de once more in each image: the new one placed 9 photos where the live one placed 21, from
+# features that differ by 12 keypoints in 343,083 (the GPU's people masks). Run-to-run, or the new image?
+app e6de7747fab5 --cond prod --rep 2
+app e6de7747fab5 --cond prod --rep 2 --image bouldermesh:mvs24-gpu

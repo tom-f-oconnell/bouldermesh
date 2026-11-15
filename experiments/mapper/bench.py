@@ -94,12 +94,14 @@ METHODS = {
     # global, with the cameras it leaves seeing next to none of the model's points taken out before the app's rest step,
     # which then places them as it does any photo left out (rest(), UNTIED): those are its cameras that are wrong
     "global_tied": ("new", "global_mapper", GLOBAL, {}),
+    # global_tied on the CPU alone: the app's first version of it, on Ubuntu's Ceres, has no GPU solve
+    "global_tied_cpu": ("new", "global_mapper", GLOBAL + ["--GlobalMapper.gp_use_gpu", "0", "--GlobalMapper.ba_ceres_use_gpu", "0"], {}),
     # VGGT's cameras for up to 80 well-linked photos, then COLMAP's triangulation and bundle adjustment (vggt_start.py)
     "vggt": ("app", "vggt", [], {}),
 }
 GPU_METHODS = {"gpuba", "gpuba0", "gpudense", "caspar", "caspar_g", "global", "global0", "global_caspar", "global_def",
                "global_tied", "vggt"}
-UNTIED = {"global_tied": 15}    # method: a camera seeing fewer points than this isn't placed (15: REST_ARGS' own least)
+UNTIED = {"global_tied": 15, "global_tied_cpu": 15}    # method: a camera seeing fewer points than this isn't placed (15: REST_ARGS' own least)
 assert GPU_METHODS <= set(METHODS)
 # feature set: (COLMAP family, extractor arguments, matcher arguments)
 SIFT = ["--ImageReader.camera_model", "SIMPLE_RADIAL", "--ImageReader.single_camera", "0", "--ImageReader.mask_path", "/p/masks"]
@@ -140,6 +142,8 @@ MVS = {
     # a mesh of more faces from the same cloud, and texturing slower)
     "as23": {"dense": ["--fusion-filter", "1", "--number-views-fuse", "3", "--postprocess-dmaps", "7"],
              "mesh": ["--min-point-distance", "2.5"]},
+    "as23cpu": {"dense": ["--fusion-filter", "1", "--number-views-fuse", "3", "--postprocess-dmaps", "7", "--cuda-device", "-2"],
+                "mesh": ["--min-point-distance", "2.5"]},      # as23 with the depth maps on the CPU: the app's fallback
     "noroi": {"dense": ["--estimate-roi", "0"]},       # nothing cut off outside the region of interest 2.4 estimates
     "cpu": {"dense": ["--cuda-device", "-2"]},         # depth maps on the CPU: what a machine without a GPU gets
 }
