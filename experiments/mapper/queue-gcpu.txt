@@ -1,7 +1,1 @@
-# The global mapper on the CPU alone, as the app's first version of it runs (handoff section 30: Tom asks to hear of
-# anything against switching the app's mapper to it). global_tied_cpu, on the complete build (Ceres with SuiteSparse,
-# as Ubuntu's is), Drifter first, with the steps after it as the app will now make them (OpenMVS 2.4, as23).
-all ce7571e0a4a3 global_tied_cpu 0 --cond prod --build complete --post complete --mvs as23
-all 31de9a59303a global_tied_cpu 0 --cond prod --build complete --post complete --mvs as23
-all 9f3b4b740847 global_tied_cpu 0 --cond prod --build complete
-all ce7571e0a4a3 global_tied_cpu 1 --cond prod --build complete
+# Moved to the end of queue-check-2.txt on 2026-11-14 21:20, as Tom asked: the GPU pipeline first, CPU fallbacks last.

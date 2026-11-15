@@ -1,9 +1,7 @@
 # OpenMVS 2.4 on the baseline's first model of 31de and of Drifter (handoff sections 13, 23, 30): as23, the settings the
-# app now gives 2.4; as23 with its depth maps on the CPU (the app's fallback where no GPU has room); and 2.4 without
+# app now gives 2.4 (its CPU fallback, as23cpu, is at the end of queue-check-2.txt); and 2.4 without
 # its region of interest. 2.3 is post-app and 2.4 as it comes is post-complete, both from earlier queues.
 post 31de9a59303a base-s0@prod --tools complete --cond prod --mvs as23
 post ce7571e0a4a3 base-s0@prod --tools complete --cond prod --mvs as23
-post 31de9a59303a base-s0@prod --tools complete --cond prod --mvs as23cpu
-post ce7571e0a4a3 base-s0@prod --tools complete --cond prod --mvs as23cpu
 post 31de9a59303a base-s0@prod --tools complete --cond prod --mvs noroi
 post ce7571e0a4a3 base-s0@prod --tools complete --cond prod --mvs noroi

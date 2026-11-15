@@ -1,5 +1,5 @@
 # The parts of a job the mapper table leaves out (section 11, item 3): the app's features and matching, timed as a job
-# runs them; then the global mapper from GPU SIFT, from ALIKED with LightGlue, and from 4.2.1's own CPU SIFT. A feat
+# runs them; then the global_tied mapper from GPU SIFT, from ALIKED with LightGlue, and from 4.2.1's own CPU SIFT. A feat
 # line without --cond makes the set the mapper starts from (4.2.1's sets in the plain tree, where the mapper looks
 # for them); the one with --cond prod is only for its timing.
 feat e6de7747fab5 --feat sift391 --cond prod
@@ -8,28 +8,43 @@ feat 9f3b4b740847 --feat sift391 --cond prod
 feat ce7571e0a4a3 --feat sift391 --cond prod
 feat 31de9a59303a --feat siftgpu391
 feat 31de9a59303a --feat siftgpu391 --cond prod
-all 31de9a59303a global 0 --feat siftgpu391 --cond prod --build complete
+all 31de9a59303a global_tied 0 --feat siftgpu391 --cond prod --build complete
 feat 9f3b4b740847 --feat siftgpu391
 feat 9f3b4b740847 --feat siftgpu391 --cond prod
-all 9f3b4b740847 global 0 --feat siftgpu391 --cond prod --build complete
+all 9f3b4b740847 global_tied 0 --feat siftgpu391 --cond prod --build complete
 feat ce7571e0a4a3 --feat siftgpu391
 feat ce7571e0a4a3 --feat siftgpu391 --cond prod
-all ce7571e0a4a3 global 0 --feat siftgpu391 --cond prod --build complete
+all ce7571e0a4a3 global_tied 0 --feat siftgpu391 --cond prod --build complete
 feat 31de9a59303a --feat aliked421
 feat 31de9a59303a --feat aliked421 --cond prod --build complete
-all 31de9a59303a global 0 --feat aliked421 --cond prod --build complete
+all 31de9a59303a global_tied 0 --feat aliked421 --cond prod --build complete
 feat 9f3b4b740847 --feat aliked421
 feat 9f3b4b740847 --feat aliked421 --cond prod --build complete
-all 9f3b4b740847 global 0 --feat aliked421 --cond prod --build complete
+all 9f3b4b740847 global_tied 0 --feat aliked421 --cond prod --build complete
 feat ce7571e0a4a3 --feat aliked421
 feat ce7571e0a4a3 --feat aliked421 --cond prod --build complete
-all ce7571e0a4a3 global 0 --feat aliked421 --cond prod --build complete
+all ce7571e0a4a3 global_tied 0 --feat aliked421 --cond prod --build complete
 feat 31de9a59303a --feat sift421
 feat 31de9a59303a --feat sift421 --cond prod --build complete
-all 31de9a59303a global 0 --feat sift421 --cond prod --build complete
+all 31de9a59303a global_tied 0 --feat sift421 --cond prod --build complete
 feat 9f3b4b740847 --feat sift421
 feat 9f3b4b740847 --feat sift421 --cond prod --build complete
-all 9f3b4b740847 global 0 --feat sift421 --cond prod --build complete
+all 9f3b4b740847 global_tied 0 --feat sift421 --cond prod --build complete
 feat ce7571e0a4a3 --feat sift421
 feat ce7571e0a4a3 --feat sift421 --cond prod --build complete
-all ce7571e0a4a3 global 0 --feat sift421 --cond prod --build complete
+all ce7571e0a4a3 global_tied 0 --feat sift421 --cond prod --build complete
+# Last, as Tom asked on 2026-11-14 21:20 (a good pipeline that assumes a GPU comes before running it on the CPU): the
+# CPU fallbacks. The global mapper on the CPU alone (global_tied_cpu, as the app's first version of it would run),
+# OpenMVS 2.4's depth maps on the CPU (as23cpu), and the old build against the complete one (CPU-only methods).
+all ce7571e0a4a3 global_tied_cpu 0 --cond prod --build complete --post complete --mvs as23
+all 31de9a59303a global_tied_cpu 0 --cond prod --build complete --post complete --mvs as23
+all 9f3b4b740847 global_tied_cpu 0 --cond prod --build complete
+all ce7571e0a4a3 global_tied_cpu 1 --cond prod --build complete
+post 31de9a59303a base-s0@prod --tools complete --cond prod --mvs as23cpu
+post ce7571e0a4a3 base-s0@prod --tools complete --cond prod --mvs as23cpu
+all e6de7747fab5 cpu421 0 --cond prod --build plain
+all e6de7747fab5 global_cpu 0 --cond prod --build plain
+all 31de9a59303a cpu421 0 --cond prod --build plain
+all 31de9a59303a global_cpu 0 --cond prod --build plain
+all 9f3b4b740847 global_cpu 0 --cond prod --build plain
+all 9f3b4b740847 cpu421 0 --cond prod --build plain
