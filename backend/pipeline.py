@@ -218,7 +218,7 @@ def _mapper(tracker: Tracker, n_images: int) -> Callable[[str], None]:
 
 def _geometric(tracker: Tracker) -> Callable[[str], None]:
     """DensifyPointCloud's depth phases; the geometric-consistency one runs twice over."""
-    rx = re.compile(r"(Geometric-consistent estimated|Estimated|Fused) depth-maps \d+ \(([\d.]+)%")
+    rx = re.compile(r"(Geometric-consistent estimated|Estimated|Fused|Dense fused) depth-maps \d+ \(([\d.]+)%")   # "Dense fused": OpenMVS 2.4
     state = {"passes": 0, "last": 0.0}
 
     def watch(line: str) -> None:
@@ -228,7 +228,7 @@ def _geometric(tracker: Tracker) -> Callable[[str], None]:
         pct = float(m[2]) / 100
         if m[1] == "Estimated":
             tracker.update("dense", 0.45 * pct, "estimating depth maps")
-        elif m[1] == "Fused":
+        elif m[1] in ("Fused", "Dense fused"):
             tracker.update("dense", 0.85 + 0.15 * pct, "fusing depth maps")
         else:
             if pct < state["last"]:
@@ -464,7 +464,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     if not _finished(work, "people") and occlusion.available():
         log("== Finding people to ignore")
         try:
-            occlusion.write_masks(images, masks, lambda f: f"{f.name}.png", log, tracker.callback("people"))
+            occlusion.write_masks(images, masks, lambda f: f"{f.name}.png", log, tracker.callback("people"), gpu=use_gpu)
             _finish(work, "people")
         except Exception as e:  # e.g. the model can't be downloaded: only costs the masking
             log(f"occlusion: failed ({e}); not masking people")
@@ -593,11 +593,22 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
 
     mask_args = ["--ignore-mask-label", "0"] if _finished(work, "people-undistorted") else []
     if masks and not mask_args:
-        # found again rather than undistorted along with the photos, which COLMAP can't do; OpenMVS
-        # looks for <image name>.mask.png next to each image
+        # COLMAP can't undistort the masks along with the photos, so each is moved as its photo was (warp_masks());
+        # people are only looked for again in a photo that couldn't be. OpenMVS looks for <image name>.mask.png
+        # next to each image
         try:
-            occlusion.write_masks(dense / "images", dense / "images", lambda f: f"{f.stem}.mask.png", log,
-                                  tracker.callback("people-undistorted"))
+            name_for = lambda f: f"{f.stem}.mask.png"  # noqa: E731
+            try:
+                left = occlusion.warp_masks(masks, orientation.read_cameras(model), orientation.read_cameras(dense / "sparse"),
+                                            dense / "images", name_for, log, tracker.callback("people-undistorted"))
+                if left:
+                    log(f"occlusion: {len(left)} undistorted photo(s) had no mask to move: looking for people in them")
+            except Exception as e:      # then as it was done before: people looked for again in every undistorted photo
+                log(f"occlusion: the masks couldn't be moved to the undistorted photos ({type(e).__name__}: {e}); looking for people in those")
+                left = None
+            if left is None or left:
+                occlusion.write_masks(dense / "images", dense / "images", name_for, log,
+                                      tracker.callback("people-undistorted"), gpu=use_gpu)
             mask_args = ["--ignore-mask-label", "0"]
             _finish(work, "people-undistorted")
         except Exception as e:

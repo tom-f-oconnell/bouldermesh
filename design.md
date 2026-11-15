@@ -231,8 +231,16 @@ photo on a CPU), and found a climber Mask R-CNN missed. It only knows people: cr
 and shadows stay in. A static-camera motion mask could catch those on video frames, but wasn't
 tried, as most of these videos pan.
 
-Masks can't be undistorted by COLMAP along with the photos, so they're computed twice: on the
-originals for COLMAP, and on the undistorted photos for OpenMVS.
+Masks can't be undistorted by COLMAP along with the photos, so until November 14 they were computed twice: on
+the originals for COLMAP, and on the undistorted photos for OpenMVS. Now the second set is the first moved as the
+undistorter moved each photo (`occlusion.warp_masks()`, from the model's lens and the undistorted one): given the masks
+as if they were the photos, COLMAP's own undistorter gives the same to within a one-pixel line at their edges (at most
+0.08% of pixels, on 92 photos of two boulders, lenses with |k| up to 0.92). It halves the masking, and the dense steps
+leave out exactly what the features did. The model's own second look differed more from the first than that (IoU 0.97
+in the middle, 0.75 at worst, over 39 photos), neither being the truth; a photo with no first mask is still looked
+at. The model itself is 0.4 s a photo on 4 CPU threads, 85% of a mask's time, and 0.05 s on a GPU (an RTX 3090, 290 MB
+of its memory), where it now runs when torch has CUDA and the GPU has room; its masks there match the CPU's but for
+edge pixels (IoU 0.997 at worst over 16 photos).
 
 COLMAP's mapper aborted in 2 of 25 runs (`NumRegImages() >= 2`), both with masks on, out of 16 such
 runs against 9 without. That's too few to blame masks, but one of them left only a 5-photo model,

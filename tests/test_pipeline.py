@@ -360,6 +360,21 @@ assert "--ImageReader.mask_path" not in by_tool(cmds, "feature_extractor"), cmds
 for tool in ("DensifyPointCloud", "TextureMesh"):
     assert "--ignore-mask-label" not in by_tool(cmds, tool), cmds
 assert any("not masking people" in l for l in logged), logged
+
+# the undistorted photos' masks are the first ones moved (occlusion.warp_masks()): people are looked for again only in
+# the photos that couldn't be, or in all of them if moving fails (as here above, where the stub undistorts nothing)
+looks = []
+for left, want in (([], 1), (["3.jpg"], 2)):
+    looks.clear()
+    saved_warp, occlusion.warp_masks = occlusion.warp_masks, (lambda *a, _left=left, **k: list(_left))
+    saved_read, pipeline.orientation.read_cameras = pipeline.orientation.read_cameras, (lambda m: [])
+    try:
+        cmds, logged = commands_with(lambda images, *a, **k: looks.append(images.name) or {})
+    finally:
+        occlusion.warp_masks, pipeline.orientation.read_cameras = saved_warp, saved_read
+    assert len(looks) == want and looks[0] == "images", (left, looks)
+    assert "--ignore-mask-label" in by_tool(cmds, "DensifyPointCloud") and "--mask-path" in by_tool(cmds, "DensifyPointCloud"), cmds
+    assert any("had no mask to move" in l for l in logged) == bool(left), logged
 print("people masks OK")
 
 # ---- masks are only made for photos without an up-to-date one, and say how much of each is people
@@ -394,6 +409,33 @@ else:
             assert looked == ["1.jpg", "3.jpg"], looked
         finally:
             occlusion.person_mask = saved
+
+        # the masks of undistorted photos, moved from the first ones as the undistorter moved the photos
+        import cv2
+        first, und = pathlib.Path(td) / "first", pathlib.Path(td) / "und"
+        first.mkdir()
+        m = np.full((40, 60), 255, np.uint8)
+        m[10:20, 30:40] = 0                             # a person
+        for name in ("a.jpg", "b.jpg", "small.jpg"):
+            cv2.imwrite(str(first / f"{name}.png"), m)
+        lens = lambda model, w, h, *params: {"model": model, "width": w, "height": h, "params": list(params)}  # noqa: E731
+        placed = [{"name": "a.jpg", "lens": lens(2, 60, 40, 50.0, 30.0, 20.0, 0.0)},           # no distortion
+                  {"name": "b.jpg", "lens": lens(2, 60, 40, 50.0, 30.0, 20.0, 0.0)},
+                  {"name": "small.jpg", "lens": lens(2, 30, 20, 25.0, 15.0, 10.0, 0.0)},       # not its mask's size
+                  {"name": "none.jpg", "lens": lens(2, 60, 40, 50.0, 30.0, 20.0, 0.0)},        # no first mask
+                  {"name": "odd.jpg", "lens": lens(9, 60, 40, 50.0, 30.0, 20.0, 0.0, 0, 0)}]   # a lens model it doesn't know
+        cv2.imwrite(str(first / "odd.jpg.png"), m)
+        flat = [{"name": "a.jpg", "lens": lens(1, 60, 40, 50.0, 50.0, 30.0, 20.0)},            # the same view
+                {"name": "b.jpg", "lens": lens(1, 70, 40, 50.0, 50.0, 35.0, 20.0)}]            # 5 pixels more to the left
+        flat += [{"name": c["name"], "lens": lens(1, 60, 40, 50.0, 50.0, 30.0, 20.0)} for c in placed[2:]]
+        left = occlusion.warp_masks(first, placed, flat, und, lambda f: f"{f.stem}.mask.png", print)
+        assert left == ["small.jpg", "none.jpg", "odd.jpg"], left
+        a, b = (cv2.imread(str(und / f"{n}.mask.png"), cv2.IMREAD_GRAYSCALE) for n in ("a", "b"))
+        assert (a == m).all(), "an undistorted lens the same as the photo's leaves the mask as it was"
+        assert b.shape == (40, 70) and (b[10:20, 35:45] == 0).all() and (b == 0).sum() == 100, "moved with the lens's centre"
+        assert (b[:, :5] == 255).all() and (b[:, 65:] == 255).all(), "outside the photo: nobody"
+        shares = json.loads((und / occlusion.SHARES).read_text())
+        assert set(shares) == {"a.jpg", "b.jpg"} and abs(shares["a.jpg"] - 100 / 2400) < 1e-9, shares
     print("mask files OK")
 
 
