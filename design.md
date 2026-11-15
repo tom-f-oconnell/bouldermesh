@@ -1303,6 +1303,51 @@ person). That took 3 s for 457k vertices and keeps every face in order, so the m
 It's less sharp than a texture, and something in front of the rock in several frames of one video still
 shows (a dark stripe on White Rastafarian's face), which a single best view showed much more strongly.
 
+## A model's check of itself (`backend/modelcheck.py`)
+
+A reconstruction can place every photo, with points a pixel off, and be wrong: the mapper benchmark
+(`experiments/mapper`) met models 12 and 27 degrees from every other method's whose counts were like any right
+model's. So each mesh's model is checked against its own photos before the mesh is made, and the result kept beside
+the mesh as `check.json` and said in the job's log. It decides nothing yet: the mesh is made either way, and a check
+that can't be made costs nothing but its line in the log.
+
+What it measures, from the levelled model and COLMAP's database:
+
+- **The points' reprojection errors**, mean and 90th percentile, as COLMAP has them. Over 2 px in the mean, or 3 at
+  the 90th percentile, fails.
+- **The cameras against their photos' pairwise geometry.** Before any model exists COLMAP verifies pairs of photos,
+  and each pair's fundamental matrix says how one camera is turned from the other. For every such pair of placed
+  photos (20 inliers or more, not one COLMAP called planar or panoramic, where that matrix means little), the angle
+  between that turn, read through the model's lenses, and the turn the model has between the two. A median over 5
+  degrees fails. This is the part that sees a wrong model, as it doesn't come from the model's own points.
+- **Lenses that can't be real** (a focal length outside 0.3-6 of the picture's longer side, or a principal point over
+  a quarter of it from the middle): over a fifth of them fails.
+- Recorded only: how many pairs, their 90th percentile, cameras seeing under 15 of the model's points, photos
+  placed, points and track length.
+
+The thresholds are first guesses **from four boulders** (the benchmark's, 33 to 234 photos, each solved by the 3.9.1
+baseline and up to seven other methods; 29 models on hal and atlas's own):
+
+| | Points off, mean (90th), px | Cameras from their pairs, median |
+|---|---|---|
+| Models that methods agree on (31de, Drifter) | 0.66-1.08 (1.6-2.0) | 1.8-3.0 degrees |
+| Every method's model of 9f3b, which no two methods agree on | 1.1-1.7 | 11-16 |
+| Both baseline runs of 38f3 (which placed 111 and 181 photos) | 1.1 | 10-12 |
+| Caspar's model of 31de, found wrong by its viewing rays | about 1 | 26.9 (the eight right ones: 2.0-2.9) |
+| Models whose tracks had been merged at loose tolerances | 2.5-5.7 (3.1-15) | as their cameras were |
+
+So on those it fails where runs don't repeat or a model was shown wrong, and passes the rest; lenses that can't be
+real were 0-6% of a sound model's and up to 21% of the others'.
+
+Its limits: it holds a model against its own photos, not against the truth. A model can pass and be wrong (a
+mirrored or repeated structure the pairs themselves were fooled by), and one can fail where the pairs are the weak
+part (few of them, or photos from one spot, whose fundamental matrices are poorly fixed). It leaves lens distortion
+out. And four boulders is few: the thresholds should be looked at again once `check.json` exists for many meshes.
+
+`of_mesh()` makes the same check later for any mesh that kept its reconstruction (`reconstruction.tar.gz` has the
+model and the verified pairs). The incremental pipeline (`experiments/mapper/incr`) uses the same module, and there
+it does decide: a model that fails is solved again from another start.
+
 ## Why job logs aren't in the database
 
 COLMAP prints tens of thousands of lines. `UPDATE projects SET log = log || ?` rewrites the whole

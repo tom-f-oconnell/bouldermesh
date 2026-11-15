@@ -16,114 +16,37 @@ The numbers (numbers()):
                         picture's longer side, or the principal point over a quarter of it from the middle)
     untied              cameras seeing fewer than UNTIED of the model's points
 
-The verdict is state.py's model_check(), which has the thresholds and the measurements they come from. It says a model
+All of it is backend/modelcheck.py's, which the app's own pipeline runs too: the thresholds and the measurements they come from are there. It says a model
 is at odds with itself, not that one is right: a model can pass and be wrong.
 """
 from __future__ import annotations
 
 import json
-import math
-import sqlite3
-import struct
 import sys
 from pathlib import Path
 
-import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import state as st  # noqa: E402
+for _b in (HERE.parents[2] / "backend", Path("/backend")):     # the repo's, or where boulder.py mounts it for the steps
+    if (_b / "modelcheck.py").exists():
+        sys.path.insert(0, str(_b))
+        break
+import modelcheck  # noqa: E402     the one implementation: backend/modelcheck.py (what's measured, the thresholds, why)
 
-MAX_IMAGE_ID = 2147483647
-MIN_INLIERS = 20        # the pairs the mapper itself uses (the app's min_num_matches)
-UNTIED = 15
-NUM_PARAMS = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8, 5: 8, 6: 12, 7: 5, 8: 4, 9: 5, 10: 12}
-
-
-def pair_angles(cams: dict[str, dict], db: Path) -> list[float]:
-    """For each verified pair of the cameras named ({name: {R world to camera, f, cx, cy}}), the angle in degrees
-    between their relative turn in the model and the nearer of the two their fundamental matrix allows."""
-    W = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1.0]])
-    K = {n: np.array([[c["f"], 0, c["cx"]], [0, c["f"], c["cy"]], [0, 0, 1.0]]) for n, c in cams.items()}
-    out = []
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    try:
-        name = {i: n for i, n in con.execute("SELECT image_id, name FROM images")}
-        for pid, F in con.execute("SELECT pair_id, F FROM two_view_geometries WHERE rows >= ? AND config IN (2, 3)", (MIN_INLIERS,)):
-            a, b = (name.get(i) for i in divmod(pid, MAX_IMAGE_ID))
-            if a not in cams or b not in cams or not F:
-                continue
-            E = K[b].T @ np.frombuffer(F, np.float64).reshape(3, 3) @ K[a]
-            if not np.isfinite(E).all() or not E.any():
-                continue
-            U, _, Vt = np.linalg.svd(E)
-            U, Vt = (U if np.linalg.det(U) > 0 else -U), (Vt if np.linalg.det(Vt) > 0 else -Vt)
-            rel = cams[b]["R"] @ cams[a]["R"].T
-            out.append(min(float(np.degrees(np.arccos(np.clip((np.trace(rel @ c.T) - 1) / 2, -1, 1)))) for c in (U @ W @ Vt, U @ W.T @ Vt)))
-    finally:
-        con.close()
-    return out
-
-
-def numbers(cams: dict[str, dict], errs, track: float, db: Path) -> dict:
-    """A model's numbers: cams {name: {R, f, cx, cy, w, h, seen}}, its points' errors (px), its mean track length."""
-    errs = np.asarray(errs, float)
-    errs = errs[errs >= 0]
-    odd = sum(1 for c in cams.values()
-              if not (0.3 * max(c["w"], c["h"]) < c["f"] < 6 * max(c["w"], c["h"]))
-              or math.hypot(c["cx"] - c["w"] / 2, c["cy"] - c["h"] / 2) > 0.25 * max(c["w"], c["h"]))
-    ang = pair_angles(cams, db)
-    return {"placed": len(cams), "points": int(len(errs)), "track": round(float(track), 2),
-            "err_mean": round(float(errs.mean()), 3) if len(errs) else None,
-            "err_p90": round(float(np.percentile(errs, 90)), 3) if len(errs) else None,
-            "pairs": len(ang), "pair_med_deg": round(float(np.median(ang)), 2) if ang else None,
-            "pair_p90_deg": round(float(np.percentile(ang, 90)), 2) if ang else None,
-            "odd_lenses": int(odd), "untied": sum(1 for c in cams.values() if c.get("seen", UNTIED) < UNTIED)}
+MAX_IMAGE_ID, UNTIED = modelcheck.MAX_IMAGE_ID, modelcheck.UNTIED
+pair_angles, read_model = modelcheck.pair_angles, modelcheck.read_model
+numbers = modelcheck.numbers_of
 
 
 def check(cams: dict[str, dict], errs, track: float, db: Path) -> dict:
-    """The numbers and the verdict: {**numbers, "ok", "failed", "why"}."""
+    """The numbers and the verdict, from a model in memory: {**numbers, "ok", "failed", "why"}."""
     n = numbers(cams, errs, track, db)
-    return {**n, **st.model_check(n)}
-
-
-def read_model(model: Path) -> tuple[dict[str, dict], np.ndarray, float]:
-    """A binary COLMAP model's cameras (as numbers() wants them), its points' errors and its mean track length."""
-    lenses = {}
-    with open(model / "cameras.bin", "rb") as f:
-        for _ in range(struct.unpack("<Q", f.read(8))[0]):
-            cid, mid = struct.unpack("<ii", f.read(8))
-            w, h = struct.unpack("<QQ", f.read(16))
-            p = struct.unpack(f"<{NUM_PARAMS[mid]}d", f.read(8 * NUM_PARAMS[mid]))
-            lenses[cid] = ((p[0], p[1], p[2]) if mid in (0, 2, 3) else ((p[0] + p[1]) / 2, p[2], p[3])) + (w, h)
-    cams = {}
-    with open(model / "images.bin", "rb") as f:
-        for _ in range(struct.unpack("<Q", f.read(8))[0]):
-            v = struct.unpack("<I7dI", f.read(64))
-            name = b""
-            while (c := f.read(1)) != b"\0":
-                name += c
-            n = struct.unpack("<Q", f.read(8))[0]
-            obs = np.frombuffer(f.read(24 * n), np.dtype([("x", "<f8"), ("y", "<f8"), ("p", "<i8")]))
-            w, x, y, z = v[1:5]
-            R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
-                          [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
-                          [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
-            fl, cx, cy, wd, ht = lenses[v[8]]
-            cams[name.decode()] = {"R": R, "f": fl, "cx": cx, "cy": cy, "w": wd, "h": ht, "seen": int((obs["p"] != -1).sum())}
-    errs, lens = [], []
-    with open(model / "points3D.bin", "rb") as f:
-        for _ in range(struct.unpack("<Q", f.read(8))[0]):
-            f.read(8 + 24 + 3)
-            errs.append(struct.unpack("<d", f.read(8))[0])
-            k = struct.unpack("<Q", f.read(8))[0]
-            f.read(8 * k)
-            lens.append(k)
-    return cams, np.array(errs), float(np.mean(lens)) if lens else 0.0
+    return {**n, **modelcheck.verdict(n)}
 
 
 def of_model(model: Path, db: Path) -> dict:
-    return check(*read_model(Path(model)), Path(db))
+    return modelcheck.check(Path(model), Path(db))
 
 
 def table(bench: Path) -> None:

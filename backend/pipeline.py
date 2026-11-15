@@ -295,6 +295,21 @@ WATERMARK = 7                   # COLMAP's two-view configuration for matches th
 PAIR_BASE = 2147483647          # COLMAP's pair id: PAIR_BASE * the lower image id + the higher
 
 
+def check_model(model: Path, db: Path, out_dir: Path, log: Log) -> dict | None:
+    """The model's check of itself (modelcheck.py), of the levelled model the mesh is made from, kept beside the mesh
+    as check.json and said in the log. It decides nothing about the mesh and never fails one: whatever goes wrong is
+    logged and nothing is written."""
+    try:
+        import modelcheck
+        c = modelcheck.check(model, db)
+        modelcheck.save(out_dir, c)
+        log(modelcheck.line(c))
+        return c
+    except Exception as e:  # noqa: BLE001: a check must not cost a mesh
+        log(f"model check: not made ({type(e).__name__}: {e})")
+        return None
+
+
 def best_ties(db: Path, placed: set[str]) -> dict[str, dict]:
     """Each photo in a COLMAP database that isn't among those placed, with the placed photo it shares most verified
     matches with (its two-view geometry's inliers, unless they're a watermark): {photo: {"with": that photo or None,
@@ -620,6 +635,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             shutil.copyfile(work / MODELS_FILE, out_dir / MODELS_FILE)
         extract = json.loads((work / EXTRACT_FILE).read_text()) if (work / EXTRACT_FILE).exists() else None
         reconstruction.keep(model, db, out_dir, log, colmap_build(), extract)
+        check_model(model, db, out_dir, log)
 
     if not _finished(work, "undistort"):
         log("== COLMAP: undistort")
