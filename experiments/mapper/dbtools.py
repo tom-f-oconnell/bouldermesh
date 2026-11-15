@@ -277,6 +277,17 @@ def dedup(src: Path, dst: Path, measure: str, threshold: float) -> dict:
             "frames_in_videos": in_videos, "dropped": len(dropped), "dropped_frames": dropped}
 
 
+def no_matches(src: Path, dst: Path) -> dict:
+    """A copy of a database with its photos, lenses and features and none of its matches, raw or verified, for
+    another matcher to fill. Returns its counts before."""
+    con = _open(src, dst)
+    before = counts(con)
+    con.execute("DELETE FROM matches")
+    con.execute("DELETE FROM two_view_geometries")
+    _close(con)
+    return before
+
+
 def check(db: Path) -> list[str]:
     """What is wrong with a database's layout or indices, for COLMAP to read it: nothing, if all is well. Every
     table and column of 3.9's layout there; each image's camera there; keypoints and descriptors a row each and

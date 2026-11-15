@@ -1,0 +1,15 @@
+# Step 8 of optimization-plan.md: fewer pairs to match. Each set is made once (the photos' CLIP embedding, then
+# matches_importer on its list, both timed @prod: derive.json), then judged by rules 1-5 against sift391's
+# global_tied-s0+complete@prod runs; its match seconds against sift391@prod's exhaustive matching.
+feat 31de9a59303a --feat sift391_pairs30
+all 31de9a59303a global_tied 0 --feat sift391_pairs30 --cond prod --build complete --post complete --mvs as23
+feat ce7571e0a4a3 --feat sift391_pairs30
+all ce7571e0a4a3 global_tied 0 --feat sift391_pairs30 --cond prod --build complete --post complete --mvs as23
+feat 31de9a59303a --feat sift391_pairs20
+all 31de9a59303a global_tied 0 --feat sift391_pairs20 --cond prod --build complete --post complete --mvs as23
+feat ce7571e0a4a3 --feat sift391_pairs20
+all ce7571e0a4a3 global_tied 0 --feat sift391_pairs20 --cond prod --build complete --post complete --mvs as23
+feat 31de9a59303a --feat sift391_pairs50
+all 31de9a59303a global_tied 0 --feat sift391_pairs50 --cond prod --build complete --post complete --mvs as23
+feat ce7571e0a4a3 --feat sift391_pairs50
+all ce7571e0a4a3 global_tied 0 --feat sift391_pairs50 --cond prod --build complete --post complete --mvs as23

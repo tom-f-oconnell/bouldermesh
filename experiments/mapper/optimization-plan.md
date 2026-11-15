@@ -102,7 +102,7 @@ of the same model. `global_one` (`--GlobalMapper.multiple_models 0`): rules 1-3,
 Feature sets `sift391_1600` and `sift391_noguided` (bench.py). Rules 1-3, and extract and match seconds from their
 `@prod` folders.
 
-### 7. Whole app jobs side by side (needs code)
+### 7. Whole app jobs side by side (written: 5dce8e5, `queue-together-app.txt`)
 
 The measure Tom cares about. Extend `variants.together()` to take `app <project> --image ...` lines: no features to
 link; each job as `--cond c<cores/N>` with `BENCH_R` as now; **no `gpu.lock`** for these (the app has none: add an
@@ -113,7 +113,7 @@ try N jobs each with every core (no `--cpus`), which is what unpartitioned worke
 - If 2 at a time gains over 1.5x: the change is in `worker/bouldermesh_worker.py` (jobs at once per machine), which
   is Tom's and hal's to decide.
 
-### 8. Fewer pairs to match (needs code)
+### 8. Fewer pairs to match (written: the `pairs<K>` sets, `queue-opt-pairs.txt`)
 
 A pair list in place of exhaustive matching: each video frame with its 10 neighbours either side in its video, and
 each photo with its 30 most alike by image embedding (the off-topic filter already loads CLIP: `backend/climbs/

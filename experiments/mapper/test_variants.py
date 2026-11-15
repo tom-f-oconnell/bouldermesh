@@ -480,6 +480,76 @@ class Pieces(unittest.TestCase):
             self.assertEqual((every["every_core"], every["cores_each"]), (True, 8))
             self.assertIn("jobs-app-n2-every", text)
 
+    def test_a_pair_list_is_a_video_s_neighbours_and_each_photo_s_most_alike(self):
+        import numpy as np
+        names = ["yt_vA_000.jpg", "yt_vA_001.jpg", "yt_vA_002.jpg", "yt_vA_010.jpg", "yt_vB_000.jpg", "mp_x.jpg"]
+        emb = np.eye(6)
+        emb[5] = [0, 0, 0, 0, 0.6, 0.8]          # mp_x is most like vB's frame
+        emb[4] = [0, 0.8, 0, 0, 0.6, 0]          # and vB's frame like vA's 001
+        pairs = variants.pair_list(names, emb / np.linalg.norm(emb, axis=1, keepdims=True), 1, neighbours=1)
+        self.assertEqual(pairs, sorted({
+            ("yt_vA_000.jpg", "yt_vA_001.jpg"), ("yt_vA_001.jpg", "yt_vA_002.jpg"),
+            ("yt_vA_002.jpg", "yt_vA_010.jpg"),                                     # neighbours by frame order, not number
+            ("yt_vA_001.jpg", "yt_vB_000.jpg"), ("mp_x.jpg", "yt_vB_000.jpg"),     # the most alike, by embedding
+            ("yt_vA_000.jpg", "yt_vA_002.jpg"), ("yt_vA_000.jpg", "yt_vA_010.jpg")}))   # ties: the first photo
+        everything = variants.pair_list(names, emb, 5, neighbours=0)
+        self.assertEqual(len(everything), 15, "k of n-1 is every pair")
+
+    def test_a_pairs_set_is_matched_from_its_list(self):
+        import sqlite3
+        import numpy as np
+        import test_dbtools
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            saved = (bench.BENCH, bench.R, bench.step)
+            bench.BENCH, bench.R = tmp, tmp / "r2"
+            (bench.R / "p" / "sift391").mkdir(parents=True)
+            test_dbtools.make(bench.R / "p" / "sift391" / "database.db")
+            calls = []
+
+            def fake_step(d, name, tools, script, mounts, cond, env=None, timeout=0, gpu=False):
+                calls.append((name, tools, script, cond, gpu))
+                d.mkdir(parents=True, exist_ok=True)
+                if name == "embed":
+                    names = [n for n, *_ in test_dbtools.PHOTOS]
+                    (d / "names.json").write_text(json.dumps(names + ["not_in_db.jpg"]))
+                    np.save(d / "embed.npy", np.eye(len(names) + 1, dtype=np.float32))
+                    return {"rc": 0, "wall": 3.0}
+                con = sqlite3.connect(d / "database.db")
+                self.assertEqual(con.execute("SELECT count(*) FROM two_view_geometries").fetchone()[0], 0, "matched afresh")
+                m = np.array([[0, 0], [1, 1]], np.uint32)
+                con.execute("INSERT INTO two_view_geometries VALUES (?, 2, 2, ?, 3, NULL, NULL, NULL, NULL, NULL)",
+                            (1 * test_dbtools.dbtools.MAX_IMAGE_ID + 2, m.tobytes()))
+                con.commit()
+                con.close()
+                (d / "match.json").write_text("{}")
+                return {"rc": 0, "wall": 5.0, "cpu_s": 4.0}
+            bench.step = fake_step
+            out, sys.stdout = sys.stdout, io.StringIO()
+            try:
+                d = variants.derive("p", "sift391_pairs30", "plain")
+                again = variants.derive("p", "sift391_pairs30", "plain")
+            finally:
+                sys.stdout = out
+                bench.BENCH, bench.R, bench.step = saved
+            self.assertEqual(d, again)
+            self.assertEqual([c[0] for c in calls], ["embed", "match"], "made once")
+            name, tools, script, cond, gpu = calls[1]
+            self.assertEqual((tools, cond, gpu), ("app", "prod", True))
+            self.assertIn("matches_importer", script)
+            self.assertIn("--match_type pairs", script)
+            self.assertIn("--SiftMatching.guided_matching 1", script)
+            self.assertNotIn("ExhaustiveMatching", script)
+            listed = (d / "pairs.txt").read_text().split("\n")
+            self.assertEqual(len([l for l in listed if l]), 15, "6 photos, each with its 30 most alike: every pair")
+            self.assertFalse(any("not_in_db" in l for l in listed))
+            r = json.loads((d / "derive.json").read_text())
+            self.assertEqual((r["what"], r["most_alike"], r["photos"], r["pairs"], r["all_pairs"]), ("pairs", 30, 6, 15, 15))
+            self.assertEqual((r["before"]["verified_pairs"], r["after"]["verified_pairs"], r["match_s"], r["embed_s"]), (15, 1, 5.0, 3.0))
+            self.assertEqual(r["after"]["keypoints"], r["before"]["keypoints"], "the same features")
+            self.assertTrue((d / "extract.json").exists())
+            self.assertIn("sift391_pairs30", bench.FEATS)
+
     def test_texture_variants_change_only_what_they_name(self):
         for name, (args, only_new) in variants.TEXTURE.items():
             self.assertEqual(len(args) % 2, 0, name)
@@ -523,7 +593,7 @@ class Queues(unittest.TestCase):
 
     FILES = sorted(p for p in HERE.glob("*.txt") if p.name.startswith(("queue-new", "queue-side", "queue-thin", "queue-lens", "queue-dedup",
                                                                         "queue-threads", "queue-hier", "queue-together", "queue-texture",
-                                                                        "queue-gpufeat", "jobs-")))
+                                                                        "queue-gpufeat", "queue-opt", "jobs-")))
 
     def test_the_files_are_there(self):
         self.assertGreaterEqual(len(self.FILES), 16, [p.name for p in self.FILES])

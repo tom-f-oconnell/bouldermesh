@@ -117,8 +117,17 @@ UNTIED = {m: UNTIED_LEAST for m in GPU_METHODS}
 #   move<P>    The same, by the other rule: the verified matches to a kept frame moved less than P% of the diagonal.
 #   thin<N>    At most N keypoints a photo (see the thin methods). Used as it is (--feat), the rest step is thinned
 #              too, so photos added there need their 15 inliers among fewer keypoints: fewer may be placed.
+#   pairs<K>   Matched from a list of pairs rather than every pair (optimization-plan.md, step 8): each video frame
+#              with the PAIRS_NEIGHBOURS frames either side of it in its video, and each photo with its K most alike
+#              by CLIP embedding (embed_photos.py, the off-topic filter's model), by `colmap matches_importer` with
+#              the set's own matching options. The same features; the pairs left out are never verified, so photos
+#              tied to the rest only by them may be placed worse or not at all. Its embedding and matching are steps
+#              of their own (embed.json in <project>/clip, match.json), timed under PAIRS_COND.
 KINDS = {"lens": ("lens", None), "dedup90": ("dedup", ("sim", 0.9)), "dedup75": ("dedup", ("sim", 0.75)),
-         "move2": ("dedup", ("move", 0.02)), **{f"thin{n}": ("thin", n) for n in THIN}}
+         "move2": ("dedup", ("move", 0.02)), **{f"thin{n}": ("thin", n) for n in THIN},
+         **{f"pairs{k}": ("pairs", k) for k in (20, 30, 50)}}
+PAIRS_NEIGHBOURS = 10       # a video frame is matched with this many frames either side of it
+PAIRS_COND = "prod"         # pairs' embedding and matching timed as the app runs, beside the exhaustive set's @prod
 DERIVED_FROM = ("sift391", "siftgpu391")      # 3.9.1 databases: changed before 4.2.1 migrates a run's copy
 
 
@@ -138,6 +147,8 @@ def derive(P: str, feat: str, build: str) -> Path:
     seconds it took, are in derive.json there."""
     import dbtools
     base, kind = derived(feat)
+    if KINDS[kind][0] == "pairs":
+        return derive_pairs(P, feat, base, KINDS[kind][1], build)
     d = B.feat_dir(P, feat)
     if (d / "derive.json").exists() and (d / "database.db").exists():
         return d
@@ -161,6 +172,88 @@ def derive(P: str, feat: str, build: str) -> Path:
     print(f"{time.strftime('%T')} {d.relative_to(B.R)} derived in {result['seconds']} s: " + ", ".join(
         f"{k} {result['before'][k]} -> {result['after'][k]}" for k in ("cameras", "images", "keypoints", "verified_pairs")
         if result["before"][k] != result["after"][k]), flush=True)
+    return d
+
+
+def pair_list(names: list[str], emb, k: int, neighbours: int = PAIRS_NEIGHBOURS) -> list[tuple[str, str]]:
+    """The pairs a pairs<K> set matches: each video frame (dbtools.VIDEO) with the `neighbours` frames after it in its
+    video, so with that many either side, and each photo with its k most alike by embedding (emb: one unit-length
+    row a name, so that a dot product is the cosine). Each pair once, its names in order, the pairs sorted."""
+    import numpy as np
+    import dbtools
+    out, vids = set(), {}
+    for n in names:
+        if m := dbtools.VIDEO.match(n):
+            vids.setdefault(m.group(1), []).append((int(m.group(2)), n))
+    for frames in vids.values():
+        frames = [n for _, n in sorted(frames)]
+        for i, a in enumerate(frames):
+            out.update(tuple(sorted((a, b))) for b in frames[i + 1:i + 1 + neighbours])
+    if len(names) > 1 and k > 0:
+        sim = np.asarray(emb, np.float64) @ np.asarray(emb, np.float64).T
+        np.fill_diagonal(sim, -np.inf)
+        for i, row in enumerate(np.argsort(-sim, axis=1, kind="stable")[:, :min(k, len(names) - 1)]):
+            out.update(tuple(sorted((names[i], names[j]))) for j in row if j != i)
+    return sorted(out)
+
+
+def derive_pairs(P: str, feat: str, base: str, k: int, build: str) -> Path:
+    """A pairs<K> set's folder: the photos embedded (once a boulder, in <project>/clip), the pair list made
+    (pairs.txt), and the base set's database without its matches matched again from that list. derive.json says
+    how many pairs against every pair, the verified pairs and matches against the base set's, and the seconds of
+    the embedding and the matching."""
+    import sqlite3
+    import numpy as np
+    import dbtools
+    d = B.feat_dir(P, feat)
+    if (d / "derive.json").exists() and (d / "database.db").exists():
+        return d
+    src = B.feat_db(P, base, build)
+    if not src.exists():
+        B.features(P, base, "dev", build)
+    d.mkdir(parents=True, exist_ok=True)
+    e = B.R / P / "clip"
+    embed = B.step(e, "embed", "app", "python3 /bench/embed_photos.py /p/photos /w",
+                   [f"{B.BENCH}/projects/{P}:/p:ro", f"{e}:/w", f"{B.BENCH}/cache/models:/data/cache/models"], PAIRS_COND,
+                   {"DATA_DIR": "/data"}, gpu=True)
+    if embed["rc"] != 0:
+        raise RuntimeError(f"{feat}: embedding the photos failed (rc {embed['rc']}): see {e / 'embed.log'}")
+    names, emb = json.loads((e / "names.json").read_text()), np.load(e / "embed.npy")
+    con = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    in_db = {n for n, in con.execute("SELECT name FROM images")}
+    con.close()
+    keep = [i for i, n in enumerate(names) if n in in_db]
+    pairs = pair_list([names[i] for i in keep], emb[keep], k)
+    (d / "pairs.txt").write_text("".join(f"{a} {b}\n" for a, b in pairs))
+    if not (d / "match.json").exists():         # matched afresh: a half-matched database from an interrupted try goes
+        before = dbtools.no_matches(src, d / "database.db")
+    else:
+        con = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        before = dbtools.counts(con)
+        con.close()
+    match = B.FEATS[base][2]
+    rec = B.step(d, "match", "app", B.sh(["colmap", "matches_importer", "--database_path", "/w/database.db",
+                                          "--match_list_path", "/w/pairs.txt", "--match_type", "pairs", *match,
+                                          "--TwoViewGeometry.min_num_inliers", "12"]),
+                 [f"{d}:/w"], PAIRS_COND, gpu=B.on_gpu(match))
+    if rec["rc"] != 0:
+        raise RuntimeError(f"{feat}: matching the pairs failed (rc {rec['rc']}): see {d / 'match.log'}")
+    problems = dbtools.check(d / "database.db")
+    if problems:
+        raise RuntimeError(f"{feat}: the matched database is unsound: {problems[:3]}")
+    con = sqlite3.connect(f"file:{d / 'database.db'}?mode=ro", uri=True)
+    after = dbtools.counts(con)
+    con.close()
+    n = len(keep)
+    (d / "extract.json").write_text(json.dumps({"step": "extract", "rc": 0, "derived": str(src)}))
+    result = {"what": "pairs", "most_alike": k, "video_neighbours": PAIRS_NEIGHBOURS, "photos": n, "pairs": len(pairs),
+              "all_pairs": n * (n - 1) // 2, "before": before, "after": after,
+              "verified_pairs_kept": round(after["verified_pairs"] / before["verified_pairs"], 3) if before["verified_pairs"] else None,
+              "embed_s": embed.get("wall"), "match_s": rec.get("wall"), "match_cpu_s": rec.get("cpu_s"),
+              "made_from": str(src), "when": time.strftime("%F %T")}
+    (d / "derive.json").write_text(json.dumps(result, indent=1))
+    print(f"{time.strftime('%T')} {d.relative_to(B.R)} matched {len(pairs)} of {n * (n - 1) // 2} pairs in {rec.get('wall', 0):.0f} s: "
+          f"verified pairs {before['verified_pairs']} -> {after['verified_pairs']}", flush=True)
     return d
 
 
