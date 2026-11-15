@@ -1,0 +1,2 @@
+# 2.4 with 2.3's defaults in the dense and mesh steps, on the Drifter model that has the others (handoff section 27)
+post ce7571e0a4a3 global_tied-s0+complete@prod --tools complete --cond prod --mvs as23

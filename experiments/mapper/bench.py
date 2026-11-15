@@ -136,6 +136,10 @@ MVS = {
     # 2.3's own defaults where 2.4's differ: its fusion, a point seen by three photos, and depth maps cleaned of speckles
     # and gaps. fuse1 alone keeps more points than 2.3 does
     "like23": {"dense": ["--fusion-filter", "1", "--number-views-fuse", "3", "--postprocess-dmaps", "7"]},
+    # like23, and the mesh too from points 2.5 px apart as 2.3's ReconstructMesh does (2.4's default is 1.5, which makes
+    # a mesh of more faces from the same cloud, and texturing slower)
+    "as23": {"dense": ["--fusion-filter", "1", "--number-views-fuse", "3", "--postprocess-dmaps", "7"],
+             "mesh": ["--min-point-distance", "2.5"]},
     "noroi": {"dense": ["--estimate-roi", "0"]},       # nothing cut off outside the region of interest 2.4 estimates
     "cpu": {"dense": ["--cuda-device", "-2"]},         # depth maps on the CPU: what a machine without a GPU gets
 }

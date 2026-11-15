@@ -2,7 +2,9 @@
 # a fifth to a third of 2.3's points. On the baseline's first model of 31de and of Drifter: 2.4 fusing as 2.3 does,
 # 2.4 without its region of interest, and 2.4's depth maps on the CPU. 2.3 is post-app and 2.4 as it comes is
 # post-complete, both from earlier queues. like23 is 2.4 with 2.3's own defaults (fusion, views to fuse, depth maps
-# cleaned), which should give 2.3's cloud at 2.4's speed.
+# cleaned), which should give 2.3's cloud at 2.4's speed; as23 that and 2.3's spacing of points in the mesh step.
+post 31de9a59303a base-s0@prod --tools complete --cond prod --mvs as23
+post ce7571e0a4a3 base-s0@prod --tools complete --cond prod --mvs as23
 post 31de9a59303a base-s0@prod --tools complete --cond prod --mvs like23
 post ce7571e0a4a3 base-s0@prod --tools complete --cond prod --mvs like23
 post 31de9a59303a base-s0@prod --tools complete --cond prod --mvs fuse1
