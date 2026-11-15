@@ -1,0 +1,57 @@
+# Faster without worse (optimization-plan.md; Tom, 2026-11-14: speed and throughput first, as long as quality isn't worse).
+# 1. texture variants on the meshes the app now makes (as23), Drifter then 31de
+post 31de9a59303a global_tied-s0+complete@prod --tools complete --cond prod --mvs as23
+texture ce7571e0a4a3 global_tied-s0+complete@prod same --tools complete --cond prod --mvs as23
+texture ce7571e0a4a3 global_tied-s0+complete@prod res1 --tools complete --cond prod --mvs as23
+texture ce7571e0a4a3 global_tied-s0+complete@prod views2 --tools complete --cond prod --mvs as23
+texture ce7571e0a4a3 global_tied-s0+complete@prod vface3 --tools complete --cond prod --mvs as23
+texture ce7571e0a4a3 global_tied-s0+complete@prod res2 --tools complete --cond prod --mvs as23
+texture ce7571e0a4a3 global_tied-s0+complete@prod views3 --tools complete --cond prod --mvs as23
+texture ce7571e0a4a3 global_tied-s0+complete@prod noseams --tools complete --cond prod --mvs as23
+texture ce7571e0a4a3 global_tied-s0+complete@prod dec50 --tools complete --cond prod --mvs as23
+texture 31de9a59303a global_tied-s0+complete@prod same --tools complete --cond prod --mvs as23
+texture 31de9a59303a global_tied-s0+complete@prod res1 --tools complete --cond prod --mvs as23
+texture 31de9a59303a global_tied-s0+complete@prod views2 --tools complete --cond prod --mvs as23
+texture 31de9a59303a global_tied-s0+complete@prod vface3 --tools complete --cond prod --mvs as23
+texture 31de9a59303a global_tied-s0+complete@prod res2 --tools complete --cond prod --mvs as23
+texture 31de9a59303a global_tied-s0+complete@prod views3 --tools complete --cond prod --mvs as23
+texture 31de9a59303a global_tied-s0+complete@prod noseams --tools complete --cond prod --mvs as23
+texture 31de9a59303a global_tied-s0+complete@prod dec50 --tools complete --cond prod --mvs as23
+# 2. a video's repeated frames dropped (9f3b has 2: left out)
+all ce7571e0a4a3 global_tied 0 --feat sift391_dedup90 --cond prod --build complete --post complete --mvs as23
+all 31de9a59303a global_tied 0 --feat sift391_dedup90 --cond prod --build complete --post complete --mvs as23
+all ce7571e0a4a3 global_tied 0 --feat sift391_dedup75 --cond prod --build complete --post complete --mvs as23
+all 31de9a59303a global_tied 0 --feat sift391_dedup75 --cond prod --build complete --post complete --mvs as23
+all ce7571e0a4a3 global_tied 0 --feat sift391_move2 --cond prod --build complete --post complete --mvs as23
+# 3. plain SIFT on the GPU (the app's GPU_SIFT=1)
+feat 31de9a59303a --feat siftgpu391
+feat 31de9a59303a --feat siftgpu391 --cond prod
+all 31de9a59303a global_tied 0 --feat siftgpu391 --cond prod --build complete --post complete --mvs as23
+feat ce7571e0a4a3 --feat siftgpu391
+feat ce7571e0a4a3 --feat siftgpu391 --cond prod
+all ce7571e0a4a3 global_tied 0 --feat siftgpu391 --cond prod --build complete --post complete --mvs as23
+feat 9f3b4b740847 --feat siftgpu391
+feat 9f3b4b740847 --feat siftgpu391 --cond prod
+all 9f3b4b740847 global_tied 0 --feat siftgpu391 --cond prod --build complete
+# 4. jobs side by side: meshes an hour at 1, 2 and 3 at a time
+together 1 jobs-global3.txt
+together 2 jobs-global3.txt
+together 3 jobs-global3.txt
+# 5. one geometric-consistency pass in the dense step; no side models in the mapper
+post ce7571e0a4a3 global_tied-s0+complete@prod --tools complete --cond prod --mvs as23g1
+post 31de9a59303a global_tied-s0+complete@prod --tools complete --cond prod --mvs as23g1
+all ce7571e0a4a3 global_one 0 --cond prod --build complete
+all 31de9a59303a global_one 0 --cond prod --build complete
+# 6. the app's SIFT on 1600 px pictures; matching without its guided pass
+feat 31de9a59303a --feat sift391_1600
+feat 31de9a59303a --feat sift391_1600 --cond prod
+all 31de9a59303a global_tied 0 --feat sift391_1600 --cond prod --build complete
+feat ce7571e0a4a3 --feat sift391_1600
+feat ce7571e0a4a3 --feat sift391_1600 --cond prod
+all ce7571e0a4a3 global_tied 0 --feat sift391_1600 --cond prod --build complete
+feat 31de9a59303a --feat sift391_noguided
+feat 31de9a59303a --feat sift391_noguided --cond prod
+all 31de9a59303a global_tied 0 --feat sift391_noguided --cond prod --build complete
+feat ce7571e0a4a3 --feat sift391_noguided
+feat ce7571e0a4a3 --feat sift391_noguided --cond prod
+all ce7571e0a4a3 global_tied 0 --feat sift391_noguided --cond prod --build complete

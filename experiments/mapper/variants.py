@@ -522,10 +522,13 @@ TEXTURE = {
     "size8192": (["--max-texture-size", "8192"], False),
     "views2": (["--views-file", "VIEWS"], True),                # every second photo colours the mesh (a cap on views)
     "views3": (["--views-file", "VIEWS"], True),                # every third
+    # OpenMVS's own way to choose views for groups of coplanar triangles at once (2.4's help: "3 - good value"). In 2.4's
+    # source; not checked against 2.3's --help, so use it with --tools of a 2.4 tree
+    "vface3": (["--virtual-face-images", "3"], False),
 }
 
 
-def texture(P: str, run: str, variant: str, feat: str, tools: str, cond: str) -> None:
+def texture(P: str, run: str, variant: str, feat: str, tools: str, cond: str, mvs: str = "") -> None:
     """TextureMesh again on a run's finished post steps (its scene and mesh, untouched), with one thing changed:
     the step tex_<variant> beside the post's own, its GLB kept in tex_<variant>/. Then, untimed, what came out
     (texstats.py, in the app's image): the GLB's size, its textures' pixels and how much of them is used, and a
@@ -535,7 +538,7 @@ def texture(P: str, run: str, variant: str, feat: str, tools: str, cond: str) ->
     if only_new and not new:
         raise RuntimeError(f"OpenMVS 2.3 has no {args[0]}")
     d = B.feat_dir(P, feat) / run
-    o = d / (f"post-{tools}" + (f"@{cond}" if cond != "dev" else ""))
+    o = d / (f"post-{tools}" + (f"+{mvs}" if mvs else "") + (f"@{cond}" if cond != "dev" else ""))      # mvs: bench.py's post --mvs
     if not (o / "scene_dense.mvs").exists() or not (o / "scene_dense_mesh.ply").exists():
         raise RuntimeError(f"{o.relative_to(B.R)} has no dense scene and mesh: run its post steps first")
     name = f"tex_{variant}"
@@ -673,7 +676,7 @@ def command(a) -> None:
         if a.args[0] == "report":
             texture_report()
         else:
-            texture(a.args[0], a.args[1], a.args[2], a.feat, a.tools, a.cond)
+            texture(a.args[0], a.args[1], a.args[2], a.feat, a.tools, a.cond, a.mvs)
     elif a.command == "people":
         rest = [x for x in a.args[1:] if x not in ("cpu", "gpu")]
         people(a.args[0], rest[0] if rest else None, "cpu" if "cpu" in a.args[1:] else "gpu", a.feat, a.tools, a.cond)

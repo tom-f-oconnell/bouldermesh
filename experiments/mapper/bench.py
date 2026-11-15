@@ -130,6 +130,12 @@ METHODS.update(variants.methods(GLOBAL))
 GPU_METHODS |= variants.GPU_METHODS
 UNTIED.update(variants.UNTIED)
 FEATS.update(variants.feats(FEATS))
+# The app's own SIFT made cheaper two ways: on smaller pictures (extraction's time goes with their pixels), and without the
+# second, guided, matching pass of each pair. Both change which photos are placed.
+FEATS["sift391_1600"] = ("app", SIFT + AFFINE + ["--SiftExtraction.max_image_size", "1600", "--SiftExtraction.use_gpu", "0"],
+                         ["--SiftMatching.guided_matching", "1", "--SiftMatching.use_gpu", "1"])
+FEATS["sift391_noguided"] = ("app", SIFT + AFFINE + ["--SiftExtraction.max_image_size", "2400", "--SiftExtraction.use_gpu", "0"],
+                             ["--SiftMatching.guided_matching", "0", "--SiftMatching.use_gpu", "1"])
 MATCH = ["--ExhaustiveMatching.block_size", "20", "--TwoViewGeometry.min_num_inliers", "12"]
 REST_ARGS = ["--Mapper.abs_pose_min_num_inliers", "15", "--Mapper.abs_pose_min_inlier_ratio", "0.15"]
 # OpenMVS 2.4 otherwise than as it comes (post --mvs <name>, results in post-<tools>+<name>): step: its extra arguments
@@ -142,6 +148,9 @@ MVS = {
     # a mesh of more faces from the same cloud, and texturing slower)
     "as23": {"dense": ["--fusion-filter", "1", "--number-views-fuse", "3", "--postprocess-dmaps", "7"],
              "mesh": ["--min-point-distance", "2.5"]},
+    # as23 with one geometric-consistency pass over the depth maps where 2.4 (and 2.3) make two: they are half the step
+    "as23g1": {"dense": ["--fusion-filter", "1", "--number-views-fuse", "3", "--postprocess-dmaps", "7", "--geometric-iters", "1"],
+               "mesh": ["--min-point-distance", "2.5"]},
     "as23cpu": {"dense": ["--fusion-filter", "1", "--number-views-fuse", "3", "--postprocess-dmaps", "7", "--cuda-device", "-2"],
                 "mesh": ["--min-point-distance", "2.5"]},      # as23 with the depth maps on the CPU: the app's fallback
     "noroi": {"dense": ["--estimate-roi", "0"]},       # nothing cut off outside the region of interest 2.4 estimates

@@ -1,0 +1,5 @@
+# together's jobs for a first read of throughput: three whole jobs from the mapper to the textured mesh, as the app now
+# makes them (global_tied, OpenMVS 2.4 with as23). Features and matching aren't in it: see optimization-plan.md, step 7.
+all 31de9a59303a global_tied 0 --build complete --post complete --mvs as23
+all 9f3b4b740847 global_tied 0 --build complete --post complete --mvs as23
+all ce7571e0a4a3 global_tied 0 --build complete --post complete --mvs as23

@@ -433,7 +433,7 @@ class Pieces(unittest.TestCase):
             self.assertEqual(only_new, "--views-file" in args, name)
             for flag in args[0::2]:      # each in 2.3's --help and 2.4's source, but the views file (2.4's)
                 self.assertIn(flag, ("--resolution-level", "--decimate", "--global-seam-leveling", "--local-seam-leveling",
-                                     "--max-texture-size", "--views-file"), name)
+                                     "--max-texture-size", "--views-file", "--virtual-face-images"), name)
 
     @unittest.skipUnless(importlib.util.find_spec("PIL"), "no PIL here (the app's image has it)")
     def test_texstats_reads_a_glb_s_textures(self):
