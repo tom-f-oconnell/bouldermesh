@@ -121,6 +121,38 @@ def gpu_choice(allowed: bool = True) -> tuple[bool, str]:
     return True, f"{free} MB of GPU memory free"
 
 
+# OpenMVS 2.4 changed defaults that 2.3 had: it fuses depth maps another way (--fusion-filter 2, "dense-fuse", where 2.3
+# has none, which is 1), wants fewer views to agree (2 against 3), filters no depth maps (0 against 7), and meshes
+# points 1.5 px apart (against 2.5). Together they gave a fifth of the points and two thirds of the faces of 2.3's,
+# and dense-fuse segfaulted 1 time in 15 (experiments/mapper, Nov 14). With 2.3's own values, 2.4 made 2.3's cloud
+# (4.73M points on Drifter against 4.95M) and a mesh of 1.28M faces, in 530 s after the mapper against 2.3's 1,131
+# on the CPU (depth maps on the GPU). So 2.4 is given 2.3's values, and the meshes look as they did, sooner.
+MVS24_DENSIFY = ["--fusion-filter", "1", "--number-views-fuse", "3", "--postprocess-dmaps", "7"]
+MVS24_MESH = ["--min-point-distance", "2.5"]
+
+
+@functools.cache
+def mvs_version() -> tuple[int, int] | None:
+    """OpenMVS's version (major, minor), from DensifyPointCloud's own banner, or None if it can't be told."""
+    tool = _mvs("DensifyPointCloud")
+    if not tool:
+        return None
+    import tempfile
+    try:
+        with tempfile.TemporaryDirectory() as td:     # it writes a log file where it runs
+            out = subprocess.run([tool, "--help"], capture_output=True, text=True, timeout=60, cwd=td)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"OpenMVS \S* ?v(\d+)\.(\d+)", out.stdout + out.stderr)
+    return (int(m[1]), int(m[2])) if m else None
+
+
+def _mvs24(args: list[str]) -> list[str]:
+    """These arguments where OpenMVS is 2.4 or later, to keep 2.3's defaults; none for 2.3, which rejects --fusion-filter."""
+    v = mvs_version()
+    return list(args) if v and v >= (2, 4) else []
+
+
 def mvs_gpu_choice(allowed: bool = True) -> tuple[bool, str]:
     """Whether OpenMVS's depth maps should use the GPU right now (given a CUDA build of it), and why or why not."""
     if not allowed:
@@ -679,7 +711,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         log("== OpenMVS: densify")
         tracker.update("dense")
         densify = ["scene.mvs", "-w", str(work), "--resolution-level", "2", *mask_args,
-                   *(["--mask-path", str(dense / "images")] if mask_args else [])]
+                   *(["--mask-path", str(dense / "images")] if mask_args else []), *_mvs24(MVS24_DENSIFY)]
         cuda, on_gpu = _mvs_cuda("DensifyPointCloud"), False
         if cuda:
             gpu, why = mvs_gpu_choice(use_gpu)
@@ -697,7 +729,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     if not _finished(work, "mesh"):
         log("== OpenMVS: reconstruct mesh")
         tracker.update("mesh")
-        _run([_mvs("ReconstructMesh"), "scene_dense.mvs", "-w", str(work)], work, log,
+        _run([_mvs("ReconstructMesh"), "scene_dense.mvs", "-w", str(work), *_mvs24(MVS24_MESH)], work, log,
              _phases(tracker, "mesh", (r"Points inserted \d+ \(([\d.]+)%", 0, 0.5), (r"Points weighted \d+ \(([\d.]+)%", 0.5, 0.9)))
         _finish(work, "mesh")
     mesh = work / "scene_dense_mesh.ply"

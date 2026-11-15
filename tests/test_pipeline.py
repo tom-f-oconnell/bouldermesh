@@ -518,6 +518,7 @@ def dense_cmds(free, fails=False, cuda_dir=True):
         return [c for c in cmds if c[0].endswith("DensifyPointCloud")], [c[0] for c in cmds if "Mesh" in c[0]], logged
 
 
+saved_version = pipeline.mvs_version
 runs, others, dlog = dense_cmds(17000)
 assert len(runs) == 1 and runs[0][0].endswith("mvs-cuda/DensifyPointCloud") and runs[0][-2:] == ["--cuda-device", "-1"], runs
 assert others == ["ReconstructMesh", "TextureMesh"], "the other steps stay with the CPU build"
@@ -526,11 +527,26 @@ for free, why in ((None, "no GPU visible"), (500, "only 500 MB")):
     runs, _, dlog = dense_cmds(free)
     assert [r[0] for r in runs] == ["DensifyPointCloud"] and "--cuda-device" not in runs[0], runs
     assert any(why in l for l in dlog), dlog
+pipeline.mvs_version = lambda: (2, 4)
 runs, _, dlog = dense_cmds(17000, fails=True)
+assert runs[1].count("--fusion-filter") == 1, "the CPU fallback is given 2.4's values too, once"
+pipeline.mvs_version = saved_version
 assert [r[0].rsplit("/", 2)[-2:] for r in runs] == [["mvs-cuda", "DensifyPointCloud"], ["DensifyPointCloud"]], runs
 assert any("GPU run failed" in l for l in dlog), dlog
 runs, _, dlog = dense_cmds(17000, cuda_dir=False)
 assert [r[0] for r in runs] == ["DensifyPointCloud"] and not any("DensifyPointCloud: using" in l for l in dlog), "an image with no CUDA build: as before"
+# OpenMVS 2.4 is given 2.3's own fusion and meshing values; 2.3, which has no --fusion-filter, is given none
+saved_version = pipeline.mvs_version
+try:
+    for version, want in (((2, 4), True), ((2, 3), False), (None, False)):
+        pipeline.mvs_version = lambda _v=version: _v
+        runs, _, _ = dense_cmds(17000)
+        assert ("--fusion-filter" in runs[0]) == want and ("--number-views-fuse" in runs[0]) == want, (version, runs)
+        mesh_cmds, _ = commands_with(lambda *a, **k: {})
+        mesh = by_tool(mesh_cmds, "ReconstructMesh")
+        assert ("--min-point-distance" in mesh) == want, (version, mesh)
+finally:
+    pipeline.mvs_version = saved_version
 print("depth maps' device OK")
 
 # GPU_SIFT (off unless set): internet photos' features as plain SIFT on the GPU; with no GPU, or if it fails, today's

@@ -583,6 +583,14 @@ built into that image. It stays off (MVS=23) until an image built that way has m
 2.4's depth maps on a GPU are another implementation, not the same arithmetic on another device. Texturing has no GPU
 path in either version (its tools take `--cuda-device` in a CUDA build and use no GPU).
 
+2.4 also changed defaults 2.3 had: depth maps fused another way (`--fusion-filter 2`, "dense-fuse"; 2.3 has no such
+option), fewer views needed to agree (2 against 3), no filtering of depth maps (0 against 7), and mesh points 1.5 px
+apart (against 2.5). As it comes it kept a fifth of 2.3's points and two thirds of its faces, and dense-fuse
+segfaulted once in 15 runs. Given 2.3's values (`pipeline.MVS24_DENSIFY`, `MVS24_MESH`, passed only to 2.4), it made
+2.3's cloud (Drifter: 4.73M points against 4.95M) and a mesh of 1.28M faces, and took 530 s after the mapper against
+2.3's 1,131: the depth maps four times faster, the mesh and texture as before. The surface barely depends on it: the
+thin and dense clouds of one model give meshes 0.13% of the scene's size apart (median).
+
 ## Stray pieces and sheets
 
 Each reconstruction hides its stray pieces (`backend/meshclean.py`), using the second rule below.
