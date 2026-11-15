@@ -15,6 +15,10 @@
 # terminal, n restarts now instead, c (or Ctrl-C) cancels, and it waits for as long as it takes. Without one to ask at,
 # it does --after, for at most WAIT_MINUTES (90).
 set -euo pipefail
+# All of it in one { } that ends with exit, so that bash reads the whole script before running any of it: it otherwise
+# reads a script as it goes, and one edited while it runs (as on 2026-11-15, during the build) carries on from the wrong
+# place in the new text.
+{
 cd "$(dirname "$0")"
 
 mode=ask
@@ -173,3 +177,5 @@ elif [ "$(systemctl show -p LoadState --value bouldermesh-worker.service 2>/dev/
 else
     echo "bouldermesh-worker isn't running as a system service here: not restarting it"
 fi
+exit
+}
