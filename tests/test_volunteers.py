@@ -819,17 +819,33 @@ def tools_python():
             return v, [" ".join(Path(c).name if i == 0 else c for i, c in enumerate(cmd)) for cmd in ran]
 
         v, cmds = tools("t1", (3, 12))
-        assert cmds[0].startswith("python-here -m venv") and len(cmds) == 3, cmds
+        assert cmds[0].startswith("python-here -m venv") and len(cmds) == 4, cmds
+        assert "--pre" not in cmds[2] and "yt-dlp[default]" in cmds[2] and cmds[3].endswith("deno"), "stable, until the server says"
         ran.clear()
         v.tools()
         assert ran == [], "updated today, by this version: not again"
         v.state["updated_by"] = bv.VERSION - 1    # as when this script has just replaced an older one
         v.tools()
-        assert len(ran) == 2 and "yt-dlp[default]" in ran[1] and not any("venv" in c for c in ran), ran
+        assert len(ran) == 3 and "yt-dlp[default]" in ran[1] and not any("venv" in c for c in ran), ran
         assert v.state["updated_by"] == bv.VERSION
         ran.clear()
         v.tools()
         assert ran == [], "then daily again"
+        # the server says which yt-dlp: nightly (PyPI's pre-releases) at once, and back to stable by reinstalling
+        v.state["channel"] = "nightly"
+        v.tools()
+        assert len(ran) == 3 and "--pre" in ran[1] and "--force-reinstall" not in ran[1] and v.state["installed_channel"] == "nightly", ran
+        ran.clear()
+        v.tools()
+        assert ran == [], "switched today: not again"
+        v.state["updated"] = 0
+        v.tools()
+        assert "--pre" in ran[1], "nightly's daily update stays nightly"
+        ran.clear()
+        v.state["channel"] = "stable"
+        v.tools()
+        assert "--pre" not in ran[1] and "--force-reinstall" in ran[1] and v.state["installed_channel"] == "stable", ran
+        ran.clear()
         _, cmds = tools("t2", (3, 8), {"python3.13": "/opt/py/python3.13"})
         assert cmds[0].startswith("python3.13 -m venv"), cmds
         _, cmds = tools("t3", (3, 8))
@@ -1057,8 +1073,20 @@ def youtube_health():
     b.q("UPDATE volunteers SET refused_until=NULL WHERE id=?", a["id"])
     a = report(b.get(a["id"]), "refused", error="ERROR: [youtube] x: Sign in to confirm you're not a bot")
     assert a["health"] == "refused" and a["rest_why"] == "refused" and told[-1][2] == "refused"
+    # every refusal and throttle is told (the server sums them up once a day), with the line that made it a refusal
+    b.q("UPDATE volunteers SET refused_until=NULL WHERE id=?", a["id"])
+    n = len(told)
+    a = report(b.get(a["id"]), "refused", error="WARNING: x\nHTTP Error 429: Too Many Requests\nERROR: unable to download video data: HTTP Error 403: Forbidden")
+    assert len(told) == n + 1 and told[-1][1:] == ("refused", "refused"), told
+    assert a["health_detail"] == "HTTP Error 429: Too Many Requests", a["health_detail"]
+    b.q("UPDATE volunteers SET refused_until=NULL WHERE id=?", a["id"])
+    a = report(b.get(a["id"]), "ok", ("throttled", "the video came at 40 KB/s"))
+    b.q("UPDATE volunteers SET refused_until=NULL WHERE id=?", a["id"])
+    a = report(b.get(a["id"]), "ok", ("throttled", "the video came at 40 KB/s"))
+    assert [t[2] for t in told[n:]] == ["refused", "throttled", "throttled"], told
+    assert bv.refusal_report("a\nHTTP Error 429: Too Many Requests\n" + "x" * 400).startswith("HTTP Error 429"), "its line first"
     st = {v["name"]: v for v in b.state()["volunteers"]}
-    assert st["Ann"]["health"] == "refused" and st["Cat"]["health"] == "degraded" and st["Cat"]["yt_dlp"] == "2099.01.01"
+    assert st["Ann"]["health"] == "throttled" and st["Cat"]["health"] == "degraded" and st["Cat"]["yt_dlp"] == "2099.01.01"
     assert b.state()["trouble"] is None, "one degraded of the two heard from: no longer many"
     print("YouTube's signs, unit OK")
 

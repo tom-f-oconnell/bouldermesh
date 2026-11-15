@@ -1084,9 +1084,15 @@ volunteers and for connecting the public site to whichever server harvests.
 - **How YouTube treats them:** with each result, the script (version 5 on) says what yt-dlp warned of and how fast the
   video came. A fetch that failed as YouTube holds back (PO tokens, SABR, signature and challenge failures, formats
   missing) is *degraded*; one stopped partway (HTTP 403), or a video far slower than the volunteer's usual, *throttled*,
-  and it rests an hour. The admin page's Volunteers list shows each one's state, why, its last speed and yt-dlp; your
-  phone is told when one gets worse (with notifications on), and when several are degraded at once, which is likely
-  YouTube changing something that a newer yt-dlp fixes, the page says so. Warnings when a fetch worked are only noted.
+  and it rests an hour. The admin page's Volunteers list shows each one's state, why, its last speed and yt-dlp. Your
+  phone is told (with notifications on) when one is degraded, and of a volunteer's throttles and refusals at most once
+  a day: the first at once, the rest summed up a day later, though a refusal whose rest has grown to 4 h comes at once.
+  A refusal's notification quotes the line that made it one (a bot check, HTTP 429). When several are degraded at once,
+  which is likely YouTube changing something that a newer yt-dlp fixes, the page says so. Warnings when a fetch worked
+  are only noted.
+- **Which yt-dlp:** the scripts (version 11 on) install yt-dlp's nightly builds, which follow YouTube's changes days or
+  weeks before a release does, and update them daily. The admin page's Volunteers section switches them to stable, to
+  roll back (`volunteers.yt_dlp`); each script switches at its next ask for work.
 - **An area's climbs wait for them:** a climb whose harvest asked volunteers for a search or videos has what they
   fetched added once it's come, and is meshed once, rather than meshed without them first; after 24 h
   (`VOLUNTEER_WAIT_HOURS`) it's meshed with what's come. Adding keeps the photos it had (asking for them back from the

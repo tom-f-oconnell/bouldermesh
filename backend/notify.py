@@ -98,6 +98,46 @@ class Paced:
         self.send(f"{len(held)} more", lines, maps or None)
 
 
+class Tally:
+    """Notifications of something that recurs, per key (one volunteer's trouble with YouTube): the first at once, then
+    for that key at most one in each `gap` seconds, summing up what came in it: how many of each kind, an amount added
+    up (hours resting), and the last one's detail. send(title, message) does the sending; summary(key, kinds, amount,
+    since, last) -> (title, message) words the one that sums up. Kept in memory only: a restart starts afresh."""
+
+    def __init__(self, send: Callable[[str, str], object], gap: float,
+                 summary: Callable[[object, dict, float, float, str], tuple[str, str]]):
+        self.send, self.gap, self.summary = send, gap, summary
+        self.lock = threading.Lock()
+        self.keys: dict = {}    # key: {"since", "kinds": {kind: n}, "amount", "last", "timer"}
+
+    def add(self, key, kind: str, title: str, message: str, amount: float = 0.0, detail: str = "") -> None:
+        now = time.time()
+        with self.lock:
+            k = self.keys.get(key)
+            if k is None or (now - k["since"] >= self.gap and not k["kinds"]):
+                self.keys[key] = {"since": now, "kinds": {}, "amount": 0.0, "last": "", "timer": None}
+                go = (title, message)
+            else:
+                k["kinds"][kind] = k["kinds"].get(kind, 0) + 1
+                k["amount"] += amount
+                k["last"] = detail
+                if k["timer"] is None:
+                    k["timer"] = threading.Timer(max(0.0, k["since"] + self.gap - now), self.flush, (key,))
+                    k["timer"].daemon = True
+                    k["timer"].start()
+                return
+        self.send(*go)
+
+    def flush(self, key) -> None:
+        with self.lock:
+            k = self.keys.get(key)
+            if not k or not k["kinds"]:
+                return
+            kinds, amount, since, last = dict(k["kinds"]), k["amount"], k["since"], k["last"]
+            self.keys[key] = {"since": time.time(), "kinds": {}, "amount": 0.0, "last": "", "timer": None}
+        self.send(*self.summary(key, kinds, amount, since, last))
+
+
 class Notifier:
     """Sends notifications, and acts on the replies their buttons send.
 

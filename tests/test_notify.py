@@ -185,6 +185,27 @@ try:
     paced.add("four", "d")
     assert paced_out[-1] == ("four", "d", None), "after the gap, at once"
     print("visitors' places and paced notifications OK")
+
+    # something that recurs, per key: the first at once, then at most one a gap, summing up what came in it
+    tally_out: list = []
+    tally = notify.Tally(lambda t, m: tally_out.append((t, m)), 0.5,
+                         lambda key, kinds, amount, since, last: (f"{key}: {sorted(kinds.items())}", f"{amount:.0f} h, last {last}"))
+    tally.add("ann", "throttled", "Ann throttled", "first", 1, "403")
+    tally.add("bob", "refused", "Bob refused", "first", 1, "429")
+    tally.add("ann", "throttled", "Ann throttled", "again", 1, "403 again")
+    tally.add("ann", "refused", "Ann refused", "again", 2, "429")
+    assert tally_out == [("Ann throttled", "first"), ("Bob refused", "first")], "the first of each at once, the rest held"
+    time.sleep(0.8)
+    assert tally_out[2] == ("ann: [('refused', 1), ('throttled', 1)]", "3 h, last 429"), tally_out
+    assert len(tally_out) == 3, "nothing held for bob: nothing to sum up"
+    tally.add("ann", "throttled", "Ann throttled", "third", 1, "x")
+    assert len(tally_out) == 3, "within a gap of the summary: held for the next one"
+    time.sleep(0.8)
+    assert tally_out[3][0] == "ann: [('throttled', 1)]", tally_out
+    time.sleep(0.6)
+    tally.add("ann", "throttled", "Ann throttled", "after", 1, "y")
+    assert tally_out[-1] == ("Ann throttled", "after"), "a gap with none: at once again"
+    print("tallied notifications OK")
     print("ALL NOTIFY TESTS PASSED")
 finally:
     shutil.rmtree(TMP, ignore_errors=True)

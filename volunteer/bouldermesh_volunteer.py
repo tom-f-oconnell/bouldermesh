@@ -49,7 +49,9 @@ from pathlib import Path
 # 9: says the name it asks for is shown on the site's public leaderboard
 # 10: videos spread over each hour (about 4 min apart at 15 an hour), 200 a day; searches and channels' pages counted
 #     apart from videos, 30 an hour and 200 a day, and fetched while a video's turn is still to come
-VERSION = 10
+# 11: installs the yt-dlp the server says (its nightly builds, or stable), switching at once when that changes; a
+#     refusal's report starts with the line that made it one
+VERSION = 11
 SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
 AGENT = "bouldermesh-volunteer"
 TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
@@ -107,6 +109,12 @@ Stop it with Ctrl-C at any time. Everything it installs is in {home}."""
 
 def log(msg: str) -> None:
     print(time.strftime("%Y-%m-%d %H:%M:%S ") + msg, flush=True)
+
+
+def refusal_report(err: str) -> str:
+    """What a refusal's report says: the line that made it one (REFUSAL), then the end of what yt-dlp said."""
+    line = next((l.strip() for l in err.splitlines() if REFUSAL.search(l)), "")
+    return (line[:300] + "\n" + err[-300:]).strip() if line and line not in err[-300:] else err[-300:]
 
 
 def why(e: Exception) -> str:
@@ -347,7 +355,9 @@ class Volunteer:
         self.ytdlp = str(bindir / ("yt-dlp.exe" if os.name == "nt" else "yt-dlp"))
         fresh = not Path(self.ytdlp).exists() or python_version(python) < TOOLS_PYTHON
         newer = self.state.get("updated_by") != VERSION     # updated before by another version of this script (or one before 4)
-        if not fresh and not newer and time.time() - self.state.get("updated", 0) < 86400:
+        channel = self.state.get("channel") or "stable"     # which yt-dlp the server last said: "nightly" or "stable"
+        switched = self.state.get("installed_channel", "stable") != channel
+        if not fresh and not newer and not switched and time.time() - self.state.get("updated", 0) < 86400:
             return
         try:
             if fresh:
@@ -357,10 +367,15 @@ class Volunteer:
                 log(f"installing yt-dlp and Deno in {venv} (a minute or two)")
                 self.make_venv(venv)
             else:
-                log("updating yt-dlp and Deno" + (f", as this script is now version {VERSION}" if newer else ""))
+                log("updating yt-dlp and Deno" + (f", as this script is now version {VERSION}" if newer else "")
+                    + (f", to yt-dlp's {channel} builds, as the server says" if switched else ""))
             pip = [str(python), "-m", "pip", "install", "-q", "--upgrade"]
             subprocess.run([*pip, "pip"], check=True)
-            subprocess.run([*pip, "yt-dlp[default]", "deno"], check=True)
+            # nightly: yt-dlp's pre-releases on PyPI; back to stable from them, a reinstall, as a nightly is newer
+            ytdlp = [*(["--pre"] if channel == "nightly" else []), *(["--force-reinstall"] if switched and channel == "stable" else [])]
+            subprocess.run([*pip, *ytdlp, "yt-dlp[default]"], check=True)
+            subprocess.run([*pip, "deno"], check=True)
+            self.state["installed_channel"] = channel
         except (subprocess.CalledProcessError, OSError) as e:
             if fresh:
                 shutil.rmtree(venv, ignore_errors=True)     # tried again from the start next time
@@ -529,7 +544,7 @@ class Volunteer:
             if failed:
                 if REFUSAL.search(err):
                     hours = self.refused()
-                    self.server.call(done, {"status": "refused", "error": err[-300:], "health": self.health(found)})
+                    self.server.call(done, {"status": "refused", "error": refusal_report(err), "health": self.health(found)})
                     log(f"YouTube refused: resting {hours} h")
                     return
                 why = last_error(err) or ("larger than max-filesize" if r.returncode == 0 else f"yt-dlp exited with {r.returncode}")
@@ -574,7 +589,7 @@ class Volunteer:
             if r.returncode:
                 if REFUSAL.search(err):
                     hours = self.refused()
-                    self.server.call(done, {"status": "refused", "error": err[-300:], "health": self.health(found)})
+                    self.server.call(done, {"status": "refused", "error": refusal_report(err), "health": self.health(found)})
                     log(f"YouTube refused: resting {hours} h")
                     return
                 why = last_error(err) or f"yt-dlp exited with {r.returncode}"
@@ -675,6 +690,11 @@ class Volunteer:
                 if not update_itself(self.server.url, r["update"], self.home):
                     updates = False     # it carries on as it is, and the server gives it work again
                 continue
+            if r.get("yt_dlp") in ("nightly", "stable") and r["yt_dlp"] != (self.state.get("channel") or "stable"):
+                self.state["channel"] = r["yt_dlp"]     # between one fetch and the next
+                self.save()
+                self.tools()
+                version = self.ytdlp_version = self.run_ytdlp(["--version"], self.home).stdout.strip()
             if r.get("newer") and r["newer"] != getattr(self, "newer", None):
                 log(f"the server has a newer version of this script ({r['newer']}): curl -O {self.server.url}{SCRIPT_PATH}")
                 self.newer = r["newer"]

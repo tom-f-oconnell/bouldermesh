@@ -1062,6 +1062,14 @@ a wrong or cut-short file but not a deliberate fake, so tokens go to people you 
 full details carry the volunteer's IP address in YouTube's signed download links, so only the fields the harvest keeps
 are sent, and the server keeps a volunteer's last address only to share the limits.
 
+**Which yt-dlp, and how often the phone hears.** Volunteers run yt-dlp's nightly builds by default (since Nov 14,
+2026): when YouTube changes something, a stable release lags the fix by days or weeks, and the nightlies carry it first.
+A nightly that breaks is rolled back from the admin page (`volunteers.yt_dlp`), each script reinstalling stable at its
+next ask for work. On Nov 13 the two volunteers rested 21 times between them, throttled or refused, and each rest was a
+notification. Those are YouTube's limits doing what they do rather than something to act on, so a volunteer's first
+throttle or refusal is told at once and the rest summed up a day later; a refusal resting 4 h (its third in a row) and
+degraded fetches, which a newer yt-dlp may fix, still come at once.
+
 Where volunteers connect follows where harvesting is. The public server is the only machine they can reach. At first
 (Nov 9, 2026) hal harvested, and an SSH connection from hal forwarded the public server's `/volunteer/` to hal's
 volunteer port, which answers nothing else; it ended in a Unix socket that Caddy's container reads through a mounted

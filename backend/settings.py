@@ -91,6 +91,9 @@ DEFAULTS = {
     # get work and how much. Machines meshing: whether provisional ones get work (then what they make waits for approval).
     "volunteers.per_hour": 15,
     "volunteers.per_day": 200,
+    # which yt-dlp volunteers' scripts run: its nightly builds, which follow YouTube's changes days or weeks before a
+    # release does, or stable to roll back (scripts switch at their next ask for work)
+    "volunteers.yt_dlp": "nightly",
     "volunteers.provisional_work": True,
     "volunteers.provisional_per_hour": 3,
     "volunteers.provisional_per_day": 10,
@@ -111,6 +114,7 @@ DEFAULTS = {
 }
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
+           "volunteers.yt_dlp": ("nightly", "stable"),
            "areas.meshes": ("boulders", "climbs"), "relevance.matcher": ("brute", "flann"), "leaderboard.names": ("new", "all", "none")}
 LIMITS = {"users.quota_mb": (0, 1_000_000), "site.map_km": (0.05, 2000), "boulders.placed_percent": (0, 100), "beta.parallel": (1, 16), "viewer.preview_faces": (0, 5_000_000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "compute.local_workers": (0, 4), "compute.processing_cores": (1, os.cpu_count() or 1), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 200),

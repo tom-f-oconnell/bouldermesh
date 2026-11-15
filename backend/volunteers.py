@@ -46,10 +46,13 @@ ONE = {"videos": "video", "searches": "search"}
 # what the admin page's settings say by default (volunteers.* there): a provisional volunteer's limits, whether one gets
 # work at all before it's approved, and how many may register
 RULES = {"per_hour": PER_HOUR, "per_day": PER_DAY, "provisional_per_hour": 3, "provisional_per_day": 10,
-         "provisional_work": True, "registrations_per_address": 5, "max_waiting": 30}
+         "provisional_work": True, "registrations_per_address": 5, "max_waiting": 30,
+         "yt_dlp": "nightly"}  # which yt-dlp volunteers' scripts install: its nightly builds (PyPI's pre-releases) or stable
 BLOCK_HOURS = (1, 2, 4, 8)  # a volunteer YouTube refused rests this long, longer each time it's still refused
 THROTTLE_REST = 3600        # a volunteer YouTube throttled rests this long (seconds), without the refusals' growing rests
 TROUBLE = ("refused", "throttled", "degraded")   # how YouTube treats a volunteer, as its script sees it, worst first
+# what a script's error says when YouTube refuses it (the script's own REFUSAL): the line a notification quotes
+REFUSAL = re.compile(r"not a bot|HTTP Error 429|Too Many Requests|content isn.t available, try again later", re.I)
 WIDESPREAD = (6 * 3600, 2, 0.5)     # degraded for at least 2 volunteers, and half of those heard from, within 6 h: YouTube's
                                     # change, which a newer yt-dlp is likely to fix, not one address's trouble
 STALE_MINUTES = 90          # work given out that nothing has come of for this long goes back to the queue
@@ -512,9 +515,10 @@ class Broker:
         signs = [x for x in given if x.get("kind") in TROUBLE]
         notes = [str(x.get("what") or "") for x in given if x.get("kind") == "note"]   # warnings, though it worked
         worst = min(signs, key=lambda x: TROUBLE.index(x["kind"])) if signs else None
-        if status == "refused":
-            health, why = "refused", str(report.get("error") or "").strip().splitlines()[-1:] or ["refused"]
-            why = why[0]
+        if status == "refused":     # the line that made it a refusal, else the last
+            lines = [l.strip() for l in str(report.get("error") or "").strip().splitlines() if l.strip()]
+            why = next((l for l in lines if REFUSAL.search(l)), lines[-1] if lines else "refused")
+            health = "refused"
         elif worst:
             health, why = worst["kind"], str(worst.get("what") or worst["kind"])
         elif status == "ok":
@@ -529,7 +533,8 @@ class Broker:
             return None
         self.q("UPDATE volunteers SET health=?, health_detail=?, health_at=? WHERE id=?", health, why[:300], now, v["id"])
         was = v.get("health")
-        if health in TROUBLE and (was not in TROUBLE or TROUBLE.index(health) < TROUBLE.index(was)):
+        # told when it gets worse, and every time it's refused or throttled, which the server sums up once a day
+        if health in TROUBLE and (was not in TROUBLE or TROUBLE.index(health) < TROUBLE.index(was) or health != "degraded"):
             try:
                 self.troubled(v, was, health, why[:300])
             except Exception:  # noqa: S110 - telling someone mustn't stop the work
@@ -1172,7 +1177,8 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
                         log(f"volunteers: {v['name']} told to update its script to version {news['update']['version']}")
                         return self.json(news)
                     return self.json({**broker.work(v, _client_ip(self), str(body.get("client") or ""),
-                                                    body.get("per_hour"), body.get("per_day"), body.get("kinds")), **news})
+                                                    body.get("per_hour"), body.get("per_day"), body.get("kinds")), **news,
+                                      "yt_dlp": {**RULES, **broker.rules()}.get("yt_dlp") or "stable"})   # which yt-dlp scripts run
                 m = re.fullmatch(r"/volunteer/api/tasks/([0-9a-f]{12})/(part|done)", u.path)
                 if m and m[2] == "part":
                     one = lambda k: (qs.get(k) or [""])[0]     # noqa: E731

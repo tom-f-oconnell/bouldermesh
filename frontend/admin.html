@@ -225,6 +225,9 @@
     <div class="inline" style="margin-top:8px">Approved volunteers: at most <input type="number" id="vol-per-hour" min="1" max="15"> an hour and
       <input type="number" id="vol-per-day" min="1" max="200"> a day <small class="note">(the script's own limits are 15 and 200, its videos
       spread over each hour; searches and channels' pages count apart, 30 an hour and 200 a day)</small></div>
+    <div class="inline" style="margin-top:8px">Volunteers run yt-dlp's <select id="vol-ytdlp"><option value="nightly">nightly</option>
+      <option value="stable">stable</option></select> builds <small class="note">(nightly follows YouTube's changes days or weeks before a
+      release; stable to roll back. Scripts switch at their next ask for work)</small></div>
     <div class="inline" style="margin-top:8px">From one address, at most <input type="number" id="reg-addr" min="1" max="100"> registrations a day,
       and <input type="number" id="reg-wait" min="1" max="1000"> waiting at once, of each kind</div>
     <div class="inline" style="margin-top:8px">Names on the public leaderboard (<a href="/volunteer/leaderboard" id="lb-link" target="_blank" rel="noopener">its page</a>):
@@ -618,6 +621,7 @@ function render(s){
   $('#reg-vol').checked = v['volunteers.provisional_work']; $('#reg-mach').checked = v['machines.provisional_work'];
   keep('#reg-vol-hour', v['volunteers.provisional_per_hour']); keep('#reg-vol-day', v['volunteers.provisional_per_day']);
   keep('#vol-per-hour', v['volunteers.per_hour']); keep('#vol-per-day', v['volunteers.per_day']);
+  if (document.activeElement !== $('#vol-ytdlp')) $('#vol-ytdlp').value = v['volunteers.yt_dlp'] || 'nightly';
   keep('#reg-addr', v['registration.per_address_day']); keep('#reg-wait', v['registration.max_waiting']);
   $('#lb-names').value = v['leaderboard.names'];
   const nt = s.notify;
@@ -821,8 +825,9 @@ $('#vol-list').addEventListener('click', async ev => {
 const regSave = () => save({ 'volunteers.provisional_work': $('#reg-vol').checked, 'machines.provisional_work': $('#reg-mach').checked,
   'volunteers.provisional_per_hour': +$('#reg-vol-hour').value, 'volunteers.provisional_per_day': +$('#reg-vol-day').value,
   'volunteers.per_hour': +$('#vol-per-hour').value, 'volunteers.per_day': +$('#vol-per-day').value,
+  'volunteers.yt_dlp': $('#vol-ytdlp').value,
   'registration.per_address_day': +$('#reg-addr').value, 'registration.max_waiting': +$('#reg-wait').value });
-for (const id of ['#reg-vol', '#reg-mach', '#reg-vol-hour', '#reg-vol-day', '#vol-per-hour', '#vol-per-day', '#reg-addr', '#reg-wait']) $(id).onchange = regSave;
+for (const id of ['#reg-vol', '#reg-mach', '#reg-vol-hour', '#reg-vol-day', '#vol-per-hour', '#vol-per-day', '#vol-ytdlp', '#reg-addr', '#reg-wait']) $(id).onchange = regSave;
 $('#lb-names').onchange = () => save({ 'leaderboard.names': $('#lb-names').value });
 $('#ntfy-on').onchange = () => save({ 'notify.enabled': $('#ntfy-on').checked });
 $('#ntfy-restarts').onchange = () => save({ 'notify.restarts': $('#ntfy-restarts').checked });

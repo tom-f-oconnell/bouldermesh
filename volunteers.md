@@ -95,7 +95,7 @@ and rests whatever the site says.
 | `N a day is the most that may register from one address` | Others at your address registered today: try again tomorrow. |
 | `YouTube refused: resting 1 h` | YouTube's bot check. It rests, longer each time it happens again. |
 | `YouTube seems to be throttling this computer (...): resting 1 h` | A video came far slower than this computer's usual, or YouTube stopped a download partway. It rests an hour. |
-| `YouTube degraded: ...` | yt-dlp couldn't get what it was asked for, as when YouTube has changed something: a newer yt-dlp usually fixes it, which the script installs daily. Whoever runs the site sees it too. |
+| `YouTube degraded: ...` | yt-dlp couldn't get what it was asked for, as when YouTube has changed something: a newer yt-dlp usually fixes it, and the script installs yt-dlp's nightly builds daily (or stable, if the site says so). Whoever runs the site sees it too. |
 | `YouTube warning: ...` | yt-dlp warned, but got the video. Nothing to do. |
 | `couldn't fetch it: ...` | That video is private, removed, or too big. The site won't ask anyone for it again. |
 | `can't reach https://...` | The site is down. It keeps trying. |
