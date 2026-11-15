@@ -109,7 +109,7 @@ RUN mkdir -p /opt/colmap4/bin /opt/colmap4/lib && cp /opt/colmap4-built/bin/colm
       > /opt/colmap4/colmap4 \
  && chmod +x /opt/colmap4/colmap4 \
  && /opt/colmap4/colmap4 -h | head -1 | grep "COLMAP 4.2.1" | grep -q "with CUDA" \
- && /opt/colmap4/colmap4 global_mapper -h | grep -q GlobalMapper.gp_use_gpu \
+ && /opt/colmap4/colmap4 global_mapper -h 2>&1 | grep -q GlobalMapper.gp_use_gpu \
  && du -sh /opt/colmap4
 
 # COLMAP4=cpu: on Ubuntu's Ceres (2.2: SuiteSparse, no CUDA), so its solves are on the CPU
@@ -141,7 +141,7 @@ RUN mkdir -p /opt/colmap4/bin /opt/colmap4/lib && cp /opt/colmap4-built/bin/colm
       > /opt/colmap4/colmap4 \
  && chmod +x /opt/colmap4/colmap4 \
  && /opt/colmap4/colmap4 -h | head -1 | grep -q "COLMAP 4.2.1" \
- && /opt/colmap4/colmap4 global_mapper -h | grep -q GlobalMapper.min_model_size
+ && /opt/colmap4/colmap4 global_mapper -h 2>&1 | grep -q GlobalMapper.min_model_size
 
 FROM colmap4-${COLMAP4} AS colmap4
 
