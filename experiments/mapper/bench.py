@@ -7,6 +7,8 @@
     bench.py all <project> <method> <seed> [...] [--post app,plain]       map, rest and post in one go
     bench.py held <project> <method> <seed> <percent> [...]   the mapper on a random share of the photos, the rest added
     bench.py heldstats                                     those against the runs on every photo
+    bench.py app <project> [--image <app image>] [--cond ..] [--rep N]   the app's own pipeline, photos to mesh
+    bench.py apps                                          those runs' steps, a row each, tab-separated
     bench.py queue <file>                                  a file of the above (one per line), one at a time
     bench.py table                                         every step so far, tab-separated (see also stats.py)
     bench.py agree [project]                               every pair of a boulder's models, laid over each other
@@ -644,6 +646,55 @@ def post(P: str, run: str, feat: str, tools: str, cond: str, mvs: str = "") -> N
             break
 
 
+def app_name(image: str, cond: str, rep: int) -> str:
+    return re.sub(r"[^\w.-]", "_", image.rsplit(":", 1)[-1]) + (f"@{cond}" if cond != "dev" else "") + (f"-r{rep}" if rep > 1 else "")
+
+
+def app(P: str, image: str, cond: str, rep: int) -> None:
+    """The app's own pipeline from photos to textured mesh, in an image of the app, as its worker runs a mesh of photos
+    from the internet (app_run.py): finding people, features, matching, the mapper, the rest step, undistorting, depth
+    maps, mesh and texture. On a copy of the boulder's photos with no masks beside them, so people are looked for.
+    One timed step; each step of the pipeline's own seconds are in steps.json beside its record (bench.py apps), and
+    the job itself (photos, work, out) under <BENCH>/apprun, apart from the records as its files are root's."""
+    global APP
+    run = app_name(image, cond, rep)
+    d, job = R / P / "app" / run, BENCH / "apprun" / P / run
+    job.mkdir(parents=True, exist_ok=True)
+    (BENCH / "cache" / "models").mkdir(parents=True, exist_ok=True)
+    script = ("rm -rf /job/photos /job/masks /job/work /job/out; mkdir -p /job/photos; cp /p/photos/* /job/photos/\n"
+              # the people model's weights (42 MB) fetched if this is their first use, outside the steps' times
+              "cd /app; python3 -c 'import sys; sys.path.insert(0, \"backend\"); import occlusion; occlusion._load(print)'\n"
+              "python3 /bench/app_run.py /job/photos /job/work /job/out /rec")
+    was, APP = APP, image
+    try:
+        step(d, "app", "app", script, [f"{BENCH}/projects/{P}:/p:ro", f"{job}:/job", f"{d}:/rec",
+                                       f"{BENCH}/cache/models:/data/cache/models"], cond, {"DATA_DIR": "/data"},
+             timeout=6 * 3600, gpu=True)
+    finally:
+        APP = was
+    rec = json.loads((d / "app.json").read_text())
+    if "image" not in rec:
+        rec["image"] = image
+        (d / "app.json").write_text(json.dumps(rec, indent=1))
+
+
+def apps() -> None:
+    """The app-pipeline runs: per run the whole job's seconds and each of the pipeline's steps'."""
+    rows = []
+    for f in sorted(R.glob("*/app/*/app.json")):
+        rec = json.loads(f.read_text())
+        steps = json.loads((f.parent / "steps.json").read_text())["steps"] if (f.parent / "steps.json").exists() else []
+        metrics = json.loads((f.parent / "metrics.json").read_text()) if (f.parent / "metrics.json").exists() else {}
+        rows.append({"boulder": f.parts[-4], "run": f.parts[-2], "rc": rec["rc"], "wall_s": round(rec["wall"]), "cpu_s": rec["cpu_s"],
+                     "flags": flags(rec.get("host", {})), "own_gpu_mib": rec.get("host", {}).get("own_mib_max", ""),
+                     "placed": metrics.get("placed", ""), "faces": metrics.get("faces", ""), "views": metrics.get("views", ""),
+                     **{s["key"]: s.get("seconds", s["state"]) for s in steps}})
+    cols = list(dict.fromkeys(k for r in rows for k in r))
+    print("\t".join(cols))
+    for r in rows:
+        print("\t".join(str(r.get(c, "")) for c in cols))
+
+
 def agree(only: str | None = None) -> None:
     """Every pair of models of each boulder laid over each other (stats.agreement): this benchmark's runs (after the
     app's rest step where it was run, else the mapper's largest model), the first scripts' runs (runs/) and the
@@ -733,7 +784,8 @@ def table() -> None:
 
 def main(argv: list[str]) -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("command", choices=["feat", "map", "rest", "post", "all", "held", "heldstats", "queue", "table", "agree"])
+    p.add_argument("command", choices=["feat", "map", "rest", "post", "all", "held", "heldstats", "queue", "table", "agree",
+                                       "app", "apps"])
     p.add_argument("args", nargs="*")
     p.add_argument("--feat", default="sift391")
     p.add_argument("--cond", default="dev")
@@ -742,6 +794,7 @@ def main(argv: list[str]) -> None:
     p.add_argument("--post", default="")
     p.add_argument("--rep", type=int, default=1)
     p.add_argument("--mvs", default="", choices=["", *MVS])
+    p.add_argument("--image", default=APP)
     a = p.parse_args(argv)
     if a.command == "feat":
         features(a.args[0], a.feat, a.cond, a.build)
@@ -758,6 +811,10 @@ def main(argv: list[str]) -> None:
             post(a.args[0], run, a.feat, tools, a.cond, a.mvs if tools != "app" else "")
     elif a.command == "held":
         held(a.args[0], a.args[1], int(a.args[2]), int(a.args[3]), a.feat, a.cond, a.build)
+    elif a.command == "app":
+        app(a.args[0], a.image, a.cond, a.rep)
+    elif a.command == "apps":
+        apps()
     elif a.command == "heldstats":
         heldstats()
     elif a.command == "table":

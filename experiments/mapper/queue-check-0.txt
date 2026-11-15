@@ -1,0 +1,6 @@
+# global_tied: the global mapper with its cameras that see next to none of the model's points taken out, for the app's
+# rest step to place as it does any photo left out (handoff section 12, From atlas). Before everything else: if
+# it holds, it is the mapper the other checks should be of.
+all 31de9a59303a global_tied 0 --cond prod --build complete --post complete
+all 9f3b4b740847 global_tied 0 --cond prod --build complete --post complete
+all ce7571e0a4a3 global_tied 0 --cond prod --build complete --post complete

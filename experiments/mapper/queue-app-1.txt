@@ -1,0 +1,11 @@
+# The app's own pipeline from photos to textured mesh (hal's section 12 in the handoff, item 3): the image that is
+# live against HEAD's built with OpenMVS 2.4 (bouldermesh:mvs24-gpu: people found on the GPU, the undistorted photos'
+# masks warped from the first ones, depth maps on the GPU). The mapper is the same in both. Small boulders first.
+app e6de7747fab5 --cond prod
+app e6de7747fab5 --cond prod --image bouldermesh:mvs24-gpu
+app 31de9a59303a --cond prod
+app 31de9a59303a --cond prod --image bouldermesh:mvs24-gpu
+app ce7571e0a4a3 --cond prod
+app ce7571e0a4a3 --cond prod --image bouldermesh:mvs24-gpu
+app 9f3b4b740847 --cond prod
+app 9f3b4b740847 --cond prod --image bouldermesh:mvs24-gpu
