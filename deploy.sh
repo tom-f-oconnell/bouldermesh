@@ -54,6 +54,22 @@ cancel() {
     exit "${1:-0}"
 }
 
+# the server's key first, so that its passphrase is asked for now and not after the build, when nobody's looking:
+# whichever key ~/.ssh/config gives for bouldermesh (ssh -G), added to the ssh agent; without an agent, a connection
+# opened now, which the rest reuse if the config keeps it open (ControlMaster). If the server can't be reached after
+# that, or there's no terminal to ask at, it stops here, before building anything
+reaches_server() { ssh -o BatchMode=yes -o ConnectTimeout=15 bouldermesh true 2>/dev/null; }
+if ! reaches_server; then
+    key=$(ssh -G bouldermesh 2>/dev/null | awk '$1 == "identityfile" {print $2; exit}')
+    key=${key/#\~/$HOME}
+    if [ -t 0 ] && [ -f "$key" ]; then
+        echo "${ask}the server's key ($key) isn't loaded: its passphrase now, rather than after the build${plain}"
+        ssh-add "$key" 2>/dev/null || ssh -o ConnectTimeout=15 bouldermesh true || true
+    fi
+    reaches_server || { echo "can't reach the server (ssh bouldermesh) without being asked for something: not building." \
+                             "Load its key (ssh-add ${key:-<its key>}), or see that it's up" >&2; exit 1; }
+fi
+
 # the images first: the server pulls its own, which changes nothing until the restart
 # (set -e doesn't stop at a failure partway through a && list, hence the || exit)
 export DEPLOY_SH=1      # so that they leave out what they'd tell you to do next by hand, which this does
