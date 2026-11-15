@@ -73,7 +73,7 @@ def main(out: str, own: str) -> None:
 
 def summary(path: str) -> dict:
     """A step's samples as: GPU utilization (mean, max, and mean while the step itself had a process on it), the most
-    GPU memory the step's own processes and anyone else's held, who else was on the GPU, mean cores in use by whom,
+    GPU memory the step's own processes and anyone else's held, and the card in all, who else was on the GPU, mean cores in use by whom,
     and the mean load average."""
     rows = [json.loads(l) for l in open(path) if l.strip()]
     rows = rows[1:] or rows         # the first sample has no interval to measure CPU over
@@ -89,7 +89,7 @@ def summary(path: str) -> dict:
     return {"samples": len(rows), "util_mean": round(sum(r["util"] for r in rows) / len(rows), 1),
             "util_max": max(r["util"] for r in rows), "own_gpu_share": round(len(on_gpu) / len(rows), 3),
             "util_mean_own": round(sum(on_gpu) / len(on_gpu), 1) if on_gpu else None,
-            "own_mib_max": max(own_mib), "other_mib_max": max(other_mib),
+            "own_mib_max": max(own_mib), "other_mib_max": max(other_mib), "card_mib_max": max(r["mib"] for r in rows),
             "others_on_gpu": sorted({p["who"] for r in rows for p in r["procs"] if p["who"] != "own"}),
             "cores": {k: round(v, 1) for k, v in sorted(cores.items()) if v >= 0.3},
             "load_mean": round(sum(r["load"] for r in rows) / len(rows), 1)}

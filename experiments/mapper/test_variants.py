@@ -427,6 +427,59 @@ class Pieces(unittest.TestCase):
             self.assertIn("why_no_mesh", text)
             self.assertEqual(text.count("jobs-x-n2\t2\t4\t3\t2\t"), 2)
 
+    def test_together_runs_the_app_s_own_jobs_unlocked_and_keeps_what_they_cost(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            saved = (bench.BENCH, bench.R, bench.CAP_FILE, variants.subprocess.run, variants.STAGGER)
+            bench.BENCH, bench.R, bench.CAP_FILE = tmp, tmp / "r2", tmp / "cores-cap.txt"
+            variants.STAGGER = 0.01
+            bench.CAP_FILE.write_text("8\n")
+            jobs = tmp / "jobs-app.txt"
+            jobs.write_text("app a --image bouldermesh:global-gpu\napp b --image bouldermesh:global-gpu\n")
+            ran = []
+
+            def fake(cmd, stdout=None, stderr=None, env=None):
+                words = cmd[2:]
+                ran.append((words, env))
+                cond = words[words.index("--cond") + 1]
+                d = Path(env["BENCH_R"], words[1], "app", f"global-gpu@{cond}")
+                d.mkdir(parents=True)
+                ok = words[1] == "a"
+                (d / "app.json").write_text(json.dumps({"step": "app", "rc": 0 if ok else 1, "wall": 500.0, "cpu_s": 3000.0,
+                                                        "host": {"own_mib_max": 3500, "card_mib_max": 7100}}))
+                (d / "steps.json").write_text(json.dumps({"steps": [{"key": "matching", "state": "done", "seconds": 44.4},
+                                                                    {"key": "dense", "state": "running"}]}))
+                (d / "metrics.json").write_text(json.dumps({"placed": 71, "faces": 900000} if ok else {}))
+                (d / "app.log").write_text("matching ...\n" + ("DensifyPointCloud: using the CPU (only 900 MB of GPU memory "
+                                                              "free, and it needs 2000)\n" if ok else "Traceback\nMemoryError\n"))
+                return type("done", (), {"returncode": 0 if ok else 1})()
+            variants.subprocess.run = fake
+            out, sys.stdout = sys.stdout, io.StringIO()
+            try:
+                variants.together(2, jobs)
+                batch = json.loads((tmp / "together" / "jobs-app-n2" / "together.json").read_text())
+                ran_split = list(ran)
+                ran.clear()
+                variants.together(2, jobs, every_core=True)
+                every = json.loads((tmp / "together" / "jobs-app-n2-every" / "together.json").read_text())
+                text = sys.stdout.getvalue()
+            finally:
+                sys.stdout = out
+                bench.BENCH, bench.R, bench.CAP_FILE, variants.subprocess.run, variants.STAGGER = saved
+            for words, env in ran_split:
+                self.assertEqual((words[0], words[-2:]), ("app", ["--cond", "c4"]))
+                self.assertEqual((env["BENCH_NO_GPU_LOCK"], env["BENCH_APP_CLEAN"]), ("1", "1"))
+            self.assertEqual((batch["kind"], batch["meshes"], batch["cpu_s"], batch["card_mib_max"], batch["gpu_fallbacks"]),
+                             ("app", 1, 6000.0, 7100, 1))
+            a, b = batch["jobs"]
+            self.assertEqual((a["mesh"], a["steps"], a["placed"], a["gpu_mib_max"]), (True, {"matching": 44.4}, 71, 3500))
+            self.assertIn("only 900 MB of GPU memory free", a["gpu_fallbacks"][0])
+            self.assertEqual((b["mesh"], b["why_no_mesh"]), (False, "the job failed (rc 1): MemoryError"))
+            # every core: under the 8-core cap, each job on all 8
+            self.assertTrue(all(w[-2:] == ["--cond", "c8"] for w, _ in ran), ran)
+            self.assertEqual((every["every_core"], every["cores_each"]), (True, 8))
+            self.assertIn("jobs-app-n2-every", text)
+
     def test_texture_variants_change_only_what_they_name(self):
         for name, (args, only_new) in variants.TEXTURE.items():
             self.assertEqual(len(args) % 2, 0, name)
@@ -487,7 +540,11 @@ class Queues(unittest.TestCase):
                 bench.condition(cond)
                 self.assertIn(build, ("plain", "complete", "v3", "native"), where)
                 if w[0] == "together":
-                    self.assertTrue(w[1].isdigit() and (HERE / w[2]).exists(), where)
+                    self.assertTrue(w[1].isdigit() and (HERE / w[2]).exists() and w[3:] in ([], ["every"]), where)
+                    continue
+                if w[0] == "app":       # the app's own jobs: an image, and no condition in a jobs file
+                    self.assertIn(w[1], PROJECTS, where)
+                    self.assertTrue("--image" in w and not (f.name.startswith("jobs-") and "--cond" in w), where)
                     continue
                 self.assertIn(w[1], PROJECTS, where)
                 if w[0] == "all":

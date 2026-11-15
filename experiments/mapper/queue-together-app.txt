@@ -1,0 +1,7 @@
+# Step 7 of optimization-plan.md: whole app jobs N at a time (meshes an hour), each on cores/N, then each on every core
+# as workers that don't share out the cores would; no gpu.lock, so their GPU steps share the card. About 3.5 h on atlas.
+together 1 jobs-app3.txt
+together 2 jobs-app3.txt
+together 3 jobs-app3.txt
+together 2 jobs-app3.txt every
+together 3 jobs-app3.txt every

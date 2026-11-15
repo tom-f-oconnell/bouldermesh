@@ -2,7 +2,8 @@
 imports this, takes its METHODS and FEATS entries, and hands it the commands in COMMANDS:
 
     bench.py sidemodels [folder]                        how much of each mapper run went on models other than the largest
-    bench.py together <N> <jobs file> | report          N whole jobs at once, each on cores/N: meshes an hour
+    bench.py together <N> <jobs file> [every] | report  N whole jobs at once, each on cores/N (every: each on every
+                                                        core, as unpartitioned workers would): meshes an hour
     bench.py texture <project> <run> <variant> | report   TextureMesh again on a finished post's mesh, one thing changed
     bench.py people <project> [run] [cpu]               the app's people masks, timed: the photos, or a run's undistorted ones
                                                         (the same on the CPU or not in an image with no GPU masks: b5607e9)
@@ -349,9 +350,12 @@ STAGGER = 5             # seconds between one job's start and the next's in a ba
 NO_START = "Docker couldn't start the container"
 RETRY_WAIT = 15         # seconds before a job that ended that way is run again (twice at most; its made steps are kept)
 SMALL = 10              # a model of fewer photos than this that then fails a post step had nothing to make a mesh of
+# what an app job's log says when one of its GPU steps went to the CPU for want of GPU memory, or failed on the GPU
+GPU_FELL_BACK = re.compile(r"only \d+ MB of GPU memory free|GPU run failed|out of memory", re.I)
 
 def job_parts(line: str, cond: str) -> tuple[list[str], str, str, str]:
-    """(a job line's words with its condition replaced, its project, feature set and build)."""
+    """(a job line's words with its condition replaced, its project, feature set and build). An app line (app
+    <project> [--image ..]) has no features of its own: its feature set and build are bench.py's defaults, unused."""
     words = shlex.split(line)
     for flag in ("--cond",):
         while flag in words:
@@ -361,11 +365,19 @@ def job_parts(line: str, cond: str) -> tuple[list[str], str, str, str]:
     return words + ["--cond", cond], words[1], get("--feat", "sift391"), get("--build", "plain")
 
 
-def together(n: int, jobs_file: Path) -> None:
+def together(n: int, jobs_file: Path, every_core: bool = False) -> None:
     """Runs a file's jobs (bench.py lines: all ..., usually with --post) N at a time, each held to cores/N cores and
     as many threads ("c<cores/N>"), in a results folder of its own (<BENCH>/together/<file>-n<N>, as BENCH_R), so
     that nothing is skipped as already made. GPU steps still take gpu.lock one at a time. Features come from the
     main results (linked, made first if missing): they aren't part of what is timed.
+
+    A file of the app's own jobs (app <project> --image ..., bench.app()) runs them whole, photos to textured mesh,
+    the same way but with no gpu.lock (BENCH_NO_GPU_LOCK): their GPU steps share the card as two of the app's workers
+    on one machine would. Each job's photos and work are deleted as it ends (BENCH_APP_CLEAN), its mesh and records
+    kept. Each job's CPU-seconds, its own and the card's peak GPU memory, and any of its GPU steps that went to the
+    CPU for want of memory or failed on the GPU (GPU_FELL_BACK) are kept with it. every_core: each job on every core
+    (no --cpus; the cap's cores where there is one), as workers that don't share out the cores would run them, in
+    <file>-n<N>-every.
 
     Saves and prints: the seconds from the first job's start to the last one's end, the jobs that ended with a mesh
     (a textured one where the job asked for the post steps, else a model), meshes an hour, and each job's own
@@ -375,21 +387,27 @@ def together(n: int, jobs_file: Path) -> None:
     A batch already made is only printed again: move its folder away to make it again.
     """
     jobs = [l for l in jobs_file.read_text().split("\n") if l.strip() and not l.startswith("#")]
-    root = B.BENCH / "together" / f"{jobs_file.stem}-n{n}"
+    kinds = {shlex.split(l)[0] for l in jobs}
+    assert kinds in ({"all"}, {"app"}), f"a batch is benchmark jobs (all ...) or the app's own (app ...), not {sorted(kinds)}"
+    app_jobs = kinds == {"app"}
+    root = B.BENCH / "together" / (f"{jobs_file.stem}-n{n}" + ("-every" if every_core else ""))
     if (root / "together.json").exists():
         together_report([root])
         return
     if root.exists():       # an interrupted batch: its steps would be skipped and the batch's time mean nothing
         root.rename(root.with_name(f"{root.name}.stale{int(time.time())}"))
     cores = B.cap() or os.cpu_count()
-    per = max(1, cores // n)
-    cond = f"c{per}"
+    per = cores if every_core else max(1, cores // n)
+    cond = (f"c{cores}" if B.cap() else "prod") if every_core else f"c{per}"
     ram = int(re.search(r"MemTotal:\s+(\d+)", Path("/proc/meminfo").read_text()).group(1)) / 2 ** 20
     mem = min(int(ram * 0.8 / n), int(re.sub(r"\D", "", B.MEM) or 64))
     commands = []
     for line in jobs:
         words, P, feat, build = job_parts(line, cond)
-        assert words[0] == "all" and words[2] in B.METHODS, f"together runs whole jobs (all <project> <method> <seed>): {line}"
+        if app_jobs:
+            commands.append(words)
+            continue
+        assert words[2] in B.METHODS, f"together runs whole jobs (all <project> <method> <seed>): {line}"
         db = B.feat_db(P, feat, build)
         if not db.exists():
             B.features(P, feat, "dev", build)
@@ -399,9 +417,10 @@ def together(n: int, jobs_file: Path) -> None:
             if f.is_file() and f.suffix in (".db", ".json") and not (dst / f.name).exists():
                 (dst / f.name).symlink_to(f)
         commands.append(words)
-    env = dict(os.environ, BENCH_R=str(root), MEM=f"{mem}g")
-    print(f"{time.strftime('%T')} together: {len(jobs)} jobs, {n} at a time, {per} of {cores} cores and {mem} GB each, in {root}",
-          flush=True)
+    root.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ, BENCH_R=str(root), MEM=f"{mem}g", **({"BENCH_NO_GPU_LOCK": "1", "BENCH_APP_CLEAN": "1"} if app_jobs else {}))
+    print(f"{time.strftime('%T')} together: {len(jobs)} {'app ' if app_jobs else ''}jobs, {n} at a time, "
+          f"{'every one' if every_core else per} of {cores} cores and {mem} GB each, in {root}", flush=True)
 
     gate, last = threading.Lock(), [0.0]
 
@@ -433,10 +452,14 @@ def together(n: int, jobs_file: Path) -> None:
     for j, words in zip(done, commands):
         j.update(job_result(root, words, j))
     meshes, ran = sum(j["mesh"] for j in done), sum(j["exit"] == 0 for j in done)
+    peaks = [j["card_mib_max"] for j in done if j.get("card_mib_max") is not None]
     (root / "together.json").write_text(json.dumps({
-        "jobs_file": str(jobs_file), "at_a_time": n, "cores_each": per, "cores": cores, "memory_gb_each": mem,
+        "jobs_file": str(jobs_file), "kind": "app" if app_jobs else "all", "every_core": every_core,
+        "at_a_time": n, "cores_each": per, "cores": cores, "memory_gb_each": mem,
         "wall": round(wall, 1), "meshes": meshes, "meshes_per_hour": round(meshes / wall * 3600, 2) if wall else 0,
         "jobs_ran": ran, "jobs_per_hour": round(ran / wall * 3600, 2) if wall else 0,
+        "cpu_s": round(sum(j.get("cpu_s") or 0 for j in done), 1), "card_mib_max": max(peaks) if peaks else None,
+        "gpu_fallbacks": sum(len(j.get("gpu_fallbacks", [])) for j in done),
         "when": time.strftime("%F %T"), "jobs": done}, indent=1))
     together_report([root])
 
@@ -445,6 +468,8 @@ def job_result(root: Path, words: list[str], ended: dict | None = None) -> dict:
     """What a finished job left in a batch's folder: its steps' seconds, the seconds its GPU steps waited for the
     lock, the photos its model places after the rest step, whether it ended with what it was asked for (a textured
     mesh if it had post steps, else a model), and if not, why (ended: how its process ended, from together())."""
+    if words[0] == "app":
+        return app_result(root, words, ended)
     steps, waited, failed = {}, 0.0, {}
     P, method, seed = words[1], words[2], words[3]
     wants_mesh = "--post" in words
@@ -483,25 +508,62 @@ def job_result(root: Path, words: list[str], ended: dict | None = None) -> dict:
             "placed": placed, "mesh": mesh, "why_no_mesh": why}
 
 
+def app_result(root: Path, words: list[str], ended: dict | None = None) -> dict:
+    """job_result() for an app job (bench.app()): the pipeline's own steps' seconds (its steps.json), the whole job's
+    seconds and CPU-seconds, the photos placed and whether it made a mesh with faces (metrics.json), its own and the
+    card's peak GPU memory while it ran, and the lines of its log where a GPU step went to the CPU or failed there."""
+    get = lambda flag, default: words[words.index(flag) + 1] if flag in words else default      # noqa: E731
+    mapper = get("--app-mapper", "")
+    run = B.app_name(get("--image", B.APP), get("--cond", "dev"), int(get("--rep", "1"))) + (f"+{mapper}" if mapper else "")
+    d = root / words[1] / "app" / run
+    read = lambda name: json.loads((d / name).read_text()) if (d / name).exists() else {}     # noqa: E731
+    rec, metrics = read("app.json"), read("metrics.json")
+    steps = {s["key"]: s["seconds"] for s in read("steps.json").get("steps", []) if s.get("seconds") is not None}
+    log = (d / "app.log").read_text(errors="replace") if (d / "app.log").exists() else ""
+    fell_back = [l.strip()[:200] for l in log.split("\n") if GPU_FELL_BACK.search(l)]
+    host = rec.get("host", {})
+    mesh = rec.get("rc") == 0 and (metrics.get("faces") or 0) > 0
+    why = ""
+    if not mesh:
+        ended = ended or {}
+        last = ([l for l in log.split("\n") if l.strip()] or [ended.get("last_line", "")])[-1][-200:]
+        if ended.get("no_start"):
+            why = f"its container couldn't be started ({ended.get('tries', 1)} tries)"
+        elif not rec:
+            why = f"it never ran: {ended.get('last_line', '')}".rstrip(": ")
+        elif rec.get("rc") != 0:
+            why = f"the job failed (rc {rec.get('rc')}): {last}"
+        else:
+            why = f"no mesh made ({metrics.get('placed', 0)} photos placed): {last}"
+    return {"steps": steps, "steps_s": rec.get("wall", 0.0), "cpu_s": rec.get("cpu_s"), "lock_wait_s": 0.0,
+            "failed": [] if mesh or not rec else ["app"], "placed": metrics.get("placed"), "faces": metrics.get("faces"),
+            "mesh": mesh, "why_no_mesh": why, "gpu_mib_max": host.get("own_mib_max"), "card_mib_max": host.get("card_mib_max"),
+            "gpu_fallbacks": fell_back}
+
+
 def together_report(roots: list[Path] | None = None) -> None:
     """Every batch (or those given): how many jobs at a time, the wall time, meshes an hour and jobs an hour (every job
     that ran to its end, mesh or not), then each job with, where it made no mesh, why."""
     roots = roots or sorted(p.parent for p in (B.BENCH / "together").glob("*/together.json"))
-    print("batch\tat_a_time\tcores_each\tjobs\tmeshes\twall_s\tmeshes_per_hour\tjobs_ran\tjobs_per_hour\tjobs_steps_s\tlock_wait_s")
+    print("batch\tat_a_time\tcores_each\tjobs\tmeshes\twall_s\tmeshes_per_hour\tjobs_ran\tjobs_per_hour\tjobs_steps_s\tlock_wait_s"
+          "\tcpu_s\tcard_mib_max\tgpu_fallbacks")
     saved = [(r, json.loads((r / "together.json").read_text())) for r in roots]
     for r, t in saved:
         ran = t.get("jobs_ran", sum(j.get("exit") == 0 for j in t["jobs"]))
         print("\t".join(str(x) for x in [r.name, t["at_a_time"], t["cores_each"], len(t["jobs"]), t["meshes"], t["wall"],
                                          t["meshes_per_hour"], ran, t.get("jobs_per_hour", round(ran / t["wall"] * 3600, 2) if t["wall"] else 0),
                                          round(sum(j["steps_s"] for j in t["jobs"]), 1),
-                                         round(sum(j["lock_wait_s"] for j in t["jobs"]), 1)]))
-    print("\nbatch\tjob\ttook_s\ttries\tplaced\tmesh\twhy_no_mesh\tlock_wait_s\tsteps")
+                                         round(sum(j["lock_wait_s"] for j in t["jobs"]), 1),
+                                         t.get("cpu_s", ""), t.get("card_mib_max", ""), t.get("gpu_fallbacks", "")]))
+    print("\nbatch\tjob\ttook_s\ttries\tplaced\tmesh\twhy_no_mesh\tlock_wait_s\tsteps\tcpu_s\tgpu_mib_max\tcard_mib_max\tgpu_fallbacks")
     for r, t in saved:
         for j in t["jobs"]:
             why = j.get("why_no_mesh") or ("" if j["mesh"] else "failed: " + ",".join(j.get("failed", [])))
             print("\t".join(str(x) for x in [r.name, j["job"], round(j["end"] - j["start"], 1), j.get("tries", 1),
                                              "" if j.get("placed") is None else j["placed"], "yes" if j["mesh"] else "no", why,
-                                             j["lock_wait_s"], " ".join(f"{k}={v}" for k, v in j["steps"].items())]))
+                                             j["lock_wait_s"], " ".join(f"{k}={v}" for k, v in j["steps"].items()),
+                                             j.get("cpu_s", ""), j.get("gpu_mib_max", ""), j.get("card_mib_max", ""),
+                                             " | ".join(j.get("gpu_fallbacks", []))]))
 
 
 # ---------------------------------------------------------------------------------------------- texture experiments
@@ -671,7 +733,7 @@ def command(a) -> None:
             together_report()
         else:
             jobs = Path(a.args[1])
-            together(int(a.args[0]), jobs if jobs.is_absolute() or jobs.exists() else HERE / jobs)
+            together(int(a.args[0]), jobs if jobs.is_absolute() or jobs.exists() else HERE / jobs, "every" in a.args[2:])
     elif a.command == "texture":
         if a.args[0] == "report":
             texture_report()

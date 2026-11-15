@@ -347,8 +347,11 @@ def step(d: Path, name: str, tools: str, script: str, mounts: list[str], cond: s
     log = d / f"{name}.log"
     samples = d / f"{name}.gpu.jsonl"
     samples.unlink(missing_ok=True)
+    # BENCH_NO_GPU_LOCK=1 (variants.together()'s batches of the app's own jobs): GPU steps share the card unlocked, as
+    # two of the app's workers on one machine would, the app having no lock of its own
+    want_lock = gpu and os.environ.get("BENCH_NO_GPU_LOCK") != "1"
     lock, asked, said = None, time.time(), time.time()
-    while gpu and lock is None and time.time() - asked < LOCK_PATIENCE:
+    while want_lock and lock is None and time.time() - asked < LOCK_PATIENCE:
         lock = open(GPU_LOCK, "a")
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -360,7 +363,7 @@ def step(d: Path, name: str, tools: str, script: str, mounts: list[str], cond: s
                 print(f"{time.strftime('%T')} {d.relative_to(R)} {name}: waiting {(said - asked) / 60:.0f} min for gpu.lock",
                       flush=True)
             time.sleep(2)
-    if gpu and lock is None:
+    if want_lock and lock is None:
         print(f"{time.strftime('%T')} {d.relative_to(R)} {name}: gpu.lock never came free, going ahead without it", flush=True)
     lock_wait = round(time.time() - asked, 1)
     sampler = subprocess.Popen([sys.executable, str(HERE / "gpusample.py"), str(samples), cname])
@@ -400,7 +403,7 @@ def step(d: Path, name: str, tools: str, script: str, mounts: list[str], cond: s
            "gpu_via": ("cdi" if "--device" in gpu_args() else "hook") if docker_works() else "",
            "wall": wall, "cpu_s": round(user + system, 1),
            "outer_wall": round(time.time() - started, 1), "started": time.strftime("%F %T", time.localtime(started)),
-           "gpu_locked": lock is not None, "lock_wait": lock_wait,
+           "gpu_locked": lock is not None, "gpu_lock_skipped": gpu and not want_lock, "lock_wait": lock_wait,
            "verify": {k: v for k, v in (verify_build.current("app" if really == "app" else tools, BENCH) or {}).items()
                       if k in ("variant", "ok", "failed", "when")},
            "marks": {k: float(v) for k, v in re.findall(r"BENCH_MARK (\w+) ([\d.]+)", text)},
@@ -708,16 +711,20 @@ def app(P: str, image: str, cond: str, rep: int, mapper: str = "") -> None:
     One timed step; each step of the pipeline's own seconds are in steps.json beside its record (bench.py apps), and
     the job itself (photos, work, out) under <BENCH>/apprun, apart from the records as its files are root's. mapper:
     the app's MAPPER inside (--app-mapper; e.g. incremental, in an image whose default is the global mapper), named
-    in the run as +<mapper>."""
+    in the run as +<mapper>. In a batch of variants.together() (BENCH_R), the job goes in the batch's own apprun/,
+    and with BENCH_APP_CLEAN=1 its photos and work are deleted when it ends (the mesh and the records are kept), as
+    a batch's jobs would otherwise fill the disk."""
     global APP
     run = app_name(image, cond, rep) + (f"+{mapper}" if mapper else "")
-    d, job = R / P / "app" / run, BENCH / "apprun" / P / run
+    d, job = R / P / "app" / run, (R if os.environ.get("BENCH_R") else BENCH) / "apprun" / P / run
+    clean = os.environ.get("BENCH_APP_CLEAN") == "1"
     job.mkdir(parents=True, exist_ok=True)
     (BENCH / "cache" / "models").mkdir(parents=True, exist_ok=True)
     script = ("rm -rf /job/photos /job/masks /job/work /job/out; mkdir -p /job/photos; cp /p/photos/* /job/photos/\n"
               # the people model's weights (42 MB) fetched if this is their first use, outside the steps' times
               "cd /app; python3 -c 'import sys; sys.path.insert(0, \"backend\"); import occlusion; occlusion._load(print)'\n"
-              "python3 /bench/app_run.py /job/photos /job/work /job/out /rec")
+              "python3 /bench/app_run.py /job/photos /job/work /job/out /rec"
+              + (" || rc=$?; rm -rf /job/photos /job/masks /job/work; exit ${rc:-0}" if clean else ""))
     was, APP = APP, image
     try:
         step(d, "app", "app", script, [f"{BENCH}/projects/{P}:/p:ro", f"{job}:/job", f"{d}:/rec",
