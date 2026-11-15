@@ -184,6 +184,7 @@
     <div class="pull">
       <div class="note" id="mach-note"></div>
       <div id="mach-list"></div>
+      <div id="mach-diag"></div>
       <div class="grid">
         <div><label>New machine's name</label><input type="text" id="mach-name" placeholder="which machine it is, for you"></div>
         <div class="row" style="margin-top:22px"><button id="mach-add">Add machine</button></div>
@@ -481,14 +482,27 @@ function render(s){
   const shares = d => !d || !d.hours ? '–' : SHARE.filter(([k]) => d[k]).map(([k, label]) => `${label} ${Math.round(100 * d[k])}%`).join(' · ')
     + ` <small class="note">(${d.hours} h recorded)</small>`;
   const gone = st => st === 'revoked' || st === 'denied', shownMach = ms.machines.filter(m => showGone.mach || !gone(m.status));
+  // what nvidia-smi said of its GPU as it joined (script 19 on), with what it couldn't read in orange
+  const gpuLine = g => {
+    if (!g) return '';
+    const cards = (g.gpus || []).map(c => `${esc(c.name)}, ${c.total_mb ? (c.total_mb / 1024).toFixed(1) + ' GB' : '<span class="warn">memory unreadable</span>'}`
+      + (c.util === null || c.util === undefined ? ' <span class="note">(use unreadable)</span>' : ''));
+    const driver = (g.gpus || []).map(c => c.driver).find(Boolean);
+    return `<div class="note">${cards.join('; ') || '<span class="warn">no GPU read</span>'}${driver ? `, driver ${esc(driver)}` : ''}${g.cuda ? `, CUDA ${esc(g.cuda)}` : ''}${
+      g.error ? ` <span class="warn">nvidia-smi: ${esc(g.error)}</span>` : ''}</div>`;
+  };
+  const script = m => +((m.client || '').match(/script (\d+)/) || [0, 0])[1];
+  const diagButtons = m => script(m) < 20 ? '<span class="note">diagnostics: script 20 on</span>' : `<button data-mdiag="${esc(m.id)}" title="Asks its script for what it's doing, its GPU, Docker, room and its last lines of log">Diagnostics</button>${
+    m.diag_at ? ` <button data-mdiagshow="${esc(m.id)}">Show (${esc(ago(m.diag_at))} ago)</button>` : ''}${
+    m.diag_asked && (!m.diag_at || m.diag_at < m.diag_asked) ? `<div class="note">asked ${esc(ago(m.diag_asked))} ago</div>` : ''}`;
   $('#mach-list').innerHTML = shownMach.length ? `<table><tr><th>Machine</th><th>Now</th><th>Last 24 h <small>(7 days)</small></th><th>Last seen</th><th>Address</th><th>Done / failed</th><th></th></tr>${
-    shownMach.map(m => `<tr class="mach" data-mshow="${esc(m.id)}" title="Shows the command to run on it again"><td>${esc(m.name)}${m.provisional ? '<span class="tag">waiting for approval</span>' : ''}${m.client ? `<div class="note">${esc(m.client)}${m.gpu ? ', GPU' : ''}${m.cpus ? `, ${m.cpus} cores` : ''}</div>` : ''}${m.held ? `<div class="note warn">${m.held} mesh(es) made, waiting for its approval</div>` : ''}</td>
+    shownMach.map(m => `<tr class="mach" data-mshow="${esc(m.id)}" title="Shows the command to run on it again"><td>${esc(m.name)}${m.provisional ? '<span class="tag">waiting for approval</span>' : ''}${m.client ? `<div class="note">${esc(m.client)}${m.gpu ? ', GPU' : ''}${m.cpus ? `, ${m.cpus} cores` : ''}</div>` : ''}${gpuLine(m.gpu_info)}${m.held ? `<div class="note warn">${m.held} mesh(es) made, waiting for its approval</div>` : ''}</td>
       <td class="${m.status === 'working' ? 'ok' : m.status === 'revoked' || m.status === 'denied' ? 'bad' : m.status === 'awaiting approval' || m.status === 'held back' ? 'warn' : ''}">${esc(m.status)}${m.job ? ` (${esc(m.job.project)}, ${m.job.minutes} min)` : ''}${
         m.now && ['held back', 'idle', 'offline'].includes(m.now.state) ? `<div class="note">${esc(m.now.state)} for ${ago(m.now.start)}${m.now.why ? `: ${esc(m.now.why)}` : ''}</div>` : ''}</td>
       <td>${shares(m.day)}<div class="note">${shares(m.week).replace(/ <small.*/, '')}</div></td>
       <td>${seen(m.last_seen)}</td><td>${esc(m.address || '')}</td><td>${m.done} / ${m.failed}</td><td>${m.status === 'revoked' || m.status === 'denied' ? '' : m.provisional
         ? `<button data-mapprove="${esc(m.id)}">Approve</button> <button class="danger" data-mdeny="${esc(m.id)}">Deny</button>`
-        : `<button class="danger" data-mrevoke="${esc(m.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
+        : `${diagButtons(m)} <button class="danger" data-mrevoke="${esc(m.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
     : `<div class="note">${ms.machines.length ? 'No machines but revoked or turned-down ones.' : 'No machines yet.'}</div>`;
   $('#mach-list').innerHTML += goneLine('mach', ms.machines.filter(m => gone(m.status)), 'machine');
   const waiting = ms.jobs.filter(j => j.state === 'queued');
@@ -746,6 +760,17 @@ $('#mach-add').onclick = async () => {
     msg('Added ' + r.name); refresh();
   } catch (e) { msg(e.message, 8000); }
 };
+// a machine's last diagnostics, below the list: what it was doing, its GPU, room, then the rest as it sent it
+function showDiagnostics(d) {
+  const r = d.report || {}, when = d.at ? new Date(d.at * 1000).toLocaleString() : 'never';
+  const doing = r.doing ? `${esc(r.doing.what)} for ${Math.round(r.doing.for_s / 60)} min${r.doing.of ? ` (${(r.doing.done / 1e6).toFixed(0)} of ${(r.doing.of / 1e6).toFixed(0)} MB)` : ''}` : '';
+  const rest = Object.fromEntries(Object.entries(r).filter(([k]) => !['log', 'journal', 'job_tail', 'doing'].includes(k)));
+  $('#mach-diag').innerHTML = `<details open><summary><b>${esc(d.name)}</b>'s diagnostics, sent ${esc(when)}</summary>${
+    r.declined ? `<div class="note warn">${esc(r.declined)}</div>` : ''}${doing ? `<div>Doing: ${doing}</div>` : ''}
+    <pre style="white-space:pre-wrap;max-height:24em;overflow:auto">${esc(JSON.stringify(rest, null, 1))}</pre>${
+    ['job_tail', 'journal', 'log'].filter(k => r[k]).map(k => `<details><summary>${{ log: 'Its last lines', journal: 'Its service\'s journal', job_tail: 'The job\'s last lines' }[k]}</summary><pre style="white-space:pre-wrap;max-height:24em;overflow:auto">${
+      esc(Array.isArray(r[k]) ? r[k].join('\n') : r[k])}</pre></details>`).join('')}</details>`;
+}
 $('#mach-list').addEventListener('click', async ev => {
   const row = ev.target.closest('tr[data-mshow]');
   if (row && ev.target.tagName !== 'BUTTON') {
@@ -753,6 +778,14 @@ $('#mach-list').addEventListener('click', async ev => {
     return;
   }
   const d = ev.target.dataset;
+  if (d.mdiagshow) {
+    try { showDiagnostics(await call('/api/admin/actions/machine-diagnostics', { id: d.mdiagshow, show: true })); } catch (e) { msg(e.message, 8000); }
+    return;
+  }
+  if (d.mdiag) {
+    try { msg((await call('/api/admin/actions/machine-diagnostics', { id: d.mdiag })).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); }
+    return;
+  }
   const [action, id, ask] = d.mapprove ? ['machine-approve', d.mapprove] : d.mdeny ? ['machine-deny', d.mdeny, 'Turn down this machine? Its token stops working, and what it made while waiting is dropped.']
     : d.mrevoke ? ['machine-revoke', d.mrevoke, 'Revoke this machine? Its token stops working at once, and a climb it was meshing waits for another.'] : [];
   if (!action || (ask && !confirm(ask))) return;

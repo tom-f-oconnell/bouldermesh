@@ -71,6 +71,9 @@ AGE_FIRST = 1800            # a beta or size job queued this long goes ahead of 
 GONE_AFTER = 600            # a machine not heard from for this long has left (presence.py), unless it said goodbye before
 GPU_NEED_PHOTOS = 20        # a reconstruction's GPU memory is reckoned for VGGT placing this many (it places fewer in less)
 OTHER_GPU_MB = 4000         # finding a mesh's beta or size
+GPU_INFO_MAX = 4000         # the most kept of what nvidia-smi said of a machine's GPU (gpu_info)
+DIAG_MAX = 300_000          # the most kept of a machine's diagnostics
+DIAG_PATIENCE = 86400       # an ask for diagnostics lapses after this long unanswered
 SPLAT_GPU_MB = 8000         # fitting a capture's scenery (splat.fit_capture())
 STATES = ("working", "idle", "held back", "awaiting approval", "offline")
 # whose work a job is, and so which goes first: what the site's owner asked for or started (areas' climbs too), then
@@ -200,6 +203,10 @@ class Board:
             for col, kind in (("live", "INTEGER"), ("spec", "TEXT")):     # meshing jobs kept over a restart (_save())
                 if col not in {r[1] for r in con.execute("PRAGMA table_info(machine_jobs)")}:
                     con.execute(f"ALTER TABLE machine_jobs ADD COLUMN {col} {kind}")
+            # what nvidia-smi says of its GPU (script 20 on, with each ask), and the diagnostics asked of it and sent
+            for col, kind in (("gpu_info", "TEXT"), ("diag", "TEXT"), ("diag_at", "REAL"), ("diag_asked", "REAL")):
+                if col not in {r[1] for r in con.execute("PRAGMA table_info(machines)")}:
+                    con.execute(f"ALTER TABLE machines ADD COLUMN {col} {kind}")
             registration.migrate(con, "machines")
             presence.migrate(con, "machines", GONE_AFTER)
         os.chmod(db_path, 0o600)
@@ -490,9 +497,12 @@ class Board:
             self.seen[m["id"]] = now
         active = None if (client or {}).get("check") else now
         if client is not None:
+            info = client.get("gpu_info")
+            info = json.dumps(info)[:GPU_INFO_MAX] if isinstance(info, dict) else None
             self.q("UPDATE machines SET last_seen=?, active_at=COALESCE(?, active_at), last_ip=?, client=?, gpu=?, cpus=?, "
-                   "gpu_name=COALESCE(?, gpu_name) WHERE id=?", now, active, ip, str(client.get("client") or "")[:120], int(bool(client.get("gpu"))),
-                   _number(client.get("cpus")), str(client["gpu_name"])[:80] if client.get("gpu_name") else None, m["id"])
+                   "gpu_name=COALESCE(?, gpu_name), gpu_info=COALESCE(?, gpu_info) WHERE id=?", now, active, ip,
+                   str(client.get("client") or "")[:120], int(bool(client.get("gpu"))), _number(client.get("cpus")),
+                   str(client["gpu_name"])[:80] if client.get("gpu_name") else None, info, m["id"])
         else:
             self.q("UPDATE machines SET last_seen=?, active_at=? WHERE id=?", now, now, m["id"])
 
@@ -623,6 +633,40 @@ class Board:
                 self._save(j)
         self._touch(m)
         return {"ok": True}
+
+    def asks(self, m: dict) -> dict:
+        """What the server asks of a machine with any answer: its diagnostics, while asked for and not yet sent."""
+        asked = m.get("diag_asked")
+        return {"diagnostics": True} if asked and asked > time.time() - DIAG_PATIENCE and (m.get("diag_at") or 0) < asked else {}
+
+    def ask_diagnostics(self, mid: str) -> dict | None:
+        """Ask a machine for its diagnostics (the admin page): it sends them with its next contact, within POLL
+        seconds while it waits for work, or with its next lines of a job's log."""
+        m = self.get(mid)
+        if not m or m["revoked"]:
+            return None
+        self.q("UPDATE machines SET diag_asked=? WHERE id=?", time.time(), mid)
+        return m
+
+    def diagnostics(self, m: dict, body: dict) -> dict:
+        """A machine's diagnostics, as its script sends them when asked (its fixed set: bouldermesh_worker.py's
+        Worker.diagnostics()), or that its owner turned them off; kept, the last only, to show on the admin page."""
+        report = body.get("report") if isinstance(body.get("report"), dict) else {"declined": str(body.get("declined") or "sent nothing")[:200]}
+        self.q("UPDATE machines SET diag=?, diag_at=? WHERE id=?", json.dumps(report)[:DIAG_MAX], time.time(), m["id"])
+        self._touch(m)
+        return {"ok": True}
+
+    def diagnostics_of(self, mid: str) -> dict | None:
+        """The last diagnostics a machine sent, and when they were asked for and came."""
+        m = self.get(mid)
+        if not m:
+            return None
+        try:
+            report = json.loads(m.get("diag") or "null")
+        except ValueError:
+            report = {"unreadable": (m.get("diag") or "")[:2000]}
+        return {"name": m["name"], "asked": m.get("diag_asked"), "at": m.get("diag_at"), "report": report,
+                "gpu_info": _json(m.get("gpu_info"))}
 
     def received(self, m: dict, job_id: str) -> int:
         with self.cond:
@@ -958,7 +1002,8 @@ class Board:
             else:
                 status = "not connected"
             machines.append({"id": m["id"], "name": m["name"], "status": status, "last_seen": m["last_seen"], "address": m["last_ip"],
-                             "token_kept": bool(m["token"]),
+                             "token_kept": bool(m["token"]), "gpu_info": _json(m.get("gpu_info")),
+                             "diag_at": m.get("diag_at"), "diag_asked": m.get("diag_asked"),
                              "client": m["client"], "gpu": bool(m["gpu"]), "cpus": m["cpus"], "done": m["done"], "failed": m["failed"],
                              "job": doing, "provisional": waiting, "held": held.get(m["id"], 0), "created": m["created"],
                              "now": self.current(m["id"]), "day": self.shares(m["id"], now - 86400),
@@ -986,6 +1031,13 @@ def gpu_need_mb(kind: str, photos: int) -> int:
         return OTHER_GPU_MB
     n = max(vggt_place.MIN_PHOTOS, min(photos, GPU_NEED_PHOTOS))
     return vggt_place.GPU_BASE_MB + vggt_place.GPU_SPARE_MB + vggt_place.GPU_PER_PHOTO_MB * n
+
+
+def _json(text: str | None):
+    try:
+        return json.loads(text) if text else None
+    except ValueError:
+        return None
 
 
 def _number(v) -> float | None:
@@ -1128,6 +1180,10 @@ def handler_for(board: Board, log: Callable[[str], None]):
                     board.bye(who)
                     log(f"machines: {who['name']} said goodbye")
                     return self.json({"ok": True})
+                if u.path == "/worker/api/diagnostics":
+                    out = board.diagnostics(who, json.loads(self.body(2 * DIAG_MAX) or b"{}"))
+                    log(f"machines: {who['name']} sent its diagnostics")
+                    return self.json(out)
                 if u.path == "/worker/api/work":
                     body = json.loads(self.body(2**20) or b"{}")
                     if int(body.get("version") or 0) < CLIENT_VERSION:
@@ -1136,7 +1192,7 @@ def handler_for(board: Board, log: Callable[[str], None]):
                     if "update" in news:    # asked between jobs: it updates itself and asks again
                         log(f"machines: {who['name']} told to update its script to version {news['update']['version']}")
                         return self.json(news)
-                    out = {**board.work(who, _client_ip(self), body), **news}
+                    out = {**board.work(who, _client_ip(self), body), **news, **board.asks(who)}
                     if "job" in out:
                         log(f"machines: {who['name']} took job {out['job']['id']}")
                     return self.json(out)
@@ -1144,7 +1200,8 @@ def handler_for(board: Board, log: Callable[[str], None]):
                 if not m:
                     return self.json({"error": "not found"}, 404)
                 if m[2] == "log":
-                    return self.json(board.report(who, m[1], (json.loads(self.body(8 * 2**20) or b"{}")).get("lines") or []))
+                    return self.json({**board.report(who, m[1], (json.loads(self.body(8 * 2**20) or b"{}")).get("lines") or []),
+                                      **board.asks(who)})
                 if m[2] == "output":
                     one = lambda k: (qs.get(k) or [""])[0]     # noqa: E731
                     got = board.part(who, m[1], int(one("offset") or -1), int(one("size") or 0), self.body(PART_MAX))

@@ -45,6 +45,12 @@ service of your own (~/.config/systemd/user/bouldermesh-worker.service), running
 When the server has a newer version of this script, it says so when the script asks for a climb, and the script replaces
 itself with that (checked against what the server said of it) and starts again, between one job and the next, never
 during one; --no-auto-update stops that.
+
+With an NVIDIA GPU, it tells the server what nvidia-smi says of it (each card's name, memory, use and driver, and the
+CUDA version) as it starts, before taking any job. Whoever runs the server can also ask it for diagnostics, to see why
+it's stuck: what it's doing and since when, nvidia-smi's view again, Docker's version and this script's containers and
+images, free room and memory, its last 150 lines of log, and its service's journal if it runs as one. That's all it
+ever sends: the server can't name a command for it to run. --no-diagnostics turns that off (remembered).
 """
 from __future__ import annotations
 
@@ -65,6 +71,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import platform
 from collections import deque
 from pathlib import Path
 
@@ -89,7 +96,9 @@ from pathlib import Path
 # 18: fits a capture's scenery (remote_job.py --task splat), with a GPU
 # 19: takes only the jobs its GPU's memory in all could hold; reads that memory before it first asks, which a start
 #     followed so closely as to ask before it had, and was given a job of any size; waits for the GPU's driver at boot
-VERSION = 19
+# 20: tells the server what nvidia-smi says of its GPU (name, memory, driver, CUDA) as it starts; sends
+#     diagnostics when the server asks (--no-diagnostics: never)
+VERSION = 20
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter", "splat")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
@@ -126,8 +135,62 @@ GPU_EVERY, BUSY_WINDOW, QUIET_WINDOW = (float(x) for x in os.environ.get("BOULDE
 SHARE_EVERY = 15            # seconds between looks at which of the GPU's processes are a job's, for its share of the GPU's use
 
 
+STARTED = time.time()
+RECENT: deque = deque(maxlen=300)   # this script's own last lines, for the diagnostics the server may ask for
+
+
 def log(msg: str) -> None:
-    print(time.strftime("%Y-%m-%d %H:%M:%S ") + msg, flush=True)
+    line = time.strftime("%Y-%m-%d %H:%M:%S ") + msg
+    RECENT.append(line)
+    print(line, flush=True)
+
+
+GPU_FIELDS = ("name", "memory.total", "memory.used", "memory.free", "utilization.gpu", "driver_version")
+
+
+def _num(text: str) -> float | None:
+    """A number nvidia-smi gave, or None for one it couldn't ("[N/A]", "[Not Supported]")."""
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def gpu_report() -> dict | None:
+    """What nvidia-smi says of this machine's GPUs, for the server to know as it joins, before giving it a job: each
+    card's name, memory (total, used and free, MB), utilization and driver, and the CUDA version its driver supports;
+    with its raw output and any error, so that a card it can't read is seen as that. None without nvidia-smi."""
+    if not shutil.which("nvidia-smi"):
+        return None
+    out: dict = {"gpus": [], "cuda": None, "error": None}
+    try:
+        r = subprocess.run(["nvidia-smi", f"--query-gpu={','.join(GPU_FIELDS)}", "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=30)
+        out.update(rc=r.returncode, raw=r.stdout.strip()[:600], error=r.stderr.strip()[:300] or None)
+        for line in r.stdout.splitlines():
+            vals = [v.strip() for v in line.split(",")]
+            if len(vals) == len(GPU_FIELDS):
+                name, total, used, free, util, driver = vals
+                out["gpus"].append({"name": name[:80], "total_mb": _num(total), "used_mb": _num(used), "free_mb": _num(free),
+                                    "util": _num(util), "driver": driver[:40]})
+        m = re.search(r"CUDA Version:\s*([\d.]+)", subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=30).stdout)
+        out["cuda"] = m[1] if m else None
+    except (OSError, subprocess.SubprocessError) as e:
+        out["error"] = f"{type(e).__name__}: {e}"[:300]
+    if not out["gpus"] and not out["error"]:
+        out["error"] = "nvidia-smi gave no GPU it could read"
+    return out
+
+
+def gpu_summary(info: dict | None) -> str:
+    """gpu_report() in a line, as the log and the admin page say it."""
+    if not info:
+        return "no nvidia-smi"
+    cards = [f"{g['name']}, {g['total_mb'] / 1024:.1f} GB" if g.get("total_mb") else f"{g['name']}, memory unreadable"
+             for g in info.get("gpus") or []]
+    driver = next((g["driver"] for g in info.get("gpus") or [] if g.get("driver")), None)
+    return ("; ".join(cards) or "no GPU read") + (f", driver {driver}" if driver else "") + (f", CUDA {info['cuda']}" if info.get("cuda") else "") \
+        + (f" (nvidia-smi: {info['error']})" if info.get("error") else "")
 
 
 def cgroup_of(pid: int) -> str:
@@ -909,6 +972,11 @@ class Worker:
         self.settings = Path(args.home).expanduser().resolve()              # config.json, and pulled.json
         self.server = Server(args.server, args.token)
         self.gpu = self.gpu_args(args.gpu)
+        self.gpu_info = gpu_report()            # sent with every ask, the first before any job
+        self.doing = {"what": "starting", "since": time.time()}     # for diagnostics
+        self.diag_busy = False
+        if self.gpu_info:
+            log(f"GPU, as nvidia-smi has it: {gpu_summary(self.gpu_info)}")
         first, card = (GpuWatch.sample(), GpuWatch.gpu_name()) if self.gpu else (None, None)
         given = tuple(t for t in TASKS if t in (args.tasks or "").split(","))
         # small_gpu: a GPU there is, too small for any job: what it is, for the server to say
@@ -1027,9 +1095,10 @@ class Worker:
         blocked = update_blocked(self.server.url)
         return {"version": VERSION, "client": f"{socket.gethostname()}: docker {docker.stdout.strip()}, script {VERSION}"
                 + ("" if self.tasks == TASKS else f"; takes {', '.join(self.tasks)} only")
-                + (f"; won't update itself: {blocked.split(',')[0]}" if blocked else ""),
+                + (f"; won't update itself: {blocked.split(',')[0]}" if blocked else "")
+                + ("" if getattr(self.args, "diagnostics", None) is not False else "; sends no diagnostics"),
                 "gpu": bool(self.gpu), "cpus": self.args.cpus, "gpu_name": self.watch.name if self.watch else None, "gpu_small": self.small_gpu,
-                "tasks": list(self.tasks)}
+                "tasks": list(self.tasks), "gpu_info": self.gpu_info}
 
     # -- one job --------------------------------------------------------------------------------------------------------
     def do(self, job: dict) -> None:
@@ -1051,10 +1120,12 @@ class Worker:
         shutil.rmtree(work, ignore_errors=True)
         (work / "job").mkdir(parents=True)
         try:
+            self.doing = {"what": f"fetching job {jid}'s photos", "since": time.time()}
             self.fetch(api, int(job["size"]), work / "input.tar")
             extract(work / "input.tar", work / "job")
             (work / "input.tar").unlink()
             if not have_image(image):
+                self.doing = {"what": f"pulling {image} for job {jid}", "since": time.time()}
                 code, last = self.stream(api, ["docker", "pull", "-q", image], f"remote: pulling {image}")
                 if code:
                     raise NotHere(f"couldn't pull {image}: {last}")
@@ -1069,6 +1140,7 @@ class Worker:
                    *(["--gpu"] if self.gpu else [])]
             if self.watch:
                 self.watch.job_start(self.container)
+            self.doing = {"what": f"running job {jid} ({task})", "since": time.time()}
             code, last = self.stream(api, cmd, f"remote: running on {socket.gethostname()}" + (" with its GPU" if self.gpu else ""))
             used = {"gpu": self.watch.job_end()} if self.watch else {}
             self.container = None
@@ -1116,6 +1188,7 @@ class Worker:
         log(f"fetching {size / 1e6:.0f} MB of photos")
         with open(dest, "ab") as f:
             while f.tell() < size:
+                self.doing.update(done=f.tell(), of=size)
                 part = self.server.call(f"{api}/input?offset={f.tell()}", raw=True, patience=AWAY_MAX)
                 if not part:
                     raise RuntimeError("the server sent less than it said")
@@ -1125,9 +1198,11 @@ class Worker:
         """The results in parts, carrying on from what the server has after a dropped connection."""
         size, part = path.stat().st_size, 64 * 2**20
         log(f"sending {size / 1e6:.0f} MB of results")
+        self.doing = {"what": "sending the results", "since": time.time()}
         sent = self.server.call(f"{api}/output", patience=AWAY_MAX).get("received", 0)
         with open(path, "rb") as f:
             while sent < size:
+                self.doing.update(done=sent, of=size)
                 f.seek(sent)
                 try:
                     sent = self.server.call(f"{api}/output?offset={sent}&size={size}", f.read(part), patience=AWAY_MAX)["received"]
@@ -1200,10 +1275,61 @@ class Worker:
         """Send lines of a job's log (taking them from the list as they're sent), in parts of at most 1000 (the server
         takes 5000), each tried once (patience None) or for up to patience seconds (Server.call())."""
         while True:     # those sent leave the list, so that a part that fails is sent again, and only it
-            self.server.call(f"{api}/log", {"lines": lines[:1000]}, tries=1, patience=patience)
+            self.asked(self.server.call(f"{api}/log", {"lines": lines[:1000]}, tries=1, patience=patience))
             del lines[:1000]
             if not lines:
                 return
+
+    # -- diagnostics, when the server asks ---------------------------------------------------------------------------
+    def asked(self, answer) -> None:
+        """Any answer of the server's may ask for this machine's diagnostics: sent on a thread of their own, one at a
+        time (or, with --no-diagnostics, that its owner turned them off)."""
+        if not isinstance(answer, dict) or not answer.get("diagnostics") or self.diag_busy:
+            return
+        self.diag_busy = True
+
+        def send():
+            try:
+                off = getattr(self.args, "diagnostics", None) is False
+                body = {"declined": "its owner turned diagnostics off (--no-diagnostics)"} if off else {"report": self.diagnostics()}
+                self.server.call("/worker/api/diagnostics", body, tries=2)
+                log("the server asked for this machine's diagnostics: " + ("turned off here (--no-diagnostics)" if off else "sent"))
+            except Exception as e:      # noqa: BLE001 - only the diagnostics are lost
+                log(f"couldn't send the server this machine's diagnostics: {e}")
+            finally:
+                self.diag_busy = False
+        threading.Thread(target=send, daemon=True).start()
+
+    def diagnostics(self) -> dict:
+        """What this machine sends when the server asks: always this, never anything the server names. What it's
+        doing and since when, nvidia-smi's view now and the last GPU samples, Docker's version and this script's
+        containers and images, room and memory, this script's last lines, and its service's journal if it runs as one."""
+        def run(cmd: list[str], most: int = 6000) -> str:
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                return (r.stdout + (f"\n[stderr] {r.stderr.strip()}" if r.stderr.strip() else ""))[-most:]
+            except (OSError, subprocess.SubprocessError) as e:
+                return f"{type(e).__name__}: {e}"
+        room = {}
+        for where in [self.home, *docker_storage()]:
+            try:
+                room[str(where)] = round(free_gb(where), 1)
+            except OSError:
+                pass
+        images = [l for l in run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}} {{.CreatedSince}}"]).splitlines()
+                  if "bouldermesh" in l]
+        out = {"version": VERSION, "doing": {**self.doing, "for_s": round(time.time() - self.doing["since"])},
+               "running_s": round(time.time() - STARTED), "python": sys.version.split()[0], "platform": platform.platform(),
+               "gpu": gpu_report(), "gpu_samples": [list(x) for x in list(self.watch.samples)[-6:]] if self.watch else None,
+               "docker": run(["docker", "version", "--format", "{{.Server.Version}} {{.Server.Os}}/{{.Server.Arch}}"], 300),
+               "containers": run(["docker", "ps", "-a", "--filter", "name=bmw-", "--format", "{{.Names}} {{.Status}} {{.Image}}"]),
+               "images": images, "room_gb": room, "memory_gb": mem_available_gb(),
+               "load": list(os.getloadavg()) if hasattr(os, "getloadavg") else None, "log": list(RECENT)[-150:]}
+        if self.container:
+            out["job_tail"] = run(["docker", "logs", "--tail", "40", self.container], 8000)
+        if os.environ.get("INVOCATION_ID"):     # under systemd: its earlier runs too, crashes and restarts
+            out["journal"] = run(["journalctl", "--user", "-u", UNIT, "-n", "80", "--no-pager"], 12000)
+        return out
 
     # -- the loop -------------------------------------------------------------------------------------------------------
     def renew(self, e: urllib.error.HTTPError) -> None:
@@ -1264,8 +1390,10 @@ class Worker:
             held = self.held_back()
             asking = {**client, "updates": updates, "held": held,     # a GPU whose memory it can't read isn't measured: --gpu all, cdi
                       **({"gpu_free_mb": self.watch.free_mb(), "gpu_total_mb": self.watch.total_mb()} if self.watch else {})}
+            self.doing = {"what": "asking for work", "since": time.time()}
             try:
                 r = self.server.call("/worker/api/work", asking)
+                self.asked(r)
             except urllib.error.HTTPError as e:
                 if e.code in (401, 403):
                     self.renew(e)
@@ -1318,6 +1446,10 @@ class Worker:
                 self.why = kind
                 time.sleep(max(5, min(float(r.get("wait") or 15), 300)))
             if self.args.once:
+                for _ in range(60):     # diagnostics it was asked for go before it stops
+                    if not self.diag_busy:
+                        break
+                    time.sleep(0.5)
                 return
 
 
@@ -1438,6 +1570,9 @@ def main() -> None:
     ap.add_argument("--check", action="store_true", help="only check the server knows the token, and remember it, and that "
                     "there's room for jobs; then, at a terminal, offer to start it by itself whenever the computer starts")
     ap.add_argument("--once", action="store_true", help="ask for one job, do it if there's one, and stop")
+    ap.add_argument("--no-diagnostics", dest="diagnostics", action="store_false", default=None,
+                    help="never send diagnostics when the server asks (remembered; --diagnostics sends them again)")
+    ap.add_argument("--diagnostics", dest="diagnostics", action="store_true", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--no-auto-update", action="store_true", help="don't replace this script with a newer one when the server "
                     "has one (it says so instead)")
     ap.add_argument("--setup", action="store_true", help="install what's missing of Docker and NVIDIA's container toolkit, "
@@ -1463,7 +1598,7 @@ def main() -> None:
         ap.error("--register makes a new token, so not with --token")
     if args.server and args.server != conf.get("server") and not args.token or args.register:
         conf.pop("token", None)     # a token is the server's it was registered with
-    for k in ("server", "token", "cpus", "gpu", "image_prefix", "data", "busy_gpu_util", "need_ram_gb", "tasks"):
+    for k in ("server", "token", "cpus", "gpu", "image_prefix", "data", "busy_gpu_util", "need_ram_gb", "tasks", "diagnostics"):
         if getattr(args, k) is None:
             setattr(args, k, conf.get(k))
         else:

@@ -1051,6 +1051,15 @@ machine. *Run more on* adds up to that many machines (2 by default):
   *Reconstructions at once on this server* at 0, finding beta and finding a mesh's size go to these machines too: a
   mesh's files, its placed photos and masks, and for beta its videos from the cache, cut to the 150 s it looks at
   (they never ask YouTube themselves). One waiting for a machine is tried again once one is there.
+- **Seeing what a machine is doing** (script 20 on): as it starts, it sends what nvidia-smi says of its GPU (each card's
+  name, memory in all, used and free, use, driver and CUDA version, and any error), which *Machines* shows under its
+  name, in orange what nvidia-smi couldn't read. Its *Diagnostics* button asks for more, which the machine sends
+  within a minute while it waits for work, or with its next lines of a job's log: what it's doing and for how long
+  (fetching a job's photos, pulling an image, running a job, sending results, with bytes done), nvidia-smi's view
+  again and its last GPU readings, Docker's version, its `bmw-` containers and BoulderMesh images, free room and
+  memory, its last 150 lines of log, a running job's last lines, and its service's journal. *Show* puts the last
+  ones below the list. That set is the script's own: the server can't name a command for a machine to run.
+  `--no-diagnostics` (remembered) answers every ask with only that its owner turned them off.
 
 Machines run the same commit as this server, in its GPU build (torch's CUDA libraries, for VGGT), which they pull from a
 registry. `deploy/build.sh` names both builds for GitHub's by their commit: `ghcr.io/<owner>/bouldermesh:<commit>` for

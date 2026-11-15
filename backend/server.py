@@ -8218,6 +8218,21 @@ def admin_machine_deny(body: dict) -> dict:
     return {"result": "turned down: its token no longer works, and what it made while waiting is dropped"}
 
 
+def admin_machine_diagnostics(body: dict) -> dict:
+    """Ask a machine for its diagnostics (its script's fixed set, version 20 on), or with show, those it last sent."""
+    mid = str(body.get("id") or "")
+    if body.get("show"):
+        d = MACHINES.diagnostics_of(mid)
+        if not d:
+            raise ValueError("no such machine")
+        return d
+    m = MACHINES.ask_diagnostics(mid)
+    if not m:
+        raise ValueError("no such machine, or it's revoked")
+    return {"result": f"asked {m['name']} for its diagnostics: it sends them the next time it's in touch, within a minute "
+                      "while it waits for work, or with its next lines of a job's log (script 20 on)"}
+
+
 # ----------------------------------------------------------------- errors in visitors' browsers
 CLIENT_ERRORS = DATA / "client-errors.jsonl"   # one report a line; the one before it, client-errors.jsonl.1, once it's full
 CLIENT_ERRORS_BYTES = 2 * 2**20                # how big the file gets before that
@@ -10933,6 +10948,7 @@ def main() -> None:
                                        "machines-forget": lambda _: {"result": f"forgot {MACHINES.forget_gone()} machine(s)"},
                                        "volunteer-approve": admin_volunteer_approve, "volunteer-deny": admin_volunteer_deny,
                                        "machine-approve": admin_machine_approve, "machine-deny": admin_machine_deny,
+                                       "machine-diagnostics": admin_machine_diagnostics,
                                        "notify-topics": admin_notify_topics, "notify-test": admin_notify_test, "edit-pair": admin_edit_pair,
                                        "measure": admin_measure}),
                     os.environ.get("ADMIN_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), ADMIN_PORT)

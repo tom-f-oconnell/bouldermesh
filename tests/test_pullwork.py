@@ -91,6 +91,10 @@ fake = TMP / "fake"
 import os, sys
 if "-L" in sys.argv:
     print("GPU 0: a fake one"); sys.exit(0)
+if len(sys.argv) == 1:      # its table, whose header names the CUDA version
+    print("| NVIDIA-SMI 550.54.15    Driver Version: 550.54.15    CUDA Version: 12.4 |"); sys.exit(0)
+if any(a.startswith("--query-gpu=name,memory.total") for a in sys.argv):    # bouldermesh_worker.gpu_report()
+    print(os.environ.get("FAKE_GPU_INFO", "NVIDIA Fake 24G, 24576, 3000, 21576, 3, 550.54.15")); sys.exit(0)
 print(open(os.environ["FAKE_GPU"]).read() if os.environ.get("FAKE_GPU") else "0, 0, 24576")
 """)
 (fake / "bin" / "nvidia-smi").chmod(0o755)
@@ -267,7 +271,7 @@ o = board.machine(other["token"])
 logged = []
 got = in_thread(board.reconstruct, p / "photos", p / "work", TMP / "out5", logged.append)
 time.sleep(0.5)
-job = board.work(m, ip, {"client": "test", "gpu": True})["job"]
+job = board.work(m, ip, {"client": "test", "gpu": True, "gpu_free_mb": 24576})["job"]
 assert board.work(m, ip, {})["job"]["id"] == job["id"], "a machine that lost track of its job gets it again"
 assert "wait" in board.work(o, ip, {}), "and no one else does"
 status, part = call(f"/worker/api/jobs/{job['id']}/input?offset=0", token=hal["token"])
@@ -658,6 +662,46 @@ r = subprocess.run([sys.executable, str(SCRIPT), "--server", URL, "--token", box
 assert "GB of memory free, and a climb may need 1e+06 GB" in r.stdout and board.current(box["id"])["state"] == "held back", r.stdout
 print("holding back OK")
 
+# --- a GPU's details as nvidia-smi has them, sent as the script starts (script 20 on), and diagnostics when asked ----------
+card = board.add("card-box")
+mc = lambda: board.machine(card["token"])     # noqa: E731
+info = {"gpus": [{"name": "NVIDIA GeForce RTX 2070", "total_mb": 8192.0, "used_mb": 800.0, "free_mb": 7392.0, "util": None,
+                  "driver": "550.54"}], "cuda": "12.4", "error": None}
+r = board.work(mc(), "10.0.0.7", {"version": SCRIPT_VERSION, "gpu": True, "gpu_free_mb": 7392, "gpu_total_mb": 8192, "gpu_info": info})
+assert json.loads(board.q("SELECT gpu_info FROM machines WHERE id=?", card["id"], one=True)["gpu_info"])["cuda"] == "12.4"
+board.work(mc(), "10.0.0.7", {"version": SCRIPT_VERSION, "gpu": True, "gpu_free_mb": 7392})
+assert json.loads(board.q("SELECT gpu_info FROM machines WHERE id=?", card["id"], one=True)["gpu_info"])["cuda"] == "12.4", "kept"
+st = {m["name"]: m for m in board.state()["machines"]}
+assert st["card-box"]["gpu_info"]["gpus"][0]["name"] == "NVIDIA GeForce RTX 2070", st["card-box"]
+# diagnostics: asked on the admin page, asked for with every answer until they come, then not
+assert board.asks(mc()) == {}
+assert board.ask_diagnostics(card["id"])["name"] == "card-box" and board.asks(mc()) == {"diagnostics": True}
+assert board.ask_diagnostics("nope") is None
+board.diagnostics(mc(), {"report": {"version": 19, "doing": {"what": "asking for work", "since": 1, "for_s": 3}}})
+assert board.asks(mc()) == {} and board.diagnostics_of(card["id"])["report"]["doing"]["what"] == "asking for work"
+board.ask_diagnostics(card["id"])
+board.diagnostics(mc(), {"declined": "its owner turned diagnostics off (--no-diagnostics)"})
+assert board.diagnostics_of(card["id"])["report"] == {"declined": "its owner turned diagnostics off (--no-diagnostics)"}
+# the script: says what nvidia-smi has of its GPU as it starts, sends its diagnostics when asked, and none with --no-diagnostics
+board.ask_diagnostics(box["id"])
+denv = {**ENV, "FAKE_GPU": str(gpu_file), "FAKE_GPU_INFO": "NVIDIA GeForce RTX 2070, 8192, 800, 7392, [N/A], 550.54"}
+gpu_file.write_text("[N/A], 800, 8192")     # a card whose utilization nvidia-smi can't give: its memory still read
+r = subprocess.run([sys.executable, str(SCRIPT), "--server", URL, "--token", box["token"], "--home", str(TMP / "gbox"), "--once",
+                    "--gpu", "all"], env=denv, capture_output=True, text=True, timeout=120)
+assert "GPU, as nvidia-smi has it: NVIDIA GeForce RTX 2070, 8.0 GB, driver 550.54, CUDA 12.4" in r.stdout, r.stdout
+assert "the server asked for this machine's diagnostics: sent" in r.stdout, r.stdout
+d = board.diagnostics_of(box["id"])
+assert d["report"]["version"] == SCRIPT_VERSION and d["report"]["gpu"]["gpus"][0]["util"] is None and d["report"]["log"], d["report"]
+assert d["report"]["doing"]["what"] == "asking for work" and d["gpu_info"]["gpus"][0]["total_mb"] == 8192.0, d
+assert "isn't known yet" not in (board.current(box["id"])["why"] or ""), "its memory was read"
+board.ask_diagnostics(box["id"])
+r = subprocess.run([sys.executable, str(SCRIPT), "--server", URL, "--token", box["token"], "--home", str(TMP / "gbox"), "--once",
+                    "--gpu", "all", "--no-diagnostics"], env=denv, capture_output=True, text=True, timeout=120)
+assert "turned off here (--no-diagnostics)" in r.stdout and "declined" in board.diagnostics_of(box["id"])["report"], r.stdout
+assert board.q("SELECT client FROM machines WHERE id=?", box["id"], one=True)["client"].endswith("; sends no diagnostics")
+assert json.loads((TMP / "gbox" / "config.json").read_text())["diagnostics"] is False, "remembered"
+print("GPU details and diagnostics OK")
+
 # --- machines joining and leaving (presence.py): told when one starts being heard from or stops, not as it's held back,
 # and each at most once in an hour, so that one dropping out and back in tells where it ended up
 import presence  # noqa: E402
@@ -796,7 +840,7 @@ cpu_box = board.add("cpu-box")
 r = board.work(board.machine(cpu_box["token"]), "10.0.0.10", asks)
 assert r["job"]["id"] == filter_job.id and r["job"]["image"] == image[0], r
 assert "job" not in board.work(board.machine(board.add("cpu-box-2")["token"]), "10.0.0.10", asks), "not the mesh"
-r = board.work(board.machine(board.add("gpu-box")["token"]), "10.0.0.11", {"version": SCRIPT_VERSION, "gpu": True})
+r = board.work(board.machine(board.add("gpu-box")["token"]), "10.0.0.11", {"version": SCRIPT_VERSION, "gpu": True, "gpu_free_mb": 24576})
 assert r["job"]["id"] == mesh_job.id and r["job"]["image"] == image[0] + "-gpu", "the GPU build, with a GPU"
 lent = board.add("lent-box")
 board.q("UPDATE machines SET status='provisional' WHERE id=?", lent["id"])

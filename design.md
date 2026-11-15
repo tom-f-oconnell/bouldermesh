@@ -1289,7 +1289,12 @@ job running in the old one. A kept job waiting for a machine isn't given out unt
 climb takes up in 24 hours goes. Filtering, beta and size jobs are kept only in memory, as before: a restart ends them,
 and they run again as their callers ask again (a harvest's filtering, beta's and size's queues). The script runs jobs as its own user, so their files are its to delete, with no
 capabilities, and only the server's image (`--image-prefix` makes sure of that); the server only ever names an image,
-never a command. Machines' tokens are kept as they are, not only hashed as volunteers' are, so that the admin page can
+never a command. For the same reason, when the admin page asks a machine for diagnostics (script 20 on: Nov 15, after
+a new machine, blackbox, was given a job too big for its GPU, and nothing showed how far its first image pull had got), the
+machine sends a fixed set its script decides: what it's doing and for how long, nvidia-smi's view, Docker's containers
+and images, room, memory, its own last lines of log and its service's journal. A request names nothing to run, so a
+taken-over server learns no more than that, and `--no-diagnostics` refuses even that. What nvidia-smi says of a GPU
+goes with every ask from the start, so a card it reads wrongly shows on the admin page before any job is given out. Machines' tokens are kept as they are, not only hashed as volunteers' are, so that the admin page can
 show a machine's command again: they're few, and the database is readable only by the server's user, though its
 nightly backup holds them too. With *Reconstructions at once on this server* at 0, a server that's too small to mesh (the public one:
 2 cores, 4 GB) harvests and keeps everything, and every mesh is made elsewhere. So is what's heavy after meshing: finding
