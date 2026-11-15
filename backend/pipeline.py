@@ -63,8 +63,8 @@ COLMAP4 = os.environ.get("COLMAP4_BIN") or shutil.which("colmap4")
 UNTIED = 15             # a camera the global mapper leaves seeing fewer of its model's points than this is taken out
 # The global mapper solves on the GPU (global positioning, and bundle adjustments of 50 photos or more: COLMAP's own
 # threshold) when its COLMAP 4 has CUDA and this much GPU memory is free, as in every benchmark run behind the switch.
-# Its peak is still to be measured (atlas); 2 GB is OpenMVS's depth maps' allowance.
-GLOBAL_GPU_MIN_FREE_MB = 2000
+# It peaked at about 430 MiB on 31de (82 photos, the app's own run) and 580 MiB on Drifter (234, the benchmark's).
+GLOBAL_GPU_MIN_FREE_MB = 1000
 SOLVE = re.compile(r"BENCH_(BA|GP) images=(\d+)\b.*?device=(\w+)")     # each solve, as the image's patched COLMAP 4 logs it
 MAPPER_FILE = "mapper.json"     # in work/, then beside the mesh: which mapper placed its cameras, and why (_global_mapper())
 # OpenMVS binaries are usually installed under /usr/local/bin/OpenMVS

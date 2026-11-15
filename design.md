@@ -641,18 +641,21 @@ internet, and every other method in the benchmark was compared on those.
 fails, or when its largest model places fewer than 6 photos that see enough of its points. The job's log says which and
 why ("placing the cameras with COLMAP 3.9.1's incremental mapper instead: ..."), and so does `mapper.json`.
 
+**In the image.** The benchmark's global mapper solved on the GPU (Ceres with cuDSS), and so does the image's (the
+Dockerfile's `colmap4-cuda` stage, built as the benchmark's was) where the GPU has 1 GB free
+(`GLOBAL_GPU_MIN_FREE_MB`): it peaked at about 430 MiB on 31de and 580 MiB on Drifter. Its first version (5d242d3)
+was built on Ubuntu's Ceres, without CUDA, to save building Ceres from source, which would have shipped something none
+of the timings behind the switch measured; that build is now only the server's (`COLMAP4=cpu`), which never has a GPU.
+The CUDA build adds 2.5 GB to the machines' image (11.4 GB against 8.86). In the app's own run on 31de (atlas, Nov 14)
+its mapper took 94 s against the benchmark's 93-112, and the whole job 538 s against 1,114 s for the same image with
+the incremental mapper, every other step the same to within a few seconds.
+
 **Not known yet:**
-- Its speed in this image. The benchmark's global mapper solved on the GPU (Ceres with cuDSS), and so does the image's
-  (the Dockerfile's `colmap4-cuda` stage, built as the benchmark's was), where the GPU has room: the app's own
-  end-to-end runs on the new image say whether it matches. Its first version (5d242d3) was built on Ubuntu's Ceres,
-  without CUDA, to save building Ceres from source, which would have shipped something none of the timings behind the
-  switch measured; that build is now only the server's (`COLMAP4=cpu`), which never has a GPU. On the CPU, the
+- Its speed in this image on 9f3b and Drifter, and against the live image's whole job (runs queued). On the CPU, the
   benchmark's `global_tied_cpu` runs say what it costs.
-- How much GPU memory it takes (`GLOBAL_GPU_MIN_FREE_MB` is 2 GB, OpenMVS's depth maps' allowance, until measured).
 - Drifter's surface at about three times 3.9.1's own spread: whether that is the global mapper's steady level or one
   seed's (its seeds 1 and 2 are queued), and which of the two is nearer the rock.
 - 9f3b, which no method solves.
-- What the `colmap4` stage adds to the image's size: CUDA's libraries alone are about 2 GB.
 
 ## Stray pieces and sheets
 
