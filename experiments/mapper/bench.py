@@ -133,6 +133,9 @@ REST_ARGS = ["--Mapper.abs_pose_min_num_inliers", "15", "--Mapper.abs_pose_min_i
 # OpenMVS 2.4 otherwise than as it comes (post --mvs <name>, results in post-<tools>+<name>): step: its extra arguments
 MVS = {
     "fuse1": {"dense": ["--fusion-filter", "1"]},      # depth maps fused as 2.3 fuses them (2.4's own way, 2, keeps far fewer points)
+    # 2.3's own defaults where 2.4's differ: its fusion, a point seen by three photos, and depth maps cleaned of speckles
+    # and gaps. fuse1 alone keeps more points than 2.3 does
+    "like23": {"dense": ["--fusion-filter", "1", "--number-views-fuse", "3", "--postprocess-dmaps", "7"]},
     "noroi": {"dense": ["--estimate-roi", "0"]},       # nothing cut off outside the region of interest 2.4 estimates
     "cpu": {"dense": ["--cuda-device", "-2"]},         # depth maps on the CPU: what a machine without a GPU gets
 }

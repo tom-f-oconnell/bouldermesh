@@ -1,7 +1,10 @@
 # What OpenMVS 2.4 does differently from 2.3 on the same model (handoff section 13): hal found its depth maps fuse to
 # a fifth to a third of 2.3's points. On the baseline's first model of 31de and of Drifter: 2.4 fusing as 2.3 does,
 # 2.4 without its region of interest, and 2.4's depth maps on the CPU. 2.3 is post-app and 2.4 as it comes is
-# post-complete, both from earlier queues.
+# post-complete, both from earlier queues. like23 is 2.4 with 2.3's own defaults (fusion, views to fuse, depth maps
+# cleaned), which should give 2.3's cloud at 2.4's speed.
+post 31de9a59303a base-s0@prod --tools complete --cond prod --mvs like23
+post ce7571e0a4a3 base-s0@prod --tools complete --cond prod --mvs like23
 post 31de9a59303a base-s0@prod --tools complete --cond prod --mvs fuse1
 post 31de9a59303a base-s0@prod --tools complete --cond prod --mvs noroi
 post ce7571e0a4a3 base-s0@prod --tools complete --cond prod --mvs fuse1
