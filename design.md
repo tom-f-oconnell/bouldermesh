@@ -657,6 +657,51 @@ the incremental mapper, every other step the same to within a few seconds.
   seed's (its seeds 1 and 2 are queued), and which of the two is nearer the rock.
 - 9f3b, which no method solves.
 
+### What its errors are: a smooth bend, not lost detail
+
+Measured on Drifter (atlas, Nov 15), the global mapper's surface against the incremental mapper's, both through the
+same OpenMVS (`experiments/mapper/surface.py`):
+
+- **The gap grows with distance from the rock's middle.** It is 0.23% of the scene's size near the middle and 0.51%
+  at the edge. The incremental mapper against itself is 0.12-0.14% everywhere.
+- **Fitted patch by patch, the gap mostly disappears.** Aligning small patches (5% of the scene's size) each on its
+  own cuts the median gap from 0.38% to 0.16%, close to the measurement's floor of 0.10-0.14%. So each patch has the
+  same local shape and just sits slightly elsewhere.
+- **The cause is the trade of lens for distance** (`experiments/mapper/consensus.py trade`): with a lens solved per
+  photo, a camera placed a bit further back with a slightly longer lens sees the same picture, and the global mapper
+  settles those trades a little differently across the scene.
+- **It is its own steady answer, not noise.** Its three seeds agree with each other at 0.13-0.26%, while each sits
+  0.38-0.42% from the incremental mapper's surface. Which of the two is nearer the real rock isn't known.
+
+### Small holds
+
+The switch doesn't lose resolution on them. A mesh's resolution comes from the dense step, and the new image keeps
+the old density. Median triangle edge near the rock, as a share of the scene's size:
+
+| Boulder | Live image (incremental, OpenMVS 2.3) | New image (global, OpenMVS 2.4 with 2.3's values) |
+|---|---|---|
+| Drifter | 0.178% | 0.175% |
+| 31de | 0.50% | 0.52% |
+
+In absolute terms neither pipeline resolves small holds well from web photos. If the cameras stand about 4 m from
+the middle (an assumption: there is no measured scale), those edges are about 7 mm on Drifter and 2 cm on 31de.
+
+### Would close-up photos of holds fix that?
+
+Yes in principle. This is reasoning from how the steps work, not a measurement.
+
+- **Why it should work:** point spacing in the dense and mesh steps is set in pixels of the photos that see a
+  region, so close-ups of a hold give a proportionally finer mesh there.
+- **Placing the close-ups is the risk.** SIFT doesn't match well across large jumps in scale, so close-ups need a
+  ladder of intermediate distances back to the wide shots.
+- **The rest step is what would place them.** The global mapper tends to leave weakly connected photos out, and
+  close-ups without a ladder would be exactly those. The rest step then registers them one by one against the model.
+- **One limit to lift:** depth maps are computed at quarter resolution everywhere (`--resolution-level 2`); for hold
+  regions that could be raised.
+- **A test:** a simulated capture. Crop and zoom existing photos around a hold, add them, and measure triangle size
+  there.
+
+
 ## Stray pieces and sheets
 
 Each reconstruction hides its stray pieces (`backend/meshclean.py`), using the second rule below.
