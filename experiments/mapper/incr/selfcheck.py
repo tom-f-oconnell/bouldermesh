@@ -28,7 +28,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-for _b in (HERE.parents[2] / "backend", Path("/backend")):     # the repo's, or where boulder.py mounts it for the steps
+# the repo's backend/ (an ancestor's), or where boulder.py mounts it for the steps (/backend, with this folder at /incr,
+# which has no ancestor but /: a fixed parents[2] raised IndexError there, failing every start's check)
+for _b in [*(p / "backend" for p in HERE.parents), Path("/backend")]:
     if (_b / "modelcheck.py").exists():
         sys.path.insert(0, str(_b))
         break

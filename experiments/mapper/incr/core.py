@@ -733,7 +733,8 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
                 rec, placed_k, did = grow(rec, kind, db, names, o, ba, rep)
                 check = self_check(rec, db)
             except Exception as e:      # a start that fails is no reason not to try the next
-                log(f"start {kind} failed: {type(e).__name__}: {e}")
+                import traceback
+                log(f"start {kind} failed: {type(e).__name__}: {e}\n" + "".join(traceback.format_exc().splitlines(True)[-12:]))
                 tried_starts.append(f"{kind}: failed ({type(e).__name__}: {e})")
                 continue
             attempts.append({"kind": kind, "rec": rec, "placed": placed_k, "others": more, "start": began, "did": did, "check": check})

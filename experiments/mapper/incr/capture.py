@@ -148,8 +148,8 @@ def readings(photo: Path) -> dict | None:
 
 def record(path: Path) -> dict:
     r = json.loads(Path(path).read_text())
-    if r.get("v") not in (1, 2, 3):
-        raise ValueError(f"a capture record of version {r.get('v')}: this reads 1 to 3")
+    if r.get("v") not in (1, 2, 3, 4):      # 4 adds only scenery (app/FORMAT.md), never meshed, which this leaves alone
+        raise ValueError(f"a capture record of version {r.get('v')}: this reads 1 to 4")
     return r
 
 

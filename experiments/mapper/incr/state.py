@@ -229,7 +229,7 @@ def model_check(n: dict, thresholds: dict | None = None) -> dict:
     """Whether a model passes its own check, from its numbers: backend/modelcheck.py's verdict(), the one the app's
     pipeline uses (thresholds and the measurements behind them are there). {"ok", "failed", "why"}."""
     import sys
-    for b in (Path(__file__).resolve().parents[3] / "backend", Path("/backend")):
+    for b in [*(p / "backend" for p in Path(__file__).resolve().parents), Path("/backend")]:    # selfcheck.py says why
         if (b / "modelcheck.py").exists() and str(b) not in sys.path:
             sys.path.insert(0, str(b))
     import modelcheck
