@@ -11,6 +11,8 @@
 #   CPU=0 skips it; without it, those machines run the server's image, on x86-64 only.
 # GPU=0 builds only the server's (and the CPU workers'). The registry is ghcr.io/<owner>/bouldermesh, the owner from the GitHub remote, unless
 # REGISTRY says otherwise.
+# Both images have OpenMVS 2.4 (the Dockerfile's MVS=24: a CPU build, and a CUDA one for depth maps on a GPU), so a mesh
+# is made the same way whichever machine makes it; MVS=23 here builds 2.3 as before.
 set -eu
 dir=$(cd "$(dirname "$0")/.." && pwd)
 cd "$dir"
@@ -43,11 +45,11 @@ if [ "${CPU:-1}" != 0 ]; then
         -t "$cpu" "$tmp"
     echo "built $cpu, for $platforms"
 fi
-docker build --build-arg TORCH=cpu --build-arg BOULDERMESH_COMMIT="$commit" --build-arg BOULDERMESH_IMAGE="$REGISTRY:$commit" \
+docker build --build-arg TORCH=cpu --build-arg MVS="${MVS:-24}" --build-arg BOULDERMESH_COMMIT="$commit" --build-arg BOULDERMESH_IMAGE="$REGISTRY:$commit" \
     --build-arg BOULDERMESH_WORKER_IMAGE="$machines" --build-arg BOULDERMESH_WORKER_CPU_IMAGE="$cpu" -t "$image" -t "$REGISTRY:$commit" "$tmp"
 echo "built $image, which is $REGISTRY:$commit"
 if [ "${GPU:-1}" != 0 ]; then
-    docker build --build-arg TORCH=cu126 --build-arg THUMBS=0 --build-arg BOULDERMESH_COMMIT="$commit" --build-arg BOULDERMESH_IMAGE="$machines" \
+    docker build --build-arg TORCH=cu126 --build-arg THUMBS=0 --build-arg MVS="${MVS:-24}" --build-arg BOULDERMESH_COMMIT="$commit" --build-arg BOULDERMESH_IMAGE="$machines" \
         --build-arg BOULDERMESH_WORKER_IMAGE="$machines" -t "$gpu_image" -t "$machines" "$tmp"
     echo "built $gpu_image, which is $machines"
 fi
