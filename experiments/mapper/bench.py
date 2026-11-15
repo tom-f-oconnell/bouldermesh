@@ -87,10 +87,15 @@ METHODS = {
     "global_cpu": ("new", "global_mapper", GLOBAL + ["--GlobalMapper.gp_use_gpu", "0", "--GlobalMapper.ba_ceres_use_gpu", "0"], {}),
     "global_caspar": ("new", "global_mapper", GLOBAL + ["--GlobalMapper.ba_backend", "CASPAR"], {}),
     "global_def": ("new", "global_mapper", [], {}),                  # COLMAP's defaults, as first tried
+    # global, with the cameras it leaves seeing next to none of the model's points taken out before the app's rest step,
+    # which then places them as it does any photo left out (rest(), UNTIED): those are its cameras that are wrong
+    "global_tied": ("new", "global_mapper", GLOBAL, {}),
     # VGGT's cameras for up to 80 well-linked photos, then COLMAP's triangulation and bundle adjustment (vggt_start.py)
     "vggt": ("app", "vggt", [], {}),
 }
-GPU_METHODS = {"gpuba", "gpuba0", "gpudense", "caspar", "caspar_g", "global", "global0", "global_caspar", "global_def", "vggt"}
+GPU_METHODS = {"gpuba", "gpuba0", "gpudense", "caspar", "caspar_g", "global", "global0", "global_caspar", "global_def",
+               "global_tied", "vggt"}
+UNTIED = {"global_tied": 15}    # method: a camera seeing fewer points than this isn't placed (15: REST_ARGS' own least)
 assert GPU_METHODS <= set(METHODS)
 # feature set: (COLMAP family, extractor arguments, matcher arguments)
 SIFT = ["--ImageReader.camera_model", "SIMPLE_RADIAL", "--ImageReader.single_camera", "0", "--ImageReader.mask_path", "/p/masks"]
@@ -580,7 +585,10 @@ def rest(P: str, run: str, feat: str) -> None:
                                     "--input_path", f"/r/sparse/{best}", "--output_path", "/r/rest/txt",
                                     "--output_type", "TXT"]).replace("colmap", "mkdir -p /r/rest/txt; colmap", 1), mounts, "dev")
     shutil.copyfile(feat_dir(P, feat) / "database.db", o / "db.db")
+    untied = (f"python3 /bench/stats.py untied txt {UNTIED[method]} >> drop.txt\nsort -u -o drop.txt drop.txt\n"
+              if method in UNTIED else "")
     drop = lambda src, dst, names: (f"python3 /bench/stats.py unrefined db.db {src} > {names}\n"      # noqa: E731
+                                    + (untied if src == "txt" else "") +
                                     f"if [ -s {names} ]; then mkdir -p {dst}; colmap image_deleter {sh(log)} --input_path {src} "
                                     f"--output_path {dst} --image_names_path {names}; else cp -r {src} {dst}; fi\n")
     script = ("cd /r/rest\nrm -rf kept rest rest2 drop.txt drop2.txt\n"         # an interrupted attempt's

@@ -1,6 +1,10 @@
 # Is the global mapper right? (handoff section 11, item 2.) Its spread over seeds on the three boulders, the meshes of
 # the baseline's second runs (9f3b's is far from every other model), and the baseline's first model through OpenMVS
 # 2.4: the same model as its post-app, so the two OpenMVS compare like for like.
+# global_tied: global with its cameras that see next to no points taken out, for the rest step to place properly
+all 31de9a59303a global_tied 0 --cond prod --build complete --post complete
+all 9f3b4b740847 global_tied 0 --cond prod --build complete --post complete
+all ce7571e0a4a3 global_tied 0 --cond prod --build complete --post complete
 all 31de9a59303a global 1 --cond prod --build complete
 all 31de9a59303a global 2 --cond prod --build complete
 all 9f3b4b740847 global 1 --cond prod --build complete

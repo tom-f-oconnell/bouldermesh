@@ -2,6 +2,7 @@
 
     stats.py largest <sparse dir>             the name of the model placing most photos
     stats.py unrefined <database> <model>     names of placed photos whose camera is still the database's first guess
+    stats.py untied <model> <least>           names of placed photos that see fewer of the model's points than that
     stats.py table <bench dir>                every run's results, as tab-separated rows
 """
 import json
@@ -160,6 +161,28 @@ def unrefined(db: Path, model: Path) -> list[str]:
     return [name for name, cid in images(model).items() if cid in first and abs(cams[cid][0] - first[cid][0]) < 1e-9]
 
 
+def untied(model: Path, least: int) -> list[str]:
+    """Placed photos that see fewer than least of the model's points: placed in name only. The global mapper leaves
+    some in that see none (every observation of theirs was filtered out), and they are its cameras that are wrong."""
+    out = []
+    if (model / "images.txt").exists():
+        lines = [l for l in open(model / "images.txt") if not l.startswith("#")]
+        for head, points in zip(lines[0::2], lines[1::2]):
+            if len(head.split()) >= 10 and sum(1 for i in points.split()[2::3] if i != "-1") < least:
+                out.append(head.split()[9])
+        return out
+    with open(model / "images.bin", "rb") as f:
+        for _ in range(struct.unpack("<Q", f.read(8))[0]):
+            f.read(64)
+            name = b""
+            while (c := f.read(1)) != b"\0":
+                name += c
+            n = struct.unpack("<Q", f.read(8))[0]
+            if sum(1 for _, _, point in struct.iter_unpack("<ddq", f.read(24 * n)) if point != -1) < least:
+                out.append(name.decode())
+    return out
+
+
 def mesh_stats(ply: Path) -> dict | None:
     """Faces, and the share of the surface in the largest connected piece, of a binary PLY from OpenMVS."""
     import numpy as np
@@ -219,5 +242,7 @@ if __name__ == "__main__":
         print(largest(Path(sys.argv[2]))[0])
     elif cmd == "unrefined":
         sys.stdout.write("".join(f"{n}\n" for n in unrefined(Path(sys.argv[2]), Path(sys.argv[3]))))
+    elif cmd == "untied":
+        sys.stdout.write("".join(f"{n}\n" for n in untied(Path(sys.argv[2]), int(sys.argv[3]))))
     elif cmd == "table":
         table(Path(sys.argv[2]))
