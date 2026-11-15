@@ -1,4 +1,11 @@
-# First, queue-opt-1.txt's jobs (Tom's go-ahead, 2026-11-14 23:50), so that they follow the app's runs in the chain as it is:
+# First (Tom, 2026-11-14 23:50: throughput first, as long as quality isn't worse; hal's section 40): whole app jobs
+# side by side (queue-together-app.txt), then queue-opt-1.txt's tests, then queue-opt-pairs.txt's, so that the chain as
+# it runs reaches them right after the app's own runs. Each file stays as it is, for running alone.
+together 1 jobs-app3.txt
+together 2 jobs-app3.txt
+together 3 jobs-app3.txt
+together 2 jobs-app3.txt every
+together 3 jobs-app3.txt every
 post 31de9a59303a global_tied-s0+complete@prod --tools complete --cond prod --mvs as23
 texture ce7571e0a4a3 global_tied-s0+complete@prod same --tools complete --cond prod --mvs as23
 texture ce7571e0a4a3 global_tied-s0+complete@prod res1 --tools complete --cond prod --mvs as23
@@ -49,6 +56,18 @@ all 31de9a59303a global_tied 0 --feat sift391_noguided --cond prod --build compl
 feat ce7571e0a4a3 --feat sift391_noguided
 feat ce7571e0a4a3 --feat sift391_noguided --cond prod
 all ce7571e0a4a3 global_tied 0 --feat sift391_noguided --cond prod --build complete
+feat 31de9a59303a --feat sift391_pairs30
+all 31de9a59303a global_tied 0 --feat sift391_pairs30 --cond prod --build complete --post complete --mvs as23
+feat ce7571e0a4a3 --feat sift391_pairs30
+all ce7571e0a4a3 global_tied 0 --feat sift391_pairs30 --cond prod --build complete --post complete --mvs as23
+feat 31de9a59303a --feat sift391_pairs20
+all 31de9a59303a global_tied 0 --feat sift391_pairs20 --cond prod --build complete --post complete --mvs as23
+feat ce7571e0a4a3 --feat sift391_pairs20
+all ce7571e0a4a3 global_tied 0 --feat sift391_pairs20 --cond prod --build complete --post complete --mvs as23
+feat 31de9a59303a --feat sift391_pairs50
+all 31de9a59303a global_tied 0 --feat sift391_pairs50 --cond prod --build complete --post complete --mvs as23
+feat ce7571e0a4a3 --feat sift391_pairs50
+all ce7571e0a4a3 global_tied 0 --feat sift391_pairs50 --cond prod --build complete --post complete --mvs as23
 # Is the global mapper right? (handoff section 11, item 2.) global_tied's spread over seeds on the three boulders, with
 # Drifter's and 31de's meshes for surface.py, the meshes of
 # the baseline's second runs (9f3b's is far from every other model), and the baseline's first model through OpenMVS
