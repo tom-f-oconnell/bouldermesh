@@ -55,15 +55,18 @@ RUN mkdir -p /usr/local/bin/OpenMVS-cuda /opt/mvs-libs
 FROM build AS mvs23
 
 # OpenMVS v2.4.0 needs OpenCV >= 4.11 (Ubuntu 24.04 has 4.6) and CGAL 6 (it has 5.6; header-only), so both are built
-# here, OpenCV with only what OpenMVS uses and nothing that would need more libraries in the last stage. The CUDA
-# build's tools load the NVIDIA driver's own library (libcuda.so.1), so they only start in a container given a GPU:
-# hence the CPU build beside it, which does every step but depth maps, and those too where there's no GPU.
+# here, OpenCV with only what OpenMVS uses and nothing that would need more libraries in the last stage. It also requires
+# JPEG XL (libjxl, found by pkg-config), whose libraries go to the last stage with OpenCV's, so that the default image's
+# packages stay as they are. The CUDA build's tools load the NVIDIA driver's own library (libcuda.so.1), so they only
+# start in a container given a GPU: hence the CPU build beside it, which does every step but depth maps, and those too
+# where there's no GPU.
 FROM ubuntu:24.04 AS mvs24
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git cmake build-essential ninja-build ca-certificates curl xz-utils nvidia-cuda-toolkit nvidia-cuda-toolkit-gcc \
     libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev \
     libeigen3-dev libgmp-dev libmpfr-dev libnanoflann-dev libjpeg-dev libpng-dev libtiff-dev zlib1g-dev \
+    pkg-config libjxl-dev \
  && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 --branch 4.14.0 https://github.com/opencv/opencv.git /opt/opencv \
  && cmake -S /opt/opencv -B /opt/opencv/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -90,7 +93,8 @@ RUN for cuda in OFF ON; do \
  && rm -rf /usr/local/bin/OpenMVS && cp -a /opt/mvs-OFF/bin/OpenMVS /usr/local/bin/OpenMVS \
  && cp -a /opt/mvs-ON/bin/OpenMVS /usr/local/bin/OpenMVS-cuda \
  && test -x /usr/local/bin/OpenMVS/DensifyPointCloud && test -x /usr/local/bin/OpenMVS-cuda/DensifyPointCloud \
- && ! (ldd /usr/local/bin/OpenMVS/TextureMesh | grep -q libcuda)
+ && ! (ldd /usr/local/bin/OpenMVS/TextureMesh | grep -q libcuda) \
+ && cp -a /usr/lib/x86_64-linux-gnu/libjxl.so.0.7* /usr/lib/x86_64-linux-gnu/libhwy.so.1* /opt/mvs-libs/
 
 FROM mvs${MVS} AS mvs
 
