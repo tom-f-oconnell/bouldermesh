@@ -486,6 +486,53 @@ for cuda, free, why in ((False, 17000, "without CUDA"), (True, None, "no GPU vis
 assert pipeline.gpu_choice(False)[0] is False
 cmds, logged = gpu_run(True, 17000, fails=("exhaustive_matcher",))   # out of memory partway: carries on, then on to the mapper
 assert flags(cmds, "exhaustive_matcher", MATCH) == ["1", "0"] and any(c[1] == "mapper" for c in cmds), cmds
+# depth maps: OpenMVS's CUDA build where the image has one and a GPU has room, else (or if it fails) the CPU build
+def dense_cmds(free, fails=False, cuda_dir=True):
+    with tempfile.TemporaryDirectory() as td:
+        tmp, cmds, logged = pathlib.Path(td), [], []
+        images, work, cudabin = tmp / "images", tmp / "work", tmp / "mvs-cuda"
+        images.mkdir()
+        cudabin.mkdir()
+        (cudabin / "DensifyPointCloud").write_bytes(b"")
+        for i in range(8):
+            (images / f"{i}.jpg").write_bytes(b"x")
+
+        def fake_run(cmd, cwd, log, watch=None):
+            cmds.append(cmd)
+            if cmd[1] == "mapper":
+                model(work / "sparse", "0", 8)
+            if cmd[1] == "image_undistorter":
+                (work / "dense" / "images").mkdir(parents=True)
+            if cmd[0].endswith("DensifyPointCloud") and "--cuda-device" in cmd and fails:
+                raise RuntimeError("DensifyPointCloud exited with -6")
+            if "ReconstructMesh" in cmd[0]:
+                (work / "scene_dense_mesh.ply").write_bytes(b"ply")
+        saved = pipeline._run, pipeline.COLMAP, pipeline._mvs, pipeline.gpu_free_mb, occlusion.available, pipeline._MVS_CUDA_DIR
+        pipeline._run, pipeline.COLMAP, pipeline._mvs = fake_run, "colmap", lambda name: name
+        pipeline.gpu_free_mb, occlusion.available = (lambda: free), (lambda: False)
+        pipeline._MVS_CUDA_DIR = str(cudabin) if cuda_dir else str(tmp / "none")
+        try:
+            pipeline.reconstruct_colmap_openmvs(images, work, tmp / "out", logged.append, True)
+        finally:
+            pipeline._run, pipeline.COLMAP, pipeline._mvs, pipeline.gpu_free_mb, occlusion.available, pipeline._MVS_CUDA_DIR = saved
+        return [c for c in cmds if c[0].endswith("DensifyPointCloud")], [c[0] for c in cmds if "Mesh" in c[0]], logged
+
+
+runs, others, dlog = dense_cmds(17000)
+assert len(runs) == 1 and runs[0][0].endswith("mvs-cuda/DensifyPointCloud") and runs[0][-2:] == ["--cuda-device", "-1"], runs
+assert others == ["ReconstructMesh", "TextureMesh"], "the other steps stay with the CPU build"
+assert any("DensifyPointCloud: using the GPU (17000 MB" in l for l in dlog), dlog
+for free, why in ((None, "no GPU visible"), (500, "only 500 MB")):
+    runs, _, dlog = dense_cmds(free)
+    assert [r[0] for r in runs] == ["DensifyPointCloud"] and "--cuda-device" not in runs[0], runs
+    assert any(why in l for l in dlog), dlog
+runs, _, dlog = dense_cmds(17000, fails=True)
+assert [r[0].rsplit("/", 2)[-2:] for r in runs] == [["mvs-cuda", "DensifyPointCloud"], ["DensifyPointCloud"]], runs
+assert any("GPU run failed" in l for l in dlog), dlog
+runs, _, dlog = dense_cmds(17000, cuda_dir=False)
+assert [r[0] for r in runs] == ["DensifyPointCloud"] and not any("DensifyPointCloud: using" in l for l in dlog), "an image with no CUDA build: as before"
+print("depth maps' device OK")
+
 # GPU_SIFT (off unless set): internet photos' features as plain SIFT on the GPU; with no GPU, or if it fails, today's
 pipeline.GPU_SIFT = True
 try:

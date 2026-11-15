@@ -53,6 +53,10 @@ MIN_REGISTERED = 6      # photos COLMAP must place together for a mesh to be mad
 COLMAP = shutil.which("colmap")
 # OpenMVS binaries are usually installed under /usr/local/bin/OpenMVS
 _MVS_DIRS = [os.environ.get("OPENMVS_BIN", ""), "/usr/local/bin/OpenMVS", "/usr/local/bin", "/usr/bin"]
+# OpenMVS built with CUDA, where the image has one (Dockerfile, MVS=24): used for depth maps when a GPU has room. Its
+# tools load the NVIDIA driver's library, so they don't start without a GPU: every other step uses the CPU build.
+_MVS_CUDA_DIR = os.environ.get("OPENMVS_CUDA_BIN", "/usr/local/bin/OpenMVS-cuda")
+GPU_MVS_MIN_FREE_MB = 2000  # its depth maps took 0.4-0.8 GB at resolution level 2 (experiments/mapper, 33-234 photos)
 
 
 def _mvs(name: str) -> str | None:
@@ -60,6 +64,10 @@ def _mvs(name: str) -> str | None:
         if d and Path(d, name).exists():
             return str(Path(d, name))
     return shutil.which(name)
+
+
+def _mvs_cuda(name: str) -> str | None:
+    return str(Path(_MVS_CUDA_DIR, name)) if _MVS_CUDA_DIR and Path(_MVS_CUDA_DIR, name).exists() else None
 
 
 def tools_available() -> dict:
@@ -110,6 +118,18 @@ def gpu_choice(allowed: bool = True) -> tuple[bool, str]:
         return False, "no GPU visible"
     if free < GPU_MIN_FREE_MB:
         return False, f"only {free} MB of GPU memory free, and it needs {GPU_MIN_FREE_MB}"
+    return True, f"{free} MB of GPU memory free"
+
+
+def mvs_gpu_choice(allowed: bool = True) -> tuple[bool, str]:
+    """Whether OpenMVS's depth maps should use the GPU right now (given a CUDA build of it), and why or why not."""
+    if not allowed:
+        return False, "USE_GPU=0"
+    free = gpu_free_mb()
+    if free is None:
+        return False, "no GPU visible"
+    if free < GPU_MVS_MIN_FREE_MB:
+        return False, f"only {free} MB of GPU memory free, and it needs {GPU_MVS_MIN_FREE_MB}"
     return True, f"{free} MB of GPU memory free"
 
 
@@ -642,8 +662,20 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     if not _finished(work, "dense"):
         log("== OpenMVS: densify")
         tracker.update("dense")
-        _run([_mvs("DensifyPointCloud"), "scene.mvs", "-w", str(work), "--resolution-level", "2", *mask_args,
-              *(["--mask-path", str(dense / "images")] if mask_args else [])], work, log, _geometric(tracker))
+        densify = ["scene.mvs", "-w", str(work), "--resolution-level", "2", *mask_args,
+                   *(["--mask-path", str(dense / "images")] if mask_args else [])]
+        cuda, on_gpu = _mvs_cuda("DensifyPointCloud"), False
+        if cuda:
+            gpu, why = mvs_gpu_choice(use_gpu)
+            log(f"DensifyPointCloud: using the {'GPU' if gpu else 'CPU'} ({why})")
+            if gpu:
+                try:
+                    _run([cuda, *densify, "--cuda-device", "-1"], work, log, _geometric(tracker))
+                    on_gpu = True
+                except RuntimeError as e:   # the CPU build carries on from the depth maps made so far
+                    log(f"DensifyPointCloud: GPU run failed ({e}), carrying on with the CPU")
+        if not on_gpu:
+            _run([_mvs("DensifyPointCloud"), *densify], work, log, _geometric(tracker))
         _finish(work, "dense")
 
     if not _finished(work, "mesh"):

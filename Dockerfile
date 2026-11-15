@@ -1,4 +1,4 @@
-# BoulderMesh with the real pipeline: COLMAP (built with CUDA) + OpenMVS (built from source, CPU).
+# BoulderMesh with the real pipeline: COLMAP (built with CUDA) + OpenMVS (built from source, CPU; --build-arg MVS=24: see below).
 # Build:  docker build -t bouldermesh .      (first build ~10-40 min depending on cores)
 # Run:    docker compose up                 (see docker-compose.yml)
 #
@@ -6,6 +6,11 @@
 # (docker-compose.gpu.yml) and has room, and the CPU otherwise. torch is its CUDA build (TORCH=cu126, 10.4 GB in all),
 # for VGGT placing photos where COLMAP's mapper can't (backend/vggt_place.py), which needs a GPU; everything else of
 # torch's runs on the CPU. --build-arg TORCH=cpu makes the 2.5 GB image a server that meshes nothing needs (build.sh).
+
+# Which OpenMVS. 23: v2.3.0 for the CPU, which every mesh so far was made with. 24 (--build-arg MVS=24): v2.4.0, built
+# twice: for the CPU, and with CUDA for depth maps on a GPU (5 times faster in experiments/mapper), which pipeline.py
+# uses for that one step when a GPU has room. Not the default until an image built with it has made meshes.
+ARG MVS=23
 
 # The same COLMAP version as Ubuntu's package, which has no CUDA, so that only the device changes.
 # It predates this compiler, which no longer brings in those two headers by itself.
@@ -44,6 +49,50 @@ RUN cmake -S /opt/openMVS -B /opt/openMVS/build -G Ninja -DCMAKE_BUILD_TYPE=Rele
  && cmake --build /opt/openMVS/build && cmake --install /opt/openMVS/build
 COPY backend/signal_note.c /opt/signal_note.c
 RUN gcc -shared -fPIC -O2 -Wall -o /usr/local/lib/signal_note.so /opt/signal_note.c
+# what the last stage takes from whichever OpenMVS stage: here no CUDA build, and no libraries of its own
+RUN mkdir -p /usr/local/bin/OpenMVS-cuda /opt/mvs-libs
+
+FROM build AS mvs23
+
+# OpenMVS v2.4.0 needs OpenCV >= 4.11 (Ubuntu 24.04 has 4.6) and CGAL 6 (it has 5.6; header-only), so both are built
+# here, OpenCV with only what OpenMVS uses and nothing that would need more libraries in the last stage. The CUDA
+# build's tools load the NVIDIA driver's own library (libcuda.so.1), so they only start in a container given a GPU:
+# hence the CPU build beside it, which does every step but depth maps, and those too where there's no GPU.
+FROM ubuntu:24.04 AS mvs24
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git cmake build-essential ninja-build ca-certificates curl xz-utils nvidia-cuda-toolkit nvidia-cuda-toolkit-gcc \
+    libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev \
+    libeigen3-dev libgmp-dev libmpfr-dev libnanoflann-dev libjpeg-dev libpng-dev libtiff-dev zlib1g-dev \
+ && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch 4.14.0 https://github.com/opencv/opencv.git /opt/opencv \
+ && cmake -S /opt/opencv -B /opt/opencv/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_LIST=core,imgproc,imgcodecs,calib3d,features2d,flann,highgui -DWITH_CUDA=OFF -DBUILD_TESTS=OFF \
+      -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_opencv_apps=OFF -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_FFMPEG=OFF \
+      -DWITH_GSTREAMER=OFF -DWITH_V4L=OFF -DWITH_OPENCL=OFF -DWITH_VA=OFF -DWITH_VTK=OFF -DWITH_LAPACK=OFF -DWITH_ITT=OFF \
+      -DWITH_WEBP=OFF -DWITH_OPENEXR=OFF -DWITH_OPENJPEG=OFF -DWITH_JASPER=OFF -DWITH_AVIF=OFF -DWITH_JPEGXL=OFF \
+      -DWITH_PROTOBUF=OFF -DWITH_ADE=OFF -DWITH_OBSENSOR=OFF \
+ && cmake --build /opt/opencv/build && cmake --install /opt/opencv/build \
+ && mkdir -p /opt/mvs-libs && cp -a /usr/local/lib/libopencv_*.so.* /opt/mvs-libs/
+RUN curl -fsSL https://github.com/CGAL/cgal/releases/download/v6.0.1/CGAL-6.0.1.tar.xz | tar -xJ --no-same-owner -C /opt \
+ && cmake -S /opt/CGAL-6.0.1 -B /opt/CGAL-6.0.1/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/cgal6 \
+ && cmake --install /opt/CGAL-6.0.1/build
+RUN git clone --depth 1 https://github.com/cdcseacave/VCG.git /opt/vcglib \
+ && git clone --depth 1 --branch v2.4.0 https://github.com/cdcseacave/openMVS.git /opt/openMVS
+# the CPU build, then the CUDA one (for every NVIDIA generation, as COLMAP's is), each into its own folder
+RUN for cuda in OFF ON; do \
+      cmake -S /opt/openMVS -B /opt/openMVS/build-$cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT=/opt/vcglib \
+        -DCGAL_DIR=/opt/cgal6/lib/cmake/CGAL -DOpenCV_DIR=/usr/local/lib/cmake/opencv4 -DOpenMVS_USE_CUDA=$cuda \
+        -DCMAKE_CUDA_ARCHITECTURES=all-major -DOpenMVS_USE_PYTHON=OFF -DOpenMVS_BUILD_VIEWER=OFF -DOpenMVS_USE_BREAKPAD=OFF \
+        -DOpenMVS_ENABLE_TESTS=OFF -DOpenMVS_USE_CERES=OFF -DCMAKE_INSTALL_PREFIX=/opt/mvs-$cuda \
+   && cmake --build /opt/openMVS/build-$cuda && cmake --install /opt/openMVS/build-$cuda || exit 1; \
+    done \
+ && rm -rf /usr/local/bin/OpenMVS && cp -a /opt/mvs-OFF/bin/OpenMVS /usr/local/bin/OpenMVS \
+ && cp -a /opt/mvs-ON/bin/OpenMVS /usr/local/bin/OpenMVS-cuda \
+ && test -x /usr/local/bin/OpenMVS/DensifyPointCloud && test -x /usr/local/bin/OpenMVS-cuda/DensifyPointCloud \
+ && ! (ldd /usr/local/bin/OpenMVS/TextureMesh | grep -q libcuda)
+
+FROM mvs${MVS} AS mvs
 
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
@@ -90,9 +139,13 @@ RUN if [ "$THUMBS" = 1 ]; then \
    && chmod -R a+rX $PLAYWRIGHT_BROWSERS_PATH && rm -rf /var/lib/apt/lists/*; fi
 # Ubuntu's colmap package is only there for the libraries this one links to: /usr/local/bin comes first
 COPY --from=colmap /opt/colmap-cuda/bin/colmap /usr/local/bin/colmap
-COPY --from=build /usr/local/bin/OpenMVS /usr/local/bin/OpenMVS
+COPY --from=mvs /usr/local/bin/OpenMVS /usr/local/bin/OpenMVS
+# with MVS=24: its CUDA build for depth maps, and the OpenCV both its builds link (empty folders otherwise)
+COPY --from=mvs /usr/local/bin/OpenMVS-cuda /usr/local/bin/OpenMVS-cuda
+COPY --from=mvs /opt/mvs-libs/ /usr/local/lib/
+RUN ldconfig
 COPY --from=build /usr/local/lib/signal_note.so /usr/local/lib/signal_note.so
-ENV OPENMVS_BIN=/usr/local/bin/OpenMVS
+ENV OPENMVS_BIN=/usr/local/bin/OpenMVS OPENMVS_CUDA_BIN=/usr/local/bin/OpenMVS-cuda
 # COLMAP's binary needs a display for some commands; run headless via Qt offscreen
 ENV QT_QPA_PLATFORM=offscreen
 

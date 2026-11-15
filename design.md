@@ -570,6 +570,19 @@ the same COLMAP extracts them again to the bit on the CPU, whatever its thread c
 4.2.1; the two find different features, so a model is only re-linked to features by the COLMAP that made it,
 which `build.json` names). What's kept comes to 0.1-0.25 MB a photo (Drifter: 31 MB for 234 photos).
 
+## Depth maps on the GPU (not the default yet)
+
+Depth maps (OpenMVS's DensifyPointCloud) are 7% of a mesh's time on the CPU. OpenMVS 2.4 built with CUDA made
+Drifter's (234 photos) in 56 s against 276 s for the image's 2.3 on hal's 48 threads, and on a 6-core machine with an
+RTX 3060 undistorting and depth maps together took 141 s against 726 s (experiments/mapper, Nov 13-14), using under
+1 GB of the GPU. So the Dockerfile can build 2.4 (`--build-arg MVS=24`), twice: a CUDA build's tools load the NVIDIA
+driver's own library and so don't even start in a container with no GPU, which would leave a machine without one
+unable to mesh at all. `pipeline.py` uses the CUDA build for depth maps alone, when a GPU has 2 GB free, and the CPU
+build for everything else and as the fallback. 2.4 needs OpenCV 4.11 and CGAL 6, newer than Ubuntu 24.04's, so both are
+built into that image. It stays off (MVS=23) until an image built that way has made meshes and they've been compared:
+2.4's depth maps on a GPU are another implementation, not the same arithmetic on another device. Texturing has no GPU
+path in either version (its tools take `--cuda-device` in a CUDA build and use no GPU).
+
 ## Stray pieces and sheets
 
 Each reconstruction hides its stray pieces (`backend/meshclean.py`), using the second rule below.
