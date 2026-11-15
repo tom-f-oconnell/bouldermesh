@@ -692,14 +692,16 @@ def app_name(image: str, cond: str, rep: int) -> str:
     return re.sub(r"[^\w.-]", "_", image.rsplit(":", 1)[-1]) + (f"@{cond}" if cond != "dev" else "") + (f"-r{rep}" if rep > 1 else "")
 
 
-def app(P: str, image: str, cond: str, rep: int) -> None:
+def app(P: str, image: str, cond: str, rep: int, mapper: str = "") -> None:
     """The app's own pipeline from photos to textured mesh, in an image of the app, as its worker runs a mesh of photos
     from the internet (app_run.py): finding people, features, matching, the mapper, the rest step, undistorting, depth
     maps, mesh and texture. On a copy of the boulder's photos with no masks beside them, so people are looked for.
     One timed step; each step of the pipeline's own seconds are in steps.json beside its record (bench.py apps), and
-    the job itself (photos, work, out) under <BENCH>/apprun, apart from the records as its files are root's."""
+    the job itself (photos, work, out) under <BENCH>/apprun, apart from the records as its files are root's. mapper:
+    the app's MAPPER inside (--app-mapper; e.g. incremental, in an image whose default is the global mapper), named
+    in the run as +<mapper>."""
     global APP
-    run = app_name(image, cond, rep)
+    run = app_name(image, cond, rep) + (f"+{mapper}" if mapper else "")
     d, job = R / P / "app" / run, BENCH / "apprun" / P / run
     job.mkdir(parents=True, exist_ok=True)
     (BENCH / "cache" / "models").mkdir(parents=True, exist_ok=True)
@@ -710,7 +712,8 @@ def app(P: str, image: str, cond: str, rep: int) -> None:
     was, APP = APP, image
     try:
         step(d, "app", "app", script, [f"{BENCH}/projects/{P}:/p:ro", f"{job}:/job", f"{d}:/rec",
-                                       f"{BENCH}/cache/models:/data/cache/models"], cond, {"DATA_DIR": "/data"},
+                                       f"{BENCH}/cache/models:/data/cache/models"], cond,
+             {"DATA_DIR": "/data", **({"MAPPER": mapper} if mapper else {})},
              timeout=6 * 3600, gpu=True)
     finally:
         APP = was
@@ -727,9 +730,13 @@ def apps() -> None:
         rec = json.loads(f.read_text())
         steps = json.loads((f.parent / "steps.json").read_text())["steps"] if (f.parent / "steps.json").exists() else []
         metrics = json.loads((f.parent / "metrics.json").read_text()) if (f.parent / "metrics.json").exists() else {}
+        made = json.loads((f.parent / "mapper.json").read_text()) if (f.parent / "mapper.json").exists() else {}
+        check = json.loads((f.parent / "check.json").read_text()) if (f.parent / "check.json").exists() else {}
         rows.append({"boulder": f.parts[-4], "run": f.parts[-2], "rc": rec["rc"], "wall_s": round(rec["wall"]), "cpu_s": rec["cpu_s"],
                      "flags": flags(rec.get("host", {})), "own_gpu_mib": rec.get("host", {}).get("own_mib_max", ""),
                      "placed": metrics.get("placed", ""), "faces": metrics.get("faces", ""), "views": metrics.get("views", ""),
+                     "mapper": made.get("mapper", ""), "untied": len(made.get("untied", [])) if made else "",
+                     "mapper_s": made.get("seconds", ""), "check": ("" if not check else "passed" if check.get("ok") else "FAILED"),
                      **{s["key"]: s.get("seconds", s["state"]) for s in steps}})
     cols = list(dict.fromkeys(k for r in rows for k in r))
     print("\t".join(cols))
@@ -842,6 +849,7 @@ def main(argv: list[str]) -> None:
     p.add_argument("--rep", type=int, default=1)
     p.add_argument("--mvs", default="", choices=["", *MVS])
     p.add_argument("--image", default=APP)
+    p.add_argument("--app-mapper", default="")
     a = p.parse_args(argv)
     if a.command == "feat":
         features(a.args[0], a.feat, a.cond, a.build)
@@ -859,7 +867,7 @@ def main(argv: list[str]) -> None:
     elif a.command == "held":
         held(a.args[0], a.args[1], int(a.args[2]), int(a.args[3]), a.feat, a.cond, a.build)
     elif a.command == "app":
-        app(a.args[0], a.image, a.cond, a.rep)
+        app(a.args[0], a.image, a.cond, a.rep, a.app_mapper)
     elif a.command == "apps":
         apps()
     elif a.command == "heldstats":

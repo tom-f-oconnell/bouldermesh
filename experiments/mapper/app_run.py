@@ -22,3 +22,6 @@ mesh, demo = pipeline.reconstruct(photos, work, out, lambda line: print(line, fl
 tracker.finish()
 print(f"BENCH_APP mesh={mesh.name} demo={demo} seconds={time.time() - began:.1f}", flush=True)
 (records / "metrics.json").write_text(json.dumps(meshmetrics.compute(out)))
+for name in ("mapper.json", "check.json", "models.json"):     # how its cameras were placed, its check, its models: where the image writes them
+    if (out / name).exists():
+        (records / name).write_text((out / name).read_text())
