@@ -1,0 +1,35 @@
+# The parts of a job the mapper table leaves out (section 11, item 3): the app's features and matching, timed as a job
+# runs them; then the global mapper from GPU SIFT, from ALIKED with LightGlue, and from 4.2.1's own CPU SIFT. A feat
+# line without --cond makes the set the mapper starts from (4.2.1's sets in the plain tree, where the mapper looks
+# for them); the one with --cond prod is only for its timing.
+feat e6de7747fab5 --feat sift391 --cond prod
+feat 31de9a59303a --feat sift391 --cond prod
+feat 9f3b4b740847 --feat sift391 --cond prod
+feat ce7571e0a4a3 --feat sift391 --cond prod
+feat 31de9a59303a --feat siftgpu391
+feat 31de9a59303a --feat siftgpu391 --cond prod
+all 31de9a59303a global 0 --feat siftgpu391 --cond prod --build complete
+feat 9f3b4b740847 --feat siftgpu391
+feat 9f3b4b740847 --feat siftgpu391 --cond prod
+all 9f3b4b740847 global 0 --feat siftgpu391 --cond prod --build complete
+feat ce7571e0a4a3 --feat siftgpu391
+feat ce7571e0a4a3 --feat siftgpu391 --cond prod
+all ce7571e0a4a3 global 0 --feat siftgpu391 --cond prod --build complete
+feat 31de9a59303a --feat aliked421
+feat 31de9a59303a --feat aliked421 --cond prod --build complete
+all 31de9a59303a global 0 --feat aliked421 --cond prod --build complete
+feat 9f3b4b740847 --feat aliked421
+feat 9f3b4b740847 --feat aliked421 --cond prod --build complete
+all 9f3b4b740847 global 0 --feat aliked421 --cond prod --build complete
+feat ce7571e0a4a3 --feat aliked421
+feat ce7571e0a4a3 --feat aliked421 --cond prod --build complete
+all ce7571e0a4a3 global 0 --feat aliked421 --cond prod --build complete
+feat 31de9a59303a --feat sift421
+feat 31de9a59303a --feat sift421 --cond prod --build complete
+all 31de9a59303a global 0 --feat sift421 --cond prod --build complete
+feat 9f3b4b740847 --feat sift421
+feat 9f3b4b740847 --feat sift421 --cond prod --build complete
+all 9f3b4b740847 global 0 --feat sift421 --cond prod --build complete
+feat ce7571e0a4a3 --feat sift421
+feat ce7571e0a4a3 --feat sift421 --cond prod --build complete
+all ce7571e0a4a3 global 0 --feat sift421 --cond prod --build complete

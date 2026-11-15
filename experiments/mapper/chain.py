@@ -9,7 +9,9 @@ whose results exist is skipped, a step cut short is made again):
 
 chain.py short runs the SHORT plan in place of the whole benchmark (PLANS): the smallest set of jobs that answers the
 main questions, small boulders first, so that a method that is clearly worse can be taken out of the later phases'
-queue files before they start. CORES_FREE and MEM (bench.py) in the environment fit it to a machine smaller than hal.
+queue files before they start. chain.py <queue file or build-<variant>> ... runs just those, in that order: a queue
+from <BENCH> as a timed phase (one named *-incr.txt is incr/boulder.py's), a build as an untimed one on every core
+allowed. CORES_FREE and MEM (bench.py) in the environment fit it to a machine smaller than hal.
 
 PHASES run in order. A timed phase is one queue (bench.py queue): a job at a time, with nothing else of the benchmark
 going. An untimed phase runs several things side by side, each given some cores, as many at once as fit in CORES_FREE,
@@ -33,7 +35,7 @@ import bench  # noqa: E402
 BENCH = bench.BENCH
 LOG, STATE, NOTES = BENCH / "chain.log", BENCH / "STATE.txt", BENCH / "STATE.notes.txt"
 CORES_FREE = int(os.environ.get("CORES_FREE", 36))      # what an untimed phase may use in all while there is no cap
-PLAN = sys.argv[1] if len(sys.argv) > 1 else "full"
+PLAN = " ".join(sys.argv[1:]) or "full"
 START = ("systemd-run --user --unit bm-bench --collect -p WorkingDirectory=" + str(HERE)
          + " -E PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
          + "".join(f" -E {k}={os.environ[k]}" for k in ("BENCH", "CORES_FREE", "MEM") if k in os.environ)
@@ -84,7 +86,17 @@ SHORT = [
     ("timed: Drifter (234 photos)", [queue("queue-short-3.txt"), queue("queue-short-3-incr.txt", script="incr/boulder.py")]),
 ]
 PLANS = {"full": FULL, "short": SHORT}
-PHASES = PLANS[PLAN]
+
+
+def named(what: str) -> tuple[str, list[dict]]:
+    """A phase of its own for a queue file in BENCH, or for build-<variant>."""
+    if what.startswith("build-") and not what.endswith(".txt"):
+        return f"untimed: the {what[6:]} build (verified)", [build(what[6:], CORES_FREE)]
+    assert (BENCH / what).is_file(), f"{what}: not a plan, a build, nor a queue file in {BENCH}"
+    return f"timed: {what}", [queue(what, script="incr/boulder.py" if what.endswith("-incr.txt") else "bench.py")]
+
+
+PHASES = PLANS[PLAN] if PLAN in PLANS else [named(w) for w in PLAN.split()]
 stopping = False
 
 
