@@ -698,8 +698,75 @@ Yes in principle. This is reasoning from how the steps work, not a measurement.
   close-ups without a ladder would be exactly those. The rest step then registers them one by one against the model.
 - **One limit to lift:** depth maps are computed at quarter resolution everywhere (`--resolution-level 2`); for hold
   regions that could be raised.
-- **A test:** a simulated capture. Crop and zoom existing photos around a hold, add them, and measure triangle size
-  there.
+- **A test:** a simulated capture, below.
+
+### The simulated close-up test (atlas, Nov 15)
+
+`experiments/mapper/sim_closeups.py` picks one "hold" in a finished model (the point near the rock's middle that most
+photos see; its region is 4% of the scene's size round it) and, from photos that see it from directions spread apart,
+cuts the window round it and enlarges it 4 times, or 2 and 4 times as a ladder. Those go in with the boulder's own
+photos through what the app now runs: its features, the global mapper, the rest step, OpenMVS 2.4 with 2.3's values.
+
+What it can't show: an enlarged window is a longer lens from the same spot, not a phone held near. There is no new
+parallax, and no fine texture that the wide photos never saw, which is what makes real close-ups hard to match. What
+it does show is the mechanics: the dense step works at a quarter of each photo's size, so a window enlarged 4 times
+reaches it at the photo's own pixels, 16 times as many over the hold.
+
+| | 31de, x4 | 31de, x2 and x4 | Drifter, x4 | Drifter, x2 and x4 |
+|---|---|---|---|---|
+| close-ups, and how far apart they look | 12, 13 degrees | 24, 13 degrees | 24, 89 degrees | 48, 89 degrees |
+| placed | 12 of 12 | 24 of 24 | 24 of 24 | 48 of 48 |
+| of those, by the global mapper / by the rest step | 0 / 12 | 3 / 21 | 3 / 21 | 19 / 29 |
+| the boulder's own photos placed (without close-ups) | 71 (71) | 71 (71) | 144 (142) | 142 (142) |
+| a close-up's points seen, median | 547 | 2,751 | 671 | 2,573 |
+| looking off where it should, median degrees | 1.2 | 4.6 | 2.0 | 1.5 |
+| its focal length against what the zoom makes it | 0.90 | 1.53 | 1.11 | 1.07 |
+| median triangle edge in the hold's region, before and after | 0.56% to 0.16% | 0.56% to 0.16% | 0.29% to 0.087% | 0.29% to 0.086% |
+| finer by | 3.5x | 3.5x | 3.4x | 3.4x |
+| old surface against new there, once fitted (old edge = 1) | 0.2 | 0.2 | 0.4 | 0.4 |
+| mapper, rest, dense, texture seconds (without: 112, 20, 66, 150 and 186, 69, 161, 316) | 139, 48, 86, 253 | 132, 76, 110, 351 | 269, 149, 236, 849 | 377, 376, 299, 1,136 |
+
+- **Every close-up was placed, and mostly by the rest step.** The global mapper left three quarters of them untied
+  (all of the x4 ones on 31de), and the rest step registered each against the model. So the rest step, and the rule
+  that takes untied cameras out for it, are what make close-ups work in this pipeline.
+- **The mesh got 3.4-3.5 times finer over the hold, and it is the same surface**: fitted there, old and new are a
+  fifth to two fifths of the old mesh's edge apart. Not 4 times, as the mesh step spaces its points 2.5 pixels apart.
+- **The ladder wasn't needed to place them here, but it tied them four times better** (2,600-2,750 points seen
+  against 550-670), and got six times as many through the global mapper itself on Drifter. Since the simulation is
+  easier than a real step closer, this doesn't argue for dropping it.
+- **A close-up's camera is right in where it looks and loose in where it stands.** They stand a third to half of the
+  scene's size from the photo they were cut from, with the focal length off by 10% (50% on 31de's ladder run): the
+  trade of lens for distance at its strongest, since a narrow view barely tells them apart. The simulation makes it
+  worse than a real capture would (no parallax of its own).
+- **The cost is large.** One hold's 48 close-ups took a Drifter job's mapper-to-texture time from 780 s to 2,250 s:
+  texturing 316 to 1,136 s (the hold's region has eleven times the faces), the rest step 69 to 376 s.
+
+### What that means for the app's close-ups of a set's holds
+
+For `backend/captureplan.py`'s `need.detail` (as close as the lens focuses, 6 views 20 degrees apart, sides 40 degrees
+round, a ladder of 2 with 3 steps needed) and whatever meshes a capture:
+
+- **Keep the rest step in whatever places a capture's photos.** Close-ups are the photos the global mapper leaves out.
+  A capture added to a finished model should be registered against it (as the rest step does, or the incremental
+  pipeline's add), not hoped for from a fresh global solve.
+- **Keep the ladder and its needed steps.** Here it wasn't needed for placing and still quadrupled the ties. Real
+  close-ups have texture the wide photos lack, so the half-way photos are the only thing both sides can match.
+- **Give the solver the phone's lens, and where tracking says it stood.** Every loose number above is a lens solved
+  per photo trading against distance. An app photo carries its lens (`k`) and its tracked position: with the lens held
+  (and not its principal point refined) a close-up can't slide along its line of sight. Worth checking what
+  `pipeline.py` does with an app photo's lens today.
+- **Views well apart matter more than their number.** 31de's hold was only seen within 13 degrees, and its ladder run
+  came out worst (4.6 degrees off, focal length 1.5 times). `view_deg` and `sides_deg` are the right asks. From one
+  side, how far a hold stands proud of the rock is the least certain thing about it.
+- **Don't put every hold's close-ups through the whole rock's dense and texture steps.** One hold tripled the job.
+  A set of ten would be hours. Mesh each hold's region by itself from its close-ups
+  (`experiments/mapper/incr/details.py` does: the hold's photos alone, cut to its sphere), tied to the rock's mesh,
+  and give the rock's own mesh only the photos it needs.
+- **A hold meshed by the rock's own dense step is 10 photo-pixels a triangle edge** (a quarter size, then 2.5 pixels
+  between points). At the 0.5 mm a pixel the plan asks of a close-up, that is 5 mm triangles: finer than now, not
+  replica grade. Full size in the hold's region (`--resolution-level 0`, as `details.py` uses) gives about 1.3 mm.
+- **Not tested:** real phone close-ups, from really nearer, with their own fine texture, blur and shallow focus; a
+  phone's known lens; holds near an edge of the rock.
 
 
 ## Stray pieces and sheets

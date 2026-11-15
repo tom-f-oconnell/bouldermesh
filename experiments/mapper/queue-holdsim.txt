@@ -1,0 +1,8 @@
+# Simulated close-ups of one hold (sim_closeups.py make; design.md, "Would close-up photos of holds fix that?"): the
+# boulder's own photos plus windows round the hold enlarged 4 times, and with a half-way ladder (2 and 4 times), through
+# the pipeline the app now runs: the app's features, the global mapper, the rest step, OpenMVS 2.4 with 2.3's values.
+# Then: python3 sim_closeups.py report hold4-31de hold24-31de hold4-ce75 hold24-ce75
+all hold4-31de global_tied 0 --cond prod --build complete --post complete --mvs as23
+all hold24-31de global_tied 0 --cond prod --build complete --post complete --mvs as23
+all hold4-ce75 global_tied 0 --cond prod --build complete --post complete --mvs as23
+all hold24-ce75 global_tied 0 --cond prod --build complete --post complete --mvs as23
