@@ -215,6 +215,55 @@ assert not ok and "it stopped" in said and "systemctl --user status bouldermesh-
 shutil.rmtree(scratch)
 print("installing OK")
 
+# --- nvidia-smi's reading of the first GPU: past warnings it prints first, and its utilization "[N/A]" where it can't say
+assert worker.GpuWatch.sample("35, 1200, 8192\n12, 100, 24576\n") == (35.0, 1200.0, 8192.0)
+assert worker.GpuWatch.sample("[N/A], 1200, 8192\n") == (None, 1200.0, 8192.0), "its memory is what matters"
+assert worker.GpuWatch.sample("WARNING: infoROM is corrupted at gpu 0000:01:00.0\n35, 1200, 8192\n") == (35.0, 1200.0, 8192.0)
+assert worker.GpuWatch.sample("") is None and worker.GpuWatch.sample("[N/A], [N/A], [N/A]\n") is None
+print("reading the GPU OK")
+
+# --- what it takes, by its GPU's memory in all: the CPU below any job's least, and no job its GPU could never hold
+GPU = ["--gpus", "all"]
+fit = worker.Worker.fit_gpu
+gpu, tasks, small, said = fit(GPU, "auto", "NVIDIA GeForce GTX 1060 3GB", 3072, ())
+assert gpu == [] and tasks == worker.CPU_TASKS and small == "NVIDIA GeForce GTX 1060 3GB (3.0 GB)" and "on the CPU" in said[0], "Gerty"
+gpu, tasks, small, said = fit(GPU, "auto", "NVIDIA GeForce RTX 2060", 6144, ())
+assert gpu == GPU and tasks == ("beta", "scale", "filter") and small is None, tasks
+assert said == ["NVIDIA GeForce RTX 2060 (6.0 GB in all) can't hold reconstruct (7.4 GB), splat (7.8 GB): not taking those"], said
+gpu, tasks, _, said = fit(GPU, "auto", "NVIDIA GeForce RTX 2070", 8192, ())
+assert gpu == GPU and tasks == worker.TASKS and said == [], "blackbox: the server fits each job to what's free"
+gpu, tasks, _, said = fit(GPU, "auto", "NVIDIA GeForce RTX 2060", 6144, ("reconstruct",))
+assert gpu == GPU and tasks == ("reconstruct",) and "the server won't give it those" in said[0], "--tasks as given, but said"
+gpu, tasks, _, said = fit(GPU, "auto", None, None, ())
+assert gpu == [] and tasks == worker.CPU_TASKS and "doesn't say how much memory" in said[0], "unknown isn't unlimited"
+assert fit(GPU, "all", None, None, ()) == (GPU, worker.TASKS, None, []), "--gpu all: as asked"
+assert fit([], "auto", None, None, ()) == ([], worker.CPU_TASKS, None, []), "no GPU"
+assert fit([], "none", None, None, ("filter",)) == ([], ("filter",), None, [])
+print("fitting the GPU OK")
+
+# --- at boot, a driver that doesn't answer yet is waited for; long after, or with no NVIDIA GPU there, it isn't
+real = (worker.quiet, worker.since_boot, worker.nvidia_hardware, worker.shutil.which, worker.log)
+answers, waits, logged = iter([1, 1, 0]), [], []
+worker.quiet = lambda cmd: type("R", (), {"returncode": next(answers), "stdout": ""})()
+worker.since_boot, worker.nvidia_hardware, worker.log = lambda: 40.0, lambda: True, logged.append
+worker.shutil.which = lambda tool: "/usr/bin/" + tool
+try:
+    assert worker.driver_answers(sleep=waits.append) and waits == [10, 10] and len(logged) == 1, (waits, logged)
+    worker.quiet = lambda cmd: type("R", (), {"returncode": 9, "stdout": ""})()
+    worker.since_boot = lambda: 4000.0
+    waits.clear()
+    assert not worker.driver_answers(sleep=waits.append) and waits == [], "long after boot: no waiting"
+    worker.since_boot, worker.nvidia_hardware = lambda: 40.0, lambda: False
+    assert not worker.driver_answers(sleep=waits.append) and waits == [], "no NVIDIA GPU: nothing to wait for"
+    ages = iter([40.0, 200.0, 400.0])
+    worker.since_boot, worker.nvidia_hardware, logged[:] = lambda: next(ages), lambda: True, []
+    assert not worker.driver_answers(sleep=waits.append) and waits == [10, 10] and "working without the GPU" in logged[-1]
+    worker.shutil.which = lambda tool: None
+    assert not worker.driver_answers(sleep=waits.append), "no driver installed"
+finally:
+    worker.quiet, worker.since_boot, worker.nvidia_hardware, worker.shutil.which, worker.log = real
+print("waiting for the driver OK")
+
 # --- elsewhere: --setup says what to install by hand
 assert worker.os_release() is not None
 print("ALL WORKER SETUP TESTS PASSED")

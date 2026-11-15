@@ -585,6 +585,12 @@ small = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 1500, "gpu_total_mb
 assert small["held"] and "its GPU (3.0 GB in all) is too small for any job waiting: the least needs 9.1 GB" in small["why"], small
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 5000, "gpu_total_mb": 24576})
 assert board.current(box["id"])["why"].startswith("its GPU has 4.9 GB"), "the same state: only the reason replaced"
+# a script that watches its GPU but couldn't say its memory (16, asking as it started: given a 9.3 GB job on an 8 GB
+# card) gets no new job; one that says only what it has in all is held to that
+r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": None, "gpu_total_mb": None})
+assert r["held"] and "its GPU's memory isn't known yet" in r["why"] and big.state == "queued", r
+r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": None, "gpu_total_mb": 8192})
+assert r["held"] and "its GPU (8.0 GB in all) is too small for any job waiting" in r["why"] and big.state == "queued", r
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 12000})
 assert r["job"]["id"] == big.id and board.current(box["id"]) == {**board.current(box["id"]), "state": "working", "why": "big"}
 del board.jobs[big.id]
@@ -837,6 +843,7 @@ import types  # noqa: E402
 spec = importlib.util.spec_from_file_location("bouldermesh_worker_gpu", SCRIPT)
 wmod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(wmod)
+assert wmod.GPU_LEAST_MB == {t: pullwork.gpu_need_mb(t, 0) for t in wmod.TASKS}, "what the script reckons its GPU can hold, as the server does"
 calls: list = []
 
 

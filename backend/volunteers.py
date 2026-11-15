@@ -829,8 +829,8 @@ computer connects out, over HTTPS; nothing needs to reach it. Ctrl-C stops it, a
 <h3>What it needs</h3>
 <ul>
 <li><b>An NVIDIA GPU</b>, with a current driver (535 or newer): GTX 900 series or newer (CUDA compute capability 5.0), and
-8 GB of its memory or more for the most help (less will still match photos; placing the hardest ones uses as much as is
-free).</li>
+8 GB of its memory or more to mesh (each climb only once enough of it is free); with 4 to 8 GB, it finds beta and
+sizes on the GPU, and with less, helps on the CPU, as a <a href="#helper">compute helper</a> does.</li>
 <li><b>Linux on an x86-64 computer</b>, with Docker and NVIDIA's Container Toolkit, Docker usable without sudo (in the
 <code>docker</code> group), and Python 3.9 or newer. On Windows, use WSL 2 with Docker's GPU support, and run everything
 below inside it. A Mac won't do: it has no NVIDIA GPU, and Docker on a Mac can't use the one it has.</li>

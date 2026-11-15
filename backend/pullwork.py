@@ -530,6 +530,11 @@ class Board:
             self._state(m, "held back", held)
             return {"wait": POLL, "why": f"held back: {held}", "held": True}
         free = _number(client.get("gpu_free_mb")) if client.get("gpu") else None
+        if client.get("gpu") and free is None:      # then no more than it has in all
+            free = _number(client.get("gpu_total_mb"))
+        # its script watches its GPU, but couldn't say what it has: as one asking at once as it starts (scripts before
+        # 19), or nvidia-smi not saying. Given no new job then, rather than one of any size
+        unknown = client.get("gpu") and free is None and "gpu_free_mb" in client
         now = time.time()
         with self.cond:
             mine = next((j for j in self.jobs.values() if j.machine == m["id"] and j.state == "running"), None)
@@ -538,6 +543,10 @@ class Board:
                 mine.out_size = None
                 mine.output.unlink(missing_ok=True)
                 self._save(mine)
+            elif unknown:
+                why = "its GPU's memory isn't known yet (nvidia-smi didn't say)"
+                self._state(m, "held back", why)
+                return {"wait": POLL, "why": f"held back: {why}", "held": True}
             else:
                 version = int(_number(client.get("version")) or 1)
                 could = [j for j in self.jobs.values() if j.state == "queued" and j.version <= version and j.owner != 0

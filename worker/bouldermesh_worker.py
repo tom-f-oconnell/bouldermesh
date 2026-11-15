@@ -25,6 +25,8 @@ for climbs and held back), and says once an hour how the hour went.
 
 A machine without an NVIDIA GPU only filters harvests' photos and finds beta by default (--tasks), which need no GPU, a
 few GB of memory and disk, and a slim CPU image (1.9 GB, for x86-64 and ARM64): meshing on a CPU alone takes hours a climb.
+Nor does one whose GPU has less memory in all than any job needs (3.9 GB); one with less than meshing needs (7.4 GB) takes
+the rest.
 
 It takes no climbs while others keep the GPU busy (over 50% as a median over 3 minutes, until it's quiet again for 5;
 --busy-gpu-util), or while less than 24 GB of memory is free (--need-ram-gb; 4 GB for filtering and beta alone), and only those whose GPU memory fits in
@@ -85,12 +87,18 @@ from pathlib import Path
 # 16: a GPU with too little memory for any job is left out, and the CPU works instead
 # 17: --check offers to start it by itself whenever the computer starts, as a systemd service of the user's own
 # 18: fits a capture's scenery (remote_job.py --task splat), with a GPU
-VERSION = 18
+# 19: takes only the jobs its GPU's memory in all could hold; reads that memory before it first asks, which a start
+#     followed so closely as to ask before it had, and was given a job of any size; waits for the GPU's driver at boot
+VERSION = 19
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter", "splat")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
                                                     # filtering a harvest's photos, fitting a capture's scenery
-SMALL_GPU_MB = 4000         # a GPU with less memory than this in all fits no job (the least the server reckons one needs): the CPU does instead
+# the least GPU memory the server reckons each kind of job may need (pullwork.gpu_need_mb(task, 0)), in MB: a GPU with
+# less than that in all is never given one, so it doesn't take it; with less than any, it works on the CPU instead
+GPU_LEAST_MB = {"reconstruct": 7600, "beta": 4000, "scale": 4000, "filter": 4000, "splat": 8000}
+SMALL_GPU_MB = min(GPU_LEAST_MB.values())
+BOOT_GRACE = 300            # seconds after the computer starts in which a GPU's driver that doesn't answer yet is waited for
 CPU_TASKS = ("filter", "beta")     # what a machine without a GPU takes, unless --tasks says otherwise
 INPUTS = ("photos", "masks", "mesh", "videos", "more", "cache.sqlite", "task.json")   # what a job's folder may hold
 SEND_EVERY = 5              # seconds between reports of a job's log, which also tell the server it's alive
@@ -134,12 +142,15 @@ class GpuWatch:
     """The GPU's use (nvidia-smi), sampled every GPU_EVERY seconds on a thread of its own, each sample marked by whether
     a job of this script's was running then (or had just ended), so that others' use can be told from its own."""
 
-    def __init__(self):
+    def __init__(self, first: tuple | None = None):
         self.samples: deque = deque(maxlen=int(QUIET_WINDOW / GPU_EVERY) + 10)     # (time, util %, used MB, total MB, ours)
         self.running, self.ours_until = False, 0.0
         self.name = self.gpu_name()
         self.lock = threading.Lock()
         self.job: dict | None = None    # the job running: {container, id (its full id, once known), busy (s), last}
+        first = first or self.sample()      # before asking for work, which says what's free
+        if first:
+            self.samples.append((time.time(), *first, False))
         threading.Thread(target=self._loop, daemon=True).start()
 
     @staticmethod
@@ -196,26 +207,38 @@ class GpuWatch:
             job["busy"] += util / 100 * job["share"] * dt
 
     @staticmethod
-    def sample() -> tuple[float, float, float] | None:
-        """The first GPU's (utilization %, memory used MB, memory total MB), or None if nvidia-smi can't say."""
-        try:
-            r = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
-                               capture_output=True, text=True, timeout=30)
-            util, used, total = (float(x) for x in r.stdout.splitlines()[0].split(","))
+    def sample(out: str | None = None) -> tuple[float | None, float, float] | None:
+        """The first GPU's (utilization %, memory used MB, memory total MB), or None if nvidia-smi can't say its memory;
+        its utilization None where it says "[N/A]", as some drivers do. From out, nvidia-smi's output, if given."""
+        if out is None:
+            r = quiet(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"])
+            out = r.stdout if r and r.returncode == 0 else ""
+        for line in out.splitlines():      # the first GPU's, after any warning printed before it
+            fields = [f.strip() for f in line.split(",")]
+            if len(fields) != 3:
+                continue
+            try:
+                used, total = float(fields[1]), float(fields[2])
+            except ValueError:
+                continue
+            try:
+                util = float(fields[0])
+            except ValueError:
+                util = None
             return util, used, total
-        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
-            return None
+        return None
 
     def _loop(self) -> None:
         while True:
+            time.sleep(GPU_EVERY)
             s = self.sample()
             if s:
                 self.samples.append((time.time(), *s, self.running or time.time() < self.ours_until))
                 try:
-                    self._job_share(s[0])
+                    if s[0] is not None:
+                        self._job_share(s[0])
                 except (OSError, subprocess.SubprocessError):
                     pass
-            time.sleep(GPU_EVERY)
 
     def ours(self, running: bool) -> None:
         """Mark a job of this script's as running, or ended (its use lingers in the samples for a little)."""
@@ -226,12 +249,15 @@ class GpuWatch:
     def others(self, seconds: float) -> list[float]:
         """Others' utilization in the samples of the last seconds, while no job of this script's ran."""
         cut = time.time() - seconds
-        return [s[1] for s in list(self.samples) if s[0] >= cut and not s[4]]
+        return [s[1] for s in list(self.samples) if s[0] >= cut and not s[4] and s[1] is not None]
 
     def free_mb(self) -> float | None:
-        """GPU memory free in the last sample without a job of this script's."""
+        """GPU memory free in the last sample without a job of this script's; or, with none (after a long one), now."""
         mine = [s for s in list(self.samples) if not s[4]]
-        return mine[-1][3] - mine[-1][2] if mine else None
+        if mine:
+            return mine[-1][3] - mine[-1][2]
+        now = None if self.running else self.sample()
+        return now[2] - now[1] if now else None
 
     def total_mb(self) -> float | None:
         """All the GPU's memory, as its last sample had it."""
@@ -373,9 +399,42 @@ def machine_state() -> dict:
             st["docker_state"] = "denied" if r and "permission denied" in r.stderr.lower() else "stopped"
     smi = shutil.which("nvidia-smi") and quiet(["nvidia-smi", "-L"])
     st["gpu"] = bool(smi and smi.returncode == 0)
-    lspci = not st["gpu"] and shutil.which("lspci") and quiet(["lspci"])
-    st["gpu_hardware"] = st["gpu"] or bool(lspci and re.search(r"(VGA|3D|Display).*NVIDIA", lspci.stdout, re.I))
+    st["gpu_hardware"] = st["gpu"] or nvidia_hardware()
     return st
+
+
+def nvidia_hardware() -> bool:
+    """Whether lspci finds an NVIDIA GPU, with or without its driver."""
+    r = shutil.which("lspci") and quiet(["lspci"])
+    return bool(r and re.search(r"(VGA|3D|Display).*NVIDIA", r.stdout, re.I))
+
+
+def since_boot() -> float:
+    """Seconds since the computer started (forever, where /proc/uptime doesn't say)."""
+    try:
+        return float(Path("/proc/uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return float("inf")
+
+
+def driver_answers(sleep=time.sleep) -> bool:
+    """Whether an NVIDIA GPU's driver answers (nvidia-smi -L). While the computer started less than BOOT_GRACE ago, it
+    waits for one that doesn't yet, if there's an NVIDIA GPU and its driver is installed: a service starting with the
+    computer may come before the driver, and would otherwise work without the GPU until it's next started."""
+    said = False
+    while shutil.which("nvidia-smi"):
+        r = quiet(["nvidia-smi", "-L"])
+        if r and r.returncode == 0:
+            return True
+        if since_boot() > BOOT_GRACE or not nvidia_hardware():
+            break
+        if not said:
+            log("the NVIDIA driver doesn't answer yet, as the computer has only just started: waiting for it")
+            said = True
+        sleep(10)
+    if said:
+        log("the NVIDIA driver didn't answer: working without the GPU")
+    return False
 
 
 def describe(st: dict) -> str:
@@ -850,17 +909,16 @@ class Worker:
         self.settings = Path(args.home).expanduser().resolve()              # config.json, and pulled.json
         self.server = Server(args.server, args.token)
         self.gpu = self.gpu_args(args.gpu)
-        self.small_gpu: str | None = None       # a GPU there is, too small for any job: what it is, for the server to say
-        if self.gpu:
-            card, total = GpuWatch.gpu_name(), (GpuWatch.sample() or (0, 0, None))[2]
-            if total is not None and total < SMALL_GPU_MB:
-                self.small_gpu = f"{card or 'its GPU'} ({total / 1024:.1f} GB)"
-                log(f"{self.small_gpu} has less memory than any job needs ({SMALL_GPU_MB / 1024:.1f} GB): working without it, on the CPU")
-                self.gpu = []
-        self.tasks = tuple(t for t in TASKS if t in (args.tasks or "").split(",")) or (TASKS if self.gpu else CPU_TASKS)
+        first, card = (GpuWatch.sample(), GpuWatch.gpu_name()) if self.gpu else (None, None)
+        given = tuple(t for t in TASKS if t in (args.tasks or "").split(","))
+        # small_gpu: a GPU there is, too small for any job: what it is, for the server to say
+        self.gpu, self.tasks, self.small_gpu, said = self.fit_gpu(self.gpu, args.gpu, card, first[2] if first else None, given)
+        for line in said:
+            log(line)
+        self.gpu_said = f"{card or 'its GPU'}, {first[2] / 1024:.1f} GB" if self.gpu and first else None    # for --check
         self.meshes = "reconstruct" in self.tasks    # what it needs room and memory for: a climb's, or less
         self.container: str | None = None
-        self.watch = GpuWatch() if self.gpu else None
+        self.watch = GpuWatch(first) if self.gpu and first else None
         self.gpu_busy = False
         (self.home / "data").mkdir(parents=True, exist_ok=True)
 
@@ -870,9 +928,32 @@ class Worker:
             return []
         if choice == "cdi":
             return ["--device", "nvidia.com/gpu=all"]
-        if choice == "all" or shutil.which("nvidia-smi") and subprocess.run(["nvidia-smi", "-L"], capture_output=True).returncode == 0:
+        if choice == "all" or driver_answers():
             return ["--gpus", "all"]
         return []
+
+    @staticmethod
+    def fit_gpu(gpu: list[str], choice: str, card: str | None, total: float | None,
+                given: tuple[str, ...]) -> tuple[list[str], tuple[str, ...], str | None, list[str]]:
+        """What this machine can do with its GPU, by the GPU's memory in all (total, MB; None if nvidia-smi didn't say):
+        the GPU's docker arguments (none: the CPU instead), the kinds of job it takes (given, by --tasks, or those its
+        GPU's memory could ever hold), the small GPU it left out, if any, for the server to say, and what to log."""
+        card = card or "its GPU"
+        if gpu and total is None and choice == "auto":
+            return [], given or CPU_TASKS, None, [f"{card}: nvidia-smi doesn't say how much memory it has, so no job can be "
+                                                  "fitted to it: working without it, on the CPU (--gpu all uses it anyway)"]
+        if gpu and total is not None and total < SMALL_GPU_MB:
+            small = f"{card} ({total / 1024:.1f} GB)"
+            return [], given or CPU_TASKS, small, [f"{small} has less memory than any job needs ({SMALL_GPU_MB / 1024:.1f} GB): "
+                                                   "working without it, on the CPU"]
+        if not gpu:
+            return [], given or CPU_TASKS, None, []
+        fits = tuple(t for t in TASKS if total is None or total >= GPU_LEAST_MB[t])
+        short = [t for t in (given or TASKS) if t not in fits]
+        said = [f"{card} ({total / 1024:.1f} GB in all) can't hold "
+                + ", ".join(f"{t} ({GPU_LEAST_MB[t] / 1024:.1f} GB)" for t in short)
+                + (": the server won't give it those" if given else ": not taking those")] if short else []
+        return gpu, given or fits, None, said
 
     # -- others using this machine -----------------------------------------------------------------------------------
     def held_back(self) -> str | None:
@@ -1161,6 +1242,8 @@ class Worker:
                 raise SystemExit(f"but there isn't room for jobs: {short}")
             log(f"room for jobs in {self.home}: {free_gb(self.home):.0f} GB free; Docker's images: "
                 + ", ".join(f"{w} {free_gb(w):.0f} GB free" for w in docker_storage()))
+            log(f"it takes {', '.join(self.tasks)}, " + (f"with its GPU ({self.gpu_said})" if self.gpu_said else
+                                                         "with its GPU" if self.gpu else "on the CPU"))
             st = autostart_state()
             offer, note = autostart_offer(st)
             if note:
@@ -1179,8 +1262,8 @@ class Worker:
         usage = Usage(Path(self.args.home).expanduser())
         while True:
             held = self.held_back()
-            asking = {**client, "updates": updates, "held": held,
-                      "gpu_free_mb": self.watch.free_mb() if self.watch else None, "gpu_total_mb": self.watch.total_mb() if self.watch else None}
+            asking = {**client, "updates": updates, "held": held,     # a GPU whose memory it can't read isn't measured: --gpu all, cdi
+                      **({"gpu_free_mb": self.watch.free_mb(), "gpu_total_mb": self.watch.total_mb()} if self.watch else {})}
             try:
                 r = self.server.call("/worker/api/work", asking)
             except urllib.error.HTTPError as e:

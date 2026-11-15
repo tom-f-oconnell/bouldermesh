@@ -1028,7 +1028,13 @@ machine. *Run more on* adds up to that many machines (2 by default):
   it's done, and an image it pulled goes once it pulls a newer one. It shares the machine: it takes no climb while others
   keep its GPU busier than 50% (`--busy-gpu-util`; a median over 3 min, and quiet again over 5 before it carries on), or
   while less than 24 GB of memory is free (`--need-ram-gb`; also `BOULDERMESH_NEED_RAM_GB`), and only one whose GPU
-  memory fits in what's free (what VGGT may need to place 20 of its photos: 7.6-9.3 GB; 4 GB for beta or size). Its CPU
+  memory fits in what's free (what VGGT may need to place 20 of its photos: 7.6-9.3 GB; 4 GB for beta or size). It
+  takes only the kinds of job its GPU's memory in all could ever hold (meshing from 7.4 GB, a scenery's splat from 7.8,
+  beta, size and filtering from 3.9), and with less than any, works on the CPU, as without a GPU (`--tasks` takes what it
+  says). It reads that memory before it first asks, and at a computer's start (5 min) waits for a GPU's driver that
+  doesn't answer yet, so that a service starting with it doesn't work without the GPU from then on. A machine whose
+  script watches its GPU but can't say its memory is given no new job (scripts before 19 could ask before their first
+  reading, and be given one of any size). Its CPU
   use is held down by `--nice` and `--cpus` instead. A climb it has started, it finishes. It tells this server why it's
   held back, which keeps each machine's state as it changes (working, idle, held back, awaiting approval, offline once
   it stops asking for 2 min) and logs each change: *Machines* on the admin page shows each one's now and for how long,
