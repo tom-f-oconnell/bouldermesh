@@ -266,13 +266,14 @@ def pycolmap(k: Checks) -> None:
 
 def tree(variant: str) -> Checks:
     k, V = Checks(), variant
+    D = "full" if V == "incr-full" else V      # its build folders: incr/build-env-inside.sh names them build-full
     lock = gpu_lock()
     WORK.mkdir(parents=True, exist_ok=True)
     scene(WORK / "model")
     # --- Ceres
     cfg = Path("/usr/local/include/ceres/internal/config.h").read_text() if Path("/usr/local/include/ceres/internal/config.h").exists() else ""
     on = lambda name: bool(re.search(rf"^#define {name}\b", cfg, re.M))      # noqa: E731
-    c = cache(f"/opt/ceres/build-{V}/CMakeCache.txt")
+    c = cache(f"/opt/ceres/build-{D}/CMakeCache.txt")
     k.flags("Ceres", c, V, "CMAKE_INTERPROCEDURAL_OPTIMIZATION")
     for item, name, want in (("SuiteSparse (CHOLMOD, SPQR)", "CERES_NO_SUITESPARSE", False), ("CUDA", "CERES_NO_CUDA", False),
                              ("cuDSS (sparse Cholesky on the GPU)", "CERES_NO_CUDSS", False), ("LAPACK", "CERES_NO_LAPACK", False),
@@ -291,7 +292,7 @@ def tree(variant: str) -> Checks:
           "openblas" in (c.get("BLAS_openblas_LIBRARY", "") + c.get("BLAS_LIBRARIES", "")).lower())
     k.add("Ceres", "code: AVX / FMA", "recorded", simd("/usr/local/lib/libceres.so"), None)
     # --- COLMAP
-    c = cache(f"/opt/colmap/build-{V}/CMakeCache.txt")
+    c = cache(f"/opt/colmap/build-{D}/CMakeCache.txt")
     k.flags("COLMAP", c, V, "CMAKE_INTERPROCEDURAL_OPTIMIZATION")
     head = sh("colmap -h 2>&1 | head -1")[1].strip()
     k.add("COLMAP", "version, CUDA", "4.2.1 with CUDA", head, "4.2.1" in head and "with CUDA" in head)
@@ -348,7 +349,7 @@ def tree(variant: str) -> Checks:
     undistort_metadata(k)
     pycolmap(k)
     # --- OpenMVS
-    c = cache(f"/opt/openMVS/build-{V}/CMakeCache.txt")
+    c = cache(f"/opt/openMVS/build-{D}/CMakeCache.txt")
     k.flags("OpenMVS", c, V, "OpenMVS_ENABLE_IPO")
     for item, name in (("CUDA", "OpenMVS_USE_CUDA"), ("OpenMP", "OpenMVS_USE_OPENMP"), ("SSE", "OpenMVS_USE_SSE")):
         k.add("OpenMVS", item, "ON", c.get(name, "?"), c.get(name) == "ON")
@@ -365,9 +366,9 @@ def tree(variant: str) -> Checks:
     k.add("OpenMVS", "code: AVX / FMA (DensifyPointCloud)", "recorded", simd("/usr/local/bin/OpenMVS/DensifyPointCloud"), None)
     k.add("OpenMVS", "code: AVX / FMA (TextureMesh)", "recorded", simd("/usr/local/bin/OpenMVS/TextureMesh"), None)
     # --- OpenCV
-    c = cache(f"/opt/opencv/build-{V}/CMakeCache.txt")
+    c = cache(f"/opt/opencv/build-{D}/CMakeCache.txt")
     k.flags("OpenCV", c, V, "ENABLE_LTO")
-    info = Path(f"/opt/opencv/build-{V}/modules/core/version_string.inc")
+    info = Path(f"/opt/opencv/build-{D}/modules/core/version_string.inc")
     info = info.read_text() if info.exists() else ""
     get = lambda label: (re.search(rf"{label}:\s+(.*?)\\n", info) or [None, "?"])[1].strip()       # noqa: E731
     k.add("OpenCV", "Intel IPP", "a version", get("Intel IPP"), get("Intel IPP") not in ("?", "NO"))
