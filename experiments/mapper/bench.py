@@ -3,7 +3,7 @@
     bench.py feat <project> [--feat sift391] [--cond dev] [--build plain]     features and matches for a boulder
     bench.py map <project> <method> <seed> [--feat ..] [--cond ..] [--build ..] [--rep N]   one mapper run
     bench.py rest <project> <run> [--feat ..]              place the photos the mapper left out, as the app does
-    bench.py post <project> <run> [--feat ..] [--tools app] [--cond ..]   undistort, densify, mesh and texture
+    bench.py post <project> <run> [--feat ..] [--tools app] [--cond ..] [--mvs fuse1]   undistort, densify, mesh, texture
     bench.py all <project> <method> <seed> [...] [--post app,plain]       map, rest and post in one go
     bench.py held <project> <method> <seed> <percent> [...]   the mapper on a random share of the photos, the rest added
     bench.py heldstats                                     those against the runs on every photo
@@ -120,6 +120,12 @@ FEATS = {
 }
 MATCH = ["--ExhaustiveMatching.block_size", "20", "--TwoViewGeometry.min_num_inliers", "12"]
 REST_ARGS = ["--Mapper.abs_pose_min_num_inliers", "15", "--Mapper.abs_pose_min_inlier_ratio", "0.15"]
+# OpenMVS 2.4 otherwise than as it comes (post --mvs <name>, results in post-<tools>+<name>): step: its extra arguments
+MVS = {
+    "fuse1": {"dense": ["--fusion-filter", "1"]},      # depth maps fused as 2.3 fuses them (2.4's own way, 2, keeps far fewer points)
+    "noroi": {"dense": ["--estimate-roi", "0"]},       # nothing cut off outside the region of interest 2.4 estimates
+    "cpu": {"dense": ["--cuda-device", "-2"]},         # depth maps on the CPU: what a machine without a GPU gets
+}
 
 
 def condition(cond: str) -> tuple[int | None, int | None, bool]:
@@ -606,30 +612,32 @@ def rest(P: str, run: str, feat: str) -> None:
     (o / "placed.json").write_text(json.dumps(placed))
 
 
-def post(P: str, run: str, feat: str, tools: str, cond: str) -> None:
+def post(P: str, run: str, feat: str, tools: str, cond: str, mvs: str = "") -> None:
     """The app's steps after placing: undistort (COLMAP), import, densify, mesh and texture (OpenMVS), each timed,
-    from a run's model after rest(). Without the people masks the app gives OpenMVS."""
+    from a run's model after rest(). Without the people masks the app gives OpenMVS. mvs names a variant of MVS."""
+    assert not mvs or tools != "app", "the variants are of OpenMVS 2.4's options"
     d = feat_dir(P, feat) / run
-    o = d / (f"post-{tools}" + (f"@{cond}" if cond != "dev" else ""))
+    o = d / (f"post-{tools}" + (f"+{mvs}" if mvs else "") + (f"@{cond}" if cond != "dev" else ""))
+    more = MVS[mvs] if mvs else {}
     if not (d / "rest" / "rest2").exists():
         return
     new = tools != "app"
     log = ["--log_target", "stderr"] if new else []
-    mvs = MVS_NEW if new else MVS_APP
+    mvs_bin = MVS_NEW if new else MVS_APP
     mounts = [f"{BENCH}/projects/{P}/photos:/photos:ro", f"{d}/rest/rest2:/model:ro", f"{o}:/o"]
     t = threads(cond, "--max-threads")
     steps = [
         ("undistort", sh(["colmap", "image_undistorter", *log, "--image_path", "/photos", "--input_path", "/model",
                           "--output_path", "/o/dense", "--output_type", "COLMAP"])),
         # the folder in full, as the app gives it: OpenMVS 2.4 takes a relative one from the input folder, 2.3 from -w
-        ("import", sh([f"{mvs}/InterfaceCOLMAP", "-i", "dense", "-o", "scene.mvs", "--image-folder", "/o/dense/images", "-w", "/o"])),
+        ("import", sh([f"{mvs_bin}/InterfaceCOLMAP", "-i", "dense", "-o", "scene.mvs", "--image-folder", "/o/dense/images", "-w", "/o"])),
         # without an interrupted attempt's depth maps, which it would take up rather than make
         ("dense", "rm -f depth*.dmap scene_dense*\n"
-         + sh([f"{mvs}/DensifyPointCloud", "scene.mvs", "-w", "/o", "--resolution-level", "2", *t])),
-        ("mesh", sh([f"{mvs}/ReconstructMesh", "scene_dense.mvs", "-w", "/o", *t])),
-        ("texture", sh([f"{mvs}/TextureMesh", "scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o",
+         + sh([f"{mvs_bin}/DensifyPointCloud", "scene.mvs", "-w", "/o", "--resolution-level", "2", *t, *more.get("dense", [])])),
+        ("mesh", sh([f"{mvs_bin}/ReconstructMesh", "scene_dense.mvs", "-w", "/o", *t, *more.get("mesh", [])])),
+        ("texture", sh([f"{mvs_bin}/TextureMesh", "scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o",
                         "scene_dense_mesh_texture.mvs", "-w", "/o", "--export-type", "glb", "--empty-color", str(0x808080),
-                        "--max-texture-size", "4096", *t])),
+                        "--max-texture-size", "4096", *t, *more.get("texture", [])])),
     ]
     for name, script in steps:      # the newer OpenMVS is built with CUDA; the app's, and undistorting, are CPU only
         if step(o, name, tools, "cd /o\n" + script, mounts, cond, timeout=4 * 3600, gpu=new and name != "undistort")["rc"] != 0:
@@ -733,6 +741,7 @@ def main(argv: list[str]) -> None:
     p.add_argument("--tools", default="app")
     p.add_argument("--post", default="")
     p.add_argument("--rep", type=int, default=1)
+    p.add_argument("--mvs", default="", choices=["", *MVS])
     a = p.parse_args(argv)
     if a.command == "feat":
         features(a.args[0], a.feat, a.cond, a.build)
@@ -741,12 +750,12 @@ def main(argv: list[str]) -> None:
     elif a.command == "rest":
         rest(a.args[0], a.args[1], a.feat)
     elif a.command == "post":
-        post(a.args[0], a.args[1], a.feat, a.tools, a.cond)
+        post(a.args[0], a.args[1], a.feat, a.tools, a.cond, a.mvs)
     elif a.command == "all":
         run = mapper(a.args[0], a.args[1], int(a.args[2]), a.feat, a.cond, a.build, a.rep)
         rest(a.args[0], run, a.feat)
         for tools in filter(None, a.post.split(",")):
-            post(a.args[0], run, a.feat, tools, a.cond)
+            post(a.args[0], run, a.feat, tools, a.cond, a.mvs if tools != "app" else "")
     elif a.command == "held":
         held(a.args[0], a.args[1], int(a.args[2]), int(a.args[3]), a.feat, a.cond, a.build)
     elif a.command == "heldstats":

@@ -1,0 +1,4 @@
+# Whether Caspar or the VGGT start costs the pipeline its agreement with the other models on 31de (handoff section
+# 13): the same first build with Ceres on the CPU for every solve, and from the global mapper's start. No meshes.
+first 31de9a59303a auto 0 --ba cpu --cond prod --no-mesh
+first 31de9a59303a global 0 --cond prod --no-mesh
