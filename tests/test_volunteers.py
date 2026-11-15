@@ -787,7 +787,8 @@ def tools_python():
     new enough, else a newer one on the PATH, else one uv fetches (installed from PyPI first, if it isn't there)."""
     sys.path.insert(0, str(SCRIPT.parent))
     import bouldermesh_volunteer as bv
-    real = (bv.subprocess.run, bv.shutil.which, bv.python_version, bv.sys.executable)
+    real = (bv.subprocess.run, bv.shutil.which, bv.python_version, bv.sys.executable, bv.Volunteer.pot_setup)
+    bv.Volunteer.pot_setup = lambda self, bindir: None      # pot(): what it does
     ran, versions, on_path = [], {}, {}
 
     def run(cmd, **kw):
@@ -819,14 +820,15 @@ def tools_python():
             return v, [" ".join(Path(c).name if i == 0 else c for i, c in enumerate(cmd)) for cmd in ran]
 
         v, cmds = tools("t1", (3, 12))
-        assert cmds[0].startswith("python-here -m venv") and len(cmds) == 4, cmds
+        assert cmds[0].startswith("python-here -m venv") and len(cmds) == 5, cmds
         assert "--pre" not in cmds[2] and "yt-dlp[default]" in cmds[2] and cmds[3].endswith("deno"), "stable, until the server says"
+        assert cmds[4].endswith(f"bgutil-ytdlp-pot-provider=={bv.POT_VERSION}"), "the PO token plugin, at the script's version"
         ran.clear()
         v.tools()
         assert ran == [], "updated today, by this version: not again"
         v.state["updated_by"] = bv.VERSION - 1    # as when this script has just replaced an older one
         v.tools()
-        assert len(ran) == 3 and "yt-dlp[default]" in ran[1] and not any("venv" in c for c in ran), ran
+        assert len(ran) == 4 and "yt-dlp[default]" in ran[1] and not any("venv" in c for c in ran), ran
         assert v.state["updated_by"] == bv.VERSION
         ran.clear()
         v.tools()
@@ -834,7 +836,7 @@ def tools_python():
         # the server says which yt-dlp: nightly (PyPI's pre-releases) at once, and back to stable by reinstalling
         v.state["channel"] = "nightly"
         v.tools()
-        assert len(ran) == 3 and "--pre" in ran[1] and "--force-reinstall" not in ran[1] and v.state["installed_channel"] == "nightly", ran
+        assert len(ran) == 4 and "--pre" in ran[1] and "--force-reinstall" not in ran[1] and v.state["installed_channel"] == "nightly", ran
         ran.clear()
         v.tools()
         assert ran == [], "switched today: not again"
@@ -864,8 +866,77 @@ def tools_python():
         _, cmds = tools("t5", (3, 8), {"python3.11": "/usr/bin/python3.11"})
         assert cmds[0].startswith("python3.11 -m venv"), cmds
     finally:
-        bv.subprocess.run, bv.shutil.which, bv.python_version, bv.sys.executable = real
+        bv.subprocess.run, bv.shutil.which, bv.python_version, bv.sys.executable, bv.Volunteer.pot_setup = real
     print("tools' Python OK")
+
+
+def pot() -> None:
+    """PO tokens (version 13): bgutil's token script set up from its release (only its server/ folder) with Deno, checked
+    to start, given to yt-dlp; whether each run used a token; and, where it can't be set up, fetching without."""
+    sys.path.insert(0, str(SCRIPT.parent))
+    import bouldermesh_volunteer as bv
+    import io
+    import tarfile
+    src = TMP / "pot-src.tar.gz"
+    with tarfile.open(src, "w:gz") as tar:
+        for name, body in ((f"bgutil-ytdlp-pot-provider-{bv.POT_VERSION}/server/src/generate_once.ts", b"// script"),
+                           (f"bgutil-ytdlp-pot-provider-{bv.POT_VERSION}/server/deno.json", b"{}"),
+                           (f"bgutil-ytdlp-pot-provider-{bv.POT_VERSION}/README.md", b"not this"),
+                           (f"bgutil-ytdlp-pot-provider-{bv.POT_VERSION}/server/../../escaped", b"nor this")):
+            info = tarfile.TarInfo(name)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    bindir, calls = TMP / "pot-bin", TMP / "pot-deno-calls"
+    bindir.mkdir(exist_ok=True)
+    (bindir / "deno").write_text(f"""#!{sys.executable}
+import os, sys
+open({str(calls)!r}, "a").write(" ".join(sys.argv[1:]) + " | " + os.environ.get("XDG_CACHE_HOME", "") + "\\n")
+if sys.argv[1] == "install":
+    sys.exit(int(os.environ.get("FAKE_DENO_FAIL", "0")) or os.makedirs("node_modules") or 0)
+print("{bv.POT_VERSION}")
+""")
+    (bindir / "deno").chmod(0o755)
+    real = bv.POT_SOURCE
+    bv.POT_SOURCE = src.as_uri().replace(bv.POT_VERSION, "{v}") if bv.POT_VERSION in src.as_uri() else src.as_uri()
+    try:
+        home = TMP / "pot-home"
+        args = type("Args", (), {"home": str(home), "yt_dlp": None, "server": "https://x.example", "token": "t", "per_hour": 1, "per_day": 1})()
+        v = bv.Volunteer(args)
+        v.ytdlp = str(bindir / "yt-dlp")
+        v.pot_setup(bindir)
+        server = home / "pot" / "server"
+        assert v.state["pot"] == bv.POT_VERSION and (server / "src" / "generate_once.ts").exists(), v.state
+        assert not (home / "pot" / "README.md").exists() and not (home / "escaped").exists() and not (TMP / "escaped").exists()
+        install, check = calls.read_text().splitlines()
+        assert install.startswith("install --allow-scripts=npm:canvas --frozen --prod |") and install.endswith(str(home / "cache")), install
+        assert check.startswith("run --allow-env --allow-net") and "generate_once.ts --version" in check, check
+        assert (home / "cache" / "bgutil-ytdlp-pot-provider").is_dir(), "its cache inside the volunteer's folder"
+        assert v.pot_args() == ["--extractor-args", f"youtubepot-bgutilscript:server_home={server}"]
+        env = v.tool_env()
+        assert env["XDG_CACHE_HOME"] == str(home / "cache") and env["DENO_DIR"] == str(home / "cache" / "deno")
+        done = lambda out="", err="": subprocess.CompletedProcess([], 0, out, err)     # noqa: E731
+        assert v.pot_said(done("[youtube] [pot:bgutil:script-deno] Generating a gvs PO Token for web client via bgutil script\n")) == "used"
+        assert v.pot_said(done(err="WARNING: [youtube] [pot:bgutil:script-deno] _get_pot_via_script failed: Timeout expired\n")) \
+            == "failed: [youtube] [pot:bgutil:script-deno] _get_pot_via_script failed: Timeout expired"
+        assert v.pot_said(done("[download] Destination: video.mp4\n")) == "unused"
+        calls.unlink()
+        v.pot_setup(bindir)
+        assert not calls.exists(), "set up already, at this version: not again"
+        # it can't be set up: fetching goes on without, and says why
+        v.state["pot"] = None
+        os.environ["FAKE_DENO_FAIL"] = "1"
+        v.pot_setup(bindir)
+        assert v.state["pot"] is None and "deno install exited with 1" in v.state["pot_why"], v.state
+        assert v.pot_args() == [] and v.pot_said(done("Generating a gvs PO Token")) is None
+        # --yt-dlp: that one's plugins are its own
+        del os.environ["FAKE_DENO_FAIL"]
+        v.pot_setup(bindir)
+        args.yt_dlp = "/usr/bin/yt-dlp"
+        assert v.state["pot"] == bv.POT_VERSION and v.pot_args() == [] and v.pot_said(done("Generating a gvs PO Token")) is None
+    finally:
+        bv.POT_SOURCE = real
+        os.environ.pop("FAKE_DENO_FAIL", None)
+    print("PO tokens OK")
 
 
 def pacing() -> None:
@@ -1053,7 +1124,8 @@ def youtube_health():
         b.want("details", secrets.token_hex(6)[:11], "details", "x")
         t = b.work(who, "198.51.100.3")["task"]
         b.finish(who, t["id"], {"status": status, "info": {"duration": 4.0}, "error": more.get("error"),
-                                "health": {"signs": [{"kind": k, "what": w} for k, w in found], "kbps": more.get("kbps"), "yt_dlp": "2099.01.01"}})
+                                "health": {"signs": [{"kind": k, "what": w} for k, w in found], "kbps": more.get("kbps"), "yt_dlp": "2099.01.01",
+                                           "pot": more.get("pot")}})
         return b.get(who["id"])
 
     a = report(a, "ok", ("note", "YouTube is forcing SABR streaming"), kbps=900)
@@ -1108,6 +1180,16 @@ def youtube_health():
     report(b.get(a["id"]), "ok")
     assert not b.q("SELECT 1 FROM youtube_log WHERE volunteer=?", c["id"]), "older than LOG_DAYS: gone"
     assert "youtube" in b.state()
+    # whether each used a PO token (script 13): rows of their own by volunteer, used and failed counted, a failure listed
+    b.q("UPDATE volunteers SET refused_until=NULL WHERE id=?", a["id"])
+    report(b.get(a["id"]), "ok", pot="used")
+    b.q("UPDATE volunteers SET refused_until=NULL WHERE id=?", a["id"])
+    report(b.get(a["id"]), "ok", pot="failed: [pot:bgutil:script-deno] Timeout expired")
+    log = b.youtube_log()
+    with_pot = next(r for r in log["by_version"] if r["volunteer"] == "Ann" and r["pot"])
+    assert (with_pot["tasks"], with_pot["pot_used"], with_pot["pot_failed"]) == (2, 1, 1), with_pot
+    assert any(r["volunteer"] == "Ann" and not r["pot"] for r in log["by_version"]), "those before, apart"
+    assert log["latest"][0]["pot"].startswith("failed") and log["latest"][0]["health"] == "ok", log["latest"][0]
     print("YouTube's signs, unit OK")
 
 
@@ -1212,6 +1294,7 @@ def keeping_in_touch() -> None:
 try:
     broker_alone()
     tools_python()
+    pot()
     pacing()
     youtube_health()
     updating()

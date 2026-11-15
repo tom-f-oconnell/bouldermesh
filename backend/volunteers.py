@@ -182,7 +182,7 @@ class Broker:
                   PRIMARY KEY(task, purpose, ref));
                 CREATE TABLE IF NOT EXISTS given(volunteer TEXT, ip TEXT, at REAL);
                 CREATE TABLE IF NOT EXISTS youtube_log(at REAL, volunteer TEXT, kind TEXT, status TEXT, health TEXT,
-                  detail TEXT, yt_dlp TEXT, kbps REAL);
+                  detail TEXT, yt_dlp TEXT, kbps REAL, pot TEXT);
                 CREATE INDEX IF NOT EXISTS youtube_log_at ON youtube_log(at);
             """)
             if "kind" not in {r[1] for r in con.execute("PRAGMA table_info(given)")}:   # rows from before count as videos
@@ -194,6 +194,8 @@ class Broker:
                 con.execute("UPDATE volunteers SET per_day=NULL WHERE per_day=100")
                 con.execute("PRAGMA user_version=1")
             registration.migrate(con, "volunteers")
+            if "pot" not in {r[1] for r in con.execute("PRAGMA table_info(youtube_log)")}:    # whether it used a PO token (script 13)
+                con.execute("ALTER TABLE youtube_log ADD COLUMN pot TEXT")
             have = {r[1] for r in con.execute("PRAGMA table_info(volunteers)")}
             # how YouTube treats it, as its script last said (health: ok, or one of TROUBLE), and why; the speed of its
             # last whole video, in KB/s; its yt-dlp; why it rests (rest_why: "refused" or "throttled"); the limits its
@@ -535,9 +537,10 @@ class Broker:
         now = time.time()
         self.q("UPDATE volunteers SET kbps=COALESCE(?, kbps), yt_dlp=COALESCE(?, yt_dlp) WHERE id=?", kbps, ytdlp, v["id"])
         failed = [l.strip() for l in str(report.get("error") or "").strip().splitlines() if l.strip()]
-        self.q("INSERT INTO youtube_log(at, volunteer, kind, status, health, detail, yt_dlp, kbps) VALUES(?,?,?,?,?,?,?,?)", now, v["id"],
-               kind, str(status or "")[:20], health, (why or (failed[-1] if failed and status != "ok" else ""))[:300] or None,
-               ytdlp or v.get("yt_dlp"), kbps)
+        pot = str(h.get("pot"))[:160] if h.get("pot") else None     # used, unused or failed: <why> (script 13 on)
+        self.q("INSERT INTO youtube_log(at, volunteer, kind, status, health, detail, yt_dlp, kbps, pot) VALUES(?,?,?,?,?,?,?,?,?)", now,
+               v["id"], kind, str(status or "")[:20], health, (why or (failed[-1] if failed and status != "ok" else ""))[:300] or None,
+               ytdlp or v.get("yt_dlp"), kbps, pot)
         self.q("DELETE FROM youtube_log WHERE at<?", now - LOG_DAYS * 86400)
         if health is None:
             return None
@@ -657,31 +660,35 @@ class Broker:
         return sorted(board, key=lambda b: (-b["videos"], -b["searches"], -b["details"], b["created"] or 0))
 
     def youtube_log(self, days: float = 7, latest: int = 20) -> dict:
-        """What volunteers' scripts said of YouTube over the last days, summed up: by yt-dlp version and volunteer, and
-        by day, the tasks that worked, were throttled, refused or degraded, or failed otherwise (a private video), with
-        the median speed of whole videos; and the latest troubles themselves. A nightly yt-dlp's version has four parts
+        """What volunteers' scripts said of YouTube over the last days, summed up: by yt-dlp version, volunteer and
+        whether its script made PO tokens, and by day, the tasks that worked, were throttled, refused or degraded, or
+        failed otherwise (a private video), how many used a PO token and how many failed to make one, with the median
+        speed of whole videos; and the latest troubles themselves. A nightly yt-dlp's version has four parts
         (2026.11.14.232655), a release's three."""
         rows = self.q("SELECT l.*, v.name FROM youtube_log l LEFT JOIN volunteers v ON v.id=l.volunteer WHERE l.at>? ORDER BY l.at",
                       time.time() - days * 86400)
 
         def sums(group: list[dict]) -> dict:
-            out = {k: 0 for k in ("tasks", "ok", *TROUBLE, "failed")}
+            out = {k: 0 for k in ("tasks", "ok", *TROUBLE, "failed", "pot_used", "pot_failed")}
             for r in group:
                 out["tasks"] += 1
                 out[r["health"] if r["health"] in TROUBLE else "ok" if r["status"] == "ok" else "failed"] += 1
+                out["pot_used"] += r["pot"] == "used"
+                out["pot_failed"] += (r["pot"] or "").startswith("failed")
             speeds = sorted(r["kbps"] for r in group if r["kbps"])
             out["kbps_median"] = round(speeds[len(speeds) // 2]) if speeds else None
             return out
         by_version, by_day = {}, {}
         for r in rows:
-            by_version.setdefault((r["yt_dlp"] or "?", r["name"] or r["volunteer"]), []).append(r)
+            by_version.setdefault((r["yt_dlp"] or "?", r["name"] or r["volunteer"], r["pot"] is not None), []).append(r)
             by_day.setdefault(time.strftime("%Y-%m-%d", time.localtime(r["at"])), []).append(r)
         return {"days": days,
-                "by_version": [{"yt_dlp": k[0], "nightly": k[0].count(".") >= 3, "volunteer": k[1], **sums(g)}
+                "by_version": [{"yt_dlp": k[0], "nightly": k[0].count(".") >= 3, "volunteer": k[1], "pot": k[2], **sums(g)}
                                for k, g in sorted(by_version.items(), key=lambda kv: (kv[0][0], kv[0][1]), reverse=True)],
                 "by_day": [{"day": d, **sums(g)} for d, g in sorted(by_day.items(), reverse=True)],
                 "latest": [{"at": r["at"], "volunteer": r["name"], "kind": r["kind"], "health": r["health"], "detail": r["detail"],
-                            "yt_dlp": r["yt_dlp"]} for r in rows if r["health"] in TROUBLE][-latest:][::-1]}
+                            "yt_dlp": r["yt_dlp"], "pot": r["pot"]} for r in rows
+                           if r["health"] in TROUBLE or (r["pot"] or "").startswith("failed")][-latest:][::-1]}
 
     def state(self) -> dict:
         now = time.time()

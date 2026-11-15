@@ -1181,6 +1181,17 @@ a wrong or cut-short file but not a deliberate fake, so tokens go to people you 
 full details carry the volunteer's IP address in YouTube's signed download links, so only the fields the harvest keeps
 are sent, and the server keeps a volunteer's last address only to share the limits.
 
+**PO tokens, by default (Nov 15, 2026).** Volunteers' videos kept stopping with "unable to download video data:
+HTTP Error 403", which yt-dlp's PO Token Guide gives as what YouTube's stream servers answer a request without a PO
+("proof of origin") token: one YouTube's own player makes by running Google's BotGuard script in the browser, and
+which YouTube now ties to each video. So volunteer script 13 installs bgutil-ytdlp-pot-provider, the provider yt-dlp's
+guide recommends: its yt-dlp plugin asks its token script, run with the Deno the script already installs, for a token
+whenever yt-dlp needs one, with no account. The script form rather than its HTTP server, so that there's nothing to
+keep running; it's slower to make each token, which 15 videos an hour doesn't feel. Its own README is careful that a
+token "does not guarantee bypassing 403 errors or bot checks", so the server's `youtube_log` keeps, for each task,
+whether a token was used or failed to be made, and *How YouTube treated them* sets throttles and refusals with tokens
+beside those before.
+
 **Which yt-dlp, and how often the phone hears.** Volunteers run yt-dlp's nightly builds by default (since Nov 14,
 2026): when YouTube changes something, a stable release lags the fix by days or weeks, and the nightlies carry it first.
 A nightly that breaks is rolled back from the admin page (`volunteers.yt_dlp`), each script reinstalling stable at its

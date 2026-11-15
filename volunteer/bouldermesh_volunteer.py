@@ -21,6 +21,10 @@ for them. Stop it with Ctrl-C at any time; delete that folder to remove everythi
 When the server has a newer version of this script, it says so, and the script replaces itself with that (checked
 against what the server said of it) and starts again, between one fetch and the next; --no-auto-update stops that.
 
+With yt-dlp it installs bgutil-ytdlp-pot-provider: a yt-dlp plugin and a script it runs with Deno (about 250 MB,
+also in that folder) that make the PO ("proof of origin") tokens YouTube asks of a video's stream, refusing it without
+one (HTTP 403). If they can't be set up, it fetches without them, and says so.
+
 It fetches as a visitor who isn't signed in. --cookies FILE (or --cookies-from-browser) makes yt-dlp sign in to YouTube
 with an account's cookies instead, which can get that account banned: read what --help says of them first.
 """
@@ -36,6 +40,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.request
@@ -55,9 +60,18 @@ from pathlib import Path
 # 11: installs the yt-dlp the server says (its nightly builds, or stable), switching at once when that changes; a
 #     refusal's report starts with the line that made it one
 # 12: --cookies FILE and --cookies-from-browser, after a warning, and saying so to the server
-VERSION = 12
+# 13: PO tokens from bgutil-ytdlp-pot-provider (its plugin and its script, run with Deno), and tells the server whether
+#     each video used one; yt-dlp's and Deno's caches in its own folder
+VERSION = 13
 SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
 AGENT = "bouldermesh-volunteer"
+# PO tokens ("proof of origin"), which YouTube asks of some requests for a video's stream: bgutil-ytdlp-pot-provider
+# makes them, its yt-dlp plugin (from PyPI) running its token script (from its release, with Deno) for each. Both at
+# this version.
+POT_VERSION = "2.0.2"
+POT_SOURCE = "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/refs/tags/{v}.tar.gz"
+POT_USED = re.compile(r"Generating an? \w+ PO Token", re.I)     # its line for each token it makes
+POT_TROUBLE = re.compile(r"\[pot[:\]].*(fail|error|unable|timeout|timed out)", re.I)
 TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
 FETCHED_PYTHON = "3.12"     # what uv fetches for them when this computer has none as new
 KINDS = ["video", "details", "search", "channel"]   # what this version does
@@ -400,6 +414,12 @@ class Volunteer:
             subprocess.run([*pip, *ytdlp, "yt-dlp[default]"], check=True)
             subprocess.run([*pip, "deno"], check=True)
             self.state["installed_channel"] = channel
+            try:
+                subprocess.run([*pip, f"bgutil-ytdlp-pot-provider=={POT_VERSION}"], check=True)
+                self.pot_setup(bindir)
+            except (subprocess.CalledProcessError, OSError) as e:
+                self.state["pot"], self.state["pot_why"] = None, f"its yt-dlp plugin couldn't be installed ({why(e)})"
+                log(f"no PO tokens: {self.state['pot_why']}; fetching without them, and trying again tomorrow")
         except (subprocess.CalledProcessError, OSError) as e:
             if fresh:
                 shutil.rmtree(venv, ignore_errors=True)     # tried again from the start next time
@@ -408,6 +428,69 @@ class Volunteer:
             log(f"couldn't update yt-dlp and Deno ({why(e)}): carrying on with those there are, and trying again tomorrow")
         self.state["updated"], self.state["updated_by"] = time.time(), VERSION
         self.save()
+
+    def pot_setup(self, bindir: Path) -> None:
+        """bgutil's token script in pot/server here, its packages installed by Deno, once for each POT_VERSION, then
+        checked to start (its --version). Sets state["pot"] to the version, or to None with state["pot_why"]: it then
+        fetches without PO tokens, and tries again with the next daily update."""
+        pot, server = self.home / "pot", self.home / "pot" / "server"
+        if self.state.get("pot") == POT_VERSION and (server / "node_modules").is_dir():
+            return
+        deno = str(bindir / ("deno.exe" if os.name == "nt" else "deno"))
+        self.state["pot"], self.state["pot_why"] = None, None
+        try:
+            log(f"installing bgutil's PO token script {POT_VERSION} in {pot} (about 250 MB, once)")
+            shutil.rmtree(pot, ignore_errors=True)
+            pot.mkdir()
+            with urllib.request.urlopen(POT_SOURCE.format(v=POT_VERSION), timeout=300) as r, tarfile.open(fileobj=r, mode="r|gz") as tar:
+                for m in tar:       # only its server/ folder, and nothing outside it
+                    parts = Path(m.name).parts
+                    if len(parts) < 2 or parts[1] != "server" or ".." in parts or not (m.isfile() or m.isdir()):
+                        continue
+                    m.name = str(Path(*parts[1:]))
+                    tar.extract(m, pot, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+            env = self.tool_env(bindir)
+            r = subprocess.run([deno, "install", "--allow-scripts=npm:canvas", "--frozen", "--prod"], cwd=server, env=env,
+                               capture_output=True, text=True, timeout=1800)
+            if r.returncode:
+                raise RuntimeError(f"deno install exited with {r.returncode}: {last_error(r.stderr or r.stdout)[-200:]}")
+            modules, cache = server / "node_modules", Path(env["XDG_CACHE_HOME"]) / "bgutil-ytdlp-pot-provider"
+            cache.mkdir(parents=True, exist_ok=True)
+            r = subprocess.run([deno, "run", "--allow-env", "--allow-net", f"--allow-ffi={modules}", f"--allow-write={cache}",
+                                f"--allow-read={cache},{modules}", str(server / "src" / "generate_once.ts"), "--version"],
+                               env=env, capture_output=True, text=True, timeout=120)
+            if (r.stdout.strip().splitlines() or [""])[-1] != POT_VERSION:
+                raise RuntimeError(f"its script didn't start: {last_error(r.stderr or r.stdout)[-200:]}")
+            self.state["pot"] = POT_VERSION
+            log(f"PO tokens: bgutil {POT_VERSION}, with Deno")
+        except (OSError, urllib.error.URLError, tarfile.TarError, subprocess.SubprocessError, RuntimeError) as e:
+            self.state["pot_why"] = why(e)[:200]
+            log(f"no PO tokens ({self.state['pot_why']}): fetching without them, and trying again tomorrow")
+
+    def tool_env(self, bindir: Path | None = None) -> dict:
+        """yt-dlp's and Deno's environment: Deno beside yt-dlp on the PATH, and their caches (yt-dlp's, Deno's, the
+        token script's) in this folder, so that deleting it removes everything."""
+        env = dict(os.environ)
+        env["PATH"] = str(bindir or Path(self.ytdlp).parent) + os.pathsep + env.get("PATH", "")
+        env.update(XDG_CACHE_HOME=str(self.home / "cache"), DENO_DIR=str(self.home / "cache" / "deno"), DENO_NO_UPDATE_CHECK="1",
+                   DENO_NO_PROMPT="1")
+        return env
+
+    def pot_args(self) -> list[str]:
+        """yt-dlp's options for the token script, once it's set up (not with --yt-dlp: that one's plugins are its own)."""
+        if self.args.yt_dlp or self.state.get("pot") != POT_VERSION:
+            return []
+        return ["--extractor-args", f"youtubepot-bgutilscript:server_home={self.home / 'pot' / 'server'}"]
+
+    def pot_said(self, r: subprocess.CompletedProcess) -> str | None:
+        """Whether a run of yt-dlp used a PO token: "used", "failed: <the line>", "unused" (none was asked for), or None
+        without the token script."""
+        if self.args.yt_dlp or self.state.get("pot") != POT_VERSION:
+            return None
+        trouble = next((l.strip() for l in (r.stderr or "").splitlines() if POT_TROUBLE.search(l)), None)
+        if trouble:
+            return "failed: " + re.sub(r"^(WARNING|ERROR):\s*", "", trouble)[:150]
+        return "used" if POT_USED.search((r.stdout or "") + (r.stderr or "")) else "unused"
 
     def make_venv(self, venv: Path) -> None:
         """A venv for yt-dlp and Deno, from this Python, or another on the PATH new enough for them, or else one uv
@@ -438,10 +521,10 @@ class Volunteer:
         subprocess.run([uv, "venv", "-q", "--seed", "--python", FETCHED_PYTHON, str(venv)], check=True, env=env)
 
     def run_ytdlp(self, args: list[str], cwd: Path) -> subprocess.CompletedProcess:
-        env = dict(os.environ)
-        env["PATH"] = str(Path(self.ytdlp).parent) + os.pathsep + env.get("PATH", "")    # Deno, beside it
-        return subprocess.run([self.ytdlp, "--sleep-requests", "0.75", *cookie_args(self.args), *args], cwd=cwd, env=env,
-                              capture_output=True, text=True, timeout=3600)     # warnings kept: signs()
+        env = dict(os.environ, PATH=str(Path(self.ytdlp).parent) + os.pathsep + os.environ.get("PATH", "")) \
+            if self.args.yt_dlp else self.tool_env()      # Deno, beside it
+        return subprocess.run([self.ytdlp, "--sleep-requests", "0.75", *cookie_args(self.args), *self.pot_args(), *args], cwd=cwd,
+                              env=env, capture_output=True, text=True, timeout=3600)     # warnings kept: signs()
 
     # -- pacing -------------------------------------------------------------------------------------------------------
     def ready_in(self, cls: str) -> tuple[float, str | None]:
@@ -528,9 +611,10 @@ class Volunteer:
             self.state["speeds"] = (self.state.get("speeds") or [])[-9:] + [round(kbps)]
         return round(kbps), slow
 
-    def health(self, found: list[dict], kbps: float | None = None) -> dict:
-        """What's sent with each task's result: how YouTube treated this computer (signs()), and its speed and yt-dlp."""
-        return {"signs": found, "kbps": kbps, "yt_dlp": getattr(self, "ytdlp_version", None)}
+    def health(self, found: list[dict], kbps: float | None = None, pot: str | None = None) -> dict:
+        """What's sent with each task's result: how YouTube treated this computer (signs()), its speed, its yt-dlp, and
+        whether a PO token was used (pot_said())."""
+        return {"signs": found, "kbps": kbps, "yt_dlp": getattr(self, "ytdlp_version", None), "pot": pot}
 
     # -- one task -----------------------------------------------------------------------------------------------------
     def do(self, task: dict) -> None:
@@ -561,19 +645,19 @@ class Volunteer:
             if kind == "details":
                 r = self.run_ytdlp(["-J", "--skip-download", "--no-playlist", url], work)
             else:
-                r = self.run_ytdlp(["-q", "--no-playlist", "-f", task["format"], "--max-filesize", task["max_filesize"],
-                                    "--write-info-json", "-o", "video.%(ext)s", url], work)
+                r = self.run_ytdlp(["--no-progress", "--no-playlist", "-f", task["format"], "--max-filesize", task["max_filesize"],
+                                    "--write-info-json", "-o", "video.%(ext)s", url], work)    # not -q: its PO token lines
             failed = bool(r.returncode or (kind == "video" and not self.video_file(work)))
-            err, found = (r.stderr or "").strip(), signs(r.stderr, failed)
+            err, found, pot = (r.stderr or "").strip(), signs(r.stderr, failed), self.pot_said(r)
             if failed:
                 if REFUSAL.search(err):
                     hours = self.refused()
-                    self.server.call(done, {"status": "refused", "error": refusal_report(err), "health": self.health(found)})
+                    self.server.call(done, {"status": "refused", "error": refusal_report(err), "health": self.health(found, pot=pot)})
                     log(f"YouTube refused: resting {hours} h")
                     return
                 why = last_error(err) or ("larger than max-filesize" if r.returncode == 0 else f"yt-dlp exited with {r.returncode}")
                 self.server.call(done, {"status": "failed", "error": why[-300:], "permanent": bool(FOR_GOOD.search(why) or FOR_GOOD.search(err)),
-                                        "health": self.health(found)})
+                                        "health": self.health(found, pot=pot)})
                 log(f"couldn't fetch it: {why}")
                 self.react(found)
                 return
@@ -589,7 +673,7 @@ class Volunteer:
                 if slow:
                     found.append({"kind": "throttled", "what": f"the video came at {kbps:.0f} KB/s"})
                 self.send(task, video)
-            out = self.server.call(done, {"status": "ok", "info": {k: info.get(k) for k in KEEP}, "health": self.health(found, kbps)})
+            out = self.server.call(done, {"status": "ok", "info": {k: info.get(k) for k in KEEP}, "health": self.health(found, kbps, pot)})
             log("sent" if out.get("ok") else f"the server didn't take it: {out}")
             self.react(found)
         except KeyboardInterrupt:
@@ -695,6 +779,9 @@ class Volunteer:
             try:
                 r = self.server.call("/volunteer/api/work", {"version": VERSION, "client": f"script {VERSION}, yt-dlp {version}"
                                                              + ("; signed in (cookies)" if cookie_args(self.args) else "")
+                                                             + ("" if self.args.yt_dlp else f"; PO tokens: bgutil {POT_VERSION}"
+                                                                if self.state.get("pot") == POT_VERSION else
+                                                                f"; no PO tokens: {self.state.get('pot_why') or 'not set up'}")
                                                              + (f"; won't update itself: {blocked.split(',')[0]}" if blocked else ""),
                                                              "per_hour": self.per_hour, "per_day": self.per_day, "kinds": kinds,
                                                              "updates": updates})

@@ -628,12 +628,12 @@ function render(s){
   // every task's outcome as volunteers' scripts said (youtube_log): by yt-dlp version, by day, and the latest troubles
   const ylog = vs.youtube;
   if (ylog && (ylog.by_day || []).length) {
-    const cells = r => `<td>${r.tasks}</td><td>${r.ok}</td><td class="${r.throttled ? 'warn' : ''}">${r.throttled}</td><td class="${r.refused ? 'bad' : ''}">${r.refused}</td><td class="${r.degraded ? 'warn' : ''}">${r.degraded}</td><td>${r.failed}</td><td>${r.kbps_median ?? '–'}</td>`;
-    const head = first => `<tr><th>${first}</th><th>Tasks</th><th>Worked</th><th>Throttled</th><th>Refused</th><th>Degraded</th><th title="Failed otherwise: a private or removed video">Failed</th><th title="Median speed of whole videos">KB/s</th></tr>`;
+    const cells = r => `<td>${r.tasks}</td><td>${r.ok}</td><td class="${r.throttled ? 'warn' : ''}">${r.throttled}</td><td class="${r.refused ? 'bad' : ''}">${r.refused}</td><td class="${r.degraded ? 'warn' : ''}">${r.degraded}</td><td>${r.failed}</td><td>${r.kbps_median ?? '–'}</td><td>${r.pot_used}${r.pot_failed ? ` <span class="warn">(${r.pot_failed} failed)</span>` : ''}</td>`;
+    const head = first => `<tr><th>${first}</th><th>Tasks</th><th>Worked</th><th>Throttled</th><th>Refused</th><th>Degraded</th><th title="Failed otherwise: a private or removed video">Failed</th><th title="Median speed of whole videos">KB/s</th><th title="Tasks that used a PO token (bgutil, volunteer script 13 on), and those whose token couldn't be made">PO tokens</th></tr>`;
     $('#vol-youtube').innerHTML = `<details${volYoutubeOpen ? ' open' : ''} id="vol-yt"><summary class="note">How YouTube treated them, the last ${ylog.days} days</summary>
-      <table>${head('yt-dlp, volunteer')}${ylog.by_version.map(r => `<tr><td>${esc(r.yt_dlp)}${r.nightly ? ' <span class="tag">nightly</span>' : ''}, ${esc(r.volunteer)}</td>${cells(r)}</tr>`).join('')}</table>
+      <table>${head('yt-dlp, volunteer')}${ylog.by_version.map(r => `<tr><td>${esc(r.yt_dlp)}${r.nightly ? ' <span class="tag">nightly</span>' : ''}${r.pot ? ' <span class="tag">PO tokens</span>' : ''}, ${esc(r.volunteer)}</td>${cells(r)}</tr>`).join('')}</table>
       <table>${head('Day')}${ylog.by_day.map(r => `<tr><td>${esc(r.day)}</td>${cells(r)}</tr>`).join('')}</table>${
-      ylog.latest.length ? `<div class="note">The latest troubles:</div><table>${ylog.latest.map(r => `<tr><td>${when(r.at)}</td><td>${esc(r.volunteer || '')}</td><td class="${r.health === 'refused' ? 'bad' : 'warn'}">${esc(r.health)}</td><td>${esc(r.kind || '')}</td><td>${esc(r.detail || '')}</td><td class="note">${esc(r.yt_dlp || '')}</td></tr>`).join('')}</table>` : ''}</details>`;
+      ylog.latest.length ? `<div class="note">The latest troubles:</div><table>${ylog.latest.map(r => `<tr><td>${when(r.at)}</td><td>${esc(r.volunteer || '')}</td><td class="${r.health === 'refused' ? 'bad' : 'warn'}">${esc(r.health || 'PO token')}</td><td>${esc(r.kind || '')}</td><td>${esc((r.pot || '').startsWith('failed') ? r.pot : r.detail || '')}</td><td class="note">${esc(r.yt_dlp || '')}</td></tr>`).join('')}</table>` : ''}</details>`;
     $('#vol-yt').addEventListener('toggle', ev => { volYoutubeOpen = ev.target.open; });
   } else $('#vol-youtube').innerHTML = '';
   const vc = vs.counts, n = k => vc[k] || 0, active = vs.volunteers.some(x => x.status !== 'revoked');
