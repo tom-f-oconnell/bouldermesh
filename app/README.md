@@ -62,6 +62,11 @@ Android, anywhere with a JDK (17 or later) and the Android SDK (`ANDROID_HOME`, 
     ./gradlew :android:assembleDebug        # android/build/outputs/apk/debug/android-debug.apk
     adb install -r android/build/outputs/apk/debug/android-debug.apk
 
+or `./apk.sh` (`--install` to put it on the phone `adb` sees), which keeps a copy named by its commit in `dist/`. Every
+push that changes `app/` also builds one on GitHub, kept 30 days as the run's `android-debug-<commit>` artifact. A debug
+APK is signed by the debug key of the machine that built it: one from another machine won't install over it without
+uninstalling first, which deletes captures not yet sent.
+
 iPhone, on a Mac with Xcode 15 or later (no Android SDK needed):
 
     brew install xcodegen && brew install --cask temurin       # XcodeGen, and a JDK for the Kotlin build Xcode runs
