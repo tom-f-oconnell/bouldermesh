@@ -7,8 +7,11 @@ cache keeps them), or its size (scale.py), with task.json's {climbs, videos, kno
 Or filtering a harvest's photos/ for those of other rocks (relevance.py): with more/ (anchors from its boulder's other
 harvests), cache.sqlite (what the server's cache knows of them) and task.json's {methods, more, prior, matcher}; out/
 gets relevance.json (its report, nothing moved) and cache.sqlite, with what it worked out.
+Or fitting a capture's scenery (splat.py fit_capture()): mesh/, photos/ (the capture's photos the mesh placed), masks/,
+scenery/ (its frames) and task.json (splat.capture_task()); out/ gets the splat, its small copy, scene.json and the
+panorama.
 
-usage: remote_job.py <job dir> [--task beta|scale|filter] [--internet] [--gpu]
+usage: remote_job.py <job dir> [--task beta|scale|filter|splat] [--internet] [--gpu]
 
 Prints the pipeline's log, with its progress as "@@progress <step> <fraction> <detail as JSON>" lines
 and the result as "@@result <JSON>", which the server reads back.
@@ -38,7 +41,33 @@ class PrintedTracker(Tracker):
 
 # what each task makes in its mesh's folder, which goes back
 MADE = {"beta": re.compile(r"beta\.json|beta_poses\.json|beta_[0-9a-f]{8}\.jpg"),
-        "scale": re.compile(r"scale\.json|poses\.json|scale_people\.json|objects\.json")}
+        "scale": re.compile(r"scale\.json|poses\.json|scale_people\.json|objects\.json"),
+        "splat": re.compile(r"scene\.splat|scene-small\.splat|scene\.json|scene-pano\.webp")}
+
+
+def splat_task(job: Path, log) -> int:
+    """Fit a capture's scenery (splat.fit_capture()) into out/."""
+    import splat
+    tracker = PrintedTracker([("splat", "Fit the scenery", 1)])
+    tracker.update("splat", 0.0)
+    def said(line: str) -> None:
+        log(line)
+        if _step(line):
+            tracker.update("splat", _step(line))
+    try:
+        record = splat.fit_capture(job, job / "out", said)
+    except Exception as e:
+        print(f"FAILED: {type(e).__name__}: {e}", flush=True)
+        return 1
+    made = sorted(f.name for f in (job / "out").iterdir() if f.is_file() and MADE["splat"].fullmatch(f.name))
+    print("@@result " + json.dumps({"mesh": "", "files": made, "splats": record.get("splats")}), flush=True)
+    return 0
+
+
+def _step(line: str) -> float:
+    """How far a splat's fitting is, from its log line ("splat: step 3001 of 15000, ..."); 0 if it doesn't say."""
+    m = re.search(r"step (\d+) of (\d+)", line)
+    return int(m[1]) / int(m[2]) if m else 0.0
 
 
 def filter_task(job: Path, log) -> int:
@@ -95,13 +124,15 @@ def task(job: Path, kind: str, log) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("job", type=Path)
-    ap.add_argument("--task", choices=("beta", "scale", "filter"))
+    ap.add_argument("--task", choices=("beta", "scale", "filter", "splat"))
     ap.add_argument("--internet", action="store_true")
     ap.add_argument("--gpu", action="store_true")
     a = ap.parse_args()
     log = lambda line: print(line, flush=True)  # noqa: E731
     if a.task == "filter":
         return filter_task(a.job, log)
+    if a.task == "splat":
+        return splat_task(a.job, log)
     if a.task:
         return task(a.job, a.task, log)
     try:

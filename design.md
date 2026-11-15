@@ -1324,6 +1324,38 @@ against the mesh's model. The image's torch is the CPU build, so fitting would a
 gsplat, or an image of its own. The viewer draws a splat with GaussianSplats3D, which sorts its blobs in a worker made
 from a blob: URL, using WebAssembly; the page's policy allows both (`worker-src blob:`, `'wasm-unsafe-eval'`).
 
+### From the apps' own frames
+
+Web photos look at the rock, so a capture can bring frames of what's around it, which needn't be exact but has to sit
+where the rock does:
+- **A walk round.** An optional step after the rock's photos: a loop two to three rock-widths out (4 to 25 m), the phone
+  pointed away from the rock and then back at it, frames taken by themselves every 30 cm or 8 degrees while it's steady
+  (SceneryWalk in app/shared). They're the tracking camera's own frames (1920 by 1080 or 1440), as the splat is fitted at
+  1000 pixels anyway, at JPEG quality 85: 200-600 of them, 50-100 MB, sent last.
+- **The turn on the spot.** The capture's first step already turns the phone all the way round; a frame for each 15
+  degrees of it (PanoTurn) makes a panorama of what's too far off for a splat to place (a walk of a few metres gives no
+  parallax for mountains), at no cost in time.
+
+**Where they go.** The frames are in the same tracking as the capture's own photos, so each spell of tracking is tied
+to the mesh by those of its photos the mesh placed (frames.tie(): the turn from their rotations, scale and shift from
+their positions), and its frames follow (splat.capture_task()). That's good to a few centimetres near where the photos
+were and drifts by about 1% of the distance walked. Fitting then refines each frame's pose a little (a small turn and
+shift of its own, learnt with the splat once it has some shape, kept small by a penalty), while the capture's own rock
+photos stay as the mesh placed them, which holds the splat to the photogrammetry. The fit says how far frames had to
+move (scene.json `refined`) and how well each kind of view is fitted (`residual`): a frame moved far, or fitted much
+worse than the photos, didn't line up. Blobs start on the mesh and on the points the tracking found (also tied), so
+they start on the ground and the trees rather than on a shell.
+
+**Only the capture's own.** The splat is fitted to the capture's frames and photos alone, all CC BY, so it's shown
+whatever the site's texture setting (scene.json `sources: capture`); a splat fitted from web photos is still shown only
+where all textures are.
+
+**Where it runs.** On a machine with a GPU that connects to the server (remote_job.py --task splat, worker script 17),
+after meshing (its job is after the backfill's), never on the server; gsplat is built into the machines' image against
+its torch, in a stage with CUDA's compiler. A phone gets `scene-small.splat`, the 150,000 most visible blobs; the
+panorama (`scene-pano.webp`, equirectangular in the mesh's frame, transparent where nothing was seen) is drawn behind
+the splat, over the drawn sky and ground.
+
 ### Depth as a guide where few photos look (not built)
 
 With few photos, a splat puts each blob at whatever depth reproduces the photos it was fitted to. Seen from anywhere

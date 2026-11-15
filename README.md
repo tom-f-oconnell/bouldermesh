@@ -558,6 +558,9 @@ rock's foot, with a soft shadow under it (the default, until a browser chooses *
 elsewhere. Fitting splats is off (`SPLATS=1` turns it on for new meshes, and `python3 cli.py splat <mesh_id>` fits one),
 as it needs CUDA builds of torch and gsplat, and the few photos most meshes are placed from make poor ones: design.md,
 "Scenes around meshes". A splat is learnt from all of a mesh's photos, so it's shown only where the site shows all its textures.
+A capture from the phone apps can walk round the rock for its scenery (the capture screen's *Scenery*): its frames
+are fitted as a splat on a machine with a GPU once the capture's mesh is made, with a panorama of what's far off from
+the turn the capture starts with, and shown whatever the texture setting, as they're the capture's own photos.
 
 The climbs list hides climbs without meshes until that box is unticked. Under *More options*, it can show only climbs
 whose coordinates look wrong, or pick out those with more than one mesh (their own, pools of them with others, and their
@@ -1282,6 +1285,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/account/join {invite, name} · /pair/take {code}     an account from an invite; a device from a pairing code
     POST /api/account/terms {version} · /pair · /signout           with an account's token: accept the terms, a code, sign out
     GET /api/account/projects · /api/account/projects/{id}/export   what the account added and holds; one of them as a zip
+    POST /api/projects/{id}/scenery · /scenery/done      a capture's frames of what's around the rock; all sent: fit its backdrop
     GET /api/submissions · POST /api/submissions/{id}/approve|decline   what accounts added, for the owner and moderators
     POST /api/meshes/{id}/beta/sets {name, climb, author, from}   a new set of beta: blank, or from {set} or {video}
     PATCH|DELETE /api/meshes/{id}/beta/sets/{set}       its name, climb, author or holds ([{id, p, role, r_m}]); or gone

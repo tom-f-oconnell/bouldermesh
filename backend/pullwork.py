@@ -71,6 +71,7 @@ AGE_FIRST = 1800            # a beta or size job queued this long goes ahead of 
 GONE_AFTER = 600            # a machine not heard from for this long has left (presence.py), unless it said goodbye before
 GPU_NEED_PHOTOS = 20        # a reconstruction's GPU memory is reckoned for VGGT placing this many (it places fewer in less)
 OTHER_GPU_MB = 4000         # finding a mesh's beta or size
+SPLAT_GPU_MB = 8000         # fitting a capture's scenery (splat.fit_capture())
 STATES = ("working", "idle", "held back", "awaiting approval", "offline")
 # whose work a job is, and so which goes first: what the site's owner asked for or started (areas' climbs too), then
 # moderators', then what users added that's been approved, then meshes made again as theirs are old, then what users
@@ -970,6 +971,8 @@ def _inputs(files: dict[str, Path]) -> list:
 def gpu_need_mb(kind: str, photos: int) -> int:
     """The GPU memory a job may need: for a reconstruction, VGGT placing GPU_NEED_PHOTOS of its photos (or all, if
     fewer), its largest use, should COLMAP not place them; for the others, OTHER_GPU_MB."""
+    if kind == "splat":
+        return SPLAT_GPU_MB
     if kind != "reconstruct":
         return OTHER_GPU_MB
     n = max(vggt_place.MIN_PHOTOS, min(photos, GPU_NEED_PHOTOS))

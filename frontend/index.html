@@ -1886,7 +1886,8 @@ document.querySelectorAll('#wiremode button').forEach(b => b.onclick = () => {
 });
 // The background: the theme's plain colour, or a scene: a sky over ground the colour of the rock's foot, with a soft
 // shadow under the rock, and where a mesh has one, the splat of what its photos show around it (backend/splat.py),
-// which leaves out what too few photos saw, so that the sky and ground show there instead
+// which leaves out what too few photos saw, so that the sky and ground show there instead, and behind that, where a
+// capture's turn on the spot saw it, a panorama of what's far off
 let terrainShown = false;     // Nearby's terrain is in view, in place of the flat ground and grid
 let bgMode = 'scene'; try { bgMode = localStorage.getItem('bm_bg') === 'solid' ? 'solid' : 'scene'; } catch {}   // a scene unless Solid was chosen
 const SKY = { light: { top: 0x5b8fc7, horizon: 0xdfe7ee, below: 0xb9b2a6 }, dark: { top: 0x0d1828, horizon: 0x3b4a5a, below: 0x1f252c } };
@@ -1900,6 +1901,28 @@ const sky = new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), new THREE.Shad
 }));
 const ground = new THREE.Mesh(new THREE.CircleGeometry(150, 64), new THREE.MeshLambertMaterial({ color: 0x9a8f7e }));
 ground.rotation.x = -Math.PI / 2;
+sky.renderOrder = ground.renderOrder = -2;     // drawn first, then the panorama over them, then everything else
+// The panorama (backend/splat.py's panorama()) over the sky and ground by its alpha, so that they still show where
+// nothing was seen. It's drawn round the camera, as a skybox is, as if infinitely far: what's far off looks the same way
+// from anywhere the view goes, being many times further off than that (on a sphere round the mesh it would shift as the
+// view moved, by a degree or more zoomed out). So it follows only the mesh's turn, not where it is or its size. It blends
+// without being `transparent`, which would draw it after the mesh; neither depth tested nor written, so the ground still
+// hides what's under it, and the rock's soft shadow (see-through, so drawn later) still shows over it. Not fogged. The
+// canvas's own alpha is left as it is (opaque): blended too, the page would show through where the picture fades. Its
+// pixel (i, j) looks along (cos lat sin lon, sin lat, cos lat cos lon) in the mesh's frame, lon = (i + .5) / W 2pi - pi,
+// lat = pi/2 - (j + .5) / H pi: so u = lon / 2pi + .5 and v = .5 - lat / pi, with its top row at v = 0 (not flipped).
+// The sphere's own UVs aren't used: the way each fragment looks, from the camera at its centre, is exact.
+const panoSky = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 16), new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthTest: false, depthWrite: false, fog: false,
+  blending: THREE.CustomBlending, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
+  uniforms: { map: { value: null }, toMesh: { value: new THREE.Matrix3() } },
+  vertexShader: 'uniform mat3 toMesh; varying vec3 vDir;\nvoid main(){ vDir = toMesh * position; gl_Position = projectionMatrix * viewMatrix * vec4(cameraPosition + position, 1.0); }',
+  fragmentShader: 'uniform sampler2D map; varying vec3 vDir;\nvoid main(){ vec3 d = normalize(vDir);\n'
+    + '  gl_FragColor = texture2D(map, vec2(atan(d.x, d.z) / 6.2831853 + 0.5, 0.5 - asin(clamp(d.y, -1.0, 1.0)) / 3.1415927));\n#include <colorspace_fragment>\n}',
+}));
+Object.assign(panoSky, { renderOrder: -1, frustumCulled: false, visible: false });
+const panoTurn = new THREE.Matrix4();
+panoSky.onBeforeRender = () => { if (current) panoSky.material.uniforms.toMesh.value.setFromMatrix4(panoTurn.extractRotation(current.matrixWorld)).transpose(); };
 // a soft shadow under the rock, drawn just over the ground (polygonOffset, so the two don't flicker into each other)
 const contact = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false,
   polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, map: (() => {
@@ -1911,7 +1934,7 @@ const contact = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasi
 })() }));
 contact.rotation.x = -Math.PI / 2;
 contact.visible = false;
-const backdrop = new THREE.Group(); backdrop.add(sky, ground, contact); backdrop.visible = false; scene.add(backdrop);
+const backdrop = new THREE.Group(); backdrop.add(sky, ground, contact, panoSky); backdrop.visible = false; scene.add(backdrop);
 // Where the rock meets the ground, how wide it is there, and the colour of its foot, from its vertices
 function footing(obj){
   obj.updateMatrixWorld(true);
@@ -1963,8 +1986,29 @@ function applyScene(){
     if (f.color) ground.material.color.setRGB(...f.color.map(x => x * .85), THREE.SRGBColorSpace);
     else ground.material.color.setHex(0x9a8f7e);
   }
-  if (current || splat) loadSplat();     // not before a mesh is shown, which is also before its id is known
+  if (current || splat || pano) { loadSplat(); loadPano(); }     // not before a mesh is shown, which is also before its id is known
 }
+let pano = null;     // {id, tex}: the panorama drawn round the view now
+function loadPano(){
+  const id = shownMesh, row = meshesById[id], want = bgMode === 'scene' && !!id && !!row?.pano && !thumbMode;
+  if (pano && (!want || pano.id !== id)) { panoSky.visible = false; panoSky.material.uniforms.map.value = null; pano.tex?.dispose(); pano = null; }
+  if (!want || pano) return;
+  const mine = pano = { id, tex: null };
+  new THREE.TextureLoader().load(`/meshes/${id}/scene-pano.webp${row.v ? `?v=${row.v}` : ''}`, tex => {
+    if (pano !== mine) return tex.dispose();
+    // magnified in any view (50° of it is under 600 of its 4096 pixels across), so no mipmaps, which would also take a
+    // third more memory and show a seam where its longitude wraps round (u jumps from 1 to 0 there)
+    Object.assign(tex, { colorSpace: THREE.SRGBColorSpace, flipY: false, generateMipmaps: false, minFilter: THREE.LinearFilter, wrapS: THREE.RepeatWrapping });
+    mine.tex = panoSky.material.uniforms.map.value = tex; panoSky.visible = true;
+  }, undefined, () => {
+    if (pano === mine) pano = null;
+    viewNote("Showing the plain sky: the picture of what's far off round this rock wouldn't load.");
+  });
+}
+// A phone (a touch screen whose shorter side is under 600 CSS pixels, whichever way it's held) or a device that says it
+// has 4 GB of memory or less (only Chrome says) gets the scene's 150k most visible blobs, scene-small.splat, rather than
+// all of up to 400k: about a third of the download, of the sorting its CPU does as the view turns, and of the memory
+const smallScene = (matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 600) || (navigator.deviceMemory || 8) <= 4;
 let splat = null;     // {id, viewer}: the splat drawn behind the mesh now
 async function loadSplat(){
   const id = shownMesh, want = bgMode === 'scene' && !!id && !!meshesById[id]?.splat && !thumbMode;
@@ -1977,7 +2021,7 @@ async function loadSplat(){
     const viewer = new GS.DropInViewer({ sharedMemoryForWorkers: false, gpuAcceleratedSort: false, sphericalHarmonicsDegree: 0 });
     viewer.matrixAutoUpdate = false;
     mine.viewer = viewer; scene.add(viewer);
-    await viewer.addSplatScene(`/meshes/${id}/scene.splat${meshesById[id]?.v ? `?v=${meshesById[id].v}` : ''}`, { showLoadingUI: false, format: GS.SceneFormat.Splat, splatAlphaRemovalThreshold: 5 });
+    await viewer.addSplatScene(`/meshes/${id}/${smallScene ? 'scene-small' : 'scene'}.splat${meshesById[id]?.v ? `?v=${meshesById[id].v}` : ''}`, { showLoadingUI: false, format: GS.SceneFormat.Splat, splatAlphaRemovalThreshold: 5 });
   } catch (e) {
     if (splat === mine) { if (mine.viewer) scene.remove(mine.viewer); splat = null; }
     viewNote(`Showing the plain scene: what's around this rock wouldn't load (${e.message || e}).`);

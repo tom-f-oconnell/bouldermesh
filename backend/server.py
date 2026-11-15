@@ -145,7 +145,7 @@ MESH_EXTRA_EXT = {".png", ".jpg", ".jpeg", ".bin", ".mtl"}       # what may be u
 SERVED_TYPES = {".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                 ".json": "application/json", ".bin": "application/octet-stream", ".ply": "application/octet-stream",
                 ".obj": "application/octet-stream", ".stl": "application/octet-stream", ".mtl": "application/octet-stream",
-                ".splat": "application/octet-stream"}
+                ".splat": "application/octet-stream", ".webp": "image/webp"}
 HARVEST_SOURCES = harvest_mod.SOURCES
 CAMPAIGN_ORDERS = ("popularity", "rating", "data")
 CAMPAIGN_POLL = 2.0     # seconds the worker waits for a queued job before moving a campaign on
@@ -2089,7 +2089,7 @@ def mesh_version(mid: str, mode: str, filename: str) -> str:
     shown, the file it's sent, its packed copies, its cleanup's pieces of each face, its splat."""
     src = viewer_glb(mid, mode, filename) or served_dir(mid, mode) / filename
     parts = [mode]
-    for f in (src, src.parent / meshclean.FACES_FILE, MESHES / mid / splat_mod.FILE):
+    for f in (src, src.parent / meshclean.FACES_FILE, MESHES / mid / splat_mod.FILE, MESHES / mid / splat_mod.PANO_FILE):
         try:
             st = f.stat()
             parts.append(f"{st.st_size}.{st.st_mtime_ns}")
@@ -3560,6 +3560,8 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         if not demo and not worse:
             queue_scale(mid)
             queue_splat(mid)
+            if (pdir / "scenery" / SCENERY_DONE).exists():     # a capture's scenery, all sent before its mesh was made
+                queue_scenery(pid)
             if settings().get("beta.auto") and beta_mod.videos(MESHES / mid):
                 queue_beta(mid)     # while its videos are still in the cache
         return mid
@@ -6349,6 +6351,103 @@ def splat_worker() -> None:
             log(f"FAILED: {type(e).__name__}: {e}")
 
 
+# ---- a capture's scenery: frames walked round the rock, fitted as a splat behind its mesh (splat.py) ------------------
+SCENERY_DONE = "DONE"           # in a project's scenery/: its app has sent every frame
+SCENERY_VERSION = 18            # the oldest machines' script that fits it (remote_job.py --task splat)
+SCENERY_WAIT = 1800             # seconds before trying again, when no machine with a GPU could take it
+_sceneries: "queue.Queue[str]" = queue.Queue()
+_scenery_busy: set[str] = set()
+
+
+def scenery_done(pid: str) -> tuple[dict, int]:
+    """A capture's app has sent its scenery: noted, and its backdrop queued if the capture's mesh is made."""
+    pdir = PROJECTS / pid
+    proj = q("SELECT status, mesh_id FROM projects WHERE id=?", pid, one=True)
+    if not proj:
+        return {"error": "not found"}, 404
+    frames = sorted(f.name for f in (pdir / "scenery").glob("*.jpg")) if (pdir / "scenery").is_dir() else []
+    if not frames:
+        return {"error": "no frames of its scenery have come"}, 400
+    (pdir / "scenery" / SCENERY_DONE).write_text(json.dumps({"at": time.time(), "frames": len(frames)}))
+    append_log(pid, f"the scenery's {plural(len(frames), 'frame')} are here")
+    ready = proj["status"] == "done" and proj["mesh_id"] and (MESHES / proj["mesh_id"] / "cameras.json").exists()
+    if ready:
+        queue_scenery(pid)
+    return {"frames": len(frames), "queued": bool(ready)}, 200
+
+
+def queue_scenery(pid: str) -> None:
+    if pid not in _scenery_busy:
+        _scenery_busy.add(pid)
+        _sceneries.put(pid)
+
+
+def scenery_worker() -> None:
+    """Fits captures' scenery one at a time, on machines with a GPU that connect here (it's never done on this server),
+    and tries again later when none can take it."""
+    while True:
+        pid = _sceneries.get()
+        try:
+            again = run_scenery(pid)
+        except Exception as e:      # never let the thread die
+            append_log(pid, f"the scenery: FAILED: {type(e).__name__}: {e}")
+            again = False
+        if again:
+            threading.Timer(SCENERY_WAIT, lambda pid=pid: _sceneries.put(pid)).start()
+        else:
+            _scenery_busy.discard(pid)
+
+
+def run_scenery(pid: str) -> bool:
+    """Fit a capture's scenery into its mesh's folder (splat.capture_task(), then remote_job.py --task splat on a
+    machine). Returns whether to try again later (no machine could take it)."""
+    import remote_job
+    proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
+    mid = proj and proj.get("mesh_id")
+    if not mid or not (MESHES / mid / "cameras.json").exists():
+        return False
+    log = lambda s: append_log(pid, "the scenery: " + s)  # noqa: E731
+    try:
+        task = splat_mod.capture_task(MESHES / mid, PROJECTS / pid)
+    except ValueError as e:
+        log(f"not fitted: {e}")
+        return False
+    ties = "; ".join(f"{s} {t['status']}" + (f" by {t['shared']} photos, {t['rms']:.3g} off" if t["status"] == "tied" else f" ({t['why']})")
+                     for s, t in task["ties"].items())
+    log(f"{task['placed']} of its {task['frames']} frames placed by its spells of tracking ({ties})")
+    files = mesh_inputs(mid, pid, [v["name"] for v in task["views"] if v["folder"] == "photos"])
+    for v in task["views"]:
+        if v["folder"] == "scenery":
+            files[f"scenery/{v['name']}"] = PROJECTS / pid / "scenery" / v["name"]
+    stage = Path(tempfile.mkdtemp(prefix="bm-scenery-", dir=DATA / "compute"))
+    try:
+        (stage / "task.json").write_text(json.dumps(task))
+        prio = max(contribution_prio(proj), pullwork.PRIO_BACKFILL)      # after meshing: it's a backdrop
+        try:
+            with pullwork.priority(prio):
+                _, back = MACHINES.task("splat", {**files}, task, f"scenery: {mid}", log, version=SCENERY_VERSION)
+        except compute.ComputeUnavailable as e:
+            log(f"waiting for a machine with a GPU: {e}")
+            return True
+        try:
+            moved = take_made(back, mid, "splat")
+            log(f"fitted: {', '.join(moved) or 'nothing came back'}")
+        finally:
+            shutil.rmtree(back, ignore_errors=True)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    return False
+
+
+def scene_free(mid: str) -> bool:
+    """Whether a mesh's scene (its splat and panorama) is made only from photos taken with an app of ours (fitted from
+    a capture's scenery), and so shown whatever the site's texture setting."""
+    try:
+        return json.loads((MESHES / mid / splat_mod.RECORD).read_text()).get("sources") == "capture"
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def queue_scale(mid: str) -> bool:
     """Queue finding a reconstructed mesh's scale (scale.py), unless it's being found; whether it was queued."""
     if not (MESHES / mid / "cameras.json").exists() or (scale_mod.load(MESHES / mid) or {}).get("status") in ("queued", "running"):
@@ -7824,7 +7923,7 @@ ACCOUNTS = accounts_mod.Accounts(DATA / "accounts.sqlite")
 USER_MAY = (("POST", r"/api/meshes/[0-9a-f]+/beta/sets"), ("PATCH", r"/api/meshes/[0-9a-f]+/beta/sets/[0-9a-z]+"),
             ("DELETE", r"/api/meshes/[0-9a-f]+/beta/sets/[0-9a-z]+"),
             # what it adds: a project of its own (photos, videos, an app's capture), meshed when its turn comes
-            ("POST", r"/api/projects"), ("POST", r"/api/projects/[0-9a-f]+/(photos|capture|capture/points|capture/log|capture/crash|reconstruct)"),
+            ("POST", r"/api/projects"), ("POST", r"/api/projects/[0-9a-f]+/(photos|capture|capture/points|capture/log|capture/crash|reconstruct|scenery|scenery/done)"),
             ("DELETE", r"/api/projects/[0-9a-f]+"), ("POST", r"/api/submissions/[0-9a-f]+/(approve|decline)"))
 OWNER = {"id": None, "name": None, "role": "owner", "areas": ["*"], "accepted": True, "quota_mb": None, "created": None}
 JOIN_TRIES, JOIN_WINDOW = 10, 3600      # invites and pairing codes one address may try in an hour
@@ -8663,7 +8762,7 @@ class Handler(BaseHTTPRequestHandler):
         import zipfile
         files: list[tuple[Path, str]] = []
         pdir = PROJECTS / proj["id"]
-        for part in ("photos", "videos"):
+        for part in ("photos", "videos", "scenery"):
             if (pdir / part).is_dir():
                 files += [(f, f"{part}/{f.name}") for f in sorted((pdir / part).iterdir()) if f.is_file() and f.stat().st_nlink == 1]
         files += [(pdir / n, n) for n in (CAPTURE_FILE, CAPTURE_POINTS_FILE, CAPTURE_LOG_FILE, "sources.json") if (pdir / n).is_file()]
@@ -9064,7 +9163,8 @@ class Handler(BaseHTTPRequestHandler):
                         r["check"] = None
                         print(f"error: mesh {r['id']}'s model check: {type(e).__name__}: {e}", flush=True)
                     r["areas"], r["area_path"] = areas(r)
-                    r["splat"] = r.get("texture") == "full" and (MESHES / r["id"] / splat_mod.FILE).exists()
+                    r["splat"] = (r.get("texture") == "full" or scene_free(r["id"])) and (MESHES / r["id"] / splat_mod.FILE).exists()
+                    r["pano"] = r["splat"] and (MESHES / r["id"] / splat_mod.PANO_FILE).exists()
                     try:
                         r["pack"] = pack_info(r)
                         r["v"] = mesh_version(r["id"], r["texture"], r["filename"])     # for its files' addresses
@@ -9237,9 +9337,10 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send_json({"error": "not shown: it isn't clearly free to copy"}, 403)
                     return self.send_file(MESHES / mid / name)
                 mode = texture_mode(mid)
-                if name == splat_mod.FILE and mode != "full":     # what's around the rock, learnt from all its photos
+                scene = name in (splat_mod.FILE, splat_mod.SMALL_FILE, splat_mod.PANO_FILE)
+                if scene and mode != "full" and not scene_free(mid):     # what's around the rock, learnt from all its photos
                     return self.send_json({"error": "not shown: the scene is made from photos that aren't all free to copy"}, 403)
-                base = served_dir(mid, mode)
+                base = MESHES / mid if scene else served_dir(mid, mode)
                 f = base / name
                 is_image = f.suffix.lower() in (".png", ".jpg", ".jpeg")
                 if mode == "hidden" and is_image:
@@ -9248,7 +9349,7 @@ class Handler(BaseHTTPRequestHandler):
                 cache = f"public, max-age={TEXTURE_CACHE}" if is_image else None
                 if qs.get("v"):     # the mesh's version, from the list: kept long if it's still this one's, else not at all
                     if row and qs["v"][0] == mesh_version(mid, mode, row["filename"]):
-                        cache = f"public, max-age={TEXTURE_CACHE}" if is_image or name == splat_mod.FILE else f"public, max-age={MESH_CACHE}, immutable"
+                        cache = f"public, max-age={TEXTURE_CACHE}" if is_image or scene else f"public, max-age={MESH_CACHE}, immutable"
                     else:
                         cache = "no-cache"
                 side = int(qs["max"][0]) if qs.get("max", [""])[0].isdigit() else 0
@@ -9472,6 +9573,26 @@ class Handler(BaseHTTPRequestHandler):
                 device = note_device(m[1], record.get("device") or "unknown phone", record.get("app"))
                 append_log(m[1], f"capture: {len(record['shots'])} photos taken with the app ({str(record.get('app') or '?')[:60]}) on {device}")
                 return self.send_json({"kept": len(record["shots"])})
+            m = re.fullmatch(r"/api/projects/([0-9a-f]+)/scenery", p)
+            if m:   # frames of what's around the rock, from a phone app's capture: kept apart from the photos it's meshed from
+                pid = m[1]
+                if not q("SELECT 1 FROM projects WHERE id=?", pid, one=True):
+                    return self.send_json({"error": "not found"}, 404)
+                if me["id"] is not None and int(self.headers.get("Content-Length") or 0) > user_quota(me) - user_used(me["id"]):
+                    return self.send_json({"error": "that's more than you have left: export and delete something you added"}, 413)
+                _, files = self.read_files()
+                saved = []
+                for fname, data in files:
+                    if Path(fname).suffix.lower() in (".jpg", ".jpeg") and re.fullmatch(r"[A-Za-z0-9._-]{1,80}", Path(fname).name):
+                        (PROJECTS / pid / "scenery").mkdir(exist_ok=True)
+                        put_file(data, PROJECTS / pid / "scenery" / Path(fname).name)
+                        saved.append(Path(fname).name)
+                    else:
+                        drop_file(data)
+                return self.send_json({"saved": saved})
+            m = re.fullmatch(r"/api/projects/([0-9a-f]+)/scenery/done", p)
+            if m:   # all its scenery is here: its backdrop is fitted once its mesh is made (now, if it is)
+                return self.send_json(*scenery_done(m[1]))
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/capture/(log|crash)", p)
             if m:   # how the capture went on the phone (its EventLog, JSON lines), or what an app wrote as it crashed, sent with the next upload
                 return self.send_json(*save_capture_log(m[1], m[2], self.read_body()))
@@ -10759,6 +10880,7 @@ def main() -> None:
         print(f"{plural(again, 'job')} people asked for, still waiting when the server stopped, queued again", flush=True)
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=contribution_pump, daemon=True).start()
+    threading.Thread(target=scenery_worker, daemon=True).start()
     threading.Thread(target=reap_machines, daemon=True).start()
     threading.Thread(target=clean_existing_meshes, daemon=True).start()
     threading.Thread(target=orient_existing_meshes, daemon=True).start()

@@ -84,11 +84,12 @@ from pathlib import Path
 # 15: rides out the server being away mid-job (a restart): the job carries on, its log kept and sent once it's back
 # 16: a GPU with too little memory for any job is left out, and the CPU works instead
 # 17: --check offers to start it by itself whenever the computer starts, as a systemd service of the user's own
-VERSION = 17
+# 18: fits a capture's scenery (remote_job.py --task splat), with a GPU
+VERSION = 18
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
-TASKS = ("reconstruct", "beta", "scale", "filter")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
-                                                    # filtering a harvest's photos
+TASKS = ("reconstruct", "beta", "scale", "filter", "splat")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
+                                                    # filtering a harvest's photos, fitting a capture's scenery
 SMALL_GPU_MB = 4000         # a GPU with less memory than this in all fits no job (the least the server reckons one needs): the CPU does instead
 CPU_TASKS = ("filter", "beta")     # what a machine without a GPU takes, unless --tasks says otherwise
 INPUTS = ("photos", "masks", "mesh", "videos", "more", "cache.sqlite", "task.json")   # what a job's folder may hold

@@ -189,10 +189,19 @@ with tempfile.TemporaryDirectory() as tmp:
         assert req(B, "POST", f"/api/projects/{pid}/capture/crash", b"java.lang.IllegalStateException: boom\n at x", ANA)[2]["kept"].startswith("crashes/crash-")
         assert req(B, "POST", f"/api/projects/{pid}/capture/log", b"", ANA)[0] == 400 and req(B, "POST", f"/api/projects/{pid}/capture/log", log, BO)[0] == 403
         assert (tmp / "data" / "projects" / pid / "capture-log.jsonl").read_bytes() == log
+        # frames of the scenery round the rock: kept apart from its photos, counted against its quota, and noted once all are sent
+        admin("user-change", {"id": ana["id"], "quota_mb": 1})
+        st, _, sc = req(B, "POST", f"/api/projects/{pid}/scenery", headers=ANA, files=[("files", "scn_x_001.jpg", b"\xff\xd8" + b"s" * 3000),
+                                                                                       ("files", "../evil.jpg", b"x"), ("files", "note.txt", b"x")])
+        assert st == 200 and sc["saved"] == ["scn_x_001.jpg", "evil.jpg"], sc
+        assert (tmp / "data" / "projects" / pid / "scenery" / "scn_x_001.jpg").is_file() and not (tmp / "data" / "projects" / pid / "photos" / "scn_x_001.jpg").exists()
+        assert req(B, "POST", f"/api/projects/{pid}/scenery", headers=BO, files=[("files", "x.jpg", b"x")])[0] == 403
+        assert req(B, "POST", f"/api/projects/{pid}/scenery/done", {}, ANA)[2] == {"frames": 2, "queued": False}, "no mesh yet: fitted once it's made"
         # the export: its own files, as a zip
         with urllib.request.urlopen(urllib.request.Request(B + f"/api/account/projects/{pid}/export", headers=ANA)) as z:
             names = zipfile.ZipFile(io.BytesIO(z.read())).namelist()
-        assert names[:4] == ["photos/p0.png", "photos/p1.png", "photos/p2.png", "capture-log.jsonl"] and names[4].startswith("crashes/crash-"), names
+        assert names[:6] == ["photos/p0.png", "photos/p1.png", "photos/p2.png", "scenery/DONE", "scenery/evil.jpg", "scenery/scn_x_001.jpg"], names
+        assert names[6] == "capture-log.jsonl" and names[7].startswith("crashes/crash-"), names
         assert req(B, "GET", f"/api/account/projects/{pid}/export", headers=BO)[0] == 404
         # approved by the owner: counted against Ana no more, and Bo can't approve anything
         assert req(B, "POST", f"/api/submissions/{pid}/approve", {}, BO)[0] == 403

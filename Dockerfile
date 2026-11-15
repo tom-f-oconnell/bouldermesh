@@ -16,6 +16,10 @@ ARG COLMAP4=cuda
 # twice: for the CPU, and with CUDA for depth maps on a GPU (5 times faster in experiments/mapper), which pipeline.py
 # uses for that one step when a GPU has room. Not the default until an image built with it has made meshes.
 ARG MVS=23
+# torch's build (cu126 for machines with a GPU, cpu for the server: deploy/build.sh), and its version, the same in the
+# image and in the stage that builds gsplat against it (gsplat's CUDA code has to match the torch it runs with)
+ARG TORCH=cu126
+ARG TORCH_VERSION=2.14.1
 
 # The same COLMAP version as Ubuntu's package, which has no CUDA, so that only the device changes.
 # It predates this compiler, which no longer brings in those two headers by itself.
@@ -211,9 +215,32 @@ RUN for cuda in OFF ON; do \
 
 FROM mvs${MVS} AS mvs
 
+# gsplat, for fitting captures' scenery as splats (backend/splat.py) on machines with a GPU: built here against the
+# image's torch, with CUDA's compiler, which the image itself doesn't have. The server's (TORCH=cpu) has none of it.
+# From its source, as its wheel on PyPI compiles its CUDA code when first used, and in C++20, as this torch's headers
+# need it (gsplat 1.5.3 asks for C++17).
+FROM nvidia/cuda:12.9.1-devel-ubuntu24.04 AS gsplat-cu126
+ARG TORCH_VERSION
+ENV DEBIAN_FRONTEND=noninteractive TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0+PTX" MAX_JOBS=6
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-pip python3-dev git ninja-build \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir --break-system-packages torch==$TORCH_VERSION --index-url https://download.pytorch.org/whl/cu126 \
+ && pip install --no-cache-dir --break-system-packages numpy jaxtyping rich setuptools wheel \
+ && mkdir /wheels /src && cd /src \
+ && pip download --no-deps --no-binary :all: --no-build-isolation --no-cache-dir -d /src gsplat==1.5.3 \
+ && tar xzf gsplat-1.5.3.tar.gz \
+ && sed -i 's/"-std=c++17"/"-std=c++20"/' gsplat-1.5.3/setup.py \
+ && pip wheel --no-deps --no-build-isolation --no-cache-dir -w /wheels ./gsplat-1.5.3 \
+ && ls -la /wheels
+FROM ubuntu:24.04 AS gsplat-cpu
+RUN mkdir /wheels
+FROM gsplat-${TORCH} AS gsplat
+
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
-ARG TORCH=cu126
+ARG TORCH
+ARG TORCH_VERSION
 # rtmlib (the pose model finding climbers' hands and feet) is installed without its declared dependencies, which
 # would replace Ubuntu's numpy and OpenCV with pip's; it works with Ubuntu's, and onnxruntime's are listed after
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -224,7 +251,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcgal-dev libglew2.2 libglfw3 libjpeg8 libpng16-16 libtiff6 \
  && rm -rf /var/lib/apt/lists/* \
  && pip install --no-cache-dir --break-system-packages yt-dlp \
- && pip install --no-cache-dir --break-system-packages torch torchvision --index-url https://download.pytorch.org/whl/$TORCH \
+ && pip install --no-cache-dir --break-system-packages torch==$TORCH_VERSION torchvision --index-url https://download.pytorch.org/whl/$TORCH \
  && pip install --no-cache-dir --break-system-packages --no-deps rtmlib onnxruntime \
  && pip install --no-cache-dir --break-system-packages flatbuffers protobuf coloredlogs humanfriendly sympy packaging tqdm \
  && pip install --no-cache-dir --break-system-packages --ignore-installed idna \
@@ -235,6 +262,13 @@ RUN pip install --no-cache-dir --break-system-packages einops safetensors huggin
  && pip install --no-cache-dir --break-system-packages --no-deps \
       https://github.com/facebookresearch/vggt/archive/a288dd0f14786c93483e45524328726ab7b1b4ce.zip \
  && python3 -c "import vggt.models.vggt"
+# gsplat (built above against this torch), on machines with a GPU only; it checks it has its compiled CUDA code
+COPY --from=gsplat /wheels /tmp/gsplat
+RUN if ls /tmp/gsplat/*.whl > /dev/null 2>&1; then \
+      pip install --no-cache-dir --break-system-packages jaxtyping rich \
+   && pip install --no-cache-dir --break-system-packages --no-deps /tmp/gsplat/*.whl \
+   && python3 -c "import gsplat, gsplat.cuda._backend as b; print('gsplat', gsplat.__version__, 'compiled:', b._C is not None)"; fi \
+ && rm -rf /tmp/gsplat
 # segno: QR codes on the admin page, of the topic a phone subscribes to for notifications (notify.py)
 RUN pip install --no-cache-dir --break-system-packages segno
 # YouTube needs a JavaScript runtime and yt-dlp's challenge scripts (yt-dlp-ejs, in its "default" extras) for full
