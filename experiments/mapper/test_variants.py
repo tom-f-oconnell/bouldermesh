@@ -58,6 +58,9 @@ class Registry(unittest.TestCase):
                 run = name + "-s3" + ("+complete" if family == "new" else "") + (f"@{cond}" if cond != "dev" else "")
                 self.assertEqual(bench.run_parts(run), (name, build, cond))
         self.assertTrue(variants.GPU_METHODS <= bench.GPU_METHODS)
+        for m, (_, command, _, _) in variants.methods(bench.GLOBAL).items():       # every use of the global mapper, as global_tied
+            self.assertEqual(bench.UNTIED.get(m), 15 if command == "global_mapper" or m.endswith("_global") else None, m)
+        self.assertEqual(bench.UNTIED["global_tied"], 15)
         self.assertTrue(all(bench.METHODS[m][0] == "new" for m in variants.GPU_METHODS))
 
     def test_the_plain_mappers_get_their_options_and_the_app_s_settings(self):
@@ -95,6 +98,90 @@ class Registry(unittest.TestCase):
                 self.assertEqual(bench.feat_db("p", "aliked421", "complete"), Path(tmp, "p", "aliked421", "database.db"))
             finally:
                 bench.R = old
+
+
+class Wrapped(unittest.TestCase):
+    """thin() and hier() with the step runner replaced: what they would run, in which folders, and that it is shell."""
+
+    def setUp(self):
+        import test_dbtools
+        self.tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self.tmp.name)
+        self.saved = (bench.BENCH, bench.R, bench.step, bench.docker_works)
+        bench.BENCH, bench.R, bench.docker_works = tmp, tmp / "r2", lambda: True
+        (bench.R / "p" / "sift391").mkdir(parents=True)
+        test_dbtools.make(bench.R / "p" / "sift391" / "database.db")
+        self.calls = []
+
+        def fake(d, name, tools, script, mounts, cond, env=None, timeout=0, gpu=False, again=True):
+            self.calls.append({"dir": str(d.relative_to(bench.R)), "name": name, "tools": tools, "script": script, "gpu": gpu,
+                               "mounts": mounts})
+            if name in ("map", "full"):          # a model of no photos, as far as stats.images() reads
+                (d / "sparse" / "0").mkdir(parents=True, exist_ok=True)
+                (d / "sparse" / "0" / "images.bin").write_bytes(struct.pack("<Q", 0))
+            rec = {"step": name, "tools": tools, "cond": cond, "rc": 0, "wall": 10.0, "cpu_s": 30.0, "started": "2026-11-14 00:00:00"}
+            (d / f"{name}.json").write_text(json.dumps(rec))
+            return rec
+        bench.step = fake
+
+    def tearDown(self):
+        bench.BENCH, bench.R, bench.step, bench.docker_works = self.saved
+        self.tmp.cleanup()
+
+    def shell(self, script: str) -> None:
+        self.assertEqual(variants.subprocess.run(["bash", "-n", "-c", script], capture_output=True).returncode, 0, script)
+
+    def test_thin_runs_the_mapper_on_the_thinned_set_then_brings_the_full_database_back(self):
+        for method, build, tools in (("thin1500_base", "plain", "app"), ("thin2500_global", "complete", "complete")):
+            self.calls.clear()
+            run = bench.mapper("p", method, 2, "sift391", "t4", build, 1)
+            n = method[4:8]
+            inner, full = self.calls
+            self.assertEqual((inner["name"], inner["dir"].split("/")[1], inner["tools"]), ("map", f"sift391_thin{n}", tools))
+            self.assertEqual((full["name"], full["dir"], full["gpu"]), ("full", f"p/sift391/{run}", tools != "app"))
+            self.shell(full["script"])
+            order = [full["script"].index(x) for x in ("model_converter", "stats.py untied /r/txt 15", "image_deleter", "variants.py poses $SRC /r/poses",
+                                                       "point_triangulator", "--database_path /r/full.db", "bundle_adjuster", "BENCH_MARK done")]
+            self.assertEqual(order, sorted(order))
+            self.assertIn("--Mapper.num_threads 4", full["script"])
+            self.assertEqual("--BundleAdjustmentCeres.use_gpu 1" in full["script"], tools != "app")
+            self.assertTrue(any(m.endswith(":/in:ro") and f"sift391_thin{n}" in m for m in full["mounts"]))
+            d = bench.R / "p" / "sift391" / run
+            rec = json.loads((d / "map.json").read_text())
+            self.assertEqual(set(rec["parts"]), {"thin", "map", "full"})
+            self.assertAlmostEqual(rec["wall"], 20 + rec["parts"]["thin"], places=1)
+            self.assertEqual((rec["rc"], rec["cpu_s"], rec["step"]), (0, 60.0, "map"))
+            self.assertTrue((bench.R / rec["mapper_run"] / "map.json").exists())
+            self.assertFalse((d / "full.db").exists())
+            self.assertEqual(json.loads((d / "models.json").read_text()), {"0": []})
+            derive = json.loads((bench.R / "p" / f"sift391_thin{n}" / "derive.json").read_text())
+            self.assertEqual(derive["what"], "thin")
+            self.assertEqual(bench.mapper("p", method, 2, "sift391", "t4", build, 1), run)      # made: not again
+            self.assertEqual(len(self.calls), 2)
+
+    def test_hier_gives_each_colmap_its_own_spelling(self):
+        bench.mapper("p", "hier_w3_l40", 5, "sift391", "prod", "plain", 1)
+        bench.mapper("p", "hier421_w2_l80", 5, "sift391", "prod", "complete", 1)
+        old, new = (c["script"] for c in self.calls)
+        for s in (old, new):
+            self.shell(s)
+            self.assertIn("--Mapper.min_model_size 6", s)
+            self.assertIn("/r/sparse/0", s)
+        self.assertIn("--random_seed 5 --num_workers 3 --leaf_max_num_images 40 --image_overlap 10", old)
+        self.assertIn("--HierarchicalMapper.num_workers 2 --HierarchicalMapper.leaf_max_num_images 80 --HierarchicalMapper.image_overlap 20", new)
+        self.assertIn("--Mapper.random_seed 5", new)
+        self.assertEqual([c["tools"] for c in self.calls], ["app", "complete"])
+
+    def test_a_derived_set_is_made_once_and_any_method_runs_on_it(self):
+        bench.mapper("p", "base", 0, "sift391_lens", "prod", "plain", 1)
+        bench.mapper("p", "global_tied", 0, "sift391_lens", "prod", "complete", 1)
+        bench.mapper("p", "base", 0, "sift391_dedup90", "prod", "plain", 1)
+        self.assertEqual([c["dir"].split("/")[1] for c in self.calls], ["sift391_lens", "sift391_lens", "sift391_dedup90"])
+        lens = json.loads((bench.R / "p" / "sift391_lens" / "derive.json").read_text())
+        self.assertEqual((lens["before"]["cameras"], lens["after"]["cameras"]), (6, 3))
+        dedup = json.loads((bench.R / "p" / "sift391_dedup90" / "derive.json").read_text())
+        self.assertEqual(list(dedup["dropped_frames"]), ["yt_vidA_001.jpg"])
+        self.assertEqual(bench.features("p", "sift391_lens", "prod", "plain"), bench.R / "p" / "sift391_lens")
 
 
 class Reports(unittest.TestCase):

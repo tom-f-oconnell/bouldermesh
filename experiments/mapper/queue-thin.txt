@@ -27,5 +27,5 @@ all ce7571e0a4a3 thin1500_base 0 --cond prod
 all ce7571e0a4a3 thin2500_base 0 --cond prod
 
 # thinned all the way (the rest step on the thinned database too): how much the full database's return is worth
-all 9f3b4b740847 global 0 --feat sift391_thin1500 --cond prod --build complete
+all 9f3b4b740847 global_tied 0 --feat sift391_thin1500 --cond prod --build complete
 all 9f3b4b740847 base 0 --feat sift391_thin1500 --cond prod

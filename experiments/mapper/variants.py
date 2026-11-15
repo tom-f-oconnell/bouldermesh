@@ -6,7 +6,6 @@ imports this, takes its METHODS and FEATS entries, and hands it the commands in 
     bench.py texture <project> <run> <variant> | report   TextureMesh again on a finished post's mesh, one thing changed
     bench.py people <project> [run] [cpu]               the app's people masks, timed: the photos, or a run's undistorted ones
     bench.py breakdown                                  every part of a job in one row, people masks to texture
-    bench.py consensus [project]                        each model against all the others of its boulder: outliers show
 
 What each new method and feature set changes about which photos are placed is said where it is defined, for the
 MESH_RULES decision that shipping any of them would need. Only the standard library is imported here at the top:
@@ -26,11 +25,12 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 B = None        # bench.py's module: set by it when it imports this one
-COMMANDS = ["sidemodels", "together", "texture", "people", "breakdown", "consensus"]
+COMMANDS = ["sidemodels", "together", "texture", "people", "breakdown"]
 WRAPPED = {"thin", "hier"}      # METHODS commands whose mapper step is made here (mapper()), not by bench.mapper()
 
 # ---------------------------------------------------------------------------------------------- methods
 
+UNTIED_LEAST = 15       # a camera seeing fewer of its model's points than this isn't placed: bench.py's UNTIED, REST_ARGS' own least
 HIER_GRID = [(w, leaf) for w in (2, 3, 4, 6, 8) for leaf in (20, 40, 60, 80, 120)]
 THIN = (1500, 2500)
 
@@ -87,6 +87,10 @@ def methods(GLOBAL: list[str]) -> dict:
 
 GPU_METHODS = {"global_one", "global_tpv1500", "global_tpv2500", "global_keep50k", "global_keep100k",
                *(f"thin{n}_global" for n in THIN)}
+# As bench.py's global_tied: the global mapper leaves cameras in its models that see none of the model's points, and
+# those are its wrong ones (atlas, 14 Nov). For every method here that runs it, a camera seeing fewer than 15 is taken
+# out before the rest step, which then places it as any photo left out.
+UNTIED = {m: UNTIED_LEAST for m in GPU_METHODS}
 
 # ---------------------------------------------------------------------------------------------- feature sets
 
@@ -196,8 +200,9 @@ def hier(P: str, method: str, seed: int, feat: str, cond: str, build: str, rep: 
 def thin(P: str, method: str, seed: int, feat: str, cond: str, build: str, rep: int) -> str:
     """A mapper on a thinned database, then the full one brought back: the method's mapper runs on <feat>_thin<N>
     (its own run, under that feature set); its largest model's cameras, without points, go to point_triangulator on
-    the full database (cameras fixed), then one bundle_adjuster (on the GPU for 4.2.1). The run's map.json is the
-    three together: seconds for thinning, the mapper and the full step under "parts"."""
+    the full database (cameras fixed), then one bundle_adjuster (on the GPU for 4.2.1). Cameras the mapper placed
+    that see fewer than UNTIED_LEAST of its points are left out of that (BENCH_UNTIED in the step's log says how
+    many). The run's map.json is the three together: seconds for thinning, the mapper and the full step, under "parts"."""
     family, _, (n, inner), _ = B.METHODS[method]
     tools, new = ("app", False) if family == "app" else (build, True)
     run = B.run_name(method, seed, cond, build, rep)
@@ -221,7 +226,16 @@ def thin(P: str, method: str, seed: int, feat: str, cond: str, build: str, rep: 
         script = "\n".join([
             "mkdir -p /r/txt /r/poses /r/tri /r/sparse/0",
             B.sh(["colmap", "model_converter", *log, "--input_path", "/in", "--output_path", "/r/txt", "--output_type", "TXT"]),
-            "python3 /bench/variants.py poses /r/txt /r/poses",
+            # cameras that see next to none of the mapper's points (the global mapper leaves such in, wrongly placed)
+            # give the triangulation nothing true: left out here, for the rest step to place
+            f"python3 /bench/stats.py untied /r/txt {UNTIED_LEAST} > /r/untied.txt; SRC=/r/txt",
+            "if [ -s /r/untied.txt ]; then mkdir -p /r/tied /r/txt2; "
+            + B.sh(["colmap", "image_deleter", *log, "--input_path", "/r/txt", "--output_path", "/r/tied", "--image_names_path",
+                    "/r/untied.txt"]) + "; "
+            + B.sh(["colmap", "model_converter", *log, "--input_path", "/r/tied", "--output_path", "/r/txt2", "--output_type", "TXT"])
+            + "; SRC=/r/txt2; fi",
+            "echo BENCH_UNTIED $(wc -l < /r/untied.txt)",
+            "python3 /bench/variants.py poses $SRC /r/poses",
             "echo BENCH_MARK triangulate $(date +%s.%N)",
             B.sh(["colmap", "point_triangulator", *log, "--database_path", "/r/full.db", "--image_path", "/photos",
                   "--input_path", "/r/poses", "--output_path", "/r/tri", *B.INC, *B.threads(cond, "--Mapper.num_threads")]),
@@ -570,7 +584,8 @@ def breakdown() -> None:
 def consensus(pairs: list[tuple[str, str, dict]]) -> dict[str, dict]:
     """Each model against all the others of its boulder, from the pairs' agreement (a, b, stats.agreement's result):
     the median over the other models of the pair's median angle and of its median position error. A model far from
-    every other shows by its own number, whichever model it is (the baseline's own second run included)."""
+    every other shows by its own number, whichever model it is (the baseline's own second run included). For
+    bench.py agree's consensus columns; consensus.py is the fuller judge (by viewing rays, not rotations)."""
     by = {}
     for a, b, ag in pairs:
         if ag and "deg_median" in ag:
@@ -601,8 +616,6 @@ def command(a) -> None:
         people(a.args[0], rest[0] if rest else None, "cpu" if "cpu" in a.args[1:] else "gpu", a.feat, a.tools, a.cond)
     elif a.command == "breakdown":
         breakdown()
-    elif a.command == "consensus":
-        B.agree(a.args[0] if a.args else None, summary=True)
 
 
 if __name__ == "__main__":

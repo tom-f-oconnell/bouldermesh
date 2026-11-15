@@ -9,12 +9,12 @@ feat 31de9a59303a --feat siftgpu391 --cond prod
 feat 31de9a59303a --feat sift421 --cond prod --build complete
 feat 31de9a59303a --feat siftgpu421 --cond prod --build complete
 feat 31de9a59303a --feat aliked421 --cond prod --build complete
-all 31de9a59303a global 0 --feat siftgpu391 --cond prod --build complete --post complete
-all 31de9a59303a global 0 --feat siftgpu421 --cond prod --build complete --post complete
-all 31de9a59303a global 0 --feat aliked421 --cond prod --build complete --post complete
-all 31de9a59303a global 0 --feat sift421 --cond prod --build complete --post complete
-people 31de9a59303a global-s0+complete@prod --tools complete --cond prod
-people 31de9a59303a global-s0+complete@prod cpu --tools complete --cond prod
+all 31de9a59303a global_tied 0 --feat siftgpu391 --cond prod --build complete --post complete
+all 31de9a59303a global_tied 0 --feat siftgpu421 --cond prod --build complete --post complete
+all 31de9a59303a global_tied 0 --feat aliked421 --cond prod --build complete --post complete
+all 31de9a59303a global_tied 0 --feat sift421 --cond prod --build complete --post complete
+people 31de9a59303a global_tied-s0+complete@prod --tools complete --cond prod
+people 31de9a59303a global_tied-s0+complete@prod cpu --tools complete --cond prod
 people 9f3b4b740847 --cond prod
 people 9f3b4b740847 cpu --cond prod
 feat 9f3b4b740847 --cond prod
@@ -22,12 +22,12 @@ feat 9f3b4b740847 --feat siftgpu391 --cond prod
 feat 9f3b4b740847 --feat sift421 --cond prod --build complete
 feat 9f3b4b740847 --feat siftgpu421 --cond prod --build complete
 feat 9f3b4b740847 --feat aliked421 --cond prod --build complete
-all 9f3b4b740847 global 0 --feat siftgpu391 --cond prod --build complete --post complete
-all 9f3b4b740847 global 0 --feat siftgpu421 --cond prod --build complete --post complete
-all 9f3b4b740847 global 0 --feat aliked421 --cond prod --build complete --post complete
-all 9f3b4b740847 global 0 --feat sift421 --cond prod --build complete --post complete
-people 9f3b4b740847 global-s0+complete@prod --tools complete --cond prod
-people 9f3b4b740847 global-s0+complete@prod cpu --tools complete --cond prod
+all 9f3b4b740847 global_tied 0 --feat siftgpu391 --cond prod --build complete --post complete
+all 9f3b4b740847 global_tied 0 --feat siftgpu421 --cond prod --build complete --post complete
+all 9f3b4b740847 global_tied 0 --feat aliked421 --cond prod --build complete --post complete
+all 9f3b4b740847 global_tied 0 --feat sift421 --cond prod --build complete --post complete
+people 9f3b4b740847 global_tied-s0+complete@prod --tools complete --cond prod
+people 9f3b4b740847 global_tied-s0+complete@prod cpu --tools complete --cond prod
 people ce7571e0a4a3 --cond prod
 people ce7571e0a4a3 cpu --cond prod
 feat ce7571e0a4a3 --cond prod
@@ -35,9 +35,9 @@ feat ce7571e0a4a3 --feat siftgpu391 --cond prod
 feat ce7571e0a4a3 --feat sift421 --cond prod --build complete
 feat ce7571e0a4a3 --feat siftgpu421 --cond prod --build complete
 feat ce7571e0a4a3 --feat aliked421 --cond prod --build complete
-all ce7571e0a4a3 global 0 --feat siftgpu391 --cond prod --build complete --post complete
-all ce7571e0a4a3 global 0 --feat siftgpu421 --cond prod --build complete --post complete
-all ce7571e0a4a3 global 0 --feat aliked421 --cond prod --build complete --post complete
-all ce7571e0a4a3 global 0 --feat sift421 --cond prod --build complete --post complete
-people ce7571e0a4a3 global-s0+complete@prod --tools complete --cond prod
-people ce7571e0a4a3 global-s0+complete@prod cpu --tools complete --cond prod
+all ce7571e0a4a3 global_tied 0 --feat siftgpu391 --cond prod --build complete --post complete
+all ce7571e0a4a3 global_tied 0 --feat siftgpu421 --cond prod --build complete --post complete
+all ce7571e0a4a3 global_tied 0 --feat aliked421 --cond prod --build complete --post complete
+all ce7571e0a4a3 global_tied 0 --feat sift421 --cond prod --build complete --post complete
+people ce7571e0a4a3 global_tied-s0+complete@prod --tools complete --cond prod
+people ce7571e0a4a3 global_tied-s0+complete@prod cpu --tools complete --cond prod

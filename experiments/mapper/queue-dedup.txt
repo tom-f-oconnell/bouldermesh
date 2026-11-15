@@ -1,14 +1,14 @@
 # Without a video's frames that repeat a kept one (feature sets derived from sift391's database; derive.json in each
 # says which frames went and why). On hal's databases, of the frames in videos: dedup90 drops 25 of 65 on 31de, 2 of
 # 114 on 9f3b, 27 of 143 on 38f3, 51 of 176 on Drifter; dedup75 33, 6, 30, 60; move2 18, 5, 29, 30.
-all 31de9a59303a global 0 --feat sift391_dedup90 --cond prod --build complete --post complete
-all 9f3b4b740847 global 0 --feat sift391_dedup90 --cond prod --build complete --post complete
-all ce7571e0a4a3 global 0 --feat sift391_dedup90 --cond prod --build complete --post complete
-all 31de9a59303a global 0 --feat sift391_dedup75 --cond prod --build complete --post complete
-all 9f3b4b740847 global 0 --feat sift391_dedup75 --cond prod --build complete --post complete
-all ce7571e0a4a3 global 0 --feat sift391_dedup75 --cond prod --build complete --post complete
-all 31de9a59303a global 0 --feat sift391_move2 --cond prod --build complete --post complete
-all 9f3b4b740847 global 0 --feat sift391_move2 --cond prod --build complete --post complete
-all ce7571e0a4a3 global 0 --feat sift391_move2 --cond prod --build complete --post complete
+all 31de9a59303a global_tied 0 --feat sift391_dedup90 --cond prod --build complete --post complete
+all 9f3b4b740847 global_tied 0 --feat sift391_dedup90 --cond prod --build complete --post complete
+all ce7571e0a4a3 global_tied 0 --feat sift391_dedup90 --cond prod --build complete --post complete
+all 31de9a59303a global_tied 0 --feat sift391_dedup75 --cond prod --build complete --post complete
+all 9f3b4b740847 global_tied 0 --feat sift391_dedup75 --cond prod --build complete --post complete
+all ce7571e0a4a3 global_tied 0 --feat sift391_dedup75 --cond prod --build complete --post complete
+all 31de9a59303a global_tied 0 --feat sift391_move2 --cond prod --build complete --post complete
+all 9f3b4b740847 global_tied 0 --feat sift391_move2 --cond prod --build complete --post complete
+all ce7571e0a4a3 global_tied 0 --feat sift391_move2 --cond prod --build complete --post complete
 all 31de9a59303a base 0 --feat sift391_dedup90 --cond prod --post app
 all ce7571e0a4a3 base 0 --feat sift391_dedup90 --cond prod --post app

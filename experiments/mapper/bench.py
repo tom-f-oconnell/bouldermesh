@@ -12,7 +12,6 @@
     bench.py queue <file>                                  a file of the above (one per line), one at a time
     bench.py table                                         every step so far, tab-separated (see also stats.py)
     bench.py agree [project]                               every pair of a boulder's models, laid over each other
-    bench.py consensus [project]                           each model against all the others: an outlier shows by itself
     bench.py sidemodels | breakdown | together | texture | people      see variants.py, which also holds more methods
                                                            and the feature sets derived from another's database
 
@@ -127,6 +126,7 @@ import variants  # noqa: E402      more methods, feature sets and commands, in t
 variants.B = sys.modules[__name__]
 METHODS.update(variants.methods(GLOBAL))
 GPU_METHODS |= variants.GPU_METHODS
+UNTIED.update(variants.UNTIED)
 FEATS.update(variants.feats(FEATS))
 MATCH = ["--ExhaustiveMatching.block_size", "20", "--TwoViewGeometry.min_num_inliers", "12"]
 REST_ARGS = ["--Mapper.abs_pose_min_num_inliers", "15", "--Mapper.abs_pose_min_inlier_ratio", "0.15"]
@@ -714,18 +714,18 @@ def apps() -> None:
         print("\t".join(str(r.get(c, "")) for c in cols))
 
 
-def agree(only: str | None = None, summary: bool = False) -> None:
+def agree(only: str | None = None) -> None:
     """Every pair of models of each boulder laid over each other (stats.agreement): this benchmark's runs (after the
     app's rest step where it was run, else the mapper's largest model), the first scripts' runs (runs/) and the
     pycolmap probes (probe/). One row a pair: how many cameras each places and both; how far those both place are
     apart, as medians and 90th percentiles (position as a share of the scene's size) and as the share of them within
     1, 2 and 5 degrees and within 2% and 10% of the scene's size; and each of the two models' consensus (the median,
-    over all the other models of the boulder, of the pair's median angle: variants.consensus()). A model that is
-    far from every other shows by its own consensus, whichever it is: the baseline's second run can be the outlier.
-    summary: one row a model instead (bench.py consensus), worst first."""
+    over all the other models of the boulder, of the pair's median angle: variants.consensus()), so that a model far
+    from every other shows by its own number, whichever it is. These compare the cameras' rotations, which differ a
+    few degrees between models that see the same (a camera can turn and shift its principal point to match):
+    consensus.py compares what the cameras see, and is the one to judge a model by."""
     dist = ["pos_median", "pos_p90", "deg_median", "deg_p90", "deg_le1", "deg_le2", "deg_le5", "pos_le2pct", "pos_le10pct"]
-    print("\t".join(["boulder", "model", "placed", "others", "consensus_deg", "consensus_pos", "nearest_deg"] if summary else
-                    ["boulder", "a", "b", "placed_a", "placed_b", "shared", *dist, "consensus_deg_a", "consensus_deg_b"]))
+    print("\t".join(["boulder", "a", "b", "placed_a", "placed_b", "shared", *dist, "consensus_deg_a", "consensus_deg_b"]))
     for proj in sorted((BENCH / "projects").iterdir()):
         P = proj.name
         if only and P != only:
@@ -748,10 +748,6 @@ def agree(only: str | None = None, summary: bool = False) -> None:
         names = sorted(poses)
         pairs = [(a, b, stats.agreement(poses[a], poses[b]) or {}) for i, a in enumerate(names) for b in names[i + 1:]]
         con = variants.consensus(pairs)
-        if summary:
-            for m in sorted(con, key=lambda m: -con[m]["deg"]):
-                print("\t".join(str(x) for x in [P, m, len(poses[m]), con[m]["others"], con[m]["deg"], con[m]["pos"], con[m]["deg_best"]]))
-            continue
         for a, b, ag in pairs:
             print("\t".join(str(x) for x in [P, a, b, len(poses[a]), len(poses[b]), len(set(poses[a]) & set(poses[b])),
                                              *(ag.get(k, "") for k in dist), con.get(a, {}).get("deg", ""), con.get(b, {}).get("deg", "")]))

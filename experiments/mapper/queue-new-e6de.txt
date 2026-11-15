@@ -8,13 +8,13 @@ all e6de7747fab5 global_tpv1500 0 --cond prod --build complete
 all e6de7747fab5 thin1500_base 0 --cond prod
 all e6de7747fab5 thin1500_global 0 --cond prod --build complete --post complete
 all e6de7747fab5 base 0 --feat sift391_lens --cond prod
-all e6de7747fab5 global 0 --feat sift391_lens --cond prod --build complete
-all e6de7747fab5 global 0 --feat sift391_dedup90 --cond prod --build complete
+all e6de7747fab5 global_tied 0 --feat sift391_lens --cond prod --build complete
+all e6de7747fab5 global_tied 0 --feat sift391_dedup90 --cond prod --build complete
 all e6de7747fab5 base 0 --feat sift391_move2 --cond prod
 all e6de7747fab5 hier_w2_l20 0 --cond prod
 all e6de7747fab5 hier421_w2_l20 0 --cond prod --build complete
-all e6de7747fab5 global 0 --feat siftgpu391 --cond prod --build complete
-all e6de7747fab5 global 0 --feat aliked421 --cond prod --build complete
+all e6de7747fab5 global_tied 0 --feat siftgpu391 --cond prod --build complete
+all e6de7747fab5 global_tied 0 --feat aliked421 --cond prod --build complete
 # these need the posts the short plan made: cpu421-s0+complete@prod/post-complete@prod and base-s0@prod/post-app@prod
 texture e6de7747fab5 cpu421-s0+complete@prod same --tools complete --cond prod
 texture e6de7747fab5 cpu421-s0+complete@prod res1 --tools complete --cond prod
