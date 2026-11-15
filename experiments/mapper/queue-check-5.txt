@@ -1,0 +1,10 @@
+# For the surface comparison (hal's section 17 in the handoff): is a global_tied model the same rock as the
+# baseline's, judged against the baseline's own two runs, all through the same OpenMVS (2.4). First Drifter's
+# global_tied mesh again: its dense step segfaulted in 2.4's fusion the first time (its record and log were put aside
+# as dense.json.crash1 and dense.crash1.log), then the same with 2.3's way of fusing (--mvs fuse1).
+post ce7571e0a4a3 global_tied-s0+complete@prod --tools complete --cond prod
+post ce7571e0a4a3 global_tied-s0+complete@prod --tools complete --cond prod --mvs fuse1
+post ce7571e0a4a3 base-s0@prod --tools complete --cond prod
+post ce7571e0a4a3 base-s0@prod-r2 --tools complete --cond prod
+post 31de9a59303a base-s0@prod --tools complete --cond prod
+post 31de9a59303a base-s0@prod-r2 --tools complete --cond prod

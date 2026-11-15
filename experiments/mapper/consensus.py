@@ -1,6 +1,7 @@
 """Whether a boulder's models are the same model, judged by each other and not by one of them: consensus.py
 
     consensus.py [project ...]        tables in Markdown for every boulder with runs, or for those named
+    consensus.py trade <project> <run a> <run b>     whether two models' cameras stand apart only as their lenses differ
 
 bench.py agree lays each pair of models over each other with every camera they share and compares the cameras'
 rotations. Two things mislead there. A model with a bent part and one that is simply elsewhere look alike. And with a
@@ -11,7 +12,8 @@ So here a camera is its viewing rays: where five of its pixels (the middle, and 
 its own lens. Each pair of models is laid over each other on the largest set of cameras that agree about how the two
 are turned (within TOL_DEG), and the result is the share of the shared cameras whose rays then land within 1, 2 and 5
 degrees, and whose positions within 1, 2 and 5% of the scene's size. A wrong model shows as one whose shares are low
-against every other model, whichever method made it. With each model's own numbers (points, track length,
+against every other model, whichever method made it. Positions are the weaker sign: a camera can also stand further
+from the rock with a longer lens and see the same (trade measures how much of a pair's disagreement is that). With each model's own numbers (points, track length,
 reprojection error, lenses that can't be real, cameras that see next to none of its points) to see whether a wrong
 one gives itself away, the spread of the phones'
 gravity readings in its frame where the photos carry any (backend/orientation.py: every reading is the same "down",
@@ -62,7 +64,8 @@ def load(model: Path) -> dict[str, dict]:
             rays.append(R.T @ (d / np.linalg.norm(d)))
         side = max(L["width"], L["height"])
         odd = not (0.3 * side < f < 6 * side) or np.hypot(cx - L["width"] / 2, cy - L["height"] / 2) > 0.25 * side
-        out[c["name"]] = {"R": R, "c": -R.T @ np.array(c["t"]), "rays": np.array(rays), "seen": c["seen"], "odd": bool(odd)}
+        out[c["name"]] = {"R": R, "c": -R.T @ np.array(c["t"]), "rays": np.array(rays), "seen": c["seen"], "odd": bool(odd),
+                          "f": f / side}
     return out
 
 
@@ -81,8 +84,9 @@ def overlay(a: dict, b: dict) -> dict | None:
 
     Returns:
         The shared cameras' names, how far each one's rays are from its twin's (degrees, the mean over its five) and
-        its position (as a share of the scene's size: the RMS distance of b's shared cameras from their middle).
-        None with fewer than 3 shared.
+        its position (as a share of the scene's size: the median distance of b's shared cameras from their middle),
+        that size, and the fit (scale, rotation, shift) taking a point of a's frame into b's. None with fewer than
+        3 shared.
     """
     names = sorted(set(a) & set(b))
     if len(names) < 3:
@@ -101,7 +105,8 @@ def overlay(a: dict, b: dict) -> dict | None:
         fit = ok
         Rs = proper(*np.linalg.svd(np.einsum("nka,nkb->ab", rb[fit], ra[fit]))[::2])
     deg = off()
-    size = float(np.sqrt(((cb - cb.mean(0)) ** 2).sum(1).mean())) or 1.0
+    # the scene's size: how far b's shared cameras typically stand from their middle (medians: a few cameras placed
+    size = float(np.median(np.linalg.norm(cb - np.median(cb, axis=0), axis=1))) or 1.0      # far off don't stretch it)
     for again in (True, False):     # scale and shift from where those stand; once more without the farthest fifth
         X, Y = ca[fit] @ Rs.T, cb[fit]
         mx, my = X.mean(0), Y.mean(0)
@@ -111,7 +116,50 @@ def overlay(a: dict, b: dict) -> dict | None:
         if not again or keep.sum() < 3:
             break
         fit = keep
-    return {"names": names, "deg": deg, "pos": pos}
+    return {"names": names, "deg": deg, "pos": pos, "fit": (float(s), Rs, my - s * mx), "size": size}
+
+
+def middle(model: Path) -> np.ndarray:
+    """The middle (median) of a model's 3D points: where the rock is."""
+    xyz = []
+    with open(model / "points3D.bin", "rb") as f:
+        for _ in range(struct.unpack("<Q", f.read(8))[0]):
+            f.read(8)
+            xyz.append(struct.unpack("<3d", f.read(24)))
+            f.read(3 + 8)
+            f.read(8 * struct.unpack("<Q", f.read(8))[0])
+    return np.median(np.array(xyz), axis=0)
+
+
+def trade(ma: Path, mb: Path) -> None:
+    """Whether two models' cameras stand in different places only because their lenses differ to match: with a lens
+    per photo, a camera further from the rock with a longer lens sees the same. Prints, for the cameras both place
+    and for those among them that stand more than AGREE[1] of the scene's size apart: how much of the gap between
+    the two positions lies along the line of sight, and how the ratio of the two focal lengths follows the ratio
+    of the two distances to the rock (the slope and correlation of their logarithms: 1 and 1 if it is all that)."""
+    a, b = load(ma), load(mb)
+    o = overlay(a, b)
+    s, Rs, t = o["fit"]
+    ca, cb = middle(ma), middle(mb)
+    rows = []
+    for n, pos, deg in zip(o["names"], o["pos"], o["deg"]):
+        pa, pb = s * Rs @ a[n]["c"] + t, b[n]["c"]
+        sight = b[n]["R"].T @ np.array([0.0, 0.0, 1.0])
+        gap = pa - pb
+        along = float((gap @ sight) ** 2 / max(gap @ gap, 1e-18))
+        da, db = np.linalg.norm(pa - (s * Rs @ ca + t)), np.linalg.norm(pb - cb)
+        if a[n]["f"] > 0 and b[n]["f"] > 0:
+            rows.append((pos, deg, along, np.log(da / db), np.log(a[n]["f"] / b[n]["f"])))
+    r = np.array(rows)
+    for label, sel in (("all shared", np.ones(len(r), bool)), (f"positions over {AGREE[1]:.0%} apart", r[:, 0] > AGREE[1]),
+                       (f"positions within {AGREE[1]:.0%}", r[:, 0] <= AGREE[1])):
+        if sel.sum() >= 3:
+            x, y = r[sel, 3], r[sel, 4]
+            slope = float((x * y).sum() / max((x * x).sum(), 1e-18))
+            print(f"{label}: {sel.sum()} cameras; gap along the line of sight (median share) {np.median(r[sel, 2]):.0%}; "
+                  f"|log distance ratio| median {np.median(np.abs(x)):.3f}, |log focal ratio| median {np.median(np.abs(y)):.3f}; "
+                  f"focal follows distance: slope {slope:.2f}, correlation {np.corrcoef(x, y)[0, 1]:.2f}; "
+                  f"rays median {np.median(r[sel, 1]):.2f} deg")
 
 
 def own(model: Path) -> dict:
@@ -157,17 +205,21 @@ def boulder(P: str) -> None:
     base = cams.get(BASE, {})
     print(f"\n### {P}: {len(list(photos.iterdir()))} photos, {len(readings)} with a gravity reading\n")
     pair = {(x, y): overlay(cams[x], cams[y]) for x in names for y in names if x != y}
-    share = lambda o: float(((o["deg"] < AGREE[0]) & (o["pos"] < AGREE[1])).mean())      # noqa: E731
+    rays = lambda o: float((o["deg"] < AGREE[0]).mean())      # noqa: E731
+    stand = lambda o: float((o["pos"] < AGREE[1]).mean())      # noqa: E731
     print(f"Each model against the others: the median (and the least), over the other models, of the share of the "
-          f"cameras both place that are the same camera in both (rays within {AGREE[0]:g} degrees, position within "
-          f"{AGREE[1]:.0%} of the scene's size); then its own numbers.\n")
-    print("| Model | Placed | Same camera as in the others: median; least | Points | Track | Reprojection error: mean; 90th (px) "
+          f"cameras both place whose rays are within {AGREE[0]:g} degrees, and of the share standing within "
+          f"{AGREE[1]:.0%} of the scene's size (a camera can stand further off with a longer lens and see the same: "
+          f"consensus.py trade); then its own numbers.\n")
+    print(f"| Model | Placed | Rays within {AGREE[0]:g} deg of the others': median; least | Standing within {AGREE[1]:.0%}: median; least "
+          "| Points | Track | Reprojection error: mean; 90th (px) "
           f"| Lenses that can't be real | Cameras seeing under {TIED} points | Places that base doesn't / misses |\n"
-          "|---|---|---|---|---|---|---|---|---|")
+          "|---|---|---|---|---|---|---|---|---|---|")
     for x in names:
-        sh = [share(pair[x, y]) for y in names if y != x and pair[x, y]]
+        others = [pair[x, y] for y in names if y != x and pair[x, y]]
         o = own(models[x])
-        print(f"| {x} | {len(cams[x])} | {np.median(sh):.0%}; {min(sh):.0%} | {o['points']:,} | {o['track']:.1f} "
+        print(f"| {x} | {len(cams[x])} | {np.median([rays(q) for q in others]):.0%}; {min(rays(q) for q in others):.0%} "
+              f"| {np.median([stand(q) for q in others]):.0%}; {min(stand(q) for q in others):.0%} | {o['points']:,} | {o['track']:.1f} "
               f"| {o['err_mean']:.2f}; {o['err_p90']:.2f} | {sum(c['odd'] for c in cams[x].values())} "
               f"| {sum(c['seen'] < TIED for c in cams[x].values())} "
               f"| {len(set(cams[x]) - set(base))} / {len(set(base) - set(cams[x]))} |")
@@ -194,5 +246,8 @@ def boulder(P: str) -> None:
 
 
 if __name__ == "__main__":
-    for proj in sys.argv[1:] or sorted(p.name for p in (bench.BENCH / "projects").iterdir()):
-        boulder(proj)
+    if sys.argv[1:2] == ["trade"]:      # trade <project> <run a> <run b>
+        trade(*(bench.R / sys.argv[2] / "sift391" / run / "rest" / "rest2" for run in sys.argv[3:5]))
+    else:
+        for proj in sys.argv[1:] or sorted(p.name for p in (bench.BENCH / "projects").iterdir()):
+            boulder(proj)
