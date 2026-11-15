@@ -1,3 +1,6 @@
 # caspar on 31de once more: its first run there is 11 degrees from every other model. The old build (plain) against
 # the complete one, CPU-only runs, moved to the end of queue-check-2.txt (Tom, 2026-11-14 21:20: the GPU pipeline first).
 all 31de9a59303a caspar 0 --cond prod --build complete --rep 2
+# The surface check owed for global_one (rule 4 of optimization-plan.md): its meshes, as the app makes them
+post ce7571e0a4a3 global_one-s0+complete@prod --tools complete --cond prod --mvs as23
+post 31de9a59303a global_one-s0+complete@prod --tools complete --cond prod --mvs as23
