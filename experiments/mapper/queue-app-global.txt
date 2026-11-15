@@ -1,0 +1,12 @@
+# The app's own pipeline with COLMAP 4.2.1's global mapper as its default (4380ece): the image built from 3cd912b or
+# later (bouldermesh:global-gpu) against the live one (b5607e9-gpu), photos to textured mesh, on the four boulders,
+# then the new image with its incremental mapper (MAPPER=incremental) on 31de. Afterwards: bench.py apps.
+app e6de7747fab5 --cond prod --image bouldermesh:global-gpu
+app 31de9a59303a --cond prod --image bouldermesh:global-gpu
+app 31de9a59303a --cond prod --image bouldermesh:global-gpu --app-mapper incremental
+app 9f3b4b740847 --cond prod --image bouldermesh:global-gpu
+app ce7571e0a4a3 --cond prod --image bouldermesh:global-gpu
+app e6de7747fab5 --cond prod
+app 31de9a59303a --cond prod
+app 9f3b4b740847 --cond prod
+app ce7571e0a4a3 --cond prod
