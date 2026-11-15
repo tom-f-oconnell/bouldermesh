@@ -1003,8 +1003,13 @@ machine. *Run more on* adds up to that many machines (2 by default):
 
   It asks this server for a climb every 15 s over HTTPS, fetches its photos, runs the job in Docker as you, with no
   capabilities, at niceness 10, and sends the log as it goes and then the mesh. Ctrl-C gives the climb back. The
-  server, token and options are remembered (in `~/.bouldermesh-worker`); `--check` only registers or checks the token, after which
-  `deploy/bouldermesh-worker.service` runs it under systemd. If this server won't take its token (unknown, revoked or
+  server, token and options are remembered (in `~/.bouldermesh-worker`); `--check` only registers or checks the token and
+  the room, and then, at a terminal, offers to start it by itself whenever the machine starts: as a systemd service of the
+  user's own (`~/.config/systemd/user/bouldermesh-worker.service`, with lingering, so that it runs with no one logged in),
+  running a copy of the script in `~/.bouldermesh-worker` with the options given that aren't remembered, and `PATH` and any
+  `DOCKER_*` and `BOULDERMESH_*` variables. It says if it didn't stay up. It doesn't offer where the system's
+  `deploy/bouldermesh-worker.service` (as on hal) or the user's own already starts it, nor as root or in WSL, and a run by
+  hand while that service runs says so and stops, as the same token twice. If this server won't take its token (unknown, revoked or
   turned down), it forgets it, warns, and registers a new one, as with none, which waits for *Approve* again. When the
   server serves a newer version of the script, it replaces itself with that between jobs, never during one, and starts
   again (`--no-auto-update` stops that; the repository's own copy is left to git, so `deploy/bouldermesh-worker.service`
@@ -1062,7 +1067,7 @@ below). A token this server won't take, as one revoked or turned down, the scrip
 new one, which waits for approval again; `--forget-token` forgets it by hand. Or *Add volunteer* there shows a token, approved from the start, and the command to give them. `https://<site>/volunteer/`, which the main page's *Volunteer* button opens wherever this
 server answers volunteers, has three ways to help, as buttons. *Collect videos* has the script and says what it does.
 *Compute meshes* has the machines' script (above), what a computer needs for it (an NVIDIA GPU, as Docker can't use a
-Mac's), and how to run it as the user's own systemd service, which starts with the computer. *Data collection* says
+Mac's), and that its `--check` offers to start it with the computer. *Data collection* says
 what's coming: uploading one's own photos and videos, and a way to take photos with a scale reference in them, to scale
 and orient existing meshes. The video script needs Python 3.8 and
 installs yt-dlp and Deno in `~/.bouldermesh-volunteer` (with uv's Python 3.12 there, under a Python older than yt-dlp's
@@ -1340,7 +1345,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_diagnostics.py # offline: what's recorded when real processes fail or get killed
     python3 tests/test_meshclean.py   # offline: finding and hiding stray pieces on small GLBs, cuts and areas, undo, the cleaned download
     python3 tests/test_glbpack.py     # offline: packed and simplified copies for the viewer, and their cleanups (needs node or deno)
-    python3 tests/test_worker_setup.py # offline: the worker's --setup and Docker check, on machines described, not changed
+    python3 tests/test_worker_setup.py # offline: the worker's --setup, Docker check and offer to start by itself, on machines described
     python3 tests/test_heading.py     # offline: which way a mesh faces, from photos' compasses and Mountain Project's text, and which wins
     python3 tests/test_terrain.py     # offline: elevation squares, with stand-ins for USGS's and IGN's services
     python3 tests/test_skyline.py     # offline: facing from a made-up skyline, and each way it gives up early

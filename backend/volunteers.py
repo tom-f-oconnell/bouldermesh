@@ -848,30 +848,13 @@ folder, readable only by you). When this site has a newer version of the script,
 one climb and the next, never during one (<code>--no-auto-update</code> stops that). It takes no climb while your own work
 keeps the GPU busier than half (<code>--busy-gpu-util</code>) or leaves less than 24 GB of memory free
 (<code>--need-ram-gb</code>), and finishes any it has started.</p>
-<h3>3. Run it</h3>
+<p>Last, it asks whether to start by itself from now on, whenever the computer starts (as a systemd service of your own,
+running a copy of the script in <code>.bouldermesh-worker</code>; it may ask for your password, to run while you're
+logged out). Say yes, and it's running: you're done. Then <code>journalctl --user -u bouldermesh-worker -f</code> shows
+what it's doing, and <code>systemctl --user disable --now bouldermesh-worker</code> stops it for good.</p>
+<h3>3. Or run it yourself</h3>
+<p>If you said no:</p>
 <div class="box"><pre>python3 bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
-<h3>Optional: start it by itself, whenever the computer starts</h3>
-<p>As a systemd service of your own, not root's. Put the script where it'll stay (here, your home folder), then:</p>
-<div class="box"><pre>mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/bouldermesh-worker.service &lt;&lt;'EOF'
-[Unit]
-Description=BoulderMesh: meshes for {base}
-
-[Service]
-ExecStart=/usr/bin/python3 %h/bouldermesh_worker.py
-Restart=always
-RestartSec=60
-RestartPreventExitStatus=3
-
-[Install]
-WantedBy=default.target
-EOF
-systemctl --user daemon-reload
-systemctl --user enable --now bouldermesh-worker
-loginctl enable-linger "$USER"</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
-<p>The last line lets it run while you're logged out, and start with the computer (it may ask for your password).
-<code>journalctl --user -u bouldermesh-worker -f</code> shows what it's doing, and
-<code>systemctl --user disable --now bouldermesh-worker</code> stops it for good.</p>
 </section>
 
 <section id="helper">
@@ -906,28 +889,12 @@ when you log in again.</p>
 <p>The first time, it makes this computer's token, asks your name (optional) and registers with this site. It says
 whether it's approved yet and whether there's room. With an NVIDIA GPU it would mesh too: add <code>--tasks filter --gpu
 none</code> to only help this way. <code>--cpus N</code> limits the cores jobs use. It remembers them all.</p>
-<h3>4. Run it</h3>
-<div class="box"><pre>python3 bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
-<h3>Optional: start it by itself, whenever the computer starts</h3>
-<div class="box"><pre>mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/bouldermesh-worker.service &lt;&lt;'EOF'
-[Unit]
-Description=BoulderMesh: compute helper for {base}
-
-[Service]
-ExecStart=/usr/bin/python3 %h/bouldermesh_worker.py
-Restart=always
-RestartSec=60
-RestartPreventExitStatus=3
-
-[Install]
-WantedBy=default.target
-EOF
-systemctl --user daemon-reload
-systemctl --user enable --now bouldermesh-worker
-loginctl enable-linger "$USER"</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
-<p><code>journalctl --user -u bouldermesh-worker -f</code> shows what it's doing, and
+<p>Last, it asks whether to start by itself from now on, whenever the computer starts. Say yes, and it's running: you're
+done. Then <code>journalctl --user -u bouldermesh-worker -f</code> shows what it's doing, and
 <code>systemctl --user disable --now bouldermesh-worker</code> stops it for good.</p>
+<h3>4. Or run it yourself</h3>
+<p>If you said no:</p>
+<div class="box"><pre>python3 bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
 </div>
 
 <div class="os" data-os="mac">

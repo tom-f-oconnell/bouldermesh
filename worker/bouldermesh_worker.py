@@ -35,6 +35,11 @@ On Debian or Ubuntu, `python3 bouldermesh_worker.py --setup` installs what's mis
 with its driver, NVIDIA's container toolkit, and lets you use Docker, asking before each step. It never installs a GPU
 driver, and asks before restarting Docker, which stops containers running then.
 
+At a terminal, --check ends by offering to start it by itself from then on, whenever the computer starts, as a systemd
+service of your own (~/.config/systemd/user/bouldermesh-worker.service), running a copy of the script in
+~/.bouldermesh-worker. Then `journalctl --user -u bouldermesh-worker -f` shows what it's doing, and
+`systemctl --user disable --now bouldermesh-worker` stops it for good.
+
 When the server has a newer version of this script, it says so when the script asks for a climb, and the script replaces
 itself with that (checked against what the server said of it) and starts again, between one job and the next, never
 during one; --no-auto-update stops that.
@@ -77,7 +82,9 @@ from pathlib import Path
 # 13: --tasks, and without a GPU, filtering alone by default
 # 14: without a GPU, finds beta too (the pose model runs on the CPU), in the slim image
 # 15: rides out the server being away mid-job (a restart): the job carries on, its log kept and sent once it's back
-VERSION = 16
+# 16: a GPU with too little memory for any job is left out, and the CPU works instead
+# 17: --check offers to start it by itself whenever the computer starts, as a systemd service of the user's own
+VERSION = 17
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
@@ -319,16 +326,25 @@ def os_release() -> dict:
     return {k.strip(): v.strip().strip("\"'") for k, sep, v in (line.partition("=") for line in lines) if sep}
 
 
+def quiet(cmd: list[str]) -> subprocess.CompletedProcess | None:
+    """A command's output, or None if it couldn't be run."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def machine_state() -> dict:
     """What --setup, and starting, look at: the system; Docker (installed, and "ok", "denied" to this user or "stopped");
     whether this user is in the docker group; the containers running; an NVIDIA GPU (with a working driver, or only the
-    hardware); and NVIDIA's container toolkit, and whether Docker has its runtime."""
+    hardware); and NVIDIA's container toolkit, and whether Docker has its runtime. And whether it runs as a systemd
+    service, whose groups are those it had when its service manager started."""
     import getpass
     rel = os_release()
     ids = {rel.get("ID", "")} | set(rel.get("ID_LIKE", "").split())
     root = hasattr(os, "geteuid") and os.geteuid() == 0
     st = {"linux": sys.platform.startswith("linux"), "debian": bool(ids & {"debian", "ubuntu"}),
-          "system": rel.get("PRETTY_NAME") or sys.platform, "root": root,
+          "system": rel.get("PRETTY_NAME") or sys.platform, "root": root, "service": bool(os.environ.get("INVOCATION_ID")),
           "user": os.environ.get("SUDO_USER") if root else getpass.getuser(),
           "docker": bool(shutil.which("docker")), "docker_state": None, "runtimes": [], "running": None, "in_group": False,
           "gpu": False, "gpu_hardware": False,
@@ -342,11 +358,6 @@ def machine_state() -> dict:
     except (ImportError, KeyError):
         pass
 
-    def quiet(cmd: list[str]) -> subprocess.CompletedProcess | None:
-        try:
-            return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        except (OSError, subprocess.TimeoutExpired):
-            return None
     if st["docker"]:
         r = quiet(["docker", "info", "--format", "{{json .Runtimes}}"])
         if r and r.returncode == 0:
@@ -480,6 +491,9 @@ def docker_problem(st: dict, gpu: str) -> str | None:
     if not st["docker"]:
         return "Docker isn't installed"
     if st["docker_state"] == "denied":
+        if st["in_group"] and st.get("service"):
+            return ("you can't use Docker yet: your account's services started before you joined the docker group, and "
+                    "get it only when they start again: restart the computer")
         return "you can't use Docker" + (" yet: log in again (or run newgrp docker), as you joined the docker group since"
                                          if st["in_group"] else " (you aren't in the docker group)")
     if st["docker_state"] != "ok":
@@ -488,6 +502,156 @@ def docker_problem(st: dict, gpu: str) -> str | None:
         return ("this machine has an NVIDIA GPU, but Docker can't give it to jobs, as NVIDIA's container toolkit isn't "
                 "installed (or run with --gpu none, for the CPU only)")
     return None
+
+
+# -- starting by itself whenever the computer starts, as a systemd service of this user's own (offered by --check) --
+UNIT = "bouldermesh-worker"     # the service's name, this user's or the system's (deploy/bouldermesh-worker.service)
+NICE = 10                       # --nice's default
+CARRIED = re.compile(r"PATH|(DOCKER|BOULDERMESH)_\w+")     # what of --check's environment the service runs with too
+
+
+def autostart_state() -> dict:
+    """What --check looks at before offering to start by itself: whether systemd runs this user's own services here
+    (not root's, nor in WSL, whose Linux doesn't start with Windows), whether this user's or the system's service is
+    enabled already (as systemctl is-enabled says: "enabled", "disabled", "not-found"...), and whether this user's
+    services run with no one logged in (lingering), and so start with the computer."""
+    import getpass
+    linux = sys.platform.startswith("linux")
+    try:
+        wsl = linux and "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        wsl = False
+    r = quiet(["systemctl", "--user", "show-environment"]) if linux and shutil.which("systemctl") else None
+    systemd, user = bool(r and r.returncode == 0), getpass.getuser()
+
+    def said(cmd: list[str]) -> str:
+        r = quiet(cmd) if systemd else None
+        return r.stdout.strip() if r else ""
+    return {"systemd": systemd, "root": hasattr(os, "geteuid") and os.geteuid() == 0, "wsl": wsl, "user": user,
+            "user_unit": said(["systemctl", "--user", "is-enabled", UNIT]), "system_unit": said(["systemctl", "is-enabled", UNIT]),
+            "linger": said(["loginctl", "show-user", user, "-p", "Linger", "--value"]) == "yes"}
+
+
+def autostart_offer(st: dict) -> tuple[bool, str | None]:
+    """Whether --check offers to start by itself, on a machine as autostart_state() describes it, and if not, what it
+    says instead (None: nothing, as where systemd doesn't run this user's services)."""
+    if st["system_unit"] == "enabled":
+        return False, f"It starts by itself already, as the system's {UNIT} service: journalctl -u {UNIT} -f shows what it's doing."
+    if st["user_unit"] == "enabled":
+        return False, (f"It starts by itself already, as your {UNIT} service"
+                       + ("" if st["linger"] else f", once you log in (sudo loginctl enable-linger {st['user']} starts it with the computer)")
+                       + f": journalctl --user -u {UNIT} -f shows what it's doing, and systemctl --user restart {UNIT} has "
+                       "it take up settings changed here (a climb it's on goes back to the server).")
+    return st["systemd"] and not st["root"] and not st["wsl"], None
+
+
+def unit_word(arg: str, dollars: bool = True) -> str:
+    """arg as one word of a systemd unit's setting: its specifiers (%) escaped, and its variables ($), which ExecStart
+    expands (dollars) but Environment doesn't, and quoted if it has a space, quote or backslash."""
+    arg = arg.replace("%", "%%")
+    if dollars:
+        arg = arg.replace("$", "$$")
+    if not arg or re.search(r"[\s\"'\\;]", arg):
+        arg = '"' + arg.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return arg
+
+
+def service_args(args) -> list[str]:
+    """The options of this run that aren't remembered (config.json has the rest), for the service to run with."""
+    home = Path(args.home).expanduser().resolve()
+    out = [] if home == Path("~/.bouldermesh-worker").expanduser().resolve() else ["--home", str(home)]
+    out += ["--nice", str(args.nice)] if args.nice != NICE else []
+    out += ["--need-gb", f"{args.need_gb:g}"] if args.need_gb is not None else []
+    return out + [f"--docker-arg={a}" for a in args.docker_arg] + (["--no-auto-update"] if args.no_auto_update else [])
+
+
+def service_unit(server: str, argv: list[str], env: dict) -> str:
+    """The text of this user's service that runs argv (Python, this script's copy, and service_args()) with env (what
+    of --check's environment CARRIED names), whenever this user's services run: from login, or with lingering, from
+    the computer's start."""
+    return f"""# Written by bouldermesh_worker.py --check. systemctl --user disable --now {UNIT} stops it for good.
+[Unit]
+Description=BoulderMesh: work for {server.replace('%', '%%')}
+
+[Service]
+ExecStart={' '.join(unit_word(a) for a in argv)}
+""" + "".join(f"Environment={unit_word(f'{k}={v}', dollars=False)}\n" for k, v in sorted(env.items())) + """Restart=always
+RestartSec=60
+# 3: the server won't take this script, as too old, and it couldn't update itself: starting again won't help
+RestartPreventExitStatus=3
+# a job's container is ended by the script when it stops, which takes a few seconds
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def service_running(unit: str = UNIT, wait: float = 8.0, look=None) -> bool:
+    """Whether this user's service is still running wait seconds after it started, never having stopped: a start that
+    fails, as without Docker, ends within a second or two, and waits RestartSec before trying again."""
+    def props() -> dict:
+        r = quiet(["systemctl", "--user", "show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "NRestarts"])
+        return dict(line.partition("=")[::2] for line in (r.stdout if r else "").splitlines())
+    look = look or props
+    end = time.time() + wait
+    while True:
+        p = look()
+        if p.get("ActiveState") != "active" or p.get("SubState") != "running" or p.get("NRestarts", "0") != "0":
+            return False
+        if time.time() >= end:
+            return True
+        time.sleep(0.5)
+
+
+def install_service(args, st: dict, ask=input, run=None, say=print, unit_dir: Path | None = None,
+                    running=service_running) -> bool:
+    """Asks whether to start by itself whenever the computer starts, and if so, copies this script into its settings'
+    folder (where it can update itself), writes this user's systemd service to run that, starts it, and lets this
+    user's services run with no one logged in (loginctl enable-linger, which may ask for a password). Whether it's
+    running."""
+    def default_run(cmd: list[str]) -> int:
+        try:
+            return subprocess.run(cmd).returncode
+        except OSError:
+            return 127
+    run = run or default_run
+    home, me = Path(args.home).expanduser().resolve(), Path(__file__).resolve()
+    copy = home / "bouldermesh_worker.py"
+    unit = (unit_dir or Path("~/.config/systemd/user").expanduser()) / f"{UNIT}.service"
+    def short(path: Path) -> str:
+        return "~" + str(path)[len(str(Path.home())):] if path.is_relative_to(Path.home()) else str(path)
+    say(f"\nIt can start by itself from now on, whenever this computer starts, as a service of your own ({short(unit)}), "
+        f"running {'this script' if copy == me else 'a copy of this script, ' + short(copy)}, which updates itself.")
+    if ask("Start it by itself? [Y/n] ").strip().lower() not in ("", "y", "yes"):
+        say(f"Then run it with python3 {Path(sys.argv[0]).name} (and --check asks this again).")
+        return False
+    if copy != me:
+        shutil.copy2(me, copy)
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.write_text(service_unit(args.server, [sys.executable or "/usr/bin/python3", str(copy)] + service_args(args),
+                                 {k: v for k, v in os.environ.items() if CARRIED.fullmatch(k)}))
+    say(f"Wrote {short(unit)}" + (f", and copied this script to {short(copy)}, the one that runs from now on" if copy != me else ""))
+    for cmd in (["systemctl", "--user", "daemon-reload"], ["systemctl", "--user", "enable", "--now", UNIT]):
+        say("    " + " ".join(cmd))
+        code = run(cmd)
+        if code:
+            say(f"That failed (exit status {code}).")
+            return False
+    save_conf(home, {**load_conf(home), "service": UNIT})
+    if not st["linger"]:
+        say("So that it runs with no one logged in, and starts with the computer (this may ask for your password):\n"
+            "    loginctl enable-linger")
+        if run(["loginctl", "enable-linger"]):
+            say(f"That failed, so it runs only while you're logged in, until: sudo loginctl enable-linger {st['user']}")
+    if not running():
+        r = quiet(["journalctl", "--user", "-u", UNIT, "-n", "15", "--no-pager", "-o", "cat"])
+        said = r.stdout.rstrip() if r and r.stdout.strip() else f"(systemctl --user status {UNIT} says why)"
+        say(f"\nBut it stopped, saying:\n{said}\nIt tries again every minute; journalctl --user -u {UNIT} -f shows how it goes.")
+        return False
+    say(f"\nIt's running, and starts by itself from now on: journalctl --user -u {UNIT} -f shows what it's doing, and "
+        f"systemctl --user disable --now {UNIT} stops it for good.")
+    return True
 
 
 # -- updating itself ------------------------------------------------------------------------------------------------
@@ -996,6 +1160,12 @@ class Worker:
                 raise SystemExit(f"but there isn't room for jobs: {short}")
             log(f"room for jobs in {self.home}: {free_gb(self.home):.0f} GB free; Docker's images: "
                 + ", ".join(f"{w} {free_gb(w):.0f} GB free" for w in docker_storage()))
+            st = autostart_state()
+            offer, note = autostart_offer(st)
+            if note:
+                print(note)
+            elif offer and sys.stdin.isatty():
+                install_service(self.args, st)
             return
         if short:
             raise SystemExit(f"not starting: {short}")
@@ -1166,7 +1336,7 @@ def main() -> None:
                     "the default), all (--gpus all), cdi (the CDI device nvidia.com/gpu=all) or none (remembered)")
     ap.add_argument("--tasks", help="the kinds of job to take, comma-separated, of " + ", ".join(TASKS) + ": all of them with "
                     "a GPU, and filter alone without one, by default, as meshing on a CPU alone takes hours (remembered)")
-    ap.add_argument("--nice", type=int, default=10, help="run jobs at this niceness (10)")
+    ap.add_argument("--nice", type=int, default=NICE, help=f"run jobs at this niceness ({NICE})")
     ap.add_argument("--busy-gpu-util", type=float, help=f"take no climbs while others keep the GPU busier than this (%%, as a "
                     f"median over {BUSY_WINDOW / 60:g} min; {BUSY_GPU_UTIL} by default, 0 never; remembered)")
     ap.add_argument("--need-ram-gb", type=float, help=f"take no climbs while less memory than this is free (GB; {NEED_RAM_GB} by "
@@ -1182,7 +1352,7 @@ def main() -> None:
     ap.add_argument("--need-gb", type=float, help=f"the room jobs need under --data before it takes one, in GB (by default "
                     f"{CLIMBS_AHEAD * CLIMB_GB:g}, and {MODELS_GB:g} more until the models are downloaded)")
     ap.add_argument("--check", action="store_true", help="only check the server knows the token, and remember it, and that "
-                    "there's room for jobs")
+                    "there's room for jobs; then, at a terminal, offer to start it by itself whenever the computer starts")
     ap.add_argument("--once", action="store_true", help="ask for one job, do it if there's one, and stop")
     ap.add_argument("--no-auto-update", action="store_true", help="don't replace this script with a newer one when the server "
                     "has one (it says so instead)")
@@ -1200,6 +1370,11 @@ def main() -> None:
     if args.forget_token:
         log(f"forgot the token remembered for {conf.get('server')}" if forget_token(home) else "no token was remembered")
         return
+    if not args.check and conf.get("service") == UNIT and not os.environ.get("INVOCATION_ID"):
+        r = quiet(["systemctl", "--user", "is-active", "--quiet", UNIT])
+        if r and r.returncode == 0:     # the same token's, twice over
+            raise SystemExit(f"It's running already, as your {UNIT} service: journalctl --user -u {UNIT} -f shows what it's "
+                             f"doing. To run it here instead, systemctl --user stop {UNIT} first.")
     if args.register and args.token:
         ap.error("--register makes a new token, so not with --token")
     if args.server and args.server != conf.get("server") and not args.token or args.register:
@@ -1212,8 +1387,10 @@ def main() -> None:
     args.gpu = args.gpu or "auto"
     problem = docker_problem(machine_state(), args.gpu)
     if problem:     # before registering a machine that can't work
-        raise SystemExit(f"{problem}. On Debian or Ubuntu, python3 {Path(sys.argv[0]).name} --setup can fix that"
-                         + ("" if problem.startswith("you can't use Docker yet") else f"; elsewhere, see {INSTALL_DOCS}"))
+        if problem.startswith("you can't use Docker yet"):     # nothing to install
+            raise SystemExit(problem)
+        raise SystemExit(f"{problem}. On Debian or Ubuntu, python3 {Path(sys.argv[0]).name} --setup can fix that; "
+                         f"elsewhere, see {INSTALL_DOCS}")
     if args.data:
         args.data = conf["data"] = str(Path(args.data).expanduser().resolve())
         Path(args.data).mkdir(parents=True, exist_ok=True)

@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""The worker script's --setup (installing Docker and NVIDIA's container toolkit where they're missing) and its check of
-Docker when it starts, on machines described here rather than looked at. Offline: nothing is installed or run."""
+"""The worker script's --setup (installing Docker and NVIDIA's container toolkit where they're missing), its check of
+Docker when it starts, and --check's offer to start it by itself (as a systemd service of the user's own), on machines
+described here rather than looked at. Offline: nothing is installed or run, and the service is written to a scratch folder."""
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import pathlib
 import re
+import shutil
+import sys
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("worker", ROOT / "worker" / "bouldermesh_worker.py")
@@ -107,6 +112,108 @@ ran.clear()
 assert worker.run_steps(steps, ask=lambda q: "Y", run=lambda c: ran.append(c) or 0, say=said.append) and ran == ["a", "b", "c", "d"]
 assert not worker.run_steps(steps, ask=lambda q: "", run=lambda c: 1 / 0, say=said.append), "no answer is no"
 print("running steps OK")
+
+# --- a service started before its user joined the docker group: only starting again gives it the group
+assert "restart the computer" in worker.docker_problem(machine(docker_state="denied", in_group=True, service=True), "auto")
+print("service's groups OK")
+
+# --- starting by itself: offered only where systemd runs the user's own services, and not if it starts by itself already
+linux = {"systemd": True, "root": False, "wsl": False, "user": "pat", "user_unit": "not-found", "system_unit": "not-found",
+         "linger": False}
+assert worker.autostart_offer(linux) == (True, None)
+assert worker.autostart_offer({**linux, "user_unit": "disabled"}) == (True, None), "turned off: offered again"
+for change in ({"systemd": False, "user_unit": "", "system_unit": ""}, {"root": True}, {"wsl": True}):
+    assert worker.autostart_offer({**linux, **change}) == (False, None), change
+offer, note = worker.autostart_offer({**linux, "system_unit": "enabled"})
+assert not offer and "the system's bouldermesh-worker" in note, "hal's, deploy/bouldermesh-worker.service"
+offer, note = worker.autostart_offer({**linux, "user_unit": "enabled"})
+assert not offer and "sudo loginctl enable-linger pat" in note and "restart" in note, note
+assert "linger" not in worker.autostart_offer({**linux, "user_unit": "enabled", "linger": True})[1]
+print("offering OK")
+
+# --- the service: ExecStart's words escaped and quoted, as systemd reads them
+assert worker.unit_word("/usr/bin/python3") == "/usr/bin/python3"
+assert worker.unit_word("/home/pat/my jobs/50%$x") == '"/home/pat/my jobs/50%%$$x"'
+assert worker.unit_word('a"b\\c') == '"a\\"b\\\\c"'
+assert worker.unit_word("PATH=$HOME/bin:%x", dollars=False) == "PATH=$HOME/bin:%%x", "Environment doesn't expand $"
+assert worker.unit_word("") == '""'
+
+
+def options(**changes) -> argparse.Namespace:
+    """--check's arguments, as main() leaves them: by default, nothing given that isn't remembered."""
+    return argparse.Namespace(**{"home": "~/.bouldermesh-worker", "nice": 10, "need_gb": None, "docker_arg": [],
+                                 "no_auto_update": False, "server": "https://boulders.example.com", **changes})
+
+
+assert worker.service_args(options()) == [], "the rest is remembered, in config.json"
+scratch = pathlib.Path(tempfile.mkdtemp())
+assert worker.service_args(options(home=str(scratch), nice=5, need_gb=20.0, docker_arg=["--memory=64g"], no_auto_update=True)) == [
+    "--home", str(scratch.resolve()), "--nice", "5", "--need-gb", "20", "--docker-arg=--memory=64g", "--no-auto-update"]
+unit = worker.service_unit("https://boulders.example.com", ["/usr/bin/python3", "/home/pat/.bouldermesh-worker/bouldermesh_worker.py"],
+                           {"PATH": "/usr/bin:/bin", "DOCKER_HOST": "unix:///run/user/1000/docker.sock"})
+lines = unit.splitlines()
+assert "ExecStart=/usr/bin/python3 /home/pat/.bouldermesh-worker/bouldermesh_worker.py" in lines, unit
+assert "Environment=DOCKER_HOST=unix:///run/user/1000/docker.sock" in lines and "Environment=PATH=/usr/bin:/bin" in lines
+assert "RestartPreventExitStatus=3" in lines and "WantedBy=default.target" in lines, "a user's service, from login or the computer's start"
+assert all(worker.CARRIED.fullmatch(k) for k in ("PATH", "DOCKER_HOST", "BOULDERMESH_NEED_RAM_GB"))
+assert not any(worker.CARRIED.fullmatch(k) for k in ("HOME", "MYPATH", "PATHS", "SSH_AUTH_SOCK"))
+print("service text OK")
+
+# --- whether it's still running after starting: a failed start waits to try again, as auto-restart
+up = {"ActiveState": "active", "SubState": "running", "NRestarts": "0"}
+assert worker.service_running(wait=0, look=lambda: up)
+for down in ({"ActiveState": "activating", "SubState": "auto-restart", "NRestarts": "0"}, {"ActiveState": "failed"},
+             {**up, "NRestarts": "1"}, {}):
+    assert not worker.service_running(wait=0, look=lambda: down), down
+looks = iter([up, up, {"ActiveState": "failed"}])
+assert not worker.service_running(wait=5, look=lambda: next(looks)), "stopped partway through the wait"
+print("running OK")
+
+# --- installing it: asked first (Enter is yes), the script copied where it updates itself, and the service started
+home, units = scratch / "settings", scratch / "units"
+home.mkdir()
+
+
+def install(answer: str, ran: list, fail: str | None = None, up: bool = True, linger: bool = False, **changes):
+    said = []
+    ok = worker.install_service(options(home=str(home), **changes), {**linux, "linger": linger}, ask=lambda q: answer,
+                                run=lambda cmd: ran.append(" ".join(cmd)) or int(" ".join(cmd) == fail), say=said.append,
+                                unit_dir=units, running=lambda: up)
+    return ok, "\n".join(said)
+
+
+ran = []
+ok, said = install("n", ran)
+assert not ok and ran == [] and not units.exists() and not (home / "bouldermesh_worker.py").exists(), "no: nothing done"
+ok, said = install("", ran, nice=5)
+assert ok, said
+assert ran == ["systemctl --user daemon-reload", "systemctl --user enable --now bouldermesh-worker", "loginctl enable-linger"], ran
+copy = home / "bouldermesh_worker.py"
+assert copy.read_bytes() == (ROOT / "worker" / "bouldermesh_worker.py").read_bytes(), "a copy outside the git checkout"
+text = (units / "bouldermesh-worker.service").read_text()
+assert f"ExecStart={sys.executable} {copy.resolve()} --home {home.resolve()} --nice 5" in text.splitlines(), text
+assert worker.load_conf(home).get("service") == "bouldermesh-worker", "a run by hand then says it runs already"
+assert "disable --now bouldermesh-worker" in said
+ran.clear()
+ok, said = install("y", ran, linger=True)
+assert ok and ran[-1] == "systemctl --user enable --now bouldermesh-worker", "lingering already"
+ran.clear()
+ok, said = install("y", ran, fail="loginctl enable-linger")
+assert ok and "sudo loginctl enable-linger pat" in said, "runs only while logged in, and says what would start it with the computer"
+(home / "config.json").unlink()
+ran.clear()
+ok, said = install("y", ran, fail="systemctl --user enable --now bouldermesh-worker")
+assert not ok and ran[-1].startswith("systemctl --user enable") and "exit status 1" in said
+assert "service" not in worker.load_conf(home), "not running as a service"
+quiet = worker.quiet
+worker.quiet = lambda cmd: None     # the journal, of a service that isn't there
+try:
+    ok, said = install("y", [], up=False, linger=True)
+finally:
+    worker.quiet = quiet
+assert not ok and "it stopped" in said and "systemctl --user status bouldermesh-worker" in said, said
+shutil.rmtree(scratch)
+print("installing OK")
 
 # --- elsewhere: --setup says what to install by hand
 assert worker.os_release() is not None
