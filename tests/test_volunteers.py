@@ -1111,6 +1111,70 @@ def youtube_health():
     print("YouTube's signs, unit OK")
 
 
+def cookies() -> None:
+    """Signing in with an account's cookies (version 12): only after the warning (in --help too) is agreed to, at a terminal
+    or with --agree, once for the same cookies; passed to yt-dlp, remembered, told to the server, and forgotten."""
+    fake = TMP / "fake-yt-dlp-c"
+    fake.write_text(FAKE_YTDLP)
+    fake.chmod(0o755)
+    log_file = TMP / "fake-c.log"
+    b = volunteers.Broker(TMP / "bc" / "v.sqlite", TMP / "bc" / "files", lambda *a: None, lambda *a: None)
+    port = free_port()
+    httpd = volunteers.serve(b, "127.0.0.1", port, log=lambda line: None)
+    base, token, home = f"http://127.0.0.1:{port}", b.add("cookie-tester")["token"], TMP / "home-c"
+    jar = TMP / "cookies.txt"
+    jar.write_text("# Netscape HTTP Cookie File\n")
+    env = {**os.environ, "FAKE_VIDEO": str(TMP / "none.mp4"), "FAKE_LOG": str(log_file)}
+
+    def run(*extra, answer: str | None = None, details: bool = True):
+        if details:
+            b.want("details", secrets.token_hex(6)[:11], "details", "x")
+        due(home)
+        log_file.unlink(missing_ok=True)
+        return subprocess.run([sys.executable, str(SCRIPT), "--server", base, "--token", token, "--once", "--yt-dlp", str(fake),
+                               "--home", str(home), *extra], env=env, capture_output=True, text=True, timeout=120,
+                              **({"input": answer} if answer is not None else {"stdin": subprocess.DEVNULL}))
+
+    def ytdlp_args() -> str:
+        return log_file.read_text() if log_file.exists() else ""
+    try:
+        h = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True, timeout=60).stdout
+        assert "you run the risk of it being banned (temporarily or permanently)" in h and "about 300 videos an hour" in h, h
+        assert "--cookies FILE" in h and "--cookies-from-browser" in h and "see the warning about cookies" in h, h
+        r = run("--agree")
+        assert r.returncode == 0 and "--cookies" not in ytdlp_args(), r.stdout + r.stderr
+        # a new setting: the warning, and no start without a yes (here, no one to ask)
+        r = run("--cookies", str(jar), details=False)
+        assert r.returncode != 0 and "not started" in r.stderr and "can get that account banned" in r.stdout, r.stdout + r.stderr
+        assert "cookies" not in json.loads((home / "config.json").read_text()), "nothing remembered"
+        # a yes at the terminal: used, and remembered with the agreement
+        r = run("--cookies", str(jar), answer="yes\n")
+        assert r.returncode == 0 and f"--cookies {jar}" in ytdlp_args(), r.stdout + r.stderr + ytdlp_args()
+        assert "Type yes to have yt-dlp sign in" in r.stdout and "you run the risk of it being banned" in r.stdout
+        conf = json.loads((home / "config.json").read_text())
+        assert conf["cookies"] == str(jar) and conf["cookies_agreed"] == f"--cookies {jar}", conf
+        assert "; signed in (cookies)" in b.q("SELECT client FROM volunteers", one=True)["client"], b.q("SELECT client FROM volunteers")
+        # the next start: the same cookies, no question, one line saying so
+        r = run()
+        assert r.returncode == 0 and f"--cookies {jar}" in ytdlp_args() and "Type yes" not in r.stdout, r.stdout + r.stderr
+        assert "signing in to YouTube with --cookies" in r.stdout, r.stdout
+        # another browser's cookies are another agreement; --agree prints the warning and takes it as agreed
+        r = run("--cookies-from-browser", "firefox", details=False)
+        assert r.returncode != 0 and "not started" in r.stderr, r.stderr
+        r = run("--cookies-from-browser", "firefox", "--agree")
+        assert r.returncode == 0 and "--cookies-from-browser firefox" in ytdlp_args() and "--agree: taken as agreed" in r.stdout
+        assert subprocess.run([sys.executable, str(SCRIPT), "--server", base, "--cookies", str(jar), "--cookies-from-browser", "x",
+                               "--home", str(home)], capture_output=True, text=True, timeout=60).returncode == 2, "not both"
+        # forgotten: fetching without signing in again
+        r = run("--no-cookies")
+        assert r.returncode == 0 and "--cookies" not in ytdlp_args(), ytdlp_args()
+        assert not {"cookies", "cookies_from_browser", "cookies_agreed"} & set(json.loads((home / "config.json").read_text()))
+        assert "(cookies)" not in b.q("SELECT client FROM volunteers", one=True)["client"]
+    finally:
+        httpd.shutdown()
+    print("cookies OK")
+
+
 def forgetting_gone() -> None:
     """Revoked and turned-down volunteers that never fetched anything are forgotten, after a day; the rest stay."""
     b = volunteers.Broker(TMP / "bf" / "v.sqlite", TMP / "bf" / "files", lambda *a: None, lambda *a: None)
@@ -1153,6 +1217,7 @@ try:
     updating()
     forgetting_gone()
     keeping_in_touch()
+    cookies()
     if shutil.which("ffmpeg"):
         script_and_broker()
         registering()

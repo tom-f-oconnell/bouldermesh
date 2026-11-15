@@ -82,6 +82,16 @@ To keep it running after you close the terminal, on macOS or Linux, once you've 
 | `--yt-dlp PATH` | use a yt-dlp you already have, instead of installing one (it must find Deno itself) |
 | `--agree` | agree on the first run without being asked |
 | `--once` | do one thing and stop |
+| `--cookies FILE` | sign in to YouTube with the cookies in FILE (cookies.txt format), after a warning; remembered (`--no-cookies` forgets them) |
+| `--cookies-from-browser BROWSER` | the same with a browser's own cookies, which YouTube soon changes while you use that browser |
+
+**Signing in can get the account banned.** yt-dlp's own documentation says of using an account: "you run the risk of
+it being banned (temporarily or permanently)". It isn't needed for YouTube's rate limits (about 300 videos an hour
+without signing in; the script fetches at most 15), so the script never signs in unless you give it cookies, and then
+only after you've read that and typed yes (or with `--agree`). If you do, use an account made for this, never your
+main Google account, and export its cookies once from a private window (sign in, open only youtube.com/robots.txt,
+export them to a file, close the window) rather than reading them from a browser you use. They stay on your
+computer: the site is told only that you sign in. `--help` says it all again.
 
 The site may set lower limits for you, and everyone at one address shares the limits. The script keeps to its own limits
 and rests whatever the site says.

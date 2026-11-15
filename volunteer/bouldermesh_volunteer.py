@@ -20,6 +20,9 @@ for them. Stop it with Ctrl-C at any time; delete that folder to remove everythi
 
 When the server has a newer version of this script, it says so, and the script replaces itself with that (checked
 against what the server said of it) and starts again, between one fetch and the next; --no-auto-update stops that.
+
+It fetches as a visitor who isn't signed in. --cookies FILE (or --cookies-from-browser) makes yt-dlp sign in to YouTube
+with an account's cookies instead, which can get that account banned: read what --help says of them first.
 """
 from __future__ import annotations
 
@@ -51,7 +54,8 @@ from pathlib import Path
 #     apart from videos, 30 an hour and 200 a day, and fetched while a video's turn is still to come
 # 11: installs the yt-dlp the server says (its nightly builds, or stable), switching at once when that changes; a
 #     refusal's report starts with the line that made it one
-VERSION = 11
+# 12: --cookies FILE and --cookies-from-browser, after a warning, and saying so to the server
+VERSION = 12
 SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
 AGENT = "bouldermesh-volunteer"
 TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
@@ -85,6 +89,26 @@ FOR_GOOD = re.compile(r"Video unavailable|video is unavailable|video is no longe
                       r"is not a valid URL|larger than max-filesize", re.I)
 KEEP = ("title", "uploader", "channel", "channel_id", "channel_url", "uploader_url", "duration", "upload_date",
         "description", "license")
+# what --help and the prompt say of signing in to YouTube with an account's cookies (yt-dlp's wiki, "Extractors",
+# YouTube, as of Nov 2026)
+COOKIES_WARNING = """\
+Signing in to YouTube with an account's cookies can get that account banned. yt-dlp's own documentation says of
+using an account: "you run the risk of it being banned (temporarily or permanently)". Use an account made for this,
+never your main Google account.
+
+It isn't needed for YouTube's rate limits: those are about 300 videos an hour for a visitor who isn't signed in
+(about 2,000 signed in), and this script fetches at most 15. What stops volunteers is YouTube's bot check and its
+refusing downloads (HTTP 403), which signing in may get past, at that account's risk.
+
+YouTube changes an account's cookies whenever a YouTube tab is open, so cookies read from a browser you use
+(--cookies-from-browser) soon stop working. yt-dlp's documentation suggests exporting them once from a private
+window instead: sign in there, open only youtube.com/robots.txt, export its cookies to a file (with a browser
+extension that writes the cookies.txt format), close the window without signing out, and give this script that
+file with --cookies FILE.
+
+The cookies stay on this computer: yt-dlp uses them, and nothing of them goes to the BoulderMesh server, which is
+told only that this computer signs in."""
+
 AGREEMENT = """\
 Before you start: what this does, and what it may cost you.
 
@@ -416,8 +440,8 @@ class Volunteer:
     def run_ytdlp(self, args: list[str], cwd: Path) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env["PATH"] = str(Path(self.ytdlp).parent) + os.pathsep + env.get("PATH", "")    # Deno, beside it
-        return subprocess.run([self.ytdlp, "--sleep-requests", "0.75", *args], cwd=cwd, env=env,     # warnings kept: signs()
-                              capture_output=True, text=True, timeout=3600)
+        return subprocess.run([self.ytdlp, "--sleep-requests", "0.75", *cookie_args(self.args), *args], cwd=cwd, env=env,
+                              capture_output=True, text=True, timeout=3600)     # warnings kept: signs()
 
     # -- pacing -------------------------------------------------------------------------------------------------------
     def ready_in(self, cls: str) -> tuple[float, str | None]:
@@ -670,6 +694,7 @@ class Volunteer:
                 continue
             try:
                 r = self.server.call("/volunteer/api/work", {"version": VERSION, "client": f"script {VERSION}, yt-dlp {version}"
+                                                             + ("; signed in (cookies)" if cookie_args(self.args) else "")
                                                              + (f"; won't update itself: {blocked.split(',')[0]}" if blocked else ""),
                                                              "per_hour": self.per_hour, "per_day": self.per_day, "kinds": kinds,
                                                              "updates": updates})
@@ -729,8 +754,40 @@ class Volunteer:
                 version = self.ytdlp_version = self.run_ytdlp(["--version"], self.home).stdout.strip()
 
 
+def cookie_args(args) -> list[str]:
+    """yt-dlp's options for the cookies given (--cookies, --cookies-from-browser), or none."""
+    if getattr(args, "cookies", None):
+        return ["--cookies", str(Path(args.cookies).expanduser())]
+    if getattr(args, "cookies_from_browser", None):
+        return ["--cookies-from-browser", args.cookies_from_browser]
+    return []
+
+
+def cookies_agreed(args, conf: dict) -> bool:
+    """With cookies given, COOKIES_WARNING printed and agreed to, unless agreed to before for the same cookies (each
+    start then says only which); --agree takes it as agreed, after printing it. False if it isn't agreed to."""
+    given = " ".join(cookie_args(args))
+    if not given:
+        return True
+    if conf.get("cookies_agreed") == given:
+        log(f"signing in to YouTube with {given} (an account at risk of a ban: --help says more)")
+        return True
+    print("\n" + COOKIES_WARNING + "\n")
+    if args.agree:
+        print("(--agree: taken as agreed)")
+    else:
+        try:
+            if input("Type yes to have yt-dlp sign in with these cookies: ").strip().lower() != "yes":
+                return False
+        except EOFError:        # no one to ask (a service): run it once at a terminal first, or with --agree
+            return False
+    conf["cookies_agreed"] = given
+    return True
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 epilog="Cookies (--cookies, --cookies-from-browser):\n\n" + COOKIES_WARNING)
     ap.add_argument("--server", help="the BoulderMesh site, such as https://boulders.example.com (remembered)")
     ap.add_argument("--token", help="a token whoever runs the server gave you (remembered); without one, it makes its own "
                     "the first time, and registers it")
@@ -749,6 +806,12 @@ def main() -> None:
     ap.add_argument("--once", action="store_true", help="do one thing and stop")
     ap.add_argument("--no-auto-update", action="store_true", help="don't replace this script with a newer one when the server "
                     "has one (it says so instead)")
+    ap.add_argument("--cookies", metavar="FILE", help="sign in to YouTube with the cookies in FILE (cookies.txt format; "
+                    "remembered). This can get that account banned: see the warning about cookies at the end of --help")
+    ap.add_argument("--cookies-from-browser", metavar="BROWSER[:PROFILE]", help="sign in to YouTube with the cookies a browser "
+                    "of yours has (as yt-dlp's option of that name; remembered). This can get that account banned, and "
+                    "YouTube soon changes the cookies of a browser in use: see the warning about cookies at the end of --help")
+    ap.add_argument("--no-cookies", action="store_true", help="forget the cookies remembered, and fetch without signing in")
     args = ap.parse_args()
     global auto_update
     auto_update = not args.no_auto_update
@@ -765,6 +828,21 @@ def main() -> None:
     args.token = args.token or (None if server_changed or args.register else conf.get("token"))
     if not args.server:
         ap.error("--server is needed the first time")
+    if args.cookies and args.cookies_from_browser:
+        ap.error("--cookies or --cookies-from-browser, not both")
+    if args.no_cookies:
+        conf.pop("cookies", None)
+        conf.pop("cookies_from_browser", None)
+        conf.pop("cookies_agreed", None)
+    elif args.cookies or args.cookies_from_browser:
+        if args.cookies and not Path(args.cookies).expanduser().is_file():
+            ap.error(f"--cookies: no such file: {args.cookies}")
+        conf["cookies"], conf["cookies_from_browser"] = args.cookies and str(Path(args.cookies).expanduser().resolve()), args.cookies_from_browser
+    else:
+        args.cookies, args.cookies_from_browser = conf.get("cookies"), conf.get("cookies_from_browser")
+    if not cookies_agreed(args, conf):
+        raise SystemExit("not started: run it again without --cookies or --cookies-from-browser (or with --no-cookies), "
+                         "or at a terminal to agree")
     if conf.get("agreed") != args.server:
         per_hour = max(1, min(args.per_hour, PER_HOUR))
         print(AGREEMENT.format(server=args.server, gap_lo=GAP[0], gap_hi=GAP[1], per_hour=per_hour, spread=60 / per_hour,
