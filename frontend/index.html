@@ -3854,6 +3854,10 @@ function metricsLine(m){
   if (x.placed != null) parts.push(`${x.placed}${x.photos_in ? ` of ${x.photos_in}` : ''} photos placed`);
   if (x.views != null) parts.push(`${MESH_METRICS[2].fmt(x.views)} distinct viewpoints`);
   if (x.around != null) parts.push(`${Math.round(x.around)}° around`);
+  // the model's check of itself (backend/modelcheck.py): how far its cameras are from what their photo pairs say
+  const c = m.check;
+  if (c && c.ok === true) parts.push(`<span title="${esc(c.why || '')}">model check passed${c.pair_med_deg != null ? ` (${c.pair_med_deg}°)` : ''}</span>`);
+  else if (c && c.ok === false) parts.push(`<span style="color:#d33" title="Its cameras don't agree with its own photos: the mesh may be wrong">model check failed: ${esc(c.why || (c.failed || []).join(', '))}</span>`);
   const where = m.areas && m.areas.length ? m.areas.join(', ') : '';
   const path = (m.area_path || []).map(s => s.replace(/^\* /, '')).join(' › ');
   return (where || parts.length) ? `<div class="meta"${path ? ` title="Mountain Project: ${esc(path)}"` : ''}>${where ? `<b>${esc(where)}</b>${parts.length ? ' · ' : ''}` : ''}${parts.join(' · ')}</div>` : '';

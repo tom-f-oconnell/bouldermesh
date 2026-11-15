@@ -66,6 +66,7 @@ import links as links_mod  # noqa: E402
 import thumbs as thumbs_mod  # noqa: E402
 import meshinputs  # noqa: E402
 import meshmetrics  # noqa: E402
+import modelcheck  # noqa: E402
 import meshopts  # noqa: E402
 import offload as offload_mod  # noqa: E402
 import orientation  # noqa: E402
@@ -9057,6 +9058,11 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as e:
                         r["metrics"] = None
                         print(f"error: mesh {r['id']}'s metrics: {type(e).__name__}: {e}", flush=True)
+                    try:    # its model's check of itself (modelcheck.py), where the mesh has one
+                        r["check"] = modelcheck.load(MESHES / r["id"])
+                    except Exception as e:
+                        r["check"] = None
+                        print(f"error: mesh {r['id']}'s model check: {type(e).__name__}: {e}", flush=True)
                     r["areas"], r["area_path"] = areas(r)
                     r["splat"] = r.get("texture") == "full" and (MESHES / r["id"] / splat_mod.FILE).exists()
                     try:
