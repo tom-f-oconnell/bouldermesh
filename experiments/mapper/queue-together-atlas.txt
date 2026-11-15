@@ -1,0 +1,9 @@
+# Jobs side by side on atlas: bench.py together <N> <jobs file> runs the file's whole jobs N at a time, each on
+# cores/N, GPU steps one at a time, and reports meshes an hour (bench.py together report). The global batches first:
+# they are minutes; the three base batches are hours each.
+together 1 jobs-global.txt
+together 2 jobs-global.txt
+together 3 jobs-global.txt
+together 1 jobs-base.txt
+together 2 jobs-base.txt
+together 3 jobs-base.txt

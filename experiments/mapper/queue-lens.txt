@@ -1,0 +1,8 @@
+# One lens per video: a video's frames of one size share a camera (the sift391_lens feature set, derived from
+# sift391's database). Production conditions.
+all 31de9a59303a global 0 --feat sift391_lens --cond prod --build complete
+all 9f3b4b740847 global 0 --feat sift391_lens --cond prod --build complete
+all ce7571e0a4a3 global 0 --feat sift391_lens --cond prod --build complete
+all 31de9a59303a base 0 --feat sift391_lens --cond prod
+all 9f3b4b740847 base 0 --feat sift391_lens --cond prod
+all ce7571e0a4a3 base 0 --feat sift391_lens --cond prod

@@ -1,0 +1,30 @@
+# Every new method and step once on the 33-photo boulder (e6de7747fab5): a check that each runs, not a result. About
+# 20 min on atlas. Then: bench.py sidemodels; bench.py breakdown; bench.py consensus e6de7747fab5; bench.py texture
+# report; bench.py together report. What each is: variants.py.
+all e6de7747fab5 models3 0 --cond prod
+all e6de7747fab5 sidecut_421 0 --cond prod --build complete
+all e6de7747fab5 global_one 0 --cond prod --build complete
+all e6de7747fab5 global_tpv1500 0 --cond prod --build complete
+all e6de7747fab5 thin1500_base 0 --cond prod
+all e6de7747fab5 thin1500_global 0 --cond prod --build complete --post complete
+all e6de7747fab5 base 0 --feat sift391_lens --cond prod
+all e6de7747fab5 global 0 --feat sift391_lens --cond prod --build complete
+all e6de7747fab5 global 0 --feat sift391_dedup90 --cond prod --build complete
+all e6de7747fab5 base 0 --feat sift391_move2 --cond prod
+all e6de7747fab5 hier_w2_l20 0 --cond prod
+all e6de7747fab5 hier421_w2_l20 0 --cond prod --build complete
+all e6de7747fab5 global 0 --feat siftgpu391 --cond prod --build complete
+all e6de7747fab5 global 0 --feat aliked421 --cond prod --build complete
+# these need the posts the short plan made: cpu421-s0+complete@prod/post-complete@prod and base-s0@prod/post-app@prod
+texture e6de7747fab5 cpu421-s0+complete@prod same --tools complete --cond prod
+texture e6de7747fab5 cpu421-s0+complete@prod res1 --tools complete --cond prod
+texture e6de7747fab5 cpu421-s0+complete@prod dec50 --tools complete --cond prod
+texture e6de7747fab5 cpu421-s0+complete@prod noseams --tools complete --cond prod
+texture e6de7747fab5 cpu421-s0+complete@prod size2048 --tools complete --cond prod
+texture e6de7747fab5 cpu421-s0+complete@prod views2 --tools complete --cond prod
+texture e6de7747fab5 base-s0@prod res1 --tools app --cond prod
+people e6de7747fab5 --cond prod
+people e6de7747fab5 cpu --cond prod
+people e6de7747fab5 cpu421-s0+complete@prod --tools complete --cond prod
+post e6de7747fab5 cpu421-s0+complete@prod --tools complete --cond t2
+together 2 jobs-e6de.txt

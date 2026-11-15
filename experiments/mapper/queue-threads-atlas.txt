@@ -1,0 +1,26 @@
+# Thread counts for each step on atlas ("t<N>": production's conditions with N threads asked for): the baseline's
+# mapper, the global mapper, and every post step (the post lines make dense, mesh and texture again with N threads
+# each; undistort and import take no thread count). The post lines need the runs named: base-s0@prod and
+# global-s0+complete@prod with their rest steps.
+all 31de9a59303a base 0 --cond t2
+all 31de9a59303a base 0 --cond t4
+all 31de9a59303a base 0 --cond t6
+all 31de9a59303a base 0 --cond t12
+all 31de9a59303a global 0 --cond t2 --build complete
+all 31de9a59303a global 0 --cond t4 --build complete
+all 31de9a59303a global 0 --cond t6 --build complete
+all 31de9a59303a global 0 --cond t12 --build complete
+all ce7571e0a4a3 global 0 --cond t2 --build complete
+all ce7571e0a4a3 global 0 --cond t4 --build complete
+all ce7571e0a4a3 global 0 --cond t6 --build complete
+all ce7571e0a4a3 global 0 --cond t12 --build complete
+post ce7571e0a4a3 global-s0+complete@prod --tools complete --cond t2
+post ce7571e0a4a3 global-s0+complete@prod --tools complete --cond t4
+post ce7571e0a4a3 global-s0+complete@prod --tools complete --cond t6
+post ce7571e0a4a3 global-s0+complete@prod --tools complete --cond t12
+post 31de9a59303a base-s0@prod --tools app --cond t2
+post 31de9a59303a base-s0@prod --tools app --cond t4
+post 31de9a59303a base-s0@prod --tools app --cond t6
+post 31de9a59303a base-s0@prod --tools app --cond t12
+all 9f3b4b740847 base 0 --cond t2
+all 9f3b4b740847 base 0 --cond t4

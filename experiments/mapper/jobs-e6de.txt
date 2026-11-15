@@ -1,0 +1,4 @@
+# together's check: three small whole jobs (bench.py together 2 jobs-e6de.txt)
+all e6de7747fab5 global0 0 --build complete --post complete
+all e6de7747fab5 cpu421 0 --build complete --post complete
+all e6de7747fab5 base 0 --post app

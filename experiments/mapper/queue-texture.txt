@@ -1,0 +1,38 @@
+# Texture experiments (variants.py TEXTURE): TextureMesh again on one finished model's mesh a boulder, one thing
+# changed each time, so only texturing differs. Needs the posts named: global-s0+complete@prod/post-complete@prod
+# (OpenMVS 2.4) and base-s0@prod/post-app@prod (2.3, which has no views file). Then: bench.py texture report. Each
+# GLB stays in its post folder's tex_<variant>/.
+texture ce7571e0a4a3 global-s0+complete@prod same --tools complete --cond prod
+texture ce7571e0a4a3 global-s0+complete@prod res1 --tools complete --cond prod
+texture ce7571e0a4a3 global-s0+complete@prod res2 --tools complete --cond prod
+texture ce7571e0a4a3 global-s0+complete@prod dec50 --tools complete --cond prod
+texture ce7571e0a4a3 global-s0+complete@prod dec25 --tools complete --cond prod
+texture ce7571e0a4a3 global-s0+complete@prod noglobal --tools complete --cond prod
+texture ce7571e0a4a3 global-s0+complete@prod nolocal --tools complete --cond prod
+texture ce7571e0a4a3 global-s0+complete@prod noseams --tools complete --cond prod
+texture ce7571e0a4a3 global-s0+complete@prod size2048 --tools complete --cond prod
+texture ce7571e0a4a3 global-s0+complete@prod size8192 --tools complete --cond prod
+texture ce7571e0a4a3 global-s0+complete@prod views2 --tools complete --cond prod
+texture ce7571e0a4a3 global-s0+complete@prod views3 --tools complete --cond prod
+texture 31de9a59303a global-s0+complete@prod same --tools complete --cond prod
+texture 31de9a59303a global-s0+complete@prod res1 --tools complete --cond prod
+texture 31de9a59303a global-s0+complete@prod res2 --tools complete --cond prod
+texture 31de9a59303a global-s0+complete@prod dec50 --tools complete --cond prod
+texture 31de9a59303a global-s0+complete@prod dec25 --tools complete --cond prod
+texture 31de9a59303a global-s0+complete@prod noglobal --tools complete --cond prod
+texture 31de9a59303a global-s0+complete@prod nolocal --tools complete --cond prod
+texture 31de9a59303a global-s0+complete@prod noseams --tools complete --cond prod
+texture 31de9a59303a global-s0+complete@prod size2048 --tools complete --cond prod
+texture 31de9a59303a global-s0+complete@prod size8192 --tools complete --cond prod
+texture 31de9a59303a global-s0+complete@prod views2 --tools complete --cond prod
+texture 31de9a59303a global-s0+complete@prod views3 --tools complete --cond prod
+texture ce7571e0a4a3 base-s0@prod same --tools app --cond prod
+texture ce7571e0a4a3 base-s0@prod res1 --tools app --cond prod
+texture ce7571e0a4a3 base-s0@prod res2 --tools app --cond prod
+texture ce7571e0a4a3 base-s0@prod dec50 --tools app --cond prod
+texture ce7571e0a4a3 base-s0@prod dec25 --tools app --cond prod
+texture ce7571e0a4a3 base-s0@prod noglobal --tools app --cond prod
+texture ce7571e0a4a3 base-s0@prod nolocal --tools app --cond prod
+texture ce7571e0a4a3 base-s0@prod noseams --tools app --cond prod
+texture ce7571e0a4a3 base-s0@prod size2048 --tools app --cond prod
+texture ce7571e0a4a3 base-s0@prod size8192 --tools app --cond prod

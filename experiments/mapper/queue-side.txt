@@ -1,0 +1,26 @@
+# Fewer side models (variants.py methods()): production conditions, one job at a time. Free and first: bench.py
+# sidemodels, on the map.log files there already are. On hal's it gave the share of the baseline's mapper time that
+# wasn't the largest model: 49% on 38f3 (largest 110 photos, a second of 82), 36% on 9f3b (106, second 27), 7% on
+# Drifter, 3% on 31de. So 9f3b first (base there took 1,300-1,608 s on atlas).
+all 9f3b4b740847 sidecut 0 --cond prod
+all 9f3b4b740847 models1 0 --cond prod
+all 9f3b4b740847 models3 0 --cond prod
+all 9f3b4b740847 trials50 0 --cond prod
+all 9f3b4b740847 overlap5 0 --cond prod
+all ce7571e0a4a3 sidecut 0 --cond prod
+all ce7571e0a4a3 models1 0 --cond prod
+all 31de9a59303a sidecut 0 --cond prod
+all 31de9a59303a models1 0 --cond prod
+# 4.2.1's incremental mapper, the same options
+all 9f3b4b740847 sidecut_421 0 --cond prod --build complete
+all 9f3b4b740847 models1_421 0 --cond prod --build complete
+all ce7571e0a4a3 sidecut_421 0 --cond prod --build complete
+# the global mapper: only the largest connected part
+all 31de9a59303a global_one 0 --cond prod --build complete
+all 9f3b4b740847 global_one 0 --cond prod --build complete
+all ce7571e0a4a3 global_one 0 --cond prod --build complete
+
+# 38f3 (194 photos), where the baseline's largest model was 110 photos in one run and 180 in the next on hal
+all 38f31439985f sidecut 0 --cond prod
+all 38f31439985f models1 0 --cond prod
+all 38f31439985f global_one 0 --cond prod --build complete

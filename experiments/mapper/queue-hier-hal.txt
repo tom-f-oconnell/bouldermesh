@@ -1,0 +1,24 @@
+# COLMAP's hierarchical mapper on hal (variants.py hier()): hier_w<workers>_l<largest cluster>, 3.9.1's then
+# 4.2.1's (hier421_...). Production conditions. A cluster size at or above a boulder's photos is the plain mapper.
+all 9f3b4b740847 hier_w4_l40 0 --cond prod
+all 9f3b4b740847 hier_w8_l40 0 --cond prod
+all 9f3b4b740847 hier_w4_l80 0 --cond prod
+all 9f3b4b740847 hier_w8_l80 0 --cond prod
+all ce7571e0a4a3 hier_w4_l40 0 --cond prod
+all ce7571e0a4a3 hier_w8_l40 0 --cond prod
+all ce7571e0a4a3 hier_w4_l80 0 --cond prod
+all ce7571e0a4a3 hier_w8_l80 0 --cond prod
+all ce7571e0a4a3 hier_w4_l120 0 --cond prod
+all ce7571e0a4a3 hier_w8_l120 0 --cond prod
+all 31de9a59303a hier_w4_l40 0 --cond prod
+all 31de9a59303a hier_w8_l40 0 --cond prod
+all 9f3b4b740847 hier421_w4_l40 0 --cond prod --build complete
+all 9f3b4b740847 hier421_w8_l40 0 --cond prod --build complete
+all 9f3b4b740847 hier421_w4_l80 0 --cond prod --build complete
+all 9f3b4b740847 hier421_w8_l80 0 --cond prod --build complete
+all ce7571e0a4a3 hier421_w4_l40 0 --cond prod --build complete
+all ce7571e0a4a3 hier421_w8_l40 0 --cond prod --build complete
+all ce7571e0a4a3 hier421_w4_l80 0 --cond prod --build complete
+all ce7571e0a4a3 hier421_w8_l80 0 --cond prod --build complete
+all ce7571e0a4a3 hier421_w4_l120 0 --cond prod --build complete
+all ce7571e0a4a3 hier421_w8_l120 0 --cond prod --build complete

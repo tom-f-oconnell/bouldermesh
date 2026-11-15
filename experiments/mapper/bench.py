@@ -12,6 +12,9 @@
     bench.py queue <file>                                  a file of the above (one per line), one at a time
     bench.py table                                         every step so far, tab-separated (see also stats.py)
     bench.py agree [project]                               every pair of a boulder's models, laid over each other
+    bench.py consensus [project]                           each model against all the others: an outlier shows by itself
+    bench.py sidemodels | breakdown | together | texture | people      see variants.py, which also holds more methods
+                                                           and the feature sets derived from another's database
 
 Tools are the app's image ("app": COLMAP 3.9.1 and OpenMVS 2.3 on the CPU) or a tree build.sh made ("plain", "native"
 or "ss": COLMAP 4.2.1 and OpenMVS 2.4 with CUDA). Conditions: "dev" gives a step CORES cores and as many threads,
@@ -44,7 +47,7 @@ import stats  # noqa: E402
 import verify_build  # noqa: E402
 
 BENCH = Path(os.environ.get("BENCH", "/data/tom/mapperbench"))
-R = BENCH / "r2"
+R = Path(os.environ["BENCH_R"]) if os.environ.get("BENCH_R") else BENCH / "r2"     # BENCH_R: variants.together()'s batches
 APP = os.environ.get("APP", "ghcr.io/tom-f-oconnell/bouldermesh:b5607e9-gpu")
 CUDA_IMAGE = "nvidia/cuda:12.9.1-devel-ubuntu24.04"
 CORES = int(os.environ.get("CORES", "6"))       # what a "dev" step gets: the one number to lower when hal is shared
@@ -120,6 +123,11 @@ FEATS = {
     "siftlg421": ("new", SIFT + ["--FeatureExtraction.max_image_size", "2400", "--FeatureExtraction.use_gpu", "1"],
                   ["--FeatureMatching.type", "SIFT_LIGHTGLUE", "--FeatureMatching.use_gpu", "1"]),
 }
+import variants  # noqa: E402      more methods, feature sets and commands, in their own file
+variants.B = sys.modules[__name__]
+METHODS.update(variants.methods(GLOBAL))
+GPU_METHODS |= variants.GPU_METHODS
+FEATS.update(variants.feats(FEATS))
 MATCH = ["--ExhaustiveMatching.block_size", "20", "--TwoViewGeometry.min_num_inliers", "12"]
 REST_ARGS = ["--Mapper.abs_pose_min_num_inliers", "15", "--Mapper.abs_pose_min_inlier_ratio", "0.15"]
 # OpenMVS 2.4 otherwise than as it comes (post --mvs <name>, results in post-<tools>+<name>): step: its extra arguments
@@ -394,9 +402,18 @@ def feat_dir(P: str, feat: str, cond: str = "dev", build: str = "plain") -> Path
     return R / P / name
 
 
+def feat_db(P: str, feat: str, build: str = "plain") -> Path:
+    """The features database a boulder's mapper runs start from. A set made by the newer COLMAP with a build other
+    than plain is in that build's folder (features() names it so), while its runs are under the set's own name."""
+    own = feat_dir(P, feat) / "database.db"
+    return own if own.exists() or FEATS[feat][0] == "app" else feat_dir(P, feat, "dev", build) / "database.db"
+
+
 def features(P: str, feat: str, cond: str, build: str) -> Path:
     """A boulder's features and matches. The first set made of the app's (sift391, dev) is the one every mapper run
     starts from, so that only the mapper varies; one made under another condition is only for its timing."""
+    if variants.derived(feat):      # made from another set's database, not from the photos
+        return variants.derive(P, feat, build)
     family, extract, match = FEATS[feat]
     tools = "app" if family == "app" else build
     d = feat_dir(P, feat, cond, build)
@@ -455,18 +472,20 @@ def mapper(P: str, method: str, seed: int, feat: str, cond: str, build: str, rep
     """One mapper run on a boulder's features. Returns the run's name."""
     family, command, _, env = METHODS[method]
     assert family == "new" or FEATS[feat][0] == "app", "3.9.1 can't read a 4.2.1 database"
+    if command in variants.WRAPPED:     # more than one mapper step: made there
+        return variants.mapper(P, method, seed, feat, cond, build, rep)
     tools = "app" if family == "app" else build
     run = run_name(method, seed, cond, build, rep)
     d = feat_dir(P, feat) / run
     if (d / "map.json").exists():
         return run
-    if not (feat_dir(P, feat) / "database.db").exists():      # the queue had no feat line for it: made (or adopted) here
+    if not feat_db(P, feat, build).exists():      # the queue had no feat line for it: made (or adopted, or derived) here
         features(P, feat, "dev", build)
     shutil.rmtree(d, ignore_errors=True)
     if d.exists():      # an interrupted run's files that its container wrote as root: put aside, as they can't be deleted
         d.rename(d.with_name(f"{d.name}.stale{int(time.time())}"))
     (d / "sparse").mkdir(parents=True)
-    shutil.copyfile(feat_dir(P, feat) / "database.db", d / "database.db")     # COLMAP 4 rewrites a 3.9.1 database
+    shutil.copyfile(feat_db(P, feat, build), d / "database.db")     # COLMAP 4 rewrites a 3.9.1 database
     mounts = [f"{BENCH}/projects/{P}/photos:/photos:ro", f"{d}:/r"]
     if command == "vggt":       # its weights (4.7 GB), copied from the worker's cache the first time
         cache = BENCH / "cache" / "models"
@@ -496,7 +515,7 @@ def held(P: str, method: str, seed: int, percent: int, feat: str, cond: str, bui
     if (d / "add_reg.json").exists():
         return
     d.mkdir(parents=True, exist_ok=True)
-    db = feat_dir(P, feat) / "database.db"
+    db = feat_db(P, feat, build)
     if not db.exists():
         features(P, feat, "dev", build)
     if not (d / "kept.txt").exists():
@@ -592,7 +611,7 @@ def rest(P: str, run: str, feat: str) -> None:
     step(o, "convert", made_by, sh(["colmap", "model_converter", *(["--log_target", "stderr"] if made_by != "app" else []),
                                     "--input_path", f"/r/sparse/{best}", "--output_path", "/r/rest/txt",
                                     "--output_type", "TXT"]).replace("colmap", "mkdir -p /r/rest/txt; colmap", 1), mounts, "dev")
-    shutil.copyfile(feat_dir(P, feat) / "database.db", o / "db.db")
+    shutil.copyfile(feat_db(P, feat, build), o / "db.db")
     untied = (f"python3 /bench/stats.py untied txt {UNTIED[method]} >> drop.txt\nsort -u -o drop.txt drop.txt\n"
               if method in UNTIED else "")
     drop = lambda src, dst, names: (f"python3 /bench/stats.py unrefined db.db {src} > {names}\n"      # noqa: E731
@@ -695,12 +714,18 @@ def apps() -> None:
         print("\t".join(str(r.get(c, "")) for c in cols))
 
 
-def agree(only: str | None = None) -> None:
+def agree(only: str | None = None, summary: bool = False) -> None:
     """Every pair of models of each boulder laid over each other (stats.agreement): this benchmark's runs (after the
     app's rest step where it was run, else the mapper's largest model), the first scripts' runs (runs/) and the
-    pycolmap probes (probe/). One row a pair: how many cameras each places and both, and how far those both place
-    are apart. The baseline against itself on other seeds is the spread any other method has to be judged by."""
-    print("boulder\ta\tb\tplaced_a\tplaced_b\tshared\tpos_median\tpos_p90\tdeg_median\tdeg_p90")
+    pycolmap probes (probe/). One row a pair: how many cameras each places and both; how far those both place are
+    apart, as medians and 90th percentiles (position as a share of the scene's size) and as the share of them within
+    1, 2 and 5 degrees and within 2% and 10% of the scene's size; and each of the two models' consensus (the median,
+    over all the other models of the boulder, of the pair's median angle: variants.consensus()). A model that is
+    far from every other shows by its own consensus, whichever it is: the baseline's second run can be the outlier.
+    summary: one row a model instead (bench.py consensus), worst first."""
+    dist = ["pos_median", "pos_p90", "deg_median", "deg_p90", "deg_le1", "deg_le2", "deg_le5", "pos_le2pct", "pos_le10pct"]
+    print("\t".join(["boulder", "model", "placed", "others", "consensus_deg", "consensus_pos", "nearest_deg"] if summary else
+                    ["boulder", "a", "b", "placed_a", "placed_b", "shared", *dist, "consensus_deg_a", "consensus_deg_b"]))
     for proj in sorted((BENCH / "projects").iterdir()):
         P = proj.name
         if only and P != only:
@@ -721,12 +746,15 @@ def agree(only: str | None = None) -> None:
                 models[f"probe/{d.name[len(P) + 1:]}"] = d / stats.largest(d)[0]
         poses = {k: stats.poses(v) for k, v in models.items()}
         names = sorted(poses)
-        for i, a in enumerate(names):
-            for b in names[i + 1:]:
-                ag = stats.agreement(poses[a], poses[b]) or {}
-                print("\t".join(str(x) for x in [P, a, b, len(poses[a]), len(poses[b]), len(set(poses[a]) & set(poses[b])),
-                                                 ag.get("pos_median", ""), ag.get("pos_p90", ""), ag.get("deg_median", ""),
-                                                 ag.get("deg_p90", "")]))
+        pairs = [(a, b, stats.agreement(poses[a], poses[b]) or {}) for i, a in enumerate(names) for b in names[i + 1:]]
+        con = variants.consensus(pairs)
+        if summary:
+            for m in sorted(con, key=lambda m: -con[m]["deg"]):
+                print("\t".join(str(x) for x in [P, m, len(poses[m]), con[m]["others"], con[m]["deg"], con[m]["pos"], con[m]["deg_best"]]))
+            continue
+        for a, b, ag in pairs:
+            print("\t".join(str(x) for x in [P, a, b, len(poses[a]), len(poses[b]), len(set(poses[a]) & set(poses[b])),
+                                             *(ag.get(k, "") for k in dist), con.get(a, {}).get("deg", ""), con.get(b, {}).get("deg", "")]))
 
 
 def table() -> None:
@@ -785,7 +813,7 @@ def table() -> None:
 def main(argv: list[str]) -> None:
     p = argparse.ArgumentParser()
     p.add_argument("command", choices=["feat", "map", "rest", "post", "all", "held", "heldstats", "queue", "table", "agree",
-                                       "app", "apps"])
+                                       "app", "apps", *variants.COMMANDS])
     p.add_argument("args", nargs="*")
     p.add_argument("--feat", default="sift391")
     p.add_argument("--cond", default="dev")
@@ -821,6 +849,8 @@ def main(argv: list[str]) -> None:
         table()
     elif a.command == "agree":
         agree(a.args[0] if a.args else None)
+    elif a.command in variants.COMMANDS:
+        variants.command(a)
     elif a.command == "queue":      # read again before each job, so that jobs can be added to the file while it runs
         done, status = 0, Path(a.args[0]).with_suffix(".status")      # the job it is on, for anyone looking
         while True:

@@ -37,7 +37,7 @@ def images(model: Path) -> dict[str, int]:
     """Each placed photo's camera."""
     out = {}
     if (model / "images.txt").exists():
-        lines = [l for l in open(model / "images.txt") if not l.startswith("#")]
+        lines = [l for l in (model / "images.txt").read_text().split("\n") if not l.startswith("#")]
         for line in lines[0::2]:
             f = line.split()
             if len(f) >= 10:
@@ -76,7 +76,7 @@ def poses(model: Path) -> dict[str, tuple]:
                 f.read(24 * struct.unpack("<Q", f.read(8))[0])
                 out[name.decode()] = (rotation(v[1:5]), np.array(v[5:8]))
         return out
-    lines = [l for l in open(model / "images.txt") if not l.startswith("#")]
+    lines = [l for l in (model / "images.txt").read_text().split("\n") if not l.startswith("#")]
     for line in lines[0::2]:
         f = line.split()
         if len(f) >= 10:
@@ -105,7 +105,8 @@ def agreement(a: dict, b: dict, fit: set | None = None, report: set | None = Non
     Returns:
         Over the cameras in report (or all shared): how many, the median and 90th percentile of the distance between
         the two positions as a share of the scene's size (RMS distance of b's shared cameras from their middle), and
-        of the angle between the two orientations in degrees. None with fewer than 3 cameras to fit.
+        of the angle between the two orientations in degrees; and the share of them within 1, 2 and 5 degrees
+        (deg_le<N>) and within 2% and 10% of the scene's size (pos_le<N>pct). None with fewer than 3 cameras to fit.
     """
     import numpy as np
     shared = sorted(set(a) & set(b))
@@ -137,8 +138,10 @@ def agreement(a: dict, b: dict, fit: set | None = None, report: set | None = Non
         return {"cameras": 0}
     pos, ang = errors(names, s, Rs, t, size)
     q = lambda v, p: round(float(np.percentile(v, p)), 4)       # noqa: E731
+    within = lambda v, limit: round(float((np.array(v) <= limit).mean()), 3)      # noqa: E731
     return {"cameras": len(names), "pos_median": q(pos, 50), "pos_p90": q(pos, 90), "deg_median": q(ang, 50),
-            "deg_p90": q(ang, 90)}
+            "deg_p90": q(ang, 90), "deg_le1": within(ang, 1), "deg_le2": within(ang, 2), "deg_le5": within(ang, 5),
+            "pos_le2pct": within(pos, 0.02), "pos_le10pct": within(pos, 0.10)}
 
 
 def largest(sparse: Path) -> tuple[str, int, int]:
@@ -166,7 +169,7 @@ def untied(model: Path, least: int) -> list[str]:
     some in that see none (every observation of theirs was filtered out), and they are its cameras that are wrong."""
     out = []
     if (model / "images.txt").exists():
-        lines = [l for l in open(model / "images.txt") if not l.startswith("#")]
+        lines = [l for l in (model / "images.txt").read_text().split("\n") if not l.startswith("#")]
         for head, points in zip(lines[0::2], lines[1::2]):
             if len(head.split()) >= 10 and sum(1 for i in points.split()[2::3] if i != "-1") < least:
                 out.append(head.split()[9])
