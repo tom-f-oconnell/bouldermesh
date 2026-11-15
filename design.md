@@ -591,6 +591,65 @@ segfaulted once in 15 runs. Given 2.3's values (`pipeline.MVS24_DENSIFY`, `MVS24
 2.3's 1,131: the depth maps four times faster, the mesh and texture as before. The surface barely depends on it: the
 thin and dense clouds of one model give meshes 0.13% of the scene's size apart (median).
 
+## The global mapper (`backend/pipeline.py`, `MAPPER`)
+
+The mapper was most of a mesh's time: 58-67% of the steps' time over the meshes made before Nov 13 (55 min at the
+median of seven pooled boulders), and once depth maps moved to the GPU it was most of what was left. So COLMAP 4.2.1's
+global mapper places the cameras now, in its own build in the image (`colmap4`, the Dockerfile's `colmap4` stage), and
+3.9.1 does everything else as before.
+
+The mapper benchmark (experiments/mapper, handoff of Nov 13-14) timed it on a 6-core machine with an RTX 3060, one run
+at a time under the worker's own conditions, from the same features and matches:
+
+| Boulder (photos) | 3.9.1's mapper, two runs | global mapper | placed after the rest step, 3.9.1 / global |
+|---|---|---|---|
+| 31de (82) | 584, 660 s | 93 s | 71 / 71 |
+| 9f3b (150) | 1,608, 1,300 s | 118 s | 136 / 143 |
+| Drifter (234) | 1,675, 1,647 s | 187 s | 142 / 150 |
+
+- **It leaves wrong cameras in its models.** Some of its cameras see none of its points: every observation of theirs
+  was filtered out, and they were its wrong ones, 12-20 degrees off the other models' (3 on 31de, 18 on 9f3b, 19 on
+  Drifter). Counting only cameras that see 50 points or more, it placed 68 / 120 / 129 against 3.9.1's 71 / 136 / 141.
+  So the pipeline takes out of its largest model every camera seeing fewer than 15 of its points (`UNTIED`, the rest
+  step's own least), and the rest step tries those photos again like any the mapper left out. That is what was
+  measured as `global_tied`.
+- **Is it the same rock?** Laying each mesh over 3.9.1's, by the cameras and then by the surfaces:
+  - On 31de, `global_tied`'s surface is 0.41-0.56% of the scene's size from 3.9.1's (median), against 0.36% between
+    3.9.1's own two runs, and nearly all of it within 1%: the same rock.
+  - On Drifter it is 0.38-0.41% against 3.9.1's own 0.13%, and 13-15% of its surface is more than 1% away, against
+    1%. That is about 1.5 cm at the median and 5 cm at the 90th percentile, for cameras some 4 m from the rock,
+    against 0.5 and 1 cm. Nearly all of it is within 2%.
+- **9f3b is wrong for every method.** No two of them agree there, and 3.9.1's own second run is another model
+  altogether (18-33 degrees from everything), with as many photos placed. So a photo count doesn't show a bad model;
+  the model's own check (below) is what does, and it fails every 9f3b model.
+
+**What changes in a mesh.** Which photos are placed, and where, changes, so meshes made this way differ from those made
+before. MESH_RULES is not raised for it (Tom, Nov 14: "no point sticking to MESH_RULES where meshes are this slow to
+compute"). Instead each mesh records how its cameras were placed, so that meshes can be found and made again by it
+later: `mapper.json` beside it ({mapper: global or incremental, why, the COLMAP that ran, its arguments, the cameras
+taken out, seconds}), and the same in its kept reconstruction's `build.json`.
+
+**Why only the mapper is 4.2.1's.** Everything after it depends on 3.9.1: its option names, the log lines the progress
+bars read, the seed retry's error text, `image_registrator` with REST_ARGS, `model_orientation_aligner`, and
+vggt_place.py. 4.2.1 changes a 3.9.1 database into its own layout as it opens it, so the global mapper gets a copy
+(`work/global.db`), and its models are written as text by 4.2.1 and read back by 3.9.1's `model_converter`, which is
+how the benchmark's rest step used them. The features stay 3.9.1's too: the affine-shape SIFT for photos from the
+internet, and every other method in the benchmark was compared on those.
+
+**When it isn't used.** Today's incremental mapper, with its seeds and VGGT after it, places the cameras when
+`MAPPER=incremental`, when the image has no `colmap4`, when the global mapper fails, when converting its models
+fails, or when its largest model places fewer than 6 photos that see enough of its points. The job's log says which and
+why ("placing the cameras with COLMAP 3.9.1's incremental mapper instead: ..."), and so does `mapper.json`.
+
+**Not known yet:**
+- Its speed in this image. The benchmark's global mapper solved on the GPU (Ceres with cuDSS); this one is built on
+  Ubuntu's Ceres, which has no CUDA, so it solves on the CPU. The benchmark's `global_cpu` runs and the app's own
+  end-to-end runs on the new image say what that costs.
+- Drifter's surface at about three times 3.9.1's own spread: whether that is the global mapper's steady level or one
+  seed's (its seeds 1 and 2 are queued), and which of the two is nearer the rock.
+- 9f3b, which no method solves.
+- What the `colmap4` stage adds to the image's size.
+
 ## Stray pieces and sheets
 
 Each reconstruction hides its stray pieces (`backend/meshclean.py`), using the second rule below.

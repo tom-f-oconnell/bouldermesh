@@ -28,6 +28,44 @@ RUN git clone --depth 1 --branch 3.9.1 https://github.com/colmap/colmap.git /opt
       "-DCMAKE_CXX_FLAGS=-include memory -include cstdint" \
  && cmake --build /opt/colmap/build -j "$(( $(nproc) / 2 + 1 ))" -- -k 0 && cmake --install /opt/colmap/build
 
+# COLMAP 4.2.1, for its global mapper only (pipeline.py, MAPPER): on the mapper benchmark's boulders it placed the cameras
+# 6-14 times faster than 3.9.1's incremental mapper, with as many photos placed (design.md, "The global mapper").
+# Everything else (features, matching, the rest step, levelling, undistorting) stays on 3.9.1 above. Built on Ubuntu's
+# Ceres (2.2: SuiteSparse, no CUDA), so its solves are on the CPU in this first version, and with
+# experiments/mapper/patch_colmap.py, whose BENCH_BA lines in a job's log say which device and solver each solve used.
+# Its binary and every library it loads but glibc's, libstdc++'s, libgcc's and the GPU driver's go to /opt/colmap4, run
+# through a wrapper (colmap4) that points at them, so that 3.9.1's colmap and its libraries are left as they are. What
+# this adds to the image is still to be measured (atlas, Nov 14).
+FROM ubuntu:24.04 AS colmap4
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git cmake build-essential ninja-build ca-certificates pkg-config python3 \
+    libboost-program-options-dev libboost-filesystem-dev libboost-graph-dev libboost-system-dev \
+    libeigen3-dev libflann-dev libfreeimage-dev libmetis-dev libgoogle-glog-dev libgflags-dev libsqlite3-dev \
+    libglew-dev libcgal-dev libceres-dev libsuitesparse-dev libopenblas-dev liblapack-dev \
+    libopenimageio-dev openimageio-tools libjpeg-dev libpng-dev libtiff-dev libwebp-dev \
+    libgtest-dev libgmock-dev libssl-dev libcurl4-openssl-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY experiments/mapper/patch_colmap.py /opt/patch_colmap.py
+# OpenImageIO's cmake config names a folder of OpenCV's headers, which nothing here installs
+RUN mkdir -p /usr/include/opencv4 \
+ && git clone --depth 1 --branch 4.2.1 https://github.com/colmap/colmap.git /opt/colmap \
+ && python3 /opt/patch_colmap.py /opt/colmap \
+ && cmake -S /opt/colmap -B /opt/colmap/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/colmap4-built \
+      -DCUDA_ENABLED=OFF -DONNX_ENABLED=OFF -DGUI_ENABLED=OFF -DOPENGL_ENABLED=OFF -DMVS_ENABLED=OFF -DTESTS_ENABLED=OFF \
+      -DCASPAR_ENABLED=OFF -DDOWNLOAD_ENABLED=OFF \
+ && cmake --build /opt/colmap/build -j "$(( $(nproc) / 2 + 1 ))" && cmake --install /opt/colmap/build
+# only the binary goes on (its static libraries and headers stay here), with the shared libraries it loads
+RUN mkdir -p /opt/colmap4/bin /opt/colmap4/lib && cp /opt/colmap4-built/bin/colmap /opt/colmap4/bin/colmap \
+ && ldd /opt/colmap4/bin/colmap | awk '/=> \// {print $3}' \
+  | grep -vE '/(libc|libm|libmvec|libpthread|libdl|librt|libresolv|libutil|ld-linux[^/]*|libstdc\+\+|libgcc_s|libcuda|libnvidia[^/]*)\.so' \
+  | xargs -r cp -L -t /opt/colmap4/lib \
+ && printf '#!/bin/sh\nLD_LIBRARY_PATH=/opt/colmap4/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} exec /opt/colmap4/bin/colmap "$@"\n' \
+      > /opt/colmap4/colmap4 \
+ && chmod +x /opt/colmap4/colmap4 \
+ && /opt/colmap4/colmap4 -h | head -1 | grep -q "COLMAP 4.2.1" \
+ && /opt/colmap4/colmap4 global_mapper -h | grep -q GlobalMapper.min_model_size
+
 FROM ubuntu:24.04 AS build
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -143,6 +181,11 @@ RUN if [ "$THUMBS" = 1 ]; then \
    && chmod -R a+rX $PLAYWRIGHT_BROWSERS_PATH && rm -rf /var/lib/apt/lists/*; fi
 # Ubuntu's colmap package is only there for the libraries this one links to: /usr/local/bin comes first
 COPY --from=colmap /opt/colmap-cuda/bin/colmap /usr/local/bin/colmap
+# COLMAP 4.2.1 beside it, for the global mapper (the colmap4 stage): checked here to start in this image, without its
+# libraries reaching anything else (they are found only through the wrapper)
+COPY --from=colmap4 /opt/colmap4 /opt/colmap4
+RUN ln -s /opt/colmap4/colmap4 /usr/local/bin/colmap4 && colmap4 -h | head -1 | grep -q "COLMAP 4.2.1"
+ENV COLMAP4_BIN=/usr/local/bin/colmap4
 COPY --from=mvs /usr/local/bin/OpenMVS /usr/local/bin/OpenMVS
 # with MVS=24: its CUDA build for depth maps, and the OpenCV both its builds link (empty folders otherwise)
 COPY --from=mvs /usr/local/bin/OpenMVS-cuda /usr/local/bin/OpenMVS-cuda

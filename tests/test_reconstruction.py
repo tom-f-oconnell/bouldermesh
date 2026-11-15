@@ -54,7 +54,8 @@ with tempfile.TemporaryDirectory() as td:
     assert args == ["--database_path", "<database>", "--image_path", "<photos>", "--ImageReader.single_camera", "0",
                     "--ImageReader.mask_path", "<masks>", "--SiftExtraction.max_image_size", "2400"], args
 
-    kept = reconstruction.keep(model, td / "database.db", out, said.append, "COLMAP 3.9.1 (Commit x with CUDA)", {"args": args, "device": "cpu"})
+    kept = reconstruction.keep(model, td / "database.db", out, said.append, "COLMAP 3.9.1 (Commit x with CUDA)", {"args": args, "device": "cpu"},
+                               {"mapper": "global", "untied": ["3.jpg"]})
     assert kept == out / reconstruction.FILE and kept.is_file(), said
     assert not (out / (reconstruction.FILE + ".partial")).exists() and not (td / "pairs.db").exists(), "nothing left behind"
     assert "kept" in said[-1] and "a placed photo" in said[-1], said
@@ -63,6 +64,7 @@ with tempfile.TemporaryDirectory() as td:
     back = td / "back"
     build = reconstruction.unpack(out, back)
     assert build["colmap"].startswith("COLMAP 3.9.1") and build["extract"] == {"args": args, "device": "cpu"}, build
+    assert build["mapper"] == {"mapper": "global", "untied": ["3.jpg"]}, build
     assert build["model_files"] == ["cameras.bin", "images.bin", "points3D.bin"], build
     for f in ("images.bin", "cameras.bin", "points3D.bin"):
         assert (back / "model" / f).read_bytes() == (model / f).read_bytes(), f

@@ -1,8 +1,9 @@
 """Photogrammetry pipeline: photos -> mesh.
 
-Real path:  COLMAP (sparse SfM) -> OpenMVS (dense + mesh), via subprocess. Where COLMAP's mapper can't place the
-            photos, VGGT places them and COLMAP refines that (vggt_place.py). The photos the mapper left out are then
-            tried again, one at a time, against the model it made (_place_rest()).
+Real path:  COLMAP (sparse SfM) -> OpenMVS (dense + mesh), via subprocess. The cameras are placed by COLMAP 4's global
+            mapper where the image has it (_global_mapper(), MAPPER), else by COLMAP 3.9.1's own incremental mapper;
+            where that can't place the photos, VGGT places them and COLMAP refines that (vggt_place.py). The photos
+            the mapper left out are then tried again, one at a time, against the model it made (_place_rest()).
 Fallback:   if either tool is missing, builds a labelled DEMO relief mesh from
             the first photo so the rest of the app can be exercised.
 
@@ -17,6 +18,7 @@ import re
 import shutil
 import struct
 import subprocess
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -51,6 +53,15 @@ MAX_TEXTURE = 4096      # larger atlases get split: an 8192 x 8192 one takes 270
 MIN_FACES = 1000        # a mesh with fewer isn't one: harvests' empty meshes had 0-574, real ones 3,870 and up (design.md)
 MIN_REGISTERED = 6      # photos COLMAP must place together for a mesh to be made from them
 COLMAP = shutil.which("colmap")
+# Which mapper places the cameras. "global": COLMAP 4.2.1's global mapper (the image's colmap4, Dockerfile), on a copy of
+# the database, its models converted for 3.9.1, which does everything else; today's incremental mapper is the fallback
+# (_global_mapper()). "incremental": COLMAP 3.9.1's mapper, as every mesh was placed before. In the mapper benchmark
+# (design.md, "The global mapper") the global mapper placed the cameras 6-14 times faster with as many photos placed,
+# once the cameras it leaves seeing next to none of its points are taken out (UNTIED) for the rest step to place.
+MAPPER = os.environ.get("MAPPER", "global")
+COLMAP4 = os.environ.get("COLMAP4_BIN") or shutil.which("colmap4")
+UNTIED = 15             # a camera the global mapper leaves seeing fewer of its model's points than this is taken out
+MAPPER_FILE = "mapper.json"     # in work/, then beside the mesh: which mapper placed its cameras, and why (_global_mapper())
 # OpenMVS binaries are usually installed under /usr/local/bin/OpenMVS
 _MVS_DIRS = [os.environ.get("OPENMVS_BIN", ""), "/usr/local/bin/OpenMVS", "/usr/local/bin", "/usr/bin"]
 # OpenMVS built with CUDA, where the image has one (Dockerfile, MVS=24): used for depth maps when a GPU has room. Its
@@ -96,12 +107,14 @@ def colmap_has_cuda() -> bool:
 
 
 @functools.cache
-def colmap_build() -> str | None:
-    """Which COLMAP this is, as the first lines of its help say (version, commit, CUDA), for what a mesh keeps."""
-    if not COLMAP:
+def colmap_build(colmap: str | None = None) -> str | None:
+    """Which COLMAP this is (or the one named, e.g. COLMAP4), as the first lines of its help say (version, commit,
+    CUDA), for what a mesh keeps."""
+    colmap = colmap or COLMAP
+    if not colmap:
         return None
     try:
-        lines = subprocess.run([COLMAP, "-h"], capture_output=True, text=True, timeout=30).stdout.splitlines()
+        lines = subprocess.run([colmap, "-h"], capture_output=True, text=True, timeout=30).stdout.splitlines()
     except (OSError, subprocess.SubprocessError):
         return None
     return " ".join(l.strip() for l in lines[:3] if l.strip()) or None
@@ -270,6 +283,27 @@ def _mapper(tracker: Tracker, n_images: int) -> Callable[[str], None]:
         if m:
             k = int(m[1])
             tracker.update("mapper", k / max(1, n_images), f"{k} of {n_images} photos in this model")
+    return watch
+
+
+def _global(tracker: Tracker) -> Callable[[str], None]:
+    """The global mapper's phases, in each connected part of the photos it reconstructs: the bar moves at the start of
+    each, by about its share of the time in the benchmark's runs."""
+    part = re.compile(r"Reconstructing component (\d+) / (\d+)")
+    phases = [("rotation averaging", 0.05, "turning the cameras"), ("track establishment", 0.15, "linking the matches"),
+              ("global positioning", 0.25, "placing the cameras"), ("iterative bundle adjustment", 0.5, "refining"),
+              ("iterative retriangulation", 0.8, "refining the points")]
+    state = {"k": 1, "n": 1}
+
+    def watch(line: str) -> None:
+        if m := part.search(line):
+            state.update(k=int(m[1]), n=int(m[2]))
+            return
+        for text, at, what in phases:
+            if f"Running {text}" in line:
+                k, n = state["k"], state["n"]
+                tracker.update("mapper", (k - 1 + at) / n, what + (f" (part {k} of {n})" if n > 1 else ""))
+                return
     return watch
 
 
@@ -470,6 +504,113 @@ def _place_rest(db: Path, model: Path, work: Path, log: Log, tracker: Tracker, p
     return model, n
 
 
+def global_args(min_registered: int, internet: bool) -> list[str]:
+    """The global mapper's options: the app's own for the incremental mapper, in its spelling (models down to what a
+    mesh can be made from; for photos from the internet each lens's principal point refined and pairs of 20 matches
+    or more), on the CPU (the image's COLMAP 4 is built on Ubuntu's Ceres, which has no CUDA), from seed 0."""
+    args = ["--log_target", "stderr", "--default_random_seed", "0", "--GlobalMapper.random_seed", "0",
+            "--GlobalMapper.min_model_size", str(min_registered)]
+    if internet:
+        args += ["--GlobalMapper.ba_refine_principal_point", "1", "--GlobalMapper.min_num_matches", "20"]
+    return args + ["--GlobalMapper.gp_use_gpu", "0", "--GlobalMapper.ba_ceres_use_gpu", "0"]
+
+
+def _set_aside(sparse: Path, work: Path, prefix: str) -> None:
+    """What the global mapper left in sparse/, moved out of the incremental mapper's way (kept in work/ to look at)."""
+    if sparse.exists() and any(sparse.iterdir()):
+        sparse.rename(work / f"{prefix}_sparse{len(list(work.glob(f'{prefix}_sparse*')))}")
+    sparse.mkdir(exist_ok=True)
+
+
+def _global_mapper(db: Path, images: Path, sparse: Path, work: Path, log: Log, tracker: Tracker, n_images: int,
+                   min_registered: int, internet: bool) -> tuple[dict | None, str]:
+    """The cameras placed by COLMAP 4.2.1's global mapper, where MAPPER is "global" and the image has it (COLMAP4).
+
+    On a copy of the database (COLMAP 4 changes a 3.9.1 database into its own layout as it opens it), into
+    work/sparse_global; each model it makes is converted to text by COLMAP 4 and back to binary by 3.9.1, into sparse/
+    as 3.9.1's mapper would have left it, so that every later step sees what it always has. In its largest model, the
+    cameras that see fewer than UNTIED of its points are then taken out: the global mapper keeps cameras whose every
+    observation it filtered out, and those were its wrong ones (12-20 degrees off the others' in the benchmark). The
+    rest step then tries them like any other photo the mapper left out.
+
+    Returns:
+        What it did, for mapper.json ({mapper: "global", colmap4, args, untied, placed, seconds}), or None and why
+        not, with sparse/ left empty for the incremental mapper: MAPPER isn't "global", COLMAP 4 isn't here, the global
+        mapper failed, its largest model places fewer than min_registered photos, or its models couldn't be converted.
+    """
+    if MAPPER != "global":
+        return None, f"MAPPER is {MAPPER!r}"
+    if not COLMAP4:
+        return None, "this image has no COLMAP 4 (colmap4) for the global mapper"
+    log("== COLMAP 4: sparse reconstruction (global mapper)")
+    tracker.update("mapper", 0, "the global mapper")
+    out, copy, args = work / "sparse_global", work / "global.db", global_args(min_registered, internet)
+    done = work / "global.json"
+    if not _finished(work, "global"):
+        shutil.rmtree(out, ignore_errors=True)
+        out.mkdir()
+        for f in work.glob(copy.name + "*"):
+            f.unlink()
+        start = time.time()
+        try:
+            shutil.copyfile(db, copy)
+            _run([COLMAP4, "global_mapper", "--database_path", str(copy), "--image_path", str(images), "--output_path", str(out),
+                  *args], work, log, _global(tracker))
+        except (RuntimeError, OSError) as e:
+            return None, f"the global mapper failed ({e})"
+        done.write_text(json.dumps({"seconds": round(time.time() - start, 1)}))
+        _finish(work, "global")
+    seconds = json.loads(done.read_text())["seconds"] if done.exists() else None
+    models = sorted((m for m in out.iterdir() if (m / "images.bin").exists()), key=lambda m: m.name) if out.exists() else []
+    if not models:
+        return None, "the global mapper made no model"
+    try:
+        for m in models:
+            text = work / "global_text" / m.name
+            shutil.rmtree(text, ignore_errors=True)
+            text.mkdir(parents=True)
+            _run([COLMAP4, "model_converter", "--log_target", "stderr", "--input_path", str(m), "--output_path", str(text),
+                  "--output_type", "TXT"], work, log)
+            (sparse / m.name).mkdir()
+            _run([COLMAP, "model_converter", "--input_path", str(text), "--output_path", str(sparse / m.name),
+                  "--output_type", "BIN"], work, log)
+    except (RuntimeError, OSError) as e:
+        _set_aside(sparse, work, "global")
+        return None, f"its models couldn't be converted for COLMAP 3.9.1 ({e})"
+    model, placed = _largest_model(sparse)
+    untied = []
+    if model is not None:
+        untied = sorted(c["name"] for c in orientation.read_cameras(model) if c["seen"] < UNTIED)
+    if untied and placed - len(untied) < min_registered:
+        _set_aside(sparse, work, "global")
+        return None, (f"its largest model places only {placed - len(untied)} of {n_images} photos that see {UNTIED} or more "
+                      f"of its points (need {min_registered})")
+    if untied:
+        names, tied = work / "untied.txt", work / "tied"
+        names.write_text("".join(f"{n}\n" for n in untied))
+        shutil.rmtree(tied, ignore_errors=True)
+        tied.mkdir()
+        try:
+            _run([COLMAP, "image_deleter", "--input_path", str(model), "--output_path", str(tied), "--image_names_path", str(names)],
+                 work, log)
+        except RuntimeError as e:
+            _set_aside(sparse, work, "global")
+            return None, f"its cameras seeing next to none of its points couldn't be taken out ({e})"
+        kept = work / f"global_untied_{model.name}"
+        shutil.rmtree(kept, ignore_errors=True)
+        model.rename(kept)
+        tied.rename(model)
+        log(f"global mapper: took out {len(untied)} of its {placed} cameras, which see fewer than {UNTIED} of its points, "
+            f"for the rest step to try again: {', '.join(untied[:12])}{' ...' if len(untied) > 12 else ''}")
+        model, placed = _largest_model(sparse)
+    if placed < min_registered:
+        _set_aside(sparse, work, "global")
+        return None, f"its largest model places only {placed} of {n_images} photos (need {min_registered})"
+    log(f"global mapper: {placed} of {n_images} photos placed in its largest model, of {len(models)} model(s)")
+    return {"mapper": "global", "why": "MAPPER is 'global'", "colmap4": colmap_build(COLMAP4), "args": args,
+            "untied": untied, "untied_least": UNTIED, "models": len(models), "placed": placed, "seconds": seconds}, ""
+
+
 def _finished(work: Path, step: str) -> bool:
     return (work / "finished" / step).exists()
 
@@ -509,6 +650,55 @@ def _level_from_readings(model: Path, images: Path, work: Path, log: Log) -> dic
     except Exception as e:
         log(f"checking which way is down failed ({e}); keeping the estimate from how photos were framed")
         return None
+
+
+def _incremental_mapper(db: Path, images: Path, sparse: Path, work: Path, log: Log, tracker: Tracker, n_images: int,
+                        min_registered: int, internet: bool, why: str) -> dict:
+    """The cameras placed by COLMAP 3.9.1's own incremental mapper, with its seeds and retries, and VGGT where it places
+    too few: how every mesh was made before the global mapper. Returns what it did, for mapper.json."""
+    log("== COLMAP: sparse reconstruction (mapper)")
+    start = time.time()
+    # models after the first as small as a mesh can be made from (COLMAP's own least is 10; the first is kept whatever
+    # its size): what the largest leaves out may be another side or rock (write_models())
+    cmd = [COLMAP, "mapper", "--database_path", str(db), "--image_path", str(images), "--output_path", str(sparse),
+           "--Mapper.min_model_size", str(min_registered)]
+    if internet:
+        cmd += ["--Mapper.ba_refine_principal_point", "1", "--Mapper.min_num_matches", "20"]
+    # COLMAP 3.9's mapper can abort on one failing model ("NumRegImages() >= 2"; 2 of 25 runs when
+    # tried), or throw away a whole model it had grown, leaving too little (design.md), or place many fewer
+    # photos of the same set from one run to the next (meshopts.py). It works from the database, so another seed
+    # doesn't redo the matching, and the models an earlier attempt finished stay on disk as candidates.
+    opts = meshopts.mapper()
+    below, more = float(opts["retry_below"] or 0), int(opts["more"] or 0)
+    attempt = failed = fewer = 0
+    while True:
+        try:
+            _run(cmd + ["--random_seed", str(attempt)], work, log, _mapper(tracker, n_images))
+            ran = True
+        except RuntimeError as e:
+            ran, problem = False, str(e)
+        best = _largest_model(sparse)[1]
+        if best >= min_registered and (ran or fewer):     # enough, from this seed or one before tried for more
+            if not (ran and below > 0 and best < below * n_images and fewer < more):
+                break
+            fewer += 1
+            log(f"mapper placed {best} of {n_images} photos, under {below:.0%} of them: trying another seed ({fewer} of "
+                f"{more}), keeping the model that places most")
+        else:
+            failed += 1
+            log(f"mapper failed ({problem if not ran else f'only {best} of {n_images} photos placed'}), attempt {failed} of "
+                f"{MAPPER_ATTEMPTS}")
+            if failed >= MAPPER_ATTEMPTS:
+                break
+        for m in list(sparse.iterdir()):
+            if not m.name.startswith("aborted"):
+                m.rename(sparse / f"aborted{attempt}-{m.name}")
+        attempt += 1
+    registered = _largest_model(sparse)[1]
+    if registered < min_registered:
+        _place_with_vggt(db, images, sparse, work, log, tracker, registered)
+    return {"mapper": "incremental", "why": why, "colmap": colmap_build(), "seeds": attempt + 1,
+            "vggt": (sparse / "vggt").is_dir(), "seconds": round(time.time() - start, 1)}
 
 
 def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool,
@@ -585,50 +775,16 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         _finish(work, "matching")
 
     if not _finished(work, "mapper"):
-        log("== COLMAP: sparse reconstruction (mapper)")
         tracker.update("mapper")
         if any(sparse.iterdir()):   # what an interrupted run left may be half written, and it'll be made again
             sparse.rename(work / f"interrupted_sparse{len(list(work.glob('interrupted_sparse*')))}")
             sparse.mkdir()
-        # models after the first as small as a mesh can be made from (COLMAP's own least is 10; the first is kept whatever
-        # its size): what the largest leaves out may be another side or rock (write_models())
-        cmd = [COLMAP, "mapper", "--database_path", str(db), "--image_path", str(images), "--output_path", str(sparse),
-               "--Mapper.min_model_size", str(min_registered)]
-        if internet:
-            cmd += ["--Mapper.ba_refine_principal_point", "1", "--Mapper.min_num_matches", "20"]
-        # COLMAP 3.9's mapper can abort on one failing model ("NumRegImages() >= 2"; 2 of 25 runs when
-        # tried), or throw away a whole model it had grown, leaving too little (design.md), or place many fewer
-        # photos of the same set from one run to the next (meshopts.py). It works from the database, so another seed
-        # doesn't redo the matching, and the models an earlier attempt finished stay on disk as candidates.
-        opts = meshopts.mapper()
-        below, more = float(opts["retry_below"] or 0), int(opts["more"] or 0)
-        attempt = failed = fewer = 0
-        while True:
-            try:
-                _run(cmd + ["--random_seed", str(attempt)], work, log, _mapper(tracker, n_images))
-                ran = True
-            except RuntimeError as e:
-                ran, problem = False, str(e)
-            best = _largest_model(sparse)[1]
-            if best >= min_registered and (ran or fewer):     # enough, from this seed or one before tried for more
-                if not (ran and below > 0 and best < below * n_images and fewer < more):
-                    break
-                fewer += 1
-                log(f"mapper placed {best} of {n_images} photos, under {below:.0%} of them: trying another seed ({fewer} of "
-                    f"{more}), keeping the model that places most")
-            else:
-                failed += 1
-                log(f"mapper failed ({problem if not ran else f'only {best} of {n_images} photos placed'}), attempt {failed} of "
-                    f"{MAPPER_ATTEMPTS}")
-                if failed >= MAPPER_ATTEMPTS:
-                    break
-            for m in list(sparse.iterdir()):
-                if not m.name.startswith("aborted"):
-                    m.rename(sparse / f"aborted{attempt}-{m.name}")
-            attempt += 1
-        registered = _largest_model(sparse)[1]
-        if registered < min_registered:
-            _place_with_vggt(db, images, sparse, work, log, tracker, registered)
+        how, why = _global_mapper(db, images, sparse, work, log, tracker, n_images, min_registered, internet)
+        if how is None:
+            if MAPPER == "global":
+                log(f"placing the cameras with COLMAP 3.9.1's incremental mapper instead: {why}")
+            how = _incremental_mapper(db, images, sparse, work, log, tracker, n_images, min_registered, internet, why)
+        (work / MAPPER_FILE).write_text(json.dumps(how, indent=1))
     model, registered = _largest_model(sparse)
     if model is not None and min_registered <= registered < n_images and not _finished(work, "rest"):
         model, registered = _place_rest(db, model, work, log, tracker, registered, n_images)
@@ -665,8 +821,11 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             shutil.copyfile(work / "vggt" / "placed.json", out_dir / "placement.json")
         if (work / MODELS_FILE).exists():
             shutil.copyfile(work / MODELS_FILE, out_dir / MODELS_FILE)
+        how = json.loads((work / MAPPER_FILE).read_text()) if (work / MAPPER_FILE).exists() else None
+        if how:
+            (out_dir / MAPPER_FILE).write_text(json.dumps(how, indent=1))
         extract = json.loads((work / EXTRACT_FILE).read_text()) if (work / EXTRACT_FILE).exists() else None
-        reconstruction.keep(model, db, out_dir, log, colmap_build(), extract)
+        reconstruction.keep(model, db, out_dir, log, colmap_build(), extract, how)
         check_model(model, db, out_dir, log)
 
     if not _finished(work, "undistort"):

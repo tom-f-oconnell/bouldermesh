@@ -12,8 +12,9 @@ What's kept comes to about 0.3 MB a photo.
         model/       COLMAP's binary model: cameras.bin, images.bin, points3D.bin (and rigs.bin, frames.bin from COLMAP 4)
         pairs.db     COLMAP's database with its keypoints, descriptors and raw matches emptied: its photos, lenses
                      and verified pairs (two_view_geometries) remain
-        build.json   {colmap, extract, made}: the COLMAP that made it (its `colmap -h` banner), and its feature
-                     extraction's arguments with paths left out, and whether that ran on the GPU or the CPU
+        build.json   {colmap, extract, mapper, made}: the COLMAP that made it (its `colmap -h` banner), its feature
+                     extraction's arguments with paths left out and whether that ran on the GPU or the CPU, and which
+                     mapper placed its cameras (pipeline.py's mapper.json: global or incremental, and why)
 """
 from __future__ import annotations
 
@@ -60,7 +61,7 @@ def slim_database(db: Path, dest: Path) -> None:
 
 
 def keep(model: Path, db: Path, out_dir: Path, log: Callable[[str], None], colmap: str | None = None,
-         extract: dict | None = None) -> Path | None:
+         extract: dict | None = None, mapper: dict | None = None) -> Path | None:
     """Keep a mesh's reconstruction beside it (FILE in out_dir). Never fails the mesh: if something is missing or
     goes wrong, it says so and keeps nothing.
 
@@ -69,6 +70,7 @@ def keep(model: Path, db: Path, out_dir: Path, log: Callable[[str], None], colma
         db: COLMAP's database.
         colmap: the COLMAP that made it, as its banner says.
         extract: {args, device} of its feature extraction (extract_args()).
+        mapper: which mapper placed its cameras, as pipeline.py records it (mapper.json).
 
     Returns:
         The file kept, or None.
@@ -82,7 +84,7 @@ def keep(model: Path, db: Path, out_dir: Path, log: Callable[[str], None], colma
     slim = db.with_name("pairs.db")
     try:
         slim_database(db, slim)
-        build = {"colmap": colmap, "extract": extract, "made": time.time(), "model_files": [p.name for p in files]}
+        build = {"colmap": colmap, "extract": extract, "mapper": mapper, "made": time.time(), "model_files": [p.name for p in files]}
         out_dir.mkdir(parents=True, exist_ok=True)
         with tarfile.open(partial, "w:gz", compresslevel=6) as tar:
             for p in files:

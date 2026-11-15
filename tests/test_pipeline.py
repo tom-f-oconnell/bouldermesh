@@ -11,6 +11,10 @@ import pipeline
 from climbs.common import Cancelled
 from progress import Tracker
 
+# the incremental mapper's tests below run as on a machine with no COLMAP 4, whatever this one has; the global
+# mapper's own tests (near the end) stand it in
+pipeline.COLMAP4 = None
+
 # ---- progress, from lines as COLMAP and OpenMVS print them
 t = Tracker(pipeline.steps() if pipeline.real_pipeline_ready() else [(k, k, 1) for k in
             ("features", "matching", "mapper", "undistort", "dense", "mesh", "texture")])
@@ -794,4 +798,181 @@ with tempfile.TemporaryDirectory() as d:
     got = pipeline.write_models(sparse, pathlib.Path(d) / "out", pathlib.Path(d) / "bad.db", sparse / "1")
     assert "left" not in got and len(got["models"]) == 2, got
 print("models recorded OK")
+
+
+# ---- COLMAP 4's global mapper places the cameras, its untied cameras are taken out, and today's mapper is the fallback
+def model_bin(path: pathlib.Path, seen: dict[str, int]) -> None:
+    """A 3.9.1 binary model whose photos see that many of its points each (orientation.read_cameras()'s "seen")."""
+    path.mkdir(parents=True, exist_ok=True)
+    with open(path / "images.bin", "wb") as f:
+        f.write(struct.pack("<Q", len(seen)))
+        for i, (name, k) in enumerate(seen.items()):
+            f.write(struct.pack("<i4d3di", i + 1, 1, 0, 0, 0, 0, 0, 0, 1) + name.encode() + b"\0" + struct.pack("<Q", k + 2))
+            f.write(b"".join(struct.pack("<ddq", 1.0, 2.0, j) for j in range(k)) + struct.pack("<ddq", 0, 0, -1) * 2)
+
+
+def global_run(tmp: pathlib.Path, models: dict | None = None, fails: str | None = None, mapper: str = "global",
+               colmap4: str | None = "colmap4", n: int = 10, interrupt: str | None = None):
+    """reconstruct_colmap_openmvs() up to levelling, with the global mapper making `models` ({name: {photo: points
+    seen}}) and the incremental one, if it runs, a model of 7. fails: the step that fails ("colmap4 global_mapper",
+    "colmap4 model_converter", "image_deleter"); interrupt: the one a restart stops at. Returns the commands, what
+    was logged, the model levelling was given, and mapper.json."""
+    images, work, cmds, logged = tmp / "images", tmp / "work", [], []
+    images.mkdir(exist_ok=True)
+    for i in range(n):
+        (images / f"{i}.jpg").write_bytes(b"x")
+    models = models if models is not None else {"0": {f"{i}.jpg": (300 if i < 7 else 3) for i in range(9)}, "1": {"9.jpg": 40}}
+
+    def fake_run(cmd, cwd, log, watch=None):
+        what = f"{cmd[0]} {cmd[1]}" if cmd[0] == "colmap4" else cmd[1]
+        cmds.append(cmd)
+        if what == "feature_extractor":
+            (work / "database.db").write_bytes(b"3.9.1's")
+        if what == fails:
+            raise RuntimeError(f"{what} exited with 1")
+        if what == interrupt:
+            raise Stop("interrupted")
+        if what == "colmap4 global_mapper":
+            if watch:
+                for line in ("=== Reconstructing component 1 / 2 with 9 images ===", "=== Running global positioning ==="):
+                    watch(line)
+            for name in models:
+                d = pathlib.Path(cmd[cmd.index("--output_path") + 1]) / name
+                d.mkdir(parents=True)
+                (d / "images.bin").write_bytes(b"COLMAP 4's")
+        if what == "model_converter" and cmd[cmd.index("--output_type") + 1] == "BIN":     # 3.9.1's, from 4's text
+            out = pathlib.Path(cmd[cmd.index("--output_path") + 1])
+            model_bin(out, models[out.name])
+        if what == "image_deleter":
+            drop = set(pathlib.Path(cmd[cmd.index("--image_names_path") + 1]).read_text().split())
+            src = pathlib.Path(cmd[cmd.index("--input_path") + 1])
+            kept = {c["name"]: c["seen"] for c in pipeline.orientation.read_cameras(src) if c["name"] not in drop}
+            model_bin(pathlib.Path(cmd[cmd.index("--output_path") + 1]), kept)
+        if what == "mapper":
+            model(work / "sparse", "0", 7)
+        if what == "model_orientation_aligner":
+            raise Stop(cmd[cmd.index("--input_path") + 1])
+    saved = pipeline._run, pipeline.COLMAP, pipeline.COLMAP4, pipeline.MAPPER
+    pipeline._run, pipeline.COLMAP, pipeline.COLMAP4, pipeline.MAPPER = fake_run, "colmap", colmap4, mapper
+    given = None
+    try:
+        with meshopts.using({"retry_below": 0, "more": 0}):
+            pipeline.reconstruct_colmap_openmvs(images, work, tmp / "out", logged.append, False, internet=True,
+                                                tracker=Tracker([("mapper", "Place cameras", 1)]))
+    except Stop as e:
+        given = e.args[0]
+    finally:
+        pipeline._run, pipeline.COLMAP, pipeline.COLMAP4, pipeline.MAPPER = saved
+    record = json.loads((work / pipeline.MAPPER_FILE).read_text()) if (work / pipeline.MAPPER_FILE).exists() else None
+    return cmds, logged, given, record
+
+
+def names_of(cmds):
+    return [f"{c[0]} {c[1]}" if c[0] == "colmap4" else c[1] for c in cmds]
+
+
+with tempfile.TemporaryDirectory() as td:
+    tmp = pathlib.Path(td)
+    cmds, logged, given, record = global_run(tmp)
+    ran = names_of(cmds)
+    i = ran.index("colmap4 global_mapper")
+    assert ran[i:i + 7] == ["colmap4 global_mapper", "colmap4 model_converter", "model_converter", "colmap4 model_converter",
+                            "model_converter", "image_deleter", "image_registrator"], ran
+    assert "mapper" not in ran, "the incremental mapper doesn't run"
+    g = cmds[i]
+    assert g[g.index("--database_path") + 1].endswith("work/global.db") and (tmp / "work" / "database.db").exists(), g
+    assert (tmp / "work" / "global.db").exists(), "on a copy of the database"
+    for flag, value in (("--GlobalMapper.min_model_size", "6"), ("--GlobalMapper.ba_refine_principal_point", "1"),
+                        ("--GlobalMapper.min_num_matches", "20"), ("--GlobalMapper.gp_use_gpu", "0"),
+                        ("--GlobalMapper.ba_ceres_use_gpu", "0"), ("--GlobalMapper.random_seed", "0")):
+        assert g[g.index(flag) + 1] == value, (flag, g)
+    conv4, conv3 = cmds[i + 1], cmds[i + 2]
+    assert conv4[conv4.index("--output_type") + 1] == "TXT" and conv3[conv3.index("--input_path") + 1] == conv4[conv4.index("--output_path") + 1]
+    assert conv3[conv3.index("--output_path") + 1].endswith("work/sparse/0"), conv3
+    # the untied cameras: those of the largest model seeing fewer than 15 of its points, taken out of it, then tried again
+    deleter = cmds[ran.index("image_deleter")]
+    assert (tmp / "work" / "untied.txt").read_text().split() == ["7.jpg", "8.jpg"], "7 and 8 see 3 points each"
+    assert deleter[deleter.index("--input_path") + 1].endswith("work/sparse/0"), deleter
+    assert (tmp / "work" / "global_untied_0" / "images.bin").exists(), "the model as the global mapper left it, kept"
+    reg = cmds[ran.index("image_registrator")]
+    assert reg[reg.index("--input_path") + 1].endswith("work/sparse/0") and "--Mapper.abs_pose_min_num_inliers" in reg, reg
+    assert sorted(c["name"] for c in pipeline.orientation.read_cameras(tmp / "work" / "sparse" / "0")) == [f"{i}.jpg" for i in range(7)]
+    assert given.endswith("sparse/0"), given
+    assert record["mapper"] == "global" and record["untied"] == ["7.jpg", "8.jpg"] and record["placed"] == 7, record
+    assert record["models"] == 2 and record["untied_least"] == 15 and "--GlobalMapper.gp_use_gpu" in record["args"], record
+    assert isinstance(record["seconds"], float), record
+    assert any("took out 2 of its 9 cameras" in l for l in logged) and any("7 of 10 photos placed" in l for l in logged), logged
+    # the step, when interrupted after the global mapper, carries on without running it again
+with tempfile.TemporaryDirectory() as td:
+    tmp = pathlib.Path(td)
+    global_run(tmp, interrupt="colmap4 model_converter")
+    again = names_of(global_run(tmp)[0])
+    assert "colmap4 global_mapper" not in again and "colmap4 model_converter" in again, again
+    assert global_run(tmp)[3]["mapper"] == "global"
+# no cameras to take out: none are
+with tempfile.TemporaryDirectory() as td:
+    cmds, logged, given, record = global_run(pathlib.Path(td), models={"0": {f"{i}.jpg": 100 for i in range(10)}})
+    assert "image_deleter" not in names_of(cmds) and "image_registrator" not in names_of(cmds) and record["untied"] == [], names_of(cmds)
+print("global mapper OK")
+
+# today's incremental mapper, with VGGT after it, wherever the global mapper can't be had or doesn't give enough
+for case, kwargs, said in (
+        ("no COLMAP 4", {"colmap4": None}, "no COLMAP 4"),
+        ("it fails", {"fails": "colmap4 global_mapper"}, "the global mapper failed"),
+        ("its models can't be converted", {"fails": "colmap4 model_converter"}, "couldn't be converted"),
+        ("too few placed", {"models": {"0": {f"{i}.jpg": 200 for i in range(4)}}}, "places only 4 of 10"),
+        ("too few left tied", {"models": {"0": {f"{i}.jpg": (200 if i < 4 else 2) for i in range(9)}}}, "places only 4 of 10 photos that see 15"),
+        ("the untied can't be taken out", {"fails": "image_deleter"}, "couldn't be taken out")):
+    with tempfile.TemporaryDirectory() as td:
+        tmp = pathlib.Path(td)
+        cmds, logged, given, record = global_run(tmp, **kwargs)
+        ran = names_of(cmds)
+        assert ran.count("mapper") == 1 and given.endswith("sparse/0"), (case, ran, given)
+        assert record["mapper"] == "incremental" and said in record["why"], (case, record)
+        assert any("incremental mapper instead" in l and said in l for l in logged), (case, logged)
+        sparse = sorted(p.name for p in (tmp / "work" / "sparse").iterdir())
+        assert sparse == ["0"], (case, sparse)
+        if case in ("too few placed", "too few left tied", "the untied can't be taken out"):     # its converted models, set aside
+            assert any(p.name.startswith("global_sparse") for p in (tmp / "work").iterdir()), case
+# MAPPER=incremental: exactly today's commands, with COLMAP 4 there or not
+def without(td: str, cmds: list[list[str]]) -> list[list[str]]:
+    """Commands with their run's temporary folder taken out, to compare two runs'."""
+    return [[a.replace(td, "<tmp>") for a in c] for c in cmds]
+
+
+with tempfile.TemporaryDirectory() as td:
+    cmds, logged, given, record = global_run(pathlib.Path(td), mapper="incremental")
+    chosen = without(td, cmds), given.replace(td, "<tmp>")
+with tempfile.TemporaryDirectory() as td:
+    cmds_today, _, given_today, _ = global_run(pathlib.Path(td), colmap4=None)
+    today = without(td, cmds_today), given_today.replace(td, "<tmp>")
+assert chosen == today, (chosen, today)
+assert "colmap4" not in {c[0] for c in chosen[0]} and record["why"] == "MAPPER is 'incremental'", record
+assert not any("incremental mapper instead" in l for l in logged), "nothing to explain when it was asked for"
+print("mapper fallback OK")
+
+# progress through the global mapper's phases, part by part; mapper.json goes beside the mesh, and into build.json
+t = Tracker([("mapper", "Place cameras", 1)])
+w = pipeline._global(t)
+for line, want in (("=== Running rotation averaging ===", 0.05), ("=== Reconstructing component 2 / 2 with 30 images ===", 0.05),
+                   ("=== Running iterative bundle adjustment ===", 0.75)):
+    w(line)
+    got = next(s["frac"] for s in t.snapshot()["steps"] if s["key"] == "mapper")
+    assert abs(got - want) < 1e-9, (line, got)
+assert "part 2 of 2" in next(s["detail"] for s in t.snapshot()["steps"] if s["key"] == "mapper")
+with tempfile.TemporaryDirectory() as td:
+    tmp = pathlib.Path(td)
+    (tmp / "work").mkdir()
+    (tmp / "work" / pipeline.MAPPER_FILE).write_text(json.dumps({"mapper": "global", "untied": ["7.jpg"]}))
+    kept = []
+    saved = pipeline.reconstruction.keep
+    pipeline.reconstruction.keep = lambda *a, **k: kept.append(a)
+    try:
+        run_until(tmp, faces=50_000)
+    finally:
+        pipeline.reconstruction.keep = saved
+    # run_until's mapper (the incremental one: no COLMAP 4 here) rewrote it, and it reached the mesh
+    beside = json.loads((tmp / "out" / pipeline.MAPPER_FILE).read_text())
+    assert beside["mapper"] == "incremental" and kept[0][-1] == beside, (beside, kept)
+print("mapper record OK")
 print("ALL PIPELINE TESTS PASSED")
