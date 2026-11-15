@@ -570,7 +570,8 @@ def start_global(db: Path, photos: Path, names: set[str], o, ba: str, work: Path
         g.mapper.bundle_adjustment.backend = pycolmap.BundleAdjustmentBackend.CASPAR
     out = work / "global"
     out.mkdir(parents=True, exist_ok=True)
-    models = sorted(pycolmap.global_mapping(str(db), str(photos), str(out), g).values(), key=lambda m: -m.num_reg_images())
+    own = shutil.copyfile(db, work / "global.db")       # a copy: whatever the mapper writes to its database stays out of the state's
+    models = sorted(pycolmap.global_mapping(str(own), str(photos), str(out), g).values(), key=lambda m: -m.num_reg_images())
     return (models[0], models[1:]) if models and models[0].num_reg_images() >= SMALL else (None, [])
 
 
@@ -584,7 +585,8 @@ def start_incremental(db: Path, photos: Path, names: set[str], o, ba: str, work:
         oo.ba_global_backend = pycolmap.BundleAdjustmentBackend.CASPAR
     out = work / "incremental"
     out.mkdir(parents=True, exist_ok=True)
-    models = sorted(pycolmap.incremental_mapping(str(db), str(photos), str(out), oo).values(), key=lambda m: -m.num_reg_images())
+    own = shutil.copyfile(db, work / "incremental.db")
+    models = sorted(pycolmap.incremental_mapping(str(own), str(photos), str(out), oo).values(), key=lambda m: -m.num_reg_images())
     return (models[0], models[1:]) if models and models[0].num_reg_images() >= SMALL else (None, [])
 
 
