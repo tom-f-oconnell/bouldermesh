@@ -267,7 +267,7 @@ COPY --from=gsplat /wheels /tmp/gsplat
 RUN if ls /tmp/gsplat/*.whl > /dev/null 2>&1; then \
       pip install --no-cache-dir --break-system-packages jaxtyping rich \
    && pip install --no-cache-dir --break-system-packages --no-deps /tmp/gsplat/*.whl \
-   && python3 -c "import gsplat, gsplat.cuda._backend as b; print('gsplat', gsplat.__version__, 'compiled:', b._C is not None)"; fi \
+   && python3 -c "import gsplat, gsplat.cuda._backend as b; assert b._C is not None, 'gsplat has no compiled CUDA code'; print('gsplat', gsplat.__version__, 'compiled')"; fi \
  && rm -rf /tmp/gsplat
 # segno: QR codes on the admin page, of the topic a phone subscribes to for notifications (notify.py)
 RUN pip install --no-cache-dir --break-system-packages segno
