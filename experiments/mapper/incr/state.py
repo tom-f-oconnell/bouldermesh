@@ -44,6 +44,26 @@ SETTINGS = {
     # share of the mesh's area covered as backend/captureplan.py's NEED asks, up by this much
     "remesh_off_mesh": 0.02,
     "remesh_coverage": 0.05,
+    # A model's check of itself (model_check(); the numbers are core.self_check()'s). From the four benchmark boulders:
+    # every COLMAP model's points are 0.94-1.71 px off in the mean (90th percentile 1.75-2.5) and this pipeline's
+    # 0.66-0.77 (1.6-1.7), where the three its own VGGT assist had spoilt were at 2.45-5.7 (3.1-15);
+    "check_err_mean": 2.0,
+    "check_err_p90": 3.0,
+    # cameras are 1.3-3.0 degrees (median) from their pairs' two-view geometry in the models other methods agree
+    # with (31de, Drifter; this pipeline's e6de), and 11-16 in every method's model of 9f3b, which no two methods
+    # agree on (the baseline's too: there this check fails every one of them, which is the truth of it);
+    "check_pair_med_deg": 5.0,
+    "check_min_pairs": 20,          # fewer pairs than this say nothing
+    # lenses that can't be real were 0-6% of a model's in those, and 5-21% on 9f3b: a fifth is past any of the good.
+    "check_odd_lens_share": 0.2,
+    "check_min_cameras": 10,
+    # VGGT starts a model only if it has room for this share of the photos its skeleton is chosen from (those linked by
+    # verified matches): with less, most photos are registered one by one against VGGT's few, which is the slow part
+    # it was to spare, on a base no full solve has checked. Atlas's 12 GB took 42: of 72 linked on 31de (58%) the
+    # model was looser than the global mapper's (rays within 1 degree of the baseline's for 65% of cameras against
+    # 89%), of 9f3b's 150 it was the furthest of any method's from the rest; hal's 24 GB took all 72 on 31de and came
+    # 0.12 degrees (median) from the baseline. Two thirds sits between; it is a first guess from three boulders.
+    "vggt_min_share": 0.66,
 }
 
 
@@ -216,6 +236,63 @@ def resolve_due(placed_before: int, placed_at_solve: int | None, tried_linked: i
         return True, (f"{left_joined} photos joined to the model by verified matches are left out ({placed_now} placed): "
                       f"a full solve takes them together")
     return False, "the model takes the new photos as it is"
+
+
+def model_check(n: dict, settings: dict = SETTINGS) -> dict:
+    """Whether a model passes its own check, from core.self_check()'s numbers: its points' reprojection errors (mean
+    and 90th percentile), its cameras against their photos' pairwise geometry (the median angle), and its lenses.
+
+    Returns:
+        {"ok", "failed": [which of "error", "pairs", "lenses"], "why": the numbers in words, what failed first}.
+    """
+    failed, said = [], []
+    mean, p90 = n.get("err_mean"), n.get("err_p90")
+    if mean is None:
+        failed.append("error")
+        said.append("it has no points")
+    else:
+        bad = mean > settings["check_err_mean"] or p90 > settings["check_err_p90"]
+        if bad:
+            failed.append("error")
+        said.append(f"its points are {mean:.2f} px off (90th percentile {p90:.2f})"
+                    + (f", over the {settings['check_err_mean']:g} ({settings['check_err_p90']:g}) a sound model stays under" if bad else ""))
+    pairs, med = n.get("pairs") or 0, n.get("pair_med_deg")
+    if pairs >= settings["check_min_pairs"] and med is not None:
+        bad = med > settings["check_pair_med_deg"]
+        if bad:
+            failed.append("pairs")
+        said.append(f"its cameras are {med:.1f} degrees (median) from their photos' pairwise geometry over {pairs} pairs"
+                    + (f", over {settings['check_pair_med_deg']:g}" if bad else ""))
+    else:
+        said.append(f"only {pairs} pairs to hold its cameras against")
+    placed, odd = n.get("placed") or 0, n.get("odd_lenses") or 0
+    if placed >= settings["check_min_cameras"] and odd > settings["check_odd_lens_share"] * placed:
+        failed.append("lenses")
+        said.append(f"{odd} of its {placed} lenses can't be real")
+    elif odd:
+        said.append(f"{odd} odd lens{'es' if odd != 1 else ''}")
+    order = {"error": 0, "pairs": 1, "lenses": 2}
+    said.sort(key=lambda t: 0 if any(w in t for w in ("over the", ", over ", "can't be real", "no points")) else 1)
+    return {"ok": not failed, "failed": sorted(failed, key=order.get), "why": "; ".join(said)}
+
+
+def check_rank(check: dict) -> tuple:
+    """For choosing between models of the same photos by their own checks (the larger the better): one that passes
+    before one that doesn't; then the fewer checks failed; then cameras nearer their pairs' geometry; then more
+    photos placed; then points less far off."""
+    med = check.get("pair_med_deg")
+    return (bool(check.get("ok")), -len(check.get("failed") or []), -(med if med is not None else 1e9), check.get("placed") or 0,
+            -(check.get("err_mean") if check.get("err_mean") is not None else 1e9))
+
+
+def vggt_start_worth(room: int, linked: int, settings: dict = SETTINGS) -> tuple[bool, str]:
+    """Whether VGGT should start a model, by how many photos it has room for of those linked by verified matches."""
+    if linked <= 0:
+        return False, "no photos are linked by verified matches"
+    if room >= linked or room >= settings["vggt_min_share"] * linked:
+        return True, f"VGGT has room for {min(room, linked)} of the {linked} linked photos"
+    return False, (f"VGGT has room for {room} of the {linked} linked photos ({room / linked:.0%}), under the "
+                   f"{settings['vggt_min_share']:.0%} it starts a model from")
 
 
 def remesh_due(mesh: dict | None, placed_now: int, points_before: int, points_new: int, gain: dict | None = None,

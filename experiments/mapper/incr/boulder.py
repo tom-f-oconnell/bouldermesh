@@ -217,8 +217,10 @@ def add(state_dir: Path | str, photos: list[Path], masks: Path | None = None, in
     core = lambda *a: "python3 /incr/core.py " + bench.sh(a)        # noqa: E731
     steps: dict[str, dict] = {}
 
+    knobs = {k: v for k, v in os.environ.items() if k.startswith("INCR_") and k != "INCR_TOOLS"}     # core.py's, e.g. INCR_AUTO_BA
+
     def step(name: str, tools: str, script: str, gpu: bool, env: dict | None = None, more: list[str] | None = None) -> dict:
-        steps[name] = run_step(logdir, name, tools, script, mounts + (more or []), cond, env, gpu)
+        steps[name] = run_step(logdir, name, tools, script, mounts + (more or []), cond, {**knobs, **(env or {})}, gpu)
         if die_after == name:
             raise KeyboardInterrupt(f"stopped after {name}, as asked")
         return steps[name]
@@ -230,9 +232,12 @@ def add(state_dir: Path | str, photos: list[Path], masks: Path | None = None, in
     def vggt_step(name: str, mode: str, out: Path, request: Path | None = None) -> bool:
         if not vggt:
             return False
+        # a model is started from VGGT only with room for enough of the photos (state.py's vggt_min_share), unless
+        # VGGT is the start asked for by name
+        share = st.SETTINGS["vggt_min_share"] if mode == "skeleton" and init == "auto" else 0
         r = step(name, "app", "python3 /incr/vggt_cams.py " + bench.sh([mode, "/s/database.db", "/s/photos",
                  f"/s/{out.relative_to(root)}", *([f"/s/{request.relative_to(root)}"] if request else [])]), True,
-                 {"DATA_DIR": "/data", "HF_HUB_OFFLINE": "1"}, [f"{MODELS}:/data/cache/models"])
+                 {"DATA_DIR": "/data", "HF_HUB_OFFLINE": "1", "INCR_VGGT_MIN_SHARE": str(share)}, [f"{MODELS}:/data/cache/models"])
         return r["rc"] == 0 and out.exists()
 
     step("features", TOOLS, core("features", "/s", "--feat", feat, "--threads", threads), feat != "sift")
@@ -289,6 +294,8 @@ def add(state_dir: Path | str, photos: list[Path], masks: Path | None = None, in
         "seed": seed, "model": (assist_rep or prior_rep or rep).get("model"), "left": sorted(set(rep.get("left", [])) - set(placed)),
         "points_new": rep.get("points_new"), "other_models": rep.get("other_models"), "resolve": rep.get("resolve"),
         "remesh": rep.get("remesh"), "old_cameras_moved": rep.get("old_cameras_moved"),
+        "check": assist_rep.get("check") or prior_rep.get("check") or rep.get("check"), "attempts": rep.get("attempts"),
+        "refinements": rep.get("refinements"), "ba_auto": rep.get("ba_auto"),
         "assist": {"asked": len(rep["assist_request"]["names"]), "placed": len(assist_rep.get("placed", {})),
                    "anchors_off": assist_rep.get("anchors_off")} if rep.get("assist_request") else None,
         "capture": {"photos": len(new), "placed_by": {how: sum(1 for v in placed.values() if v == how) for how in set(placed.values())},
@@ -303,6 +310,11 @@ def add(state_dir: Path | str, photos: list[Path], masks: Path | None = None, in
         s.manifest["adds"][-1]["meshed"] = made
         st.write_json(s.manifest_path, s.manifest)
         record = s.manifest["adds"][-1]
+    chk = record.get("check") or {}
+    if chk and not chk.get("ok"):
+        print(f"THE MODEL FAILS ITS OWN CHECK: {chk.get('why')} (starts tried: {record.get('starts')})", flush=True)
+    elif chk:
+        print(f"the model passes its own check: {chk.get('why')}", flush=True)
     print(f"{record['kind']}: {len(record['placed_new'])} placed by this add, {record['placed_total']} in all, "
           f"{len(record.get('left') or [])} left out; steps {sum(r['wall'] for r in steps.values()):.0f} s", flush=True)
     return record
@@ -452,6 +464,8 @@ def export(s: st.State, out: Path, of: str, how: str = "add", note: str = "") ->
     rec = frames.save(out, of, how, found, note=note or f"made by experiments/mapper/incr ({n} cameras)",
                       level={k: lv.get(k) for k in ("n", "spread_median_deg", "spread_p90_deg", "tilt_from_model_deg", "mean_err_deg")} if lv else None)
     (out / "level.json").write_text(json.dumps(lv))
+    last = s.manifest["adds"][-1] if s.manifest["adds"] else {}
+    (out / "check.json").write_text(json.dumps({"check": last.get("check"), "starts": last.get("starts"), "attempts": last.get("attempts")}))
     tex = textured_by(root)
     if tex:
         (out / "textured.json").write_text(json.dumps(tex))

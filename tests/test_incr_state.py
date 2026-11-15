@@ -112,6 +112,95 @@ def test_remesh_gate():
     assert st.remesh_due(mesh, 42, 10000, 900, {**g, "new_points_off_mesh": 400})[0]
 
 
+GOOD = {"placed": 72, "points": 40000, "track": 7.4, "err_mean": 0.77, "err_p90": 1.72, "pairs": 750, "pair_med_deg": 2.2,
+        "pair_p90_deg": 18.0, "odd_lenses": 0, "untied": 0}
+
+
+def test_model_check():
+    """The model's check of itself, on the numbers the benchmark's models gave (selfcheck.py table)."""
+    assert st.model_check(GOOD)["ok"]
+    assert st.model_check({**GOOD, "err_mean": 0.95, "err_p90": 1.75, "pair_med_deg": 3.03, "odd_lenses": 8, "placed": 143})["ok"]     # Drifter's baseline
+    spoilt = st.model_check({**GOOD, "err_mean": 5.70, "err_p90": 15.08, "pair_med_deg": 11.2})         # 9f3b after the assist
+    assert not spoilt["ok"] and spoilt["failed"] == ["error", "pairs"] and "5.70 px" in spoilt["why"]
+    assert st.model_check({**GOOD, "err_mean": 1.09, "err_p90": 1.93, "pair_med_deg": 16.2, "odd_lenses": 24, "placed": 114})["failed"] == ["pairs", "lenses"]
+    assert st.model_check({**GOOD, "err_mean": 2.45, "err_p90": 3.13})["failed"] == ["error"]
+    assert st.model_check({**GOOD, "pairs": 5, "pair_med_deg": 40.0})["ok"], "too few pairs to judge by"
+    assert not st.model_check({**GOOD, "err_mean": None, "err_p90": None, "points": 0})["ok"]
+    assert st.model_check({**GOOD, "placed": 6, "odd_lenses": 3})["ok"], "too few cameras for the lens share to mean much"
+
+
+def test_check_rank_keeps_the_better():
+    """Of several starts' models: one that passes; else the one failing least, then nearest its pairs' geometry."""
+    ok = {**GOOD, **st.model_check(GOOD)}
+    worse = {**GOOD, "pair_med_deg": 11.2, "err_mean": 5.7, "err_p90": 15.0}
+    worse = {**worse, **st.model_check(worse)}
+    pairs_only = {**GOOD, "pair_med_deg": 9.0, "placed": 60}
+    pairs_only = {**pairs_only, **st.model_check(pairs_only)}
+    pairs_more = {**GOOD, "pair_med_deg": 16.2, "placed": 140}
+    pairs_more = {**pairs_more, **st.model_check(pairs_more)}
+    assert max([worse, ok, pairs_only], key=st.check_rank) is ok
+    assert max([worse, pairs_only, pairs_more], key=st.check_rank) is pairs_only
+    assert max([pairs_more, worse], key=st.check_rank) is pairs_more
+
+
+def test_vggt_start_worth():
+    assert st.vggt_start_worth(80, 72)[0] and st.vggt_start_worth(42, 44)[0]
+    no, why = st.vggt_start_worth(42, 150)
+    assert not no and "42 of the 150" in why
+    assert not st.vggt_start_worth(42, 72)[0], "58% is under two thirds"
+    assert st.vggt_start_worth(80, 110)[0] and not st.vggt_start_worth(0, 0)[0]
+
+
+def test_pair_angles():
+    """Cameras against the two-view geometry of their pairs: none off where the model is the one the pairs came
+    from, and the turn found where a camera is turned away."""
+    import math
+    import sqlite3
+    import numpy as np
+    import selfcheck
+    rng = np.random.default_rng(0)
+
+    def rot(axis, deg):
+        a = np.asarray(axis, float) / np.linalg.norm(axis)
+        K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
+        t = math.radians(deg)
+        return np.eye(3) + math.sin(t) * K + (1 - math.cos(t)) * K @ K
+    cams = {}
+    for i in range(6):
+        R = rot(rng.normal(size=3), rng.uniform(0, 40))
+        cams[f"p{i}.jpg"] = {"R": R, "t": rng.normal(size=3), "f": 1000.0 + 50 * i, "cx": 640.0, "cy": 360.0, "w": 1280, "h": 720, "seen": 100}
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "db.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE images (image_id INTEGER, name TEXT)")
+        con.execute("CREATE TABLE two_view_geometries (pair_id INTEGER, rows INTEGER, config INTEGER, F BLOB)")
+        names = sorted(cams)
+        for i, n in enumerate(names):
+            con.execute("INSERT INTO images VALUES (?, ?)", (i + 1, n))
+        for i, a in enumerate(names):
+            for j in range(i + 1, len(names)):
+                b = names[j]
+                R = cams[b]["R"] @ cams[a]["R"].T
+                t = cams[b]["t"] - R @ cams[a]["t"]
+                E = np.array([[0, -t[2], t[1]], [t[2], 0, -t[0]], [-t[1], t[0], 0]]) @ R
+                Ka, Kb = [np.array([[cams[n]["f"], 0, 640.0], [0, cams[n]["f"], 360.0], [0, 0, 1.0]]) for n in (a, b)]
+                F = np.linalg.inv(Kb).T @ E @ np.linalg.inv(Ka)
+                con.execute("INSERT INTO two_view_geometries VALUES (?, ?, ?, ?)",
+                            ((i + 1) * selfcheck.MAX_IMAGE_ID + j + 1, 100, 3, F.astype(np.float64).tobytes()))
+        con.execute("INSERT INTO two_view_geometries VALUES (?, ?, ?, ?)", (1 * selfcheck.MAX_IMAGE_ID + 2, 5, 3, b""))       # too few inliers
+        con.commit()
+        con.close()
+        ang = selfcheck.pair_angles(cams, db)
+        assert len(ang) == 15 and max(ang) < 1e-4
+        n = selfcheck.check(cams, rng.uniform(0.3, 1.5, 500), 6.0, db)
+        assert n["ok"] and n["pairs"] == 15
+        turned = {k: dict(v) for k, v in cams.items()}
+        for k in names[:4]:      # most of the cameras turned away from where their pairs have them
+            turned[k]["R"] = rot(rng.normal(size=3), 20) @ turned[k]["R"]
+        bad = selfcheck.numbers(turned, rng.uniform(0.3, 1.5, 500), 6.0, db)
+        assert bad["pair_med_deg"] > 10 and st.model_check({**bad, "pairs": 30})["failed"] == ["pairs"]
+
+
 if __name__ == "__main__":
     import tempfile
     for name, f in sorted(globals().items()):

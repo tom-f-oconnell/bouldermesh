@@ -43,23 +43,37 @@ python3 ../../../tests/test_incr_state.py   # the state logic, without COLMAP or
 - **Matching** of the pairs not tried yet (new × all), listed for COLMAP, guided, on the GPU; the rows of pairs
   matched before are checked to be unchanged afterwards.
 - **Placement** (`core.py place`):
-  - *No model yet* (or a re-solve): a start, then the rest registered against it. Starts, tried in turn
-    (`--init auto`): VGGT's cameras for the photos best linked by verified matches (as many as the GPU has room for,
-    80 at most), each checked against its pairs' two-view geometry (`vggt_start.py`'s check), then COLMAP
-    triangulates and refines in three rounds of tightening tolerance (the app's `vggt_place` rounds, here in one
-    pycolmap session so the solves can use the GPU); else COLMAP's global mapper; else its incremental mapper.
-    `poses` takes starting cameras from a file in the same format (for the phone apps' tracked poses).
+  - *No model yet* (or a re-solve): a start, then the rest registered against it. Starts, in turn (`--init auto`):
+    VGGT's cameras for the photos best linked by verified matches (as many as the GPU has room for, 80 at most),
+    each checked against its pairs' two-view geometry (`vggt_start.py`'s check), then COLMAP triangulates and
+    refines in three rounds of tightening tolerance (the app's `vggt_place` rounds, in one pycolmap session); then
+    COLMAP's global mapper; then its incremental mapper. `poses` takes starting cameras from a file in the same
+    format (for the phone apps' tracked poses).
+  - **VGGT starts a model only with room for two thirds of the linked photos** (`vggt_min_share`): with fewer, most
+    photos would be registered one by one against VGGT's few, and `auto` starts from the global mapper. Whatever
+    the start, its cameras seeing fewer than 15 of the model's points are taken out first (the global mapper places
+    some it has nothing to tie down) and tried again like any photo left out.
+  - **Each start's model checks itself before it is kept** (`selfcheck.py`; thresholds in `state.py`): its points'
+    reprojection errors (mean over 2 px or 90th percentile over 3 fails), its cameras against their photos'
+    pairwise geometry (the median angle between the turn from one camera to another in the model and the turn their
+    fundamental matrix gives through the model's lenses: over 5 degrees fails), and its lenses (a fifth that can't
+    be real fails). A model that fails is solved again from the next start; of those tried, one that passes is
+    kept, else the one failing least, and the manifest (`check`, `attempts`, `starts`), the log and `out/check.json`
+    say which and why. After an add, a model that passed and now fails is solved again in full. The check says a
+    model is at odds with itself, not that one is right: a model can pass and be wrong.
   - *A model there*: the new photos (and those left out before) are registered with every camera of the model held,
     pose and lens, so its frame, level and scale stay put; then only the added cameras and the points they see are
     refined (the problem's size follows the add, not the model).
   - Registration is COLMAP's own loop (best candidate next, triangulate, local refinement), run twice: on COLMAP's
     terms, then on the app's looser "rest" terms (15 inliers, 15%).
-  - **A guard on refinements of everything**: one that moves a lens more than 1.3× either way, or loses cameras, is
-    undone and done again with the lenses refined before held. On photos taken from about one place the matches fix
-    neither lens nor depth, and each free refinement walked them further (measured below).
+  - **A guard on refinements of everything**: one that moves a lens more than 1.3× either way, or loses a camera
+    to a degenerate lens, is undone and done again with the lenses refined before held. On photos taken from about
+    one place the matches fix neither lens nor depth, and each free refinement walked them further (measured
+    below). A camera dropped for seeing too little doesn't hold the lenses (it did until 2026-11-14, see Results).
   - **VGGT for what registration misses**: photos joined to the model by verified matches but not registered are
     given to VGGT with 12 placed photos (anchors); VGGT's frame is laid over the model's through the anchors, and the
-    photos are triangulated and refined from there, kept if 15 of their points survive.
+    photos are triangulated and refined from there, kept if 15 of their points survive. If the model passed its
+    own check before and fails with them in, they're left out and the model stays as it was.
 - **Gates** (`state.py`, thresholds in `SETTINGS`, first guesses, reported with each decision):
   - *A full re-solve* when the placed photos have grown by half since the last full solve, when under half of the
     new photos linked to the model register, or when photos joined to the model by verified matches are left out
@@ -85,15 +99,76 @@ logs (the patched COLMAP names each bundle adjustment's device and solver) and t
 | features (the app's affine-shape, domain-size-pooling SIFT) | CPU: COLMAP has those only on the CPU |
 | matching (guided) | GPU |
 | VGGT's cameras | GPU (9-10 GB for 32-72 photos) |
-| refinements of everything (`--ba auto`) | GPU: Caspar, from 20 photos; the last one Ceres on the CPU (SuiteSparse) |
+| refinements of everything (`--ba auto`) | CPU: Ceres with SuiteSparse (since 2026-11-14; Caspar on the GPU with `INCR_AUTO_BA=caspar` or `--ba caspar`: 7 times faster and less exact, see Results) |
 | local refinements (6 photos), an add's own refinement | CPU (Ceres) |
 | densify | GPU (OpenMVS CUDA) |
 | mesh, texture | CPU |
 
 ## Results
 
-All indicative: development conditions (6 cores, niced, other work on hal at times), one seed. The benchmark's
-production-condition timed queue is still to run them (see `../review.md`, `../bench.py`).
+### Timed on atlas, and what they showed (2026-11-14)
+
+Another session timed `first <boulder> auto 0 --cond prod` on atlas (i7-8700K, 6 cores; RTX 3060, 12 GB), a quiet
+machine, production conditions, one seed, with the code as of a655737: before the fixes below. Its tables are in
+`/local/tensor/Tom/bm_opt_handoff/atlas/consensus-*.md`; models are compared by `../consensus.py` (each camera's
+viewing rays through its own lens, on the cameras that agree).
+
+| Boulder | Whole | Placed | Rays within 1 / 2 / 5 degrees of the 3.9.1 baseline's | The baseline against itself | Mean reprojection error |
+|---|---|---|---|---|---|
+| e6de (33) | 153 s | 32 of 33 | | | |
+| 31de (82) | 399 s | 72 | 65% / 68% / 94% | 96% / 100% / 100% | 0.77 px |
+| 9f3b (150) | 971 s | 133 | 0% / 0% / 5% (median 12 degrees) | (its second run is another model) | 5.70 px (90th percentile 15) |
+| Drifter (234) | 1,404 s | 148 | 86% / 94% / 96% | 93% / 94% / 96% | 2.88 px |
+
+Step times on Drifter: features 284 s, match 257, VGGT 35, place 182, assists 111, dense 179, mesh 44, texture 307.
+For scale, the global mapper with its untied cameras taken out and the app's rest step (`global_tied`) agreed with
+the baseline on 89% / 100% / 100% of 31de's cameras in 132 s, and on 61% / 85% / 94% of Drifter's in 255 s.
+
+**On 9f3b the pipeline came out wrong and did not know it**: 133 photos placed, none untied, nothing in its counts
+amiss, and its cameras 12 degrees (median) from the baseline's and no nearer any other method's. (No two methods agree
+on that boulder: the baseline is the same camera as another model's for a quarter of its cameras in the middle case,
+and one of its own runs is another model.) On 31de it was looser than the global mapper. What was behind each, from
+atlas's logs:
+
+- **The 2.9 and 5.7 px were the VGGT assist's doing, and are COLMAP's own figure** (each point's mean error over its
+  track, `compute_mean_reprojection_error()`). Placement left 9f3b at 1.12 px and Drifter at 0.83; the assist step
+  after it took them to 5.70 and 2.88, with 13,000 and 17,000 points fewer and longer tracks. To take in VGGT's rough
+  cameras it triangulates at up to 150 px and then tightens, and its refinement completed and merged tracks across
+  the whole model at those tolerances while filtering only in the added photos: old photos' points were merged and
+  given observations far off, and nothing took them out. The cameras didn't move (they're held), but the points the
+  dense steps start from did. Not the 1-degree triangulation angle (31de, with no assist, is at 0.77 px), nor the
+  filter thresholds, which are COLMAP's (4 px).
+- **The lenses were held from the first refinement on, in all three larger boulders**, because that refinement
+  dropped a camera: the guard took any lost camera for lenses walking off, with none walked. So every lens stayed
+  where VGGT's three rounds or its first refinement left it.
+- **VGGT had room for 42 photos**: on 12 GB it started 31de from 42 of 72 linked photos, and 9f3b and Drifter from 42 of
+  150 and 234, and the other 90 to 100 photos it placed were registered one by one against that base.
+- **Caspar** solved every refinement but the last (see below).
+
+Changed since (2026-11-14, **not yet run**: hal is held, so these are code and quick tests only):
+
+- the assist's and the phone-pose placement's refinement completes and merges only the added photos' own points, and
+  only in the last round, at COLMAP's tolerances; and a model that passed its check before them and fails with them is
+  left as it was;
+- a camera dropped for seeing too little no longer holds the lenses;
+- VGGT starts a model only with room for two thirds of the linked photos; otherwise the global mapper does, with its
+  untied cameras taken out;
+- `--ba auto` is Ceres on the CPU throughout;
+- every model checks itself before it's kept, and is solved again from the next start when it fails.
+
+What that check says of the models on hal (`selfcheck.py table`, 29 of them): it passes every model of 31de (cameras
+1.8-2.7 degrees, median, from their pairs' geometry), Drifter's baseline (3.0) and this pipeline's of e6de (1.0-1.5);
+it fails every model of 9f3b (11-16 degrees: the baseline's too, which also has 24 of 114 lenses that can't be real)
+and both baseline runs of 38f3 (10-12 degrees; they placed 111 and 181 photos), and on e6de the baseline's and four
+other methods' (6-35 degrees; it passes one at 4.3). It fails the three pipeline models the assist had spoilt on their error. So it fails
+where runs don't repeat, on the numbers so far; whether the pipeline now passes it on 9f3b from any start, atlas's
+next runs will say. If none does, the model kept says so.
+
+### On hal, in development
+
+All indicative: development conditions (6 cores, niced, other work on hal at times), one seed, and with the faults
+above still in (Caspar where it says `auto`; the 150-photo build's lenses held; the assist's merging wherever an
+assist ran, which is the 150-photo build and the 33-photo adds).
 
 **First builds** (seconds per step; placed = photos in the model):
 
@@ -140,7 +215,9 @@ What measurements changed in the design: lenses walked off on low-parallax photo
 under 600 of its 15,000 points, so new photos had nothing to register against, hence 1 degree; VGGT's assist with 3
 anchor photos was laid 0.25-0.5 of the scene off, hence 12; adds that joined photos by their matches but couldn't place
 them (8 of 33 left out where the from-scratch build placed them), hence the joined-photos re-solve gate; Ceres on the
-GPU was slower than on the CPU here, and Caspar 7 times faster than either, hence `auto`.
+GPU was slower than on the CPU here; Caspar was 7 times faster than either and its cameras 0.34 degrees (median) from
+Ceres's, 3.5 at the 90th percentile, where Ceres's on the CPU and the GPU are 0.05 and 0.7 apart, and atlas found
+it wrong on 31de in COLMAP's own mapper: hence `auto` is Ceres on the CPU and Caspar is to be asked for.
 
 ## Storage
 
@@ -166,8 +243,8 @@ photos' neighbours, and densifying on the GPU takes seconds.
 
 ## Next
 
-- The timed queue on production conditions (the benchmark's), with 5 seeds on the small and medium boulders, against
-  the 3.9.1 baseline's seed-to-seed spread.
+- Atlas's reruns of the four first builds with the fixes above, and whether each model's own check agrees with what
+  `consensus.py` says of it; then 5 seeds on the small and medium boulders against the baseline's own spread.
 - Simulated captures end to end (sim_capture.py, `boulder.py simcap`): placed, pose agreement against the truth,
   level against the 1-degree goal, pairs and time against capture x all, the capture's texture share, add against
   refit against the server's own "cameras" tie.

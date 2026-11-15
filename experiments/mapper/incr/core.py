@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -52,8 +53,12 @@ ROUNDS = ((8, 150), (3, 20), (2, 4))
 # together, so less often does (README: what was measured).
 GLOBAL_RATIO = float(os.environ.get("INCR_GLOBAL_RATIO", "1.4"))
 GLOBAL_REFINEMENTS = int(os.environ.get("INCR_GLOBAL_REFINEMENTS", "3"))
-# From this many images a refinement of everything goes to Caspar, with --ba auto or caspar (ba_options)
+# What --ba auto solves refinements of everything with: "ceres" or "caspar" (ba_options has the measurements). The one
+# line to change, or INCR_AUTO_BA in the environment (boulder.py passes INCR_* on to the steps).
+AUTO_BA = os.environ.get("INCR_AUTO_BA", "ceres")
+# From this many images a refinement of everything goes to Caspar, where Caspar is the solver (ba_options)
 CASPAR_MIN_IMAGES = int(os.environ.get("INCR_CASPAR_MIN_IMAGES", "20"))
+UNTIED = 15                 # a camera seeing fewer of the model's points than this isn't tied to it (atlas's rule)
 GPU_MIN_IMAGES = 50         # an add's own refinement goes to --ba's solver from this many added photos
 ASSIST_MIN_POINTS = 15      # a photo placed from VGGT's camera stays if this many of its points survive refinement
 ANCHORS = 12                # placed photos sent to VGGT with the unplaced ones, to tie its frame to the model's
@@ -292,19 +297,20 @@ def ba_options(o: pycolmap.IncrementalPipelineOptions, images: int, ba: str, loc
                final: bool = False) -> pycolmap.BundleAdjustmentOptions:
     """A bundle adjustment's options for a problem of so many images, on what --ba asks for.
 
-    "auto": Caspar (COLMAP's GPU solver, float32) for every refinement of everything from CASPAR_MIN_IMAGES images up,
-    but the final one (final), which is Ceres's on the CPU (SuiteSparse): on the 82-photo boulder, from the same VGGT
-    start, placement took 26 s with Caspar throughout, 181 s with Ceres on the CPU and 211 s with Ceres on the GPU
-    (cuDSS), all placing the same 72 photos. Caspar's cameras end 0.34 degrees (median; 3.5 at the 90th percentile)
-    from Ceres's, and a final Ceres refinement does not take them back (0.34 and 2.9 after it; 0.10 from Caspar's
-    own): the two solvers settle in slightly different places from the start on, at reprojection errors of 0.64 and
-    0.66 px. Which is nearer the truth is for the benchmark's seed-to-seed spread to say, so the final refinement on
-    Ceres is kept, as the more exact solver, at one round. "caspar", "cpu" and "gpu" (Ceres with CUDA) use the one
-    throughout."""
+    "auto" is AUTO_BA: "ceres" (Ceres on the CPU with SuiteSparse, throughout), or "caspar" (COLMAP's GPU solver,
+    float32, for every refinement of everything from CASPAR_MIN_IMAGES images up but the final one). On the 82-photo
+    boulder, from the same VGGT start, placement took 26 s with Caspar throughout, 88 s with Caspar and a last
+    Ceres round, 181 s with Ceres on the CPU and 211 s with Ceres on the GPU (cuDSS), all placing the same 72 photos.
+    But Caspar's cameras end 0.34 degrees (median; 3.5 at the 90th percentile) from Ceres's, where Ceres on the CPU
+    and on the GPU end 0.05 (0.7) apart, and a last Ceres round doesn't take them back; against the 3.9.1 baseline
+    the Ceres model is 0.12 degrees off (median) and the Caspar one 0.52. On atlas, Caspar in COLMAP's own mapper
+    gave a wrong model of that boulder, and this pipeline with it agreed with the baseline on 65% of cameras' rays
+    within a degree, where the baseline agrees with itself on 96%. So the default is Ceres, and Caspar is to be
+    asked for. "caspar", "cpu" and "gpu" (Ceres with CUDA) use the one throughout."""
     b = o.get_local_bundle_adjustment() if local else o.get_global_bundle_adjustment()
     b.print_summary = False
     gpu_there = pycolmap.has_cuda and pycolmap.get_num_cuda_devices() > 0
-    if gpu_there and not local and images >= CASPAR_MIN_IMAGES and (ba == "caspar" or ba == "auto" and not final):
+    if gpu_there and not local and images >= CASPAR_MIN_IMAGES and (ba == "caspar" or ba == "auto" and AUTO_BA == "caspar" and not final):
         b.backend = pycolmap.BundleAdjustmentBackend.CASPAR
     elif ba == "gpu" and gpu_there:
         b.ceres.use_gpu, b.ceres.min_num_images_gpu_solver = True, 0
@@ -393,9 +399,17 @@ class Session:
         before, had = copy.deepcopy(self.rec), set(self.rec.reg_image_ids())
         self._solve(mo, tri, refinements, False, final)
         lost, drift = had - set(self.rec.reg_image_ids()), self.drifted()
-        if (lost or drift) and not self.lenses_held:
-            log(f"a refinement of everything lost {len(lost)} camera(s) and walked {len(drift)} lens(es) off: undone, "
-                f"and done again with the {len(self.anchor)} lenses refined before held")
+        m = self.o.mapper
+        # a camera COLMAP dropped for its lens (one it calls degenerate) is where a walk ends; one dropped for seeing
+        # too little is no lens's doing (until 2026-11-14 any lost camera held every lens: on atlas that held them
+        # from the first refinement on in all three larger boulders, with no lens walked off)
+        lost_lens = [i for i in lost if self.rec.exists_image(i) and self.rec.camera(self.rec.image(i).camera_id).has_bogus_params(
+            m.min_focal_length_ratio, m.max_focal_length_ratio, m.max_extra_param)]
+        if lost and not (lost_lens or drift):
+            log(f"a refinement of everything dropped {len(lost)} camera(s), none for its lens: kept")
+        if (lost_lens or drift) and not self.lenses_held:
+            log(f"a refinement of everything lost {len(lost_lens)} camera(s) to degenerate lenses and walked {len(drift)} lens(es) off: "
+                f"undone, and done again with the {len(self.anchor)} lenses refined before held")
             self._undo(before)
             self.lenses_held = True
             self._solve(mo, tri, refinements, False, final)
@@ -457,10 +471,17 @@ def register_loop(S: Session, mo, tri, refine_all: bool, how: str, placed: dict[
     return done
 
 
-def refine_added(mapper, rec, o, mo, tri, added: list[int], ba: str, rounds: int = 2, fixed_lenses: set[int] = frozenset()) -> None:
+def refine_added(mapper, rec, o, mo, tri, added: list[int], ba: str, rounds: int = 2, fixed_lenses: set[int] = frozenset(),
+                 tracks: bool = True) -> None:
     """Refines the cameras just added and the points they see, with every other camera as it is (pose and lens: the
     lenses named are held even where a new photo shares one): only they and those points are in the problem, so its
-    size follows the add, not the model."""
+    size follows the add, not the model.
+
+    With tracks, the points the added photos see have their tracks completed and merged first, with tri's tolerances:
+    only those points, never the whole model's, and only to be asked for at COLMAP's own tolerances. (Until
+    2026-11-14 this completed and merged every track of the model at whatever tolerance the caller's round had, up
+    to 150 px, and filtered only in the added photos: after VGGT's assist a model's mean reprojection error went from
+    1.1 to 5.7 px on one boulder and 0.8 to 2.9 on another, its points merged by the ten thousand.)"""
     if not added:
         return
     for _ in range(rounds):
@@ -478,7 +499,10 @@ def refine_added(mapper, rec, o, mo, tri, added: list[int], ba: str, rounds: int
         b = ba_options(o, len(added), ba if len(added) >= GPU_MIN_IMAGES else "cpu")
         b.refine_principal_point = False
         pycolmap.create_default_bundle_adjuster(b, config, rec).solve()
-        changed = mapper.complete_and_merge_tracks(tri)
+        changed = 0
+        if tracks and points:
+            changed += mapper.triangulator.complete_tracks(tri, {p for p in points if rec.exists_point3D(p)})
+            changed += mapper.triangulator.merge_tracks(tri, {p for p in points if rec.exists_point3D(p)})
         changed += mapper.observation_manager.filter_points3D_in_images(mo.filter_max_reproj_error, mo.filter_min_tri_angle, set(added))
         if changed == 0:
             break
@@ -564,6 +588,53 @@ def start_incremental(db: Path, photos: Path, names: set[str], o, ba: str, work:
     return (models[0], models[1:]) if models and models[0].num_reg_images() >= SMALL else (None, [])
 
 
+def self_check(rec: pycolmap.Reconstruction, db: Path) -> dict:
+    """A model's check of itself (selfcheck.py has what's measured, state.py's model_check() the thresholds): its
+    points' reprojection errors, its cameras against their photos' pairwise geometry, its lenses.
+    Returns the numbers with "ok", "failed" and "why"."""
+    import selfcheck
+    rec.update_point_3d_errors()
+    cams = {}
+    for i in rec.reg_image_ids():
+        im = rec.image(i)
+        cam = rec.camera(im.camera_id)
+        cams[im.name] = {"R": im.cam_from_world().rotation.matrix(), "f": cam.mean_focal_length(), "cx": cam.principal_point_x,
+                         "cy": cam.principal_point_y, "w": cam.width, "h": cam.height, "seen": im.num_points3D}
+    return selfcheck.check(cams, [p.error for p in rec.points3D.values()], rec.compute_mean_track_length(), db)
+
+
+def grow(rec: pycolmap.Reconstruction, used: str, db: Path, names: set[str], o, ba: str, rep: Report) -> tuple:
+    """A start's model grown to all it can take: its cameras that see next to none of its points taken out first
+    (atlas's rule for the global mapper's, which places some it has nothing to tie down; they're then tried like any
+    photo left out), the photos left out registered against it the usual way and then on the app's rest terms, and
+    everything refined. Returns (the model, {photo: how it was placed}, what was done)."""
+    placed = {rec.image(i).name: used for i in rec.reg_image_ids()}
+    loose = [i for i in rec.reg_image_ids() if rec.image(i).num_points3D < UNTIED]
+    if rec.num_reg_images() - len(loose) >= SMALL:
+        for i in loose:
+            placed.pop(rec.image(i).name, None)
+            rec.deregister_frame(rec.image(i).frame_id)
+    else:
+        loose = []
+    rep.part("register")
+    S = Session(open_cache(db, names), rec, o, ba)
+    mo, tri = o.get_mapper(), o.get_triangulation()
+    n1 = register_loop(S, mo, tri, True, "pnp", placed)
+    S.restart()
+    mo.abs_pose_min_num_inliers, mo.abs_pose_min_inlier_ratio = REST
+    n2 = register_loop(S, mo, tri, True, "pnp-rest", placed)
+    rep.part("polish")      # principal points too, if that holds up; then the last word on the most exact solver
+    polished = S.polish(o.get_mapper(), tri)
+    rep.part("final_adjust")
+    S.refine(o.get_mapper(), tri, 1, final=True)
+    rec = S.close()
+    placed = {n: how for n, how in placed.items() if has_pose(rec, n)}
+    log(f"untied cameras taken out first: {len(loose)}; registered {n1} + {n2} (rest terms) more: {stats_of(rec)}; "
+        f"lenses held: {S.lenses_held}; principal points refined: {polished}")
+    return rec, placed, {"solves": S.solves, "undone": S.undone, "lenses_held": S.lenses_held, "principal_points": polished,
+                         "untied_taken_out": len(loose), "registered": [n1, n2]}
+
+
 def linked_to(names: list[str], placed: set[str], ids: dict[str, int], link: dict) -> list[str]:
     """Those of the photos named that share verified matches with a placed one."""
     placed_ids = {ids[n] for n in placed if n in ids}
@@ -627,57 +698,61 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
     if old is None:
         names = set(ids)
         log(f"{'full re-solve' if resolve else 'first build'}: {len(names)} photos, start: {init}")
-        rec, used, tried_starts = None, None, []
         # "poses": cameras from a file in VGGT's format ({chosen, placed}), e.g. a phone's tracked poses: started as VGGT's are
         order = {"auto": ["vggt", "global", "incremental"], "vggt": ["vggt", "global", "incremental"],
                  "poses": ["poses", "global", "incremental"], "global": ["global", "incremental"], "incremental": ["incremental"]}[init]
+        cams = json.loads(vggt.read_text()) if vggt and vggt.exists() else None
+        attempts, tried_starts = [], []
         for kind in order:
             rep.part(f"start_{kind}")
+            rec, more = None, []
             try:
                 if kind in ("vggt", "poses"):
-                    if not vggt or not vggt.exists():
-                        log("no VGGT cameras were given: trying the next start")
-                        tried_starts.append("vggt: no cameras")
+                    if cams is None:
+                        log(f"no cameras were given for a {kind} start: the next start")
+                        tried_starts.append(f"{kind}: no cameras were given")
                         continue
-                    cams = json.loads(vggt.read_text())
+                    if cams.get("skipped"):     # vggt_cams.py: VGGT has room for too small a share of the photos
+                        log(f"not started from VGGT: {cams['skipped']}")
+                        tried_starts.append(f"{kind}: not used ({cams['skipped']})")
+                        continue
                     rec = start_from_cameras(open_cache(db, names), cams, o, ba, rep)
-                    rep.data[kind] = {k: cams.get(k) for k in ("seconds", "gpu_peak_mib", "device", "pairs_checked", "dropped")}
+                    rep.data[kind] = {k: cams.get(k) for k in ("seconds", "gpu_peak_mib", "device", "pairs_checked", "dropped", "linked", "room")}
                     rep.data[kind]["chosen"] = len(cams["chosen"])
                 elif kind == "global":
-                    rec, others = start_global(db, photos, names, o, ba, work)
+                    rec, more = start_global(db, photos, names, o, ba, work)
                 else:
-                    rec, others = start_incremental(db, photos, names, o, ba, work)
+                    rec, more = start_incremental(db, photos, names, o, ba, work)
+                if rec is None:
+                    tried_starts.append(f"{kind}: no model")
+                    continue
+                began = {"kind": kind, **stats_of(rec)}
+                log(f"start by {kind}: {stats_of(rec)}")
+                rec, placed_k, did = grow(rec, kind, db, names, o, ba, rep)
+                check = self_check(rec, db)
             except Exception as e:      # a start that fails is no reason not to try the next
                 log(f"start {kind} failed: {type(e).__name__}: {e}")
-                rec = None
-            tried_starts.append(f"{kind}: {'ok, ' + str(rec.num_reg_images()) + ' cameras' if rec else 'no model'}")
-            if rec is not None:
-                used = kind
+                tried_starts.append(f"{kind}: failed ({type(e).__name__}: {e})")
+                continue
+            attempts.append({"kind": kind, "rec": rec, "placed": placed_k, "others": more, "start": began, "did": did, "check": check})
+            tried_starts.append(f"{kind}: {rec.num_reg_images()} placed; its own check {'passed' if check['ok'] else 'FAILED'}: {check['why']}")
+            log(f"the model from the {kind} start {'passes' if check['ok'] else 'FAILS'} its own check: {check['why']}")
+            if check["ok"]:
                 break
+            if kind != order[-1]:
+                log("solving again from the next start")
         rep.data["starts"] = tried_starts
-        if rec is None:
+        if not attempts:
             log("no start gave a model")
             return rep.save(kind="none", placed={}, tried=sorted(ids), start=None, resolve={"due": False, "why": "no model"},
                             remesh={"due": False, "why": "no model"})
-        placed = {rec.image(i).name: used for i in rec.reg_image_ids()}
-        rep.data["start"] = {"kind": used, **stats_of(rec)}
-        log(f"start by {used}: {stats_of(rec)}")
-        # the photos the start left out, registered against its model: the usual way, then on the app's rest terms
-        rep.part("register")
-        S = Session(open_cache(db, names), rec, o, ba)
-        mo, tri = o.get_mapper(), o.get_triangulation()
-        n1 = register_loop(S, mo, tri, True, "pnp", placed)
-        S.restart()
-        mo.abs_pose_min_num_inliers, mo.abs_pose_min_inlier_ratio = REST
-        n2 = register_loop(S, mo, tri, True, "pnp-rest", placed)
-        rep.part("polish")      # principal points too, if that holds up; then the last word on the most exact solver
-        polished = S.polish(o.get_mapper(), tri)
-        rep.part("final_adjust")
-        S.refine(o.get_mapper(), tri, 1, final=True)
-        rec = S.close()
-        rep.data["refinements"] = {"solves": S.solves, "undone": S.undone, "lenses_held": S.lenses_held, "principal_points": polished}
-        placed = {n: how for n, how in placed.items() if has_pose(rec, n)}
-        log(f"registered {n1} + {n2} (rest terms) more: {stats_of(rec)}; lenses held: {S.lenses_held}; principal points refined: {polished}")
+        best = max(attempts, key=lambda t: st.check_rank(t["check"]))
+        if len(attempts) > 1:
+            log(f"kept the model from the {best['kind']} start, of {[t['kind'] for t in attempts]}: "
+                + ("it passes its own check" if best["check"]["ok"] else "NONE PASSES ITS OWN CHECK; it fails the least"))
+        rec, placed, others, used, check = best["rec"], best["placed"], best["others"], best["kind"], best["check"]
+        rep.data.update(start=best["start"], refinements=best["did"],
+                        attempts=[{"kind": t["kind"], "placed": t["rec"].num_reg_images(), "check": t["check"]} for t in attempts])
         if resolve and s.has_model():       # back into the frame the first build set
             prev = pycolmap.Reconstruction(str(root / "model"))
             a, b = poses(rec), poses(prev)
@@ -721,6 +796,8 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
         rep.data["old_cameras_moved"] = max((float(np.abs(after[n][1] - t).max()) for n, (_, t) in old_poses.items() if n in after), default=0.0)
         rep.data["old_cameras_lost"] = sorted(was - set(after))
         rep.data["old_lenses_changed"] = sum(1 for c, p in lens_before.items() if rec.exists_camera(c) and list(rec.camera(c).params) != p)
+        check = self_check(rec, db)
+        log(f"after the add the model {'passes' if check['ok'] else 'FAILS'} its own check: {check['why']}")
     rep.part("gates")
     now = {rec.image(i).name for i in rec.reg_image_ids()}
     left = sorted(n for n in ids if n not in now)
@@ -730,6 +807,9 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
     due, why = (False, "this was a full solve") if kind != "add" else st.resolve_due(
         len(now) - len(placed), (s.manifest.get("solve") or {}).get("placed"), len(tried_linked), len([n for n in tried_linked if n in placed]),
         len(left_joined), len(now))
+    passed_before = ((s.manifest["adds"][-1].get("check") or {}).get("ok", True)) if s.manifest["adds"] else True
+    if kind == "add" and not check["ok"] and passed_before and not due:
+        due, why = True, f"with the new photos the model fails its own check ({check['why']})"
     points_new = max(0, rec.num_points3D() - points_before)
     gain = None
     if kind == "add" and s.manifest.get("mesh"):
@@ -760,7 +840,7 @@ def place(root: Path, init: str, vggt: Path | None, ba: str, seed: int, threads:
     return rep.save(kind=kind, placed=placed, tried=tried, left=left, left_linked=left_linked, left_joined=left_joined, model=stats_of(rec),
                     points_before=points_before, points_new=points_new, other_models=[m.num_reg_images() for m in others],
                     resolve={"due": due, "why": why}, remesh={"due": mesh_due, "why": mesh_why}, assist_request=request,
-                    added_ids=added_ids)
+                    added_ids=added_ids, check=check, ba_auto=AUTO_BA)
 
 
 def assist(root: Path, cams_file: Path, ba: str, threads: int) -> dict:
@@ -772,6 +852,7 @@ def assist(root: Path, cams_file: Path, ba: str, threads: int) -> dict:
     db = root / "database.db"
     cams = json.loads(cams_file.read_text())
     rec = pycolmap.Reconstruction(str(root / "model.new"))
+    before_check = self_check(rec, db)
     have = poses(rec)
     v = {n: (np.array(R), np.array(t)) for n, (R, t, _) in cams["placed"].items()}
     anchors = [n for n in cams["anchors"] if n in have and n in v]
@@ -810,18 +891,21 @@ def assist(root: Path, cams_file: Path, ba: str, threads: int) -> dict:
         for n in kept:
             mapper.triangulate_image(tri, ids[n])
         rep.part(f"adjust{k}")
-        refine_added(mapper, rec, o, mo, tri, [ids[n] for n in kept], ba, rounds=1, fixed_lenses=fixed)
+        refine_added(mapper, rec, o, mo, tri, [ids[n] for n in kept], ba, rounds=1, fixed_lenses=fixed, tracks=k == len(ROUNDS) - 1)
         log(f"assist round {k + 1}: points per photo " + ", ".join(f"{n}: {rec.image(ids[n]).num_points3D}" for n in kept))
         kept = [n for n in kept if rec.image(ids[n]).num_points3D >= (ASSIST_MIN_POINTS if k == len(ROUNDS) - 1 else 3)]
     for n in todo:
         if n not in kept and rec.image(ids[n]).has_pose:
             mapper.observation_manager.deregister_frame(rec.image(ids[n]).frame_id)
     mapper.end_reconstruction(False)
-    rec.update_point_3d_errors()
+    after = self_check(rec, db)
+    if before_check["ok"] and not after["ok"]:      # never leave the model worse than it was found
+        log(f"assist: undone, as with these photos in the model failed its own check ({after['why']}): it stays as it was")
+        return rep.save(placed={}, tried=todo, anchors=len(anchors), undone=after["why"], check=before_check, check_with=after)
     rec.write(str(root / "model.new"))
-    log(f"assist: {len(kept)} of {len(todo)} photos kept {ASSIST_MIN_POINTS}+ points and are placed")
+    log(f"assist: {len(kept)} of {len(todo)} photos kept {ASSIST_MIN_POINTS}+ points and are placed; the model's check: {after['why']}")
     return rep.save(placed={n: "vggt-assist" for n in kept}, tried=todo, anchors=len(anchors),
-                    anchors_off=round(float(np.median(off) / size), 4), model=stats_of(rec))
+                    anchors_off=round(float(np.median(off) / size), 4), model=stats_of(rec), check=after)
 
 
 # ---------------------------------------------------------------- a state from a mesh's kept reconstruction
@@ -1032,6 +1116,7 @@ def prior_place(root: Path, threads: int, ba: str, near: int = 6, max_off_m: flo
     pri = json.loads((root / "cache" / "priors.json").read_text())
     mpu = pri.get("metres_per_unit") or 1.0         # the fit's scale: metres a unit of the model
     rec = pycolmap.Reconstruction(str(root / "model.new"))
+    before_check = self_check(rec, root / "database.db")
     have = poses(rec)
     phone = {n: (cp.qmatrix(p["q"]), np.asarray(p["t"])) for n, p in pri["photos"].items() if "q" in p}
     order = {n: (p.get("spell"), p.get("i") or 0) for n, p in pri["photos"].items()}
@@ -1083,16 +1168,19 @@ def prior_place(root: Path, threads: int, ba: str, near: int = 6, max_off_m: flo
         for n in kept:
             mapper.triangulate_image(tri, ids[n])
         rep.part(f"adjust{k}")
-        refine_added(mapper, rec, o, mo, tri, [ids[n] for n in kept], ba, rounds=1, fixed_lenses=fixed)
+        refine_added(mapper, rec, o, mo, tri, [ids[n] for n in kept], ba, rounds=1, fixed_lenses=fixed, tracks=k == len(ROUNDS) - 1)
         kept = [n for n in kept if rec.image(ids[n]).num_points3D >= (ASSIST_MIN_POINTS if k == len(ROUNDS) - 1 else 3)]
     for n in placed_from:
         if n not in kept and rec.image(ids[n]).has_pose:
             mapper.observation_manager.deregister_frame(rec.image(ids[n]).frame_id)
     mapper.end_reconstruction(False)
-    rec.update_point_3d_errors()
+    after = self_check(rec, root / "database.db")
+    if before_check["ok"] and not after["ok"]:
+        log(f"prior_place: undone, as with these photos in the model failed its own check ({after['why']}): it stays as it was")
+        return rep.save(placed={}, tried=todo, refused=refused, bad_spells=bad, undone=after["why"], check=before_check, check_with=after)
     rec.write(str(root / "model.new"))
     log(f"prior_place: {len(kept)} of {len(todo)} photos placed from the phone's cameras ({len(refused)} refused); spells not to trust: {bad}")
-    return rep.save(placed={n: "phone" for n in kept}, tried=todo, refused=refused, bad_spells=bad, model=stats_of(rec))
+    return rep.save(placed={n: "phone" for n in kept}, tried=todo, refused=refused, bad_spells=bad, model=stats_of(rec), check=after)
 
 
 def level_report(root: Path, model: Path) -> dict | None:

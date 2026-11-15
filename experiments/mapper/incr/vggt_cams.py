@@ -13,6 +13,7 @@ Writes {"chosen": [{id, name, camera, width, height}], "placed": {name: [rotatio
 "dropped": [names], "names" and "anchors" (assist), "seconds", "gpu_peak_mib", "device", "pairs_checked"}.
 """
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -46,6 +47,17 @@ def main(mode: str, db: Path, photos: Path, out: Path, request: Path | None = No
     print(f"torch {torch.__version__} on {torch.cuda.get_device_name(0)}, cuDNN {torch.backends.cudnn.version()}", flush=True)
     extra = {}
     if mode == "skeleton":
+        # with room for too small a share of the linked photos, VGGT doesn't start the model (state.py has why): the
+        # share comes from boulder.py, and nothing of VGGT is loaded
+        share = float(os.environ.get("INCR_VGGT_MIN_SHARE", "0") or 0)
+        linked = len(vggt_place.choose(db, 10 ** 9))
+        if share and limit < linked and limit < share * linked:
+            why = f"VGGT has room for {limit} of the {linked} linked photos ({limit / max(linked, 1):.0%}), under the {share:.0%} it starts a model from"
+            print(f"VGGT: not used: {why}", flush=True)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps({"skipped": why, "linked": linked, "room": int(limit), "chosen": [], "placed": {}, "device": device}))
+            return
+        extra = {"linked": linked, "room": int(limit)}
         chosen = vggt_place.choose(db, limit)
     else:
         req = json.loads(Path(request).read_text())
