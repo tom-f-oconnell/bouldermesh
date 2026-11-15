@@ -1,4 +1,11 @@
-# Whether Caspar or the VGGT start costs the pipeline its agreement with the other models on 31de (handoff section
-# 13): the same first build with Ceres on the CPU for every solve, and from the global mapper's start. No meshes.
-first 31de9a59303a auto 0 --ba cpu --cond prod --no-mesh
-first 31de9a59303a global 0 --cond prod --no-mesh
+# The pipeline's first builds again with what atlas's first ones showed fixed (hal's section 19 in the handoff:
+# 2511e7f, b861520): the assist no longer spoils old points, the lens guard, auto starting from the global mapper
+# where VGGT has room for under two thirds of the photos, untied cameras taken out, Ceres on the CPU, and a check of
+# its own model before it is kept. The two vggt lines force the VGGT start; the caspar one puts Caspar back.
+first e6de7747fab5 auto 0 --cond prod --tag v2
+first 31de9a59303a auto 0 --cond prod --tag v2
+first 9f3b4b740847 auto 0 --cond prod --tag v2
+first ce7571e0a4a3 auto 0 --cond prod --tag v2
+first 31de9a59303a vggt 0 --cond prod --tag v2
+first ce7571e0a4a3 vggt 0 --cond prod --tag v2
+first 31de9a59303a auto 0 --ba caspar --cond prod --tag v2

@@ -1,0 +1,3 @@
+# The changed pipeline once on the smallest boulder, before anything long depends on it (the same line as the first of
+# queue-check-1-incr.txt, which then skips it)
+first e6de7747fab5 auto 0 --cond prod --tag v2
