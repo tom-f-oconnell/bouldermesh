@@ -631,7 +631,8 @@ def summary(record: dict | None) -> dict | None:
     if not record:
         return None
     return {"status": record["status"], "progress": record.get("progress"), "at": record.get("at"), "note": record.get("note"),
-            "waiting": record.get("waiting"), "videos": len(record["videos"]), "holds": sum(len(v.get("holds") or []) for v in record["videos"])}
+            "waiting": record.get("waiting"), "videos": len(record["videos"]), "holds": sum(len(v.get("holds") or []) for v in record["videos"]),
+            "waiting_videos": len(record.get("waiting_videos") or [])}
 
 
 def carry_on(mesh_dir: Path) -> None:

@@ -135,7 +135,8 @@ with tempfile.TemporaryDirectory() as td:
     assert [s["name"] for s in beta.load_sets(d)] == ["Marked holds", "Beta", "Beta 2", "Sit start", "Left exit", "From A send"]
     assert beta.delete_set(d, blank["id"]) and not beta.delete_set(d, blank["id"]) and len(beta.load_sets(d)) == 5
     beta.save(d, {"status": "running", "videos": [{"holds": [{}, {}]}]})
-    assert beta.summary(beta.load(d)) == {"status": "running", "progress": None, "at": None, "note": None, "waiting": None, "videos": 1, "holds": 2}
+    assert beta.summary(beta.load(d)) == {"status": "running", "progress": None, "at": None, "note": None, "waiting": None, "videos": 1, "holds": 2,
+                                         "waiting_videos": 0}
     beta.carry_on(d)
     assert beta.load(d)["status"] == "queued" and beta.load(d)["resume"], "a restart queues it again, keeping what's done"
     assert beta.videos(d) == {}, "no record of its photos"
