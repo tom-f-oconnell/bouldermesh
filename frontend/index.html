@@ -992,7 +992,7 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + b.dataset.tab));
   if (b.dataset.tab === 'beta') { renderBetaList(); betaLoop(); }    // its bars every 5 s while beta's found and it shows
   if (b.dataset.tab === 'projects') poll();          // followed while it shows
-  if (b.dataset.tab === 'areas') { campaignLoop(); if (!phone.matches) showRight('areas', true); }     // every 5 s while it shows; the areas' map beside it
+  if (b.dataset.tab === 'areas') { campaignLoop(); if (!phone.matches) { viewChosen++; showRight('areas', true); } }     // every 5 s while it shows; the areas' map beside it
 });
 // The ? tab's form: a comment or bug report, to POST /api/feedback (data/feedback.jsonl there), from anyone, editing or
 // not. Its hidden "website" field is for bots that fill in every field: the server drops what comes with it filled in.
@@ -1051,14 +1051,22 @@ function setFull(on){
 }
 $('#tofull').onclick = () => setFull(true); $('#toctl').onclick = () => setFull(false);
 // which: '3d', 'map', or 'areas' (the areas with meshes, while no mesh is loaded: areaMap())
+// The mesh in the page's address loads in the background as the page starts; once you've chosen what the right side
+// shows meanwhile (the areas' tab, or the map), that load doesn't take it back: the mesh is there when you go to it
+let viewChosen = 0, addressLoad = null;     // times a view was chosen; the count as the address's load began, until its
+                                            // first mesh load takes it (loadMeshUrl()): a mesh opened by hand is shown
+function vmapLabel(which){
+  $('#vmap').textContent = which === 'map' || (which === 'areas' && current) ? (phone.matches ? '3D' : '3D viewer') : 'Map';    // one button goes between them
+}
 function showRight(which, keepControls = false){
   if (!keepControls) setFull(true);
   if (which !== 'map') map.stop();      // any pan or zoom still easing out, which would go on behind the view
   $('#viewer').classList.toggle('on', which==='3d'); $('#map').classList.toggle('on', which==='map'); $('#areamap').classList.toggle('on', which==='areas');
-  $('#vmap').textContent = which === 'map' || (which === 'areas' && current) ? (phone.matches ? '3D' : '3D viewer') : 'Map';    // one button goes between them
+  vmapLabel(which);
   if (which==='map') { setTimeout(()=>map.invalidateSize(), 50); } else if (which === 'areas') areaMap(); else resize();
 }
 $('#vmap').onclick = () => {
+  viewChosen++;
   if ($('#areamap').classList.contains('on') && current) return showRight('3d');
   if ($('#map').classList.contains('on')) return showRight(current || !$('#loading').hidden ? '3d' : 'areas');
   endSway(); showRight('map');
@@ -2338,6 +2346,10 @@ function loading(label){
 }
 // local: one of the files an editor chose, from its object URL, with nothing sent
 async function loadMeshUrl(url, filename, label, id, local = false){
+  // the page address's mesh: the view stays as chosen meanwhile, if it was (the areas' tab, the map)
+  const since = local ? null : addressLoad;
+  addressLoad = null;
+  const passive = () => since !== null && viewChosen > since;
   if (!local) endLocal();
   $('#vold').hidden = true;     // viewMesh() says if it's old
   flushRating();
@@ -2350,7 +2362,7 @@ async function loadMeshUrl(url, filename, label, id, local = false){
   viewVia = '';
   $('#vfrom').style.display = 'none';
   closeBeta(id);
-  if (!phone.matches) showRight('3d');
+  if (!phone.matches && !passive()) showRight('3d');
   const loaded = loading(label);
   viewNote('');
   pieces = null; renderPieces();
@@ -2390,9 +2402,11 @@ async function loadMeshUrl(url, filename, label, id, local = false){
       obj = await loader.loadAsync(at(url), progress);
     } else throw new Error('unsupported format .' + ext);
     if (local && localMesh?.url !== url) return loaded();     // discarded or replaced while it loaded
-    if (phone.matches) showRight('3d');
+    if (phone.matches && !passive()) showRight('3d');
     loaded();
     showObject(obj, label, !!id && meshesById[id]?.source !== 'upload');
+    if (passive())      // kept out of view: the button beside it now goes to it
+      vmapLabel($('#areamap').classList.contains('on') ? 'areas' : $('#map').classList.contains('on') ? 'map' : '3d');
     toast(note ? 'Loaded, with a problem: see the note on the view' : 'Loaded ' + label, note ? 5000 : 1500);
     if (id) reportView(id, via, (performance.now() - began) / 1000, note);
     if (id) setTimeout(controlsTip, 1000);     // the first mesh a browser shows: how to move round it, once it's settled
@@ -4479,6 +4493,7 @@ async function openFromAddress(){
   const m = location.pathname.match(/^\/([cbm])\/([^/]+?)\/?$/);
   if (!m) return openLinked();
   const [, kind, key] = m;
+  addressLoad = viewChosen;      // its mesh's load leaves the view alone if one is chosen before it's shown
   try {
     if (kind === 'm' && thumbMode) return await drawThumb(key);
     if (kind === 'm') return await openExact(key, new URLSearchParams(location.search).get('from'));
@@ -4494,6 +4509,7 @@ async function openFromAddress(){
       }
     }
   } catch (e) { toast(e.message, 8000); }
+  finally { addressLoad = null; }
 }
 // The camera as the picture's renderer is to set it: given (with fit, one the server chose, moved back as far as all of
 // the rock needs), else from where the climb it's of was photographed (the one with most photos placed, on a boulder's),
