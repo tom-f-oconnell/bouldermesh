@@ -392,6 +392,10 @@ function renderTimings(){
         rows.map(r => `<tr><td>${esc(r.where)}</td><td>${esc(r.photos)}</td><td>${r.n}${r.from_log ? ` <small class="note">(${r.from_log} from logs)</small>` : ''}</td>
           <td>${fmt(r.minutes)}</td><td>${fmt(r.cpu_minutes)}</td><td>${fmt(r.wall_minutes)}</td><td>${fmt(r.waited)}</td>
           <td>${r.vggt ? `${r.vggt}, +${fmt(r.vggt_seconds)} s` : '–'}</td></tr>`).join('')}</table>`;
+  const b = t?.beta?.[$('#times-since').value];     // finding beta, from start to finish (a machine's wait included)
+  if (t) $('#times-body').insertAdjacentHTML('beforeend', b ? `<div class="note" style="margin-top:6px">Finding beta: ${b.n} mesh${b.n === 1 ? '' : 'es'},
+    ${b.videos} video${b.videos === 1 ? '' : 's'}; median ${b.median_minutes} min a mesh (${fmt(b.per_video_minutes)} a video), longest ${b.longest_minutes} min</div>`
+    : '<div class="note" style="margin-top:6px">Finding beta: none finished in this time.</div>');
 }
 $('#times-since').onchange = renderTimings;
 // What the backup has told this server (deploy/backup-handshake.py): none, in red at the top; out of date, or its latest

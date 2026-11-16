@@ -3658,7 +3658,29 @@ def timings_existing_meshes() -> None:
 def timings_summary() -> dict:
     """The admin page's medians of how long meshes took (timings.summarize()): over the last week, and all."""
     recs = [r for m in q("SELECT id FROM meshes WHERE source LIKE 'project:%'") if (r := mesh_timings(m["id"]))]
-    return {"week": timings_mod.summarize(recs, since=time.time() - 7 * 86400), "all": timings_mod.summarize(recs), "meshes": len(recs)}
+    return {"week": timings_mod.summarize(recs, since=time.time() - 7 * 86400), "all": timings_mod.summarize(recs), "meshes": len(recs),
+            "beta": beta_timings()}
+
+
+def beta_timings(now: float | None = None) -> dict:
+    """How long finding beta took, from each mesh's beta.json (started to finished, a machine's wait for it included):
+    {"week": ..., "all": ...}, each {n, videos, median_minutes, per_video_minutes, longest_minutes}, or None if none."""
+    import statistics
+    now = now or time.time()
+    runs = []
+    for d in MESHES.iterdir() if MESHES.exists() else []:
+        rec = beta_mod.load(d) or {}
+        if rec.get("status") == "done" and rec.get("started") and rec.get("finished") and rec["finished"] >= rec["started"]:
+            runs.append((rec["finished"], (rec["finished"] - rec["started"]) / 60, len(rec.get("videos") or [])))
+
+    def summed(rows):
+        if not rows:
+            return None
+        mins = [r[1] for r in rows]
+        per = [r[1] / r[2] for r in rows if r[2]]
+        return {"n": len(rows), "videos": sum(r[2] for r in rows), "median_minutes": round(statistics.median(mins), 1),
+                "per_video_minutes": round(statistics.median(per), 1) if per else None, "longest_minutes": round(max(mins), 1)}
+    return {"week": summed([r for r in runs if r[0] >= now - 7 * 86400]), "all": summed(runs)}
 
 
 CHANNEL_TTL = 30 * 86400    # how long a channel's description is trusted before it's read again
@@ -4764,7 +4786,7 @@ def check_room() -> None:
 # ------------------------------------------------------------------ offloading to the backup (offload.py)
 # Above storage.offload_percent of the cap, what the backup on another machine holds and nothing here uses any more is
 # deleted, oldest first in each kind, in this order, down to that %: photos the filter rejected (after REJECTED_DAYS);
-# fetched videos, once every climb they're of has been meshed (or skipped, or failed) and beta has been found in each of
+# fetched videos, once every climb they're of has been meshed (or skipped, or failed) and beta has been found in it, in each of
 # its meshes; the photos and people masks of climbs and boulders meshed MESHED_DAYS ago, or skipped SKIPPED_DAYS ago,
 # none of whose boulder's climbs are still to be harvested or meshed; and the big files of older versions of meshes
 # replaced MESHED_DAYS ago. The web cache's pages older than CACHE_DAYS go too, without the backup (it keeps none).
@@ -4818,13 +4840,29 @@ def _in_play() -> tuple[set[str], set[str]]:
     return climbs, boulders
 
 
-def _beta_found(mid: str) -> bool:
-    return (beta_mod.load(MESHES / mid) or {}).get("status") == "done"
+_placed_videos: dict[str, set[str]] = {}     # mesh id: ids of the videos whose frames are placed in it (offload_candidates())
+
+
+def _beta_found(mid: str, vid: str | None = None) -> bool:
+    """Whether a mesh's beta has been found, or with vid, whether it has in that video (or there's none to find in it:
+    a mesh none of whose photos are that video's frames, or with no video frames placed at all)."""
+    rec = beta_mod.load(MESHES / mid) or {}
+    if rec.get("status") == "done" or vid is None:
+        return rec.get("status") == "done"
+    if any(youtube_mod.video_id(v.get("url")) == vid and v.get("status") in ("done", "no holds found") for v in rec.get("videos") or []):
+        return True
+    if mid not in _placed_videos:
+        try:
+            _placed_videos[mid] = {youtube_mod.video_id(u) for u in beta_mod.videos(MESHES / mid)}
+        except Exception:  # noqa: BLE001 - records that can't be read: kept, as before
+            return False
+    return vid not in _placed_videos[mid]
 
 
 def offload_candidates() -> list[tuple[str, str, str]]:
     """What may be offloaded now, in the order it goes: (path under the data folder, kind, what it's of)."""
     now, out = time.time(), []
+    _placed_videos.clear()     # read again each time: meshes are made and remade
     busy, boulders = _in_play()
     projects = {p["id"]: p for p in q("SELECT p.id, p.kind, p.status, p.created, p.mesh_id, p.climb_id, p.boulder, c.area_path, "
                                       "m.created AS meshed FROM projects p LEFT JOIN climbs c ON c.id=p.climb_id "
@@ -4835,7 +4873,7 @@ def offload_candidates() -> list[tuple[str, str, str]]:
         files = [f for f in rej.iterdir() if f.is_file()] if rej.is_dir() else []
         if files and max(f.stat().st_mtime for f in files) < now - REJECTED_DAYS * 86400:
             out.append((f"projects/{d.name}/rejected", "rejected photos", d.name))
-    # fetched videos, once every climb they're of was meshed (or not) and beta found in each of its meshes
+    # fetched videos, once every climb they're of was meshed (or not) and beta found in it in each of its meshes
     of: dict[str, set[str]] = {}
     for r in q("SELECT climb_id, url FROM climb_videos"):
         vid = youtube_mod.video_id(r["url"])
@@ -4855,7 +4893,7 @@ def offload_candidates() -> list[tuple[str, str, str]]:
         if not climbs:
             done = f.stat().st_mtime < now - CACHE_DAYS * 86400     # of no climb known: once it's sat a while
         else:
-            done = all(c not in busy and c in tried and all(_beta_found(m) for m in own.get(c, []) + (
+            done = all(c not in busy and c in tried and all(_beta_found(m, vid) for m in own.get(c, []) + (
                 [of_boulder[area[c]]] if area.get(c) in of_boulder else [])) for c in climbs)
         if done:
             out.append((f"cache/videos/{f.name}", "videos", vid))
@@ -6649,8 +6687,9 @@ def remote_beta(mid: str, pid: str, log) -> None:
     found = beta_mod.videos(mesh_dir)
     rec = beta_mod.load(mesh_dir) or {}
     done = {v["url"] for v in rec.get("videos", []) if rec.get("resume") and v.get("status") in ("done", "no holds found")}
-    todo = [u for u in found if u not in done]
-    if any(not youtube_mod.cached(u) for u in todo):
+    todo = [u for u in found if u not in done and youtube_mod.cached(u)]   # those here: the rest once they come
+    absent = [u for u in found if u not in done and not youtube_mod.cached(u)]
+    if not todo:
         raise youtube_mod.Refused({"since": time.time(), "until": time.time() + 3600, "level": 0, "volunteers": True,
                                    "error": "some of its videos aren't here yet"})
     stage = Path(tempfile.mkdtemp(prefix="bm-beta-", dir=DATA / "compute"))
@@ -6673,6 +6712,9 @@ def remote_beta(mid: str, pid: str, log) -> None:
             shutil.rmtree(back, ignore_errors=True)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
+    if absent:      # the machine did those here; run_beta() asks volunteers for the rest, and it waits for them
+        raise youtube_mod.Refused({"since": time.time(), "until": time.time() + 3600, "level": 0, "volunteers": True,
+                                   "error": f"{len(absent)} of its videos aren't here yet"})
 
 
 def remote_scale(mid: str, pid: str, climbs: list[dict], log) -> None:

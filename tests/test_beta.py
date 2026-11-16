@@ -192,4 +192,33 @@ with tempfile.TemporaryDirectory() as td:
     assert [a["frac"] for a in ats] == [0.3333, 0.3333, 0.5, 0.6667, 0.6667, 0.8333], [a["frac"] for a in ats]
     assert ats[2] == {"done_videos": 1, "videos": 3, "frame": 2, "frames": 4, "frac": 0.5, "started": ats[2]["started"], "frac0": 0.3333}
     assert rec["at"] is None, "none once done"
+
+# --- videos here first: where they can't be fetched now, those here are done and the rest waited for ----------------
+with tempfile.TemporaryDirectory() as td:
+    d = pathlib.Path(td)
+    urls = [f"https://www.youtube.com/watch?v=w{i}" for i in range(3)]
+    found = {u: {"tag": f"t{i}", "title": None, "uploader": None, "frames": {f"yt_t{i}_000.jpg": {}}} for i, u in enumerate(urls)}
+    here, done = {urls[2]}, []
+
+    def analyse(url, *a, **k):
+        assert url in here, f"{url} isn't here: it waits"
+        done.append(url)
+        return {"holds": [], "reference": None, "poses": {}, "with_climber": 0, "frames": 1, "placed_frames": 1}
+    real = (youtube.cached, youtube.via)
+    youtube.cached, youtube.via = (lambda u: d / "v.mp4" if u in here else None), "volunteers"
+    beta.videos, beta.analyse_video = (lambda _: found), analyse
+    try:
+        try:
+            beta.find(d, d, lambda s: None)
+            raise AssertionError("two aren't here")
+        except youtube.Refused:
+            pass
+        rec = beta.load(d)
+        assert done == [urls[2]] and rec["status"] == "queued" and rec["resume"], (done, rec)
+        assert rec["waiting_videos"] == urls[:2] and [v["url"] for v in rec["videos"]] == [urls[2]], rec
+        here |= set(urls)
+        rec = beta.find(d, d, lambda s: None)
+        assert done == [urls[2], urls[0], urls[1]] and rec["status"] == "done", "the one done isn't done again"
+    finally:
+        youtube.cached, youtube.via = real
 print("ALL BETA TESTS PASSED")

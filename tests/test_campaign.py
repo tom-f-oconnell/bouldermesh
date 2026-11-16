@@ -2320,11 +2320,23 @@ for vid, cid in (("v1aaaaaaaaa", "c1"), ("v5aaaaaaaaa", "c5")):
 project("d5" * 6, "c5", "done", "a5" * 6, age=2 * day)
 server.beta_mod.save(server.MESHES / ("a1" * 6), {"status": "done", "videos": []})      # c1's beta found; c5's never was
 put("cache/http/old", 1000, age=40 * day)
+real_videos = server.beta_mod.videos     # v5's frames are placed in c5's mesh: its beta is to be found in it
+server.beta_mod.videos = lambda d: {"https://www.youtube.com/watch?v=v5aaaaaaaaa": {}} if d.name == "a5" * 6 else real_videos(d)
 got = {c[0]: c[1] for c in server.offload_candidates()}
 assert got == {f"projects/{'d2' * 6}/rejected": "rejected photos", "cache/videos/v1aaaaaaaaa.mp4": "videos",
                f"projects/{'d1' * 6}/photos": "photos", f"projects/{'d1' * 6}/masks": "photos",
                f"meshes/{'a0' * 6}/mesh.glb": "older meshes"}, got
 assert list(got)[0].endswith("rejected"), "rejected photos first"
+# a video goes once its own beta is found in each of its meshes, not once all of a mesh's are: c5's mesh still waits for
+# another, but v5's is done; and a mesh none of whose photos are its frames has nothing to find in it
+server.beta_mod.save(server.MESHES / ("a5" * 6), {"status": "queued", "videos": [{"url": "https://www.youtube.com/watch?v=v5aaaaaaaaa",
+                                                                              "status": "no holds found"}], "waiting_videos": ["x"]})
+assert "cache/videos/v5aaaaaaaaa.mp4" in {c[0] for c in server.offload_candidates()}
+server.beta_mod.videos = real_videos
+server.beta_mod.save(server.MESHES / ("a5" * 6), {"status": "queued", "videos": [], "waiting_videos": ["x"]})
+assert "cache/videos/v5aaaaaaaaa.mp4" in {c[0] for c in server.offload_candidates()}, "not placed in c5's mesh: nothing to wait for"
+server.beta_mod.videos = lambda d: {"https://www.youtube.com/watch?v=v5aaaaaaaaa": {}} if d.name == "a5" * 6 else real_videos(d)
+(server.MESHES / ("a5" * 6) / server.beta_mod.FILE).unlink()
 server.settings().update({"storage.cap_gb": 0.001, "storage.offload_percent": 1.0})
 server.measure_usage()
 did = server.offload_step()
@@ -2343,6 +2355,7 @@ assert server.photos_away("d1" * 6) and sorted((D / "offload.list").read_text().
 (D / "backed-up").write_text(str(time.time() - 3600))         # no copy since: nothing more goes
 st = offload.state(D, server.q)
 assert st["away"]["photos"]["n"] == 2 and st["away"]["videos"]["n"] == 1 and st["backed_up"]
+server.beta_mod.videos = real_videos
 # a job that needs them asks for them back, and waits
 try:
     server.need_back(["d1" * 6], "meshing it")
@@ -3656,4 +3669,17 @@ try:
 finally:
     server.q("DELETE FROM campaigns WHERE id='ee0000000001'", write=True)
 print("areas' runs and done vs partial OK")
+# how long finding beta took, for the admin page: started to finished, over the week and all
+bt_dirs = [server.MESHES / f"bt000000000{i}" for i in range(3)]
+for d, (age, mins, vids) in zip(bt_dirs, ((1, 2, 4), (2, 6, 2), (10, 30, 3))):
+    d.mkdir(parents=True, exist_ok=True)
+    end = time.time() - age * 86400
+    server.beta_mod.save(d, {"status": "done", "started": end - mins * 60, "finished": end, "videos": [{}] * vids})
+try:
+    bt = server.beta_timings()
+    assert bt["week"]["n"] >= 2 and bt["all"]["n"] >= 3 and bt["all"]["longest_minutes"] >= 30, bt
+finally:
+    for d in bt_dirs:
+        shutil.rmtree(d, ignore_errors=True)
+print("beta timings OK")
 print("ALL CAMPAIGN TESTS PASSED")

@@ -872,7 +872,8 @@ cache) into `data/cache/` as `relevance.sqlite`.
 **Offloading to the backup.** Above 70% of the cap (*Room for data*'s *offload* %, `storage.offload_percent`; 0 never),
 the server deletes, down to that %, what the backup holds and nothing uses any more, oldest first in each kind and in this
 order: photos the filter rejected, after 3 days; fetched videos, once every climb they're of has been meshed (or skipped
-or failed) and beta has been found in each of its meshes; the photos and people masks of climbs and boulders meshed 2
+or failed) and its beta has been found in each of its meshes (each video's as soon as it's here, not once all of a mesh's
+are); the photos and people masks of climbs and boulders meshed 2
 weeks ago, or skipped a month ago, none of whose boulder's climbs is still to be harvested or meshed; and the big files of
 older versions of meshes replaced 2 weeks ago. The web cache's month-old searches and pages go too (the photos it downloaded, in `cache/http-kept/`, stay). Meshes,
 the databases, and each climb's and mesh's records always stay. In two steps, so that nothing goes that the backup can't

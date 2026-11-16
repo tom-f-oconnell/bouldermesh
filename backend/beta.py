@@ -653,7 +653,10 @@ def progress_at(done: int, videos: int, frame: tuple[int, int] | None, started: 
 
 def find(mesh_dir: Path, photos: Path, log: Log, report: Callable[[str, dict], None] | None = None) -> dict:
     """Find the beta in each of a mesh's videos, saving beta.json as it goes, so the page can follow it.
-    Videos already done by a search that YouTube's refusal or a restart stopped partway aren't done again.
+    Videos already done by a search that YouTube's refusal or a restart stopped partway aren't done again. Those here
+    already go first, and where videos can't be fetched here now (left to volunteers, or YouTube refusing), the rest are
+    left until they come: each video's beta is found as soon as it's here, so that it can be offloaded, rather than
+    once all of its mesh's are.
 
     Args:
         report: also told how far it is, as the record's progress (text) and at (progress_at()).
@@ -662,7 +665,8 @@ def find(mesh_dir: Path, photos: Path, log: Log, report: Callable[[str, dict], N
         The record saved.
 
     Raises:
-        youtube.Refused: YouTube is refusing downloads; beta.json says "waiting", with the videos done so far.
+        youtube.Refused: some of its videos aren't here and can't be fetched now; beta.json says "queued", with the
+            videos done so far and those it waits for (waiting_videos).
     """
     from climbs import youtube
     found = videos(mesh_dir)
@@ -680,8 +684,13 @@ def find(mesh_dir: Path, photos: Path, log: Log, report: Callable[[str, dict], N
         poses = {u: p for u, p in json.loads((mesh_dir / POSES_FILE).read_text()).items() if u in {v["url"] for v in kept}}
     except (FileNotFoundError, json.JSONDecodeError):
         poses = {}
-    for url, v in found.items():
+    fetchable = youtube.via != "volunteers" and not youtube.refused()
+    missing = []
+    for url, v in sorted(found.items(), key=lambda uv: youtube.cached(uv[0]) is None):     # those here first
         if url in {k["url"] for k in kept}:
+            continue
+        if not fetchable and youtube.cached(url) is None:
+            missing.append(url)
             continue
         entry = {"url": url, "tag": v["tag"], "title": v["title"], "uploader": v["uploader"], "placed": len(v["frames"])}
 
@@ -715,6 +724,13 @@ def find(mesh_dir: Path, photos: Path, log: Log, report: Callable[[str, dict], N
             shutil.rmtree(mesh_dir / "beta_tmp", ignore_errors=True)
         record["videos"].append(entry)
         save(mesh_dir, record)
+    if missing:     # the rest, once they're here
+        state = {"since": time.time(), "until": time.time() + 3600, "level": 0, "volunteers": True,
+                 "error": f"{len(missing)} of its videos aren't here yet"}
+        log(f"beta: {len(record['videos'])} video(s) done; waiting for {len(missing)} not here yet")
+        record.update(status="queued", progress=None, at=None, resume=True, waiting_videos=missing, waiting=state["until"])
+        save(mesh_dir, record)
+        raise youtube.Refused(state)
     record.update(status="done", progress=None, at=None, finished=time.time())
     save(mesh_dir, record)
     return record

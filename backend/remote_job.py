@@ -104,7 +104,10 @@ def task(job: Path, kind: str, log) -> int:
         if kind == "beta":
             import beta
             tracker = PrintedTracker([("beta", "Find its beta", 1)])
-            beta.find(mesh, photos, log, report=lambda text, at: tracker.update("beta", at["frac"], {**at, "text": text}))
+            try:
+                beta.find(mesh, photos, log, report=lambda text, at: tracker.update("beta", at["frac"], {**at, "text": text}))
+            except youtube.Refused as e:    # the videos sent are done: beta.json says which are still to come
+                log(f"beta: {e}: the videos sent are done")
         else:
             import scale
             args = json.loads((job / "task.json").read_text())
