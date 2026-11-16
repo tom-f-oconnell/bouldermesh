@@ -72,7 +72,7 @@
   #linkmenu .thumbset .noimg{display:grid;place-items:center;font-size:11px;color:var(--mute)} #linkmenu .thumbset .what{font-size:11px;color:var(--mute)}
   /* the picture's renderer (thumbMode): the view alone, its whole size */
   body.thumb{grid-template-rows:1fr} body.thumb main{grid-template-columns:minmax(0,1fr)} body.thumb #right{display:grid;grid-template-rows:1fr}
-  body.thumb header,body.thumb aside,body.thumb .viewbar,body.thumb #vtitle,body.thumb #vcorner,body.thumb #vextra,body.thumb #hud,
+  body.thumb header,body.thumb aside,body.thumb .viewbar,body.thumb #vtitle,body.thumb #vcorner,body.thumb #vbeta,body.thumb #vextra,body.thumb #hud,
   body.thumb #viewnote,body.thumb #pieces,body.thumb #orient,body.thumb #nearby,body.thumb #map,body.thumb .toast,body.thumb #loading,
   body.thumb #linkmenu,body.thumb #srctip,body.thumb #prefs,body.thumb #tip,body.thumb #areamap,body.thumb dialog{display:none!important}
   #vextra{position:absolute;right:12px;bottom:50px;z-index:3;display:flex;flex-direction:column;align-items:flex-end;gap:6px}  /* over Rate */
@@ -257,6 +257,9 @@
   .crows small{color:var(--mute)} .crows .note{grid-column:2/-1;color:var(--mute);font-size:11px;margin-top:-3px}
   #viewnote{display:none;position:absolute;top:40px;left:22px;max-width:640px;background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-line);border-radius:6px;padding:6px 10px;font-size:12px;z-index:2}
   #viewnote button{margin-left:8px}
+  /* bottom left of the view: the beta of the mesh in view, on and off */
+  #vbeta{position:absolute;left:12px;bottom:12px;z-index:3} #vbeta[hidden]{display:none}
+  #vbeta[aria-pressed=true]{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
   #pieces{display:none;position:absolute;top:12px;right:12px;max-width:340px;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;z-index:2}
   #pieces .row{margin-top:6px;gap:6px;flex-wrap:wrap}
   #pieces .tools{margin-left:0} #pieces .tools button{padding:4px 8px} #pieces label{display:inline-flex;gap:4px;align-items:center}
@@ -414,6 +417,7 @@
     #hud{display:none!important}
     #orient,#viewnote{top:56px;bottom:auto;left:8px;right:8px;max-width:none;max-height:35%;overflow:auto} #viewnote{z-index:3}
     #pieces{top:auto;bottom:12px;left:8px;right:auto;max-width:calc(100% - 175px);max-height:35%;overflow:auto}
+    #vbeta{left:8px;font-size:14px;padding:6px 12px} #viewer:has(#vbeta:not([hidden])) #pieces{bottom:56px}   /* stray pieces above it */
     #ratebtn{font-size:14px;padding:6px 12px} #vcorner #vinfo,#vcorner #vreport{padding:6px 10px}
     /* the rating box above the corner's buttons, its right edge at theirs, not off the screen to the left of Rate */
     #ratemenu{position:absolute;right:0;bottom:calc(100% + 6px);width:calc(100vw - 24px - 2px);max-width:360px;box-sizing:border-box}
@@ -464,18 +468,10 @@
       <section class="w">
         <h2>Import</h2>
         <div class="row">
-          <input type="text" id="imp-url" class="grow" placeholder="mountainproject.com route or area URL · openbeta.io/climbs/<uuid> · kaya link">
+          <input type="text" id="imp-url" class="grow" placeholder="mountainproject.com route URL · openbeta.io/climbs/<uuid> · kaya link">
           <button id="imp-go">Import</button>
         </div>
-        <div class="checks" style="margin-top:6px"><label><input type="checkbox" id="imp-children" checked> for areas, also import each problem (summary from the area page)</label></div>
-        <details style="margin-top:8px"><summary>Search OpenBeta by name or near coordinates</summary>
-          <div class="row" style="margin-top:6px">
-            <input type="text" id="s-q" class="grow" placeholder="area / boulder name (e.g. Camp 4 Boulders)">
-            <input type="text" id="s-ll" style="width:150px" placeholder="lat, lng (optional)">
-            <button class="sec" id="s-go">Search</button>
-          </div>
-          <div id="s-results"></div>
-        </details>
+        <p class="meta" style="margin:6px 0 0">One climb's link. A whole area: start a job for it in the Areas tab.</p>
         <details style="margin-top:8px"><summary>Add manually / Kaya export</summary>
           <div class="row" style="margin-top:6px"><input type="text" id="m-name" placeholder="name" class="grow"><input type="text" id="m-grade" placeholder="grade" style="width:80px"></div>
           <div class="row" style="margin-top:6px"><input type="text" id="m-boulder" placeholder="boulder name" class="grow"><input type="text" id="m-ll" placeholder="lat, lng" style="width:150px"></div>
@@ -636,7 +632,8 @@
           <button class="sm sec" id="m-clear" title="All meshes, every area, and every range back to its ends">Clear the filter</button>
           <div class="checks" style="margin-top:8px">
             <label title="Rated 1.5 or under on average, with bad 1, OK 2 and good 3"><input type="checkbox" id="m-nobad"> Hide those rated bad</label>
-            <label title="Those you rated bad in their 3D view, in this browser"><input type="checkbox" id="m-nomine"> Hide those I rated bad</label></div>
+            <label title="Those you rated bad in their 3D view, in this browser"><input type="checkbox" id="m-nomine"> Hide those I rated bad</label>
+            <label title="Those with holds found in their videos or marked by hand"><input type="checkbox" id="m-onlybeta"> Only meshes with beta</label></div>
           <div class="checks" style="margin-top:6px"><label><input type="checkbox" id="m-older"> Show older versions of rebuilt meshes</label></div>
         </details>
         <div id="meshes"></div>
@@ -706,6 +703,7 @@
         <button class="sm sec" id="vnewest" hidden title="This is an older version of this mesh, as its link was to: show the newest">Newest</button>
         <button class="sm sec" id="vothers" hidden></button>
       </div>
+      <button class="sm sec" id="vbeta" hidden aria-pressed="false" title="Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.">Beta</button>
       <div id="vcorner">
       <div id="rate" hidden>
         <div id="ratemenu" hidden>
@@ -2361,7 +2359,7 @@ async function loadMeshUrl(url, filename, label, id, local = false){
   clearNearby();
   shownMesh = id || null;
   $('#vshare').disabled = !shownMesh;
-  showRate(true);
+  showRate(true); showBetaButton();
   const began = performance.now(), via = viewVia;
   viewVia = '';
   $('#vfrom').style.display = 'none';
@@ -3363,27 +3361,12 @@ $('#imp-go').onclick = async () => {
   const url = $('#imp-url').value.trim(); if (!url) return;
   toast('Fetching… (polite rate limit: up to a minute per Mountain Project page)', 120000);
   try {
-    const r = await api('/api/climbs/import', { method: 'POST', json: { url, include_children: $('#imp-children').checked } });
+    const r = await api('/api/climbs/import', { method: 'POST', json: { url } });
     toast(`Imported ${r.imported.length} record(s)`); $('#imp-url').value = '';
     await refreshClimbs(); if (r.imported.length) openClimb(r.imported[0].id);
   } catch (e) { toast('Import failed: ' + e.message, 8000); }
 };
 $('#imp-url').addEventListener('keydown', e => { if (e.key === 'Enter') $('#imp-go').click(); });
-$('#s-go').onclick = async () => {
-  const ll = parseLL($('#s-ll').value);
-  toast('Searching OpenBeta…', 30000);
-  try {
-    const r = await api('/api/climbs/search', { method: 'POST', json: { q: $('#s-q').value.trim(), lat: ll?.[0], lng: ll?.[1], radius_m: 3000 } });
-    const el = $('#s-results'); el.innerHTML = r.results.length ? '' : '<div class="status">No results.</div>';
-    for (const a of r.results.slice(0, 40)) {
-      const d = document.createElement('div'); d.className = 'row'; d.style.marginTop = '4px';
-      d.innerHTML = `<span class="grow"><b>${esc(a.name)}</b>${a.boulder_name?'<span class="tag">boulder</span>':''} <small>${esc((a.area_path||[]).slice(-3).join(' › '))} · ${fmtLL(a.lat,a.lng)}</small></span><button class="sm sec">Import</button>`;
-      d.querySelector('button').onclick = async () => { $('#imp-url').value = a.url; $('#imp-go').click(); };
-      el.appendChild(d);
-    }
-    toast(`${r.results.length} result(s)`);
-  } catch (e) { toast('Search failed: ' + e.message, 8000); }
-};
 $('#m-go').onclick = async () => {
   const ll = parseLL($('#m-ll').value);
   try {
@@ -4178,6 +4161,7 @@ function meshShown(m){
   if (meshAreas(m).every(a => meshView.hidden.includes(a))) return false;
   if (meshView.noBad && m.rating?.n && m.rating.mean <= 1.5) return false;
   if (meshView.noMineBad && myRating(m.id) === 1) return false;
+  if (meshView.onlyBeta && !hasBeta(m)) return false;
   for (const def of MESH_METRICS) {
     const [a, b] = meshView.ranges[def.key] || [null, null];
     if (a == null && b == null) continue;
@@ -4204,6 +4188,7 @@ $('#m-sort').onchange = () => { meshView.sort = $('#m-sort').value; saveMeshView
 $('#m-dir').onclick = () => { meshView.desc = !meshView.desc; saveMeshView(); renderMeshes(); };
 $('#m-nobad').onchange = () => { meshView.noBad = $('#m-nobad').checked; saveMeshView(); renderMeshes(); };
 $('#m-nomine').onchange = () => { meshView.noMineBad = $('#m-nomine').checked; saveMeshView(); renderMeshes(); };
+$('#m-onlybeta').onchange = () => { meshView.onlyBeta = $('#m-onlybeta').checked; saveMeshView(); renderMeshes(); };
 // climbs, groups and boulders each ticked or not; the last one ticked can't be unticked, as that would show nothing
 $('#m-kinds').querySelectorAll('[data-kind]').forEach(b => b.onchange = () => {
   const boxes = [...$('#m-kinds').querySelectorAll('[data-kind]')];
@@ -4316,7 +4301,7 @@ async function refreshMeshes(){
   hideSourceTip();
   meshesCache = await api('/api/meshes'); meshesById = Object.fromEntries(meshesCache.map(m => [m.id, m]));
   await scrollStill();
-  renderMeshes();
+  renderMeshes(); showBetaButton();     // beta found since for the mesh in view: its button
   meshesReady = true; drawAreas();
 }
 // the cards whose list of climbs is open (folded away to start with), kept as the list is drawn again
@@ -4330,7 +4315,7 @@ function renderMeshes(filter = true){
   const all = meshesCache.filter(m => $('#m-older').checked || !m.replaced_by);
   if (filter) renderMeshFilter(all);
   $('#m-sort').value = meshView.sort; $('#m-dir').textContent = meshView.desc ? '↓' : '↑';
-  $('#m-nobad').checked = !!meshView.noBad; $('#m-nomine').checked = !!meshView.noMineBad;
+  $('#m-nobad').checked = !!meshView.noBad; $('#m-nomine').checked = !!meshView.noMineBad; $('#m-onlybeta').checked = !!meshView.onlyBeta;
   $('#m-dir').title = meshView.desc ? 'Largest (or newest) first: click for the other way' : 'Smallest (or oldest) first: click for the other way';
   const shown = all.filter(meshShown);
   const key = meshView.sort, sign = meshView.desc ? -1 : 1;
@@ -4849,20 +4834,38 @@ function watchBeta(){
     if (!['queued', 'running'].includes(betaState.found?.status)) { clearInterval(betaPoll); refreshMeshes(); }
   }, 5000);
 }
+// NOTE (user, Nov 16, 2026): the Beta tab may later be for editors only, visitors seeing beta through the view's Beta
+// button alone (vbeta).
 async function openBeta(mid){
   document.querySelector('.tabs button[data-tab=beta]').click();
   await viewMesh(mid, null, 'beta');
   if (!current) return;
+  await startBeta(mid);
+}
+// The beta of the mesh in view, drawn on it (the Beta tab's panel follows it)
+async function startBeta(mid){
   betaState = { mid, found: null, sets: [], sid: null, marked: [], sel: null, shown: new Set(), marking: false };
   await loadBeta();
   if (['queued', 'running'].includes(betaState.found?.status)) watchBeta();
-  renderBetaList();
+  renderBetaList(); showBetaButton();
 }
-function closeBeta(id){
-  if (!betaState || betaState.mid === id) return;
+function stopBeta(){
+  if (!betaState) return;
   if (betaState.group) betaState.group.parent?.remove(betaState.group);
   betaState = null; clearInterval(betaPoll);
-  $('#beta-open').innerHTML = ''; showMarkButton(); renderBetaList();
+  $('#beta-open').innerHTML = ''; showMarkButton(); renderBetaList(); showBetaButton(); woke();
+}
+const hasBeta = m => !!(m && (m.marked || m.beta?.holds));
+// the view's Beta button: there when the mesh in view has beta, pressed while it's drawn
+function showBetaButton(){
+  const b = $('#vbeta'), m = shownMesh && meshesById[shownMesh];
+  b.hidden = !hasBeta(m) || thumbMode;
+  b.setAttribute('aria-pressed', String(!!betaState && betaState.mid === shownMesh));
+}
+$('#vbeta').onclick = () => betaState?.mid === shownMesh ? stopBeta() : shownMesh && current && startBeta(shownMesh);
+function closeBeta(id){
+  if (!betaState || betaState.mid === id) return showBetaButton();
+  stopBeta();
 }
 // markers go under the node the mesh's geometry is in, so they share its coordinates, which are beta.json's
 function meshNode(){
