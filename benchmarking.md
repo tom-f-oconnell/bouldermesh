@@ -589,6 +589,14 @@ run, and about how long it takes on atlas. Run them through `chain.py <queue fil
 on the machine), judge by the rules in `experiments/mapper/optimization-plan.md`, and add the results to "Results on
 atlas".
 
+**What's left on atlas to resume with** (cleared on 2026-11-15 at Tom's word): the build trees (`build-plain`,
+`build-complete`, `build-incr-full` in `/mnt/d0/mapperbench`), every run's records, logs, models, meshes (GLB, PNG,
+`scene_dense_mesh.ply`) and features databases, and VGGT's weights. Deleted: depth maps, dense point clouds and
+undistorted photos of every post folder (a texture or OpenMVS experiment on an old post now needs its post run again),
+the app runs' job folders, BuildKit's cache, and the Docker images (`docker pull nvidia/cuda:12.9.1-devel-ubuntu24.04`
+and `ghcr.io/tom-f-oconnell/bouldermesh:b5607e9-gpu` before any run; the app images are built again from the
+Dockerfile).
+
 ### The CPU fallbacks (`experiments/mapper/queue-cpu-held.txt`, 12 jobs, 2-4 h)
 
 What a machine with no GPU, or a GPU with no room, would get. The app falls back to these paths; none has been timed.
