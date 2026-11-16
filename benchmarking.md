@@ -369,11 +369,11 @@ CPU-seconds. All with `global_tied`; reference numbers in brackets.
 | every third (`views3`) | 113 s, 65 s | | 611, 210 | for Tom's eye |
 | `dec50`, `noseams` | 199 s, 288 s on Drifter | | half the faces; visible seams | not pursued |
 | half-size photos (`res1`), virtual faces (`vface3`) | slower: 407 s, 427 s | | | no |
-| a video's repeated frames dropped (`dedup90`) | Drifter 51 of 176 frames; mapper to texture 782 to 487 s | no kept photo lost on Drifter, 1 on 31de | check 2.82 (3.43), 2.37 (2.55); surface 0.37% on Drifter (seeds to 0.26%), 0.62% on 31de (within seeds) | passes but for Drifter's surface, 1.4 times the widest seed pair |
+| a video's repeated frames dropped (`dedup90`) | Drifter 51 of 176 frames; mapper to texture 782 to 487 s | no kept photo lost on Drifter, 1 on 31de | check 2.82 (3.43), 2.37 (2.55); surface 0.37% on Drifter (seeds to 0.26%), 0.62% on 31de (within seeds) | passes. Drifter's surface gap is 1.4 times the widest seed pair, but it is the same smooth bend seeds have: patches of 5% fitted alone go 0.36% to 0.14% (seed against seed: 0.29% to 0.13%) |
 | `dedup75` | 60 frames | loses 7 kept photos on 31de | | no |
 | plain SIFT on the GPU (`siftgpu391`) | extraction 250 to 8 s on Drifter, 2,957 to 12 CPU-seconds | 159 (142), 74 (71), 9f3b 133 (141) | check against the reference's database 2.91 (3.43), 2.94 (2.55); rays within 2 degrees of the reference 82%, 81% (seeds 95-97%); surface 0.26% on Drifter | a different model by more than seeds differ; a fifth of 31de's shared cameras over 5 degrees off. Open |
 | matching a list of pairs (a video's neighbours + the K most alike by CLIP) | matching 220 s to 39 / 54 / 82 s on Drifter for K = 20 / 30 / 50 | 137 / 138 / 139 (142); 71 / 71 / 71 | surface 0.29% (K 20), 0.18% (K 50) on Drifter; 0.47% (K 30) on 31de | K 50 passes on Drifter; 31de unmeasured for K 20 and 50 |
-| one geometric pass (`as23g1`) | dense 161 to 101 s | same model | surface at the floor | passes |
+| one geometric pass (`as23g1`) | dense 161 to 101 s on Drifter, 66 to 52 s on 31de | same model | surface at the floor; fused points 4.63M (4.73M) and 2.48M (2.55M), faces 1.27M (1.28M) and 1.09M (1.09M) | passes |
 | no side models (`global_one`) | mapper 186 to 117 s on Drifter | same | check 3.36, 2.67 | surface owed |
 | 1600 px pictures for SIFT | extraction 250 to 208 s | same | check 2.96, 2.89 | small gain |
 | no guided matching | matching 220 to 186 s, but the mapper 186 to 292 s | 138, 70 | check 2.39, 2.14 | a loss on time |
@@ -416,8 +416,11 @@ holds").
 | Drifter | 1,404 s | 148 of 234 | 94% | 2.88 px |
 
 Good on Drifter, loose on 31de, wrong on 9f3b without saying so. The high errors came from its VGGT assist step
-spoiling old points (found from these logs on hal, fixed in 2511e7f). The fixed pipeline has run once here: e6de, 129
-s, 32 placed, passes its own check. The other boulders' reruns are in progress.
+spoiling old points (found from these logs on hal, fixed in 2511e7f). With its fixes (`first-auto-s0@prod-v2`): e6de 129 s, 32
+placed, passes its own check (1.10 px, 2.0 degrees); 31de 662 s, 72 placed, from the global mapper's start (VGGT had
+room for 42 of 72 photos), passes (0.72 px, 2.5 degrees). Placing 31de took 59 s with Caspar before and several minutes with
+Ceres on the CPU now. A first try of these (before a5844d0) failed on every start but VGGT's: the check couldn't be
+imported in the tools' container. 9f3b, Drifter and the forced-VGGT builds are running.
 
 ### Problems met on atlas
 
