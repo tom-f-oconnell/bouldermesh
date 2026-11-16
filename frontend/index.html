@@ -468,18 +468,10 @@
       <section class="w">
         <h2>Import</h2>
         <div class="row">
-          <input type="text" id="imp-url" class="grow" placeholder="mountainproject.com route or area URL · openbeta.io/climbs/<uuid> · kaya link">
+          <input type="text" id="imp-url" class="grow" placeholder="mountainproject.com route URL · openbeta.io/climbs/<uuid> · kaya link">
           <button id="imp-go">Import</button>
         </div>
-        <div class="checks" style="margin-top:6px"><label><input type="checkbox" id="imp-children" checked> for areas, also import each problem (summary from the area page)</label></div>
-        <details style="margin-top:8px"><summary>Search OpenBeta by name or near coordinates</summary>
-          <div class="row" style="margin-top:6px">
-            <input type="text" id="s-q" class="grow" placeholder="area / boulder name (e.g. Camp 4 Boulders)">
-            <input type="text" id="s-ll" style="width:150px" placeholder="lat, lng (optional)">
-            <button class="sec" id="s-go">Search</button>
-          </div>
-          <div id="s-results"></div>
-        </details>
+        <p class="meta" style="margin:6px 0 0">One climb's link. A whole area: start a job for it in the Areas tab.</p>
         <details style="margin-top:8px"><summary>Add manually / Kaya export</summary>
           <div class="row" style="margin-top:6px"><input type="text" id="m-name" placeholder="name" class="grow"><input type="text" id="m-grade" placeholder="grade" style="width:80px"></div>
           <div class="row" style="margin-top:6px"><input type="text" id="m-boulder" placeholder="boulder name" class="grow"><input type="text" id="m-ll" placeholder="lat, lng" style="width:150px"></div>
@@ -703,7 +695,6 @@
             <div class="cap">Gap to the other mesh's surface, as a share of A's size (its main part, corner to corner). <label>Scale tops out at <select id="cmptop"></select></label></div>
             <div class="stats"></div><div class="cap">Counted by area, over the part of each near A's middle.</div>
           </div>
-      <button class="sm sec" id="vbeta" hidden aria-pressed="false" title="Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.">Beta</button>
           <div class="line"><span id="cmpsay" role="status"></span><button class="sm sec" id="cmpline" title="Fits B onto A: scaled, turned and shifted until their surfaces match as well as they can">Line them up</button><button class="sm sec" id="cmpundo" hidden>Undo</button></div>
           <div class="prog" id="cmpprog" hidden><div class="bar"><i></i></div><span class="pct"></span><button class="sm sec" id="cmpstop">Stop</button></div>
         </div>
@@ -712,6 +703,7 @@
         <button class="sm sec" id="vnewest" hidden title="This is an older version of this mesh, as its link was to: show the newest">Newest</button>
         <button class="sm sec" id="vothers" hidden></button>
       </div>
+      <button class="sm sec" id="vbeta" hidden aria-pressed="false" title="Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.">Beta</button>
       <div id="vcorner">
       <div id="rate" hidden>
         <div id="ratemenu" hidden>
@@ -3369,27 +3361,12 @@ $('#imp-go').onclick = async () => {
   const url = $('#imp-url').value.trim(); if (!url) return;
   toast('Fetching… (polite rate limit: up to a minute per Mountain Project page)', 120000);
   try {
-    const r = await api('/api/climbs/import', { method: 'POST', json: { url, include_children: $('#imp-children').checked } });
+    const r = await api('/api/climbs/import', { method: 'POST', json: { url } });
     toast(`Imported ${r.imported.length} record(s)`); $('#imp-url').value = '';
     await refreshClimbs(); if (r.imported.length) openClimb(r.imported[0].id);
   } catch (e) { toast('Import failed: ' + e.message, 8000); }
 };
 $('#imp-url').addEventListener('keydown', e => { if (e.key === 'Enter') $('#imp-go').click(); });
-$('#s-go').onclick = async () => {
-  const ll = parseLL($('#s-ll').value);
-  toast('Searching OpenBeta…', 30000);
-  try {
-    const r = await api('/api/climbs/search', { method: 'POST', json: { q: $('#s-q').value.trim(), lat: ll?.[0], lng: ll?.[1], radius_m: 3000 } });
-    const el = $('#s-results'); el.innerHTML = r.results.length ? '' : '<div class="status">No results.</div>';
-    for (const a of r.results.slice(0, 40)) {
-      const d = document.createElement('div'); d.className = 'row'; d.style.marginTop = '4px';
-      d.innerHTML = `<span class="grow"><b>${esc(a.name)}</b>${a.boulder_name?'<span class="tag">boulder</span>':''} <small>${esc((a.area_path||[]).slice(-3).join(' › '))} · ${fmtLL(a.lat,a.lng)}</small></span><button class="sm sec">Import</button>`;
-      d.querySelector('button').onclick = async () => { $('#imp-url').value = a.url; $('#imp-go').click(); };
-      el.appendChild(d);
-    }
-    toast(`${r.results.length} result(s)`);
-  } catch (e) { toast('Search failed: ' + e.message, 8000); }
-};
 $('#m-go').onclick = async () => {
   const ll = parseLL($('#m-ll').value);
   try {
@@ -4161,7 +4138,6 @@ function renderMeshFilter(all){
     if (!vals.length) continue;
     const lo = Math.min(...vals), hi = Math.max(...vals), [a, b] = meshView.ranges[def.key] || [null, null];
     const row = document.createElement('div'); row.className = 'mrange';
-  if (meshView.onlyBeta && !hasBeta(m)) return false;
     row.innerHTML = `<span>${def.label}</span><div class="dual"><div class="track"></div><div class="fill"></div>
       <input type="range" min="0" max="1000" class="lo" aria-label="${def.label}: at least"><input type="range" min="0" max="1000" class="hi" aria-label="${def.label}: at most"></div><span class="val"></span>`;
     const [rlo, rhi] = row.querySelectorAll('input'), fill = row.querySelector('.fill'), val = row.querySelector('.val');
@@ -4185,10 +4161,10 @@ function meshShown(m){
   if (meshAreas(m).every(a => meshView.hidden.includes(a))) return false;
   if (meshView.noBad && m.rating?.n && m.rating.mean <= 1.5) return false;
   if (meshView.noMineBad && myRating(m.id) === 1) return false;
+  if (meshView.onlyBeta && !hasBeta(m)) return false;
   for (const def of MESH_METRICS) {
     const [a, b] = meshView.ranges[def.key] || [null, null];
     if (a == null && b == null) continue;
-$('#m-onlybeta').onchange = () => { meshView.onlyBeta = $('#m-onlybeta').checked; saveMeshView(); renderMeshes(); };
     const v = meshMetric(m, def.key);
     if (v == null || (a != null && v < a * (1 - 1e-9)) || (b != null && v > b * (1 + 1e-9))) return false;
   }
@@ -4212,6 +4188,7 @@ $('#m-sort').onchange = () => { meshView.sort = $('#m-sort').value; saveMeshView
 $('#m-dir').onclick = () => { meshView.desc = !meshView.desc; saveMeshView(); renderMeshes(); };
 $('#m-nobad').onchange = () => { meshView.noBad = $('#m-nobad').checked; saveMeshView(); renderMeshes(); };
 $('#m-nomine').onchange = () => { meshView.noMineBad = $('#m-nomine').checked; saveMeshView(); renderMeshes(); };
+$('#m-onlybeta').onchange = () => { meshView.onlyBeta = $('#m-onlybeta').checked; saveMeshView(); renderMeshes(); };
 // climbs, groups and boulders each ticked or not; the last one ticked can't be unticked, as that would show nothing
 $('#m-kinds').querySelectorAll('[data-kind]').forEach(b => b.onchange = () => {
   const boxes = [...$('#m-kinds').querySelectorAll('[data-kind]')];
@@ -4838,16 +4815,10 @@ async function findBeta(mid){
   if (meshesById[mid]?.beta?.status === 'done' && !await askDanger('Find its beta again?',
     "What was found is replaced as soon as it starts: a video that can't be had again (YouTube refusing it, or deleted from the cache) then has none. Holds marked by hand stay.", 'Find again')) return;
   try { await api(`/api/meshes/${mid}/beta`, { method: 'POST' }); toast('Finding its beta: a few minutes for each video', 5000); }
-// NOTE (user, Nov 16, 2026): the Beta tab may later be for editors only, visitors seeing beta through the view's Beta
-// button alone (vbeta).
   catch (e) { return toast(e.message, 6000); }
   await refreshMeshes(); betaLoop();
   if (betaState?.mid === mid) { await loadBeta(); watchBeta(); }
 }
-  await startBeta(mid);
-}
-// The beta of the mesh in view, drawn on it (the Beta tab's panel follows it)
-async function startBeta(mid){
 async function loadBeta(){
   const r = await api(`/api/meshes/${betaState.mid}/beta`);
   const fresh = !betaState.found || (r.found?.videos || []).length !== (betaState.found?.videos || []).length;
@@ -4867,10 +4838,16 @@ function watchBeta(){
     if (!['queued', 'running'].includes(betaState.found?.status)) { clearInterval(betaPoll); refreshMeshes(); }
   }, 5000);
 }
+// NOTE (user, Nov 16, 2026): the Beta tab may later be for editors only, visitors seeing beta through the view's Beta
+// button alone (vbeta).
 async function openBeta(mid){
   document.querySelector('.tabs button[data-tab=beta]').click();
   await viewMesh(mid, null, 'beta');
   if (!current) return;
+  await startBeta(mid);
+}
+// The beta of the mesh in view, drawn on it (the Beta tab's panel follows it)
+async function startBeta(mid){
   betaState = { mid, found: null, sets: [], sid: null, marked: [], sel: null, shown: new Set(), marking: false };
   await loadBeta();
   if (['queued', 'running'].includes(betaState.found?.status)) watchBeta();
