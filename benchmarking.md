@@ -83,7 +83,11 @@ on hal. Names in quotes are atlas's sections under "Results on atlas". GLBs are 
       (`sudo systemctl start bouldermesh-worker`).
 13. **See the OpenMVS fallback work** (a hal session): a job whose GPU dense step is made to fail on purpose. Settled
     by a job that finishes on the CPU build and says so in its log.
-14. **Lower:** why the dense step holds one CPU thread (plan step 9); ALIKED with a pair list (plan step 10, not
+14. **The model check's line (5 degrees): look again** (a hal session with atlas). One model known to disagree with
+    every other passes it at 3.42 (the incremental pipeline's section). First measure that model's surface against
+    the baseline's, to see that it is wrong and not the comparison; then try the line at 3.5 over every model on both
+    machines. In the app the check only reports, so nothing breaks meanwhile.
+15. **Lower:** why the dense step holds one CPU thread (plan step 9); ALIKED with a pair list (plan step 10, not
     written; only if tonight's ALIKED runs place photos well); `together report` saying "no mesh made" of jobs that
     made one; CDI in atlas's Docker (Tom's sudo); the incremental pipeline's simulated, then real, captures; and,
     when this round is over, whether `MESH_RULES` goes back (ask before raising it) or stays lifted: Tom's to say.
@@ -491,12 +495,17 @@ of a hold (simulated)"; `incr/README.md` has the rest.
   VGGT started from 42 photos; Caspar solved all but the last refinement. Now the assist touches only the added
   photos' points, `auto` starts from the global mapper when VGGT has room for under two thirds of the photos, every
   solve is Ceres on the CPU, and each model checks itself before it is kept.
-- **Run with the fixes:** e6de only (129 s, 32 of 33 placed, passes its check). 31de and 9f3b then failed on atlas with
-  "IndexError: 2" after each start's model was made (handoff section 50): the check looked for `backend/` where the
-  tools' container doesn't have it. Fixed in a5844d0. With it, 31de builds in 662 s, 72 placed, from the global
-  start, and passes its check (2.5 degrees over 760 pairs). On 9f3b both starts fail the check (10.8 and 10.5
-  degrees), as every model of it does; it keeps the one failing least and says so (124 placed, 2,863 s). 9f3b was 12 degrees off before the assist ran; the pipeline's agent
-  expects it to fail its check from every start and say so, not to come out right.
+- **Run with the fixes, on atlas (a5844d0; the table is in "The incremental pipeline's first builds"):** all seven
+  builds ran through. 31de from the global start: 662 s, 72 placed, passes its check, 90% of cameras' rays within 2
+  degrees of the baseline's (66% from the VGGT start, so sending 31de to the global start was right). Drifter from
+  the global start: 2,375 s, **171 placed** (baseline 142), passes, 91% within 2 degrees; 28 of its 34 extra photos
+  see 100 points or more. 9f3b fails its check from both starts, as every model of it does, keeps the less bad one
+  and says so. Placing with Ceres on the CPU is 4 to 5 times slower than it was with Caspar (237 s on 31de, 952 s on
+  Drifter).
+- **Against the model's check as it stands:** with Caspar's solves, 31de's model passes the check (3.42 degrees, under
+  the line at 5) and is 6.7 degrees (median) from the baseline, with 1% of its cameras within 5. Atlas marks it "to
+  check" (its overlay could be at fault; that model's surface isn't measured). If it holds, a line nearer 3.5 would
+  have caught it and still passed every model that agrees with the others (2.0 to 3.5). The same check is in the app.
 - **Never run:** a capture's add, refit, capture-first texture, re-levelling, hold detail meshes and card scale, on
   simulated or real captures. They are written and unit-tested only.
 - **The simulated close-ups' advice for whatever meshes a capture** (`design.md`, "What that means for the app's
@@ -535,4 +544,4 @@ tell them apart. Later sections correct earlier ones.
 | `meshes.py` | depth maps, fused points, faces and seconds from OpenMVS's logs; `export` copies the GLBs out |
 | `verify_build.py`, `sim_closeups.py`, `incr/boulder.py` | the check a tool tree must pass to be timed; the simulated close-ups; the incremental pipeline |
 
-Last updated: 2026-11-15 19:40 PST, through section 55 of the handoff file.
+Last updated: 2026-11-15 21:00 PST, through section 56 of the handoff file.
