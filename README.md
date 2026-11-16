@@ -872,6 +872,9 @@ It uses a key of its own with no passphrase, which the server takes only for rea
     sudo cp deploy/bouldermesh-backup.service deploy/bouldermesh-backup.timer /etc/systemd/system/
     sudo systemctl daemon-reload && sudo systemctl enable --now bouldermesh-backup.timer
 
+To back up now, outside the night's run, with what it's doing shown until it's done: `deploy/backup-now.sh` (it starts
+the service, follows its log, and says how it went; Ctrl-C stops only the following).
+
 To restore onto a new server, put `current/data` in its checkout's `data/` and `current/.env` beside it, then copy a
 night's `db/<date>/bouldermesh.sqlite.backup` and `volunteers.sqlite.backup` into `data/`, and `machines.sqlite.backup`
 into `data/compute/`, each without its `.backup`, and `current/data/snapshots/relevance.sqlite.backup` (the filter's

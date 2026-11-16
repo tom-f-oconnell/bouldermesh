@@ -158,10 +158,20 @@ rsync -e "$ssh" --list-only "${from}data/" > /dev/null 2>&1 || fail "no data/ at
 # is named in the night's report, for the admin page. Any other error stops the night.
 copy() {
     rc=0
+    # how it's going, every 2 minutes, for whoever follows it (deploy/backup-now.sh, or journalctl -fu bouldermesh-backup)
+    # (its sleep stopped with it: one left behind would hold the output open for whoever reads it to its end)
+    ( t0=$(date +%s); trap 'kill "$s" 2>/dev/null; exit 0' TERM
+      while :; do
+        sleep 120 & s=$!; wait "$s"
+        echo "still copying: $(( ($(date +%s) - t0) / 60 )) min so far; this copy now $(du -sh "$dest/current" 2>/dev/null | cut -f1)"
+      done ) &
+    ticker=$!
     rsync -a --delete --delete-excluded --backup --backup-dir="$dest/changed/$day" --info=stats1 -e "$ssh" \
         --filter="merge $tmp/filter" "$from" "$dest/current/" 2> "$tmp/copy.err" || rc=$?
+    kill "$ticker" 2>/dev/null || true
     cat "$tmp/copy.err" >&2
 }
+echo "copying $src into $dest/current: only what changed since the last copy (often 10-30 min)"
 copy
 if [ "$rc" = 24 ]; then
     echo "some files went on the server while they were copied: copying again, for what they became" >&2
@@ -188,6 +198,7 @@ for snap in "$dest/current/data/snapshots/"*.backup; do
     cp -p "$snap" "$dest/db/$day/"
 done
 # what can't easily be had again, out of tonight's changed/ into archive/, kept for good; then the rest by age
+echo "copied; keeping for good what the server deleted that can't easily be had again (archive/)"
 python3 "$(dirname "$0")/backup-archive.py" "$dest" "$day" || echo "couldn't archive tonight's set-aside files: they stay in changed/$day" >&2
 find "$dest/changed" -mindepth 1 -maxdepth 1 -type d -mtime "+$keep" -exec rm -rf {} +
 find "$dest/db" -mindepth 1 -maxdepth 1 -type d -mtime "+$keep_db" -exec rm -rf {} +
