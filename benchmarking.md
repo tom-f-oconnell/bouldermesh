@@ -553,3 +553,56 @@ tell them apart. Later sections correct earlier ones.
 | `verify_build.py`, `sim_closeups.py`, `incr/boulder.py` | the check a tool tree must pass to be timed; the simulated close-ups; the incremental pipeline |
 
 Last updated: 2026-11-15 21:30 PST, through section 57 of the handoff file.
+
+## Benchmarking left on hold
+
+<!-- owner: atlas -->
+
+On 2026-11-15 Tom put the rest of the benchmarking on hold after the feature-set runs: atlas is the one GPU he has
+free rein over, and it is to make meshes now. Nothing below is queued. Each item says what it would settle, what to
+run, and about how long it takes on atlas. Run them through `chain.py <queue file>` (one job at a time, nothing else
+on the machine), judge by the rules in `experiments/mapper/optimization-plan.md`, and add the results to "Results on
+atlas".
+
+### The CPU fallbacks (`experiments/mapper/queue-cpu-held.txt`, 12 jobs, 2-4 h)
+
+What a machine with no GPU, or a GPU with no room, would get. The app falls back to these paths; none has been timed.
+
+- **The global mapper on the CPU alone** (`global_tied_cpu` on Drifter twice, 31de, 9f3b, with `as23` meshes). Settles
+  how much of the mapper's 10x gain needs the GPU, and whether a CPU-only worker should use it or the incremental
+  mapper. Compare its mapper seconds and placed photos with `global_tied`'s (112, 86, 186 s) and base's.
+- **OpenMVS 2.4's depth maps on the CPU** (`post --mvs as23cpu` on base run 1 of 31de and Drifter). Settles whether
+  the fallback after a GPU failure is slower than OpenMVS 2.3 was (721 s on Drifter), which it replaces.
+- **The old build against the complete one** (`cpu421` and `global_cpu` on the plain tree, e6de, 31de, 9f3b). Settles
+  what SuiteSparse is worth to Ceres on the CPU. 9f3b's `cpu421` without it has no estimate and may take hours: run it
+  last.
+
+To run: `chain.py queue-cpu-held.txt`.
+
+### Seeing the fallbacks work
+
+- **OpenMVS 2.4's dense step segfaulted twice in about 65 runs.** The app then runs the CPU build. Nobody has seen
+  that path after a real crash: make the GPU dense step fail on purpose in a job (a hal session) and check the job
+  finishes and says so.
+- **What crashes it** is unknown. A backtrace needs a crash under gdb; it took 11 reruns of one crashed step without
+  one, so loop a Drifter dense step some hundred times (2 min each) with core dumps on.
+
+### Not run at all
+
+- **Jobs at once on hal** (`queue-together-app.txt`, `queue-threads-hal.txt`): atlas gained 30% and ran out of CPU;
+  hal has 48 threads. Needs the hold on hal lifted and the image built there. This is the largest untested gain.
+- **The passing changes together in one job**: one geometric pass, repeated frames dropped, texture from every second
+  photo, each measured alone. One `bench.py app` run each on 31de and Drifter once they are in an image.
+- **Repeated frames dropped before extraction** (plan step 2, second half): not written. `dedup90` as measured drops
+  them after matching, so it saves nothing on features and matching yet.
+- **Why the dense step holds one CPU thread** with the GPU at 25% (plan step 9): a few stack samples of
+  `DensifyPointCloud` during a run.
+- **The model check's line** (5 degrees): a Caspar model of 31de passes at 3.42 and is 6.7 degrees from the
+  baseline's. Its surface against base first, then every model on both machines against a line of 3.5.
+- **A real close-up capture** of a hold: the simulation can't show new parallax or texture (`design.md`).
+- **The v3 and native builds** (AVX2, LTO), the hierarchical mapper, the thinned database, thread counts on atlas,
+  38f3: dropped as unlikely to matter now that the mapper is 13% of a job. `queue-hier-atlas.txt`, `queue-thin.txt`
+  and `queue-threads-atlas.txt` are there if that changes.
+- **CDI in atlas's Docker** (`setup-gpu-host.sh`, needs sudo): until it is on, a systemd reload can take the GPU from a
+  running container. Worth doing before atlas makes meshes for the site.
+

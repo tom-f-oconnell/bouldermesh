@@ -33,18 +33,3 @@ all 9f3b4b740847 global_tied 0 --feat sift421 --cond prod --build complete
 feat ce7571e0a4a3 --feat sift421
 feat ce7571e0a4a3 --feat sift421 --cond prod --build complete
 all ce7571e0a4a3 global_tied 0 --feat sift421 --cond prod --build complete
-# Last, as Tom asked on 2026-11-14 21:20 (a good pipeline that assumes a GPU comes before running it on the CPU): the
-# CPU fallbacks. The global mapper on the CPU alone (global_tied_cpu, as the app's first version of it would run),
-# OpenMVS 2.4's depth maps on the CPU (as23cpu), and the old build against the complete one (CPU-only methods).
-all ce7571e0a4a3 global_tied_cpu 0 --cond prod --build complete --post complete --mvs as23
-all 31de9a59303a global_tied_cpu 0 --cond prod --build complete --post complete --mvs as23
-all 9f3b4b740847 global_tied_cpu 0 --cond prod --build complete
-all ce7571e0a4a3 global_tied_cpu 1 --cond prod --build complete
-post 31de9a59303a base-s0@prod --tools complete --cond prod --mvs as23cpu
-post ce7571e0a4a3 base-s0@prod --tools complete --cond prod --mvs as23cpu
-all e6de7747fab5 cpu421 0 --cond prod --build plain
-all e6de7747fab5 global_cpu 0 --cond prod --build plain
-all 31de9a59303a cpu421 0 --cond prod --build plain
-all 31de9a59303a global_cpu 0 --cond prod --build plain
-all 9f3b4b740847 global_cpu 0 --cond prod --build plain
-all 9f3b4b740847 cpu421 0 --cond prod --build plain
