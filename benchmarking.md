@@ -99,7 +99,9 @@ on hal. Names in quotes are atlas's sections under "Results on atlas". GLBs are 
     the baseline's, to see that it is wrong and not the comparison; then try the line at 3.5 over every model on both
     machines. In the app the check only reports, so nothing breaks meanwhile. Fixed meanwhile (396dfdd): the check read
     a few point errors of 1e150 px and more that COLMAP 4.2.1 never set (atlas's `aliked421` and `sift421` models of
-    31de failed on "error" for them); they are now left out and counted (`err_unread`).
+    31de failed on "error" for them); they are now left out and counted (`err_unread`). With it both pass
+    (64 of 7,043 points and 13 of 30,335 left out). The app converts the global mapper's model to 3.9.1 before its own
+    steps, so its meshes may not have such points; it matters if a 4.2.1 bundle adjustment ever runs after the mapper.
 15. **Lower:** why the dense step holds one CPU thread (plan step 9); ALIKED with a pair list (plan step 10, not
     written; ALIKED placed 78 on 31de with 97% of cameras within
     2 degrees, but ran out of memory on Drifter, so only with a pair list and `max_image_size` lowered); `together report` saying "no mesh made" of jobs that
@@ -568,7 +570,7 @@ tell them apart. Later sections correct earlier ones.
 | `meshes.py` | depth maps, fused points, faces and seconds from OpenMVS's logs; `export` copies the GLBs out |
 | `verify_build.py`, `sim_closeups.py`, `incr/boulder.py` | the check a tool tree must pass to be timed; the simulated close-ups; the incremental pipeline |
 
-Last updated: 2026-11-15 23:10 PST, through section 63 of the handoff file.
+Last updated: 2026-11-15 23:25 PST, through section 65 of the handoff file.
 
 ## Benchmarking left on hold
 
