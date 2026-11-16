@@ -798,7 +798,7 @@ COPY_ICON = ('<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke
              'stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/>'
              '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>')
 PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Volunteer for BoulderMesh</title>
+<title>Volunteer for boulderme.sh</title>
 <script>/* light or dark as chosen on the main page: ?theme= from its Volunteer button, or what it keeps, if it's this address */
 try { const t = new URLSearchParams(location.search).get('theme') || localStorage.getItem('bm_theme');
       if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}</script>
@@ -834,7 +834,7 @@ ul{padding-left:1.2em} li{margin:.2em 0}
   text-decoration:none}
 </style>
 <a class="lead" href="/volunteer/leaderboard" title="Who has fetched the most videos, and whose computers have made the most meshes">Leaderboard</a>
-<h1>Volunteer for <a class="home" href="/" title="BoulderMesh's meshes">BoulderMesh</a></h1>
+<h1>Volunteer for <a class="home" href="/" title="BoulderMesh's meshes">boulderme.sh</a></h1>
 <p>BoulderMesh makes 3D models of boulders from photos and climbing videos. You can help from your own computer in three
 ways now: each script makes a token for you, asks your name (shown on the leaderboard; you can leave it out), and registers itself with this
 site, and whoever runs it then approves it. A fourth way, collecting data yourself, is coming soon.</p>
@@ -1065,14 +1065,14 @@ showOs(/Mac/.test(navigator.platform || navigator.userAgent) ? 'mac' : /Win/.tes
 """
 
 
-LEADERBOARD_PAGE = PAGE.split("<h1>")[0].replace("<title>Volunteer for BoulderMesh</title>", "<title>BoulderMesh leaderboard</title>").replace(
+LEADERBOARD_PAGE = PAGE.split("<h1>")[0].replace("<title>Volunteer for boulderme.sh</title>", "<title>boulderme.sh leaderboard</title>").replace(
     '<a class="lead" href="/volunteer/leaderboard" title="Who has fetched the most videos, and whose computers have made the most meshes">Leaderboard</a>',
     '<a class="lead" href="/volunteer/">Volunteer</a>') + """<style>
 table{border-collapse:collapse;width:100%;font-size:.92em;margin:.4em 0 1.4em} th,td{text-align:right;padding:4px 6px;border-bottom:1px solid var(--line)}
 th:nth-child(2),td:nth-child(2){text-align:left} th{font-weight:600;color:var(--mute);font-size:.85em} .note{color:var(--mute);font-size:.85em}
 td.gone{color:var(--mute)} .wrap{overflow-x:auto}
 </style>
-<h1>Leaderboard</h1>
+<h1><a class="home" href="/">boulderme.sh</a> leaderboard</h1>
 <p class="note">Thank you, all. Names are as each chose them when their script registered (or anonymous); see <a href="/volunteer/">Volunteer</a> to join.</p>
 <h2>Videos</h2>
 <p class="note">Videos fetched from YouTube for the server, which can't fetch them itself, and the searches that found them.</p>

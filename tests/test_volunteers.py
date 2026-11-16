@@ -346,7 +346,7 @@ def script_and_broker() -> None:
         st, script = call(base + "/volunteer/bouldermesh_volunteer.py")
         assert st == 200 and script == SCRIPT.read_bytes()
         st, page = call(base + "/volunteer/leaderboard")
-        assert st == 200 and b"<h1>Leaderboard</h1>" in page and b'href="/volunteer/">Volunteer</a>' in page
+        assert st == 200 and b'<a class="home" href="/">boulderme.sh</a> leaderboard</h1>' in page and b'href="/volunteer/">Volunteer</a>' in page
         assert b'href="/volunteer/leaderboard"' in call(base + "/volunteer/")[1]
         assert call(base + "/volunteer/api/work", {"version": 1})[0] == 401
         assert call(base + "/volunteer/api/work", {"version": 0}, token)[0] == 426, "too old a script"
