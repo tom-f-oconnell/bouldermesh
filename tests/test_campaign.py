@@ -3574,4 +3574,31 @@ finally:
     server.VOLUNTEERS.q("DELETE FROM tasks WHERE id='lbtask000001'")
     server.MACHINES.q("DELETE FROM machine_jobs WHERE id IN ('lbjob0000001', 'lbjob0000002')")
 print("leaderboard OK")
+# what machines are doing for each project (the projects tab's tags and order): its meshing, its harvest's filtering,
+# and its mesh's beta or size, by the jobs' labels; a job of nothing known left out
+server.q("INSERT INTO projects(id,name,created,kind,status,mesh_id) VALUES('bb0000000001','Worked Boulder (boulder)',?,'boulder','done','aa0000000001')",
+         time.time(), write=True)
+server.q("INSERT INTO projects(id,name,created,kind,status) VALUES('bb0000000002','Worked Climb (harvest)',?,'harvest','harvested')",
+         time.time(), write=True)
+real_state = server.MACHINES.state
+server.MACHINES.state = lambda: {"jobs": [
+    {"project": "size: aa0000000001", "task": "scale", "state": "running", "machine": "atlas", "minutes": 2.0},
+    {"project": "filter: Worked Climb (harvest)", "task": "filter", "state": "queued", "machine": None, "minutes": 0.1},
+    {"project": "bb0000000002", "task": "reconstruct", "state": "running", "machine": "hal-2", "minutes": 5.0},
+    {"project": "beta: ffffffffffff", "task": "beta", "state": "running", "machine": "Gerty", "minutes": 1.0},
+    {"project": "size: aa0000000001", "task": "scale", "state": "done", "machine": "atlas", "minutes": 9.0}]}
+try:
+    work = server.machine_work()
+    assert work["bb0000000001"] == [{"task": "scale", "what": "finding the size of", "state": "running", "machine": "atlas", "minutes": 2.0}], work
+    assert [w["task"] for w in work["bb0000000002"]] == ["filter", "reconstruct"], work
+    assert len(work) == 2, "an unknown mesh's job, and a finished one, left out"
+    d = server.describe_job("scale", "size: aa0000000001")
+    assert d["what"] == "finding the size of " + server.q("SELECT name FROM meshes WHERE id='aa0000000001'", one=True)["name"] \
+        if server.q("SELECT name FROM meshes WHERE id='aa0000000001'", one=True) else d["what"] == "finding the size of aa0000000001", d
+    assert server.describe_job("reconstruct", "bb0000000002")["what"] == "meshing Worked Climb (harvest)"
+    assert server.describe_job("filter", "filter: Worked Climb (harvest)") == {"what": "filtering photos of Worked Climb (harvest)"}
+finally:
+    server.MACHINES.state = real_state
+    server.q("DELETE FROM projects WHERE id IN ('bb0000000001','bb0000000002')", write=True)
+print("machines' work by project OK")
 print("ALL CAMPAIGN TESTS PASSED")

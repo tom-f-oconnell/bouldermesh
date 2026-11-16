@@ -3275,10 +3275,15 @@ $('#m-export').onchange = async ev => {
 // ---------------------------------------------------------------- projects
 let active = null;
 const projectCards = new Map();
+let areasAtWork = new Map();     // area id: what machines are doing for its projects (refreshProjects()), for the areas list
 async function refreshProjects(){
-  // what's working first (running, harvesting, then queued), the rest in the server's order
-  const rank = p => ({ running: 0, harvesting: 0, queued: 1 })[p.status] ?? 2;
+  // what's being worked on first: running or harvesting, or a machine at work for it (its mesh's beta or size, say); then
+  // what's queued or waiting for a machine; the rest in the server's order
+  const rank = p => (['running', 'harvesting'].includes(p.status) || (p.work || []).some(w => w.state === 'running')) ? 0
+    : (p.status === 'queued' || (p.work || []).length) ? 1 : 2;
   const list = (await api('/api/projects')).map((p, i) => [p, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
+  areasAtWork = new Map();
+  for (const p of list) for (const a of (p.work || []).length ? p.areas || [] : []) areasAtWork.set(a.id, [...(areasAtWork.get(a.id) || []), ...p.work]);
   const el = $('#projects'); el.innerHTML = list.length ? '' : '<div class="status">No projects yet.</div>';
   projectCards.clear();
   const cut = list.filter(p => p.status === 'interrupted').length;
@@ -3291,7 +3296,7 @@ async function refreshProjects(){
   for (const p of list) {
     const d = document.createElement('div'); d.className = 'card' + (p.id===active ? ' active' : '');
     const busy = BUSY.includes(p.status);
-    d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':p.kind==='boulder'?'<span class="tag climb" title="Every photo its climbs\' harvests found, together">boulder</span>':''}</b><span class="status ${p.status}">${p.status}${p.demo?' (demo)':''}</span>${p.low_priority ? `<span class="tag low" title="${LOW_TIP}">low priority</span>` : ''}</div>
+    d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':p.kind==='boulder'?'<span class="tag climb" title="Every photo its climbs\' harvests found, together">boulder</span>':''}</b><span class="status ${p.status}">${p.status}${p.demo?' (demo)':''}</span>${(p.work || []).map(w => `<span class="tag" title="${w.state === 'running' ? `${esc(w.machine || 'a machine')} has been at it ${w.minutes ?? 0} min` : 'waiting for a machine'}">${esc(w.what.replace(/ (of|for)$/, ''))}${w.state === 'running' ? ` on ${esc(w.machine || 'a machine')}` : ', waiting'}</span>`).join('')}${p.low_priority ? `<span class="tag low" title="${LOW_TIP}">low priority</span>` : ''}</div>
       ${projectAreasHtml(p)}
       <div class="row" style="margin-top:8px">
         <label class="file"><button class="sec sm" type="button">Add photos or videos</button><input type="file" multiple accept="image/jpeg,image/png,video/*"></label>
@@ -3595,10 +3600,12 @@ function currentHtml(c){
   }).join('') + pausedHtml(c);
 }
 async function refreshCampaigns(){
-  const list = await api('/api/campaigns');
+  // those whose projects machines are working for (a mesh's size or beta, say) first, the rest in their order (#place)
+  const busy = c => (areasAtWork.get(c.id) || []).some(w => w.state === 'running') ? 0 : areasAtWork.has(c.id) ? 1 : 2;
+  const list = (await api('/api/campaigns')).map((c, i) => [c, i]).sort((a, b) => busy(a[0]) - busy(b[0]) || a[1] - b[1]).map(x => x[0]);
   const el = $('#campaigns');
   // progress moves constantly: only rebuild when something else changed, which would close open lists
-  const key = JSON.stringify(list.map(c => ({ ...c, current: c.current && { ...c.current, progress: null, boulder_panel: null, updated: null }, running: (c.running || []).map(r => r.name) })));
+  const key = JSON.stringify([...areasAtWork]) + JSON.stringify(list.map(c => ({ ...c, current: c.current && { ...c.current, progress: null, boulder_panel: null, updated: null }, running: (c.running || []).map(r => r.name) })));
   const typing = el.contains(document.activeElement) && document.activeElement.matches('input[type=number]');
   if (key === campaignShown || typing) {
     for (const c of list) { const n = el.querySelector(`[data-camp="${c.id}"] .now`); if (n) n.innerHTML = currentHtml(c); }
@@ -3625,7 +3632,8 @@ async function refreshCampaigns(){
       const tip = { queued: 'Running, but waiting its turn: no worker is free for it. Areas are taken in the order they were entered, top first.',
                     'low priority': `Only remaking its old meshes, in the background, as no area has anything else to take. ${c.status === 'running' ? 'Its own list has nothing left to go.' : `Its own list stays ${c.status}.`}`,
                     waiting: 'Running, but with no climb to take now: its climbs wait for volunteers\' YouTube searches and videos, or for the rest of their boulder\'s, or are paused. Workers go on to the next area meanwhile.' }[state];
-      d.innerHTML = `<div class="row"><span class="grow campname">${title}</span>${c.place ? `<small class="meta" title="Its place in the order areas are taken: as entered, top first">#${c.place}</small>` : ''}<span class="status ${['stopped', 'queued', 'waiting'].includes(state) ? '' : state === 'low priority' ? 'lowp' : state === 'done' ? 'done' : 'running'}"${tip ? ` title="${esc(tip)}"` : ''}>${esc(state === 'low priority' ? 'low priority: remaking old meshes' : state)}</span></div>
+      const atWork = areasAtWork.get(c.id) || [];
+      d.innerHTML = `<div class="row"><span class="grow campname">${title}${atWork.length ? ` <span class="tag" title="${esc(atWork.map(w => `${w.what.replace(/ (of|for)$/, '')}${w.state === 'running' ? ` on ${w.machine || 'a machine'}` : ', waiting'}`).join('; '))}">machines at work: ${atWork.length}</span>` : ''}</span>${c.place ? `<small class="meta" title="Its place in the order areas are taken: as entered, top first">#${c.place}</small>` : ''}<span class="status ${['stopped', 'queued', 'waiting'].includes(state) ? '' : state === 'low priority' ? 'lowp' : state === 'done' ? 'done' : 'running'}"${tip ? ` title="${esc(tip)}"` : ''}>${esc(state === 'low priority' ? 'low priority: remaking old meshes' : state)}</span></div>
         <div class="meta">${ORDER_NAMES[c.ord] || ''}${c.max_meshes ? `, up to ${c.max_meshes} mesh${c.max_meshes === 1 ? '' : 'es'}${c.count_failures ? ` or failure${c.max_meshes === 1 ? '' : 's'}` : ''} (${c.made} made)` : ''}</div>
         ${c.listed ? `<div class="meta" title="As Mountain Project lists them. Whether a lowest area is one boulder is read from its page as its climbs come up.">${plural(c.listed.climbs, 'climb')} on MP: ${plural(c.listed.boulders, 'boulder')}, ${plural(c.listed.groups, 'area')} of several rocks${c.listed.unread ? `, ${plural(c.listed.unread, 'lowest area')} not read yet` : ''}</div>` : ''}
         <div class="meta" style="margin-top:6px"><b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${n.paused ? ` · ${n.paused} paused` : ''}${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${c.old_queued ? ` · <span class="lowp" title="Their only meshes were made before the rules for what an area meshes last changed, or are another climb's: looked for new photos and meshed again, only when no area has anything else to take. This never starts or resumes the area's own list.">${plural(c.old_queued, 'old mesh', 'old meshes')} being remade, at low priority</span>` : ''}${c.needs_backup ? ` · <span style="color:var(--warn)" title="Their photos were offloaded to the backup to make room: each is asked for back as its turn comes, and waits for it (the backup sends them within half an hour)">needs data from the backup (${c.needs_backup})</span>` : ''}${c.blocked ? ` · <span style="color:var(--bad)" title="What they need was lost from the backup: nothing of them is made or replaced until the admin page says to mesh them again without it, or leave them as they are">${c.blocked} blocked: data lost from the backup</span>` : ''}${n.beyond ? ` · ${n.beyond} more past the limit` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>

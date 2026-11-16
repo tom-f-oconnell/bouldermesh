@@ -8199,6 +8199,31 @@ def describe_job(task: str, label: str) -> dict:
     return {"what": f"{kind} {re.sub(r'^filter: ', '', label or '')}".strip()}
 
 
+def machine_work() -> dict[str, list]:
+    """What machines are doing or waiting to do for each project, by its id: [{task, what, state, machine, minutes}] for
+    its meshing, its harvest's filtering, and finding its mesh's beta, size or scenery, so that the projects tab shows a
+    project being worked on as such even when its own status isn't running (a finished mesh's size, say)."""
+    out: dict[str, list] = {}
+    try:
+        jobs = [j for j in MACHINES.state()["jobs"] if j["state"] in ("queued", "running")]
+    except Exception:  # noqa: BLE001 - the list is only less informative
+        return out
+    by_mesh = {r["mesh_id"]: r["id"] for r in q("SELECT id, mesh_id FROM projects WHERE mesh_id IS NOT NULL")}
+    by_name = None
+    for j in jobs:
+        label = j.get("project") or ""
+        m = re.fullmatch(r"(?:beta|size|scenery): ([0-9a-f]{12})", label)
+        pid = by_mesh.get(m[1]) if m else label if re.fullmatch(r"[0-9a-f]{12}", label) else None
+        if pid is None and label.startswith("filter: "):
+            if by_name is None:
+                by_name = {r["name"]: r["id"] for r in q("SELECT id, name FROM projects")}
+            pid = by_name.get(label[len("filter: "):])
+        if pid:
+            out.setdefault(pid, []).append({"task": j["task"], "what": JOB_KINDS.get(j["task"], j["task"]), "state": j["state"],
+                                            "machine": j.get("machine"), "minutes": j.get("minutes")})
+    return out
+
+
 def phone_apps() -> dict:
     """Where an account gets the phone apps: the Android app's latest build, and the iPhone app's public TestFlight link
     (the admin page's apps.testflight_url), if there is one. Shown only to accounts (and invitees, as they join)."""
@@ -9132,11 +9157,14 @@ class Handler(BaseHTTPRequestHandler):
                 me = self.who()     # what an account added and nobody approved is its own and the owner's to see; what it deleted, the owner's
                 rows = [r for r in rows if not r["user_id"] or (r["approved"] == 1 and not r["deleted_at"]) or
                         (me and (me["role"] == "owner" or (r["user_id"] == me["id"] and not r["deleted_at"])))]
+                work = machine_work()
                 for r in rows:
                     if r["id"] in areas:
                         r["areas"] = areas[r["id"]]
                         # remaking an old mesh (queue_old()): after everything else
                         r["low_priority"] = any(a.get("old_rerun") for a in r["areas"])
+                    if r["id"] in work:
+                        r["work"] = work[r["id"]]
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/effects", p)
             if m:   # what stopping or deleting it would do, to say first
