@@ -23,8 +23,10 @@ on hold", the last section), and atlas is to make meshes for the site.
 **Nov 15, 21:45: Tom told atlas "go with your recommendations"** (handoff section 66). Into the app: one geometric
 pass (step 5); GPU SIFT with the CPU SIFT as its fallback when its model fails the check or places under 70% of the
 matched photos (step 8); a video's repeated frames dropped in the harvest, slots not refilled (step 6). Not taken: no
-side models (step 7). A hal session writes them once Tom confirms there (it came by relay, and two of them change
-which photos are placed, so `MESH_RULES` is his to call first); atlas checks each before it's deployed, then times
+side models (step 7). `MESH_RULES` is not raised for them (Tom, section 67:
+"defer MESH_RULES"; meshes from before the new boulder grouping are remade first, and the ~3 made between the grouping
+and the new pipeline only far down the line, maybe in a lower tier: ask him before queuing them). A hal session writes
+them once Tom confirms there (it came by relay); atlas checks each before it's deployed, then times
 them together with `views2` (step 10).
 
 <!-- owner: hal -->
@@ -577,7 +579,7 @@ tell them apart. Later sections correct earlier ones.
 | `meshes.py` | depth maps, fused points, faces and seconds from OpenMVS's logs; `export` copies the GLBs out |
 | `verify_build.py`, `sim_closeups.py`, `incr/boulder.py` | the check a tool tree must pass to be timed; the simulated close-ups; the incremental pipeline |
 
-Last updated: 2026-11-15 23:40 PST, through section 66 of the handoff file.
+Last updated: 2026-11-15 23:55 PST, through section 67 of the handoff file.
 
 ## Benchmarking left on hold
 
