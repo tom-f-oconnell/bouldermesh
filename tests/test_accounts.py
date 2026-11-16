@@ -37,6 +37,12 @@ with tempfile.TemporaryDirectory() as tmp:
     late = a.invite(now=1000.0, days=1)
     assert "isn't good" in refused(a.join, late["code"], "Late", now=1000.0 + 86401), "and not after it runs out"
     assert "taken" in refused(a.join, a.invite(now=1000.0)["code"], "ana b", now=1004.0)
+    # an invite taken back: its link makes no account; one used, or a bad id, isn't there to take back
+    back = a.invite(note="for Bo", now=1000.0)
+    bid = next(i["id"] for i in a.invites(now=1001.0) if i["note"] == "for Bo")
+    assert a.rescind(bid) and not a.rescind(bid) and not a.rescind("nothing!") and not a.rescind("x' OR 1")
+    assert all(i["note"] != "for Bo" for i in a.invites(now=1001.0))
+    assert "isn't good" in refused(a.join, back["code"], "Bo C", now=1002.0)
     assert a.user_for(ana["token"])["id"] == ana["user"]["id"] and a.user_for("x" + ana["token"]) is None and a.user_for(None) is None
     # the terms: this version or none
     assert "changed" in refused(a.accept, ana["user"]["id"], accounts.TERMS_VERSION + 1)

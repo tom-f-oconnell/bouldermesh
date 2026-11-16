@@ -1010,10 +1010,18 @@ function renderPeople(u){
           x.disabled ? `<button class="sec" data-popen="${esc(x.id)}">Reopen</button>` : `<button class="sec" data-psignin="${esc(x.id)}" title="A link that signs one device in to this account, once, within 10 minutes: for an account reopened, or whose devices are lost">Sign-in link</button> <button class="danger" data-pclose="${esc(x.id)}" data-name="${esc(x.name)}">Close</button>`} <button class="danger" data-pdel="${esc(x.id)}" data-name="${esc(x.name)}" title="Remove it for good, freeing its name: only an account that added nothing">Delete</button></td></tr>`).join('')}</table>`
       : '<div class="note">No accounts yet.</div>';
   }
-  $('#inv-list').innerHTML = u.invites.length ? `<table><tr><th>Open invites</th><th>For</th><th>Made</th><th>Good until</th></tr>${
-    u.invites.map(i => `<tr><td>${esc(i.note || '(no note)')}</td><td>a ${esc(i.role)}</td><td>${when(i.created)}</td><td>${when(i.expires)}</td></tr>`).join('')}</table>
+  $('#inv-list').innerHTML = u.invites.length ? `<table><tr><th>Open invites</th><th>For</th><th>Made</th><th>Good until</th><th></th></tr>${
+    u.invites.map(i => `<tr><td>${esc(i.note || '(no note)')}</td><td>a ${esc(i.role)}</td><td>${when(i.created)}</td><td>${when(i.expires)}</td>
+      <td><button class="sec sm" data-rescind="${esc(i.id)}" data-note="${esc(i.note || '')}" title="Take back this invite: its link no longer makes an account" aria-label="Take back this invite">✕</button></td></tr>`).join('')}</table>
     <div class="note">An invite's link is shown only when it's made. One not used runs out by itself.</div>` : '';
 }
+$('#inv-list').addEventListener('click', async ev => {     // ✕: an open invite taken back, so its link no longer works
+  const b = ev.target.closest('[data-rescind]');
+  if (!b) return;
+  if (!await askDanger('Take back this invite?', `${b.dataset.note ? `"${b.dataset.note}": ` : ''}its link no longer makes an account, for whoever has it. Accounts already made with others stay.`, 'Take it back')) return;
+  try { const r = await call('/api/admin/actions/user-rescind', { id: b.dataset.rescind }); render(r); msg('Invite taken back', 4000); }
+  catch (e) { msg(e.message, 8000); }
+});
 $('#inv-make').onclick = async () => {
   try {
     const r = await call('/api/admin/actions/user-invite', { role: $('#inv-role').value, areas: [], note: $('#inv-note').value.trim() });

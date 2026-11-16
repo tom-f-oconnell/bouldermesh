@@ -110,6 +110,14 @@ class Accounts:
         return self._q("SELECT substr(hash, 1, 8) AS id, role, areas, note, created, expires FROM invites "
                        "WHERE used_by IS NULL AND expires > ? ORDER BY created DESC", now)
 
+    def rescind(self, invite_id: str) -> bool:
+        """Take back an invite not yet used, by its id (invites()'s: the start of its code's hash): its link no longer
+        makes an account. Whether there was one to take back."""
+        if not (isinstance(invite_id, str) and len(invite_id) == 8 and all(c in "0123456789abcdef" for c in invite_id)):
+            return False
+        with self.lock, self._con() as con:
+            return con.execute("DELETE FROM invites WHERE substr(hash, 1, 8)=? AND used_by IS NULL", (invite_id,)).rowcount > 0
+
     def join(self, code, name, label: str | None = None, now: float | None = None) -> dict:
         """Make an account from an invite. Returns {token, user}.
 

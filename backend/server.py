@@ -8673,6 +8673,13 @@ def admin_user_invite(body: dict) -> dict:
     return {**admin_state(), "invite": {**made, "url": f"{SITE_URL.rstrip('/')}/?invite={made['code']}" if SITE_URL else None}}
 
 
+def admin_user_rescind(body: dict) -> dict:
+    """Take back an open invite, by its id ({id}, as the admin page lists them): its link no longer makes an account."""
+    if not ACCOUNTS.rescind(str(body.get("id") or "")):
+        raise ValueError("there's no such open invite: used, run out, or taken back already")
+    return admin_state()
+
+
 def admin_user_signin(body: dict) -> dict:
     """A one-time link (and its QR) that signs a device in to an account, for the admin page: one reopened, or whose
     devices are lost, has none left to make one from. As an account's own Sign in another device: good once, for
@@ -11642,7 +11649,7 @@ def main() -> None:
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
-                                       "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-change": admin_user_change,
+                                       "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-rescind": admin_user_rescind, "user-change": admin_user_change,
                                        "user-signin": admin_user_signin, "user-delete": admin_user_delete, "submission": admin_submission, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
                                        "machine-revoke": admin_machine_revoke, "clear-rejected": admin_clear_rejected,
                                        "volunteers-forget": lambda _: {"result": f"forgot {VOLUNTEERS.forget_gone()} volunteer(s)"},
