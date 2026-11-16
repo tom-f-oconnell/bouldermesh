@@ -227,6 +227,24 @@ with tempfile.TemporaryDirectory() as tmp:
         assert kept["deleted_at"] is None and kept["approved"] == 1 and state["users"]["list"][0]["used"] == 0
         admin("submission", {"id": other, "do": "remove"})
         assert not (tmp / "data" / "projects" / other).exists()
+
+        # the People section: a sign-in link for an account (once), renaming it, and deleting one that added nothing
+        bad = lambda name, body: req(A, "POST", f"/api/admin/actions/{name}", body)      # noqa: E731
+        sg = admin("user-signin", {"id": bo["id"]})["signin"]
+        took = req(B, "POST", "/api/account/pair/take", {"code": sg["code"], "label": "a phone"})
+        assert took[0] == 201 and took[2]["user"]["name"] == "Bo", took
+        assert req(B, "POST", "/api/account/pair/take", {"code": sg["code"]})[0] == 400, "once"
+        admin("user-change", {"id": bo["id"], "disabled": True})
+        assert bad("user-signin", {"id": bo["id"]})[0] == 400, "a closed account: reopened first"
+        admin("user-change", {"id": bo["id"], "disabled": False, "name": "Bo Two"})
+        assert next(x for x in admin("user-signin", {"id": bo["id"]})["users"]["list"] if x["id"] == bo["id"])["name"] == "Bo Two"
+        st, _, e = bad("user-delete", {"id": ana["id"]})
+        assert st == 400 and "project(s)" in e["error"], e        # Ana's projects keep her
+        state = admin("user-delete", {"id": bo["id"]})
+        assert bo["id"] not in [x["id"] for x in state["users"]["list"]]
+        assert req(B, "GET", "/api/account", headers=BO)[2]["user"] is None, "its devices are signed out"
+        again = req(B, "POST", "/api/account/join", {"invite": admin("user-invite", {})["invite"]["code"], "name": "Bo Two"})
+        assert again[0] == 201, again        # its name free again
     finally:
         out = srv.stop()
 print("what accounts add OK")

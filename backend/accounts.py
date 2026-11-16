@@ -183,6 +183,18 @@ class Accounts:
             self._q("UPDATE users SET name=? WHERE id=?", name, uid)
         return self.get(uid)
 
+    def delete(self, uid: str) -> dict:
+        """Remove an account for good, its devices' tokens and sign-in codes with it, freeing its name. Whether it added
+        anything is for the caller to have checked (the server's admin_user_delete()). Returns it as it was."""
+        user = self.get(uid)
+        if user is None:
+            raise Refused("there's no such account")
+        with self.lock, self._con() as con:
+            for table in ("tokens", "pairings"):
+                con.execute(f"DELETE FROM {table} WHERE user_id=?", (uid,))
+            con.execute("DELETE FROM users WHERE id=?", (uid,))
+        return user
+
     def accept(self, uid: str, version, now: float | None = None) -> dict:
         """The account accepts the terms as they stand. Raises Refused for any other version: they've changed since it read them."""
         if version != TERMS_VERSION:
