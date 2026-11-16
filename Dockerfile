@@ -197,8 +197,14 @@ RUN git clone --depth 1 --branch 4.14.0 https://github.com/opencv/opencv.git /op
 RUN curl -fsSL https://github.com/CGAL/cgal/releases/download/v6.0.1/CGAL-6.0.1.tar.xz | tar -xJ --no-same-owner -C /opt \
  && cmake -S /opt/CGAL-6.0.1 -B /opt/CGAL-6.0.1/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/cgal6 \
  && cmake --install /opt/CGAL-6.0.1/build
+# v2.4.0's TImage::sample() with a sampler reads the image as if it were already of the type it interpolates in, so
+# TextureMesh's seam levelling sampled garbage and painted a sixth to a quarter of every atlas black (upstream issue
+# #1251); patched as upstream fixed it after 2.4.0 (eeedab7, Feb 27, 2026)
 RUN git clone --depth 1 https://github.com/cdcseacave/VCG.git /opt/vcglib \
- && git clone --depth 1 --branch v2.4.0 https://github.com/cdcseacave/openMVS.git /opt/openMVS
+ && git clone --depth 1 --branch v2.4.0 https://github.com/cdcseacave/openMVS.git /opt/openMVS \
+ && sed -i 's/return Sampler::Sample< INTERTYPE, INTERTYPE, TImage<TYPE>, SAMPLER,/return Sampler::Sample< TYPE, INTERTYPE, TImage<TYPE>, SAMPLER,/' \
+      /opt/openMVS/libs/Common/Types.inl \
+ && grep -q 'return Sampler::Sample< TYPE, INTERTYPE, TImage<TYPE>, SAMPLER,' /opt/openMVS/libs/Common/Types.inl
 # the CPU build, then the CUDA one (for every NVIDIA generation, as COLMAP's is), each into its own folder
 RUN for cuda in OFF ON; do \
       cmake -S /opt/openMVS -B /opt/openMVS/build-$cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT=/opt/vcglib \

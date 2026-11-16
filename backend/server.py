@@ -73,6 +73,7 @@ import orientation  # noqa: E402
 import policy  # noqa: E402
 import provenance  # noqa: E402
 import retexture  # noqa: E402
+import textureagain  # noqa: E402
 import settings as settings_mod  # noqa: E402
 import pipeline  # noqa: E402
 import proxy_ranges  # noqa: E402
@@ -6815,6 +6816,38 @@ def run_retexture(mid: str) -> None:
 _retexturing: set[str] = set()
 
 
+def run_texture_again(mid: str) -> None:
+    """Texture a mesh again keeping its shape (textureagain.py), from its kept cameras and its project's photos, and put
+    it in place of its texture; its packed copies, shrunk textures and picture follow, as its file changed. Said in
+    texture-again.log beside it."""
+    m = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
+    mesh_dir = MESHES / mid
+
+    def log(line: str) -> None:
+        with open(mesh_dir / "texture-again.log", "a") as f:
+            f.write(line.rstrip() + "\n")
+    work = DATA / "work" / f"texture-{mid}"
+    try:
+        if not m or not m["source"].startswith("project:"):
+            raise RuntimeError("only a mesh made here from a project's photos can be textured again")
+        pid = m["source"].split(":", 1)[1]
+        need_back([pid], "texturing again")
+        log(f"-- {time.strftime('%Y-%m-%d %H:%M')}: texturing again")
+        new = textureagain.texture_again(mesh_dir, PROJECTS / pid / "photos", PROJECTS / pid / "masks", work, log)
+        textureagain.install(mesh_dir, new, log)
+        queue_pack(mid)
+    except PhotosAway:
+        log("its photos are in the backup: asked for back; texture it again once they're here")
+    except Exception as e:  # noqa: BLE001 - said in its log, and the mesh left as it was
+        log(f"FAILED: {type(e).__name__}: {e}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        _texturing_again.discard(mid)
+
+
+_texturing_again: set[str] = set()
+
+
 # ------------------------------------------------------------------ what the site shows (policy.py)
 def texture_mode(mid: str, source: str | None = None) -> str:
     """How a mesh's texture is shown: "full", "permitted" (from permitted/) or "hidden"."""
@@ -7273,12 +7306,14 @@ def run_job(job: dict) -> None:
     """A job someone asked for, on this thread's worker."""
     w = current_worker()
     w.job = {"job": job, "started": time.time(), "from": job_progress(job) or 0.0, "thread": threading.get_ident()}
-    jobctl.begin(low_priority=job["type"] in ("retexture", "scale", "boulder"))
+    jobctl.begin(low_priority=job["type"] in ("retexture", "texture-again", "scale", "boulder"))
     try:
         if job["type"] == "scale":
             run_scale(job["mid"])
         elif job["type"] == "retexture":
             run_retexture(job["mid"])
+        elif job["type"] == "texture-again":
+            run_texture_again(job["mid"])
         elif job["type"] == "reconstruct":
             with pullwork.priority(contribution_prio(q("SELECT user_id, approved FROM projects WHERE id=?", job["pid"], one=True) or {})):
                 run_reconstruct(job["pid"], job.get("internet", False), resume=job.get("resume", False))
@@ -7336,6 +7371,7 @@ _draining: dict | None = None    # deploy.sh about to restart it: {since, now, u
 DRAIN_LEASE = 300   # seconds a drain lasts unless deploy.sh says so again (it does every 30 s as it waits): one it left behind ends
 AGAIN = {"reconstruct": "Retry on its project runs it", "harvest": "Retry on its project runs it", "retry": "Retry on its project runs it",
          "boulder": "Retry on its project runs it", "retexture": "Make textures... on the admin page runs it",
+         "texture-again": "Texture again on the admin page runs it",
          "scale": "it's queued again by itself"}     # what runs a job after a restart interrupted it
 
 
@@ -11071,6 +11107,22 @@ def admin_retexture(_: dict) -> dict:
                       + (f"; {away} whose photos are in the backup weren't" if away else "")}
 
 
+def admin_texture_again(body: dict) -> dict:
+    """Queue meshes to be textured again, keeping their shape (run_texture_again()): {"ids": "<mesh ids, space or comma
+    separated>"}."""
+    ids = [i for i in re.split(r"[\s,]+", str(body.get("ids") or "")) if i]
+    bad = [i for i in ids if not re.fullmatch(r"[0-9a-f]{12}", i) or not q("SELECT 1 FROM meshes WHERE id=?", i)]
+    if not ids or bad:
+        raise ValueError(f"no such mesh: {', '.join(bad)}" if bad else "give the ids of the meshes to texture again")
+    n = 0
+    for mid in dict.fromkeys(ids):
+        if mid not in _texturing_again:
+            _texturing_again.add(mid)
+            queue_job({"type": "texture-again", "mid": mid})
+            n += 1
+    return {"result": f"queued {n} mesh(es) to be textured again: each one's texture-again.log says how it went"}
+
+
 def main() -> None:
     began = time.time()
     init_db()
@@ -11133,7 +11185,7 @@ def main() -> None:
                          "open to anyone who can reach this port; set EDIT_TOKEN, or READ_ONLY=1, before exposing it"), flush=True)
     in_docker = Path("/.dockerenv").exists()
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
-                                      {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rest": admin_rest,
+                                      {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "texture-again": admin_texture_again, "rest": admin_rest,
                                        "remesh-untied": admin_remesh_untied, "inputs-check": admin_inputs_check,
                                        "old-decide": admin_old_decide, "lost-decide": admin_lost_decide,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,

@@ -155,6 +155,13 @@ MVS24_DENSIFY = ["--fusion-filter", "1", "--number-views-fuse", "3", "--postproc
 MVS24_MESH = ["--min-point-distance", "2.5"]
 
 
+def texture_args(work: Path, images: Path, mask_args: list[str], log=None) -> list[str]:
+    """TextureMesh's arguments after its input, output and work folder, as every mesh is textured (here and by
+    textureagain.py)."""
+    return ["--export-type", "glb", "--empty-color", str(0x808080), "--max-texture-size", str(MAX_TEXTURE), *mask_args,
+            *texture_views(work, images, log)]
+
+
 @functools.cache
 def mvs_version() -> tuple[int, int] | None:
     """OpenMVS's version (major, minor), from DensifyPointCloud's own banner, or None if it can't be told."""
@@ -1143,8 +1150,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             # separate files referenced by relative URI, so they're copied alongside it. Faces no photo
             # saw get --empty-color, by default a bright orange that reads as part of the scene.
             _run([tex, "scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o", "scene_dense_mesh_texture.mvs",
-                  "-w", str(work), "--export-type", "glb", "--empty-color", str(0x808080),
-                  "--max-texture-size", str(MAX_TEXTURE), *mask_args, *texture_views(work, dense / "images", log)], work, log,
+                  "-w", str(work), *texture_args(work, dense / "images", mask_args, log)], work, log,
                  _phases(tracker, "texture", (r"Initialized views \d+ \(([\d.]+)%", 0, 0.3),
                          (r"Assigning the best view .*completed", 0.3, 0.6), (r"Generating texture atlas .*completed", 0.6, 0.95)))
             glb = work / "scene_dense_mesh_texture.glb"

@@ -82,6 +82,8 @@
     <label class="choice"><input type="radio" name="tex" value="permitted"> Only from photos clearly free to copy <small>(a mesh's texture if all its photos are, or else one made from only those, or none)</small></label>
     <label class="choice"><input type="radio" name="tex" value="none"> None <small>(every mesh plain grey)</small></label>
     <div class="row"><button class="sec" id="retex">Make textures from only the photos free to copy</button><span class="note" id="retex-note"></span></div>
+    <div class="row"><input type="text" id="texagain-ids" placeholder="mesh ids, e.g. c2a6a38ed672 ebdeeb2837f9" style="flex:1;min-width:200px">
+      <button class="sec" id="texagain" title="Colour these meshes again from their photos, keeping their shape and cleanup: a minute or two each, where meshing again takes ten or more. Each one's old texture is kept beside it, in texture-before/">Texture again</button></div>
     <div style="margin-top:14px"><b>Source photos and video frames</b></div>
     <label class="choice"><input type="radio" name="src" value="all"> Show all <small>(as now)</small></label>
     <label class="choice"><input type="radio" name="src" value="link"> Show those free to copy, and only link to the rest <small>(their copies here aren't shown)</small></label>
@@ -814,6 +816,7 @@ $('#room-rejected').onclick = async () => {
   const b = state?.backup || {}, last = b.confirmed ? `The last good backup, which keeps rejected photos too, began ${new Date(b.confirmed * 1000).toLocaleString()}`
     : 'No backup of this site has been confirmed';
   if (!await askDanger('Delete every photo the filter rejected?', `From every project not being harvested or meshed now. They can't be put back after, nor looked at to judge the filter. ${last}: photos rejected since aren't in it. To keep them, back up first: on hal, sudo systemctl start bouldermesh-backup (this page's backup line says when it's done), then come back.`, 'Delete them')) return; msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
+$('#texagain').onclick = async () => { try { msg((await call('/api/admin/actions/texture-again', { ids: $('#texagain-ids').value })).result, 8000); } catch (e) { msg(e.message, 8000); } };
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#via').onchange = () => save({ 'youtube.via': $('#via').value });
 $('#area-meshes').onchange = () => save({ 'areas.meshes': $('#area-meshes').value });
