@@ -7339,6 +7339,9 @@ def campaigns_listed() -> list[dict]:
         v["meshed"] = q("SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND status='done' AND mesh_id IS NOT NULL",
                         c["id"], one=True)["n"]
         v["climbs"] = q("SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=?", c["id"], one=True)["n"]
+        at = q("SELECT AVG(cl.lat) lat, AVG(cl.lng) lng FROM campaign_items ci JOIN climbs cl ON cl.id=ci.climb_id "
+               "WHERE ci.campaign_id=? AND cl.lat IS NOT NULL AND cl.lng IS NOT NULL", c["id"], one=True)
+        v["lat"], v["lng"] = (at["lat"], at["lng"]) if at else (None, None)     # where its climbs are, for the areas map
         v["complete"] = c["status"] == "done" and not c.get("max_meshes") and v["meshed"] > 0
         if c["status"] == "stopped":
             away = sum(r["bytes"] or 0 for r in area_away(c["id"]))

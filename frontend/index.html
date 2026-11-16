@@ -211,6 +211,13 @@
   /* the areas with meshes, in place of the 3D view until a mesh is loaded (areaMap()) */
   #areamap .areahead{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:500;background:var(--overlay);border:1px solid var(--line);
     border-radius:8px;padding:6px 12px;font-size:13px;max-width:calc(100% - 24px);text-align:center;pointer-events:none}
+  #areamap .arealoading{position:absolute;top:48px;left:50%;transform:translateX(-50%);z-index:500;background:var(--overlay);border:1px solid var(--line);
+    border-radius:8px;padding:5px 10px;font-size:12px;display:flex;align-items:center;gap:8px;pointer-events:none}
+  #areamap .arealoading[hidden]{display:none}
+  .minispin{display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--acc);animation:spin .8s linear infinite}
+  .arealegend{display:flex;flex-direction:column;gap:2px}
+  #campaigns.stale{opacity:.55;pointer-events:none}     /* this browser's last copy, until the new one comes */
+  #areas-loading[hidden]{display:none}
   #areamap .leaflet-tooltip.arealabel{background:var(--overlay);color:var(--fg);border:1px solid var(--line);font-size:12px;font-weight:600;padding:2px 6px}
   #viewer canvas{display:block;width:100%;height:100%}
   #viewer.quiet #hud,#viewer.quiet #viewnote,#viewer.quiet #pieces,#viewer.quiet #orient,#viewer.quiet #vclimb{display:none!important}
@@ -539,7 +546,8 @@
         </details>
       </section>
       <section class="areas-list">
-        <h2>Areas <small class="meta" id="areas-tally" style="text-transform:none;font-weight:normal"></small></h2>
+        <h2>Areas <small class="meta" id="areas-tally" style="text-transform:none;font-weight:normal"></small>
+          <small class="meta" id="areas-loading" style="text-transform:none;font-weight:normal"><span class="minispin"></span> loading…</small></h2>
         <div id="campaigns"></div>
       </section>
     </div>
@@ -710,7 +718,8 @@
       <div id="drop">Drop mesh file to upload &amp; view</div>
     </div>
     <div id="map"></div>
-    <div id="areamap"><div class="areahead">Areas with meshes: pick one to list its meshes, or pick a mesh on the left</div></div>
+    <div id="areamap"><div class="areahead">Areas with meshes: pick one to list its meshes, or pick a mesh on the left</div>
+      <div class="arealoading"><span class="minispin"></span> Loading the areas…</div></div>
   </div>
 </main>
 <div id="loading" hidden><div class="card"><div class="spin"></div><div class="what"></div><div class="detail"></div><div class="bar"><i></i></div></div></div>
@@ -983,7 +992,7 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + b.dataset.tab));
   if (b.dataset.tab === 'beta') { renderBetaList(); betaLoop(); }    // its bars every 5 s while beta's found and it shows
   if (b.dataset.tab === 'projects') poll();          // followed while it shows
-  if (b.dataset.tab === 'areas') campaignLoop();     // every 5 s while it shows
+  if (b.dataset.tab === 'areas') { campaignLoop(); if (!phone.matches) showRight('areas', true); }     // every 5 s while it shows; the areas' map beside it
 });
 // The ? tab's form: a comment or bug report, to POST /api/feedback (data/feedback.jsonl there), from anyone, editing or
 // not. Its hidden "website" field is for bots that fill in every field: the server drops what comes with it filled in.
@@ -1046,10 +1055,11 @@ function showRight(which, keepControls = false){
   if (!keepControls) setFull(true);
   if (which !== 'map') map.stop();      // any pan or zoom still easing out, which would go on behind the view
   $('#viewer').classList.toggle('on', which==='3d'); $('#map').classList.toggle('on', which==='map'); $('#areamap').classList.toggle('on', which==='areas');
-  $('#vmap').textContent = which === 'map' ? (phone.matches ? '3D' : '3D viewer') : 'Map';    // one button goes between them
+  $('#vmap').textContent = which === 'map' || (which === 'areas' && current) ? (phone.matches ? '3D' : '3D viewer') : 'Map';    // one button goes between them
   if (which==='map') { setTimeout(()=>map.invalidateSize(), 50); } else if (which === 'areas') areaMap(); else resize();
 }
 $('#vmap').onclick = () => {
+  if ($('#areamap').classList.contains('on') && current) return showRight('3d');
   if ($('#map').classList.contains('on')) return showRight(current || !$('#loading').hidden ? '3d' : 'areas');
   endSway(); showRight('map');
   const m = shownMesh && meshesById[shownMesh];
@@ -1063,36 +1073,78 @@ $('#vmap').onclick = () => {
 
 // ---------------------------------------------------------------- the areas, before a mesh is loaded
 // One point for each area with meshes that have places, where they are on average, larger for more of them; picking
-// one lists that area's meshes (the Meshes tab with only its box ticked). Drawn again when the meshes change.
-let amap = null, areaLayer = null, areaFitted = false, areaKey = '';
+// one lists that area's meshes (the Meshes tab with only its box ticked). Drawn again when the meshes change. An editor
+// sees every area with a job too, meshes or not, each coloured by its job's state (AREA_LOOKS), with a legend. What
+// was drawn last is kept in this browser (AREAS_KEPT) and drawn at once, until the lists come, which can take seconds.
+let amap = null, areaLayer = null, areaFitted = false, areaKey = '', meshesReady = false, campaignsCache = null;
+const AREAS_KEPT = 'bm_areas';
+const AREA_LOOKS = [      // [the states it covers, colour, what the legend says]: not red, green or orange, kept for bad, good and warnings
+  [['running', 'stopping'], '#3f6fe0', 'active'],
+  [['queued', 'waiting'], '#e0b84a', 'waiting its turn'],
+  [['low priority'], '#9a5fe0', 'low priority: remaking old meshes'],
+  [['stopped', 'data offloaded'], '#8a8f98', 'stopped'],
+  [['done', 'partial'], '#2aa9c9', 'done: nothing left to do'],
+];
+const areaState = st => AREA_LOOKS.find(x => x[0].includes(st)) || null;
+const plural2 = (n, one, many = one + 'es') => `${n} ${n === 1 ? one : many}`;
 function areaMap(){
   if (!amap) {
     amap = L.map('areamap', { zoomControl: true, worldCopyJump: true, minZoom: 1 }).setView([30, -40], 2);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(amap);
     for (const type of ['dragenter', 'dragover']) $('#areamap').addEventListener(type, ev => ev.preventDefault());
     $('#areamap').addEventListener('drop', ev => { ev.preventDefault(); previewLocal(ev.dataTransfer.files); });     // as the 3D view takes them
+    if (editor) {
+      $('#areamap .areahead').textContent = 'Areas and their jobs: pick one to list its meshes, or pick a mesh on the left';
+      const legend = L.control({ position: 'bottomleft' });
+      legend.onAdd = () => {
+        const d = L.DomUtil.create('div', 'maplegend arealegend');
+        d.innerHTML = AREA_LOOKS.map(([, c, said]) => `<span><i style="background:${c}"></i>${esc(said)}</span>`).join('');
+        return d;
+      };
+      legend.addTo(amap);
+    }
   }
   setTimeout(() => { amap.invalidateSize(); drawAreas(); }, 50);
 }
-function drawAreas(){
-  if (!amap || !$('#areamap').classList.contains('on')) return;
+// Each area to draw: {a: name, lat, lng, n: meshes, st: its job's state (editors), link: whether it lists meshes}
+function areaPoints(){
   const at = {};
   for (const m of meshesCache) {
     if (m.lat == null || m.lng == null || m.replaced_by) continue;
     for (const a of new Set(meshAreas(m))) if (a !== NO_AREA) (at[a] ||= []).push(m);
   }
-  const key = JSON.stringify(Object.entries(at).map(([a, ms]) => [a, ms.map(m => m.id)]));
+  const camps = editor ? campaignsCache || [] : [];
+  const byName = Object.fromEntries(camps.map(c => [c.name, c]));
+  const names = [...new Set([...Object.keys(at), ...camps.map(c => c.name)])];
+  return names.map(a => {
+    const ms = at[a] || [], c = byName[a];
+    const lat = ms.length ? ms.reduce((t, m) => t + m.lat, 0) / ms.length : c?.lat, lng = ms.length ? ms.reduce((t, m) => t + m.lng, 0) / ms.length : c?.lng;
+    const st = c ? (c.state === 'done' && !c.complete ? 'partial' : c.state || c.status) : null;
+    return { a, lat, lng, n: ms.length, st };
+  }).filter(x => x.lat != null && x.lng != null);
+}
+function drawAreas(){
+  if (!amap || !$('#areamap').classList.contains('on')) return;
+  const ready = meshesReady && (!editor || campaignsCache);
+  let pts = ready ? areaPoints() : null;
+  if (!pts) { try { pts = JSON.parse(localStorage.getItem(AREAS_KEPT) || 'null'); } catch {} }      // drawn last time, until the lists come
+  $('#areamap .arealoading').hidden = ready;
+  if (!pts) return;
+  const key = JSON.stringify(pts);
   if (key === areaKey) return;      // drawn already: not again, which would fade the labels out and in
   areaKey = key;
+  if (ready) try { localStorage.setItem(AREAS_KEPT, key); } catch {}
   if (areaLayer) areaLayer.clearLayers(); else areaLayer = L.featureGroup().addTo(amap);
-  for (const [a, ms] of Object.entries(at)) {
-    const lat = ms.reduce((t, m) => t + m.lat, 0) / ms.length, lng = ms.reduce((t, m) => t + m.lng, 0) / ms.length;
-    L.circleMarker([lat, lng], { radius: Math.min(22, 7 + 2.5 * Math.sqrt(ms.length)), color: '#5cc8ff', weight: 2, fillOpacity: .55 })
-      .bindTooltip(`${esc(a)} · ${ms.length}`, { permanent: true, direction: 'right', offset: [10, 0], className: 'arealabel' })
-      .on('click', () => listArea(a)).addTo(areaLayer);
+  for (const p of pts) {
+    const look = editor ? areaState(p.st) : null, colour = look ? look[1] : '#5cc8ff';
+    const said = [esc(p.a), plural2(p.n, 'mesh'), ...(editor && look ? [esc(look[2].split(':')[0])] : [])].join(' · ');
+    L.circleMarker([p.lat, p.lng], { radius: Math.min(22, 7 + 2.5 * Math.sqrt(p.n)), color: colour, weight: 2, fillOpacity: p.n ? .6 : .25 })
+      .bindTooltip(said, { permanent: true, direction: 'right', offset: [10, 0], className: 'arealabel' })
+      .on('click', () => p.n ? listArea(p.a) : (document.querySelector('.tabs button[data-tab=areas]').click(), setFull(false)))
+      .addTo(areaLayer);
   }
-  if (!areaFitted && Object.keys(at).length) {      // the whole world's map, centred on where the areas are, as near as fits them all
-    areaFitted = true;
+  if (!areaFitted && pts.length) {      // the whole world's map, centred on where the areas are, as near as fits them all
+    areaFitted = ready;
     amap.fitBounds(areaLayer.getBounds(), { padding: [60, 60], maxZoom: 5 });
   }
 }
@@ -3682,13 +3734,20 @@ function currentHtml(c){
       ${boulderPanelHtml(cur.boulder_panel, c)}`;
   }).join('') + pausedHtml(c);
 }
-async function refreshCampaigns(){
+// kept: the list as this browser last had it, drawn faded at once while the new one comes (it can take seconds)
+async function refreshCampaigns(kept = null){
   // low priority (only remaking old meshes) under the rest; within each, those whose projects machines are working for (a
   // mesh's size or beta, say) first, the rest in their order (#place)
   // three bands, as projects: going on; low priority (only remaking old meshes); then stopped and done (or finishing)
   const band = c => { const st = c.state || c.status; return st === 'low priority' ? 3 : ['stopped', 'done'].includes(st) ? 6 : 0; };
   const busy = c => band(c) + ((areasAtWork.get(c.id) || []).some(w => w.state === 'running') ? 0 : areasAtWork.has(c.id) ? 1 : 2);
-  const list = (await api('/api/campaigns')).map((c, i) => [c, i]).sort((a, b) => busy(a[0]) - busy(b[0]) || a[1] - b[1]).map(x => x[0]);
+  const fresh = kept || await api('/api/campaigns');
+  $('#campaigns').classList.toggle('stale', !!kept); $('#areas-loading').hidden = !kept;
+  if (!kept) {
+    campaignsCache = fresh; drawAreas();
+    try { localStorage.setItem('bm_campaigns', JSON.stringify(fresh)); } catch {}
+  }
+  const list = fresh.map((c, i) => [c, i]).sort((a, b) => busy(a[0]) - busy(b[0]) || a[1] - b[1]).map(x => x[0]);
   const el = $('#campaigns');
   // progress moves constantly: only rebuild when something else changed, which would close open lists
   const key = JSON.stringify([...areasAtWork, ...areasLeft]) + JSON.stringify(list.map(c => ({ ...c, current: c.current && { ...c.current, progress: null, boulder_panel: null, updated: null }, running: (c.running || []).map(r => r.name) })));
@@ -4238,7 +4297,7 @@ async function refreshMeshes(){
   meshesCache = await api('/api/meshes'); meshesById = Object.fromEntries(meshesCache.map(m => [m.id, m]));
   await scrollStill();
   renderMeshes();
-  drawAreas();
+  meshesReady = true; drawAreas();
 }
 // the cards whose list of climbs is open (folded away to start with), kept as the list is drawn again
 const climbListsOpen = new Set();
@@ -6265,10 +6324,15 @@ if (statusCache.admin) { $('#admin').style.display = ''; $('#admin').onclick = o
 if (/^https:\/\/\S+$/.test(statusCache.donate_url || '')) { $('#donate').href = $('#hdonate').href = statusCache.donate_url; $('#donatebox').hidden = $('#hdonate').hidden = false; }   // the admin page's site.donate_url
 if (statusCache.volunteer_url) { $('#volunteer').dataset.base = statusCache.volunteer_url + '/volunteer/'; volunteerLink(); $('#volunteer').style.display = ''; }
 if (!editor) $('#hud').textContent = 'Pick a mesh. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan';
+// a page opened with no mesh, climb or boulder to show: the areas in place of the empty 3D view, the controls kept in view on a
+// phone; at once, from what this browser drew last, as the lists below can take seconds
+if (!thumbMode && !/^\/[cbm]\//.test(location.pathname) && !new URLSearchParams(location.hash.slice(1)).get('mesh')) showRight('areas', true);
+if (!thumbMode) {      // the areas list from this browser's last copy at once; then the new one, alongside the rest, for it and the map
+  try { const kept = JSON.parse(localStorage.getItem('bm_campaigns') || 'null'); if (Array.isArray(kept)) refreshCampaigns(kept).catch(() => {}); } catch {}
+  refreshCampaigns().catch(() => {});
+}
 if (thumbMode) { detailChoice = 'preview'; await refreshMeshes(); }
 else { await refreshClimbs(); await refreshMeshes(); await refreshProjects(); poll(); campaignLoop(); }
-// a page opened with no mesh, climb or boulder to show: the areas in place of the empty 3D view, the controls kept in view on a phone
-if (!thumbMode && !/^\/[cbm]\//.test(location.pathname) && !new URLSearchParams(location.hash.slice(1)).get('mesh')) showRight('areas', true);
 openFromAddress();
 addEventListener('hashchange', openLinked);
 $('#vnewest').onclick = () => { const n = newestOf(shownMesh); if (n && n !== shownMesh) viewMesh(n, null, 'newest', viewedClimb); };
