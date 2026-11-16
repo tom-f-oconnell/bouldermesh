@@ -42,12 +42,15 @@ on hal. Names in quotes are atlas's sections under "Results on atlas". GLBs are 
 4. **Texture from every second photo (`views2`): Tom's eye.** `<boulder>-texture-same.glb`, `-texture-views2.glb`,
    `-texture-views3.glb`. No number settles texture quality, and 31de's sharpness number fell with `views2`. If yes,
    a hal session adds the argument to TextureMesh's call in `backend/pipeline.py`, with a test of the command.
-5. **One geometric pass (`as23g1`): Tom's eye, then one flag.** It passed the surface rule; atlas still owes its fused
-   points and faces (rule 5). `<boulder>-global_tied-s0+complete@prod-post-complete+as23.glb` and `...+as23g1.glb`.
-6. **A video's repeated frames dropped (`dedup90`).** Atlas runs the patch test on Drifter's surface (is its 0.37% a
-   smooth bend, like the global mapper's?) and calls rule 4. If it passes, a hal session writes the dropping into the
-   harvest, before extraction (`backend/climbs/`), checks which frames go against `dedup90`'s on the five boulders'
-   videos, and atlas judges it again. It changes which photos a mesh is made from: Tom's OK first.
+5. **One geometric pass (`as23g1`): only Tom's eye is left, then one flag.** It passes the surface rule (at the
+   measuring floor on both boulders) and rule 5 (fused points and faces within 2% of two passes'), for 60 s less dense
+   time on Drifter. `<boulder>-global_tied-s0+complete@prod-post-complete+as23.glb` and `...+as23g1.glb`. If yes, a hal
+   session adds `--geometric-iters 1` to the dense step's arguments in `backend/pipeline.py`, with a test.
+6. **A video's repeated frames dropped (`dedup90`): Tom's OK, then a hal session writes it.** Atlas calls rule 4
+   passed: its 0.37% on Drifter is a smooth bend like the one two seeds have (patches fitted alone: 0.36% to 0.14%,
+   against 0.29% to 0.13% seed against seed), and rules 1 to 3 pass. What's left is the real saving: dropping the
+   frames in the harvest, before extraction (`backend/climbs/`), checked against `dedup90`'s choice on the five
+   boulders' videos, then judged again by atlas. It changes which photos a mesh is made from, so it needs Tom's word.
 7. **`global_one` (no side models):** atlas posts its surface. If it passes, a hal session adds the option to the
    app's global mapper call, after checking what the app does with side models (`review.md`, problem 6).
 8. **GPU SIFT: Tom's decision, after step 2.** It changes which photos are placed and gives a different model by more
@@ -57,7 +60,8 @@ on hal. Names in quotes are atlas's sections under "Results on atlas". GLBs are 
    against 142 at K = 50), which rule 1 as written does not allow, and the list missed half of the pairs that
    verify. Either a better list than CLIP's "alike", or Tom accepts the loss.
 10. **Time the passing changes together** as one whole app job on 31de and Drifter (atlas's chain). Each gain so far
-    was measured alone; whether they add up is not measured.
+    was measured alone; whether they add up is not measured. Atlas can queue it once Tom has said which to take
+    (`as23g1` and `views2` are `bench.py` options already; `dedup90` is a feature set).
 11. **Jobs at once on a hal worker, and thread counts** (`queue-together-app.txt`, `queue-threads-hal.txt`). Needs Tom
     to lift the hold on hal, and the new image built there. Settled by jobs an hour at 1, 2, 3 and more at once, for
     `worker/bouldermesh_worker.py`. Do not also cap each job's cores.
@@ -465,7 +469,8 @@ of a hold (simulated)"; `incr/README.md` has the rest.
   solve is Ceres on the CPU, and each model checks itself before it is kept.
 - **Run with the fixes:** e6de only (129 s, 32 of 33 placed, passes its check). 31de and 9f3b then failed on atlas with
   "IndexError: 2" after each start's model was made (handoff section 50): the check looked for `backend/` where the
-  tools' container doesn't have it. Fixed in a5844d0; atlas has been asked to run them again. No result yet. 9f3b was 12 degrees off before the assist ran; the pipeline's agent
+  tools' container doesn't have it. Fixed in a5844d0. With it, 31de builds in 662 s, 72 placed, from the global
+  start, and passes its check (2.5 degrees over 760 pairs); 9f3b and Drifter are running on atlas. 9f3b was 12 degrees off before the assist ran; the pipeline's agent
   expects it to fail its check from every start and say so, not to come out right.
 - **Never run:** a capture's add, refit, capture-first texture, re-levelling, hold detail meshes and card scale, on
   simulated or real captures. They are written and unit-tested only.
@@ -505,4 +510,4 @@ tell them apart. Later sections correct earlier ones.
 | `meshes.py` | depth maps, fused points, faces and seconds from OpenMVS's logs; `export` copies the GLBs out |
 | `verify_build.py`, `sim_closeups.py`, `incr/boulder.py` | the check a tool tree must pass to be timed; the simulated close-ups; the incremental pipeline |
 
-Last updated: 2026-11-15 17:40 PST, through section 52 of the handoff file.
+Last updated: 2026-11-15 17:55 PST, through section 54 of the handoff file.
