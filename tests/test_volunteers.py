@@ -329,7 +329,8 @@ def script_and_broker() -> None:
         st, page = call(base + "/volunteer/")
         assert st == 200 and b"bouldermesh_volunteer.py" in page
         assert b"Help compute meshes" in page and b"/worker/bouldermesh_worker.py" in page, "both ways to help, on one page"
-        assert b'data-show="data">Data collection' in page and b"Coming soon" in page and b">Help collect videos<" not in page.split(b"<section")[0]
+        assert b'data-show="data">Data collection' in page and b"releases/download/android-latest/bouldermesh.apk" in page and b"{android_apk}" not in page \
+            and b">Help collect videos<" not in page.split(b"<section")[0]
         # the compute helper: what it does, from HELPER_JOBS, which says each kind of job the worker script takes without a GPU
         worker_cpu = re.search(r'^CPU_TASKS = \(([^)]*)\)', (ROOT / "worker" / "bouldermesh_worker.py").read_text(), re.M)[1]
         assert set(volunteers.HELPER_JOBS) == set(re.findall(r'"(\w+)"', worker_cpu)), "the page says what a CPU-only worker does"

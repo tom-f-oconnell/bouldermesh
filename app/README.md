@@ -69,7 +69,9 @@ Android, anywhere with a JDK (17 or later) and the Android SDK (`ANDROID_HOME`, 
 or `./apk.sh` (`--install` to put it on the phone `adb` sees), which keeps a copy named by its commit in `dist/`. Every
 push that changes `app/` also builds one on GitHub, kept 30 days as the run's `android-debug-<commit>` artifact, and
 on main as the release [android-latest](https://github.com/tom-f-oconnell/bouldermesh/releases/tag/android-latest):
-open that on the phone, tap the `.apk` and allow installing it, with no USB and no sign-in. A debug
+open that on the phone, tap the `.apk` and allow installing it, with no USB and no sign-in. Its `bouldermesh.apk` is the same file
+under a name that stays, a direct download: https://github.com/tom-f-oconnell/bouldermesh/releases/download/android-latest/bouldermesh.apk
+(the volunteer page's *Data collection* links to it, with how testers install, sign in and use the apps). A debug
 APK is signed by the debug key of the machine that built it: one from another machine won't install over it without
 uninstalling first, which deletes captures not yet sent.
 

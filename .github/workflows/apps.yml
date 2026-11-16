@@ -64,7 +64,8 @@ jobs:
           short=${GITHUB_SHA::7}
           cp app/android/build/outputs/apk/debug/android-debug.apk "bouldermesh-$short-debug.apk"
           gh release delete android-latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create android-latest "bouldermesh-$short-debug.apk" --target "$GITHUB_SHA" --prerelease \
+          cp "bouldermesh-$short-debug.apk" bouldermesh.apk     # the same, under a name that stays: the volunteer page's link
+          gh release create android-latest "bouldermesh-$short-debug.apk" bouldermesh.apk --target "$GITHUB_SHA" --prerelease \
             --title "Android app, latest ($short)" \
             --notes "The Android app as built from $short: open this page on the phone, tap the .apk, and allow installing it. A debug build: one from another machine doesn't install over it without uninstalling first, which deletes captures not yet sent."
       - name: A test server with one mesh

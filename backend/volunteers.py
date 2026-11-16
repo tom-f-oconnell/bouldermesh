@@ -843,7 +843,7 @@ site, and whoever runs it then approves it. A fourth way, collecting data yourse
   <a href="#videos" data-show="videos">Collect videos<small>Fetch YouTube videos of climbs from your address, slowly. Python is all it needs.</small></a>
   <a href="#compute" data-show="compute">Compute meshes <span class="req">(requires Linux + GPU)</span><small>Turn climbs' photos into 3D models on your computer's NVIDIA GPU, in Docker.</small></a>
   <a href="#helper" data-show="helper">Compute helper <span class="req">(all platforms; CPU only)</span><small>{helper_jobs}</small></a>
-  <a href="#data" data-show="data">Data collection<small>Coming soon: your own photos and videos, and photos to scale and orient meshes.</small></a>
+  <a href="#data" data-show="data">Data collection<small>Test the phone apps: photograph boulders so their meshes come out whole, level and the right size.</small></a>
 </div>
 
 <section id="videos">
@@ -1034,14 +1034,69 @@ Register-ScheduledTask -TaskName "BoulderMesh compute helper" -Action $a -Trigge
 </section>
 
 <section id="data">
-<h2>Data collection</h2>
-<p>Coming soon:</p>
+<h2>Data collection: testing the phone apps</h2>
+<p>The Android and iPhone apps photograph a boulder so that its mesh comes out whole, level, the right size and in the
+right place: they show what's still to photograph over the camera's picture, take each photo when it's worth taking,
+and record which way was down, where the phone was and which way it faced. They're new and have hardly been used on a
+phone yet, so what goes wrong is as useful to hear as what works.</p>
+<p>Testing needs an account on this site (from an invite), to upload what you capture: it's credited to your name.</p>
+
+<h3>1. Install the app</h3>
+<p><b>Android</b> (8.0 or newer, on a phone that supports Google Play Services for AR, as most recent ones do):</p>
+<ol>
+<li>On the phone, download <a href="{android_apk}"><b>the latest Android app</b></a> (an <code>.apk</code> file, about
+11 MB).</li>
+<li>Open it from the download. The first time, Android asks to allow installing apps from your browser: allow it, go
+back, and press <i>Install</i>. (Play Protect may warn that it's from an unknown developer: <i>Install anyway</i>.)</li>
+<li>If Google Play Services for AR isn't on the phone, the Play Store offers it the first time you capture.</li>
+</ol>
+<p>To update, download and install the latest the same way, over the old one: your captures stay. Only if Android says
+the app conflicts with one installed (a copy built elsewhere) do you need to uninstall first, which deletes captures not
+yet uploaded: upload them first.</p>
+<p><b>iPhone</b> (iOS 16 or newer): install Apple's <a href="https://apps.apple.com/app/testflight/id899247664">TestFlight</a>
+app, then open the app's TestFlight link from this site (press your name at the top of the main page, once you've joined
+from your invite), <i>Accept</i>, and <i>Install</i>. New versions come through TestFlight.</p>
+
+<h3>2. Sign it in</h3>
 <ul>
-<li><b>Your own photos and videos:</b> upload those you took of boulders and climbs, for meshes of climbs that have none
-yet, and better ones of those that do.</li>
-<li><b>Photos to scale and orient existing meshes:</b> a way to take photos of a boulder with a scale reference in them,
-something of known size, so that its mesh gets its true size and the right way up.</li>
+<li><b>Android, signed in to this site in the phone's browser:</b> press your name at the top of the main page, then
+<i>Sign the app in</i>: the app opens, signed in as you.</li>
+<li><b>Otherwise (and on an iPhone):</b> on the site, press your name, then <i>Sign in another device</i>, for a code; in
+the app's <i>Settings</i>, paste the code (or your invite link).</li>
 </ul>
+
+<h3>3. Before you go</h3>
+<ul>
+<li><b>While you have signal,</b> open <i>Get meshes…</i> and get the boulders you'll visit (nearest first; <i>Get the N
+within 2 km</i> takes them all). They're kept on the phone, with their holds, for where there's no signal.</li>
+<li><b>Before each capture,</b> <i>Calibrate</i> the compass: half a minute of turning the phone every which way, away
+from metal (car, crash pad zips, rings).</li>
+</ul>
+
+<h3>4. At the rock</h3>
+<ol>
+<li>Press <i>Capture</i> on its mesh. First, <b>turn slowly all the way round on the spot</b>, the phone held upright as
+for a photo: that's how it finds which way is down.</li>
+<li>A small model of the mesh appears. Tap a spot on it you can find on the rock, then the same spot on the real rock;
+then once more, well to one side of the first. If the mesh drawn over the rock sits on it, press <i>It fits: start</i>;
+if not, <i>Add a spot</i> or <i>Start again</i>.</li>
+<li><b>Follow the words at the top.</b> It first walks you to a few rings in the air, where earlier photos were taken,
+for one photo from each. Then red parts of the mesh still need photos, amber ones are part done, green ones done; rings
+mark holds, with a stop for a photo at each halving of the distance on the way in.</li>
+<li>Hold still where it's useful and it takes the photo itself, and says if one came out blurred or badly lit.
+<i>Take</i> takes one anyway; <i>Skip this</i> leaves what you can't reach (too high, the back).</li>
+<li><b>Finish</b> when it's all green, or as much as you can get.</li>
+</ol>
+<p>A rock with no mesh yet: <i>Capture a new rock…</i>, tap its middle, and walk round as much of it as you can, with
+<i>Can't reach that side</i> for the rest and <i>Mark a hold</i> for what needs close-ups.</p>
+
+<h3>5. Upload</h3>
+<p>Once you have signal, <i>Upload</i>. The server meshes your photos together with the mesh's own, and the new mesh
+appears beside the old one, linked to the same climbs.</p>
+
+<h3>Telling us how it went</h3>
+<p>Anything odd, confusing or broken: the <b>?</b> tab on the main page (say which phone), or on an iPhone, a screenshot
+sent from TestFlight. What the app did comes to the server with each capture, so saying when and where helps us find it.</p>
 </section>
 
 <script>
@@ -1101,6 +1156,8 @@ fetch('/volunteer/api/leaderboard').then(r => r.json()).then(b => {
 }).catch(e => { document.querySelector('#updated').textContent = "Couldn't load it: " + e.message; });
 </script>
 """
+# the Android app's latest build, under a name that stays (.github/workflows/apps.yml): a direct download, no sign-in
+ANDROID_APK = "https://github.com/tom-f-oconnell/bouldermesh/releases/download/android-latest/bouldermesh.apk"
 LEADERBOARD_CACHE = 60      # seconds the leaderboard is kept before it's worked out again
 
 
@@ -1153,6 +1210,7 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
             if u.path in ("/volunteer", "/volunteer/"):
                 page = PAGE.replace("{helper_jobs}", html.escape(helper_jobs_text()))
                 page = page.replace("{helper_list}", html.escape("; ".join(HELPER_JOBS.values())))
+                page = page.replace("{android_apk}", ANDROID_APK)
                 return self.send(200, page.replace("{base}", base).replace("{icon}", COPY_ICON).encode(), "text/html; charset=utf-8")
             if u.path in ("/volunteer/leaderboard", "/volunteer/leaderboard/"):
                 return self.send(200, LEADERBOARD_PAGE.encode(), "text/html; charset=utf-8")
