@@ -74,6 +74,15 @@ if ! reaches_server; then
                              "Load its key (ssh-add ${key:-<its key>}), or see that it's up" >&2; exit 1; }
 fi
 
+# nothing to do if the server already runs this commit (its /api/status version): said, rather than a whole build
+want=$(git rev-parse --short HEAD)
+live=$(on_server "curl -s http://127.0.0.1:\${PORT:-8470}/api/status" 2>/dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin).get("version") or "")' 2>/dev/null || true)
+if [ -n "$live" ] && [ "$live" = "$want" ]; then
+    echo "the server already runs $want, the commit checked out here: nothing to deploy"
+    exit 0
+fi
+[ -z "$live" ] || echo "the server runs $live; deploying $want"
+
 # the images first: the server pulls its own, which changes nothing until the restart
 # (set -e doesn't stop at a failure partway through a && list, hence the || exit)
 export DEPLOY_SH=1      # so that they leave out what they'd tell you to do next by hand, which this does
@@ -147,7 +156,6 @@ elif [ "$check" -ne 0 ]; then
 fi
 
 on_server 'git pull --ff-only && sudo systemctl restart bouldermesh' || exit 1
-want=$(git rev-parse --short HEAD)
 for _ in $(seq 30); do      # up to a minute for it to answer again
     live=$(on_server "curl -s http://127.0.0.1:\${PORT:-8470}/api/status" 2>/dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin).get("version") or "")' 2>/dev/null || true)
     [ -n "$live" ] && break
