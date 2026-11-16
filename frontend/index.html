@@ -6419,9 +6419,17 @@ if (!thumbMode) {      // the areas list from this browser's last copy at once; 
   try { const kept = JSON.parse(localStorage.getItem('bm_campaigns') || 'null'); if (Array.isArray(kept)) refreshCampaigns(kept).catch(() => {}); } catch {}
   refreshCampaigns().catch(() => {});
 }
-if (thumbMode) { detailChoice = 'preview'; await refreshMeshes(); }
-else { await refreshClimbs(); await refreshMeshes(); await refreshProjects(); poll(); campaignLoop(); }
-openFromAddress();
+// a link's mesh, climb or boulder: the loading card at once (the lists it's found in can take seconds), and opened as soon
+// as the meshes are listed, not after the projects too
+const linked = !thumbMode && /^\/[cbm]\//.test(location.pathname), linkCard = linked ? loading('the mesh in this link') : null;
+if (linkCard) $('#loading .detail').textContent = 'Getting the list of meshes…';
+if (thumbMode) { detailChoice = 'preview'; await refreshMeshes(); openFromAddress(); }
+else {
+  await refreshClimbs(); await refreshMeshes();
+  const opened = openFromAddress();
+  if (linkCard) opened.finally(linkCard);       // gone once its mesh's own loading takes over, or if nothing loads
+  await refreshProjects(); poll(); campaignLoop();
+}
 addEventListener('hashchange', openLinked);
 $('#vnewest').onclick = () => { const n = newestOf(shownMesh); if (n && n !== shownMesh) viewMesh(n, null, 'newest', viewedClimb); };
 $('#vothers').onclick = async () => {

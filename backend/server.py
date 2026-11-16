@@ -3680,6 +3680,75 @@ def timings_existing_meshes() -> None:
         print(f"timings: backfill failed ({type(e).__name__}: {e})", flush=True)
 
 
+# What a mesh's listing reads from its own files (its texture's mode, cleanup, orientation, sources, beta, size, timings,
+# metrics, check, packed copies, picture...): kept, and read again only when its folder or one of its subfolders changes
+# (files are written by renaming over: that changes the folder), the settings these depend on change, or after
+# MESH_ROW_TTL. The list (/api/meshes) read every file of every mesh each time, 15 s on the public server on Nov 16, 2026.
+_mesh_rows: dict[str, tuple] = {}
+MESH_ROW_TTL = 600
+MESH_ROW_FIELDS = ("texture", "cleanup", "orientation", "sources", "beta", "marked", "scale", "tie", "cameras_kept", "timings",
+                   "metrics", "check", "splat", "pano", "pack", "v", "thumb")
+
+
+def _mesh_stamp(mid: str) -> tuple:
+    d = MESHES / mid
+    try:
+        out = [d.stat().st_mtime_ns]
+        with os.scandir(d) as it:
+            out += sorted((e.name, e.stat().st_mtime_ns) for e in it if e.is_dir(follow_symlinks=False))
+        return tuple(out)
+    except OSError:
+        return ()
+
+
+def mesh_files_fields(r: dict) -> None:
+    """Fill a mesh's row (from the meshes table) with what's read from its files: MESH_ROW_FIELDS, kept (_mesh_rows)."""
+    st = settings()
+    key = (_mesh_stamp(r["id"]), st.get("site.textures"), st.get("viewer.preview_faces"), r.get("adds_to"), r.get("replaced_by"),
+           r.get("filename"), r.get("source"))
+    got = _mesh_rows.get(r["id"])
+    if got and got[0] == key and time.time() - got[1] < MESH_ROW_TTL:
+        r.update(got[2])
+        return
+    r["texture"] = texture_mode(r["id"], r["source"])
+    try:    # one mesh's unreadable file shouldn't empty the whole list
+        r["cleanup"] = meshclean.summary(meshclean.load(served_dir(r["id"], r["texture"])))
+        r["orientation"] = orientation.load(MESHES / r["id"])
+        r["sources"] = provenance.summary(mesh_record(MESHES / r["id"]))
+        r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
+        r["marked"] = sum(len(one["holds"]) for one in beta_mod.load_sets(MESHES / r["id"]))
+        r["scale"] = scale_mod.summary(scale_mod.load(MESHES / r["id"]))
+        r["tie"] = mesh_tie(r["id"]) if r.get("adds_to") else None
+    except Exception as e:
+        print(f"error: listing mesh {r['id']}: {type(e).__name__}: {e}", flush=True)
+    r["cameras_kept"] = (MESHES / r["id"] / orientation.CAMERAS_FILE).exists()
+    r["timings"] = timings_brief(mesh_timings(r["id"]))
+    try:
+        r["metrics"] = meshmetrics.load(MESHES / r["id"])
+    except Exception as e:
+        r["metrics"] = None
+        print(f"error: mesh {r['id']}'s metrics: {type(e).__name__}: {e}", flush=True)
+    try:    # its model's check of itself (modelcheck.py), where the mesh has one
+        r["check"] = modelcheck.load(MESHES / r["id"])
+    except Exception as e:
+        r["check"] = None
+        print(f"error: mesh {r['id']}'s model check: {type(e).__name__}: {e}", flush=True)
+    r["splat"] = (r.get("texture") == "full" or scene_free(r["id"])) and (MESHES / r["id"] / splat_mod.FILE).exists()
+    r["pano"] = r["splat"] and (MESHES / r["id"] / splat_mod.PANO_FILE).exists()
+    try:
+        r["pack"] = pack_info(r)
+        r["v"] = mesh_version(r["id"], r["texture"], r["filename"])     # for its files' addresses
+    except Exception as e:
+        r["pack"] = r["v"] = None
+        print(f"error: mesh {r['id']}'s packed copies: {type(e).__name__}: {e}", flush=True)
+    try:
+        r["thumb"] = thumb_info(r)      # its picture, for its card (thumbs.py)
+    except Exception as e:
+        r["thumb"] = None
+        print(f"error: mesh {r['id']}'s picture: {type(e).__name__}: {e}", flush=True)
+    _mesh_rows[r["id"]] = (key, time.time(), {k: r.get(k) for k in MESH_ROW_FIELDS})
+
+
 def timings_summary() -> dict:
     """The admin page's medians of how long meshes took (timings.summarize()): over the last week, and all."""
     recs = [r for m in q("SELECT id FROM meshes WHERE source LIKE 'project:%'") if (r := mesh_timings(m["id"]))]
@@ -9645,43 +9714,8 @@ class Handler(BaseHTTPRequestHandler):
                     leaf = (pool_leaf(r["boulder"]) if r["boulder"] else
                             next(iter(leaves[r["id"]])) if sum(not c["shared"] for c in r["climbs"]) > 1 and len(leaves[r["id"]]) == 1 else None)
                     r["boulder_url"] = leaf_url(leaf, urls) if leaf else None
-                    r["texture"] = texture_mode(r["id"], r["source"])
-                    try:    # one mesh's unreadable file shouldn't empty the whole list
-                        r["cleanup"] = meshclean.summary(meshclean.load(served_dir(r["id"], r["texture"])))
-                        r["orientation"] = orientation.load(MESHES / r["id"])
-                        r["sources"] = provenance.summary(mesh_record(MESHES / r["id"]))
-                        r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
-                        r["marked"] = sum(len(one["holds"]) for one in beta_mod.load_sets(MESHES / r["id"]))
-                        r["scale"] = scale_mod.summary(scale_mod.load(MESHES / r["id"]))
-                        r["tie"] = mesh_tie(r["id"]) if r.get("adds_to") else None
-                    except Exception as e:
-                        print(f"error: listing mesh {r['id']}: {type(e).__name__}: {e}", flush=True)
-                    r["cameras_kept"] = (MESHES / r["id"] / orientation.CAMERAS_FILE).exists()
-                    r["timings"] = timings_brief(mesh_timings(r["id"]))
-                    try:
-                        r["metrics"] = meshmetrics.load(MESHES / r["id"])
-                    except Exception as e:
-                        r["metrics"] = None
-                        print(f"error: mesh {r['id']}'s metrics: {type(e).__name__}: {e}", flush=True)
-                    try:    # its model's check of itself (modelcheck.py), where the mesh has one
-                        r["check"] = modelcheck.load(MESHES / r["id"])
-                    except Exception as e:
-                        r["check"] = None
-                        print(f"error: mesh {r['id']}'s model check: {type(e).__name__}: {e}", flush=True)
+                    mesh_files_fields(r)
                     r["areas"], r["area_path"] = areas(r)
-                    r["splat"] = (r.get("texture") == "full" or scene_free(r["id"])) and (MESHES / r["id"] / splat_mod.FILE).exists()
-                    r["pano"] = r["splat"] and (MESHES / r["id"] / splat_mod.PANO_FILE).exists()
-                    try:
-                        r["pack"] = pack_info(r)
-                        r["v"] = mesh_version(r["id"], r["texture"], r["filename"])     # for its files' addresses
-                    except Exception as e:
-                        r["pack"] = r["v"] = None
-                        print(f"error: mesh {r['id']}'s packed copies: {type(e).__name__}: {e}", flush=True)
-                    try:
-                        r["thumb"] = thumb_info(r)      # its picture, for its card (thumbs.py)
-                    except Exception as e:
-                        r["thumb"] = None
-                        print(f"error: mesh {r['id']}'s picture: {type(e).__name__}: {e}", flush=True)
                 # the names in its climbs' and its boulder's links, for Share, and how many current meshes its boulder has
                 # (boulder_mesh_sets(): its own, what that left out, its climbs' own), for the viewer's Meshes button
                 try:    # links failing shouldn't empty the list
