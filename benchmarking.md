@@ -273,11 +273,13 @@ benchmark's verified "complete" build.
 
 - **caspar's model of 31de is wrong**: 13% of its cameras look within 2 degrees of any other model's, and the
   self-check reads 26.9 degrees where the eight others read 2.0-2.9. It placed the usual 71 photos. On Drifter it is
-  fine. Caspar runs in float32 unless COLMAP is built with `-DCASPAR_USE_DOUBLE=ON`; not tried.
+  fine. Caspar runs in float32 unless COLMAP is built with `-DCASPAR_USE_DOUBLE=ON`; not tried. A second run
+  (`caspar-s0+complete@prod-r2`, 548 s) is wrong again and differently: 7.2 degrees (median) from base, 23 from the
+  first run, check 9.8. With the pipeline's Caspar build, that is three Caspar models of 31de, none right.
 - **The baseline can be silently wrong too**: its second run on 9f3b placed 137 photos in a model 56 degrees (median)
   from every other.
 - `global_one` (no side models): mapper 117 s on Drifter and 88 s on 31de, same photos placed, self-check 3.36 and
-  2.67. Its surface check is owed.
+  2.67, surface within the seeds' spread. Passes.
 
 ### The global mapper's untied cameras
 
@@ -393,7 +395,7 @@ CPU-seconds. All with `global_tied`; reference numbers in brackets.
 | plain SIFT on the GPU (`siftgpu391`) | extraction 250 to 8 s on Drifter, 2,957 to 12 CPU-seconds | 159 (142), 74 (71), 9f3b 133 (141) | check against the reference's database 2.91 (3.43), 2.94 (2.55); rays within 2 degrees of the reference 82%, 81% (seeds 95-97%); surface 0.26% on Drifter, 0.30% on 31de, both within the seeds' | passes the surface rule on both; still a different set of cameras by more than seeds differ (a fifth of 31de's shared cameras over 5 degrees off), and it changes which photos are placed. Tom's |
 | matching a list of pairs (a video's neighbours + the K most alike by CLIP) | matching 220 s to 39 / 54 / 82 s on Drifter for K = 20 / 30 / 50 | 137 / 138 / 139 (142); 71 / 71 / 71 | surface 0.29% (K 20), 0.18% (K 50) on Drifter; 0.50% / 0.33% / 0.44% (K 20 / 30 / 50) on 31de, within its seeds' 0.35-0.82% | passes the surface rule; places 3-5 photos fewer on Drifter, which rule 1 doesn't allow |
 | one geometric pass (`as23g1`) | dense 161 to 101 s on Drifter, 66 to 52 s on 31de | same model | surface at the floor; fused points 4.63M (4.73M) and 2.48M (2.55M), faces 1.27M (1.28M) and 1.09M (1.09M) | passes |
-| no side models (`global_one`) | mapper 186 to 117 s on Drifter | same | check 3.36, 2.67 | surface owed |
+| no side models (`global_one`) | mapper 186 to 117 s on Drifter, 112 to 88 s on 31de | same (142, 71) | check 3.36, 2.67 (3.43, 2.55); surface 0.13% on Drifter and 0.31% on 31de from the reference's, within the seeds' | passes |
 | 1600 px pictures for SIFT | extraction 250 to 208 s | same | check 2.96, 2.89 | small gain |
 | no guided matching | matching 220 to 186 s, but the mapper 186 to 292 s | 138, 70 | check 2.39, 2.14 | a loss on time |
 
