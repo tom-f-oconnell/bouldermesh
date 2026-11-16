@@ -293,7 +293,6 @@
   #cmplegend .ramp{height:10px;border-radius:3px;background:linear-gradient(to right,#dcdde2 0%,#93b4ee 35%,#3f6fe0 70%,#d01fb4 100%)}
   #cmplegend .ticks{display:flex;justify-content:space-between;color:var(--mute);font-variant-numeric:tabular-nums}
   #cmplegend select{width:auto;padding:1px 4px;font-size:12px} #cmplegend .cap{color:var(--mute)} #cmplegend .stats{font-variant-numeric:tabular-nums}
-  #cmpprog .turn{flex:none;width:12px;height:12px;border:2px solid var(--line);border-top-color:var(--acc);border-radius:50%;animation:spin .8s linear infinite}
   #cmpsay{flex:1 1 100%;min-width:0;font-size:12px} #cmpsay.warn{color:var(--warn)} #cmpsay:empty{display:none}
   #viewer.local #hud,#viewer.local #vvia{display:none}
   @media (max-width:860px){ #localbar,#localbar.two{top:44px;left:8px;right:8px;transform:none;width:auto;max-width:none;max-height:60%;overflow:auto} }
@@ -681,7 +680,7 @@
             <div class="stats"></div><div class="cap">Counted by area, over the part of each near A's middle.</div>
           </div>
           <div class="line"><span id="cmpsay" role="status"></span><button class="sm sec" id="cmpline" title="Fits B onto A: scaled, turned and shifted until their surfaces match as well as they can">Line them up</button><button class="sm sec" id="cmpundo" hidden>Undo</button></div>
-          <div class="prog" id="cmpprog" hidden><i class="turn" aria-hidden="true"></i><div class="bar"><i></i></div><span class="pct"></span><button class="sm sec" id="cmpstop">Stop</button></div>
+          <div class="prog" id="cmpprog" hidden><div class="bar"><i></i></div><span class="pct"></span><button class="sm sec" id="cmpstop">Stop</button></div>
         </div>
       </div>
       <div id="vextra">
