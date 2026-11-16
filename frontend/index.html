@@ -272,16 +272,30 @@
   @media (max-width:860px){ #vvia{top:auto;bottom:100px;left:12px;right:12px;transform:none;max-width:none} }
   #vold{position:absolute;left:12px;bottom:12px;z-index:3;color:var(--warn);font-weight:700;font-size:13px;text-shadow:0 0 3px var(--bg),0 0 3px var(--bg)}
   #vold[hidden]{display:none}
-  /* an editor's mesh files shown from this device, before they're uploaded: what it is, and Upload or Discard */
-  #localbar{position:absolute;left:50%;transform:translateX(-50%);top:12px;z-index:4;width:max-content;max-width:min(620px,calc(100% - 24px));display:flex;flex-wrap:wrap;
-    align-items:center;justify-content:center;gap:6px 10px;background:var(--overlay);border:1px solid var(--acc);border-radius:8px;padding:7px 10px;font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,.3)}
+  /* an editor's mesh files shown from this device, before they're uploaded: a row for each (two at most), what's not uploaded,
+     and with two, how they're compared */
+  #localbar{position:absolute;left:50%;transform:translateX(-50%);top:12px;z-index:4;width:max-content;max-width:min(620px,calc(100% - 24px));display:grid;gap:6px;
+    background:var(--overlay);border:1px solid var(--acc);border-radius:8px;padding:7px 10px;font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,.3)}
+  #localbar.two{left:auto;right:12px;transform:none;width:380px;max-height:calc(100% - 64px);overflow:auto}
   #localbar[hidden],#localbar [hidden]{display:none!important}
-  #localbar .what{min-width:0;overflow-wrap:anywhere} #localbar .size{color:var(--mute)} #localbar .state{display:block;font-size:12px;color:var(--warn)}
-  #localbar .state.bad{color:var(--bad)} #localbar .btns{display:flex;gap:6px}
+  #localbar .rows{display:grid;gap:6px} #localbar .row{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}
+  #localbar .what{flex:1;min-width:0;overflow-wrap:anywhere} #localbar .size{color:var(--mute)} #localbar .row.off .what{opacity:.45}
+  #localbar .sw{flex:none;width:18px;height:18px;border-radius:4px;display:grid;place-items:center;font-size:11px;font-weight:700;color:#fff}
+  #localbar .show{display:flex;align-items:center;gap:3px;font-size:12px;color:var(--mute);cursor:pointer}
+  #localbar .state{flex-basis:100%;font-size:12px;color:var(--warn)} #localbar .state.bad{color:var(--bad)}
   #localbar .prog{flex-basis:100%;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums}
   #localbar .bar{flex:1;height:8px;border-radius:4px;background:var(--line);overflow:hidden} #localbar .bar i{display:block;height:100%;width:0;background:var(--acc)}
+  #localbar .foot{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px} #localbar .only{flex:1;font-size:12px;color:var(--warn)}
+  #localcmp{border-style:dashed} #viewer.dragging #localcmp,#localcmp.over{border:2px dashed var(--acc);padding:8px 14px} #localcmp.over{background:var(--src-bg)}
+  #localbar.folded .rows,#localbar.folded #localcmpbox,#localbar.folded #localdiscard{display:none}
+  #localcmpbox{display:grid;gap:7px;border-top:1px solid var(--line);padding-top:7px} #localcmpbox .line{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+  #localbar .seg{margin-left:0} #cmplegend{display:grid;gap:3px;font-size:12px}
+  #cmplegend .ramp{height:10px;border-radius:3px;background:linear-gradient(to right,#dcdde2 0%,#93b4ee 35%,#3f6fe0 70%,#d01fb4 100%)}
+  #cmplegend .ticks{display:flex;justify-content:space-between;color:var(--mute);font-variant-numeric:tabular-nums}
+  #cmplegend select{width:auto;padding:1px 4px;font-size:12px} #cmplegend .cap{color:var(--mute)} #cmplegend .stats{font-variant-numeric:tabular-nums}
+  #cmpsay{flex:1 1 100%;min-width:0;font-size:12px} #cmpsay.warn{color:var(--warn)} #cmpsay:empty{display:none}
   #viewer.local #hud,#viewer.local #vvia{display:none}
-  @media (max-width:860px){ #localbar{top:44px;left:8px;right:8px;transform:none;width:auto;max-width:none} }
+  @media (max-width:860px){ #localbar,#localbar.two{top:44px;left:8px;right:8px;transform:none;width:auto;max-width:none;max-height:60%;overflow:auto} }
   #vcorner{position:absolute;right:12px;bottom:12px;z-index:3;display:flex;align-items:flex-end;gap:6px}   /* Rate, then the notes' button */
   /* over the scene's ground, which can be as dark as their text: a halo of the page's background round the text and icons,
      keeping their see-through bodies */
@@ -652,9 +666,22 @@
       <div id="vvia" hidden></div>
       <div id="vold" hidden title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</div>
       <div id="localbar" hidden>
-        <div class="what"><b class="name"></b> <span class="size"></span><span class="state" role="status"></span></div>
-        <div class="btns"><button class="sm" id="localup">Upload</button><button class="sm sec" id="localcancel" hidden>Cancel</button><button class="sm sec" id="localdiscard">Discard</button></div>
-        <div class="prog" hidden><div class="bar" role="progressbar" aria-label="Uploaded" aria-valuemin="0" aria-valuemax="100"><i></i></div><span class="pct"></span></div>
+        <div class="rows"></div>
+        <div class="foot"><span class="only"></span>
+          <button class="sm sec" id="localcmp" hidden title="Choose a second mesh's files, or drop them here, to compare it with this one. Nothing is uploaded.">Compare to…</button>
+          <input type="file" id="cmpfile" hidden multiple accept=".ply,.obj,.mtl,.glb,.gltf,.stl,.bin,.png,.jpg,.jpeg">
+          <button class="sm sec" id="localdiscard">Discard</button><button class="sm sec" id="localfold" hidden title="Fold this box away, or show it again">Fold ▴</button></div>
+        <div id="localcmpbox" hidden>
+          <div class="line"><span class="seg" id="cmpmode"><button data-mode="diff" title="Each mesh coloured by how far it is from the other's surface">Differences</button><button data-mode="two" title="Each mesh in one colour, so one poking through the other shows">Two colours</button></span>
+            <button class="sm sec" id="cmpflip" title="Shows A alone, then B alone, in place. Or hold Space over the view: one while it's down, the other when you let go.">Flip</button><button class="sm sec" id="cmpboth" hidden>Both</button></div>
+          <div id="cmplegend" hidden>
+            <div class="ramp"></div><div class="ticks"><span></span><span></span><span></span></div>
+            <div class="cap">Gap to the other mesh's surface, as a share of A's size (its main part, corner to corner). <label>Scale tops out at <select id="cmptop"></select></label></div>
+            <div class="stats"></div><div class="cap">Counted by area, over the part of each near A's middle.</div>
+          </div>
+          <div class="line"><span id="cmpsay" role="status"></span><button class="sm sec" id="cmpline" title="Fits B onto A: scaled, turned and shifted until their surfaces match as well as they can">Line them up</button><button class="sm sec" id="cmpundo" hidden>Undo</button></div>
+          <div class="prog" id="cmpprog" hidden><div class="bar"><i></i></div><span class="pct"></span><button class="sm sec" id="cmpstop">Stop</button></div>
+        </div>
       </div>
       <div id="vextra">
         <button class="sm sec" id="vnewest" hidden title="This is an older version of this mesh, as its link was to: show the newest">Newest</button>
@@ -2164,8 +2191,9 @@ async function loadGltfWithTexture(url, base, label, first = 0){
 let shownMesh = null;    // the id of the mesh in the viewer, if it's one of ours
 // An editor's mesh files, shown from this device before any of it is uploaded (previewLocal() below):
 // {files, main, urls: each file's name in lower case to its object URL, url: main's, size, before: {id, climb} of the
-// mesh shown before it, abort: an AbortController while it uploads, sent: all of it has gone, and only the answer is awaited}
-let localMesh = null;
+// mesh shown before it, abort: an AbortController while it uploads, sent: all of it has gone, and only the answer is awaited,
+// up: '' or 'up', 'failed', 'done', note: what its row says of that, n: bytes gone, shown, ready: it's in the view}
+let localMesh = null, localOther = null;     // the second, while two are compared (compareLocal() below)
 const fileName = u => { try { u = decodeURIComponent(u); } catch {} return u.split(/[?#]/)[0].split(/[\\/]/).pop().toLowerCase(); };
 // A name a local mesh's file refers to (its textures, .bin, .mtl), which a loader has put after the object URL's start:
 // the object URL of the chosen file of that name, whatever folder it was said to be in
@@ -2270,6 +2298,7 @@ async function loadMeshUrl(url, filename, label, id, local = false){
       const gl = renderer.getContext();
       if (gl.getError() === gl.OUT_OF_MEMORY) viewNote('The graphics card ran out of memory for this texture, so it may show black.', again);
     }));
+    return true;
   } catch (e) {
     if (local) {     // nothing about it is sent, an error included
       loaded();
@@ -4911,36 +4940,66 @@ renderer.domElement.addEventListener('click', ev => {
   saveMarked();
 });
 
-// ---- a mesh of an editor's own: shown first from the chosen files on this device, with nothing sent, under a bar that
-// says so. Its Upload button sends them, as far along as the bar shows, and Discard goes back to what was in view.
+// ---- meshes of an editor's own: shown first from the chosen files on this device, with nothing sent, under a bar that
+// lists them and says so. A row's Upload sends that mesh's files, as far along as the row shows; its ✕ takes it out of
+// the view, and Discard goes back to what was in view. A second one ("Compare to…") is compared with the first (below).
 const MESH_MAIN = ['ply', 'obj', 'glb', 'gltf', 'stl'];     // as the server's MESH_EXT: the first such file is the mesh
-function localBar(state, text = ''){
-  const el = $('#localbar'), m = localMesh, st = el.querySelector('.state'), up = state === 'up';
-  el.hidden = !m; vEl.classList.toggle('local', !!m);
-  if (!m) return;
-  el.querySelector('.name').textContent = m.main.name;
-  el.querySelector('.size').textContent = fmtSize(m.size) + (m.files.length > 1 ? `, ${m.files.length} files` : '');
-  st.textContent = text || (up ? 'Uploading…' : 'Not uploaded yet: only you see this');
-  st.classList.toggle('bad', state === 'failed');
-  el.querySelector('.prog').hidden = !up;
-  $('#localup').hidden = $('#localdiscard').hidden = up || state === 'done'; $('#localcancel').hidden = !up;
-  $('#localup').textContent = state === 'failed' ? 'Upload again' : 'Upload';
-  if (up) localProgress(0, m.size);
+const mainOf = files => files.find(f => MESH_MAIN.includes(f.name.split('.').pop().toLowerCase()));
+function localItem(files, main){
+  const urls = new Map(files.map(f => [f.name.toLowerCase(), URL.createObjectURL(f)]));
+  return { files, main, urls, url: urls.get(main.name.toLowerCase()), size: files.reduce((n, f) => n + f.size, 0), before: null, abort: null, sent: false,
+           up: '', note: '', n: 0, shown: true, ready: false };
 }
-function localProgress(n, total){
-  const el = $('#localbar'), pct = total ? Math.floor(100 * n / total) : 100, bar = el.querySelector('.bar');
+const localItems = () => [localMesh, localOther].filter(Boolean);
+const midName = (name, most = 32) => name.length > most ? `${name.slice(0, 15)}…${name.slice(15 - most + 1)}` : name;     // a long name's start and end: two to compare often differ only at the end
+const isLocal = m => !!m && (m === localMesh || m === localOther);
+function renderLocal(){
+  const el = $('#localbar'), items = localItems(), two = items.length === 2;
+  el.hidden = !items.length; vEl.classList.toggle('local', !!items.length); el.classList.toggle('two', two);
+  if (!items.length) return el.classList.remove('folded');
+  el.querySelector('.rows').innerHTML = items.map((m, i) => {
+    const up = m.up === 'up', busy = up || m.up === 'done';
+    return `<div class="row" data-i="${i}">${two ? `<span class="sw" style="background:${LOCAL_COLORS[i]}">${'AB'[i]}</span>` : ''}
+      <span class="what"><b class="name" title="${esc(m.main.name)}">${esc(two ? midName(m.main.name) : m.main.name)}</b> <span class="size">${fmtSize(m.size)}${m.files.length > 1 ? `, ${m.files.length} files` : ''}</span></span>
+      ${two ? `<label class="show" title="Untick to hide this mesh"><input type="checkbox"${m.shown ? ' checked' : ''}> show</label>` : ''}
+      <button class="sm up"${busy ? ' hidden' : ''}>${m.up === 'failed' ? 'Upload again' : 'Upload'}</button>
+      <button class="sm sec cancel"${up ? '' : ' hidden'}>Cancel</button>
+      <button class="sm sec rm" title="Take this mesh out of the view. Nothing of it was uploaded." aria-label="Remove ${esc(m.main.name)}"${busy ? ' hidden' : ''}>✕</button>
+      <span class="state${m.up === 'failed' ? ' bad' : ''}" role="status"${m.note || up ? '' : ' hidden'}>${esc(m.note || 'Uploading…')}</span>
+      <div class="prog"${up ? '' : ' hidden'}><div class="bar" role="progressbar" aria-label="Uploaded" aria-valuemin="0" aria-valuemax="100"><i></i></div><span class="pct"></span></div></div>`;
+  }).join('');
+  el.querySelector('.only').textContent = `Not uploaded yet: only you see ${two ? 'these' : 'this'}`;
+  $('#localdiscard').textContent = two ? 'Discard both' : 'Discard';
+  $('#localcmp').hidden = two || !localMesh.ready;
+  $('#localfold').hidden = !two;
+  if (!two) el.classList.remove('folded');
+  $('#localfold').textContent = el.classList.contains('folded') ? 'Show ▾' : 'Fold ▴';
+  $('#localcmpbox').hidden = !two;
+  for (const m of items) if (m.up === 'up') localProgress(m, m.n, m.size);
+  renderCmp();
+}
+function localProgress(m, n, total){
+  const row = $('#localbar').querySelector(`.row[data-i="${localItems().indexOf(m)}"]`), pct = total ? Math.floor(100 * n / total) : 100;
+  m.n = n;
+  if (n >= total && total) { m.sent = true; m.note = 'Sent: the site is saving it…'; }
+  if (!row) return;
+  const bar = row.querySelector('.bar');
   bar.firstChild.style.width = pct + '%'; bar.setAttribute('aria-valuenow', pct);
-  el.querySelector('.pct').textContent = `${pct}% · ${mb(n)} of ${mb(total)} MB`;
-  if (n >= total && localMesh) { localMesh.sent = true; el.querySelector('.state').textContent = 'Sent: the site is saving it…'; }
+  row.querySelector('.pct').textContent = `${pct}% · ${mb(n)} of ${mb(total)} MB`;
+  if (m.sent) row.querySelector('.state').textContent = m.note;
 }
-// The local mesh over with: its upload stopped if one is going, its object URLs given back
-function endLocal(){
-  const m = localMesh;
-  if (!m) return;
-  localMesh = null;
+// A local mesh over with: its upload stopped if one is going, its object URLs given back
+function dropLocal(m){
   if (m.abort) { m.abort.abort(); toast('Upload cancelled', 4000); }
   for (const u of m.urls.values()) URL.revokeObjectURL(u);
-  localBar();
+}
+function endLocal(){
+  const items = localItems();
+  if (!items.length) return;
+  endCompare();
+  localMesh = localOther = null;
+  items.forEach(dropLocal);
+  renderLocal();
 }
 function clearView(){
   loadSeq++; $('#loading').hidden = true;
@@ -4950,24 +5009,27 @@ function clearView(){
   $('#viewing').textContent = ''; $('#vsway').disabled = true;
   $('#hud').textContent = 'Pick a mesh, or drop a mesh file here. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan';
 }
+// A local mesh shown on its own, as a mesh of the site's is, with its textures
+function showLocal(m){
+  showTitle(m.main.name, 'Not uploaded');
+  return loadMeshUrl(m.url, m.main.name, `${m.main.name} (not uploaded)`, null, true).then(ok => { if (localMesh === m) { m.ready = !!ok; renderLocal(); } markShown(); });
+}
 function previewLocal(files){
   if (!editor) return toast('This copy of the site is view-only.');
   files = [...files];
   if (!files.length) return;
-  const main = files.find(f => MESH_MAIN.includes(f.name.split('.').pop().toLowerCase()));
+  const main = mainOf(files);
   if (!main) return toast('That needs a mesh file: .ply .obj .glb .gltf or .stl', 6000);
   const before = localMesh ? localMesh.before : shownMesh ? { id: shownMesh, climb: viewedClimb } : null;
   endLocal();
-  const urls = new Map(files.map(f => [f.name.toLowerCase(), URL.createObjectURL(f)]));
-  localMesh = { files, main, urls, url: urls.get(main.name.toLowerCase()), size: files.reduce((n, f) => n + f.size, 0), before, abort: null };
+  localMesh = Object.assign(localItem(files, main), { before });
   // nothing of the mesh that was in view stays: its title, its link in the address, its climb and its other versions
   viewedClimb = null;
-  showTitle(main.name, 'Not uploaded');
   try { history.replaceState(null, '', '/'); } catch {}
   closeLinkMenu();
   for (const id of ['vclimb', 'vvia', 'vnewest', 'vothers']) $('#' + id).hidden = true;
-  localBar();
-  return loadMeshUrl(localMesh.url, main.name, `${main.name} (not uploaded)`, null, true).then(markShown);
+  renderLocal();
+  return showLocal(localMesh);
 }
 function discardLocal(){
   const m = localMesh;
@@ -4976,41 +5038,710 @@ function discardLocal(){
   if (m.before && meshesById[m.before.id]) return viewMesh(m.before.id, undefined, '', m.before.climb);
   clearView(); markShown();
 }
-async function uploadLocal(){
-  const m = localMesh;
-  if (!m || m.abort) return;
-  m.abort = new AbortController(); m.sent = false;
-  localBar('up');
+// One of the local meshes taken out of the view: the other stays, as a mesh on its own; the last one gone is a Discard
+function removeLocal(m){
+  if (!isLocal(m)) return;
+  if (!localOther) return discardLocal();
+  const wasFirst = m === localMesh, keep = wasFirst ? localOther : localMesh;
+  endCompare();
+  keep.before = localMesh.before; keep.shown = true;
+  localMesh = keep; localOther = null;
+  dropLocal(m);
+  if (wasFirst) { keep.ready = false; renderLocal(); return showLocal(keep); }     // it was only a shape so far: loaded as a mesh on its own is
+  showTitle(keep.main.name, 'Not uploaded');
+  $('#viewing').textContent = `Viewing: ${keep.main.name} (not uploaded)`;
+  renderLocal(); markShown();
+}
+async function uploadLocal(m){
+  if (!isLocal(m) || m.abort) return;
+  Object.assign(m, { abort: new AbortController(), sent: false, up: 'up', note: '', n: 0 });
+  renderLocal();
   let r;
   try {
     [r] = await sendFiles('/api/meshes', m.files, 'files', { together: true, fields: $('#upclimb').value ? { climb_id: $('#upclimb').value } : {},
-                                                           signal: m.abort.signal, progress: (n, t) => { if (localMesh === m) localProgress(n, t); } });
+                                                           signal: m.abort.signal, progress: (n, t) => { if (isLocal(m)) localProgress(m, n, t); } });
   } catch (e) {
-    if (localMesh !== m) return;     // discarded or replaced meanwhile, which said so
+    if (!isLocal(m)) return;     // discarded or replaced meanwhile, which said so
     const cancelled = m.abort.signal.aborted;
     m.abort = null;
     if (cancelled && m.sent) setTimeout(() => refreshMeshes().catch(() => {}), 4000);
-    return localBar(cancelled ? '' : 'failed', !cancelled ? 'Upload failed: ' + e.message
+    m.up = cancelled ? '' : 'failed';
+    m.note = !cancelled ? 'Upload failed: ' + e.message
       : m.sent ? 'Cancelled after all of it was sent, so it may be on the site: check the list before uploading again'
-      : 'Upload cancelled. Still not uploaded: only you see this');
+      : 'Upload cancelled: still not uploaded';
+    return renderLocal();
   }
   m.abort = null;
-  const mine = localMesh === m;
-  if (mine) localBar('done', 'Uploaded');
+  const mine = isLocal(m);
+  if (mine) { m.up = 'done'; m.note = 'Uploaded'; renderLocal(); }
   try { await refreshMeshes(); await refreshClimbs(); } catch {}
   if (!mine) return toast(`${m.main.name} had already uploaded: it's in the list`, 6000);
-  if (localMesh !== m) return;      // another mesh picked meanwhile
+  if (!isLocal(m)) return;      // another mesh picked meanwhile
+  const other = m === localMesh ? localOther : localMesh;
+  if (other?.abort) { removeLocal(m); return toast(`Uploaded ${m.main.name}: it's in the list`, 5000); }    // the other is still going up: left to finish
   viewMesh(r.id);
-  if (localMesh === m) discardLocal();     // not in the list after all
+  if (isLocal(m)) discardLocal();     // not in the list after all
   toast('Uploaded ' + m.main.name, 3000);
 }
-$('#localup').onclick = uploadLocal;
+$('#localbar .rows').addEventListener('click', ev => {
+  const m = localItems()[ev.target.closest('.row')?.dataset.i];
+  if (!m) return;
+  if (ev.target.closest('.up')) uploadLocal(m);
+  else if (ev.target.closest('.cancel')) m.abort?.abort();
+  else if (ev.target.closest('.rm')) removeLocal(m);
+});
+$('#localbar .rows').addEventListener('change', ev => {
+  const m = localItems()[ev.target.closest('.row')?.dataset.i];
+  if (!m || !cmp) return;
+  m.shown = ev.target.checked; cmp.solo = null;
+  applyCompare();
+});
 $('#localdiscard').onclick = discardLocal;
-$('#localcancel').onclick = () => localMesh?.abort?.abort();
+$('#localfold').onclick = () => { $('#localbar').classList.toggle('folded'); renderLocal(); };
 $('#meshfile').onchange = ev => { const files = [...ev.target.files]; ev.target.value = ''; previewLocal(files); };    // emptied, so the same file can be chosen again
-vEl.addEventListener('dragover', ev => { ev.preventDefault(); if (editor) $('#drop').textContent = 'Drop a mesh\'s files to look at it before uploading'; vEl.classList.add('dragging'); });
+vEl.addEventListener('dragover', ev => {
+  ev.preventDefault();
+  if (editor) $('#drop').textContent = !localMesh ? 'Drop a mesh\'s files to look at it before uploading'
+    : localOther ? 'Drop a mesh\'s files to look at it in place of these' : 'Drop a mesh\'s files to look at it in place of this one, or on “Compare to…” to compare them';
+  vEl.classList.add('dragging');
+});
 vEl.addEventListener('dragleave', () => vEl.classList.remove('dragging'));
 vEl.addEventListener('drop', ev => { ev.preventDefault(); vEl.classList.remove('dragging'); previewLocal(ev.dataTransfer.files); });
+// The bar takes drops too: files dropped on it are compared with the mesh shown, and never replace it
+$('#localcmp').onclick = () => $('#cmpfile').click();
+$('#cmpfile').onchange = ev => { const files = [...ev.target.files]; ev.target.value = ''; compareLocal(files); };
+for (const type of ['dragenter', 'dragover']) $('#localbar').addEventListener(type, ev => {
+  ev.preventDefault(); ev.stopPropagation();
+  vEl.classList.remove('dragging'); $('#localcmp').classList.add('over');
+});
+$('#localbar').addEventListener('dragleave', ev => { ev.stopPropagation(); if (!$('#localbar').contains(ev.relatedTarget)) $('#localcmp').classList.remove('over'); });
+$('#localbar').addEventListener('drop', ev => {
+  ev.preventDefault(); ev.stopPropagation();
+  $('#localcmp').classList.remove('over');
+  if (localOther) return toast('Two meshes are shown already: take one out with its ✕ first', 6000);
+  if (!localMesh?.ready) return toast('Wait for the first mesh to show', 4000);
+  compareLocal(ev.dataTransfer.files);
+});
+
+// ---- two local meshes compared. The second (B) is put in the coordinates of the first (A): given the same turn, size and
+// place in the view as A got. Both lose their textures, and are coloured by how far each is from the other's surface
+// (Differences), or one colour each (Two colours); Flip shows one alone, then the other. Everything is measured in the
+// view's coordinates and said as a share of A's size (corner to corner of the box its main part fills: mainBox()), as a
+// local mesh has no units. If they don't lie on each other as they are, B is fitted onto A: scaled, turned and shifted
+// (lineUp(), after experiments/mapper/surface.py, which has cameras to start from: this has only the two surfaces).
+// None of it sends anything.
+const LOCAL_COLORS = ['#2aa9c9', '#9a5fe0'];
+const DIFF_STOPS = [[0, '#dcdde2'], [.35, '#93b4ee'], [.7, '#3f6fe0'], [1, '#d01fb4']];      // the same to far: also the legend's (the page's CSS)
+// cap: no gap is looked for beyond this share of A's size. floor: the least the automatic scale tops out at, and far:
+// how many times the usual gap it tops out at. lined: B is taken as lying on A already if the median gap near the rock
+// is under this, and as not fitted if it's still over poorGap after a fit. reach: how far from A's middle counts as
+// the rock, in A's spreads (the median distance of its surface from its middle); points further than that from the
+// other surface aren't matched. trunc: no gap counts as more than this, in A's spreads, in a fit's score. keep: the
+// closer share of matches a fit is made on, unless its stage says. along: what a step across the surface weighs a gap
+// along it by. step: the most one such step turns (radians) and scales. scale: how far a fit's scale may go from its
+// start's. factors: each start also this much larger and smaller. samples: points taken of each surface. stages:
+// every start is tried with few points (n) and rounds (the first `point` of them point to point), the best `keep` of
+// those go on with more, and so on, to the best two with the most; `share`: the closer share fitted on, half at first
+// and more as the fit closes in (a smooth rock that's turned a little is out of place mostly in its further half).
+const CMP = { cap: .2, floor: .0002, far: 8, lined: .005, poorGap: .025, reach: 2.5, keep: .5, trunc: .11, along: .05, step: { turn: .35, scale: 1.25 }, scale: 2,
+              factors: [1, .8, .9, 1.1, 1.25], samples: 20000,
+              stages: [{ n: 250, rounds: 2, patience: 9, point: 1, share: .5 }, { n: 400, rounds: 5, patience: 9, share: .5, keep: 40 },
+                       { n: 2000, rounds: 14, patience: 4, share: .7, keep: 12 }, { n: 8000, rounds: 30, patience: 4, share: .85, keep: 2 }] };
+const BVH_LIB = 'https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.8.3/build/index.module.js';     // for the nearest point of a surface; three r159 and later
+let bvhLib = null;
+// {a, b: the two local meshes, job: counts what's started (a job stops when it's no longer the last), mode: 'diff' or
+// 'two', solo: 0 or 1 while Flip shows one alone, T: B's fit {s, q, t}, undo: the fit before the last, top: 'auto' or a
+// percent, dist: fits' keys to the gaps measured under them, fitG: the group B's fit moves, parts: each one's meshes,
+// geo: each one's {pos, index, count, w, bvh, samples, mid, spread, axes} in the view's coordinates (B's before its fit),
+// size: A's, reach, trunc, nearA: which of A's samples are within reach of its middle, say, warn, busy: what the box
+// says and is doing, fitted: what the last fit came to}
+let cmp = null;
+const tick = (ms = 0) => new Promise(ok => setTimeout(ok, ms));
+const noFit = () => ({ s: 1, q: new THREE.Quaternion(), t: [0, 0, 0] });
+const fitKey = T => [T.s, T.q.x, T.q.y, T.q.z, T.q.w, ...T.t].map(x => x.toPrecision(7)).join();
+const rotOf = ({ x, y, z, w }) => [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w), 2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+                                  2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)];     // a quaternion's matrix, by rows
+const turned = (R, x, y, z) => [R[0] * x + R[1] * y + R[2] * z, R[3] * x + R[4] * y + R[5] * z, R[6] * x + R[7] * y + R[8] * z];
+const setSurface = (o, m) => { if (o.userData.surface) o.userData.surface = m; else o.material = m; };      // under the wireframe, if that's on
+// a share of A's size, as a percent with two figures or so
+const pc = (x, size) => { const v = 100 * x / size; return (v < .095 ? v.toFixed(3) : v < .95 ? v.toFixed(2) : v < 9.5 ? v.toFixed(1) : v.toFixed(0)) + '%'; };
+function mulberry(seed){ return () => { let t = seed += 0x6D2B79F5; t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61); return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+// the p-th percentile of d's first n values (those `mask` marks, if given)
+function pctOf(d, mask, n, p){
+  const a = new Float32Array(n);
+  let k = 0;
+  for (let i = 0; i < n; i++) if (!mask || mask[i]) a[k++] = d[i];
+  if (!k) return Infinity;
+  const s = a.subarray(0, k).sort();
+  return s[Math.min(k - 1, Math.floor(p / 100 * k))];
+}
+// A symmetric matrix's eigenvectors (an array of rows, changed), the largest eigenvalue's first, by Jacobi's rotations
+function eigenSym(a){
+  const n = a.length, v = a.map((_, i) => a.map((_, j) => +(i === j)));
+  for (let sweep = 0; sweep < 50; sweep++) {
+    let off = 0, all = 0;
+    for (let p = 0; p < n; p++) for (let q = 0; q < n; q++) { all += a[p][q] ** 2; if (p !== q) off += a[p][q] ** 2; }
+    if (off <= 1e-24 * all) break;
+    for (let p = 0; p < n - 1; p++) for (let q = p + 1; q < n; q++) {
+      if (!a[p][q]) continue;
+      const theta = (a[q][q] - a[p][p]) / (2 * a[p][q]), t = (theta < 0 ? -1 : 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+      const c = 1 / Math.sqrt(t * t + 1), s = t * c;
+      for (let k = 0; k < n; k++) { const x = a[k][p], y = a[k][q]; a[k][p] = c * x - s * y; a[k][q] = s * x + c * y; }
+      for (let k = 0; k < n; k++) { const x = a[p][k], y = a[q][k]; a[p][k] = c * x - s * y; a[q][k] = s * x + c * y; }
+      for (let k = 0; k < n; k++) { const x = v[k][p], y = v[k][q]; v[k][p] = c * x - s * y; v[k][q] = s * x + c * y; }
+    }
+  }
+  return a.map((_, i) => i).sort((i, j) => a[j][j] - a[i][i]).map(i => v.map(row => row[i]));
+}
+// The scale s, turn q and middles (mx, my) taking n points X onto n points Y, least squares (y = my + s q (x - mx)): Horn's
+// way, the turn being a quaternion, the eigenvector with the largest eigenvalue of a 4x4 made from the points' products
+function similarity(X, Y, n){
+  const mx = [0, 0, 0], my = [0, 0, 0], S = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+  for (let i = 0; i < 3 * n; i++) { mx[i % 3] += X[i] / n; my[i % 3] += Y[i] / n; }
+  let xx = 0;
+  for (let i = 0; i < n; i++) {
+    const k = 3 * i, x = [X[k] - mx[0], X[k + 1] - mx[1], X[k + 2] - mx[2]], y = [Y[k] - my[0], Y[k + 1] - my[1], Y[k + 2] - my[2]];
+    for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) S[3 * a + b] += x[a] * y[b];
+    xx += x[0] * x[0] + x[1] * x[1] + x[2] * x[2];
+  }
+  const [Sxx, Sxy, Sxz, Syx, Syy, Syz, Szx, Szy, Szz] = S;
+  const [[w, x, y, z]] = eigenSym([[Sxx + Syy + Szz, Syz - Szy, Szx - Sxz, Sxy - Syx], [Syz - Szy, Sxx - Syy - Szz, Sxy + Syx, Szx + Sxz],
+                                 [Szx - Sxz, Sxy + Syx, -Sxx + Syy - Szz, Syz + Szy], [Sxy - Syx, Szx + Sxz, Syz + Szy, -Sxx - Syy + Szz]]);
+  const q = new THREE.Quaternion(x, y, z, w).normalize(), R = rotOf(q);
+  let dot = 0;      // of each y with its x turned
+  for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) dot += R[3 * a + b] * S[3 * b + a];
+  return { s: xx > 0 ? dot / xx : 1, q, mx, my };
+}
+// The turns a fit starts from: none, about the up axis every 30 degrees, the 24 ways a box stands on its faces, and those
+// 24 again between the two meshes' own axes (the directions each is longest, middling and shortest in: `from` B's, `to`
+// A's, each three vectors), which is what finds two models of a rock that don't share an up at all
+function fitTurns(from, to){
+  const out = [new THREE.Quaternion()], add = q => { if (!out.some(o => Math.abs(o.dot(q)) > .9999)) out.push(q); };
+  for (let k = 1; k < 12; k++) add(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), k * Math.PI / 6));
+  const axes = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].map(a => new THREE.Vector3(...a)), box = [];
+  for (const x of axes) for (const y of axes) if (Math.abs(x.dot(y)) < .5) box.push(new THREE.Matrix4().makeBasis(x, y, new THREE.Vector3().crossVectors(x, y)));
+  for (const m of box) add(new THREE.Quaternion().setFromRotationMatrix(m));
+  const basis = v => new THREE.Matrix4().makeBasis(...v.map(a => new THREE.Vector3(...a))), A = basis(to), B = basis(from).transpose();
+  for (const m of box) add(new THREE.Quaternion().setFromRotationMatrix(A.clone().multiply(m).multiply(B)));
+  return out;
+}
+// A local mesh's shape alone: its file read with no texture fetched or decoded (a GLB's own images among them), and no
+// materials file. Its .bin, if it has one, is the chosen file of that name.
+async function loadShape(m){
+  const ext = m.main.name.split('.').pop().toLowerCase(), progress = ev => loadingUpdate?.(ev), image = /\.(png|jpe?g|webp)$/i;
+  const manager = new THREE.LoadingManager();
+  manager.setURLModifier(u => {
+    if (u === m.url) return u;
+    if (u.startsWith('data:')) return u.startsWith('data:image') ? NO_IMAGE : u;
+    if (!u.startsWith('blob:')) return image.test(u) ? NO_IMAGE : u;
+    const name = fileName(u), mine = m.urls.get(name);
+    if (image.test(name)) return NO_IMAGE;
+    return mine || (/\.[a-z0-9]+$/.test(name) ? u : NO_IMAGE);      // an image inside a GLB comes as a blob: with no name
+  });
+  let obj;
+  if (ext === 'ply') obj = new THREE.Mesh(await new PLYLoader(manager).loadAsync(m.url, progress));
+  else if (ext === 'stl') obj = new THREE.Mesh(await new STLLoader(manager).loadAsync(m.url, progress));
+  else if (ext === 'obj') obj = await new OBJLoader(manager).loadAsync(m.url, progress);
+  else if (ext === 'glb' || ext === 'gltf') obj = (await new GLTFLoader(manager).setMeshoptDecoder(MeshoptDecoder).loadAsync(m.url, progress)).scene;
+  else throw new Error('unsupported format .' + ext);
+  obj.traverse(o => { if (o.isMesh && !o.geometry.attributes.normal) o.geometry.computeVertexNormals(); });
+  return obj;
+}
+function compareLocal(files){
+  const a = localMesh;
+  if (!editor || !a?.ready || localOther) return;
+  files = [...files];
+  if (!files.length) return;
+  const main = mainOf(files);
+  if (!main) return toast('That needs a mesh file: .ply .obj .glb .gltf or .stl', 6000);
+  const b = localOther = localItem(files, main);
+  showTitle(`${a.main.name} and ${b.main.name}`, 'Not uploaded');
+  return startCompare(a, b);
+}
+async function startCompare(a, b){
+  const c = cmp = { a, b, job: 0, mode: 'diff', solo: null, T: noFit(), undo: null, top: 'auto', dist: new Map(), geo: [], size: 0, fitG: null, parts: null,
+                    say: '', warn: false, busy: null, v: new THREE.Vector3(), hit: {}, last: 0 };
+  renderLocal();
+  const loaded = loading(b.main.name);
+  let obj;
+  try { obj = await loadShape(b); }
+  catch (e) {
+    loaded();
+    if (cmp !== c) return;
+    removeLocal(b);
+    return viewNote(`Could not show ${b.main.name} here: ${e.message.replace(/\.+$/, '')}. If it has other files (.bin), choose them all together.`);
+  }
+  loaded();
+  if (cmp !== c) return;
+  // B under the same turn, size and place as showObject() gave A, inside a group that its fit moves
+  const norm = new THREE.Group();
+  norm.position.copy(current.position); norm.quaternion.copy(current.quaternion); norm.scale.copy(current.scale);
+  norm.add(obj);
+  c.fitG = new THREE.Group(); c.fitG.add(norm); scene.add(c.fitG);
+  const meshesOf = root => { const out = []; root.traverse(o => { if (o.isMesh && !o.userData.hiddenPieces && !o.userData.beta) out.push(o); }); return out; };
+  c.parts = [meshesOf(current), meshesOf(obj)];
+  for (const o of c.parts[0]) Object.assign(o.userData, { localSurface: o.userData.surface || o.material, localColor: o.geometry.attributes.color || null });
+  c.flat = LOCAL_COLORS.map(color => new THREE.MeshStandardMaterial({ color, side: THREE.DoubleSide, roughness: .85 }));
+  c.heat = [0, 1].map(() => new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: .85 }));
+  b.ready = true;
+  viewNote('');
+  $('#viewing').textContent = `Comparing ${a.main.name} with ${b.main.name} (not uploaded)`;
+  applyCompare();
+  markShown();
+  return runCompare(c, 'auto');
+}
+// The comparison over with: A as it was shown on its own, B gone from the view
+function endCompare(){
+  const c = cmp;
+  if (!c) return;
+  cmp = null; c.job++;
+  if (c.fitG) scene.remove(c.fitG);
+  for (const o of c.parts?.[1] || []) o.geometry.dispose();
+  for (const o of c.parts?.[0] || []) {
+    setSurface(o, o.userData.localSurface);
+    if (o.userData.localColor) o.geometry.setAttribute('color', o.userData.localColor); else if (o.userData.localHeat) o.geometry.deleteAttribute('color');
+    delete o.userData.localSurface; delete o.userData.localColor; delete o.userData.localHeat;
+  }
+  for (const m of [...c.flat || [], ...c.heat || []]) m.dispose();
+  if (current) current.visible = true;
+}
+function cmpSay(c, text, warn = false){ c.say = text; c.warn = warn; if (cmp === c) renderCmp(); }
+function cmpBusy(c, text, frac = 0){
+  const was = !!c.busy;
+  c.busy = text ? { text, frac } : null;
+  if (cmp !== c) return;
+  if (was !== !!c.busy) renderCmp();
+  const el = $('#cmpprog');
+  el.hidden = !text;
+  if (!text) return;
+  el.querySelector('.bar i').style.width = Math.round(100 * frac) + '%';
+  el.querySelector('.pct').textContent = text;
+}
+// What the two are shown as: coloured by their gaps once those are measured (till then, and in Two colours, a colour
+// each), and which of them shows
+function applyCompare(){
+  const c = cmp;
+  if (!c?.parts) return renderCmp();
+  const d = c.dist.get(fitKey(c.T)), heat = c.mode === 'diff' && !!d;
+  if (heat) paintDiff(c, d);
+  c.parts.forEach((meshes, i) => { for (const o of meshes) setSurface(o, heat ? c.heat[i] : c.flat[i]); });
+  current.visible = c.solo == null ? c.a.shown : c.solo === 0;
+  c.fitG.visible = c.solo == null ? c.b.shown : c.solo === 1;
+  renderCmp();
+}
+function renderCmp(){
+  const c = cmp;
+  if (!c) return;
+  const d = c.dist.get(fitKey(c.T)), heat = c.mode === 'diff' && !!d;
+  document.querySelectorAll('#cmpmode button').forEach(b => b.classList.toggle('on', b.dataset.mode === c.mode));
+  $('#cmplegend').hidden = !heat;
+  if (heat) {
+    const top = topOf(c, d), ticks = $('#cmplegend .ticks').children, P = x => pc(x, c.size);
+    const way = (x, from, to) => `<div><b>${from} to ${to}</b>: median ${P(x.median)} · 90th ${P(x.p90)} · ${(100 * x.beyond).toFixed(x.beyond < .1 ? 1 : 0)}% beyond ${P(top)}</div>`;
+    ticks[0].textContent = '0'; ticks[1].textContent = P(top / 2); ticks[2].textContent = '≥ ' + P(top);
+    $('#cmptop').value = String(c.top);
+    $('#cmplegend .stats').innerHTML = way(d.stats[0], 'A', 'B') + way(d.stats[1], 'B', 'A');
+  }
+  const say = $('#cmpsay');
+  say.textContent = c.say; say.classList.toggle('warn', c.warn);
+  $('#cmpline').disabled = !!c.busy || !c.parts;
+  $('#cmpundo').hidden = !c.undo || !!c.busy;
+  $('#cmpboth').hidden = c.solo == null;
+  $('#cmpflip').disabled = !c.parts;
+  $('#cmpflip').textContent = c.solo == null ? 'Flip' : `Flip: ${'AB'[c.solo]} alone`;
+  document.querySelectorAll('#localbar .row').forEach((row, i) => {
+    const on = c.solo == null ? [c.a, c.b][i].shown : c.solo === i, box = row.querySelector('.show input');
+    row.classList.toggle('off', !on);
+    if (box) box.checked = on;
+  });
+}
+function flipLocal(){
+  if (!cmp?.parts) return;
+  cmp.solo = cmp.solo === 0 ? 1 : 0;
+  applyCompare();
+}
+// Space, held over the view: one alone while it's down, the other when it's let go
+const flipKey = ev => ev.code === 'Space' && !!cmp?.parts && (ev.target === document.body || vEl.contains(ev.target)) && !ev.target.closest?.('button, input, select, textarea, a, label');
+addEventListener('keydown', ev => { if (!flipKey(ev)) return; ev.preventDefault(); if (!ev.repeat) flipLocal(); });
+addEventListener('keyup', ev => { if (!flipKey(ev)) return; ev.preventDefault(); flipLocal(); });
+$('#cmpflip').onclick = flipLocal;
+$('#cmpboth').onclick = () => { if (!cmp) return; cmp.solo = null; cmp.a.shown = cmp.b.shown = true; applyCompare(); };
+$('#cmpmode').onclick = ev => {
+  const mode = ev.target.closest('button')?.dataset.mode, c = cmp;
+  if (!mode || !c) return;
+  c.mode = mode;
+  applyCompare();
+  if (mode === 'diff' && c.parts && !c.busy && !c.dist.has(fitKey(c.T))) runCompare(c, 'diff');
+};
+$('#cmptop').innerHTML = '<option value="auto">Auto</option>' + [.02, .05, .1, .25, .5, 1, 2, 5].map(p => `<option value="${p}">${p}%</option>`).join('');
+$('#cmptop').onchange = ev => { if (!cmp) return; cmp.top = ev.target.value === 'auto' ? 'auto' : +ev.target.value; applyCompare(); };
+$('#cmpline').onclick = () => { if (cmp?.parts && !cmp.busy) runCompare(cmp, 'line'); };
+$('#cmpundo').onclick = () => {
+  const c = cmp;
+  if (!c?.undo || c.busy) return;
+  c.T = c.undo; c.undo = null;
+  setFit(c);
+  cmpSay(c, 'B is back as it was');
+  applyCompare();
+  runCompare(c, 'diff');
+};
+$('#cmpstop').onclick = () => { const c = cmp; if (!c) return; c.job++; cmpBusy(c, null); cmpSay(c, 'Stopped'); applyCompare(); };
+function setFit(c){ c.fitG.position.set(...c.T.t); c.fitG.quaternion.copy(c.T.q); c.fitG.scale.setScalar(c.T.s); }
+
+// A list of meshes as one: every vertex in the view's coordinates and every triangle, in the meshes' order
+function mergeGeo(meshes){
+  let nv = 0, ni = 0;
+  for (const o of meshes) { const g = o.geometry, n = g.attributes.position.count; nv += n; ni += g.index ? g.index.count : n; }
+  const pos = new Float32Array(nv * 3), index = new Uint32Array(ni - ni % 3), p = new THREE.Vector3();
+  let v0 = 0, i0 = 0;
+  for (const o of meshes) {
+    const g = o.geometry, P = g.attributes.position, m = o.matrixWorld, idx = g.index?.array;
+    for (let j = 0; j < P.count; j++) { p.fromBufferAttribute(P, j).applyMatrix4(m); pos[3 * (v0 + j)] = p.x; pos[3 * (v0 + j) + 1] = p.y; pos[3 * (v0 + j) + 2] = p.z; }
+    const n = idx ? idx.length : P.count;
+    for (let k = 0; k < n && i0 < index.length; k++) index[i0++] = (idx ? idx[k] : k) + v0;
+    v0 += P.count;
+  }
+  return { pos, index, count: nv };
+}
+// n points on a merged mesh's surface (the same ones each time), as many in each triangle as in any other: so most where
+// the mesh is finest, which is the rock the photos were of, and few on what stretches off behind it in big triangles (a
+// fit by area would be of that). And each vertex's share of the surface's area (g.w).
+function sampleSurface(g, n, seed){
+  const { pos, index } = g, nt = index.length / 3, w = g.w = new Float32Array(g.count), rnd = mulberry(seed), out = new Float32Array(3 * n);
+  let total = 0;
+  for (let t = 0; t < nt; t++) {
+    const a = 3 * index[3 * t], b = 3 * index[3 * t + 1], c = 3 * index[3 * t + 2];
+    const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2], vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2];
+    const area = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
+    total += area;
+    w[a / 3] += area / 3; w[b / 3] += area / 3; w[c / 3] += area / 3;
+  }
+  if (!(total > 0)) throw new Error('it has no faces');
+  for (let i = 0; i < n; i++) {
+    const lo = Math.min(nt - 1, Math.floor(rnd() * nt));
+    let u = rnd(), v = rnd();
+    if (u + v > 1) { u = 1 - u; v = 1 - v; }
+    const a = 3 * index[3 * lo], b = 3 * index[3 * lo + 1], c = 3 * index[3 * lo + 2];
+    for (let k = 0; k < 3; k++) out[3 * i + k] = pos[a + k] + u * (pos[b + k] - pos[a + k]) + v * (pos[c + k] - pos[a + k]);
+  }
+  return out;
+}
+// What measuring needs of both meshes: each as one, a tree of its triangles, points spread over it, its middle and spread
+async function prepareCompare(c, alive){
+  cmpBusy(c, 'Getting ready to measure…', 0);
+  let lib;
+  try { lib = await (bvhLib ||= import(BVH_LIB)); }
+  catch (e) { bvhLib = null; throw new Error('the code that measures didn\'t load (' + e.message + ')'); }
+  if (!alive()) return false;
+  current.updateMatrixWorld(true); c.fitG.updateMatrixWorld(true);
+  for (const i of [0, 1]) {
+    cmpBusy(c, `Getting ${'AB'[i]} ready to measure…`, i / 2);
+    await tick(30);
+    if (!alive()) return false;
+    const g = mergeGeo(c.parts[i]), geo = new THREE.BufferGeometry(), n = CMP.samples;
+    if (!g.index.length) throw new Error(`${[c.a, c.b][i].main.name} has no faces`);
+    geo.setAttribute('position', new THREE.BufferAttribute(g.pos, 3)); geo.setIndex(new THREE.BufferAttribute(g.index, 1));
+    g.bvh = new lib.MeshBVH(geo);
+    g.samples = sampleSurface(g, n, 1 + i);
+    const axis = k => pctOf(g.samples.filter((_, j) => j % 3 === k), null, n, 50), mid = g.mid = [axis(0), axis(1), axis(2)], far = new Float32Array(n);
+    for (let j = 0; j < n; j++) far[j] = Math.hypot(g.samples[3 * j] - mid[0], g.samples[3 * j + 1] - mid[1], g.samples[3 * j + 2] - mid[2]);
+    g.spread = pctOf(far, null, n, 50);
+    // its own axes: where the part of it near its middle is longest, middling and shortest
+    const cov = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    for (let j = 0; j < n; j++) if (far[j] < CMP.reach * g.spread) for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) cov[a][b] += (g.samples[3 * j + a] - mid[a]) * (g.samples[3 * j + b] - mid[b]);
+    g.axes = eigenSym(cov);
+    const [u, v, w] = g.axes;
+    if (u[0] * (v[1] * w[2] - v[2] * w[1]) + u[1] * (v[2] * w[0] - v[0] * w[2]) + u[2] * (v[0] * w[1] - v[1] * w[0]) < 0) g.axes[2] = w.map(x => -x);     // right-handed
+    c.geo[i] = g;
+    if (i) break;
+    c.reach = CMP.reach * g.spread; c.trunc = CMP.trunc * g.spread;
+    c.nearA = Uint8Array.from(far, x => x < c.reach ? 1 : 0);
+    c.diag = mainBox(current).getSize(new THREE.Vector3()).length();     // of its main part, as the view frames it: stray pieces far off don't count
+  }
+  c.size = c.diag;
+  return true;
+}
+// One matching of the first w.n sample points of each mesh to the other's surface, under B's fit T: each one's gap (reach, if
+// nothing is within that), where it landed, and which way the surface faces there. dab, fa, xa, nx: A's points, to where on
+// B (moved by T); dba, fb, ya, na: B's (moved: bt, and whether that's near the rock: nb), to where on A. False if stopped.
+const matchWork = n => ({ n, bt: new Float32Array(3 * n), ya: new Float32Array(3 * n), xa: new Float32Array(3 * n), na: new Float32Array(3 * n), nx: new Float32Array(3 * n),
+                          dab: new Float32Array(n), dba: new Float32Array(n), fa: new Uint8Array(n), fb: new Uint8Array(n), nb: new Uint8Array(n) });
+// which way a merged mesh's triangle f faces, into out at k
+function faceNormal(g, f, out, k){
+  const { pos, index } = g, a = 3 * index[3 * f], b = 3 * index[3 * f + 1], c = 3 * index[3 * f + 2];
+  const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2], vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2];
+  const x = uy * vz - uz * vy, y = uz * vx - ux * vz, z = ux * vy - uy * vx, l = Math.hypot(x, y, z) || 1;
+  out[k] = x / l; out[k + 1] = y / l; out[k + 2] = z / l;
+}
+async function matchBoth(c, T, w, alive){
+  const [A, B] = c.geo, R = rotOf(T.q), s = T.s, [tx, ty, tz] = T.t, reach = c.reach, [rx, ry, rz] = A.mid, v = c.v;
+  for (let i = 0; i < w.n; i++) {
+    const k = 3 * i, [px, py, pz] = turned(R, B.samples[k] * s, B.samples[k + 1] * s, B.samples[k + 2] * s);
+    w.bt[k] = px + tx; w.bt[k + 1] = py + ty; w.bt[k + 2] = pz + tz;
+    w.nb[i] = Math.hypot(w.bt[k] - rx, w.bt[k + 1] - ry, w.bt[k + 2] - rz) < reach ? 1 : 0;
+    const h = A.bvh.closestPointToPoint(v.set(w.bt[k], w.bt[k + 1], w.bt[k + 2]), c.hit, 0, reach);
+    if (h && h.distance <= reach) { w.fb[i] = 1; w.dba[i] = h.distance; w.ya[k] = h.point.x; w.ya[k + 1] = h.point.y; w.ya[k + 2] = h.point.z; faceNormal(A, h.faceIndex, w.na, k); }
+    else { w.fb[i] = 0; w.dba[i] = reach; }
+    if ((i & 63) === 63 && performance.now() - c.last > 40) { await tick(); c.last = performance.now(); if (!alive()) return false; }
+  }
+  for (let i = 0; i < w.n; i++) {       // A's point in B's own coordinates, and the answer brought back
+    const k = 3 * i, dx = (A.samples[k] - tx) / s, dy = (A.samples[k + 1] - ty) / s, dz = (A.samples[k + 2] - tz) / s;
+    const h = B.bvh.closestPointToPoint(v.set(R[0] * dx + R[3] * dy + R[6] * dz, R[1] * dx + R[4] * dy + R[7] * dz, R[2] * dx + R[5] * dy + R[8] * dz), c.hit, 0, reach / s);
+    if (h && h.distance * s <= reach) {
+      const [qx, qy, qz] = turned(R, h.point.x * s, h.point.y * s, h.point.z * s);
+      w.fa[i] = 1; w.dab[i] = h.distance * s; w.xa[k] = qx + tx; w.xa[k + 1] = qy + ty; w.xa[k + 2] = qz + tz;
+      faceNormal(B, h.faceIndex, w.nx, k);
+      [w.nx[k], w.nx[k + 1], w.nx[k + 2]] = turned(R, w.nx[k], w.nx[k + 1], w.nx[k + 2]);
+    } else { w.fa[i] = 0; w.dab[i] = reach; }
+    if ((i & 63) === 63 && performance.now() - c.last > 40) { await tick(); c.last = performance.now(); if (!alive()) return false; }
+  }
+  return true;
+}
+// What a fit is judged by: the gaps near the rock, both ways, each counted as no more than a little (c.trunc) and
+// averaged. Every part the two share counts, so a rock that is the lesser part of a mesh of mostly ground still says
+// which way round it goes; and what only one of them covers counts the same wherever it lies, so nothing is gained by
+// shrinking a mesh into the other.
+function cappedMean(d, mask, n, cap){
+  let sum = 0, k = 0;
+  for (let i = 0; i < n; i++) if (mask[i]) { sum += Math.min(d[i], cap); k++; }
+  return k ? sum / k : Infinity;
+}
+const fitScore = (c, w) => (cappedMean(w.dab, c.nearA, w.n, c.trunc) + cappedMean(w.dba, w.nb, w.n, c.trunc)) / 2;
+// The small scale, turn and shift (y = c + s q (x - c) + t) that bring m points X, with the surface facing N at each,
+// closest to points Y, measured mostly across the surface (how far X is from Y's plane), and a little along it (CMP.along):
+// a step of Gauss and Newton's, which gets a smooth rock turned where matching point to point barely moves it
+function planeStep(X, Y, N, m){
+  const c = [0, 0, 0], H = Array.from({ length: 7 }, () => new Float64Array(8)), j = new Float64Array(7);
+  for (let i = 0; i < 3 * m; i++) c[i % 3] += X[i] / m;
+  const add = (e, wt) => { for (let a = 0; a < 7; a++) { const ja = wt * j[a]; if (!ja) continue; for (let b = 0; b < 7; b++) H[a][b] += ja * j[b]; H[a][7] -= ja * e; } };
+  for (let i = 0; i < m; i++) {
+    const k = 3 * i, dx = X[k] - c[0], dy = X[k + 1] - c[1], dz = X[k + 2] - c[2], rx = X[k] - Y[k], ry = X[k + 1] - Y[k + 1], rz = X[k + 2] - Y[k + 2], nx = N[k], ny = N[k + 1], nz = N[k + 2];
+    j[0] = dy * nz - dz * ny; j[1] = dz * nx - dx * nz; j[2] = dx * ny - dy * nx; j[3] = nx; j[4] = ny; j[5] = nz; j[6] = dx * nx + dy * ny + dz * nz;
+    add(rx * nx + ry * ny + rz * nz, 1);
+    j[0] = 0; j[1] = dz; j[2] = -dy; j[3] = 1; j[4] = 0; j[5] = 0; j[6] = dx; add(rx, CMP.along);
+    j[0] = -dz; j[1] = 0; j[2] = dx; j[3] = 0; j[4] = 1; j[5] = 0; j[6] = dy; add(ry, CMP.along);
+    j[0] = dy; j[1] = -dx; j[2] = 0; j[3] = 0; j[4] = 0; j[5] = 1; j[6] = dz; add(rz, CMP.along);
+  }
+  for (let a = 0; a < 7; a++) H[a][a] *= 1 + 1e-9;
+  for (let a = 0; a < 7; a++) {       // solved by elimination, the largest left in each column first
+    let p = a;
+    for (let b = a + 1; b < 7; b++) if (Math.abs(H[b][a]) > Math.abs(H[p][a])) p = b;
+    if (!H[p][a]) return null;
+    [H[a], H[p]] = [H[p], H[a]];
+    for (let b = 0; b < 7; b++) if (b !== a) { const f = H[b][a] / H[a][a]; if (f) for (let k = a; k < 8; k++) H[b][k] -= f * H[a][k]; }
+  }
+  const u = H.map((row, a) => row[7] / row[a]), angle = Math.hypot(u[0], u[1], u[2]), turn = Math.min(angle, CMP.step.turn);
+  const q = angle ? new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(u[0] / angle, u[1] / angle, u[2] / angle), turn) : new THREE.Quaternion();
+  return { s: Math.min(Math.max(1 + u[6], 1 / CMP.step.scale), CMP.step.scale), q, c, t: [u[3], u[4], u[5]] };
+}
+// How far apart the two are under a fit: {score: what a fit is judged by (a low percentile of the gaps near the rock, both
+// ways: the part two meshes share reads near nothing when they're laid right, whatever else only one covers), gap: the
+// median gap near the rock, both ways}. Null if stopped.
+async function gapOf(c, T, alive, n = 3000){
+  const w = matchWork(n);
+  if (!await matchBoth(c, T, w, alive)) return null;
+  const gap = (pctOf(w.dab, c.nearA, n, 50) + pctOf(w.dba, w.nb, n, 50)) / 2;
+  return { score: fitScore(c, w), gap: isFinite(gap) ? gap : c.reach };
+}
+// B's surface matched to A's from one start, both ways at once (matched one way only, a fit that may scale shrinks one mesh
+// into the other), fitted each round on the closer `share` of what's near the rock, with n points of each; the best fit
+// seen is kept, so it never ends worse than it began. {T, score, first, rounds}, or null if stopped.
+async function fitFrom(c, start, { n, rounds, patience, point = 0, share = CMP.keep }, alive){
+  const w = matchWork(n), X = new Float64Array(6 * n), Y = new Float64Array(6 * n), N = new Float64Array(6 * n), least = Math.min(100, n / 4);
+  let T = start, best = null, first = 0;
+  for (let r = 0; r <= rounds; r++) {
+    if (!await matchBoth(c, T, w, alive)) return null;
+    const score = fitScore(c, w);
+    if (!best) first = score;
+    if (!best || score < best.score) best = { T, score, rounds: r };
+    else if (r - best.rounds >= patience) break;
+    if (r === rounds || !isFinite(score)) break;
+    const ka = pctOf(w.dab, c.nearA, n, share * 100), kb = pctOf(w.dba, w.nb, n, share * 100), A = c.geo[0].samples;
+    let m = 0;
+    const pair = (x, y, nrm, k) => { for (let j = 0; j < 3; j++) { X[3 * m + j] = x[k + j]; Y[3 * m + j] = y[k + j]; N[3 * m + j] = nrm[k + j]; } m++; };
+    for (let i = 0; i < n; i++) {
+      if (c.nearA[i] && w.fa[i] && w.dab[i] <= ka) pair(w.xa, A, w.nx, 3 * i);        // where on B (as it lies now) to A's point
+      if (w.nb[i] && w.fb[i] && w.dba[i] <= kb) pair(w.bt, w.ya, w.na, 3 * i);         // B's point (as it lies now) to where on A
+    }
+    if (m < least) break;
+    // the first rounds point to point (Horn's fit: sure, and brings a far start near), the rest across the surface (quick, once near)
+    const bound = x => Math.min(Math.max(x, start.s / CMP.scale / T.s), start.s * CMP.scale / T.s);
+    let s2, q2, t2;
+    const plane = r >= point ? planeStep(X, Y, N, m) : null;
+    if (plane) {
+      s2 = bound(plane.s); q2 = plane.q;
+      const cc = turned(rotOf(q2), plane.c[0] * s2, plane.c[1] * s2, plane.c[2] * s2), far = Math.hypot(...plane.t), k = far > c.reach / 2 ? c.reach / 2 / far : 1;
+      t2 = [plane.c[0] - cc[0] + k * plane.t[0], plane.c[1] - cc[1] + k * plane.t[1], plane.c[2] - cc[2] + k * plane.t[2]];
+    } else {
+      const f = similarity(X, Y, m);
+      s2 = bound(f.s); q2 = f.q;
+      const mx = turned(rotOf(q2), f.mx[0] * s2, f.mx[1] * s2, f.mx[2] * s2);
+      t2 = [f.my[0] - mx[0], f.my[1] - mx[1], f.my[2] - mx[2]];
+    }
+    const tt = turned(rotOf(q2), T.t[0] * s2, T.t[1] * s2, T.t[2] * s2);
+    T = { s: s2 * T.s, q: q2.clone().multiply(T.q).normalize(), t: [tt[0] + t2[0], tt[1] + t2[1], tt[2] + t2[2]] };
+  }
+  return { ...best, first };
+}
+const sameFit = (f, g) => Math.abs(Math.log(f.T.s / g.T.s)) <= .02 && 2 * Math.acos(Math.min(1, Math.abs(f.T.q.dot(g.T.q)))) <= 5 * Math.PI / 180;
+// B fitted onto A with nothing to go by but the two surfaces: from many starts (as it lies; then B's middle on A's at the
+// ratio of their spreads, under each of fitTurns()' turns, each also larger and smaller), every one tried a little, the
+// best of those more, and so on down CMP.stages to the best two (two that differ, if there are), with the most points.
+// False if stopped.
+async function lineUp(c, alive){
+  const [A, B] = c.geo, was = c.T, starts = [was], stages = CMP.stages;
+  cmpBusy(c, 'Lining them up…', 0);
+  const before = await gapOf(c, was, alive);
+  if (!before) return false;
+  for (const q of fitTurns(B.axes, A.axes)) for (const k of CMP.factors) {
+    const s = k * A.spread / B.spread, m = turned(rotOf(q), B.mid[0] * s, B.mid[1] * s, B.mid[2] * s);
+    starts.push({ s, q, t: [A.mid[0] - m[0], A.mid[1] - m[1], A.mid[2] - m[2]] });
+  }
+  let fits = [];
+  for (const [i, T] of starts.entries()) {
+    cmpBusy(c, `Lining them up: start ${i + 1} of ${starts.length}…`, .35 * i / starts.length);
+    const f = await fitFrom(c, T, stages[0], alive);
+    if (!f) return false;
+    fits.push(f);
+  }
+  for (const [k, stage] of stages.slice(1).entries()) {
+    fits.sort((f, g) => f.score - g.score);
+    // the last stage's two: the best, and the best that ended somewhere else, if one did: that's what tells a rock that
+    // fits two ways
+    const last = k === stages.length - 2, on = last ? [fits[0], fits.slice(1).find(f => !sameFit(f, fits[0])) || fits[1]].filter(Boolean) : fits.slice(0, stage.keep);
+    fits = [];
+    for (const [i, q] of on.entries()) {
+      cmpBusy(c, last ? `Lining them up: the best ${on.length}, with every point…` : `Lining them up: the best ${on.length} starts…`, .35 + .65 * (k + i / on.length) / (stages.length - 1));
+      const f = await fitFrom(c, q.T, stage, alive);
+      if (!f) return false;
+      fits.push(f);
+    }
+  }
+  fits.sort((f, g) => f.score - g.score);
+  const best = fits[0], after = await gapOf(c, best.T, alive), P = x => pc(x, c.size);
+  if (!after) return false;
+  const kept = !(after.score < before.score * .98), end = kept ? before : after, poor = end.gap > CMP.poorGap * c.size;
+  const turn = 2 * Math.acos(Math.min(1, Math.abs(best.T.q.dot(was.q)))) * 180 / Math.PI;
+  // the other of the last two ended somewhere else (its scale over 2% away, or turned over 5 degrees), and lies as close:
+  // by the median gap, as the score of two meshes that share only part of themselves is mostly the rest
+  const other = !kept && fits[1] && !sameFit(fits[1], best) ? await gapOf(c, fits[1].T, alive) : null;
+  if (!alive()) return false;
+  const unsure = !!other && other.gap <= after.gap * 1.3 + 1e-4 * c.size;
+  cmpBusy(c, null);
+  if (!kept) { c.undo = was; c.T = best.T; setFit(c); }
+  c.fitted = { before, after, kept, poor, unsure, s: best.T.s / was.s, turn, tried: starts.length, other };
+  cmpSay(c, (poor ? `Couldn't line these up: they are still ${P(end.gap)} apart at best, so they may not be the same rock. ` : '')
+    + (kept ? `B is left as it was: no fit brought it closer (gap ${P(before.gap)}).`
+            : `B scaled ${(best.T.s / was.s).toFixed(3)}, turned ${turn.toFixed(turn < 10 ? 1 : 0)}°, moved; gap went from ${P(before.gap)} to ${P(after.gap)}.`)
+    + (unsure ? ' Couldn\'t tell how to line these up (another way fits as well): look before trusting it.' : ''), poor || unsure);
+  return true;
+}
+// How far every vertex of each mesh is from the other's surface, under B's fit: kept by fit, so it's measured once.
+// False if stopped.
+async function measureDiff(c, alive){
+  const key = fitKey(c.T);
+  if (c.dist.has(key)) return true;
+  const [A, B] = c.geo, T = c.T, R = rotOf(T.q), s = T.s, [tx, ty, tz] = T.t, cap = CMP.cap * c.size, v = c.v, total = A.count + B.count;
+  const d = [new Float32Array(A.count), new Float32Array(B.count)], near = [new Uint8Array(A.count), new Uint8Array(B.count)], [rx, ry, rz] = A.mid;
+  let last = performance.now();
+  const pause = async done => {
+    cmpBusy(c, `Measuring differences: ${Math.floor(100 * done / total)}%`, done / total);
+    await tick();
+    last = performance.now();
+    return alive();
+  };
+  cmpBusy(c, 'Measuring differences: 0%', 0);
+  for (let i = 0; i < A.count; i++) {
+    const k = 3 * i, dx = (A.pos[k] - tx) / s, dy = (A.pos[k + 1] - ty) / s, dz = (A.pos[k + 2] - tz) / s;
+    const h = B.bvh.closestPointToPoint(v.set(R[0] * dx + R[3] * dy + R[6] * dz, R[1] * dx + R[4] * dy + R[7] * dz, R[2] * dx + R[5] * dy + R[8] * dz), c.hit, 0, cap / s);
+    d[0][i] = h ? Math.min(cap, h.distance * s) : cap;
+    near[0][i] = Math.hypot(A.pos[k] - rx, A.pos[k + 1] - ry, A.pos[k + 2] - rz) < c.reach ? 1 : 0;
+    if ((i & 255) === 255 && performance.now() - last > 40 && !await pause(i)) return false;
+  }
+  for (let i = 0; i < B.count; i++) {
+    const k = 3 * i, [px, py, pz] = turned(R, B.pos[k] * s, B.pos[k + 1] * s, B.pos[k + 2] * s);
+    const h = A.bvh.closestPointToPoint(v.set(px + tx, py + ty, pz + tz), c.hit, 0, cap);
+    d[1][i] = h ? Math.min(cap, h.distance) : cap;
+    near[1][i] = Math.hypot(px + tx - rx, py + ty - ry, pz + tz - rz) < c.reach ? 1 : 0;
+    if ((i & 255) === 255 && performance.now() - last > 40 && !await pause(A.count + i)) return false;
+  }
+  // percentiles by each vertex's share of the surface, from a fine count of the gaps: of the part of each near A's middle
+  // (the rock), as one mesh often has more of what's round it than the other
+  const stats = d.map((dist, i) => {
+    // (counted in steps of a third of a percent of the gap itself, from a millionth of the cap up: a pair that differs by next to nothing still has its numbers)
+    const w = c.geo[i].w, N = 4096, least = cap * 1e-6, span = Math.log(1e6), bins = new Float64Array(N + 1);
+    const at = p => { let run = 0; if (!all) return cap; for (let b = 0; b <= N; b++) { run += bins[b]; if (run >= p * all) return b ? least * Math.exp((b - .5) / N * span) : 0; } return cap; };
+    let all = 0;
+    for (let j = 0; j < dist.length; j++) if (near[i][j]) { const g = dist[j]; bins[g <= least ? 0 : Math.min(N, 1 + Math.floor(Math.log(g / least) / span * N))] += w[j]; all += w[j]; }
+    return { median: at(.5), p90: at(.9), p95: at(.95), all };
+  });
+  // the scale tops out, left to itself, at several times the gap that's usual between the two (their medians: how well
+  // they agree where they're the same), so what stands out from that reads as far; but no higher than where 95% of
+  // both are under it (a part only one of them has would stretch it till nothing else showed), nor so low that nothing
+  // reads as the same
+  const usual = Math.max(stats[0].median, stats[1].median), most = Math.max(stats[0].p95, stats[1].p95);
+  const raw = 100 * Math.max(Math.min(most, CMP.far * usual), CMP.floor * c.size) / c.size, step = 10 ** (Math.floor(Math.log10(raw)) - 1);     // as a percent, to two figures
+  c.dist.set(key, { key, d, near, stats, auto: Math.ceil(raw / step - 1e-9) * step / 100 * c.size });
+  for (const k of c.dist.keys()) if (c.dist.size > 2 && k !== key) c.dist.delete(k);      // this fit's, and the one before (Undo)
+  cmpBusy(c, null);
+  return true;
+}
+const topOf = (c, d) => c.top === 'auto' ? d.auto : c.top / 100 * c.size;
+let diffLut = null;
+// Every vertex's colour by its gap, on the legend's scale up to `top`; and each surface's share beyond that
+function paintDiff(c, d){
+  const top = topOf(c, d);
+  if (d.top === top && c.painted === d) return;
+  if (!diffLut) {
+    diffLut = new Uint8Array(768);
+    const col = new THREE.Color(), rgb = h => { col.set(h); const o = {}; col.getRGB(o, THREE.SRGBColorSpace); return o; };
+    for (let i = 0; i < 256; i++) {     // mixed as the legend's gradient is, then as a vertex's colour is given
+      const x = i / 255, k = Math.max(1, DIFF_STOPS.findIndex(s => s[0] >= x)), [x0, c0] = DIFF_STOPS[k - 1], [x1, c1] = DIFF_STOPS[k], f = (x - x0) / (x1 - x0), a = rgb(c0), b = rgb(c1);
+      col.setRGB(a.r + f * (b.r - a.r), a.g + f * (b.g - a.g), a.b + f * (b.b - a.b), THREE.SRGBColorSpace);
+      diffLut.set([col.r, col.g, col.b].map(v => Math.round(255 * v)), 3 * i);
+    }
+  }
+  d.d.forEach((dist, i) => {
+    const w = c.geo[i].w;
+    let at = 0, beyond = 0;
+    for (const o of c.parts[i]) {
+      const n = o.geometry.attributes.position.count, attr = o.userData.localHeat ||= new THREE.BufferAttribute(new Uint8Array(3 * n), 3, true), arr = attr.array;
+      for (let j = 0; j < n; j++) {
+        const g = dist[at + j], k = 3 * Math.min(255, Math.floor(255 * g / top));
+        arr[3 * j] = diffLut[k]; arr[3 * j + 1] = diffLut[k + 1]; arr[3 * j + 2] = diffLut[k + 2];
+        if (g > top && d.near[i][at + j]) beyond += w[at + j];
+      }
+      attr.needsUpdate = true;
+      if (o.geometry.attributes.color !== attr) o.geometry.setAttribute('color', attr);
+      at += n;
+    }
+    d.stats[i].beyond = d.stats[i].all ? beyond / d.stats[i].all : 1;
+  });
+  d.top = top; c.painted = d;
+}
+// What's to be done to the comparison, one thing at a time (a new one stops the last): 'auto' as the second mesh arrives
+// (lined up only if they don't lie on each other), 'line' for the button, 'diff' for the gaps alone
+async function runCompare(c, what){
+  const job = ++c.job, alive = () => cmp === c && c.job === job;
+  try {
+    if (!c.size && !await prepareCompare(c, alive)) return;
+    if (what === 'auto') {
+      cmpBusy(c, 'Seeing whether they line up…', 0);
+      const g = await gapOf(c, c.T, alive);
+      if (!g) return;
+      if (g.gap < CMP.lined * c.size) cmpSay(c, `Lined up as they are (gap ${pc(g.gap, c.size)})`); else what = 'line';
+    }
+    if (what === 'line' && !await lineUp(c, alive)) return;
+    if (c.mode === 'diff' && !await measureDiff(c, alive)) return;
+    cmpBusy(c, null);
+    applyCompare();
+  } catch (e) {
+    if (!alive()) return;
+    cmpBusy(c, null);
+    cmpSay(c, 'Could not measure these: ' + e.message, true);
+    applyCompare();
+  }
+}
 
 // ---------------------------------------------------------------- errors, told to the server for looking at later
 // A mesh that won't load, and errors in the page, go to /api/client-errors (data/client-errors.jsonl there). Not a texture
