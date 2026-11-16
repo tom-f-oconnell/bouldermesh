@@ -74,8 +74,20 @@ try:
     r = run()
     assert r.returncode == 0, r.stdout + r.stderr
     assert not (dest / "current" / "data" / "meshes" / "m2").exists()
-    aside = {str(p.relative_to(next((dest / "changed").iterdir()))) for p in (dest / "changed").rglob("*") if p.is_file()}
-    assert {"data/meshes/m2/mesh.glb", "data/projects/aaaaaaaaaaaa/photos/p.jpg"} <= aside, aside
+    # what can't easily be had again (a deleted mesh, a replaced photo) is moved into archive/, kept for good; and a photo
+    # the filter moved into rejected/, which the copy keeps as that, isn't kept twice
+    archived = {str(p.relative_to(dest / "archive")) for p in (dest / "archive").rglob("*") if p.is_file()}
+    assert {"data/meshes/m2/mesh.glb", "data/projects/aaaaaaaaaaaa/photos/p.jpg"} <= archived, archived
+    assert (dest / "archive" / "data/projects/aaaaaaaaaaaa/photos/p.jpg").read_bytes() == b"jpg"
+    (data / "projects" / "aaaaaaaaaaaa" / "photos" / "p.jpg").write_bytes(b"jpg, a third")
+    (data / "projects" / "aaaaaaaaaaaa" / "photos" / "q.jpg").write_bytes(b"q")
+    r = run()
+    (data / "projects" / "aaaaaaaaaaaa" / "photos" / "q.jpg").rename(data / "projects" / "aaaaaaaaaaaa" / "rejected" / "Off_q.jpg")
+    r = run()
+    assert r.returncode == 0, r.stdout + r.stderr
+    kept = {p.name: p.read_bytes() for p in (dest / "archive" / "data/projects/aaaaaaaaaaaa/photos").iterdir()}
+    assert kept["p.jpg"] == b"jpg" and any(n.startswith("p.jpg.~") and b == b"jpg, again" for n, b in kept.items()), kept
+    assert "q.jpg" not in kept, "rejected: kept as that, in current/"
     print("backup.sh OK")
 
     # through SSH as the public server takes the backup key: rsync's command forced to rrsync -ro, rooted at the checkout
@@ -138,6 +150,7 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
     rep = json.loads((data / "backup-report.json").read_text())
     assert rep["status"] == "ok" and rep["why"] == "" and began - 2 <= rep["began"] <= rep["ended"] <= time.time() and rep["bytes"] > 0, rep
     assert rep["kept"] and all(set(k) == {"day", "db", "changed"} for k in rep["kept"]) and rep["received"] >= rep["ended"], rep
+    assert rep["disk_free"] > 0 and rep["disk_warn"] == 200 * 2**30 and isinstance(rep["archive"], int), rep
     # one that fails says why
     r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), str(TMP / "home")], env=henv, capture_output=True, text=True)
     assert r.returncode == 1, r.stdout + r.stderr

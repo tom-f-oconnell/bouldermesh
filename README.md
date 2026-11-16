@@ -845,10 +845,17 @@ machine (hal), copies it each night over SSH, with nothing connecting to that ma
 - `current/`: the server's `data/` and `.env` as they are now, but not its caches of web pages and models, uploads in
   progress or work folders. The `.env` holds the editing token and the key saved credentials are encrypted with, so the
   folder is readable only by you.
-- `db/<date>/`: that night's databases. The server copies them every hour into `data/snapshots/` with SQLite's backup
-  API (`SNAPSHOT_MINUTES`), as copying a database in use isn't safe.
-- `changed/<date>/`: whatever that night's copy replaced or deleted in `current/`, so a mesh deleted on the server can be
-  had back. Both kept 30 days (`KEEP_DAYS`).
+- `db/<date>/`: that night's databases, kept a year (`KEEP_DB_DAYS`). The server copies them every hour into
+  `data/snapshots/` with SQLite's backup API (`SNAPSHOT_MINUTES`), as copying a database in use isn't safe.
+- `archive/`: kept for good, in the server's layout, what the server deleted or replaced that can't easily be had again:
+  fetched videos, projects' photos, masks and rejected photos, meshes deleted, and the big files of meshes replaced
+  (`deploy/backup-archive.py`). Each file once; one changed at the same path is kept beside it as `<name>.~<date>~`.
+- `changed/<date>/`: the rest of what that night's copy replaced or deleted in `current/` (records rewritten, web cache
+  pages), kept 30 days (`KEEP_DAYS`).
+
+Each night's report says how much room is left on the backup's disk, and your phone is told when it's under
+`WARN_FREE_GB` (200): `archive/` only grows, by several GB a day while areas run, so the backup then wants a machine
+with more room (move `BACKUP_DIR` there, with its keys and timers).
 
 The server is in use while it copies, so a file can go between rsync listing it and copying it (replaced by a newer
 version, moved to `rejected/`, deleted). That leaves this copy's file as it was, so nothing is lost, and the copy runs

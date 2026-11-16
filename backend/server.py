@@ -5244,6 +5244,7 @@ def watch_usage() -> None:
                 measure_usage()
                 check_room()
             offload_step()
+            check_backup_disk()
         except Exception as e:  # never let the thread die
             print(f"usage error: {e!r}", flush=True)
         time.sleep(USAGE_EVERY)
@@ -11111,6 +11112,26 @@ def apply_settings() -> None:
 
 
 BACKUP_STALE_HOURS = 36     # the backup copies each night: a good copy older than this means it has stopped
+
+
+_backup_disk_told: dict = {"received": None}
+
+
+def check_backup_disk() -> str | None:
+    """Tell your phone, once for each night's report, when the backup's disk has less room than its report's disk_warn
+    (deploy/backup.sh's WARN_FREE_GB): what it keeps for good (archive/) only grows. What was said, or None."""
+    rep = backup_state()["report"] or {}
+    free, warn = rep.get("disk_free"), rep.get("disk_warn")
+    if not isinstance(free, (int, float)) or not isinstance(warn, (int, float)) or free >= warn \
+            or rep.get("received") == _backup_disk_told["received"]:
+        return None
+    _backup_disk_told["received"] = rep.get("received")
+    said = (f"{free / 2**30:.0f} GB left on the disk the backup is on ({rep.get('host') or 'the backup machine'}), under its "
+            f"{warn / 2**30:.0f} GB warning; what it keeps for good takes {(rep.get('archive') or 0) / 2**30:.0f} GB. Time to move "
+            "the backup to a machine with more room (README, Backups).")
+    threading.Thread(target=NOTIFIER.send, args=("BoulderMesh: the backup's disk is filling", said),
+                     kwargs={"priority": 4, "tags": ["floppy_disk"]}, daemon=True).start()
+    return said
 
 
 def backup_state() -> dict:

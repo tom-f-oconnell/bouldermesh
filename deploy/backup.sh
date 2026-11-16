@@ -23,9 +23,13 @@
 #                     safely within the last hour (the filter's cache, relevance.sqlite, too); and what the server
 #                     offloaded; and its web cache (the photos it downloaded, kept for good, and searches and pages),
 #                     so that the sites needn't be asked again. Not its live databases, models, or work folders.
-#   db/<date>/        that night's database snapshots, kept KEEP_DAYS (30)
-#   changed/<date>/   whatever that night's copy replaced or deleted in current/, kept KEEP_DAYS too, so a mesh deleted
-#                     on the server, or a database gone wrong, can still be had back for a while
+#   db/<date>/        that night's database snapshots, kept KEEP_DB_DAYS (365)
+#   archive/          kept for good, in the server's layout: what the server deleted or replaced that can't easily be had
+#                     again (fetched videos, projects' photos, masks and rejected photos, meshes deleted, and the big files
+#                     of meshes replaced), moved out of that night's changed/ (deploy/backup-archive.py)
+#   changed/<date>/   the rest of what that night's copy replaced or deleted in current/ (records rewritten, web cache
+#                     pages), kept KEEP_DAYS (30)
+# Each night's report says how much room is left on this disk; under WARN_FREE_GB (200) the server tells your phone.
 set -eu
 only_restore=
 if [ "${1:-}" = --restore-only ]; then
@@ -35,10 +39,12 @@ fi
 src=${1:-${BACKUP_SOURCE:?usage: deploy/backup.sh [--restore-only] user@host: or a directory}}
 dest=${BACKUP_DIR:-$HOME/bouldermesh-backups}
 keep=${KEEP_DAYS:-30}
+keep_db=${KEEP_DB_DAYS:-365}
+warn_free=$(( ${WARN_FREE_GB:-200} * 1073741824 ))
 key=${BACKUP_KEY:-$HOME/.ssh/bouldermesh_backup}
 hkey=${BACKUP_HANDSHAKE_KEY:-$HOME/.ssh/bouldermesh_handshake}
 day=$(date +%F)
-mkdir -p "$dest/current" "$dest/changed" "$dest/db"
+mkdir -p "$dest/current" "$dest/changed" "$dest/db" "$dest/archive"
 chmod 700 "$dest"
 case "$src" in
     *:) from=$src ;;            # rrsync's folder itself
@@ -65,9 +71,11 @@ report() {
         printf '{"day":"%s","db":%s,"changed":%s},' "$d" "$(du -sb "$dest/db/$d" 2>/dev/null | cut -f1 || echo 0)" \
             "$(du -sb "$dest/changed/$d" 2>/dev/null | cut -f1 || echo 0)"
     done)
-    printf '{"status":"%s","began":%s,"ended":%s,"bytes":%s,"why":"%s","host":"%s","kept":[%s]}' "$1" "${started:-null}" \
-        "$(date +%s)" "$(du -sb "$dest/current" 2>/dev/null | cut -f1 || echo 0)" "$(printf '%s' "$2" | tr -d '"\\\n')" \
-        "$(hostname)" "${kept%,}" | $handshake report > /dev/null 2>&1 || echo "couldn't tell the server how the copy went" >&2
+    printf '{"status":"%s","began":%s,"ended":%s,"bytes":%s,"why":"%s","host":"%s","kept":[%s],"archive":%s,"disk_free":%s,"disk_warn":%s}' \
+        "$1" "${started:-null}" "$(date +%s)" "$(du -sb "$dest/current" 2>/dev/null | cut -f1 || echo 0)" "$(printf '%s' "$2" | tr -d '"\\\n')" \
+        "$(hostname)" "${kept%,}" "$(du -sb "$dest/archive" 2>/dev/null | cut -f1 || echo 0)" \
+        "$(df -B1 --output=avail "$dest" 2>/dev/null | tail -1 | tr -d ' ' || echo null)" "$warn_free" \
+        | $handshake report > /dev/null 2>&1 || echo "couldn't tell the server how the copy went" >&2
 }
 fail() { why=$1; echo "$1" >&2; exit 1; }
 trap 'st=$?; if [ -z "$only_restore" ] && [ -z "$done_ok" ]; then report failed "${why:-it stopped with an error (exit $st)}"; fi; rm -rf "$tmp"' EXIT
@@ -179,7 +187,10 @@ for snap in "$dest/current/data/snapshots/"*.backup; do
     mkdir -p "$dest/db/$day"
     cp -p "$snap" "$dest/db/$day/"
 done
-find "$dest/db" "$dest/changed" -mindepth 1 -maxdepth 1 -type d -mtime "+$keep" -exec rm -rf {} +
+# what can't easily be had again, out of tonight's changed/ into archive/, kept for good; then the rest by age
+python3 "$(dirname "$0")/backup-archive.py" "$dest" "$day" || echo "couldn't archive tonight's set-aside files: they stay in changed/$day" >&2
+find "$dest/changed" -mindepth 1 -maxdepth 1 -type d -mtime "+$keep" -exec rm -rf {} +
+find "$dest/db" -mindepth 1 -maxdepth 1 -type d -mtime "+$keep_db" -exec rm -rf {} +
 date +%s > "$dest/last-ok"
 done_ok=1
 echo "backed up $src to $dest/current ($(du -sh "$dest/current" | cut -f1)); databases kept in $dest/db/$day"

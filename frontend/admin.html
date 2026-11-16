@@ -429,7 +429,10 @@ function renderBackup(b){
   banner.innerHTML = say;
   $('#backupnote').innerHTML = b.confirmed
     ? `The last good copy began ${when(b.confirmed)} (${ago(b.confirmed)} ago)` + (rep?.status === 'ok' && rep.bytes ? `: ${size(rep.bytes)}${rep.host ? `, on ${esc(rep.host)}` : ''}` : '') + '.'
-      + (rep?.kept?.length ? ' What it keeps by night, each for 30 days: that night\'s databases, and what that night\'s copy replaced or deleted here.' : '')
+      + (rep?.archive != null ? ` Kept for good (videos, photos, masks, rejected photos and meshes deleted or replaced here): ${size(rep.archive)}.` : '')
+      + (rep?.disk_free != null ? ` ${size(rep.disk_free)} left on its disk${rep.disk_warn && rep.disk_free < rep.disk_warn ? ', under its warning: time to move it' : ''}.` : '')
+      + (rep?.kept?.length ? (rep?.archive != null ? ' By night: its databases (kept a year) and the rest of what that night\'s copy replaced or deleted here (kept 30 days).'
+        : ' What it keeps by night, each for 30 days: that night\'s databases, and what that night\'s copy replaced or deleted here.') : '')
     : 'No good copy confirmed yet.';
   $('#backupdays').innerHTML = rep?.kept?.length ? '<tr><th>Night</th><th>Databases</th><th>Replaced or deleted</th></tr>'
     + rep.kept.slice().reverse().map(k => `<tr><td>${esc(k.day)}</td><td>${size(k.db || 0)}</td><td>${size(k.changed || 0)}</td></tr>`).join('') : '';

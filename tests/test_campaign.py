@@ -3767,4 +3767,23 @@ finally:
     server.q("DELETE FROM projects WHERE id='ee0000000002'", write=True)
     server.q("DELETE FROM offloads WHERE path='projects/ee0000000002/photos'", write=True)
 print("stopped areas' data OK")
+# the backup's disk under its warning: your phone is told, once a night's report
+rp = server.DATA / "backup-report.json"
+had = rp.read_text() if rp.exists() else None
+told = []
+real_send = server.NOTIFIER.send
+server.NOTIFIER.send = lambda *a, **k: told.append(a)
+try:
+    rp.write_text(json.dumps({"status": "ok", "received": 1.0, "disk_free": 150 * 2**30, "disk_warn": 200 * 2**30, "archive": 40 * 2**30, "host": "hal"}))
+    said = server.check_backup_disk()
+    assert said and "150 GB left" in said and "hal" in said and "40 GB" in said, said
+    assert server.check_backup_disk() is None, "once a report"
+    rp.write_text(json.dumps({"status": "ok", "received": 2.0, "disk_free": 300 * 2**30, "disk_warn": 200 * 2**30}))
+    assert server.check_backup_disk() is None, "room enough"
+finally:
+    server.NOTIFIER.send = real_send
+    rp.unlink()
+    if had is not None:
+        rp.write_text(had)
+print("backup disk warning OK")
 print("ALL CAMPAIGN TESTS PASSED")

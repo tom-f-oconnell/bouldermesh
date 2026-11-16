@@ -82,7 +82,8 @@ def report() -> int:
         sys.exit("not JSON")
     if not isinstance(got, dict) or got.get("status") not in ("ok", "failed"):
         sys.exit("not a report: {status: ok|failed, ...}")
-    keep = {k: got[k] for k in ("status", "began", "ended", "bytes", "why", "kept", "host") if k in got}
+    keep = {k: got[k] for k in ("status", "began", "ended", "bytes", "why", "kept", "host", "archive", "disk_free", "disk_warn")
+            if k in got}
     tmp = DATA / "backup-report.json.tmp"
     tmp.write_text(json.dumps({**keep, "received": time.time()}))
     tmp.replace(DATA / "backup-report.json")
