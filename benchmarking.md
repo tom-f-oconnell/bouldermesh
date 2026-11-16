@@ -552,7 +552,7 @@ tell them apart. Later sections correct earlier ones.
 | `meshes.py` | depth maps, fused points, faces and seconds from OpenMVS's logs; `export` copies the GLBs out |
 | `verify_build.py`, `sim_closeups.py`, `incr/boulder.py` | the check a tool tree must pass to be timed; the simulated close-ups; the incremental pipeline |
 
-Last updated: 2026-11-15 21:30 PST, through section 57 of the handoff file.
+Last updated: 2026-11-15 22:05 PST, through section 59 of the handoff file.
 
 ## Benchmarking left on hold
 
