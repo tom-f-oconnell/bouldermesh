@@ -98,7 +98,7 @@ from pathlib import Path
 #     followed so closely as to ask before it had, and was given a job of any size; waits for the GPU's driver at boot
 # 20: tells the server what nvidia-smi says of its GPU (name, memory, driver, CUDA) as it starts; sends
 #     diagnostics when the server asks (--no-diagnostics: never)
-VERSION = 22
+VERSION = 23
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter", "splat")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
@@ -1292,6 +1292,8 @@ class Worker:
                     else:
                         pending.append(line)
                         last = line if line and not line.startswith("@@") else last
+                        if "FALLBACK:" in line:     # a step fell back to the CPU (pipeline.py, _fell_back()): said here too
+                            log(f"job: {line[line.index('FALLBACK:'):][:400]}")
                 except queue.Empty:
                     pass
                 if ended or time.time() - sent >= wait or (len(pending) >= 500 and away is None):

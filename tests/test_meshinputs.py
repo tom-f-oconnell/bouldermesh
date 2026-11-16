@@ -30,9 +30,16 @@ from climbs.common import Climb  # noqa: E402
 relevance.CACHE_FILE = tmp / "cache" / "relevance.sqlite"
 
 
+FELL_BACK = [{"step": "plain_sift", "why": "its model fails its own check (pairs): placed again", "better": True,
+              "gpu": {"placed": 30, "ok": False}, "cpu": {"placed": 28, "ok": True}}]
+
+
 def fake_reconstruct(images, work, out_dir, log, use_gpu=False, internet=False, tracker=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "mesh.ply").write_text("ply")
+    if FELL_BACK:       # the first mesh's job fell back to the CPU's SIFT (pipeline.py's fallbacks.json)
+        (out_dir / pipeline.FALLBACKS_FILE).write_text(json.dumps(FELL_BACK))
+        FELL_BACK.clear()
     return out_dir / "mesh.ply", False
 
 
@@ -119,6 +126,9 @@ server.link(D, E, 0, "photos")
 
 # --- a mesh records what it was made from, as it's made ---------------------------------------------------------
 mA = server.run_reconstruct(hA)
+fell = [json.loads(line) for line in server.FALLBACKS_LOG.read_text().splitlines()]
+assert len(fell) == 1 and fell[0]["mesh"] == mA and fell[0]["project"] == hA and fell[0]["step"] == "plain_sift", fell
+assert fell[0]["better"] and fell[0]["where"] == "this server" and fell[0]["cpu"]["placed"] == 28, fell
 rec = meshinputs.load(server.MESHES / mA)
 assert rec and rec["kind"] == "climb" and rec["project"] == hA and rec["mesh"] == mA, rec
 assert sorted(rec["photos"]["files"]) == ["ddg_a1.jpg", "ddg_a2.jpg", "mp_a1.jpg", "mp_a2.jpg", "mp_a3.jpg"], rec["photos"]
@@ -274,5 +284,6 @@ assert any("never harvested" in n for n in got[mB]["notes"]), got[mB]
 got = check()
 assert got[mA]["status"] == "changed" and got[mA]["changed"]["photos"]["contents"] == ["mp_a3.jpg"], got[mA]
 print("backfill OK")
+assert len(server.FALLBACKS_LOG.read_text().splitlines()) == 1, "only the mesh whose job fell back is logged"
 shutil.rmtree(tmp, ignore_errors=True)
 print("ALL MESH INPUTS TESTS PASSED")

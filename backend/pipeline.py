@@ -44,10 +44,11 @@ GPU_MIN_FREE_MB = 4000  # matching 113 photos peaked at about 3 GB
 # COLMAP's minimum of 15 raw matches, on the GPU. Its matcher finds about 4% fewer, which would drop
 # borderline pairs before guided matching can rescue them; design.md has the measurements.
 GPU_MATCH_ARGS = ["--TwoViewGeometry.min_num_inliers", "12"]
-# GPU_SIFT=1: features for photos from the internet on the GPU. COLMAP has no GPU version of the affine shape and
-# domain-size pooling those use, so the GPU's are plain SIFT, which changes which photos are placed (a MESH_RULES
-# matter): off unless set, until the mapper benchmark has compared them. With no GPU to be had, features are today's.
-GPU_SIFT = os.environ.get("GPU_SIFT") == "1"
+# GPU_SIFT (on unless GPU_SIFT=0): features for photos from the internet on the GPU. COLMAP has no GPU version of the
+# affine shape and domain-size pooling those use, so the GPU's are plain SIFT, which changes which photos are placed:
+# turned on Nov 15 without raising MESH_RULES (Tom), with the CPU's SIFT as its fallback (PLAIN_SIFT_LEAST below).
+# With no GPU to be had, features are the CPU's as before.
+GPU_SIFT = os.environ.get("GPU_SIFT", "1") == "1"
 AFFINE_SIFT = ["--SiftExtraction.estimate_affine_shape", "1", "--SiftExtraction.domain_size_pooling", "1"]
 MAX_TEXTURE = 4096      # larger atlases get split: an 8192 x 8192 one takes 270 MB in a browser, which can refuse it
 MIN_FACES = 1000        # a mesh with fewer isn't one: harvests' empty meshes had 0-574, real ones 3,870 and up (design.md)
@@ -144,8 +145,13 @@ def gpu_choice(allowed: bool = True) -> tuple[bool, str]:
 # points 1.5 px apart (against 2.5). Together they gave a fifth of the points and two thirds of the faces of 2.3's,
 # and dense-fuse segfaulted 1 time in 15 (experiments/mapper, Nov 14). With 2.3's own values, 2.4 made 2.3's cloud
 # (4.73M points on Drifter against 4.95M) and a mesh of 1.28M faces, in 530 s after the mapper against 2.3's 1,131
-# on the CPU (depth maps on the GPU). So 2.4 is given 2.3's values, and the meshes look as they did, sooner.
-MVS24_DENSIFY = ["--fusion-filter", "1", "--number-views-fuse", "3", "--postprocess-dmaps", "7"]
+# on the CPU (depth maps on the GPU). So 2.4 is given 2.3's values, and the meshes look as they did, sooner. Except one:
+# one geometric-consistency pass over the depth maps where both make two (Tom's yes, Nov 15): in the mapper benchmark
+# ("as23g1") the dense step went from 161 to 101 s on Drifter and 66 to 52 s on 31de, with the surface as close to
+# two passes' as two runs of two passes are to each other, and the points within 2%.
+GEOMETRIC_ITERS = 1
+MVS24_DENSIFY = ["--fusion-filter", "1", "--number-views-fuse", "3", "--postprocess-dmaps", "7",
+                 "--geometric-iters", str(GEOMETRIC_ITERS)]
 MVS24_MESH = ["--min-point-distance", "2.5"]
 
 
@@ -228,6 +234,22 @@ def _run(cmd: list[str], cwd: Path, log: Log, watch: Callable[[str], None] | Non
         raise failure
 
 
+FALLBACKS_FILE = "fallbacks.json"   # in work/, then beside the mesh: each time a step fell back from the GPU to the CPU
+
+
+def _fell_back(work: Path, step: str, why: str, log: Log, **more) -> None:
+    """Records that a step fell back to the CPU (or to the CPU's way of doing it), in work/FALLBACKS_FILE, which goes
+    beside the mesh for the server to log (server.py, note_fallbacks()), and says so in the job's log as a line
+    starting "FALLBACK:", which a machine's worker script also logs as its own."""
+    f = work / FALLBACKS_FILE
+    try:
+        had = json.loads(f.read_text()) if f.exists() else []
+    except ValueError:
+        had = []
+    f.write_text(json.dumps(had + [{"step": step, "why": why[:500], "t": round(time.time()), **more}], indent=1))
+    log(f"FALLBACK: {step}: {why}")
+
+
 def _gpu_or_cpu(cmd: list[str], flag: str, allowed: bool, cwd: Path, log: Log, watch: Callable[[str], None] | None = None,
                 gpu_args: list[str] | None = None) -> str:
     """Run a COLMAP step on the GPU if it can be, otherwise on the CPU.
@@ -251,6 +273,7 @@ def _gpu_or_cpu(cmd: list[str], flag: str, allowed: bool, cwd: Path, log: Log, w
             return "gpu"
         except RuntimeError as e:
             log(f"{cmd[1]}: GPU run failed ({e}), carrying on with the CPU")
+            _fell_back(cwd, cmd[1], f"the GPU run failed ({e}): carried on with the CPU", log)
     _run(cmd + [flag, "0"], cwd, log, watch)
     return "gpu+cpu" if gpu else "cpu"
 
@@ -330,8 +353,9 @@ def _global(tracker: Tracker) -> Callable[[str], None]:
     return watch
 
 
-def _geometric(tracker: Tracker) -> Callable[[str], None]:
-    """DensifyPointCloud's depth phases; the geometric-consistency one runs twice over."""
+def _geometric(tracker: Tracker, passes: int = 2) -> Callable[[str], None]:
+    """DensifyPointCloud's depth phases; the geometric-consistency one runs `passes` times over (OpenMVS's own 2, or
+    GEOMETRIC_ITERS where it's given)."""
     rx = re.compile(r"(Geometric-consistent estimated|Estimated|Fused|Dense fused) depth-maps \d+ \(([\d.]+)%")   # "Dense fused": OpenMVS 2.4
     state = {"passes": 0, "last": 0.0}
 
@@ -348,7 +372,7 @@ def _geometric(tracker: Tracker) -> Callable[[str], None]:
             if pct < state["last"]:
                 state["passes"] += 1
             state["last"] = pct
-            tracker.update("dense", 0.45 + 0.40 * min(1.0, (state["passes"] + pct) / 2), "checking depth consistency")
+            tracker.update("dense", 0.45 + 0.40 * min(1.0, (state["passes"] + pct) / passes), "checking depth consistency")
     return watch
 
 
@@ -634,6 +658,7 @@ def _global_mapper(db: Path, images: Path, sparse: Path, work: Path, log: Log, t
                 if not gpu:
                     raise
                 log(f"global_mapper: GPU run failed ({e}), starting it again on the CPU")
+                _fell_back(work, "global_mapper", f"the GPU run failed ({e}): started again on the CPU", log)
                 device = "gpu+cpu"
                 args, lines = attempt(False)
         except (RuntimeError, OSError) as e:
@@ -789,6 +814,93 @@ def _incremental_mapper(db: Path, images: Path, sparse: Path, work: Path, log: L
             "vggt": (sparse / "vggt").is_dir(), "seconds": round(time.time() - start, 1)}
 
 
+# GPU_SIFT's plain SIFT is checked once its model is placed: if the model fails its own check (modelcheck.py) or places
+# under PLAIN_SIFT_LEAST of the photos that share verified matches with another, the photos are placed again from the
+# CPU's SIFT with affine shapes and domain-size pooling (Tom, Nov 15, on atlas's measurements: GPU SIFT's surfaces were
+# within two runs' of each other on both boulders and it placed 17 more on Drifter, but its cameras differ from the
+# CPU's by more than two runs' do, and on 9f3b it placed 133 against 141). What the GPU's run made is kept aside in
+# work/PLAIN_SIFT_ASIDE, and why in work/PLAIN_SIFT_FILE and mapper.json ("plain_sift_rejected").
+PLAIN_SIFT_LEAST = 0.7
+PLAIN_SIFT_FILE = "plain-sift.json"
+PLAIN_SIFT_ASIDE = "plain-sift"
+# what placing the photos leaves in work/, set aside to place them again, and the steps that made it
+PLACING_FILES = ("database.db*", "sparse", "sparse_global", "global.db*", "global.json", "global_text", "untied.txt", "tied",
+                 "vggt", "rest", MAPPER_FILE, EXTRACT_FILE, MODELS_FILE)
+PLACING_STEPS = ("features", "matching", "global", "mapper", "rest")
+
+
+def matched_photos(db: Path, least: int = 20) -> int:
+    """How many photos in a COLMAP database share at least `least` verified matches with another (modelcheck's
+    MIN_INLIERS, the pairs the mapper goes by): those a model could place."""
+    import sqlite3
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        ids = set()
+        for pid, in con.execute("SELECT pair_id FROM two_view_geometries WHERE rows >= ?", (least,)):
+            ids.update(divmod(pid, 2147483647))
+        return len(ids)
+    finally:
+        con.close()
+
+
+def placing_summary(model: Path | None, registered: int, db: Path, log: Log) -> dict:
+    """What a placing came to, to judge it and to compare two: {placed, matched (photos with verified matches, or
+    None), ok (its model's own check, or None if it couldn't be made), why (the check's words)}."""
+    out = {"placed": registered if model is not None else 0, "matched": None, "ok": None, "why": None}
+    try:
+        out["matched"] = matched_photos(db)
+    except Exception as e:  # noqa: BLE001: can't tell, so not on this ground
+        log(f"GPU SIFT: couldn't count the photos with matches ({e})")
+    if model is None:
+        out["ok"], out["why"] = False, "it made no model"
+        return out
+    try:
+        import modelcheck
+        c = modelcheck.check(model, db)
+        out["ok"], out["why"] = bool(c.get("ok")), c.get("why")
+    except Exception as e:  # noqa: BLE001
+        log(f"GPU SIFT: the model couldn't be checked ({type(e).__name__}: {e})")
+    return out
+
+
+def _plain_sift_short(summary: dict) -> str | None:
+    """Why GPU SIFT's placing (placing_summary()) falls short, for the CPU's to be tried instead, or None if it doesn't."""
+    placed, matched = summary["placed"], summary["matched"]
+    if summary["ok"] is False and placed == 0:
+        return summary["why"]
+    if matched and placed < PLAIN_SIFT_LEAST * matched:
+        return f"its model places {placed} of the {matched} photos with matches, under {PLAIN_SIFT_LEAST:.0%}"
+    if summary["ok"] is False:
+        return f"its model fails its own check ({summary['why']})"
+    return None
+
+
+def _said(summary: dict) -> str:
+    return (f"placed {summary['placed']}" + (f" of {summary['matched']} with matches" if summary["matched"] else "") +
+            {True: ", check passed", False: ", check failed", None: ", not checked"}[summary["ok"]])
+
+
+def plain_sift_better(gpu: dict, cpu: dict) -> bool:
+    """Whether the CPU's placing did better than the GPU's it replaced: its check passed where the GPU's failed, or it
+    placed more photos and its check didn't fail."""
+    if cpu["ok"] and gpu["ok"] is False:
+        return True
+    return cpu["placed"] > gpu["placed"] and cpu["ok"] is not False
+
+
+def _set_aside_placing(work: Path) -> None:
+    """Moves what placing the photos made into work/PLAIN_SIFT_ASIDE, and forgets those steps were done."""
+    aside = work / PLAIN_SIFT_ASIDE
+    shutil.rmtree(aside, ignore_errors=True)
+    aside.mkdir()
+    for pattern in PLACING_FILES:
+        for f in work.glob(pattern):
+            f.rename(aside / f.name)
+    for step in PLACING_STEPS:
+        (work / "finished" / step).unlink(missing_ok=True)
+    (work / "sparse").mkdir()
+
+
 def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool,
                                internet: bool = False, min_registered: int = MIN_REGISTERED, tracker: Tracker | None = None) -> Path:
     """internet=True tunes COLMAP for unordered photos from many cameras (per-image intrinsics,
@@ -821,62 +933,94 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     if not _finished(work, "people"):
         masks = None
 
-    cmd = [COLMAP, "feature_extractor", "--database_path", str(db), "--image_path", str(images),
-           "--ImageReader.camera_model", "SIMPLE_RADIAL"]
-    if internet:
-        cmd += ["--ImageReader.single_camera", "0", "--SiftExtraction.max_image_size", "2400"]
-    else:
-        cmd += ["--ImageReader.single_camera", "1"]
-    if masks:
-        cmd += ["--ImageReader.mask_path", str(masks)]
-    if not _finished(work, "features"):
-        log(f"== COLMAP: feature extraction ({'internet-collection' if internet else 'single-camera'} settings)")
-        tracker.update("features", 0, f"0 of {n_images} photos")
-        watch = _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1))
-        device = None
-        if internet and GPU_SIFT and use_gpu:      # plain SIFT, all on the GPU or not at all: the two find different features
-            gpu, why = gpu_choice(True)
-            log(f"feature_extractor: GPU_SIFT is set: {'plain SIFT on the GPU' if gpu else 'not this time'} ({why})")
-            if gpu:
-                try:
-                    _run(cmd + ["--SiftExtraction.use_gpu", "1"], work, log, watch)
-                    device = "gpu"
-                except RuntimeError as e:
-                    log(f"feature_extractor: GPU run failed ({e}): starting again on the CPU, with its usual features")
-                    for f in work.glob(db.name + "*"):
-                        f.unlink()
-        if device is None:
-            # COLMAP has no GPU version of the affine shape and domain-size pooling of the internet settings
-            cmd += AFFINE_SIFT if internet else []
-            device = _gpu_or_cpu(cmd, "--SiftExtraction.use_gpu", use_gpu and not internet, work, log, watch)
-        (work / EXTRACT_FILE).write_text(json.dumps({"args": reconstruction.extract_args(cmd), "device": device}))
-        _finish(work, "features")
+    rejected = work / PLAIN_SIFT_FILE
 
-    if not _finished(work, "matching"):
-        log("== COLMAP: matching")
-        tracker.update("matching")
-        # smaller blocks than the default 50 only make for finer progress: all pairs get matched either way
-        cmd = [COLMAP, "exhaustive_matcher", "--database_path", str(db), "--ExhaustiveMatching.block_size", "20"]
+    def place() -> tuple[Path | None, int]:
+        """Features, matching, the mapper and the rest step, each where not finished: the largest model and how many it places."""
+        cmd = [COLMAP, "feature_extractor", "--database_path", str(db), "--image_path", str(images),
+               "--ImageReader.camera_model", "SIMPLE_RADIAL"]
         if internet:
-            cmd += ["--SiftMatching.guided_matching", "1"]
-        _gpu_or_cpu(cmd, "--SiftMatching.use_gpu", use_gpu, work, log, _matching(tracker), GPU_MATCH_ARGS)
-        _finish(work, "matching")
+            cmd += ["--ImageReader.single_camera", "0", "--SiftExtraction.max_image_size", "2400"]
+        else:
+            cmd += ["--ImageReader.single_camera", "1"]
+        if masks:
+            cmd += ["--ImageReader.mask_path", str(masks)]
+        if not _finished(work, "features"):
+            log(f"== COLMAP: feature extraction ({'internet-collection' if internet else 'single-camera'} settings)")
+            tracker.update("features", 0, f"0 of {n_images} photos")
+            watch = _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1))
+            device = None
+            if internet and GPU_SIFT and use_gpu and not rejected.exists():     # plain SIFT, all on the GPU or not at all: the two find different features
+                gpu, why = gpu_choice(True)
+                log(f"feature_extractor: GPU_SIFT is set: {'plain SIFT on the GPU' if gpu else 'not this time'} ({why})")
+                if gpu:
+                    try:
+                        _run(cmd + ["--SiftExtraction.use_gpu", "1"], work, log, watch)
+                        device = "gpu"
+                    except RuntimeError as e:
+                        log(f"feature_extractor: GPU run failed ({e}): starting again on the CPU, with its usual features")
+                        _fell_back(work, "feature_extractor", f"GPU SIFT failed ({e}): started again with the CPU's SIFT", log)
+                        for f in work.glob(db.name + "*"):
+                            f.unlink()
+            if device is None:
+                # COLMAP has no GPU version of the affine shape and domain-size pooling of the internet settings
+                cmd += AFFINE_SIFT if internet else []
+                device = _gpu_or_cpu(cmd, "--SiftExtraction.use_gpu", use_gpu and not internet, work, log, watch)
+            (work / EXTRACT_FILE).write_text(json.dumps({"args": reconstruction.extract_args(cmd), "device": device,
+                                                          **({"plain_sift": "rejected"} if rejected.exists() else {})}))
+            _finish(work, "features")
 
-    if not _finished(work, "mapper"):
-        tracker.update("mapper")
-        if any(sparse.iterdir()):   # what an interrupted run left may be half written, and it'll be made again
-            sparse.rename(work / f"interrupted_sparse{len(list(work.glob('interrupted_sparse*')))}")
-            sparse.mkdir()
-        how, why = _global_mapper(db, images, sparse, work, log, tracker, n_images, min_registered, internet, use_gpu)
-        if how is None:
-            if MAPPER == "global":
-                log(f"placing the cameras with COLMAP 3.9.1's incremental mapper instead: {why}")
-            how = _incremental_mapper(db, images, sparse, work, log, tracker, n_images, min_registered, internet, why)
-        (work / MAPPER_FILE).write_text(json.dumps(how, indent=1))
-    model, registered = _largest_model(sparse)
-    if model is not None and min_registered <= registered < n_images and not _finished(work, "rest"):
-        model, registered = _place_rest(db, model, work, log, tracker, registered, n_images)
-        _finish(work, "rest")
+        if not _finished(work, "matching"):
+            log("== COLMAP: matching")
+            tracker.update("matching")
+            # smaller blocks than the default 50 only make for finer progress: all pairs get matched either way
+            cmd = [COLMAP, "exhaustive_matcher", "--database_path", str(db), "--ExhaustiveMatching.block_size", "20"]
+            if internet:
+                cmd += ["--SiftMatching.guided_matching", "1"]
+            _gpu_or_cpu(cmd, "--SiftMatching.use_gpu", use_gpu, work, log, _matching(tracker), GPU_MATCH_ARGS)
+            _finish(work, "matching")
+
+        if not _finished(work, "mapper"):
+            tracker.update("mapper")
+            if any(sparse.iterdir()):   # what an interrupted run left may be half written, and it'll be made again
+                sparse.rename(work / f"interrupted_sparse{len(list(work.glob('interrupted_sparse*')))}")
+                sparse.mkdir()
+            how, why = _global_mapper(db, images, sparse, work, log, tracker, n_images, min_registered, internet, use_gpu)
+            if how is None:
+                if MAPPER == "global":
+                    log(f"placing the cameras with COLMAP 3.9.1's incremental mapper instead: {why}")
+                how = _incremental_mapper(db, images, sparse, work, log, tracker, n_images, min_registered, internet, why)
+            if rejected.exists():
+                how["plain_sift_rejected"] = json.loads(rejected.read_text())
+            (work / MAPPER_FILE).write_text(json.dumps(how, indent=1))
+        model, registered = _largest_model(sparse)
+        if model is not None and min_registered <= registered < n_images and not _finished(work, "rest"):
+            model, registered = _place_rest(db, model, work, log, tracker, registered, n_images)
+            _finish(work, "rest")
+        return model, registered
+
+    model, registered = place()
+    extract = json.loads((work / EXTRACT_FILE).read_text()) if (work / EXTRACT_FILE).exists() else {}
+    if internet and extract.get("device") == "gpu" and not rejected.exists() and not _finished(work, "sift-judged"):
+        gpu = placing_summary(model, registered, db, log)
+        why = _plain_sift_short(gpu)
+        log(f"GPU SIFT: {_said(gpu)}" + (f": {why}" if why else ""))
+        if why:     # solved again from the CPU's SIFT, with affine shapes and domain-size pooling, as before GPU_SIFT
+            log("GPU SIFT: placing the photos again from the CPU's SIFT, with affine shapes and domain-size pooling")
+            rejected.write_text(json.dumps({"why": why, "gpu": gpu, "aside": PLAIN_SIFT_ASIDE}))
+            _set_aside_placing(work)
+    if rejected.exists() and not _finished(work, "sift-judged"):
+        model, registered = place()
+        record = json.loads(rejected.read_text())
+        cpu = placing_summary(model, registered, db, log)
+        record.update(cpu=cpu, better=plain_sift_better(record["gpu"], cpu))
+        rejected.write_text(json.dumps(record))
+        how = json.loads((work / MAPPER_FILE).read_text()) if (work / MAPPER_FILE).exists() else {}
+        (work / MAPPER_FILE).write_text(json.dumps({**how, "plain_sift_rejected": record}, indent=1))
+        _fell_back(work, "plain_sift", f"{record['why']}: placed again from the CPU's SIFT. The GPU's {_said(record['gpu'])}; "
+                   f"the CPU's {_said(cpu)}: " + ("the CPU's did better" if record["better"] else "the CPU's did no better"),
+                   log, gpu=record["gpu"], cpu=cpu, better=record["better"])
+    _finish(work, "sift-judged")
     log(f"registered {registered}/{n_images} images in the largest model")
     try:
         rec = write_models(sparse, work, db, model)
@@ -909,6 +1053,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             shutil.copyfile(work / "vggt" / "placed.json", out_dir / "placement.json")
         if (work / MODELS_FILE).exists():
             shutil.copyfile(work / MODELS_FILE, out_dir / MODELS_FILE)
+        if (work / FALLBACKS_FILE).exists():
+            shutil.copyfile(work / FALLBACKS_FILE, out_dir / FALLBACKS_FILE)
         how = json.loads((work / MAPPER_FILE).read_text()) if (work / MAPPER_FILE).exists() else None
         if how:
             (out_dir / MAPPER_FILE).write_text(json.dumps(how, indent=1))
@@ -960,17 +1106,19 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         densify = ["scene.mvs", "-w", str(work), "--resolution-level", "2", *mask_args,
                    *(["--mask-path", str(dense / "images")] if mask_args else []), *_mvs24(MVS24_DENSIFY)]
         cuda, on_gpu = _mvs_cuda("DensifyPointCloud"), False
+        passes = GEOMETRIC_ITERS if "--geometric-iters" in densify else 2
         if cuda:
             gpu, why = mvs_gpu_choice(use_gpu)
             log(f"DensifyPointCloud: using the {'GPU' if gpu else 'CPU'} ({why})")
             if gpu:
                 try:
-                    _run([cuda, *densify, "--cuda-device", "-1"], work, log, _geometric(tracker))
+                    _run([cuda, *densify, "--cuda-device", "-1"], work, log, _geometric(tracker, passes))
                     on_gpu = True
                 except RuntimeError as e:   # the CPU build carries on from the depth maps made so far
                     log(f"DensifyPointCloud: GPU run failed ({e}), carrying on with the CPU")
+                    _fell_back(work, "DensifyPointCloud", f"the GPU run failed ({e}): carried on with the CPU build", log)
         if not on_gpu:
-            _run([_mvs("DensifyPointCloud"), *densify], work, log, _geometric(tracker))
+            _run([_mvs("DensifyPointCloud"), *densify], work, log, _geometric(tracker, passes))
         _finish(work, "dense")
 
     if not _finished(work, "mesh"):

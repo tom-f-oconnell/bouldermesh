@@ -484,9 +484,16 @@ it runs out partway, matching uses the CPU, so a shared GPU is fine. The top of 
 it would use now, and each job's log says which it did. `USE_GPU=0` keeps it on the CPU.
 
 Finding people runs on the GPU too, where the image's torch has CUDA and 1.5 GB of its memory is free (8 times
-faster than 4 CPU threads; `PEOPLE_GPU=0` keeps it off). Finding features doesn't: COLMAP has no GPU version of
-the settings used for photos from the internet. `GPU_SIFT=1` trades those for plain SIFT on the GPU, which finds
-different features and so places different photos: it's there to be compared (experiments/mapper), not yet to use.
+faster than 4 CPU threads; `PEOPLE_GPU=0` keeps it off). Features for photos from the internet are found on the GPU
+too, as plain SIFT (COLMAP has no GPU version of the affine shapes and domain-size pooling the CPU uses for them). If
+the model made from them fails its own check (`backend/modelcheck.py`) or places under 70% of the photos that have
+matches, the photos are placed again from the CPU's SIFT; `GPU_SIFT=0` uses the CPU's from the start. The dense step
+makes one geometric-consistency pass over the depth maps, not OpenMVS's two (`GEOMETRIC_ITERS`).
+
+Whenever a step falls back from the GPU to the CPU (a GPU run that failed, or GPU SIFT's placing that fell short), the
+job's log says so in a line starting `FALLBACK:` (which a machine's worker script also logs as its own), and the server
+keeps a line for it in `fallbacks.jsonl` in its data folder: the mesh, the step, why, where it ran, and for GPU SIFT
+both placings and whether the CPU's did better (`"better"`).
 
 **Which mapper places the cameras.** COLMAP 4.2.1's global mapper, built into the image as `colmap4`, places them by
 default: on the mapper benchmark's boulders it was 6-14 times faster than 3.9.1's incremental mapper. It solves on the

@@ -229,9 +229,11 @@ print("a whole job OK")
 # --- a job that fails says why --------------------------------------------------------------------------------------------
 p = project("fails")
 got = in_thread(board.reconstruct, p / "photos", p / "work", TMP / "out2", print)
-r = worker(hal["token"], "--once", env={**ENV, "FAKE_JOB": "echo 'FAILED: only 2 image(s) could be registered'; exit 1"})
+r = worker(hal["token"], "--once", env={**ENV, "FAKE_JOB": "echo 'FALLBACK: plain_sift: placed again'; "
+                                                         "echo 'FAILED: only 2 image(s) could be registered'; exit 1"})
 got["thread"].join(30)
 assert isinstance(got.get("error"), RuntimeError) and "only 2 image(s)" in str(got["error"]), (got, r.stdout)
+assert "job: FALLBACK: plain_sift: placed again" in r.stdout, "a step's fallback is in the machine's own log too"
 assert board.state()["machines"][0]["failed"] == 1
 print("a failing job OK")
 

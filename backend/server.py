@@ -3513,6 +3513,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng,boulder,rules) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
           mid, mesh_name(proj["name"]), mesh_path.name, f"project:{pid}", time.time(), mesh_path.stat().st_size, int(demo),
           *boulder_place(proj["boulder"]), proj["boulder"] if proj["kind"] == "boulder" else None, MESH_RULES, write=True)
+        note_fallbacks(mid, proj["name"], pid, "a machine" if remote else "this server")
         if inputs:
             try:
                 meshinputs.save(MESHES / mid, {**inputs, "mesh": mid, "made": time.time()})
@@ -8295,6 +8296,30 @@ def record_client_error(report: dict, sender: str, user_agent: str, editor: bool
         return False
     print(f"browser error ({line['kind']}){' in mesh ' + line['mesh'] if line['mesh'] else ''}: {(line['message'] or '')[:200]}", flush=True)
     return True
+
+
+FALLBACKS_LOG = DATA / "fallbacks.jsonl"     # each time a mesh's job fell back from the GPU to the CPU, a JSON line each
+
+
+def note_fallbacks(mid: str, name: str, pid: str, where: str) -> list[dict]:
+    """Logs each fallback to the CPU a new mesh's job made (pipeline.py's fallbacks.json beside it): in the server's
+    log, and a line each in FALLBACKS_LOG with the mesh, its project and where it was made, for seeing later how often
+    each happens and, for GPU SIFT's, whether the CPU's SIFT did any better ("better", with both placings). Returns
+    what it logged; nothing it can't read stops the mesh."""
+    try:
+        made = json.loads((MESHES / mid / pipeline.FALLBACKS_FILE).read_text())
+    except (OSError, ValueError):
+        return []
+    lines = [{**f, "mesh": mid, "name": name, "project": pid, "where": where} for f in made if isinstance(f, dict)]
+    try:
+        with open(FALLBACKS_LOG, "a") as out:
+            for line in lines:
+                out.write(json.dumps(line) + "\n")
+    except OSError as e:
+        print(f"fallbacks: couldn't keep them ({e})", flush=True)
+    for line in lines:
+        print(f"fallback: {name} ({mid}, on {where}): {line.get('step')}: {line.get('why')}", flush=True)
+    return lines
 
 
 NEARBY_OVERLAPS = DATA / "nearby-overlaps.jsonl"   # meshes Nearby wouldn't show, as they'd overlap the one in view

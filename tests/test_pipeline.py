@@ -48,6 +48,11 @@ w("Geometric-consistent estimated depth-maps 1 (10.00%, 1s, ETA 9s)...")      # 
 assert abs(frac("dense") - 0.67) < 1e-6, frac("dense")
 w("Fused depth-maps 33 (100.00%, 2s)")
 assert frac("dense") == 1, frac("dense")
+t1 = Tracker([("dense", "dense", 1)])
+w = pipeline._geometric(t1, passes=1)       # GEOMETRIC_ITERS: one pass is the whole of that phase
+w("Geometric-consistent estimated depth-maps 33 (50.00%, 9s, ETA 9s)...")
+assert abs(t1.snapshot()["steps"][0]["frac"] - 0.65) < 1e-6, t1.snapshot()
+assert pipeline.MVS24_DENSIFY[-2:] == ["--geometric-iters", "1"], pipeline.MVS24_DENSIFY
 
 w = pipeline._phases(t, "mesh", (r"Points inserted \d+ \(([\d.]+)%", 0, 0.5), (r"Points weighted \d+ \(([\d.]+)%", 0.5, 0.9))
 w("Points inserted 600000 (50.00%, 3s, ETA 3s)...")
@@ -477,6 +482,7 @@ def flags(cmds, tool, flag):
 
 
 MATCH, EXTRACT = "--SiftMatching.use_gpu", "--SiftExtraction.use_gpu"
+pipeline.GPU_SIFT = False       # the internet settings' own SIFT first; GPU_SIFT (on by default) below
 cmds, logged = gpu_run(True, 17000)
 assert flags(cmds, "exhaustive_matcher", MATCH) == ["1"], cmds
 assert flags(cmds, "feature_extractor", EXTRACT) == ["0"], "COLMAP's GPU SIFT can't do the internet settings"
@@ -553,7 +559,7 @@ finally:
     pipeline.mvs_version = saved_version
 print("depth maps' device OK")
 
-# GPU_SIFT (off unless set): internet photos' features as plain SIFT on the GPU; with no GPU, or if it fails, today's
+# GPU_SIFT (on unless GPU_SIFT=0): internet photos' features as plain SIFT on the GPU; with no GPU, or if it fails, the CPU's
 pipeline.GPU_SIFT = True
 try:
     sift_cmds, sift_logged = gpu_run(True, 17000)
@@ -566,6 +572,7 @@ try:
     first, second = [c for c in sift_cmds if c[1] == "feature_extractor"]
     assert "--SiftExtraction.domain_size_pooling" not in first and "--SiftExtraction.domain_size_pooling" in second and second[-1] == "0", sift_cmds
     assert any("starting again on the CPU" in l for l in sift_logged), sift_logged
+    assert any(l.startswith("FALLBACK: feature_extractor: GPU SIFT failed") for l in sift_logged), sift_logged
 finally:
     pipeline.GPU_SIFT = False
 gpu_cmd, cpu_cmd = [c for c in cmds if c[1] == "exhaustive_matcher"]
@@ -587,6 +594,78 @@ pipeline.subprocess.run = lambda *a, **k: (_ for _ in ()).throw(FileNotFoundErro
 assert pipeline.gpu_free_mb() is None
 pipeline.subprocess.run = saved
 print("gpu OK")
+
+
+# ---- GPU SIFT's placing judged, and placed again from the CPU's SIFT when it falls short
+assert pipeline._plain_sift_short({"placed": 60, "matched": 100, "ok": True, "why": ""}).startswith("its model places 60 of the 100")
+assert pipeline._plain_sift_short({"placed": 70, "matched": 100, "ok": True, "why": ""}) is None, "70% is enough"
+assert pipeline._plain_sift_short({"placed": 90, "matched": 100, "ok": False, "why": "pairs"}) == "its model fails its own check (pairs)"
+assert pipeline._plain_sift_short({"placed": 90, "matched": None, "ok": None, "why": None}) is None, "what can't be told isn't held against it"
+assert pipeline._plain_sift_short({"placed": 0, "matched": 50, "ok": False, "why": "it made no model"}) == "it made no model"
+B = pipeline.plain_sift_better
+assert B({"placed": 90, "ok": False}, {"placed": 80, "ok": True}) and B({"placed": 50, "ok": True}, {"placed": 60, "ok": None})
+assert not B({"placed": 90, "ok": True}, {"placed": 80, "ok": True}) and not B({"placed": 50, "ok": True}, {"placed": 60, "ok": False})
+
+
+def sift_fallback(gpu_ok: bool, interrupt_cpu: bool = False):
+    """A job of 12 photos from the internet, GPU SIFT on, whose GPU-SIFT model's check says gpu_ok and the CPU's passes;
+    stopped at levelling. Returns the commands, the log, mapper.json, fallbacks.json and what's set aside."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp, cmds, logged = pathlib.Path(td), [], []
+        images, work = tmp / "images", tmp / "work"
+        images.mkdir()
+        for i in range(12):
+            (images / f"{i}.jpg").write_bytes(b"x")
+        state = {"stop_cpu": interrupt_cpu}
+
+        def fake_run(cmd, cwd, log, watch=None):
+            cmds.append(cmd)
+            if cmd[1] == "feature_extractor":
+                (work / "database.db").write_bytes(b"gpu" if cmd[-1] == "1" else b"cpu")
+            if cmd[1] == "mapper":
+                if state["stop_cpu"] and (work / "database.db").read_bytes() == b"cpu":
+                    state["stop_cpu"] = False
+                    raise Cancelled()
+                model(work / "sparse", "0", 12)
+            if cmd[1] == "model_orientation_aligner":
+                raise Stop()
+
+        def summary(model_dir, registered, db, log):
+            gpu = db.read_bytes() == b"gpu"
+            return {"placed": registered, "matched": 12, "ok": gpu_ok if gpu else True, "why": "pairs" if gpu and not gpu_ok else None}
+        saved = (pipeline._run, pipeline.COLMAP, pipeline.colmap_has_cuda, pipeline.gpu_free_mb, occlusion.available,
+                 pipeline.placing_summary, pipeline.GPU_SIFT)
+        pipeline._run, pipeline.COLMAP, pipeline.colmap_has_cuda, pipeline.gpu_free_mb = fake_run, "colmap", (lambda: True), (lambda: 17000)
+        occlusion.available, pipeline.placing_summary, pipeline.GPU_SIFT = (lambda: False), summary, True
+        try:
+            for _ in range(2):      # an interrupted job is run again on the same work/
+                try:
+                    pipeline.reconstruct_colmap_openmvs(images, work, tmp / "out", logged.append, True, internet=True)
+                except (Stop, Cancelled) as e:
+                    if isinstance(e, Stop):
+                        break
+        finally:
+            (pipeline._run, pipeline.COLMAP, pipeline.colmap_has_cuda, pipeline.gpu_free_mb, occlusion.available,
+             pipeline.placing_summary, pipeline.GPU_SIFT) = saved
+        read = lambda f: json.loads(f.read_text()) if f.exists() else None  # noqa: E731
+        return (cmds, logged, read(work / pipeline.MAPPER_FILE), read(work / pipeline.FALLBACKS_FILE),
+                sorted(p.name for p in (work / pipeline.PLAIN_SIFT_ASIDE).iterdir()) if (work / pipeline.PLAIN_SIFT_ASIDE).exists() else [])
+
+
+cmds, logged, how, fell, aside = sift_fallback(gpu_ok=True)
+assert flags(cmds, "feature_extractor", EXTRACT) == ["1"] and not fell and not aside and "plain_sift_rejected" not in how, (cmds, fell)
+assert any(l.startswith("GPU SIFT: placed 12 of 12 with matches, check passed") for l in logged), logged
+for interrupted in (False, True):
+    cmds, logged, how, fell, aside = sift_fallback(gpu_ok=False, interrupt_cpu=interrupted)
+    extracts = [c for c in cmds if c[1] == "feature_extractor"]
+    assert [c[-1] for c in extracts] == ["1", "0"] and "--SiftExtraction.estimate_affine_shape" in extracts[1], extracts
+    assert "database.db" in aside and "sparse" in aside and pipeline.EXTRACT_FILE in aside, aside
+    r = how["plain_sift_rejected"]
+    assert r["why"] == "its model fails its own check (pairs)" and r["gpu"]["ok"] is False and r["cpu"]["ok"] is True and r["better"], r
+    assert len(fell) == 1 and fell[0]["step"] == "plain_sift" and fell[0]["better"] and fell[0]["cpu"]["placed"] == 12, fell
+    said = [l for l in logged if l.startswith("FALLBACK: plain_sift:")]
+    assert len(said) == 1 and "the CPU's did better" in said[0] and "check failed" in said[0], logged
+print("GPU SIFT's fallback to the CPU's OK")
 
 
 # ---- levelling: a reading it believes turns the model and is kept; anything else keeps the estimate
