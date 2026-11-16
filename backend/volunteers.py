@@ -799,6 +799,7 @@ COPY_ICON = ('<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke
              '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>')
 PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Volunteer for boulderme.sh</title>
+<link rel="icon" href="/static/favicon-volunteer.svg" type="image/svg+xml">
 <script>/* light or dark as chosen on the main page: ?theme= from its Volunteer button, or what it keeps, if it's this address */
 try { const t = new URLSearchParams(location.search).get('theme') || localStorage.getItem('bm_theme');
       if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}</script>
