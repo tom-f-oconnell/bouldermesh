@@ -28,7 +28,10 @@ side models (step 7). `MESH_RULES` is not raised for them (Tom, section 67:
 and the new pipeline only far down the line, maybe in a lower tier: ask him before queuing them). Tom confirmed
 on hal ("write all of them"); written Nov 16: one pass and GPU SIFT's fallback in 70d2afa (with every GPU-to-CPU
 fallback logged: `fallbacks.json` beside the mesh, `FALLBACK:` log lines, the server's `fallbacks.jsonl`, at Tom's
-asking), repeated frames in c522266 (ORB, the last 8 kept frames, the sharper kept). Not deployed; atlas checks each before it's deployed, then times
+asking), repeated frames in c522266 (ORB, the last 8 kept frames, the sharper kept). Atlas checked the frames
+change on real videos (section 71): 31de drops 21 of 65 frames (dedup90: 25), Drifter 45 of 176 (51), and the meshes
+pass rules 1-4 (surface 0.33% and 0.24% near the rock, within seeds; Drifter mapper to texture about 550 s against 782).
+Changes 1 and 2 aren't checked on real models; `fallbacks.jsonl` will show how GPU SIFT's fallback fares. Not deployed; atlas checks each before it's deployed, then times
 them together with `views2` (step 10).
 
 <!-- owner: hal -->
@@ -582,7 +585,7 @@ tell them apart. Later sections correct earlier ones.
 | `meshes.py` | depth maps, fused points, faces and seconds from OpenMVS's logs; `export` copies the GLBs out |
 | `verify_build.py`, `sim_closeups.py`, `incr/boulder.py` | the check a tool tree must pass to be timed; the simulated close-ups; the incremental pipeline |
 
-Last updated: 2026-11-16 01:35 PST, through section 68 of the handoff file.
+Last updated: 2026-11-16 01:50 PST, through section 71 of the handoff file.
 
 ## Benchmarking left on hold
 
