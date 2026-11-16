@@ -79,4 +79,13 @@ with tempfile.TemporaryDirectory() as td:
         raise AssertionError("no reconstruction kept")
     except RuntimeError as e:
         assert "reconstruction wasn't kept" in str(e)
+# how far it is, from the tools' own counts, as a fraction of the whole
+seen = []
+w = textureagain._watch("undistort", lambda step, f: seen.append((step, round(f, 3))))
+w("I20261116 Undistorting image [5/10]")
+w("unrelated line")
+t = textureagain._watch("texture", lambda step, f: seen.append((step, round(f, 3))))
+t("Initialized views 18 (100.00%, 463ms)")
+t("08:51:37 [ScnTextr] Generating texture atlas and image completed: 312 patches")
+assert seen == [("undistort", 0.175), ("texture", 0.658), ("texture", 0.944)], seen
 print("ALL TEXTURE AGAIN TESTS PASSED")

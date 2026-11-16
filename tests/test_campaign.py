@@ -3786,4 +3786,25 @@ finally:
     if had is not None:
         rp.write_text(had)
 print("backup disk warning OK")
+# texturing again: each mesh asked for shows on the admin page, queued with how many jobs are ahead of it
+tm = "ab0000000001"
+server.q("INSERT OR IGNORE INTO meshes(id,name,filename,source,created) VALUES(?,'Textured Again','mesh.glb','project:x',?)", tm, time.time(), write=True)
+real_queue = server.queue_job
+server.queue_job = lambda job: None
+try:
+    server._texturing_again.discard(tm)
+    assert "queued 1" in server.admin_texture_again({"ids": tm})["result"]
+    row = next(x for x in server.texture_again_state() if x["mid"] == tm)
+    assert row["status"] == "queued" and row["frac"] == 0.0 and "ahead" in row, row
+    try:
+        server.admin_texture_again({"ids": "nothing12345"})
+        raise AssertionError("no such mesh")
+    except ValueError:
+        pass
+finally:
+    server.queue_job = real_queue
+    server._texturing_again.discard(tm)
+    server._texture_again_state.pop(tm, None)
+    server.q("DELETE FROM meshes WHERE id=?", tm, write=True)
+print("texture again's state OK")
 print("ALL CAMPAIGN TESTS PASSED")

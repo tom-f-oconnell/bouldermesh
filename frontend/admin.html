@@ -84,6 +84,7 @@
     <div class="row"><button class="sec" id="retex">Make textures from only the photos free to copy</button><span class="note" id="retex-note"></span></div>
     <div class="row"><input type="text" id="texagain-ids" placeholder="mesh ids, e.g. c2a6a38ed672 ebdeeb2837f9" style="flex:1;min-width:200px">
       <button class="sec" id="texagain" title="Colour these meshes again from their photos, keeping their shape and cleanup: a minute or two each, where meshing again takes ten or more. Each one's old texture is kept beside it, in texture-before/">Texture again</button></div>
+    <div id="texagain-list" class="note"></div>
     <div style="margin-top:14px"><b>Source photos and video frames</b></div>
     <label class="choice"><input type="radio" name="src" value="all"> Show all <small>(as now)</small></label>
     <label class="choice"><input type="radio" name="src" value="link"> Show those free to copy, and only link to the rest <small>(their copies here aren't shown)</small></label>
@@ -461,6 +462,15 @@ function render(s){
   renderBackup(s.backup || {});
   renderManifest(s.manifest || {}, s.offload || {}, s.lost_blocks || []);
   timings = s.timings || null;
+  // meshes being textured again: on this server, one at a time per worker, at low priority, after the jobs queued before
+  const ta = s.texture_again || [], mins = t => t < 90 ? `${Math.round(t)} s` : `${Math.round(t / 60)} min`;
+  $('#texagain-list').innerHTML = ta.length ? `<table style="margin-top:6px"><tr><th>Mesh</th><th>Status</th><th style="width:40%">Progress</th></tr>${ta.map(x => {
+    const now = Date.now() / 1000, took = x.finished && x.started ? x.finished - x.started : x.started ? now - x.started : null;
+    const said = x.status === 'queued' ? `queued, low priority${x.ahead ? `: ${x.ahead} job${x.ahead === 1 ? '' : 's'} ahead of it` : ''}`
+      : x.status === 'running' ? `${esc(x.step || 'starting')}${took != null ? `, ${mins(took)}` : ''}`
+      : x.status === 'done' ? `done${took != null ? ` in ${mins(took)}` : ''}` : `failed: ${esc(x.error || '')}`;
+    return `<tr><td>${esc(x.name || x.mid)} <small>${esc(x.mid)}</small></td><td style="color:${x.status === 'failed' ? 'var(--bad)' : x.status === 'done' ? 'var(--ok)' : 'inherit'}">${said}</td>
+      <td><progress max="1" value="${x.status === 'done' ? 1 : x.frac || 0}" style="width:100%"></progress></td></tr>`; }).join('')}</table>` : '';
   $('#stops').innerHTML = (s.stops || []).length ? `<table><tr><th>When</th><th>What</th><th>Was</th></tr>${s.stops.map(x =>
     `<tr><td>${new Date(x.at * 1000).toLocaleString()}</td><td>${x.kind === 'area' ? 'area' : 'project'}: ${esc(x.name || x.id)}</td><td>${esc(x.was || '')}</td></tr>`).join('')}</table>`
     : '<div class="note">None recorded yet (recorded since Nov 16, 2026).</div>';
@@ -842,7 +852,7 @@ $('#room-rejected').onclick = async () => {
   if (!await askDanger('Delete every photo the filter rejected?', `${photos(c.files)} (${size(c.bytes)}), from every project not being harvested or meshed now. They can't be put back after, nor looked at to judge the filter. ${backed}${first}`,
                        c.unbacked_files ? `Delete them, ${photos(c.unbacked_files)} for good` : 'Delete them')) return;
   msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
-$('#texagain').onclick = async () => { try { msg((await call('/api/admin/actions/texture-again', { ids: $('#texagain-ids').value })).result, 8000); } catch (e) { msg(e.message, 8000); } };
+$('#texagain').onclick = async () => { try { msg((await call('/api/admin/actions/texture-again', { ids: $('#texagain-ids').value })).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#via').onchange = () => save({ 'youtube.via': $('#via').value });
 $('#area-meshes').onchange = () => save({ 'areas.meshes': $('#area-meshes').value });

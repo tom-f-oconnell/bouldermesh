@@ -6984,25 +6984,52 @@ def run_texture_again(mid: str) -> None:
         with open(mesh_dir / "texture-again.log", "a") as f:
             f.write(line.rstrip() + "\n")
     work = DATA / "work" / f"texture-{mid}"
+    st = _texture_again_state.setdefault(mid, {"mid": mid})
+    st.update(status="running", step="starting", frac=0.0, started=time.time(), error=None)
+
+    def progress(step: str, frac: float) -> None:
+        st.update(step=step, frac=round(min(max(frac, 0.0), 1.0), 3))
     try:
         if not m or not m["source"].startswith("project:"):
             raise RuntimeError("only a mesh made here from a project's photos can be textured again")
         pid = m["source"].split(":", 1)[1]
         need_back([pid], "texturing again")
         log(f"-- {time.strftime('%Y-%m-%d %H:%M')}: texturing again")
-        new = textureagain.texture_again(mesh_dir, PROJECTS / pid / "photos", PROJECTS / pid / "masks", work, log)
+        new = textureagain.texture_again(mesh_dir, PROJECTS / pid / "photos", PROJECTS / pid / "masks", work, log, progress=progress)
         textureagain.install(mesh_dir, new, log)
         queue_pack(mid)
+        st.update(status="done", step=None, frac=1.0)
     except PhotosAway:
         log("its photos are in the backup: asked for back; texture it again once they're here")
+        st.update(status="failed", error="its photos are in the backup: asked for back; press Texture again once they're here")
     except Exception as e:  # noqa: BLE001 - said in its log, and the mesh left as it was
         log(f"FAILED: {type(e).__name__}: {e}")
+        st.update(status="failed", error=f"{type(e).__name__}: {e}")
     finally:
+        st["finished"] = time.time()
         shutil.rmtree(work, ignore_errors=True)
         _texturing_again.discard(mid)
 
 
 _texturing_again: set[str] = set()
+# each mesh asked to be textured again since the server started: {mid, name, status (queued, running, done, failed),
+# step, frac, queued, started, finished, error}, for the admin page
+_texture_again_state: dict[str, dict] = {}
+
+
+def texture_again_state() -> list[dict]:
+    """The meshes textured again lately, newest asked first, each queued one with how many jobs are ahead of it in
+    this server's queue (where they run, one at a time per worker, at low priority)."""
+    with jobs.mutex:
+        queue = list(jobs.queue)
+    out = []
+    for st in sorted(_texture_again_state.values(), key=lambda s: -(s.get("queued") or 0)):
+        row = dict(st)
+        if st.get("status") == "queued":
+            at = next((i for i, j in enumerate(queue) if j.get("type") == "texture-again" and j.get("mid") == st["mid"]), None)
+            row["ahead"] = at
+        out.append(row)
+    return out[:30]
 
 
 # ------------------------------------------------------------------ what the site shows (policy.py)
@@ -11174,6 +11201,7 @@ def admin_state() -> dict:
             "notify": NOTIFIER.state(), "pairing": pairing_state(), "feedback": feedback_mod.recent(FEEDBACK),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
             "stops": [dict(r) for r in q("SELECT at, kind, id, name, was FROM job_stops ORDER BY at DESC LIMIT 30")],
+            "texture_again": texture_again_state(),
             "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q), "backup": backup_state(),
             "manifest": {**manifest_state(), "quiet": manifest_quiet(), "hours": MANIFEST_HOURS}, "lost_blocks": lost_blocks()}
@@ -11336,6 +11364,9 @@ def admin_texture_again(body: dict) -> dict:
     for mid in dict.fromkeys(ids):
         if mid not in _texturing_again:
             _texturing_again.add(mid)
+            name = (q("SELECT name FROM meshes WHERE id=?", mid, one=True) or {}).get("name")
+            _texture_again_state[mid] = {"mid": mid, "name": name, "status": "queued", "step": None, "frac": 0.0,
+                                         "queued": time.time(), "started": None, "finished": None, "error": None}
             queue_job({"type": "texture-again", "mid": mid})
             n += 1
     return {"result": f"queued {n} mesh(es) to be textured again: each one's texture-again.log says how it went"}

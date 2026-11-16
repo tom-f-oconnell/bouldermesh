@@ -72,10 +72,39 @@ def same_faces(old: Path, new: Path, tol: float = 1e-4) -> str | None:
     return None if off <= tol * scale else f"its faces aren't in the same order or places (up to {off:.3g} apart)"
 
 
-def texture_again(mesh_dir: Path, photos: Path, masks: Path | None, work: Path, log: Log, use_gpu: bool = False) -> Path:
+Progress = Callable[[str, float], None]
+STEPS = {"undistort": (0.05, 0.3), "masks": (0.3, 0.35), "import": (0.35, 0.42), "texture": (0.45, 0.97)}   # each step's share
+
+
+def _watch(step: str, progress: Progress | None):
+    """A tool's output lines to progress(step, fraction of the whole), from its own counts where it gives them."""
+    import re
+    lo, hi = STEPS[step]
+
+    def on(line: str) -> None:
+        if not progress:
+            return
+        m = re.search(r"Undistorting image \[(\d+)/(\d+)\]", line)
+        if m:
+            return progress(step, lo + (hi - lo) * int(m[1]) / max(int(m[2]), 1))
+        m = re.search(r"Initialized views \d+ \(([\d.]+)%", line)
+        if m:
+            return progress(step, lo + (hi - lo) * 0.4 * float(m[1]) / 100)
+        if "Assigning the best view" in line:
+            return progress(step, lo + (hi - lo) * 0.6)
+        if "Generating texture atlas" in line:
+            return progress(step, lo + (hi - lo) * 0.95)
+    return on
+
+
+def texture_again(mesh_dir: Path, photos: Path, masks: Path | None, work: Path, log: Log, use_gpu: bool = False,
+                  progress: Progress | None = None) -> Path:
     """Texture mesh_dir's mesh.glb again in work/ (made empty first), from its kept reconstruction, the project's photos
     and its people masks (<photo name>.png, or None); the new GLB, its textures beside it. Raises RuntimeError if what's
-    needed isn't there or a step fails, NotSame if the faces didn't stay as they were."""
+    needed isn't there or a step fails, NotSame if the faces didn't stay as they were. progress(step, fraction): how far
+    it is, from 0 to 1 of the whole."""
+    say = progress or (lambda step, frac: None)
+    say("cameras", 0.0)
     old = mesh_dir / "mesh.glb"
     if not old.is_file():
         raise RuntimeError("only a mesh made as a GLB can be textured again")
@@ -92,9 +121,11 @@ def texture_again(mesh_dir: Path, photos: Path, masks: Path | None, work: Path, 
                            f"({', '.join(missing[:3])}{'...' if len(missing) > 3 else ''})")
 
     log(f"== texture again: {len(wanted)} placed photos")
+    say("undistort", STEPS["undistort"][0])
     pipeline._run([pipeline.COLMAP, "image_undistorter", "--image_path", str(photos), "--input_path", str(model),
-                   "--output_path", str(dense), "--output_type", "COLMAP"], work, log)
+                   "--output_path", str(dense), "--output_type", "COLMAP"], work, log, _watch("undistort", progress))
     mask_args = []
+    say("masks", STEPS["masks"][0])
     if masks and masks.is_dir():
         name_for = lambda f: f"{f.stem}.mask.png"  # noqa: E731
         try:
@@ -105,17 +136,21 @@ def texture_again(mesh_dir: Path, photos: Path, masks: Path | None, work: Path, 
             mask_args = ["--ignore-mask-label", "0"]
         except Exception as e:      # noqa: BLE001 - as the pipeline: textured without them
             log(f"occlusion: failed ({type(e).__name__}: {e}); texturing without the people masks")
+    say("import", STEPS["import"][0])
     pipeline._run([pipeline._mvs("InterfaceCOLMAP"), "-i", str(dense), "-o", "scene.mvs", "--image-folder", str(dense / "images"),
                    "-w", str(work)], work, log)
 
     verts, faces = faces_of(old)
     write_ply(work / "mesh.ply", verts, faces)
     log(f"the mesh: {len(faces)} faces, {len(verts)} vertices")
+    say("texture", STEPS["texture"][0])
     pipeline._run([pipeline._mvs("TextureMesh"), "scene.mvs", "-m", "mesh.ply", "-o", "scene_dense_mesh_texture.mvs",
-                   "-w", str(work), *pipeline.texture_args(work, dense / "images", mask_args, log)], work, log)
+                   "-w", str(work), *pipeline.texture_args(work, dense / "images", mask_args, log)], work, log,
+                  _watch("texture", progress))
     new = work / GLB
     if not new.is_file():
         raise RuntimeError("TextureMesh made no GLB")
+    say("check", 0.98)
     why = same_faces(old, new)
     if why:
         raise NotSame(f"not used: textured again, {why}")

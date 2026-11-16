@@ -3761,7 +3761,14 @@ async function refreshCampaigns(){
         campaignLoop(); };
       d.querySelector('.stopnow')?.addEventListener('click', () => { if (ask(`Stop now? The climb in progress pauses, and carries on from its last finished step when you resume. Finished meshes stay.`)) post('stop', { now: true }); });
       d.querySelector('.stoplater')?.addEventListener('click', () => post('stop', { now: false }));
-      d.querySelector('.resume')?.addEventListener('click', () => post('start'));
+      d.querySelector('.resume')?.addEventListener('click', async () => {
+        // remaking its old meshes at low priority: resuming its own list puts that ahead of them, so ask first
+        if (c.old_queued && !await askDanger(`Resume ${c.name}'s own list?`,
+          `It's remaking ${plural(c.old_queued, 'old mesh', 'old meshes')} now, at low priority. Resuming takes up its own list (${plural(c.counts?.pending || 0, 'climb')} to go) `
+          + `at the usual priority, ahead of those: the old mesh being remade now finishes, and the rest of the old ones wait until its list is done or stopped again.`,
+          'Resume, ahead of the old meshes')) return;
+        post('start');
+      });
       d.querySelector('.retryfailed')?.addEventListener('click', () => post('retry'));
       const alone = c.status === 'running' ? 'They go ahead of the rest of the list.' : 'Only these run, and then it stops.';
       d.querySelector('.checknew')?.addEventListener('click', () => { if (ask(`Look in every source again for each climb in "${c.name}", adding only what wasn't found before? Searches are asked again; photos it had aren't downloaded again. Their meshes stay. ${alone}`)) post('harvest-again', { new_only: true }); });
