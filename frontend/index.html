@@ -3276,7 +3276,9 @@ $('#m-export').onchange = async ev => {
 let active = null;
 const projectCards = new Map();
 async function refreshProjects(){
-  const list = await api('/api/projects');
+  // what's working first (running, harvesting, then queued), the rest in the server's order
+  const rank = p => ({ running: 0, harvesting: 0, queued: 1 })[p.status] ?? 2;
+  const list = (await api('/api/projects')).map((p, i) => [p, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
   const el = $('#projects'); el.innerHTML = list.length ? '' : '<div class="status">No projects yet.</div>';
   projectCards.clear();
   const cut = list.filter(p => p.status === 'interrupted').length;
