@@ -54,8 +54,14 @@ on hal. Names in quotes are atlas's sections under "Results on atlas". GLBs are 
    against 0.29% to 0.13% seed against seed), and rules 1 to 3 pass. What's left is the real saving: dropping the
    frames in the harvest, before extraction (`backend/climbs/`), checked against `dedup90`'s choice on the five
    boulders' videos, then judged again by atlas. It changes which photos a mesh is made from, so it needs Tom's word.
-7. **`global_one` (no side models):** atlas posts its surface. If it passes, a hal session adds the option to the
-   app's global mapper call, after checking what the app does with side models (`review.md`, problem 6).
+7. **`global_one` (no side models): passes the benchmark's rules; Tom's decision, because the app uses side models.**
+   Mapper 186 to 117 s on Drifter and 112 to 88 s on 31de, the same photos placed, check and surface within the
+   seeds' spread. But the benchmark only looks at the mesh's own model. The app also records every other model the
+   mapper made (`models.json`, `pipeline.write_models()`), and the server reads them to say which climbs' photos landed
+   in a model together (pooling), and to offer a boulder's other models as meshes of what its mesh left out
+   (`backend/server.py`, "rest" meshes). With one model only, those would have nothing to go on. That is "what a
+   boulder's mesh leaves out", which the repo's rules send to Tom first. A middle way, not measured: keep side models
+   only for pooled boulders and groups, where they're read.
 8. **GPU SIFT: Tom's decision.** Its surface now passes on both boulders (Drifter 0.26%, 31de 0.30%), and against
    the same database its model checks no worse on Drifter (2.91 against 3.43 degrees) and a little worse on 31de
    (2.94 against 2.55). What stays: it places different photos (Drifter 20 gained, 3 lost) and its cameras agree with
@@ -546,4 +552,4 @@ tell them apart. Later sections correct earlier ones.
 | `meshes.py` | depth maps, fused points, faces and seconds from OpenMVS's logs; `export` copies the GLBs out |
 | `verify_build.py`, `sim_closeups.py`, `incr/boulder.py` | the check a tool tree must pass to be timed; the simulated close-ups; the incremental pipeline |
 
-Last updated: 2026-11-15 21:00 PST, through section 56 of the handoff file.
+Last updated: 2026-11-15 21:30 PST, through section 57 of the handoff file.
