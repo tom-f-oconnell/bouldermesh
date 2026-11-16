@@ -7,7 +7,8 @@ photos it verified, how one camera is turned from the other. A model that hangs 
 each other the way their pairs say; one that doesn't, hasn't.
 
     numbers(model, db)    placed, points, track; err_mean, err_p90 (the points' reprojection errors, px: each point's
-                          mean over its track, as COLMAP has it); pairs, pair_med_deg, pair_p90_deg (over the verified
+                          mean over its track, as COLMAP has it, leaving out err_unread: values no error can be, over
+                          ERR_MOST_PX or not a number); pairs, pair_med_deg, pair_p90_deg (over the verified
                           pairs of placed photos with MIN_INLIERS and a geometry COLMAP didn't call planar or
                           panoramic: the angle between the turn from one camera to the other in the model and the
                           nearer of the two their fundamental matrix allows through the model's lenses); odd_lenses
@@ -37,6 +38,9 @@ VERSION = 1
 MAX_IMAGE_ID = 2147483647   # COLMAP's pair_id is this times the smaller image id, plus the larger
 MIN_INLIERS = 20            # the pairs the mapper itself goes by (the app's min_num_matches)
 UNTIED = 15                 # a camera seeing fewer of the model's points than this isn't tied to it
+# A point's error past this isn't a reprojection error but a value COLMAP never set: 4.2.1's models after its global
+# mapper's last steps have held a few of 1e150 px and more among points otherwise a pixel or two off (atlas, Nov 15)
+ERR_MOST_PX = 1e4
 NUM_PARAMS = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8, 5: 8, 6: 12, 7: 5, 8: 4, 9: 5, 10: 12}     # by COLMAP's camera model id
 
 # From the mapper benchmark's models of four boulders, with the 3.9.1 baseline and seven other methods (hal's 29 models
@@ -128,14 +132,16 @@ def numbers_of(cams: dict[str, dict], errs, track: float, db: Path) -> dict:
     memory; numbers() reads them from a model's files)."""
     import numpy as np
     errs = np.asarray(errs, float)
-    errs = errs[errs >= 0]
+    errs = errs[~(errs < 0)]    # COLMAP's -1: not worked out (a NaN is kept, to be counted below)
+    sane = np.isfinite(errs) & (errs <= ERR_MOST_PX)
+    unread, errs = int((~sane).sum()), errs[sane]
     odd = sum(1 for c in cams.values()
               if not (0.3 * max(c["w"], c["h"]) < c["f"] < 6 * max(c["w"], c["h"]))
               or math.hypot(c["cx"] - c["w"] / 2, c["cy"] - c["h"] / 2) > 0.25 * max(c["w"], c["h"]))
     ang = pair_angles(cams, db)
     return {"placed": len(cams), "points": int(len(errs)), "track": round(float(track), 2),
             "err_mean": round(float(errs.mean()), 3) if len(errs) else None,
-            "err_p90": round(float(np.percentile(errs, 90)), 3) if len(errs) else None,
+            "err_p90": round(float(np.percentile(errs, 90)), 3) if len(errs) else None, "err_unread": unread,
             "pairs": len(ang), "pair_med_deg": round(float(np.median(ang)), 2) if ang else None,
             "pair_p90_deg": round(float(np.percentile(ang, 90)), 2) if ang else None,
             "odd_lenses": int(odd), "untied": sum(1 for c in cams.values() if c.get("seen", UNTIED) < UNTIED)}

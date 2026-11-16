@@ -134,6 +134,11 @@ with tempfile.TemporaryDirectory() as tmp:
     write_model(tmp / "far" / "model", cams, err=5.0)
     far = modelcheck.check(tmp / "far" / "model", tmp / "right0" / "db.db")
     assert far["failed"] == ["error"] and far["why"].startswith("its points are 5.00 px off"), far
+    # a few points whose error COLMAP never set (4.2.1 has written 1e152): left out, and counted, not failed on
+    got = modelcheck.read_model(tmp / "right0" / "model")
+    junk = modelcheck.numbers_of(got[0], list(got[1]) + [1.2e152, 5.6e150, float("nan"), float("inf"), -1.0], got[2], tmp / "right0" / "db.db")
+    assert junk["err_unread"] == 4 and junk["points"] == 480 and abs(junk["err_mean"] - 0.8) < 1e-6, junk
+    assert modelcheck.verdict(junk)["ok"], junk
     # lenses that can't be real, and cameras that see next to nothing
     odd = [(R, t, 50.0 if i < 4 else f) for i, (R, t, f) in enumerate(cams)]
     write_model(tmp / "odd" / "model", odd)
