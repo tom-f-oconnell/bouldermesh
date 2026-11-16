@@ -163,6 +163,8 @@ for _ in $(seq 30); do      # up to a minute for it to answer again
 done
 if [ "$live" = "$want" ]; then
     echo "deployed: the server runs $want"
+    # the image it ran before is no container's now: gone, for room (the 75 GB disk). Rolling back means pulling it again
+    on_server 'docker image prune -af' | tail -1 | grep -v '^Total reclaimed space: 0B$' || true
 elif [ -n "$live" ]; then
     echo "restarted, but the server says it runs $live, not $want: see its log (docker compose logs bouldermesh, on it)"
 else
