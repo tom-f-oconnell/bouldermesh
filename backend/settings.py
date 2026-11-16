@@ -48,6 +48,7 @@ DEFAULTS = {
     "site.via_links": True,                # a climb never meshed on its own opens the mesh made for another on its boulder ("via")
     "site.small_thumbs": True,             # with sources link/permitted: small copies of the rest anyway, linking to where they came from
     "site.map_km": 1.0,                    # how many km across (its narrower side) the map opens around a boulder
+    "apps.testflight_url": "",             # the iPhone app's public TestFlight link (https://testflight.apple.com/join/…), shown to accounts; none while empty
     "site.donate_url": "",                 # where the "?" tab's Donate button goes (https://…); none while empty (DONATE_URL starts it)
     # the viewer opens a mesh with at least twice as many faces as a simplified copy of about this many first, then the
     # rest (glbpack.py): 150,000 is about 1 MB, and on Caveman looks the same at a phone's size; 0: no previews
@@ -211,6 +212,8 @@ class Settings:
                 raise ValueError("notify.server is an https:// address, such as https://ntfy.sh")
             if k in ("notify.topic", "notify.reply_topic") and v and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", v):
                 raise ValueError(f"{k} is up to 64 letters, digits, - and _")
+            if k == "apps.testflight_url" and v and not re.fullmatch(r"https://testflight\.apple\.com/join/[A-Za-z0-9]{4,40}", v):
+                raise ValueError("apps.testflight_url is a TestFlight public link, https://testflight.apple.com/join/…, or empty")
             if k == "site.donate_url" and v and not DONATE_URL.fullmatch(v):
                 raise ValueError("site.donate_url is an https:// address, or empty for no Donate button")
             clean[k] = v

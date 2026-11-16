@@ -8145,6 +8145,15 @@ def admin_submission(body: dict) -> dict:
     return admin_state()
 
 
+ANDROID_RELEASE = "https://github.com/tom-f-oconnell/bouldermesh/releases/tag/android-latest"   # apps.yml's latest APK
+
+
+def phone_apps() -> dict:
+    """Where an account gets the phone apps: the Android app's latest build, and the iPhone app's public TestFlight link
+    (the admin page's apps.testflight_url), if there is one. Shown only to accounts (and invitees, as they join)."""
+    return {"android": ANDROID_RELEASE, "iphone": settings().get("apps.testflight_url") or None}
+
+
 def admin_user_invite(body: dict) -> dict:
     """An invite to make an account with: {role?, areas?, note?}. The link is shown this once."""
     try:
@@ -9267,7 +9276,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"user": accounts_mod.public(me) if me and me["id"] else None, "owner": bool(me) and me["role"] == "owner",
                                        "accounts": not READ_ONLY and bool(EDIT_TOKEN),
                                        "terms": {"version": accounts_mod.TERMS_VERSION, "text": accounts_mod.TERMS, "licence": accounts_mod.LICENCE},
-                                       "limits": {"sets": beta_mod.SETS_PER_USER, "holds": beta_mod.SET_HOLDS_MOST}})
+                                       "limits": {"sets": beta_mod.SETS_PER_USER, "holds": beta_mod.SET_HOLDS_MOST},
+                                       "apps": phone_apps() if me else None})
             if p == "/api/videos":   # every video known, and what it or its channel says about the climber's size
                 return self.send_json(q("""SELECT v.url,v.title,v.uploader,v.channel_url,v.duration,v.upload_date,v.license,
                       v.height_cm,v.wingspan_cm,v.ape_index_cm,v.first_person,v.quotes,

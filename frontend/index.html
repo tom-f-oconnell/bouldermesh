@@ -5949,7 +5949,11 @@ function openJoin(invite){
       try { await acceptTerms(); } catch (e) { toast(sentence(e.message), 8000); }
       if (was && kept) return location.reload();      // no longer the editor here
       dlg.close(); showAccount();
-      if (account.accepted) toast(`Welcome, ${account.name}. Your name is at the top of the page.`, 6000); else openTerms();
+      try { accountInfo = { ...accountInfo, apps: (await api('/api/account')).apps }; } catch {}
+      if (!account.accepted) openTerms();
+      else if (accountInfo?.apps) acctDlg(`<p><b>Welcome, ${esc(account.name)}.</b> Your name is at the top of the page: it opens your account.</p>
+        ${appsHtml()}<div class="row" style="justify-content:flex-end"><button class="sm close">Close</button></div>`);
+      else toast(`Welcome, ${account.name}. Your name is at the top of the page.`, 6000);
     }
     catch (e) { say.textContent = sentence(e.message); go.disabled = false; }
   };
@@ -6013,11 +6017,21 @@ async function showAdded(dlg){
     };
   });
 }
+// where an account gets the phone apps (GET /api/account's apps): Android's latest build; the iPhone's through TestFlight
+function appsHtml(){
+  const a = accountInfo?.apps;
+  if (!a) return '';
+  return `<p style="margin-bottom:4px"><b>The phone app</b>, to photograph a boulder for its mesh:</p><ul style="margin:0 0 10px">
+    <li>Android: open <a href="${esc(a.android)}" target="_blank" rel="noopener">its latest build</a> on the phone, tap the <i>.apk</i>, and allow installing it.</li>
+    ${a.iphone ? `<li>iPhone: install Apple's <a href="https://apps.apple.com/app/testflight/id899247664" target="_blank" rel="noopener">TestFlight</a> app, then open
+      <a href="${esc(a.iphone)}" target="_blank" rel="noopener">this link</a> on the phone and tap <i>Accept</i>, then <i>Install</i>. New versions come by themselves.</li>`
+      : '<li>iPhone: not yet available.</li>'}</ul>`;
+}
 function openAccount(){
   const role = account.role === 'user' ? '' : ` (${esc(account.role)})`;
   const dlg = acctDlg(`<p>Signed in as <b>${esc(account.name)}</b>${role}: what you add is credited to this name.</p>
     ${account.accepted ? '' : '<p>You haven\'t accepted the site\'s terms yet, so nothing can be added. <button class="sm sec toterms">Read them</button></p>'}
-    <p style="margin-bottom:4px"><b>What I've added</b></p><div class="mine" style="margin:0 0 10px"><p>Loading…</p></div>
+    ${appsHtml()}<p style="margin-bottom:4px"><b>What I've added</b></p><div class="mine" style="margin:0 0 10px"><p>Loading…</p></div>
     <div class="pair"></div><p class="err"></p>
     <div class="row" style="gap:8px;justify-content:flex-end;flex-wrap:wrap"><button class="sm sec pairgo">Sign in another device</button><button class="sm sec out">Sign out</button><button class="sm close">Close</button></div>`);
   dlg.querySelector('.toterms')?.addEventListener('click', openTerms);
