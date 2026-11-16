@@ -1049,8 +1049,10 @@ machine. *Run more on* adds up to that many machines (2 by default):
   machine, task, when it was made, taken and ended, and how: done, failed, released, or gone), each ending is logged
   with how long it took and waited, and once an hour the server logs each machine's minutes in each state. The script
   keeps its own record in `usage.jsonl` in `~/.bouldermesh-worker` (each job, and each change between working, waiting
-  for climbs and held back), and logs once an hour how the hour went. Its other options: `--gpu auto|all|cdi|none` (`cdi` for
-  a host whose GPU is a CDI device), `--docker-arg=--memory=64g` (repeatable), and `--image-prefix ghcr.io/<owner>/`
+  for climbs and held back), and logs once an hour how the hour went. Its other options: `--gpu auto|all|cdi|none` (`auto` gives the GPU
+  as a CDI device where Docker has CDI on, which `--setup` offers to switch on, and else by `--gpus all`, with a warning
+  under systemd's cgroup driver: there a running job loses a GPU given by `--gpus` whenever systemd reloads its units,
+  such as on a package upgrade, and keeps a CDI device), `--docker-arg=--memory=64g` (repeatable), and `--image-prefix ghcr.io/<owner>/`
   to refuse any other image, should the server be taken over. The public setup's Caddy passes `/worker/` to a port that
   answers only that (`WORKER_PORT`, 47614); elsewhere, publish that port to where the machines are. With
   *Reconstructions at once on this server* at 0, finding beta and finding a mesh's size go to these machines too: a

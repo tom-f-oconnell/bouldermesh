@@ -22,7 +22,7 @@ def machine(**changes) -> dict:
     """A machine as machine_state() describes one: by default hal, with everything in place."""
     st = {"linux": True, "debian": True, "system": "Ubuntu 26.04 LTS", "root": False, "user": "pat", "docker": True,
           "docker_state": "ok", "runtimes": ["io.containerd.runc.v2", "nvidia", "runc"], "running": 0, "in_group": True,
-          "gpu": True, "gpu_hardware": True, "toolkit": True, "have": {"curl": True, "gpg": True}}
+          "cdi": True, "cgroup": "systemd", "gpu": True, "gpu_hardware": True, "toolkit": True, "have": {"curl": True, "gpg": True}}
     return {**st, **changes}
 
 
@@ -55,7 +55,7 @@ toolkit = steps[2]["commands"]
 assert toolkit[0] == "sudo apt-get install curl", "only what's missing of curl and gpg"
 assert any("nvidia.github.io/libnvidia-container/gpgkey" in c and "sudo gpg --dearmor" in c for c in toolkit)
 assert toolkit[-1] == "sudo apt-get install nvidia-container-toolkit"
-assert steps[3]["commands"] == ["sudo nvidia-ctk runtime configure --runtime=docker"]
+assert steps[3]["commands"] == ["sudo nvidia-ctk runtime configure --runtime=docker --cdi.enabled"]
 assert steps[4]["commands"] == ["sudo systemctl restart docker"] and steps[4]["warn"] is None, "a Docker installed just now runs nothing"
 steps, _ = worker.setup_steps(machine(docker_state="denied", running=None, toolkit=False, runtimes=[]))
 assert "any containers" in steps[-2]["warn"], "how many isn't known"
@@ -71,8 +71,13 @@ assert len(steps) == 4 and "3 container(s)" in steps[2]["warn"] and "Say no" in 
 assert "toolkit isn't installed" in worker.docker_problem(st, "auto") and worker.docker_problem(st, "none") is None
 assert worker.docker_problem(st, "cdi") is None, "a CDI device is the user's own arrangement"
 steps, _ = worker.setup_steps(machine(runtimes=["runc"], running=0))
-assert [s["commands"][0] for s in steps][:2] == ["sudo nvidia-ctk runtime configure --runtime=docker", "sudo systemctl restart docker"]
+assert [s["commands"][0] for s in steps][:2] == ["sudo nvidia-ctk runtime configure --runtime=docker --cdi.enabled", "sudo systemctl restart docker"]
 assert steps[1]["warn"] is None, "nothing running: nothing to warn of"
+# CDI alone missing: switched on, Docker restarted with its warning, and the GPU tried as a CDI device
+steps, _ = worker.setup_steps(machine(cdi=False, running=2))
+assert len(steps) == 3 and "--cdi.enabled" in steps[0]["commands"][0] and "systemd reloads" in steps[0]["why"], steps
+assert "2 container(s)" in steps[1]["warn"] and "--device nvidia.com/gpu=all" in steps[2]["commands"][-1], steps
+check_safe(steps)
 print("toolkit missing OK")
 
 # --- no GPU, or a GPU without its driver: no GPU steps, and a driver is left to the user

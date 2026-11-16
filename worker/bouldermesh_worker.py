@@ -98,7 +98,7 @@ from pathlib import Path
 #     followed so closely as to ask before it had, and was given a job of any size; waits for the GPU's driver at boot
 # 20: tells the server what nvidia-smi says of its GPU (name, memory, driver, CUDA) as it starts; sends
 #     diagnostics when the server asks (--no-diagnostics: never)
-VERSION = 20
+VERSION = 21
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter", "splat")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
@@ -437,7 +437,7 @@ def machine_state() -> dict:
           "system": rel.get("PRETTY_NAME") or sys.platform, "root": root, "service": bool(os.environ.get("INVOCATION_ID")),
           "user": os.environ.get("SUDO_USER") if root else getpass.getuser(),
           "docker": bool(shutil.which("docker")), "docker_state": None, "runtimes": [], "running": None, "in_group": False,
-          "gpu": False, "gpu_hardware": False,
+          "cdi": False, "cgroup": None, "gpu": False, "gpu_hardware": False,
           "toolkit": bool(shutil.which("nvidia-ctk") or shutil.which("nvidia-container-runtime-hook")),
           "have": {tool: bool(shutil.which(tool)) for tool in ("curl", "gpg")}}
     try:
@@ -458,6 +458,7 @@ def machine_state() -> dict:
                 pass
             ps = quiet(["docker", "ps", "-q"])
             st["running"] = len(ps.stdout.split()) if ps and ps.returncode == 0 else None
+            st["cdi"], st["cgroup"] = cdi_ready(), cgroup_driver()
         else:
             st["docker_state"] = "denied" if r and "permission denied" in r.stderr.lower() else "stopped"
     smi = shutil.which("nvidia-smi") and quiet(["nvidia-smi", "-L"])
@@ -538,9 +539,12 @@ def setup_steps(st: dict) -> tuple[list[dict], list[str]]:
                               f"curl -fsSL {NVIDIA_REPO}/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb "
                               f"[signed-by={NVIDIA_KEYRING}] https://#g' | {sudo}tee /etc/apt/sources.list.d/nvidia-container-toolkit.list",
                               f"{sudo}apt-get update", f"{sudo}apt-get install nvidia-container-toolkit"]})
-        if not st["toolkit"] or "nvidia" not in st["runtimes"]:
+        if not st["toolkit"] or "nvidia" not in st["runtimes"] or not st.get("cdi"):
             running = st["running"] if st["docker"] else 0      # a Docker installed just now has none
-            steps.append({"why": "Give Docker NVIDIA's runtime", "commands": [f"{sudo}nvidia-ctk runtime configure --runtime=docker"]})
+            only_cdi = st["toolkit"] and "nvidia" in st["runtimes"]
+            steps.append({"why": ("Let Docker give jobs the GPU as a CDI device: " + GPUS_LOSS) if only_cdi else
+                                 "Give Docker NVIDIA's runtime, and the GPU as a CDI device (which a job keeps when systemd reloads)",
+                          "commands": [f"{sudo}nvidia-ctk runtime configure --runtime=docker --cdi.enabled"]})
             steps.append({"why": "Restart Docker, for that to take effect",
                           "warn": None if running == 0 else
                           (f"this stops the {running} container(s) running now; those set to restart come back by themselves, "
@@ -549,7 +553,8 @@ def setup_steps(st: dict) -> tuple[list[dict], list[str]]:
                            "Say no to do it yourself later (sudo systemctl restart docker)."),
                           "commands": [f"{sudo}systemctl restart docker"]})
             steps.append({"why": "Check a container can use the GPU (this fetches Ubuntu's image, about 30 MB)",
-                          "commands": [f"{sudo}docker run --rm --gpus all ubuntu nvidia-smi -L"]})
+                          "commands": [f"nvidia-ctk cdi list | grep -q {CDI_DEVICE} || {sudo}nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml",
+                                       f"{sudo}docker run --rm --device {CDI_DEVICE} ubuntu nvidia-smi -L"]})
     elif st["gpu_hardware"]:
         notes.append("This machine has an NVIDIA GPU, but no driver for it (nvidia-smi doesn't work), which --setup leaves to you, "
                      "as it needs a reboot and can clash with a CUDA you have: on Ubuntu, sudo ubuntu-drivers install, then "
@@ -607,6 +612,31 @@ def setup() -> int:
         print("Log in again (or run newgrp docker) before starting the worker, for the docker group to take effect.")
     print(f"Then: python3 {Path(sys.argv[0]).name} --server https://<the site> --check")
     return 0
+
+
+CDI_DEVICE = "nvidia.com/gpu=all"
+# Why CDI is preferred to --gpus: said by --setup, and when a worker starts with --gpus under systemd's cgroup driver
+GPUS_LOSS = ("with --gpus, a running job can lose the GPU whenever systemd reloads its units (a package upgrade, a snap "
+             "refresh), as the GPU is added to its container behind Docker's back; given as a CDI device it stays")
+
+
+def cdi_ready() -> bool:
+    """Whether Docker here can give a container the GPU as a CDI device: Docker has CDI on, and NVIDIA's toolkit lists
+    the device for every GPU."""
+    r = quiet(["docker", "info", "--format", "{{json .CDISpecDirs}}"])
+    try:
+        if not (r and r.returncode == 0 and json.loads(r.stdout or "null")):
+            return False
+    except ValueError:
+        return False
+    r = shutil.which("nvidia-ctk") and quiet(["nvidia-ctk", "cdi", "list"])
+    return bool(r and r.returncode == 0 and CDI_DEVICE in r.stdout)
+
+
+def cgroup_driver() -> str | None:
+    """Docker's cgroup driver ("systemd" or "cgroupfs"), or None if it doesn't say."""
+    r = quiet(["docker", "info", "--format", "{{.CgroupDriver}}"])
+    return r.stdout.strip() or None if r and r.returncode == 0 else None
 
 
 def docker_problem(st: dict, gpu: str) -> str | None:
@@ -977,6 +1007,8 @@ class Worker:
         self.diag_busy = False
         if self.gpu_info:
             log(f"GPU, as nvidia-smi has it: {gpu_summary(self.gpu_info)}")
+        if self.gpu[:1] == ["--gpus"] and cgroup_driver() == "systemd":
+            log(f"WARNING: jobs get the GPU by --gpus: {GPUS_LOSS}. --setup switches CDI on in Docker (it restarts Docker)")
         first, card = (GpuWatch.sample(), GpuWatch.gpu_name()) if self.gpu else (None, None)
         given = tuple(t for t in TASKS if t in (args.tasks or "").split(","))
         # small_gpu: a GPU there is, too small for any job: what it is, for the server to say
@@ -995,9 +1027,11 @@ class Worker:
         if choice == "none":
             return []
         if choice == "cdi":
-            return ["--device", "nvidia.com/gpu=all"]
-        if choice == "all" or driver_answers():
+            return ["--device", CDI_DEVICE]
+        if choice == "all":
             return ["--gpus", "all"]
+        if driver_answers():     # auto: as a CDI device where Docker has that (GPUS_LOSS)
+            return ["--device", CDI_DEVICE] if cdi_ready() else ["--gpus", "all"]
         return []
 
     @staticmethod
@@ -1549,7 +1583,8 @@ def main() -> None:
     ap.add_argument("--register", action="store_true", help="make a new token and register it, in place of the one remembered")
     ap.add_argument("--cpus", type=float, help="at most this many cores for a job (docker run --cpus; remembered)")
     ap.add_argument("--gpu", choices=("auto", "all", "cdi", "none"), help="give jobs the GPU: auto (if nvidia-smi finds one, "
-                    "the default), all (--gpus all), cdi (the CDI device nvidia.com/gpu=all) or none (remembered)")
+                    "as a CDI device where Docker has CDI on, else --gpus all; the default), all (--gpus all), cdi (the CDI device "
+                    "nvidia.com/gpu=all) or none (remembered)")
     ap.add_argument("--tasks", help="the kinds of job to take, comma-separated, of " + ", ".join(TASKS) + ": all of them with "
                     "a GPU, and filter alone without one, by default, as meshing on a CPU alone takes hours (remembered)")
     ap.add_argument("--nice", type=int, default=NICE, help=f"run jobs at this niceness ({NICE})")
