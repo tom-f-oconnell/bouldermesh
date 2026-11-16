@@ -298,9 +298,10 @@ Drifter. The global mapper isn't repeatable either: the same seed left 3 and the
   31de. Its line is at 5. It needs only the model and its database. It must be read against one database: GPU SIFT's
   model read 4.40 against its own and 2.91 against the reference's.
 - **The surface** (`surface.py`): two meshes laid over each other and the distance between them, near the rock, as a
-  share of the scene's size (the median distance of the cameras from their middle). It is not reliable on 31de for
-  some pairs: it starts from the cameras' fit, which can be far off, and its ICP has shrunk a mesh. Figures below are
-  only those that held up.
+  share of the scene's size (the median distance of the cameras from their middle). Until 19c334e it started only
+  from the cameras' fit, which was 25% off on one 31de pair, and its ICP shrank a mesh on another: the 2-7% it gave for
+  three 31de pairs were the tool's. It now tries starts from the models' own points too, matches both ways and keeps
+  the best fit; those pairs are measured again below (`atlas/surface-31de-1115.md`).
 
 ### Is the global mapper's model right?
 
@@ -382,8 +383,8 @@ CPU-seconds. All with `global_tied`; reference numbers in brackets.
 | half-size photos (`res1`), virtual faces (`vface3`) | slower: 407 s, 427 s | | | no |
 | a video's repeated frames dropped (`dedup90`) | Drifter 51 of 176 frames; mapper to texture 782 to 487 s | no kept photo lost on Drifter, 1 on 31de | check 2.82 (3.43), 2.37 (2.55); surface 0.37% on Drifter (seeds to 0.26%), 0.62% on 31de (within seeds) | passes. Drifter's surface gap is 1.4 times the widest seed pair, but it is the same smooth bend seeds have: patches of 5% fitted alone go 0.36% to 0.14% (seed against seed: 0.29% to 0.13%) |
 | `dedup75` | 60 frames | loses 7 kept photos on 31de | | no |
-| plain SIFT on the GPU (`siftgpu391`) | extraction 250 to 8 s on Drifter, 2,957 to 12 CPU-seconds | 159 (142), 74 (71), 9f3b 133 (141) | check against the reference's database 2.91 (3.43), 2.94 (2.55); rays within 2 degrees of the reference 82%, 81% (seeds 95-97%); surface 0.26% on Drifter | a different model by more than seeds differ; a fifth of 31de's shared cameras over 5 degrees off. Open |
-| matching a list of pairs (a video's neighbours + the K most alike by CLIP) | matching 220 s to 39 / 54 / 82 s on Drifter for K = 20 / 30 / 50 | 137 / 138 / 139 (142); 71 / 71 / 71 | surface 0.29% (K 20), 0.18% (K 50) on Drifter; 0.47% (K 30) on 31de | K 50 passes on Drifter; 31de unmeasured for K 20 and 50 |
+| plain SIFT on the GPU (`siftgpu391`) | extraction 250 to 8 s on Drifter, 2,957 to 12 CPU-seconds | 159 (142), 74 (71), 9f3b 133 (141) | check against the reference's database 2.91 (3.43), 2.94 (2.55); rays within 2 degrees of the reference 82%, 81% (seeds 95-97%); surface 0.26% on Drifter, 0.30% on 31de, both within the seeds' | passes the surface rule on both; still a different set of cameras by more than seeds differ (a fifth of 31de's shared cameras over 5 degrees off), and it changes which photos are placed. Tom's |
+| matching a list of pairs (a video's neighbours + the K most alike by CLIP) | matching 220 s to 39 / 54 / 82 s on Drifter for K = 20 / 30 / 50 | 137 / 138 / 139 (142); 71 / 71 / 71 | surface 0.29% (K 20), 0.18% (K 50) on Drifter; 0.50% / 0.33% / 0.44% (K 20 / 30 / 50) on 31de, within its seeds' 0.35-0.82% | passes the surface rule; places 3-5 photos fewer on Drifter, which rule 1 doesn't allow |
 | one geometric pass (`as23g1`) | dense 161 to 101 s on Drifter, 66 to 52 s on 31de | same model | surface at the floor; fused points 4.63M (4.73M) and 2.48M (2.55M), faces 1.27M (1.28M) and 1.09M (1.09M) | passes |
 | no side models (`global_one`) | mapper 186 to 117 s on Drifter | same | check 3.36, 2.67 | surface owed |
 | 1600 px pictures for SIFT | extraction 250 to 208 s | same | check 2.96, 2.89 | small gain |
@@ -431,7 +432,9 @@ spoiling old points (found from these logs on hal, fixed in 2511e7f). With its f
 placed, passes its own check (1.10 px, 2.0 degrees); 31de 662 s, 72 placed, from the global mapper's start (VGGT had
 room for 42 of 72 photos), passes (0.72 px, 2.5 degrees). Placing 31de took 59 s with Caspar before and several minutes with
 Ceres on the CPU now. A first try of these (before a5844d0) failed on every start but VGGT's: the check couldn't be
-imported in the tools' container. 9f3b, Drifter and the forced-VGGT builds are running.
+imported in the tools' container. On 9f3b both starts' models fail the check (10.8 and 10.5 degrees), so it keeps the
+one failing least and says "THE MODEL FAILS ITS OWN CHECK": 124 placed, 2,863 s (971 s when it said nothing).
+Drifter and the forced-VGGT builds are running.
 
 ### Problems met on atlas
 
