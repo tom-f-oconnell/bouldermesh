@@ -404,6 +404,8 @@ CPU-seconds. All with `global_tied`; reference numbers in brackets.
 | no side models (`global_one`) | mapper 186 to 117 s on Drifter, 112 to 88 s on 31de | same (142, 71) | check 3.36, 2.67 (3.43, 2.55); surface 0.13% on Drifter and 0.31% on 31de from the reference's, within the seeds' | passes |
 | 1600 px pictures for SIFT | extraction 250 to 208 s | same | check 2.96, 2.89 | small gain |
 | no guided matching | matching 220 to 186 s, but the mapper 186 to 292 s | 138, 70 | check 2.39, 2.14 | a loss on time |
+| COLMAP 4.2.1's own SIFT (`sift421`, the app's settings) | none: extraction 361-566 s on Drifter (the app's 607 s @prod), 313-331 s on 31de (238 s); mapper slower (306 and 262 s against 186 and 112) | 151 (142), 72 (71), 136 (141) | check 2.57 on Drifter; rays within 2 degrees of the reference 88%, 72% | no gain |
+| ALIKED + LightGlue (`aliked421`) | extraction 22-33 s, but matching every pair 289 s on 31de (48 s) and 957 s on 9f3b (106 s); **extraction ran out of the 12 GB card's memory on Drifter** (ONNX Runtime, rc 134) | 78 (71) on 31de, 140 (141) on 9f3b | 31de: rays within 2 degrees of the reference 97% | only with a pair list and smaller pictures; Drifter not measured |
 
 - GPU SIFT gained 20 photos and lost 3 on Drifter: 14 of the gained see 200 points or more (one video's run of
   frames), 6 under 100, and `dedup90` would drop 5 of them.
@@ -478,8 +480,13 @@ spoiling old points (found from these logs on hal, fixed in 2511e7f). With its f
 ### Not measured, or not to be trusted
 
 - Anything on hal's 48 threads and RTX 3090: every timing here is atlas's.
-- The global mapper on the CPU alone, OpenMVS 2.4's depth maps on the CPU, the old build against the complete one,
-  ALIKED features, COLMAP 4.2.1's own SIFT, the pipeline's reruns, caspar on 31de again: queued, running Nov 15.
+- The global mapper on the CPU alone, OpenMVS 2.4's depth maps on the CPU, the old build against the complete one: on
+  hold ("Benchmarking left on hold").
+- ALIKED on Drifter: its extraction ran out of GPU memory; its `global_tied` run (32 placed) is of a partial database and
+  means nothing.
+- The model check read a mean reprojection error of about 1e150 px for the `aliked421` and `sift421` models of 31de (their
+  90th percentiles are 1.7 px), and so failed them on "error": one value it reads is not a real error. Until that's
+  found, a model the check fails on "error" alone needs a second look.
 - The v3 and native builds, the hierarchical mapper, the thinned database, thread counts, 38f3: not run.
 - Why the dense step holds one CPU thread at 100% and the GPU at 25%.
 - Texture quality: there is no number that settles it.
