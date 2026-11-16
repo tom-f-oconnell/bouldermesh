@@ -83,7 +83,9 @@
     <label class="choice"><input type="radio" name="tex" value="none"> None <small>(every mesh plain grey)</small></label>
     <div class="row"><button class="sec" id="retex">Make textures from only the photos free to copy</button><span class="note" id="retex-note"></span></div>
     <div class="row"><input type="text" id="texagain-ids" placeholder="mesh ids, e.g. c2a6a38ed672 ebdeeb2837f9" style="flex:1;min-width:200px">
-      <button class="sec" id="texagain" title="Colour these meshes again from their photos, keeping their shape and cleanup: a minute or two each, where meshing again takes ten or more. Each one's old texture is kept beside it, in texture-before/">Texture again</button></div>
+      <button class="sec" id="texagain" title="Colour these meshes again from their photos, keeping their shape and cleanup: a minute or two each, where meshing again takes ten or more. Each one's old texture is kept beside it, in texture-before/">Texture again</button>
+      <button class="sec" id="texblack" disabled title="Texture again every current mesh whose texture came out patched with black (OpenMVS 2.4.0's unpatched TextureMesh): found by looking at each one's texture, on a thread of the server's own at low priority">Texture again the black-patched</button></div>
+    <div id="texblack-note" class="note"></div>
     <div id="texagain-list" class="note"></div>
     <div style="margin-top:14px"><b>Source photos and video frames</b></div>
     <label class="choice"><input type="radio" name="src" value="all"> Show all <small>(as now)</small></label>
@@ -471,6 +473,13 @@ function render(s){
       : x.status === 'done' ? `done${took != null ? ` in ${mins(took)}` : ''}` : `failed: ${esc(x.error || '')}`;
     return `<tr><td>${esc(x.name || x.mid)} <small>${esc(x.mid)}</small></td><td style="color:${x.status === 'failed' ? 'var(--bad)' : x.status === 'done' ? 'var(--ok)' : 'inherit'}">${said}</td>
       <td><progress max="1" value="${x.status === 'done' ? 1 : x.frac || 0}" style="width:100%"></progress></td></tr>`; }).join('')}</table>` : '';
+  // meshes whose textures came out black-patched (texturecheck.py), for Texture again the black-patched
+  const bt = s.black_textures || { ids: [], meshes: [] };
+  $('#texblack').disabled = !bt.ids.length;
+  $('#texblack').textContent = `Texture again the black-patched (${bt.ids.length})`;
+  $('#texblack-note').innerHTML = (bt.running ? `Looking at the meshes' textures: ${bt.checked} of ${bt.of}. ` : '')
+    + (bt.ids.length ? `Black-patched: ${bt.meshes.map(m => `${esc(m.name || m.id)} <small>${esc(m.id)}, ${Math.round(m.share * 100)}% black</small>`).join(' · ')}`
+       : bt.running || !bt.finished ? '' : 'No current mesh\'s texture is black-patched.');
   $('#stops').innerHTML = (s.stops || []).length ? `<table><tr><th>When</th><th>What</th><th>Was</th></tr>${s.stops.map(x =>
     `<tr><td>${new Date(x.at * 1000).toLocaleString()}</td><td>${x.kind === 'area' ? 'area' : 'project'}: ${esc(x.name || x.id)}</td><td>${esc(x.was || '')}</td></tr>`).join('')}</table>`
     : '<div class="note">None recorded yet (recorded since Nov 16, 2026).</div>';
@@ -852,6 +861,11 @@ $('#room-rejected').onclick = async () => {
   if (!await askDanger('Delete every photo the filter rejected?', `${photos(c.files)} (${size(c.bytes)}), from every project not being harvested or meshed now. They can't be put back after, nor looked at to judge the filter. ${backed}${first}`,
                        c.unbacked_files ? `Delete them, ${photos(c.unbacked_files)} for good` : 'Delete them')) return;
   msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
+$('#texblack').onclick = async () => {
+  const ids = state?.black_textures?.ids || [];
+  if (!ids.length || !confirm(`Texture again the ${ids.length} mesh(es) whose textures are black-patched? A minute or two each, at low priority.`)) return;
+  try { msg((await call('/api/admin/actions/texture-again', { ids: ids.join(' ') })).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); }
+};
 $('#texagain').onclick = async () => { try { msg((await call('/api/admin/actions/texture-again', { ids: $('#texagain-ids').value })).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#via').onchange = () => save({ 'youtube.via': $('#via').value });

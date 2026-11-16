@@ -74,6 +74,7 @@ import policy  # noqa: E402
 import provenance  # noqa: E402
 import retexture  # noqa: E402
 import textureagain  # noqa: E402
+import texturecheck  # noqa: E402
 import settings as settings_mod  # noqa: E402
 import pipeline  # noqa: E402
 import proxy_ranges  # noqa: E402
@@ -7013,6 +7014,13 @@ def run_texture_again(mid: str) -> None:
         new = textureagain.texture_again(mesh_dir, PROJECTS / pid / "photos", PROJECTS / pid / "masks", work, log, progress=progress)
         textureagain.install(mesh_dir, new, log)
         queue_pack(mid)
+        try:        # checked again at once, so that it leaves the admin page's list of black-patched ones
+            got = texturecheck.check(mesh_dir)
+            if got:
+                _tex_checks[mid] = got
+                log(f"its texture's charts are {got['share']:.0%} black now")
+        except Exception:  # noqa: BLE001
+            pass
         st.update(status="done", step=None, frac=1.0)
     except PhotosAway:
         log("its photos are in the backup: asked for back; texture it again once they're here")
@@ -7024,6 +7032,46 @@ def run_texture_again(mid: str) -> None:
         st["finished"] = time.time()
         shutil.rmtree(work, ignore_errors=True)
         _texturing_again.discard(mid)
+
+
+# Which current meshes made here have black-patched textures (texturecheck.py: OpenMVS 2.4.0's unpatched sampler), for the
+# admin page's "Texture again" of them all: looked at by texture_check_worker() on a thread of its own at the lowest CPU
+# priority, each mesh once until its textures change (texture-check.json beside it)
+_tex_checks: dict[str, dict] = {}
+_tex_check_pass = {"checked": 0, "of": 0, "running": False, "finished": None}
+TEX_CHECK_EVERY = 3600      # seconds between passes over every mesh, for new ones and those textured again
+
+
+def texture_check_worker() -> None:
+    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    while True:
+        rows = q("SELECT id FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%' ORDER BY created DESC")
+        _tex_check_pass.update(checked=0, of=len(rows), running=True)
+        seen = set()
+        for r in rows:
+            seen.add(r["id"])
+            try:
+                got = texturecheck.check(MESHES / r["id"])
+                if got:
+                    _tex_checks[r["id"]] = got
+            except Exception as e:  # noqa: BLE001 - one unreadable texture mustn't stop the rest
+                print(f"{r['id']}: its texture couldn't be checked: {type(e).__name__}: {e}", flush=True)
+            _tex_check_pass["checked"] += 1
+            time.sleep(0.05)
+        for mid in set(_tex_checks) - seen:     # replaced or deleted since
+            _tex_checks.pop(mid, None)
+        _tex_check_pass.update(running=False, finished=time.time())
+        time.sleep(TEX_CHECK_EVERY)
+
+
+def black_textures() -> dict:
+    """For the admin page: the current meshes whose textures are black-patched, and not being textured again now, with
+    how far the check of them all has got."""
+    ids = sorted((mid for mid, c in _tex_checks.items() if c.get("black") and mid not in _texturing_again),
+                 key=lambda mid: -_tex_checks[mid]["share"])
+    names = {r["id"]: r["name"] for r in q(f"SELECT id, name FROM meshes WHERE id IN ({','.join('?' * len(ids))})", *ids)} if ids else {}
+    return {"ids": ids, "meshes": [{"id": mid, "name": names.get(mid), "share": _tex_checks[mid]["share"]} for mid in ids],
+            **_tex_check_pass}
 
 
 _texturing_again: set[str] = set()
@@ -11224,7 +11272,7 @@ def admin_state() -> dict:
             "notify": NOTIFIER.state(), "pairing": pairing_state(), "feedback": feedback_mod.recent(FEEDBACK),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
             "stops": [dict(r) for r in q("SELECT at, kind, id, name, was FROM job_stops ORDER BY at DESC LIMIT 30")],
-            "texture_again": texture_again_state(),
+            "texture_again": texture_again_state(), "black_textures": black_textures(),
             "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q), "backup": backup_state(),
             "manifest": {**manifest_state(), "quiet": manifest_quiet(), "hours": MANIFEST_HOURS}, "lost_blocks": lost_blocks()}
@@ -11439,6 +11487,7 @@ def main() -> None:
     threading.Thread(target=frames_worker, daemon=True).start()
     threading.Thread(target=prune_worker, daemon=True).start()
     threading.Thread(target=pack_worker, daemon=True).start()
+    threading.Thread(target=texture_check_worker, daemon=True, name="texture-check").start()
     if thumbs_mod.available():
         threading.Thread(target=thumb_worker, daemon=True, name="thumbs").start()
     print(f"pictures of meshes: {'drawn here' if thumbs_mod.available() else 'not drawn: no node and playwright-core here (thumbs.py)'}", flush=True)
