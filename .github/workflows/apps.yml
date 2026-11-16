@@ -6,6 +6,8 @@ on:
   push:
     paths: ["app/**", ".github/workflows/apps.yml", "tests/capture_fixture.py"]
   workflow_dispatch:
+permissions:
+  contents: write       # the android-latest release
 defaults:
   run:
     shell: bash       # with pipefail: a build piped through tail still fails the step
@@ -55,6 +57,16 @@ jobs:
       - name: Keep the APK
         uses: actions/upload-artifact@v4
         with: { name: "android-debug-${{ github.sha }}", path: app/android/build/outputs/apk/debug/android-debug.apk, retention-days: 30 }
+      - name: The APK as the release "android-latest", which a phone downloads with no sign-in (main only)
+        if: github.ref == 'refs/heads/main'
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          short=${GITHUB_SHA::7}
+          cp app/android/build/outputs/apk/debug/android-debug.apk "bouldermesh-$short-debug.apk"
+          gh release delete android-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create android-latest "bouldermesh-$short-debug.apk" --target "$GITHUB_SHA" --prerelease \
+            --title "Android app, latest ($short)" \
+            --notes "The Android app as built from $short: open this page on the phone, tap the .apk, and allow installing it. A debug build: one from another machine doesn't install over it without uninstalling first, which deletes captures not yet sent."
       - name: A test server with one mesh
         run: |
           python3 -m venv "$RUNNER_TEMP/venv" && "$RUNNER_TEMP/venv/bin/pip" install -q numpy pillow

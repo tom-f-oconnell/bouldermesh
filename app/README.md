@@ -63,7 +63,9 @@ Android, anywhere with a JDK (17 or later) and the Android SDK (`ANDROID_HOME`, 
     adb install -r android/build/outputs/apk/debug/android-debug.apk
 
 or `./apk.sh` (`--install` to put it on the phone `adb` sees), which keeps a copy named by its commit in `dist/`. Every
-push that changes `app/` also builds one on GitHub, kept 30 days as the run's `android-debug-<commit>` artifact. A debug
+push that changes `app/` also builds one on GitHub, kept 30 days as the run's `android-debug-<commit>` artifact, and
+on main as the release [android-latest](https://github.com/tom-f-oconnell/bouldermesh/releases/tag/android-latest):
+open that on the phone, tap the `.apk` and allow installing it, with no USB and no sign-in. A debug
 APK is signed by the debug key of the machine that built it: one from another machine won't install over it without
 uninstalling first, which deletes captures not yet sent.
 
