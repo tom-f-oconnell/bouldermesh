@@ -703,6 +703,20 @@ r = subprocess.run([sys.executable, str(SCRIPT), "--server", URL, "--token", box
 assert "turned off here (--no-diagnostics)" in r.stdout and "declined" in board.diagnostics_of(box["id"])["report"], r.stdout
 assert board.q("SELECT client FROM machines WHERE id=?", box["id"], one=True)["client"].endswith("; sends no diagnostics")
 assert json.loads((TMP / "gbox" / "config.json").read_text())["diagnostics"] is False, "remembered"
+# what a job is, for its machine's log: the board's describe(), given to the machine with the job
+said = []
+board.describe = lambda task, label: said.append((task, label)) or {"what": f"meshing {label}", "url": "https://x.example/m/abc", "else": "no"}
+dj = board._new_job("reconstruct", {"photos": many / "photos"}, {"internet": True}, "described", image[0])
+r = board.work(mc(), "10.0.0.7", {"version": SCRIPT_VERSION, "gpu": True, "gpu_free_mb": 24576})
+assert r["job"]["what"] == "meshing described" and r["job"]["url"] == "https://x.example/m/abc" and "else" not in r["job"], r
+assert said == [("reconstruct", "described")]
+board.describe = lambda task, label: 1 / 0      # its words are lost, not the job
+board.jobs[dj.id].state = "queued"
+r = board.work(mc(), "10.0.0.7", {"version": SCRIPT_VERSION, "gpu": True, "gpu_free_mb": 24576})
+assert r["job"]["id"] == dj.id and "what" not in r["job"], r
+board.describe = lambda task, label: {}
+del board.jobs[dj.id]
+dj.input.unlink()
 print("GPU details and diagnostics OK")
 
 # --- machines joining and leaving (presence.py): told when one starts being heard from or stops, not as it's held back,

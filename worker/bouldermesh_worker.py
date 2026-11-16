@@ -98,7 +98,8 @@ from pathlib import Path
 #     followed so closely as to ask before it had, and was given a job of any size; waits for the GPU's driver at boot
 # 20: tells the server what nvidia-smi says of its GPU (name, memory, driver, CUDA) as it starts; sends
 #     diagnostics when the server asks (--no-diagnostics: never)
-VERSION = 23
+# 24: says what each job is (meshing, finding beta or size, filtering, scenery) and of which project or mesh, with its link
+VERSION = 24
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter", "splat")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
@@ -1198,7 +1199,7 @@ class Worker:
             if code:
                 self.server.call(f"{api}/done", {"status": "failed", "error": last or f"the job exited with {code}", **used},
                                  patience=AWAY_MAX)
-                log(f"job {jid} failed: {last}")
+                log(f"job {jid} failed, {getattr(self, 'what', task)}: {last}")
                 self.outcome = "failed"
                 return
             with tarfile.open(work / "output.tar", "w") as tar:
@@ -1207,7 +1208,7 @@ class Worker:
                         tar.add(work / "job" / part, arcname=part)
             self.send(api, work / "output.tar")
             self.server.call(f"{api}/done", {"status": "ok", **used}, patience=AWAY_MAX)
-            log(f"job {jid} done")
+            log(f"job {jid} done, {getattr(self, 'what', task)}")
             self.outcome = "done"
         except Gone as e:
             log(f"job {jid} is no longer wanted ({e}): leaving it")
@@ -1469,7 +1470,9 @@ class Worker:
                 self.newer = r["newer"]
             usage.to("working" if "job" in r else "held" if r.get("held") else "idle", r.get("why"))
             if "job" in r:
-                log(f"job {r['job'].get('id')}: {r['job'].get('size', 0) / 1e6:.0f} MB of photos, in {r['job'].get('image')}")
+                said = r["job"].get("what") or r["job"].get("task") or "a job"
+                self.what = said + (f" ({r['job']['url']})" if r["job"].get("url") else "")
+                log(f"job {r['job'].get('id')}, {self.what}: {r['job'].get('size', 0) / 1e6:.0f} MB of photos, in {r['job'].get('image')}")
                 began, self.outcome = time.time(), "stopped"
                 try:
                     if self.watch:

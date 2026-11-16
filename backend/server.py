@@ -8180,6 +8180,25 @@ def admin_submission(body: dict) -> dict:
 ANDROID_RELEASE = "https://github.com/tom-f-oconnell/bouldermesh/releases/tag/android-latest"   # apps.yml's latest APK
 
 
+JOB_KINDS = {"reconstruct": "meshing", "beta": "finding beta for", "scale": "finding the size of", "filter": "filtering photos of",
+             "splat": "fitting the scenery of"}
+
+
+def describe_job(task: str, label: str) -> dict:
+    """What a machine's job is, for its log: {what: "meshing Dino's Egg (boulder)", url: the mesh's page, where it has
+    one}, from its label (a project's id; "beta: <mesh>", "size: <mesh>", "scenery: <mesh>"; "filter: <name>")."""
+    kind, base = JOB_KINDS.get(task, task), SITE_URL.rstrip("/") if SITE_URL else ""
+    m = re.fullmatch(r"(?:beta|size|scenery): ([0-9a-f]{12})", label or "")
+    if m:
+        row = q("SELECT name FROM meshes WHERE id=?", m[1], one=True)
+        return {"what": f"{kind} {row['name'] if row else m[1]}", "url": f"{base}/m/{m[1]}" if base and row else None}
+    if re.fullmatch(r"[0-9a-f]{12}", label or ""):
+        row = q("SELECT name, mesh_id FROM projects WHERE id=?", label, one=True)
+        name = row["name"] if row else label
+        return {"what": f"{kind} {name}", "url": f"{base}/m/{row['mesh_id']}" if base and row and row["mesh_id"] else None}
+    return {"what": f"{kind} {re.sub(r'^filter: ', '', label or '')}".strip()}
+
+
 def phone_apps() -> dict:
     """Where an account gets the phone apps: the Android app's latest build, and the iPhone app's public TestFlight link
     (the admin page's apps.testflight_url), if there is one. Shown only to accounts (and invitees, as they join)."""
@@ -8209,7 +8228,7 @@ def admin_user_change(body: dict) -> dict:
 MACHINES = pullwork.Board(DATA / "compute" / "machines.sqlite", DATA / "compute" / "jobs", lambda: compute_settings()["compute.image"],
                           jobctl, machine_rules, lambda m: NOTIFIER.registered("machine", m, f" ({m['client'] or 'a worker script'})"),
                           came_went=came_went("machine"), idle_why=lambda: machines_idle_why(), downloaded=script_downloaded("worker"),
-                          cpu_image=lambda image: cpu_image_for(image))
+                          cpu_image=lambda image: cpu_image_for(image), describe=lambda task, label: describe_job(task, label))
 
 
 def cpu_image_for(image: str) -> str:

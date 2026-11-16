@@ -166,9 +166,11 @@ class Board:
                  registered: Callable[[dict], None] = lambda m: None, log: Callable[[str], None] = print,
                  came_went: Callable[[dict, str, str], None] = lambda m, state, why: None,
                  downloaded: Callable[[dict], None] = lambda info: None,
-                 idle_why: Callable[[], str | None] = lambda: None, cpu_image: Callable[[str], str] = lambda image: image):
+                 idle_why: Callable[[], str | None] = lambda: None, cpu_image: Callable[[str], str] = lambda image: image,
+                 describe: Callable[[str, str], dict] = lambda task, label: {}):
         self.db_path, self.files, self.image, self.jobctl = db_path, files, image, jobctl
         self.cpu_image = cpu_image      # the image to run a job in on a machine without a GPU, for the one it was made with
+        self.describe = describe        # a job's {what, url} for its machine's log: what it does, of which project or mesh
         self.rules, self.registered, self.came_went, self.idle_why = rules, registered, came_went, idle_why
         self.downloaded = downloaded
         self._said: dict[str, tuple[str, float]] = {}   # each machine's reason for its state last logged, and when
@@ -593,8 +595,12 @@ class Board:
             self.cond.notify_all()
             self.q("UPDATE machine_jobs SET machine_id=?, machine=?, taken=?, outcome=NULL WHERE id=?", m["id"], m["name"], now, mine.id)
             self._state(m, "working", mine.label)
+            try:
+                said = {k: str(v)[:300] for k, v in (self.describe(mine.task, mine.label) or {}).items() if k in ("what", "url") and v}
+            except Exception:  # noqa: BLE001 - only the log's words are lost
+                said = {}
             return {"job": {"id": mine.id, "image": mine.image if client.get("gpu") else self.cpu_image(mine.image),
-                            "internet": mine.internet, "size": mine.size, "part": PART_MAX, "task": mine.task}}
+                            "internet": mine.internet, "size": mine.size, "part": PART_MAX, "task": mine.task, **said}}
 
     def _mine(self, m: dict, job_id: str) -> Job:
         j = self.jobs.get(job_id)
