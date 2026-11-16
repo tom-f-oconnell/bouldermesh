@@ -272,20 +272,25 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
         TextButton(onClick = { anonFirst = !anonFirst; a.store.anonFirst = anonFirst }) {
             Text(if (anonFirst) "Holds others marked privately: asked for from the start" else "Holds others marked privately: asked about at the end")
         }
-        Text("Sending captures needs an account, or the site's own token. Paste an invite link, a code from \"Sign in another device\" on the site, or the admin page's pairing link.")
-        OutlinedTextField(token, { token = it; a.store.token = it }, label = { Text("Token") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
-        OutlinedTextField(code, { code = it }, label = { Text("Pairing link or code") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button(enabled = code.isNotBlank(), onClick = {
-            scope.launch {
-                said = try {
-                    val name = withContext(Dispatchers.IO) { a.api.signIn(code) }
-                    token = a.store.token; credit = a.store.credit; code = ""
-                    (if (name != null) "Signed in as $name: this phone can upload now." else "Paired: this phone can upload now.") to true
-                } catch (e: Exception) { "Pairing failed: ${e.message}" to false }
-            }
-        }) { Text("Pair") }
+        Section("Signing in")
+        Text("Sending captures needs your account. Where you're signed in to the site (a computer, or this phone's browser), press your " +
+            "name at the top, then Sign in another device: Scan the QR it shows, or type its code below. An invite link can go below too.")
+        fun signIn(text: String) = scope.launch {
+            said = try {
+                val name = withContext(Dispatchers.IO) { a.api.signIn(text) }
+                token = a.store.token; credit = a.store.credit; code = ""
+                (if (name != null) "Signed in as $name: this phone can upload now." else "Paired: this phone can upload now.") to true
+            } catch (e: Exception) { "Signing in failed: ${e.message}" to false }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = { scanQr(a) { text, why -> if (text != null) signIn(text) else if (why != null) said = why to false } }) { Text("Scan") }
+            Text("a QR from the site", style = MaterialTheme.typography.bodySmall)
+        }
+        OutlinedTextField(code, { code = it }, label = { Text("Code from another device, or an invite link") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Button(enabled = code.isNotBlank(), onClick = { signIn(code) }) { Text("Sign in") }
         said?.let { Text(it.first, color = if (it.second) GOOD else BAD) }
+        OutlinedTextField(token, { token = it; a.store.token = it }, label = { Text("Token (set by signing in)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
         if (token.isNotEmpty()) {
             Section("Your account elsewhere")
             Text("To sign in to your account on a computer or another phone, without a new invite:")
@@ -383,4 +388,17 @@ fun DoneScreen(a: MainActivity, id: String, go: (Screen) -> Unit) {
         if (a.store.token.isEmpty()) Text("Uploading needs the site's editing token: see Settings.", color = WARN)
         OutlinedButton(onClick = { go(Screen.Home) }) { Text(if (u.done) "Home" else "Later: it stays on the phone") }
     }
+}
+
+/**
+ * Reads a QR with Google's code scanner (Play services' own camera screen: no camera permission or screen of the app's),
+ * giving its text, or null and why not (null for both if it was cancelled).
+ */
+fun scanQr(a: MainActivity, done: (String?, String?) -> Unit) {
+    val options = com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions.Builder()
+        .setBarcodeFormats(com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE).build()
+    com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(a, options).startScan()
+        .addOnSuccessListener { done(it.rawValue, if (it.rawValue == null) "That QR has no text in it." else null) }
+        .addOnCanceledListener { done(null, null) }
+        .addOnFailureListener { done(null, "The scanner couldn't start (${it.message}): type the code instead.") }
 }

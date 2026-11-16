@@ -61,6 +61,11 @@ class Api(private val store: Store) {
             if (name.isBlank()) throw IOException("set the name your photos are credited to first: the account is made under it")
             return postJson("/api/account/join", "{\"invite\":${q(invite)},\"name\":${q(name)}}")["token"]?.jsonPrimitive?.content ?: throw IOException("the server gave no token")
         }
+        // an account's "Sign in another device": its QR's link (#signin=), the site's link for this app (?code=), or the code typed
+        Regex("(?:signin|[?&]code)=([\\w-]{6,})").find(codeOrLink)?.groupValues?.get(1)?.let { code ->
+            return postJson("/api/account/pair/take", "{\"code\":${q(code)},\"label\":${q(android.os.Build.MODEL)}}")["token"]?.jsonPrimitive?.content
+                ?: throw IOException("the server gave no token")
+        }
         val code = Regex("pair=([\\w-]{16,})").find(codeOrLink)?.groupValues?.get(1) ?: codeOrLink.trim()
         if ("pair=" !in codeOrLink) runCatching {
             postJson("/api/account/pair/take", "{\"code\":${q(code)},\"label\":${q(android.os.Build.MODEL)}}")["token"]?.jsonPrimitive?.content

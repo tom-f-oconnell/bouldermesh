@@ -35,4 +35,5 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("com.google.ar:core:1.47.0")
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")     // Settings' Scan (scanQr())
 }

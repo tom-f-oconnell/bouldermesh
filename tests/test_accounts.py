@@ -131,7 +131,9 @@ with tempfile.TemporaryDirectory() as tmp:
         assert req(B, "PATCH", f"/api/meshes/{mid}/beta/sets/{mine['id']}", {"shared": False}, ANA)[2]["shared"] is False
         assert names() == ["The site's"] and names(ANA) == ["Mine", "The site's"]
         # another device, by a code; signing out; an account closed from the admin page
-        code = req(B, "POST", "/api/account/pair", {}, ANA)[2]["code"]
+        made = req(B, "POST", "/api/account/pair", {}, ANA)[2]
+        code = made["code"]
+        assert made["link"].endswith(f"/#signin={code}") and "qr" in made, made     # the QR (with segno) a phone scans
         st, _, phone = req(B, "POST", "/api/account/pair/take", {"code": code, "label": "a phone"})
         PHONE = {"Authorization": f"Bearer {phone['token']}"}
         assert st == 201 and req(B, "GET", "/api/account", headers=PHONE)[2]["user"]["name"] == "Ana"

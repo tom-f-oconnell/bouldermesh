@@ -8891,8 +8891,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "that needs an account's own token"}, 401)
             if p == "/api/account/terms":
                 return self.send_json({"user": accounts_mod.public(ACCOUNTS.accept(user["id"], body.get("version")))})
-            if p == "/api/account/pair":
-                return self.send_json(ACCOUNTS.pair_code(user["id"]))
+            if p == "/api/account/pair":     # with a link to it, and that as a QR: for the phone app's Scan, or a phone's camera
+                made = ACCOUNTS.pair_code(user["id"])
+                link = f"{SITE_URL or 'http://' + self.headers.get('Host', '127.0.0.1')}/#signin={made['code']}"
+                return self.send_json({**made, "link": link, "qr": notify_mod.qr_svg(link)})
             if p == "/api/account/signout":
                 ACCOUNTS.sign_out(user["id"], None if body.get("everywhere") else self.headers.get("Authorization", "")[7:])
                 return self.send_json({"signed_out": True})
