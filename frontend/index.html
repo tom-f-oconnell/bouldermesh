@@ -1259,7 +1259,7 @@ $('#vshare').onclick = () => {
 };
 document.addEventListener('pointerdown', ev => { if (!$('#linkmenu').hidden && !ev.target.closest('#linkmenu')) closeLinkMenu(); });
 renderer.domElement.addEventListener('dblclick', ev => {
-  let hit = pieces?.editing ? null : surfaceUnder(ev);
+  let hit = surfaceUnder(ev);     // editing faces too: a spot behind a fold of the mesh, looked at through it
   if (!hit) return;
   if (hit.object.userData.terrain && seeThroughOn)      // a mesh behind the ground there: that, and the ground goes see-through
     hit = surfaceUnder(ev, false, [current, nearby?.group]) || hit;
@@ -1451,7 +1451,8 @@ function syncBacks(){
     }
   }
 }
-const xrayOn = () => seeThroughOn && xrayPicked && !wire && !pieces?.editing && !!current;
+// (while editing faces too: hiding takes the nearest surface, see-through or not, as depthImage() draws it solid)
+const xrayOn = () => seeThroughOn && xrayPicked && !wire && !!current;
 function updateXray(){
   if (!xrayOn()) { xrayUniforms.xrayRadius.value = 0; return; }
   camera.updateMatrixWorld();
@@ -1566,6 +1567,7 @@ function applyPieces(){
     part.hidden.userData.faceList = hiddenFaces;
     part.hidden.visible = pieces.editing;
   }
+  if (betaState?.group) drawBeta();     // holds on faces hidden now go with them, and those shown again come back
 }
 function pieceLabel(p){ return `${p.faces.toLocaleString()} faces · ${p.size.map(x => x < 10 ? x.toFixed(1) : x.toFixed(0)).join(' × ')}${p.id === 0 ? ' · main' : ''}`; }
 function renderPieces(){
@@ -4871,6 +4873,28 @@ const REACH = (() => {      // a sphere of radius 1 as three circles, one about 
   }
   return new THREE.BufferGeometry().setFromPoints(pts);
 })();
+// Whether a hold (a point in the node's coordinates, as beta.json has it) is on a face the cleanup hides: the face
+// nearest it, by its middle. Each part's face middles are worked out once.
+function onHiddenFace(p, node){
+  if (!pieces?.parts || !pieces.record?.removed?.length) return false;
+  const hide = new Set(pieces.record.removed), world = node.localToWorld(new THREE.Vector3().fromArray(p));
+  let best = Infinity, hidden = false;
+  for (const part of pieces.parts) {
+    const pos = part.mesh.geometry.attributes.position, F = part.faces, n = part.labels.length;
+    if (!part.middles) {
+      part.middles = new Float32Array(n * 3);
+      const at = (v, k) => k === 0 ? pos.getX(v) : k === 1 ? pos.getY(v) : pos.getZ(v);     // packed copies are quantized
+      for (let f = 0; f < n; f++) for (let k = 0; k < 3; k++)
+        part.middles[3 * f + k] = (at(F[3 * f], k) + at(F[3 * f + 1], k) + at(F[3 * f + 2], k)) / 3;
+    }
+    const q = part.mesh.worldToLocal(world.clone()), M = part.middles;
+    for (let f = 0; f < n; f++) {
+      const dx = M[3 * f] - q.x, dy = M[3 * f + 1] - q.y, dz = M[3 * f + 2] - q.z, d = dx * dx + dy * dy + dz * dz;
+      if (d < best) { best = d; hidden = hide.has(part.labels[f]); }
+    }
+  }
+  return hidden;
+}
 function drawBeta(){
   if (!betaState || !current) return;
   if (betaState.group) betaState.group.parent?.remove(betaState.group);
@@ -4891,7 +4915,7 @@ function drawBeta(){
         new THREE.LineBasicMaterial({ color: limb.endsWith('h') ? 0xe8e8e8 : 0xffc83c, transparent: true, opacity: .55 }));
       line.userData.beta = true; g.add(line);
     }
-    for (const h of v.holds || []) ring(h.p, h.role, 'found');
+    for (const h of v.holds || []) if (!onHiddenFace(h.p, node)) ring(h.p, h.role, 'found');     // not on faces hidden
   }
   // how far round a hold reaches, as three circles about it (lines: nothing that goes through the meshes sees them),
   // where the mesh's size is known: the selected hold's, and those given a size
@@ -4899,6 +4923,7 @@ function drawBeta(){
   betaState.markers = betaState.marked.map((h, i) => {
     const sprite = ring(h.p, h.role, 'marked'), on = i === betaState.sel;
     sprite.userData.marked = i;
+    if (onHiddenFace(h.p, node)) { sprite.visible = false; return sprite; }     // hidden with the faces it's on
     if (on) sprite.userData.size *= 1.4;
     if (mpu > 0 && (on || h.r_m)) {
       const reach = new THREE.LineSegments(REACH, new THREE.LineBasicMaterial({ color: ROLES[h.role].color, transparent: true, opacity: on ? .95 : .45 }));
