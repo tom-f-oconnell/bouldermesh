@@ -3701,4 +3701,55 @@ finally:
     for d in bt_dirs:
         shutil.rmtree(d, ignore_errors=True)
 print("beta timings OK")
+# stops are recorded, whichever way a job is stopped; an area stopped a while stops counting as in play, its climbs'
+# data may be offloaded, it says "data offloaded", and resuming it asks the data back if there's room, or says why not
+server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status) VALUES('ff0000000001','Parked Area','0','popularity',?,'running')",
+         time.time(), write=True)
+server.q("INSERT INTO climbs(id,source,source_id,name,area_path,data) VALUES('pk0000000001','test','pk1','Parked Climb','[\"Parked\", \"Rock\"]','{}')",
+         write=True)
+server.q("INSERT INTO projects(id,name,created,kind,status,climb_id,harvest) VALUES('ee0000000002','Parked Climb (harvest)',?,'harvest','harvested',"
+         "'pk0000000001','{}')", time.time(), write=True)
+server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,climb_id,project_id,status) VALUES('ff0000000001','pk1',1,'Parked Climb',"
+         "'pk0000000001','ee0000000002','harvested')", write=True)
+try:
+    server.stop_campaign("ff0000000001")
+    row = server.q("SELECT status, stopped_at FROM campaigns WHERE id='ff0000000001'", one=True)
+    assert row["status"] == "stopped" and abs(row["stopped_at"] - time.time()) < 60, dict(row)
+    stop = server.q("SELECT * FROM job_stops WHERE id='ff0000000001'", one=True)
+    assert stop["kind"] == "area" and stop["was"] == "running" and stop["name"] == "Parked Area", dict(stop)
+    assert "pk0000000001" in server._in_play()[0], "stopped only now: still in play"
+    server.q("UPDATE campaigns SET stopped_at=? WHERE id='ff0000000001'", time.time() - 2 * 86400, write=True)
+    assert server.long_stopped() >= {"ff0000000001"} and "pk0000000001" not in server._in_play()[0], "stopped 2 days: not in play"
+    server.settings().update({"storage.offload_stopped": False})
+    assert "pk0000000001" in server._in_play()[0], "unticked: a stopped area's data stays"
+    server.settings().update({"storage.offload_stopped": True, "storage.stopped_days": 3.0})
+    assert "pk0000000001" in server._in_play()[0], "not stopped 3 days yet"
+    server.settings().update({"storage.stopped_days": 1.0})
+    put("projects/ee0000000002/photos/a.jpg", 3 * 2**20)
+    assert "projects/ee0000000002/photos" in {c[0] for c in server.offload_candidates()}, "its unmeshed photos may go"
+    server.q("INSERT INTO offloads(path, kind, ref, bytes, marked, done) VALUES('projects/ee0000000002/photos','photos','ee0000000002',?,?,?)",
+             3 * 2**20, time.time(), time.time(), write=True)
+    view = next(c for c in server.campaigns_listed() if c["id"] == "ff0000000001")
+    assert view["state"] == "data offloaded" and view["away_bytes"] == 3 * 2**20, view.get("state")
+    real_free, real_min = server.disk_free, server.CAMPAIGN_MIN_FREE
+    server.CAMPAIGN_MIN_FREE = 10 * 2**30
+    server.disk_free = lambda: 10 * 2**30 + 2**20       # 1 MB above what areas keep: not room for 3 MB
+    try:
+        server.bring_back(server.area_away("ff0000000001"), "Parked Area")
+        raise AssertionError("no room")
+    except ValueError as e:
+        assert "can't be resumed: 3 MB of its data is in the backup" in str(e) and "1 MB free" in str(e), str(e)
+    assert server.q("SELECT wanted FROM offloads WHERE path='projects/ee0000000002/photos'", one=True)["wanted"] is None, "nothing asked"
+    server.disk_free = lambda: 20 * 2**30
+    assert server.bring_back(server.area_away("ff0000000001"), "Parked Area") == 3 * 2**20
+    assert server.q("SELECT wanted FROM offloads WHERE path='projects/ee0000000002/photos'", one=True)["wanted"], "asked back"
+    server.disk_free, server.CAMPAIGN_MIN_FREE = real_free, real_min
+    server.q("UPDATE campaigns SET status='running' WHERE id='ff0000000001'", write=True)
+    assert server.q("SELECT stopped_at FROM campaigns WHERE id='ff0000000001'", one=True)["stopped_at"] is None, "running again"
+finally:
+    server.q("DELETE FROM campaigns WHERE id='ff0000000001'", write=True)
+    server.q("DELETE FROM campaign_items WHERE campaign_id='ff0000000001'", write=True)
+    server.q("DELETE FROM projects WHERE id='ee0000000002'", write=True)
+    server.q("DELETE FROM offloads WHERE path='projects/ee0000000002/photos'", write=True)
+print("stopped areas' data OK")
 print("ALL CAMPAIGN TESTS PASSED")

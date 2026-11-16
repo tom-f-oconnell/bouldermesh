@@ -297,6 +297,22 @@ def init_db() -> None:
             for c in con.execute("SELECT id, ord, max_meshes, created FROM campaigns").fetchall():
                 con.execute("UPDATE campaigns SET runs=? WHERE id=?", (json.dumps([{"ord": c[1], "max_meshes": c[2], "at": c[3],
                                                                                      "assumed": True}]), c[0]))
+        # when each area and project was last stopped (NULL while it isn't), and every stop, by triggers, so that every
+        # way of stopping one counts: the admin page lists them, and areas stopped a while may have their data offloaded
+        for table in ("campaigns", "projects"):
+            if "stopped_at" not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN stopped_at REAL")
+                con.execute(f"UPDATE {table} SET stopped_at=? WHERE status='stopped'", (time.time(),))  # counted from now
+        con.execute("CREATE TABLE IF NOT EXISTS job_stops(at REAL, kind TEXT, id TEXT, name TEXT, was TEXT)")
+        now_sql = "(julianday('now') - 2440587.5) * 86400.0"
+        for table, kind in (("campaigns", "area"), ("projects", "project")):
+            con.execute(f"""CREATE TRIGGER IF NOT EXISTS {table}_stopped AFTER UPDATE OF status ON {table}
+                WHEN NEW.status='stopped' AND COALESCE(OLD.status,'')!='stopped' BEGIN
+                  UPDATE {table} SET stopped_at={now_sql} WHERE id=NEW.id;
+                  INSERT INTO job_stops(at, kind, id, name, was) VALUES({now_sql}, '{kind}', NEW.id, NEW.name, OLD.status);
+                END""")
+            con.execute(f"""CREATE TRIGGER IF NOT EXISTS {table}_unstopped AFTER UPDATE OF status ON {table}
+                WHEN OLD.status='stopped' AND NEW.status!='stopped' BEGIN UPDATE {table} SET stopped_at=NULL WHERE id=NEW.id; END""")
         if con.execute("PRAGMA user_version").fetchone()[0] < 1:   # once: areas on the old defaults take the new ones
             con.execute("UPDATE campaigns SET mapper_more=? WHERE mapper_below=75 AND mapper_more=1", (meshopts.MAPPER["more"],))
             con.execute("PRAGMA user_version=1")
@@ -4823,21 +4839,104 @@ def need_back(pids, what: str) -> None:
                          "run brings (half-hourly, with deploy/bouldermesh-restore.timer)")
 
 
+def _away(paths=(), video_ids=()) -> list[dict]:
+    """Of these paths, and these videos', those whose files are only in the backup now and can come back (not lost):
+    [{path, bytes}]."""
+    out = []
+    for p in dict.fromkeys(paths):
+        out += q("SELECT path, bytes FROM offloads WHERE path=? AND done IS NOT NULL AND approved IS NULL AND lost IS NULL", p)
+    for v in dict.fromkeys(video_ids):
+        out += q("SELECT path, bytes FROM offloads WHERE kind='videos' AND ref=? AND done IS NOT NULL AND approved IS NULL "
+                 "AND lost IS NULL", v)
+    return [dict(r) for r in out]
+
+
+def area_away(cid: str) -> list[dict]:
+    """What of an area's climbs still to mesh is in the backup (offloaded while it was stopped: long_stopped()): their
+    projects' photos and masks, their boulders' and groups', and their videos."""
+    items = q("SELECT project_id, climb_id, boulder, pool FROM campaign_items WHERE campaign_id=? AND status NOT IN ('done','skipped')", cid)
+    pids = {i["project_id"] for i in items if i["project_id"]}
+    keys = {k for i in items for k in (i["boulder"], i["pool"]) if k}
+    for k in keys:
+        pids |= {r["id"] for r in q("SELECT id FROM projects WHERE kind='boulder' AND boulder=?", k)}
+    climbs = [i["climb_id"] for i in items if i["climb_id"]]
+    vids = {youtube_mod.video_id(r["url"]) for c in climbs for r in q("SELECT url FROM climb_videos WHERE climb_id=?", c)}
+    return _away([f"projects/{p}/{part}" for p in sorted(pids) for part in ("photos", "masks")], sorted(v for v in vids if v))
+
+
+def project_away(pid: str) -> list[dict]:
+    """A project's photos and masks that are in the backup now."""
+    return _away([f"projects/{pid}/photos", f"projects/{pid}/masks"])
+
+
+def bring_back(away: list[dict], what: str) -> int:
+    """Ask the backup for these back (area_away(), project_away()), if there's room for them: on the disk above what
+    areas keep free (CAMPAIGN_MIN_FREE), and under the data's cap. Returns the bytes asked for; ValueError, saying why,
+    if there isn't room (nothing is asked for then)."""
+    need = sum(r["bytes"] or 0 for r in away)
+    if not need:
+        return 0
+    gb = lambda b: f"{b / 2**30:.1f} GB" if b >= 2**30 else f"{max(1, round(b / 2**20))} MB"  # noqa: E731
+    free = disk_free() - CAMPAIGN_MIN_FREE
+    if need > free:
+        raise ValueError(f"{what} can't be resumed: {gb(need)} of its data is in the backup, and bringing it back needs that much "
+                         f"room, but the server has {gb(max(free, 0))} free above the {gb(CAMPAIGN_MIN_FREE)} areas keep. Make room first "
+                         "(the admin page's Room for data)")
+    cap = data_cap()
+    if cap and _usage.get("total", 0) + need > cap:
+        raise ValueError(f"{what} can't be resumed: bringing back the {gb(need)} of its data in the backup would take the data "
+                         f"over its {gb(cap)} cap ({gb(_usage['total'])} now). Make room first, or raise the cap")
+    offload_mod.want(DATA, q, [r["path"] for r in away])
+    return need
+
+
 def photos_away(pid: str) -> bool:
     return offload_mod.away(q, f"projects/{pid}/photos")
 
 
+def long_stopped() -> set[str]:
+    """Areas stopped storage.stopped_days or more (with storage.offload_stopped on): no longer in play (_in_play()), so
+    their climbs' data may be offloaded, and asked back when they're resumed (bring_back())."""
+    st = settings()
+    if not st.get("storage.offload_stopped"):
+        return set()
+    return {r["id"] for r in q("SELECT id FROM campaigns WHERE status='stopped' AND stopped_at IS NOT NULL AND stopped_at<?",
+                               time.time() - st.get("storage.stopped_days") * 86400)}
+
+
+def _only_long_stopped(long: set[str]) -> set[str]:
+    """Climbs listed only by areas in long (long_stopped()), and in none still going or done with them."""
+    if not long:
+        return set()
+    by: dict[str, set[str]] = {}
+    for r in q("SELECT climb_id, campaign_id FROM campaign_items WHERE climb_id IS NOT NULL"):
+        by.setdefault(r["climb_id"], set()).add(r["campaign_id"])
+    return {c for c, areas in by.items() if areas <= long}
+
+
 def _in_play() -> tuple[set[str], set[str]]:
     """Climbs still to be harvested or meshed, and the boulders (area paths) they're on, whose climbs' photos a
-    boulder's mesh may still pool."""
-    climbs = {r["climb_id"] for r in q("SELECT climb_id FROM campaign_items WHERE climb_id IS NOT NULL AND status IN "
-                                       "('pending','running','waiting','harvested')")}
-    climbs |= {r["climb_id"] for r in q("SELECT climb_id FROM projects WHERE climb_id IS NOT NULL AND status IN "
-                                         "('new','queued','harvesting','running','waiting','stopped','interrupted','failed')")}
+    boulder's mesh may still pool. Not those only areas stopped a while list (long_stopped()), nor their projects that
+    are stopped, failed, or waiting for the rest of their boulder's."""
+    long = long_stopped()
+    parked = _only_long_stopped(long)
+    climbs = {r["climb_id"] for r in q("SELECT climb_id, campaign_id FROM campaign_items WHERE climb_id IS NOT NULL AND status IN "
+                                       "('pending','running','waiting','harvested')") if r["campaign_id"] not in long}
+    climbs |= {r["climb_id"] for r in q("SELECT climb_id, status FROM projects WHERE climb_id IS NOT NULL AND status IN "
+                                         "('new','queued','harvesting','running','waiting','stopped','interrupted','failed')")
+               if not (r["climb_id"] in parked and r["status"] in ("waiting", "stopped", "interrupted", "failed"))}
     boulders = {r["area_path"] for r in q(f"SELECT area_path FROM climbs WHERE id IN ({','.join('?' * len(climbs))})", *climbs)} if climbs else set()
-    boulders |= {r["boulder"] for r in q("SELECT boulder FROM projects WHERE kind='boulder' AND status IN "
-                                         "('queued','harvesting','running','stopped','interrupted')") if r["boulder"]}
+    boulders |= {r["boulder"] for r in q("SELECT boulder, status FROM projects WHERE kind='boulder' AND status IN "
+                                         "('queued','harvesting','running','stopped','interrupted')")
+                 if r["boulder"] and not (r["status"] in ("stopped", "interrupted") and _boulder_parked(r["boulder"], parked))}
     return climbs, boulders
+
+
+def _boulder_parked(boulder: str, parked: set[str]) -> bool:
+    """Whether a boulder's (or group's) climbs on areas' lists are all only on areas stopped a while (parked)."""
+    ids = {r["climb_id"] for r in q("SELECT climb_id FROM campaign_items WHERE (boulder=? OR pool=?) AND climb_id IS NOT NULL",
+                                    boulder, boulder)}
+    return bool(ids) and ids <= parked
 
 
 _placed_videos: dict[str, set[str]] = {}     # mesh id: ids of the videos whose frames are placed in it (offload_candidates())
@@ -4864,6 +4963,7 @@ def offload_candidates() -> list[tuple[str, str, str]]:
     now, out = time.time(), []
     _placed_videos.clear()     # read again each time: meshes are made and remade
     busy, boulders = _in_play()
+    parked = _only_long_stopped(long_stopped())
     projects = {p["id"]: p for p in q("SELECT p.id, p.kind, p.status, p.created, p.mesh_id, p.climb_id, p.boulder, c.area_path, "
                                       "m.created AS meshed FROM projects p LEFT JOIN climbs c ON c.id=p.climb_id "
                                       "LEFT JOIN meshes m ON m.id=p.mesh_id")}
@@ -4904,7 +5004,10 @@ def offload_candidates() -> list[tuple[str, str, str]]:
             continue
         meshed = p["status"] == "done" and p["meshed"] and p["meshed"] < now - MESHED_DAYS * 86400
         skipped = p["status"] == "harvested" and p["kind"] == "harvest" and (p["created"] or now) < now - SKIPPED_DAYS * 86400
-        if meshed or skipped:
+        # not meshed yet, of an area stopped a while: asked back when it's resumed (bring_back())
+        stopped = p["status"] in ("harvested", "waiting", "stopped", "interrupted", "failed") and (
+            p["climb_id"] in parked if p["kind"] == "harvest" else bool(p["boulder"]) and _boulder_parked(p["boulder"], parked))
+        if meshed or skipped or stopped:
             for part in ("photos", "masks"):
                 d = PROJECTS / p["id"] / part
                 if d.is_dir() and any(d.iterdir()):
@@ -5347,6 +5450,10 @@ def retry_project(pid: str) -> tuple[dict, int]:
         return {"error": "already running"}, 409
     if proj["status"] not in ("failed", "stopped", "interrupted"):
         return {"error": "it hasn't failed: Reconstruct makes another mesh"}, 409
+    try:    # its photos, if they were offloaded while it was stopped, asked back (its job waits for them)
+        bring_back(project_away(pid), "It")
+    except ValueError as e:
+        return {"error": str(e)}, 409
     if proj["kind"] not in ("harvest", "boulder") or proj["harvest"]:    # otherwise it gets its photos first
         n = len([f for f in (PROJECTS / pid / "photos").iterdir() if f.suffix.lower() in PHOTO_EXT])
         if n < (1 if not pipeline.real_pipeline_ready() else 3):
@@ -7205,6 +7312,10 @@ def campaigns_listed() -> list[dict]:
                         c["id"], one=True)["n"]
         v["climbs"] = q("SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=?", c["id"], one=True)["n"]
         v["complete"] = c["status"] == "done" and not c.get("max_meshes") and v["meshed"] > 0
+        if c["status"] == "stopped":
+            away = sum(r["bytes"] or 0 for r in area_away(c["id"]))
+            if away:    # some of its data was offloaded while it was stopped: resuming brings it back first
+                v["state"], v["away_bytes"] = "data offloaded", away
         out.append(v)
     rank = {"running": 0, "stopping": 0, "low priority": 0, "queued": 1, "waiting": 1}
     out.sort(key=lambda v: (rank.get(v["state"], 2), -(v["last_mesh"] or 0) if rank.get(v["state"]) == 0 else
@@ -9328,6 +9439,10 @@ class Handler(BaseHTTPRequestHandler):
                         r["work"] = work[r["id"]]
                     if r["id"] in left:
                         r["left"] = left[r["id"]]
+                    if r["status"] in ("stopped", "failed", "interrupted", "harvested", "waiting"):
+                        away = sum(x["bytes"] or 0 for x in project_away(r["id"]))
+                        if away:    # its data was offloaded: resuming brings it back first
+                            r["away_bytes"] = away
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/effects", p)
             if m:   # what stopping or deleting it would do, to say first
@@ -10070,7 +10185,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not campaign_status(m[1]):
                     return self.send_json({"error": "not found"}, 404)
                 if m[2] == "start":
-                    q("UPDATE campaigns SET status='running', note=NULL, only_retries=0 WHERE id=? AND status IN ('stopped','stopping')", m[1], write=True)
+                    name = q("SELECT name FROM campaigns WHERE id=?", m[1], one=True)["name"]
+                    try:    # what was offloaded while it was stopped comes back first (its climbs wait for it meanwhile)
+                        asked = bring_back(area_away(m[1]), name)
+                    except ValueError as e:
+                        return self.send_json({"error": str(e)}, 409)
+                    q("UPDATE campaigns SET status='running', note=?, only_retries=0 WHERE id=? AND status IN ('stopped','stopping')",
+                      f"bringing back {asked / 2**30:.1f} GB of its data from the backup" if asked else None, m[1], write=True)
                 else:
                     stop_campaign(m[1], bool(self.read_json().get("now", True)))
                 return self.send_json(campaign_view(q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)))
@@ -11031,6 +11152,7 @@ def admin_state() -> dict:
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
             "notify": NOTIFIER.state(), "pairing": pairing_state(), "feedback": feedback_mod.recent(FEEDBACK),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
+            "stops": [dict(r) for r in q("SELECT at, kind, id, name, was FROM job_stops ORDER BY at DESC LIMIT 30")],
             "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q), "backup": backup_state(),
             "manifest": {**manifest_state(), "quiet": manifest_quiet(), "hours": MANIFEST_HOURS}, "lost_blocks": lost_blocks()}

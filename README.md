@@ -875,7 +875,10 @@ order: photos the filter rejected, after 3 days; fetched videos, once every clim
 or failed) and its beta has been found in each of its meshes (each video's as soon as it's here, not once all of a mesh's
 are); the photos and people masks of climbs and boulders meshed 2
 weeks ago, or skipped a month ago, none of whose boulder's climbs is still to be harvested or meshed; and the big files of
-older versions of meshes replaced 2 weeks ago. The web cache's month-old searches and pages go too (the photos it downloaded, in `cache/http-kept/`, stay). Meshes,
+older versions of meshes replaced 2 weeks ago. Areas stopped a day or more (*Room for data*'s *Offload the data of areas stopped a while*, on by default, and its
+days) stop counting as in use: their climbs' photos and videos still to mesh may go too. Such an area, or a project, then
+says *data offloaded* (in orange, saying how much); resuming it asks the backup for its data back first, or says it can't
+if the server hasn't the room. Every stop of an area or a project is recorded (*Jobs stopped lately*, under the timings). The web cache's month-old searches and pages go too (the photos it downloaded, in `cache/http-kept/`, stay). Meshes,
 the databases, and each climb's and mesh's records always stay. In two steps, so that nothing goes that the backup can't
 be shown to hold: what's to go is marked (`data/offload.list`, which the backup reads first, and keeps whatever the server
 does), and each of its files recorded with its size, time and SHA-1; it's deleted once a manifest from the backup shows it

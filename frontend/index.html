@@ -162,6 +162,7 @@
   .bpanel .brow.in{color:var(--ok)} .bpanel .brow.in i{background:var(--ok)}
   .bpanel .brow.out{color:var(--bad)} .bpanel .brow.out i{background:var(--bad)}
   .bpanel .brow.why b{text-decoration:underline dotted}
+  .status.offloaded{color:var(--climb)}   /* orange: some of its data is in the backup, brought back on resuming */
   .status.done,.status.harvested{color:var(--ok)} .status.failed{color:var(--bad)} .status.running,.status.queued,.status.harvesting,.status.interrupted{color:var(--warn)}
   .thumbs{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}
   .thumbs img{width:44px;height:44px;object-fit:cover;border-radius:4px;border:1px solid var(--line)}
@@ -3336,7 +3337,10 @@ const PROJECT_NAMES = { new: 'new', queued: 'queued to mesh', harvesting: 'gathe
   waiting: 'waiting for its photos' };
 const PROJECT_TIPS = { harvested: 'Its photos are gathered: it is meshed with the rest of its boulder\'s, or when asked (Reconstruct)',
   waiting: 'Waiting for volunteers\' YouTube searches and videos, or for the rest of its boulder\'s climbs' };
+const gbOf = b => b >= 2 ** 30 ? `${(b / 2 ** 30).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 2 ** 20))} MB`;
 function projectState(p){
+  if (p.away_bytes) return { label: 'data offloaded', cls: 'offloaded',
+    tip: `${gbOf(p.away_bytes)} of its photos were offloaded to the backup while it was stopped: Retry brings them back first, if the server has room, and it carries on once they're here` };
   // what a machine is doing for it now, else what's still to do for its mesh (beta in its videos, its size): /api/projects' left
   const running = (p.work || []).filter(w => w.state === 'running'), queued = (p.work || []).filter(w => w.state !== 'running');
   const doing = (running.length ? running : queued).map(w => w.what.replace(/ (of|for)$/, '')).join(', ');
@@ -3680,7 +3684,7 @@ async function refreshCampaigns(){
   // low priority (only remaking old meshes) under the rest; within each, those whose projects machines are working for (a
   // mesh's size or beta, say) first, the rest in their order (#place)
   // three bands, as projects: going on; low priority (only remaking old meshes); then stopped and done (or finishing)
-  const band = c => { const st = c.state || c.status; return st === 'low priority' ? 3 : ['stopped', 'done'].includes(st) ? 6 : 0; };
+  const band = c => { const st = c.state || c.status; return st === 'low priority' ? 3 : ['stopped', 'done', 'data offloaded'].includes(st) ? 6 : 0; };
   const busy = c => band(c) + ((areasAtWork.get(c.id) || []).some(w => w.state === 'running') ? 0 : areasAtWork.has(c.id) ? 1 : 2);
   const list = (await api('/api/campaigns')).map((c, i) => [c, i]).sort((a, b) => busy(a[0]) - busy(b[0]) || a[1] - b[1]).map(x => x[0]);
   const el = $('#campaigns');
@@ -3719,7 +3723,9 @@ async function refreshCampaigns(){
       const sumUp = [`Run for: ${(c.runs_said || []).join('; ') || 'nothing yet'}`, `${c.meshed ?? 0} of ${plural(c.climbs ?? 0, 'climb')} meshed`,
         ...(toCome ? [`${toCome} of its meshes still have beta or their size to come`] : []),
         ...(atWork.length ? [`machines at work for it: ${atWork.length}`] : [])].join('. ');
-      const st = state === 'done' && !c.complete ? { label: 'partial', cls: '', tip: sumUp }
+      const st = state === 'data offloaded' ? { label: 'data offloaded', cls: 'offloaded',
+          tip: `Stopped a while, so ${gbOf(c.away_bytes || 0)} of its climbs' photos and videos were offloaded to the backup. Resuming brings them back first, if the server has room. ${sumUp}` }
+        : state === 'done' && !c.complete ? { label: 'partial', cls: '', tip: sumUp }
         : state === 'done' && atWork.length ? { label: 'finishing: machines still at work', cls: 'running', tip: sumUp }
         : state === 'done' && toCome ? { label: `meshed; ${toCome} with beta or size to come`, cls: 'running', tip: sumUp }
         : { label: state === 'low priority' ? 'low priority: remaking old meshes' : state,
@@ -3750,7 +3756,9 @@ async function refreshCampaigns(){
         ${c.worked.length ? `<details data-list="${c.id}-done"><summary class="meta">Worked through (${c.worked.length}${c.worked.length === 300 ? ' most recent' : ''})</summary><div class="crows">${c.worked.map(row).join('')}</div></details>` : ''}
         ${c.next.length ? `<details data-list="${c.id}-next"><summary class="meta">Up next</summary><div class="crows">${c.next.map(row).join('')}</div></details>` : ''}
         ${(c.old_next || []).length ? `<details data-list="${c.id}-old"><summary class="meta lowp">Old meshes to remake, at low priority</summary><div class="crows">${c.old_next.map(row).join('')}</div></details>` : ''}`;
-      const post = async (what, json) => { await api(`/api/campaigns/${c.id}/${what}`, { method: 'POST', json: json || {} }); campaignLoop(); };
+      const post = async (what, json) => {     // what the server refuses (resuming without room for its data back) is said
+        try { await api(`/api/campaigns/${c.id}/${what}`, { method: 'POST', json: json || {} }); } catch (e) { toast(e.message, 12000); }
+        campaignLoop(); };
       d.querySelector('.stopnow')?.addEventListener('click', () => { if (ask(`Stop now? The climb in progress pauses, and carries on from its last finished step when you resume. Finished meshes stay.`)) post('stop', { now: true }); });
       d.querySelector('.stoplater')?.addEventListener('click', () => post('stop', { now: false }));
       d.querySelector('.resume')?.addEventListener('click', () => post('start'));
