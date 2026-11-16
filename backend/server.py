@@ -8303,7 +8303,8 @@ def leaderboard() -> dict:
                         "WHERE gpu_busy IS NOT NULL GROUP BY machine_id, gpu_name"):
         k = gpu_factor(r["gpu_name"])
         g = measured.setdefault(r["machine_id"], {"since": r["since"], "hours": 0.0, "known": True})
-        g["since"] = min(g["since"] or r["since"], r["since"] or g["since"])
+        known = [t for t in (g["since"], r["since"]) if t is not None]     # jobs taken before that was kept have none
+        g["since"] = min(known) if known else None
         g["hours"] += (r["busy"] or 0) / 3600 * (k if k is not None else 1.0)
         g["known"] = g["known"] and k is not None
     made, since = machine_compute({m["name"]: measured[m["id"]]["since"] for m in machines if m["id"] in measured and measured[m["id"]]["since"]})

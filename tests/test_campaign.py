@@ -3616,6 +3616,9 @@ try:
     server.MACHINES.q("UPDATE machine_jobs SET taken=1 WHERE id='lbjob0000002'")      # measured from before that mesh: no estimate
     w = server.leaderboard()["workers"][0]
     assert abs(w["gpu_hours"] - round(0.5 * 82.6 / 35.6, 2)) < 0.011 and not w["gpu_rough"], w
+    # GPU use measured on a job with no time taken kept (as the public server's had on Nov 16): still worked out
+    server.MACHINES.q("UPDATE machine_jobs SET taken=NULL WHERE id='lbjob0000002'")
+    assert server.leaderboard()["workers"][0]["gpu_hours"] > 0
 finally:
     server.settings().update({"leaderboard.names": "new"})
     server.VOLUNTEERS.q("DELETE FROM tasks WHERE id='lbtask000001'")

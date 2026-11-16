@@ -1159,7 +1159,11 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
             if u.path == "/volunteer/api/leaderboard":     # anyone's to see, worked out at most once a LEADERBOARD_CACHE
                 now = time.time()
                 if now - cached["at"] > LEADERBOARD_CACHE:
-                    cached.update(at=now, board=broker.leaderboard())
+                    try:
+                        cached.update(at=now, board=broker.leaderboard())
+                    except Exception as e:  # noqa: BLE001 - said, rather than the connection dropped
+                        print(f"leaderboard: {type(e).__name__}: {e}", flush=True)
+                        return self.json({"error": "the leaderboard couldn't be worked out just now"}, 500)
                 return self.json(cached["board"])
             if u.path == "/volunteer/bouldermesh_volunteer.py":
                 try:    # someone fetching the script (or a copy updating itself, which the server tells apart)
