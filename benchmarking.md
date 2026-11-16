@@ -33,9 +33,9 @@ on hal. Names in quotes are atlas's sections under "Results on atlas". GLBs are 
    model through OpenMVS 2.3 and 2.4) a start spoiled by 25% in scale and 15% of the scene in place gives the same
    row as the unspoiled one (near the rock 0.14% and 0.16%, floor 0.10%). A comparison takes 6 to 22 minutes on one
    core, the longer when the start is far off.
-2. **Rerun 31de's failed surface comparisons** (`siftgpu391`, `sift391_pairs50`, `sift391_pairs20`): atlas, with the
-   fixed tool. Settles rule 4 on 31de for GPU SIFT and the pair lists. A row that says "starts disagree" is not to be
-   used without a look at its starts (they go to stderr).
+2. **31de's surface comparisons, rerun with the fixed tool: done by atlas, Nov 15.** All four pass rule 4 (near the
+   rock: `siftgpu391` 0.30%, `pairs30` 0.33%, `pairs50` 0.44%, `pairs20` 0.50%, against 0.35 to 0.82% between seeds;
+   no row flagged). The 2 to 7% before were the tool.
 3. **Let atlas's chain finish** (its estimate: around midnight, Nov 15): the incremental pipeline's fixed builds,
    caspar on 31de again, `global_one`'s meshes, ALIKED and COLMAP 4.2.1's own SIFT, then the CPU-only runs. Atlas
    adds each result to its part.
@@ -56,12 +56,15 @@ on hal. Names in quotes are atlas's sections under "Results on atlas". GLBs are 
    boulders' videos, then judged again by atlas. It changes which photos a mesh is made from, so it needs Tom's word.
 7. **`global_one` (no side models):** atlas posts its surface. If it passes, a hal session adds the option to the
    app's global mapper call, after checking what the app does with side models (`review.md`, problem 6).
-8. **GPU SIFT: Tom's decision, after step 2.** It changes which photos are placed and gives a different model by more
-   than seeds differ. Either `GPU_SIFT` stays off, or it is tried for video frames only, with the app's CPU SIFT for
-   stills (plan step 3; not written).
-9. **Pair lists: after step 2.** On Drifter every list places more than 2 photos fewer than the reference (139
-   against 142 at K = 50), which rule 1 as written does not allow, and the list missed half of the pairs that
-   verify. Either a better list than CLIP's "alike", or Tom accepts the loss.
+8. **GPU SIFT: Tom's decision.** Its surface now passes on both boulders (Drifter 0.26%, 31de 0.30%), and against
+   the same database its model checks no worse on Drifter (2.91 against 3.43 degrees) and a little worse on 31de
+   (2.94 against 2.55). What stays: it places different photos (Drifter 20 gained, 3 lost) and its cameras agree with
+   the CPU model's less than two seeds do (rays within 2 degrees: 81-82% against 95-97%), with nothing to say which
+   is nearer the truth. The prize is 250 to 8 s of extraction and about 2,950 CPU-seconds a Drifter job. Either
+   `GPU_SIFT` goes on, stays off, or is tried for video frames only with the app's CPU SIFT for stills (not written).
+9. **Pair lists: Tom's decision, or a better list.** They pass the surface rule on both boulders, but on Drifter every
+   list places more than 2 photos fewer than the reference (139 against 142 at K = 50), which rule 1 as written
+   doesn't allow, and the list missed half of the pairs that verify. Saves about 130 s of GPU matching on Drifter.
 10. **Time the passing changes together** as one whole app job on 31de and Drifter (atlas's chain). Each gain so far
     was measured alone; whether they add up is not measured. Atlas can queue it once Tom has said which to take
     (`as23g1` and `views2` are `bench.py` options already; `dedup90` is a feature set).
@@ -476,7 +479,8 @@ of a hold (simulated)"; `incr/README.md` has the rest.
 - **Run with the fixes:** e6de only (129 s, 32 of 33 placed, passes its check). 31de and 9f3b then failed on atlas with
   "IndexError: 2" after each start's model was made (handoff section 50): the check looked for `backend/` where the
   tools' container doesn't have it. Fixed in a5844d0. With it, 31de builds in 662 s, 72 placed, from the global
-  start, and passes its check (2.5 degrees over 760 pairs); 9f3b and Drifter are running on atlas. 9f3b was 12 degrees off before the assist ran; the pipeline's agent
+  start, and passes its check (2.5 degrees over 760 pairs). On 9f3b both starts fail the check (10.8 and 10.5
+  degrees), as every model of it does; it keeps the one failing least and says so (124 placed, 2,863 s). 9f3b was 12 degrees off before the assist ran; the pipeline's agent
   expects it to fail its check from every start and say so, not to come out right.
 - **Never run:** a capture's add, refit, capture-first texture, re-levelling, hold detail meshes and card scale, on
   simulated or real captures. They are written and unit-tested only.
@@ -516,4 +520,4 @@ tell them apart. Later sections correct earlier ones.
 | `meshes.py` | depth maps, fused points, faces and seconds from OpenMVS's logs; `export` copies the GLBs out |
 | `verify_build.py`, `sim_closeups.py`, `incr/boulder.py` | the check a tool tree must pass to be timed; the simulated close-ups; the incremental pipeline |
 
-Last updated: 2026-11-15 19:00 PST, through section 54 of the handoff file.
+Last updated: 2026-11-15 19:40 PST, through section 55 of the handoff file.
