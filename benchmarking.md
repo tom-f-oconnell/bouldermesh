@@ -14,7 +14,9 @@ Drifter about 0.4% of the scene's size from the old mapper's (a smooth bend; whi
 known) and two segfaults of OpenMVS 2.4's dense step in about 65 runs, with a fallback nobody has seen run after a real
 crash. The decisions that matter most next are Tom's: which measured candidates to take (texture from every second
 photo, one geometric pass, a video's repeated frames dropped, GPU SIFT). Nothing has been timed on hal since the
-handoff, so jobs at once on a worker there is not measured.
+handoff, so jobs at once on a worker there is not measured. **Atlas's benchmarking ended on Nov 15 at 21:14**, at
+Tom's word: its chain finished (the last feature sets gained nothing), the CPU-only runs are on hold ("Benchmarking left
+on hold", the last section), and atlas is to make meshes for the site.
 
 ## Next steps, in order
 
@@ -36,9 +38,11 @@ on hal. Names in quotes are atlas's sections under "Results on atlas". GLBs are 
 2. **31de's surface comparisons, rerun with the fixed tool: done by atlas, Nov 15.** All four pass rule 4 (near the
    rock: `siftgpu391` 0.30%, `pairs30` 0.33%, `pairs50` 0.44%, `pairs20` 0.50%, against 0.35 to 0.82% between seeds;
    no row flagged). The 2 to 7% before were the tool.
-3. **Let atlas's chain finish** (its estimate: around midnight, Nov 15): the incremental pipeline's fixed builds,
-   caspar on 31de again, `global_one`'s meshes, ALIKED and COLMAP 4.2.1's own SIFT, then the CPU-only runs. Atlas
-   adds each result to its part.
+3. **Atlas's chain: finished, Nov 15 21:14; benchmarking on atlas stopped there (Tom).** Its last results:
+   COLMAP 4.2.1's own SIFT (`sift421`) is no faster to extract and makes the mapper slower (306 and 262 s against 186
+   and 112): no gain. ALIKED (`aliked421`) extracts in 22-33 s but matches every pair 6-9 times slower than SIFT, and ran
+   out of the 12 GB card's memory on Drifter: worth more only with a pair list and smaller images (step 15). The
+   CPU-only runs are on hold, with what each would settle, in "Benchmarking left on hold".
 4. **Texture from every second photo (`views2`): in the app, Tom's yes on Nov 15** (not deployed yet). The admin
    page's "Texture meshes from every second photo" (`mesh.texture_every_second`, ticked by default) has TextureMesh
    told which photos through `--views-file` (`pipeline.texture_views()`; OpenMVS 2.4 on, and only with 20 photos or
@@ -71,7 +75,8 @@ on hal. Names in quotes are atlas's sections under "Results on atlas". GLBs are 
 9. **Pair lists: Tom's decision, or a better list.** They pass the surface rule on both boulders, but on Drifter every
    list places more than 2 photos fewer than the reference (139 against 142 at K = 50), which rule 1 as written
    doesn't allow, and the list missed half of the pairs that verify. Saves about 130 s of GPU matching on Drifter.
-10. **Time the passing changes together** as one whole app job on 31de and Drifter (atlas's chain). Each gain so far
+10. **Time the passing changes together** as one whole app job on 31de and Drifter (atlas's chain, before it stopped;
+    now it would need Tom to give atlas's GPU back to benchmarking, or hal's hold lifted). Each gain so far
     was measured alone; whether they add up is not measured. Atlas can queue it once Tom has said which to take
     (`as23g1` and `views2` are `bench.py` options already; `dedup90` is a feature set).
 11. **Jobs at once on a hal worker, and thread counts** (`queue-together-app.txt`, `queue-threads-hal.txt`). Needs Tom
@@ -92,10 +97,14 @@ on hal. Names in quotes are atlas's sections under "Results on atlas". GLBs are 
 14. **The model check's line (5 degrees): look again** (a hal session with atlas). One model known to disagree with
     every other passes it at 3.42 (the incremental pipeline's section). First measure that model's surface against
     the baseline's, to see that it is wrong and not the comparison; then try the line at 3.5 over every model on both
-    machines. In the app the check only reports, so nothing breaks meanwhile.
+    machines. In the app the check only reports, so nothing breaks meanwhile. Fixed meanwhile (396dfdd): the check read
+    a few point errors of 1e150 px and more that COLMAP 4.2.1 never set (atlas's `aliked421` and `sift421` models of
+    31de failed on "error" for them); they are now left out and counted (`err_unread`).
 15. **Lower:** why the dense step holds one CPU thread (plan step 9); ALIKED with a pair list (plan step 10, not
-    written; only if tonight's ALIKED runs place photos well); `together report` saying "no mesh made" of jobs that
-    made one; CDI in atlas's Docker (Tom's sudo); the incremental pipeline's simulated, then real, captures; and,
+    written; ALIKED placed 78 on 31de with 97% of cameras within
+    2 degrees, but ran out of memory on Drifter, so only with a pair list and `max_image_size` lowered); `together report` saying "no mesh made" of jobs that
+    made one; CDI in atlas's Docker (Tom's sudo; the worker's `--setup` now
+    offers it, cefd417); the incremental pipeline's simulated, then real, captures; and,
     when this round is over, whether `MESH_RULES` goes back (ask before raising it) or stays lifted: Tom's to say.
 
 ## What was asked, and how "not worse" is judged
@@ -559,7 +568,7 @@ tell them apart. Later sections correct earlier ones.
 | `meshes.py` | depth maps, fused points, faces and seconds from OpenMVS's logs; `export` copies the GLBs out |
 | `verify_build.py`, `sim_closeups.py`, `incr/boulder.py` | the check a tool tree must pass to be timed; the simulated close-ups; the incremental pipeline |
 
-Last updated: 2026-11-15 22:05 PST, through section 59 of the handoff file.
+Last updated: 2026-11-15 23:10 PST, through section 63 of the handoff file.
 
 ## Benchmarking left on hold
 
