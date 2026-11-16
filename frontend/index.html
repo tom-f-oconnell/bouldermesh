@@ -56,6 +56,7 @@
   #acctdlg p{font-size:13px;margin:0 0 10px} #acctdlg label{display:block;font-size:13px;margin:0 0 10px}
   #acctdlg input{display:block;width:100%;box-sizing:border-box;margin-top:4px;background:var(--bg);border:1px solid var(--line);color:var(--fg);padding:7px 9px;border-radius:6px;font:inherit}
   #acctdlg .terms{white-space:pre-line;font-size:12px;color:var(--mute);border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:0 0 10px;max-height:40vh;overflow:auto}
+  #acctdlg .pairqr svg{display:block;width:100%;height:auto}
   #acctdlg .paircode{font:600 20px ui-monospace,Menlo,Consolas,monospace;letter-spacing:1px;user-select:all;overflow-wrap:anywhere}
   #acctdlg .added{border-top:1px solid var(--line);padding:6px 0;font-size:13px;gap:6px;flex-wrap:wrap} #acctdlg .added small{color:var(--mute)}
   #me{max-width:12em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -3295,10 +3296,11 @@ function projectState(p){
   return { label: `${base}; ${what} to come`, cls: 'queued', tip: `Still to do: ${left.join('; ')}` };
 }
 async function refreshProjects(){
-  // what's being worked on first: running or harvesting, or a machine at work for it (its mesh's beta or size, say); then
-  // what's queued or waiting for a machine; the rest in the server's order
-  const rank = p => (['running', 'harvesting'].includes(p.status) || (p.work || []).some(w => w.state === 'running')) ? 0
-    : (p.status === 'queued' || (p.work || []).length) ? 1 : 2;
+  // low priority (remaking an old mesh) under everything else; within each, what's being worked on first: running or
+  // harvesting, or a machine at work for it (its mesh's beta or size, say); then what's queued or waiting for a machine;
+  // the rest in the server's order
+  const rank = p => (p.low_priority ? 3 : 0) + ((['running', 'harvesting'].includes(p.status) || (p.work || []).some(w => w.state === 'running')) ? 0
+    : (p.status === 'queued' || (p.work || []).length) ? 1 : 2);
   const list = (await api('/api/projects')).map((p, i) => [p, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
   areasAtWork = new Map();
   for (const p of list) for (const a of (p.work || []).length ? p.areas || [] : []) areasAtWork.set(a.id, [...(areasAtWork.get(a.id) || []), ...p.work]);
@@ -3618,8 +3620,10 @@ function currentHtml(c){
   }).join('') + pausedHtml(c);
 }
 async function refreshCampaigns(){
-  // those whose projects machines are working for (a mesh's size or beta, say) first, the rest in their order (#place)
-  const busy = c => (areasAtWork.get(c.id) || []).some(w => w.state === 'running') ? 0 : areasAtWork.has(c.id) ? 1 : 2;
+  // low priority (only remaking old meshes) under the rest; within each, those whose projects machines are working for (a
+  // mesh's size or beta, say) first, the rest in their order (#place)
+  const busy = c => ((c.state || c.status) === 'low priority' ? 3 : 0)
+    + ((areasAtWork.get(c.id) || []).some(w => w.state === 'running') ? 0 : areasAtWork.has(c.id) ? 1 : 2);
   const list = (await api('/api/campaigns')).map((c, i) => [c, i]).sort((a, b) => busy(a[0]) - busy(b[0]) || a[1] - b[1]).map(x => x[0]);
   const el = $('#campaigns');
   // progress moves constantly: only rebuild when something else changed, which would close open lists
@@ -5856,8 +5860,10 @@ function keepToken(t){
   catch { toast('This browser blocks site storage, so the token can\'t be kept.', 6000); return false; }
 }
 async function takePairing(text){
+  const mine = (String(text).match(/\bsignin=([\w-]{6,})/) || [])[1];      // an account's "Sign in another device"
+  if (mine) return (await api('/api/account/pair/take', { method: 'POST', json: { code: mine } })).token;
   const code = (String(text).match(/\bpair=([\w-]{16,})/) || [])[1];
-  if (!code) throw new Error('That isn\'t the QR from the admin page.');
+  if (!code) throw new Error('That isn\'t a QR from this site\'s admin page or an account\'s Sign in another device.');
   const r = await fetch('/api/pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || r.statusText);
@@ -6107,8 +6113,9 @@ function openAccount(){
     ev.target.disabled = true; dlg.querySelector('.err').textContent = '';
     try {
       const r = await api('/api/account/pair', { method: 'POST', json: {} });
-      dlg.querySelector('.pair').innerHTML = `<p>On the other device, enter this code: in the phone app, under <i>Settings</i>, <i>Pairing link or code</i>; or on this site, under <i>Edit…</i>, <i>Sign in with a code</i>.</p>
-        <p class="paircode">${esc(r.code)}</p><p>It works once, and lasts 10 minutes (until ${hhmm(r.expires)}).</p>`;
+      dlg.querySelector('.pair').innerHTML = `<p>On the other device: in the phone app, <i>Settings</i>, <i>Scan</i> this QR, or scan it with
+        the phone's camera to sign in its browser; or enter the code, in the app's <i>Settings</i> or on this site under <i>Edit…</i>, <i>Sign in with a code</i>.</p>
+        ${r.qr ? `<div class="pairqr" style="max-width:200px;margin:6px 0">${r.qr}</div>` : ''}<p class="paircode">${esc(r.code)}</p><p>It works once, and lasts 10 minutes (until ${hhmm(r.expires)}).</p>`;
       ev.target.textContent = 'A new code';
     }
     catch (e) { dlg.querySelector('.err').textContent = sentence(e.message); }
@@ -6117,6 +6124,12 @@ function openAccount(){
 }
 
 // ---------------------------------------------------------------- boot
+const signinCode = new URLSearchParams(location.hash.slice(1)).get('signin');
+if (signinCode) {    // a phone's camera opened an account's "Sign in another device" QR: once, so off the address too
+  history.replaceState(null, '', location.pathname + location.search);
+  try { const t = await takePairing('signin=' + signinCode); if (keepToken(t)) token = t; }
+  catch (e) { toast(sentence(e.message), 8000); }
+}
 const pairCode = new URLSearchParams(location.hash.slice(1)).get('pair');
 if (pairCode) {    // the phone's camera app opened the admin page's QR: the code works once, so it's taken off the address
   history.replaceState(null, '', location.pathname + location.search);
