@@ -8,6 +8,8 @@
 <style>
   dialog.danger-ask{max-width:420px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:14px}
   dialog.danger-ask::backdrop{background:rgba(0,0,0,.45)} dialog.danger-ask p{color:var(--mute);font-size:13px}
+  dialog.danger-ask .cmd{display:flex;align-items:center;gap:8px;margin:6px 0;padding:6px 8px;background:var(--bg);border:1px solid var(--line);border-radius:6px}
+  dialog.danger-ask .cmd code{flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--fg);user-select:all}
   dialog.danger-ask .yes{background:var(--bad);color:#fff;border-color:var(--bad);font-weight:600}
   :root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#e6e8ee;--mute:#8b93a7;--acc:#5cc8ff;--ok:#5fd68a;--bad:#ff6b6b;--warn:#ffc857}
   *{box-sizing:border-box}
@@ -372,7 +374,14 @@ function askDanger(title, body, go){
   return new Promise(done => {
     const dlg = document.createElement('dialog'); dlg.className = 'danger-ask';
     dlg.innerHTML = `<b></b><p></p><div style="display:flex;gap:8px;justify-content:flex-end"><button class="sec no">Cancel</button><button class="yes"></button></div>`;
-    dlg.querySelector('b').textContent = title; dlg.querySelector('p').textContent = body; dlg.querySelector('.yes').textContent = go;
+    dlg.querySelector('b').textContent = title; dlg.querySelector('.yes').textContent = go;
+    if (body?.html != null) dlg.querySelector('p').innerHTML = body.html;     // {html}: our own markup, its values escaped
+    else dlg.querySelector('p').textContent = body;
+    dlg.querySelectorAll('.cmd .copy').forEach(b => b.onclick = async () => {    // a command's Copy
+      const code = b.parentNode.querySelector('code');
+      try { await navigator.clipboard.writeText(code.textContent); b.textContent = 'Copied'; }
+      catch { getSelection().selectAllChildren(code); b.textContent = 'Selected: copy it'; }   // no clipboard over plain HTTP
+    });
     const end = v => { dlg.close(); dlg.remove(); done(v); };
     dlg.querySelector('.no').onclick = () => end(false);
     dlg.querySelector('.yes').onclick = () => end(true);
@@ -854,11 +863,14 @@ $('#room-rejected').onclick = async () => {
   const size = n => n >= 2 ** 30 ? (n / 2 ** 30).toFixed(1) + ' GB' : `${Math.max(1, Math.round(n / 2 ** 20))} MB`;
   const photos = n => `${n.toLocaleString()} photo${n === 1 ? '' : 's'}`;
   const when = c.backed_up_at ? new Date(c.backed_up_at * 1000).toLocaleString() : null;
-  const backed = !when ? `None of them is in a backup: no backup of this site has been confirmed.`
-    : !c.unbacked_files ? `All of them are in the backup (its last good copy began ${when}): good to go.`
-    : `${photos(c.unbacked_files)} (${size(c.unbacked_bytes)}) ${c.unbacked_files === 1 ? 'is' : 'are'} not in the backup: rejected since its last good copy began, ${when}.`;
-  const first = c.unbacked_files ? ' To keep them, back up first: on hal, sudo systemctl start bouldermesh-backup (this page\'s backup line says when it\'s done), then come back.' : '';
-  if (!await askDanger('Delete every photo the filter rejected?', `${photos(c.files)} (${size(c.bytes)}), from every project not being harvested or meshed now. They can't be put back after, nor looked at to judge the filter. ${backed}${first}`,
+  const red = t => `<span style="color:var(--bad)">${t}</span>`, green = t => `<span style="color:var(--ok)">${t}</span>`;
+  const backed = !when ? red('None of them is in a backup: no backup of this site has been confirmed.')
+    : !c.unbacked_files ? green('All of them are in the backup: good to go.')
+    : red(`${photos(c.unbacked_files)} (${size(c.unbacked_bytes)}) ${c.unbacked_files === 1 ? 'is' : 'are'} not in the backup`);
+  const first = c.unbacked_files || !when ? `<br>To keep them, back up first, on hal:<span class="cmd"><code>sudo systemctl start bouldermesh-backup</code>`
+    + `<button type="button" class="sec sm copy">Copy</button></span>This page's backup line says when it's done; then come back.` : '';
+  if (!await askDanger('Delete every photo the filter rejected?', { html: `${photos(c.files)} (${size(c.bytes)}), from every project not being harvested or meshed now. `
+    + `They can't be put back after, nor looked at to judge the filter.<br>${backed}<br><br>Last backup: ${when ? green(esc(when)) : red('none confirmed')}<br>${first}` },
                        c.unbacked_files ? `Delete them, ${photos(c.unbacked_files)} for good` : 'Delete them')) return;
   msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#texblack').onclick = async () => {
