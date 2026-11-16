@@ -901,7 +901,9 @@ keeps the GPU busier than half (<code>--busy-gpu-util</code>) or leaves less tha
 <p>Last, it asks whether to start by itself from now on, whenever the computer starts (as a systemd service of your own,
 running a copy of the script in <code>.bouldermesh-worker</code>; it may ask for your password, to run while you're
 logged out). Say yes, and it's running: you're done. Then <code>journalctl --user -u bouldermesh-worker -f</code> shows
-what it's doing, and <code>systemctl --user disable --now bouldermesh-worker</code> stops it for good.</p>
+what it's doing, and <code>systemctl --user disable --now bouldermesh-worker</code> stops it for good. To pause it for a while,
+<code>systemctl --user stop bouldermesh-worker</code> stops it for now (any climb it's on goes to another computer), and
+it starts again with <code>systemctl --user start bouldermesh-worker</code>, or by itself when the computer next starts.</p>
 <h3>3. Or run it yourself</h3>
 <p>If you said no:</p>
 <div class="box"><pre>python3 bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
@@ -941,7 +943,9 @@ whether it's approved yet and whether there's room. With an NVIDIA GPU it would 
 none</code> to only help this way. <code>--cpus N</code> limits the cores jobs use. It remembers them all.</p>
 <p>Last, it asks whether to start by itself from now on, whenever the computer starts. Say yes, and it's running: you're
 done. Then <code>journalctl --user -u bouldermesh-worker -f</code> shows what it's doing, and
-<code>systemctl --user disable --now bouldermesh-worker</code> stops it for good.</p>
+<code>systemctl --user disable --now bouldermesh-worker</code> stops it for good. To pause it for a while,
+<code>systemctl --user stop bouldermesh-worker</code> stops it for now (any job it's on goes to another computer), and
+it starts again with <code>systemctl --user start bouldermesh-worker</code>, or by itself when the computer next starts.</p>
 <h3>4. Or run it yourself</h3>
 <p>If you said no:</p>
 <div class="box"><pre>python3 bouldermesh_worker.py</pre><button class="copy" title="Copy" aria-label="Copy">{icon}</button></div>
