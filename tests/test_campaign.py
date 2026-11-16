@@ -1805,6 +1805,25 @@ kind, files, args = sent[-1]
 assert kind == "beta" and {"mesh/mesh.glb", "mesh/cameras.json", "photos/yt_aaaaaaaa_000.jpg", "videos/aaaaaaaaaaa.mp4"} <= set(files), files
 assert "mesh/texture.png" not in files and "photos/p.jpg" not in files, "only the mesh, and the video frames placed in it"
 assert server.beta_mod.load(md)["status"] == "done" and not (md / "page.html").exists(), "only what the job may make comes back"
+# two videos, one here: the machine is sent that one, and the mesh waits for the other, until it comes
+url2 = "https://www.youtube.com/watch?v=bbbbbbbbbbb"
+server.beta_mod.videos = lambda d: {url: {"tag": "aaaaaaaa", "title": "t", "uploader": "u", "frames": {"yt_aaaaaaaa_000.jpg": {}}},
+                                    url2: {"tag": "bbbbbbbb", "title": "t", "uploader": "u", "frames": {"yt_bbbbbbbb_000.jpg": {}}}}
+server.beta_mod.save(md, {"status": "queued", "videos": [], "queued": time.time()})
+n_sent = len(sent)
+server.run_beta(mid)
+assert len(sent) == n_sent + 1 and "videos/aaaaaaaaaaa.mp4" in sent[-1][1] and "videos/bbbbbbbbbbb.mp4" not in sent[-1][1]
+rec = server.beta_mod.load(md)
+assert rec["status"] == "queued" and rec["waiting_videos"] == [url2], rec
+# a mesh queued before (waiting for all its videos): ready once any it hasn't done is here
+server.beta_mod.save(md, {"status": "queued", "videos": [], "waiting_videos": [url2]})
+assert server.beta_ready(mid), "the first video is here"
+server.beta_mod.save(md, {"status": "queued", "videos": [{"url": url, "status": "done"}], "waiting_videos": [url2]})
+via_was, server.youtube_mod.via = server.youtube_mod.via, "volunteers"
+assert not server.beta_ready(mid), "nothing new here, and only volunteers fetch videos"
+server.youtube_mod.via = via_was
+server.beta_mod.videos = lambda d: {url: {"tag": "aaaaaaaa", "title": "t", "uploader": "u", "frames": {"yt_aaaaaaaa_000.jpg": {}}}}
+server.beta_mod.save(md, {"status": "done", "videos": []})
 first, last = heard[0], heard[-1]
 assert first["status"] == "running" and first["at"]["frac"] == 0.125 and first["at"]["frames"] == 120, first
 assert first["at"]["started"] > 1e9 and first["at"]["where"] == "machine" and "on a machine" in first["progress"], \

@@ -6180,15 +6180,22 @@ def queue_beta(mid: str, ahead: bool = False) -> bool:
 
 
 def beta_ready(mid: str) -> bool:
-    """Whether a queued mesh's beta can be looked for now: the videos it waited for are all in the cache, or this
+    """Whether a queued mesh's beta can be looked for now: any of the videos it waits for is in the cache, or this
     server may fetch videos from YouTube now (it isn't refusing, and they aren't left to volunteers), or, where they
     are, it hasn't asked volunteers for any yet. Not while it waits for a machine to find it on."""
     rec = beta_mod.load(MESHES / mid) or {}
     if rec.get("machine_wait", 0) > time.time():
         return False
     waiting = rec.get("waiting_videos") or []
-    if waiting and all(youtube_mod.cached(u) for u in waiting):
+    if waiting and any(youtube_mod.cached(u) for u in waiting):     # each video's beta as soon as it's here
         return True
+    if waiting:     # one here that wasn't waited for, as a mesh queued before videos were done one by one
+        done = {v.get("url") for v in rec.get("videos") or [] if v.get("status") in ("done", "no holds found")}
+        try:
+            if any(u not in done and youtube_mod.cached(u) for u in beta_mod.videos(MESHES / mid)):
+                return True
+        except Exception:  # noqa: BLE001 - as before: it waits
+            pass
     if youtube_mod.via == "volunteers":
         return not waiting
     return not youtube_mod.refused()
