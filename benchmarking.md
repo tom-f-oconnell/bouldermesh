@@ -24,14 +24,18 @@ handoff, so jobs at once on a worker there is not measured.
 on hal. Names in quotes are atlas's sections under "Results on atlas". GLBs are in
 `/local/tensor/Tom/bm_opt_handoff/atlas/meshes/`; `<boulder>` is `ce7571e0a4a3` (Drifter) or `31de9a59303a`.
 
-1. **Fix `surface.py`'s start and add its guard: written on hal, being tested, 2026-11-15.** It started from the
-   cameras' fit, which was 25% off on one 31de pair, and its ICP shrank a mesh on another. Now: scale and shift tried
-   from the models' own 3D points as well as the cameras, at several scales; surfaces matched both ways, near the rock
-   only; the best fit kept; a row flagged when two starts end equally good at different scales. On made-up rock
-   (`test_surface.py`) it recovers a start a quarter off to within 0.5%, where the old matching ended 13% small.
-   Settled when it also recovers a spoiled start on hal's own Drifter meshes, and is pushed and announced.
-2. **Rerun 31de's failed surface comparisons** (`siftgpu391`, `sift391_pairs50`, `sift391_pairs20`): atlas, once
-   step 1 is pushed. Settles rule 4 on 31de for GPU SIFT and the pair lists.
+1. **`surface.py`'s start and its guard: fixed on hal, Nov 15** (done; kept here until step 2 confirms it on the pairs
+   that failed). It started from the cameras' fit, which was 25% off on one 31de pair, and its ICP shrank a mesh on
+   another. Now scale and shift are tried from the models' own 3D points as well as the cameras, at several scales;
+   surfaces are matched both ways, near the rock only; the best fit is kept; a row is flagged when two starts end
+   equally good at different scales. Checked two ways: on made-up rock (`test_surface.py`) a start a quarter off
+   ends within 0.5% of the true scale, where the old matching ended 13% small; and on hal's own Drifter meshes (one
+   model through OpenMVS 2.3 and 2.4) a start spoiled by 25% in scale and 15% of the scene in place gives the same
+   row as the unspoiled one (near the rock 0.14% and 0.16%, floor 0.10%). A comparison takes 6 to 22 minutes on one
+   core, the longer when the start is far off.
+2. **Rerun 31de's failed surface comparisons** (`siftgpu391`, `sift391_pairs50`, `sift391_pairs20`): atlas, with the
+   fixed tool. Settles rule 4 on 31de for GPU SIFT and the pair lists. A row that says "starts disagree" is not to be
+   used without a look at its starts (they go to stderr).
 3. **Let atlas's chain finish** (its estimate: around midnight, Nov 15): the incremental pipeline's fixed builds,
    caspar on 31de again, `global_one`'s meshes, ALIKED and COLMAP 4.2.1's own SIFT, then the CPU-only runs. Atlas
    adds each result to its part.
@@ -496,9 +500,9 @@ tell them apart. Later sections correct earlier ones.
 | `chain.py` | runs queue files (`queue-*.txt`) one job at a time, detached (systemd user unit `bm-bench`) |
 | `variants.py` | the methods, the derived feature sets (dedup, pairs, lens, thin), the texture variants, `together` |
 | `consensus.py` | models compared by their cameras' viewing rays; `trade` tests the trade of lens for distance |
-| `surface.py` | two meshes laid over each other, and the gap between them (its start: step 1 above) |
+| `surface.py` | two meshes laid over each other, and the gap between them; `test_surface.py` beside it |
 | `incr/selfcheck.py` | a model checked against its own photos; `table` runs it over every model under `BENCH` |
 | `meshes.py` | depth maps, fused points, faces and seconds from OpenMVS's logs; `export` copies the GLBs out |
 | `verify_build.py`, `sim_closeups.py`, `incr/boulder.py` | the check a tool tree must pass to be timed; the simulated close-ups; the incremental pipeline |
 
-Last updated: 2026-11-15 16:40 PST, through section 51 of the handoff file.
+Last updated: 2026-11-15 17:40 PST, through section 52 of the handoff file.
