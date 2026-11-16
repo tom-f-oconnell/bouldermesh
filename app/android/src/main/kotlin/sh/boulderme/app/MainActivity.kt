@@ -91,7 +91,9 @@ class MainActivity : ComponentActivity() {
     private fun tryOut() {
         tryingOut = intent.hasExtra("server") || intent.hasExtra("screen")
         intent.getStringExtra("server")?.let { store.server = it }
-        store.terms = if (intent.getStringExtra("terms") == "show") 0 else TERMS_VERSION      // the terms' own screen is looked at too
+        // CI's runs skip the terms (but for the terms' own screen); anyone else's start of a debug build, as testers install
+        // from android-latest, is asked to accept them as a release build's would be
+        if (tryingOut || intent.hasExtra("terms")) store.terms = if (intent.getStringExtra("terms") == "show") 0 else TERMS_VERSION
         screen = when (intent.getStringExtra("screen")) {
             "browse" -> Screen.Browse(intent.getBooleanExtra("get", false))
             "settings" -> Screen.Settings
