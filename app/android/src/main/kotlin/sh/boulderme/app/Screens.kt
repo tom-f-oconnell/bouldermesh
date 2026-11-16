@@ -287,7 +287,15 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
             Text("a QR from the site", style = MaterialTheme.typography.bodySmall)
         }
         OutlinedTextField(code, { code = it }, label = { Text("Code from another device, or an invite link") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button(enabled = code.isNotBlank(), onClick = { signIn(code) }) { Text("Sign in") }
+        if ("invite=" in code) {    // a new account, made under this name: the credit above, here as well
+            OutlinedTextField(credit, { credit = it.take(80); a.store.credit = credit }, label = { Text("Your name, for the new account") },
+                singleLine = true, modifier = Modifier.fillMaxWidth())
+            Text("Already joined, on the site or another phone? Then don't use the invite: sign in with a code from there, as above.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Button(enabled = code.isNotBlank() && ("invite=" !in code || credit.isNotBlank()), onClick = { signIn(code) }) {
+            Text(if ("invite=" in code) "Join" else "Sign in")
+        }
         said?.let { Text(it.first, color = if (it.second) GOOD else BAD) }
         OutlinedTextField(token, { token = it; a.store.token = it }, label = { Text("Token (set by signing in)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))

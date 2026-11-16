@@ -124,7 +124,9 @@ class Accounts:
             if inv is None or inv["used_by"] or inv["expires"] <= now:
                 raise Refused("that invite isn't good: it was used already, has run out, or was mistyped")
             if con.execute("SELECT 1 FROM users WHERE lower(name)=lower(?)", (name,)).fetchone():
-                raise Refused("that name is taken: pick another")
+                raise Refused("that name is taken. If it's yours, you have an account already, and this invite isn't needed: "
+                              "sign in instead, with a code from a device where you're signed in (your name at the top of "
+                              "the site, then Sign in another device). Otherwise, pick another name")
             con.execute("INSERT INTO users(id, name, role, areas, created, invited_by, last_seen) VALUES(?,?,?,?,?,?,?)",
                         (uid, name, inv["role"], inv["areas"], now, inv["hash"][:8], now))
             con.execute("UPDATE invites SET used_by=?, used_at=? WHERE hash=?", (uid, now, inv["hash"]))
