@@ -260,6 +260,12 @@
   /* bottom left of the view: the beta of the mesh in view, on and off */
   #vbeta{position:absolute;left:12px;bottom:12px;z-index:3} #vbeta[hidden]{display:none}
   #vbeta[aria-pressed=true]{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
+  /* above it while beta shows: the videos its holds came from, each shown or not, and one picked out */
+  #vbetavids{position:absolute;left:12px;bottom:52px;z-index:3;max-width:min(360px,calc(100% - 24px));max-height:40%;overflow:auto;
+    background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12px} #vbetavids[hidden]{display:none}
+  #vbetavids .bv{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:4px;cursor:pointer}
+  #vbetavids .bv:hover{background:var(--line)} #vbetavids .bv.on{background:var(--src-bg);outline:1px solid var(--acc)}
+  #vbetavids .bv .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap} #vbetavids .bv small{color:var(--mute);white-space:nowrap}
   #pieces{display:none;position:absolute;top:12px;right:12px;max-width:340px;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;z-index:2}
   #pieces .row{margin-top:6px;gap:6px;flex-wrap:wrap}
   #pieces .tools{margin-left:0} #pieces .tools button{padding:4px 8px} #pieces label{display:inline-flex;gap:4px;align-items:center}
@@ -418,6 +424,7 @@
     #orient,#viewnote{top:56px;bottom:auto;left:8px;right:8px;max-width:none;max-height:35%;overflow:auto} #viewnote{z-index:3}
     #pieces{top:auto;bottom:12px;left:8px;right:auto;max-width:calc(100% - 175px);max-height:35%;overflow:auto}
     #vbeta{left:8px;font-size:14px;padding:6px 12px} #viewer:has(#vbeta:not([hidden])) #pieces{bottom:56px}   /* stray pieces above it */
+    #vbetavids{left:8px;bottom:56px;max-height:30%;font-size:13px} #viewer:has(#vbetavids:not([hidden])) #pieces{display:none!important}
     #ratebtn{font-size:14px;padding:6px 12px} #vcorner #vinfo,#vcorner #vreport{padding:6px 10px}
     /* the rating box above the corner's buttons, its right edge at theirs, not off the screen to the left of Rate */
     #ratemenu{position:absolute;right:0;bottom:calc(100% + 6px);width:calc(100vw - 24px - 2px);max-width:360px;box-sizing:border-box}
@@ -703,6 +710,7 @@
         <button class="sm sec" id="vnewest" hidden title="This is an older version of this mesh, as its link was to: show the newest">Newest</button>
         <button class="sm sec" id="vothers" hidden></button>
       </div>
+      <div id="vbetavids" hidden></div>
       <button class="sm sec" id="vbeta" hidden aria-pressed="false" title="Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.">Beta</button>
       <div id="vcorner">
       <div id="rate" hidden>
@@ -4853,11 +4861,37 @@ async function startBeta(mid){
   if (['queued', 'running'].includes(betaState.found?.status)) watchBeta();
   renderBetaList(); showBetaButton();
 }
+// Over the view's bottom left while beta shows: each video holds were found in, with how many and a link to it; its box
+// shows or hides its holds, and picking it (again to undo) makes the others' faint
+function renderBetaVids(){
+  const el = $('#vbetavids'), b = betaState, vids = (b?.found?.videos || []).filter(v => v.holds?.length);
+  el.hidden = !b || b.mid !== shownMesh || !vids.length || thumbMode;
+  if (el.hidden) return;
+  el.innerHTML = `<div class="meta" style="margin-bottom:3px">Holds from videos: tick to show, pick one to see it alone</div>` + vids.map(v =>
+    `<div class="bv${b.focus === v.tag ? ' on' : ''}" data-tag="${v.tag}" title="${esc(v.title || v.url)}${v.uploader ? ` · ${esc(v.uploader)}` : ''}">
+      <input type="checkbox" ${b.shown.has(v.tag) ? 'checked' : ''} aria-label="Show its holds">
+      <span class="t">${esc(v.title || v.url)}</span><small>${v.holds.length} hold${v.holds.length === 1 ? '' : 's'}</small>
+      <a href="${esc(v.url)}" target="_blank" rel="noopener" title="Open the video">▶</a></div>`).join('');
+  el.querySelectorAll('.bv').forEach(row => {
+    const tag = row.dataset.tag;
+    row.querySelector('input').onchange = ev => {
+      ev.target.checked ? b.shown.add(tag) : b.shown.delete(tag);
+      if (!ev.target.checked && b.focus === tag) b.focus = null;
+      drawBeta(); renderBetaPanel();
+    };
+    row.onclick = ev => {
+      if (ev.target.closest('input, a')) return;
+      b.focus = b.focus === tag ? null : tag;
+      if (b.focus) b.shown.add(tag);
+      drawBeta(); renderBetaPanel();
+    };
+  });
+}
 function stopBeta(){
   if (!betaState) return;
   if (betaState.group) betaState.group.parent?.remove(betaState.group);
   betaState = null; clearInterval(betaPoll);
-  $('#beta-open').innerHTML = ''; showMarkButton(); renderBetaList(); showBetaButton(); woke();
+  $('#beta-open').innerHTML = ''; showMarkButton(); renderBetaList(); showBetaButton(); renderBetaVids(); woke();
 }
 const hasBeta = m => !!(m && (m.marked || m.beta?.holds));
 // the view's Beta button: there when the mesh in view has beta, pressed while it's drawn
@@ -4928,8 +4962,9 @@ function drawBeta(){
   const node = meshNode(), g = new THREE.Group();
   // the boulder's size as the view frames it (not stray pieces), in the units of the node the holds are in
   const unit = Math.max(...mainBox(current).getSize(new THREE.Vector3()).toArray()) / node.getWorldScale(new THREE.Vector3()).x;
-  const ring = (p, role, kind) => {
-    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: RING[kind], color: ROLES[role].color, transparent: true, depthWrite: false }));
+  const ring = (p, role, kind, dim = false) => {
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: RING[kind], color: ROLES[role].color, transparent: true, depthWrite: false,
+      opacity: dim ? .25 : 1 }));
     sprite.userData = { beta: true, at: new THREE.Vector3().fromArray(p), size: unit * HOLD_SIZE[kind], lift: unit * RING_LIFT };
     sprite.renderOrder = kind === 'marked' ? 4 : 3;
     g.add(sprite); return sprite;
@@ -4942,7 +4977,8 @@ function drawBeta(){
         new THREE.LineBasicMaterial({ color: limb.endsWith('h') ? 0xe8e8e8 : 0xffc83c, transparent: true, opacity: .55 }));
       line.userData.beta = true; g.add(line);
     }
-    for (const h of v.holds || []) if (!onHiddenFace(h.p, node)) ring(h.p, h.role, 'found');     // not on faces hidden
+    // not on faces hidden; faint while another video's are picked out (renderBetaVids())
+    for (const h of v.holds || []) if (!onHiddenFace(h.p, node)) ring(h.p, h.role, 'found', !!betaState.focus && betaState.focus !== v.tag);
   }
   // how far round a hold reaches, as three circles about it (lines: nothing that goes through the meshes sees them),
   // where the mesh's size is known: the selected hold's, and those given a size
@@ -4960,7 +4996,7 @@ function drawBeta(){
   });
   node.add(g);
   Object.assign(betaState, { group: g, node, rings: g.children.filter(o => o.isSprite) });
-  liftRings();
+  liftRings(); renderBetaVids();
 }
 const eye = new THREE.Vector3();
 function liftRings(){
