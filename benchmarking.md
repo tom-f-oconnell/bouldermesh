@@ -431,13 +431,28 @@ holds").
 | Drifter | 1,404 s | 148 of 234 | 94% | 2.88 px |
 
 Good on Drifter, loose on 31de, wrong on 9f3b without saying so. The high errors came from its VGGT assist step
-spoiling old points (found from these logs on hal, fixed in 2511e7f). With its fixes (`first-auto-s0@prod-v2`): e6de 129 s, 32
-placed, passes its own check (1.10 px, 2.0 degrees); 31de 662 s, 72 placed, from the global mapper's start (VGGT had
-room for 42 of 72 photos), passes (0.72 px, 2.5 degrees). Placing 31de took 59 s with Caspar before and several minutes with
-Ceres on the CPU now. A first try of these (before a5844d0) failed on every start but VGGT's: the check couldn't be
-imported in the tools' container. On 9f3b both starts' models fail the check (10.8 and 10.5 degrees), so it keeps the
-one failing least and says "THE MODEL FAILS ITS OWN CHECK": 124 placed, 2,863 s (971 s when it said nothing).
-Drifter and the forced-VGGT builds are running.
+spoiling old points (found from these logs on hal, fixed in 2511e7f). With its fixes (a5844d0; `first-<start>-s0[-caspar]@prod-v2`), photos to textured mesh. Ceres on the CPU unless said:
+
+| | start | whole | placing | placed | its own check: pairs' degrees, error | against base, rays within 2 / 5 degrees |
+|---|---|---|---|---|---|---|
+| e6de | VGGT | 129 s | 27 s | 32 | 2.04, 1.10 px: passes | |
+| 31de | global (VGGT had room for 42 of 72) | 662 s | 237 s | 72 | 2.54, 0.72 px: passes | 90% / 97% |
+| 31de, VGGT start forced | VGGT | 724 s | 245 s | 72 | 2.07, 0.76 px: passes | 66% / 99% |
+| 31de, Caspar for every solve | global | 459 s | 103 s | 72 | **3.42, 1.10 px: passes** | **0% / 1%, median 6.7 degrees** |
+| 9f3b | global, then incremental: both fail, the less bad kept | 2,863 s | 1,904 s | 124 | 11.13, 1.25 px: fails, and says so | 31% / 48% |
+| Drifter | global | 2,375 s | 952 s | 171 | 2.49, 0.94 px: passes | 91% / 96% |
+| Drifter, VGGT start forced | VGGT | 1,775 s | 493 s | 149 | 2.45, 0.84 px: passes | 93% / 96% |
+
+- **Drifter: 171 placed where the baseline places 142**, and its shared cameras are as close to the baseline's as the
+  baseline's own runs are to global's. Of its 34 photos the baseline doesn't place, 28 see 100 points or more (median
+  654; the model's 2,397). It misses 5 the baseline places.
+- **9f3b now says it failed** instead of returning a wrong model as if it were right, at three times the time.
+- **Caspar again gives a model of 31de that nothing else agrees with, and this time the model's own check passes
+  it** (3.42 degrees, under the line at 5; the Ceres runs read 2.1-2.5). So a pass is not proof, and Caspar on 31de
+  stays ruled out. This is the second such model (the first: `caspar-s0+complete@prod`, which the check fails at 26.9).
+- Placing is slow now: Ceres on the CPU takes 237 s on 31de where Caspar took 59 s before the fixes, and 952 s on Drifter.
+- A first try of these (before a5844d0) failed on every start but VGGT's: the check couldn't be imported in the tools'
+  container.
 
 ### Problems met on atlas
 
