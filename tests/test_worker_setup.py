@@ -180,6 +180,7 @@ home.mkdir()
 
 
 def install(answer: str, ran: list, fail: str | None = None, up: bool = True, linger: bool = False, **changes):
+    (units / "bouldermesh-worker.service").unlink(missing_ok=True)     # each a first install: one already there isn't asked about
     said = []
     ok = worker.install_service(options(home=str(home), **changes), {**linux, "linger": linger}, ask=lambda q: answer,
                                 run=lambda cmd: ran.append(" ".join(cmd)) or int(" ".join(cmd) == fail), say=said.append,
@@ -199,6 +200,18 @@ text = (units / "bouldermesh-worker.service").read_text()
 assert f"ExecStart={sys.executable} {copy.resolve()} --home {home.resolve()} --nice 5" in text.splitlines(), text
 assert worker.load_conf(home).get("service") == "bouldermesh-worker", "a run by hand then says it runs already"
 assert "disable --now bouldermesh-worker" in said
+ran.clear()                 # installed already as Y would install it: not asked again, whatever the PATH it was written with
+unit_text = (units / "bouldermesh-worker.service").read_text()
+(units / "bouldermesh-worker.service").write_text(re.sub(r"(?m)^Environment=\"?PATH=.*\n", 'Environment="PATH=/elsewhere"\n', unit_text))
+asked = []
+ok = worker.install_service(options(home=str(home), nice=5), {**linux, "linger": False, "user_unit": "disabled"},
+                            ask=lambda q: asked.append(q) or "y", run=lambda cmd: ran.append(cmd) or 0, say=asked.append,
+                            unit_dir=units, running=lambda: True)
+assert not ok and ran == [] and not any("[Y/n]" in a for a in asked) and "systemctl --user enable --now" in asked[-1], asked
+ok = worker.install_service(options(home=str(home), nice=5), {**linux, "linger": False, "user_unit": "enabled"},
+                            ask=lambda q: 1 / 0, run=lambda cmd: 1 / 0, say=lambda m: None, unit_dir=units, running=lambda: True)
+assert ok, "enabled and running: nothing to ask or do"
+(units / "bouldermesh-worker.service").write_text(unit_text)
 ran.clear()
 ok, said = install("y", ran, linger=True)
 assert ok and ran[-1] == "systemctl --user enable --now bouldermesh-worker", "lingering already"

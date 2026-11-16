@@ -98,7 +98,7 @@ from pathlib import Path
 #     followed so closely as to ask before it had, and was given a job of any size; waits for the GPU's driver at boot
 # 20: tells the server what nvidia-smi says of its GPU (name, memory, driver, CUDA) as it starts; sends
 #     diagnostics when the server asks (--no-diagnostics: never)
-VERSION = 21
+VERSION = 22
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter", "splat")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
@@ -740,6 +740,17 @@ WantedBy=default.target
 """
 
 
+def same_unit(path: Path, text: str) -> bool:
+    """Whether the service at path is the one text describes: the same but for its PATH, which is whatever shell ran
+    --check last (the commands it finds are the system's either way)."""
+    def norm(t: str) -> list[str]:
+        return [l for l in t.splitlines() if not re.match(r'Environment="?PATH=', l)]
+    try:
+        return norm(path.read_text()) == norm(text)
+    except OSError:
+        return False
+
+
 def service_running(unit: str = UNIT, wait: float = 8.0, look=None) -> bool:
     """Whether this user's service is still running wait seconds after it started, never having stopped: a start that
     fails, as without Docker, ends within a second or two, and waits RestartSec before trying again."""
@@ -774,6 +785,13 @@ def install_service(args, st: dict, ask=input, run=None, say=print, unit_dir: Pa
     unit = (unit_dir or Path("~/.config/systemd/user").expanduser()) / f"{UNIT}.service"
     def short(path: Path) -> str:
         return "~" + str(path)[len(str(Path.home())):] if path.is_relative_to(Path.home()) else str(path)
+    text = service_unit(args.server, [sys.executable or "/usr/bin/python3", str(copy)] + service_args(args),
+                        {k: v for k, v in os.environ.items() if CARRIED.fullmatch(k)})
+    if same_unit(unit, text):       # Y would write what's there: nothing to ask
+        enabled = st.get("user_unit") == "enabled"
+        say(f"\nIts service is installed already ({short(unit)}), as this would install it"
+            + ("." if enabled else f", but not enabled, so it doesn't start by itself: systemctl --user enable --now {UNIT}"))
+        return enabled and running()
     say(f"\nIt can start by itself from now on, whenever this computer starts, as a service of your own ({short(unit)}), "
         f"running {'this script' if copy == me else 'a copy of this script, ' + short(copy)}, which updates itself.")
     if ask("Start it by itself? [Y/n] ").strip().lower() not in ("", "y", "yes"):
@@ -782,8 +800,7 @@ def install_service(args, st: dict, ask=input, run=None, say=print, unit_dir: Pa
     if copy != me:
         shutil.copy2(me, copy)
     unit.parent.mkdir(parents=True, exist_ok=True)
-    unit.write_text(service_unit(args.server, [sys.executable or "/usr/bin/python3", str(copy)] + service_args(args),
-                                 {k: v for k, v in os.environ.items() if CARRIED.fullmatch(k)}))
+    unit.write_text(text)
     say(f"Wrote {short(unit)}" + (f", and copied this script to {short(copy)}, the one that runs from now on" if copy != me else ""))
     for cmd in (["systemctl", "--user", "daemon-reload"], ["systemctl", "--user", "enable", "--now", UNIT]):
         say("    " + " ".join(cmd))
