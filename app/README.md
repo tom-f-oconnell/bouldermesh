@@ -72,6 +72,38 @@ iPhone, on a Mac with Xcode 15 or later (no Android SDK needed):
     brew install xcodegen && brew install --cask temurin       # XcodeGen, and a JDK for the Kotlin build Xcode runs
     cd ios/xcode && xcodegen && open BoulderMesh.xcodeproj     # set your team under Signing, then run on a phone
 
+Without a Mac, or for someone else's iPhone: TestFlight, below. The icon is the site's favicon
+(`ios/xcode/make_icon.py`).
+
+### TestFlight: an iPhone without a Mac
+
+`.github/workflows/testflight.yml` builds the iPhone app on GitHub's Macs, signs it for the App Store and uploads it to
+TestFlight, from which any tester's iPhone installs it: no Mac, no cable, no registering the phone. It runs on every
+push to main that changes `app/` (or `gh workflow run testflight.yml`), each upload numbered by the run. Until its
+secrets are set it only says so. Setting them up, once, with an Apple developer account:
+
+1. [App Store Connect](https://appstoreconnect.apple.com) → *Users and Access* → *Integrations* → *App Store Connect
+   API*: generate a key (role *App Manager*), note its issuer ID, and download `AuthKey_<key id>.p8` (only once).
+2. [Identifiers](https://developer.apple.com/account/resources/identifiers/list): register an App ID with the bundle ID
+   `sh.boulderme.app` (explicit; no capabilities needed).
+3. A distribution certificate, made without a Mac: `app/ci/ios-signing.sh csr`, upload the `.csr` it makes as an
+   [*Apple Distribution*](https://developer.apple.com/account/resources/certificates/add) certificate, download it,
+   then `app/ci/ios-signing.sh p12 <downloaded .cer>`. Its key stays in `~/.bouldermesh-ios-signing`: keep it private.
+4. [Profiles](https://developer.apple.com/account/resources/profiles/add): *App Store Connect* distribution, for
+   `sh.boulderme.app`, with that certificate; download it.
+5. App Store Connect → *Apps* → *+* → *New App*: iOS, bundle ID `sh.boulderme.app`, any SKU; a name not taken on the App
+   Store (it needn't be the one under the icon).
+6. `app/ci/ios-signing.sh secrets AuthKey_<key id>.p8 <issuer id> <team id> <profile>.mobileprovision` (the team ID is
+   under *Membership details*) sets the workflow's seven secrets with `gh`; then `gh workflow run testflight.yml`.
+
+A build shows in App Store Connect's *TestFlight* tab a few minutes after the run, once Apple has processed it. To put it
+on someone's iPhone, add them as a tester: an *internal* tester (a user of your App Store Connect team, up to 100)
+gets builds at once; an *external* one (any email, in a group) after Apple's beta review of the first build of each
+version, usually within a day. They install Apple's *TestFlight* app and accept the invitation; later builds reach
+them by themselves. Each build lasts 90 days. The camera screen needs a real iPhone (ARKit doesn't run in a
+simulator); what it does there comes back to the server with each capture (`capture-log.jsonl`), and TestFlight sends
+crash reports to App Store Connect.
+
 To try either against a test server rather than the site, set its address in *Settings*. Plain `http://` works for one
 on your own network (a debug build on Android; local addresses on an iPhone); anything else has to be https.
 
