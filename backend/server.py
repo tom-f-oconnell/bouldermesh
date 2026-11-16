@@ -16,6 +16,7 @@ Data layout (DATA_DIR, default ./data):
 from __future__ import annotations
 
 import base64
+import copy
 import csv
 import email.utils
 import gzip
@@ -3756,6 +3757,24 @@ def timings_summary() -> dict:
             "beta": beta_timings()}
 
 
+_beta_records: dict[str, tuple[float, dict]] = {}
+
+
+def _beta_record(d: Path) -> dict:
+    """A mesh's beta.json, read again only when it changes (beta_timings() reads every mesh's for the admin page)."""
+    path = d / beta_mod.FILE
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        return {}
+    had = _beta_records.get(str(d))
+    if had and had[0] == stamp:
+        return had[1]
+    rec = beta_mod.load(d) or {}
+    _beta_records[str(d)] = (stamp, rec)
+    return rec
+
+
 def beta_timings(now: float | None = None) -> dict:
     """How long finding beta took, from each mesh's beta.json (started to finished, a machine's wait for it included):
     {"week": ..., "all": ...}, each {n, videos, median_minutes, per_video_minutes, longest_minutes}, or None if none."""
@@ -3763,7 +3782,7 @@ def beta_timings(now: float | None = None) -> dict:
     now = now or time.time()
     runs = []
     for d in MESHES.iterdir() if MESHES.exists() else []:
-        rec = beta_mod.load(d) or {}
+        rec = _beta_record(d)
         if rec.get("status") == "done" and rec.get("started") and rec.get("finished") and rec["finished"] >= rec["started"]:
             runs.append((rec["finished"], (rec["finished"] - rec["started"]) / 60, len(rec.get("videos") or [])))
 
@@ -7170,8 +7189,10 @@ def texture_mode(mid: str, source: str | None = None) -> str:
     if source is None:
         row = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
         source = row["source"] if row else ""
-    return policy.texture_mode(settings().get("site.textures"), source == "upload", mesh_record(MESHES / mid),
-                               retexture.has_variant(MESHES / mid))
+    setting = settings().get("site.textures")
+    if setting in ("none", "all") or source == "upload":       # what the mesh's photos are doesn't matter
+        return policy.texture_mode(setting, source == "upload", None, False)
+    return policy.texture_mode(setting, False, mesh_record(MESHES / mid), retexture.has_variant(MESHES / mid))
 
 
 def served_dir(mid: str, mode: str | None = None) -> Path:
@@ -7268,10 +7289,27 @@ def video_entry(url: str) -> dict:
     return {"source": "youtube", **(video_info(url) or {"license": None})}
 
 
+_records: dict[str, tuple[float, float, dict | None]] = {}     # mesh_record()'s: by folder, (file's time, when, record)
+RECORD_FRESH = 300      # seconds a mesh's provenance is kept for: what's learnt of its videos' licences shows by then
+
+
 def mesh_record(mesh_dir: Path) -> dict | None:
     """A mesh's provenance, with its frames' licences and uploaders filled in from the videos table where the
-    harvest hadn't recorded them: older harvests didn't, and a video's licence is learnt from its metadata later."""
-    return provenance.load(mesh_dir, video_info)
+    harvest hadn't recorded them: older harvests didn't, and a video's licence is learnt from its metadata later.
+    Kept for RECORD_FRESH seconds, or until its file changes: the admin page asks for every mesh's, every few seconds
+    (each a file and a query for each of its video frames), which took it 10-40 s on the live server."""
+    path = mesh_dir / provenance.FILE
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        stamp = 0.0
+    key, now = str(mesh_dir), time.time()
+    had = _records.get(key)
+    if had and had[0] == stamp and now - had[1] < RECORD_FRESH:
+        return copy.deepcopy(had[2])
+    rec = provenance.load(mesh_dir, video_info)
+    _records[key] = (stamp, now, rec)
+    return copy.deepcopy(rec)
 
 
 def stop_campaign(camp_id: str, now: bool = True) -> None:

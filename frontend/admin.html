@@ -790,7 +790,24 @@ document.addEventListener('click', async ev => {
   if (!confirm(`Forget the revoked and turned-down ${list === 'mach' ? 'machines' : 'volunteers'} that never did any work? They're deleted, and their tokens are then unknown rather than revoked, which their scripts treat the same.`)) return;
   try { msg((await call(`/api/admin/actions/${list === 'mach' ? 'machines' : 'volunteers'}-forget`, {})).result); refresh(); } catch (e) { msg(e.message, 8000); }
 });
-async function refresh(){ try { render(await call('/api/admin/state')); } catch (e) { msg(e.message, 8000); } }
+// The page's state, again. One at a time: a call still going isn't joined by another (the state took 10-40 s at times on
+// the live server, and every 10 s they piled up). A failed one from the page's own polling says so only once it has
+// failed twice running, in words, as the server restarting or a tunnel blinking are passing; one asked for says at once.
+let refreshing = null, refreshFails = 0;
+function refresh(polled = false){
+  if (refreshing) return refreshing;
+  refreshing = (async () => {
+    try { render(await call('/api/admin/state')); refreshFails = 0; }
+    catch (e) {
+      refreshFails++;
+      const net = e instanceof TypeError;      // fetch's own failure: no answer at all (Firefox: "NetworkError when attempting to fetch resource")
+      if (!polled || refreshFails >= 2)
+        msg(net ? `Can't reach the admin page's server${refreshFails > 1 ? ` (${refreshFails} tries running)` : ''}: trying again every 10 s` : e.message, 8000);
+    }
+    finally { refreshing = null; }
+  })();
+  return refreshing;
+}
 async function save(changes, compute){
   try { const s = await call('/api/admin/settings', changes); if (compute) editing = false; render(s); msg('Saved'); }
   catch (e) { msg(e.message, 8000); refresh(); }
@@ -1104,7 +1121,7 @@ $('#pair-show').onclick = async () => {
     clearTimeout(renderPairing.t); renderPairing.t = setTimeout(refresh, r.seconds * 1000 + 500);
   } catch (e) { msg(e.message, 8000); }
 };
-refresh(); setInterval(refresh, 10000);
+(async function poll(){ await refresh(true); setTimeout(poll, 10000); })();     // 10 s after each answer, not every 10 s
 </script>
 </body>
 </html>
