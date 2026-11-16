@@ -25,8 +25,10 @@ pass (step 5); GPU SIFT with the CPU SIFT as its fallback when its model fails t
 matched photos (step 8); a video's repeated frames dropped in the harvest, slots not refilled (step 6). Not taken: no
 side models (step 7). `MESH_RULES` is not raised for them (Tom, section 67:
 "defer MESH_RULES"; meshes from before the new boulder grouping are remade first, and the ~3 made between the grouping
-and the new pipeline only far down the line, maybe in a lower tier: ask him before queuing them). A hal session writes
-them once Tom confirms there (it came by relay); atlas checks each before it's deployed, then times
+and the new pipeline only far down the line, maybe in a lower tier: ask him before queuing them). Tom confirmed
+on hal ("write all of them"); written Nov 16: one pass and GPU SIFT's fallback in 70d2afa (with every GPU-to-CPU
+fallback logged: `fallbacks.json` beside the mesh, `FALLBACK:` log lines, the server's `fallbacks.jsonl`, at Tom's
+asking), repeated frames in c522266 (ORB, the last 8 kept frames, the sharper kept). Not deployed; atlas checks each before it's deployed, then times
 them together with `views2` (step 10).
 
 <!-- owner: hal -->
@@ -579,7 +581,7 @@ tell them apart. Later sections correct earlier ones.
 | `meshes.py` | depth maps, fused points, faces and seconds from OpenMVS's logs; `export` copies the GLBs out |
 | `verify_build.py`, `sim_closeups.py`, `incr/boulder.py` | the check a tool tree must pass to be timed; the simulated close-ups; the incremental pipeline |
 
-Last updated: 2026-11-15 23:55 PST, through section 67 of the handoff file.
+Last updated: 2026-11-16 01:35 PST, through section 68 of the handoff file.
 
 ## Benchmarking left on hold
 
