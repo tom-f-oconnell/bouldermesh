@@ -49,7 +49,7 @@ grey=''; [ -n "$ask" ] && grey=$'\e[90m'    # what's said while it waits, as cli
 deploy_json() {
     ssh bouldermesh 'cd bouldermesh && docker compose exec -T bouldermesh python3 -' <<'PY'
 import os, sys, urllib.request
-sys.stdout.write(urllib.request.urlopen(f"http://127.0.0.1:{os.environ.get('PORT', '8470')}/api/deploy", timeout=30).read().decode())
+sys.stdout.write(urllib.request.urlopen(f"http://127.0.0.1:{os.environ.get('PORT', '8470')}/api/deploy", timeout=120).read().decode())
 PY
 }
 cancel() {
@@ -93,6 +93,11 @@ deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public || exit 1
 set +e
 out=$(deploy_json | python3 cli.py deploy-check --from - ${ask:+--color})
 check=$?
+if [ "$check" -ne 0 ] && [ "$check" -ne 3 ]; then     # a busy server can be slow to answer: once more before going on
+    echo "the server didn't say what's in progress: asking once more"
+    out=$(deploy_json | python3 cli.py deploy-check --from - ${ask:+--color})
+    check=$?
+fi
 set -e
 legend=''
 if [[ "$out" == *$'\n@@legend\n'* ]]; then
@@ -152,7 +157,15 @@ if [ "$check" -eq 3 ]; then
         cli deploy-drain --now >/dev/null       # the stop then doesn't wait for jobs either
     fi
 elif [ "$check" -ne 0 ]; then
-    echo "couldn't ask the server what's in progress (it may be down): restarting anyway"
+    # it may be down, or too busy to answer: a restart then may cut short what it's doing, so asked, when there's
+    # someone to ask (on Nov 16, 2026 it went ahead without, the server too busy to answer for 30 s)
+    if [ "$mode" = ask ] && [ -t 0 ]; then
+        printf '%s' "${ask}Couldn't ask the server what's in progress (it may be down, or busy). Restart [a]nyway, or [c]ancel?${plain} "
+        read -r answer || answer=c
+        case "$answer" in a|A) echo "restarting anyway" ;; *) cancel ;; esac
+    else
+        echo "couldn't ask the server what's in progress (it may be down): restarting anyway"
+    fi
 fi
 
 on_server 'git pull --ff-only && sudo systemctl restart bouldermesh' || exit 1
