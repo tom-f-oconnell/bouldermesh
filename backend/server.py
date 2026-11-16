@@ -3021,7 +3021,7 @@ def inputs_record(pid: str, log=None) -> dict | None:
         proj = q("SELECT kind, climb_id, boulder FROM projects WHERE id=?", pid, one=True)
         pdir, kind = PROJECTS / pid, inputs_kind(proj)
         rec = {"project": pid, "kind": kind, "photos": meshinputs.photo_files(meshinputs.photos_in(pdir / "photos")),
-               "filter": meshinputs.filter_of(_read_json(pdir / "relevance.json")), "meshopts": meshopts.mapper(),
+               "filter": meshinputs.filter_of(_read_json(pdir / "relevance.json")), "meshopts": meshopts.placing(),
                "mesh_rules": MESH_RULES, "unknown": {}}
         if kind in ("boulder", "pool"):
             rec["leaf"] = pool_leaf(proj["boulder"])
@@ -3175,7 +3175,8 @@ def _mapper_now(kind: str, rec: dict, proj: dict | None) -> dict | None:
              for c in [q("SELECT * FROM campaigns WHERE id=?", r["campaign_id"], one=True)] if c}
     if len(found) > 1:
         return None
-    return {**meshopts.MAPPER, **json.loads(found.pop())} if found else dict(meshopts.MAPPER)
+    base = {k: v for k, v in meshopts.MAPPER.items() if k not in meshopts.TEXTURE_ONLY}    # as inputs.json keeps them (meshopts.placing())
+    return {**base, **json.loads(found.pop())} if found else base
 
 
 def _pool_now(leaf: str, members: list[str]) -> tuple[list[str] | None, str | None]:

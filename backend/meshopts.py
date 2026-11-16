@@ -31,6 +31,15 @@ def mapper() -> dict:
     return {**MAPPER, **(given() or {})}
 
 
+def placing() -> dict:
+    """mapper(), of what decides how photos are placed: what a mesh's record of what it was made from keeps, and what
+    it's compared by later. How it's textured isn't among them, so changing that makes no mesh out of date."""
+    return {k: v for k, v in mapper().items() if k not in TEXTURE_ONLY}
+
+
+TEXTURE_ONLY = ("texture_every",)
+
+
 def given() -> dict | None:
     """What an area, or the whole site, set for the mesh this thread is making, if anything: what a job elsewhere is sent."""
     return {**_site, **(getattr(_local, "mapper", None) or {})} or None
