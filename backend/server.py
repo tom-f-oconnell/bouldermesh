@@ -517,6 +517,12 @@ def _km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return 12742 * math.asin(math.sqrt(h))
 
 
+def is_area_url(url: str) -> bool:
+    """Whether a link is to an area (Mountain Project's /area/, OpenBeta's /area(s)/), not to one climb."""
+    path = url.split("?")[0].split("#")[0]
+    return bool(re.search(r"mountainproject\.com/area/\d", path) or re.search(r"openbeta\.io/areas?/", path))
+
+
 def upsert_climb(c: Climb) -> str:
     row = q("SELECT id, lat, lng, coord_source FROM climbs WHERE source=? AND source_id=?", c.source, c.source_id, one=True)
     if row and c.raw.get("stub"):   # an area-table summary never replaces a record we already have
@@ -3638,11 +3644,13 @@ def mesh_areas():
     path of its first climb's area, top first."""
     made_for: dict[str, set] = {}
     by_climb: dict[str, set] = {}
-    for r in q("SELECT ci.mesh_id, ci.climb_id, c.name FROM campaign_items ci JOIN campaigns c ON c.id=ci.campaign_id"):
+    # a climb an area lists is its, linked yet or not: one imported on its own is matched by its Mountain Project id
+    mp = {r["source_id"]: r["id"] for r in q("SELECT id, source_id FROM climbs WHERE source='mountainproject'")}
+    for r in q("SELECT ci.mesh_id, ci.climb_id, ci.source_id, c.name FROM campaign_items ci JOIN campaigns c ON c.id=ci.campaign_id"):
         if r["mesh_id"]:
             made_for.setdefault(r["mesh_id"], set()).add(r["name"])
-        if r["climb_id"]:
-            by_climb.setdefault(r["climb_id"], set()).add(r["name"])
+        for climb in {r["climb_id"], mp.get(r["source_id"])} - {None}:
+            by_climb.setdefault(climb, set()).add(r["name"])
     paths = {c["id"]: c["area_path"] for c in q("SELECT id, area_path FROM climbs WHERE area_path IS NOT NULL")}
 
     def of(m: dict) -> tuple[list[str], list[str] | None]:
@@ -4502,6 +4510,14 @@ def run_campaign_item(camp: dict, item: dict) -> None:
         elif with_boulder:
             set_item(cid, sid, status="done", climb_id=climb_id, mesh_id=with_boulder, note="already meshed with its boulder")
         else:
+            if not resume:      # its harvest made already (imported and harvested on its own): carried on from, not done again
+                # (one an area made is left to the areas' own rules, which try a skipped climb again)
+                own = next((h for h in climb_harvests(climb_id) if q(
+                    "SELECT 1 FROM projects WHERE id=? AND status IN ('harvested','failed','interrupted','stopped','new')", h)
+                    and not q("SELECT 1 FROM campaign_items WHERE project_id=?", h)), None)
+                if own:
+                    pid, resume = own, True
+                    append_log(pid, f"-- taken up by the area {camp['name']}: harvested already, so not again")
             if not resume:
                 pid = new_id()
                 (PROJECTS / pid / "photos").mkdir(parents=True)
@@ -10189,7 +10205,10 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/climbs/import":
                 body = self.read_json()
                 url = (body.get("url") or "").strip()
-                recs = climbs_mod.fetch_climb_url(url, include_children=bool(body.get("include_children", True)))
+                if is_area_url(url):    # an area is taken whole by an area's job (create_campaign()), not here
+                    return self.send_json({"error": "that's an area: start a job for it in the Areas tab, which lists its "
+                                                    "climbs and meshes them; this box takes one climb's link"}, 400)
+                recs = [c for c in climbs_mod.fetch_climb_url(url, include_children=False) if c.kind != "area"]
                 ids = [upsert_climb(c) for c in recs]
                 return self.send_json({"imported": [climb_row(i) for i in ids]}, 201)
 

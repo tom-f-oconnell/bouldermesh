@@ -468,18 +468,10 @@
       <section class="w">
         <h2>Import</h2>
         <div class="row">
-          <input type="text" id="imp-url" class="grow" placeholder="mountainproject.com route or area URL · openbeta.io/climbs/<uuid> · kaya link">
+          <input type="text" id="imp-url" class="grow" placeholder="mountainproject.com route URL · openbeta.io/climbs/<uuid> · kaya link">
           <button id="imp-go">Import</button>
         </div>
-        <div class="checks" style="margin-top:6px"><label><input type="checkbox" id="imp-children" checked> for areas, also import each problem (summary from the area page)</label></div>
-        <details style="margin-top:8px"><summary>Search OpenBeta by name or near coordinates</summary>
-          <div class="row" style="margin-top:6px">
-            <input type="text" id="s-q" class="grow" placeholder="area / boulder name (e.g. Camp 4 Boulders)">
-            <input type="text" id="s-ll" style="width:150px" placeholder="lat, lng (optional)">
-            <button class="sec" id="s-go">Search</button>
-          </div>
-          <div id="s-results"></div>
-        </details>
+        <p class="meta" style="margin:6px 0 0">One climb's link. A whole area: start a job for it in the Areas tab.</p>
         <details style="margin-top:8px"><summary>Add manually / Kaya export</summary>
           <div class="row" style="margin-top:6px"><input type="text" id="m-name" placeholder="name" class="grow"><input type="text" id="m-grade" placeholder="grade" style="width:80px"></div>
           <div class="row" style="margin-top:6px"><input type="text" id="m-boulder" placeholder="boulder name" class="grow"><input type="text" id="m-ll" placeholder="lat, lng" style="width:150px"></div>
@@ -3369,27 +3361,12 @@ $('#imp-go').onclick = async () => {
   const url = $('#imp-url').value.trim(); if (!url) return;
   toast('Fetching… (polite rate limit: up to a minute per Mountain Project page)', 120000);
   try {
-    const r = await api('/api/climbs/import', { method: 'POST', json: { url, include_children: $('#imp-children').checked } });
+    const r = await api('/api/climbs/import', { method: 'POST', json: { url } });
     toast(`Imported ${r.imported.length} record(s)`); $('#imp-url').value = '';
     await refreshClimbs(); if (r.imported.length) openClimb(r.imported[0].id);
   } catch (e) { toast('Import failed: ' + e.message, 8000); }
 };
 $('#imp-url').addEventListener('keydown', e => { if (e.key === 'Enter') $('#imp-go').click(); });
-$('#s-go').onclick = async () => {
-  const ll = parseLL($('#s-ll').value);
-  toast('Searching OpenBeta…', 30000);
-  try {
-    const r = await api('/api/climbs/search', { method: 'POST', json: { q: $('#s-q').value.trim(), lat: ll?.[0], lng: ll?.[1], radius_m: 3000 } });
-    const el = $('#s-results'); el.innerHTML = r.results.length ? '' : '<div class="status">No results.</div>';
-    for (const a of r.results.slice(0, 40)) {
-      const d = document.createElement('div'); d.className = 'row'; d.style.marginTop = '4px';
-      d.innerHTML = `<span class="grow"><b>${esc(a.name)}</b>${a.boulder_name?'<span class="tag">boulder</span>':''} <small>${esc((a.area_path||[]).slice(-3).join(' › '))} · ${fmtLL(a.lat,a.lng)}</small></span><button class="sm sec">Import</button>`;
-      d.querySelector('button').onclick = async () => { $('#imp-url').value = a.url; $('#imp-go').click(); };
-      el.appendChild(d);
-    }
-    toast(`${r.results.length} result(s)`);
-  } catch (e) { toast('Search failed: ' + e.message, 8000); }
-};
 $('#m-go').onclick = async () => {
   const ll = parseLL($('#m-ll').value);
   try {

@@ -51,9 +51,10 @@ Terms: the Adventure Projects (Mountain Project) terms disallow automated/bulk s
 so that adapter is deliberately low-volume — one page per import, disk cache, robots.txt
 honoured including its `Crawl-delay` (60 s on MP, so each further MP page or photo takes a
 minute; documented APIs like Commons and Flickr are exempt from robots rules, which address
-crawlers). Importing an area summarises its problems from the area page's own route table;
-a problem's page (photos, description, route GPS) is fetched when you import it directly,
-press *Fetch problem page*, or harvest it. Use OpenBeta for anything bulk. KAYA's terms
+crawlers). The Climbs tab's *Import* takes one climb's link; a whole area is an area's job
+(the Areas tab), whose list of climbs comes from Mountain Project in one request. A climb
+imported on its own counts as the area's that lists it, and an area's job that comes to it
+uses its mesh, or carries on from its harvest, rather than doing them again. KAYA's terms
 prohibit scraping and circumventing their app, so the Kaya adapter only records links
 and imports files you already hold.
 
@@ -1313,7 +1314,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
                                                         area or grade), with meshes, or whose coordinates look wrong; multi: those
                                                         with more than one mesh first
     GET  /api/climbs/count · GET|PATCH|DELETE /api/climbs/{id}
-    POST /api/climbs/import {url, include_children}     MP / OpenBeta / Kaya URL
+    POST /api/climbs/import {url}                       one climb's MP / OpenBeta / Kaya URL (areas: an area's job)
     POST /api/climbs/search {q, lat, lng, radius_m}     OpenBeta live search
     POST /api/climbs/manual {...} · POST /api/climbs/kaya-export (multipart csv/json)
     POST /api/climbs/{id}/harvest {sources:[climb,google,ddg,commons,flickr,youtube], reconstruct, filter}
