@@ -3284,12 +3284,15 @@ const PROJECT_NAMES = { new: 'new', queued: 'queued to mesh', harvesting: 'gathe
 const PROJECT_TIPS = { harvested: 'Its photos are gathered: it is meshed with the rest of its boulder\'s, or when asked (Reconstruct)',
   waiting: 'Waiting for volunteers\' YouTube searches and videos, or for the rest of its boulder\'s climbs' };
 function projectState(p){
+  // what a machine is doing for it now, else what's still to do for its mesh (beta in its videos, its size): /api/projects' left
   const running = (p.work || []).filter(w => w.state === 'running'), queued = (p.work || []).filter(w => w.state !== 'running');
   const doing = (running.length ? running : queued).map(w => w.what.replace(/ (of|for)$/, '')).join(', ');
-  const base = PROJECT_NAMES[p.status] || p.status;
-  if (!doing || ['running', 'harvesting'].includes(p.status)) return { label: base, cls: p.status, tip: PROJECT_TIPS[p.status] || '' };
-  return { label: `${base}; ${doing}${running.length ? '' : ' (waiting for a machine)'}`, cls: running.length ? 'running' : 'queued',
-           tip: 'A machine is still working for it: the tag beside this says which' };
+  const base = PROJECT_NAMES[p.status] || p.status, left = p.left || [];
+  if (['running', 'harvesting'].includes(p.status) || (!doing && !left.length)) return { label: base, cls: p.status, tip: PROJECT_TIPS[p.status] || '' };
+  if (doing) return { label: `${base}; ${doing}${running.length ? '' : ' (waiting for a machine)'}`, cls: running.length ? 'running' : 'queued',
+                      tip: ['A machine is still working for it: the tag beside this says which', ...left].join('. ') };
+  const what = [...new Set(left.map(x => x.split(' ')[0]))].join(' and ');     // "beta", "size"
+  return { label: `${base}; ${what} to come`, cls: 'queued', tip: `Still to do: ${left.join('; ')}` };
 }
 async function refreshProjects(){
   // what's being worked on first: running or harvesting, or a machine at work for it (its mesh's beta or size, say); then
@@ -5899,8 +5902,8 @@ function openEdit(){    // on a phone, Scan has the focus, rather than the token
     <div class="row" style="gap:8px;margin:0 0 14px"><input type="password" class="tok" placeholder="Editing token" autocomplete="off" aria-label="Editing token"${phone.matches ? '' : ' autofocus'}><button class="sm use">Use it</button></div>
     <p>Or, on the admin page on your computer, press <i>Show a QR for a phone</i>, and scan it: <button class="sm sec scan"${phone.matches ? ' autofocus' : ''}>Scan</button></p>
     <p class="scanmsg"></p><video playsinline muted hidden></video>
-    ${accountInfo?.accounts ? `<details><summary>I have a code</summary>
-      <p>To sign in to your account here: on a device where you're signed in, press your name at the top of the page, then <i>Sign in another device</i>, and enter the code it shows.</p>
+    ${accountInfo?.accounts ? `<details><summary>Sign in with a code</summary>
+      <p>To sign in to your account here: on a device where you're signed in, press your name at the top of the page (in the phone app: <i>Settings</i>), then <i>Sign in another device</i>, and enter the code it shows.</p>
       <div class="row" style="gap:8px;margin:0 0 10px"><input type="text" class="code" placeholder="Code" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Code from a signed-in device"><button class="sm takecode">Sign in</button></div>
       <p class="err codemsg"></p></details>` : ''}
     <div class="row" style="justify-content:flex-end"><button class="sm sec close">Cancel</button></div>`;
@@ -5989,8 +5992,8 @@ function openJoin(invite){
 // what a new account is shown once it's joined (and accepted the terms): where its account is, and the phone app
 function openWelcome(){
   if (!accountInfo?.apps) return toast(`Welcome, ${account.name}. Your name is at the top of the page.`, 6000);
-  acctDlg(`<p><b>Welcome, ${esc(account.name)}.</b> Your name at the top of the page opens your account, where these links
-    stay.</p>${appsHtml()}<div class="row" style="justify-content:flex-end"><button class="sm close">Close</button></div>`);
+  bindApps(acctDlg(`<p><b>Welcome, ${esc(account.name)}.</b> Your name at the top of the page opens your account, where these links
+    stay.</p>${appsHtml()}<div class="row" style="justify-content:flex-end"><button class="sm close">Close</button></div>`));
 }
 // the terms, to an account that hasn't accepted them as they stand: nothing of its own is taken until it does;
 // welcome: just joined, so the welcome follows
@@ -6051,6 +6054,24 @@ async function showAdded(dlg){
   });
 }
 // where an account gets the phone apps (GET /api/account's apps): Android's latest build; the iPhone's through TestFlight
+// appsHtml()'s "Sign the app in" on an Android phone: a pairing code of the account's, handed to the app by a link it
+// answers to (bouldermesh://pair, MainActivity.signInFrom()), which signs it in and credits its photos to this name
+function bindApps(dlg){
+  const b = dlg.querySelector('.appsign');
+  if (!b) return;
+  b.onclick = async () => {
+    const say = dlg.querySelector('.appsignsay');
+    b.disabled = true; say.textContent = '';
+    try {
+      const r = await api('/api/account/pair', { method: 'POST', json: {} });
+      const url = `intent://pair?code=${encodeURIComponent(r.code)}&server=${encodeURIComponent(location.origin)}#Intent;scheme=bouldermesh;package=sh.boulderme.app;end`;
+      say.innerHTML = `If the app didn't open, <a href="${esc(url)}">open it here</a>. It needs installing first, from the button above.`;
+      location.href = url;
+    }
+    catch (e) { say.textContent = sentence(e.message); }
+    b.disabled = false;
+  };
+}
 // The one for this device first, as a button; on a computer, both, and how to get them onto the phone.
 function appsHtml(){
   const a = accountInfo?.apps;
@@ -6063,7 +6084,9 @@ function appsHtml(){
     : 'iPhone: not yet available.';
   const head = `<p style="margin-bottom:4px"><b>The phone app</b>, to photograph a boulder for its mesh:</p>`;
   if (android) return `${head}<p style="margin:0 0 6px"><a href="${esc(a.android)}" target="_blank" rel="noopener" style="display:inline-block;background:var(--acc);color:var(--acc-fg);padding:7px 11px;border-radius:6px;font-weight:600;text-decoration:none">Get the Android app</a></p>
-    <p style="margin:0 0 10px;font-size:13px">On the page it opens, tap the <i>.apk</i>, then allow this browser to install it.</p>`;
+    <p style="margin:0 0 10px;font-size:13px">On the page it opens, tap the <i>.apk</i>, then allow this browser to install it.</p>
+    <p style="margin:0 0 4px">Once it's installed: <button class="sm sec appsign">Sign the app in as ${esc(account?.name || 'you')}</button></p>
+    <p class="appsignsay" style="margin:0 0 10px;font-size:13px"></p>`;
   if (ios) return `${head}<ul style="margin:0 0 10px"><li>${iph}</li></ul>`;
   return `${head}<ul style="margin:0 0 6px"><li>${and}</li><li>${iph}</li></ul>
     <p style="margin:0 0 10px;font-size:13px">On a computer: open this site on the phone and sign in there (<i>Sign in another device</i>, in your
@@ -6077,13 +6100,14 @@ function openAccount(){
     <div class="pair"></div><p class="err"></p>
     <div class="row" style="gap:8px;justify-content:flex-end;flex-wrap:wrap"><button class="sm sec pairgo">Sign in another device</button><button class="sm sec out">Sign out</button><button class="sm close">Close</button></div>`);
   dlg.querySelector('.toterms')?.addEventListener('click', openTerms);
+  bindApps(dlg);
   showAdded(dlg);
   dlg.querySelector('.out').onclick = () => { if (confirm('Sign out of this browser? Signing in again needs a code from another of your devices, or a new invite.')) signOut(); };
   dlg.querySelector('.pairgo').onclick = async ev => {
     ev.target.disabled = true; dlg.querySelector('.err').textContent = '';
     try {
       const r = await api('/api/account/pair', { method: 'POST', json: {} });
-      dlg.querySelector('.pair').innerHTML = `<p>On the other device, enter this code: in the phone app, or on this site under <i>Edit…</i>, <i>I have a code</i>.</p>
+      dlg.querySelector('.pair').innerHTML = `<p>On the other device, enter this code: in the phone app, under <i>Settings</i>, <i>Pairing link or code</i>; or on this site, under <i>Edit…</i>, <i>Sign in with a code</i>.</p>
         <p class="paircode">${esc(r.code)}</p><p>It works once, and lasts 10 minutes (until ${hhmm(r.expires)}).</p>`;
       ev.target.textContent = 'A new code';
     }

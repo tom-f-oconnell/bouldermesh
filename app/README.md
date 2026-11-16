@@ -27,7 +27,11 @@ phone yet**: see [What's been checked](#whats-been-checked).
 A rock with no mesh: *Capture a new rock…*, tap its middle, and walk round as much of it as you can; *Can't reach that
 side* for the rest, and *Mark a hold* for anything that needs close-ups.
 
-Uploading needs the site's editing token (*Settings*: paste it, or the link from the admin page's *Pair a phone*).
+Uploading needs an account or the site's editing token. On an Android phone signed in to the site, your account's
+*Sign the app in* opens the app signed in, with your photos credited to your account's name. Otherwise, in *Settings*,
+paste an invite link, a code from *Sign in another device* on the site, or the link from the admin page's *Pair a
+phone*. The app's own *Sign in another device* (in *Settings*) gives a code for signing in on a computer: there, *Edit…*,
+*Sign in with a code*.
 
 ## More
 

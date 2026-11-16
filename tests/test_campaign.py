@@ -3601,4 +3601,32 @@ finally:
     server.MACHINES.state = real_state
     server.q("DELETE FROM projects WHERE id IN ('bb0000000001','bb0000000002')", write=True)
 print("machines' work by project OK")
+
+# what's still to do for a meshed project: beta in its videos (so many of so many done), its size; nothing once done
+server.q("INSERT INTO projects(id,name,created,kind,status,mesh_id) VALUES('cc0000000001','Left Boulder (boulder)',?,'boulder','done','dd0000000001')",
+         time.time(), write=True)
+server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES('dd0000000001','Left Boulder','m.glb','project:cc0000000001',?)", time.time(), write=True)
+(server.MESHES / "dd0000000001").mkdir(parents=True, exist_ok=True)
+real = (server.beta_mod.videos, server.beta_mod.load, server.scale_mod.load)
+beta_rec, size_rec = {"status": "queued", "videos": [{"holds": []}], "waiting_videos": ["u3"]}, {"status": "queued"}
+server.beta_mod.videos = lambda d: {"u1": {}, "u2": {}, "u3": {}} if d.name == "dd0000000001" else real[0](d)
+server.beta_mod.load = lambda d: beta_rec if d.name == "dd0000000001" else real[1](d)
+server.scale_mod.load = lambda d: size_rec if d.name == "dd0000000001" else real[2](d)
+try:
+    server._steps_left["at"] = 0
+    left = server.steps_left()["cc0000000001"]
+    assert left == ["beta queued: 1 of 3 video(s) done, 1 still to fetch", "size queued"], left
+    beta_rec.update(status="done", videos=[{}, {}, {}], waiting_videos=[])
+    size_rec.update(status="done")
+    server._steps_left["at"] = 0
+    assert "cc0000000001" not in server.steps_left(), "every step done: nothing left"
+    beta_rec.update(videos=[{}, {}])     # done before a third video was placed in it
+    server._steps_left["at"] = 0
+    assert server.steps_left()["cc0000000001"] == ["beta not looked for yet: 2 of 3 video(s) done"]
+finally:
+    server.beta_mod.videos, server.beta_mod.load, server.scale_mod.load = real
+    server.q("DELETE FROM projects WHERE id='cc0000000001'", write=True)
+    server.q("DELETE FROM meshes WHERE id='dd0000000001'", write=True)
+    server._steps_left["at"] = 0
+print("steps still to do OK")
 print("ALL CAMPAIGN TESTS PASSED")

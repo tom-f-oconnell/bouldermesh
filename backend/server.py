@@ -8224,6 +8224,41 @@ def machine_work() -> dict[str, list]:
     return out
 
 
+_steps_left: dict = {"at": 0.0, "by": {}}
+STEPS_LEFT_EVERY = 60       # seconds the steps left are kept between workings out (they read every mesh's records)
+
+
+def steps_left() -> dict[str, list[str]]:
+    """What's still to do for each meshed project, by its id, beyond meshing: finding beta in its mesh's videos (all of
+    those placed in it, or those still to look at) and finding its size, each as words for the projects tab ("beta: 2
+    of 5 videos", "size"). Meshes made old by a newer one aren't listed. Kept STEPS_LEFT_EVERY seconds."""
+    now = time.time()
+    if now - _steps_left["at"] < STEPS_LEFT_EVERY:
+        return _steps_left["by"]
+    by: dict[str, list[str]] = {}
+    for r in q("SELECT p.id AS pid, m.id AS mid FROM projects p JOIN meshes m ON m.id = p.mesh_id WHERE m.replaced_by IS NULL"):
+        d, left = MESHES / r["mid"], []
+        if not d.is_dir():
+            continue
+        try:
+            total = len(beta_mod.videos(d))
+            rec = beta_mod.load(d) or {}
+            done = len(rec.get("videos") or []) if rec.get("status") == "done" else len([v for v in rec.get("videos") or [] if v.get("holds") is not None])
+            if total and (rec.get("status") != "done" or done < total):
+                state = {"queued": "queued", "running": "being found"}.get(rec.get("status"), "not looked for yet")
+                waits = len(rec.get("waiting_videos") or [])
+                left.append(f"beta {state}: {min(done, total)} of {total} video(s) done" + (f", {waits} still to fetch" if waits else ""))
+            size = (scale_mod.load(d) or {}).get("status")
+            if size not in ("done", "nothing to go by"):
+                left.append({"queued": "size queued", "running": "size being found"}.get(size, "size not found yet"))
+        except Exception:  # noqa: BLE001 - a mesh whose records can't be read is only left out
+            continue
+        if left:
+            by[r["pid"]] = left
+    _steps_left.update(at=now, by=by)
+    return by
+
+
 def phone_apps() -> dict:
     """Where an account gets the phone apps: the Android app's latest build, and the iPhone app's public TestFlight link
     (the admin page's apps.testflight_url), if there is one. Shown only to accounts (and invitees, as they join)."""
@@ -9157,7 +9192,7 @@ class Handler(BaseHTTPRequestHandler):
                 me = self.who()     # what an account added and nobody approved is its own and the owner's to see; what it deleted, the owner's
                 rows = [r for r in rows if not r["user_id"] or (r["approved"] == 1 and not r["deleted_at"]) or
                         (me and (me["role"] == "owner" or (r["user_id"] == me["id"] and not r["deleted_at"])))]
-                work = machine_work()
+                work, left = machine_work(), steps_left()
                 for r in rows:
                     if r["id"] in areas:
                         r["areas"] = areas[r["id"]]
@@ -9165,6 +9200,8 @@ class Handler(BaseHTTPRequestHandler):
                         r["low_priority"] = any(a.get("old_rerun") for a in r["areas"])
                     if r["id"] in work:
                         r["work"] = work[r["id"]]
+                    if r["id"] in left:
+                        r["left"] = left[r["id"]]
                 return self.send_json(rows)
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/effects", p)
             if m:   # what stopping or deleting it would do, to say first

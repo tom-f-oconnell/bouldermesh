@@ -69,6 +69,23 @@ class Api(private val store: Store) {
             ?: throw IOException("the server gave no token")
     }
 
+    /** The name of the account this phone's token is for, or null for the site's own token (or none). */
+    fun accountName(): String? = runCatching {
+        json.parseToJsonElement(read(open("/api/account")).decodeToString()).jsonObject["user"]?.jsonObject?.get("name")?.jsonPrimitive?.content
+    }.getOrNull()?.takeIf { it.isNotBlank() }
+
+    /**
+     * Signs this phone in with a pairing code, and if photos aren't credited to anyone yet, credits them to the
+     * account's name. Returns that name, or null for the site's own token.
+     */
+    fun signIn(codeOrLink: String): String? {
+        store.token = pair(codeOrLink, store.credit)
+        return accountName()?.also { if (store.credit.isBlank()) store.credit = it }
+    }
+
+    /** A code another device signs in to this phone's account with (the site's Edit…, Sign in with a code), once, for 10 minutes. */
+    fun pairCode(): String = postJson("/api/account/pair", "{}")["code"]?.jsonPrimitive?.content ?: throw IOException("the server gave no code")
+
     /** Tells the server this phone's account accepts the terms, as it did on the phone: nothing, for the site's own token. */
     fun acceptTerms() { runCatching { postJson("/api/account/terms", "{\"version\":${sh.boulderme.core.TERMS_VERSION}}") } }
 

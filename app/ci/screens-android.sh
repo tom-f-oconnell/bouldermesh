@@ -30,6 +30,22 @@ WAIT=15 shot browse --es screen browse --ez get true
 [ "$ONLY" = capture ] || shot home-with-mesh
 WAIT=25 shot capture --es screen capture
 WAIT=12 shot capture-new --es screen capture --es mesh none
+# the site's "Sign the app in" (bouldermesh://pair): with an account's code from a server with accounts (PAIR_SERVER,
+# PAIR_CODE, PAIR_NAME, from app/ci/pair_code.py), the app keeps a token and credits its photos to the account's name
+if [ "$ONLY" != capture ] && [ -n "${PAIR_CODE:-}" ]; then
+    adb shell am force-stop $ID
+    adb shell "am start -W -a android.intent.action.VIEW -d 'bouldermesh://pair?code=$PAIR_CODE&server=$PAIR_SERVER' --es server '$PAIR_SERVER' $ID" > /dev/null
+    sleep 8
+    adb exec-out screencap -p > "$OUT/$PREFIX-signed-in.png"
+    prefs=$(adb shell run-as $ID cat shared_prefs/bouldermesh.xml)
+    if echo "$prefs" | grep -q "name=\"credit\">$PAIR_NAME<" && echo "$prefs" | grep -qE 'name="token">[^<]{10,}<'; then
+        echo "signed in from a link: credited to $PAIR_NAME"
+    else
+        echo "::error::the app didn't sign in from bouldermesh://pair, or didn't credit its photos to $PAIR_NAME"; echo "$prefs" | sed 's/name="token">[^<]*</name="token">…</'; fail=1
+    fi
+    if [ -z "$(adb shell pidof $ID)" ]; then echo "::error::the Android app died signing in from a link"; adb logcat -d -b crash | tail -80; fail=1; fi
+    adb shell pm clear $ID > /dev/null     # its token is the other server's: the next run starts clean
+fi
 adb shell dumpsys media.camera 2>/dev/null | grep -iE "Number of camera devices|Device [0-9]+ is|Facing|camera provider" | head -12 > "$OUT/$PREFIX-cameras.txt"
 adb logcat -d | grep -E "$ID|ARCore|arcore|native  :|AndroidRuntime|GLES|EGL" | tail -3000 > "$OUT/$PREFIX-logcat.txt"
 exit $fail

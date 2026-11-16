@@ -41,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -259,6 +260,7 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
     var token by remember { mutableStateOf(a.store.token) }
     var code by remember { mutableStateOf("") }
     var said by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+    var other by remember { mutableStateOf<Pair<String?, String>?>(null) }     // a code for another device, and what to do with it
     val scope = rememberCoroutineScope()
     Page("Settings", back = { go(Screen.Home) }) {
         OutlinedTextField(server, { server = it; a.store.server = it.ifBlank { Store.DEFAULT_SERVER } }, label = { Text("Server") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -277,13 +279,29 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
         Button(enabled = code.isNotBlank(), onClick = {
             scope.launch {
                 said = try {
-                    token = withContext(Dispatchers.IO) { a.api.pair(code, a.store.credit) }
-                    a.store.token = token; code = ""
-                    "Paired: this phone can upload now." to true
+                    val name = withContext(Dispatchers.IO) { a.api.signIn(code) }
+                    token = a.store.token; credit = a.store.credit; code = ""
+                    (if (name != null) "Signed in as $name: this phone can upload now." else "Paired: this phone can upload now.") to true
                 } catch (e: Exception) { "Pairing failed: ${e.message}" to false }
             }
         }) { Text("Pair") }
         said?.let { Text(it.first, color = if (it.second) GOOD else BAD) }
+        if (token.isNotEmpty()) {
+            Section("Your account elsewhere")
+            Text("To sign in to your account on a computer or another phone, without a new invite:")
+            OutlinedButton(onClick = {
+                scope.launch {
+                    other = try {
+                        withContext(Dispatchers.IO) { a.api.pairCode() } to "On the other device, open ${a.store.server.removePrefix("https://")}, " +
+                            "press Edit…, then Sign in with a code, and enter this. It works once, for 10 minutes."
+                    } catch (e: Exception) { null to "No code: ${e.message}" }
+                }
+            }) { Text(if (other?.first != null) "A new code" else "Sign in another device") }
+            other?.let { (code, words) ->
+                Text(words, color = if (code == null) BAD else MaterialTheme.colorScheme.onSurface)
+                code?.let { SelectionContainer { Text(it, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) } }
+            }
+        }
         Text("BoulderMesh ${BuildInfo.VERSION}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

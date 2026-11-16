@@ -2,6 +2,7 @@ package sh.boulderme.app
 
 import sh.boulderme.core.TERMS_VERSION
 import android.Manifest
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -20,6 +21,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import android.widget.Toast
 
 /** Where the app is. */
 sealed interface Screen {
@@ -46,6 +48,10 @@ class MainActivity : ComponentActivity() {
         store = Store(this); api = Api(store); sensors = PhoneSensors(this)
         Crashes.watch(store.crashes)
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) tryOut()
+        signInFrom(intent)
+        if (store.token.isNotEmpty() && store.credit.isBlank()) Thread {     // paired before the app filled this in itself
+            api.accountName()?.let { if (store.credit.isBlank()) store.credit = it }
+        }.start()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(Modifier.fillMaxSize()) {
@@ -91,6 +97,35 @@ class MainActivity : ComponentActivity() {
             }
             else -> Screen.Home
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        signInFrom(intent)
+    }
+
+    /**
+     * The site's "Sign the app in" on this phone (frontend/index.html, appsHtml()): bouldermesh://pair?code=<a pairing
+     * code of the account's>&server=<the site>. Signs in with the code, crediting photos to the account's name if
+     * they're credited to nobody yet, and says how it went. A link for a server other than the app's is refused, so
+     * a link from elsewhere can't send this phone's captures somewhere else.
+     */
+    private fun signInFrom(intent: Intent?) {
+        val link = intent?.data?.takeIf { it.scheme == "bouldermesh" && it.host == "pair" } ?: return
+        intent.data = null      // once: not again as the activity is made again
+        val code = link.getQueryParameter("code")?.takeIf { it.isNotBlank() } ?: return
+        val server = link.getQueryParameter("server")?.trimEnd('/')
+        if (server != null && server != store.server.trimEnd('/')) {
+            Toast.makeText(this, "That link is for $server, and this app sends to ${store.server}: change Server in Settings first.", Toast.LENGTH_LONG).show()
+            return
+        }
+        Thread {
+            val said = try {
+                val name = api.signIn(code)
+                if (name != null) "Signed in as $name" + (if (store.credit == name) ": photos are credited to $name." else ".") else "Paired: this phone can upload now."
+            } catch (e: Exception) { "Signing in failed: ${e.message}" }
+            runOnUiThread { Toast.makeText(this, said, Toast.LENGTH_LONG).show() }
+        }.start()
     }
 
     override fun onResume() {

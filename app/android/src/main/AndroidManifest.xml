@@ -17,6 +17,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- the site's "Sign the app in" on this phone: bouldermesh://pair?code=<code>&server=<site> (MainActivity.signInFrom()) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="bouldermesh" android:host="pair" />
+            </intent-filter>
         </activity>
     </application>
 </manifest>
