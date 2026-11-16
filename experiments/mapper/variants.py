@@ -125,7 +125,10 @@ UNTIED = {m: UNTIED_LEAST for m in GPU_METHODS}
 #              of their own (embed.json in <project>/clip, match.json), timed under PAIRS_COND.
 KINDS = {"lens": ("lens", None), "dedup90": ("dedup", ("sim", 0.9)), "dedup75": ("dedup", ("sim", 0.75)),
          "move2": ("dedup", ("move", 0.02)), **{f"thin{n}": ("thin", n) for n in THIN},
-         **{f"pairs{k}": ("pairs", k) for k in (20, 30, 50)}}
+         **{f"pairs{k}": ("pairs", k) for k in (20, 30, 50)},
+         # the frames the app's harvest drops (climbs/harvest.py drop_repeats(), run by harvest_repeats.py into the
+         # set's folder as listed.json before the set is derived)
+         "harvest": ("listed", "listed.json")}
 PAIRS_NEIGHBOURS = 10       # a video frame is matched with this many frames either side of it
 PAIRS_COND = "prod"         # pairs' embedding and matching timed as the app runs, beside the exhaustive set's @prod
 DERIVED_FROM = ("sift391", "siftgpu391")      # 3.9.1 databases: changed before 4.2.1 migrates a run's copy
@@ -159,8 +162,18 @@ def derive(P: str, feat: str, build: str) -> Path:
     what, arg = KINDS[kind]
     start = time.time()
     tmp = d / "database.tmp.db"
-    result = (dbtools.lens(src, tmp) if what == "lens" else dbtools.thin(src, tmp, arg) if what == "thin"
-              else dbtools.dedup(src, tmp, *arg))
+    if what == "listed":
+        if not (d / arg).exists():
+            raise RuntimeError(f"{feat}: no {arg} in {d}: make it first (harvest_repeats.py)")
+        listed = json.loads((d / arg).read_text())
+        near, dbtools.near_duplicates = dbtools.near_duplicates, lambda con, measure, threshold: listed
+        try:
+            result = dbtools.dedup(src, tmp, "listed", 0.0)
+        finally:
+            dbtools.near_duplicates = near
+    else:
+        result = (dbtools.lens(src, tmp) if what == "lens" else dbtools.thin(src, tmp, arg) if what == "thin"
+                  else dbtools.dedup(src, tmp, *arg))
     problems = dbtools.check(tmp)
     if problems:
         raise RuntimeError(f"{feat}: the changed database is unsound: {problems[:3]}")

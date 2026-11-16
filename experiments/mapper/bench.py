@@ -279,7 +279,10 @@ def launch(cname: str, tools: str, script: str, mounts: list[str], env: dict, cp
     if docker_works():
         # nothing of a step's goes to Docker's own storage (hal's root pool): no log kept, /tmp in memory
         cmd = ["docker", "run", "--rm", "--name", cname, "--log-driver", "none", "--tmpfs", "/tmp:exec,size=8g",
-               "--memory", MEM, "--memory-swap", MEM, "--pids-limit", "512", *gpu_args(), "-w", "/tmp"]
+               "--memory", MEM, "--memory-swap", MEM, "--pids-limit", "512",
+               # a tree's /usr mounted over the image hides the driver's libraries CDI puts there (the runs get the tree's
+               # empty placeholders and "No CUDA devices available"); the hook's go in after the mounts
+               *(gpu_args() if tools == "app" else ["--gpus", "all"]), "-w", "/tmp"]
         if cpus:
             cmd += ["--cpus", str(cpus)]
         if tools == "app":
