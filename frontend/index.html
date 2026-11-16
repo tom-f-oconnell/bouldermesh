@@ -390,7 +390,9 @@
     body,main{grid-template-columns:minmax(0,1fr)} aside{border-right:0} #right{display:none} .phone{display:inline-block}
     body.full{grid-template-rows:1fr} body.full header,body.full aside{display:none} body.full #right{display:grid}
     header{padding:6px 10px;gap:8px;flex-wrap:wrap;min-width:0;max-width:100vw;box-sizing:border-box} header h1{display:none}
-    html,body{overflow-x:hidden;max-width:100vw}
+    /* the page itself never scrolls on a phone (its panes and notes scroll inside): nothing that overflows the view, as
+       its notes and boxes can, lets it slide away below the view */
+    html,body{overflow:hidden;max-width:100vw} #right{overflow:hidden}
     header>*{min-width:0;flex-shrink:1;overflow:hidden;text-overflow:ellipsis}
     /* the editing token's button on a line of its own, at the right */
     header:has(#forget:not([style*='none'])) #hbreak{display:block;order:4;flex-basis:100%;height:0}
@@ -413,6 +415,8 @@
     #orient,#viewnote{top:56px;bottom:auto;left:8px;right:8px;max-width:none;max-height:35%;overflow:auto} #viewnote{z-index:3}
     #pieces{top:auto;bottom:12px;left:8px;right:auto;max-width:calc(100% - 175px);max-height:35%;overflow:auto}
     #ratebtn{font-size:14px;padding:6px 12px} #vcorner #vinfo,#vcorner #vreport{padding:6px 10px}
+    /* the rating box above the corner's buttons, its right edge at theirs, not off the screen to the left of Rate */
+    #ratemenu{position:absolute;right:0;bottom:calc(100% + 6px);width:calc(100vw - 24px - 2px);max-width:360px;box-sizing:border-box}
     #vextra{bottom:56px} #vextra button{font-size:14px;padding:6px 12px} .mthumb{width:96px} #ratemenu .seg button{padding:7px 14px;font-size:14px} #ratecomment{font-size:16px}
     #vclimb{top:6px;right:8px} #viewer:not(.quiet) #vtitle{max-width:calc(100% - 130px)!important}
     #vtitle:has(#vname:not(:empty)){display:block;position:absolute;top:6px;left:8px;max-width:calc(100% - 16px);font-size:12px;line-height:1.35;
