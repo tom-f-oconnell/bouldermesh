@@ -10702,6 +10702,7 @@ def apply_settings() -> None:
     youtube_mod.via = settings().get("youtube.via")
     relevance_mod.MATCHER = settings().get("relevance.matcher")
     relevance_mod.RUNNER = filter_anywhere      # on a machine when one can (relevance.machines), else here
+    meshopts.set_site({"texture_every": 2 if settings().get("mesh.texture_every_second") else 1})
     configure_workers()
     NOTIFIER.reconfigured()
     threading.Thread(target=skyline_existing_meshes, daemon=True).start()

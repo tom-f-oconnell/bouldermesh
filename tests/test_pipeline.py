@@ -1007,4 +1007,34 @@ with tempfile.TemporaryDirectory() as td:
     beside = json.loads((tmp / "out" / pipeline.MAPPER_FILE).read_text())
     assert beside["mapper"] == "incremental" and kept[0][-1] == beside, (beside, kept)
 print("mapper record OK")
+
+# --- texture from every second photo, where OpenMVS can be told which (2.4 on) and the site says so ---------------------
+with tempfile.TemporaryDirectory() as td:
+    td = pathlib.Path(td)
+    (td / "images").mkdir()
+    for i in range(25):
+        (td / "images" / f"p{i:02d}.jpg").write_bytes(b"x")
+        (td / "images" / f"p{i:02d}.jpg.mask.png").write_bytes(b"x")
+    real = pipeline._mvs24
+    said = []
+    try:
+        pipeline._mvs24 = lambda args: list(args)       # OpenMVS 2.4
+        assert pipeline.texture_views(td, td / "images", said.append) == ["--views-file", "texture-views.txt"]
+        kept = (td / "texture-views.txt").read_text().split()
+        assert kept == [f"p{i:02d}.jpg" for i in range(0, 25, 2)] and "13 of 25 photos (every second)" in said[0], (kept, said)
+        meshopts.set_site({"texture_every": 1})         # the admin page's box unticked: every photo, and jobs elsewhere are told
+        assert pipeline.texture_views(td, td / "images") == [] and meshopts.given() == {"texture_every": 1}
+        with meshopts.using({"more": 2}):
+            assert meshopts.given() == {"texture_every": 1, "more": 2} and meshopts.mapper()["texture_every"] == 1
+        meshopts.set_site({"texture_every": 2})         # the default again: nothing to tell
+        assert meshopts.given() is None and meshopts.mapper()["texture_every"] == 2
+        for f in list((td / "images").glob("p1*")) + list((td / "images").glob("p2*")):
+            f.unlink()
+        assert pipeline.texture_views(td, td / "images") == [], "too few photos to leave any out"
+        pipeline._mvs24 = lambda args: []               # OpenMVS 2.3 has no --views-file
+        assert pipeline.texture_views(td, td / "images") == []
+    finally:
+        pipeline._mvs24 = real
+        meshopts.set_site({})
+print("texture views OK")
 print("ALL PIPELINE TESTS PASSED")

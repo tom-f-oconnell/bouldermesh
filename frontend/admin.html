@@ -116,6 +116,8 @@
       matched (and one it didn't), and more checks didn't close the gap, so brute force stays the default.</div>
     <label class="choice"><input type="checkbox" id="filter-machines"> Filter harvests' photos on a machine that connects here, when one can
       <small>(its script version 12 or newer; it takes them before meshing, and they're filtered here, one at a time, if none takes one within 3 minutes, as when the only machine is meshing. An earlier run's verdicts stand either way: a boulder pooled again only judges what's new)</small></label>
+    <label class="choice"><input type="checkbox" id="texture-second"> Texture meshes from every second photo
+      <small>(halves the texture step, the longest of a mesh's: 335 to 159 s on a 234-photo boulder. Unticked, every photo is used. For meshes made from now on)</small></label>
     <label class="choice"><input type="checkbox" id="beta-auto"> Find beta in each new mesh with video frames placed in it
       <small>(while its videos are still here; on a machine, after meshing)</small></label>
     <div class="grid"><div><label>Meshes to find beta in at once, on as many machines that take it <small>(one at a time on this server)</small></label>
@@ -514,6 +516,7 @@ function render(s){
   $('#area-meshes').value = v['areas.meshes'];
   $('#matcher').value = v['relevance.matcher'];
   $('#filter-machines').checked = v['relevance.machines'];
+  $('#texture-second').checked = v['mesh.texture_every_second'];
   $('#beta-auto').checked = v['beta.auto']; $('#prune-videos').checked = v['videos.prune_unplaced'];
   if (document.activeElement !== $('#map-km')) $('#map-km').value = v['site.map_km'];
   if (document.activeElement !== $('#preview-faces')) $('#preview-faces').value = v['viewer.preview_faces'];
@@ -836,6 +839,7 @@ $('#beta-parallel').onchange = () => save({ 'beta.parallel': +$('#beta-parallel'
 $('#placed-percent').onchange = () => save({ 'boulders.placed_percent': +$('#placed-percent').value });
 $('#rest-auto').onchange = () => save({ 'boulders.rest_auto': $('#rest-auto').checked });
 $('#filter-machines').onchange = () => save({ 'relevance.machines': $('#filter-machines').checked });
+$('#texture-second').onchange = () => save({ 'mesh.texture_every_second': $('#texture-second').checked });
 $('#preview-faces').onchange = () => save({ 'viewer.preview_faces': Math.round(+$('#preview-faces').value) });
 $('#vol-add').onclick = async () => {
   try {

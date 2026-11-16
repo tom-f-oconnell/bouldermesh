@@ -71,6 +71,7 @@ DEFAULTS = {
     # filter a harvest's photos on a machine that connects here when one with a new enough script is in touch (they take
     # it before meshing), rather than on this server; here if none takes it within 3 minutes, or it fails
     "relevance.machines": True,
+    "mesh.texture_every_second": True,     # a mesh is textured from every second photo (meshopts.py's texture_every)
     # find beta in each new mesh with video frames placed in it, while its videos are still in the cache; and delete
     # cached videos none of whose frames is placed in any mesh, once the climbs that used them are settled
     "beta.auto": True,

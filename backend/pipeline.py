@@ -165,6 +165,24 @@ def mvs_version() -> tuple[int, int] | None:
     return (int(m[1]), int(m[2])) if m else None
 
 
+def texture_views(work: Path, images: Path, log=None) -> list[str]:
+    """TextureMesh's arguments for texturing from every meshopts' texture_every-th photo (in name order, the first
+    kept), as a list of them in work/texture-views.txt: none where every photo is used, there are too few to thin, or
+    OpenMVS is before 2.4, which has no --views-file."""
+    every = int(meshopts.mapper().get("texture_every") or 1)
+    names = sorted(f.name for f in images.iterdir() if f.is_file() and not f.name.endswith(".mask.png")) if images.is_dir() else []
+    if every < 2 or len(names) < TEXTURE_VIEWS_LEAST * every or not _mvs24(["x"]):
+        return []
+    kept = names[::every]
+    (work / "texture-views.txt").write_text("\n".join(kept) + "\n")
+    if log:
+        log(f"texture: from {len(kept)} of {len(names)} photos (every {'second' if every == 2 else f'{every}th'})")
+    return ["--views-file", "texture-views.txt"]
+
+
+TEXTURE_VIEWS_LEAST = 10    # photos left to texture from, at least, for only some to be used
+
+
 def _mvs24(args: list[str]) -> list[str]:
     """These arguments where OpenMVS is 2.4 or later, to keep 2.3's defaults; none for 2.3, which rejects --fusion-filter."""
     v = mvs_version()
@@ -978,7 +996,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             # saw get --empty-color, by default a bright orange that reads as part of the scene.
             _run([tex, "scene_dense.mvs", "-m", "scene_dense_mesh.ply", "-o", "scene_dense_mesh_texture.mvs",
                   "-w", str(work), "--export-type", "glb", "--empty-color", str(0x808080),
-                  "--max-texture-size", str(MAX_TEXTURE), *mask_args], work, log,
+                  "--max-texture-size", str(MAX_TEXTURE), *mask_args, *texture_views(work, dense / "images", log)], work, log,
                  _phases(tracker, "texture", (r"Initialized views \d+ \(([\d.]+)%", 0, 0.3),
                          (r"Assigning the best view .*completed", 0.3, 0.6), (r"Generating texture atlas .*completed", 0.6, 0.95)))
             glb = work / "scene_dense_mesh_texture.glb"

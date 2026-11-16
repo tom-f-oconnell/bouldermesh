@@ -39,9 +39,12 @@ on hal. Names in quotes are atlas's sections under "Results on atlas". GLBs are 
 3. **Let atlas's chain finish** (its estimate: around midnight, Nov 15): the incremental pipeline's fixed builds,
    caspar on 31de again, `global_one`'s meshes, ALIKED and COLMAP 4.2.1's own SIFT, then the CPU-only runs. Atlas
    adds each result to its part.
-4. **Texture from every second photo (`views2`): Tom's eye.** `<boulder>-texture-same.glb`, `-texture-views2.glb`,
-   `-texture-views3.glb`. No number settles texture quality, and 31de's sharpness number fell with `views2`. If yes,
-   a hal session adds the argument to TextureMesh's call in `backend/pipeline.py`, with a test of the command.
+4. **Texture from every second photo (`views2`): in the app, Tom's yes on Nov 15** (not deployed yet). The admin
+   page's "Texture meshes from every second photo" (`mesh.texture_every_second`, ticked by default) has TextureMesh
+   told which photos through `--views-file` (`pipeline.texture_views()`; OpenMVS 2.4 on, and only with 20 photos or
+   more), and is sent with jobs to machines when unticked. Measured on atlas: 335 to 159 s and half the CPU-seconds
+   on Drifter. Still true: no number settles texture quality, and 31de's sharpness number fell with it; the GLBs to
+   compare are `<boulder>-texture-same.glb` and `-texture-views2.glb`.
 5. **One geometric pass (`as23g1`): only Tom's eye is left, then one flag.** It passes the surface rule (at the
    measuring floor on both boulders) and rule 5 (fused points and faces within 2% of two passes'), for 60 s less dense
    time on Drifter. `<boulder>-global_tied-s0+complete@prod-post-complete+as23.glb` and `...+as23g1.glb`. If yes, a hal
@@ -510,4 +513,4 @@ tell them apart. Later sections correct earlier ones.
 | `meshes.py` | depth maps, fused points, faces and seconds from OpenMVS's logs; `export` copies the GLBs out |
 | `verify_build.py`, `sim_closeups.py`, `incr/boulder.py` | the check a tool tree must pass to be timed; the simulated close-ups; the incremental pipeline |
 
-Last updated: 2026-11-15 17:55 PST, through section 54 of the handoff file.
+Last updated: 2026-11-15 19:00 PST, through section 54 of the handoff file.

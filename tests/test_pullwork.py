@@ -501,7 +501,8 @@ real_reconstruct = remote_job.pipeline.reconstruct
 remote_job.pipeline.reconstruct = lambda *a, **k: (got.update(mapper=meshopts.mapper()), (job / "out" / "mesh.glb", False))[1]
 argv = sys.argv
 try:
-    for told_it, want in ((None, meshopts.MAPPER), ({"retry_below": 0.6, "more": 2}, {"retry_below": 0.6, "more": 2})):
+    for told_it, want in ((None, meshopts.MAPPER), ({"retry_below": 0.6, "more": 2}, {**meshopts.MAPPER, "retry_below": 0.6, "more": 2}),
+                         ({"texture_every": 1}, {**meshopts.MAPPER, "texture_every": 1})):
         (job / "task.json").write_text(json.dumps({"mapper": told_it} if told_it else {}))
         sys.argv = ["remote_job.py", str(job), "--internet"]
         with contextlib.redirect_stdout(io.StringIO()):

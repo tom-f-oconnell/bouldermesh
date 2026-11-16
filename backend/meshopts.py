@@ -12,8 +12,18 @@ import threading
 
 # its defaults, wherever no area says otherwise: no more seeds since Nov 11, 2026, as over 5 runs they took 72 minutes
 # for 3 more photos, and placing the rest (pipeline._place_rest()) recovers photos the mapper left out for far less
-MAPPER = {"retry_below": 0.75, "more": 0}
+# texture_every: a mesh is textured from every this-many-th of its photos (2: every second, which halved the step and
+# its CPU time on two boulders with the texture's sharpness unchanged on one and lower on the other: benchmarking.md;
+# 1: all of them). The whole site's, from the admin page (set_site()), not an area's. OpenMVS 2.4 on.
+MAPPER = {"retry_below": 0.75, "more": 0, "texture_every": 2}
 _local = threading.local()
+_site: dict = {}        # what the whole site sets otherwise than the defaults (set_site())
+
+
+def set_site(options: dict) -> None:
+    """What the admin page's settings say of how meshes are made, where it isn't the default: sent with every job."""
+    global _site
+    _site = {k: v for k, v in options.items() if k in MAPPER and v != MAPPER[k]}
 
 
 def mapper() -> dict:
@@ -22,15 +32,15 @@ def mapper() -> dict:
 
 
 def given() -> dict | None:
-    """What an area set for the mesh this thread is making, if anything: what a job elsewhere is sent."""
-    return getattr(_local, "mapper", None)
+    """What an area, or the whole site, set for the mesh this thread is making, if anything: what a job elsewhere is sent."""
+    return {**_site, **(getattr(_local, "mapper", None) or {})} or None
 
 
 @contextlib.contextmanager
 def using(mapper: dict | None):
     """The mapper's settings for what this thread meshes inside it ({"retry_below": 0-1, "more": seeds}), or None for
     the defaults."""
-    before = given()
+    before = getattr(_local, "mapper", None)
     _local.mapper = {k: mapper[k] for k in MAPPER if k in mapper} if mapper else None
     try:
         yield
