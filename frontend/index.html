@@ -5933,7 +5933,8 @@ async function signOut(){
   location.reload();
 }
 function openJoin(invite){
-  const dlg = acctDlg(`<p><b>You've been invited to add to this site.</b> Its terms:</p>${termsHtml()}
+  const dlg = acctDlg(`<p><b>You've been invited to add to this site.</b> Once you've joined, your name at the top of the page
+    opens your account, where you can download the phone app for photographing boulders. Its terms:</p>${termsHtml()}
     <label>The name your photos are credited to<input type="text" class="name" maxlength="40" autocomplete="nickname" autofocus></label>
     ${editor && statusCache.editing === 'token' ? '<p>This browser keeps the site\'s editing token: joining replaces it here with the account\'s.</p>' : ''}
     <p class="err"></p>
@@ -5947,28 +5948,35 @@ function openJoin(invite){
       const kept = keepToken(token);
       stripInvite();      // it works once
       try { await acceptTerms(); } catch (e) { toast(sentence(e.message), 8000); }
-      if (was && kept) return location.reload();      // no longer the editor here
+      if (was && kept) {      // no longer the editor here: the welcome comes once the page is back
+        try { sessionStorage.setItem('bm_welcome', '1'); } catch {}
+        return location.reload();
+      }
       dlg.close(); showAccount();
       try { accountInfo = { ...accountInfo, apps: (await api('/api/account')).apps }; } catch {}
-      if (!account.accepted) openTerms();
-      else if (accountInfo?.apps) acctDlg(`<p><b>Welcome, ${esc(account.name)}.</b> Your name is at the top of the page: it opens your account.</p>
-        ${appsHtml()}<div class="row" style="justify-content:flex-end"><button class="sm close">Close</button></div>`);
-      else toast(`Welcome, ${account.name}. Your name is at the top of the page.`, 6000);
+      if (!account.accepted) openTerms(true); else openWelcome();
     }
     catch (e) { say.textContent = sentence(e.message); go.disabled = false; }
   };
   go.onclick = join;
   name.onkeydown = ev => { if (ev.key === 'Enter') join(); };
 }
-// the terms, to an account that hasn't accepted them as they stand: nothing of its own is taken until it does
-function openTerms(){
+// what a new account is shown once it's joined (and accepted the terms): where its account is, and the phone app
+function openWelcome(){
+  if (!accountInfo?.apps) return toast(`Welcome, ${account.name}. Your name is at the top of the page.`, 6000);
+  acctDlg(`<p><b>Welcome, ${esc(account.name)}.</b> Your name at the top of the page opens your account, where these links
+    stay.</p>${appsHtml()}<div class="row" style="justify-content:flex-end"><button class="sm close">Close</button></div>`);
+}
+// the terms, to an account that hasn't accepted them as they stand: nothing of its own is taken until it does;
+// welcome: just joined, so the welcome follows
+function openTerms(welcome = false){
   const dlg = acctDlg(`<p><b>Before you add anything, ${esc(account.name)}:</b> the site's terms.</p>${termsHtml()}
     <p class="err"></p>
     <div class="row" style="gap:8px;justify-content:flex-end"><button class="sm sec out">Sign out</button><button class="sm accept" autofocus>Accept</button></div>`);
   dlg.querySelector('.out').onclick = signOut;
   dlg.querySelector('.accept').onclick = async ev => {
     ev.target.disabled = true;
-    try { await acceptTerms(); dlg.close(); }
+    try { await acceptTerms(); dlg.close(); if (welcome) openWelcome(); }
     catch (e) { dlg.querySelector('.err').textContent = sentence(e.message); ev.target.disabled = false; }
   };
 }
@@ -6018,14 +6026,23 @@ async function showAdded(dlg){
   });
 }
 // where an account gets the phone apps (GET /api/account's apps): Android's latest build; the iPhone's through TestFlight
+// The one for this device first, as a button; on a computer, both, and how to get them onto the phone.
 function appsHtml(){
   const a = accountInfo?.apps;
   if (!a) return '';
-  return `<p style="margin-bottom:4px"><b>The phone app</b>, to photograph a boulder for its mesh:</p><ul style="margin:0 0 10px">
-    <li>Android: open <a href="${esc(a.android)}" target="_blank" rel="noopener">its latest build</a> on the phone, tap the <i>.apk</i>, and allow installing it.</li>
-    ${a.iphone ? `<li>iPhone: install Apple's <a href="https://apps.apple.com/app/testflight/id899247664" target="_blank" rel="noopener">TestFlight</a> app, then open
-      <a href="${esc(a.iphone)}" target="_blank" rel="noopener">this link</a> on the phone and tap <i>Accept</i>, then <i>Install</i>. New versions come by themselves.</li>`
-      : '<li>iPhone: not yet available.</li>'}</ul>`;
+  const ua = navigator.userAgent, android = /Android/i.test(ua),
+        ios = /iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const and = `Android: open <a href="${esc(a.android)}" target="_blank" rel="noopener">its latest build</a> on the phone, tap the <i>.apk</i>, and allow installing it.`;
+  const iph = a.iphone ? `iPhone: install Apple's <a href="https://apps.apple.com/app/testflight/id899247664" target="_blank" rel="noopener">TestFlight</a> app, then open
+      <a href="${esc(a.iphone)}" target="_blank" rel="noopener">this link</a> on the phone and tap <i>Accept</i>, then <i>Install</i>. New versions come by themselves.`
+    : 'iPhone: not yet available.';
+  const head = `<p style="margin-bottom:4px"><b>The phone app</b>, to photograph a boulder for its mesh:</p>`;
+  if (android) return `${head}<p style="margin:0 0 6px"><a href="${esc(a.android)}" target="_blank" rel="noopener" style="display:inline-block;background:var(--acc);color:var(--acc-fg);padding:7px 11px;border-radius:6px;font-weight:600;text-decoration:none">Get the Android app</a></p>
+    <p style="margin:0 0 10px;font-size:13px">On the page it opens, tap the <i>.apk</i>, then allow this browser to install it.</p>`;
+  if (ios) return `${head}<ul style="margin:0 0 10px"><li>${iph}</li></ul>`;
+  return `${head}<ul style="margin:0 0 6px"><li>${and}</li><li>${iph}</li></ul>
+    <p style="margin:0 0 10px;font-size:13px">On a computer: open this site on the phone and sign in there (<i>Sign in another device</i>, in your
+    account), or send the phone these links.</p>`;
 }
 function openAccount(){
   const role = account.role === 'user' ? '' : ` (${esc(account.role)})`;
@@ -6089,8 +6106,11 @@ if (statusCache.editing === 'token') {
 if (accountInfo) {
   showAccount();
   if (account && inviteCode) { stripInvite(); toast(`This browser is already signed in, as ${account.name}: the invite wasn't used.`, 8000); }
-  if (account && !account.accepted) openTerms();
+  let welcome = false;      // just joined, in a browser that reloaded (openJoin())
+  try { welcome = sessionStorage.getItem('bm_welcome') === '1'; sessionStorage.removeItem('bm_welcome'); } catch {}
+  if (account && !account.accepted) openTerms(welcome);
   else if (inviteCode && !account) openJoin(inviteCode);
+  else if (account && welcome) openWelcome();
 }
 else if (inviteCode && !thumbMode) toast('This copy of the site has no accounts to join.', 8000);
 if (statusCache.admin) { $('#admin').style.display = ''; $('#admin').onclick = openAdmin; }
