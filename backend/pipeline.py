@@ -179,18 +179,33 @@ def mvs_version() -> tuple[int, int] | None:
 
 
 def texture_views(work: Path, images: Path, log=None) -> list[str]:
-    """TextureMesh's arguments for texturing from every meshopts' texture_every-th photo (in name order, the first
-    kept), as a list of them in work/texture-views.txt: none where every photo is used, there are too few to thin, or
-    OpenMVS is before 2.4, which has no --views-file."""
+    """TextureMesh's arguments for texturing from every still and every meshopts' texture_every-th frame of each video
+    (VIDEO_FRAME's names; in their order, the first kept), as a list of them in work/texture-views.txt: none where every
+    photo is used, no frame would be left out, there are too few to thin, or OpenMVS is before 2.4, which has no
+    --views-file. Only frames are thinned: a video's next frame mostly shows what the last did, where a still is a
+    viewpoint of its own, and leaving stills out left faces coloured from fewer, further photos (Stem Bem Boulder,
+    Nov 16: blotches of another photo's light where every second photo was used)."""
     every = int(meshopts.mapper().get("texture_every") or 1)
     names = sorted(f.name for f in images.iterdir() if f.is_file() and not f.name.endswith(".mask.png")) if images.is_dir() else []
-    if every < 2 or len(names) < TEXTURE_VIEWS_LEAST * every or not _mvs24(["x"]):
+    if every < 2 or len(names) < TEXTURE_VIEWS_LEAST or not _mvs24(["x"]):
         return []
-    kept = names[::every]
+    videos: dict[str, list[str]] = {}
+    for n in names:
+        if VIDEO_FRAME.match(n):
+            videos.setdefault(n.rsplit("_", 1)[0], []).append(n)
+    left = {n for frames in videos.values() for n in frames if n not in frames[::every]}
+    if not left:
+        return []
+    kept = [n for n in names if n not in left]
     (work / "texture-views.txt").write_text("\n".join(kept) + "\n")
     if log:
-        log(f"texture: from {len(kept)} of {len(names)} photos (every {'second' if every == 2 else f'{every}th'})")
+        frames = sum(map(len, videos.values()))
+        log(f"texture: from {len(kept)} of {len(names)} photos (every still, and {frames - len(left)} of {frames} video frames: "
+            f"every {'second' if every == 2 else f'{every}th'} of each video)")
     return ["--views-file", "texture-views.txt"]
+
+
+VIDEO_FRAME = re.compile(r"(yt|vid)_[0-9a-f]+_\d+\.")   # a video's frames, as the harvest names them (yt_<tag>_NNN.jpg, vid_ for uploads)
 
 
 TEXTURE_VIEWS_LEAST = 10    # photos left to texture from, at least, for only some to be used

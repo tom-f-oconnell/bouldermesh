@@ -1092,24 +1092,34 @@ with tempfile.TemporaryDirectory() as td:
     td = pathlib.Path(td)
     (td / "images").mkdir()
     for i in range(25):
-        (td / "images" / f"p{i:02d}.jpg").write_bytes(b"x")
-        (td / "images" / f"p{i:02d}.jpg.mask.png").write_bytes(b"x")
+        (td / "images" / f"yt_ab12cd34_{i:03d}.jpg").write_bytes(b"x")
+        (td / "images" / f"yt_ab12cd34_{i:03d}.jpg.mask.png").write_bytes(b"x")
+    for n in ("mp_1.jpg", "ddg_2.jpg", "vid_99ff00aa_000.jpg", "vid_99ff00aa_001.jpg", "vid_99ff00aa_002.jpg"):
+        (td / "images" / n).write_bytes(b"x")       # stills, all kept; another video, thinned on its own
     real = pipeline._mvs24
     said = []
     try:
         pipeline._mvs24 = lambda args: list(args)       # OpenMVS 2.4
         assert pipeline.texture_views(td, td / "images", said.append) == ["--views-file", "texture-views.txt"]
         kept = (td / "texture-views.txt").read_text().split()
-        assert kept == [f"p{i:02d}.jpg" for i in range(0, 25, 2)] and "13 of 25 photos (every second)" in said[0], (kept, said)
+        assert kept == sorted(["ddg_2.jpg", "mp_1.jpg", "vid_99ff00aa_000.jpg", "vid_99ff00aa_002.jpg"]
+                              + [f"yt_ab12cd34_{i:03d}.jpg" for i in range(0, 25, 2)]), kept
+        assert "from 17 of 30 photos (every still, and 15 of 28 video frames" in said[0], said
         meshopts.set_site({"texture_every": 1})         # the admin page's box unticked: every photo, and jobs elsewhere are told
         assert pipeline.texture_views(td, td / "images") == [] and meshopts.given() == {"texture_every": 1}
         with meshopts.using({"more": 2}):
             assert meshopts.given() == {"texture_every": 1, "more": 2} and meshopts.mapper()["texture_every"] == 1
         meshopts.set_site({"texture_every": 2})         # the default again: nothing to tell
         assert meshopts.given() is None and meshopts.mapper()["texture_every"] == 2
-        for f in list((td / "images").glob("p1*")) + list((td / "images").glob("p2*")):
+        for f in [f for f in (td / "images").glob("yt_*") if not f.name.endswith(".mask.png")][2:]:
             f.unlink()
         assert pipeline.texture_views(td, td / "images") == [], "too few photos to leave any out"
+        for i in range(12):
+            (td / "images" / f"still_{i}.jpg").write_bytes(b"x")
+        assert pipeline.texture_views(td, td / "images") != [], "enough photos, a video thinned"
+        for f in (td / "images").glob("*_*_*.jpg"):
+            f.unlink()
+        assert pipeline.texture_views(td, td / "images") == [], "stills only: every one used"
         pipeline._mvs24 = lambda args: []               # OpenMVS 2.3 has no --views-file
         assert pipeline.texture_views(td, td / "images") == []
     finally:

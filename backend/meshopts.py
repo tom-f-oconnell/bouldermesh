@@ -12,9 +12,9 @@ import threading
 
 # its defaults, wherever no area says otherwise: no more seeds since Nov 11, 2026, as over 5 runs they took 72 minutes
 # for 3 more photos, and placing the rest (pipeline._place_rest()) recovers photos the mapper left out for far less
-# texture_every: a mesh is textured from every this-many-th of its photos (2: every second, which halved the step and
-# its CPU time on two boulders with the texture's sharpness unchanged on one and lower on the other: benchmarking.md;
-# 1: all of them). The whole site's, from the admin page (set_site()), not an area's. OpenMVS 2.4 on.
+# texture_every: a mesh is textured from every still and every this-many-th frame of each video (2: every second, which
+# halved the step and its CPU time on two boulders with the texture's sharpness unchanged on one and lower on the other:
+# benchmarking.md; 1: all of them; since Nov 16 stills are all kept: pipeline.texture_views()). The whole site's, from the admin page (set_site()), not an area's. OpenMVS 2.4 on.
 MAPPER = {"retry_below": 0.75, "more": 0, "texture_every": 2}
 _local = threading.local()
 _site: dict = {}        # what the whole site sets otherwise than the defaults (set_site())
