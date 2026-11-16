@@ -8673,6 +8673,48 @@ def admin_user_invite(body: dict) -> dict:
     return {**admin_state(), "invite": {**made, "url": f"{SITE_URL.rstrip('/')}/?invite={made['code']}" if SITE_URL else None}}
 
 
+def admin_user_signin(body: dict) -> dict:
+    """A one-time link (and its QR) that signs a device in to an account, for the admin page: one reopened, or whose
+    devices are lost, has none left to make one from. As an account's own Sign in another device: good once, for
+    accounts.PAIR_SECONDS."""
+    uid = str(body.get("id"))
+    user = ACCOUNTS.get(uid)
+    if user is None:
+        raise ValueError("there's no such account")
+    if user.get("disabled"):
+        raise ValueError("that account is closed: reopen it first")
+    made = ACCOUNTS.pair_code(uid)
+    link = f"{SITE_URL.rstrip('/')}/#signin={made['code']}" if SITE_URL else None
+    return {**admin_state(), "signin": {**made, "name": user["name"], "link": link, "qr": notify_mod.qr_svg(link) if link else None}}
+
+
+def user_added(uid: str) -> list[str]:
+    """What an account added that stays its own: its projects (deleted ones too, until they're purged) and sets of beta,
+    in words; none for one that can be deleted."""
+    said = []
+    n = q("SELECT COUNT(*) n FROM projects WHERE user_id=?", uid, one=True)["n"]
+    if n:
+        said.append(f"{n} project(s)")
+    sets = sum(1 for d in (MESHES.iterdir() if MESHES.is_dir() else []) if (d / beta_mod.SETS_FILE).is_file()
+               for st in beta_mod.load_sets(d) if st.get("owner") == uid)
+    if sets:
+        said.append(f"{sets} set(s) of beta")
+    return said
+
+
+def admin_user_delete(body: dict) -> dict:
+    """Delete an account that added nothing (user_added()), for good, freeing its name; one that added something is
+    closed or renamed instead, so that what it added keeps its owner."""
+    uid = str(body.get("id"))
+    if ACCOUNTS.get(uid) is None:
+        raise ValueError("there's no such account")
+    added = user_added(uid)
+    if added:
+        raise ValueError(f"it added {' and '.join(added)}, which would be left with no owner: close it, or rename it to free its name")
+    ACCOUNTS.delete(uid)
+    return admin_state()
+
+
 def admin_user_change(body: dict) -> dict:
     """An account's role, areas, quota, name, or whether it's closed: {id, ...those to change}; sign_out: forget its devices."""
     try:
@@ -11600,7 +11642,8 @@ def main() -> None:
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
-                                       "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-change": admin_user_change, "submission": admin_submission, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
+                                       "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-change": admin_user_change,
+                                       "user-signin": admin_user_signin, "user-delete": admin_user_delete, "submission": admin_submission, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
                                        "machine-revoke": admin_machine_revoke, "clear-rejected": admin_clear_rejected,
                                        "volunteers-forget": lambda _: {"result": f"forgot {VOLUNTEERS.forget_gone()} volunteer(s)"},
                                        "machines-forget": lambda _: {"result": f"forgot {MACHINES.forget_gone()} machine(s)"},
