@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("thumbs.mjs")
-VERSION = 1                 # how pictures are drawn: one more draws them all again
+VERSION = 2                 # how pictures are drawn: one more draws them all again (2: without the controls' tip)
 SIZE, SMALL = (1200, 630), (480, 252)
 DIR, LARGE, SMALL_FILE, RECORD = "thumb", "large.jpg", "small.jpg", "thumb.json"
 TIMEOUT = 600               # seconds one picture may take, page and mesh loading included: at the lowest priority, on

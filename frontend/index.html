@@ -74,7 +74,7 @@
   body.thumb{grid-template-rows:1fr} body.thumb main{grid-template-columns:minmax(0,1fr)} body.thumb #right{display:grid;grid-template-rows:1fr}
   body.thumb header,body.thumb aside,body.thumb .viewbar,body.thumb #vtitle,body.thumb #vcorner,body.thumb #vextra,body.thumb #hud,
   body.thumb #viewnote,body.thumb #pieces,body.thumb #orient,body.thumb #nearby,body.thumb #map,body.thumb .toast,body.thumb #loading,
-  body.thumb #linkmenu,body.thumb #srctip,body.thumb #prefs{display:none!important}
+  body.thumb #linkmenu,body.thumb #srctip,body.thumb #prefs,body.thumb #tip,body.thumb #areamap,body.thumb dialog{display:none!important}
   #vextra{position:absolute;right:12px;bottom:50px;z-index:3;display:flex;flex-direction:column;align-items:flex-end;gap:6px}  /* over Rate */
   #vnewest[hidden],#vothers[hidden]{display:none}
   #linkmenu .hint{font-size:11px;color:var(--mute)} #viewnote a.same{color:inherit;margin-left:6px;text-decoration:underline}
@@ -6300,11 +6300,11 @@ function showTips(){
   tip.querySelector('.next').onclick = () => done(false);
   tip.querySelector('.skip')?.addEventListener('click', () => done(true));
 }
-setTimeout(showTips, 1500);     // once the page has settled
+if (!thumbMode) setTimeout(showTips, 1500);     // once the page has settled (and never in a mesh's picture)
 // how to move round a mesh, the first time one's shown in a browser (bm_tips_v1's controls), for a computer or a phone;
 // after any other tip that's showing, and not over a hidden viewer
 function controlsTip(tries = 0){
-  if (tipsSeen().controls) return;
+  if (tipsSeen().controls || thumbMode) return;      // never in a mesh's picture, which the server draws from this page
   const v = $('#viewer'), r = v.getBoundingClientRect();
   if (document.querySelector('#tip') || !r.width) { if (tries < 30) setTimeout(() => controlsTip(tries + 1), 2000); return; }
   const tip = document.createElement('div'); tip.id = 'tip'; tip.setAttribute('role', 'dialog'); tip.className = 'flat';
