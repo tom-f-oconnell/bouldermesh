@@ -310,6 +310,7 @@
     <div class="note">Accounts, each made from an invite: whoever opens its link picks a name, accepts the terms, and may then make their
       own sets of beta. A moderator's areas are the ids of the areas they may approve additions to, or <code>*</code> for all.</div>
     <div id="people-list"></div>
+    <div id="people-signin"></div>
     <div class="inline" style="margin-top:8px">An account may hold at most <input type="number" id="users-quota" min="0" step="100" style="width:100px"> MB of what it
       added <small class="note">(approved things don't count; an account's own quota, in the table, goes before this)</small></div>
     <div id="added-list"></div>
@@ -447,7 +448,8 @@ function renderBackup(b){
   $('#backupnote').innerHTML = b.confirmed
     ? `The last good copy began ${when(b.confirmed)} (${ago(b.confirmed)} ago)` + (rep?.status === 'ok' && rep.bytes ? `: ${size(rep.bytes)}${rep.host ? `, on ${esc(rep.host)}` : ''}` : '') + '.'
       + (rep?.archive != null ? ` Kept for good (videos, photos, masks, rejected photos and meshes deleted or replaced here): ${size(rep.archive)}.` : '')
-      + (rep?.disk_free != null ? ` ${size(rep.disk_free)} left on its disk${rep.disk_warn && rep.disk_free < rep.disk_warn ? ', under its warning: time to move it' : ''}.` : '')
+      + (rep?.disk_free != null ? ` ${rep.disk_free < (rep.disk_urgent ?? 50 * 2 ** 30) ? `<span style="color:var(--bad)">${size(rep.disk_free)} left on its disk: nearly full, so the next backups may fail. Move it now</span>`
+        : `${size(rep.disk_free)} left on its disk${rep.disk_warn && rep.disk_free < rep.disk_warn ? ', <span style="color:var(--warn)">under its warning: time to move it</span>' : ''}`}.` : '')
       + (rep?.kept?.length ? (rep?.archive != null ? ' By night: its databases (kept a year) and the rest of what that night\'s copy replaced or deleted here (kept 30 days).'
         : ' What it keeps by night, each for 30 days: that night\'s databases, and what that night\'s copy replaced or deleted here.') : '')
     : 'No good copy confirmed yet.';
@@ -996,7 +998,7 @@ function renderPeople(u){
   if (!peopleEditing || peopleDrawnFor !== peopleEditing) {
     peopleDrawnFor = peopleEditing;
     $('#people-list').innerHTML = u.list.length ? `<table><tr><th>Name</th><th>Role</th><th>Areas</th><th>Quota (MB)</th><th title="What it added that isn't approved, of what it may hold">Used</th><th>Accepted the terms</th><th>Devices</th><th>Last seen</th><th>Closed</th><th></th></tr>${
-      u.list.map(x => x.id === peopleEditing ? `<tr><td>${esc(x.name)}</td>
+      u.list.map(x => x.id === peopleEditing ? `<tr><td><input type="text" id="pe-name" value="${esc(x.name)}" maxlength="40" title="Its name, which what it adds is credited to: another frees this one" style="width:140px"></td>
         <td><select id="pe-role" style="width:auto">${[...new Set(['user', 'moderator', x.role])].map(r => `<option ${r === x.role ? 'selected' : ''}>${esc(r)}</option>`).join('')}</select></td>
         <td><input type="text" id="pe-areas" value="${esc((x.areas || []).join(', '))}" placeholder="ids, or *" title="The ids of the areas a moderator may approve additions to, with commas between; * for all" style="width:120px"></td>
         <td><input type="number" id="pe-quota" min="0" value="${x.quota_mb ?? ''}" placeholder="default" title="Blank: the site's default" style="width:90px"></td><td>${used(x)}</td>
@@ -1005,7 +1007,7 @@ function renderPeople(u){
       : `<tr><td>${esc(x.name)}</td><td>${esc(x.role)}</td><td>${esc(areas(x.areas))}</td><td>${x.quota_mb ?? 'default'}</td><td class="${x.quota != null && x.used >= x.quota ? 'warn' : ''}">${used(x)}</td>
         <td class="${x.accepted ? '' : 'warn'}">${x.accepted ? 'yes' : 'not yet'}</td><td>${x.devices}</td><td>${when(x.last_seen)}</td><td class="${x.disabled ? 'bad' : ''}">${x.disabled ? 'closed' : '–'}</td>
         <td><button class="sec" data-pedit="${esc(x.id)}">Change</button> ${x.devices ? `<button class="sec" data-pout="${esc(x.id)}" data-name="${esc(x.name)}">Sign out everywhere</button> ` : ''}${
-          x.disabled ? `<button class="sec" data-popen="${esc(x.id)}">Reopen</button>` : `<button class="danger" data-pclose="${esc(x.id)}" data-name="${esc(x.name)}">Close</button>`}</td></tr>`).join('')}</table>`
+          x.disabled ? `<button class="sec" data-popen="${esc(x.id)}">Reopen</button>` : `<button class="sec" data-psignin="${esc(x.id)}" title="A link that signs one device in to this account, once, within 10 minutes: for an account reopened, or whose devices are lost">Sign-in link</button> <button class="danger" data-pclose="${esc(x.id)}" data-name="${esc(x.name)}">Close</button>`} <button class="danger" data-pdel="${esc(x.id)}" data-name="${esc(x.name)}" title="Remove it for good, freeing its name: only an account that added nothing">Delete</button></td></tr>`).join('')}</table>`
       : '<div class="note">No accounts yet.</div>';
   }
   $('#inv-list').innerHTML = u.invites.length ? `<table><tr><th>Open invites</th><th>For</th><th>Made</th><th>Good until</th></tr>${
@@ -1042,11 +1044,30 @@ $('#people-list').addEventListener('click', async ev => {
   let body = null;
   if (d.pesave) {
     const q = $('#pe-quota').value.trim();
-    body = { id: d.pesave, role: $('#pe-role').value, areas: $('#pe-areas').value.split(',').map(a => a.trim()).filter(Boolean), quota_mb: q === '' ? null : +q };
+    body = { id: d.pesave, name: $('#pe-name').value.trim(), role: $('#pe-role').value, areas: $('#pe-areas').value.split(',').map(a => a.trim()).filter(Boolean), quota_mb: q === '' ? null : +q };
   }
   else if (d.pout) { if (!confirm(`Sign ${d.name} out everywhere? Each of their devices then needs a new invite's account, or a code from one signed in again.`)) return; body = { id: d.pout, sign_out: true }; }
   else if (d.pclose) { if (!await askDanger(`Close ${d.name}'s account?`, 'Its devices are signed out, and it can add or change nothing until it\'s reopened. What it added stays.', 'Close')) return; body = { id: d.pclose, disabled: true }; }
   else if (d.popen) body = { id: d.popen, disabled: false };
+  else if (d.pdel) {
+    if (!await askDanger(`Delete ${d.name}'s account for good?`, 'Its devices are signed out and its name is free again. Only an account that added nothing can be deleted; otherwise close it, or rename it.', 'Delete')) return;
+    try { render(await call('/api/admin/actions/user-delete', { id: d.pdel })); msg('Deleted'); } catch (e) { msg(e.message, 10000); }
+    return;
+  }
+  else if (d.psignin) {
+    try {
+      const r = await call('/api/admin/actions/user-signin', { id: d.psignin }), sg = r.signin;
+      render(r);
+      $('#people-signin').innerHTML = `<div class="note ok">A sign-in for ${esc(sg.name)}. ${sg.link ? 'Open this link on the device, or scan the QR with its camera (or the phone app\'s Scan)' : 'On the device: on the site, Edit…, Sign in with a code, and enter this code (or in the phone app\'s Settings)'}:</div>
+        <div class="row"><code id="ps-link" style="user-select:all">${esc(sg.link || sg.code)}</code><button class="sec" id="ps-copy">Copy</button></div>
+        ${sg.qr ? `<div class="pairqr">${sg.qr}</div>` : ''}<div class="note">It works once, until ${new Date(sg.expires * 1000).toLocaleTimeString()}, and only for this account.</div>`;
+      $('#ps-copy').onclick = async ev => {
+        try { await navigator.clipboard.writeText(sg.link || sg.code); ev.target.textContent = 'Copied'; }
+        catch { getSelection().selectAllChildren($('#ps-link')); ev.target.textContent = 'Selected: copy it'; }
+      };
+    } catch (e) { msg(e.message, 8000); }
+    return;
+  }
   if (!body) return;
   try { const r = await call('/api/admin/actions/user-change', body); if (d.pesave) redraw(null); msg('Saved'); render(r); }
   catch (e) { msg(e.message, 8000); }

@@ -8673,6 +8673,48 @@ def admin_user_invite(body: dict) -> dict:
     return {**admin_state(), "invite": {**made, "url": f"{SITE_URL.rstrip('/')}/?invite={made['code']}" if SITE_URL else None}}
 
 
+def admin_user_signin(body: dict) -> dict:
+    """A one-time link (and its QR) that signs a device in to an account, for the admin page: one reopened, or whose
+    devices are lost, has none left to make one from. As an account's own Sign in another device: good once, for
+    accounts.PAIR_SECONDS."""
+    uid = str(body.get("id"))
+    user = ACCOUNTS.get(uid)
+    if user is None:
+        raise ValueError("there's no such account")
+    if user.get("disabled"):
+        raise ValueError("that account is closed: reopen it first")
+    made = ACCOUNTS.pair_code(uid)
+    link = f"{SITE_URL.rstrip('/')}/#signin={made['code']}" if SITE_URL else None
+    return {**admin_state(), "signin": {**made, "name": user["name"], "link": link, "qr": notify_mod.qr_svg(link) if link else None}}
+
+
+def user_added(uid: str) -> list[str]:
+    """What an account added that stays its own: its projects (deleted ones too, until they're purged) and sets of beta,
+    in words; none for one that can be deleted."""
+    said = []
+    n = q("SELECT COUNT(*) n FROM projects WHERE user_id=?", uid, one=True)["n"]
+    if n:
+        said.append(f"{n} project(s)")
+    sets = sum(1 for d in (MESHES.iterdir() if MESHES.is_dir() else []) if (d / beta_mod.SETS_FILE).is_file()
+               for st in beta_mod.load_sets(d) if st.get("owner") == uid)
+    if sets:
+        said.append(f"{sets} set(s) of beta")
+    return said
+
+
+def admin_user_delete(body: dict) -> dict:
+    """Delete an account that added nothing (user_added()), for good, freeing its name; one that added something is
+    closed or renamed instead, so that what it added keeps its owner."""
+    uid = str(body.get("id"))
+    if ACCOUNTS.get(uid) is None:
+        raise ValueError("there's no such account")
+    added = user_added(uid)
+    if added:
+        raise ValueError(f"it added {' and '.join(added)}, which would be left with no owner: close it, or rename it to free its name")
+    ACCOUNTS.delete(uid)
+    return admin_state()
+
+
 def admin_user_change(body: dict) -> dict:
     """An account's role, areas, quota, name, or whether it's closed: {id, ...those to change}; sign_out: forget its devices."""
     try:
@@ -11248,22 +11290,32 @@ BACKUP_STALE_HOURS = 36     # the backup copies each night: a good copy older th
 
 
 _backup_disk_told: dict = {"received": None}
+BACKUP_URGENT_GB = 50       # the urgent level, where a report doesn't say its own (one from before deploy/backup.sh did)
 
 
 def check_backup_disk() -> str | None:
     """Tell your phone, once for each night's report, when the backup's disk has less room than its report's disk_warn
-    (deploy/backup.sh's WARN_FREE_GB): what it keeps for good (archive/) only grows. What was said, or None."""
+    (deploy/backup.sh's WARN_FREE_GB): what it keeps for good (archive/) only grows. Under its disk_urgent
+    (URGENT_FREE_GB), where the next copies may fail for want of room, urgently. What was said, or None."""
     rep = backup_state()["report"] or {}
     free, warn = rep.get("disk_free"), rep.get("disk_warn")
-    if not isinstance(free, (int, float)) or not isinstance(warn, (int, float)) or free >= warn \
+    urgent = rep.get("disk_urgent") if isinstance(rep.get("disk_urgent"), (int, float)) else BACKUP_URGENT_GB * 2**30
+    if not isinstance(free, (int, float)) or not isinstance(warn, (int, float)) or free >= max(warn, urgent) \
             or rep.get("received") == _backup_disk_told["received"]:
         return None
     _backup_disk_told["received"] = rep.get("received")
-    said = (f"{free / 2**30:.0f} GB left on the disk the backup is on ({rep.get('host') or 'the backup machine'}), under its "
-            f"{warn / 2**30:.0f} GB warning; what it keeps for good takes {(rep.get('archive') or 0) / 2**30:.0f} GB. Time to move "
-            "the backup to a machine with more room (README, Backups).")
-    threading.Thread(target=NOTIFIER.send, args=("BoulderMesh: the backup's disk is filling", said),
-                     kwargs={"priority": 4, "tags": ["floppy_disk"]}, daemon=True).start()
+    where = f"the disk the backup is on ({rep.get('host') or 'the backup machine'})"
+    kept = f"what it keeps for good takes {(rep.get('archive') or 0) / 2**30:.0f} GB"
+    if free < urgent:
+        said = (f"Only {free / 2**30:.0f} GB left on {where}, under {urgent / 2**30:.0f} GB: the next backups may fail for want "
+                f"of room, and nothing more can be offloaded safely. {kept}. Move the backup to a machine with more room now, "
+                "or free some on that disk (README, Backups).")
+        title, prio, tags = "BoulderMesh: the backup's disk is nearly full", 5, ["rotating_light"]
+    else:
+        said = (f"{free / 2**30:.0f} GB left on {where}, under its {warn / 2**30:.0f} GB warning; {kept}. Time to move the backup "
+                "to a machine with more room (README, Backups).")
+        title, prio, tags = "BoulderMesh: the backup's disk is filling", 4, ["floppy_disk"]
+    threading.Thread(target=NOTIFIER.send, args=(title, said), kwargs={"priority": prio, "tags": tags}, daemon=True).start()
     return said
 
 
@@ -11590,7 +11642,8 @@ def main() -> None:
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
-                                       "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-change": admin_user_change, "submission": admin_submission, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
+                                       "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-change": admin_user_change,
+                                       "user-signin": admin_user_signin, "user-delete": admin_user_delete, "submission": admin_submission, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
                                        "machine-revoke": admin_machine_revoke, "clear-rejected": admin_clear_rejected,
                                        "volunteers-forget": lambda _: {"result": f"forgot {VOLUNTEERS.forget_gone()} volunteer(s)"},
                                        "machines-forget": lambda _: {"result": f"forgot {MACHINES.forget_gone()} machine(s)"},

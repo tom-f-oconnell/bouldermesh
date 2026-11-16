@@ -150,7 +150,7 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
     rep = json.loads((data / "backup-report.json").read_text())
     assert rep["status"] == "ok" and rep["why"] == "" and began - 2 <= rep["began"] <= rep["ended"] <= time.time() and rep["bytes"] > 0, rep
     assert rep["kept"] and all(set(k) == {"day", "db", "changed"} for k in rep["kept"]) and rep["received"] >= rep["ended"], rep
-    assert rep["disk_free"] > 0 and rep["disk_warn"] == 200 * 2**30 and isinstance(rep["archive"], int), rep
+    assert rep["disk_free"] > 0 and rep["disk_warn"] == 200 * 2**30 and rep["disk_urgent"] == 50 * 2**30 and isinstance(rep["archive"], int), rep
     # one that fails says why
     r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), str(TMP / "home")], env=henv, capture_output=True, text=True)
     assert r.returncode == 1, r.stdout + r.stderr

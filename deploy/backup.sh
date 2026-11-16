@@ -29,7 +29,8 @@
 #                     of meshes replaced), moved out of that night's changed/ (deploy/backup-archive.py)
 #   changed/<date>/   the rest of what that night's copy replaced or deleted in current/ (records rewritten, web cache
 #                     pages), kept KEEP_DAYS (30)
-# Each night's report says how much room is left on this disk; under WARN_FREE_GB (200) the server tells your phone.
+# Each night's report says how much room is left on this disk; under WARN_FREE_GB (200) the server tells your phone,
+# and under URGENT_FREE_GB (50), when the copies are about to fail for want of room, urgently.
 set -eu
 only_restore=
 if [ "${1:-}" = --restore-only ]; then
@@ -41,6 +42,7 @@ dest=${BACKUP_DIR:-$HOME/bouldermesh-backups}
 keep=${KEEP_DAYS:-30}
 keep_db=${KEEP_DB_DAYS:-365}
 warn_free=$(( ${WARN_FREE_GB:-200} * 1073741824 ))
+urgent_free=$(( ${URGENT_FREE_GB:-50} * 1073741824 ))
 key=${BACKUP_KEY:-$HOME/.ssh/bouldermesh_backup}
 hkey=${BACKUP_HANDSHAKE_KEY:-$HOME/.ssh/bouldermesh_handshake}
 day=$(date +%F)
@@ -71,10 +73,10 @@ report() {
         printf '{"day":"%s","db":%s,"changed":%s},' "$d" "$(du -sb "$dest/db/$d" 2>/dev/null | cut -f1 || echo 0)" \
             "$(du -sb "$dest/changed/$d" 2>/dev/null | cut -f1 || echo 0)"
     done)
-    printf '{"status":"%s","began":%s,"ended":%s,"bytes":%s,"why":"%s","host":"%s","kept":[%s],"archive":%s,"disk_free":%s,"disk_warn":%s}' \
+    printf '{"status":"%s","began":%s,"ended":%s,"bytes":%s,"why":"%s","host":"%s","kept":[%s],"archive":%s,"disk_free":%s,"disk_warn":%s,"disk_urgent":%s}' \
         "$1" "${started:-null}" "$(date +%s)" "$(du -sb "$dest/current" 2>/dev/null | cut -f1 || echo 0)" "$(printf '%s' "$2" | tr -d '"\\\n')" \
         "$(hostname)" "${kept%,}" "$(du -sb "$dest/archive" 2>/dev/null | cut -f1 || echo 0)" \
-        "$(df -B1 --output=avail "$dest" 2>/dev/null | tail -1 | tr -d ' ' || echo null)" "$warn_free" \
+        "$(df -B1 --output=avail "$dest" 2>/dev/null | tail -1 | tr -d ' ' || echo null)" "$warn_free" "$urgent_free" \
         | $handshake report > /dev/null 2>&1 || echo "couldn't tell the server how the copy went" >&2
 }
 fail() { why=$1; echo "$1" >&2; exit 1; }

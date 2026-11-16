@@ -3797,6 +3797,10 @@ try:
     assert server.check_backup_disk() is None, "once a report"
     rp.write_text(json.dumps({"status": "ok", "received": 2.0, "disk_free": 300 * 2**30, "disk_warn": 200 * 2**30}))
     assert server.check_backup_disk() is None, "room enough"
+    told.clear()
+    rp.write_text(json.dumps({"status": "ok", "received": 3.0, "disk_free": 30 * 2**30, "disk_warn": 200 * 2**30, "disk_urgent": 50 * 2**30}))
+    said = server.check_backup_disk()
+    assert said and said.startswith("Only 30 GB left") and "may fail" in said and told and "nearly full" in told[0][0], (said, told)
 finally:
     server.NOTIFIER.send = real_send
     rp.unlink()
