@@ -1111,6 +1111,8 @@ function areaMap(){
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(amap);
     for (const type of ['dragenter', 'dragover']) $('#areamap').addEventListener(type, ev => ev.preventDefault());
     $('#areamap').addEventListener('drop', ev => { ev.preventDefault(); previewLocal(ev.dataTransfer.files); });     // as the 3D view takes them
+    amap.on('zoomend resize', placeAreaLabels);
+    amap.on('zoomstart', () => areaLines?.clearLayers());     // its lines would be left where they were, as it zooms
     if (editor) {
       $('#areamap .areahead').textContent = 'Areas and their jobs: pick one to list its meshes, or pick a mesh on the left';
       const legend = L.control({ position: 'bottomleft' });
@@ -1123,6 +1125,50 @@ function areaMap(){
     }
   }
   setTimeout(() => { amap.invalidateSize(); drawAreas(); }, 50);
+}
+// The areas' labels placed so that none hides another or a point: each beside its point if there's room (right, left,
+// above, below), else further out, with a line from the point to it. Again after each zoom, and as the map's size changes.
+let areaLines = null;
+function placeAreaLabels(){
+  if (!amap || !areaLayer) return;
+  (areaLines ||= L.layerGroup().addTo(amap)).clearLayers();
+  const size = amap.getSize(), taken = [], pad = 3;
+  const hits = (a) => taken.some(b => a.x < b.x + b.w + pad && b.x < a.x + a.w + pad && a.y < b.y + b.h + pad && b.y < a.y + a.h + pad);
+  const marks = areaLayer.getLayers().filter(l => l.getTooltip?.());
+  for (const m of marks) {     // the points first: no label goes over one
+    const c = amap.latLngToContainerPoint(m.getLatLng()), r = m.getRadius();
+    taken.push({ x: c.x - r, y: c.y - r, w: 2 * r, h: 2 * r });
+  }
+  // the areas with most meshes first: theirs keep the nearest places
+  marks.sort((a, b) => b.getRadius() - a.getRadius());
+  for (const m of marks) {
+    const t = m.getTooltip(), el = t.getElement();
+    if (!el) continue;
+    const c = amap.latLngToContainerPoint(m.getLatLng()), r = m.getRadius(), w = el.offsetWidth, h = el.offsetHeight, gap = 6;
+    let best = null;
+    for (let ring = 0; ring < 8 && !best; ring++) {
+      const d = ring * 16;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, -1], [0, 1], [1, -1], [1, 1], [-1, -1], [-1, 1]]) {
+        // the box's middle: beside the point, then further out along the same way
+        const cx = c.x + dx * (r + gap + w / 2 + d), cy = c.y + dy * (r + gap + h / 2 + d * .6);
+        const box = { x: cx - w / 2, y: cy - h / 2, w, h };
+        if (box.x < 0 || box.y < 0 || box.x + w > size.x || box.y + h > size.y || hits(box)) continue;
+        best = { cx, cy, box, far: ring > 0 || (dx && dy) };
+        break;
+      }
+    }
+    if (!best) best = { cx: c.x + r + gap + w / 2, cy: c.y, box: { x: c.x + r + gap, y: c.y - h / 2, w, h }, far: false };  // no room anywhere: as before
+    taken.push(best.box);
+    t.options.direction = 'center';
+    t.options.offset = L.point(best.cx - c.x, best.cy - c.y);
+    t.update();
+    if (best.far) {     // away from its point: a line from the point's edge to the label's nearest edge
+      const ang = Math.atan2(best.cy - c.y, best.cx - c.x), from = L.point(c.x + r * Math.cos(ang), c.y + r * Math.sin(ang));
+      const to = L.point(Math.min(Math.max(c.x, best.box.x), best.box.x + w), Math.min(Math.max(c.y, best.box.y), best.box.y + h));
+      L.polyline([amap.containerPointToLatLng(from), amap.containerPointToLatLng(to)],
+                 { color: m.options.color, weight: 1.5, opacity: .9, interactive: false }).addTo(areaLines);
+    }
+  }
 }
 // Each area to draw: {a: name, lat, lng, n: meshes, st: its job's state (editors), link: whether it lists meshes}
 function areaPoints(){
@@ -1165,6 +1211,7 @@ function drawAreas(){
     areaFitted = ready;
     amap.fitBounds(areaLayer.getBounds(), { padding: [60, 60], maxZoom: 5 });
   }
+  requestAnimationFrame(placeAreaLabels);      // once the labels are in the page, with their sizes
 }
 // An area's meshes, in the Meshes tab: as if only its box under Areas were ticked
 function listArea(a){
