@@ -3629,4 +3629,31 @@ finally:
     server.q("DELETE FROM meshes WHERE id='dd0000000001'", write=True)
     server._steps_left["at"] = 0
 print("steps still to do OK")
+# each limit and order an area is run with is noted, and said per order with the most it went to; an area is "complete"
+# (done, not partial) only when its list finished with no limit and something was meshed
+server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status,max_meshes,runs) VALUES('ee0000000001','Runs Area','0',"
+         "'popularity',?,'done',5,NULL)", time.time(), write=True)
+try:
+    server.record_run("ee0000000001")
+    server.record_run("ee0000000001")       # the same again: not noted twice
+    server.q("UPDATE campaigns SET ord='rating', max_meshes=3 WHERE id='ee0000000001'", write=True)
+    server.record_run("ee0000000001")
+    server.q("UPDATE campaigns SET ord='popularity', max_meshes=2 WHERE id='ee0000000001'", write=True)
+    server.record_run("ee0000000001")
+    camp = server.q("SELECT * FROM campaigns WHERE id='ee0000000001'", one=True)
+    assert len(server.json.loads(camp["runs"])) == 3
+    assert server.runs_said(camp) == ["up to 5 most popular", "up to 3 highest rated"], server.runs_said(camp)
+    v = next(c for c in server.campaigns_listed() if c["id"] == "ee0000000001")
+    assert v["complete"] is False and v["meshed"] == 0, "limited, and nothing meshed: partial"
+    server.q("UPDATE campaigns SET max_meshes=NULL WHERE id='ee0000000001'", write=True)
+    server.record_run("ee0000000001")
+    camp = server.q("SELECT * FROM campaigns WHERE id='ee0000000001'", one=True)
+    assert server.runs_said(camp) == ["all, most popular first", "up to 3 highest rated"], server.runs_said(camp)
+    v = next(c for c in server.campaigns_listed() if c["id"] == "ee0000000001")
+    assert v["complete"] is False, "nothing meshed: never done"
+    assert server.runs_said({"runs": server.json.dumps([{"ord": "data", "max_meshes": 4, "assumed": True}])}) == \
+        ["up to 4 most photos and videos (assumed: from before runs were noted)"]
+finally:
+    server.q("DELETE FROM campaigns WHERE id='ee0000000001'", write=True)
+print("areas' runs and done vs partial OK")
 print("ALL CAMPAIGN TESTS PASSED")

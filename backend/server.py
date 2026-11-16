@@ -291,6 +291,11 @@ def init_db() -> None:
             con.execute(f"ALTER TABLE campaigns ADD COLUMN mapper_below INTEGER DEFAULT {round(meshopts.MAPPER['retry_below'] * 100)}")
         if "mapper_more" not in cols:       # how many more
             con.execute(f"ALTER TABLE campaigns ADD COLUMN mapper_more INTEGER DEFAULT {meshopts.MAPPER['more']}")
+        if "runs" not in cols:              # each limit and order it was run with (record_run()); those before, assumed
+            con.execute("ALTER TABLE campaigns ADD COLUMN runs TEXT")
+            for c in con.execute("SELECT id, ord, max_meshes, created FROM campaigns").fetchall():
+                con.execute("UPDATE campaigns SET runs=? WHERE id=?", (json.dumps([{"ord": c[1], "max_meshes": c[2], "at": c[3],
+                                                                                     "assumed": True}]), c[0]))
         if con.execute("PRAGMA user_version").fetchone()[0] < 1:   # once: areas on the old defaults take the new ones
             con.execute("UPDATE campaigns SET mapper_more=? WHERE mapper_below=75 AND mapper_more=1", (meshopts.MAPPER["more"],))
             con.execute("PRAGMA user_version=1")
@@ -4182,6 +4187,7 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
           "mapper_below=?, mapper_more=?, priority=? WHERE id=?", order, max_meshes, int(bool(count_failures)), int(bool(without_youtube)),
           int(bool(same_photos_once)), int(bool(keep_better)), mapper["mapper_below"], mapper["mapper_more"], next_priority(),
           old["id"], write=True)
+        record_run(old["id"])
         if start and old["status"] in ("stopped", "done"):
             q("UPDATE campaigns SET status='running', note=NULL, only_retries=0 WHERE id=?", old["id"], write=True)
         return {**q("SELECT * FROM campaigns WHERE id=?", old["id"], one=True), "again": True, "added": added}
@@ -4197,6 +4203,7 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
       int(bool(without_youtube)), max_meshes, int(bool(count_failures)), int(bool(same_photos_once)), int(bool(keep_better)),
       mapper["mapper_below"], mapper["mapper_more"], next_priority(), write=True)
     add_new_climbs(cid, recs)
+    record_run(cid)
     return q("SELECT * FROM campaigns WHERE id=?", cid, one=True)
 
 
@@ -4222,6 +4229,31 @@ def next_priority() -> float:
     """The priority after every area's: an area entered, or entered again, goes after those there are, so that a list of
     them entered at once is taken in its order, top first (_claim())."""
     return (q("SELECT MAX(priority) p FROM campaigns", one=True)["p"] or 0.0) + 1.0
+
+
+ORDER_WORDS = {"popularity": "most popular", "rating": "highest rated", "data": "most photos and videos"}
+
+
+def record_run(camp_id: str) -> None:
+    """Note the limit and order an area runs with now in its runs, unless they're its last run's (for runs_said())."""
+    c = q("SELECT ord, max_meshes, runs FROM campaigns WHERE id=?", camp_id, one=True)
+    runs = json.loads(c["runs"] or "[]")
+    if runs and (runs[-1].get("ord"), runs[-1].get("max_meshes")) == (c["ord"], c["max_meshes"]):
+        return
+    runs.append({"ord": c["ord"], "max_meshes": c["max_meshes"], "at": time.time()})
+    q("UPDATE campaigns SET runs=? WHERE id=?", json.dumps(runs), camp_id, write=True)
+
+
+def runs_said(camp: dict) -> list[str]:
+    """What an area has been run for, each order once with the most it was run to ("up to 5 most popular", "all, most
+    popular first"); "(assumed)" on one from before runs were noted, known only from its settings then."""
+    best: dict[str, dict] = {}
+    for r in json.loads(camp.get("runs") or "[]"):
+        o, b = r.get("ord") or "popularity", best.get(r.get("ord") or "popularity")
+        if b is None or b["max_meshes"] is not None and (r.get("max_meshes") is None or r["max_meshes"] > b["max_meshes"]):
+            best[o] = {"max_meshes": r.get("max_meshes"), "assumed": bool(r.get("assumed"))}
+    return [(f"up to {b['max_meshes']} {ORDER_WORDS.get(o, o)}" if b["max_meshes"] else f"all, {ORDER_WORDS.get(o, o)} first")
+            + (" (assumed: from before runs were noted)" if b["assumed"] else "") for o, b in best.items()]
 
 
 def clean_max_meshes(n) -> int | None:
@@ -4267,6 +4299,7 @@ def set_campaign_options(camp_id: str, options: dict) -> dict:
         limit["count_failures"] = int(bool(options["count_failures"]))
     if limit:
         q(f"UPDATE campaigns SET {', '.join(f'{k}=?' for k in limit)} WHERE id=?", *limit.values(), camp_id, write=True)
+        record_run(camp_id)
         camp = q("SELECT * FROM campaigns WHERE id=?", camp_id, one=True)
         if camp["status"] == "done" and ordered_pending(camp):
             q("UPDATE campaigns SET status='running', note=NULL WHERE id=?", camp_id, write=True)
@@ -7084,6 +7117,12 @@ def campaigns_listed() -> list[dict]:
         if v["running"] and all(r["old_rerun"] for r in v["running"]) and not own_going:
             v["state"] = "low priority"     # only remaking its old meshes (queue_old()), whatever its status
         v["place"] = order.index(c["id"]) + 1 if c["id"] in order else None
+        # done only as a whole: its list finished with no limit, and something meshed; else partial, with what it was run for
+        v["runs_said"] = runs_said(c)
+        v["meshed"] = q("SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND status='done' AND mesh_id IS NOT NULL",
+                        c["id"], one=True)["n"]
+        v["climbs"] = q("SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=?", c["id"], one=True)["n"]
+        v["complete"] = c["status"] == "done" and not c.get("max_meshes") and v["meshed"] > 0
         out.append(v)
     rank = {"running": 0, "stopping": 0, "low priority": 0, "queued": 1, "waiting": 1}
     out.sort(key=lambda v: (rank.get(v["state"], 2), -(v["last_mesh"] or 0) if rank.get(v["state"]) == 0 else
