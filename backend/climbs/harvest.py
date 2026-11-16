@@ -215,11 +215,15 @@ def flickr_search(lat: float, lng: float, queries: list[str], log: Log, radius_k
     return out
 
 
-def extract_frames(video: Path, work: Path, keep: int, log: Log, fps: float | None = None) -> list[Path]:
-    """A video's sharpest frames, as JPEGs in work/ (f0001.jpg...), the rest deleted.
+def extract_frames(video: Path, work: Path, keep: int, log: Log, fps: float | None = None,
+                   stats: dict | None = None) -> list[Path]:
+    """A video's sharpest frames, less those that repeat one kept (drop_repeats()), as JPEGs in work/ (f0001.jpg...),
+    the rest deleted.
 
     Args:
         keep: how many to keep at most.
+        stats: given, filled with how many were chosen before repeats were left out ("chosen") and how many were left
+            out ("repeats"): the places those left free aren't for another video's frames.
         fps: frames a second to choose from; by default about twice keep of them over the video's length (ffprobe's),
             from 0.5 to 4 a second, or 1 if its length can't be read.
     """
@@ -241,10 +245,59 @@ def extract_frames(video: Path, work: Path, keep: int, log: Log, fps: float | No
     jobctl.run([ffmpeg, "-loglevel", "error", "-threads", "2", "-i", str(video), "-vf", f"fps={fps:g}", "-q:v", "2",
                 str(work / "f%04d.jpg")], timeout=900)
     frames = sorted(work.glob("f*.jpg"))
-    chosen = _sharpest(frames, keep, log)
+    sharpness: dict[Path, float] = {}
+    sharpest = _sharpest(frames, keep, log, sharpness)
+    chosen = drop_repeats(sharpest, sharpness, log)
+    if stats is not None:
+        stats.update(chosen=len(sharpest), repeats=len(sharpest) - len(chosen))
     for f in set(frames) - set(chosen):
         f.unlink()
     return chosen
+
+
+# A video's frame that shows what a frame kept before it does is left out (Tom, Nov 15: the job gets smaller, and the
+# freed places aren't filled): the same shot by diversity.py's measure (enough matches, nearly all of them explained by
+# one shift, turn and zoom: a camera that didn't move, or only turned or zoomed), which the mapper benchmark measured
+# on COLMAP's own matches as "dedup90" (Drifter's frames 176 to 125, the steps after it 782 to 487 s, as many photos
+# placed). Each frame is held against the REPEAT_LOOKBACK kept just before it; of two, the sharper is kept.
+REPEAT_LOOKBACK = 8
+
+
+def drop_repeats(frames: list[Path], sharpness: dict[Path, float], log: Log) -> list[Path]:
+    """frames (one video's, in time order) without those that repeat a kept one (diversity.pair()'s same shot), the
+    sharper of each two kept, in time order. Without OpenCV, all of them."""
+    if len(frames) < 2:
+        return frames
+    from . import diversity
+    feats = diversity.orb_features(frames)
+    if feats is None:
+        log("frames: OpenCV isn't installed, so repeated frames are kept")
+        return frames
+    import cv2
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+    def sharp(f: Path) -> float:
+        if f not in sharpness:
+            try:
+                sharpness[f] = _sharpness(f)
+            except Exception:  # noqa: BLE001: the earlier is kept
+                sharpness[f] = 0.0
+        return sharpness[f]
+    kept: list[list] = []      # [frame, features]
+    dropped = 0
+    for f, feat in zip(frames, feats):
+        same = None
+        if feat is not None:
+            same = next((k for k in reversed(kept[-REPEAT_LOOKBACK:]) if k[1] is not None and diversity.pair(feat, k[1], bf)[1]), None)
+        if same is None:
+            kept.append([f, feat])
+            continue
+        dropped += 1
+        if sharp(f) > sharp(same[0]):
+            same[0], same[1] = f, feat
+    if dropped:
+        log(f"frames: {dropped} of {len(frames)} left out as repeating a frame kept (the camera didn't move, or only turned "
+            "or zoomed)")
+    return sorted(k[0] for k in kept)
 
 
 def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0, max_frames: int = 150,
@@ -265,6 +318,7 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
         log("youtube: skipped (needs ffmpeg on PATH)")
         return []
     saved, refused, missed = [], None, []
+    used = 0        # places taken, those of frames left out as repeats among them (extract_frames())
     n_videos = min(len(videos), max_videos)
     for i, v in enumerate(videos[:max_videos]):
         have = youtube.cached(v.url)
@@ -295,7 +349,9 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
                 vid = youtube.cache_put(v.url, vid, details)
             if progress:
                 progress((i + 0.7) / n_videos, f"extracting frames from video {i + 1} of {n_videos}")
-            frames = extract_frames(vid, tmp, (max_frames - len(saved)) // (n_videos - i), log, fps)   # a video that failed leaves its share
+            stats: dict = {}
+            frames = extract_frames(vid, tmp, (max_frames - used) // (n_videos - i), log, fps, stats)   # a video that failed leaves its share
+            used += stats.get("chosen", len(frames))
             for j, f in enumerate(frames):
                 dst = out_dir / f"yt_{tag}_{j:03d}.jpg"
                 shutil.move(str(f), dst)
@@ -323,19 +379,26 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
     return saved
 
 
-def _sharpest(frames: list[Path], keep: int, log: Log) -> list[Path]:
-    """Drop blurry frames (low Laplacian variance) - needs PIL+numpy; otherwise uniform subsample."""
+def _sharpness(f: Path) -> float:
+    """How sharp a picture is: its Laplacian's variance on a copy at most 640 across (needs PIL and numpy)."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    im = Image.open(f).convert("L")
+    im.thumbnail((640, 640))
+    return float(np.asarray(im.filter(ImageFilter.Kernel((3, 3), [0, 1, 0, 1, -4, 1, 0, 1, 0], scale=1)), dtype=float).var())
+
+
+def _sharpest(frames: list[Path], keep: int, log: Log, sharpness: dict[Path, float] | None = None) -> list[Path]:
+    """Drop blurry frames (low Laplacian variance) - needs PIL+numpy; otherwise uniform subsample. Each frame's
+    sharpness goes into `sharpness`, where given."""
     if len(frames) <= keep:
         return frames
     try:
-        import numpy as np
-        from PIL import Image, ImageFilter
         scored = []
         for f in frames:
-            im = Image.open(f).convert("L")
-            im.thumbnail((640, 640))
-            lap = np.asarray(im.filter(ImageFilter.Kernel((3, 3), [0, 1, 0, 1, -4, 1, 0, 1, 0], scale=1)), dtype=float)
-            scored.append((lap.var(), f))
+            scored.append((_sharpness(f), f))
+            if sharpness is not None:
+                sharpness[f] = scored[-1][0]
         # keep the sharpest frame in each of `keep` equal time windows -> coverage + sharpness
         win = len(scored) / keep
         out = []

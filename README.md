@@ -19,7 +19,7 @@ Optional extras, each unlocks a feature and is detected at runtime:
 | `pip install torch torchvision` | keeps climbers and spotters out of reconstructions (in the Docker image) |
 | `pip install torch open_clip_torch` | also rejects harvested photos that don't look like a boulder at all (350 MB model download; rarely adds much) |
 | `yt-dlp` + `ffmpeg` on PATH | frames from linked YouTube/Vimeo beta videos |
-| `ffmpeg` on PATH | videos you upload to a project, turned into its photos (its 200 sharpest frames, spread over its length) |
+| `ffmpeg` on PATH | videos you upload to a project, turned into its photos (its 200 sharpest frames, spread over its length, less those that repeat a frame kept: a camera that didn't move, or only turned or zoomed) |
 | COLMAP + OpenMVS (see Docker section) | real photogrammetry instead of demo relief meshes |
 | `GOOGLE_CSE_KEY` + `GOOGLE_CSE_CX` | Google Images via the Custom Search JSON API (100 free queries/day; existing keys only, see Known gaps) |
 | `FLICKR_KEY` | geotagged Flickr photos around the climb's coordinates |

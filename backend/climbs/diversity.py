@@ -85,14 +85,13 @@ def _reject(p: Path, rejected: Path, why: str):
     p.rename(rejected / f"{why}_{p.name}")
 
 
-def view_graph(paths: list[Path], log: Log, max_images: int = 120, progress: Progress | None = None) -> dict:
+def orb_features(paths: list[Path]) -> list | None:
+    """Each photo's ORB features on a copy at most 1024 across: (keypoints, descriptors), or None for one that can't
+    be read or has 50 or fewer. None if OpenCV isn't installed."""
     try:
         import cv2
-        import numpy as np
     except ImportError:
-        log("diversity: OpenCV not installed -> skipping view-graph estimate (pip install opencv-python-headless)")
-        return {"available": False}
-    paths = paths[:max_images]
+        return None
     orb = cv2.ORB_create(nfeatures=2500)
     feats = []
     for p in paths:
@@ -105,6 +104,46 @@ def view_graph(paths: list[Path], log: Log, max_images: int = 120, progress: Pro
             im = cv2.resize(im, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
         kp, des = orb.detectAndCompute(im, None)
         feats.append((kp, des) if des is not None and len(kp) > 50 else None)
+    return feats
+
+
+def pair(a, b, bf=None) -> tuple[int, bool]:
+    """Two photos' ORB features (orb_features()): how many matches agree with one fundamental matrix (0 if too few, or
+    too small a share of the matches, as repetitive texture makes), and whether they're the same shot: IDENTICAL_INLIERS
+    or more of them, IDENTICAL_SIM_FRACTION of which one shift, turn and zoom explains (no parallax: a crop, a re-encode,
+    a pan or zoom, or a camera that didn't move)."""
+    import cv2
+    import numpy as np
+    bf = bf or cv2.BFMatcher(cv2.NORM_HAMMING)
+    m = bf.knnMatch(a[1], b[1], k=2)
+    good = [x for x, y in (x for x in m if len(x) == 2) if x.distance < 0.75 * y.distance]
+    if len(good) < 15:
+        return 0, False
+    p1 = np.float32([a[0][g.queryIdx].pt for g in good])
+    p2 = np.float32([b[0][g.trainIdx].pt for g in good])
+    F, mask = cv2.findFundamentalMat(p1, p2, cv2.FM_RANSAC, 2.0, 0.99)
+    # when estimation fails OpenCV returns F=None and an *uninitialised* mask -> treat as no overlap
+    if F is None or F.shape != (3, 3) or mask is None:
+        return 0, False
+    mask = (mask.ravel() == 1)
+    k = int(mask.sum())
+    # repetitive textures produce many putative matches with a low inlier ratio -> ignore
+    if k / max(1, len(good)) < MIN_INLIER_RATIO:
+        return 0, False
+    if k < IDENTICAL_INLIERS:
+        return k, False
+    A, am = cv2.estimateAffinePartial2D(p1[mask], p2[mask], method=cv2.RANSAC, ransacReprojThreshold=3.0)
+    return k, bool(A is not None and am is not None and (am.ravel() == 1).mean() >= IDENTICAL_SIM_FRACTION)
+
+
+def view_graph(paths: list[Path], log: Log, max_images: int = 120, progress: Progress | None = None) -> dict:
+    paths = paths[:max_images]
+    feats = orb_features(paths)
+    if feats is None:
+        log("diversity: OpenCV not installed -> skipping view-graph estimate (pip install opencv-python-headless)")
+        return {"available": False}
+    import cv2
+    import numpy as np
     bf = cv2.BFMatcher(cv2.NORM_HAMMING)
     n = len(paths)
     inl = np.zeros((n, n), dtype=int)
@@ -118,28 +157,10 @@ def view_graph(paths: list[Path], log: Log, max_images: int = 120, progress: Pro
         for j in range(i + 1, n):
             if feats[j] is None:
                 continue
-            m = bf.knnMatch(feats[i][1], feats[j][1], k=2)
-            good = [a for a, b in (x for x in m if len(x) == 2) if a.distance < 0.75 * b.distance]
-            if len(good) < 15:
-                continue
-            p1 = np.float32([feats[i][0][g.queryIdx].pt for g in good])
-            p2 = np.float32([feats[j][0][g.trainIdx].pt for g in good])
-            F, mask = cv2.findFundamentalMat(p1, p2, cv2.FM_RANSAC, 2.0, 0.99)
-            # when estimation fails OpenCV returns F=None and an *uninitialised* mask -> treat as no overlap
-            if F is None or F.shape != (3, 3) or mask is None:
-                continue
-            mask = (mask.ravel() == 1)
-            k = int(mask.sum())
-            # repetitive textures produce many putative matches with a low inlier ratio -> ignore
-            if k / max(1, len(good)) < MIN_INLIER_RATIO:
-                k = 0
+            k, same = pair(feats[i], feats[j], bf)
             inl[i, j] = inl[j, i] = k
-            if k >= IDENTICAL_INLIERS:
-                # No parallax?  If a 2-D similarity (shift/scale/rotate) explains nearly all inliers the
-                # pair is a crop / resize / re-encode of one shot, or a pure pan-zoom: useless for 3-D.
-                A, am = cv2.estimateAffinePartial2D(p1[mask], p2[mask], method=cv2.RANSAC, ransacReprojThreshold=3.0)
-                if A is not None and am is not None and (am.ravel() == 1).mean() >= IDENTICAL_SIM_FRACTION:
-                    ident[i, j] = ident[j, i] = True
+            if same:     # useless for 3-D (pair())
+                ident[i, j] = ident[j, i] = True
     # graph of useful pairs: enough inliers but not near-identical
     useful = (inl >= MIN_INLIERS) & ~ident
     comp = _components(useful)
