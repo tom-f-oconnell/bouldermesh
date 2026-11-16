@@ -4674,10 +4674,41 @@ def room_left() -> dict:
 _room_warned = False    # told of: not again until there's room again (half as much more than the warning's)
 
 
+DISK_WARN_TIMES = 2     # the disk's free space is told of under this many times CAMPAIGN_MIN_FREE, ahead of areas stopping
+_disk_level = 0         # told of: 1 under DISK_WARN_TIMES x CAMPAIGN_MIN_FREE, 2 under CAMPAIGN_MIN_FREE (areas can't start)
+
+
+def disk_free() -> int:
+    return shutil.disk_usage(DATA).free
+
+
+def check_disk() -> None:
+    """Tell your phone when the disk itself gets near the free space an area needs to start or go on (CAMPAIGN_MIN_FREE):
+    once under DISK_WARN_TIMES of it, ahead of trouble, and again under it; told again only once it's had a quarter more
+    room than the first warning's since. Apart from the cap (check_room()): on Nov 15, 2026 the public server's disk had
+    7 GB free, under its 10 GB, while its data was far under its cap, so an area stopped with no warning."""
+    global _disk_level
+    free, floor, gb = disk_free(), CAMPAIGN_MIN_FREE, lambda b: f"{b / 2**30:.1f} GB"
+    level = 2 if free < floor else 1 if free < DISK_WARN_TIMES * floor else 0
+    if level > _disk_level:
+        NOTIFIER.send("BoulderMesh's disk is too full for areas" if level == 2 else "BoulderMesh's disk is getting full",
+                      f"{gb(free)} free on its disk; areas stop, and none starts, under {gb(floor)}"
+                      + (": none can run now." if level == 2 else ".")
+                      + " The admin page's Room for data shows what takes it: deleting the photos the filter rejected (after a backup) usually frees most.",
+                      priority=4, tags=["floppy_disk"])
+        _disk_level = level
+    elif level == 0 and free > 1.25 * DISK_WARN_TIMES * floor:
+        _disk_level = 0
+
+
 def check_room() -> None:
     """After measuring: tell your phone (notify.py) once the room left under the cap is under warn_room(), and once
-    the cap is reached, each once until there's room again."""
+    the cap is reached, each once until there's room again; and of the disk's own free space (check_disk())."""
     global _room_warned
+    try:
+        check_disk()
+    except OSError:
+        pass
     room = room_left()
     if not room:
         return

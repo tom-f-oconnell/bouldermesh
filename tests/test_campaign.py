@@ -1469,6 +1469,32 @@ try:
     assert told[-1][0] == "BoulderMesh is out of room" and len(told) == 2
     server.settings().update({"storage.warn_gb": 2.5})
     assert server.warn_room() == 2.5 * 2**30, "the GB set overrides the %"
+    # the disk's own free space, apart from the cap: told under twice what areas need, again under it, then not until there's room
+    real_free, real_floor = server.disk_free, server.CAMPAIGN_MIN_FREE
+    floor = server.CAMPAIGN_MIN_FREE = 10 * 2**30    # the public server's (this test runs with none)
+    server._disk_level = 0      # whatever this machine's own disk told earlier
+    n = len(told)
+    try:
+        server.disk_free = lambda: int(1.5 * floor)
+        server.check_disk(); server.check_disk()
+        assert len(told) == n + 1 and told[-1][0] == "BoulderMesh's disk is getting full", told[n:]
+        server.disk_free = lambda: int(0.7 * floor)
+        server.check_disk()
+        assert len(told) == n + 2 and told[-1][0] == "BoulderMesh's disk is too full for areas" and "none can run now" in told[-1][1]
+        server.disk_free = lambda: int(2.2 * floor)     # not yet a quarter more than the first warning's
+        server.check_disk()
+        server.disk_free = lambda: int(1.5 * floor)
+        server.check_disk()
+        assert len(told) == n + 2, "not told again until there's been room"
+        server.disk_free = lambda: int(3 * floor)
+        server.check_disk()
+        server.disk_free = lambda: int(1.5 * floor)
+        server.check_disk()
+        assert len(told) == n + 3 and told[-1][0] == "BoulderMesh's disk is getting full"
+    finally:
+        server.disk_free, server.CAMPAIGN_MIN_FREE = real_free, real_floor
+        server._disk_level = 0
+    del told[2:]        # the cap's two, as the presence checks below count from
     assert server.settings().get("storage.warn_percent") == 1.0
     # and when a worker or downloader joins or leaves (presence.py)
     server.came_went("machine")({"id": 1, "name": "hal", "client": "script 5"}, "here", "")
