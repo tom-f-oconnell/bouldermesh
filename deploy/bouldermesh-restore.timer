@@ -1,10 +1,10 @@
-# Runs bouldermesh-restore.service every half hour.
+# Runs bouldermesh-restore.service every 5 minutes: what the server wants back, and a backup it asked for (Back up now).
 [Unit]
-Description=BoulderMesh: send back what the public server wants from the backup, every half hour
+Description=BoulderMesh: send back what the public server wants from the backup, every 5 minutes
 
 [Timer]
 OnBootSec=5min
-OnUnitActiveSec=30min
+OnUnitActiveSec=5min
 
 [Install]
 WantedBy=timers.target

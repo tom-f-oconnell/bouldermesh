@@ -874,6 +874,9 @@ It uses a key of its own with no passphrase, which the server takes only for rea
 
 To back up now, outside the night's run, with what it's doing shown until it's done: `deploy/backup-now.sh` (it starts
 the service, follows its log, and says how it went; Ctrl-C stops only the following).
+Or from the admin page's **Back up now**: the server only notes the wish, which the backup machine's frequent run
+(`bouldermesh-restore.timer`, every 5 minutes) reads through its handshake and answers with a whole copy at once;
+nothing connects from the server to the backup. One copy runs at a time.
 
 To restore onto a new server, put `current/data` in its checkout's `data/` and `current/.env` beside it, then copy a
 night's `db/<date>/bouldermesh.sqlite.backup` and `volunteers.sqlite.backup` into `data/`, and `machines.sqlite.backup`

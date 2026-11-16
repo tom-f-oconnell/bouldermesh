@@ -1453,11 +1453,25 @@ chk = server.rejected_check()
 assert chk["unbacked_files"] == 0 and chk["bytes"] >= 300_000, chk
 mark.write_text(str(time.time() - 3600))   # one that began before: none in it
 assert server.rejected_check()["unbacked_files"] == chk["files"]
+# deleting only those the backup holds: one rejected before its copy began goes, one rejected after stays
+rej_dir = server.PROJECTS / "rejonly00001" / "rejected"
+rej_dir.mkdir(parents=True, exist_ok=True)
+server.q("INSERT INTO projects(id,name,created,kind,status) VALUES('rejonly00001','Rejected Only',?,'harvest','done')", time.time(), write=True)
+(rej_dir / "Off_older.jpg").write_bytes(b"o" * 1000)
+time.sleep(1.1)
+mark.write_text(str(time.time()))
+time.sleep(0.2)
+(rej_dir / "Off_newer.jpg").write_bytes(b"n" * 1000)
+said = server.admin_clear_rejected({"only_backed": True})["result"]
+assert not (rej_dir / "Off_older.jpg").exists() and (rej_dir / "Off_newer.jpg").exists(), said
+assert "not in it yet kept" in said, said
 if had is None:
     mark.unlink()
 else:
     mark.write_text(had)
-assert "1 project(s)" in server.admin_clear_rejected({})["result"] and not (old / "rejected").exists()
+# (the older project's, all in the backup, went with them; the whole lot now takes the newer one)
+assert "1 project(s)" in server.admin_clear_rejected({})["result"] and not (old / "rejected").exists() and not rej_dir.exists()
+server.q("DELETE FROM projects WHERE id='rejonly00001'", write=True)
 assert not server.full(), "measured again after"
 with server._claim_lock:
     assert server._claim(w)[1]["name"] == "Alpha"

@@ -162,6 +162,26 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
     r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), "--restore-only", str(checkout)], env=henv, capture_output=True, text=True)
     assert r.returncode == 0 and "restored 1 file(s)" in r.stdout, r.stdout + r.stderr
     assert (data / "restore-inbox" / "projects" / "aaaaaaaaaaaa" / "photos" / "p.jpg").read_bytes() == b"jpg, kept"
+    # Back up now: the server asks (admin_backup_now()), the frequent run sees it through the handshake and makes a whole
+    # copy at once, whose report answers it; asked again while one runs, the second leaves it to the first
+    r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), "--restore-only", str(checkout)], env=henv, capture_output=True, text=True)
+    assert r.returncode == 0 and "backing up now" not in r.stdout, "not asked: only what's wanted back"
+    server.DATA, data_was = data, server.DATA
+    try:
+        assert "asked" in server.admin_backup_now({})["result"] and server.backup_state()["asked"] >= time.time() - 5
+    finally:
+        server.DATA = data_was
+    time.sleep(1.1)     # the copy begins after it was asked, as it would
+    r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), "--restore-only", str(checkout)], env=henv, capture_output=True, text=True)
+    assert r.returncode == 0 and "backing up now" in r.stdout and "backed up" in r.stdout, r.stdout + r.stderr
+    assert not (data / "backup-asked").exists(), "answered by its report"
+    assert json.loads((data / "backup-report.json").read_text())["status"] == "ok"
+    import fcntl
+    with open(dest / ".backup.lock", "w") as lock:     # one running: another whole copy leaves it to that one
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), str(checkout)], env=henv, capture_output=True, text=True)
+    assert r.returncode == 0 and "running already" in r.stdout, r.stdout + r.stderr
+    assert json.loads((data / "backup-report.json").read_text())["status"] == "ok", "no failure reported for it"
     hs = lambda *a, stdin=None: subprocess.run([sys.executable, str(ROOT / "deploy" / "backup-handshake.py"), *a],  # noqa: E731
                                                env={**os.environ, "BOULDERMESH_DATA": str(data)}, input=stdin, capture_output=True)
     assert hs("backed-up", "soon").returncode and hs("backed-up", str(int(time.time()) + 3600)).returncode, "nonsense refused"

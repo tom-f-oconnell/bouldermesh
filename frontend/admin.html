@@ -280,6 +280,8 @@
   <section id="backups">
     <h2>Backups</h2>
     <div class="note" id="backupnote"></div>
+    <div class="row"><button class="sec" id="backupnow" title="The backup machine starts a whole copy at its next check-in (every 5 minutes): nothing connects from here to it">Back up now</button>
+      <span class="note" id="backupasked"></span></div>
     <div class="note" id="manifestnote"></div>
     <table id="backupdays"></table>
   </section>
@@ -370,10 +372,12 @@ function oldMeshesNote(o){
     they lacked, is of too: kept, and left out of visitors' lists of a boulder's meshes.`;
 }
 // a confirmation for what can't be taken back: a dialog whose red button goes on (resolves true), as the site's page has
-function askDanger(title, body, go){
+// also: a second way to go, {label, value} (resolved with value; the main button with true, Cancel with false)
+function askDanger(title, body, go, also = null){
   return new Promise(done => {
     const dlg = document.createElement('dialog'); dlg.className = 'danger-ask';
-    dlg.innerHTML = `<b></b><p></p><div style="display:flex;gap:8px;justify-content:flex-end"><button class="sec no">Cancel</button><button class="yes"></button></div>`;
+    dlg.innerHTML = `<b></b><p></p><div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap"><button class="sec no">Cancel</button>${also ? '<button class="sec also"></button>' : ''}<button class="yes"></button></div>`;
+    if (also) { dlg.querySelector('.also').textContent = also.label; dlg.querySelector('.also').onclick = () => end(also.value); }
     dlg.querySelector('b').textContent = title; dlg.querySelector('.yes').textContent = go;
     if (body?.html != null) dlg.querySelector('p').innerHTML = body.html;     // {html}: our own markup, its values escaped
     else dlg.querySelector('p').textContent = body;
@@ -419,6 +423,7 @@ $('#times-since').onchange = renderTimings;
 function renderBackup(b){
   const now = Date.now() / 1000, rep = b.report, ago = t => { const h = (now - t) / 3600; return h < 1.5 ? `${Math.round(h * 60)} min` : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} days`; };
   const size = n => n >= 2 ** 30 ? (n / 2 ** 30).toFixed(1) + ' GB' : `${Math.round(n / 2 ** 20)} MB`, when = t => new Date(t * 1000).toLocaleString();
+  $('#backupasked').textContent = b.asked ? `Asked ${when(b.asked)}: the backup machine starts it within 5 minutes, and the line above says when it's done.` : '';
   const why = rep?.status === 'failed' ? esc(rep.why || 'no reason given') : '';
   let level = null, say = '';
   if (!b.confirmed) {
@@ -869,10 +874,15 @@ $('#room-rejected').onclick = async () => {
     : red(`${photos(c.unbacked_files)} (${size(c.unbacked_bytes)}) ${c.unbacked_files === 1 ? 'is' : 'are'} not in the backup`);
   const first = c.unbacked_files || !when ? `<br>To keep them, back up first, on hal:<span class="cmd"><code>~/src/bouldermesh/deploy/backup-now.sh</code>`
     + `<button type="button" class="sec sm copy">Copy</button></span>It shows the backup's progress until it's done (or see this page's backup line); then come back.` : '';
-  if (!await askDanger('Delete every photo the filter rejected?', { html: `${photos(c.files)} (${size(c.bytes)}), from every project not being harvested or meshed now. `
+  const backedN = c.files - c.unbacked_files;
+  const go = await askDanger('Delete every photo the filter rejected?', { html: `${photos(c.files)} (${size(c.bytes)}), from every project not being harvested or meshed now. `
     + `They can't be put back after, nor looked at to judge the filter.<br>${backed}<br><br>Last backup: ${when ? green(esc(when)) : red('none confirmed')}<br>${first}` },
-                       c.unbacked_files ? `Delete them, ${photos(c.unbacked_files)} for good` : 'Delete them')) return;
-  msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
+                       c.unbacked_files ? `Delete them, ${photos(c.unbacked_files)} for good` : 'Delete them',
+                       c.unbacked_files && when && backedN ? { label: `Delete only the ${photos(backedN)} backed up`, value: 'backed' } : null);
+  if (!go) return;
+
+  msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', { only_backed: go === 'backed' })).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
+$('#backupnow').onclick = async () => { try { msg((await call('/api/admin/actions/backup-now', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#texblack').onclick = async () => {
   const ids = state?.black_textures?.ids || [];
   if (!ids.length || !confirm(`Texture again the ${ids.length} mesh(es) whose textures are black-patched? A minute or two each, at low priority.`)) return;

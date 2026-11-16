@@ -117,6 +117,20 @@ send_manifest() {   # what this copy holds of what the server offloaded or marke
 
 if [ -n "$only_restore" ]; then
     send_back
+    # the admin page's Back up now: asked through the handshake, answered here at once with a whole copy
+    if [ -n "$handshake" ] && when=$($handshake asked 2>/dev/null) && [ -n "$when" ]; then
+        echo "the server asked for a backup at $(date -d "@$when" '+%F %H:%M'): backing up now"
+        rm -rf "$tmp"
+        trap - EXIT
+        exec sh "$0" "$src"
+    fi
+    exit 0
+fi
+# one whole copy at a time: the night's, and one the server asked for, don't run together
+exec 9> "$dest/.backup.lock"
+if ! flock -n 9; then
+    echo "a backup is running already: leaving it to finish"
+    done_ok=1
     exit 0
 fi
 started=$(date +%s)

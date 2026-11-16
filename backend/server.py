@@ -11279,7 +11279,24 @@ def backup_state() -> dict:
         report = json.loads((DATA / "backup-report.json").read_text())
     except (OSError, ValueError):
         report = None
-    return {"confirmed": confirmed, "report": report, "stale_hours": BACKUP_STALE_HOURS}
+    try:        # a backup asked for from the admin page (admin_backup_now()), not answered yet
+        asked = float((DATA / BACKUP_ASKED).read_text().strip())
+    except (OSError, ValueError):
+        asked = None
+    return {"confirmed": confirmed, "report": report, "stale_hours": BACKUP_STALE_HOURS, "asked": asked}
+
+
+BACKUP_ASKED = "backup-asked"       # deploy/backup-handshake.py's ASKED
+
+
+def admin_backup_now(_: dict) -> dict:
+    """Ask the backup for a whole copy now: its frequent run (bouldermesh-restore.timer, every 5 minutes) sees this
+    through its handshake and backs up at once; its report clears it. Nothing connects from here to the backup."""
+    tmp = DATA / (BACKUP_ASKED + ".tmp")
+    tmp.write_text(f"{time.time():.0f}\n")
+    tmp.replace(DATA / BACKUP_ASKED)
+    return {"result": "asked: the backup machine starts a copy at its next check-in (every 5 minutes), and this page "
+                      "says when it's done"}
 
 
 def admin_state() -> dict:
@@ -11364,19 +11381,45 @@ def rejected_check(_: dict | None = None) -> dict:
     return out
 
 
-def admin_clear_rejected(_: dict) -> dict:
+def admin_clear_rejected(body: dict) -> dict:
     """Delete the photos the filter rejected (projects' rejected/), of every project not being harvested or meshed:
-    most of what harvests leave on disk, and needed only to put one back by hand."""
-    freed, n = 0, 0
+    most of what harvests leave on disk, and needed only to put one back by hand. With {"only_backed": true}, only
+    those the backup holds (moved into rejected/ before its last good copy began: rejected_check()), the rest kept."""
+    only = bool((body or {}).get("only_backed"))
+    since = offload_mod.backed_up_at(DATA)
+    if only and since is None:
+        raise ValueError("no backup has been confirmed: none of them is in one")
+    freed, n, files, kept = 0, 0, 0, 0
     for r in q("SELECT id, status FROM projects"):
         d = PROJECTS / r["id"] / "rejected"
         if r["status"] in ("queued", "running", "harvesting") or not d.is_dir():
             continue
-        freed += sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
-        shutil.rmtree(d, ignore_errors=True)
-        n += 1
+        if not only:
+            freed += sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+            shutil.rmtree(d, ignore_errors=True)
+            n += 1
+            continue
+        took = False
+        for f in d.rglob("*"):
+            try:
+                st = f.stat()
+                if not f.is_file():
+                    continue
+                if st.st_ctime >= since:
+                    kept += 1
+                    continue
+                f.unlink()
+            except OSError:
+                continue
+            freed, files, took = freed + st.st_size, files + 1, True
+        n += took
+        if not any(d.iterdir()):
+            d.rmdir()
     if data_cap():
         measure_usage()
+    if only:
+        return {"result": f"deleted the {files:,} rejected photos the backup holds, of {n} project(s): {freed / 2**30:.1f} GB; "
+                          f"{kept:,} not in it yet kept"}
     return {"result": f"deleted the rejected photos of {n} project(s): {freed / 2**30:.1f} GB"}
 
 
@@ -11541,7 +11584,7 @@ def main() -> None:
                          "open to anyone who can reach this port; set EDIT_TOKEN, or READ_ONLY=1, before exposing it"), flush=True)
     in_docker = Path("/.dockerenv").exists()
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
-                                      {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rejected-check": rejected_check, "texture-again": admin_texture_again, "rest": admin_rest,
+                                      {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rejected-check": rejected_check, "backup-now": admin_backup_now, "texture-again": admin_texture_again, "rest": admin_rest,
                                        "remesh-untied": admin_remesh_untied, "inputs-check": admin_inputs_check,
                                        "old-decide": admin_old_decide, "lost-decide": admin_lost_decide,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,

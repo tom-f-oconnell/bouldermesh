@@ -13,6 +13,8 @@ here, through a key of its own whose forced command this is (README, "Backups"),
     sample                  the files offloaded whose SHA-1s it's to read back tonight (data/offload-sample.list)
     manifest                what it holds of the paths offloaded, on stdin (backend/offload.py's manifest_of() has its
                             form), kept whole or not at all in data/backup-manifest.txt, which the server checks
+    asked                   when the admin page asked for a backup now (data/backup-asked), if it has and none has
+                            been reported since: the backup's half-hourly run then backs up at once
 
 The command comes from SSH_ORIGINAL_COMMAND (over SSH) or the arguments (run here). The data folder is the checkout's
 data/, or BOULDERMESH_DATA.
@@ -87,7 +89,20 @@ def report() -> int:
     tmp = DATA / "backup-report.json.tmp"
     tmp.write_text(json.dumps({**keep, "received": time.time()}))
     tmp.replace(DATA / "backup-report.json")
+    began = got.get("began")
+    if isinstance(began, (int, float)) and asked() is not None and began >= asked():
+        (DATA / ASKED).unlink(missing_ok=True)      # answered, whether it went well or not (the report says)
     return 0
+
+
+ASKED = "backup-asked"      # when the admin page asked for a backup now (backend/server.py's admin_backup_now())
+
+
+def asked() -> float | None:
+    try:
+        return float((DATA / ASKED).read_text().strip())
+    except (OSError, ValueError):
+        return None
 
 
 def sample() -> list[str]:
@@ -144,7 +159,12 @@ def main() -> int:
         return 0
     if words == ["manifest"]:
         return manifest()
-    sys.exit("usage: backed-up <unix time> | wanted | restore | report | sample | manifest")
+    if words == ["asked"]:
+        t = asked()
+        if t is not None:
+            print(f"{t:.0f}")
+        return 0
+    sys.exit("usage: backed-up <unix time> | wanted | restore | report | sample | manifest | asked")
 
 
 if __name__ == "__main__":
