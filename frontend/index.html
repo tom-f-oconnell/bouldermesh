@@ -272,6 +272,16 @@
   @media (max-width:860px){ #vvia{top:auto;bottom:100px;left:12px;right:12px;transform:none;max-width:none} }
   #vold{position:absolute;left:12px;bottom:12px;z-index:3;color:var(--warn);font-weight:700;font-size:13px;text-shadow:0 0 3px var(--bg),0 0 3px var(--bg)}
   #vold[hidden]{display:none}
+  /* an editor's mesh files shown from this device, before they're uploaded: what it is, and Upload or Discard */
+  #localbar{position:absolute;left:50%;transform:translateX(-50%);top:12px;z-index:4;width:max-content;max-width:min(620px,calc(100% - 24px));display:flex;flex-wrap:wrap;
+    align-items:center;justify-content:center;gap:6px 10px;background:var(--overlay);border:1px solid var(--acc);border-radius:8px;padding:7px 10px;font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,.3)}
+  #localbar[hidden],#localbar [hidden]{display:none!important}
+  #localbar .what{min-width:0;overflow-wrap:anywhere} #localbar .size{color:var(--mute)} #localbar .state{display:block;font-size:12px;color:var(--warn)}
+  #localbar .state.bad{color:var(--bad)} #localbar .btns{display:flex;gap:6px}
+  #localbar .prog{flex-basis:100%;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums}
+  #localbar .bar{flex:1;height:8px;border-radius:4px;background:var(--line);overflow:hidden} #localbar .bar i{display:block;height:100%;width:0;background:var(--acc)}
+  #viewer.local #hud,#viewer.local #vvia{display:none}
+  @media (max-width:860px){ #localbar{top:44px;left:8px;right:8px;transform:none;width:auto;max-width:none} }
   #vcorner{position:absolute;right:12px;bottom:12px;z-index:3;display:flex;align-items:flex-end;gap:6px}   /* Rate, then the notes' button */
   /* over the scene's ground, which can be as dark as their text: a halo of the page's background round the text and icons,
      keeping their see-through bodies */
@@ -571,7 +581,7 @@
         <h2 class="row" style="align-items:baseline"><span class="grow">Meshes <small id="m-count"></small></span><a href="#" id="m-byname" class="byname" title="Find a climb by its name, boulder, area or grade, on the Climbs tab">Search by name</a></h2>
         <div class="row w" style="margin-bottom:8px">
           <label class="file"><button class="sec" type="button">Upload mesh (.ply .obj .glb .stl)</button>
-            <input type="file" id="meshfile" multiple accept=".ply,.obj,.mtl,.glb,.gltf,.stl,.png,.jpg"></label>
+            <input type="file" id="meshfile" multiple accept=".ply,.obj,.mtl,.glb,.gltf,.stl,.bin,.png,.jpg,.jpeg"></label>
           <select id="upclimb" style="width:170px"><option value="">link to climb (optional)</option></select>
         </div>
         <div class="row" style="margin-bottom:6px">
@@ -641,6 +651,11 @@
       <div id="orient"></div>
       <div id="vvia" hidden></div>
       <div id="vold" hidden title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</div>
+      <div id="localbar" hidden>
+        <div class="what"><b class="name"></b> <span class="size"></span><span class="state" role="status"></span></div>
+        <div class="btns"><button class="sm" id="localup">Upload</button><button class="sm sec" id="localcancel" hidden>Cancel</button><button class="sm sec" id="localdiscard">Discard</button></div>
+        <div class="prog" hidden><div class="bar" role="progressbar" aria-label="Uploaded" aria-valuemin="0" aria-valuemax="100"><i></i></div><span class="pct"></span></div>
+      </div>
       <div id="vextra">
         <button class="sm sec" id="vnewest" hidden title="This is an older version of this mesh, as its link was to: show the newest">Newest</button>
         <button class="sm sec" id="vothers" hidden></button>
@@ -744,27 +759,45 @@ const api = async (url, opt={}) => {
   if (opt.json) { opt.body = JSON.stringify(opt.json); opt.headers = {'Content-Type':'application/json'}; delete opt.json; }
   if (!editor && opt.method && opt.method !== 'GET' && !accountMay(url)) throw new Error(viewOnlyNote());
   if (token) opt.headers = { ...(opt.headers || {}), Authorization: 'Bearer ' + token };
+  if (opt.sent) return apiSend(url, opt);
   const r = await fetch(url, opt);
   const j = await r.json().catch(()=>({}));
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 };
+// The same over XMLHttpRequest, which says how much of the body has gone as it goes: opt.sent(bytes). opt.signal stops it.
+const apiSend = (url, opt) => new Promise((ok, fail) => {
+  const x = new XMLHttpRequest(), stopped = () => fail(new DOMException('Cancelled', 'AbortError'));
+  if (opt.signal?.aborted) return stopped();
+  x.open(opt.method, url);
+  for (const [k, v] of Object.entries(opt.headers || {})) x.setRequestHeader(k, v);
+  x.upload.onprogress = ev => opt.sent(ev.loaded);
+  x.onload = () => {
+    let j = {}; try { j = JSON.parse(x.responseText); } catch {}
+    if (x.status >= 200 && x.status < 300) ok(j); else fail(new Error(j.error || x.statusText || `the server answered ${x.status}`));
+  };
+  x.onerror = () => fail(new Error('the connection failed'));
+  x.onabort = stopped;
+  opt.signal?.addEventListener('abort', () => x.abort(), { once: true });
+  x.send(opt.body);
+});
 // Cloudflare's free plan refuses any request over 100 MB, so files go in requests under BATCH, and a file bigger than
 // that on its own in parts (POST /api/uploads), which the request then names in its "uploads" field
 const BATCH = 80e6;
 const pause = ms => new Promise(ok => setTimeout(ok, ms));
-async function sendInParts(file, progress){
-  const { id, part } = await api('/api/uploads', { method: 'POST', json: { name: file.name, size: file.size } });
+async function sendInParts(file, progress, signal){
+  const { id, part } = await api('/api/uploads', { method: 'POST', json: { name: file.name, size: file.size }, signal });
+  const fine = signal ? { signal, sent: n => progress(Math.min(sent + n, file.size)) } : {};      // as each part goes
   let sent = 0, tries = 0;
   while (sent < file.size) {
     try {
       sent = (await api(`/api/uploads/${id}?offset=${sent}`, { method: 'POST', body: file.slice(sent, sent + part),
-                                                              headers: { 'Content-Type': 'application/octet-stream' } })).received;
+                                                              headers: { 'Content-Type': 'application/octet-stream' }, ...fine })).received;
       tries = 0;
     } catch (e) {     // a dropped connection: carry on from what the server has, a few times
-      if (++tries > 5) throw e;
+      if (signal?.aborted || ++tries > 5) throw e;
       await pause(2000 * tries);
-      const s = await fetch(`/api/uploads/${id}`).then(r => r.ok ? r.json() : null).catch(() => null);
+      const s = await fetch(`/api/uploads/${id}`, { signal }).then(r => r.ok ? r.json() : null).catch(() => null);
       if (s) sent = s.received;
     }
     progress(sent);
@@ -772,14 +805,17 @@ async function sendInParts(file, progress){
   return id;
 }
 // Sends files to url as the field `field`, in requests under BATCH, or all in one if `together` (a mesh with its
-// textures), with `fields` in each; the answers. progress(bytes sent, of all).
-async function sendFiles(url, files, field, { together = false, fields = {}, progress = () => {} } = {}){
+// textures), with `fields` in each; the answers. progress(bytes sent, of all): with `signal` (an AbortController's, which
+// stops it), as the bytes go, and without, as each request ends. With `signal` every file goes in parts, and the request
+// that makes something of them last and small: one stopped part-way would reach the server cut short, which it would take
+// as whole.
+async function sendFiles(url, files, field, { together = false, fields = {}, progress = () => {}, signal = null } = {}){
   files = [...files];
   const total = files.reduce((n, f) => n + f.size, 0);
-  const inParts = together && total > BATCH ? files : files.filter(f => f.size > BATCH);
+  const inParts = signal || (together && total > BATCH) ? files.filter(f => f.size) : files.filter(f => f.size > BATCH);
   let done = 0;
   const ids = [];
-  for (const f of inParts) { ids.push(await sendInParts(f, n => progress(done + n, total))); done += f.size; }
+  for (const f of inParts) { ids.push(await sendInParts(f, n => progress(done + n, total), signal)); done += f.size; }
   const batches = [];
   let batch = [], size = 0;
   for (const f of files.filter(f => !inParts.includes(f))) {
@@ -793,8 +829,9 @@ async function sendFiles(url, files, field, { together = false, fields = {}, pro
     for (const [k, v] of Object.entries(fields)) fd.append(k, v);
     for (const f of b) fd.append(field, f);
     if (i === 0 && ids.length) fd.append('uploads', ids.join(','));
-    out.push(await api(url, { method: 'POST', body: fd }));
-    done += b.reduce((n, f) => n + f.size, 0);
+    const size = b.reduce((n, f) => n + f.size, 0), from = done;
+    out.push(await api(url, { method: 'POST', body: fd, ...(signal ? { signal, sent: n => progress(from + Math.min(n, size), total) } : {}) }));
+    done += size;
     progress(done, total);
   }
   return out;
@@ -2074,6 +2111,8 @@ const NO_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAf
 function gltfLoader(side, shapeOnly = false){
   const manager = new THREE.LoadingManager();
   manager.setURLModifier(u => {
+    const mine = localUrl(u);
+    if (mine) return mine;
     if (!/\.(png|jpe?g|webp)$/i.test(u)) return u;
     if (shapeOnly) return NO_IMAGE;
     loadingUpdate?.({ texture: true });     // its texture files follow the model's
@@ -2123,6 +2162,23 @@ async function loadGltfWithTexture(url, base, label, first = 0){
   return { gltf, note };
 }
 let shownMesh = null;    // the id of the mesh in the viewer, if it's one of ours
+// An editor's mesh files, shown from this device before any of it is uploaded (previewLocal() below):
+// {files, main, urls: each file's name in lower case to its object URL, url: main's, size, before: {id, climb} of the
+// mesh shown before it, abort: an AbortController while it uploads, sent: all of it has gone, and only the answer is awaited}
+let localMesh = null;
+const fileName = u => { try { u = decodeURIComponent(u); } catch {} return u.split(/[?#]/)[0].split(/[\\/]/).pop().toLowerCase(); };
+// A name a local mesh's file refers to (its textures, .bin, .mtl), which a loader has put after the object URL's start:
+// the object URL of the chosen file of that name, whatever folder it was said to be in
+const localUrl = u => localMesh && u.startsWith('blob:') && localMesh.urls.get(fileName(u)) || null;
+function localManager(){ const m = new THREE.LoadingManager(); m.setURLModifier(u => localUrl(u) || u); return m; }
+// A local glTF: grey if its texture files weren't chosen with it, saying which
+async function loadLocalGltf(url){
+  const gltf = await loadGltf(url);
+  if (!texturesLost(gltf)) return { gltf, note: '' };
+  const missing = gltf.parser.json.images.map(i => i.uri).filter(u => u && !u.startsWith('data:') && !localMesh?.urls.has(fileName(u)));
+  return { gltf, note: missing.length ? `Showing plain grey: choose its texture${missing.length > 1 ? 's' : ''} along with it (${missing.join(', ')}).`
+                                      : 'Showing plain grey: this browser couldn\'t read its texture.' };
+}
 // A mesh's progress while it loads: on a phone over whichever view is showing, moving to the view once it's ready to see,
 // rather than to an empty view; on a wider screen over the middle of the view. Returns what to call when it's done.
 let loadSeq = 0, loadingUpdate = null;
@@ -2144,7 +2200,9 @@ function loading(label){
   };
   return () => { if (seq === loadSeq) { el.hidden = true; loadingUpdate = null; } };
 }
-async function loadMeshUrl(url, filename, label, id){
+// local: one of the files an editor chose, from its object URL, with nothing sent
+async function loadMeshUrl(url, filename, label, id, local = false){
+  if (!local) endLocal();
   $('#vold').hidden = true;     // viewMesh() says if it's old
   flushRating();
   stopDetail();
@@ -2161,7 +2219,7 @@ async function loadMeshUrl(url, filename, label, id){
   viewNote('');
   pieces = null; renderPieces();
   $('#orient').style.display = 'none';
-  const again = () => loadMeshUrl(url, filename, label, id);
+  const again = () => loadMeshUrl(url, filename, label, id, local);
   const ext = filename.split('.').pop().toLowerCase();
   // with the mesh's version from the list, its files are kept a year: what's at that address never changes (server.py)
   const v = id ? meshesById[id]?.v : null, at = (u, query = '') => { const qs = [query, v ? `v=${v}` : ''].filter(Boolean).join('&'); return qs ? `${u}?${qs}` : u; };
@@ -2172,6 +2230,7 @@ async function loadMeshUrl(url, filename, label, id){
     const progress = ev => loadingUpdate?.(ev);
     if (ext === 'ply') obj = new THREE.Mesh(await new PLYLoader().loadAsync(at(url), progress));
     else if (ext === 'stl') obj = new THREE.Mesh(await new STLLoader().loadAsync(at(url), progress));
+    else if (local && (ext === 'glb' || ext === 'gltf')) { const got = await loadLocalGltf(url); obj = got.gltf.scene; note = got.note; }
     else if (ext === 'glb' || ext === 'gltf') {
       // its copies packed for viewing, if it has them: a preview, or all of it, with its texture at 2048 pixels first
       let pk = ext === 'glb' && id ? meshesById[id]?.pack : null, lod = pk ? (pk.preview ? 'preview' : 'full') : null, got;
@@ -2187,11 +2246,14 @@ async function loadMeshUrl(url, filename, label, id){
       if (pk) detail = { id, pk, v, gltf, base, url, lod, first, began, firstBytes: pk[lod] + (first && pk.texture.bytes[first] || 0) };
     }
     else if (ext === 'obj') {
-      const loader = new OBJLoader();
-      try { const mtl = await new MTLLoader().setPath(base).loadAsync(filename.replace(/\.obj$/i, '.mtl')); mtl.preload(); loader.setMaterials(mtl); }
-      catch { note = 'Showing plain grey: its .mtl materials file wouldn\'t load.'; }
+      const manager = localManager(), loader = new OBJLoader(manager);
+      let mtlName = filename.replace(/\.obj$/i, '.mtl');
+      if (local && !localMesh?.urls.has(mtlName.toLowerCase())) mtlName = localMesh?.files.find(f => /\.mtl$/i.test(f.name))?.name;    // the one chosen, whatever its name
+      try { const mtl = await new MTLLoader(manager).setPath(base).loadAsync(mtlName); mtl.preload(); loader.setMaterials(mtl); }
+      catch { note = local && !mtlName ? 'Showing plain grey: choose its .mtl file and textures along with it to see them.' : 'Showing plain grey: its .mtl materials file wouldn\'t load.'; }
       obj = await loader.loadAsync(at(url), progress);
     } else throw new Error('unsupported format .' + ext);
+    if (local && localMesh?.url !== url) return loaded();     // discarded or replaced while it loaded
     if (phone.matches) showRight('3d');
     loaded();
     showObject(obj, label, !!id && meshesById[id]?.source !== 'upload');
@@ -2208,7 +2270,14 @@ async function loadMeshUrl(url, filename, label, id){
       const gl = renderer.getContext();
       if (gl.getError() === gl.OUT_OF_MEMORY) viewNote('The graphics card ran out of memory for this texture, so it may show black.', again);
     }));
-  } catch (e) { loaded(); reportError('mesh', e, { mesh: id, file: filename }); toast('Could not load mesh: ' + e.message, 6000); $('#viewing').textContent = 'Could not load: ' + e.message; viewNote('Could not load this mesh: ' + e.message, again); }
+  } catch (e) {
+    if (local) {     // nothing about it is sent, an error included
+      loaded();
+      if (localMesh?.url !== url) return;
+      const why = `${e.message.replace(/\.+$/, '')}. If it has other files (.bin, .mtl, textures), choose them all together. It can still be uploaded.`;
+      toast('Could not show this file', 6000); $('#viewing').textContent = 'Could not show ' + filename; return viewNote('Could not show this file here: ' + why);
+    }
+    loaded(); reportError('mesh', e, { mesh: id, file: filename }); toast('Could not load mesh: ' + e.message, 6000); $('#viewing').textContent = 'Could not load: ' + e.message; viewNote('Could not load this mesh: ' + e.message, again); }
 }
 
 // ---- the rest of a mesh shown from its copies packed for viewing (backend/glbpack.py): its texture as sharp as this device
@@ -4320,8 +4389,8 @@ function shownClimbs(){
 // What shows which mesh is in view: on a phone, the Viewer button, with its climb under it (grey until there's one,
 // with Random blue meanwhile, as the way in), and the climbs' View buttons, the one shown blue
 function markShown(){
-  const m = shownMesh && meshesById[shownMesh], has = !!m, b = $('#tofull');
-  const picked = has && viewedClimb && [...m.climbs, ...(m.boulder_climbs || []), ...climbsCache].find(c => c.id === viewedClimb);
+  const m = shownMesh && meshesById[shownMesh], has = !!m || !!localMesh, b = $('#tofull');
+  const picked = m && viewedClimb && [...m.climbs, ...(m.boulder_climbs || []), ...climbsCache].find(c => c.id === viewedClimb);
   const name = picked ? named(picked) : $('#vname').textContent || m?.name || '';
   b.disabled = !has;
   b.title = has ? 'Back to the mesh' : 'Pick a climb\'s mesh first';
@@ -4842,20 +4911,106 @@ renderer.domElement.addEventListener('click', ev => {
   saveMarked();
 });
 
-async function uploadMesh(files){
-  if (!editor) return toast('This copy of the site is view-only.');
-  toast('Uploading mesh…', 60000);
-  try {
-    const [r] = await sendFiles('/api/meshes', files, 'files', { together: true, fields: $('#upclimb').value ? { climb_id: $('#upclimb').value } : {},
-                                                               progress: (n, t) => toast(`Uploading mesh: ${mb(n)} of ${mb(t)} MB…`, 60000) });
-    await refreshMeshes(); await refreshClimbs(); viewMesh(r.id);
-  }
-  catch(e){ toast('Upload failed: ' + e.message, 8000); }
+// ---- a mesh of an editor's own: shown first from the chosen files on this device, with nothing sent, under a bar that
+// says so. Its Upload button sends them, as far along as the bar shows, and Discard goes back to what was in view.
+const MESH_MAIN = ['ply', 'obj', 'glb', 'gltf', 'stl'];     // as the server's MESH_EXT: the first such file is the mesh
+function localBar(state, text = ''){
+  const el = $('#localbar'), m = localMesh, st = el.querySelector('.state'), up = state === 'up';
+  el.hidden = !m; vEl.classList.toggle('local', !!m);
+  if (!m) return;
+  el.querySelector('.name').textContent = m.main.name;
+  el.querySelector('.size').textContent = fmtSize(m.size) + (m.files.length > 1 ? `, ${m.files.length} files` : '');
+  st.textContent = text || (up ? 'Uploading…' : 'Not uploaded yet: only you see this');
+  st.classList.toggle('bad', state === 'failed');
+  el.querySelector('.prog').hidden = !up;
+  $('#localup').hidden = $('#localdiscard').hidden = up || state === 'done'; $('#localcancel').hidden = !up;
+  $('#localup').textContent = state === 'failed' ? 'Upload again' : 'Upload';
+  if (up) localProgress(0, m.size);
 }
-$('#meshfile').onchange = ev => uploadMesh(ev.target.files);
-vEl.addEventListener('dragover', ev => { ev.preventDefault(); vEl.classList.add('dragging'); });
+function localProgress(n, total){
+  const el = $('#localbar'), pct = total ? Math.floor(100 * n / total) : 100, bar = el.querySelector('.bar');
+  bar.firstChild.style.width = pct + '%'; bar.setAttribute('aria-valuenow', pct);
+  el.querySelector('.pct').textContent = `${pct}% · ${mb(n)} of ${mb(total)} MB`;
+  if (n >= total && localMesh) { localMesh.sent = true; el.querySelector('.state').textContent = 'Sent: the site is saving it…'; }
+}
+// The local mesh over with: its upload stopped if one is going, its object URLs given back
+function endLocal(){
+  const m = localMesh;
+  if (!m) return;
+  localMesh = null;
+  if (m.abort) { m.abort.abort(); toast('Upload cancelled', 4000); }
+  for (const u of m.urls.values()) URL.revokeObjectURL(u);
+  localBar();
+}
+function clearView(){
+  loadSeq++; $('#loading').hidden = true;
+  if (current) scene.remove(current);
+  current = null; clearBacks();
+  showTitle('', ''); viewNote('');
+  $('#viewing').textContent = ''; $('#vsway').disabled = true;
+  $('#hud').textContent = 'Pick a mesh, or drop a mesh file here. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan';
+}
+function previewLocal(files){
+  if (!editor) return toast('This copy of the site is view-only.');
+  files = [...files];
+  if (!files.length) return;
+  const main = files.find(f => MESH_MAIN.includes(f.name.split('.').pop().toLowerCase()));
+  if (!main) return toast('That needs a mesh file: .ply .obj .glb .gltf or .stl', 6000);
+  const before = localMesh ? localMesh.before : shownMesh ? { id: shownMesh, climb: viewedClimb } : null;
+  endLocal();
+  const urls = new Map(files.map(f => [f.name.toLowerCase(), URL.createObjectURL(f)]));
+  localMesh = { files, main, urls, url: urls.get(main.name.toLowerCase()), size: files.reduce((n, f) => n + f.size, 0), before, abort: null };
+  // nothing of the mesh that was in view stays: its title, its link in the address, its climb and its other versions
+  viewedClimb = null;
+  showTitle(main.name, 'Not uploaded');
+  try { history.replaceState(null, '', '/'); } catch {}
+  closeLinkMenu();
+  for (const id of ['vclimb', 'vvia', 'vnewest', 'vothers']) $('#' + id).hidden = true;
+  localBar();
+  return loadMeshUrl(localMesh.url, main.name, `${main.name} (not uploaded)`, null, true).then(markShown);
+}
+function discardLocal(){
+  const m = localMesh;
+  if (!m) return;
+  endLocal();
+  if (m.before && meshesById[m.before.id]) return viewMesh(m.before.id, undefined, '', m.before.climb);
+  clearView(); markShown();
+}
+async function uploadLocal(){
+  const m = localMesh;
+  if (!m || m.abort) return;
+  m.abort = new AbortController(); m.sent = false;
+  localBar('up');
+  let r;
+  try {
+    [r] = await sendFiles('/api/meshes', m.files, 'files', { together: true, fields: $('#upclimb').value ? { climb_id: $('#upclimb').value } : {},
+                                                           signal: m.abort.signal, progress: (n, t) => { if (localMesh === m) localProgress(n, t); } });
+  } catch (e) {
+    if (localMesh !== m) return;     // discarded or replaced meanwhile, which said so
+    const cancelled = m.abort.signal.aborted;
+    m.abort = null;
+    if (cancelled && m.sent) setTimeout(() => refreshMeshes().catch(() => {}), 4000);
+    return localBar(cancelled ? '' : 'failed', !cancelled ? 'Upload failed: ' + e.message
+      : m.sent ? 'Cancelled after all of it was sent, so it may be on the site: check the list before uploading again'
+      : 'Upload cancelled. Still not uploaded: only you see this');
+  }
+  m.abort = null;
+  const mine = localMesh === m;
+  if (mine) localBar('done', 'Uploaded');
+  try { await refreshMeshes(); await refreshClimbs(); } catch {}
+  if (!mine) return toast(`${m.main.name} had already uploaded: it's in the list`, 6000);
+  if (localMesh !== m) return;      // another mesh picked meanwhile
+  viewMesh(r.id);
+  if (localMesh === m) discardLocal();     // not in the list after all
+  toast('Uploaded ' + m.main.name, 3000);
+}
+$('#localup').onclick = uploadLocal;
+$('#localdiscard').onclick = discardLocal;
+$('#localcancel').onclick = () => localMesh?.abort?.abort();
+$('#meshfile').onchange = ev => { const files = [...ev.target.files]; ev.target.value = ''; previewLocal(files); };    // emptied, so the same file can be chosen again
+vEl.addEventListener('dragover', ev => { ev.preventDefault(); if (editor) $('#drop').textContent = 'Drop a mesh\'s files to look at it before uploading'; vEl.classList.add('dragging'); });
 vEl.addEventListener('dragleave', () => vEl.classList.remove('dragging'));
-vEl.addEventListener('drop', ev => { ev.preventDefault(); vEl.classList.remove('dragging'); uploadMesh(ev.dataTransfer.files); });
+vEl.addEventListener('drop', ev => { ev.preventDefault(); vEl.classList.remove('dragging'); previewLocal(ev.dataTransfer.files); });
 
 // ---------------------------------------------------------------- errors, told to the server for looking at later
 // A mesh that won't load, and errors in the page, go to /api/client-errors (data/client-errors.jsonl there). Not a texture

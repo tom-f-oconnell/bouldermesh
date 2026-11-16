@@ -664,6 +664,28 @@ def feedback(tmp: Path) -> None:
     print("feedback OK")
 
 
+def cut_short(tmp: Path) -> None:
+    """An upload cut off part-way (cancelled, a tab closed) is refused, not kept as if it were whole."""
+    srv = Server(tmp, EDIT_TOKEN=TOKEN, READ_ONLY="auto")
+    try:
+        bnd = "xyz"
+        body = (f'--{bnd}\r\nContent-Disposition: form-data; name="files"; filename="rock.ply"\r\n\r\n').encode() + PLY + f"\r\n--{bnd}--\r\n".encode()
+        head = (f"POST /api/meshes HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\n"
+                f"Content-Type: multipart/form-data; boundary={bnd}\r\nContent-Length: {len(body) + 500}\r\n\r\n").encode()
+        with socket.create_connection(("127.0.0.1", srv.port), timeout=10) as s:
+            s.sendall(head + body)
+            s.shutdown(socket.SHUT_WR)      # as a browser ends an upload it gave up on
+            out = b""
+            while chunk := s.recv(65536):
+                out += chunk
+        assert out.startswith(b"HTTP/1.0 400") or out.startswith(b"HTTP/1.1 400"), out[:200]
+        assert b"cut short" in out and req(srv.url, "GET", "/api/meshes")[2] == [], out[-200:]
+        assert req(srv.url, "POST", "/api/meshes", headers=AUTH, files=[("files", "rock.ply", PLY)])[0] == 201, "and one that came whole is kept"
+    finally:
+        srv.stop()
+    print("uploads cut short OK")
+
+
 def main() -> None:
     fetcher()
     with tempfile.TemporaryDirectory(prefix="bouldermesh-public-") as td:
@@ -674,6 +696,7 @@ def main() -> None:
         scene_hidden(Path(td) / "e")
         links_site(Path(td) / "f")
         feedback(Path(td) / "g")
+        cut_short(Path(td) / "h")
     print("ALL PUBLIC TESTS PASSED")
 
 

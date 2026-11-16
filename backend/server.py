@@ -8694,7 +8694,11 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Content-Length is negative")
         if n > MAX_UPLOAD:
             raise ValueError(f"upload exceeds {MAX_UPLOAD // 2**20} MB")
-        return self.rfile.read(n)
+        body = self.rfile.read(n)
+        if len(body) < n:       # cut off on the way (cancelled, a tab closed, the signal lost): never kept as if whole
+            self.close_connection = True
+            raise ValueError(f"the upload was cut short: {len(body)} of {n} bytes came")
+        return body
 
     # -- changes -----------------------------------------------------------
     def is_editor(self) -> bool:
