@@ -3664,13 +3664,13 @@ async function refreshCampaigns(){
       const atWork = areasAtWork.get(c.id) || [];
       // "done" only for an area meshed whole (no limit) with nothing left for its meshes; one run only so far (a limit, or
       // nothing meshed yet) is "partial"; the title says what it was run for and how far it is
-      const left = areasLeft.get(c.id) || 0;
+      const toCome = areasLeft.get(c.id) || 0;
       const sumUp = [`Run for: ${(c.runs_said || []).join('; ') || 'nothing yet'}`, `${c.meshed ?? 0} of ${plural(c.climbs ?? 0, 'climb')} meshed`,
-        ...(left ? [`${left} of its meshes still have beta or their size to come`] : []),
+        ...(toCome ? [`${toCome} of its meshes still have beta or their size to come`] : []),
         ...(atWork.length ? [`machines at work for it: ${atWork.length}`] : [])].join('. ');
       const st = state === 'done' && !c.complete ? { label: 'partial', cls: '', tip: sumUp }
         : state === 'done' && atWork.length ? { label: 'finishing: machines still at work', cls: 'running', tip: sumUp }
-        : state === 'done' && left ? { label: `meshed; ${left} with beta or size to come`, cls: 'running', tip: sumUp }
+        : state === 'done' && toCome ? { label: `meshed; ${toCome} with beta or size to come`, cls: 'running', tip: sumUp }
         : { label: state === 'low priority' ? 'low priority: remaking old meshes' : state,
             cls: ['stopped', 'queued', 'waiting'].includes(state) ? '' : state === 'low priority' ? 'lowp' : state === 'done' ? 'done' : 'running',
             tip: [tip, sumUp].filter(Boolean).join(' ') };
