@@ -204,8 +204,12 @@
      give way (cut short) before anything wraps */
   .viewbar button{white-space:nowrap;flex:none} .viewbar select{min-width:8em;flex:0 1 auto}
   .viewbar .status{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #viewer,#map{position:relative;min-height:0;display:none}
-  #viewer.on,#map.on{display:block}
+  #viewer,#map,#areamap{position:relative;min-height:0;display:none}
+  #viewer.on,#map.on,#areamap.on{display:block}
+  /* the areas with meshes, in place of the 3D view until a mesh is loaded (areaMap()) */
+  #areamap .areahead{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:500;background:var(--overlay);border:1px solid var(--line);
+    border-radius:8px;padding:6px 12px;font-size:13px;max-width:calc(100% - 24px);text-align:center;pointer-events:none}
+  #areamap .leaflet-tooltip.arealabel{background:var(--overlay);color:var(--fg);border:1px solid var(--line);font-size:12px;font-weight:600;padding:2px 6px}
   #viewer canvas{display:block;width:100%;height:100%}
   #viewer.quiet #hud,#viewer.quiet #viewnote,#viewer.quiet #pieces,#viewer.quiet #orient,#viewer.quiet #vclimb{display:none!important}
   /* with the notes shown (the info button), as on a phone: how it's framed and scaled at the top left, a passing note
@@ -704,6 +708,7 @@
       <div id="drop">Drop mesh file to upload &amp; view</div>
     </div>
     <div id="map"></div>
+    <div id="areamap"><div class="areahead">Areas with meshes: pick one to list its meshes, or pick a mesh on the left</div></div>
   </div>
 </main>
 <div id="loading" hidden><div class="card"><div class="spin"></div><div class="what"></div><div class="detail"></div><div class="bar"><i></i></div></div></div>
@@ -1034,15 +1039,16 @@ function setFull(on){
   if ($('#map').classList.contains('on')) setTimeout(() => map.invalidateSize(), 50);
 }
 $('#tofull').onclick = () => setFull(true); $('#toctl').onclick = () => setFull(false);
-function showRight(which){
-  setFull(true);
+// which: '3d', 'map', or 'areas' (the areas with meshes, while no mesh is loaded: areaMap())
+function showRight(which, keepControls = false){
+  if (!keepControls) setFull(true);
   if (which !== 'map') map.stop();      // any pan or zoom still easing out, which would go on behind the view
-  $('#viewer').classList.toggle('on', which==='3d'); $('#map').classList.toggle('on', which==='map');
+  $('#viewer').classList.toggle('on', which==='3d'); $('#map').classList.toggle('on', which==='map'); $('#areamap').classList.toggle('on', which==='areas');
   $('#vmap').textContent = which === 'map' ? (phone.matches ? '3D' : '3D viewer') : 'Map';    // one button goes between them
-  if (which==='map') { setTimeout(()=>map.invalidateSize(), 50); } else resize();
+  if (which==='map') { setTimeout(()=>map.invalidateSize(), 50); } else if (which === 'areas') areaMap(); else resize();
 }
 $('#vmap').onclick = () => {
-  if ($('#map').classList.contains('on')) return showRight('3d');
+  if ($('#map').classList.contains('on')) return showRight(current || !$('#loading').hidden ? '3d' : 'areas');
   endSway(); showRight('map');
   const m = shownMesh && meshesById[shownMesh];
   // opened around the mesh in view, the first time for it, and its climb's point opened as if clicked, unless it's been moved
@@ -1052,6 +1058,51 @@ $('#vmap').onclick = () => {
     refreshMap().then(() => { if (!mapMoved()) popShown(m); });
   } else refreshMap(!mapFitted);
 };
+
+// ---------------------------------------------------------------- the areas, before a mesh is loaded
+// One point for each area with meshes that have places, where they are on average, larger for more of them; picking
+// one lists that area's meshes (the Meshes tab with only its box ticked). Drawn again when the meshes change.
+let amap = null, areaLayer = null, areaFitted = false, areaKey = '';
+function areaMap(){
+  if (!amap) {
+    amap = L.map('areamap', { zoomControl: true, worldCopyJump: true, minZoom: 1 }).setView([30, -40], 2);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(amap);
+    for (const type of ['dragenter', 'dragover']) $('#areamap').addEventListener(type, ev => ev.preventDefault());
+    $('#areamap').addEventListener('drop', ev => { ev.preventDefault(); previewLocal(ev.dataTransfer.files); });     // as the 3D view takes them
+  }
+  setTimeout(() => { amap.invalidateSize(); drawAreas(); }, 50);
+}
+function drawAreas(){
+  if (!amap || !$('#areamap').classList.contains('on')) return;
+  const at = {};
+  for (const m of meshesCache) {
+    if (m.lat == null || m.lng == null || m.replaced_by) continue;
+    for (const a of new Set(meshAreas(m))) if (a !== NO_AREA) (at[a] ||= []).push(m);
+  }
+  const key = JSON.stringify(Object.entries(at).map(([a, ms]) => [a, ms.map(m => m.id)]));
+  if (key === areaKey) return;      // drawn already: not again, which would fade the labels out and in
+  areaKey = key;
+  if (areaLayer) areaLayer.clearLayers(); else areaLayer = L.featureGroup().addTo(amap);
+  for (const [a, ms] of Object.entries(at)) {
+    const lat = ms.reduce((t, m) => t + m.lat, 0) / ms.length, lng = ms.reduce((t, m) => t + m.lng, 0) / ms.length;
+    L.circleMarker([lat, lng], { radius: Math.min(22, 7 + 2.5 * Math.sqrt(ms.length)), color: '#5cc8ff', weight: 2, fillOpacity: .55 })
+      .bindTooltip(`${esc(a)} · ${ms.length}`, { permanent: true, direction: 'right', offset: [10, 0], className: 'arealabel' })
+      .on('click', () => listArea(a)).addTo(areaLayer);
+  }
+  if (!areaFitted && Object.keys(at).length) {      // the whole world's map, centred on where the areas are, as near as fits them all
+    areaFitted = true;
+    amap.fitBounds(areaLayer.getBounds(), { padding: [60, 60], maxZoom: 5 });
+  }
+}
+// An area's meshes, in the Meshes tab: as if only its box under Areas were ticked
+function listArea(a){
+  meshView.hidden = [...new Set(meshesCache.flatMap(meshAreas))].filter(x => x !== a);
+  saveMeshView();
+  document.querySelector('.tabs button[data-tab=meshes]').click();
+  renderMeshes();
+  setFull(false);
+  toast(`Meshes in ${a}: tick the other areas, or Clear, for all of them`, 5000);
+}
 
 // ---------------------------------------------------------------- 3D viewer
 const vEl = $('#viewer');
@@ -4172,6 +4223,7 @@ async function refreshMeshes(){
   meshesCache = await api('/api/meshes'); meshesById = Object.fromEntries(meshesCache.map(m => [m.id, m]));
   await scrollStill();
   renderMeshes();
+  drawAreas();
 }
 // the cards whose list of climbs is open (folded away to start with), kept as the list is drawn again
 const climbListsOpen = new Set();
@@ -6200,6 +6252,8 @@ if (statusCache.volunteer_url) { $('#volunteer').dataset.base = statusCache.volu
 if (!editor) $('#hud').textContent = 'Pick a mesh. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan';
 if (thumbMode) { detailChoice = 'preview'; await refreshMeshes(); }
 else { await refreshClimbs(); await refreshMeshes(); await refreshProjects(); poll(); campaignLoop(); }
+// a page opened with no mesh, climb or boulder to show: the areas in place of the empty 3D view, the controls kept in view on a phone
+if (!thumbMode && !/^\/[cbm]\//.test(location.pathname) && !new URLSearchParams(location.hash.slice(1)).get('mesh')) showRight('areas', true);
 openFromAddress();
 addEventListener('hashchange', openLinked);
 $('#vnewest').onclick = () => { const n = newestOf(shownMesh); if (n && n !== shownMesh) viewMesh(n, null, 'newest', viewedClimb); };
