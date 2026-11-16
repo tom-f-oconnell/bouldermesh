@@ -124,7 +124,7 @@ assert rec and rec["kind"] == "climb" and rec["project"] == hA and rec["mesh"] =
 assert sorted(rec["photos"]["files"]) == ["ddg_a1.jpg", "ddg_a2.jpg", "mp_a1.jpg", "mp_a2.jpg", "mp_a3.jpg"], rec["photos"]
 assert rec["photos"]["files"]["mp_a1.jpg"][1] == hashlib.sha1((P / hA / "photos" / "mp_a1.jpg").read_bytes()).hexdigest()
 assert rec["filter"] == {"version": relevance.VERSION, "settings": relevance.settings_key(), "methods": sorted(relevance.METHODS)}, rec
-assert rec["meshopts"] == server.meshopts.MAPPER and rec["mesh_rules"] == server.MESH_RULES and not rec["unknown"], rec
+assert rec["meshopts"] == server.meshopts.placing() == {"retry_below": 0.75, "more": 0} and rec["mesh_rules"] == server.MESH_RULES and not rec["unknown"], rec
 assert "leaf" not in rec and "pool" not in rec, "a climb's own mesh has no pooling"
 fp = rec["fingerprint"]
 assert fp and meshinputs.finish(server.inputs_record(hA))["fingerprint"] == fp, "the same inputs, the same fingerprint"
