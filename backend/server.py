@@ -11183,6 +11183,32 @@ def admin_end_nodes(_: dict) -> dict:
     return {"result": f"ended {ended} machine(s); any in use end when their climb is done"}
 
 
+def rejected_check(_: dict | None = None) -> dict:
+    """What deleting the photos the filter rejected would delete (admin_clear_rejected()), and how much of it the backup
+    doesn't hold: those moved into rejected/ after its last good copy began (a move sets a file's ctime, so it's when
+    the filter rejected it), or all if no copy was ever confirmed. {files, bytes, unbacked_files, unbacked_bytes,
+    backed_up_at}."""
+    since = offload_mod.backed_up_at(DATA)
+    out = {"files": 0, "bytes": 0, "unbacked_files": 0, "unbacked_bytes": 0, "backed_up_at": since}
+    for r in q("SELECT id, status FROM projects"):
+        d = PROJECTS / r["id"] / "rejected"
+        if r["status"] in ("queued", "running", "harvesting") or not d.is_dir():
+            continue
+        for f in d.rglob("*"):
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            if not f.is_file():
+                continue
+            out["files"] += 1
+            out["bytes"] += st.st_size
+            if since is None or st.st_ctime >= since:
+                out["unbacked_files"] += 1
+                out["unbacked_bytes"] += st.st_size
+    return out
+
+
 def admin_clear_rejected(_: dict) -> dict:
     """Delete the photos the filter rejected (projects' rejected/), of every project not being harvested or meshed:
     most of what harvests leave on disk, and needed only to put one back by hand."""
@@ -11356,7 +11382,7 @@ def main() -> None:
                          "open to anyone who can reach this port; set EDIT_TOKEN, or READ_ONLY=1, before exposing it"), flush=True)
     in_docker = Path("/.dockerenv").exists()
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
-                                      {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "texture-again": admin_texture_again, "rest": admin_rest,
+                                      {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rejected-check": rejected_check, "texture-again": admin_texture_again, "rest": admin_rest,
                                        "remesh-untied": admin_remesh_untied, "inputs-check": admin_inputs_check,
                                        "old-decide": admin_old_decide, "lost-decide": admin_lost_decide,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,

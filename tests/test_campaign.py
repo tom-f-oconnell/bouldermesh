@@ -1442,6 +1442,21 @@ v = server.VOLUNTEERS.volunteer(erin["token"])
 server.VOLUNTEERS.want("video", "ggggggggggg", "harvest", "x")
 got = server.VOLUNTEERS.work(v, "203.0.113.30")
 assert "out of room" in got["why"] and got["wait"] == server.volunteers_mod.PAUSE_WAIT, got
+# before deleting: how many the backup doesn't hold (rejected since its last good copy began), or all without one
+mark = server.DATA / server.offload_mod.MARK
+had = mark.read_text() if mark.exists() else None
+mark.unlink(missing_ok=True)
+chk = server.rejected_check()
+assert chk["files"] >= 1 and chk["unbacked_files"] == chk["files"] and chk["backed_up_at"] is None, chk
+mark.write_text(str(time.time() + 60))     # a copy that began after they were rejected: all in it
+chk = server.rejected_check()
+assert chk["unbacked_files"] == 0 and chk["bytes"] >= 300_000, chk
+mark.write_text(str(time.time() - 3600))   # one that began before: none in it
+assert server.rejected_check()["unbacked_files"] == chk["files"]
+if had is None:
+    mark.unlink()
+else:
+    mark.write_text(had)
 assert "1 project(s)" in server.admin_clear_rejected({})["result"] and not (old / "rejected").exists()
 assert not server.full(), "measured again after"
 with server._claim_lock:

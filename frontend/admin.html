@@ -825,10 +825,20 @@ $('#mach-list').addEventListener('click', async ev => {
 $('#room-save').onclick = async () => { await save({ 'storage.cap_gb': +$('#room-cap').value, 'storage.warn_percent': +$('#room-warn-pct').value, 'storage.warn_gb': +$('#room-warn-gb').value, 'storage.offload_percent': +$('#room-offload').value, 'storage.offload_stopped': $('#room-stopped').checked, 'storage.stopped_days': +$('#room-stopped-days').value }); try { await call('/api/admin/actions/measure', {}); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#room-measure').onclick = async () => { msg('Measuring…', 60000); try { msg((await call('/api/admin/actions/measure', {})).result); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#room-rejected').onclick = async () => {
-  // the backup keeps rejected photos too: say when it last began, and how to start one first (it runs on the backup machine, hal)
-  const b = state?.backup || {}, last = b.confirmed ? `The last good backup, which keeps rejected photos too, began ${new Date(b.confirmed * 1000).toLocaleString()}`
-    : 'No backup of this site has been confirmed';
-  if (!await askDanger('Delete every photo the filter rejected?', `From every project not being harvested or meshed now. They can't be put back after, nor looked at to judge the filter. ${last}: photos rejected since aren't in it. To keep them, back up first: on hal, sudo systemctl start bouldermesh-backup (this page's backup line says when it's done), then come back.`, 'Delete them')) return; msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
+  // how many of them the backup doesn't hold (rejected since its last good copy began): to say before deleting
+  let c;
+  try { c = await call('/api/admin/actions/rejected-check', {}); } catch (e) { msg(e.message, 8000); return; }
+  if (!c.files) { msg('No rejected photos to delete', 6000); return; }
+  const size = n => n >= 2 ** 30 ? (n / 2 ** 30).toFixed(1) + ' GB' : `${Math.max(1, Math.round(n / 2 ** 20))} MB`;
+  const photos = n => `${n.toLocaleString()} photo${n === 1 ? '' : 's'}`;
+  const when = c.backed_up_at ? new Date(c.backed_up_at * 1000).toLocaleString() : null;
+  const backed = !when ? `None of them is in a backup: no backup of this site has been confirmed.`
+    : !c.unbacked_files ? `All of them are in the backup (its last good copy began ${when}): good to go.`
+    : `${photos(c.unbacked_files)} (${size(c.unbacked_bytes)}) ${c.unbacked_files === 1 ? 'is' : 'are'} not in the backup: rejected since its last good copy began, ${when}.`;
+  const first = c.unbacked_files ? ' To keep them, back up first: on hal, sudo systemctl start bouldermesh-backup (this page\'s backup line says when it\'s done), then come back.' : '';
+  if (!await askDanger('Delete every photo the filter rejected?', `${photos(c.files)} (${size(c.bytes)}), from every project not being harvested or meshed now. They can't be put back after, nor looked at to judge the filter. ${backed}${first}`,
+                       c.unbacked_files ? `Delete them, ${photos(c.unbacked_files)} for good` : 'Delete them')) return;
+  msg('Deleting…', 120000); try { msg((await call('/api/admin/actions/clear-rejected', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#texagain').onclick = async () => { try { msg((await call('/api/admin/actions/texture-again', { ids: $('#texagain-ids').value })).result, 8000); } catch (e) { msg(e.message, 8000); } };
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#via').onchange = () => save({ 'youtube.via': $('#via').value });
