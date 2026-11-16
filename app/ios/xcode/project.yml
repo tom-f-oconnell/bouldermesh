@@ -12,7 +12,7 @@ targets:
   BoulderMesh:
     type: application
     platform: iOS
-    sources: [Sources, Assets.xcassets]      # the icon: make_icon.py, from the site's favicon
+    sources: [Sources, Assets.xcassets]      # the icon: app/make_icons.py, from the site's favicon
     scheme: {}        # a scheme kept with the project, so that xcodebuild finds one on a machine Xcode has never opened it on
     info:
       path: Info.plist

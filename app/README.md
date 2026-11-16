@@ -75,7 +75,7 @@ iPhone, on a Mac with Xcode 15 or later (no Android SDK needed):
     cd ios/xcode && xcodegen && open BoulderMesh.xcodeproj     # set your team under Signing, then run on a phone
 
 Without a Mac, or for someone else's iPhone: TestFlight, below. The icon is the site's favicon
-(`ios/xcode/make_icon.py`).
+(`make_icons.py`, which makes the Android app's too).
 
 ### TestFlight: an iPhone without a Mac
 
