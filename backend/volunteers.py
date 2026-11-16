@@ -1048,7 +1048,9 @@ phone yet, so what goes wrong is as useful to hear as what works.</p>
 11 MB).</li>
 <li>Open it from the download. The first time, Android asks to allow installing apps from your browser: allow it, go
 back, and press <i>Install</i>. (Play Protect may warn that it's from an unknown developer: <i>Install anyway</i>.)</li>
-<li>If Google Play Services for AR isn't on the phone, the Play Store offers it the first time you capture.</li>
+<li>Open the app, with signal, and accept its terms. If Google Play Services for AR, which capturing needs, isn't on
+the phone, the Play Store then offers it at once: install it (it needs signal; it's free, from Google). If the app says
+this phone can't run it, the phone can't capture, though the rest of the app works.</li>
 </ol>
 <p>To update, download and install the latest the same way, over the old one: your captures stay. Only if Android says
 the app conflicts with one installed (a copy built elsewhere) do you need to uninstall first, which deletes captures not
@@ -1067,7 +1069,8 @@ the app's <i>Settings</i>, paste the code (or your invite link).</li>
 
 <h3>3. Before you go</h3>
 <ul>
-<li><b>While you have signal,</b> open <i>Get meshes…</i> and get the boulders you'll visit (nearest first; <i>Get the N
+<li><b>While you have signal,</b> check Google Play Services for AR is installed (Android: the app asks for it when it
+opens if not), and open <i>Get meshes…</i> and get the boulders you'll visit (nearest first; <i>Get the N
 within 2 km</i> takes them all). They're kept on the phone, with their holds, for where there's no signal.</li>
 <li><b>Before each capture,</b> <i>Calibrate</i> the compass: half a minute of turning the phone every which way, away
 from metal (car, crash pad zips, rings).</li>

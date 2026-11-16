@@ -22,6 +22,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import android.widget.Toast
+import android.os.Handler
+import android.os.Looper
+import com.google.ar.core.ArCoreApk
 
 /** Where the app is. */
 sealed interface Screen {
@@ -40,6 +43,8 @@ class MainActivity : ComponentActivity() {
     lateinit var api: Api
     lateinit var sensors: PhoneSensors
     private var screen by mutableStateOf<Screen>(Screen.Home)
+    private var arAsked = false     // Google Play Services for AR looked at (and asked for, if missing) since the app started
+    private var tryingOut = false   // started by app/ci/screens-android.sh: nothing that would cover its screens
 
     fun has(permission: String) = ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
@@ -58,7 +63,7 @@ class MainActivity : ComponentActivity() {
                     val go: (Screen) -> Unit = { screen = it }
                     BackHandler(enabled = screen != Screen.Home && screen !is Screen.Capture) { screen = Screen.Home }
                     var accepted by remember { mutableStateOf(store.terms >= TERMS_VERSION) }
-                    if (!accepted) TermsScreen { store.terms = TERMS_VERSION; accepted = true }
+                    if (!accepted) TermsScreen { store.terms = TERMS_VERSION; accepted = true; ensureArCore() }
                     else when (val s = screen) {
                         is Screen.Capture -> CaptureScreen(this, s, go)       // the camera, edge to edge
                         else -> Box(Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -84,6 +89,7 @@ class MainActivity : ComponentActivity() {
      * mesh <id>` for the mesh to capture: the first downloaded if not given, `none` for a rock with no mesh).
      */
     private fun tryOut() {
+        tryingOut = intent.hasExtra("server") || intent.hasExtra("screen")
         intent.getStringExtra("server")?.let { store.server = it }
         store.terms = if (intent.getStringExtra("terms") == "show") 0 else TERMS_VERSION      // the terms' own screen is looked at too
         screen = when (intent.getStringExtra("screen")) {
@@ -131,6 +137,34 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         sensors.start(has(Manifest.permission.ACCESS_FINE_LOCATION))
+        ensureArCore()
+    }
+
+    /**
+     * Google Play Services for AR, which capturing needs, asked for as soon as the terms are accepted (the Play Store's
+     * own prompt, which needs signal), rather than first at the rock, where there may be none. Once each time the app
+     * starts; a phone that can't run it is told so. Capturing asks again if it's still missing (ArController.resume()).
+     */
+    private fun ensureArCore() {
+        if (arAsked || tryingOut || store.terms < TERMS_VERSION) return
+        val ar = ArCoreApk.getInstance()
+        val got = ar.checkAvailability(this)
+        if (got.isTransient) {      // still finding out: again shortly
+            Handler(Looper.getMainLooper()).postDelayed({ ensureArCore() }, 300)
+            return
+        }
+        arAsked = true
+        when (got) {
+            ArCoreApk.Availability.SUPPORTED_NOT_INSTALLED, ArCoreApk.Availability.SUPPORTED_APK_TOO_OLD -> try {
+                ar.requestInstall(this, true)
+            } catch (e: Exception) {
+                Toast.makeText(this, "Capturing needs Google Play Services for AR, which couldn't be installed now (${e.message}): " +
+                    "it's asked for again when you capture, with signal.", Toast.LENGTH_LONG).show()
+            }
+            ArCoreApk.Availability.UNSUPPORTED_DEVICE_NOT_CAPABLE -> Toast.makeText(this,
+                "This phone can't run Google Play Services for AR, which capturing needs: the rest of the app works.", Toast.LENGTH_LONG).show()
+            else -> {}
+        }
     }
 
     override fun onPause() {
