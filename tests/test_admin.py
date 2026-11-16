@@ -202,6 +202,29 @@ with tempfile.TemporaryDirectory() as td:
 print("proxy ranges OK")
 
 # --- textures: stripped, and coloured from only permitted photos ----------------------------------
+# with a password: everything asks for it but the page's icon, which browsers fetch without it
+with tempfile.TemporaryDirectory() as td:
+    d = pathlib.Path(td)
+    s2 = settings_mod.Settings(d / "db.sqlite", d)
+    ctx2 = admin.Context(s2, lambda: {"settings": s2.all()}, lambda: None, {})
+    port2 = free_port()
+    os.environ["ADMIN_PASSWORD"] = "test-pw"
+    try:
+        httpd2 = admin.start(ctx2, "127.0.0.1", port2)
+    finally:
+        del os.environ["ADMIN_PASSWORD"]
+
+    def status(path):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port2}{path}") as r:
+                return r.status, r.headers.get("Content-Type")
+        except urllib.error.HTTPError as e:
+            return e.code, None
+    assert status("/")[0] == 401 and status("/api/admin/state")[0] == 401
+    assert status("/static/favicon-admin.svg") == (200, "image/svg+xml")
+    httpd2.shutdown()
+print("icon without the password OK")
+
 try:
     import numpy as np
     from PIL import Image

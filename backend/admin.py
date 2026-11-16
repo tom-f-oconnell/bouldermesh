@@ -88,14 +88,14 @@ def handler_for(ctx: Context, password: str | None):
             return origin is None or origin.split("//", 1)[-1] == self.headers.get("Host")
 
         def do_GET(self):
+            if self.path == "/static/favicon-admin.svg":    # without the password: browsers fetch icons without it
+                return self._send(200, ICON.read_bytes(), "image/svg+xml")
             if not self._authorised():
                 return
             if not self._same_site():
                 return self.json({"error": "refused"}, 403)
             if self.path in ("/", "/index.html"):
                 return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
-            if self.path == "/static/favicon-admin.svg":
-                return self._send(200, ICON.read_bytes(), "image/svg+xml")
             if self.path == "/api/admin/state":
                 return self.json(ctx.state())
             self.json({"error": "not found"}, 404)
