@@ -7342,8 +7342,8 @@ def campaigns_listed() -> list[dict]:
         v["complete"] = c["status"] == "done" and not c.get("max_meshes") and v["meshed"] > 0
         if c["status"] == "stopped":
             away = sum(r["bytes"] or 0 for r in area_away(c["id"]))
-            if away:    # some of its data was offloaded while it was stopped: resuming brings it back first
-                v["state"], v["away_bytes"] = "data offloaded", away
+            if away:    # some of its data was offloaded while it was stopped: resuming brings it back first (said
+                v["away_bytes"] = away      # beside its state, which stays)
         out.append(v)
     rank = {"running": 0, "stopping": 0, "low priority": 0, "queued": 1, "waiting": 1}
     out.sort(key=lambda v: (rank.get(v["state"], 2), -(v["last_mesh"] or 0) if rank.get(v["state"]) == 0 else

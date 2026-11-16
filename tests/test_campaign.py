@@ -3745,7 +3745,7 @@ try:
     server.q("INSERT INTO offloads(path, kind, ref, bytes, marked, done) VALUES('projects/ee0000000002/photos','photos','ee0000000002',?,?,?)",
              3 * 2**20, time.time(), time.time(), write=True)
     view = next(c for c in server.campaigns_listed() if c["id"] == "ff0000000001")
-    assert view["state"] == "data offloaded" and view["away_bytes"] == 3 * 2**20, view.get("state")
+    assert view["state"] == "stopped" and view["away_bytes"] == 3 * 2**20, view.get("state")
     real_free, real_min = server.disk_free, server.CAMPAIGN_MIN_FREE
     server.CAMPAIGN_MIN_FREE = 10 * 2**30
     server.disk_free = lambda: 10 * 2**30 + 2**20       # 1 MB above what areas keep: not room for 3 MB

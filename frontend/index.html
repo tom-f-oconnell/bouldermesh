@@ -162,7 +162,8 @@
   .bpanel .brow.in{color:var(--ok)} .bpanel .brow.in i{background:var(--ok)}
   .bpanel .brow.out{color:var(--bad)} .bpanel .brow.out i{background:var(--bad)}
   .bpanel .brow.why b{text-decoration:underline dotted}
-  .status.offloaded{color:var(--climb)}   /* orange: some of its data is in the backup, brought back on resuming */
+  .status.offloaded{color:var(--climb)}
+  .statcol{display:inline-flex;flex-direction:column;align-items:flex-end;gap:3px}   /* a state, and below it "data offloaded" */   /* orange: some of its data is in the backup, brought back on resuming */
   .status.done,.status.harvested{color:var(--ok)} .status.failed{color:var(--bad)} .status.running,.status.queued,.status.harvesting,.status.interrupted{color:var(--warn)}
   .thumbs{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}
   .thumbs img{width:44px;height:44px;object-fit:cover;border-radius:4px;border:1px solid var(--line)}
@@ -3338,9 +3339,10 @@ const PROJECT_NAMES = { new: 'new', queued: 'queued to mesh', harvesting: 'gathe
 const PROJECT_TIPS = { harvested: 'Its photos are gathered: it is meshed with the rest of its boulder\'s, or when asked (Reconstruct)',
   waiting: 'Waiting for volunteers\' YouTube searches and videos, or for the rest of its boulder\'s climbs' };
 const gbOf = b => b >= 2 ** 30 ? `${(b / 2 ** 30).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 2 ** 20))} MB`;
+// "data offloaded", in a bubble of its own below a project's or an area's state, with how much in its title
+const offloadedTag = (bytes, what, resume) => bytes ? `<span class="status offloaded" title="${esc(`${gbOf(bytes)} of ${what} offloaded to the backup `
+  + `while it was stopped, to make room. ${resume} brings ${bytes === 1 ? 'it' : 'them'} back first, if the server has room for ${gbOf(bytes)}, and it carries on once they're here.`)}">data offloaded: ${gbOf(bytes)}</span>` : '';
 function projectState(p){
-  if (p.away_bytes) return { label: 'data offloaded', cls: 'offloaded',
-    tip: `${gbOf(p.away_bytes)} of its photos were offloaded to the backup while it was stopped: Retry brings them back first, if the server has room, and it carries on once they're here` };
   // what a machine is doing for it now, else what's still to do for its mesh (beta in its videos, its size): /api/projects' left
   const running = (p.work || []).filter(w => w.state === 'running'), queued = (p.work || []).filter(w => w.state !== 'running');
   const doing = (running.length ? running : queued).map(w => w.what.replace(/ (of|for)$/, '')).join(', ');
@@ -3377,7 +3379,7 @@ async function refreshProjects(){
   for (const p of list) {
     const d = document.createElement('div'); d.className = 'card' + (p.id===active ? ' active' : '');
     const busy = BUSY.includes(p.status);
-    d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':p.kind==='boulder'?'<span class="tag climb" title="Every photo its climbs\' harvests found, together">boulder</span>':''}</b><span class="status ${projectState(p).cls}" title="${esc(projectState(p).tip)}">${esc(projectState(p).label)}${p.demo?' (demo)':''}</span>${(p.work || []).map(w => `<span class="tag" title="${w.state === 'running' ? `${esc(w.machine || 'a machine')} has been at it ${w.minutes ?? 0} min` : 'waiting for a machine'}">${esc(w.what.replace(/ (of|for)$/, ''))}${w.state === 'running' ? ` on ${esc(w.machine || 'a machine')}` : ', waiting'}</span>`).join('')}${p.low_priority ? `<span class="tag low" title="${LOW_TIP}">low priority</span>` : ''}</div>
+    d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':p.kind==='boulder'?'<span class="tag climb" title="Every photo its climbs\' harvests found, together">boulder</span>':''}</b><span class="statcol"><span class="status ${projectState(p).cls}" title="${esc(projectState(p).tip)}">${esc(projectState(p).label)}${p.demo?' (demo)':''}</span>${offloadedTag(p.away_bytes, 'its photos were', 'Retry')}</span>${(p.work || []).map(w => `<span class="tag" title="${w.state === 'running' ? `${esc(w.machine || 'a machine')} has been at it ${w.minutes ?? 0} min` : 'waiting for a machine'}">${esc(w.what.replace(/ (of|for)$/, ''))}${w.state === 'running' ? ` on ${esc(w.machine || 'a machine')}` : ', waiting'}</span>`).join('')}${p.low_priority ? `<span class="tag low" title="${LOW_TIP}">low priority</span>` : ''}</div>
       ${projectAreasHtml(p)}
       <div class="row" style="margin-top:8px">
         <label class="file"><button class="sec sm" type="button">Add photos or videos</button><input type="file" multiple accept="image/jpeg,image/png,video/*"></label>
@@ -3684,7 +3686,7 @@ async function refreshCampaigns(){
   // low priority (only remaking old meshes) under the rest; within each, those whose projects machines are working for (a
   // mesh's size or beta, say) first, the rest in their order (#place)
   // three bands, as projects: going on; low priority (only remaking old meshes); then stopped and done (or finishing)
-  const band = c => { const st = c.state || c.status; return st === 'low priority' ? 3 : ['stopped', 'done', 'data offloaded'].includes(st) ? 6 : 0; };
+  const band = c => { const st = c.state || c.status; return st === 'low priority' ? 3 : ['stopped', 'done'].includes(st) ? 6 : 0; };
   const busy = c => band(c) + ((areasAtWork.get(c.id) || []).some(w => w.state === 'running') ? 0 : areasAtWork.has(c.id) ? 1 : 2);
   const list = (await api('/api/campaigns')).map((c, i) => [c, i]).sort((a, b) => busy(a[0]) - busy(b[0]) || a[1] - b[1]).map(x => x[0]);
   const el = $('#campaigns');
@@ -3723,15 +3725,13 @@ async function refreshCampaigns(){
       const sumUp = [`Run for: ${(c.runs_said || []).join('; ') || 'nothing yet'}`, `${c.meshed ?? 0} of ${plural(c.climbs ?? 0, 'climb')} meshed`,
         ...(toCome ? [`${toCome} of its meshes still have beta or their size to come`] : []),
         ...(atWork.length ? [`machines at work for it: ${atWork.length}`] : [])].join('. ');
-      const st = state === 'data offloaded' ? { label: 'data offloaded', cls: 'offloaded',
-          tip: `Stopped a while, so ${gbOf(c.away_bytes || 0)} of its climbs' photos and videos were offloaded to the backup. Resuming brings them back first, if the server has room. ${sumUp}` }
-        : state === 'done' && !c.complete ? { label: 'partial', cls: '', tip: sumUp }
+      const st = state === 'done' && !c.complete ? { label: 'partial', cls: '', tip: sumUp }
         : state === 'done' && atWork.length ? { label: 'finishing: machines still at work', cls: 'running', tip: sumUp }
         : state === 'done' && toCome ? { label: `meshed; ${toCome} with beta or size to come`, cls: 'running', tip: sumUp }
         : { label: state === 'low priority' ? 'low priority: remaking old meshes' : state,
             cls: ['stopped', 'queued', 'waiting'].includes(state) ? '' : state === 'low priority' ? 'lowp' : state === 'done' ? 'done' : 'running',
             tip: [tip, sumUp].filter(Boolean).join(' ') };
-      d.innerHTML = `<div class="row"><span class="grow campname">${title}${atWork.length ? ` <span class="tag" title="${esc(atWork.map(w => `${w.what.replace(/ (of|for)$/, '')}${w.state === 'running' ? ` on ${w.machine || 'a machine'}` : ', waiting'}`).join('; '))}">machines at work: ${atWork.length}</span>` : ''}</span>${c.place ? `<small class="meta" title="Its place in the order areas are taken: as entered, top first">#${c.place}</small>` : ''}<span class="status ${st.cls}" title="${esc(st.tip)}">${esc(st.label)}</span></div>
+      d.innerHTML = `<div class="row"><span class="grow campname">${title}${atWork.length ? ` <span class="tag" title="${esc(atWork.map(w => `${w.what.replace(/ (of|for)$/, '')}${w.state === 'running' ? ` on ${w.machine || 'a machine'}` : ', waiting'}`).join('; '))}">machines at work: ${atWork.length}</span>` : ''}</span>${c.place ? `<small class="meta" title="Its place in the order areas are taken: as entered, top first">#${c.place}</small>` : ''}<span class="statcol"><span class="status ${st.cls}" title="${esc(st.tip)}">${esc(st.label)}</span>${offloadedTag(c.away_bytes, "its climbs' photos and videos were", 'Resuming')}</span></div>
         <div class="meta">${ORDER_NAMES[c.ord] || ''}${c.max_meshes ? `, up to ${c.max_meshes} mesh${c.max_meshes === 1 ? '' : 'es'}${c.count_failures ? ` or failure${c.max_meshes === 1 ? '' : 's'}` : ''} (${c.made} made)` : ''}</div>
         ${c.listed ? `<div class="meta" title="As Mountain Project lists them. Whether a lowest area is one boulder is read from its page as its climbs come up.">${plural(c.listed.climbs, 'climb')} on MP: ${plural(c.listed.boulders, 'boulder')}, ${plural(c.listed.groups, 'area')} of several rocks${c.listed.unread ? `, ${plural(c.listed.unread, 'lowest area')} not read yet` : ''}</div>` : ''}
         <div class="meta" style="margin-top:6px"><b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${n.paused ? ` · ${n.paused} paused` : ''}${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${c.old_queued ? ` · <span class="lowp" title="Their only meshes were made before the rules for what an area meshes last changed, or are another climb's: looked for new photos and meshed again, only when no area has anything else to take. This never starts or resumes the area's own list.">${plural(c.old_queued, 'old mesh', 'old meshes')} being remade, at low priority</span>` : ''}${c.needs_backup ? ` · <span style="color:var(--warn)" title="Their photos were offloaded to the backup to make room: each is asked for back as its turn comes, and waits for it (the backup sends them within half an hour)">needs data from the backup (${c.needs_backup})</span>` : ''}${c.blocked ? ` · <span style="color:var(--bad)" title="What they need was lost from the backup: nothing of them is made or replaced until the admin page says to mesh them again without it, or leave them as they are">${c.blocked} blocked: data lost from the backup</span>` : ''}${n.beyond ? ` · ${n.beyond} more past the limit` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
