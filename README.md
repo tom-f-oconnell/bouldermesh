@@ -496,6 +496,8 @@ does everything else. `MAPPER=incremental` goes back to 3.9.1's mapper, which is
 mapper can't be used, fails, or places fewer than 6 photos. Each mesh has a `mapper.json` beside it saying which mapper
 placed its cameras, and why.
 [design.md](design.md#the-global-mapper-backendpipelinepy-mapper) has the measurements, and what isn't known yet.
+[benchmarking.md](benchmarking.md) keeps what's been measured about making a mesh faster without making it worse, what
+was decided from it, and what to try next.
 
 **When COLMAP can't place the photos** (its mapper places fewer than 6), VGGT places them instead, and COLMAP refines
 that. This needs the GPU with about 7 GB of its memory free. The first time, it downloads its 4.7 GB of weights into
