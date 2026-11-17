@@ -1743,7 +1743,10 @@ to offer Apple's too.
 **What a token may do.** The owner is whoever holds EDIT_TOKEN. An account's token may change only what's on a short
 list (`USER_MAY` in server.py), and only once it has accepted the terms: everything else stays the owner's, so a route
 added later is closed to accounts until it's put on the list. Roles are owner, moderator (with the areas they're given)
-and user; `RANK` is whose work goes first.
+and user; `RANK` is whose work goes first. An account given the owner's role (an editor, chosen on the admin page's
+People or in its invite) may change what EDIT_TOKEN may, from its own token, with no quota and what it adds approved
+as it comes (`limited()` in server.py): so a device signed in to an account needs no second token to edit, as a
+browser keeps only one.
 
 **The terms.** Accepted once, before anything is sent (`TERMS`, versioned): everything captured or uploaded, and what
 is made from it alone, is CC BY 4.0 credited to the account's name. A mesh that also draws on web photos stays under

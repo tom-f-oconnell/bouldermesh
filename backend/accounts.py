@@ -96,8 +96,8 @@ class Accounts:
     def invite(self, role: str = "user", areas: list | None = None, note: str | None = None, days: float = INVITE_DAYS,
                now: float | None = None) -> dict:
         """A new invite: {code, expires}. The code is shown once and not kept."""
-        if role not in ("moderator", "user"):
-            raise Refused("an invite is for a user or a moderator")
+        if role not in ROLES:
+            raise Refused("an invite is for a user, a moderator or an owner (an editor)")
         now = time.time() if now is None else now
         code = secrets.token_urlsafe(16)
         self._q("INSERT INTO invites(hash, role, areas, note, created, expires) VALUES(?,?,?,?,?,?)", _hash(code), role,

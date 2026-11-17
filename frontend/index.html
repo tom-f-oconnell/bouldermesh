@@ -6322,7 +6322,8 @@ async function showAdded(dlg){
   try { r = await api('/api/account/projects'); }
   catch (e) { if (el.isConnected) el.innerHTML = `<p class="err">${esc(sentence(e.message))}</p>`; return; }
   if (!el.isConnected) return;
-  el.innerHTML = `<p>${gb(r.used)} of ${gb(r.quota)} GB used; approved things don't count.</p>`
+  el.innerHTML = (r.quota == null ? '<p>An editor: no storage limit, and what you add is approved as it comes.</p>'
+    : `<p>${gb(r.used)} of ${gb(r.quota)} GB used; approved things don't count.</p>`)
     + (r.projects.length ? r.projects.map(x => `<div class="row added" data-id="${esc(x.id)}">
       <span class="grow"><b>${esc(x.name)}</b>${x.adds_to ? ` <small>· adds to ${esc(meshesById[x.adds_to]?.name || 'a mesh')}</small>` : ''}<br>
         <small>${esc(addedState(x))} · ${x.photos} photo${x.photos === 1 ? '' : 's'} · ${fmtSize(x.bytes)} · ${fmtWhen(x.created)}</small></span>
@@ -6384,7 +6385,7 @@ function appsHtml(){
     account), or send the phone these links.</p>`;
 }
 function openAccount(){
-  const role = account.role === 'user' ? '' : ` (${esc(account.role)})`;
+  const role = account.role === 'user' ? '' : ` (${account.role === 'owner' ? 'an editor' : esc(account.role)})`;
   const dlg = acctDlg(`<p>Signed in as <b>${esc(account.name)}</b>${role}: what you add is credited to this name.</p>
     ${account.accepted ? '' : '<p>You haven\'t accepted the site\'s terms yet, so nothing can be added. <button class="sm sec toterms">Read them</button></p>'}
     ${appsHtml()}<p style="margin-bottom:4px"><b>What I've added</b></p><div class="mine" style="margin:0 0 10px"><p>Loading…</p></div>

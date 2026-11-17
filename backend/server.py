@@ -8440,7 +8440,16 @@ def user_used(uid: str) -> int:
     return sum(project_bytes(r["id"]) for r in q("SELECT id FROM projects WHERE user_id=? AND COALESCE(approved, 0)<>1 AND deleted_at IS NULL", uid))
 
 
-def user_quota(user: dict) -> int:
+def limited(user: dict) -> bool:
+    """Whether a change's maker is an account held to its own (its projects and sets, its quota): any but the site's
+    owner, by the editing token, and an account given the owner's role (an editor), which may change what the token may."""
+    return user["id"] is not None and user["role"] != "owner"
+
+
+def user_quota(user: dict) -> int | None:
+    """What an account may hold of what it added, in bytes: None (no limit) for an editor."""
+    if user.get("role") == "owner":
+        return None
     mb = user.get("quota_mb")
     return int((settings().get("users.quota_mb") if mb is None else mb) * 2**20)
 
@@ -8468,8 +8477,8 @@ def contribution_prio(proj: dict) -> int:
         return pullwork.PRIO_OWNER
     if proj.get("approved") != 1:
         return pullwork.PRIO_UNAPPROVED
-    user = ACCOUNTS.get(proj["user_id"]) or {}
-    return pullwork.PRIO_MODERATOR if user.get("role") in ("moderator", "owner") else pullwork.PRIO_USER
+    role = (ACCOUNTS.get(proj["user_id"]) or {}).get("role")
+    return pullwork.PRIO_OWNER if role == "owner" else pullwork.PRIO_MODERATOR if role == "moderator" else pullwork.PRIO_USER
 
 
 def submit_reconstruct(pid: str) -> dict:
@@ -9387,17 +9396,25 @@ class Handler(BaseHTTPRequestHandler):
         return body
 
     # -- changes -----------------------------------------------------------
-    def is_editor(self) -> bool:
+    def has_edit_token(self) -> bool:
         """Whether this request carries the editing token (EDIT_TOKEN), as "Authorization: Bearer <token>"."""
         got = self.headers.get("Authorization", "")
         return bool(EDIT_TOKEN) and hmac.compare_digest(got.encode(), f"Bearer {EDIT_TOKEN}".encode())
+
+    def is_editor(self) -> bool:
+        """Whether this request may change what the editing token may: it carries that token, or an editor's (an
+        account given the owner's role on the admin page)."""
+        if self.has_edit_token():
+            return True
+        user = self.who()
+        return bool(EDIT_TOKEN) and user is not None and user["role"] == "owner"
 
     def who(self) -> dict | None:
         """Who a request is from: the site's owner (its editing token, or anyone where there's none), an account (by
         its token), or nobody. A view-only site has no accounts."""
         if READ_ONLY:
             return None
-        if not EDIT_TOKEN or self.is_editor():
+        if not EDIT_TOKEN or self.has_edit_token():
             return OWNER
         got = self.headers.get("Authorization", "")
         return ACCOUNTS.user_for(got[7:]) if got.startswith("Bearer ") else None
@@ -9498,7 +9515,7 @@ class Handler(BaseHTTPRequestHandler):
         one it deleted). True for paths that name none."""
         m = re.fullmatch(r"/api/projects/([0-9a-f]+)(/.*)?", p)
         me = self.who() or OWNER
-        if not m or me["id"] is None:
+        if not m or not limited(me):
             return True
         proj = q("SELECT user_id, deleted_at FROM projects WHERE id=?", m[1], one=True)
         return proj is None or (proj["user_id"] == me["id"] and proj["deleted_at"] is None)
@@ -9506,7 +9523,7 @@ class Handler(BaseHTTPRequestHandler):
     def own_set(self, mid: str, sid: str) -> bool:
         """Whether whoever asks may change a set of beta: the site's owner any, an account its own."""
         me = self.who() or OWNER
-        if me["role"] == "owner":
+        if not limited(me):
             return True
         one = next((s for s in beta_mod.load_sets(MESHES / mid) if s["id"] == sid), None) if (MESHES / mid).is_dir() else None
         return one is None or one.get("owner") == me["id"]     # a set that isn't there: said as not found, further on
@@ -10169,7 +10186,7 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 pid = new_id()
                 name = (body.get("name") or f"project {pid}").strip()[:80]
-                if me["id"] is not None and user_used(me["id"]) >= user_quota(me):
+                if limited(me) and user_used(me["id"]) >= user_quota(me):
                     return self.send_json({"error": "you're at your storage limit: export and delete something you added, or wait for it to be approved"}, 413)
                 (PROJECTS / pid / "photos").mkdir(parents=True)
                 q("INSERT INTO projects(id,name,created,kind,climb_id,user_id,approved) VALUES(?,?,?,?,?,?,?)", pid, name, time.time(),
@@ -10212,7 +10229,7 @@ class Handler(BaseHTTPRequestHandler):
                 pid = m[1]
                 if not q("SELECT 1 FROM projects WHERE id=?", pid, one=True):
                     return self.send_json({"error": "not found"}, 404)
-                if me["id"] is not None:    # an account's: within what it may hold
+                if limited(me):    # an account's: within what it may hold
                     room = user_quota(me) - user_used(me["id"])
                     if int(self.headers.get("Content-Length") or 0) > room:
                         return self.send_json({"error": f"that's more than the {max(0, room) // 2**20} MB you have left: export and delete something "
@@ -10263,7 +10280,7 @@ class Handler(BaseHTTPRequestHandler):
                 pid = m[1]
                 if not q("SELECT 1 FROM projects WHERE id=?", pid, one=True):
                     return self.send_json({"error": "not found"}, 404)
-                if me["id"] is not None and int(self.headers.get("Content-Length") or 0) > user_quota(me) - user_used(me["id"]):
+                if limited(me) and int(self.headers.get("Content-Length") or 0) > user_quota(me) - user_used(me["id"]):
                     return self.send_json({"error": "that's more than you have left: export and delete something you added"}, 413)
                 _, files = self.read_files()
                 saved = []
@@ -10557,7 +10574,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "not found"}, 404)
                 body, me = self.read_json(), self.who() or OWNER
                 source = body.get("from")
-                if me["id"] is not None and isinstance(source, dict) and source.get("set"):    # a copy only of a set it may see
+                if limited(me) and isinstance(source, dict) and source.get("set"):    # a copy only of a set it may see
                     seen = beta_mod.visible(beta_mod.load_sets(MESHES / m[1]), me["id"])
                     if not any(one["id"] == source["set"] for one in seen):
                         return self.send_json({"error": "there's no such set to copy"}, 400)
@@ -10663,7 +10680,7 @@ class Handler(BaseHTTPRequestHandler):
                 changes = body if isinstance(body, dict) else {}
                 if not self.own_set(m[1], m[2]):
                     return self.send_json({"error": "that set of beta isn't yours to change"}, 403)
-                if (self.who() or OWNER)["id"] is not None:
+                if limited(self.who() or OWNER):
                     changes = {k: v for k, v in changes.items() if k in ("name", "climb", "holds", "shared")}    # its author is its account
                 try:
                     return self.send_json(beta_mod.update_set(MESHES / m[1], m[2], changes))
@@ -10760,7 +10777,7 @@ class Handler(BaseHTTPRequestHandler):
             me = self.who() or OWNER
             if not self.own_project(p):
                 return self.send_json({"error": "that isn't yours to delete"}, 403)
-            if me["id"] is not None:    # an account's own: marked, not destroyed
+            if limited(me):    # an account's own: marked, not destroyed
                 if not q("SELECT 1 FROM projects WHERE id=?", m[1], one=True):
                     return self.send_json({"error": "not found"}, 404)
                 return self.send_json(user_delete_project(m[1], me))

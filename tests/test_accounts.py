@@ -60,7 +60,8 @@ with tempfile.TemporaryDirectory() as tmp:
     assert accounts.may_moderate(mod, "c1") and not accounts.may_moderate(mod, "c2") and not accounts.may_moderate(a.get(ana["user"]["id"]), "c1")
     assert accounts.may_moderate(a.change(mod["id"], {"areas": ["*"]}), "c2") and accounts.may_moderate({"role": "owner", "areas": []}, None)
     assert a.change(ana["user"]["id"], {"quota_mb": 500})["quota_mb"] == 500 and "megabytes" in refused(a.change, ana["user"]["id"], {"quota_mb": -1})
-    assert "role" in refused(a.change, ana["user"]["id"], {"role": "king"}) and "moderator" in refused(a.invite, "owner")
+    assert "role" in refused(a.change, ana["user"]["id"], {"role": "king"}) and "moderator" in refused(a.invite, "king")
+    assert a.invite("owner", now=1000.0)["role"] == "owner", "an editor, from an invite"
     a.change(ana["user"]["id"], {"disabled": True})
     assert a.user_for(ana["token"]) is None and a.get(ana["user"]["id"])["disabled"]
     assert accounts.RANK["owner"] < accounts.RANK["moderator"] < accounts.RANK["user"] and "CC BY 4.0" in accounts.TERMS
@@ -147,6 +148,13 @@ with tempfile.TemporaryDirectory() as tmp:
         assert req(B, "POST", "/api/account/signout", {}, PHONE)[0] == 200 and req(B, "GET", "/api/account", headers=PHONE)[2]["user"] is None
         st, _, state = admin("user-change", {"id": ana["user"]["id"], "role": "moderator", "areas": ["*"], "quota_mb": 4000})
         assert st == 200 and state["users"]["list"][0]["role"] == "moderator" and state["users"]["list"][0]["quota_mb"] == 4000
+        # an editor (the owner's role): whatever the editing token may change, from its account's own token
+        assert not req(B, "GET", "/api/status", headers=ANA)[2]["editor"]
+        admin("user-change", {"id": ana["user"]["id"], "role": "owner"})
+        assert req(B, "GET", "/api/status", headers=ANA)[2]["editor"] and req(B, "GET", "/api/account", headers=ANA)[2]["owner"]
+        assert req(B, "PATCH", f"/api/meshes/{mid}/beta/sets/{site['id']}", {"holds": hold}, ANA)[0] == 200
+        assert req(B, "POST", "/api/projects/retry-interrupted", {}, ANA)[0] != 401
+        admin("user-change", {"id": ana["user"]["id"], "role": "moderator"})
         admin("user-change", {"id": ana["user"]["id"], "disabled": True})
         assert req(B, "GET", "/api/account", headers=ANA)[2]["user"] is None and req(B, "DELETE", f"/api/meshes/{mid}/beta/sets/{mine['id']}", headers=ANA)[0] == 401
         # guessing invites is slowed
@@ -251,6 +259,17 @@ with tempfile.TemporaryDirectory() as tmp:
         assert req(B, "GET", "/api/account", headers=BO)[2]["user"] is None, "its devices are signed out"
         again = req(B, "POST", "/api/account/join", {"invite": admin("user-invite", {})["invite"]["code"], "name": "Bo Two"})
         assert again[0] == 201, again        # its name free again
+
+        # an editor: no quota, what it adds approved as it comes, and anyone's to change or delete
+        ed, ED = join("Ed")
+        admin("user-change", {"id": ed["id"], "role": "owner", "quota_mb": 0})
+        st, _, theirs = req(B, "POST", "/api/projects", {"name": "Ed's rock"}, ED)
+        assert st == 201 and req(B, "POST", f"/api/projects/{theirs['id']}/photos", headers=ED, files=[photo(i) for i in range(3)])[0] == 200
+        mine = req(B, "GET", "/api/account/projects", headers=ED)[2]
+        assert mine["quota"] is None and mine["projects"][0]["approved"] == 1, mine
+        assert next(x for x in admin("user-signin", {"id": ed["id"]})["users"]["list"] if x["id"] == ed["id"])["quota"] is None
+        assert req(B, "POST", f"/api/projects/{pid}/photos", headers=ED, files=[photo(7)])[0] == 200, "Ana's, which an editor may add to"
+        assert req(B, "DELETE", f"/api/projects/{theirs['id']}", headers=ED)[2] == {"deleted": theirs["id"]}, "deleted, not only marked"
     finally:
         out = srv.stop()
 print("what accounts add OK")
