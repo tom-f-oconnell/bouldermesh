@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 
 FILE = "check.json"
-VERSION = 1
+VERSION = 2     # 2: a model split into groups that disagree fails ("split")
 MAX_IMAGE_ID = 2147483647   # COLMAP's pair_id is this times the smaller image id, plus the larger
 MIN_INLIERS = 20            # the pairs the mapper itself goes by (the app's min_num_matches)
 UNTIED = 15                 # a camera seeing fewer of the model's points than this isn't tied to it
@@ -54,7 +54,16 @@ THRESHOLDS = {
     # they don't: every method's model of the one boulder no two methods agree on (11-16), both baseline runs of a
     # boulder they placed 111 and 181 photos of (10-12), and a model another check had found wrong (26.9, where the
     # eight right ones of that boulder were at 2.0-2.9)
+    # Not 3.5 (Nov 17): of the site's 128 global placings since Nov 15, 68 were over 3.5 and 36 over 5.0, while only 20
+    # were split (agree_share below): photos from the internet, with lenses only guessed, sit higher than the benchmark's
+    # boulders. A line at 3.5 would have placed half of all jobs again with the incremental mapper (10-25 minutes each on
+    # a big pool) and sent half of GPU SIFT's placings back to the CPU's. The models placed wrongly that this was meant
+    # to catch are caught by agree_share: JBMF Boulder (4.93, split at 78%) and Caveman Boulder (3.02, split at 46%).
     "pair_med_deg": 5.0,
+    # the share of the judged cameras in the largest group whose pairs agree with the model (agreeing_groups()): a
+    # sound model's were 99% (Caveman Boulder, Nov 16 18:48: 175 of 176); one with a video placed in the wrong spot,
+    # 76% (JBMF Boulder); one made of two halves joined wrongly, 46% (Caveman Boulder, Nov 17)
+    "agree_share": 0.8,
     "min_pairs": 20,            # fewer pairs than this say nothing
     # lenses that can't be real were 0-6% of a sound model's, and up to 21% of the others'
     "odd_lens_share": 0.2,
@@ -101,9 +110,41 @@ def read_model(model: Path) -> tuple[dict[str, dict], list[float], float]:
     return cams, errs, (sum(lens) / len(lens) if lens else 0.0)
 
 
+AGREE_DEG = 12.0       # a pair agrees with the model when its turn is within this of what its photos' geometry allows
+
+
 def pair_angles(cams: dict[str, dict], db: Path) -> list[float]:
     """For each verified pair of the cameras given, degrees between their relative turn in the model and the nearer of
     the two turns their fundamental matrix allows (through the model's own lenses, distortion left out)."""
+    return [a for _, _, a in pair_list(cams, db)]
+
+
+def agreeing_groups(cams: dict[str, dict], db: Path, deg: float = AGREE_DEG, pairs: list | None = None) -> tuple[list[set[str]], set[str]]:
+    """The cameras joined by pairs that agree with the model (within deg), largest group first, and the cameras that
+    have a verified pair at all (judged; those that have none can't be told either way). Cameras placed wrongly as a
+    block (a video put in the wrong spot, or two halves of a boulder joined at the wrong angle) agree among themselves
+    but not with the rest, so they make a group of their own."""
+    pairs = pair_list(cams, db) if pairs is None else pairs
+    parent = {n: n for n in cams}
+
+    def root(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    judged = set()
+    for a, b, ang in pairs:
+        judged |= {a, b}
+        if ang <= deg:
+            parent[root(a)] = root(b)
+    groups: dict[str, set[str]] = {}
+    for n in judged:
+        groups.setdefault(root(n), set()).add(n)
+    return sorted(groups.values(), key=len, reverse=True), judged
+
+
+def pair_list(cams: dict[str, dict], db: Path) -> list[tuple[str, str, float]]:
+    """pair_angles(), each with its two photos' names."""
     import numpy as np
     W = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1.0]])
     K = {n: np.array([[c["f"], 0, c["cx"]], [0, c["f"], c["cy"]], [0, 0, 1.0]]) for n, c in cams.items()}
@@ -121,7 +162,7 @@ def pair_angles(cams: dict[str, dict], db: Path) -> list[float]:
             U, _, Vt = np.linalg.svd(E)
             U, Vt = (U if np.linalg.det(U) > 0 else -U), (Vt if np.linalg.det(Vt) > 0 else -Vt)
             rel = cams[b]["R"] @ cams[a]["R"].T
-            out.append(min(float(np.degrees(np.arccos(np.clip((np.trace(rel @ c.T) - 1) / 2, -1, 1)))) for c in (U @ W @ Vt, U @ W.T @ Vt)))
+            out.append((a, b, min(float(np.degrees(np.arccos(np.clip((np.trace(rel @ c.T) - 1) / 2, -1, 1)))) for c in (U @ W @ Vt, U @ W.T @ Vt))))
     finally:
         con.close()
     return out
@@ -138,8 +179,12 @@ def numbers_of(cams: dict[str, dict], errs, track: float, db: Path) -> dict:
     odd = sum(1 for c in cams.values()
               if not (0.3 * max(c["w"], c["h"]) < c["f"] < 6 * max(c["w"], c["h"]))
               or math.hypot(c["cx"] - c["w"] / 2, c["cy"] - c["h"] / 2) > 0.25 * max(c["w"], c["h"]))
-    ang = pair_angles(cams, db)
-    return {"placed": len(cams), "points": int(len(errs)), "track": round(float(track), 2),
+    pairs = pair_list(cams, db)
+    ang = [a for _, _, a in pairs]
+    groups, judged = agreeing_groups(cams, db, pairs=pairs)
+    return {"agree_share": round(len(groups[0]) / len(judged), 3) if judged else None, "agree_groups": [len(g) for g in groups[:4]],
+            "judged": len(judged),
+            "placed": len(cams), "points": int(len(errs)), "track": round(float(track), 2),
             "err_mean": round(float(errs.mean()), 3) if len(errs) else None,
             "err_p90": round(float(np.percentile(errs, 90)), 3) if len(errs) else None, "err_unread": unread,
             "pairs": len(ang), "pair_med_deg": round(float(np.median(ang)), 2) if ang else None,
@@ -152,7 +197,7 @@ def numbers(model: Path, db: Path) -> dict:
 
 
 def verdict(n: dict, thresholds: dict = THRESHOLDS) -> dict:
-    """Whether a model's numbers pass: {ok, failed (of "error", "pairs", "lenses"), why: the numbers in words, what
+    """Whether a model's numbers pass: {ok, failed (of "error", "pairs", "split", "lenses"), why: the numbers in words, what
     failed first}."""
     t = thresholds
     failed, said = [], []
@@ -175,6 +220,14 @@ def verdict(n: dict, thresholds: dict = THRESHOLDS) -> dict:
                      + (f", over {t['pair_med_deg']:g}" if bad else "")))
     else:
         said.append((False, f"only {pairs} pairs to hold its cameras against"))
+    share, judged = n.get("agree_share"), n.get("judged") or 0
+    if share is not None and judged >= t["min_cameras"]:
+        bad = share < t["agree_share"]
+        if bad:
+            failed.append("split")
+        if bad or share < 0.98:
+            said.append((bad, f"{share:.0%} of its {judged} judged cameras agree as one group (groups {n.get('agree_groups')})"
+                         + (f", under {t['agree_share']:.0%}: some were placed as a block in the wrong spot" if bad else "")))
     placed, odd = n.get("placed") or 0, n.get("odd_lenses") or 0
     if placed >= t["min_cameras"] and odd > t["odd_lens_share"] * placed:
         failed.append("lenses")

@@ -3229,7 +3229,7 @@ def _mapper_now(kind: str, rec: dict, proj: dict | None) -> dict | None:
              for c in [q("SELECT * FROM campaigns WHERE id=?", r["campaign_id"], one=True)] if c}
     if len(found) > 1:
         return None
-    base = {k: v for k, v in meshopts.MAPPER.items() if k not in meshopts.TEXTURE_ONLY}    # as inputs.json keeps them (meshopts.placing())
+    base = {k: v for k, v in meshopts.MAPPER.items() if k not in meshopts.NOT_COMPARED}    # as inputs.json keeps them (meshopts.placing())
     return {**base, **json.loads(found.pop())} if found else base
 
 
@@ -11441,7 +11441,8 @@ def apply_settings() -> None:
     youtube_mod.via = settings().get("youtube.via")
     relevance_mod.MATCHER = settings().get("relevance.matcher")
     relevance_mod.RUNNER = filter_anywhere      # on a machine when one can (relevance.machines), else here
-    meshopts.set_site({"texture_every": 2 if settings().get("mesh.texture_every_second") else 1})
+    meshopts.set_site({"texture_every": 2 if settings().get("mesh.texture_every_second") else 1,
+                       "method": settings().get("mesh.mapper") or "global"})
     configure_workers()
     NOTIFIER.reconfigured()
     threading.Thread(target=skyline_existing_meshes, daemon=True).start()

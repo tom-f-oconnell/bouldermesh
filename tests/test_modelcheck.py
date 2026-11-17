@@ -127,7 +127,11 @@ with tempfile.TemporaryDirectory() as tmp:
     many = [(rot(np.random.default_rng(i).normal(size=3), 25) @ R, t, f) if i % 3 else (R, t, f) for i, (R, t, f) in enumerate(cams)]
     write_model(tmp / "many" / "model", many)
     bad = modelcheck.check(tmp / "many" / "model", tmp / "right0" / "db.db")
-    assert not bad["ok"] and bad["failed"] == ["pairs"] and bad["pair_med_deg"] > 10 and "FAILED (pairs)" in modelcheck.line(bad), bad
+    assert not bad["ok"] and bad["failed"] == ["pairs", "split"] and bad["pair_med_deg"] > 10 and "FAILED (pairs, split)" in modelcheck.line(bad), bad
+    # one camera wrong: a group of its own, the rest one group; groups of cameras that agree among themselves only
+    groups, judged = modelcheck.agreeing_groups(got[0], tmp / "right0" / "db.db")
+    assert [len(g) for g in groups] == [11, 1] and "p05.jpg" in groups[1] and len(judged) == 12, groups
+    assert one["ok"] and one["agree_share"] == round(11 / 12, 3), one
     print("cameras turned from where their pairs have them show OK")
 
     # points 5 px off: fails on error, whatever the cameras say
@@ -170,7 +174,7 @@ with tempfile.TemporaryDirectory() as tmp:
     mesh = tmp / "mesh"
     assert reconstruction.keep(tmp / "many" / "model", tmp / "right0" / "db.db", mesh, lambda m: None, "COLMAP x", {"args": [], "device": "cpu"})
     later = modelcheck.of_mesh(mesh, write=True)
-    assert later["failed"] == ["pairs"] and later["pair_med_deg"] == bad["pair_med_deg"] and modelcheck.load(mesh)["ok"] is False
+    assert later["failed"] == ["pairs", "split"] and later["pair_med_deg"] == bad["pair_med_deg"] and modelcheck.load(mesh)["ok"] is False
     assert modelcheck.of_mesh(tmp / "out2") is None, "a mesh that kept nothing has nothing to check"
     print("a kept reconstruction checked later OK")
 print("ALL MODEL CHECK TESTS PASSED")

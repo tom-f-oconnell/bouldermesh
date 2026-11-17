@@ -124,6 +124,13 @@
       matched (and one it didn't), and more checks didn't close the gap, so brute force stays the default.</div>
     <label class="choice"><input type="checkbox" id="filter-machines"> Filter harvests' photos on a machine that connects here, when one can
       <small>(its script version 12 or newer; it takes them before meshing, and they're filtered here, one at a time, if none takes one within 3 minutes, as when the only machine is meshing. An earlier run's verdicts stand either way: a boulder pooled again only judges what's new)</small></label>
+    <label>Which mapper places a mesh's cameras</label>
+    <select id="mapper-method"><option value="global">Global (COLMAP 4.2.1): 6-14 times faster; a placing that fails its check is placed again incrementally</option>
+      <option value="incremental">Incremental (COLMAP 3.9.1): as every mesh was placed before Nov 15</option></select>
+    <div class="note">For meshes made from now on, here and on machines that connect here. Every other step is the same
+      either way (GPU SIFT, OpenMVS 2.4 with one geometric pass, thinned texturing, cameras that don't agree with the rest
+      dropped). The global mapper can place a loosely linked group of photos (one video, say) in the wrong spot; the
+      incremental one tends to leave such a group out, and takes 10-25 minutes longer on a big boulder.</div>
     <label class="choice"><input type="checkbox" id="texture-second"> Texture meshes from every second video frame
       <small>(every still is always used; a video's frames are thinned, as each mostly shows what the one before did. Halved the texture step, the longest of a mesh's, on boulders mostly of video frames: 335 to 159 s on a 234-photo one. Unticked, every frame is used. For meshes made, or textured again, from now on)</small></label>
     <label class="choice"><input type="checkbox" id="beta-auto"> Find beta in each new mesh with video frames placed in it
@@ -570,6 +577,7 @@ function render(s){
   $('#matcher').value = v['relevance.matcher'];
   $('#filter-machines').checked = v['relevance.machines'];
   $('#texture-second').checked = v['mesh.texture_every_second'];
+  $('#mapper-method').value = v['mesh.mapper'] || 'global';
   $('#beta-auto').checked = v['beta.auto']; $('#prune-videos').checked = v['videos.prune_unplaced'];
   if (document.activeElement !== $('#map-km')) $('#map-km').value = v['site.map_km'];
   if (document.activeElement !== $('#preview-faces')) $('#preview-faces').value = v['viewer.preview_faces'];
@@ -943,6 +951,7 @@ $('#beta-parallel').onchange = () => save({ 'beta.parallel': +$('#beta-parallel'
 $('#placed-percent').onchange = () => save({ 'boulders.placed_percent': +$('#placed-percent').value });
 $('#rest-auto').onchange = () => save({ 'boulders.rest_auto': $('#rest-auto').checked });
 $('#filter-machines').onchange = () => save({ 'relevance.machines': $('#filter-machines').checked });
+$('#mapper-method').onchange = () => save({ 'mesh.mapper': $('#mapper-method').value });
 $('#texture-second').onchange = () => save({ 'mesh.texture_every_second': $('#texture-second').checked });
 $('#preview-faces').onchange = () => save({ 'viewer.preview_faces': Math.round(+$('#preview-faces').value) });
 $('#vol-add').onclick = async () => {

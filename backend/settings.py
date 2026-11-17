@@ -77,6 +77,9 @@ DEFAULTS = {
     # it before meshing), rather than on this server; here if none takes it within 3 minutes, or it fails
     "relevance.machines": True,
     "mesh.texture_every_second": True,     # a mesh is textured from every second photo (meshopts.py's texture_every)
+    # which of COLMAP's mappers places a mesh's cameras (meshopts.py's method): "global", COLMAP 4.2.1's global mapper
+    # (6-14 times faster), or "incremental", 3.9.1's, as every mesh was placed before Nov 15; every other step is the same
+    "mesh.mapper": "global",
     # find beta in each new mesh with video frames placed in it, while its videos are still in the cache; and delete
     # cached videos none of whose frames is placed in any mesh, once the climbs that used them are settled
     "beta.auto": True,
@@ -121,7 +124,7 @@ DEFAULTS = {
 CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": ("all", "permitted", "none"),
            "site.sources": ("all", "link", "permitted"), "youtube.via": ("here", "volunteers_when_refused", "volunteers"),
            "volunteers.yt_dlp": ("nightly", "stable"),
-           "areas.meshes": ("boulders", "climbs"), "relevance.matcher": ("brute", "flann"), "leaderboard.names": ("new", "all", "none")}
+           "areas.meshes": ("boulders", "climbs"), "mesh.mapper": ("global", "incremental"), "relevance.matcher": ("brute", "flann"), "leaderboard.names": ("new", "all", "none")}
 LIMITS = {"users.quota_mb": (0, 1_000_000), "site.map_km": (0.05, 2000), "boulders.placed_percent": (0, 100), "beta.parallel": (1, 16), "viewer.preview_faces": (0, 5_000_000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "storage.stopped_days": (0, 365), "compute.local_workers": (0, 4), "compute.processing_cores": (1, os.cpu_count() or 1), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 200),
           "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 200),

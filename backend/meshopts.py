@@ -15,7 +15,9 @@ import threading
 # texture_every: a mesh is textured from every still and every this-many-th frame of each video (2: every second, which
 # halved the step and its CPU time on two boulders with the texture's sharpness unchanged on one and lower on the other:
 # benchmarking.md; 1: all of them; since Nov 16 stills are all kept: pipeline.texture_views()). The whole site's, from the admin page (set_site()), not an area's. OpenMVS 2.4 on.
-MAPPER = {"retry_below": 0.75, "more": 0, "texture_every": 2}
+# method: which mapper places the cameras (pipeline.mapper_method()): "global" (COLMAP 4.2.1's, the default since Nov 15)
+# or "incremental" (3.9.1's); the whole site's, from the admin page, unless MAPPER is set in the environment
+MAPPER = {"retry_below": 0.75, "more": 0, "texture_every": 2, "method": "global"}
 _local = threading.local()
 _site: dict = {}        # what the whole site sets otherwise than the defaults (set_site())
 
@@ -34,10 +36,13 @@ def mapper() -> dict:
 def placing() -> dict:
     """mapper(), of what decides how photos are placed: what a mesh's record of what it was made from keeps, and what
     it's compared by later. How it's textured isn't among them, so changing that makes no mesh out of date."""
-    return {k: v for k, v in mapper().items() if k not in TEXTURE_ONLY}
+    return {k: v for k, v in mapper().items() if k not in NOT_COMPARED}
 
 
 TEXTURE_ONLY = ("texture_every",)
+# not kept in inputs.json either: which mapper placed a mesh is in its own mapper.json, and switching the site's
+# (the admin page) is a choice for meshes made from then on, not a reason to call every mesh made before out of date
+NOT_COMPARED = TEXTURE_ONLY + ("method",)
 
 
 def given() -> dict | None:

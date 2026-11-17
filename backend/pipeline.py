@@ -59,7 +59,14 @@ COLMAP = shutil.which("colmap")
 # (_global_mapper()). "incremental": COLMAP 3.9.1's mapper, as every mesh was placed before. In the mapper benchmark
 # (design.md, "The global mapper") the global mapper placed the cameras 6-14 times faster with as many photos placed,
 # once the cameras it leaves seeing next to none of its points are taken out (UNTIED) for the rest step to place.
-MAPPER = os.environ.get("MAPPER", "global")
+MAPPER = os.environ.get("MAPPER", "")     # set: this image's choice, whatever the site's (benchmarks, tests)
+
+
+def mapper_method() -> str:
+    """Which mapper places the cameras: MAPPER where it's set, else the site's choice (meshopts' method, the admin page's
+    mesh.mapper, sent with each job to a machine), "global" or "incremental". Every other step is the same either way:
+    GPU SIFT, its fallback, the consistent-cameras step, OpenMVS 2.4 with one geometric pass, thinned texturing."""
+    return MAPPER or meshopts.mapper().get("method") or "global"
 COLMAP4 = os.environ.get("COLMAP4_BIN") or shutil.which("colmap4")
 UNTIED = 15             # a camera the global mapper leaves seeing fewer of its model's points than this is taken out
 # The global mapper solves on the GPU (global positioning, and bundle adjustments of 50 photos or more: COLMAP's own
@@ -627,7 +634,7 @@ def _set_aside(sparse: Path, work: Path, prefix: str) -> None:
 
 def _global_mapper(db: Path, images: Path, sparse: Path, work: Path, log: Log, tracker: Tracker, n_images: int,
                    min_registered: int, internet: bool, use_gpu: bool = False) -> tuple[dict | None, str]:
-    """The cameras placed by COLMAP 4.2.1's global mapper, where MAPPER is "global" and the image has it (COLMAP4).
+    """The cameras placed by COLMAP 4.2.1's global mapper, where mapper_method() is "global" and the image has it (COLMAP4).
 
     On a copy of the database (COLMAP 4 changes a 3.9.1 database into its own layout as it opens it), into
     work/sparse_global; each model it makes is converted to text by COLMAP 4 and back to binary by 3.9.1, into sparse/
@@ -640,11 +647,11 @@ def _global_mapper(db: Path, images: Path, sparse: Path, work: Path, log: Log, t
 
     Returns:
         What it did, for mapper.json ({mapper: "global", colmap4, args, device, solves, untied, placed, seconds}), or None and why
-        not, with sparse/ left empty for the incremental mapper: MAPPER isn't "global", COLMAP 4 isn't here, the global
+        not, with sparse/ left empty for the incremental mapper: the mapper chosen isn't "global", COLMAP 4 isn't here, the global
         mapper failed, its largest model places fewer than min_registered photos, or its models couldn't be converted.
     """
-    if MAPPER != "global":
-        return None, f"MAPPER is {MAPPER!r}"
+    if mapper_method() != "global":
+        return None, f"the mapper chosen is {mapper_method()!r}"
     if not COLMAP4:
         return None, "this image has no COLMAP 4 (colmap4) for the global mapper"
     log("== COLMAP 4: sparse reconstruction (global mapper)")
@@ -741,7 +748,7 @@ def _global_mapper(db: Path, images: Path, sparse: Path, work: Path, log: Log, t
         _set_aside(sparse, work, "global")
         return None, f"its largest model places only {placed} of {n_images} photos (need {min_registered})"
     log(f"global mapper: {placed} of {n_images} photos placed in its largest model, of {len(models)} model(s)")
-    return {"mapper": "global", "why": "MAPPER is 'global'", "colmap4": colmap_build(COLMAP4), "args": args,
+    return {"mapper": "global", "why": "the mapper chosen is 'global'", "colmap4": colmap_build(COLMAP4), "args": args,
             "device": ran.get("device"), "device_why": ran.get("device_why"), "solves": ran.get("solves"),
             "untied": untied, "untied_least": UNTIED, "models": len(models), "placed": placed, "seconds": seconds}, ""
 
@@ -923,6 +930,101 @@ def _set_aside_placing(work: Path) -> None:
     (work / "sparse").mkdir()
 
 
+def _judge_placing(model: Path, db: Path) -> dict:
+    """A placing's own check (modelcheck.py) and the cameras it would drop: those judged by their photo pairs that aren't
+    in the largest group agreeing with the model (modelcheck.agreeing_groups()). {ok, failed, why, share, placed, keep
+    (cameras left once those are dropped), out (their names)}."""
+    import modelcheck
+    cams, _, _ = modelcheck.read_model(model)
+    groups, judged = modelcheck.agreeing_groups(cams, db)
+    out = sorted(judged - (groups[0] if groups else set()))
+    c = modelcheck.check(model, db)
+    return {"ok": c["ok"], "failed": c["failed"], "why": modelcheck.line(c), "share": c.get("agree_share"),
+            "placed": len(cams), "keep": len(cams) - len(out), "out": out}
+
+
+def _keep_consistent(db: Path, images: Path, sparse: Path, work: Path, log: Log, tracker: Tracker, model: Path,
+                     registered: int, n_images: int, min_registered: int, internet: bool) -> tuple[Path, int]:
+    """Only cameras placed consistently go on to the mesh. A placing by the global mapper whose own check fails (its
+    cameras a median of over 5 degrees from their pairs, or split into groups that disagree: a video placed as a block in the
+    wrong spot, two halves joined at the wrong angle, which made the ghost surfaces of JBMF and Caveman Boulder, Nov
+    17) is placed again by 3.9.1's incremental mapper, which leaves such groups out rather than misplacing them; the
+    one with more consistent cameras is kept. Then the cameras outside the largest agreeing group are dropped
+    (image_deleter), so that no surface is made from them. Said in the log, in mapper.json ("consistent") and, for a
+    placing done again, in fallbacks.json. Returns the model and how many photos it places."""
+    how = json.loads((work / MAPPER_FILE).read_text()) if (work / MAPPER_FILE).exists() else {}
+    try:
+        j = _judge_placing(model, db)
+    except Exception as e:  # noqa: BLE001 - a check that can't be made decides nothing
+        log(f"placing not judged ({type(e).__name__}: {e})")
+        return model, registered
+    log(f"placing: {j['why']}")
+    record = {"first": {k: j[k] for k in ("ok", "failed", "share", "placed", "keep")}, "mapper": how.get("mapper")}
+    if how.get("mapper") == "global" and not j["ok"] and {"pairs", "split"} & set(j["failed"]):
+        why = f"the global mapper's model failed its check ({', '.join(j['failed'])})"
+        log(f"{why}: placing the photos again with COLMAP 3.9.1's incremental mapper")
+        aside = work / "global-placing"
+        shutil.rmtree(aside, ignore_errors=True)
+        aside.mkdir()
+        sparse.rename(aside / "sparse")
+        if (work / MAPPER_FILE).exists():
+            (work / MAPPER_FILE).rename(aside / MAPPER_FILE)
+        sparse.mkdir()
+        j2 = None
+        try:
+            how2 = _incremental_mapper(db, images, sparse, work, log, tracker, n_images, min_registered, internet, why)
+            m2, r2 = _largest_model(sparse)
+            if m2 is not None and min_registered <= r2 < n_images:
+                m2, r2 = _place_rest(db, m2, work, log, tracker, r2, n_images)
+            j2 = _judge_placing(m2, db) if m2 is not None else None
+        except Exception as e:  # noqa: BLE001 - the global mapper's placing stands
+            log(f"the incremental mapper failed ({type(e).__name__}: {e})")
+        better = j2 is not None and (j2["keep"] > j["keep"] or (j2["ok"] and j2["keep"] >= 0.9 * j["keep"]))
+        record["again"] = {k: j2[k] for k in ("ok", "failed", "share", "placed", "keep")} if j2 else None
+        record["kept"] = "incremental" if better else "global"
+        if better:
+            log(f"placing again: {j2['why']}")
+            (work / MAPPER_FILE).write_text(json.dumps({**how2, "replaced_global": how}, indent=1))
+            model, registered, j = m2, r2, j2
+        else:
+            shutil.rmtree(sparse, ignore_errors=True)
+            (aside / "sparse").rename(sparse)
+            if (aside / MAPPER_FILE).exists():
+                (aside / MAPPER_FILE).rename(work / MAPPER_FILE)
+            model, registered = _largest_model(sparse)
+        _fell_back(work, "global_mapper_check", f"{why}: placed again with the incremental mapper, which kept "
+                   f"{j2['keep'] if j2 else 0} consistent cameras against the global mapper's {record['first']['keep']}: "
+                   + ("the incremental mapper's is kept" if better else "the global mapper's is kept"), log,
+                   first=record["first"], again=record["again"], kept=record["kept"])
+    if j["out"] and model is not None:
+        names = work / "disagreeing.txt"
+        names.write_text("\n".join(j["out"]) + "\n")
+        kept = work / "consistent"
+        shutil.rmtree(kept, ignore_errors=True)
+        kept.mkdir()
+        try:
+            _run([COLMAP, "image_deleter", "--input_path", str(model), "--output_path", str(kept), "--image_names_path", str(names)],
+                 work, log)
+            before = work / f"before_consistent_{model.name}"
+            shutil.rmtree(before, ignore_errors=True)
+            model.rename(before)
+            kept.rename(model)
+            registered -= len(j["out"])
+            record["dropped"] = j["out"]
+            log(f"dropped {len(j['out'])} camera(s) that don't agree with the rest of the model (their photo pairs over "
+                f"{modelcheck_agree_deg():g} degrees off it): {', '.join(j['out'][:8])}{'...' if len(j['out']) > 8 else ''}")
+        except RuntimeError as e:
+            log(f"couldn't drop the cameras that disagree ({e}); meshing from all of them")
+    how = json.loads((work / MAPPER_FILE).read_text()) if (work / MAPPER_FILE).exists() else {}
+    (work / MAPPER_FILE).write_text(json.dumps({**how, "consistent": record}, indent=1))
+    return model, registered
+
+
+def modelcheck_agree_deg() -> float:
+    import modelcheck
+    return modelcheck.AGREE_DEG
+
+
 def _swap_back_placing(work: Path) -> None:
     """Puts the GPU-SIFT placing set aside (_set_aside_placing()) back in place of the CPU's, which goes to
     work/plain-sift-cpu/, its steps marked done again: for when the CPU's did no better (plain_sift_better()). Of 84
@@ -1027,7 +1129,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
                 sparse.mkdir()
             how, why = _global_mapper(db, images, sparse, work, log, tracker, n_images, min_registered, internet, use_gpu)
             if how is None:
-                if MAPPER == "global":
+                if mapper_method() == "global":
                     log(f"placing the cameras with COLMAP 3.9.1's incremental mapper instead: {why}")
                 how = _incremental_mapper(db, images, sparse, work, log, tracker, n_images, min_registered, internet, why)
             if rejected.exists():
@@ -1066,6 +1168,10 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
                                                   "the CPU's did no better, so the GPU's is kept"),
                    log, gpu=record["gpu"], cpu=cpu, better=record["better"], kept=record["kept"])
     _finish(work, "sift-judged")
+    if not _finished(work, "consistent") and model is not None:
+        model, registered = _keep_consistent(db, images, sparse, work, log, tracker, model, registered, n_images,
+                                             min_registered, internet)
+        _finish(work, "consistent")
     log(f"registered {registered}/{n_images} images in the largest model")
     try:
         rec = write_models(sparse, work, db, model)
