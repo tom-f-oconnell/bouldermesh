@@ -154,6 +154,32 @@ class FlowTest {
         assertTrue(TestWorld.near(record.level!!.tiltDeg, 1.0, 0.05) && record.level!!.sectors == 12 && record.downAgreeDeg!! < 0.5 && "\"down_agree_deg\"" in record.json())
     }
 
+    @Test fun takeWaitsForTheButtonsPhotoToBeSteady() {
+        val flow = CaptureFlow(CaptureSession(null, null, "f5", "test", "a phone", 0.0))
+        flow.skipLevel()
+        val mid = Vec3(0.0, 1.0, 3.0)
+        val pose = TestWorld.look(Vec3(0.0, 1.5, 0.0), mid)
+        flow.frame(pose, true, 0.0, 0.004, 0.0, 90)
+        flow.tap(pose.centre, pose.forward) { mid }
+        flow.setAuto(false)
+        // pressed with the phone turning: no photo yet, and it says to hold still; pressed again, it still waits for the one
+        flow.shutter()
+        var out = flow.frame(pose, true, 1.0, 0.004, 1.0, 90)
+        assertTrue(!out.shoot && out.ui.waiting && "Hold still" in out.ui.text, "${out.ui}")
+        flow.shutter()
+        assertFalse(flow.frame(pose, true, 1.0, 0.004, 1.5, 90).shoot)
+        out = flow.frame(pose, true, 0.0, 0.004, 2.0, 90)
+        assertTrue(out.shoot && !out.ui.waiting, "taken once still")
+        assertTrue(flow.shot(shot(pose, 2.0)).kept)
+        assertFalse(flow.frame(pose, true, 0.0, 0.004, 2.5, 90).shoot, "one press, one photo")
+        // never still: the press lapses, and says why
+        flow.shutter()
+        flow.frame(pose, true, 1.0, 0.004, 3.0, 90)
+        out = flow.frame(pose, true, 1.0, 0.004, 3.0 + CaptureFlow.WAIT_S + 0.1, 90)
+        assertTrue(!out.ui.waiting && "didn't hold still" in out.ui.note, "${out.ui}")
+        assertFalse(flow.frame(pose, true, 0.0, 0.004, 20.0, 90).shoot)
+    }
+
     @Test fun trackingLostAndBack() {
         val plan = TestWorld.plan().copy(key = "abc123def456", made = 1.7e9, guide = GuideInfo(patches = 12, sha1 = "0123abcd"))
         val flow = CaptureFlow(CaptureSession(plan, TestWorld.guide(), "f4", "test", "a phone", 0.0))

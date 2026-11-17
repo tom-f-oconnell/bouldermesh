@@ -26,6 +26,7 @@ data class CaptureUi(
     val askMore: Int = 0,           // everything asked for is done, and this many holds others marked privately are left: photograph them too?
     val canCard: Boolean = false,   // a photo with a bank card beside that hold can be asked for; card: the next photo is it
     val card: Boolean = false,
+    val waiting: Boolean = false,   // Take was pressed: the photo is taken once the phone holds still
 )
 
 /**
@@ -78,6 +79,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     private var meshTap: Vec3? = null
     private val tapMarks = ArrayList<Marker>()
     private var wantShot = false
+    private var wantAt: Double? = null    // the first frame after Take was pressed
     private var inFlight = false
     private var rejected = 0
     private var note = ""
@@ -161,7 +163,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
 
     /** Goes on without the turn on the spot: down is then as the phone's tracking has it. */
     fun skipLevel() { if (phase == Phase.LEVEL) { event("level_skipped", "filled" to turn.filled); phase = afterLevel; note = "" } }
-    fun shutter() { event("shutter"); wantShot = true }
+    /** Takes a photo once the phone holds still enough for it: at once if it already is, else within the next WAIT_S. */
+    fun shutter() { event("shutter", "waiting" to wantShot); if (!wantShot) { wantShot = true; wantAt = null } }
     fun setAuto(on: Boolean) { event("auto", "on" to on); session.auto = on }
     fun skip() { event("skip", "target" to session.currentTarget); session.skipCurrent("skipped on the phone"); levelsDirty = true }
     fun toggleMarking() { marking = !marking; event("marking", "on" to marking) }
@@ -413,9 +416,15 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 val left = if (out.hint.kind == Hint.Kind.DONE && !askedMore) session.coverage?.anonLeft() ?: 0 else 0
                 if (left > 0) ui = ui.copy(askMore = left, text = "Done. $left more hold${if (left == 1) " has" else "s have"} been marked here by others, privately. Photograph ${if (left == 1) "it" else "them"} too?")
                 if (cardNext) ui = ui.copy(text = "Hold a bank card flat on the rock beside the hold, all of it in the picture and out of any glare, and press the shutter")
-                // a card photo is taken by hand: it waits for the card to be there
-                val shoot = (if (cardNext) wantShot else out.shoot || wantShot) && !inFlight
+                // the button's photo waits for the phone to hold still, as one taken by itself does; a card photo is taken only by the button
+                val steady = out.blurPx <= CaptureSession.STEADY_PX
+                if (wantShot && wantAt == null) wantAt = t
+                if (wantShot && !steady && t - wantAt!! > WAIT_S) { wantShot = false; event("shutter_lapsed", "blur_px" to out.blurPx); note = "Not taken: the phone didn't hold still. Brace it, or move more slowly, and press Take again." }
+                val pressed = wantShot && steady
+                val shoot = (if (cardNext) pressed else out.shoot || pressed) && !inFlight
                 if (shoot) { inFlight = true; wantShot = false; cardShot = cardNext; event("shoot", "auto" to out.shoot, "still" to out.still, "card" to cardNext, "blur_px" to out.blurPx) }
+                else if (wantShot && !steady) ui = ui.copy(text = "Hold still: the photo is taken as soon as the phone is steady")
+                ui = ui.copy(waiting = wantShot, note = note)
                 return FlowOut(ui, session.fit, false, 0.75f, levels, markers, shoot, out.still, shoot && cardNext)
             }
             else -> { ui = base; return FlowOut(ui, null, false, 0f, null, emptyList(), false) }
@@ -467,6 +476,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         const val REFINE_LEAST = 150
         const val REFINE_EVERY_S = 3.0
         const val LOST_S = 1.0              // tracking lost for longer than this starts a new spell: shorter is a blink, with its world kept
+        const val WAIT_S = 8.0              // how long a press of Take waits for the phone to hold still
         const val STEADY_SCENERY_PX = 1.5   // a scenery frame is kept only with the phone turning less than smears it this much
         const val ORBIT_ROCK_M = 2.0        // how far a rock with no mesh is taken to reach from its middle, for the walk round it
         const val SPAN_S = 5.0              // how often how frames are coming is logged

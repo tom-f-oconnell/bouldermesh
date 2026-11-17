@@ -144,7 +144,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                             Button(onClick = { controller.more(true) }) { Text("Photograph ${if (ui.askMore == 1) "it" else "them"} too") }
                             FilledTonalButton(onClick = { controller.more(false) }) { Text("No") }
                         }
-                        Button(onClick = { controller.shutter() }) { Text("Take") }
+                        Button(onClick = { controller.shutter() }) { Text(if (ui.waiting) "Hold still…" else "Take") }
                         FilledTonalButton(onClick = { controller.setAuto(!ui.auto) }) { Text(if (ui.auto) "Auto: on" else "Auto: off") }
                         if (plan != null) {
                             if (ui.canSkip) FilledTonalButton(onClick = { controller.skip() }) { Text("Skip this") }

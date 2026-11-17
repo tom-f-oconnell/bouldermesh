@@ -629,7 +629,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         val turn = (now.phase == Phase.CAPTURE || now.phase == Phase.SCENERY) && hypot(now.turnX, now.turnY) > 0.3
         arrow.hidden = !turn
         if (turn) arrow.transform = CGAffineTransformMakeRotation(atan2(-now.turnY, now.turnX))     // the screen's y runs down
-        val want = "${now.phase}/${now.auto}/${now.canSkip}/${now.reach}/${now.canCard}/${now.card}/${now.askMore}/${now.scenery > 0}/${now.marking}/${now.guided}/${now.pairs > 0}/${now.kept > 0}"
+        val want = "${now.phase}/${now.auto}/${now.canSkip}/${now.reach}/${now.canCard}/${now.card}/${now.askMore}/${now.scenery > 0}/${now.marking}/${now.guided}/${now.pairs > 0}/${now.kept > 0}/${now.waiting}"
         if (want != buttonsFor) { buttonsFor = want; offer(now) }
     }
 
@@ -648,7 +648,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             }
             Phase.CAPTURE -> {
                 if (now.askMore > 0) buttons.addArrangedSubview(makeRow(makeButton("Photograph ${if (now.askMore == 1) "it" else "them"} too", Look.FILLED) { flow.more(true) }, makeButton("No") { flow.more(false) }))
-                buttons.addArrangedSubview(makeRow(makeButton("Take", Look.FILLED) { flow.shutter() }, makeButton(if (now.auto) "Auto: on" else "Auto: off") { flow.setAuto(!now.auto) }, leave))
+                buttons.addArrangedSubview(makeRow(makeButton(if (now.waiting) "Hold still…" else "Take", Look.FILLED) { flow.shutter() }, makeButton(if (now.auto) "Auto: on" else "Auto: off") { flow.setAuto(!now.auto) }, leave))
                 buttons.addArrangedSubview(if (now.guided) makeRow(makeButton("Skip this", enabled = now.canSkip) { flow.skip() }, makeButton("Doing: ${now.reach}") { flow.toggleWide() },
                         *(if (now.canCard || now.card) arrayOf(makeButton(if (now.card) "No card" else "Card photo") { flow.toggleCard() }) else emptyArray()))
                     else makeRow(makeButton(if (now.marking) "Tap the hold…" else "Mark a hold") { flow.toggleMarking() }, makeButton("Can't reach that side") { flow.blockSide() }))

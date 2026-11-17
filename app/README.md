@@ -21,7 +21,7 @@ phone yet**: see [What's been checked](#whats-been-checked).
    need photos, amber ones are part done, green ones done; rings mark holds. On the way in to a hold it asks you to
    stop for a photo at each halving of the distance. The app takes a photo by itself when you're holding still somewhere useful, and says so
    when one came out blurred or badly lit. *Skip this* leaves what can't be reached (too high, the back). *Take* takes
-   one whatever.
+   one whatever is in view, as soon as you hold still (*Hold still…* while it waits, up to 8 s).
 5. **Finish**, then *Upload* once you have signal. The server meshes your photos together with the mesh's own.
 6. **Once it's meshed**, *View mesh* on its capture shows it in the site's own viewer. Home asks the server how each
    upload stands whenever it comes up (*Check if meshed* asks again); press a capture for what it holds, grouped by
