@@ -77,9 +77,10 @@ DEFAULTS = {
     # it before meshing), rather than on this server; here if none takes it within 3 minutes, or it fails
     "relevance.machines": True,
     "mesh.texture_every_second": True,     # a mesh is textured from every second photo (meshopts.py's texture_every)
-    # which of COLMAP's mappers places a mesh's cameras (meshopts.py's method): "global", COLMAP 4.2.1's global mapper
-    # (6-14 times faster), or "incremental", 3.9.1's, as every mesh was placed before Nov 15; every other step is the same
-    "mesh.mapper": "global",
+    # which of COLMAP's mappers places a mesh's cameras (meshopts.py's method): "incremental", 3.9.1's, or "global",
+    # COLMAP 4.2.1's global mapper (6-14 times faster, the default Nov 15-17, but it misplaced groups of cameras in many
+    # meshes: experiments/mapper/global-mapper-issues.md); every other step is the same
+    "mesh.mapper": "incremental",
     # find beta in each new mesh with video frames placed in it, while its videos are still in the cache; and delete
     # cached videos none of whose frames is placed in any mesh, once the climbs that used them are settled
     "beta.auto": True,

@@ -66,7 +66,7 @@ def mapper_method() -> str:
     """Which mapper places the cameras: MAPPER where it's set, else the site's choice (meshopts' method, the admin page's
     mesh.mapper, sent with each job to a machine), "global" or "incremental". Every other step is the same either way:
     GPU SIFT, its fallback, the consistent-cameras step, OpenMVS 2.4 with one geometric pass, thinned texturing."""
-    return MAPPER or meshopts.mapper().get("method") or "global"
+    return MAPPER or meshopts.mapper().get("method") or "incremental"
 COLMAP4 = os.environ.get("COLMAP4_BIN") or shutil.which("colmap4")
 UNTIED = 15             # a camera the global mapper leaves seeing fewer of its model's points than this is taken out
 # The global mapper solves on the GPU (global positioning, and bundle adjustments of 50 photos or more: COLMAP's own
@@ -949,8 +949,10 @@ def _keep_consistent(db: Path, images: Path, sparse: Path, work: Path, log: Log,
     cameras a median of over 5 degrees from their pairs, or split into groups that disagree: a video placed as a block in the
     wrong spot, two halves joined at the wrong angle, which made the ghost surfaces of JBMF and Caveman Boulder, Nov
     17) is placed again by 3.9.1's incremental mapper, which leaves such groups out rather than misplacing them; the
-    one with more consistent cameras is kept. Then the cameras outside the largest agreeing group are dropped
-    (image_deleter), so that no surface is made from them. Said in the log, in mapper.json ("consistent") and, for a
+    one with more consistent cameras is kept. Then, where the global mapper's placing stands, the cameras outside the
+    largest agreeing group are dropped (image_deleter), so that no surface is made from them; an incremental placing
+    is left whole, as every mesh was made before Nov 15 (the share agreeing is no measure of an incremental model:
+    experiments/mapper/global-mapper-issues.md). Said in the log, in mapper.json ("consistent") and, for a
     placing done again, in fallbacks.json. Returns the model and how many photos it places."""
     how = json.loads((work / MAPPER_FILE).read_text()) if (work / MAPPER_FILE).exists() else {}
     try:
@@ -996,7 +998,8 @@ def _keep_consistent(db: Path, images: Path, sparse: Path, work: Path, log: Log,
                    f"{j2['keep'] if j2 else 0} consistent cameras against the global mapper's {record['first']['keep']}: "
                    + ("the incremental mapper's is kept" if better else "the global mapper's is kept"), log,
                    first=record["first"], again=record["again"], kept=record["kept"])
-    if j["out"] and model is not None:
+    final = json.loads((work / MAPPER_FILE).read_text()).get("mapper") if (work / MAPPER_FILE).exists() else None
+    if j["out"] and model is not None and final == "global":     # an incremental placing is left as it always was
         names = work / "disagreeing.txt"
         names.write_text("\n".join(j["out"]) + "\n")
         kept = work / "consistent"

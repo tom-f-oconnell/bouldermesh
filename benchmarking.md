@@ -5,6 +5,10 @@ next. For Tom, and for AI coding agents picking the work up with no other contex
 (sections marked `<!-- owner: hal -->`) and "atlas" (`<!-- owner: atlas -->`: every number measured on atlas). Each
 edits only its own sections and proposes changes to the other's in the handoff file ("Where things are", at the end).
 
+**Nov 17: the incremental mapper is the default again.** The global mapper misplaced groups of cameras in at least a
+third of the site's meshes (ghost sheets), on boulders unlike the three benchmarked: `experiments/mapper/global-mapper-issues.md`
+has the faults and the tests to run before it's the default again.
+
 **Where things stand, 2026-11-15.** On atlas, the new pipeline (COLMAP 4.2.1's global mapper on the GPU with its
 untied cameras taken out, OpenMVS 2.4 given 2.3's values, people masks on the GPU) makes a whole job 2.6 to 3.5 times
 faster than the live one (Drifter: 1,276 s against 3,376 s), with as many photos placed on 31de and Drifter and

@@ -15,9 +15,10 @@ import threading
 # texture_every: a mesh is textured from every still and every this-many-th frame of each video (2: every second, which
 # halved the step and its CPU time on two boulders with the texture's sharpness unchanged on one and lower on the other:
 # benchmarking.md; 1: all of them; since Nov 16 stills are all kept: pipeline.texture_views()). The whole site's, from the admin page (set_site()), not an area's. OpenMVS 2.4 on.
-# method: which mapper places the cameras (pipeline.mapper_method()): "global" (COLMAP 4.2.1's, the default since Nov 15)
-# or "incremental" (3.9.1's); the whole site's, from the admin page, unless MAPPER is set in the environment
-MAPPER = {"retry_below": 0.75, "more": 0, "texture_every": 2, "method": "global"}
+# method: which mapper places the cameras (pipeline.mapper_method()): "incremental" (3.9.1's) or "global" (COLMAP 4.2.1's,
+# the default Nov 15-17, until it was found to misplace groups of cameras: experiments/mapper/global-mapper-issues.md);
+# the whole site's, from the admin page, unless MAPPER is set in the environment
+MAPPER = {"retry_below": 0.75, "more": 0, "texture_every": 2, "method": "incremental"}
 _local = threading.local()
 _site: dict = {}        # what the whole site sets otherwise than the defaults (set_site())
 
@@ -25,7 +26,8 @@ _site: dict = {}        # what the whole site sets otherwise than the defaults (
 def set_site(options: dict) -> None:
     """What the admin page's settings say of how meshes are made, where it isn't the default: sent with every job."""
     global _site
-    _site = {k: v for k, v in options.items() if k in MAPPER and v != MAPPER[k]}
+    _site = {k: v for k, v in options.items() if k in MAPPER and (v != MAPPER[k] or k == "method")}  # the mapper always:
+    # a machine on an image from before its default changed would otherwise use that image's default
 
 
 def mapper() -> dict:

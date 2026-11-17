@@ -125,12 +125,14 @@
     <label class="choice"><input type="checkbox" id="filter-machines"> Filter harvests' photos on a machine that connects here, when one can
       <small>(its script version 12 or newer; it takes them before meshing, and they're filtered here, one at a time, if none takes one within 3 minutes, as when the only machine is meshing. An earlier run's verdicts stand either way: a boulder pooled again only judges what's new)</small></label>
     <label>Which mapper places a mesh's cameras</label>
-    <select id="mapper-method"><option value="global">Global (COLMAP 4.2.1): 6-14 times faster; a placing that fails its check is placed again incrementally</option>
-      <option value="incremental">Incremental (COLMAP 3.9.1): as every mesh was placed before Nov 15</option></select>
+    <select id="mapper-method"><option value="incremental">Incremental (COLMAP 3.9.1): as every mesh was placed before Nov 15</option>
+      <option value="global">Global (COLMAP 4.2.1): 6-14 times faster, but misplaced groups of cameras in about a third of its meshes</option></select>
     <div class="note">For meshes made from now on, here and on machines that connect here. Every other step is the same
-      either way (GPU SIFT, OpenMVS 2.4 with one geometric pass, thinned texturing, cameras that don't agree with the rest
-      dropped). The global mapper can place a loosely linked group of photos (one video, say) in the wrong spot; the
-      incremental one tends to leave such a group out, and takes 10-25 minutes longer on a big boulder.</div>
+      either way (GPU SIFT, OpenMVS 2.4 with one geometric pass, thinned texturing). The global mapper can place a
+      loosely linked group of photos (one video, say) in the wrong spot, or two halves of a boulder a few degrees apart,
+      which makes ghost sheets; its cameras that disagree with the rest are dropped and a split placing is redone
+      incrementally, but that doesn't catch every case (Caveman Boulder). The incremental one takes 10-25 minutes longer
+      on a big boulder.</div>
     <label class="choice"><input type="checkbox" id="texture-second"> Texture meshes from every second video frame
       <small>(every still is always used; a video's frames are thinned, as each mostly shows what the one before did. Halved the texture step, the longest of a mesh's, on boulders mostly of video frames: 335 to 159 s on a 234-photo one. Unticked, every frame is used. For meshes made, or textured again, from now on)</small></label>
     <label class="choice"><input type="checkbox" id="beta-auto"> Find beta in each new mesh with video frames placed in it
@@ -577,7 +579,7 @@ function render(s){
   $('#matcher').value = v['relevance.matcher'];
   $('#filter-machines').checked = v['relevance.machines'];
   $('#texture-second').checked = v['mesh.texture_every_second'];
-  $('#mapper-method').value = v['mesh.mapper'] || 'global';
+  $('#mapper-method').value = v['mesh.mapper'] || 'incremental';
   $('#beta-auto').checked = v['beta.auto']; $('#prune-videos').checked = v['videos.prune_unplaced'];
   if (document.activeElement !== $('#map-km')) $('#map-km').value = v['site.map_km'];
   if (document.activeElement !== $('#preview-faces')) $('#preview-faces').value = v['viewer.preview_faces'];

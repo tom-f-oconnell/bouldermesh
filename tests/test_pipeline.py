@@ -1177,13 +1177,13 @@ print("a model OpenMVS can't import, tidied OK")
 
 # --- only consistent cameras go on: a global placing that fails its check placed again by the incremental mapper (the
 # one with more consistent cameras kept), then the cameras outside the largest agreeing group dropped
-def consistent(first: dict, again: dict | None):
+def consistent(first: dict, again: dict | None, mapper: str = "global"):
     with tempfile.TemporaryDirectory() as td:
         work = pathlib.Path(td)
         sparse = work / "sparse"
         model(sparse, "0", first["placed"])
         (sparse / "0" / "who").write_text("global")
-        (work / pipeline.MAPPER_FILE).write_text(json.dumps({"mapper": "global"}))
+        (work / pipeline.MAPPER_FILE).write_text(json.dumps({"mapper": mapper}))
         calls, logged = [], []
 
         def judge(m, db):
@@ -1217,7 +1217,7 @@ GOOD = {"ok": True, "failed": [], "placed": 160, "keep": 158, "out": ["a.jpg", "
 r, how, fell, calls, logged, before = consistent(SPLIT, GOOD)
 assert calls[0][0] == "incremental" and "failed its check (split)" in calls[0][1], calls
 assert how["mapper"] == "incremental" and how["replaced_global"] == {"mapper": "global"} and how["consistent"]["kept"] == "incremental", how
-assert before == "incremental" and r == 158 and how["consistent"]["dropped"] == ["a.jpg", "b.jpg"], (before, r, how)
+assert before is None and r == 160 and "dropped" not in how["consistent"], ("an incremental placing is left whole", before, r, how)
 assert fell[0]["step"] == "global_mapper_check" and fell[0]["kept"] == "incremental", fell
 WORSE = {"ok": True, "failed": [], "placed": 40, "keep": 40, "out": []}
 r, how, fell, calls, logged, before = consistent(SPLIT, WORSE)
@@ -1225,6 +1225,8 @@ assert how["mapper"] == "global" and how["consistent"]["kept"] == "global" and b
 assert any("the global mapper's is kept" in l for l in logged), logged
 r, how, fell, calls, logged, before = consistent({**GOOD, "out": []}, None)
 assert not calls and r == 160 and "dropped" not in how["consistent"], "a sound placing: nothing done"
+r, how, fell, calls, logged, before = consistent(SPLIT, None, mapper="incremental")
+assert not calls and r == 179 and before is None and "dropped" not in how["consistent"], "the incremental mapper's own: left whole"
 print("only consistent cameras kept OK")
 
 # --- which mapper: MAPPER where the image sets it, else the site's choice (the admin page's mesh.mapper), sent with jobs
@@ -1232,14 +1234,16 @@ saved_mapper = pipeline.MAPPER
 try:
     pipeline.MAPPER = ""
     meshopts.set_site({})
-    assert pipeline.mapper_method() == "global" and meshopts.given() is None, "the default, and nothing to send"
+    assert pipeline.mapper_method() == "incremental" and meshopts.given() is None, "the default"
     meshopts.set_site({"method": "incremental"})
-    assert pipeline.mapper_method() == "incremental" and meshopts.given() == {"method": "incremental"}
+    assert pipeline.mapper_method() == "incremental" and meshopts.given() == {"method": "incremental"}, "sent even as the default"
     assert pipeline._global_mapper(pathlib.Path("db"), pathlib.Path("i"), pathlib.Path("s"), pathlib.Path("w"), print, Tracker([]), 10, 6,
                                    True) == (None, "the mapper chosen is 'incremental'")
     assert "method" not in meshopts.placing(), "not compared with what meshes were made from: their mapper.json says"
-    pipeline.MAPPER = "global"
-    assert pipeline.mapper_method() == "global", "the image's own MAPPER wins"
+    meshopts.set_site({"method": "global"})
+    assert pipeline.mapper_method() == "global"
+    pipeline.MAPPER = "incremental"
+    assert pipeline.mapper_method() == "incremental", "the image's own MAPPER wins"
 finally:
     pipeline.MAPPER = saved_mapper
     meshopts.set_site({})
