@@ -3828,4 +3828,29 @@ finally:
     server._texture_again_state.pop(tm, None)
     server.q("DELETE FROM meshes WHERE id=?", tm, write=True)
 print("texture again's state OK")
+# Mesh next: ahead of everything on the machines; one stopped starts at once on a worker of its own, carrying on
+server.q("INSERT INTO projects(id,name,created,kind,status,job,user_id,approved) VALUES('nx0000000001','Next One',?,'user','held',?,'u1',NULL)",
+         time.time(), json.dumps({"type": "reconstruct", "pid": "nx0000000001", "internet": False}), write=True)
+ran = []
+real_run = server.run_job
+server.run_job = lambda job: ran.append((job, server.current_worker().name, server.current_worker().remote))
+try:
+    said = server.mesh_next("nx0000000001")["result"]
+    for _ in range(50):
+        if ran: break
+        time.sleep(0.05)
+    assert "started now" in said and ran and ran[0][0]["pid"] == "nx0000000001" and ran[0][2], (said, ran)
+    row = server.q("SELECT status, approved, next_at FROM projects WHERE id='nx0000000001'", one=True)
+    assert row["status"] == "queued" and row["approved"] == 1 and row["next_at"], dict(row)
+    assert server.contribution_prio(row) == server.PRIO_NEXT < server.pullwork.PRIO_OWNER
+    assert not any(w.name.startswith("next:") for w in server._workers), "its worker gone once done"
+    try:
+        server.mesh_next("nothing00000")
+        raise AssertionError("no such project")
+    except ValueError:
+        pass
+finally:
+    server.run_job = real_run
+    server.q("DELETE FROM projects WHERE id='nx0000000001'", write=True)
+print("mesh next OK")
 print("ALL CAMPAIGN TESTS PASSED")

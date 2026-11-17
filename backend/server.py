@@ -306,6 +306,8 @@ def init_db() -> None:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN stopped_at REAL")
                 con.execute(f"UPDATE {table} SET stopped_at=? WHERE status='stopped'", (time.time(),))  # counted from now
         con.execute("CREATE TABLE IF NOT EXISTS job_stops(at REAL, kind TEXT, id TEXT, name TEXT, was TEXT)")
+        if "next_at" not in {r[1] for r in con.execute("PRAGMA table_info(projects)")}:   # Mesh next (mesh_next())
+            con.execute("ALTER TABLE projects ADD COLUMN next_at REAL")
         now_sql = "(julianday('now') - 2440587.5) * 86400.0"
         for table, kind in (("campaigns", "area"), ("projects", "project")):
             con.execute(f"""CREATE TRIGGER IF NOT EXISTS {table}_stopped AFTER UPDATE OF status ON {table}
@@ -7676,7 +7678,7 @@ def run_job(job: dict) -> None:
         elif job["type"] == "texture-again":
             run_texture_again(job["mid"])
         elif job["type"] == "reconstruct":
-            with pullwork.priority(contribution_prio(q("SELECT user_id, approved FROM projects WHERE id=?", job["pid"], one=True) or {})):
+            with pullwork.priority(contribution_prio(q("SELECT user_id, approved, next_at FROM projects WHERE id=?", job["pid"], one=True) or {})):
                 run_reconstruct(job["pid"], job.get("internet", False), resume=job.get("resume", False))
         elif job["type"] == "harvest":
             run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True), resume=job.get("resume", False),
@@ -8454,8 +8456,14 @@ def may_approve(user: dict | None, proj: dict) -> bool:
     return bool(user) and (user["role"] == "owner" or any(accounts_mod.may_moderate(user, a) for a in areas_of_project(proj)))
 
 
+PRIO_NEXT = -1      # a project the owner said to mesh next (mesh_next()): ahead of every other's on the machines
+
+
 def contribution_prio(proj: dict) -> int:
-    """Whose work a project's mesh is (pullwork.PRIO_*): the owner's unless an account added it."""
+    """Whose work a project's mesh is (pullwork.PRIO_*): the owner's unless an account added it; ahead of all, one said
+    to be meshed next."""
+    if proj.get("next_at"):
+        return PRIO_NEXT
     if not proj.get("user_id"):
         return pullwork.PRIO_OWNER
     if proj.get("approved") != 1:
@@ -8481,6 +8489,54 @@ def submit_reconstruct(pid: str) -> dict:
     threading.Thread(target=NOTIFIER.send, args=("Something added, to look at", f"{who} added {plural(n, 'photo')} as \"{proj['name']}\". "
                      "It will be meshed when nothing else is waiting, or sooner once approved (the admin page's People).", None, 3, ["inbox_tray"]), daemon=True).start()
     return {"queued": False, "held": True, "why": "it will be meshed when the machines have nothing else to do, or sooner once it's approved"}
+
+
+def mesh_next(pid: str) -> dict:
+    """Mesh a project next, on the machines that connect here: ahead of everything else waiting for one, without stopping
+    anything running. Its mesh's job already waiting for a machine moves to the front; one not running (held for
+    approval, which this gives; queued; stopped; failed; interrupted) starts at once on a worker of its own, so it
+    isn't left behind a job this server's worker is waiting on (a size, say). An area's climb waiting its turn in the
+    area isn't moved: its machine job is, once there. Returns what was done, in words."""
+    proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
+    if not proj:
+        raise ValueError("no such project")
+    q("UPDATE projects SET next_at=? WHERE id=?", time.time(), pid, write=True)
+    moved = MACHINES.reprioritise(pid, PRIO_NEXT)
+    if proj.get("user_id") and proj.get("approved") != 1:
+        q("UPDATE projects SET approved=1, approved_by='the owner', approved_at=? WHERE id=?", time.time(), pid, write=True)
+    running = any(w.job and w.job["job"].get("pid") == pid for w in list(_workers))
+    if moved or running:
+        return {"result": "moved to the front of the machines' queue" if moved else "running already: its next machine job goes first"}
+    if area_work(pid, proj):
+        return {"result": "an area's climb: its mesh goes first once the area gets to it (resume or retry it there)"}
+    with jobs.mutex:        # out of this server's queue, to run on a worker of its own
+        for j in [j for j in jobs.queue if j.get("pid") == pid]:
+            jobs.queue.remove(j)
+    if proj["status"] in ("held", "stopped", "interrupted") and proj.get("job"):
+        job = {**json.loads(proj["job"]), "resume": proj["status"] != "held"}
+    elif proj["status"] == "failed":
+        job = {"type": "retry", "pid": pid}
+    elif proj["status"] in ("queued", "new", "done"):
+        job = {"type": "reconstruct", "pid": pid, "internet": proj["kind"] in ("harvest", "boulder")}
+    else:
+        return {"result": f"it's {proj['status']}: nothing to mesh now"}
+    q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
+
+    def go() -> None:
+        w = Worker(f"next: {proj['name'][:40]}", remote=True)
+        _here.worker = w
+        use_control(w.control)
+        with _workers_lock:
+            _workers.append(w)
+        try:
+            run_job(job)
+        finally:
+            w.retired = True
+            with _workers_lock:
+                if w in _workers:
+                    _workers.remove(w)
+    threading.Thread(target=go, daemon=True, name=f"next-{pid}").start()
+    return {"result": "started now, on a worker of its own, ahead of everything else waiting for a machine"}
 
 
 def link_contribution(pid: str) -> None:
@@ -10264,6 +10320,15 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/retry", p)
             if m:
                 return self.send_json(*retry_project(m[1]))
+            m = re.fullmatch(r"/api/projects/([0-9a-f]+)/next", p)
+            if m:   # Mesh next: the site's owner's (an editor's) only
+                me = self.who()
+                if not me or me["role"] != "owner":
+                    return self.send_json({"error": "only the site's owner can put a mesh first"}, 403)
+                try:
+                    return self.send_json(mesh_next(m[1]))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 404)
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/stop", p)
             if m:
                 return self.send_json(*stop_project(m[1]))

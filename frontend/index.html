@@ -3493,6 +3493,7 @@ async function refreshProjects(){
       ${projectAreasHtml(p)}
       <div class="row" style="margin-top:8px">
         <label class="file"><button class="sec sm" type="button">Add photos or videos</button><input type="file" multiple accept="image/jpeg,image/png,video/*"></label>
+        ${editor && ['held', 'queued', 'running', 'stopped', 'failed', 'interrupted'].includes(p.status) ? `<button class="next sm sec" title="Mesh it next, on the machines: ahead of everything else waiting for one, without stopping what's running">Mesh next</button>` : ''}
         ${RETRYABLE.includes(p.status) ? `<button class="retry sm" title="Tries again from the last step it finished, rather than from the start${(p.areas || []).some(a => a.kind === 'climb') ? '. In its area it goes next, resumed if it was paused; a stopped area runs only what\'s asked for again, and stops' : ''}">Retry</button>` : ''}
         ${busy ? '<button class="stop sm sec" title="Stops its job now, or takes it out of the queue; Retry carries on from the last step it finished. An area\'s climb in progress is paused on the Areas tab instead">Stop</button>' : ''}
         <button class="rec sm ${RETRYABLE.includes(p.status) ? 'sec' : ''}" title="Makes a new mesh from the start" ${busy?'disabled':''}>Reconstruct</button>
@@ -3528,6 +3529,10 @@ async function refreshProjects(){
         toast(r.paused ? `Paused ${r.paused.map(x => `${x.climb} in ${x.area}`).join(', ')}: resume it on the Areas tab` : 'Stopped: Retry carries on with it', 8000);
         refreshProjects();
       }
+      catch(e){ toast(e.message, 8000); }
+    });
+    d.querySelector('.next')?.addEventListener('click', async () => {
+      try { toast((await api(`/api/projects/${p.id}/next`, {method:'POST'})).result, 6000); active = p.id; poll(); }
       catch(e){ toast(e.message, 8000); }
     });
     d.querySelector('.retry')?.addEventListener('click', async () => {
