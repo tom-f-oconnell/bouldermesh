@@ -616,15 +616,20 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         }
         if (levelling) {
             bar.progress = now.done.toFloat() / maxOf(1, now.total)
-            counts.text = "${now.done} of ${now.total} directions faced"
+            val l = now.level
+            // how still, as a bar running to three times what's acceptable, with a mark at it
+            val meter = l?.let { val k = (it.wobbleNow / it.wobbleOk * 4).toInt().coerceIn(0, 12)
+                (0 until 12).joinToString("") { i -> if (i == 4) "|" else if (i < k) "■" else "□" } }
+            counts.text = listOfNotNull("${now.done} of ${now.total} directions faced", meter?.let { "$it  ${l.steadyText()}" }, l?.agreeText()).joinToString("\n")
         }
         if (capturing) {
             bar.progress = now.done.toFloat() / now.total
             counts.text = listOfNotNull("${now.done}/${now.total} ${if (now.guided) "parts" else "sides and spots"}", if (now.holds > 0 && now.guided) "${now.holdsDone}/${now.holds} holds" else null,
                 "${now.kept} photos", if (now.rejected > 0) "${now.rejected} not kept" else null).joinToString(" · ")
         }
-        readings.text = now.sensors
-        readings.hidden = !(now.phase == Phase.CAPTURE && now.sensors.isNotEmpty())
+        val redo = if (levelling) now.level?.redoText() else null
+        readings.text = redo ?: now.sensors
+        readings.hidden = redo == null && !(now.phase == Phase.CAPTURE && now.sensors.isNotEmpty())
         // which way to turn, when what's wanted is out of the picture
         val turn = (now.phase == Phase.CAPTURE || now.phase == Phase.SCENERY) && hypot(now.turnX, now.turnY) > 0.3
         arrow.hidden = !turn

@@ -6,6 +6,7 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sqrt
 
 /** Readings turned into the axes of a stored photo: x along its rows, y down its columns, z the way the camera looks. */
@@ -94,10 +95,11 @@ data class Level(val down: Vec3, val tiltDeg: Double, val offset: Vec3, val spre
  * tracking says how the phone was turned at each reading), they come apart. Nothing level or plumb is needed.
  *
  * Readings are kept by the direction faced, in `sectors` equal parts of the circle, each counting the same however
- * long was spent facing it.
+ * long was spent facing it. As the turn goes, check() says how well the directions so far agree, and which one most
+ * spoils it; clear() lets that one alone be faced again, rather than the whole turn.
  */
 class LevelTurn(val sectors: Int = 12) {
-    private class Sum { var n = 0; val r = DoubleArray(9); var m = Vec3.ZERO; var f = Vec3.ZERO }
+    private class Sum { var n = 0; val r = DoubleArray(9); var m = Vec3.ZERO; var f = Vec3.ZERO; var wobble = 0.0 }
     private val sums = Array(sectors) { Sum() }
     var samples = 0
         private set
@@ -105,36 +107,84 @@ class LevelTurn(val sectors: Int = 12) {
     /** How many of the directions have readings enough. */
     val filled: Int get() = sums.count { it.n >= PER_SECTOR_LEAST }
 
+    /** Directions cleared by clear(), not yet faced again. */
+    private val cleared = BooleanArray(sectors)
+
+    /** The direction being faced now (an index of the sectors), or -1 before the first reading. */
+    var facing = -1
+        private set
+
+    /** Degrees the force read now is from gravity as it's known so far, smoothed over a fraction of a second: how still the phone is. */
+    var wobbleNow = 0.0
+        private set
+    private var wobbleSq = 0.0
+    private var wobbleSum = 0.0
+    private var wobbleN = 0
+    private var recent: Vec3? = null        // the force in the world, smoothed over a second: gravity, until there's a fit
+    private var fitted: Fit? = null         // the last check()'s fit
+    private var lastT = Double.NaN
+
+    /** The same, as the root mean square over the readings used so far. */
+    val wobbleTurn: Double get() = if (wobbleN == 0) 0.0 else sqrt(wobbleSum / wobbleN)
+
+    /** Each direction's state: 0 not faced yet, 1 being read, 2 read enough, 3 cleared for disagreeing with the rest. */
+    fun states(): IntArray = IntArray(sectors) { i -> val n = sums[i].n
+        if (n >= PER_SECTOR_LEAST) 2 else if (cleared[i]) 3 else if (n > 0) 1 else 0 }
+
+    /** Each read direction's own wobble (as wobbleTurn), for the log; -1 for those not read enough. */
+    fun sectorWobbles(): List<Double> = sums.map { if (it.n >= PER_SECTOR_LEAST) sqrt(it.wobble / it.n) else -1.0 }
+
     /**
      * A reading as the phone turns: where the tracking has the camera, and what the accelerometer reads (the phone's
-     * axes, m/s2). Returns whether it was used: not while the camera points steeply up or down, turns fast or is jolted.
+     * axes, m/s2), at time `t` (seconds; NaN to take readings as 1/30 s apart). Returns whether it was used: not while
+     * the camera points steeply up or down, turns fast or is jolted.
      */
-    fun add(pose: CameraPose, accel: Vec3, sensorOrientation: Int = 90, gyroRadS: Double = 0.0): Boolean {
+    fun add(pose: CameraPose, accel: Vec3, sensorOrientation: Int = 90, gyroRadS: Double = 0.0, t: Double = Double.NaN): Boolean {
+        val dt = if (t.isNaN() || lastT.isNaN()) 1.0 / 30 else (t - lastT).coerceIn(0.0, 0.2)
+        lastT = t
         val ahead = pose.forward
-        if (abs(ahead.y) > MAX_PITCH || gyroRadS > MAX_TURNING || abs(accel.norm - Sensors.G) > MAX_JOLT) return false
-        val turn = (atan2(ahead.x, ahead.z) + 2 * PI) % (2 * PI)
-        val s = sums[floor(turn / (2 * PI / sectors)).toInt().coerceIn(0, sectors - 1)]
-        if (s.n >= PER_SECTOR_MOST) return false
         val force = Axes.forceInImage(accel, sensorOrientation)
+        val world = pose.rot.rotate(force)
+        val sector = floor(((atan2(ahead.x, ahead.z) + 2 * PI) % (2 * PI)) / (2 * PI / sectors)).toInt().coerceIn(0, sectors - 1)
+        facing = sector
+        // how far this reading is from gravity: as the fit so far has it, or as the last second's readings average out
+        val r = recent
+        recent = if (r == null) world else r + (world - r) * min(1.0, dt / RECENT_S)
+        val f = fitted
+        val expect = if (f != null) f.u + pose.rot.rotate(f.c) else r ?: world
+        val d = angleDeg(world, expect)
+        wobbleSq += (d * d - wobbleSq) * min(1.0, dt / NOW_S)
+        wobbleNow = sqrt(wobbleSq)
+        if (abs(ahead.y) > MAX_PITCH || gyroRadS > MAX_TURNING || abs(accel.norm - Sensors.G) > MAX_JOLT) return false
+        val s = sums[sector]
+        if (s.n >= PER_SECTOR_MOST) return false
         val cx = pose.rot.rotate(Vec3(1.0, 0.0, 0.0)); val cy = pose.rot.rotate(Vec3(0.0, 1.0, 0.0)); val cz = pose.rot.rotate(Vec3(0.0, 0.0, 1.0))
         val cols = arrayOf(cx, cy, cz)
         for (j in 0 until 3) { s.r[j] += cols[j].x; s.r[3 + j] += cols[j].y; s.r[6 + j] += cols[j].z }      // row-major: image axes to world
-        s.m += pose.rot.rotate(force); s.f += force
+        s.m += world; s.f += force; s.wobble += d * d
         s.n++; samples++
+        if (s.n >= PER_SECTOR_LEAST) cleared[sector] = false
+        wobbleSum += d * d; wobbleN++
         return true
     }
 
+    /** Forgets what was read facing one direction, to be faced again. */
+    fun clear(sector: Int) {
+        val s = sums[sector]
+        samples -= s.n
+        s.n = 0; s.r.fill(0.0); s.m = Vec3.ZERO; s.f = Vec3.ZERO; s.wobble = 0.0
+        cleared[sector] = true
+    }
+
+    private class Fit(val u: Vec3, val c: Vec3, val off: Double, val k: Int)
+
     /**
-     * The answer, from the directions with readings enough; null with fewer than `least` of them, or readings that
-     * aren't gravity's.
-     *
      * Each reading, turned into the world, is gravity's force u plus the phone's own offset c turned as the phone
      * was: u + R c. Least squares over the directions' means gives both; the part of c along gravity can't be told
      * from gravity's strength and is left at nothing, which changes no direction.
      */
-    fun solve(least: Int = sectors): Level? {
-        val used = sums.filter { it.n >= PER_SECTOR_LEAST }
-        if (used.size < least || used.size < 3) return null
+    private fun fit(used: List<Sum>): Fit? {
+        if (used.size < 3) return null
         val k = used.size.toDouble()
         val a = Array(6) { DoubleArray(6) }; val b = DoubleArray(6)
         for (i in 0 until 3) { a[i][i] = k; a[3 + i][3 + i] = k * (1 + RIDGE) }
@@ -154,17 +204,66 @@ class LevelTurn(val sectors: Int = 12) {
             val e = s.m / n - u - rc
             off += e dot e
         }
-        val down = -u.unit()
-        return Level(down, angleDeg(down, Vec3(0.0, -1.0, 0.0)), c, atan2(sqrt(off / used.size), u.norm) * 180 / PI, used.size, samples)
+        return Fit(u, c, off, used.size)
+    }
+
+    /** How far the directions of a fit disagree, as it would be expected to come out with all of them read alike. */
+    private fun agreeDeg(f: Fit): Double {
+        val free = 3 * f.k - FREE
+        if (free <= 0) return 0.0
+        return atan2(sqrt(f.off / free * (3 * sectors - FREE) / sectors), f.u.norm) * 180 / PI
+    }
+
+    /**
+     * How the turn so far stands.
+     *
+     * @param agreeDeg how far the directions read so far disagree, scaled to what a whole turn like them would come to:
+     *   comparable with Level.spreadDeg from the start.
+     * @param worst the direction that disagrees most: the one whose leaving out helps most; withoutDeg, the rest's agreement then.
+     */
+    data class Check(val agreeDeg: Double, val sectors: Int, val worst: Int, val withoutDeg: Double)
+
+    /** How the turn so far stands, from CHECK_LEAST directions read on; null before. */
+    fun check(): Check? {
+        val used = (0 until sectors).filter { sums[it].n >= PER_SECTOR_LEAST }
+        if (used.size < CHECK_LEAST) return null
+        val all = fit(used.map { sums[it] }) ?: return null
+        fitted = all
+        var worst = -1; var without = Double.MAX_VALUE
+        for (i in used) {
+            val f = fit(used.filter { it != i }.map { sums[it] }) ?: continue
+            val a = agreeDeg(f)
+            if (a < without) { without = a; worst = i }
+        }
+        if (worst < 0) return null
+        return Check(agreeDeg(all), used.size, worst, without)
+    }
+
+    /** The answer, from the directions with readings enough; null with fewer than `least` of them, or readings that aren't gravity's. */
+    fun solve(least: Int = sectors): Level? {
+        val used = sums.filter { it.n >= PER_SECTOR_LEAST }
+        if (used.size < least) return null
+        val f = fit(used) ?: return null
+        val down = -f.u.unit()
+        return Level(down, angleDeg(down, Vec3(0.0, -1.0, 0.0)), f.c, atan2(sqrt(f.off / used.size), f.u.norm) * 180 / PI, used.size, samples)
     }
 
     companion object {
-        const val PER_SECTOR_LEAST = 5      // readings facing a direction for it to count
+        const val PER_SECTOR_LEAST = 10     // readings facing a direction for it to count: a third of a second's frames
         const val PER_SECTOR_MOST = 400     // and past which more add nothing
         const val MAX_PITCH = 0.8           // of the view's direction, up or down: steeper than about 50 degrees isn't "as for a photo"
         const val MAX_TURNING = 0.9         // radians a second: a turn quicker than about 7 seconds isn't read
         const val MAX_JOLT = 1.0            // m/s2 from g
         const val RIDGE = 1e-4
+        const val CHECK_LEAST = 5           // directions read before check() says anything: with fewer, the fit bends to them
+        const val FREE = 5                  // what the fit is free to choose: u, and c but for its part along u
+        const val RECENT_S = 1.0
+        const val NOW_S = 0.4
+        /**
+         * Degrees of wobble (wobbleNow) a turn can be held to and still come out agreeing well enough. A guide for the
+         * screen, from what a third to half a second of readings a direction averages away: to tune from the logs.
+         */
+        const val WOBBLE_OK = 0.8
     }
 }
 

@@ -112,6 +112,62 @@ class FlowTest {
         assertTrue(kinds.count { it == "phase" } < 10 && lines.size < 80, "a line a change, not a line a frame: ${lines.size}")
     }
 
+    @Test fun anUnsteadyDirectionIsFacedAgain() {
+        val flow = CaptureFlow(CaptureSession(null, null, "f4", "test", "a phone", 0.0))
+        val down = Quat.axisAngle(Vec3(0.0, 0.0, 1.0), 1.0 * TestWorld.rad).rotate(Vec3(0.0, -1.0, 0.0))
+        // facing 60 to 90 degrees round, the phone is swung sideways the whole time: 0.3 m/s2, nearly 2 degrees' worth,
+        // which would leave the whole turn agreeing to only half a degree
+        fun at(deg: Int, swung: Boolean): Pair<CameraPose, Vec3> {
+            val yaw = deg * TestWorld.rad
+            val pose = TestWorld.look(Vec3.ZERO, Vec3(kotlin.math.sin(yaw), 0.1, kotlin.math.cos(yaw)))
+            val push = if (swung) Vec3(0.3, 0.0, 0.0) else Vec3.ZERO
+            return pose to (Axes.forceInImage(pose.rot.conj().rotate(-down * Sensors.G + push)) + Vec3(0.2, 0.0, 0.1))
+        }
+        var t = 0.0
+        var out = flow.frame(at(0, false).first, true, 0.0, 0.004, t, 90)
+        var clearedAt = -1
+        for (i in 0 until 240) {
+            val (pose, accel) = at(i, i in 60 until 90)
+            t += 0.05; out = flow.frame(pose, true, 0.3, 0.004, t, 90, accel)
+            val lvl = assertNotNull(out.ui.level)
+            if (clearedAt < 0 && lvl.faced[2] == 3) clearedAt = i
+        }
+        // found out early, well before the turn is done; and only that direction is to face again, the rest kept
+        assertTrue(clearedAt in 0 until 160, "cleared at $clearedAt degrees")
+        val lvl = assertNotNull(out.ui.level)
+        assertTrue(lvl.faced[2] == 3 && lvl.faced.count { it == 2 } == 7 && out.ui.done == 7, "${lvl.faced}")
+        assertTrue(lvl.agreeDeg!! < 0.1 && lvl.wobbleNow < 0.2 && "unsteadily" in out.ui.note, "$lvl ${out.ui.note}")
+        assertTrue(flow.log.text().contains("\"e\":\"level_redo\""))
+        // the rest of the way round, and back to face that direction again, steadily: done
+        for (i in 240 until 360) { val (pose, accel) = at(i, false); t += 0.05; out = flow.frame(pose, true, 0.3, 0.004, t, 90, accel) }
+        assertEquals(Phase.LEVEL, flow.phase)
+        for (i in 359 downTo 50) {
+            val (pose, accel) = at(i, false); t += 0.05; out = flow.frame(pose, true, 0.3, 0.004, t, 90, accel)
+            if (flow.phase != Phase.LEVEL) break
+        }
+        val level = assertNotNull(flow.session.level)
+        assertTrue(flow.phase == Phase.CENTRE && angleDeg(level.down, down) < 0.05, "$level")
+    }
+
+    @Test fun howSteadyTheTurnIs() {
+        val flow = CaptureFlow(CaptureSession(null, null, "f5", "test", "a phone", 0.0))
+        val down = Vec3(0.0, -1.0, 0.0)
+        var t = 0.0
+        fun frame(deg: Int, shake: Double, gyro: Double = 0.3): LevelUi {
+            val yaw = deg * TestWorld.rad
+            val pose = TestWorld.look(Vec3.ZERO, Vec3(kotlin.math.sin(yaw), 0.1, kotlin.math.cos(yaw)))
+            val wobble = Vec3(shake * kotlin.math.sin(t * 40), 0.0, shake * kotlin.math.cos(t * 31))
+            t += 0.033
+            return assertNotNull(flow.frame(pose, true, gyro, 0.004, t, 90, Axes.forceInImage(pose.rot.conj().rotate(-down * Sensors.G + wobble))).ui.level)
+        }
+        var lvl = frame(0, 0.0)
+        for (i in 0 until 30) lvl = frame(i, 0.0)
+        assertTrue(lvl.wobbleNow < 0.1 && lvl.wobbleNow < lvl.wobbleOk && !lvl.tooFast && lvl.facing == 0, "$lvl")
+        for (i in 30 until 60) lvl = frame(i, 0.5)       // shaken: half a metre a second squared, about 3 degrees
+        assertTrue(lvl.wobbleNow > lvl.wobbleOk && lvl.wobbleTurn > 0.5 && lvl.facing == 1, "$lvl")
+        assertTrue(frame(60, 0.0, gyro = 2.0).tooFast)
+    }
+
     @Test fun firstWhichWayIsDown() {
         val flow = CaptureFlow(CaptureSession(null, null, "f3", "test", "a phone", 0.0))
         // the tracking's world is a degree off level, and the accelerometer reads 0.2 m/s2 off sideways

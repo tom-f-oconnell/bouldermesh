@@ -27,7 +27,44 @@ data class CaptureUi(
     val canCard: Boolean = false,   // a photo with a bank card beside that hold can be asked for; card: the next photo is it
     val card: Boolean = false,
     val waiting: Boolean = false,   // Take was pressed: the photo is taken once the phone holds still
+    val level: LevelUi? = null,     // how the turn on the spot is going, while it's going
 )
+
+/**
+ * How the turn on the spot is going, for the screen to show beside its progress.
+ *
+ * @param faced each direction round the circle (LevelTurn.states()): 0 to face, 1 being read, 2 read, 3 to face again.
+ * @param facing which of them the phone faces now.
+ * @param wobbleNow how much the phone is moving now, as degrees of tilt it puts in the accelerometer; wobbleTurn the
+ *   same over the turn so far; wobbleOk what it should stay under.
+ * @param agreeDeg how well the directions read so far agree (null before there are enough to say); agreeOk the most
+ *   it may come to for the turn to be believed.
+ * @param tooFast the phone is turning too quickly for its readings to be used.
+ */
+data class LevelUi(val faced: List<Int>, val facing: Int, val wobbleNow: Double, val wobbleTurn: Double, val wobbleOk: Double,
+                   val agreeDeg: Double?, val agreeOk: Double, val tooFast: Boolean) {
+    /** How far to turn to face the nearest direction to be faced again: degrees, to the left if positive; null if none is. */
+    fun redoTurnDeg(): Int? {
+        val n = faced.size
+        if (facing < 0) return null
+        // the directions are numbered anticlockwise as seen from above: the way a turn to the left goes
+        val k = (0 until n).filter { faced[it] == 3 }.map { val d = ((it - facing) % n + n) % n; if (d <= n / 2) d else d - n }
+            .minByOrNull { kotlin.math.abs(it) } ?: return null
+        return k * 360 / n
+    }
+
+    fun steadyText(): String = if (tooFast) "Turning too fast to read: slower" else
+        "Steadiness ${tenths(wobbleNow)}° now, ${tenths(wobbleTurn)}° over the turn (keep under ${tenths(wobbleOk)}°)"
+
+    fun agreeText(): String = agreeDeg?.let { "The directions so far agree to ${hundredths(it)}° (needs under ${hundredths(agreeOk)}°)" }
+        ?: "How well the directions agree shows from ${LevelTurn.CHECK_LEAST} of them"
+
+    fun redoText(): String? = redoTurnDeg()?.let { if (it == 0) "Face this way again, steadily"
+        else "Turn ${kotlin.math.abs(it)}° to your ${if (it > 0) "left" else "right"}, to face a direction again" }
+
+    private fun tenths(x: Double) = round(x * 10) / 10
+    private fun hundredths(x: Double) = round(x * 100) / 100
+}
 
 /**
  * What to draw for a camera frame, and whether to take a photo now.
@@ -61,6 +98,10 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     var phase = Phase.LEVEL
         private set
     private var turn = LevelTurn()
+    private var levelChecked = -1           // how many directions were read when the turn was last checked, and when
+    private var levelCheckT = -1.0
+    private var agree: Double? = null
+    private var levelNote = false
     var marking = false
         private set
     /** What counts: 1 the whole rock (what a texture of the capture's own needs), 2 its climbs, 3 only the holds of the capture's set of beta. */
@@ -342,7 +383,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         }
         val base = ui.copy(phase = phase, kept = session.shotCount, scenery = session.sceneryCount, rejected = rejected, note = note, sensors = sensorNote, auto = session.auto, wide = wide, marking = marking,
             reach = when (reach) { 1 -> "whole rock"; 2 -> "its climbs"; else -> "only the holds of $setName" }, card = cardNext, target = "", canCard = false, askMore = 0,
-            pairs = session.taps.size, tracking = tracking)
+            pairs = session.taps.size, tracking = tracking, level = null)
         if (!tracking) {
             ui = base.copy(text = "Hold on: the phone is finding where it is. Move it slowly, looking at the rock.", turnX = 0.0, turnY = 0.0)
             return FlowOut(ui, null, false, 0f, null, emptyList(), false)
@@ -356,23 +397,42 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         }
         when (phase) {
             Phase.LEVEL -> {
-                if (accel != null) turn.add(pose, accel, sensorOrientation, gyroRadS)
-                if (turn.filled == turn.sectors) {
-                    val found = turn.solve()
-                    event("level", "found" to (found != null), "spread_deg" to found?.spreadDeg, "tilt_deg" to found?.tiltDeg, "offset_deg" to found?.offsetDeg,
-                        "samples" to found?.samples, "taken" to (found != null && found.spreadDeg <= LEVEL_SPREAD_MOST))
-                    if (found != null && found.spreadDeg <= LEVEL_SPREAD_MOST) {
-                        session.level = found
-                        note = "Down found: the ${found.sectors} directions agree to ${hundredths(found.spreadDeg)}°. The phone's tracking had it ${hundredths(found.tiltDeg)}° off, " +
-                            "and one reading of its accelerometer would have been ${hundredths(found.offsetDeg)}° off."
-                        phase = afterLevel
-                    } else {
-                        turn = LevelTurn()
-                        note = "That turn was too unsteady to tell which way is down: once more, more slowly."
+                if (accel != null) turn.add(pose, accel, sensorOrientation, gyroRadS, t)
+                // checked as each direction is read, and now and then as more comes in: a direction that spoils the
+                // rest is cleared to be faced again as soon as it shows, and the rest kept
+                if (turn.filled != levelChecked || t - levelCheckT >= LEVEL_CHECK_S) {
+                    levelChecked = turn.filled; levelCheckT = t
+                    val c = turn.check()
+                    agree = c?.agreeDeg
+                    if (levelNote && 3 !in turn.states()) { note = ""; levelNote = false }      // what was cleared has been faced again
+                    if (c != null && c.agreeDeg > LEVEL_SPREAD_MOST && (c.withoutDeg <= LEVEL_SPREAD_MOST || c.sectors >= LEVEL_CLEAR_FROM)) {
+                        event("level_redo", "sector" to c.worst, "of" to c.sectors, "agree_deg" to c.agreeDeg, "without_deg" to c.withoutDeg,
+                            "wobble_deg" to turn.sectorWobbles()[c.worst], "wobble_turn_deg" to turn.wobbleTurn)
+                        turn.clear(c.worst)
+                        levelNote = true
+                        levelChecked = turn.filled
+                        note = if (c.withoutDeg <= LEVEL_SPREAD_MOST) "One direction was read unsteadily: it is to be faced again, and the rest are kept."
+                            else "Too unsteady so far: the directions agree to ${hundredths(c.agreeDeg)}°, and need ${hundredths(LEVEL_SPREAD_MOST)}°. " +
+                                "The worst is cleared to face again: turn more slowly, elbows in, and pause facing each way."
+                    } else if (turn.filled == turn.sectors) {
+                        val found = turn.solve()
+                        event("level", "found" to (found != null), "spread_deg" to found?.spreadDeg, "tilt_deg" to found?.tiltDeg, "offset_deg" to found?.offsetDeg,
+                            "samples" to found?.samples, "wobble_turn_deg" to turn.wobbleTurn, "taken" to (found != null && found.spreadDeg <= LEVEL_SPREAD_MOST))
+                        if (found != null && found.spreadDeg <= LEVEL_SPREAD_MOST) {
+                            session.level = found
+                            note = "Down found: the ${found.sectors} directions agree to ${hundredths(found.spreadDeg)}°. The phone's tracking had it ${hundredths(found.tiltDeg)}° off, " +
+                                "and one reading of its accelerometer would have been ${hundredths(found.offsetDeg)}° off."
+                            phase = afterLevel
+                        } else if (found == null) {        // readings that aren't gravity's at all: nothing in them to keep
+                            turn = LevelTurn(); levelChecked = 0
+                            note = "The readings of that turn didn't add up: once more, more slowly."
+                        }
                     }
                 }
+                val lvl = if (phase == Phase.LEVEL) LevelUi(turn.states().toList(), turn.facing, turn.wobbleNow, turn.wobbleTurn, LevelTurn.WOBBLE_OK,
+                    agree, LEVEL_SPREAD_MOST, gyroRadS > LevelTurn.MAX_TURNING) else null
                 ui = base.copy(phase = phase, note = note, turnX = 0.0, turnY = 0.0, total = turn.sectors, done = if (phase == Phase.LEVEL) turn.filled else turn.sectors,
-                    text = "To find which way is down: hold the phone upright, as for a photo, and turn slowly all the way round on the spot")
+                    level = lvl, text = "To find which way is down: hold the phone upright, as for a photo, and turn slowly all the way round on the spot")
                 // and a frame for each step of the turn, for a panorama of what's far off
                 val grab = if (!grabbing && pano.wanted(pose, sceneryBlurPx(gyroRadS, exposureS, pose.lens.fx) <= STEADY_SCENERY_PX)) "pano" else null
                 if (grab != null) grabbing = true
@@ -481,6 +541,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         const val ORBIT_ROCK_M = 2.0        // how far a rock with no mesh is taken to reach from its middle, for the walk round it
         const val SPAN_S = 5.0              // how often how frames are coming is logged
         const val LEVEL_SPREAD_MOST = 0.4   // degrees the directions of a turn on the spot may disagree by, for it to be believed
+        const val LEVEL_CLEAR_FROM = 8      // directions read from which the worst is cleared even when clearing it alone won't do
+        const val LEVEL_CHECK_S = 0.5
 
         private fun hundredths(x: Double) = kotlin.math.round(x * 100) / 100
     }

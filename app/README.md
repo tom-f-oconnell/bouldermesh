@@ -48,8 +48,11 @@ phone*. The app's own *Sign in another device* (in *Settings*) gives a code for 
   accelerometer's zero is typically off by a degree or so, and it doesn't sit exactly square to the camera. Both are
   fixed to the phone, though, and gravity to the world: so over a turn on the spot the phone's errors point every way in
   turn and cancel, as a spirit level's does when it's turned end for end. Nothing level or plumb is needed. The screen
-  says afterwards how well the twelve directions agreed (a few tenths of a degree is good; it asks again if they
-  don't), how far the phone's own tracking had been off, and how far one reading would have been. Each photo then
+  says afterwards how well the twelve directions agreed (under 0.4° is needed), how far the phone's own tracking had
+  been off, and how far one reading would have been.
+  During the turn, a ring shows each direction (green once read), a bar how still the phone is now against what it
+  should stay under, and how well the directions read so far agree. From five directions on, one that spoils the rest
+  is cleared as soon as it shows (orange on the ring, with which way to turn to face it again); the rest are kept. Each photo then
   carries down as the turn found it, and its own accelerometer's beside it, and the screen says if the two drift apart.
   In simulation this finds down to under 0.1°; on a phone it hasn't been tried.
 - **A photo isn't kept** if the phone's own motion would have smeared it by more than 1.5 pixels (from its gyroscope,

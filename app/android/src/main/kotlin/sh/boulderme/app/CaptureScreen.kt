@@ -8,6 +8,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -36,12 +38,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import sh.boulderme.core.CaptureUi
+import sh.boulderme.core.LevelUi
 import sh.boulderme.core.Phase
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -49,6 +53,51 @@ import kotlin.math.hypot
 import kotlin.math.sin
 
 private val SHADE = Color(0xB0000000)
+
+/**
+ * How the turn on the spot is going: a ring of the directions round you, the way you face at the top (read ones green,
+ * ones to face again orange); how still the phone is, against what it should stay under; and how well the directions
+ * read so far agree.
+ */
+@Composable
+private fun LevelGauges(l: LevelUi) {
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Canvas(Modifier.size(64.dp)) {
+            val n = l.faced.size
+            val step = 360f / n
+            val w = size.width * 0.14f
+            val inset = w / 2
+            for (i in 0 until n) {
+                // anticlockwise as seen from above is a turn to the left: on the ring, to the left of the top
+                val mid = -90f - (i - l.facing.coerceAtLeast(0)) * step
+                val color = when (l.faced[i]) { 2 -> GOOD; 3 -> WARN; 1 -> Color.White.copy(alpha = 0.6f); else -> Color.White.copy(alpha = 0.2f) }
+                drawArc(color, mid - step / 2 + 2f, step - 4f, false, topLeft = Offset(inset, inset),
+                    size = androidx.compose.ui.geometry.Size(size.width - w, size.height - w), style = Stroke(w))
+            }
+            // you, facing the top
+            val c = Offset(size.width / 2, size.height / 2)
+            drawPath(Path().apply { moveTo(c.x, c.y - size.height * 0.22f); lineTo(c.x - size.width * 0.1f, c.y + size.height * 0.08f)
+                lineTo(c.x + size.width * 0.1f, c.y + size.height * 0.08f); close() }, Color.White)
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            // how still: the bar runs to three times what's acceptable, with a mark at it
+            val top = l.wobbleOk * 3
+            Canvas(Modifier.fillMaxWidth().height(8.dp)) {
+                drawRect(Color.White.copy(alpha = 0.2f))
+                val k = (l.wobbleNow / top).coerceIn(0.0, 1.0).toFloat()
+                val color = if (l.tooFast || l.wobbleNow > 2 * l.wobbleOk) BAD else if (l.wobbleNow > l.wobbleOk) WARN else GOOD
+                drawRect(color, size = androidx.compose.ui.geometry.Size(size.width * k, size.height))
+                val avg = (l.wobbleTurn / top).coerceIn(0.0, 1.0).toFloat() * size.width
+                drawLine(Color.White.copy(alpha = 0.7f), Offset(avg, 0f), Offset(avg, size.height), 2f)
+                val ok = size.width / 3
+                drawLine(Color.White, Offset(ok, -2f), Offset(ok, size.height + 2f), 3f)
+            }
+            Text(l.steadyText(), color = if (l.tooFast) WARN else Color.White, style = MaterialTheme.typography.bodySmall)
+            Text(l.agreeText(), color = l.agreeDeg?.let { if (it <= l.agreeOk) GOOD else WARN } ?: Color.White, style = MaterialTheme.typography.bodySmall)
+            l.redoText()?.let { Text(it, color = WARN, style = MaterialTheme.typography.bodySmall) }
+        }
+    }
+}
 
 /** The camera with the mesh and what's left to photograph drawn over it, the hint, and the few buttons a capture has. */
 @OptIn(ExperimentalLayoutApi::class)
@@ -109,6 +158,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                 if (ui.phase == Phase.LEVEL && failed == null && ui.tracking) {
                     LinearProgressIndicator(progress = { ui.done.toFloat() / ui.total.coerceAtLeast(1) }, modifier = Modifier.fillMaxWidth())
                     Text("${ui.done} of ${ui.total} directions faced", color = Color.White, style = MaterialTheme.typography.bodySmall)
+                    ui.level?.let { LevelGauges(it) }
                 }
                 if (ui.phase == Phase.CAPTURE && ui.total > 0) {
                     LinearProgressIndicator(progress = { ui.done.toFloat() / ui.total }, modifier = Modifier.fillMaxWidth())
