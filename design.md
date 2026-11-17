@@ -1192,6 +1192,13 @@ token "does not guarantee bypassing 403 errors or bot checks", so the server's `
 whether a token was used or failed to be made, and *How YouTube treated them* sets throttles and refusals with tokens
 beside those before.
 
+**Trials from the server (Nov 17, 2026).** Two days in, tokens were used on only 10 of ~630 videos: yt-dlp's default
+clients mostly don't ask for one, and every 403 came without. Comparing one way of running yt-dlp with another needs
+volunteers running both at once, as YouTube changes from day to day. Rather than separate scripts (one script updates
+itself; two would need two update paths), the server names a trial per volunteer with its work, and the script takes
+only the settings it knows (`TRIAL_KEYS`), each checked, so a server can't make it run anything else. Each task's
+report names its trial, which `youtube_log` keeps.
+
 **Which yt-dlp, and how often the phone hears.** Volunteers run yt-dlp's nightly builds by default (since Nov 14,
 2026): when YouTube changes something, a stable release lags the fix by days or weeks, and the nightlies carry it first.
 A nightly that breaks is rolled back from the admin page (`volunteers.yt_dlp`), each script reinstalling stable at its

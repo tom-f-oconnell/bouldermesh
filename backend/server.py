@@ -11339,6 +11339,15 @@ def admin_volunteer_limits(body: dict) -> dict:
     return {"result": f"{v['name']}: at most {' and '.join(own)}, within the site's" if own else f"{v['name']}: the site's limits"}
 
 
+def admin_volunteer_trial(body: dict) -> dict:
+    """Put a volunteer in a trial ({id, trial}: one of volunteers.TRIALS, or null for none), from its next ask for work."""
+    v = VOLUNTEERS.set_trial(str(body.get("id") or ""), body.get("trial"))
+    if not v:
+        raise ValueError("no such volunteer")
+    return {"result": f"{v['name']}: in the {v['trial']} trial from its next ask for work (script 14 on)" if v["trial"]
+            else f"{v['name']}: in no trial"}
+
+
 def admin_volunteer_revoke(body: dict) -> dict:
     VOLUNTEERS.revoke(str(body.get("id") or ""))
     return {"result": "revoked: its token no longer works, and what it was fetching goes to someone else"}
@@ -11751,6 +11760,7 @@ def main() -> None:
                                        "old-decide": admin_old_decide, "lost-decide": admin_lost_decide,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
+                                       "volunteer-trial": admin_volunteer_trial,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
                                        "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-rescind": admin_user_rescind, "user-change": admin_user_change,
                                        "user-signin": admin_user_signin, "user-delete": admin_user_delete, "submission": admin_submission, "machine-add": admin_machine_add, "machine-show": admin_machine_show,

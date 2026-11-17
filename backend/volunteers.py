@@ -83,6 +83,12 @@ DETAILS = {"title": 500, "uploader": 200, "channel": 200, "channel_id": 100, "ch
            "upload_date": 20, "description": 20000, "license": 200}     # yt-dlp's names, as youtube.details() reads them
 SCRIPT = Path(__file__).resolve().parents[1] / "volunteer" / "bouldermesh_volunteer.py"
 CLIENT_VERSION = 1          # the oldest script that speaks to this
+# Trials: how a volunteer's script runs yt-dlp, chosen for it on the admin page, to compare one way with another in
+# youtube_log (A/B tests). Each is a name and what it sets, from the few things scripts from version 14 let the server
+# choose (their own TRIAL_KEYS): player_client, yt-dlp's YouTube clients for videos and their details. Older scripts
+# carry on as they are.
+TRIALS = {"mweb": {"what": "YouTube's mobile web client, which asks for a PO token for every video's stream",
+                   "player_client": "mweb"}}
 
 
 def clean_details(info: dict, video_id: str) -> dict:
@@ -194,14 +200,18 @@ class Broker:
                 con.execute("UPDATE volunteers SET per_day=NULL WHERE per_day=100")
                 con.execute("PRAGMA user_version=1")
             registration.migrate(con, "volunteers")
-            if "pot" not in {r[1] for r in con.execute("PRAGMA table_info(youtube_log)")}:    # whether it used a PO token (script 13)
+            logged = {r[1] for r in con.execute("PRAGMA table_info(youtube_log)")}
+            if "pot" not in logged:     # whether it used a PO token (script 13)
                 con.execute("ALTER TABLE youtube_log ADD COLUMN pot TEXT")
+            if "trial" not in logged:   # the trial its script ran under (script 14), as it said
+                con.execute("ALTER TABLE youtube_log ADD COLUMN trial TEXT")
             have = {r[1] for r in con.execute("PRAGMA table_info(volunteers)")}
             # how YouTube treats it, as its script last said (health: ok, or one of TROUBLE), and why; the speed of its
             # last whole video, in KB/s; its yt-dlp; why it rests (rest_why: "refused" or "throttled"); the limits its
-            # script last asked for (its own, or what its volunteer gave it)
+            # script last asked for (its own, or what its volunteer gave it); the trial it's in (TRIALS), if any
             for name, kind in (("health", "TEXT"), ("health_detail", "TEXT"), ("health_at", "REAL"), ("kbps", "REAL"),
-                               ("yt_dlp", "TEXT"), ("rest_why", "TEXT"), ("asked_per_hour", "INTEGER"), ("asked_per_day", "INTEGER")):
+                               ("yt_dlp", "TEXT"), ("rest_why", "TEXT"), ("asked_per_hour", "INTEGER"), ("asked_per_day", "INTEGER"),
+                               ("trial", "TEXT")):
                 if name not in have:
                     con.execute(f"ALTER TABLE volunteers ADD COLUMN {name} {kind}")
             presence.migrate(con, "volunteers", GONE_AFTER_OLD)
@@ -235,6 +245,20 @@ class Broker:
         are. None for one unknown."""
         self.q("UPDATE volunteers SET per_hour=?, per_day=? WHERE id=?", _own(per_hour, PER_HOUR), _own(per_day, PER_DAY), vid)
         return self.get(vid)
+
+    def set_trial(self, vid: str, trial: str | None) -> dict | None:
+        """Put a volunteer in one of TRIALS, or none (None or ""), from its next ask for work. None for one unknown."""
+        trial = trial or None
+        if trial is not None and trial not in TRIALS:
+            raise ValueError(f"no such trial: {trial}")
+        self.q("UPDATE volunteers SET trial=? WHERE id=?", trial, vid)
+        return self.get(vid)
+
+    @staticmethod
+    def trial_for(v: dict) -> dict | None:
+        """What a volunteer's script is told of its trial: {"name", and what it sets}, or None."""
+        t = TRIALS.get(v.get("trial") or "")
+        return {"name": v["trial"], **{k: x for k, x in t.items() if k != "what"}} if t else None
 
     def register(self, token: str, name, ip: str, client: str = "") -> dict:
         """A volunteer's script registering the token it made: provisional until approved (registration.register()).
@@ -538,9 +562,10 @@ class Broker:
         self.q("UPDATE volunteers SET kbps=COALESCE(?, kbps), yt_dlp=COALESCE(?, yt_dlp) WHERE id=?", kbps, ytdlp, v["id"])
         failed = [l.strip() for l in str(report.get("error") or "").strip().splitlines() if l.strip()]
         pot = str(h.get("pot"))[:160] if h.get("pot") else None     # used, unused or failed: <why> (script 13 on)
-        self.q("INSERT INTO youtube_log(at, volunteer, kind, status, health, detail, yt_dlp, kbps, pot) VALUES(?,?,?,?,?,?,?,?,?)", now,
-               v["id"], kind, str(status or "")[:20], health, (why or (failed[-1] if failed and status != "ok" else ""))[:300] or None,
-               ytdlp or v.get("yt_dlp"), kbps, pot)
+        trial = str(h.get("trial"))[:40] if h.get("trial") else None    # the trial it ran under (script 14 on)
+        self.q("INSERT INTO youtube_log(at, volunteer, kind, status, health, detail, yt_dlp, kbps, pot, trial) VALUES(?,?,?,?,?,?,?,?,?,?)",
+               now, v["id"], kind, str(status or "")[:20], health, (why or (failed[-1] if failed and status != "ok" else ""))[:300] or None,
+               ytdlp or v.get("yt_dlp"), kbps, pot, trial)
         self.q("DELETE FROM youtube_log WHERE at<?", now - LOG_DAYS * 86400)
         if health is None:
             return None
@@ -660,8 +685,8 @@ class Broker:
         return sorted(board, key=lambda b: (-b["videos"], -b["searches"], -b["details"], b["created"] or 0))
 
     def youtube_log(self, days: float = 7, latest: int = 20) -> dict:
-        """What volunteers' scripts said of YouTube over the last days, summed up: by yt-dlp version, volunteer and
-        whether its script made PO tokens, and by day, the tasks that worked, were throttled, refused or degraded, or
+        """What volunteers' scripts said of YouTube over the last days, summed up: by yt-dlp version, volunteer,
+        whether its script made PO tokens and the trial it ran under, and by day, the tasks that worked, were throttled, refused or degraded, or
         failed otherwise (a private video), how many used a PO token and how many failed to make one, with the median
         speed of whole videos; and the latest troubles themselves. A nightly yt-dlp's version has four parts
         (2026.11.14.232655), a release's three."""
@@ -680,14 +705,15 @@ class Broker:
             return out
         by_version, by_day = {}, {}
         for r in rows:
-            by_version.setdefault((r["yt_dlp"] or "?", r["name"] or r["volunteer"], r["pot"] is not None), []).append(r)
+            by_version.setdefault((r["yt_dlp"] or "?", r["name"] or r["volunteer"], r["pot"] is not None, r["trial"] or ""), []).append(r)
             by_day.setdefault(time.strftime("%Y-%m-%d", time.localtime(r["at"])), []).append(r)
         return {"days": days,
-                "by_version": [{"yt_dlp": k[0], "nightly": k[0].count(".") >= 3, "volunteer": k[1], "pot": k[2], **sums(g)}
+                "by_version": [{"yt_dlp": k[0], "nightly": k[0].count(".") >= 3, "volunteer": k[1], "pot": k[2], "trial": k[3] or None,
+                                **sums(g)}
                                for k, g in sorted(by_version.items(), key=lambda kv: (kv[0][0], kv[0][1]), reverse=True)],
                 "by_day": [{"day": d, **sums(g)} for d, g in sorted(by_day.items(), reverse=True)],
                 "latest": [{"at": r["at"], "volunteer": r["name"], "kind": r["kind"], "health": r["health"], "detail": r["detail"],
-                            "yt_dlp": r["yt_dlp"], "pot": r["pot"]} for r in rows
+                            "yt_dlp": r["yt_dlp"], "pot": r["pot"], "trial": r["trial"]} for r in rows
                            if r["health"] in TROUBLE or (r["pot"] or "").startswith("failed")][-latest:][::-1]}
 
     def state(self) -> dict:
@@ -722,7 +748,8 @@ class Broker:
                          "created": v["created"], "last_hour": sum(g["at"] > now - 3600 for g in given), "last_day": len(given),
                          "pages_last_hour": sum(g["at"] > now - 3600 for g in pages), "pages_last_day": len(pages),
                          "health": v.get("health"), "health_detail": v.get("health_detail"), "health_at": v.get("health_at"),
-                         "kbps": v.get("kbps"), "yt_dlp": v.get("yt_dlp"), "rest_why": v.get("rest_why")})
+                         "kbps": v.get("kbps"), "yt_dlp": v.get("yt_dlp"), "rest_why": v.get("rest_why"),
+                         "trial": v.get("trial")})
         counts = {f"{r['state']}_{r['kind']}": r["n"] for r in self.q("SELECT state, kind, count(*) AS n FROM tasks GROUP BY state, kind")}
         wanted = {r["purpose"]: r["n"] for r in self.q("SELECT w.purpose, count(DISTINCT w.task) AS n FROM wants w JOIN tasks t "
                                                          "ON t.id=w.task WHERE t.state IN ('queued','assigned') GROUP BY w.purpose")}
@@ -730,7 +757,7 @@ class Broker:
                         "ORDER BY finished DESC LIMIT 8")
         return {"volunteers": vols, "counts": counts, "wanted": wanted, "recent": recent,
                 "connected": sum(v["status"] in ("fetching", "waiting for work") for v in vols), "trouble": self.trouble(),
-                "youtube": self.youtube_log()}
+                "youtube": self.youtube_log(), "trials": {k: t["what"] for k, t in TRIALS.items()}}
 
 
 class OffsetError(Exception):
@@ -1293,7 +1320,8 @@ def handler_for(broker: Broker, log: Callable[[str], None]):
                         return self.json(news)
                     return self.json({**broker.work(v, _client_ip(self), str(body.get("client") or ""),
                                                     body.get("per_hour"), body.get("per_day"), body.get("kinds")), **news,
-                                      "yt_dlp": {**RULES, **broker.rules()}.get("yt_dlp") or "stable"})   # which yt-dlp scripts run
+                                      "yt_dlp": {**RULES, **broker.rules()}.get("yt_dlp") or "stable",   # which yt-dlp scripts run
+                                      "trial": broker.trial_for(v)})
                 m = re.fullmatch(r"/volunteer/api/tasks/([0-9a-f]{12})/(part|done)", u.path)
                 if m and m[2] == "part":
                     one = lambda k: (qs.get(k) or [""])[0]     # noqa: E731

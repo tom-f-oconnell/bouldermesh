@@ -1154,6 +1154,11 @@ volunteers and for connecting the public site to whichever server harvests.
   video's stream, which it may refuse without one (HTTP 403). Where it can't be set up, the script fetches without and
   tries again daily; its line on the admin page says "PO tokens: bgutil 2.0.2" or "no PO tokens: <why>", and each
   task's report says whether a token was used, which *How YouTube treated them* counts (and lists any that failed).
+- **Trials (A/B tests):** the menu beside a volunteer's YouTube health puts it in one of `TRIALS` (backend/volunteers.py),
+  which its script (version 14 on) runs from its next ask for work; *How YouTube treated them* then keeps its tasks in
+  rows of their own, tagged with the trial. A trial may set only what the script allows (its `TRIAL_KEYS`, checked
+  there): today `player_client`, yt-dlp's YouTube clients for videos and their details (`mweb`: the mobile web client,
+  which asks for a PO token for every stream). A new kind of setting needs a new script version.
 - **An area's climbs wait for them:** a climb whose harvest asked volunteers for a search or videos has what they
   fetched added once it's come, and is meshed once, rather than meshed without them first; after 24 h
   (`VOLUNTEER_WAIT_HOURS`) it's meshed with what's come. Adding keeps the photos it had (asking for them back from the

@@ -62,7 +62,9 @@ from pathlib import Path
 # 12: --cookies FILE and --cookies-from-browser, after a warning, and saying so to the server
 # 13: PO tokens from bgutil-ytdlp-pot-provider (its plugin and its script, run with Deno), and tells the server whether
 #     each video used one; yt-dlp's and Deno's caches in its own folder
-VERSION = 13
+# 14: trials: the server may choose a few of yt-dlp's settings (TRIAL_KEYS), to compare one way with another, and it
+#     says which trial each task ran under
+VERSION = 14
 SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
 AGENT = "bouldermesh-volunteer"
 # PO tokens ("proof of origin"), which YouTube asks of some requests for a video's stream: bgutil-ytdlp-pot-provider
@@ -72,6 +74,9 @@ POT_VERSION = "2.0.2"
 POT_SOURCE = "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/refs/tags/{v}.tar.gz"
 POT_USED = re.compile(r"Generating an? \w+ PO Token", re.I)     # its line for each token it makes
 POT_TROUBLE = re.compile(r"\[pot[:\]].*(fail|error|unable|timeout|timed out)", re.I)
+# what a trial the server chooses may set (each checked here), and how: YouTube's clients for videos and their details
+TRIAL_KEYS = {"player_client": re.compile(r"-?[a-z_]{2,20}(,-?[a-z_]{2,20}){0,5}")}
+TRIAL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,40}")
 TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
 FETCHED_PYTHON = "3.12"     # what uv fetches for them when this computer has none as new
 KINDS = ["video", "details", "search", "channel"]   # what this version does
@@ -520,10 +525,30 @@ class Volunteer:
         env = {**os.environ, "UV_PYTHON_INSTALL_DIR": str(self.home / "python"), "UV_CACHE_DIR": str(self.home / "uv-cache")}
         subprocess.run([uv, "venv", "-q", "--seed", "--python", FETCHED_PYTHON, str(venv)], check=True, env=env)
 
-    def run_ytdlp(self, args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    def take_trial(self, trial) -> None:
+        """The trial the server put this volunteer in (with its ask for work), kept if it's one this script can run:
+        a name, and only TRIAL_KEYS, each as it allows. Anything else: none, and said so once."""
+        ok = (isinstance(trial, dict) and TRIAL_NAME.fullmatch(str(trial.get("name") or "")) and
+              all(k in TRIAL_KEYS and isinstance(x, str) and TRIAL_KEYS[k].fullmatch(x) for k, x in trial.items() if k != "name"))
+        if trial and not ok and trial != getattr(self, "refused_trial", None):
+            log(f"the server's trial isn't one this script can run, so it runs as usual: {str(trial)[:200]}")
+            self.refused_trial = trial
+        trial = trial if ok else None
+        if trial != getattr(self, "trial", None):
+            log(f"in the server's {trial['name']} trial: {', '.join(f'{k} {x}' for k, x in trial.items() if k != 'name') or 'as usual'}"
+                if trial else "in no trial: as usual")
+        self.trial = trial
+
+    def trial_args(self) -> list[str]:
+        """yt-dlp's options for the trial it's in, for videos and their details."""
+        t = getattr(self, "trial", None) or {}
+        return ["--extractor-args", f"youtube:player_client={t['player_client']}"] if t.get("player_client") else []
+
+    def run_ytdlp(self, args: list[str], cwd: Path, trial: bool = False) -> subprocess.CompletedProcess:
         env = dict(os.environ, PATH=str(Path(self.ytdlp).parent) + os.pathsep + os.environ.get("PATH", "")) \
             if self.args.yt_dlp else self.tool_env()      # Deno, beside it
-        return subprocess.run([self.ytdlp, "--sleep-requests", "0.75", *cookie_args(self.args), *self.pot_args(), *args], cwd=cwd,
+        return subprocess.run([self.ytdlp, "--sleep-requests", "0.75", *cookie_args(self.args), *self.pot_args(),
+                               *(self.trial_args() if trial else []), *args], cwd=cwd,
                               env=env, capture_output=True, text=True, timeout=3600)     # warnings kept: signs()
 
     # -- pacing -------------------------------------------------------------------------------------------------------
@@ -612,9 +637,10 @@ class Volunteer:
         return round(kbps), slow
 
     def health(self, found: list[dict], kbps: float | None = None, pot: str | None = None) -> dict:
-        """What's sent with each task's result: how YouTube treated this computer (signs()), its speed, its yt-dlp, and
-        whether a PO token was used (pot_said())."""
-        return {"signs": found, "kbps": kbps, "yt_dlp": getattr(self, "ytdlp_version", None), "pot": pot}
+        """What's sent with each task's result: how YouTube treated this computer (signs()), its speed, its yt-dlp,
+        whether a PO token was used (pot_said()), and the trial it ran under."""
+        return {"signs": found, "kbps": kbps, "yt_dlp": getattr(self, "ytdlp_version", None), "pot": pot,
+                "trial": (getattr(self, "trial", None) or {}).get("name")}
 
     # -- one task -----------------------------------------------------------------------------------------------------
     def do(self, task: dict) -> None:
@@ -643,10 +669,10 @@ class Volunteer:
             self.fetched_now("video")
             began = time.time()
             if kind == "details":
-                r = self.run_ytdlp(["-J", "--skip-download", "--no-playlist", url], work)
+                r = self.run_ytdlp(["-J", "--skip-download", "--no-playlist", url], work, trial=True)
             else:
                 r = self.run_ytdlp(["--no-progress", "--no-playlist", "-f", task["format"], "--max-filesize", task["max_filesize"],
-                                    "--write-info-json", "-o", "video.%(ext)s", url], work)    # not -q: its PO token lines
+                                    "--write-info-json", "-o", "video.%(ext)s", url], work, trial=True)    # not -q: its PO token lines
             failed = bool(r.returncode or (kind == "video" and not self.video_file(work)))
             err, found, pot = (r.stderr or "").strip(), signs(r.stderr, failed), self.pot_said(r)
             if failed:
@@ -807,6 +833,7 @@ class Volunteer:
                 self.save()
                 self.tools()
                 version = self.ytdlp_version = self.run_ytdlp(["--version"], self.home).stdout.strip()
+            self.take_trial(r.get("trial"))
             if r.get("newer") and r["newer"] != getattr(self, "newer", None):
                 log(f"the server has a newer version of this script ({r['newer']}): curl -O {self.server.url}{SCRIPT_PATH}")
                 self.newer = r["newer"]

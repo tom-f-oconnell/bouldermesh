@@ -391,6 +391,29 @@ def script_and_broker() -> None:
         assert len(state["paged"]) == 2 and len(state["fetched"]) == 2, state
         assert [r["kind"] for r in b.q("SELECT kind FROM given ORDER BY at")][-4:] == ["video", "details", "search", "channel"]
 
+        # a trial (version 14): the server's choice of yt-dlp's clients, for videos (not searches), said with each result
+        vid_id = b.q("SELECT id FROM volunteers", one=True)["id"]
+        b.set_trial(vid_id, "mweb")
+        b.want("search", "Relic V10 Joshua Tree", "harvest", "p5")
+        out = volunteer()
+        assert "in the server's mweb trial: player_client mweb" in out, out
+        assert "player_client" not in (TMP / "fake.log").read_text().splitlines()[-1], "not for a search"
+        b.want("video", "trialvvvvvv", "harvest", "p5")
+        out = volunteer()
+        assert "sent" in out and "--extractor-args youtube:player_client=mweb" in (TMP / "fake.log").read_text().splitlines()[-1], out
+        assert b.q("SELECT trial FROM youtube_log ORDER BY at DESC LIMIT 1", one=True)["trial"] == "mweb"
+        assert any(r["trial"] == "mweb" for r in b.youtube_log()["by_version"]) and b.state()["trials"]["mweb"]
+        b.set_trial(vid_id, None)
+        assert b.q("SELECT trial FROM volunteers", one=True)["trial"] is None
+        try:
+            b.set_trial(vid_id, "no-such")
+            raise AssertionError("an unknown trial")
+        except ValueError:
+            pass
+        b.q("DELETE FROM tasks WHERE id IN (SELECT task FROM wants WHERE ref='p5')")     # out of the counts below
+        state = json.loads((TMP / "home" / "state.json").read_text())
+        (TMP / "home" / "state.json").write_text(json.dumps({**state, "fetched": [], "paged": []}))
+
         b.want("video", "refused0000", "harvest", "p2")
         assert "YouTube refused: resting 1 h" in volunteer()
         assert b.q("SELECT refused_until FROM volunteers", one=True)["refused_until"] > time.time() + 3500
@@ -1191,6 +1214,12 @@ def youtube_health():
     assert (with_pot["tasks"], with_pot["pot_used"], with_pot["pot_failed"]) == (2, 1, 1), with_pot
     assert any(r["volunteer"] == "Ann" and not r["pot"] for r in log["by_version"]), "those before, apart"
     assert log["latest"][0]["pot"].startswith("failed") and log["latest"][0]["health"] == "ok", log["latest"][0]
+    # a trial the script can't run (a key or value it doesn't allow): none, and said so
+    for bad in ({"name": "x", "player_client": "mweb --exec rm"}, {"name": "x", "format": "b"}, {"name": "x y", "player_client": "mweb"}, "mweb"):
+        v.take_trial(bad)
+        assert v.trial is None and v.trial_args() == [], bad
+    v.take_trial({"name": "both", "player_client": "default,mweb"})
+    assert v.trial_args() == ["--extractor-args", "youtube:player_client=default,mweb"] and v.health([])["trial"] == "both"
     print("YouTube's signs, unit OK")
 
 

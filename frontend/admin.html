@@ -662,6 +662,10 @@ function render(s){
     return `<span class="${x.health === 'ok' ? 'ok' : x.health === 'refused' ? 'bad' : 'warn'}" title="${esc(tip)}">${esc(x.health)}${
       x.health === 'ok' && x.health_detail ? ' (warned)' : ''}</span>`;
   };
+  // the trial each is in (A/B tests, volunteers.TRIALS), chosen here: its script runs it from its next ask for work (version 14 on)
+  const trials = vs.trials || {};
+  const trialPick = x => Object.keys(trials).length || x.trial ? ` <select data-vtrial="${esc(x.id)}" title="Trial: how its script runs yt-dlp, to compare in the table below (script 14 on)">${
+    ['', ...Object.keys(trials)].map(k => `<option value="${esc(k)}"${(x.trial || '') === k ? ' selected' : ''} title="${esc(trials[k] || 'As usual')}">${k ? esc(k) : 'no trial'}</option>`).join('')}</select>` : '';
   const tr = vs.trouble;
   $('#vol-trouble').innerHTML = tr ? `<div class="note warn">${tr.degraded} of the ${tr.of} volunteers heard from in the last few hours say YouTube is
     degrading them, as: ${esc(tr.example || '')}. That's likely YouTube changing something, which a newer yt-dlp usually fixes (volunteers
@@ -671,7 +675,7 @@ function render(s){
     volDrawnFor = limitsEditing;
     $('#vol-list').innerHTML = shownVol.length ? `<table><tr><th>Volunteer</th><th>Now</th><th>YouTube</th><th>Last seen</th><th>Address</th><th title="Videos (with videos' details), and searches (with channels' pages)">Last hour / day</th><th>Fetched</th><th></th></tr>${
       shownVol.map(x => `<tr><td>${esc(x.name)}${x.provisional ? '<span class="tag">waiting for approval</span>' : ''}${x.registered ? `<div class="note">registered itself ${when(x.created)}</div>` : ''}</td><td class="${x.status === 'resting' || x.status === 'awaiting approval' ? 'warn' : gone(x.status) ? 'bad' : x.status === 'fetching' ? 'ok' : ''}">${esc(x.status)}${
-        x.refused_until ? `${x.rest_why === 'throttled' ? ' (throttled)' : ''} until ${when(x.refused_until)}` : ''}${x.fetching ? `: ${esc(x.fetching.kind)} ${esc(x.fetching.video_id)}` : ''}</td><td>${yt(x)}</td><td>${when(x.last_seen)}</td><td>${esc(x.address || '')}</td>
+        x.refused_until ? `${x.rest_why === 'throttled' ? ' (throttled)' : ''} until ${when(x.refused_until)}` : ''}${x.fetching ? `: ${esc(x.fetching.kind)} ${esc(x.fetching.video_id)}` : ''}</td><td>${yt(x)}${gone(x.status) ? (x.trial ? ` <span class="tag">${esc(x.trial)}</span>` : '') : trialPick(x)}</td><td>${when(x.last_seen)}</td><td>${esc(x.address || '')}</td>
         <td>${x.id === limitsEditing ? `<span class="inline"><input type="number" min="1" max="15" id="vl-hour" placeholder="site's" value="${x.own_per_hour ?? ''}" style="width:64px"> an hour,
           <input type="number" min="1" max="200" id="vl-day" placeholder="site's" value="${x.own_per_day ?? ''}" style="width:72px"> a day
           <button data-vlsave="${esc(x.id)}">Save</button><button class="sec" data-vlsite="${esc(x.id)}" title="No limits of its own: the site's, as they change">The site's</button><button class="sec" data-vlcancel="1">Cancel</button></span>`
@@ -688,7 +692,7 @@ function render(s){
     const cells = r => `<td>${r.tasks}</td><td>${r.ok}</td><td class="${r.throttled ? 'warn' : ''}">${r.throttled}</td><td class="${r.refused ? 'bad' : ''}">${r.refused}</td><td class="${r.degraded ? 'warn' : ''}">${r.degraded}</td><td>${r.failed}</td><td>${r.kbps_median ?? '–'}</td><td>${r.pot_used}${r.pot_failed ? ` <span class="warn">(${r.pot_failed} failed)</span>` : ''}</td>`;
     const head = first => `<tr><th>${first}</th><th>Tasks</th><th>Worked</th><th>Throttled</th><th>Refused</th><th>Degraded</th><th title="Failed otherwise: a private or removed video">Failed</th><th title="Median speed of whole videos">KB/s</th><th title="Tasks that used a PO token (bgutil, volunteer script 13 on), and those whose token couldn't be made">PO tokens</th></tr>`;
     $('#vol-youtube').innerHTML = `<details${volYoutubeOpen ? ' open' : ''} id="vol-yt"><summary class="note">How YouTube treated them, the last ${ylog.days} days</summary>
-      <table>${head('yt-dlp, volunteer')}${ylog.by_version.map(r => `<tr><td>${esc(r.yt_dlp)}${r.nightly ? ' <span class="tag">nightly</span>' : ''}${r.pot ? ' <span class="tag">PO tokens</span>' : ''}, ${esc(r.volunteer)}</td>${cells(r)}</tr>`).join('')}</table>
+      <table>${head('yt-dlp, volunteer')}${ylog.by_version.map(r => `<tr><td>${esc(r.yt_dlp)}${r.nightly ? ' <span class="tag">nightly</span>' : ''}${r.pot ? ' <span class="tag">PO tokens</span>' : ''}${r.trial ? ` <span class="tag" title="Trial">${esc(r.trial)}</span>` : ''}, ${esc(r.volunteer)}</td>${cells(r)}</tr>`).join('')}</table>
       <table>${head('Day')}${ylog.by_day.map(r => `<tr><td>${esc(r.day)}</td>${cells(r)}</tr>`).join('')}</table>${
       ylog.latest.length ? `<div class="note">The latest troubles:</div><table>${ylog.latest.map(r => `<tr><td>${when(r.at)}</td><td>${esc(r.volunteer || '')}</td><td class="${r.health === 'refused' ? 'bad' : 'warn'}">${esc(r.health || 'PO token')}</td><td>${esc(r.kind || '')}</td><td>${esc((r.pot || '').startsWith('failed') ? r.pot : r.detail || '')}</td><td class="note">${esc(r.yt_dlp || '')}</td></tr>`).join('')}</table>` : ''}</details>`;
     $('#vol-yt').addEventListener('toggle', ev => { volYoutubeOpen = ev.target.open; });
@@ -953,6 +957,11 @@ $('#vol-add').onclick = async () => {
 // 100 a day until it updates itself
 const scriptTag = x => x.script_chose ? ` <span class="tag" title="Its volunteer started the script with lower limits (--per-hour, --per-day): ${x.script_per_hour} an hour and ${x.script_per_day} a day">their choice</span>`
   : x.script_per_day != null && x.script_per_day < 200 ? ` <span class="tag" title="A script from before version 10, which keeps to ${x.script_per_day} a day; it updates itself when it next asks for work">old script</span>` : '';
+$('#vol-list').addEventListener('change', async ev => {
+  const id = ev.target.dataset.vtrial;
+  if (!id) return;
+  try { msg((await call('/api/admin/actions/volunteer-trial', { id, trial: ev.target.value || null })).result); refresh(); } catch (e) { msg(e.message, 8000); }
+});
 let limitsEditing = null, volDrawnFor = null;     // the volunteer whose limits are being edited: the table isn't redrawn meanwhile
 $('#vol-list').addEventListener('click', async ev => {
   const d = ev.target.dataset;
