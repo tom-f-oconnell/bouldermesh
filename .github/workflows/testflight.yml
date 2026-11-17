@@ -1,12 +1,14 @@
 # The iPhone app, signed for the App Store and uploaded to TestFlight, from which a tester's iPhone installs it (no Mac,
-# no cable). Every push to main that changes app/, or by hand (gh workflow run testflight.yml). Each upload's build
-# number is this workflow's run number. Its seven secrets come from app/ci/ios-signing.sh (app/README.md, "TestFlight"):
+# no cable). Every push to main that changes the iPhone app's own code or its build (not the Android app's, the docs,
+# CI's scripts or this file: so that a build number only rises with the app), or by hand (gh workflow run
+# testflight.yml). Each upload's build number is this workflow's run number. Its seven secrets come from app/ci/ios-signing.sh (app/README.md, "TestFlight"):
 # without them it says so and does nothing.
 name: TestFlight
 on:
   push:
     branches: [main]
-    paths: ["app/**", ".github/workflows/testflight.yml"]
+    paths: ["app/shared/src/commonMain/**", "app/ios/src/**", "app/ios/xcode/**", "app/ios/build.gradle.kts", "app/shared/build.gradle.kts",
+            "app/build.gradle.kts", "app/settings.gradle.kts", "app/gradle.properties", "app/gradle/**"]
   workflow_dispatch:
 concurrency: { group: testflight, cancel-in-progress: false }
 defaults:

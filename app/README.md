@@ -72,7 +72,8 @@ Android, anywhere with a JDK (17 or later) and the Android SDK (`ANDROID_HOME`, 
 
 or `./apk.sh` (`--install` to put it on the phone `adb` sees), which keeps a copy named by its commit in `dist/`. Every
 push that changes `app/` also builds one on GitHub, kept 30 days as the run's `android-debug-<commit>` artifact, and
-on main as the release [android-latest](https://github.com/tom-f-oconnell/bouldermesh/releases/tag/android-latest):
+on main, when the Android app's own code or build changed since the last (not for docs, tests, CI's scripts or the
+iPhone app alone, so phones aren't offered updates that change nothing), as the release [android-latest](https://github.com/tom-f-oconnell/bouldermesh/releases/tag/android-latest):
 open that on the phone, tap the `.apk` and allow installing it, with no USB and no sign-in. Its `bouldermesh.apk` is the same file
 under a name that stays, a direct download: https://github.com/tom-f-oconnell/bouldermesh/releases/download/android-latest/bouldermesh.apk
 (the volunteer page's *Data collection* links to it, with how testers install, sign in and use the apps).
@@ -99,7 +100,8 @@ Without a Mac, or for someone else's iPhone: TestFlight, below. The icon is the 
 
 `.github/workflows/testflight.yml` builds the iPhone app on GitHub's Macs, signs it for the App Store and uploads it to
 TestFlight, from which any tester's iPhone installs it: no Mac, no cable, no registering the phone. It runs on every
-push to main that changes `app/` (or `gh workflow run testflight.yml`), each upload numbered by the run. Until its
+push to main that changes the iPhone app's own code or build (`app/shared/src/commonMain`, `app/ios`, the Gradle files;
+not docs, tests, CI's scripts or the Android app), or `gh workflow run testflight.yml`, each upload numbered by the run. Until its
 secrets are set it only says so. Setting them up, once, with an Apple developer account:
 
 1. [App Store Connect](https://appstoreconnect.apple.com) → *Users and Access* → *Integrations* → *App Store Connect

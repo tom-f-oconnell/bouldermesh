@@ -104,7 +104,8 @@ class MainActivity : ComponentActivity() {
      * on the intent that starts it set the server (`--es server <address>`) and open a screen straight away (`--es
      * screen browse|settings|calibrate|capture|viewer|upload|photo`, with `--ez get true` to download the first mesh listed,
      * `--es mesh <id>` for the mesh to capture: the first downloaded if not given, `none` for a rock with no mesh; the
-     * viewer shows the first downloaded; upload and photo show a capture on the phone, `--es capture <id>` or the newest).
+     * viewer shows the first downloaded; upload and photo show a capture on the phone, `--es capture <id>` or the newest;
+     * `--es sample <url of a zip>` puts a capture on the phone first).
      */
     private fun tryOut() {
         tryingOut = intent.hasExtra("server") || intent.hasExtra("screen")
@@ -112,6 +113,22 @@ class MainActivity : ComponentActivity() {
         // CI's runs skip the terms (but for the terms' own screen); anyone else's start of a debug build, as testers install
         // from android-latest, is asked to accept them as a release build's would be
         if (tryingOut || intent.hasExtra("terms")) store.terms = if (intent.getStringExtra("terms") == "show") 0 else TERMS_VERSION
+        // a capture to put on the phone first, as a zip of its folder (app/ci/sample_capture.py): the shell can't write
+        // into the app's files on Android 11, so it's fetched from the machine running the emulator
+        intent.getStringExtra("sample")?.let { url ->
+            Thread {
+                runCatching {
+                    java.util.zip.ZipInputStream(java.net.URL(url).openStream()).use { zip ->
+                        while (true) {
+                            val e = zip.nextEntry ?: break
+                            val to = java.io.File(store.captures, e.name).canonicalFile
+                            if (!to.path.startsWith(store.captures.canonicalPath + "/") || e.isDirectory) continue
+                            to.parentFile?.mkdirs(); to.outputStream().use { zip.copyTo(it) }
+                        }
+                    }
+                }.onFailure { android.util.Log.e("BoulderMesh", "no sample capture from $url", it) }
+            }.apply { start(); join() }
+        }
         screen = when (intent.getStringExtra("screen")) {
             "browse" -> Screen.Browse(intent.getBooleanExtra("get", false))
             "settings" -> Screen.Settings

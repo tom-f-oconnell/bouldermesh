@@ -68,8 +68,21 @@ jobs:
       - name: Keep the APK
         uses: actions/upload-artifact@v4
         with: { name: "android-debug-${{ github.sha }}", path: app/android/build/outputs/apk/debug/android-debug.apk, retention-days: 30 }
-      - name: The APK as the release "android-latest", which a phone downloads with no sign-in (main only)
+      # a new release only when the Android app's own code or build changed since the last one: phones are offered each
+      # release as an update, so a push of docs, tests, CI's scripts or the iPhone app's code alone doesn't make one
+      - name: Whether the Android app changed since the release "android-latest"
+        id: changed
         if: github.ref == 'refs/heads/main'
+        run: |
+          paths="app/shared/src/commonMain app/android/src app/android/build.gradle.kts app/shared/build.gradle.kts app/build.gradle.kts app/settings.gradle.kts app/gradle.properties app/gradle"
+          if git fetch -q --depth=1 origin tag android-latest 2>/dev/null && git diff --quiet android-latest HEAD -- $paths; then
+            echo "::notice::The Android app hasn't changed since the release android-latest ($(git rev-parse --short android-latest)): no new release"
+            echo "release=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=yes" >> "$GITHUB_OUTPUT"
+          fi
+      - name: The APK as the release "android-latest", which a phone downloads with no sign-in (main only)
+        if: github.ref == 'refs/heads/main' && steps.changed.outputs.release == 'yes'
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           short=${GITHUB_SHA::7}

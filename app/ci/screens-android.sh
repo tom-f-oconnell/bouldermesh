@@ -30,14 +30,17 @@ fi
 WAIT=15 shot browse --es screen browse --ez get true
 [ "$ONLY" = capture ] || shot home-with-mesh
 if [ "$ONLY" != capture ] && [ -n "${SAMPLE:-}" ]; then
-    files=/sdcard/Android/data/$ID/files/captures
-    adb shell mkdir -p "$files" && adb push "$SAMPLE" "$files/" > /dev/null || {
-        # where the shell may not write there itself: by way of somewhere it may, as the app
-        adb push "$SAMPLE" /data/local/tmp/ > /dev/null && adb shell run-as $ID cp -r "/data/local/tmp/$(basename "$SAMPLE")" "$files/"; }
-    shot home-with-upload
+    # the shell can't write into the app's files on Android 11: the app fetches the capture, zipped, from here
+    serve=$(mktemp -d); (cd "$(dirname "$SAMPLE")" && zip -qr "$serve/sample.zip" "$(basename "$SAMPLE")")
+    python3 -m http.server 47617 --bind 127.0.0.1 --directory "$serve" > /dev/null 2>&1 & web=$!
+    sleep 1
+    shot home-with-upload --es sample http://10.0.2.2:47617/sample.zip
+    kill $web
     shot upload --es screen upload
     shot photo --es screen photo
     WAIT=20 shot viewer --es screen viewer
+    # the web view may draw as black in a picture here: what it shows, as text, from the screen's accessibility tree
+    adb shell uiautomator dump /sdcard/viewer.xml > /dev/null && adb shell cat /sdcard/viewer.xml > "$OUT/$PREFIX-viewer.xml"
 fi
 WAIT=25 shot capture --es screen capture
 WAIT=12 shot capture-new --es screen capture --es mesh none
