@@ -99,7 +99,7 @@ from pathlib import Path
 # 20: tells the server what nvidia-smi says of its GPU (name, memory, driver, CUDA) as it starts; sends
 #     diagnostics when the server asks (--no-diagnostics: never)
 # 24: says what each job is (meshing, finding beta or size, filtering, scenery) and of which project or mesh, with its link
-VERSION = 24
+VERSION = 25
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter", "splat")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
@@ -399,6 +399,9 @@ class Gone(Exception):
 
 class NotHere(Exception):
     """This machine can't do a job now, through no fault of the job's: it goes back for another machine."""
+
+
+DOCKER_FAILED = 125     # docker run's own exit status when it couldn't start the container (its other codes are the job's)
 
 
 # -- setting this machine up: Docker, and NVIDIA's container toolkit for its GPU (--setup) -------------------------
@@ -1196,6 +1199,8 @@ class Worker:
             code, last = self.stream(api, cmd, f"remote: running on {socket.gethostname()}" + (" with its GPU" if self.gpu else ""))
             used = {"gpu": self.watch.job_end()} if self.watch else {}
             self.container = None
+            if code == DOCKER_FAILED:   # Docker couldn't start it (a full disk, the daemon restarting): this machine's
+                raise NotHere(f"Docker couldn't run it: {self.docker_said or last}")    # trouble, not the job's
             if code:
                 self.server.call(f"{api}/done", {"status": "failed", "error": last or f"the job exited with {code}", **used},
                                  patience=AWAY_MAX)
@@ -1283,6 +1288,7 @@ class Worker:
 
         threading.Thread(target=read, daemon=True).start()
         pending, last, sent, ended = [first], "", 0.0, False
+        self.docker_said = None
         away, wait = None, SEND_EVERY     # since when the server's been out of reach, and the wait before trying again
         try:
             while not ended:
@@ -1293,6 +1299,8 @@ class Worker:
                     else:
                         pending.append(line)
                         last = line if line and not line.startswith("@@") else last
+                        if line.startswith("docker: "):     # Docker's own complaint, before its "Run 'docker run --help'"
+                            self.docker_said = line[:400]
                         if "FALLBACK:" in line:     # a step fell back to the CPU (pipeline.py, _fell_back()): said here too
                             log(f"job: {line[line.index('FALLBACK:'):][:400]}")
                 except queue.Empty:

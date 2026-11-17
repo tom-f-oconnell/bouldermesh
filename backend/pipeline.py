@@ -1118,8 +1118,14 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     if not _finished(work, "import"):
         log("== OpenMVS: import scene")
         tracker.update("import")
-        _run([_mvs("InterfaceCOLMAP"), "-i", str(dense), "-o", "scene.mvs", "--image-folder", str(dense / "images"),
-              "-w", str(work)], work, log)
+        imp = [_mvs("InterfaceCOLMAP"), "-i", str(dense), "-o", "scene.mvs", "--image-folder", str(dense / "images"), "-w", str(work)]
+        try:
+            _run(imp, work, log)
+        except RuntimeError as e:
+            if not openmvs_ready_model(dense / "sparse", log):
+                raise
+            log(f"InterfaceCOLMAP failed ({e}): importing again from the model tidied for it")
+            _run(imp, work, log)
         _finish(work, "import")
 
     if not _finished(work, "dense"):
@@ -1150,7 +1156,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
              _phases(tracker, "mesh", (r"Points inserted \d+ \(([\d.]+)%", 0, 0.5), (r"Points weighted \d+ \(([\d.]+)%", 0.5, 0.9)))
         _finish(work, "mesh")
     mesh = work / "scene_dense_mesh.ply"
-    faces = ply_faces(mesh)
+    # OpenMVS 2.4 writes no file at all for a mesh it cleaned down to nothing (a few photos placed, a few points)
+    faces = ply_faces(mesh) if mesh.exists() else 0
     if faces is not None and faces < MIN_FACES:
         raise RuntimeError(f"the mesh has only {faces} face(s) (need >= {MIN_FACES}): too few points were found in the photos "
                            "to build a surface")
@@ -1189,6 +1196,54 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
 # Fallback: DEMO relief mesh from the first photo (so the app is testable
 # without COLMAP/OpenMVS). Clearly labelled as a demo in the job log.
 # --------------------------------------------------------------------------
+def openmvs_ready_model(sparse: Path, log: Log) -> bool:
+    """After OpenMVS's InterfaceCOLMAP failed on an undistorted model (dense/sparse): says what in it OpenMVS can't
+    take, and tidies it if anything. InterfaceCOLMAP stops reading cameras.bin at the first camera that isn't PINHOLE
+    or SIMPLE_PINHOLE, and then aborts on the first photo whose camera it didn't read (std::out_of_range, unordered_map::
+    at: three jobs on Nov 16, after the global mapper's untied cameras were taken out). The model goes to text (which
+    InterfaceCOLMAP also reads, the binary files kept aside in sparse/binary/), without the cameras it can't take, the
+    photos that use them and those photos' observations. Returns whether anything was changed, for it to be tried
+    again."""
+    txt = sparse.parent / "sparse_txt"
+    shutil.rmtree(txt, ignore_errors=True)
+    txt.mkdir()
+    try:
+        _run([COLMAP, "model_converter", "--input_path", str(sparse), "--output_path", str(txt), "--output_type", "TXT"], sparse.parent, log)
+    except RuntimeError as e:
+        log(f"the undistorted model couldn't be read ({e})")
+        return False
+    def rows(name):
+        return [l for l in (txt / name).read_text().splitlines() if l and not l.startswith("#")]
+    cams = {int(l.split()[0]): l.split()[1] for l in rows("cameras.txt")}
+    lines = rows("images.txt")
+    images = [(lines[i], lines[i + 1] if i + 1 < len(lines) else "") for i in range(0, len(lines), 2)]
+    good_cams = {c for c, model in cams.items() if model in ("PINHOLE", "SIMPLE_PINHOLE")}
+    bad = {int(h.split()[0]): h.split()[9] for h, _ in images if int(h.split()[8]) not in good_cams}
+    unused = set(cams) - {int(h.split()[8]) for h, _ in images}
+    log(f"the undistorted model: {len(cams)} camera(s) ({', '.join(sorted(set(cams.values())))}), {len(unused)} used by no photo; "
+        f"{len(images)} photo(s), {len(bad)} with a camera OpenMVS can't take" + (f": {', '.join(list(bad.values())[:5])}" if bad else ""))
+    if not bad and all(cams[c] in ("PINHOLE", "SIMPLE_PINHOLE") for c in cams):
+        return False
+    keep = [(h, o) for h, o in images if int(h.split()[0]) not in bad]
+    (txt / "cameras.txt").write_text("\n".join(l for l in rows("cameras.txt") if int(l.split()[0]) in good_cams) + "\n")
+    (txt / "images.txt").write_text("".join(f"{h}\n{o}\n" for h, o in keep))
+    pts = []
+    for l in rows("points3D.txt"):
+        f = l.split()
+        track = [(f[i], f[i + 1]) for i in range(8, len(f) - 1, 2) if int(f[i]) not in bad]
+        if len(track) >= 2:
+            pts.append(" ".join(f[:8] + [x for t in track for x in t]))
+    (txt / "points3D.txt").write_text("\n".join(pts) + "\n")
+    aside = sparse / "binary"
+    aside.mkdir(exist_ok=True)
+    for f in sparse.glob("*.bin"):
+        f.rename(aside / f.name)
+    for f in txt.glob("*.txt"):
+        shutil.copyfile(f, sparse / f.name)
+    log(f"tidied for OpenMVS: {len(good_cams)} camera(s), {len(keep)} photo(s), {len(pts)} point(s)")
+    return True
+
+
 def ply_faces(path: Path) -> int | None:
     """How many faces a PLY file says it has, from its header, or None if that can't be read."""
     try:

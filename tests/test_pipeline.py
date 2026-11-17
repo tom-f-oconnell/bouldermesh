@@ -1126,4 +1126,44 @@ with tempfile.TemporaryDirectory() as td:
         pipeline._mvs24 = real
         meshopts.set_site({})
 print("texture views OK")
+
+# --- a model OpenMVS can't import (a camera it can't read): said, tidied to what it can, and tried again ----------------
+with tempfile.TemporaryDirectory() as td:
+    sparse = pathlib.Path(td) / "dense" / "sparse"
+    sparse.mkdir(parents=True)
+    for n in ("cameras", "images", "points3D"):
+        (sparse / f"{n}.bin").write_bytes(b"x")
+    TXT = {"cameras.txt": "# c\n1 PINHOLE 100 80 90 90 50 40\n2 SIMPLE_RADIAL 100 80 90 50 40 0.01\n3 PINHOLE 100 80 90 90 50 40\n",
+           "images.txt": "# i\n1 1 0 0 0 0 0 0 1 a.jpg\n10 10 0\n2 1 0 0 0 0 0 0 2 b.jpg\n11 11 1\n3 1 0 0 0 0 0 0 1 c.jpg\n12 12 2\n",
+           "points3D.txt": "# p\n0 1 2 3 9 9 9 0.5 1 0 2 0\n1 1 2 3 9 9 9 0.5 1 1 2 1 3 0\n2 1 2 3 9 9 9 0.5 2 2 3 1\n"}
+    seen = []
+
+    def fake_run(cmd, cwd, log, watch=None):
+        seen.append(cmd)
+        out = pathlib.Path(cmd[cmd.index("--output_path") + 1])
+        for name, text in TXT.items():
+            (out / name).write_text(text)
+    real, pipeline._run = pipeline._run, fake_run
+    said = []
+    try:
+        assert pipeline.openmvs_ready_model(sparse, said.append) is True
+    finally:
+        pipeline._run = real
+    assert seen and seen[0][1] == "model_converter", seen
+    assert any("1 with a camera OpenMVS can't take: b.jpg" in l for l in said), said
+    assert sorted(p.name for p in (sparse / "binary").iterdir()) == ["cameras.bin", "images.bin", "points3D.bin"] and not list(sparse.glob("*.bin"))
+    cams = (sparse / "cameras.txt").read_text().split("\n")
+    assert [c.split()[0] for c in cams if c] == ["1", "3"], cams
+    imgs = [l for l in (sparse / "images.txt").read_text().splitlines() if l]
+    assert [l.split()[9] for l in imgs[::2]] == ["a.jpg", "c.jpg"], imgs
+    pts = [l.split() for l in (sparse / "points3D.txt").read_text().splitlines() if l]
+    assert [p[0] for p in pts] == ["1"] and pts[0][8:] == ["1", "1", "3", "0"], pts      # b's observations gone; points seen once dropped
+    # a model with nothing OpenMVS can't take: left as it is
+    TXT["cameras.txt"] = "1 PINHOLE 100 80 90 90 50 40\n2 PINHOLE 100 80 90 90 50 40\n3 PINHOLE 100 80 90 90 50 40\n"
+    pipeline._run = fake_run
+    try:
+        assert pipeline.openmvs_ready_model(sparse, said.append) is False
+    finally:
+        pipeline._run = real
+print("a model OpenMVS can't import, tidied OK")
 print("ALL PIPELINE TESTS PASSED")

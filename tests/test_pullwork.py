@@ -360,6 +360,18 @@ assert "value" in got, (got, r.stdout, r.stderr)
 shutil.rmtree(got["value"][1])
 assert "image rm ghcr.io/me/bouldermesh:older" in (fake / "calls").read_text(), "the image it pulled before is deleted"
 assert json.loads((TMP / "home" / "pulled.json").read_text()) == ["ghcr.io/me/bouldermesh:abc123"]
+# Docker failing to start the container (exit 125, as on hal-2 with its disk full, Nov 15): given back, with Docker's
+# own words, not failed
+got = in_thread(board.task, "beta", {"mesh/cameras.json": src / "cameras.json"}, {"why": "test"}, "beta: m4", print)
+time.sleep(0.5)
+r = worker(hal["token"], "--once", env={**ENV, "FAKE_JOB": "echo 'docker: Error response from daemon: no space left on device.'; "
+                                                         "echo \"Run 'docker run --help' for more information\"; exit 125"})
+assert "Docker couldn't run it: docker: Error response from daemon: no space left on device." in r.stdout, r.stdout + r.stderr
+assert [j["state"] for j in board.state()["jobs"]] == ["queued"], "Docker's own failure gives the job back"
+r = worker(hal["token"], "--once", env={**ENV, "FAKE_JOB": made})
+got["thread"].join(30)
+assert "value" in got, (got, r.stdout, r.stderr)
+shutil.rmtree(got["value"][1])
 print("room OK")
 
 # --- a machine that won't run the image asked for gives the job back, and stops -------------------------------------------
