@@ -4,7 +4,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import sh.boulderme.core.MeshRow
+import sh.boulderme.core.UploadStatus
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -43,6 +46,10 @@ class Api(private val store: Store) {
 
     /** The current meshes made from photos, which a capture can add to. */
     fun meshes(): List<MeshRow> = json.decodeFromString<List<MeshRow>>(read(open("/api/capture/meshes")).decodeToString())
+
+    /** How each of these uploads (project ids) stands on the server: whether it's meshed, and as what. */
+    fun status(projects: Collection<String>): Map<String, UploadStatus> =
+        json.decodeFromString(MapSerializer(String.serializer(), UploadStatus.serializer()), read(open("/api/capture/status?ids=" + projects.joinToString(","))).decodeToString())
 
     /** A mesh's plan and guide, as text and bytes, to keep. */
     fun plan(mesh: String): Pair<String, ByteArray> {

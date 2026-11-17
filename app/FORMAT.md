@@ -10,6 +10,11 @@ Each side's tests read files the other really wrote (`shared/src/jvmTest/resourc
     GET /api/capture/meshes               [{id, name, lat, lng, climbs: ["name grade"], holds, sets: [names]}]: current meshes a capture can add to
     GET /api/capture/plan/<mesh>          the plan below
     GET /api/capture/guide/<mesh>.bin     the guide below, at the plan's guide_url
+    GET /api/capture/status?ids=<project>,…     {project: {status, mesh, approved, left, failure, mesh_gone}}: how each of
+                                          the phone's uploads stands (UploadStatus in shared Contents.kt says it in words);
+                                          one that's gone, or another account's not yet approved, is {status: "gone"}.
+                                          A mesh is then shown in the site's own viewer, /m/<mesh>, in a web view given the
+                                          phone's token (as the page keeps it: localStorage bm_token)
 
 **The plan** (JSON). Lengths are the mesh's own units unless they say metres; +Y is up.
 

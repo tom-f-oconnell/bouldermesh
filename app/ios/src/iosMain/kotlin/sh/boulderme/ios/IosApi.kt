@@ -1,6 +1,8 @@
 package sh.boulderme.ios
 
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
@@ -20,6 +22,7 @@ import platform.Foundation.setValue
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
 import sh.boulderme.core.MeshRow
+import sh.boulderme.core.UploadStatus
 
 /**
  * The server, as the app talks to it. Nothing here blocks: each call answers later, on the main thread, with what it
@@ -136,4 +139,10 @@ class IosApi(private val store: IosStore) {
 
     fun sendRecord(project: String, record: String, done: (String?) -> Unit) = post("/api/projects/$project/capture", record) { obj, why -> done(if (obj != null) null else why) }
     fun reconstruct(project: String, done: (String?) -> Unit) = post("/api/projects/$project/reconstruct", "{}") { obj, why -> done(if (obj != null) null else why) }
+
+    /** How each of these uploads (project ids) stands on the server: whether it's meshed, and as what. */
+    fun status(projects: Collection<String>, done: (Map<String, UploadStatus>?, String?) -> Unit) = call("/api/capture/status?ids=" + projects.joinToString(",")) { bytes, why ->
+        val got = bytes?.let { runCatching { json.decodeFromString(MapSerializer(String.serializer(), UploadStatus.serializer()), it.decodeToString()) }.getOrNull() }
+        if (got != null) done(got, null) else done(null, why ?: "the answer couldn't be read")
+    }
 }

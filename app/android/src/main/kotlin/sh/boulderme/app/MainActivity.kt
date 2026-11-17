@@ -36,6 +36,18 @@ sealed interface Screen {
     /** mesh: the mesh being added to, or null for a rock with none. */
     data class Capture(val mesh: String?, val name: String, val set: String? = null) : Screen      // set: the set of beta it's for
     data class Done(val id: String) : Screen
+    /** A capture on this phone: what it holds, by what each part was for; and one of its photos (or scenery's frames). */
+    data class Upload(val id: String) : Screen
+    data class Photo(val id: String, val name: String, val scenery: Boolean, val group: String) : Screen
+    /** A mesh in the site's own viewer; back: where Back goes. */
+    data class Viewer(val mesh: String, val name: String, val back: Screen = Home) : Screen
+}
+
+/** Where Back goes from a screen. */
+fun backOf(s: Screen): Screen = when (s) {
+    is Screen.Photo -> Screen.Upload(s.id)
+    is Screen.Viewer -> s.back
+    else -> Screen.Home
 }
 
 class MainActivity : ComponentActivity() {
@@ -63,7 +75,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(Modifier.fillMaxSize()) {
                     val go: (Screen) -> Unit = { screen = it }
-                    BackHandler(enabled = screen != Screen.Home && screen !is Screen.Capture) { screen = Screen.Home }
+                    BackHandler(enabled = screen != Screen.Home && screen !is Screen.Capture) { screen = backOf(screen) }
                     var accepted by remember { mutableStateOf(store.terms >= TERMS_VERSION) }
                     if (!accepted) TermsScreen { store.terms = TERMS_VERSION; accepted = true; ensureArCore() }
                     else when (val s = screen) {
@@ -75,6 +87,9 @@ class MainActivity : ComponentActivity() {
                                 Screen.Settings -> SettingsScreen(this@MainActivity, go)
                                 Screen.Calibrate -> CalibrateScreen(this@MainActivity, go)
                                 is Screen.Done -> DoneScreen(this@MainActivity, s.id, go)
+                                is Screen.Upload -> UploadScreen(this@MainActivity, s.id, go)
+                                is Screen.Photo -> PhotoScreen(this@MainActivity, s, go)
+                                is Screen.Viewer -> ViewerScreen(this@MainActivity, s, go)
                                 is Screen.Capture -> {}
                             }
                         }
@@ -87,8 +102,9 @@ class MainActivity : ComponentActivity() {
     /**
      * In a debug build, for trying it in an emulator with nobody to press anything (app/ci/screens-android.sh): extras
      * on the intent that starts it set the server (`--es server <address>`) and open a screen straight away (`--es
-     * screen browse|settings|calibrate|capture`, with `--ez get true` to download the first mesh listed, and `--es
-     * mesh <id>` for the mesh to capture: the first downloaded if not given, `none` for a rock with no mesh).
+     * screen browse|settings|calibrate|capture|viewer|upload|photo`, with `--ez get true` to download the first mesh listed,
+     * `--es mesh <id>` for the mesh to capture: the first downloaded if not given, `none` for a rock with no mesh; the
+     * viewer shows the first downloaded; upload and photo show a capture on the phone, `--es capture <id>` or the newest).
      */
     private fun tryOut() {
         tryingOut = intent.hasExtra("server") || intent.hasExtra("screen")
@@ -105,6 +121,11 @@ class MainActivity : ComponentActivity() {
                 val mesh = asked?.takeIf { it != "none" } ?: store.downloaded().firstOrNull()?.mesh?.takeIf { asked == null }
                 Screen.Capture(mesh, mesh?.let { store.plan(it)?.name } ?: "A rock", intent.getStringExtra("set"))
             }
+            "viewer" -> store.downloaded().firstOrNull()?.let { Screen.Viewer(it.mesh, it.name) } ?: Screen.Home
+            "upload", "photo" -> (intent.getStringExtra("capture") ?: store.captureIds().firstOrNull())?.let { id ->
+                val first = store.contents(id).first.firstOrNull { it.photos.isNotEmpty() }
+                if (intent.getStringExtra("screen") == "photo" && first != null) Screen.Photo(id, first.photos.first(), first.scenery, first.title) else Screen.Upload(id)
+            } ?: Screen.Home
             else -> Screen.Home
         }
     }

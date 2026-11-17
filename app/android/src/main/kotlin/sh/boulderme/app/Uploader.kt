@@ -69,6 +69,7 @@ object Uploader {
                 for (crash in store.crashes.listFiles().orEmpty().sortedBy { it.name }) runCatching { api.sendLog(project, "crash", crash); crash.delete() }
                 say(id, "Asking for it to be meshed")
                 try { api.reconstruct(project) } catch (e: IOException) { if ("already running" !in (e.message ?: "")) throw e }      // asked before, and cut off
+                u = u!!.copy(meshAsked = true); store.saveUpload(id, u!!)
                 // then the scenery round the rock, last, as it's the most to send and only a backdrop
                 val frames = (File(dir, "scenery").listFiles() ?: emptyArray()).filter { it.name.endsWith(".jpg") }.sortedBy { it.name }
                 for ((i, f) in frames.withIndex()) {

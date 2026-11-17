@@ -38,5 +38,10 @@ object Files {
     fun write(path: String, text: String): Boolean = write(path, text.encodeToByteArray())
     fun list(path: String): List<String> = (manager.contentsOfDirectoryAtPath(path, error = null) ?: emptyList<Any?>()).mapNotNull { it as? String }.sorted()
     fun delete(path: String) { manager.removeItemAtPath(path, error = null) }
+    fun size(path: String): Long = when (val n = manager.attributesOfItemAtPath(path, error = null)?.get(platform.Foundation.NSFileSize)) {
+        is platform.Foundation.NSNumber -> n.longLongValue
+        is Number -> n.toLong()
+        else -> 0L
+    }
     fun modified(path: String): Double = (manager.attributesOfItemAtPath(path, error = null)?.get(NSFileModificationDate) as? NSDate)?.timeIntervalSince1970 ?: 0.0
 }

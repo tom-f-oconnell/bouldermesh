@@ -19,6 +19,7 @@ import numpy as np
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MESH = "ca" * 6
+PROJECT = "cafe" * 3    # the upload the mesh was made from: a capture the apps' tests put on the phone says it sent it
 
 
 def quat(R) -> list[float]:
@@ -67,7 +68,8 @@ def cameras() -> list[dict]:
 
 
 def make(data: pathlib.Path) -> str:
-    """A data folder with the wall as a mesh, sized, with a climb on it and two holds. Returns the mesh's id."""
+    """A data folder with the wall as a mesh, sized, with a climb on it and two holds, made from a project (PROJECT) a
+    phone's capture is said to have been sent to. Returns the mesh's id."""
     os.environ["DATA_DIR"] = str(data)
     sys.path.insert(0, str(ROOT / "backend"))
     import pipeline
@@ -85,6 +87,7 @@ def make(data: pathlib.Path) -> str:
              34.0, -116.0, write=True)
     server.q("INSERT INTO climbs(id,source,source_id,name,grade,created) VALUES('c1','test','1','Alpha','V2',1.0)", write=True)
     server.link_mesh(MESH, "c1", None)
+    server.q("INSERT INTO projects(id,name,created,status,mesh_id) VALUES(?,?,?,?,?)", PROJECT, "A Wall (capture)", 1.0, "done", MESH, write=True)
     return MESH
 
 

@@ -197,6 +197,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     private val guide: GuideMesh? = if (plan != null && mesh != null) app.store.guide(mesh) else null
     val id: String = (NSDate().timeIntervalSince1970.toLong()).toString(36) + (100..999).random()
     private val dir = app.store.captureDir(id)
+    init { plan?.let { app.store.keepPlan(id, it.mesh) } }
     private val core = CaptureSession(plan.takeIf { guide != null }, guide, id, IosStore.APP, machine(), NSDate().timeIntervalSince1970)
     private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = this@CaptureController.app.store.credit.ifBlank { null } }, set, app.store.anonFirst)
     private val arSession = "a" + (100000..999999).random()

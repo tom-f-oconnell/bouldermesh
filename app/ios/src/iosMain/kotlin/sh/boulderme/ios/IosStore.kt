@@ -1,8 +1,16 @@
 package sh.boulderme.ios
 
+import platform.Foundation.NSDate
+import platform.Foundation.timeIntervalSince1970
 import kotlinx.serialization.json.Json
 import platform.Foundation.NSUserDefaults
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
+import sh.boulderme.core.CaptureContents
+import sh.boulderme.core.CaptureRecord
+import sh.boulderme.core.ContentGroup
 import sh.boulderme.core.GuideMesh
+import sh.boulderme.core.UploadStatus
 import sh.boulderme.core.Plan
 import sh.boulderme.core.UploadState
 
@@ -41,6 +49,9 @@ class IosStore {
 
     fun plan(mesh: String): Plan? = Files.readText("$plans/$mesh.json")?.let { runCatching { Plan.parse(it) }.getOrNull() }
     fun guide(mesh: String): GuideMesh? = Files.readBytes("$plans/$mesh.bin")?.let { runCatching { GuideMesh.parse(it) }.getOrNull() }
+    /** A copy of the plan a capture goes by, kept with it: what each of its photos was for is told from it, after the plan's gone. */
+    fun keepPlan(id: String, mesh: String) { Files.readBytes("$plans/$mesh.json")?.let { Files.write("${captureDir(id)}/plan.json", it) } }
+
     fun removePlan(mesh: String) { Files.delete("$plans/$mesh.json"); Files.delete("$plans/$mesh.bin") }
     fun downloaded(): List<Plan> = Files.list(plans).filter { it.endsWith(".json") }.mapNotNull { plan(it.removeSuffix(".json")) }.sortedBy { it.name.lowercase() }
 
@@ -53,10 +64,27 @@ class IosStore {
     fun scenery(id: String): List<String> = Files.list("$captures/$id/scenery").filter { it.endsWith(".jpg") }
     fun deleteCapture(id: String) { Files.delete("$captures/$id") }
 
+    /** What a capture holds, grouped by what each part was for (CaptureContents), with its record if it can be read. */
+    fun contents(id: String): Pair<List<ContentGroup>, CaptureRecord?> {
+        val dir = "$captures/$id"
+        val record = Files.readText("$dir/capture.json")?.let { runCatching { json.decodeFromString(CaptureRecord.serializer(), it) }.getOrNull() }
+        val plan = Files.readText("$dir/plan.json")?.let { runCatching { Plan.parse(it) }.getOrNull() }
+            ?: record?.mesh?.let { plan(it) }?.takeIf { p -> record.plan?.key.let { it == null || it == p.key } }
+        val others = listOf("capture.json", "points.bin", "capture-log.jsonl").associateWith { Files.size("$dir/$it") }.filterValues { it > 0 }
+        return CaptureContents.group(record, plan, photos(id), scenery(id), others) to record
+    }
+
+    /** What the server last said of each upload (UploadStatus, by project id), and when it was asked (Unix seconds; 0: never). */
+    var statuses: Map<String, UploadStatus>
+        get() = runCatching { json.decodeFromString(STATUSES, prefs.stringForKey("statuses") ?: "{}") }.getOrDefault(emptyMap())
+        set(v) { prefs.setObject(json.encodeToString(STATUSES, v), forKey = "statuses"); prefs.setDouble(NSDate().timeIntervalSince1970, forKey = "statuses_at") }
+    val statusesAt: Double get() = prefs.doubleForKey("statuses_at")
+
     companion object {
         const val DEFAULT_SERVER = "https://boulderme.sh"
         const val VERSION = "0.1.0"
         const val APP = "ios $VERSION"
         val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; coerceInputValues = true }
+        private val STATUSES = MapSerializer(String.serializer(), UploadStatus.serializer())
     }
 }

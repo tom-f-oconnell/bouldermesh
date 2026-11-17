@@ -177,6 +177,7 @@ abstract class Form(val heading: String) {
     }
 
     fun push(next: Form) { screen.navigationController?.pushViewController(next.screen, animated = true) }
+    fun push(next: UIViewController) { screen.navigationController?.pushViewController(next, animated = true) }
 
     fun add(v: UIView): UIView { screen.stack.addArrangedSubview(v); return v }
     fun text(s: String, color: UIColor? = null, bold: Boolean = false, small: Boolean = false) = add(makeLabel(s, color, bold, if (small) 13.0 else 16.0)) as UILabel

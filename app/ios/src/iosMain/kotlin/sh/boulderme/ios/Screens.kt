@@ -1,5 +1,7 @@
 package sh.boulderme.ios
 
+import platform.Foundation.NSDate
+import platform.Foundation.timeIntervalSince1970
 import platform.AudioToolbox.AudioServicesPlaySystemSound
 import platform.UIKit.UIColor
 import platform.UIKit.UIModalPresentationFullScreen
@@ -21,9 +23,18 @@ private fun summary(p: Plan): String {
 
 private fun beep() = AudioServicesPlaySystemSound(1113u)
 
+/** How long ago a time was (Unix seconds), in words. */
+private fun ago(t: Double): String {
+    val s = (NSDate().timeIntervalSince1970 - t).toLong()
+    return when { s < 90 -> "just now"; s < 5400 -> "${s / 60} minutes ago"; s < 129600 -> "${s / 3600} hours ago"; else -> "${s / 86400} days ago" }
+}
+
 // --------------------------------------------------------------------------------------------------------------- home
 class Home(private val app: App) : Form("BoulderMesh") {
-    override fun appear() { app.uploader.onChange = { rebuild() } }
+    override fun appear() {
+        app.uploader.onChange = { rebuild() }
+        app.statuses.refresh { rebuild() }      // each time Home comes up: whether what was sent is meshed yet
+    }
 
     fun capture(mesh: String?, name: String, set: String? = null) {
         val c = CaptureController(app, mesh, name, set) { id -> if (id != null) push(Done(app, id)) }
@@ -48,7 +59,9 @@ class Home(private val app: App) : Form("BoulderMesh") {
         for (p in plans) {
             text(p.name.ifEmpty { p.mesh }, bold = true)
             text(summary(p), small = true)
-            row(makeButton("Capture", Look.FILLED) { capture(p.mesh, p.name.ifEmpty { p.mesh }) }, makeButton("Remove", Look.PLAIN) { app.store.removePlan(p.mesh); rebuild() })
+            row(makeButton("Capture", Look.FILLED) { capture(p.mesh, p.name.ifEmpty { p.mesh }) },
+                makeButton("View") { push(ViewerController(app, p.mesh, p.name.ifEmpty { p.mesh })) },
+                makeButton("Remove", Look.PLAIN) { app.store.removePlan(p.mesh); rebuild() })
             // for one of its sets of beta: that set's holds from close, all round, as a replica of them needs
             if (p.setsWithHolds.isNotEmpty()) text("Or for a set of beta, its holds in detail:", small = true)
             for (set in p.setsWithHolds) button("${set.name ?: "Beta"} (${set.targets.size} hold${if (set.targets.size == 1) "" else "s"})") { capture(p.mesh, p.name.ifEmpty { p.mesh }, set.id) }
@@ -60,22 +73,26 @@ class Home(private val app: App) : Form("BoulderMesh") {
 
         val ids = app.store.captureIds()
         if (ids.isNotEmpty()) section("Captures on this phone")
-        for (id in ids) {
-            val u = app.store.upload(id) ?: continue
+        val uploads = ids.mapNotNull { id -> app.store.upload(id)?.let { id to it } }
+        if (uploads.any { it.second.meshAsked || it.second.done }) {
+            val at = app.store.statusesAt
+            row(makeButton(if (app.statuses.busy) "Checking…" else "Check if meshed", enabled = !app.statuses.busy) { app.statuses.refresh { rebuild() }; rebuild() },
+                makeLabel(if (at > 0) "Last asked ${ago(at)}" else "", UIColor.secondaryLabelColor, size = 13.0))
+            app.statuses.error?.let { text(it, WARN, small = true) }
+        }
+        for ((id, u) in uploads) {
             val busy = app.uploader.busy(id)
-            text(u.name, bold = true)
-            val status = app.uploader.state[id]?.takeIf { busy } ?: when {
-                u.done -> "Sent: the server is meshing it, or has"
-                u.note.isNotEmpty() -> "Stopped: ${u.note}"
-                u.sent.isNotEmpty() -> "${u.sent.size} of ${u.photos} photos sent"
-                else -> "${u.photos} photos, not sent yet"
-            }
-            text(status, if (u.done) GOOD else if (u.note.isNotEmpty() && !busy) BAD else null, small = true)
+            button("${u.name}  ›", Look.PLAIN) { push(UploadForm(app, id)) }       // what's in it
+            val server = u.project?.let { app.statuses.state[it] }
+            val (status, color) = uploadSaid(u, app.uploader.state[id]?.takeIf { busy }, server)
+            text(status, color, small = true)
             val delete = makeButton("Delete", Look.PLAIN, !busy) {
                 screen.confirm("Delete this capture?", if (u.done) "Its photos are on the server; this takes them off the phone." else "Its ${u.photos} photos haven't all been sent, and can't be got back.",
                     "Delete", "Keep", danger = true) { app.store.deleteCapture(id); rebuild() }
             }
-            if (u.done) row(delete) else row(makeButton(if (u.sent.isEmpty()) "Upload" else "Carry on", Look.FILLED, !busy) { app.uploader.start(id); rebuild() }, delete)
+            val view = server?.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh -> makeButton("View mesh", Look.FILLED) { push(ViewerController(app, mesh, u.name)) } }
+            val send = if (u.done) null else makeButton(if (u.sent.isEmpty()) "Upload" else "Carry on", Look.FILLED, !busy) { app.uploader.start(id); rebuild() }
+            row(*listOfNotNull(send, view, delete).toTypedArray())
         }
 
         section("This phone")
@@ -249,5 +266,6 @@ class Done(private val app: App, private val id: String) : Form("Captured") {
         text("Uploading publishes them under CC BY 4.0, credited to ${app.store.credit.ifBlank { "nobody by name (set one in Settings)" }}.")
         if (app.store.token.isEmpty()) text("Uploading needs the site's editing token: see Settings.", WARN)
         text(if (u.done) "It's on the server." else "It stays on the phone until it's sent: go back to carry on later.", UIColor.secondaryLabelColor, small = true)
+        button("What's in it") { push(UploadForm(app, id)) }
     }
 }

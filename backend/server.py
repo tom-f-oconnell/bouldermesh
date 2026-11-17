@@ -1750,6 +1750,28 @@ def capture_meshes() -> list[dict]:
     return out
 
 
+def capture_status(ids: list[str], me: dict | None) -> dict[str, dict]:
+    """How a phone's uploads stand, by project id, for the apps to say whether each is meshed: {status, mesh, approved,
+    left (what's still to come beyond meshing: steps_left()), failure, mesh_gone}. A project whoever asks may not see
+    (another account's, not approved), or that's gone, is {"status": "gone"}."""
+    out: dict[str, dict] = {}
+    left = steps_left()
+    for pid in ids[:200]:
+        proj = q("SELECT id, status, mesh_id, user_id, approved, deleted_at FROM projects WHERE id=?", pid, one=True)
+        seen = proj and not proj["deleted_at"] and (not proj["user_id"] or proj["approved"] == 1 or
+                                                    (me and (me["role"] == "owner" or proj["user_id"] == me["id"])))
+        if not seen:
+            out[pid] = {"status": "gone"}
+            continue
+        failure = None
+        if proj["status"] in ("failed", "interrupted"):
+            failure = (last_failure(pid, "FAILED: " if proj["status"] == "failed" else "INTERRUPTED: ").splitlines() or [""])[0][:200] or None
+        mid = proj["mesh_id"]
+        out[pid] = {"status": proj["status"], "mesh": mid, "approved": not proj["user_id"] or proj["approved"] == 1,
+                    "left": left.get(pid, []), "failure": failure, "mesh_gone": bool(mid) and not (MESHES / mid).is_dir()}
+    return out
+
+
 MERGED_FILE = "merged.json"     # in a capture's project: the photos of the mesh it added to, which it's meshed together with
 CAPTURE_LINK = "from a capture with the app, adding to mesh"   # how a mesh_links note starts for such a mesh's climbs
 PHONE_PLACE_M = 5.0     # a mesh is put where its app photos' GPS fixes say, if together they say so to within this
@@ -9900,6 +9922,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(rows)
             if p == "/api/capture/meshes":   # for the phone apps: the meshes a capture can add to
                 return self.send_json(capture_meshes())
+            if p == "/api/capture/status":   # for the phone apps: whether each of their uploads is meshed yet (?ids=a,b,…)
+                ids = [x for x in ",".join(qs.get("ids") or []).split(",") if re.fullmatch(r"[0-9a-f]+", x)]
+                return self.send_json(capture_status(ids, self.who()))
             m = re.fullmatch(r"/api/capture/plan/([0-9a-f]+)", p)
             if m:   # for the phone apps: what of a mesh to photograph (capture_plan())
                 try:

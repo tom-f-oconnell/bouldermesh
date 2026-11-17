@@ -4,6 +4,9 @@
 # checked only as far as saying so.
 #
 #   screens-ios.sh <BoulderMesh.app> <a test server's address> <folder for the pictures>
+#
+# SAMPLE: a capture made by app/ci/sample_capture.py (its folder), put in the app's own for the screens that show what an
+# upload holds.
 set -u
 APP=$1; SERVER=$2; OUT=$3; ID=sh.boulderme.app
 mkdir -p "$OUT"
@@ -34,6 +37,14 @@ shot settings -screen settings
 shot calibrate -screen calibrate
 WAIT=15 shot browse -screen browse -get YES
 shot home-with-mesh
+if [ -n "${SAMPLE:-}" ]; then
+    docs="$(xcrun simctl get_app_container "$UDID" "$ID" data)/Documents/captures"
+    mkdir -p "$docs" && cp -R "$SAMPLE" "$docs/"
+    shot home-with-upload
+    shot upload -screen upload
+    shot photo -screen photo
+    WAIT=20 shot viewer -screen viewer
+fi
 shot capture -screen capture
 shot capture-new -screen capture -mesh none
 xcrun simctl terminate "$UDID" "$ID" 2>/dev/null

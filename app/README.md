@@ -23,6 +23,10 @@ phone yet**: see [What's been checked](#whats-been-checked).
    when one came out blurred or badly lit. *Skip this* leaves what can't be reached (too high, the back). *Take* takes
    one whatever.
 5. **Finish**, then *Upload* once you have signal. The server meshes your photos together with the mesh's own.
+6. **Once it's meshed**, *View mesh* on its capture shows it in the site's own viewer. Home asks the server how each
+   upload stands whenever it comes up (*Check if meshed* asks again); press a capture for what it holds, grouped by
+   what each photo was for (each climb, the card, tying to the old photos, the scenery), with what's been sent ticked.
+   *View* on a downloaded mesh shows it the same way. Viewing needs signal.
 
 A rock with no mesh: *Capture a new rock…*, tap its middle, and walk round as much of it as you can; *Can't reach that
 side* for the rest, and *Mark a hold* for anything that needs close-ups.

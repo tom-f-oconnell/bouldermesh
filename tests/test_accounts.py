@@ -206,6 +206,12 @@ with tempfile.TemporaryDirectory() as tmp:
         # asked for a mesh: held, as nothing has approved it; the owner's phone would be told
         st, _, r = req(B, "POST", f"/api/projects/{pid}/reconstruct", {}, ANA)
         assert st == 202 and r["held"] and req(B, "POST", f"/api/projects/{pid}/reconstruct", {}, ANA)[0] == 409, r
+        # how it stands, for the phone apps: Ana's and the owner's to see, not Bo's; ids that aren't anything are gone
+        status = lambda h: req(B, "GET", f"/api/capture/status?ids={pid},abc123,x'y", headers=h)[2]      # noqa: E731
+        seen = status(ANA)
+        assert seen[pid]["status"] in ("held", "queued", "running", "failed") and not seen[pid]["approved"] and seen[pid]["mesh"] is None, seen
+        assert seen["abc123"] == {"status": "gone"} and "x'y" not in seen and status(AUTH)[pid]["status"] == seen[pid]["status"], seen
+        assert status(BO)[pid] == {"status": "gone"} == status(None)[pid]
         # how the capture went on the phone, and a crash's report: kept with it, and in its export
         log = b'{"t":0.0,"e":"start"}\n{"t":1.5,"e":"phase","to":"LEVEL"}\n'
         assert req(B, "POST", f"/api/projects/{pid}/capture/log", log, ANA)[2] == {"kept": "capture-log.jsonl", "lines": 2}

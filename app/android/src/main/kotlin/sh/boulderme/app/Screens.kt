@@ -61,7 +61,7 @@ val WARN = Color(0xFFF0A030)
 val BAD = Color(0xFFE5564B)
 
 @Composable
-private fun Page(title: String, back: (() -> Unit)? = null, content: @Composable () -> Unit) {
+internal fun Page(title: String, back: (() -> Unit)? = null, content: @Composable () -> Unit) {
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (back != null) TextButton(onClick = back) { Text("‹ Back") }
@@ -73,7 +73,7 @@ private fun Page(title: String, back: (() -> Unit)? = null, content: @Composable
 }
 
 @Composable
-private fun Section(text: String) = Text(text.uppercase(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+internal fun Section(text: String) = Text(text.uppercase(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
     modifier = Modifier.padding(top = 10.dp))
 
 private fun summary(p: Plan): String {
@@ -107,6 +107,11 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
     }
     LaunchedEffect(sending) { tick++ }
     val update by Updates.state.collectAsState()
+    val statuses by Statuses.state.collectAsState()
+    val checking by Statuses.busy.collectAsState()
+    val checkFailed by Statuses.error.collectAsState()
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { Statuses.refresh(a.store, a.api) }      // each time Home comes up: whether what was sent is meshed yet
 
     Page("BoulderMesh") {
         update.newer?.let { newer ->        // the app's newer build (Update.kt): installs over this one, keeping its captures
@@ -132,6 +137,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                 Text(summary(p), style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { start(Screen.Capture(p.mesh, p.name.ifEmpty { p.mesh })) }) { Text("Capture") }
+                    OutlinedButton(onClick = { go(Screen.Viewer(p.mesh, p.name.ifEmpty { p.mesh })) }) { Text("View") }
                     TextButton(onClick = { a.store.removePlan(p.mesh); tick++ }) { Text("Remove") }
                 }
                 // for one of its sets of beta: that set's holds from close, all round, as a replica of them needs
@@ -147,18 +153,24 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
         OutlinedButton(onClick = { naming = true }, modifier = Modifier.fillMaxWidth()) { Text("Capture a new rock…") }
 
         if (captures.isNotEmpty()) Section("Captures on this phone")
-        for ((id, u) in captures) Card(Modifier.fillMaxWidth()) {
+        if (captures.any { it.second.meshAsked || it.second.done }) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(enabled = !checking, onClick = { scope.launch { Statuses.refresh(a.store, a.api) } }) { Text(if (checking) "Checking…" else "Check if meshed") }
+            val at = a.store.statusesAt
+            if (at > 0) Text("Last asked " + android.text.format.DateUtils.getRelativeTimeSpanString(at), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        checkFailed?.let { Text(it, color = WARN, style = MaterialTheme.typography.bodySmall) }
+        for ((id, u) in captures) Card(onClick = { go(Screen.Upload(id)) }, modifier = Modifier.fillMaxWidth()) {     // pressed: what's in it
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(u.name, fontWeight = FontWeight.SemiBold)
-                val status = sending[id]?.takeIf { Uploader.busy(id) } ?: when {
-                    u.done -> "Sent: the server is meshing it, or has"
-                    u.note.isNotEmpty() -> "Stopped: ${u.note}"
-                    u.sent.isNotEmpty() -> "${u.sent.size} of ${u.photos} photos sent"
-                    else -> "${u.photos} photos, not sent yet"
-                }
-                Text(status, style = MaterialTheme.typography.bodySmall, color = if (u.done) GOOD else if (u.note.isNotEmpty() && !Uploader.busy(id)) BAD else Color.Unspecified)
+                Text("${u.name}  ›", fontWeight = FontWeight.SemiBold)
+                val server = u.project?.let { statuses[it] }
+                val (status, color) = uploadSaid(u, sending[id]?.takeIf { Uploader.busy(id) }, server)
+                Text(status, style = MaterialTheme.typography.bodySmall, color = color)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (!u.done) Button(enabled = !Uploader.busy(id), onClick = { Uploader.start(a.store, a.api, id) }) { Text(if (u.sent.isEmpty()) "Upload" else "Carry on") }
+                    server?.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh ->
+                        Button(onClick = { go(Screen.Viewer(mesh, u.name)) }) { Text("View mesh") }
+                    }
                     TextButton(enabled = !Uploader.busy(id), onClick = { removing = id }) { Text("Delete") }
                 }
             }
@@ -406,6 +418,7 @@ fun DoneScreen(a: MainActivity, id: String, go: (Screen) -> Unit) {
         if (!u.done) Button(enabled = !Uploader.busy(id) && u.photos >= 3, onClick = { Uploader.start(a.store, a.api, id) }) { Text(if (u.sent.isEmpty()) "Upload now" else "Carry on uploading") }
         Text("Uploading publishes them under CC BY 4.0, credited to ${a.store.credit.ifBlank { "nobody by name (set one in Settings)" }}.", style = MaterialTheme.typography.bodySmall)
         if (a.store.token.isEmpty()) Text("Uploading needs the site's editing token: see Settings.", color = WARN)
+        OutlinedButton(onClick = { go(Screen.Upload(id)) }) { Text("What's in it") }
         OutlinedButton(onClick = { go(Screen.Home) }) { Text(if (u.done) "Home" else "Later: it stays on the phone") }
     }
 }

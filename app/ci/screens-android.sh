@@ -4,7 +4,8 @@
 #
 #   screens-android.sh <the debug apk> <a test server's address, as the emulator sees it> <folder for the pictures>
 #
-# ONLY=capture skips the screens with no camera; PREFIX names the pictures (android by default).
+# ONLY=capture skips the screens with no camera; PREFIX names the pictures (android by default). SAMPLE: a capture made by
+# app/ci/sample_capture.py (its folder), put on the phone for the screens that show what an upload holds.
 set -u
 APK=$1; SERVER=$2; OUT=$3; ID=sh.boulderme.app; PREFIX=${PREFIX:-android}; ONLY=${ONLY:-}
 mkdir -p "$OUT"
@@ -28,6 +29,16 @@ if [ "$ONLY" != capture ]; then
 fi
 WAIT=15 shot browse --es screen browse --ez get true
 [ "$ONLY" = capture ] || shot home-with-mesh
+if [ "$ONLY" != capture ] && [ -n "${SAMPLE:-}" ]; then
+    files=/sdcard/Android/data/$ID/files/captures
+    adb shell mkdir -p "$files" && adb push "$SAMPLE" "$files/" > /dev/null || {
+        # where the shell may not write there itself: by way of somewhere it may, as the app
+        adb push "$SAMPLE" /data/local/tmp/ > /dev/null && adb shell run-as $ID cp -r "/data/local/tmp/$(basename "$SAMPLE")" "$files/"; }
+    shot home-with-upload
+    shot upload --es screen upload
+    shot photo --es screen photo
+    WAIT=20 shot viewer --es screen viewer
+fi
 WAIT=25 shot capture --es screen capture
 WAIT=12 shot capture-new --es screen capture --es mesh none
 # the site's "Sign the app in" (bouldermesh://pair): with an account's code from a server with accounts (PAIR_SERVER,
