@@ -54,6 +54,8 @@ class MainActivity : ComponentActivity() {
         Crashes.watch(store.crashes)
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) tryOut()
         signInFrom(intent)
+        if (intent?.action == Updates.ACTION) Updates.installerSaid(this, intent)
+        if (!tryingOut) Updates.lookQuietly()       // a newer build, offered on the Home screen
         if (store.token.isNotEmpty() && store.credit.isBlank()) Thread {     // paired before the app filled this in itself
             api.accountName()?.let { if (store.credit.isBlank()) store.credit = it }
         }.start()
@@ -109,6 +111,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (intent.action == Updates.ACTION) return Updates.installerSaid(this, intent)
         signInFrom(intent)
     }
 

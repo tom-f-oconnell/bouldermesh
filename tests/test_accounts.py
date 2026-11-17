@@ -108,7 +108,7 @@ with tempfile.TemporaryDirectory() as tmp:
         assert req(B, "GET", "/api/account", headers=ANA)[2]["user"]["id"] == ana["user"]["id"] and req(B, "GET", "/api/account", headers=AUTH)[2]["owner"]
         # the phone apps' links, to accounts only: Android's latest build; the iPhone's TestFlight link once it's set
         apps = req(B, "GET", "/api/account", headers=ANA)[2]["apps"]
-        assert apps["android"].endswith("/releases/tag/android-latest") and apps["iphone"] is None, apps
+        assert apps["android"].endswith("/releases/download/android-latest/bouldermesh.apk") and apps["iphone"] is None, apps
         assert req(B, "GET", "/api/account")[2]["apps"] is None, "not to a browser with no account"
         assert req(A, "POST", "/api/admin/settings", {"apps.testflight_url": "https://testflight.apple.com/join/AbCd1234"})[0] == 200
         assert req(B, "GET", "/api/account", headers=ANA)[2]["apps"]["iphone"] == "https://testflight.apple.com/join/AbCd1234"

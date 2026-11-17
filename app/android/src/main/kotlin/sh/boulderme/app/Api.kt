@@ -146,5 +146,7 @@ class Api(private val store: Store) {
 
 object BuildInfo {
     const val VERSION = "0.1.0"
-    val APP = "android $VERSION"
+    val COMMIT: String = BuildConfig.COMMIT     // the commit it was built from, and CI's build number (1 elsewhere)
+    val BUILD: Int = BuildConfig.BUILD
+    val APP = "android $VERSION ($COMMIT, build $BUILD)"
 }

@@ -8614,7 +8614,7 @@ def admin_submission(body: dict) -> dict:
     return admin_state()
 
 
-ANDROID_RELEASE = "https://github.com/tom-f-oconnell/bouldermesh/releases/tag/android-latest"   # apps.yml's latest APK
+ANDROID_RELEASE = "https://github.com/tom-f-oconnell/bouldermesh/releases/download/android-latest/bouldermesh.apk"   # apps.yml's latest APK, downloaded straight away
 
 
 JOB_KINDS = {"reconstruct": "meshing", "beta": "finding beta for", "scale": "finding the size of", "filter": "filtering photos of",

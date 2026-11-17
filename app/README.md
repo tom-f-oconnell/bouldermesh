@@ -71,9 +71,17 @@ push that changes `app/` also builds one on GitHub, kept 30 days as the run's `a
 on main as the release [android-latest](https://github.com/tom-f-oconnell/bouldermesh/releases/tag/android-latest):
 open that on the phone, tap the `.apk` and allow installing it, with no USB and no sign-in. Its `bouldermesh.apk` is the same file
 under a name that stays, a direct download: https://github.com/tom-f-oconnell/bouldermesh/releases/download/android-latest/bouldermesh.apk
-(the volunteer page's *Data collection* links to it, with how testers install, sign in and use the apps). A debug
-APK is signed by the debug key of the machine that built it: one from another machine won't install over it without
-uninstalling first, which deletes captures not yet sent.
+(the volunteer page's *Data collection* links to it, with how testers install, sign in and use the apps).
+
+Every build is signed with one key, so each installs over the last, keeping captures not yet sent, and the app updates
+itself: it looks for a newer build as it starts (the release's title says its build number, CI's run number, which is
+its `versionCode`) and offers *Update* on its Home screen, which downloads it and hands it to Android's installer (the
+person confirms; the first time, Android asks them to let the app install apps). The key is the repo's secrets
+`ANDROID_SIGNING_KEYSTORE` (base64 of a PKCS12 file, alias `bouldermesh`) and `ANDROID_SIGNING_PASSWORD`; its copy on hal
+is in `/data/tom/android-toolchain/signing/` (`signing.env` gives Gradle `BM_SIGNING_KEYSTORE` and
+`BM_SIGNING_PASSWORD_FILE`), and should be kept somewhere else safe too: a build signed with another key can't update an
+installed one, so losing it means every phone uninstalls once. Without the key, a build is signed with the SDK's debug
+key, which installs over nothing else.
 
 iPhone, on a Mac with Xcode 15 or later (no Android SDK needed):
 

@@ -106,8 +106,20 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
         else { wanted = c; ask.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
     }
     LaunchedEffect(sending) { tick++ }
+    val update by Updates.state.collectAsState()
 
     Page("BoulderMesh") {
+        update.newer?.let { newer ->        // the app's newer build (Update.kt): installs over this one, keeping its captures
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("A newer version of the app is ready (build ${newer.build}).")
+                    Button(enabled = update.busy == null, onClick = { Updates.state.value = update.copy(busy = "Starting…", error = null); Updates.install(a, newer) }) {
+                        Text(update.busy ?: "Update")
+                    }
+                    update.error?.let { Text(it, color = BAD) }
+                }
+            }
+        }
         Text("Photograph a boulder so that its mesh comes out whole, level, the right size and in the right place. " +
             "The app says where to stand and takes each photo when it's worth taking.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (refused) Text("Capturing needs the camera: allow it in the phone's settings for this app.", color = BAD)
@@ -315,7 +327,7 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
                 code?.let { SelectionContainer { Text(it, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) } }
             }
         }
-        Text("BoulderMesh ${BuildInfo.VERSION}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("BoulderMesh ${BuildInfo.VERSION}, build ${BuildInfo.BUILD} (${BuildInfo.COMMIT})", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

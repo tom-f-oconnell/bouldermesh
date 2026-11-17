@@ -6364,13 +6364,13 @@ function appsHtml(){
   if (!a) return '';
   const ua = navigator.userAgent, android = /Android/i.test(ua),
         ios = /iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
-  const and = `Android: open <a href="${esc(a.android)}" target="_blank" rel="noopener">its latest build</a> on the phone, tap the <i>.apk</i>, and allow installing it.`;
+  const and = `Android: on the phone, <a href="${esc(a.android)}">download the app</a>, open the downloaded file, and allow installing it. It offers each newer version itself.`;
   const iph = a.iphone ? `iPhone: install Apple's <a href="https://apps.apple.com/app/testflight/id899247664" target="_blank" rel="noopener">TestFlight</a> app, then open
       <a href="${esc(a.iphone)}" target="_blank" rel="noopener">this link</a> on the phone and tap <i>Accept</i>, then <i>Install</i>. New versions come by themselves.`
     : 'iPhone: not yet available.';
   const head = `<p style="margin-bottom:4px"><b>The phone app</b>, to photograph a boulder for its mesh:</p>`;
   if (android) return `${head}<p style="margin:0 0 6px"><a href="${esc(a.android)}" target="_blank" rel="noopener" style="display:inline-block;background:var(--acc);color:var(--acc-fg);padding:7px 11px;border-radius:6px;font-weight:600;text-decoration:none">Get the Android app</a></p>
-    <p style="margin:0 0 10px;font-size:13px">On the page it opens, tap the <i>.apk</i>, then allow this browser to install it.</p>
+    <p style="margin:0 0 10px;font-size:13px">Open the downloaded file, then allow this browser to install it. The app offers each newer version itself.</p>
     <p style="margin:0 0 4px">Once it's installed: <button class="sm sec appsign">Sign the app in as ${esc(account?.name || 'you')}</button></p>
     <p class="appsignsay" style="margin:0 0 10px;font-size:13px"></p>`;
   if (ios) return `${head}<ul style="margin:0 0 10px"><li>${iph}</li></ul>`;

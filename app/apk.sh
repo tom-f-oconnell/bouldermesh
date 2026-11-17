@@ -28,5 +28,5 @@ cp "$apk" "$out"
 echo "built: $(pwd)/$out ($(( $(stat -c %s "$out") / 1000000 )) MB)"
 if [ "$install" = 1 ]; then
     adb=${ANDROID_HOME:+$ANDROID_HOME/platform-tools/}adb
-    "$adb" install -r "$out"      # -r: over the one there, keeping its captures; fails if that one was signed by another machine
+    "$adb" install -r "$out"      # -r: over the one there, keeping its captures; fails if that one was signed with another key
 fi
