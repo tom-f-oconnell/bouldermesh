@@ -150,7 +150,9 @@ the server fits them once the capture's mesh is made (backend/splat.py) and puts
 `capture-log.jsonl`): JSON lines, each {t: seconds since the capture's first frame, e: what, ...}, written as the
 capture runs (app/shared EventLog.kt), a line for each change and not each frame: `start`, `camera` (how the app set
 its camera up), `phase`, `tracking`, `says` and `hint` (when what's asked for changes), `frames` (every 5 s: fps, the
-longest gap, untracked frames), `level`, `tap_model`, `tap_rock`, `refine`, `fit_confirmed`, `spell`, `shoot`,
+longest gap, untracked frames), `level`, `level_redo` (a direction of the turn on the spot cleared to face again),
+`imu_clock` (how far the motion sensors' clock is from the camera's, found by matching the gyroscope to the tracking: the
+first few tries and each change), `tap_model`, `tap_rock`, `refine`, `fit_confirmed`, `spell`, `shoot`,
 `shot`, `no_shot`, `error`, `start_failed`, and the screen's buttons. Its upload never holds the rest up.
 
 **Crashes**: what the app wrote as it crashed, one file each, sent with the next capture uploaded to

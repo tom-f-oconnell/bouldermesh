@@ -139,6 +139,7 @@ import sh.boulderme.core.CaptureSession
 import sh.boulderme.core.CaptureUi
 import sh.boulderme.core.Coverage
 import sh.boulderme.core.GuideMesh
+import sh.boulderme.core.ImuClock
 import sh.boulderme.core.ImageStats
 import sh.boulderme.core.Lens
 import sh.boulderme.core.Features
@@ -207,6 +208,9 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     private val background = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT.toLong(), 0u)
     private var timer: NSTimer? = null
     private var ticks = 0
+    private val imu = ImuClock()        // the accelerometer's readings, lined up with ARKit's frames
+    private var clockSaid = 0
+    private var clockUsed = 0.0
     private var cameraSet = false
     // how wide the photos are, in pixels: wider than the frames ARKit tracks with where it gives full-size ones (guessed at
     // 12 megapixels until the first comes), so that what's asked for is what a photo will show, not what a frame does
@@ -352,7 +356,13 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         flow.refineDue(now)?.let { work -> dispatch_async(background) { val found = flow.tighter(work); dispatch_async(dispatch_get_main_queue()) { flow.tightened(work, found) } } }
         val seen = poseOf(camera)
         val pose = stillWidth?.takeIf { it != seen.lens.w }?.let { w -> seen.copy(lens = seen.lens.scaledTo(w, (w.toDouble() * seen.lens.h / seen.lens.w).roundToInt())) } ?: seen
-        val out = flow.frame(pose, tracking, app.sensors.gyro(), camera.exposureDuration, now, UPRIGHT_DEG, app.sensors.accel(), SENSOR_ORIENTATION)
+        // the accelerometer as it read when this frame's picture was taken, not as it reads now
+        app.sensors.feed(imu)
+        val clocked = if (tracking) imu.frame(frame.timestamp, seen.rot) else null
+        clocked?.takeIf { clockSaid++ < 5 || abs(it.usedS - clockUsed) > 0.002 }?.let { clockUsed = it.usedS; flow.event("imu_clock", "offset_s" to it.offsetS,
+            "fit_rad_s" to it.fitRadS, "motion_rad_s" to it.motionRadS, "taken" to it.taken, "used_s" to it.usedS, "newest_after_s" to it.lagS, "frame_age_s" to now - frame.timestamp) }
+        val accel = imu.accelAt(frame.timestamp) ?: app.sensors.accel()
+        val out = flow.frame(pose, tracking, app.sensors.gyro(), camera.exposureDuration, now, UPRIGHT_DEG, accel, SENSOR_ORIENTATION)
         out.levels?.let { levels = it; colour() }
         val fit = out.guide
         guideNode.hidden = fit == null

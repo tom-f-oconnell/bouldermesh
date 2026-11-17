@@ -17,7 +17,9 @@ import sh.boulderme.core.GpsAverager
 import sh.boulderme.core.GpsFix
 import sh.boulderme.core.Quat
 import sh.boulderme.core.SensorSample
+import sh.boulderme.core.ImuClock
 import sh.boulderme.core.Vec3
+import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
@@ -40,6 +42,25 @@ class PhoneSensors(private val context: Context) : SensorEventListener, Location
 
     fun now(): Double = SystemClock.elapsedRealtimeNanos() / 1e9
 
+    // accelerometer and gyroscope readings since a capture last took them (drain()), each at the moment it was read
+    private val pending = ArrayList<Triple<Boolean, Double, Vec3>>()
+    private var skew = Double.NaN
+
+    /** A reading's own time, as now() has it: their clock is now()'s on nearly every phone, and is put onto it if not. */
+    private fun readAt(e: SensorEvent): Double {
+        val raw = e.timestamp / 1e9
+        val d = raw - now()
+        if (abs(d) < 1.0) return raw
+        skew = if (skew.isNaN()) d else maxOf(skew, d)      // the least delayed reading's: as near as it can say
+        return raw - skew
+    }
+
+    /** Hands the accelerometer and gyroscope readings since the last call to `clock`. */
+    fun drain(clock: ImuClock) {
+        val got = synchronized(pending) { ArrayList(pending).also { pending.clear() } }
+        for ((isAccel, t, v) in got) if (isAccel) clock.accel(t, v) else clock.gyro(t, v)
+    }
+
     @SuppressLint("MissingPermission")
     fun start(withLocation: Boolean) {
         for (type in intArrayOf(Sensor.TYPE_ACCELEROMETER, Sensor.TYPE_GYROSCOPE, Sensor.TYPE_MAGNETIC_FIELD, Sensor.TYPE_ROTATION_VECTOR))
@@ -55,8 +76,15 @@ class PhoneSensors(private val context: Context) : SensorEventListener, Location
 
     override fun onSensorChanged(e: SensorEvent) {
         when (e.sensor.type) {
-            Sensor.TYPE_ACCELEROMETER -> accel = Vec3(e.values[0].toDouble(), e.values[1].toDouble(), e.values[2].toDouble())
-            Sensor.TYPE_GYROSCOPE -> gyro = Vec3(e.values[0].toDouble(), e.values[1].toDouble(), e.values[2].toDouble())
+            Sensor.TYPE_ACCELEROMETER, Sensor.TYPE_GYROSCOPE -> {
+                val v = Vec3(e.values[0].toDouble(), e.values[1].toDouble(), e.values[2].toDouble())
+                val isAccel = e.sensor.type == Sensor.TYPE_ACCELEROMETER
+                if (isAccel) accel = v else gyro = v
+                synchronized(pending) {
+                    pending.add(Triple(isAccel, readAt(e), v))
+                    if (pending.size > PENDING_MOST) pending.subList(0, pending.size - PENDING_MOST).clear()     // no capture taking them
+                }
+            }
             Sensor.TYPE_MAGNETIC_FIELD -> Vec3(e.values[0].toDouble(), e.values[1].toDouble(), e.values[2].toDouble()).let { mag = it; magAccuracy = e.accuracy; onMag?.invoke(it) }
             Sensor.TYPE_ROTATION_VECTOR -> {
                 // the phone's turn into a frame of east, (magnetic) north and up
@@ -85,4 +113,8 @@ class PhoneSensors(private val context: Context) : SensorEventListener, Location
 
     /** Everything as it is now, for a photo being taken. */
     fun sample(): SensorSample = SensorSample(accel, gyro, mag, magAccuracy, heading, null, fix, now())
+
+    companion object {
+        const val PENDING_MOST = 4000       // readings kept for a capture to take: some seconds' worth
+    }
 }

@@ -35,6 +35,7 @@ import sh.boulderme.core.LICENCE
 import sh.boulderme.core.CaptureSession
 import sh.boulderme.core.CaptureUi
 import sh.boulderme.core.GuideMesh
+import sh.boulderme.core.ImuClock
 import sh.boulderme.core.Lens
 import sh.boulderme.core.Plan
 import sh.boulderme.core.Quality
@@ -87,6 +88,9 @@ class ArController(
     private fun uprightDeg(): Int = ((sensorOrientation - rotation() * 90) % 360 + 360) % 360
     private var lastUi = 0.0
     private var frames = 0
+    private val imu = ImuClock()        // the accelerometer's readings, lined up with the frames: drawing thread only
+    private var clockSaid = 0
+    private var clockUsed = 0.0
     private var exposure = UNKNOWN_EXPOSURE_S      // the shutter time last read: asked for now and then, as each asking holds something of ARCore's
 
     // ---- from the screen ---------------------------------------------------------------------------------------------
@@ -205,11 +209,19 @@ class ArController(
         if (frames++ % 10 == 0) runCatching { frame.imageMetadata.getLong(ImageMetadata.SENSOR_EXPOSURE_TIME) / 1e9 }.getOrNull()?.takeIf { it > 0 }?.let { exposure = it }
         val exposure = exposure
         val gyro = sensors.gyro?.norm ?: 0.0
+        // the accelerometer as it read when this frame's picture was taken, not as it reads now
+        sensors.drain(imu)
+        val shotAt = runCatching { frame.androidCameraTimestamp / 1e9 }.getOrNull()?.takeIf { kotlin.math.abs(it - now) < 1.0 } ?: now
+        val clocked = if (tracking) imu.frame(shotAt, pose.rot) else null
+        val accel = imu.accelAt(shotAt) ?: sensors.accel
         val out = synchronized(lock) {
+            // the first few tries, and then each time what's used changes: not a line every two seconds
+            clocked?.takeIf { clockSaid++ < 5 || kotlin.math.abs(it.usedS - clockUsed) > 0.002 }?.let { clockUsed = it.usedS; flow.event("imu_clock", "offset_s" to it.offsetS, "fit_rad_s" to it.fitRadS, "motion_rad_s" to it.motionRadS, "taken" to it.taken,
+                "used_s" to it.usedS, "newest_after_s" to it.lagS, "frame_age_s" to now - shotAt) }
             if (tap != null && tracking) { val (from, along) = ray(tap[0], tap[1]); flow.tap(from, along) { hit(frame, tap) } }
             // the slow half of tightening the fit holds no lock: frames go on being drawn meanwhile
             flow.refineDue(now)?.let { work -> worker.execute { val found = flow.tighter(work); synchronized(lock) { flow.tightened(work, found) } } }
-            flow.frame(pose, tracking, gyro, exposure, now, uprightDeg(), sensors.accel, sensorOrientation)
+            flow.frame(pose, tracking, gyro, exposure, now, uprightDeg(), accel, sensorOrientation)
         }
         out.levels?.let { guideRenderer?.setLevels(it) }
         out.guide?.let { fit ->

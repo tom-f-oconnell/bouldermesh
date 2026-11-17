@@ -14,6 +14,7 @@ import platform.darwin.NSObject
 import sh.boulderme.core.Axes
 import sh.boulderme.core.GpsAverager
 import sh.boulderme.core.GpsFix
+import sh.boulderme.core.ImuClock
 import sh.boulderme.core.SensorSample
 import sh.boulderme.core.Sensors
 import sh.boulderme.core.Vec3
@@ -87,6 +88,15 @@ class IosSensors : NSObject(), CLLocationManagerDelegateProtocol {
 
     /** What the accelerometer reads by itself, as Android gives it: m/s2, 9.81 upwards at rest (the other way round from iOS, and not in g). */
     fun accel(): Vec3? = motion.accelerometerData?.acceleration?.useContents { Vec3(x, y, z) * -Sensors.G }
+
+    /**
+     * Hands the newest accelerometer and gyroscope readings to `clock`, each at the moment it was read (on now()'s
+     * clock, as ARKit's frames are). Asked each frame: a reading seen before is passed over.
+     */
+    fun feed(clock: ImuClock) {
+        motion.accelerometerData?.let { d -> clock.accel(d.timestamp, d.acceleration.useContents { Vec3(x, y, z) * -Sensors.G }) }
+        motion.gyroData?.let { d -> clock.gyro(d.timestamp, d.rotationRate.useContents { Vec3(x, y, z) }) }
+    }
 
     private fun turning(): Vec3? = motion.deviceMotion?.rotationRate?.useContents { Vec3(x, y, z) } ?: motion.gyroData?.rotationRate?.useContents { Vec3(x, y, z) }
 
