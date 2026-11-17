@@ -15,7 +15,8 @@ data class FrameIn(val pose: CameraPose, val gyroRadS: Double, val exposureS: Do
 /** What to show and do for a frame: the hint, whether to take a photo now, and how far along the capture is. */
 data class FrameOut(val hint: Hint, val shoot: Boolean, val progress: Progress, val blurPx: Double,
                     val still: Boolean = false,     // a photo taken now should be a full-size still: it's of a hold wanted in detail
-                    val status: String = "")        // how that hold stands, in a line
+                    val status: String = "",        // how that hold stands, in a line
+                    val steadyS: Double = 0.0)      // how long the phone has held still enough for a photo, to this frame
 
 /** Something to draw in the world: a hold, an edge or a marked spot, coloured by how done it is (Coverage.LEVEL_*). */
 data class Marker(val id: String, val world: Vec3, val radiusM: Double, val level: Int, val kind: String, val current: Boolean,
@@ -77,6 +78,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     private var lastT = 0.0
     private var speed = 0.0
     private var lastShotT = -1e9
+    private var steadySince: Double? = null
     private var kept = 0
 
     val mode: String get() = if (plan != null) "plan" else "orbit"
@@ -139,6 +141,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         lastPose = f.pose; lastT = f.t
         val cov = coverage; val orb = orbit; val fitNow = fit
         val none = Progress(0, 0, 0, 0, 0)
+        if (!f.tracking) steadySince = null
         if (!f.tracking) return FrameOut(Hint(Hint.Kind.NONE, "Hold on: the phone is finding where it is. Move it slowly over the rock."), false, cov?.progress() ?: orb?.progress() ?: none, 0.0)
         if (cov != null) {
             if (fitNow == null) return FrameOut(Hint(Hint.Kind.NONE, "Line the mesh up with the rock first"), false, cov.progress(), 0.0)
@@ -153,21 +156,27 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             // how far off what's being photographed is; from a view to stand at, that's the rock, taken as a few metres off
             val far = target?.let { if (it.target.isView) VIEW_FAR_M else inMesh.centre.distance(it.target.point) * cov.metresPerUnit }
             val blur = Quality.blurPx(f.gyroRadS, speed, f.exposureS, eye.lens.fx, far)
-            if (target == null) return FrameOut(Hint(Hint.Kind.DONE, if (progress.total == 0) "Nothing to do here: widen what counts" else "Done: every part that counts is covered. Finish, or widen to the rest."), false, progress, blur)
+            val steadyS = steadyFor(blur, f.t)      // counted when all's done too: Take still takes one
+            if (target == null) return FrameOut(Hint(Hint.Kind.DONE, if (progress.total == 0) "Nothing to do here: widen what counts" else "Done: every part that counts is covered. Finish, or widen to the rest."), false, progress, blur, steadyS = steadyS)
             var hint = cov.hint(eye, target, f.uprightDeg)
-            val steady = blur <= STEADY_PX
             val worth = cov.gain(eye) > 0
-            if (hint.kind == Hint.Kind.SHOOT && !steady) hint = hint.copy(text = "Hold still: the phone is moving")
-            return FrameOut(hint, auto && steady && worth && f.t - lastShotT >= MIN_GAP_S, progress, blur, still, if (close) cov.status(target!!) else "")
+            if (hint.kind == Hint.Kind.SHOOT && steadyS < STEADY_FOR_S) hint = hint.copy(text = "Hold still: the phone is moving")
+            return FrameOut(hint, auto && steadyS >= STEADY_FOR_S && worth && f.t - lastShotT >= MIN_GAP_S, progress, blur, still, if (close) cov.status(target!!) else "", steadyS)
         }
         if (orb != null) {
             val blur = Quality.blurPx(f.gyroRadS, speed, f.exposureS, f.pose.lens.fx, f.pose.centre.distance(orb.centre))
-            val steady = blur <= STEADY_PX
+            val steadyS = steadyFor(blur, f.t)
             var hint = orb.hint(f.pose)
-            if (hint.kind == Hint.Kind.SHOOT && !steady) hint = hint.copy(text = "Hold still: the phone is moving")
-            return FrameOut(hint, auto && steady && orb.useful(f.pose) && f.t - lastShotT >= MIN_GAP_S, orb.progress(), blur)
+            if (hint.kind == Hint.Kind.SHOOT && steadyS < STEADY_FOR_S) hint = hint.copy(text = "Hold still: the phone is moving")
+            return FrameOut(hint, auto && steadyS >= STEADY_FOR_S && orb.useful(f.pose) && f.t - lastShotT >= MIN_GAP_S, orb.progress(), blur, steadyS = steadyS)
         }
         return FrameOut(Hint(Hint.Kind.NONE, "Tap the middle of the rock to start"), false, none, 0.0)
+    }
+
+    /** How long the phone has been still enough for a photo, up to this frame at `t` whose blur is `blur`: 0 if it isn't now. */
+    private fun steadyFor(blur: Double, t: Double): Double {
+        if (blur > STEADY_PX) { steadySince = null; return 0.0 }
+        return t - (steadySince ?: t.also { steadySince = it })
     }
 
     /**
@@ -326,6 +335,8 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         const val MATCHED_MOST = 300
         const val HARSH_CLIP = 0.01     // this share of a picture blown out and as much black: lit and shaded rock together
         const val STEADY_PX = 1.0       // a photo takes itself only when the phone's own motion would smear it less than this
+        const val STEADY_FOR_S = 0.3    // and has been for this long: a photo lands about half a second after it's asked for, and
+                                        // one steady frame alone often turned out to be a pause in a swing, blurred by then
         const val MIN_GAP_S = 0.6       // and no sooner than this after the last
         const val SPEED_SMOOTH_S = 0.15
         const val USUAL_FROM = 5        // photos kept before their sharpness says what's usual

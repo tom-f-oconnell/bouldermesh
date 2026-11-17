@@ -173,6 +173,7 @@ class SessionTest {
         assertTrue(s.shotCount in 8..60, "${s.shotCount} photos")
         assertTrue(Hint.Kind.CLOSER in kinds && Hint.Kind.ANGLE in kinds, "it asked to come closer and for other angles: $kinds")
         assertEquals(Hint.Kind.DONE, s.frame(FrameIn(TestWorld.look(at, aim), 0.0, 0.004, true, t + 1)).hint.kind)
+        assertTrue(s.frame(FrameIn(TestWorld.look(at, aim), 0.0, 0.004, true, t + 1.5)).steadyS >= CaptureSession.STEADY_FOR_S, "still counted when done, for Take")
         val rec = s.record(900.0)
         assertTrue(rec.mode == "plan" && rec.mesh == "abc" && rec.shots.size == s.shotCount && rec.progress!!.done == p.done)
         assertTrue(near(rec.fit!!.scale, 1.25, 1e-6) && rec.fit!!.taps == 2 && rec.json().contains("\"tilt_deg\""))
@@ -185,7 +186,8 @@ class SessionTest {
         val unlined = CaptureSession(TestWorld.plan(), TestWorld.guide(), "t2", "test", "phone", 0.0)
         assertTrue("Line the mesh up" in unlined.frame(FrameIn(pose, 0.0, 0.004, true, 0.0)).hint.text)
         assertTrue(!s.frame(FrameIn(pose, 0.0, 0.004, false, 0.0)).shoot, "not while it's lost")
-        assertTrue(s.frame(FrameIn(pose, 0.0, 0.004, true, 1.0)).shoot)
+        assertTrue(!s.frame(FrameIn(pose, 0.0, 0.004, true, 0.8)).shoot, "nor the moment it's still: it waits to see it stay so")
+        assertTrue(s.frame(FrameIn(pose, 0.0, 0.004, true, 0.8 + CaptureSession.STEADY_FOR_S)).shoot)
         assertTrue(!s.frame(FrameIn(pose, 0.5, 0.004, true, 2.0)).shoot, "nor while it's turning: 6 pixels of blur")
         val moved = TestWorld.look(pose.centre + Vec3(0.5, 0.0, 0.0), truth.apply(Vec3(-0.5, 1.0, 0.0)))
         assertTrue(!s.frame(FrameIn(moved, 0.0, 0.004, true, 2.1)).shoot, "nor while it's moving: half a metre in a tenth of a second")
@@ -233,7 +235,8 @@ class SessionTest {
         while (!orbit.progress().finished && guard++ < 300) {
             val pose = TestWorld.look(mid + Vec3(3 * sin(a), 0.3, 3 * cos(a)), mid)
             s.frame(FrameIn(pose, 0.0, 0.004, true, t)); t += 1.0       // stepping there, then standing
-            val out = s.frame(FrameIn(pose, 0.0, 0.004, true, t)); t += 1.0
+            s.frame(FrameIn(pose, 0.0, 0.004, true, t)); t += 0.5
+            val out = s.frame(FrameIn(pose, 0.0, 0.004, true, t)); t += 0.5
             if (out.shoot) { take(s, pose, t); continue }
             a += when (out.hint.kind) { Hint.Kind.FACE -> 0.2 * out.hint.turnX; else -> 0.11 }
         }

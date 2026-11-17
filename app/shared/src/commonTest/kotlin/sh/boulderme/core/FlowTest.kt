@@ -196,6 +196,7 @@ class FlowTest {
         val pose = TestWorld.look(Vec3(0.0, 1.5, 0.0), mid)
         flow.tap(pose.centre, pose.forward) { mid }
         flow.shutter()
+        flow.frame(pose, true, 0.0, 0.004, t + 1.5, 90)
         assertTrue(flow.frame(pose, true, 0.0, 0.004, t + 2, 90).shoot)
         val accel = Axes.forceInImage(pose.rot.conj().rotate(-down * Sensors.G)) + Vec3(0.2, 0.0, 0.1)
         val shot = flow.shot(ShotIn(pose, SensorSample(accel, Vec3.ZERO, t = t + 2), sharp, 0.004, 80.0, 1.3, true, "a", t + 2, 1.7e9))
@@ -224,8 +225,10 @@ class FlowTest {
         assertTrue(!out.shoot && out.ui.waiting && "Hold still" in out.ui.text, "${out.ui}")
         flow.shutter()
         assertFalse(flow.frame(pose, true, 1.0, 0.004, 1.5, 90).shoot)
+        out = flow.frame(pose, true, 0.0, 0.004, 1.7, 90)
+        assertTrue(!out.shoot && out.ui.waiting, "not the moment it's still: it waits to see it stay so")
         out = flow.frame(pose, true, 0.0, 0.004, 2.0, 90)
-        assertTrue(out.shoot && !out.ui.waiting, "taken once still")
+        assertTrue(out.shoot && !out.ui.waiting, "taken once still for long enough")
         assertTrue(flow.shot(shot(pose, 2.0)).kept)
         assertFalse(flow.frame(pose, true, 0.0, 0.004, 2.5, 90).shoot, "one press, one photo")
         // never still: the press lapses, and says why
@@ -247,7 +250,11 @@ class FlowTest {
         flow.confirmFit()
         flow.addPoint(1.0, 2.0, 3.0); flow.addPoint(1.01, 2.0, 3.0); flow.addPoint(1.5, 2.0, 3.0)
         assertEquals(2, flow.pointCount, "one to each 5 cm")
-        fun take(t: Double): ShotOut { flow.shutter(); assertTrue(flow.frame(pose, true, 0.0, 0.004, t, 90).shoot); return flow.shot(shot(pose, t)) }
+        fun take(t: Double): ShotOut {
+            flow.shutter()
+            val at = (0..4).map { t - 0.4 + it * 0.1 }.firstOrNull { flow.frame(pose, true, 0.0, 0.004, it, 90).shoot }
+            return flow.shot(shot(pose, assertNotNull(at, "held still, the photo is taken")))
+        }
         assertEquals("a", take(2.0).record.blob.ar!!.s)
         // a blink of lost tracking keeps the same spell; two seconds of it starts another
         flow.frame(pose, false, 0.0, 0.004, 3.0, 90); flow.frame(pose, true, 0.0, 0.004, 3.3, 90)
@@ -279,6 +286,7 @@ class FlowTest {
         assertEquals(Phase.CENTRE, flow.phase)
         flow.tap(pose.centre, pose.forward) { mid }
         assertEquals(Phase.CAPTURE, flow.phase)
+        flow.frame(pose, true, 0.0, 0.004, 0.6, 90)
         var out = flow.frame(pose, true, 0.0, 0.004, 1.0, 90)
         assertTrue(!out.ui.guided && out.ui.total == 12 && out.guide == null && !out.ui.canSkip, "${out.ui}")
         assertTrue(out.shoot && flow.shot(shot(pose, 1.1)).kept, "looking at it, still: the first photo takes itself")

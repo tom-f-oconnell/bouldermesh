@@ -477,12 +477,12 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 if (left > 0) ui = ui.copy(askMore = left, text = "Done. $left more hold${if (left == 1) " has" else "s have"} been marked here by others, privately. Photograph ${if (left == 1) "it" else "them"} too?")
                 if (cardNext) ui = ui.copy(text = "Hold a bank card flat on the rock beside the hold, all of it in the picture and out of any glare, and press the shutter")
                 // the button's photo waits for the phone to hold still, as one taken by itself does; a card photo is taken only by the button
-                val steady = out.blurPx <= CaptureSession.STEADY_PX
+                val steady = out.steadyS >= CaptureSession.STEADY_FOR_S
                 if (wantShot && wantAt == null) wantAt = t
                 if (wantShot && !steady && t - wantAt!! > WAIT_S) { wantShot = false; event("shutter_lapsed", "blur_px" to out.blurPx); note = "Not taken: the phone didn't hold still. Brace it, or move more slowly, and press Take again." }
                 val pressed = wantShot && steady
                 val shoot = (if (cardNext) pressed else out.shoot || pressed) && !inFlight
-                if (shoot) { inFlight = true; wantShot = false; cardShot = cardNext; event("shoot", "auto" to out.shoot, "still" to out.still, "card" to cardNext, "blur_px" to out.blurPx) }
+                if (shoot) { inFlight = true; wantShot = false; cardShot = cardNext; event("shoot", "auto" to out.shoot, "still" to out.still, "card" to cardNext, "blur_px" to out.blurPx, "steady_s" to out.steadyS) }
                 else if (wantShot && !steady) ui = ui.copy(text = "Hold still: the photo is taken as soon as the phone is steady")
                 ui = ui.copy(waiting = wantShot, note = note)
                 return FlowOut(ui, session.fit, false, 0.75f, levels, markers, shoot, out.still, shoot && cardNext)
