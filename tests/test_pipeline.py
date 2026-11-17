@@ -607,7 +607,7 @@ assert B({"placed": 90, "ok": False}, {"placed": 80, "ok": True}) and B({"placed
 assert not B({"placed": 90, "ok": True}, {"placed": 80, "ok": True}) and not B({"placed": 50, "ok": True}, {"placed": 60, "ok": False})
 
 
-def sift_fallback(gpu_ok: bool, interrupt_cpu: bool = False):
+def sift_fallback(gpu_ok: bool, interrupt_cpu: bool = False, gpu_n: int = 12, cpu_n: int = 12):
     """A job of 12 photos from the internet, GPU SIFT on, whose GPU-SIFT model's check says gpu_ok and the CPU's passes;
     stopped at levelling. Returns the commands, the log, mapper.json, fallbacks.json and what's set aside."""
     with tempfile.TemporaryDirectory() as td:
@@ -626,7 +626,7 @@ def sift_fallback(gpu_ok: bool, interrupt_cpu: bool = False):
                 if state["stop_cpu"] and (work / "database.db").read_bytes() == b"cpu":
                     state["stop_cpu"] = False
                     raise Cancelled()
-                model(work / "sparse", "0", 12)
+                model(work / "sparse", "0", gpu_n if (work / "database.db").read_bytes() == b"gpu" else cpu_n)
             if cmd[1] == "model_orientation_aligner":
                 raise Stop()
 
@@ -648,6 +648,7 @@ def sift_fallback(gpu_ok: bool, interrupt_cpu: bool = False):
             (pipeline._run, pipeline.COLMAP, pipeline.colmap_has_cuda, pipeline.gpu_free_mb, occlusion.available,
              pipeline.placing_summary, pipeline.GPU_SIFT) = saved
         read = lambda f: json.loads(f.read_text()) if f.exists() else None  # noqa: E731
+        sift_fallback.db = (work / "database.db").read_bytes()
         return (cmds, logged, read(work / pipeline.MAPPER_FILE), read(work / pipeline.FALLBACKS_FILE),
                 sorted(p.name for p in (work / pipeline.PLAIN_SIFT_ASIDE).iterdir()) if (work / pipeline.PLAIN_SIFT_ASIDE).exists() else [])
 
@@ -665,6 +666,12 @@ for interrupted in (False, True):
     assert len(fell) == 1 and fell[0]["step"] == "plain_sift" and fell[0]["better"] and fell[0]["cpu"]["placed"] == 12, fell
     said = [l for l in logged if l.startswith("FALLBACK: plain_sift:")]
     assert len(said) == 1 and "the CPU's did better" in said[0] and "check failed" in said[0], logged
+# the CPU's placing no better (fewer photos, as in 29 of 84 fallbacks to Nov 17): the GPU's is put back and kept
+cmds, logged, how, fell, aside = sift_fallback(gpu_ok=True, gpu_n=8, cpu_n=7)
+r = how["plain_sift_rejected"]
+assert r["why"].startswith("its model places 8 of the 12") and r["better"] is False and r["kept"] == "gpu", r
+assert sift_fallback.db == b"gpu" and fell[0]["kept"] == "gpu", "the GPU's database and model are the ones meshed"
+assert any("the CPU's did no better, so the GPU's is kept" in l for l in logged), logged
 print("GPU SIFT's fallback to the CPU's OK")
 
 

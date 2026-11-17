@@ -16,8 +16,12 @@ the jobs' logs for the 7 that didn't. Photos placed are in the largest model, ag
   the mesh is made from fewer photos than the GPU's placing had. Each fallback also costs the CPU's SIFT and a second
   placing.
 
-Worth deciding: keep whichever placing is better (the GPU's is kept aside in `work/plain-sift/` until the job ends), and
-whether the "check failed" trigger is worth it, as the CPU's check failed too in most of those.
+**Done (Nov 17):** whichever placing is better is kept: when the CPU's did no better, the GPU's goes back in its place
+(`pipeline._swap_back_placing()`), and `fallbacks.jsonl` and `mapper.json` say which was kept (`"kept"`).
+
+**May want, not done (user, Nov 17: "make a note we may want to do 2"):** drop the "check failed" trigger, falling
+back only when the GPU's placing is under 70% of the photos with matches. In 28 of its 43 jobs the CPU's check failed
+too, and those lost the most photos (net -155). Look again once `fallbacks.jsonl` has more cases with "kept".
 
 ## Every case
 

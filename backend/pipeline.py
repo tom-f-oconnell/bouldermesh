@@ -923,6 +923,24 @@ def _set_aside_placing(work: Path) -> None:
     (work / "sparse").mkdir()
 
 
+def _swap_back_placing(work: Path) -> None:
+    """Puts the GPU-SIFT placing set aside (_set_aside_placing()) back in place of the CPU's, which goes to
+    work/plain-sift-cpu/, its steps marked done again: for when the CPU's did no better (plain_sift_better()). Of 84
+    fallbacks to Nov 17 the CPU's placed fewer photos in 29 (net -193): experiments/mapper/gpu-sift-fallbacks.md."""
+    cpu_dir, aside = work / "plain-sift-cpu", work / PLAIN_SIFT_ASIDE
+    shutil.rmtree(cpu_dir, ignore_errors=True)
+    cpu_dir.mkdir()
+    for pattern in PLACING_FILES:
+        for f in work.glob(pattern):
+            f.rename(cpu_dir / f.name)
+    for f in aside.iterdir():
+        f.rename(work / f.name)
+    aside.rmdir()
+    (work / "finished").mkdir(exist_ok=True)
+    for step in ("features", "matching", "rest") + (("global",) if (work / "global.json").exists() else ()):
+        _finish(work, step)
+
+
 def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool,
                                internet: bool = False, min_registered: int = MIN_REGISTERED, tracker: Tracker | None = None) -> Path:
     """internet=True tunes COLMAP for unordered photos from many cameras (per-image intrinsics,
@@ -1036,12 +1054,17 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         record = json.loads(rejected.read_text())
         cpu = placing_summary(model, registered, db, log)
         record.update(cpu=cpu, better=plain_sift_better(record["gpu"], cpu))
+        if not record["better"] and (work / PLAIN_SIFT_ASIDE).is_dir():     # the GPU's placing again, as no worse
+            _swap_back_placing(work)
+            model, registered = _largest_model(sparse)
+        record["kept"] = "cpu" if record["better"] else "gpu"
         rejected.write_text(json.dumps(record))
         how = json.loads((work / MAPPER_FILE).read_text()) if (work / MAPPER_FILE).exists() else {}
         (work / MAPPER_FILE).write_text(json.dumps({**how, "plain_sift_rejected": record}, indent=1))
         _fell_back(work, "plain_sift", f"{record['why']}: placed again from the CPU's SIFT. The GPU's {_said(record['gpu'])}; "
-                   f"the CPU's {_said(cpu)}: " + ("the CPU's did better" if record["better"] else "the CPU's did no better"),
-                   log, gpu=record["gpu"], cpu=cpu, better=record["better"])
+                   f"the CPU's {_said(cpu)}: " + ("the CPU's did better, and is kept" if record["better"] else
+                                                  "the CPU's did no better, so the GPU's is kept"),
+                   log, gpu=record["gpu"], cpu=cpu, better=record["better"], kept=record["kept"])
     _finish(work, "sift-judged")
     log(f"registered {registered}/{n_images} images in the largest model")
     try:
