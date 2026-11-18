@@ -279,7 +279,12 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
             Phase.CAPTURE -> if (marking) {
                 val world = hit()
                 if (world == null) note = "The phone hasn't made out the rock there yet: move a little and tap again."
-                else { session.orbit?.addSpot(world); marking = false; levelsDirty = true; note = "" }
+                else {
+                    val id = session.markHold(world, block)
+                    event("mark", "id" to id)
+                    marking = false; levelsDirty = true
+                    note = if (id == null) "" else "Marked: it's asked for close up, and once the capture is meshed it's a hold of yours there, in a set of beta"
+                }
             }
             else -> {}
         }

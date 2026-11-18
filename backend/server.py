@@ -1913,6 +1913,54 @@ def tie_capture(mid: str, target: str, log=None, how: str = "cameras") -> dict |
     return rec
 
 
+def phone_holds(mid: str, pid: str, log=None, target: str | None = None) -> dict | None:
+    """The holds marked on the phone in a capture (its record's "marked") as a set of beta on the mesh made from it,
+    the account's that sent it (the site's, sent with its token): each where the photos taken in the same spell of the
+    phone's tracking, as placed in the mesh, put it (phonedata.session_fits()). With `target` (the mesh the capture
+    added to, once the two are tied: tie_capture()), there too. A hold whose spell had too few photos placed is left
+    out, and said. Asked again, a set made before stays as it is (beta.capture_set()).
+
+    Returns:
+        {placed, of, sets: [{mesh, set}]}; None if the capture marked none.
+    """
+    import phonedata
+    rec = _read_json(PROJECTS / pid / CAPTURE_FILE)
+    marked = [m for m in (rec.get("marked") or []) if isinstance(m, dict) and isinstance(m.get("p"), list) and len(m["p"]) == 3
+              and all(isinstance(x, (int, float)) for x in m["p"])] if isinstance(rec, dict) else []
+    if not marked:
+        return None
+    say = log or (lambda s: None)
+    try:
+        cams = json.loads((MESHES / mid / "cameras.json").read_text())
+    except (OSError, ValueError):
+        cams = []
+    fits = phonedata.session_fits(cams, phonedata.blobs(PROJECTS / pid / "photos", [c["name"] for c in cams])) if cams else {}
+    holds = [{"p": [round(x, 5) for x in phonedata.to_model(fits[m["s"]], m["p"])], "role": "hand"} for m in marked if m.get("s") in fits]
+    out = {"placed": len(holds), "of": len(marked), "sets": []}
+    if not holds:
+        say(f"capture: none of the {plural(len(marked), 'hold')} marked on the phone could be put on the mesh: too few of the photos "
+            "taken as each was marked were placed")
+        return out
+    proj = q("SELECT user_id FROM projects WHERE id=?", pid, one=True)
+    user = ACCOUNTS.get(proj["user_id"]) if proj and proj.get("user_id") else None
+    places = [(mid, holds)]
+    tie = frames.load(MESHES / mid) if target else None
+    if tie and tie.get("status") == "tied" and tie.get("of") == target:
+        places.append((target, [{**h, "p": [round(x, 5) for x in frames.back(tie, h["p"])]} for h in holds]))
+    for where, these in places:
+        try:
+            one = beta_mod.capture_set(MESHES / where, pid, these, user["id"] if user else None, user["name"] if user else None)
+            out["sets"].append({"mesh": where, "set": one["id"]})
+        except ValueError as e:
+            say(f"capture: the holds marked on the phone weren't added to mesh {where}: {e}")
+    if out["sets"]:
+        meshes_changed()
+    say(f"capture: {len(holds)} of the {plural(len(marked), 'hold')} marked on the phone put on "
+        + " and ".join(f"mesh {s['mesh']}" for s in out["sets"]) + f", as the set of beta \"{beta_mod.CAPTURE_SET_NAME}\""
+        + (f"; {len(marked) - len(holds)} left out, too few photos of their spell of the tracking placed" if len(holds) < len(marked) else ""))
+    return out
+
+
 def mesh_tie(mid: str) -> dict | None:
     """How a capture's mesh is tied to the one it adds to (tie_capture()), for the mesh list."""
     rec = frames.load(MESHES / mid)
@@ -3586,6 +3634,10 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
                 keep_capture_level(mid, pid, log)
             except Exception as e:
                 log(f"capture: keeping how its down was found failed ({type(e).__name__}: {e})")
+            try:
+                phone_holds(mid, pid, log, added_to if added_to and not waits else None)
+            except Exception as e:
+                log(f"capture: adding the holds marked on the phone failed ({type(e).__name__}: {e})")
         before = proj["mesh_id"] if proj["mesh_id"] and proj["mesh_id"] != mid and q("SELECT id FROM meshes WHERE id=?", proj["mesh_id"]) else None
         worse = fewer_placed(before, mid, pdir / "photos") if before and keep_better and not mesh_is_old(
             q("SELECT source, rules FROM meshes WHERE id=?", before, one=True)) else None      # never an old one over it
@@ -8582,6 +8634,10 @@ def link_contribution(pid: str) -> None:
     target = (_read_json(PROJECTS / pid / CAPTURE_FILE) or {}).get("mesh")
     if target and q("SELECT 1 FROM meshes WHERE id=?", target, one=True):
         link_capture(mid, target, log)
+        try:
+            phone_holds(mid, pid, log, target)
+        except Exception as e:
+            log(f"capture: adding the holds marked on the phone failed ({type(e).__name__}: {e})")
 
 
 def approve_project(pid: str, by: dict, ok: bool = True) -> dict:

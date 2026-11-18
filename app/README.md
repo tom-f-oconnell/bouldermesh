@@ -31,6 +31,10 @@ phone yet**: see [What's been checked](#whats-been-checked).
 A rock with no mesh: *Capture a new rock…*, tap its middle, and walk round as much of it as you can; *Can't reach that
 side* for the rest, and *Mark a hold* for anything that needs close-ups.
 
+*Mark a hold* (with or without a mesh): tap a hold on the rock, and it's asked for close up. Once the capture is meshed,
+the holds you marked are on the mesh as a set of beta of yours, *Marked on the phone* (each a hand hold: change the
+roles in the site's *Beta* tab), and on the mesh you were adding to as well.
+
 *Another ring* (with or without a mesh) asks for the rock all round again from another height: hold the phone at least
 0.9 m higher or lower than before (crouched, or up on a pole), and keep it near that height all the way round; the
 mesh's own targets come back after it. For a phone out of sight, *Settings* has two sounds, both off at first: a bell

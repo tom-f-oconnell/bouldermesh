@@ -97,9 +97,10 @@ data class SceneryShot(val name: String, val kind: String, val t: Double, val ar
 /** A whole capture, as sent to the server beside its photos (POST /api/projects/<id>/capture). */
 @Serializable
 data class CaptureRecord(
-    val v: Int = 4,                         // 2: plan, level, down_agree_deg; `ar.s` changes when tracking was lost and came back; accel_bias gone
+    val v: Int = 5,                         // 2: plan, level, down_agree_deg; `ar.s` changes when tracking was lost and came back; accel_bias gone
                                             // 3: detail, licence, credit; a photo's ref, still, ar.span
                                             // 4: scenery
+                                            // 5: marked
     val id: String,
     val app: String,
     val device: String,
@@ -121,9 +122,17 @@ data class CaptureRecord(
     val credit: String? = null,
     val shots: List<ShotRecord>,
     val scenery: List<SceneryShot> = emptyList(),   // frames of what's around the rock, for the site's backdrop
+    val marked: List<RecordMarked> = emptyList(),   // holds marked on the phone, to add to the mesh as a set of beta
 ) {
     fun json(): String = Plan.json.encodeToString(serializer(), this)
 }
+
+/**
+ * A hold marked on the phone (its target or spot `id`): where it was tapped (p), in the world of the phone's tracking in
+ * spell `s` (as a photo's ar.s, null if no photo was taken), which the server ties to its mesh by the photos of that
+ * spell it placed; and, with a mesh to go by, where in that mesh's coordinates the phone's fit put it (m).
+ */
+@Serializable data class RecordMarked(val id: String, val s: String?, val p: List<Double>, val m: List<Double>? = null)
 
 /** The plan a capture went by: what it was made from (its key), when, and its guide. A mesh's frame can change between a plan's download and a capture's upload. */
 @Serializable data class RecordPlan(val key: String, val made: Double, val guide: String)

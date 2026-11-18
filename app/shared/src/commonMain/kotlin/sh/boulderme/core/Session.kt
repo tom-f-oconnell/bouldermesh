@@ -70,6 +70,9 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     private val nearest: GuideMesh.Nearest? = guide?.let { g -> val (lo, hi) = g.bounds(); g.Nearest(max(1e-6, (hi - lo).norm / 40)) }
     private val shots = ArrayList<ShotRecord>()
     private val scenery = ArrayList<SceneryShot>()
+    private class Marked(val id: String, val world: Vec3, val spell: Int, val mesh: Vec3?)
+    private val marked = ArrayList<Marked>()
+    val markedCount: Int get() = marked.size
     val sceneryCount: Int get() = scenery.size
     private val fields = ArrayList<Double>()
     private val sharps = ArrayList<Double>()
@@ -147,6 +150,30 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             orbit = Orbit(f.apply((lo + hi) * 0.5), others = listOf(usual))
         }
         return orbit!!.newRing().n
+    }
+
+    /**
+     * A hold tapped on the rock (`world`, in spell `spell` of the phone's tracking): to photograph close up from all round,
+     * and to add to the mesh made of the capture as a set of beta of the account's. With a mesh lined up, a target of
+     * its own, in the capture's set of beta if it's for one; with none, a spot of the orbit. Returns its id, or null with
+     * neither yet.
+     */
+    fun markHold(world: Vec3, spell: Int): String? {
+        val cov = coverage; val f = fit; val orb = orbit
+        val id: String; var inMesh: Vec3? = null
+        if (cov != null && f != null) {
+            val m = f.inverse().apply(world)
+            val g = guide; val n = nearest
+            val face = if (g != null && n != null) n.of(m, MARK_NEAR_M / cov.metresPerUnit)?.first else null
+            val normal = if (face != null) g!!.normal(face) else lastPose?.let { (f.inverse().apply(it.centre) - m).unit() } ?: Vec3(0.0, 0.0, 1.0)
+            id = "p${marked.size + 1}"
+            cov.add(Target(id, "hold", m.toList(), normal.toList(), MARK_REACH_M / cov.metresPerUnit, prio = 3, from = "phone",
+                climbs = cov.scope.climbs.sorted(), sets = listOfNotNull(cov.scope.set), detailM = MARK_DETAIL_M))
+            inMesh = m
+        } else if (orb != null) id = orb.addSpot(world).id
+        else return null
+        marked.add(Marked(id, world, spell, inMesh))
+        return id
     }
 
     /** Whether photos now go by a ring round the rock, rather than the mesh's targets: with no mesh, or while a ring asked for is unfinished. */
@@ -342,10 +369,17 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             progress = p?.let { RecordProgress(it.total, it.done, it.skipped, it.holds, it.holdsDone) },
             detail = set?.let { id -> cov?.let { RecordDetail(id, it.reached()) } }, licence = licence, credit = credit,
             shots = shots.toList(), scenery = scenery.toList(),
+            marked = marked.map { h -> RecordMarked(h.id, arBase()?.let { if (h.spell > 1) "$it.${h.spell}" else it }, h.world.toList(), h.mesh?.toList()) },
         )
     }
 
+    /** The phone tracking's own name for the capture's session, without its spell: as its photos have it. */
+    private fun arBase(): String? = (shots.firstOrNull { it.blob.ar != null }?.blob?.ar?.s ?: scenery.firstOrNull()?.ar?.s)?.substringBefore('.')
+
     companion object {
+        const val MARK_NEAR_M = 0.3     // a hold marked on the phone faces the way the mesh does within this of it
+        const val MARK_REACH_M = 0.15   // as a target: this far round it (the server's captureplan.HOLD_RADIUS_M)
+        const val MARK_DETAIL_M = 0.075 // and the hold itself, wanted in detail (beta.HOLD_R_M)
         const val CARD = "id1-card"     // a photo's ref: a bank card (ID-1, 85.60 by 53.98 mm) flat on the rock in it
         // warnings that a photo may not join up with the others when meshed: low, as they're only said, and to be tuned
         // against which photos meshing did place (the capture's log and record have every photo's numbers)

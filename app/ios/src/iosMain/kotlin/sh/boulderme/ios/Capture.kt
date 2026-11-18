@@ -671,8 +671,10 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
                 buttons.addArrangedSubview(if (now.guided) makeRow(makeButton("Skip this", enabled = now.canSkip) { flow.skip() }, makeButton("Doing: ${now.reach}") { flow.toggleWide() },
                         *(if (now.canCard || now.card) arrayOf(makeButton(if (now.card) "No card" else "Card photo") { flow.toggleCard() }) else emptyArray()))
                     else makeRow(makeButton(if (now.marking) "Tap the hold…" else "Mark a hold") { flow.toggleMarking() }, makeButton("Can't reach that side") { flow.blockSide() }))
-                buttons.addArrangedSubview(if (now.guided && now.ring > 0) makeRow(makeButton(if (now.ring > 1) "Another ring (on ${now.ring})" else "Another ring") { flow.newRing() }, makeButton("Can't reach that side") { flow.blockSide() })
-                    else makeRow(makeButton(if (now.ring > 1) "Another ring (on ${now.ring})" else "Another ring") { flow.newRing() }))
+                val ring = makeButton(if (now.ring > 1) "Another ring (on ${now.ring})" else "Another ring") { flow.newRing() }
+                buttons.addArrangedSubview(if (!now.guided) makeRow(ring)
+                    else makeRow(*listOfNotNull(makeButton(if (now.marking) "Tap the hold…" else "Mark a hold") { flow.toggleMarking() }, ring,
+                        if (now.ring > 0) makeButton("Can't reach that side") { flow.blockSide() } else null).toTypedArray()))
                 buttons.addArrangedSubview(makeRow(makeButton(if (now.scenery > 0) "Scenery (more)" else "Scenery") { flow.startScenery()?.let { flow.say(it) } }))
             }
             Phase.SCENERY -> buttons.addArrangedSubview(makeRow(makeButton("Back to the rock", Look.FILLED) { flow.endScenery() }, leave))

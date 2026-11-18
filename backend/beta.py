@@ -858,6 +858,28 @@ def new_set(mesh_dir: Path, name=None, climb=None, author=None, source: dict | N
     return made
 
 
+CAPTURE_SET_NAME = "Marked on the phone"
+
+
+def capture_set(mesh_dir: Path, capture: str, holds: list[dict], owner: str | None = None, author: str | None = None) -> dict:
+    """The set of beta of the holds marked on a phone in a capture (its project's id), made the first time it's asked
+    for, with each hold a hand until its maker says. Asked again (a mesh made again, or approved later), it's the set
+    made before, as it now is: whatever its owner has changed of it stays.
+
+    Raises:
+        ValueError: as new_set().
+    """
+    one = next((s for s in load_sets(mesh_dir) if (s.get("from") or {}).get("capture") == capture), None)
+    if one is not None:
+        return one
+    made = new_set(mesh_dir, CAPTURE_SET_NAME, author=author, owner=owner)
+    sets = load_sets(mesh_dir)
+    one = next(s for s in sets if s["id"] == made["id"])
+    one.update({"from": {"capture": capture}, "holds": _checked([{"p": h["p"], "role": h.get("role") or "hand"} for h in holds][:SET_HOLDS_MOST])})
+    save_sets(mesh_dir, sets)
+    return one
+
+
 def update_set(mesh_dir: Path, sid: str, changes: dict) -> dict:
     """Change a set's name, climb, author, holds or whether it's shared (those given). Returns it. Raises ValueError: no such set, or bad holds."""
     sets = load_sets(mesh_dir)

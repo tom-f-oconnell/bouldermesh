@@ -99,7 +99,7 @@ last before) and `k_src: "derived"` (its lens was worked out from the tracking c
 
 **The record** (`capture.json`, kept whole in the project):
 
-    v, id, app, device, started, ended     v is 3 (1: no plan, level or down_agree_deg; one `ar.s` whatever happened; 2: no detail, licence or credit)
+    v, id, app, device, started, ended     v is 5 (1: no plan, level or down_agree_deg; one `ar.s` whatever happened; 2: no detail, licence or credit; 4: no marked)
     plan                  {key, made, guide}: the plan the capture went by, and its guide's sha1
     mesh, climbs          the mesh it adds to (none: a rock with no mesh), and the climbs it was kept to, if any
     mode                  "plan" or "orbit"
@@ -124,6 +124,11 @@ last before) and `k_src: "derived"` (its lens was worked out from the tracking c
     progress              {total, done, skipped, holds, holds_done}
     shots                 [{name, blob, kept, why, notes, helped}]: every photo taken, kept or not, with its readings
                           (helped: the targets it counted for; round a rock, `sector<k>` of the first ring, `ring<n>_sector<k>` of others)
+    marked                [{id, s, p, m}]: holds marked on the phone (Mark a hold): where tapped, in the world of the
+                          tracking's spell s (as a photo's ar.s; null with no photo taken), and with a mesh to go by, where
+                          the phone's fit put it in that mesh's coordinates (m). Once the capture is meshed, the server puts
+                          them on the mesh, by the photos of their spell it placed (phone_holds()), as a set of beta of the
+                          account's, "Marked on the phone", each a hand until changed; and on the mesh it added to, once tied
 
 **The points** (`points.bin`, kept in the project as `capture-points.bin`): what the phone's tracking found of the world,
 one to each 5 cm, 20,000 at most to a spell. Noisy to a centimetre or so, except from a lidar.

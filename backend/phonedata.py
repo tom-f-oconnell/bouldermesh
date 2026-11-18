@@ -90,13 +90,14 @@ def similarity(X, Y) -> tuple[float, "object", "object"]:
     return s, R, my - s * R @ mx
 
 
-def scale_estimates(cams: list[dict], blobs: dict[str, dict]) -> list[dict]:
-    """A scale from each motion-tracking session whose photos were placed: how far apart the phone says they were taken,
-    against how far apart the model has them. Places the two disagree on (a photo misplaced, tracking that jumped) are
-    left out, twice over.
+def session_fits(cams: list[dict], blobs: dict[str, dict]) -> dict[str, dict]:
+    """How each motion-tracking session's world sits in the model, from the photos of it that were placed: the
+    scale, turn and shift taking the model's coordinates to the session's (AR ~ s R model + t). Places the two disagree
+    on (a photo misplaced, tracking that jumped) are left out, twice over. Sessions with fewer than AR_MIN photos left,
+    or spread over less than AR_SPREAD metres, are left out.
 
     Returns:
-        For scale.combine(): [{kind: "phone", metres_per_unit, sd, n, of, session, rms_m, spread_m}].
+        {session: {s, R, t, n, of, rms_m, spread_m}}.
     """
     import numpy as np
     by: dict[str, list[tuple]] = {}
@@ -105,7 +106,7 @@ def scale_estimates(cams: list[dict], blobs: dict[str, dict]) -> list[dict]:
         p = ar.get("p")
         if isinstance(p, list) and len(p) == 3 and ar.get("track", "normal") == "normal":
             by.setdefault(str(ar.get("s", "")), []).append((_centre(cam), np.asarray(p, float)))
-    out = []
+    out = {}
     for session, pairs in sorted(by.items()):
         X, Y = np.array([a for a, _ in pairs]), np.array([b for _, b in pairs])
         keep = np.ones(len(X), bool)
@@ -126,9 +127,26 @@ def scale_estimates(cams: list[dict], blobs: dict[str, dict]) -> list[dict]:
         if spread < AR_SPREAD or s <= 0:
             continue
         rms = float(np.sqrt((np.linalg.norm(Y[keep] - (s * (R @ X[keep].T).T + t), axis=1) ** 2).mean()))
-        out.append({"kind": "phone", "metres_per_unit": round(s, 6), "sd": round(float(np.hypot(AR_SD, rms / spread / math.sqrt(n))), 4),
-                    "n": n, "of": len(pairs), "session": session, "rms_m": round(rms, 3), "spread_m": round(spread, 2)})
+        out[session] = {"s": s, "R": R, "t": t, "n": n, "of": len(pairs), "rms_m": rms, "spread_m": spread}
     return out
+
+
+def scale_estimates(cams: list[dict], blobs: dict[str, dict]) -> list[dict]:
+    """A scale from each motion-tracking session whose photos were placed (session_fits()): how far apart the phone
+    says they were taken, against how far apart the model has them.
+
+    Returns:
+        For scale.combine(): [{kind: "phone", metres_per_unit, sd, n, of, session, rms_m, spread_m}].
+    """
+    return [{"kind": "phone", "metres_per_unit": round(f["s"], 6), "sd": round(float(math.hypot(AR_SD, f["rms_m"] / f["spread_m"] / math.sqrt(f["n"]))), 4),
+             "n": f["n"], "of": f["of"], "session": session, "rms_m": round(f["rms_m"], 3), "spread_m": round(f["spread_m"], 2)}
+            for session, f in session_fits(cams, blobs).items()]
+
+
+def to_model(fit: dict, p) -> list[float]:
+    """A point in a session's world (metres, as its photos' ar.p) in the model's coordinates, by session_fits()'s fit of it."""
+    import numpy as np
+    return [float(x) for x in fit["R"].T @ (np.asarray(p, float) - fit["t"]) / fit["s"]]
 
 
 def position(cams: list[dict], blobs: dict[str, dict], metres_per_unit: float, point=None, north: float | None = None) -> dict | None:

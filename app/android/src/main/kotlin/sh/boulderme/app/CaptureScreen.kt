@@ -200,7 +200,8 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                             if (ui.canSkip) FilledTonalButton(onClick = { controller.skip() }) { Text("Skip this") }
                             FilledTonalButton(onClick = { controller.toggleWide() }) { Text("Doing: ${ui.reach}") }
                             if (ui.canCard || ui.card) FilledTonalButton(onClick = { controller.toggleCard() }) { Text(if (ui.card) "No card" else "Card photo") }
-                        } else FilledTonalButton(onClick = { controller.toggleMarking() }) { Text(if (ui.marking) "Tap the hold…" else "Mark a hold") }
+                        }
+                        FilledTonalButton(onClick = { controller.toggleMarking() }) { Text(if (ui.marking) "Tap the hold…" else "Mark a hold") }
                         if (plan == null || ui.ring > 0) FilledTonalButton(onClick = { controller.blockSide() }) { Text("Can't reach that side") }
                         FilledTonalButton(onClick = { controller.newRing() }) { Text(if (ui.ring > 1) "Another ring (on ${ui.ring})" else "Another ring") }
                         FilledTonalButton(onClick = { controller.startScenery() }) { Text(if (ui.scenery > 0) "Scenery (${ui.scenery})" else "Scenery") }

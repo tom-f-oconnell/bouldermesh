@@ -343,6 +343,34 @@ assert server.q("SELECT lat, lng FROM meshes WHERE id=?", new_mid, one=True) == 
 assert scale.load(server.MESHES / new_mid)["phone"]["placed"]["was"] == [34.0, -116.0] and server.place_from_phone(new_mid) is None, "once"
 print("placed by its app photos OK")
 
+# --- holds marked on the phone: a set of beta on the capture's mesh, and on the mesh it added to ---------------------------
+yaw = 1.1
+R_ar = np.array([[math.cos(yaw), 0, math.sin(yaw)], [0, 1, 0], [-math.sin(yaw), 0, math.cos(yaw)]])
+s_ar, t_ar = 0.8, np.array([-2.0, 0.3, 5.0])      # the phone's world: metres, turned and shifted from the capture mesh's
+ar = lambda x: [float(v) for v in s_ar * R_ar @ np.asarray(x, float) + t_ar]  # noqa: E731
+truly = [moved(c, s_true, R_true, t_true) for c in cams]
+for c in truly[:2] + truly[3:]:     # each photo with where the phone was (but the one the mesh misplaced, mine_cams[2])
+    Image.new("RGB", (32, 24), (80, 80, 80)).save(server.PROJECTS / mine / "photos" / c["name"], exif=(lambda e: (e.get_ifd(phonedata.EXIF_IFD).__setitem__(
+        phonedata.USER_COMMENT, b"ASCII\0\0\0" + phonedata.MARK + json.dumps({"v": 1, "ar": {"s": "a", "p": ar(phonedata._centre(c))}}).encode()), e)[1])(Image.Exif()))
+hold_new = frames.apply(found, [0.3, 1.1, 1.98])
+(server.PROJECTS / mine / server.CAPTURE_FILE).write_text(json.dumps({"mesh": mid, "shots": [], "marked": [
+    {"id": "p1", "s": "a", "p": ar(hold_new), "m": [0.3, 1.1, 1.98]}, {"id": "p2", "s": "a.2", "p": [0, 0, 0]}]}))
+assert server.phone_holds(new_mid, theirs) is None, "no record: nothing marked"
+got = server.phone_holds(new_mid, mine, said.append, mid)
+assert got["placed"] == 1 and got["of"] == 2 and [x["mesh"] for x in got["sets"]] == [new_mid, mid], got
+assert "1 of the 2 holds marked on the phone" in said[-1] and "1 left out" in said[-1], said[-1]
+ours = next(x for x in beta.load_sets(server.MESHES / new_mid) if x["name"] == beta.CAPTURE_SET_NAME)
+assert ours["from"] == {"capture": mine} and ours["owner"] is None and ours["holds"][0]["role"] == "hand", ours
+assert np.allclose(ours["holds"][0]["p"], hold_new, atol=1e-3), (ours["holds"], hold_new)
+there = next(x for x in beta.load_sets(mdir) if x["name"] == beta.CAPTURE_SET_NAME)
+assert np.allclose(there["holds"][0]["p"], [0.3, 1.1, 1.98], atol=1e-3), "and on the mesh it added to, where it is there"
+beta.update_set(server.MESHES / new_mid, ours["id"], {"holds": [{**ours["holds"][0], "role": "start"}]})
+again = server.phone_holds(new_mid, mine, None, mid)
+assert [x["set"] for x in again["sets"]] == [ours["id"], there["id"]] and sum(x["name"] == beta.CAPTURE_SET_NAME for x in beta.load_sets(mdir)) == 1
+assert beta.load_sets(server.MESHES / new_mid)[-1]["holds"][0]["role"] == "start", "asked again: the set as its owner left it"
+beta.delete_set(mdir, there["id"])
+print("holds marked on the phone OK")
+
 # --- whose its photos are: a capture's, under the licence its record gives, credited as it says ---------------------------
 import policy  # noqa: E402
 import provenance  # noqa: E402

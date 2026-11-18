@@ -55,8 +55,12 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
         internal var wantedAt = 0.0
     }
 
-    val states: List<State> = plan.targets.map { State(it) }
-    private val byId = states.associateBy { it.target.id }
+    private val all = ArrayList(plan.targets.map { State(it) })
+    val states: List<State> get() = all
+    private val byId = HashMap(all.associateBy { it.target.id })
+
+    /** A target the plan didn't have: a hold marked on the phone. */
+    fun add(t: Target): State = State(t).also { all.add(it); byId[t.id] = it }
     var scope = Scope()
     var refFx = 3000.0      // a phone's main camera at 12 megapixels, until a photo says
 

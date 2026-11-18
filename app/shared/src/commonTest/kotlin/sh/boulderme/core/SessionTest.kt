@@ -86,6 +86,30 @@ class SessionTest {
         assertTrue(s.frame(FrameIn(pole, 0.0, 0.004, true, 3.5)).redundant, "nothing more from just there")
     }
 
+    @Test fun holdsMarkedOnThePhone() {
+        val s = session()
+        val before = assertNotNull(s.coverage).progress()
+        val pose = TestWorld.look(truth.apply(Vec3(0.3, 1.2, 1.5)), truth.apply(Vec3(0.3, 1.2, 0.0)))
+        s.frame(FrameIn(pose, 0.0, 0.004, true, 0.0))
+        take(s, pose, 0.1)
+        // with a mesh: a hold of its own to photograph close up, facing the way the rock does there
+        val at = truth.apply(Vec3(0.3, 1.2, 0.0))
+        assertEquals("p1", s.markHold(at, 2))
+        val t = assertNotNull(s.coverage!!.state("p1")).target
+        assertTrue(t.isHold && t.from == "phone" && near(Vec3.of(t.p), Vec3(0.3, 1.2, 0.0), 1e-6) && t.normal.z > 0.9, "$t")
+        assertEquals(before.holds + 1, s.coverage!!.progress().holds)
+        assertTrue(s.markers().any { it.id == "p1" && it.kind == "hold" })
+        val rec = s.record(1.0).marked.single()
+        assertTrue(rec.id == "p1" && rec.s == "ar1.2" && near(Vec3.of(rec.p), at, 1e-9) && near(Vec3.of(rec.m!!), Vec3(0.3, 1.2, 0.0), 1e-6), "$rec")
+        assertTrue("\"marked\":[{\"id\":\"p1\"" in s.record(1.0).json())
+        // with none: a spot of the orbit, in the world only
+        val o = CaptureSession(null, null, "t9", "test", "phone", 0.0)
+        assertNull(o.markHold(Vec3.ZERO, 1), "nothing to mark it on yet")
+        o.startOrbit(Vec3(0.0, 1.0, 3.0))
+        assertEquals("s0", o.markHold(Vec3(0.2, 1.1, 2.5), 1))
+        assertTrue(o.record(1.0).marked.single().let { it.m == null && it.s == null }, "no photo yet, so no spell to tie it by")
+    }
+
     @Test fun whereEarlierPhotosWereTakenComesFirst() {
         // an earlier photo was taken 4 units (5 m) out from the wall, looking at it
         val from = Target("v0", "view", listOf(0.5, 1.2, 4.0), listOf(0.0, 0.0, -1.0), 0.8, prio = 2)
