@@ -16,7 +16,7 @@ env:
   ADMIN_PORT: "47614"
 jobs:
   ios:
-    runs-on: xcode-27      # the iOS 27 SDK, as the TestFlight uploads (testflight.yml)
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
