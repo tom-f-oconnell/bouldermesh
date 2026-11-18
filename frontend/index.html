@@ -5,7 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BoulderMesh</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-<script>try { const t = localStorage.getItem('bm_theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}</script>
+<script>
+// ?app: the phone apps' viewer (html.app): the view alone, in the phone's own colours
+const APP = new URLSearchParams(location.search).has('app');
+if (APP) document.documentElement.classList.add('app');
+if (APP && new URLSearchParams(location.search).has('notex')) document.documentElement.classList.add('notex');
+try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || t === 'dark')) document.documentElement.dataset.theme = t; } catch {}
+</script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>
   :root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#e6e8ee;--mute:#8b93a7;--acc:#5cc8ff;--acc-fg:#001018;--ok:#5fd68a;--bad:#ff6b6b;--warn:#ffc857;--climb:#ff9f5c;--time:#b49cff;
@@ -435,6 +441,13 @@
     #vname,#varea{white-space:nowrap;overflow:hidden;text-overflow:ellipsis} #varea{font-size:11px;color:var(--mute)} #varea:empty{display:none}
     .viewbar{overflow-x:auto} .viewbar button{white-space:nowrap} .viewbar .status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   }
+  /* the phone apps' viewer: the mesh's view alone, with no lists, header or view's bar, and no way to other meshes; the
+     settings that apply to it (and the button for its full detail) at its top right */
+  html.app body{grid-template-rows:1fr} html.app main{grid-template-columns:minmax(0,1fr)} html.app #right{display:grid;grid-template-rows:1fr}
+  html.app header,html.app aside,html.app .viewbar,html.app #vtitle,html.app #vclimb,html.app #vextra,html.app #vreport,html.app #nearby,
+  html.app #linkmenu,html.app #map,html.app #areamap,html.app #prefs .notapp,html.app.notex #prefs .wire{display:none!important}
+  #appbar{display:none} html.app #appbar{position:absolute;top:8px;right:8px;z-index:4;display:flex;gap:6px;align-items:center}
+  html.app #orient,html.app #viewnote{top:48px}
 </style>
 </head>
 <body>
@@ -680,6 +693,7 @@
     </div>
     <div id="viewer" class="on">
       <div id="vtitle"><div id="vname"></div><div id="varea"></div></div>
+      <div id="appbar"></div>
       <div id="linkmenu" hidden></div>
       <div id="viewnote"></div>
       <div id="pieces"></div>
@@ -736,16 +750,16 @@
 <div class="toast" id="toast"></div>
 <div id="srctip" role="tooltip"></div>
 <span id="prefs">
-  <span class="plabel">Mesh</span>
-  <span class="seg" id="wiremode" title="The mesh's surface, or only the edges of its triangles, to see how it's built"><button data-wire="0" class="on">Surface</button><button data-wire="1">Wireframe</button></span>
+  <span class="plabel wire">Mesh</span>
+  <span class="seg wire" id="wiremode" title="The mesh's surface, or only the edges of its triangles, to see how it's built"><button data-wire="0" class="on">Surface</button><button data-wire="1">Wireframe</button></span>
   <span class="plabel">Background</span>
   <span class="seg" id="bgmode" title="Behind a mesh: the plain page colour, or a scene: a sky over ground the colour of the rock's foot, and around a reconstructed mesh, where its photos show it, what's really there"><button data-bg="solid">Solid</button><button data-bg="scene" class="on">Scene</button></span>
   <span class="plabel">Detail</span>
   <span class="seg" id="detailmode" title="How much of each mesh to load. Auto: a simplified copy at once, then all of it, with its texture as sharp as this device can use, unless the connection looks too slow for that, when a button offers it. Full: all of it, always. Preview: the simplified copy only, with the button for the rest."><button data-detail="auto" class="on">Auto</button><button data-detail="full">Full</button><button data-detail="preview">Preview</button></span>
   <span class="plabel">Walls in the way</span>
   <span class="seg" id="xraymode" title="See-through: the grey backs of a rock (the side of its surface no photo saw, as on the outside of an arch whose inside was photographed) show the rock behind them through them; and once you double-click a spot to look at, whatever comes between you and it is see-through around it. Opaque: every surface solid."><button data-xray="1" class="on">See-through</button><button data-xray="0">Opaque</button></span>
-  <span class="plabel">Colours</span>
-  <span class="seg" id="theme" title="Colours: the browser's setting, or light or dark here"><button data-theme="system" class="on">System</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span>
+  <span class="plabel notapp">Colours</span>
+  <span class="seg notapp" id="theme" title="Colours: the browser's setting, or light or dark here"><button data-theme="system" class="on">System</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span>
 </span>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
@@ -2297,7 +2311,7 @@ document.querySelectorAll('#bgmode button').forEach(b => b.onclick = () => {
 });
 // ---------------------------------------------------------------- theme: the browser's, or chosen here
 const themeMedia = matchMedia('(prefers-color-scheme: light)');
-let themeChoice = 'system'; try { themeChoice = localStorage.getItem('bm_theme') || 'system'; } catch {}
+let themeChoice = 'system'; if (!APP) try { themeChoice = localStorage.getItem('bm_theme') || 'system'; } catch {}
 // The volunteers' page in the colours chosen here: told by its address, as it may be at another one, with other storage
 function volunteerLink(){ const a = $('#volunteer'); if (a.dataset.base) a.href = a.dataset.base + (themeChoice === 'system' ? '' : '?theme=' + themeChoice); }
 function applyTheme(){
@@ -4552,7 +4566,13 @@ function viewLink(id, from){
   const c = climbOn(meshesById[id], viewedClimb);
   return c?.slug && pickClimbMesh(c.id)?.id === id ? `/c/${c.slug}` : exactLink(id, from);
 }
-function setLink(id, from){ try { history.replaceState(null, '', viewLink(id, from)); } catch {} }
+// in the apps' viewer, its own parameters stay on the address, for a reload
+function setLink(id, from){
+  let u = viewLink(id, from);
+  const q = new URLSearchParams(location.search), keep = APP ? ['app', 'notex'].filter(k => q.has(k)) : [];
+  if (keep.length) u += (u.includes('?') ? '&' : '?') + keep.map(k => `${k}=${encodeURIComponent(q.get(k))}`).join('&');
+  try { history.replaceState(null, '', u); } catch {}
+}
 function openLinked(){
   const h = new URLSearchParams(location.hash.slice(1)), id = h.get('mesh');
   if (id && meshesById[id] && id !== shownMesh) viewMesh(id, h.get('climb') || undefined, 'link');
@@ -6453,6 +6473,7 @@ if (pairCode) {    // the phone's camera app opened the admin page's QR: the cod
   catch (e) { toast(e.message, 8000); }
 }
 if (thumbMode) document.body.classList.add('thumb');
+if (APP) $('#appbar').append($('#detail'), $('#vprefs'));
 let statusCache = { env: {} };
 statusCache = await api('/api/status');
 if (statusCache.via_links === false) $('#c-no-via').closest('label').hidden = true;     // none shown anyway (the admin page's setting)
@@ -6557,7 +6578,7 @@ function showTips(tries = 0){
   tip.querySelector('.next').onclick = () => done(false);
   tip.querySelector('.skip')?.addEventListener('click', () => done(true));
 }
-if (!thumbMode) setTimeout(showTips, 1500);     // once the page has settled (and never in a mesh's picture)
+if (!thumbMode && !APP) setTimeout(showTips, 1500);     // once the page has settled (and never in a mesh's picture)
 // how to move round a mesh, the first time one's shown in a browser (bm_tips_v1's controls), for a computer or a phone;
 // after any other tip that's showing, and not over a hidden viewer
 function controlsTip(tries = 0){

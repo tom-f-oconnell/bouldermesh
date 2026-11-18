@@ -313,7 +313,8 @@ class ViewerController(private val app: App, private val mesh: String, private v
         note.text = if (kept == null) "" else if (kept.textures) "No signal: the copy kept on this phone" else "No signal: the copy kept on this phone, without its textures"
         note.hidden = kept == null
         column.addArrangedSubview(web)
-        val address = if (kept != null) own + "m/$mesh" + (if (kept.textures) "" else "?notex=1") else "$server/m/$mesh"
+        // the site's viewer alone (app)
+        val address = if (kept != null) own + "m/$mesh?app=1" + (if (kept.textures) "" else "&notex=1") else "$server/m/$mesh?app=1"
         NSURL.URLWithString(address)?.let { web.loadRequest(NSURLRequest.requestWithURL(it)) }
     }
 }

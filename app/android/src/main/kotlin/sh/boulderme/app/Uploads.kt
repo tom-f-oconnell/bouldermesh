@@ -256,8 +256,9 @@ fun ViewerScreen(a: MainActivity, s: Screen.Viewer, go: (Screen) -> Unit) {
                         if (request.isForMainFrame) failed = error.description?.toString() ?: "no connection"
                     }
                 }
-                // the page keeps its token in the site's own storage: put this phone's there, then open the mesh
-                val page = "$server/m/${s.mesh}" + if (copy != null && !copy.textures) "?notex=1" else ""
+                // the page keeps its token in the site's own storage: put this phone's there, then open the mesh, in the
+                // site's viewer alone (app)
+                val page = "$server/m/${s.mesh}?app=1" + if (copy != null && !copy.textures) "&notex=1" else ""
                 val keep = if (a.store.token.isEmpty()) "localStorage.removeItem('bm_token')" else "localStorage.setItem('bm_token',${JsonPrimitive(a.store.token)})"
                 loadDataWithBaseURL("$server/", "<!doctype html><script>try{$keep}catch(e){};location.replace(${JsonPrimitive(page)})</script>", "text/html", "utf-8", null)
             }
