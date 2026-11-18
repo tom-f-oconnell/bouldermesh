@@ -1,0 +1,38 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "StartAndWatchInstances",
+      "Effect": "Allow",
+      "Action": ["ec2:RunInstances", "ec2:DescribeInstances", "ec2:DescribeImages", "ec2:DescribeSpotPriceHistory"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "TagThemAsTheyStart",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:*:*:instance/*",
+      "Condition": {"StringEquals": {"ec2:CreateAction": "RunInstances"}}
+    },
+    {
+      "Sid": "EndOnlyBoulderMeshInstances",
+      "Effect": "Allow",
+      "Action": "ec2:TerminateInstances",
+      "Resource": "*",
+      "Condition": {"Null": {"aws:ResourceTag/bouldermesh-pull": "false"}}
+    },
+    {
+      "Sid": "FindTheGpuImageAndPrices",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameter", "pricing:GetProducts"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "FirstSpotRequest",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "*",
+      "Condition": {"StringEquals": {"iam:AWSServiceName": "spot.amazonaws.com"}}
+    }
+  ]
+}

@@ -1059,7 +1059,7 @@ machine. *Run more on* adds up to that many machines (2 by default):
   token of its own, so it works alongside the machines you run yourself. Nothing starts or ends one by itself: it runs
   until *End now* (its climb waits for another machine) or *End after its climb* (it's given no new one, and ends once
   that's done). If AWS ends one itself, as when it takes back a spot instance, its token is revoked and your phone is
-  told. *Check it could start one* is a dry run. It needs the address machines reach this server at (WORKER_URL, else VOLUNTEER_URL, else https://SITE_HOST: already so on the public setup), the AWS credentials, and AWS's quota for GPU
+  told. *Check it could start one* is a dry run. It needs the address machines reach this server at (WORKER_URL, else VOLUNTEER_URL, else https://SITE_HOST: already so on the public setup), the AWS credentials (an IAM user's access key, with `deploy/aws-ec2-machines-policy.json` as its policy: it may end only instances tagged as these), and AWS's quota for GPU
   instances ("All G and VT Spot Instance Requests", or the on-demand one), which is 0 on a new account until you ask for
   more. It uses the region, spot, disk (at least the AMI's own and 60 GB more), AMI (AWS's Deep Learning GPU image, which has Docker and NVIDIA's toolkit),
   subnet and security group (empty: the VPC's default, as nothing needs to reach in) of the AWS settings. Its first
