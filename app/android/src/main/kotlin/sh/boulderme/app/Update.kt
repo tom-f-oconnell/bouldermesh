@@ -18,12 +18,14 @@ import java.net.URL
 
 /**
  * The app updating itself from the newest build CI published (.github/workflows/apps.yml: the release android-latest,
- * titled "Android app, latest (<commit>, build <n>)", its APK as bouldermesh.apk). Every build is signed with the same
- * key, so the new one installs over this one, keeping its captures; Android still asks the person to confirm each
- * install, as it does for any app from outside an app store.
+ * titled "Android app, latest (<commit>, build <n>)", its APK as bouldermesh.apk, and latest.json saying the same).
+ * Every build is signed with the same key, so the new one installs over this one, keeping its captures; Android still
+ * asks the person to confirm each install, as it does for any app from outside an app store.
  */
 object Updates {
     const val RELEASE = "https://api.github.com/repos/tom-f-oconnell/bouldermesh/releases/tags/android-latest"
+    const val LATEST = "https://github.com/tom-f-oconnell/bouldermesh/releases/download/android-latest/latest.json"
+    const val APK = "https://github.com/tom-f-oconnell/bouldermesh/releases/download/android-latest/bouldermesh.apk"
     const val ACTION = "sh.boulderme.app.UPDATE_STATUS"
 
     /** A newer build than this one: its build number, commit, and where its APK is. */
@@ -39,14 +41,25 @@ object Updates {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** The newest published build, if it's newer than this one (by build number). Blocks: call off the main thread. */
+    /**
+     * The newest published build, if it's newer than this one (by build number). Blocks: call off the main thread.
+     * Reads the release's latest.json, a download like the APK's, which GitHub doesn't count against its API's limit
+     * of 60 requests an hour per address (a phone on mobile data shares its address with many others, so the API often
+     * refuses it with 403); the API only for a release from before latest.json was published with it.
+     */
     fun check(): Newer? {
-        val c = URL(RELEASE).openConnection() as HttpURLConnection
-        c.connectTimeout = 15_000; c.readTimeout = 30_000
-        c.setRequestProperty("Accept", "application/vnd.github+json")
-        c.setRequestProperty("User-Agent", "BoulderMeshApp/${BuildInfo.VERSION} (Android)")
-        if (c.responseCode != 200) throw IOException("the newest build couldn't be looked up (${c.responseCode})")
-        val rel = json.parseToJsonElement(c.inputStream.use { it.readBytes() }.decodeToString()).jsonObject
+        val c = open(LATEST)
+        if (c.responseCode == 200) {
+            val o = json.parseToJsonElement(c.inputStream.use { it.readBytes() }.decodeToString()).jsonObject
+            val build = o["build"]!!.jsonPrimitive.content.toInt()
+            if (build <= BuildConfig.BUILD) return null
+            return Newer(build, o["commit"]?.jsonPrimitive?.content ?: "", APK, o["bytes"]?.jsonPrimitive?.long ?: 0)
+        }
+        if (c.responseCode != 404) throw IOException(refused("the newest build couldn't be looked up", c))
+        val r = open(RELEASE).apply { setRequestProperty("Accept", "application/vnd.github+json") }
+        if (r.responseCode == 404) throw IOException("no build is published just now (one may be on its way): try again in a few minutes")
+        if (r.responseCode != 200) throw IOException(refused("the newest build couldn't be looked up", r))
+        val rel = json.parseToJsonElement(r.inputStream.use { it.readBytes() }.decodeToString()).jsonObject
         val title = rel["name"]?.jsonPrimitive?.content ?: ""
         val m = Regex("\\(([0-9a-f]{7,}), build (\\d+)\\)").find(title) ?: return null     // a build from before builds were numbered
         val asset = rel["assets"]?.jsonArray?.map { it.jsonObject }?.firstOrNull { it["name"]?.jsonPrimitive?.content == "bouldermesh.apk" }
@@ -54,6 +67,19 @@ object Updates {
         val build = m.groupValues[2].toInt()
         if (build <= BuildConfig.BUILD) return null
         return Newer(build, m.groupValues[1], asset["browser_download_url"]!!.jsonPrimitive.content, asset["size"]?.jsonPrimitive?.long ?: 0)
+    }
+
+    private fun open(url: String) = (URL(url).openConnection() as HttpURLConnection).apply {
+        instanceFollowRedirects = true; connectTimeout = 15_000; readTimeout = 30_000
+        setRequestProperty("User-Agent", "BoulderMeshApp/${BuildInfo.VERSION} (Android)")
+    }
+
+    /** What a refusal says: its status, and GitHub's own reason (e.g. its rate limit) if it gave one. */
+    private fun refused(what: String, c: HttpURLConnection): String {
+        val why = runCatching { c.errorStream?.use { it.readBytes() }?.decodeToString() }.getOrNull()
+            ?.let { runCatching { json.parseToJsonElement(it).jsonObject["message"]?.jsonPrimitive?.content }.getOrNull() }
+        val limited = c.responseCode == 403 && c.getHeaderField("x-ratelimit-remaining") == "0"
+        return "$what (${c.responseCode}" + (if (limited) ": GitHub's limit for this network, try again within the hour" else why?.let { ": ${it.take(120)}" } ?: "") + ")"
     }
 
     /**

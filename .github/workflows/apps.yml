@@ -89,7 +89,9 @@ jobs:
           cp app/android/build/outputs/apk/debug/android-debug.apk "bouldermesh-$short-debug.apk"
           gh release delete android-latest --yes --cleanup-tag 2>/dev/null || true
           cp "bouldermesh-$short-debug.apk" bouldermesh.apk     # the same, under a name that stays: the volunteer page's link
-          gh release create android-latest "bouldermesh-$short-debug.apk" bouldermesh.apk --target "$GITHUB_SHA" --prerelease \
+          # what the app reads to tell a newer build (Update.kt): a download, which GitHub doesn't rate-limit as it does its API
+          printf '{"build": %s, "commit": "%s", "bytes": %s}\n' "$GITHUB_RUN_NUMBER" "$short" "$(stat -c %s bouldermesh.apk)" > latest.json
+          gh release create android-latest "bouldermesh-$short-debug.apk" bouldermesh.apk latest.json --target "$GITHUB_SHA" --prerelease \
             --title "Android app, latest ($short, build $GITHUB_RUN_NUMBER)" \
             --notes "The Android app as built from $short: open this page on the phone, tap the .apk, and allow installing it. Each build is signed with the same key, so it installs over the last, keeping captures not yet sent; the app offers each newer one itself."
       - name: A test server with one mesh
