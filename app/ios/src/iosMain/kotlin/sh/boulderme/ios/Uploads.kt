@@ -314,7 +314,7 @@ class ViewerController(private val app: App, private val mesh: String, private v
         note.hidden = kept == null
         column.addArrangedSubview(web)
         // the site's viewer alone (app)
-        val address = if (kept != null) own + "m/$mesh?app=1" + (if (kept.textures) "" else "&notex=1") else "$server/m/$mesh?app=1"
+        val address = if (kept != null) own + "m/$mesh?app=ios" + (if (kept.textures) "" else "&notex=1") else "$server/m/$mesh?app=ios"
         NSURL.URLWithString(address)?.let { web.loadRequest(NSURLRequest.requestWithURL(it)) }
     }
 }

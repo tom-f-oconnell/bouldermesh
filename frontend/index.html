@@ -51,6 +51,9 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   #admindlg a{color:var(--acc)}
   #editdlg{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;width:min(440px,calc(100vw - 32px));box-sizing:border-box;padding:16px}
   #editdlg::backdrop{background:rgba(0,0,0,.5)}
+  /* the apps' viewer: the report form over the view, in place of the ? tab */
+  #fbdlg{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;width:min(440px,calc(100vw - 32px));box-sizing:border-box;padding:16px}
+  #fbdlg::backdrop{background:rgba(0,0,0,.5)} #fbdlg h2{margin:0 0 4px;font-size:16px} #fbdlg #fb-close{margin-left:auto}
   #editdlg p{font-size:13px;margin:0 0 10px} #editdlg .scanmsg{color:var(--mute);min-height:1em}
   #editdlg input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);color:var(--fg);padding:7px 9px;border-radius:6px;font:inherit}
   #editdlg video{display:block;width:100%;max-height:50vh;object-fit:cover;border-radius:6px;background:#000;margin:0 0 10px}
@@ -444,7 +447,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   /* the phone apps' viewer: the mesh's view alone, with no lists, header or view's bar, and no way to other meshes; the
      settings that apply to it (and the button for its full detail) at its top right */
   html.app body{grid-template-rows:1fr} html.app main{grid-template-columns:minmax(0,1fr)} html.app #right{display:grid;grid-template-rows:1fr}
-  html.app header,html.app aside,html.app .viewbar,html.app #vtitle,html.app #vclimb,html.app #vextra,html.app #vreport,html.app #nearby,
+  html.app header,html.app aside,html.app .viewbar,html.app #vtitle,html.app #vclimb,html.app #vextra,html.app #nearby,
   html.app #linkmenu,html.app #map,html.app #areamap,html.app #prefs .notapp,html.app.notex #prefs .wire{display:none!important}
   #appbar{display:none} html.app #appbar{position:absolute;top:8px;right:8px;z-index:4;display:flex;gap:6px;align-items:center}
   html.app #orient,html.app #viewnote{top:48px}
@@ -471,6 +474,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
 <dialog id="admindlg"></dialog>
 <dialog id="editdlg"></dialog>
 <dialog id="acctdlg"></dialog>
+<dialog id="fbdlg"><h2>Report a problem</h2></dialog>
 <dialog id="bpick"></dialog>
 <main>
   <aside>
@@ -1063,10 +1067,18 @@ function setFbMesh(id){
   if (fbMesh) $('#fb-mesh span').textContent = 'About the mesh in view: ' + (meshesById[fbMesh]?.name || fbMesh);
 }
 $('#fb-mesh-x').onclick = () => setFbMesh(null);
+// in the apps' viewer, the form opens over the view instead (put in its dialog as the page starts), with a Close button
+if (APP) {
+  $('#fbdlg').append($('#fb'));
+  const close = document.createElement('button'); close.type = 'button'; close.className = 'sec'; close.id = 'fb-close'; close.textContent = 'Close';
+  close.onclick = () => $('#fbdlg').close();
+  $('#fb-send').after(close);
+}
 $('#vreport').onclick = () => {
   document.querySelector('input[name=fbkind][value=bug]').checked = true;
   setFbMesh(shownMesh);
   $('#fb-note').textContent = '';
+  if (APP) { $('#fbdlg').showModal(); return $('#fb-text').focus(); }
   setFull(false);     // on a phone, out of the view on its own, to the tabs
   document.querySelector('.tabs button[data-tab=help]').click();
   $('#fb-text').focus();
@@ -1082,11 +1094,17 @@ $('#fb').addEventListener('submit', async ev => {
       body: JSON.stringify({ kind: document.querySelector('input[name=fbkind]:checked').value, message: $('#fb-text').value, contact: $('#fb-contact').value,
                              website: $('#fb-website').value, page: (location.pathname + location.search + location.hash).slice(0, 300), ...(fbMesh ? { mesh: fbMesh } : {}) }) });
     const j = await r.json().catch(() => ({}));
+    // 503: the apps' copy kept for no signal, which answers in place of the server
+    if (APP && r.status === 503) throw new TypeError('no connection');
     if (!r.ok) throw new Error(r.status === 429 ? 'too many from here lately. Try again in a while.' : j.error || r.statusText);
     $('#fb-text').value = '';
     setFbMesh(null);
     note.textContent = 'Sent. Thank you!';
-  } catch (e) { note.textContent = 'Not sent: ' + e.message; }
+    if (APP) setTimeout(() => $('#fbdlg').close(), 1500);
+  } catch (e) {
+    // what was written stays in the form, to send again
+    note.textContent = e instanceof TypeError ? 'Not sent: no connection. What you wrote is kept here, to try again.' : 'Not sent: ' + e.message;
+  }
   $('#fb-send').disabled = false;
 });
 // on a phone, the view on its own, or the controls on their own
