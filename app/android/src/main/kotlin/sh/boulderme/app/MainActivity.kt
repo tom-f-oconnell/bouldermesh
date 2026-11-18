@@ -40,7 +40,7 @@ import com.google.ar.core.ArCoreApk
 /** Where the app is. */
 sealed interface Screen {
     data object Home : Screen
-    /** getFirst: download the first mesh listed without being asked (for trying it in an emulator). */
+    /** getFirst: download the first mesh listed, with its textures, without being asked anything (for trying it in an emulator). */
     data class Browse(val getFirst: Boolean = false) : Screen
     data object Settings : Screen
     /** On first opening, not signed in: how to sign in from where the account was joined. */

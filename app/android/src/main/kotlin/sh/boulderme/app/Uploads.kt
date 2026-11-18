@@ -219,6 +219,9 @@ fun ViewerScreen(a: MainActivity, s: Screen.Viewer, go: (Screen) -> Unit) {
             color = BAD, modifier = Modifier.padding(16.dp)) }
         AndroidView(modifier = Modifier.fillMaxWidth().weight(1f), factory = { ctx ->
             WebView(ctx).apply {
+                // not the holder's default wrap_content: a WebView whose height wraps lays its page out 0 high (so that
+                // the content's height can size it), and the site's page, 100vh high with nothing over, then shows blank
+                layoutParams = android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 webViewClient = object : WebViewClient() {

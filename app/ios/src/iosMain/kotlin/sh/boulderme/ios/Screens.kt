@@ -184,7 +184,7 @@ class Browse(private val app: App, private var getFirst: Boolean = false) : Form
             app.api.meshes { got, why ->
                 rows = got; error = why?.let { "Couldn't list the meshes: $it" }
                 rebuild()
-                if (getFirst) { getFirst = false; got?.firstOrNull()?.let { ask(listOf(it)) } }
+                if (getFirst) { getFirst = false; got?.firstOrNull()?.let { get(listOf(it), true) } }
             }
         }
         val all = rows

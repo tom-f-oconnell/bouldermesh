@@ -894,6 +894,29 @@ const mb = n => (n / 1e6).toFixed(n < 1e7 ? 1 : 0);
 let toastT;
 const phone = matchMedia('(max-width:860px)');   // the same width as the CSS for phones
 const overMesh = () => phone.matches && document.body.classList.contains('full');
+// Whether a control can be seen and pressed now: on the screen, with nothing over its middle. A tip only points at such a
+// control: not one this page doesn't have, one that's hidden (as the phone apps' viewer hides the site's header), or one
+// that is off the screen or covered, which it waits for
+function onScreen(el){
+  if (!el || !el.isConnected) return false;
+  const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+  if (r.width < 4 || r.height < 4 || x < 0 || y < 0 || x > innerWidth || y > innerHeight) return false;
+  const at = document.elementFromPoint(x, y);
+  return !!at && (el === at || el.contains(at));
+}
+
+// ---- first-visit tips, one after another, each shown once per browser (bm_tips_v1: those seen; bump the version to show
+// changed tips again). A private window starts with none seen, so it sees them each time; storage that throws: the same
+const TIPS = [
+  { key: 'random', at: ['#vrandom', '#random'], text: '<b>Random</b> opens a mesh picked at random: a quick way to see what\'s here.' },
+  { key: 'settings', at: ['#vprefs', '#prefsbtn'], text: '<b>Settings</b> (⚙︎) change how a mesh looks: its colours, background and detail.' },
+  { key: 'help', at: ['.tabs button[data-tab=help]'], text: 'The <b>?</b> tab is where to leave a comment or report a bug, and to support the site.' },
+];
+const TIPS_KEY = 'bm_tips_v1';
+const tipsSeen = () => { try { return JSON.parse(localStorage.getItem(TIPS_KEY) || '{}'); } catch { return {}; } };
+const tipSeen = (key, all = false) => {
+  try { localStorage.setItem(TIPS_KEY, JSON.stringify(all ? Object.fromEntries(TIPS.map(t => [t.key, 1])) : { ...tipsSeen(), [key]: 1 })); } catch {}
+};
 const toast = (msg, ms=3500) => { if (overMesh()) return; const t=$('#toast'); t.textContent=msg; t.style.display='block'; clearTimeout(toastT); toastT=setTimeout(()=>t.style.display='none', ms); };
 const fmtSize = n => n>1e6 ? (n/1e6).toFixed(1)+' MB' : (n/1e3).toFixed(0)+' kB';
 const fmtWhen = t => new Date(t * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
@@ -6507,25 +6530,14 @@ $('#vothers').onclick = async () => {
   if (b) try { pickBoulder(await api(`/api/links/b/${b.slug}`)); } catch (e) { toast(e.message, 6000); }
 };
 
-// ---- first-visit tips, one after another, each shown once per browser (bm_tips_v1: those seen; bump the version to show
-// changed tips again). A private window starts with none seen, so it sees them each time; storage that throws: the same
-const TIPS = [
-  { key: 'random', at: ['#vrandom', '#random'], text: '<b>Random</b> opens a mesh picked at random: a quick way to see what\'s here.' },
-  { key: 'settings', at: ['#vprefs', '#prefsbtn'], text: '<b>Settings</b> (⚙︎) change how a mesh looks: its colours, background and detail.' },
-  { key: 'help', at: ['.tabs button[data-tab=help]'], text: 'The <b>?</b> tab is where to leave a comment or report a bug, and to support the site.' },
-];
-const TIPS_KEY = 'bm_tips_v1';
-const tipsSeen = () => { try { return JSON.parse(localStorage.getItem(TIPS_KEY) || '{}'); } catch { return {}; } };
-const tipSeen = (key, all = false) => {
-  try { localStorage.setItem(TIPS_KEY, JSON.stringify(all ? Object.fromEntries(TIPS.map(t => [t.key, 1])) : { ...tipsSeen(), [key]: 1 })); } catch {}
-};
-function showTips(){
-  if (document.querySelector('#tip')) return;     // one at a time (the search's may be showing)
-  const seen = tipsSeen();
-  const todo = TIPS.map(t => ({ ...t, el: t.at.map(q => document.querySelector(q)).find(x => x && x.getClientRects().length) }))
-    .filter(t => !seen[t.key] && t.el);
+// ---- first-visit tips (TIPS and the rest of them are with the page's first helpers, above)
+function showTips(tries = 0){
+  const seen = tipsSeen(), unseen = TIPS.filter(t => !seen[t.key]);
+  if (!unseen.length) return;
+  const todo = document.querySelector('#tip') ? [] : unseen.map(t => ({ ...t, el: t.at.map(q => document.querySelector(q)).find(onScreen) })).filter(t => t.el);
   const t = todo[0];
-  if (!t) return;
+  // one at a time (the search's may be showing); none whose control isn't on the screen yet: looked for again a while
+  if (!t) { if (tries < 40) setTimeout(() => showTips(tries + 1), 3000); return; }
   const tip = document.createElement('div'); tip.id = 'tip'; tip.setAttribute('role', 'dialog');
   tip.innerHTML = `<div>${t.text}</div><div class="row">${todo.length > 1 ? '<button class="sm sec skip">Skip tips</button>' : ''}<button class="sm next">${todo.length > 1 ? 'Next' : 'Got it'}</button></div>`;
   document.body.append(tip);
@@ -6551,7 +6563,7 @@ if (!thumbMode) setTimeout(showTips, 1500);     // once the page has settled (an
 function controlsTip(tries = 0){
   if (tipsSeen().controls || thumbMode) return;      // never in a mesh's picture, which the server draws from this page
   const v = $('#viewer'), r = v.getBoundingClientRect();
-  if (document.querySelector('#tip') || !r.width) { if (tries < 30) setTimeout(() => controlsTip(tries + 1), 2000); return; }
+  if (document.querySelector('#tip') || r.width < 50 || r.height < 50 || r.bottom < 0 || r.top > innerHeight) { if (tries < 30) setTimeout(() => controlsTip(tries + 1), 2000); return; }
   const tip = document.createElement('div'); tip.id = 'tip'; tip.setAttribute('role', 'dialog'); tip.className = 'flat';
   tip.innerHTML = `<div>${phone.matches ? '<b>Moving round it:</b> drag with one finger to turn it · pinch to zoom · drag with two fingers to move it'
     : '<b>Moving round it:</b> drag to turn it · scroll to zoom to the pointer · double-click a spot to centre on it · right-drag to move it'}</div>

@@ -238,7 +238,7 @@ fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
         }
     }
     var gotFirst by remember { mutableStateOf(!getFirst) }
-    LaunchedEffect(rows) { val first = rows?.firstOrNull(); if (!gotFirst && first != null) { gotFirst = true; asking = listOf(first) } }
+    LaunchedEffect(rows) { val first = rows?.firstOrNull(); if (!gotFirst && first != null) { gotFirst = true; get(listOf(first), true) } }
     asking?.let { list ->
         KeepChoice(if (list.size == 1) list[0].name.ifEmpty { "this mesh" } else "these ${list.size} meshes", list.map { it.bytes },
             dismiss = { asking = null }) { textures -> asking = null; get(list, textures) }
