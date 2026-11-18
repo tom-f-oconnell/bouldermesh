@@ -3,10 +3,10 @@ package sh.boulderme.app
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
@@ -37,7 +37,11 @@ object Uploader {
                 val was = state.value[id]
                 if (!store.uploadWifiOnly || store.onWifi()) return
                 say(id, WAITING)
-                while (store.uploadWifiOnly && !store.onWifi()) delay(2000)
+                while (true) {
+                    val seen = store.changes
+                    if (!store.uploadWifiOnly || store.onWifi()) break
+                    runInterruptible { store.awaitChange(seen) }
+                }
                 was?.let { say(id, it) }
             }
             var u = store.upload(id)

@@ -52,6 +52,17 @@ class Api(internal val store: Store) {
     fun status(projects: Collection<String>): Map<String, UploadStatus> =
         json.decodeFromString(MapSerializer(String.serializer(), UploadStatus.serializer()), read(open("/api/capture/status?ids=" + projects.joinToString(","))).decodeToString())
 
+    /**
+     * The account's captures kept on the server, newest first; null where this phone's token isn't an account's (the
+     * site's own) or there's none.
+     */
+    fun accountProjects(): List<sh.boulderme.core.SentCapture>? {
+        if (store.token.isEmpty()) return null
+        val c = open("/api/account/projects")
+        if (c.responseCode == 401) { c.errorStream?.close(); return null }
+        return json.decodeFromString(sh.boulderme.core.AccountProjects.serializer(), read(c).decodeToString()).projects
+    }
+
     /** Every file the site's viewer fetches to show a mesh, to keep for showing it with no signal (OfflineStore). */
     fun offline(mesh: String): sh.boulderme.core.OfflineBundle = json.decodeFromString(read(open("/api/capture/offline/$mesh")).decodeToString())
 

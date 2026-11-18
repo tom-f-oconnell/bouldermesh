@@ -131,3 +131,26 @@ data class UploadStatus(val status: String = "", val mesh: String? = null, val a
         else -> "On the server ($status)" to "wait"
     }
 }
+
+/**
+ * One of the account's captures as the server keeps it (an entry of its /api/account/projects): listed by the apps when
+ * it isn't among the phone's own, as after the app was uninstalled, or for one sent from another phone.
+ */
+@Serializable
+data class SentCapture(val id: String, val name: String = "", val created: Double = 0.0, val status: String = "", val mesh: String? = null,
+                       val photos: Int = 0) {
+    /** Its name without the " (capture)" the apps add to a new rock's. */
+    val title: String get() = name.removeSuffix(" (capture)").ifEmpty { id }
+
+    companion object {
+        /** Those of `all` that aren't any of the phone's own captures (`here`: their projects), newest first. */
+        fun notOnPhone(all: List<SentCapture>, here: Collection<String?>): List<SentCapture> {
+            val have = here.filterNotNull().toSet()
+            return all.filter { it.id !in have }.sortedByDescending { it.created }
+        }
+    }
+}
+
+/** /api/account/projects, as the apps read it. */
+@Serializable
+data class AccountProjects(val projects: List<SentCapture> = emptyList())

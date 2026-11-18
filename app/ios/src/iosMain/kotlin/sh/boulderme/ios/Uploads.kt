@@ -42,6 +42,7 @@ import platform.darwin.dispatch_get_global_queue
 import platform.darwin.dispatch_get_main_queue
 import sh.boulderme.core.CaptureContents
 import sh.boulderme.core.UploadState
+import sh.boulderme.core.SentCapture
 import sh.boulderme.core.UploadStatus
 
 /** Waiting: yellow, as nothing else is. */
@@ -50,22 +51,40 @@ val WAIT: UIColor get() = UIColor.systemYellowColor
 fun toneColor(tone: String): UIColor? = when (tone) { "good" -> GOOD; "bad" -> BAD; "warn" -> WARN; "wait" -> WAIT; else -> null }
 
 /**
- * What the server says of this phone's uploads (IosStore.statuses, kept for when there's no signal), asked again each
- * time the Home screen comes up and when its Check is pressed.
+ * What the server says of this phone's uploads (IosStore.statuses, kept for when there's no signal), and of the
+ * account's captures that aren't on the phone (IosStore.sent), asked again each time the Home screen comes up and when
+ * its Check is pressed: never on its own, and with no connection only when pressed (to say there's none).
  */
 class Statuses(private val store: IosStore, private val api: IosApi) {
     var state: Map<String, UploadStatus> = store.statuses
+    var sent: List<SentCapture> = store.sent
     var error: String? = null
     var busy = false
 
-    fun refresh(then: () -> Unit) {
-        val asked = store.captureIds().mapNotNull { store.upload(it) }.filter { it.meshAsked || it.done }.mapNotNull { it.project }
-        if (asked.isEmpty() || busy) return
+    fun refresh(pressed: Boolean = false, then: () -> Unit) = Net.known {
+        if (busy) return@known
+        if (store.token.isEmpty() && sent.isNotEmpty()) { sent = emptyList(); store.sent = sent; then() }
+        if (!Net.online) {
+            if (pressed) { error = "No connection: this is what the server said last"; then() }
+            return@known
+        }
+        val local = store.captureIds().mapNotNull { store.upload(it) }
+        val asked = local.filter { it.meshAsked || it.done }.mapNotNull { it.project }
+        if (asked.isEmpty() && store.token.isEmpty()) return@known
         busy = true
-        api.status(asked) { got, why ->
-            busy = false
-            if (got != null) { store.statuses = got; state = got; error = null } else error = "Couldn't ask the server: $why"
-            then()
+        api.accountProjects { all, why ->
+            if (why != null) { busy = false; error = "Couldn't ask the server: $why"; return@accountProjects then() }
+            val others = all?.let { SentCapture.notOnPhone(it, local.map { u -> u.project }) }.orEmpty()
+            val ids = asked + others.map { it.id }
+            fun keep(got: Map<String, UploadStatus>) {
+                store.statuses = got; state = got; store.sent = others; sent = others; error = null
+            }
+            if (ids.isEmpty()) { busy = false; keep(emptyMap()); return@accountProjects then() }
+            api.status(ids) { got, why2 ->
+                busy = false
+                if (got != null) keep(got) else error = "Couldn't ask the server: $why2"
+                then()
+            }
         }
     }
 }

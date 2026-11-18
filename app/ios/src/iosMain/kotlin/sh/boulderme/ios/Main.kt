@@ -63,7 +63,7 @@ fun rootViewController(): UIViewController {
     }
     // the window in the screen's top half only, for an account whose role asks for it: as kept, then as the server says
     dispatch_async(dispatch_get_main_queue()) { topHalf(app.store.topHalf) }
-    if (app.store.token.isNotEmpty()) app.api.account { topHalf(it) }
+    if (app.store.token.isNotEmpty()) Net.known { if (Net.online) app.api.account { topHalf(it) } }
     return nav
 }
 

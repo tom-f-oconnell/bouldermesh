@@ -2,15 +2,18 @@ package sh.boulderme.app
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import sh.boulderme.core.CaptureContents
 import sh.boulderme.core.CaptureRecord
 import sh.boulderme.core.ContentGroup
 import sh.boulderme.core.GuideMesh
+import sh.boulderme.core.SentCapture
 import sh.boulderme.core.UploadStatus
 import sh.boulderme.core.Plan
 import java.io.File
@@ -54,10 +57,10 @@ class Store(context: Context) {
 
     var downloadWifiOnly: Boolean   // meshes are got only over Wi-Fi, waiting for it if need be
         get() = prefs.getBoolean("download_wifi_only", false)
-        set(v) = prefs.edit().putBoolean("download_wifi_only", v).apply()
+        set(v) { prefs.edit().putBoolean("download_wifi_only", v).apply(); changed() }
     var uploadWifiOnly: Boolean     // captures are sent only over Wi-Fi, waiting for it if need be
         get() = prefs.getBoolean("upload_wifi_only", false)
-        set(v) = prefs.edit().putBoolean("upload_wifi_only", v).apply()
+        set(v) { prefs.edit().putBoolean("upload_wifi_only", v).apply(); changed() }
 
     /** Whether the phone is on Wi-Fi (or a cable) that isn't metered, as a phone's hotspot is: what "only over Wi-Fi" waits for. */
     fun onWifi(): Boolean {
@@ -66,16 +69,47 @@ class Store(context: Context) {
             caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
     }
 
+    /** Whether the phone has a connection that reaches the internet: nothing is asked of the server without one, unless pressed for. */
+    fun online(): Boolean {
+        val caps = connectivity?.let { it.getNetworkCapabilities(it.activeNetwork) } ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    // waiting for Wi-Fi sleeps until Android says the network changed (or a Wi-Fi-only setting did), rather than looking
+    // every few seconds: `changes` counts those, for a waiter to sleep only if none came since it last looked
+    private val lock = Object()
+    @Volatile var changes = 0L
+        private set
+    private fun changed() = synchronized(lock) { changes++; lock.notifyAll() }
+    private val watching by lazy {
+        runCatching {
+            connectivity?.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) = changed()
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) = changed()
+                override fun onLost(network: Network) = changed()
+            })
+        }
+    }
+
+    /** Blocks until the network or a Wi-Fi-only setting has changed since `seen` (a value of `changes`), or `ms` at most. */
+    fun awaitChange(seen: Long, ms: Long = 30_000) {
+        watching
+        synchronized(lock) { if (changes == seen) lock.wait(ms) }
+    }
+
     /**
      * Blocks until meshes may be got: at once, unless they're got only over Wi-Fi and it isn't on it. Calls `waiting`
-     * first if it has to wait; raises CancellationException once `alive` says the one waiting has gone.
+     * first if it has to wait; raises CancellationException once `alive` says the one waiting has gone (looked at each
+     * time the network changes, and every 30 s).
      */
     fun awaitDownloads(alive: () -> Boolean, waiting: () -> Unit = {}) {
         var told = false
-        while (downloadWifiOnly && !onWifi()) {
+        while (true) {
+            val seen = changes
+            if (!downloadWifiOnly || onWifi()) return
             if (!alive()) throw kotlinx.coroutines.CancellationException("no longer wanted")
             if (!told) { told = true; waiting() }
-            Thread.sleep(2000)
+            awaitChange(seen)
         }
     }
 
@@ -132,10 +166,15 @@ class Store(context: Context) {
         get() = runCatching { json.decodeFromString(STATUSES, prefs.getString("statuses", "{}") ?: "{}") }.getOrDefault(emptyMap())
         set(v) = prefs.edit().putString("statuses", json.encodeToString(STATUSES, v)).putLong("statuses_at", System.currentTimeMillis()).apply()
     val statusesAt: Long get() = prefs.getLong("statuses_at", 0)
+    /** The account's captures on the server that aren't on this phone, as last heard (Statuses). */
+    var sent: List<SentCapture>
+        get() = runCatching { json.decodeFromString(SENT, prefs.getString("sent", "[]") ?: "[]") }.getOrDefault(emptyList())
+        set(v) = prefs.edit().putString("sent", json.encodeToString(SENT, v)).apply()
 
     companion object {
         const val DEFAULT_SERVER = "https://boulderme.sh"
         val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; coerceInputValues = true }
         private val STATUSES = MapSerializer(String.serializer(), UploadStatus.serializer())
+        private val SENT = ListSerializer(SentCapture.serializer())
     }
 }

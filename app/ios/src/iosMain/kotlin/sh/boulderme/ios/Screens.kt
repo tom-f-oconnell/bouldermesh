@@ -20,6 +20,7 @@ import sh.boulderme.core.MeshRow
 import sh.boulderme.core.Plan
 import sh.boulderme.core.Reopen
 import sh.boulderme.core.UploadState
+import sh.boulderme.core.UploadStatus
 
 private fun summary(p: Plan): String {
     val holds = p.targets.count { it.isHold }
@@ -120,12 +121,14 @@ class Home(private val app: App) : Form("BoulderMesh") {
         val ids = app.store.captureIds()
         if (ids.isNotEmpty()) section("Captures on this phone")
         val uploads = ids.mapNotNull { id -> app.store.upload(id)?.let { id to it } }
-        if (uploads.any { it.second.meshAsked || it.second.done }) {
+        fun check() {
             val at = app.store.statusesAt
-            row(makeButton(if (app.statuses.busy) "Checking…" else "Check if meshed", enabled = !app.statuses.busy) { app.statuses.refresh { rebuild() }; rebuild() },
+            row(makeButton(if (app.statuses.busy) "Checking…" else "Check if meshed", enabled = !app.statuses.busy) { app.statuses.refresh(pressed = true) { rebuild() }; rebuild() },
                 makeLabel(if (at > 0) "Last asked ${ago(at)}" else "", UIColor.secondaryLabelColor, size = 13.0))
             app.statuses.error?.let { text(it, WARN, small = true) }
         }
+        val checkHere = uploads.any { it.second.meshAsked || it.second.done }
+        if (checkHere) check()
         for ((id, u) in uploads) {
             val busy = app.uploader.busy(id)
             button("${u.name}  ›", Look.PLAIN) { push(UploadForm(app, id)) }       // what's in it
@@ -139,6 +142,24 @@ class Home(private val app: App) : Form("BoulderMesh") {
             val view = server?.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh -> makeButton("View mesh", Look.FILLED) { push(ViewerController(app, mesh, u.name)) } }
             val send = if (u.done) null else makeButton(if (u.sent.isEmpty()) "Upload" else "Carry on", Look.FILLED, !busy) { app.uploader.start(id); rebuild() }
             row(*listOfNotNull(send, view, delete).toTypedArray())
+        }
+
+        // the account's captures on the server that aren't on the phone: after the app was deleted, or sent from another
+        val sent = app.statuses.sent
+        if (sent.isNotEmpty()) {
+            section("Your captures on the server")
+            text("Not on this phone (sent from another, or before the app was reinstalled): their photos are kept on the server.",
+                UIColor.secondaryLabelColor, small = true)
+            if (!checkHere) check()
+        }
+        for (x in sent) {
+            text(x.title, bold = true)
+            val server = app.statuses.state[x.id] ?: UploadStatus(x.status, x.mesh, approved = true)
+            val (status, tone) = server.said()
+            text((if (x.created > 0) ago(x.created) + " · " else "") + "${x.photos} photo${if (x.photos == 1) "" else "s"} · $status", toneColor(tone), small = true)
+            server.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh ->
+                row(makeButton("View mesh", Look.FILLED) { push(ViewerController(app, mesh, x.title)) })
+            }
         }
 
         section("This phone")

@@ -64,4 +64,16 @@ class ContentsTest {
             """{"ab": {"status": "done", "mesh": "m1", "approved": true, "left": [], "failure": null, "mesh_gone": false}, "cd": {"status": "gone"}}""")
         assertEquals("m1", got["ab"]!!.mesh); assertEquals("gone", got["cd"]!!.status)
     }
+
+    @Test fun listsTheAccountsCapturesNotOnThePhone() {
+        // as the server answers: unknown fields, and an "approved" that's 1 or null
+        val got = Plan.json.decodeFromString(AccountProjects.serializer(), """{"projects": [
+            {"id": "a1", "name": "gym (capture)", "created": 100.5, "status": "done", "mesh": "m1", "photos": 40, "approved": 1, "bytes": 9},
+            {"id": "b2", "name": "gym2 (capture)", "created": 200.0, "status": "queued", "mesh": null, "photos": 12, "approved": null},
+            {"id": "c3", "name": "on the phone", "created": 300.0, "status": "done"}], "used": 5, "quota": null}""").projects
+        val shown = SentCapture.notOnPhone(got, listOf("c3", null))
+        assertEquals(listOf("b2", "a1"), shown.map { it.id })
+        assertEquals("gym", shown[1].title); assertEquals("m1", shown[1].mesh); assertEquals(40, shown[1].photos)
+        assertEquals(null, shown[0].mesh)
+    }
 }

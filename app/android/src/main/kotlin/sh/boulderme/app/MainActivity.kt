@@ -86,7 +86,7 @@ class MainActivity : ComponentActivity() {
         topHalf = store.topHalf
         store.onTopHalf = { v -> runOnUiThread { topHalf = v } }
         // the account's name (if paired before the app filled it in itself) and whether its role draws in the top half only
-        if (store.token.isNotEmpty() && !tryingOut) Thread {
+        if (store.token.isNotEmpty() && !tryingOut && store.online()) Thread {
             api.accountName()?.let { if (store.credit.isBlank()) store.credit = it }
         }.start()
         setContent {
@@ -212,7 +212,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         sensors.start(has(Manifest.permission.ACCESS_FINE_LOCATION))
         ensureArCore()
-        if (!tryingOut) Updates.look(unlessWithinMs = 10 * 60_000L)     // a newer build, offered on the Home screen
+        if (!tryingOut && store.online()) Updates.look(unlessWithinMs = 10 * 60_000L)     // a newer build, offered on the Home screen
     }
 
     /**

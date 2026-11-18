@@ -21,7 +21,9 @@ import platform.Foundation.setHTTPMethod
 import platform.Foundation.setValue
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
+import sh.boulderme.core.AccountProjects
 import sh.boulderme.core.MeshRow
+import sh.boulderme.core.SentCapture
 import sh.boulderme.core.UploadStatus
 
 /**
@@ -31,9 +33,13 @@ import sh.boulderme.core.UploadStatus
 class IosApi(private val store: IosStore) {
     private val json = IosStore.json
 
-    private fun call(path: String, method: String = "GET", body: NSData? = null, type: String? = null, done: (ByteArray?, String?) -> Unit) {
+    private fun call(path: String, method: String = "GET", body: NSData? = null, type: String? = null, done: (ByteArray?, String?) -> Unit) =
+        fetch(path, method, body, type) { bytes, why, _ -> done(bytes, why) }
+
+    /** As call(), also answering the HTTP status (0: none came). */
+    private fun fetch(path: String, method: String = "GET", body: NSData? = null, type: String? = null, done: (ByteArray?, String?, Int) -> Unit) {
         val url = NSURL.URLWithString(store.server + path)
-        if (url == null) { done(null, "the server's address isn't one"); return }
+        if (url == null) { done(null, "the server's address isn't one", 0); return }
         val req = NSMutableURLRequest.requestWithURL(url)
         req.setHTTPMethod(method)
         req.setTimeoutInterval(120.0)
@@ -49,7 +55,7 @@ class IosApi(private val store: IosStore) {
                 code !in 200..299 -> runCatching { json.parseToJsonElement(bytes.decodeToString()).jsonObject["error"]?.jsonPrimitive?.content }.getOrNull() ?: "the server answered $code"
                 else -> null
             }
-            dispatch_async(dispatch_get_main_queue()) { if (why == null) done(bytes, null) else done(null, why) }
+            dispatch_async(dispatch_get_main_queue()) { if (why == null) done(bytes, null, code) else done(null, why, code) }
         }.resume()
     }
 
@@ -157,6 +163,19 @@ class IosApi(private val store: IosStore) {
 
     fun sendRecord(project: String, record: String, done: (String?) -> Unit) = post("/api/projects/$project/capture", record) { obj, why -> done(if (obj != null) null else why) }
     fun reconstruct(project: String, done: (String?) -> Unit) = post("/api/projects/$project/reconstruct", "{}") { obj, why -> done(if (obj != null) null else why) }
+
+    /**
+     * The account's captures kept on the server, newest first; or null with no reason where this phone's token isn't an
+     * account's (the site's own) or there's none; or null and why it couldn't ask.
+     */
+    fun accountProjects(done: (List<SentCapture>?, String?) -> Unit) {
+        if (store.token.isEmpty()) return done(null, null)
+        fetch("/api/account/projects") { bytes, why, code ->
+            if (code == 401) return@fetch done(null, null)
+            val got = bytes?.let { runCatching { json.decodeFromString(AccountProjects.serializer(), it.decodeToString()).projects }.getOrNull() }
+            if (got != null) done(got, null) else done(null, why ?: "the answer couldn't be read")
+        }
+    }
 
     /** How each of these uploads (project ids) stands on the server: whether it's meshed, and as what. */
     fun status(projects: Collection<String>, done: (Map<String, UploadStatus>?, String?) -> Unit) = call("/api/capture/status?ids=" + projects.joinToString(",")) { bytes, why ->

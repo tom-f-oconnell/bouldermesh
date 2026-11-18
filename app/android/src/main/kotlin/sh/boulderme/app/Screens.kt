@@ -57,6 +57,7 @@ import sh.boulderme.core.SignInHelp
 import androidx.compose.foundation.layout.safeDrawingPadding
 import sh.boulderme.core.Plan
 import sh.boulderme.core.Reopen
+import sh.boulderme.core.UploadStatus
 import sh.boulderme.core.Vec3
 
 val GOOD = Color(0xFF58C27D)
@@ -113,6 +114,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
     val statuses by Statuses.state.collectAsState()
     val checking by Statuses.busy.collectAsState()
     val checkFailed by Statuses.error.collectAsState()
+    val sent by Statuses.sent.collectAsState()
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { Statuses.refresh(a.store, a.api) }      // each time Home comes up: whether what was sent is meshed yet
 
@@ -155,14 +157,18 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
         Section("A rock with no mesh")
         OutlinedButton(onClick = { naming = true }, modifier = Modifier.fillMaxWidth()) { Text("Capture a new rock…") }
 
-        if (captures.isNotEmpty()) Section("Captures on this phone")
-        if (captures.any { it.second.meshAsked || it.second.done }) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(enabled = !checking, onClick = { scope.launch { Statuses.refresh(a.store, a.api) } }) { Text(if (checking) "Checking…" else "Check if meshed") }
-            val at = a.store.statusesAt
-            if (at > 0) Text("Last asked " + android.text.format.DateUtils.getRelativeTimeSpanString(at), style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        val check = @Composable {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(enabled = !checking, onClick = { scope.launch { Statuses.refresh(a.store, a.api, pressed = true) } }) { Text(if (checking) "Checking…" else "Check if meshed") }
+                val at = a.store.statusesAt
+                if (at > 0) Text("Last asked " + android.text.format.DateUtils.getRelativeTimeSpanString(at), style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            checkFailed?.let { Text(it, color = WARN, style = MaterialTheme.typography.bodySmall) }
         }
-        checkFailed?.let { Text(it, color = WARN, style = MaterialTheme.typography.bodySmall) }
+        val checkHere = captures.any { it.second.meshAsked || it.second.done }
+        if (captures.isNotEmpty()) Section("Captures on this phone")
+        if (checkHere) check()
         for ((id, u) in captures) Card(onClick = { go(Screen.Upload(id)) }, modifier = Modifier.fillMaxWidth()) {     // pressed: what's in it
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("${u.name}  ›", fontWeight = FontWeight.SemiBold)
@@ -175,6 +181,26 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                         Button(onClick = { go(Screen.Viewer(mesh, u.name)) }) { Text("View mesh") }
                     }
                     TextButton(enabled = !Uploader.busy(id), onClick = { removing = id }) { Text("Delete") }
+                }
+            }
+        }
+
+        // the account's captures on the server that aren't on the phone: after the app was uninstalled, or sent from another
+        if (sent.isNotEmpty()) {
+            Section("Your captures on the server")
+            Text("Not on this phone (sent from another, or before the app was reinstalled): their photos are kept on the server.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (!checkHere) check()
+        }
+        for (x in sent) Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(x.title, fontWeight = FontWeight.SemiBold)
+                val server = statuses[x.id] ?: UploadStatus(x.status, x.mesh, approved = true)
+                val (status, tone) = server.said()
+                val day = if (x.created > 0) android.text.format.DateUtils.formatDateTime(a, (x.created * 1000).toLong(), android.text.format.DateUtils.FORMAT_SHOW_DATE) + " · " else ""
+                Text("$day${x.photos} photo${if (x.photos == 1) "" else "s"} · $status", style = MaterialTheme.typography.bodySmall, color = toneColor(tone))
+                server.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh ->
+                    Button(onClick = { go(Screen.Viewer(mesh, x.title)) }) { Text("View mesh") }
                 }
             }
         }

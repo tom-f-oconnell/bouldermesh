@@ -29,14 +29,20 @@ phone yet**: see [What's been checked](#whats-been-checked).
    carries it on: the turn on the spot again (the panorama), line up again, then 8 or so photos of the rock before
    *Scenery*, as they place this visit's frames on the mesh.
 6. **Once it's meshed**, *View mesh* on its capture shows it in the site's own viewer. Home asks the server how each
-   upload stands whenever it comes up (*Check if meshed* asks again); press a capture for what it holds, grouped by
+   upload stands whenever it comes up and there's a connection (*Check if meshed* asks again); press a capture for what it holds, grouped by
    what each photo was for (each climb, the card, tying to the old photos, the scenery), with what's been sent ticked.
    *View* on a downloaded mesh shows it the same way. With no signal, the viewer shows the copy kept on the phone (as
    a wireframe if it was kept without textures); an upload's mesh can be kept too (*Keep for viewing with no signal*,
    on its screen).
+7. **Captures no longer on the phone** (deleted, sent from another phone, or lost when the app was uninstalled) are
+   listed under *Your captures on the server*, with how each stands and *View mesh*, once the phone is signed in to
+   your account. Uninstalling deletes the captures on the phone: on Android 10 and later, tick *Keep app data* in the
+   uninstall prompt to keep them. Updating keeps them.
 
 Meshes and captures go over Wi-Fi or mobile data alike unless *Settings* says *only over Wi-Fi* for either: then the
 app waits for unmetered Wi-Fi (not a phone's hotspot) and carries on by itself once there is one, while it's open.
+The app asks nothing of the server by itself with no connection, and never checks on a timer: only when a screen
+comes up or a button is pressed (and, on Android, a look for a newer build at most every 10 minutes it's opened).
 A mesh being got shows a bar of how much of it has come.
 
 A rock with no mesh: *Capture a new rock…*, tap its middle, and walk round as much of it as you can; *Can't reach that

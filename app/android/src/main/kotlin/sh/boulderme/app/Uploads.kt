@@ -50,6 +50,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
 import sh.boulderme.core.CaptureContents
+import sh.boulderme.core.SentCapture
 import sh.boulderme.core.UploadStatus
 import java.io.File
 
@@ -59,22 +60,38 @@ val WAIT = Color(0xFFE8C547)
 fun toneColor(tone: String): Color = when (tone) { "good" -> GOOD; "bad" -> BAD; "warn" -> WARN; "wait" -> WAIT; else -> Color.Unspecified }
 
 /**
- * What the server says of this phone's uploads (Store.statuses, kept for when there's no signal), asked again each time
- * the Home screen comes up and when its Check is pressed.
+ * What the server says of this phone's uploads (Store.statuses, kept for when there's no signal), and of the account's
+ * captures that aren't on the phone (Store.sent), asked again each time the Home screen comes up and when its Check is
+ * pressed: never on its own, and with no connection only when pressed (to say there's none).
  */
 object Statuses {
     val state = MutableStateFlow<Map<String, UploadStatus>>(emptyMap())
+    val sent = MutableStateFlow<List<SentCapture>>(emptyList())
     val error = MutableStateFlow<String?>(null)
     val busy = MutableStateFlow(false)
 
-    suspend fun refresh(store: Store, api: Api) {
+    suspend fun refresh(store: Store, api: Api, pressed: Boolean = false) {
         if (state.value.isEmpty()) state.value = store.statuses
-        val asked = store.captureIds().mapNotNull { store.upload(it) }.filter { it.meshAsked || it.done }.mapNotNull { it.project }
-        if (asked.isEmpty() || busy.value) return
+        if (sent.value.isEmpty()) sent.value = store.sent
+        if (busy.value) return
+        if (!store.online()) {
+            if (pressed) error.value = "No connection: this is what the server said last"
+            return
+        }
+        val local = store.captureIds().mapNotNull { store.upload(it) }
+        val asked = local.filter { it.meshAsked || it.done }.mapNotNull { it.project }
+        if (store.token.isEmpty() && sent.value.isNotEmpty()) { store.sent = emptyList(); sent.value = emptyList() }
+        if (asked.isEmpty() && store.token.isEmpty()) return
         busy.value = true
         try {
-            val got = withContext(Dispatchers.IO) { api.status(asked) }
-            store.statuses = got; state.value = got; error.value = null
+            withContext(Dispatchers.IO) {
+                val others = api.accountProjects()?.let { SentCapture.notOnPhone(it, local.map { u -> u.project }) }.orEmpty()
+                val ids = asked + others.map { it.id }
+                val got = if (ids.isEmpty()) emptyMap() else api.status(ids)
+                store.statuses = got; state.value = got
+                store.sent = others; sent.value = others
+            }
+            error.value = null
         } catch (e: Exception) {
             error.value = "Couldn't ask the server: ${e.message}"
         } finally {
