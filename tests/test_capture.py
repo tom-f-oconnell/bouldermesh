@@ -209,6 +209,16 @@ assert both["role"] == "start" and with_sets["made"] != ranked["made"], "the hol
 assert both["holds"] == [beta.hold_id([0.0, 1.0, 2.0])] and both["detail_m"] == beta.HOLD_R_M == captureplan.HOLD_DETAIL_M, both
 beta.delete_set(mdir, one["id"])
 print("the server's plans OK")
+# what the viewer fetches of a mesh, for the apps to keep for viewing it with no signal
+off = server.offline_bundle(mid)
+urls = [f["url"] for f in off["files"]]
+assert urls[0] == f"/m/{mid}" and any(u.startswith("/static/app.") and u.endswith(".js") for u in urls), urls
+assert "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" in urls and any(u.endswith("/loaders/GLTFLoader.js") for u in urls), urls
+assert all(f.get("lib") for f in off["files"] if f["url"].startswith("https://")) and "/api/meshes" in urls and f"/api/meshes/{mid}/cleanup" in urls
+whole = next(f for f in off["files"] if f["url"] == f"/meshes/{mid}/mesh.ply?v={off['v']}")
+assert whole["bytes"] == (mdir / "mesh.ply").stat().st_size and off["bytes"] == {"plain": whole["bytes"], "textured": whole["bytes"]}, off["bytes"]
+assert server.offline_bundle("0" * 12) is None
+print("what the viewer fetches OK")
 
 # --- the server's: the meshes a capture can add to, and a capture meshed together with the photos of the one it adds to ----
 (row,) = server.capture_meshes()

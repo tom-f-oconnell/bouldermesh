@@ -61,7 +61,9 @@ class Store(context: Context) {
     /** A copy of the plan a capture goes by, kept with it: what each of its photos was for is told from it, after the plan's gone. */
     fun keepPlan(id: String, mesh: String) = runCatching { File(plans, "$mesh.json").copyTo(File(captureDir(id), "plan.json"), overwrite = true) }
 
-    fun removePlan(mesh: String) { File(plans, "$mesh.json").delete(); File(plans, "$mesh.bin").delete() }
+    fun removePlan(mesh: String) { File(plans, "$mesh.json").delete(); File(plans, "$mesh.bin").delete(); offline.remove(mesh) }
+    /** Meshes kept for the viewer with no signal. */
+    val offline = OfflineStore(File(root, "viewer"))
     fun downloaded(): List<Plan> = (plans.listFiles { f -> f.name.endsWith(".json") } ?: emptyArray())
         .mapNotNull { f -> runCatching { Plan.parse(f.readText()) }.getOrNull() }.sortedBy { it.name.lowercase() }
 

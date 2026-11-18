@@ -2108,6 +2108,9 @@ $('#vinfo').onclick = () => {
 };
 // The wireframe: only the edges of the mesh's triangles, in the accent colour, in place of its surface
 let wire = false; try { wire = localStorage.getItem('bm_wire') === '1'; } catch {}
+// ?notex: a copy of the mesh kept on a phone without its textures (the apps' offline viewer): its shape alone, as a wireframe
+const NO_TEXTURES = new URLSearchParams(location.search).has('notex');
+if (NO_TEXTURES) wire = true;
 const wireMaterial = new THREE.MeshBasicMaterial({ wireframe: true, transparent: true, opacity: .6 });
 function applyWire(){
   wireMaterial.color.set(getComputedStyle(document.documentElement).getPropertyValue('--acc').trim());
@@ -2314,7 +2317,7 @@ function gltfLoader(side, shapeOnly = false){
     const mine = localUrl(u);
     if (mine) return mine;
     if (!/\.(png|jpe?g|webp)$/i.test(u)) return u;
-    if (shapeOnly) return NO_IMAGE;
+    if (shapeOnly || NO_TEXTURES) return NO_IMAGE;
     loadingUpdate?.({ texture: true });     // its texture files follow the model's
     return side ? `${u}?max=${side}` : u;
   });

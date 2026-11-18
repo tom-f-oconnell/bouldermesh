@@ -4,6 +4,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.readValue
 import kotlinx.cinterop.useContents
 import kotlinx.serialization.json.JsonPrimitive
+import sh.boulderme.core.Offline
 import platform.CoreGraphics.CGRectZero
 import platform.CoreGraphics.CGSizeMake
 import platform.Foundation.NSError
@@ -129,6 +130,8 @@ private fun thumb(path: String, sent: Boolean, open: () -> Unit): UIView {
 
 /** One capture: what it holds, grouped by what each part was for, with what's been sent ticked; each photo opens. */
 class UploadForm(private val app: App, private val id: String) : Form("What's in it") {
+    private var keeping: String? = null
+    private var keepError: String? = null
     override fun appear() { app.statuses.refresh { rebuild() } }
 
     override fun build() {
@@ -138,7 +141,25 @@ class UploadForm(private val app: App, private val id: String) : Form("What's in
         text(u.name, bold = true)
         val (said, color) = uploadSaid(u, null, server)
         text(said, color)
-        server?.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh -> button("View its mesh", Look.FILLED) { push(ViewerController(app, mesh, u.name)) } }
+        server?.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh ->
+            button("View its mesh", Look.FILLED) { push(ViewerController(app, mesh, u.name)) }
+            val kept = app.store.offline.index(mesh)
+            if (kept != null) text(if (kept.textures) "Kept on this phone, for viewing with no signal" else "Kept on this phone without its textures, for viewing with no signal", GOOD, small = true)
+            else button(keeping ?: "Keep for viewing with no signal", Look.PLAIN) {
+                if (keeping != null) return@button
+                keeping = "Asking…"; rebuild()
+                app.api.offline(mesh) { bundle, why ->
+                    keeping = null
+                    if (bundle == null) { keepError = why; rebuild(); return@offline }
+                    rebuild()
+                    screen.keepChoice(u.name, listOf(bundle.bytes)) { textures ->
+                        keeping = "Keeping…"; rebuild()
+                        app.store.offline.fetch(app.api, mesh, textures, bundle) { _, whyNot -> keeping = null; keepError = whyNot; rebuild() }
+                    }
+                }
+            }
+            keepError?.let { text(it, BAD, small = true) }
+        }
         val dir = app.store.captureDir(id)
         for (g in app.store.contents(id).first) {
             section(g.title)
@@ -202,7 +223,7 @@ class ViewerDelegate(private val server: String, private val failed: (String) ->
         val url = decidePolicyForNavigationAction.request.URL
         val text = url?.absoluteString ?: ""
         val main = decidePolicyForNavigationAction.targetFrame?.mainFrame ?: true
-        if (!main || text.startsWith("$server/") || text == server || text.startsWith("about:")) return decisionHandler(WKNavigationActionPolicy.WKNavigationActionPolicyAllow)
+        if (!main || text.startsWith("$server/") || text == server || text.startsWith("about:") || text.startsWith("${Offline.SCHEME}://")) return decisionHandler(WKNavigationActionPolicy.WKNavigationActionPolicyAllow)
         if (url != null) UIApplication.sharedApplication.openURL(url, options = emptyMap<Any?, Any>(), completionHandler = null)
         decisionHandler(WKNavigationActionPolicy.WKNavigationActionPolicyCancel)
     }
@@ -212,14 +233,19 @@ class ViewerDelegate(private val server: String, private val failed: (String) ->
 
 /**
  * A mesh in the site's own viewer (its /m/<id> page, in a web view), signed in as this phone is, so that an upload's
- * mesh nobody has approved yet shows too. Needs signal: the page and the mesh come from the server.
+ * mesh nobody has approved yet shows too. With signal, the page and the mesh come from the server. A mesh kept on the
+ * phone (IosOffline) shows with none, under the kept pages' own scheme (OfflinePages); one kept without its textures as a
+ * wireframe (?notex).
  */
 @OptIn(ExperimentalForeignApi::class)
 class ViewerController(private val app: App, private val mesh: String, private val name: String) : UIViewController(nibName = null, bundle = null) {
     private val server = app.store.server.trimEnd('/')
     private val note = UILabel()
+    private val column = UIStackView()
+    private var pages: OfflinePages? = null     // held here: the web view holds its scheme's handler, but not past this
     private val delegate = ViewerDelegate(server) { why ->       // held here: the web view holds its delegate weakly
-        note.text = "The mesh couldn't be shown: $why. Viewing needs signal."
+        note.text = "The mesh couldn't be shown: $why. " + if (pages == null) "Viewing needs signal, or a copy kept on the phone (Get meshes)." else ""
+        note.textColor = BAD
         note.hidden = false
     }
 
@@ -227,30 +253,39 @@ class ViewerController(private val app: App, private val mesh: String, private v
         super.viewDidLoad()
         title = name
         view.backgroundColor = UIColor.systemBackgroundColor
-        val config = WKWebViewConfiguration()
-        // the page keeps its token in the site's own storage: this phone's goes there before the page's own code runs
-        val token = app.store.token
-        val keep = if (token.isEmpty()) "localStorage.removeItem('bm_token')" else "localStorage.setItem('bm_token',${JsonPrimitive(token)})"
-        config.userContentController.addUserScript(WKUserScript(
-            "if (location.href.indexOf(${JsonPrimitive("$server/")}) === 0) { try { $keep } catch (e) {} }",
-            WKUserScriptInjectionTime.WKUserScriptInjectionTimeAtDocumentStart, true))
-        val web = WKWebView(frame = CGRectZero.readValue(), configuration = config)
-        web.navigationDelegate = delegate
-        web.translatesAutoresizingMaskIntoConstraints = false
         note.numberOfLines = 0
-        note.textColor = BAD
-        note.hidden = true
-        val column = UIStackView()
+        note.text = "Opening…"
         column.axis = platform.UIKit.UILayoutConstraintAxisVertical
         column.translatesAutoresizingMaskIntoConstraints = false
         column.addArrangedSubview(note)
-        column.addArrangedSubview(web)
         view.addSubview(column)
         NSLayoutConstraint.activateConstraints(listOf(
             column.topAnchor.constraintEqualToAnchor(view.safeAreaLayoutGuide.topAnchor),
             column.bottomAnchor.constraintEqualToAnchor(view.bottomAnchor),
             column.leadingAnchor.constraintEqualToAnchor(view.leadingAnchor),
             column.trailingAnchor.constraintEqualToAnchor(view.trailingAnchor)))
-        NSURL.URLWithString("$server/m/$mesh")?.let { web.loadRequest(NSURLRequest.requestWithURL(it)) }
+        val kept = app.store.offline.index(mesh)
+        if (kept == null) open(null) else app.store.offline.reachable { up -> open(if (up) null else kept) }
+    }
+
+    private fun open(kept: sh.boulderme.core.OfflineIndex?) {
+        val config = WKWebViewConfiguration()
+        // the page keeps its token in the site's own storage: this phone's goes there before the page's own code runs
+        val token = app.store.token
+        val keep = if (token.isEmpty()) "localStorage.removeItem('bm_token')" else "localStorage.setItem('bm_token',${JsonPrimitive(token)})"
+        val own = if (kept != null) "${Offline.SCHEME}://${Offline.HOST}/" else "$server/"
+        config.userContentController.addUserScript(WKUserScript(
+            "if (location.href.indexOf(${JsonPrimitive(own)}) === 0) { try { $keep } catch (e) {} }",
+            WKUserScriptInjectionTime.WKUserScriptInjectionTimeAtDocumentStart, true))
+        if (kept != null) OfflinePages(app.store.offline, kept, server).also { pages = it; config.setURLSchemeHandler(it, forURLScheme = Offline.SCHEME) }
+        val web = WKWebView(frame = CGRectZero.readValue(), configuration = config)
+        web.navigationDelegate = delegate
+        web.translatesAutoresizingMaskIntoConstraints = false
+        note.textColor = UIColor.secondaryLabelColor
+        note.text = if (kept == null) "" else if (kept.textures) "No signal: the copy kept on this phone" else "No signal: the copy kept on this phone, without its textures"
+        note.hidden = kept == null
+        column.addArrangedSubview(web)
+        val address = if (kept != null) own + "m/$mesh" + (if (kept.textures) "" else "?notex=1") else "$server/m/$mesh"
+        NSURL.URLWithString(address)?.let { web.loadRequest(NSURLRequest.requestWithURL(it)) }
     }
 }

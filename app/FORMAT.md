@@ -7,7 +7,13 @@ Each side's tests read files the other really wrote (`shared/src/jvmTest/resourc
 
 ## From the server
 
-    GET /api/capture/meshes               [{id, name, lat, lng, climbs: ["name grade"], holds, sets: [names]}]: current meshes a capture can add to
+    GET /api/capture/meshes               [{id, name, lat, lng, climbs: ["name grade"], holds, sets: [names], bytes: {plain, textured}}]:
+                                          current meshes a capture can add to; bytes, what keeping one for the viewer takes
+    GET /api/capture/offline/<mesh>       {mesh, v, page, files: [{url, bytes, texture, lib}], bytes}: every file the
+                                          site's viewer fetches to show a mesh (its page, scripts, the CDN modules its
+                                          script imports, the API it waits for, the mesh and its textures at 2048), kept
+                                          by the apps (shared Offline.kt) and given back to the page by address with no
+                                          signal; without its textures, the page is opened with ?notex (a wireframe)
     GET /api/capture/plan/<mesh>          the plan below
     GET /api/capture/guide/<mesh>.bin     the guide below, at the plan's guide_url
     GET /api/capture/status?ids=<project>,…     {project: {status, mesh, approved, left, failure, mesh_gone}}: how each of

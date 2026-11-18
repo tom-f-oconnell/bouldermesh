@@ -207,29 +207,41 @@ fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
     var search by remember { mutableStateOf("") }
     var have by remember { mutableStateOf(a.store.downloaded().map { it.mesh }.toSet()) }
     var busy by remember { mutableStateOf(setOf<String>()) }
+    var viewing by remember { mutableStateOf(rows.orEmpty().associate { it.id to a.store.offline.index(it.id) }) }
+    var asking by remember { mutableStateOf<List<MeshRow>?>(null) }     // which to keep, once it's said how
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
         try { rows = withContext(Dispatchers.IO) { a.api.meshes() } } catch (e: Exception) { error = "Couldn't list the meshes: ${e.message}" }
     }
+    LaunchedEffect(rows) { viewing = withContext(Dispatchers.IO) { rows.orEmpty().associate { it.id to a.store.offline.index(it.id) } } }
     val here = a.sensors.fix
     fun metres(r: MeshRow): Double? { val lat = r.lat; val lng = r.lng; return if (here != null && lat != null && lng != null) GpsAverager.metresApart(here.lat, here.lng, lat, lng) else null }
     val shown = (rows ?: emptyList()).filter { r -> search.isBlank() || r.name.contains(search, true) || r.climbs.any { it.contains(search, true) } }
         .sortedWith(compareBy<MeshRow> { metres(it) ?: Double.MAX_VALUE }.thenBy { it.name.lowercase() })
-    fun get(list: List<MeshRow>) {     // one after another: the server makes each mesh's plan as it's first asked for
+    // one after another: the server makes each mesh's plan as it's first asked for; then what the viewer needs of it
+    fun get(list: List<MeshRow>, textures: Boolean) {
         busy = busy + list.map { it.id }
         scope.launch {
             for (r in list) {
                 try {
-                    val (plan, guide) = withContext(Dispatchers.IO) { a.api.plan(r.id) }
-                    a.store.savePlan(r.id, plan, guide)
-                    have = have + r.id
+                    if (r.id !in have) {
+                        val (plan, guide) = withContext(Dispatchers.IO) { a.api.plan(r.id) }
+                        a.store.savePlan(r.id, plan, guide)
+                        have = have + r.id
+                    }
+                    val index = withContext(Dispatchers.IO) { a.store.offline.fetch(a.api, a.store, r.id, textures) }
+                    viewing = viewing + (r.id to index)
                 } catch (e: Exception) { error = "${r.name}: ${e.message}" }
                 busy = busy - r.id
             }
         }
     }
     var gotFirst by remember { mutableStateOf(!getFirst) }
-    LaunchedEffect(rows) { val first = rows?.firstOrNull(); if (!gotFirst && first != null) { gotFirst = true; get(listOf(first)) } }
+    LaunchedEffect(rows) { val first = rows?.firstOrNull(); if (!gotFirst && first != null) { gotFirst = true; asking = listOf(first) } }
+    asking?.let { list ->
+        KeepChoice(if (list.size == 1) list[0].name.ifEmpty { "this mesh" } else "these ${list.size} meshes", list.map { it.bytes },
+            dismiss = { asking = null }) { textures -> asking = null; get(list, textures) }
+    }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -241,7 +253,7 @@ fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
         if (rows == null && error == null) Text("Listing them…")
         if (rows != null) {
             val near = shown.filter { (metres(it) ?: 1e9) <= 2000 && it.id !in have }
-            if (near.size > 1 && search.isBlank()) OutlinedButton(onClick = { get(near.take(40)) }) { Text("Get the ${minOf(near.size, 40)} within 2 km") }
+            if (near.size > 1 && search.isBlank()) OutlinedButton(onClick = { asking = near.take(40) }) { Text("Get the ${minOf(near.size, 40)} within 2 km") }
             Text(if (here == null) "No GPS fix yet: listed by name." else "Nearest first.", style = MaterialTheme.typography.bodySmall)
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
@@ -253,10 +265,12 @@ fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
                         Text(listOfNotNull(far, if (r.holds > 0) "${r.holds} holds marked" else null, r.climbs.take(3).joinToString(", ").ifEmpty { null }).joinToString(" · "),
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    when (r.id) {
-                        in busy -> Text("Getting…")
-                        in have -> Text("On phone", color = GOOD)
-                        else -> TextButton(onClick = { get(listOf(r)) }) { Text("Get") }
+                    val kept = viewing[r.id]
+                    when {
+                        r.id in busy -> Text("Getting…")
+                        r.id in have && kept != null -> Text(if (kept.textures) "On phone" else "On phone · wireframe", color = GOOD)
+                        r.id in have -> TextButton(onClick = { asking = listOf(r) }) { Text("Keep for viewing") }
+                        else -> TextButton(onClick = { asking = listOf(r) }) { Text("Get") }
                     }
                 }
             }

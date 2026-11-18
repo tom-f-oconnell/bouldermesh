@@ -61,7 +61,9 @@ class IosStore {
     /** A copy of the plan a capture goes by, kept with it: what each of its photos was for is told from it, after the plan's gone. */
     fun keepPlan(id: String, mesh: String) { Files.readBytes("$plans/$mesh.json")?.let { Files.write("${captureDir(id)}/plan.json", it) } }
 
-    fun removePlan(mesh: String) { Files.delete("$plans/$mesh.json"); Files.delete("$plans/$mesh.bin") }
+    fun removePlan(mesh: String) { Files.delete("$plans/$mesh.json"); Files.delete("$plans/$mesh.bin"); offline.remove(mesh) }
+    /** Meshes kept for the viewer with no signal. */
+    val offline: IosOffline by lazy { IosOffline(this) }
     fun downloaded(): List<Plan> = Files.list(plans).filter { it.endsWith(".json") }.mapNotNull { plan(it.removeSuffix(".json")) }.sortedBy { it.name.lowercase() }
 
     // ---- captures -----------------------------------------------------------------------------------------------------

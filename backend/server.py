@@ -1731,7 +1731,7 @@ def capture_meshes() -> list[dict]:
         of.setdefault(l["mesh_id"], []).append(" ".join(x for x in (l["name"], l["grade"]) if x))
     on: dict[str, list[str]] = {}
     out = []
-    for m in q("SELECT id, name, lat, lng, boulder FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%' ORDER BY name"):
+    for m in q("SELECT id, name, lat, lng, boulder, filename, source FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%' ORDER BY name"):
         d = MESHES / m["id"]
         if not (d / "cameras.json").exists():
             continue
@@ -1745,9 +1745,91 @@ def capture_meshes() -> list[dict]:
             holds = sum(len(one["holds"]) for one in sets) + sum(len(v.get("holds") or []) for v in (beta_mod.load(d) or {}).get("videos", []))
         except Exception:
             holds, sets = 0, []
+        try:    # what keeping it for the viewer with no signal takes, with its textures and without
+            size = offline_sizes(offline_mesh(m["id"], m["filename"], m["source"]))
+        except Exception:
+            size = None
         out.append({"id": m["id"], "name": m["name"], "lat": m["lat"], "lng": m["lng"], "climbs": climbs or [], "holds": holds,
-                    "sets": [one["name"] for one in sets if one.get("shared", True)]})
+                    "sets": [one["name"] for one in sets if one.get("shared", True)], "bytes": size})
     return out
+
+
+OFFLINE_SIDE = 2048     # the textures a mesh is kept with on a phone, for its viewer with no signal: as the viewer first shows them
+OFFLINE_API = ("/api/status", "/api/climbs/count", "/api/meshes", "/api/projects", "/api/campaigns", "/api/jobs")
+CDN_URL = r"https://(?:cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com)/[^\"'\s]+"
+
+
+def offline_mesh(mid: str, filename: str, source: str | None) -> dict | None:
+    """What the viewer fetches of a mesh to show it, as it would first (preview first, its textures at OFFLINE_SIDE):
+    {glb, faces, textures: [{url, bytes}], v}, each file's address as the page asks for it. None for a mesh with no file."""
+    mode = texture_mode(mid, source)
+    f = served_dir(mid, mode) / filename
+    if not f.is_file():
+        return None
+    v = mesh_version(mid, mode, filename)
+    src = viewer_glb(mid, mode, filename)
+    rec = glbpack.record(src) if src else None
+    lod = ("preview" if (rec.get("preview") or {}).get("bytes") else "full") if rec else None
+
+    def query(*parts: str) -> str:
+        return "?" + "&".join(x for x in parts if x)
+    base = f"/meshes/{mid}/"
+    glb = {"url": base + filename + query(f"lod={lod}" if lod else "", f"v={v}"), "bytes": rec[lod]["bytes"] if lod else f.stat().st_size}
+    cleanup = meshclean.load(served_dir(mid, mode))
+    faces = {"url": base + meshclean.FACES_FILE + query(f"lod={lod}" if lod else "", f"v={v}"), "bytes": None} \
+        if cleanup and not cleanup.get("deleted") else None
+    textures = []
+    if mode != "hidden" and src:
+        sides = (rec or {}).get("textures") or {}
+        for uri in glbpack.image_files(src):
+            if rec and sides.get(uri):
+                textures.append({"url": f"{base}{uri}?max={OFFLINE_SIDE}", "bytes": sides[uri]["bytes"].get(str(OFFLINE_SIDE))})
+            elif (src.parent / uri).is_file():
+                textures.append({"url": base + uri, "bytes": (src.parent / uri).stat().st_size})
+    return {"v": v, "glb": glb, "faces": faces, "textures": textures}
+
+
+def offline_sizes(got: dict | None) -> dict | None:
+    """How much of a phone a mesh kept for its viewer takes (offline_mesh()), in bytes: without its textures, and with."""
+    if not got:
+        return None
+    plain = got["glb"]["bytes"] or 0
+    return {"plain": plain, "textured": plain + sum(t["bytes"] or 0 for t in got["textures"])}
+
+
+def offline_bundle(mid: str) -> dict | None:
+    """For the phone apps: every file the site's viewer fetches to show a mesh at /m/<mid>, to keep for showing it with
+    no signal. Each {url, bytes (if known), texture (one of its textures), lib (from a CDN, the same for every mesh)}:
+    the page and its own files; the CDN files its markup names, and the modules its script imports (those import
+    others, which are the app's to follow); what of the API it waits for before it shows the mesh (OFFLINE_API, the
+    climbs list, the mesh's cleanup); and the mesh.
+
+    Returns:
+        {mesh, v, page, files, bytes: {plain, textured}}; None if there's no such mesh, or it has no file.
+    """
+    row = q("SELECT id, filename, source FROM meshes WHERE id=?", mid, one=True)
+    got = offline_mesh(mid, row["filename"], row["source"]) if row else None
+    if not got:
+        return None
+    parts = page_parts()
+    html = parts["html"]
+    files = [{"url": f"/m/{mid}"}] + [{"url": f"/static/{n}"} for n in sorted(parts["assets"])] + [{"url": "/static/favicon.svg"}]
+    libs = re.findall(r'(?:src|href)="(' + CDN_URL + ')"', html)
+    found = re.search(r'<script type="importmap">(.*?)</script>', html, re.S)
+    imports = json.loads(found[1]).get("imports", {}) if found else {}
+    module = next((body.decode() for ctype, body, _ in parts["assets"].values() if "javascript" in ctype), "")
+    for spec in re.findall(r"^import [^;]*? from '([^']+)'", module, re.M):
+        prefix = next((k for k in sorted(imports, key=len, reverse=True) if spec == k or (k.endswith("/") and spec.startswith(k))), None)
+        if prefix:
+            libs.append(imports[prefix] + spec[len(prefix):] if prefix.endswith("/") else imports[prefix])
+    files += [{"url": u, "lib": True} for u in dict.fromkeys(libs)]
+    files += [{"url": u} for u in OFFLINE_API + ("/api/climbs?limit=100&offset=0", "/api/climbs?meshed=1&limit=100&offset=0",
+                                                 f"/api/meshes/{mid}/cleanup")]
+    files.append(got["glb"])
+    if got["faces"]:
+        files.append(got["faces"])
+    files += [{**t, "texture": True} for t in got["textures"]]
+    return {"mesh": mid, "v": got["v"], "page": f"/m/{mid}", "files": files, "bytes": offline_sizes(got)}
 
 
 def capture_status(ids: list[str], me: dict | None) -> dict[str, dict]:
@@ -9988,6 +10070,14 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     return self.send_json({"error": f"no plan for this mesh: {e}"}, 409)
                 return self.send_json(plan) if plan else self.send_json({"error": "not found"}, 404)
+            m = re.fullmatch(r"/api/capture/offline/([0-9a-f]+)", p)
+            if m:   # for the phone apps: what the viewer fetches of a mesh, to keep for showing it with no signal (offline_bundle())
+                waiting = unapproved_meshes()
+                me = self.who()
+                if m[1] in waiting and not (me and (me["role"] == "owner" or waiting[m[1]] == me["id"])):
+                    return self.send_json({"error": "not found"}, 404)
+                got = offline_bundle(m[1])
+                return self.send_json(got) if got else self.send_json({"error": "not found"}, 404)
             m = re.fullmatch(r"/api/capture/guide/([0-9a-f]+)\.bin", p)
             if m:   # and the light copy of it they draw, by the version its plan names
                 return self.send_file(MESHES / m[1] / captureplan.DIR / captureplan.GUIDE_FILE, cache="public, max-age=31536000, immutable")

@@ -8,7 +8,9 @@ phone yet**: see [What's been checked](#whats-been-checked).
 ## Using it
 
 1. **While you have signal**, open *Get meshes…* and get the boulders you'll visit (nearest first; *Get the N within
-   2 km* takes them all). They're kept on the phone, with their holds, and work with no signal.
+   2 km* takes them all). It asks whether to keep each with its textures or without (shown as a wireframe), saying
+   what each takes. They're kept on the phone, with their holds, for capturing and for the viewer, and work with no
+   signal.
 2. **Before a capture**, *Calibrate* the compass: half a minute of turning the phone every which way, away from metal.
 3. **At the rock**, press *Capture* on its mesh. It first asks for **one slow turn all the way round on the spot**, with
    the phone held upright as for a photo: that's how it finds which way is down (below). Then a small model of the
@@ -26,7 +28,9 @@ phone yet**: see [What's been checked](#whats-been-checked).
 6. **Once it's meshed**, *View mesh* on its capture shows it in the site's own viewer. Home asks the server how each
    upload stands whenever it comes up (*Check if meshed* asks again); press a capture for what it holds, grouped by
    what each photo was for (each climb, the card, tying to the old photos, the scenery), with what's been sent ticked.
-   *View* on a downloaded mesh shows it the same way. Viewing needs signal.
+   *View* on a downloaded mesh shows it the same way. With no signal, the viewer shows the copy kept on the phone (as
+   a wireframe if it was kept without textures); an upload's mesh can be kept too (*Keep for viewing with no signal*,
+   on its screen).
 
 A rock with no mesh: *Capture a new rock…*, tap its middle, and walk round as much of it as you can; *Can't reach that
 side* for the rest, and *Mark a hold* for anything that needs close-ups.

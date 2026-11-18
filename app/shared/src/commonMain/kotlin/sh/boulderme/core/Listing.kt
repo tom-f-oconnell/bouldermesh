@@ -5,7 +5,8 @@ import kotlinx.serialization.Serializable
 /** A mesh as the server lists it for capturing more of (its /api/capture/meshes). */
 @Serializable
 data class MeshRow(val id: String, val name: String = "", val lat: Double? = null, val lng: Double? = null,
-                   val climbs: List<String> = emptyList(), val holds: Int = 0)
+                   val climbs: List<String> = emptyList(), val holds: Int = 0,
+                   val bytes: OfflineSizes? = null)     // what keeping it for the viewer takes, without its textures and with
 
 /** How far a capture's upload has got, kept beside its photos so that one cut off carries on from there. */
 @Serializable

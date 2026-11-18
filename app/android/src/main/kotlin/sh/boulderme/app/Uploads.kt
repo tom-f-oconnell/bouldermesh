@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
 import sh.boulderme.core.CaptureContents
@@ -135,6 +136,7 @@ fun UploadScreen(a: MainActivity, id: String, go: (Screen) -> Unit) {
                 Text(said, color = color)
                 server?.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh ->
                     TextButton(onClick = { go(Screen.Viewer(mesh, u.name, Screen.Upload(id))) }) { Text("View its mesh") }
+                    KeepMesh(a, mesh, u.name)
                 }
             }
             for (g in groups) {
@@ -191,20 +193,30 @@ fun PhotoScreen(a: MainActivity, s: Screen.Photo, go: (Screen) -> Unit) {
 // ------------------------------------------------------------------------------------------------------------- viewer
 /**
  * A mesh in the site's own viewer (its /m/<id> page, in a WebView), signed in as this phone is, so that an upload's mesh
- * nobody has approved yet shows too. Needs signal: the page and the mesh come from the server, though what was seen
- * before may come from the WebView's cache.
+ * nobody has approved yet shows too. With signal, the page and the mesh come from the server. A mesh kept on the phone
+ * (OfflineStore) shows with none: each of the page's requests is answered from what's kept, and one kept without its
+ * textures shows as a wireframe (?notex).
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun ViewerScreen(a: MainActivity, s: Screen.Viewer, go: (Screen) -> Unit) {
     var failed by remember { mutableStateOf<String?>(null) }
     val server = a.store.server.trimEnd('/')
+    // kept: the copy to show from, when the server can't be reached; decided before the page is opened
+    val kept by produceState<Pair<Boolean, sh.boulderme.core.OfflineIndex?>?>(null, s.mesh) {
+        value = withContext(Dispatchers.IO) { a.store.offline.index(s.mesh).let { k -> if (k == null || a.api.reachable()) true to null else false to k } }
+    }
     Column(Modifier.fillMaxSize()) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp)) {
             TextButton(onClick = { go(s.back) }) { Text("‹ Back") }
             Text(s.name, style = MaterialTheme.typography.titleMedium, maxLines = 1)
         }
-        failed?.let { Text("The mesh couldn't be shown: $it. Viewing needs signal.", color = BAD, modifier = Modifier.padding(16.dp)) }
+        val decided = kept ?: run { Text("Opening…", modifier = Modifier.padding(16.dp)); return@Column }
+        val copy = decided.second
+        if (copy != null) Text(if (copy.textures) "No signal: the copy kept on this phone" else "No signal: the copy kept on this phone, without its textures",
+            style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+        failed?.let { Text("The mesh couldn't be shown: $it. " + if (copy == null) "Viewing needs signal, or a copy kept on the phone (Get meshes)." else "",
+            color = BAD, modifier = Modifier.padding(16.dp)) }
         AndroidView(modifier = Modifier.fillMaxWidth().weight(1f), factory = { ctx ->
             WebView(ctx).apply {
                 settings.javaScriptEnabled = true
@@ -216,15 +228,44 @@ fun ViewerScreen(a: MainActivity, s: Screen.Viewer, go: (Screen) -> Unit) {
                         runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }      // elsewhere: the phone's browser
                         return true
                     }
+                    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): android.webkit.WebResourceResponse? =
+                        copy?.let { a.store.offline.answer(it, server, request) }
                     override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                         if (request.isForMainFrame) failed = error.description?.toString() ?: "no connection"
                     }
                 }
                 // the page keeps its token in the site's own storage: put this phone's there, then open the mesh
-                val page = "$server/m/${s.mesh}"
+                val page = "$server/m/${s.mesh}" + if (copy != null && !copy.textures) "?notex=1" else ""
                 val keep = if (a.store.token.isEmpty()) "localStorage.removeItem('bm_token')" else "localStorage.setItem('bm_token',${JsonPrimitive(a.store.token)})"
                 loadDataWithBaseURL("$server/", "<!doctype html><script>try{$keep}catch(e){};location.replace(${JsonPrimitive(page)})</script>", "text/html", "utf-8", null)
             }
         }, onRelease = { it.destroy() })
+    }
+}
+
+/** Keeps an upload's mesh for the viewer with no signal: asks how (with textures or without) once the server says what each takes. */
+@Composable
+fun KeepMesh(a: MainActivity, mesh: String, name: String) {
+    var kept by remember { mutableStateOf(a.store.offline.index(mesh)) }
+    var bundle by remember { mutableStateOf<sh.boulderme.core.OfflineBundle?>(null) }
+    var busy by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val k = kept
+    if (k != null) Text(if (k.textures) "Kept on this phone, for viewing with no signal" else "Kept on this phone without its textures, for viewing with no signal",
+        style = MaterialTheme.typography.bodySmall, color = GOOD)
+    else TextButton(enabled = busy == null, onClick = {
+        busy = "Asking…"; error = null
+        scope.launch { runCatching { withContext(Dispatchers.IO) { a.api.offline(mesh) } }.fold({ bundle = it }, { error = it.message }); busy = null }
+    }) { Text(busy ?: "Keep for viewing with no signal") }
+    error?.let { Text(it, color = BAD, style = MaterialTheme.typography.bodySmall) }
+    bundle?.let { b ->
+        KeepChoice(name, listOf(b.bytes), dismiss = { bundle = null }) { textures ->
+            bundle = null; busy = "Keeping…"
+            scope.launch {
+                runCatching { withContext(Dispatchers.IO) { a.store.offline.fetch(a.api, a.store, mesh, textures, b) } }.fold({ kept = it }, { error = it.message })
+                busy = null
+            }
+        }
     }
 }

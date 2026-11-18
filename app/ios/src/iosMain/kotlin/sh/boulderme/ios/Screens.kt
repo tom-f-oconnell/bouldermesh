@@ -114,17 +114,27 @@ class Browse(private val app: App, private var getFirst: Boolean = false) : Form
         return if (here != null && lat != null && lng != null) GpsAverager.metresApart(here.lat, here.lng, lat, lng) else null
     }
 
-    /** One after another: the server makes each mesh's plan as it's first asked for. */
-    private fun get(list: List<MeshRow>) {
+    /** One after another: the server makes each mesh's plan as it's first asked for; then what the viewer needs of it. */
+    private fun get(list: List<MeshRow>, textures: Boolean) {
         val r = list.firstOrNull() ?: return
         busy.addAll(list.map { it.id })
         rebuild()
-        app.api.plan(r.id) { plan, guide, why ->
-            if (plan != null && guide != null) app.store.savePlan(r.id, plan, guide) else error = "${r.name}: $why"
+        fun after(why: String?) {
+            if (why != null) error = "${r.name}: $why"
             busy.remove(r.id)
-            if (list.size > 1) get(list.drop(1)) else rebuild()
+            if (list.size > 1) get(list.drop(1), textures) else rebuild()
+        }
+        fun viewer() = app.api.offline(r.id) { bundle, why ->
+            if (bundle == null) after("the viewer's copy: $why") else app.store.offline.fetch(app.api, r.id, textures, bundle) { _, whyNot -> after(whyNot?.let { "the viewer's copy: $it" }) }
+        }
+        if (app.store.plan(r.id) != null) viewer()
+        else app.api.plan(r.id) { plan, guide, why ->
+            if (plan != null && guide != null) { app.store.savePlan(r.id, plan, guide); viewer() } else after(why)
         }
     }
+
+    private fun ask(list: List<MeshRow>) = screen.keepChoice(if (list.size == 1) list[0].name.ifEmpty { "this mesh" } else "these ${list.size} meshes",
+        list.map { it.bytes }) { textures -> get(list, textures) }
 
     override fun build() {
         if (!asked) {
@@ -132,7 +142,7 @@ class Browse(private val app: App, private var getFirst: Boolean = false) : Form
             app.api.meshes { got, why ->
                 rows = got; error = why?.let { "Couldn't list the meshes: $it" }
                 rebuild()
-                if (getFirst) { getFirst = false; got?.firstOrNull()?.let { get(listOf(it)) } }
+                if (getFirst) { getFirst = false; got?.firstOrNull()?.let { ask(listOf(it)) } }
             }
         }
         val all = rows
@@ -149,16 +159,18 @@ class Browse(private val app: App, private var getFirst: Boolean = false) : Form
         val match = all.filter { r -> search.isBlank() || r.name.contains(search, true) || r.climbs.any { it.contains(search, true) } }
             .sortedWith(compareBy<MeshRow> { metres(it) ?: Double.MAX_VALUE }.thenBy { it.name.lowercase() })
         val near = match.filter { (metres(it) ?: 1e9) <= 2000 && it.id !in have && it.id !in busy }
-        if (near.size > 1 && search.isBlank()) button("Get the ${minOf(near.size, 40)} within 2 km") { get(near.take(40)) }
+        if (near.size > 1 && search.isBlank()) button("Get the ${minOf(near.size, 40)} within 2 km") { ask(near.take(40)) }
         text(if (app.sensors.fix == null) "No GPS fix yet: listed by name." else "Nearest first.", small = true)
         for (r in match.take(shown)) {
             val far = metres(r)?.let { if (it < 950) "${(it / 10).toInt() * 10} m" else "${(it / 100).toInt() / 10.0} km" }
             text(r.name.ifEmpty { r.id }, bold = true)
             text(listOfNotNull(far, if (r.holds > 0) "${r.holds} holds marked" else null, r.climbs.take(3).joinToString(", ").ifEmpty { null }).joinToString(" · "), UIColor.secondaryLabelColor, small = true)
-            when (r.id) {
-                in busy -> text("Getting…", small = true)
-                in have -> text("On this phone", GOOD, small = true)
-                else -> button("Get") { get(listOf(r)) }
+            val kept = app.store.offline.index(r.id)
+            when {
+                r.id in busy -> text("Getting…", small = true)
+                r.id in have && kept != null -> text(if (kept.textures) "On this phone" else "On this phone · wireframe", GOOD, small = true)
+                r.id in have -> button("Keep for viewing") { ask(listOf(r)) }
+                else -> button("Get") { ask(listOf(r)) }
             }
         }
         if (match.size > shown) button("Show more (${match.size - shown})", Look.PLAIN) { shown += 40; rebuild() }

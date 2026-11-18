@@ -67,6 +67,12 @@ class IosApi(private val store: IosStore) {
         if (rows != null) done(rows, null) else done(null, why ?: "the list couldn't be read")
     }
 
+    /** Every file the site's viewer fetches to show a mesh, to keep for showing it with no signal (IosOffline). */
+    fun offline(mesh: String, done: (sh.boulderme.core.OfflineBundle?, String?) -> Unit) = call("/api/capture/offline/$mesh") { bytes, why ->
+        val b = bytes?.let { runCatching { json.decodeFromString(sh.boulderme.core.OfflineBundle.serializer(), it.decodeToString()) }.getOrNull() }
+        if (b != null) done(b, null) else done(null, why ?: "the server's answer couldn't be read")
+    }
+
     /** A mesh's plan and guide, as text and bytes, to keep. */
     fun plan(mesh: String, done: (String?, ByteArray?, String?) -> Unit) = call("/api/capture/plan/$mesh") { bytes, why ->
         val text = bytes?.decodeToString()

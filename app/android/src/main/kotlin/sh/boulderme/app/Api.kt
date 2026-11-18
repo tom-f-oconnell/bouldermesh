@@ -15,7 +15,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /** The server, as the app talks to it. Every call blocks: call from a background thread. Failures are IOExceptions, in words. */
-class Api(private val store: Store) {
+class Api(internal val store: Store) {
     private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 
     private fun open(path: String, method: String = "GET"): HttpURLConnection {
@@ -51,6 +51,9 @@ class Api(private val store: Store) {
     /** How each of these uploads (project ids) stands on the server: whether it's meshed, and as what. */
     fun status(projects: Collection<String>): Map<String, UploadStatus> =
         json.decodeFromString(MapSerializer(String.serializer(), UploadStatus.serializer()), read(open("/api/capture/status?ids=" + projects.joinToString(","))).decodeToString())
+
+    /** Every file the site's viewer fetches to show a mesh, to keep for showing it with no signal (OfflineStore). */
+    fun offline(mesh: String): sh.boulderme.core.OfflineBundle = json.decodeFromString(read(open("/api/capture/offline/$mesh")).decodeToString())
 
     /** A mesh's plan and guide, as text and bytes, to keep. */
     fun plan(mesh: String): Pair<String, ByteArray> {
