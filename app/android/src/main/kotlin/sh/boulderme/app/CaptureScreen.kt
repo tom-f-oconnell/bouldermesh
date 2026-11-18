@@ -218,7 +218,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
     }
 
     if (leaving) AlertDialog(onDismissRequest = { leaving = false },
-        title = { Text(if (ui.kept > 0) "Finish this capture?" else "Leave?") },
+        title = { KeepDialogInTopHalf(); Text(if (ui.kept > 0) "Finish this capture?" else "Leave?") },
         text = { Text(if (ui.kept > 0) "${ui.kept} photos kept" + (if (ui.total > 0 && ui.done < ui.total) ", with ${ui.total - ui.done} of ${ui.total} still to do. What's there is still worth sending." else ".") else "No photos have been kept.") },
         confirmButton = { TextButton(onClick = {
             leaving = false

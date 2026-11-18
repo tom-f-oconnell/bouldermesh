@@ -9,3 +9,9 @@ const val TERMS_VERSION = 1
 const val TERMS = "BoulderMesh is a community project: using it to capture or add to a rock means sharing what you add.\n\n" +
     "Everything you capture with the app or upload to the site (photos, videos, the readings stored with them, and beta you choose to share), and whatever is made from it alone (meshes, textures, models of holds), is published under the Creative Commons Attribution 4.0 International licence (CC BY 4.0): the site and anyone else may copy, change and reuse it, for any purpose, as long as they credit you by the name you give.\n\n" +
     "Only add what is yours to license this way. What you add is reviewed before it is shown, and may be declined or removed. Meshes that also draw on other people's photos stay under those photos' own terms."
+
+/**
+ * The account role (backend/accounts.py ROLES) whose phones draw the apps in the top half of the screen only: a user
+ * otherwise, for a phone whose screen's lower half is broken.
+ */
+const val HALF_ROLE = "george"

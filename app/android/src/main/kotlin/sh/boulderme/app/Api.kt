@@ -6,6 +6,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
+import sh.boulderme.core.HALF_ROLE
 import sh.boulderme.core.MeshRow
 import sh.boulderme.core.UploadStatus
 import java.io.File
@@ -81,9 +82,15 @@ class Api(private val store: Store) {
             ?: throw IOException("the server gave no token")
     }
 
-    /** The name of the account this phone's token is for, or null for the site's own token (or none). */
+    /**
+     * The name of the account this phone's token is for, or null for the site's own token (or none). Keeps whether
+     * its role draws the app in the screen's top half only (Store.topHalf), as it goes.
+     */
     fun accountName(): String? = runCatching {
-        json.parseToJsonElement(read(open("/api/account")).decodeToString()).jsonObject["user"]?.jsonObject?.get("name")?.jsonPrimitive?.content
+        val user = json.parseToJsonElement(read(open("/api/account")).decodeToString()).jsonObject["user"]
+        val u = (user as? JsonObject)
+        store.topHalf = u?.get("role")?.jsonPrimitive?.content == HALF_ROLE
+        u?.get("name")?.jsonPrimitive?.content
     }.getOrNull()?.takeIf { it.isNotBlank() }
 
     /**

@@ -10021,7 +10021,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.export_project(proj)
             if p == "/api/submissions":     # what accounts added that whoever asks may approve
                 me = self.who()
-                if not me or me["role"] == "user":
+                if not me or me["role"] not in ("owner", "moderator"):
                     return self.send_json({"error": "that's for the site's owner and its moderators"}, 401)
                 return self.send_json({"added": submissions(me)})
             if p == "/api/account":     # who this browser or phone is signed in as, and the terms as they stand

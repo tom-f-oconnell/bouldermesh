@@ -190,7 +190,7 @@ class Settings(private val app: App) : Form("Settings") {
         button("Pair", Look.FILLED) {
             if (code.isBlank()) return@button
             app.api.pair(code, app.store.credit) { token, why ->
-                said = if (token != null) { app.store.token = token; code = ""; "Paired: this phone can upload now." to true } else "Pairing failed: $why" to false
+                said = if (token != null) { app.store.token = token; code = ""; app.api.account { topHalf(it) }; "Paired: this phone can upload now." to true } else "Pairing failed: $why" to false
                 rebuild()
             }
         }

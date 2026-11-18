@@ -1,6 +1,12 @@
 package sh.boulderme.ios
 
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.useContents
+import platform.CoreGraphics.CGRectMake
 import platform.Foundation.NSUserDefaults
+import platform.UIKit.UIApplication
+import platform.UIKit.UIScreen
+import platform.darwin.dispatch_async
 import platform.UIKit.UINavigationController
 import platform.UIKit.UIViewController
 import platform.darwin.DISPATCH_TIME_NOW
@@ -49,5 +55,19 @@ fun rootViewController(): UIViewController {
             home.capture(mesh, mesh?.let { app.store.plan(it)?.name } ?: "A rock")
         }
     }
+    // the window in the screen's top half only, for an account whose role asks for it: as kept, then as the server says
+    dispatch_async(dispatch_get_main_queue()) { topHalf(app.store.topHalf) }
+    if (app.store.token.isNotEmpty()) app.api.account { topHalf(it) }
     return nav
+}
+
+/**
+ * Draws the whole app, alerts and all, in the top half of the screen (for a phone whose screen's lower half is broken),
+ * or in all of it.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun topHalf(on: Boolean) {
+    val window = UIApplication.sharedApplication.keyWindow ?: return
+    val (w, h) = UIScreen.mainScreen.bounds.useContents { size.width to size.height }
+    window.setFrame(CGRectMake(0.0, 0.0, w, if (on) h / 2 else h))
 }

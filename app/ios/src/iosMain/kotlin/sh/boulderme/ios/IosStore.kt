@@ -43,6 +43,9 @@ class IosStore {
     var token: String
         get() = prefs.stringForKey("token") ?: ""
         set(v) = prefs.setObject(v.trim(), forKey = "token")
+    var topHalf: Boolean    // the account's role (HALF_ROLE) has the app drawn in the screen's top half only
+        get() = prefs.boolForKey("top_half")
+        set(v) = prefs.setBool(v, forKey = "top_half")
     var magNote: String
         get() = prefs.stringForKey("mag_note") ?: ""
         set(v) = prefs.setObject(v, forKey = "mag_note")

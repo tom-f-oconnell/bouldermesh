@@ -6,8 +6,9 @@ token is. No passwords and no email. Another device (the phone app) gets a token
 signed-in one asks for. Only hashes of tokens, invites and codes are kept.
 
 Roles: "owner" (everything; whoever holds the site's EDIT_TOKEN is the owner too, with no account), "moderator" (may
-approve what's added to the areas they're given, `areas`: campaign ids, or "*" for all), "user". What a user's token may
-do is a short list of routes in server.py (ALLOWED there): anything not on it still needs the owner.
+approve what's added to the areas they're given, `areas`: campaign ids, or "*" for all), "user", and "george": a user whose
+phone apps draw only in the top half of the screen (for a phone whose screen's lower half is broken). What a user's token
+may do is a short list of routes in server.py (ALLOWED there): anything not on it still needs the owner.
 
 The terms are accepted once, before anything is sent (TERMS, TERMS_VERSION): an account that hasn't accepted the
 current version is refused uploads, and the apps don't go past their first screen without it.
@@ -24,8 +25,8 @@ import threading
 import time
 from pathlib import Path
 
-ROLES = ("owner", "moderator", "user")
-RANK = {"owner": 0, "moderator": 1, "user": 2}      # whose work goes first: the owner's, moderators', then users'
+ROLES = ("owner", "moderator", "user", "george")
+RANK = {"owner": 0, "moderator": 1, "user": 2, "george": 2}      # whose work goes first: the owner's, moderators', then users'
 NAME_MAX = 40
 INVITE_DAYS = 14
 PAIR_SECONDS = 600

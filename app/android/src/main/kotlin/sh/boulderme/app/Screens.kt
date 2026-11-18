@@ -185,14 +185,14 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
 
     if (naming) {
         var name by remember { mutableStateOf("") }
-        AlertDialog(onDismissRequest = { naming = false }, title = { Text("What is it?") },
+        AlertDialog(onDismissRequest = { naming = false }, title = { KeepDialogInTopHalf(); Text("What is it?") },
             text = { OutlinedTextField(name, { name = it.take(60) }, label = { Text("The rock's or climb's name") }, singleLine = true) },
             confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = { naming = false; start(Screen.Capture(null, name.trim())) }) { Text("Start") } },
             dismissButton = { TextButton(onClick = { naming = false }) { Text("Cancel") } })
     }
     removing?.let { id ->
         val u = a.store.upload(id)
-        AlertDialog(onDismissRequest = { removing = null }, title = { Text("Delete this capture?") },
+        AlertDialog(onDismissRequest = { removing = null }, title = { KeepDialogInTopHalf(); Text("Delete this capture?") },
             text = { Text(if (u?.done == true) "Its photos are on the server; this takes them off the phone." else "Its ${u?.photos ?: 0} photos haven't all been sent, and can't be got back.") },
             confirmButton = { TextButton(onClick = { a.store.deleteCapture(id); removing = null; tick++ }) { Text("Delete", color = BAD) } },
             dismissButton = { TextButton(onClick = { removing = null }) { Text("Keep") } })

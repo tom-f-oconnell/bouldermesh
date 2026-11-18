@@ -62,6 +62,9 @@ with tempfile.TemporaryDirectory() as tmp:
     assert a.change(ana["user"]["id"], {"quota_mb": 500})["quota_mb"] == 500 and "megabytes" in refused(a.change, ana["user"]["id"], {"quota_mb": -1})
     assert "role" in refused(a.change, ana["user"]["id"], {"role": "king"}) and "moderator" in refused(a.invite, "king")
     assert a.invite("owner", now=1000.0)["role"] == "owner", "an editor, from an invite"
+    # george: a user whose phone apps draw only in the screen's top half; nothing more may it do
+    geo = a.join(a.invite("george", now=1000.0)["code"], "George", now=1006.0)["user"]
+    assert geo["role"] == "george" and accounts.RANK["george"] == accounts.RANK["user"] and not accounts.may_moderate(geo, "c1")
     a.change(ana["user"]["id"], {"disabled": True})
     assert a.user_for(ana["token"]) is None and a.get(ana["user"]["id"])["disabled"]
     assert accounts.RANK["owner"] < accounts.RANK["moderator"] < accounts.RANK["user"] and "CC BY 4.0" in accounts.TERMS
@@ -197,6 +200,9 @@ with tempfile.TemporaryDirectory() as tmp:
         assert req(B, "POST", f"/api/projects/{pid}/reconstruct", {}, BO)[0] == 403 and req(B, "DELETE", f"/api/projects/{pid}", headers=BO)[0] == 403
         listed = lambda h=None: [x["id"] for x in req(B, "GET", "/api/projects", headers=h)[2]]     # noqa: E731
         assert listed(ANA) == [pid] == listed(AUTH) and listed(BO) == [] == listed()
+        geo = req(B, "POST", "/api/account/join", {"invite": admin("user-invite", {"role": "george"})["invite"]["code"], "name": "George"})[2]
+        GEO = {"Authorization": f"Bearer {geo['token']}"}
+        assert req(B, "GET", "/api/account", headers=GEO)[2]["user"]["role"] == "george" and req(B, "GET", "/api/submissions", headers=GEO)[0] == 401
         assert req(B, "GET", "/api/submissions", headers=ANA)[0] == 401 and [x["id"] for x in req(B, "GET", "/api/submissions", headers=AUTH)[2]["added"]] == [pid]
         # its quota: lowered by the owner, the next upload is refused; approved, it no longer counts
         admin("user-change", {"id": ana["id"], "quota_mb": 0.008})

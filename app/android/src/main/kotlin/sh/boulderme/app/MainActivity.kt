@@ -9,6 +9,16 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.DialogWindowProvider
+import android.view.Gravity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -55,6 +65,7 @@ class MainActivity : ComponentActivity() {
     lateinit var api: Api
     lateinit var sensors: PhoneSensors
     private var screen by mutableStateOf<Screen>(Screen.Home)
+    private var topHalf by mutableStateOf(false)    // the account's role draws the app in the screen's top half only (Store.topHalf)
     private var arAsked = false     // Google Play Services for AR looked at (and asked for, if missing) since the app started
     private var tryingOut = false   // started by app/ci/screens-android.sh: nothing that would cover its screens
 
@@ -68,18 +79,23 @@ class MainActivity : ComponentActivity() {
         signInFrom(intent)
         if (intent?.action == Updates.ACTION) Updates.installerSaid(this, intent)
         if (!tryingOut) Updates.lookQuietly()       // a newer build, offered on the Home screen
-        if (store.token.isNotEmpty() && store.credit.isBlank()) Thread {     // paired before the app filled this in itself
+        topHalf = store.topHalf
+        store.onTopHalf = { v -> runOnUiThread { topHalf = v } }
+        // the account's name (if paired before the app filled it in itself) and whether its role draws in the top half only
+        if (store.token.isNotEmpty() && !tryingOut) Thread {
             api.accountName()?.let { if (store.credit.isBlank()) store.credit = it }
         }.start()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                Surface(Modifier.fillMaxSize()) {
+              CompositionLocalProvider(LocalTopHalf provides topHalf) {
+               Box(Modifier.fillMaxSize().background(Color.Black)) {
+                Surface(Modifier.fillMaxWidth().fillMaxHeight(if (topHalf) 0.5f else 1f)) {
                     val go: (Screen) -> Unit = { screen = it }
                     BackHandler(enabled = screen != Screen.Home && screen !is Screen.Capture) { screen = backOf(screen) }
                     var accepted by remember { mutableStateOf(store.terms >= TERMS_VERSION) }
                     if (!accepted) TermsScreen { store.terms = TERMS_VERSION; accepted = true; ensureArCore() }
                     else when (val s = screen) {
-                        is Screen.Capture -> CaptureScreen(this, s, go)       // the camera, edge to edge
+                        is Screen.Capture -> CaptureScreen(this@MainActivity, s, go)       // the camera, edge to edge
                         else -> Box(Modifier.fillMaxSize().safeDrawingPadding()) {
                             when (s) {
                                 Screen.Home -> HomeScreen(this@MainActivity, go)
@@ -95,6 +111,8 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+               }
+              }
             }
         }
     }
@@ -214,4 +232,13 @@ class MainActivity : ComponentActivity() {
         sensors.stop()
         super.onPause()
     }
+}
+
+/** Whether the app is drawn in the screen's top half only (Store.topHalf), for what's drawn outside its own content. */
+val LocalTopHalf = compositionLocalOf { false }
+
+/** Called inside a dialog's content: puts the dialog in the screen's top half too, when the app is drawn there only. */
+@Composable
+fun KeepDialogInTopHalf() {
+    if (LocalTopHalf.current) (LocalView.current.parent as? DialogWindowProvider)?.window?.setGravity(Gravity.TOP)
 }
