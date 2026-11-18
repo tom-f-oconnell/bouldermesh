@@ -4,7 +4,7 @@
 name: Notify
 on:
   workflow_run:
-    workflows: ["Phone apps", "TestFlight"]
+    workflows: ["Phone apps", "TestFlight", "Worker CPU image for ARM64"]
     types: [completed]
 jobs:
   ntfy:

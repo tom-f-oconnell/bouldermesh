@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """The worker script's --setup (installing Docker and NVIDIA's container toolkit where they're missing), its check of
-Docker when it starts, and --check's offer to start it by itself (as a systemd service of the user's own), on machines
+Docker when it starts, and --check's offer to start it by itself (as a systemd service of the user's own, or on a Mac a
+launchd agent), and the room on Docker Desktop's disk, on machines
 described here rather than looked at. Offline: nothing is installed or run, and the service is written to a scratch folder."""
 from __future__ import annotations
 
@@ -232,6 +233,102 @@ finally:
 assert not ok and "it stopped" in said and "systemctl --user status bouldermesh-worker" in said, said
 shutil.rmtree(scratch)
 print("installing OK")
+
+# --- on a Mac: a launchd agent of the user's own, offered unless loaded already
+mac = {**linux, "systemd": False, "user_unit": "", "system_unit": "", "linger": False, "launchd": True, "agent": False}
+assert worker.autostart_offer(mac) == (True, None)
+assert worker.autostart_offer({**mac, "root": True}) == (False, None)
+offer, note = worker.autostart_offer({**mac, "agent": True})
+assert not offer and "kickstart -k gui/" in note and worker.AGENT_LOG in note, note
+printed = """gui/501/org.bouldermesh.worker = {
+	active count = 1
+	path = /Users/pat/Library/LaunchAgents/org.bouldermesh.worker.plist
+	state = running
+	program = /usr/bin/python3
+	runs = 1
+	pid = 4242
+"""
+assert worker.agent_props(printed) == {"ActiveState": "active", "SubState": "running", "NRestarts": "0"}
+assert worker.service_running(wait=0, look=lambda: worker.agent_props(printed))
+again = printed.replace("state = running", "state = not running").replace("runs = 1", "runs = 3")
+assert worker.agent_props(again) == {"ActiveState": "inactive", "SubState": "not", "NRestarts": "2"}
+assert not worker.service_running(wait=0, look=lambda: worker.agent_props(again)), "ended, and waiting to try again"
+assert not worker.service_running(wait=0, look=lambda: worker.agent_props(printed.replace("runs = 1", "runs = 2")))
+print("Mac offer OK")
+
+import plistlib     # noqa: E402
+scratch = pathlib.Path(tempfile.mkdtemp())
+home, agents = scratch / "settings", scratch / "agents"
+home.mkdir()
+real_log = worker.AGENT_LOG
+worker.AGENT_LOG = str(scratch / "logs" / "worker.log")
+
+
+def install_mac(answer: str, ran: list, fail: str | None = None, up: bool = True, loaded: bool = False, **changes):
+    said = []
+    ok = worker.install_service(options(home=str(home), **changes), {**mac, "agent": loaded}, ask=lambda q: answer,
+                                run=lambda cmd: ran.append(" ".join(cmd)) or int(" ".join(cmd).startswith(fail or "\0")),
+                                say=said.append, unit_dir=agents, running=lambda: up)
+    return ok, "\n".join(said)
+
+
+try:
+    ran = []
+    ok, said = install_mac("n", ran)
+    assert not ok and ran == [] and not agents.exists(), "no: nothing done"
+    ok, said = install_mac("", ran, nice=5)
+    assert ok, said
+    assert [r.split()[:2] for r in ran] == [["launchctl", "enable"], ["launchctl", "bootstrap"]], ran
+    plist = plistlib.loads((agents / "org.bouldermesh.worker.plist").read_bytes())
+    copy = home / "bouldermesh_worker.py"
+    assert plist["ProgramArguments"] == [sys.executable, str(copy.resolve()), "--home", str(home.resolve()), "--nice", "5"], plist
+    assert plist["KeepAlive"] == {"SuccessfulExit": False} and plist["RunAtLoad"] and plist["StandardOutPath"] == worker.AGENT_LOG
+    assert copy.read_bytes() == (ROOT / "worker" / "bouldermesh_worker.py").read_bytes()
+    assert worker.load_conf(home).get("service") == "bouldermesh-worker"
+    assert "launchctl bootout gui/" in said and (scratch / "logs").is_dir()
+    ran.clear()     # loaded as this would write it: nothing asked or run
+    ok = worker.install_service(options(home=str(home), nice=5), {**mac, "agent": True}, ask=lambda q: 1 / 0,
+                                run=lambda cmd: 1 / 0, say=lambda m: None, unit_dir=agents, running=lambda: True)
+    assert ok
+    ok, said = install_mac("y", ran, loaded=True)       # changed (no --nice now): unloaded, then loaded again
+    assert ok and ran[0].startswith("launchctl bootout gui/") and ran[-1].startswith("launchctl bootstrap"), ran
+    ran.clear()
+    ok, said = install_mac("y", ran, fail="launchctl bootstrap")
+    assert not ok and "exit status 1" in said
+    pathlib.Path(worker.AGENT_LOG).write_text("one\ncan't use Docker: Cannot connect to the Docker daemon\n")
+    ok, said = install_mac("y", [], up=False)
+    assert not ok and "Cannot connect to the Docker daemon" in said and "tries again every minute" in said, said
+    # the log starts again past AGENT_LOG_MOST, the one before kept
+    most = worker.AGENT_LOG_MOST
+    worker.AGENT_LOG_MOST = 10
+    worker.trim_agent_log()
+    assert pathlib.Path(worker.AGENT_LOG).stat().st_size == 0 and "Docker daemon" in pathlib.Path(worker.AGENT_LOG + ".old").read_text()
+    worker.AGENT_LOG_MOST = most
+finally:
+    worker.AGENT_LOG = real_log
+print("Mac agent OK")
+
+# --- Docker Desktop's disk: what its sparse file may still grow by, and no more than the computer's own disk has
+raw = scratch / "Docker.raw"
+with open(raw, "wb") as f:
+    f.truncate(64 * 2**30)      # a 64 GB limit, nothing in it yet
+    f.write(b"x" * 2**20)
+free = worker.desktop_disk_free(raw)
+assert free is not None and free <= worker.free_gb(scratch) + 0.01 and free <= 64, free
+assert worker.desktop_disk_free(scratch / "none") is None
+real_run = worker.subprocess.run
+worker.subprocess.run = lambda cmd, **kw: type("R", (), {"returncode": 0, "stdout": "Docker Desktop\n"})()
+real_raws = worker.DESKTOP_RAW
+worker.DESKTOP_RAW = (str(scratch / "none"), str(raw))
+try:
+    (where, room), = worker.docker_free()
+    assert where.startswith(worker.DESKTOP_DISK) and abs(room - free) < 0.01, (where, room)
+    worker.DESKTOP_RAW = (str(scratch / "none"),)
+    assert worker.docker_free() == [], "Docker Desktop, but its disk not found: not known"
+finally:
+    worker.subprocess.run, worker.DESKTOP_RAW = real_run, real_raws
+shutil.rmtree(scratch)
+print("Docker Desktop's disk OK")
 
 # --- nvidia-smi's reading of the first GPU: past warnings it prints first, and its utilization "[N/A]" where it can't say
 assert worker.GpuWatch.sample("35, 1200, 8192\n12, 100, 24576\n") == (35.0, 1200.0, 8192.0)

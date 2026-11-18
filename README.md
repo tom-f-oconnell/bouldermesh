@@ -711,9 +711,11 @@ for the machines that mesh (see "Running reconstructions elsewhere"). The server
 registry, so a ship moves only the layers that changed, usually a few MB. Its earlier builds' images go once nothing runs
 them. `NO_PUSH=1` sends the image whole instead. `GPU=0 deploy/build.sh` builds only the server's and the CPU workers'.
 Those, from `deploy/worker-cpu.Dockerfile`, hold only what filtering photos and finding beta need (Python, OpenCV, CLIP on torch's CPU
-build, ffmpeg, and rtmlib's pose model on onnxruntime, which downloads 150 MB the first time), for x86-64 and, where Docker here can run ARM64 images, ARM64 too, for Apple Silicon Macs, under one name;
-`CPU=0` skips them. Building the ARM64 half on an x86-64 machine needs QEMU registered with the kernel, once per boot:
-`docker run --privileged --rm tonistiigi/binfmt --install arm64` (build.sh says so when it's missing, and builds x86-64 only).
+build, ffmpeg, and rtmlib's pose model on onnxruntime, which downloads 150 MB the first time), for x86-64 and ARM64
+(Apple Silicon Macs), under one name; `CPU=0` skips them. Where Docker here can't build ARM64 images (no QEMU registered
+with the kernel, as on hal), build.sh builds x86-64 only, and ship.sh then has GitHub build the ARM64 half on its ARM64
+runners (`.github/workflows/worker-cpu-arm64.yml`, about 15 min), which adds it to the same name. Its commit must be on
+GitHub for that; `gh run list -w worker-cpu-arm64.yml` shows how it went.
 
 Areas are stopped in the copy, so nothing runs there by itself. Projects' photos don't go, so their cards show none, and
 the database there is replaced each time, all but the settings changed on its admin page. Once the public server harvests
@@ -1044,7 +1046,9 @@ machine. *Run more on* adds up to that many machines (2 by default):
   running a copy of the script in `~/.bouldermesh-worker` with the options given that aren't remembered, and `PATH` and any
   `DOCKER_*` and `BOULDERMESH_*` variables. It says if it didn't stay up. It doesn't offer where the system's
   `deploy/bouldermesh-worker.service` (as on hal) or the user's own already starts it, nor as root or in WSL, and a run by
-  hand while that service runs says so and stops, as the same token twice. If this server won't take its token (unknown, revoked or
+  hand while that service runs says so and stops, as the same token twice. On a Mac it's a launchd agent of the user's
+  own instead (`~/Library/LaunchAgents/org.bouldermesh.worker.plist`), which starts at login, as Docker Desktop does, and
+  logs to `~/Library/Logs/bouldermesh-worker.log`; there the room for images is checked on Docker Desktop's disk. If this server won't take its token (unknown, revoked or
   turned down), it forgets it, warns, and registers a new one, as with none, which waits for *Approve* again. When the
   server serves a newer version of the script, it replaces itself with that between jobs, never during one, and starts
   again (`--no-auto-update` stops that; the repository's own copy is left to git, so `deploy/bouldermesh-worker.service`

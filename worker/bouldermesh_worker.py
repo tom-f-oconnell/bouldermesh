@@ -40,7 +40,10 @@ driver, and asks before restarting Docker, which stops containers running then.
 At a terminal, --check ends by offering to start it by itself from then on, whenever the computer starts, as a systemd
 service of your own (~/.config/systemd/user/bouldermesh-worker.service), running a copy of the script in
 ~/.bouldermesh-worker. Then `journalctl --user -u bouldermesh-worker -f` shows what it's doing, and
-`systemctl --user disable --now bouldermesh-worker` stops it for good.
+`systemctl --user disable --now bouldermesh-worker` stops it for good. On a Mac, it's a launchd agent of your own instead
+(~/Library/LaunchAgents/org.bouldermesh.worker.plist), which starts whenever you log in, as Docker Desktop does:
+`tail -f ~/Library/Logs/bouldermesh-worker.log` shows what it's doing, and `launchctl bootout gui/$(id -u)/org.bouldermesh.worker`
+stops it (delete the file too, for good).
 
 When the server has a newer version of this script, it says so when the script asks for a climb, and the script replaces
 itself with that (checked against what the server said of it) and starts again, between one job and the next, never
@@ -99,7 +102,8 @@ from pathlib import Path
 # 20: tells the server what nvidia-smi says of its GPU (name, memory, driver, CUDA) as it starts; sends
 #     diagnostics when the server asks (--no-diagnostics: never)
 # 24: says what each job is (meshing, finding beta or size, filtering, scenery) and of which project or mesh, with its link
-VERSION = 25
+# 26: on a Mac, --check offers to start it by itself as a launchd agent; checks the room on Docker Desktop's disk
+VERSION = 26
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter", "splat")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
@@ -141,9 +145,16 @@ RECENT: deque = deque(maxlen=300)   # this script's own last lines, for the diag
 
 
 def log(msg: str) -> None:
+    global _logged
     line = time.strftime("%Y-%m-%d %H:%M:%S ") + msg
     RECENT.append(line)
     print(line, flush=True)
+    _logged += 1
+    if _logged % 500 == 0 and as_agent():
+        trim_agent_log()
+
+
+_logged = 0
 
 
 GPU_FIELDS = ("name", "memory.total", "memory.used", "memory.free", "utilization.gpu", "driver_version")
@@ -438,7 +449,7 @@ def machine_state() -> dict:
     ids = {rel.get("ID", "")} | set(rel.get("ID_LIKE", "").split())
     root = hasattr(os, "geteuid") and os.geteuid() == 0
     st = {"linux": sys.platform.startswith("linux"), "debian": bool(ids & {"debian", "ubuntu"}),
-          "system": rel.get("PRETTY_NAME") or sys.platform, "root": root, "service": bool(os.environ.get("INVOCATION_ID")),
+          "system": rel.get("PRETTY_NAME") or sys.platform, "root": root, "service": bool(os.environ.get("INVOCATION_ID")) or as_agent(),
           "user": os.environ.get("SUDO_USER") if root else getpass.getuser(),
           "docker": bool(shutil.which("docker")), "docker_state": None, "runtimes": [], "running": None, "in_group": False,
           "cdi": False, "cgroup": None, "gpu": False, "gpu_hardware": False,
@@ -594,7 +605,8 @@ def setup() -> int:
     if sys.platform == "darwin":
         print("--setup installs only on Debian and Ubuntu. On a Mac, install Docker Desktop "
               "(https://docs.docker.com/desktop/setup/install/mac-install/), OrbStack or Colima, start it, and give it at least "
-              "4 GB of memory (Docker Desktop: Settings, Resources). A Mac only filters photos and finds beta: Docker can't use its GPU.")
+              "4 GB of memory (Docker Desktop: Settings, Resources). A Mac only filters photos and finds beta: Docker can't use its GPU. "
+              "Then --check offers to start this script by itself whenever you log in.")
         return 1
     if not st["linux"] or not st["debian"]:
         print(f"--setup installs only on Debian, Ubuntu and systems based on them. Here, install them yourself: {INSTALL_DOCS}")
@@ -680,18 +692,26 @@ def autostart_state() -> dict:
         wsl = False
     r = quiet(["systemctl", "--user", "show-environment"]) if linux and shutil.which("systemctl") else None
     systemd, user = bool(r and r.returncode == 0), getpass.getuser()
+    launchd = sys.platform == "darwin" and bool(shutil.which("launchctl"))
 
     def said(cmd: list[str]) -> str:
         r = quiet(cmd) if systemd else None
         return r.stdout.strip() if r else ""
     return {"systemd": systemd, "root": hasattr(os, "geteuid") and os.geteuid() == 0, "wsl": wsl, "user": user,
             "user_unit": said(["systemctl", "--user", "is-enabled", UNIT]), "system_unit": said(["systemctl", "is-enabled", UNIT]),
-            "linger": said(["loginctl", "show-user", user, "-p", "Linger", "--value"]) == "yes"}
+            "linger": said(["loginctl", "show-user", user, "-p", "Linger", "--value"]) == "yes",
+            "launchd": launchd, "agent": bool(launchd and agent_props())}
 
 
 def autostart_offer(st: dict) -> tuple[bool, str | None]:
     """Whether --check offers to start by itself, on a machine as autostart_state() describes it, and if not, what it
-    says instead (None: nothing, as where systemd doesn't run this user's services)."""
+    says instead (None: nothing, as where systemd doesn't run this user's services, nor launchd on a Mac)."""
+    if st.get("launchd"):
+        if st.get("agent"):
+            return False, (f"It starts by itself already, whenever you log in, as your {AGENT} agent: tail -f {AGENT_LOG} "
+                           f"shows what it's doing, and launchctl kickstart -k {agent_target()} has it take up settings "
+                           "changed here (a climb it's on goes back to the server).")
+        return not st["root"], None
     if st["system_unit"] == "enabled":
         return False, f"It starts by itself already, as the system's {UNIT} service: journalctl -u {UNIT} -f shows what it's doing."
     if st["user_unit"] == "enabled":
@@ -784,6 +804,8 @@ def install_service(args, st: dict, ask=input, run=None, say=print, unit_dir: Pa
         except OSError:
             return 127
     run = run or default_run
+    if st.get("launchd"):
+        return install_agent(args, st, ask, run, say, unit_dir, running)
     home, me = Path(args.home).expanduser().resolve(), Path(__file__).resolve()
     copy = home / "bouldermesh_worker.py"
     unit = (unit_dir or Path("~/.config/systemd/user").expanduser()) / f"{UNIT}.service"
@@ -826,6 +848,118 @@ def install_service(args, st: dict, ask=input, run=None, say=print, unit_dir: Pa
     say(f"\nIt's running, and starts by itself from now on: journalctl --user -u {UNIT} -f shows what it's doing, and "
         f"systemctl --user disable --now {UNIT} stops it for good.")
     return True
+
+
+# -- the same on a Mac: a launchd agent of this user's own, which runs from when they log in ----------------------------
+AGENT = "org.bouldermesh.worker"                    # its label, and its file's name in ~/Library/LaunchAgents
+AGENT_LOG = "~/Library/Logs/bouldermesh-worker.log"     # what it says, where Console.app finds it too
+AGENT_LOG_MOST = 20 * 2**20     # bytes: past this, the log starts again, the one before kept as .old
+
+
+def agent_target() -> str:
+    return f"gui/{os.getuid()}/{AGENT}"
+
+
+def agent_props(out: str | None = None) -> dict:
+    """launchctl print's view of this user's agent, as systemctl show's names have it (ActiveState, SubState and
+    NRestarts), for service_running(); {} if it isn't loaded. From out, launchctl print's output, if given."""
+    if out is None:
+        r = quiet(["launchctl", "print", agent_target()])
+        if not r or r.returncode:
+            return {}
+        out = r.stdout
+    state = re.search(r"^\s*state = (\S+)", out, re.M)
+    runs = re.search(r"^\s*runs = (\d+)", out, re.M)
+    running = bool(state and state[1] == "running")
+    return {"ActiveState": "active" if running else "inactive", "SubState": state[1] if state else "",
+            "NRestarts": str(max(0, int(runs[1]) - 1)) if runs else "0"}
+
+
+def agent_plist(argv: list[str], env: dict, log_path: str) -> bytes:
+    """This user's launchd agent that runs argv with env, from when they log in, and again a minute after it ends
+    other than as asked to (an exit status of 0: Ctrl-C, or launchctl's stopping it), with what it says in log_path."""
+    import plistlib
+    return plistlib.dumps({"Label": AGENT, "ProgramArguments": argv, "EnvironmentVariables": dict(sorted(env.items())),
+                           "RunAtLoad": True, "KeepAlive": {"SuccessfulExit": False}, "ThrottleInterval": 60,
+                           "ExitTimeOut": 60, "ProcessType": "Background",
+                           "StandardOutPath": log_path, "StandardErrorPath": log_path})
+
+
+def same_agent(path: Path, data: bytes) -> bool:
+    """Whether the agent at path is the one data describes, but for its PATH (as same_unit())."""
+    import plistlib
+    try:
+        a, b = plistlib.loads(path.read_bytes()), plistlib.loads(data)
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return False
+    for p in (a, b):
+        p.get("EnvironmentVariables", {}).pop("PATH", None)
+    return a == b
+
+
+def install_agent(args, st: dict, ask, run, say, agent_dir: Path | None, running) -> bool:
+    """install_service() on a Mac: asks, copies this script into its settings' folder, writes this user's launchd
+    agent to run that, and loads it, which starts it. Whether it's running."""
+    home, me = Path(args.home).expanduser().resolve(), Path(__file__).resolve()
+    copy = home / "bouldermesh_worker.py"
+    path = (agent_dir or Path("~/Library/LaunchAgents").expanduser()) / f"{AGENT}.plist"
+    log_path = Path(AGENT_LOG).expanduser()
+    if running is service_running:
+        running = lambda: service_running(look=agent_props)    # noqa: E731
+    def short(p: Path) -> str:
+        return "~" + str(p)[len(str(Path.home())):] if p.is_relative_to(Path.home()) else str(p)
+    data = agent_plist([sys.executable or "/usr/bin/python3", str(copy)] + service_args(args),
+                       {k: v for k, v in os.environ.items() if CARRIED.fullmatch(k)}, str(log_path))
+    stop = f"launchctl bootout {agent_target()} stops it, and deleting {short(path)} as well stops it for good."
+    if same_agent(path, data) and st.get("agent"):
+        say(f"\nIts agent is installed and loaded already ({short(path)}), as this would install it.")
+        return running()
+    say(f"\nIt can start by itself from now on, whenever you log in to this Mac, as an agent of your own ({short(path)}), "
+        f"running {'this script' if copy == me else 'a copy of this script, ' + short(copy)}, which updates itself.")
+    if ask("Start it by itself? [Y/n] ").strip().lower() not in ("", "y", "yes"):
+        say(f"Then run it with python3 {Path(sys.argv[0]).name} (and --check asks this again).")
+        return False
+    if copy != me:
+        shutil.copy2(me, copy)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    say(f"Wrote {short(path)}" + (f", and copied this script to {short(copy)}, the one that runs from now on" if copy != me else ""))
+    if st.get("agent"):     # loaded as it was before: unloaded first, as bootstrap won't load it twice
+        run(["launchctl", "bootout", agent_target()])
+    for cmd in (["launchctl", "enable", agent_target()], ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)]):
+        say("    " + " ".join(cmd))
+        code = run(cmd)
+        if code:
+            say(f"That failed (exit status {code}).")
+            return False
+    save_conf(home, {**load_conf(home), "service": UNIT})
+    if not running():
+        try:
+            said = "\n".join(log_path.read_text(errors="replace").splitlines()[-15:]) or "(nothing)"
+        except OSError:
+            said = f"(launchctl print {agent_target()} says why)"
+        say(f"\nBut it stopped, saying:\n{said}\nIt tries again every minute; tail -f {AGENT_LOG} shows how it goes.")
+        return False
+    say(f"\nIt's running, and starts by itself whenever you log in: tail -f {AGENT_LOG} shows what it's doing. {stop}")
+    return True
+
+
+def as_agent() -> bool:
+    """Whether this run is the launchd agent's, which launchd says by its label."""
+    return os.environ.get("XPC_SERVICE_NAME") == AGENT
+
+
+def trim_agent_log() -> None:
+    """Start the agent's log again once it's past AGENT_LOG_MOST, keeping the one before as .old. launchd appends to
+    it, so cutting it to nothing is enough for what's written next to go at its start."""
+    path = Path(AGENT_LOG).expanduser()
+    try:
+        if path.stat().st_size > AGENT_LOG_MOST:
+            shutil.copyfile(path, path.with_name(path.name + ".old"))
+            os.truncate(path, 0)
+    except OSError:
+        pass
 
 
 # -- updating itself ------------------------------------------------------------------------------------------------
@@ -1121,13 +1255,15 @@ class Worker:
         """Why Docker's storage hasn't room to pull image, or None if it has (or can't be checked)."""
         size = image_download(image)
         need = size * IMAGE_TIMES / GB if size else IMAGE_GUESS_GB
-        for where in docker_storage():
-            free = free_gb(where)
+        for where, free in docker_free():
             if free < need:
+                vm = where.startswith(DESKTOP_DISK)
                 return (f"Docker keeps images in {where}, which has {free:.1f} GB free, and {image} needs about {need:.1f} GB "
                         f"({'its layers, kept and unpacked' if size else 'a guess, as the registry did not say its size'}). Make room "
-                        "there (docker image prune deletes images nothing uses), or move Docker's storage (data-root in "
-                        "/etc/docker/daemon.json)")
+                        "there (docker image prune deletes images nothing uses), or " + (
+                            "give Docker Desktop a bigger disk (Settings, Resources, Disk usage limit), or free some on this "
+                            "computer's own disk, which that grows into" if vm else
+                            "move Docker's storage (data-root in /etc/docker/daemon.json)"))
         return None
 
     def prune_pulled(self, keep: str) -> None:
@@ -1373,11 +1509,11 @@ class Worker:
             except (OSError, subprocess.SubprocessError) as e:
                 return f"{type(e).__name__}: {e}"
         room = {}
-        for where in [self.home, *docker_storage()]:
-            try:
-                room[str(where)] = round(free_gb(where), 1)
-            except OSError:
-                pass
+        try:
+            room[str(self.home)] = round(free_gb(self.home), 1)
+        except OSError:
+            pass
+        room.update((where, round(free, 1)) for where, free in docker_free())
         images = [l for l in run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}} {{.CreatedSince}}"]).splitlines()
                   if "bouldermesh" in l]
         out = {"version": VERSION, "doing": {**self.doing, "for_s": round(time.time() - self.doing["since"])},
@@ -1391,6 +1527,8 @@ class Worker:
             out["job_tail"] = run(["docker", "logs", "--tail", "40", self.container], 8000)
         if os.environ.get("INVOCATION_ID"):     # under systemd: its earlier runs too, crashes and restarts
             out["journal"] = run(["journalctl", "--user", "-u", UNIT, "-n", "80", "--no-pager"], 12000)
+        elif as_agent():                        # under launchd: the same, from its log
+            out["journal"] = run(["tail", "-n", "80", str(Path(AGENT_LOG).expanduser())], 12000)
         return out
 
     # -- the loop -------------------------------------------------------------------------------------------------------
@@ -1429,7 +1567,7 @@ class Worker:
             if short:
                 raise SystemExit(f"but there isn't room for jobs: {short}")
             log(f"room for jobs in {self.home}: {free_gb(self.home):.0f} GB free; Docker's images: "
-                + ", ".join(f"{w} {free_gb(w):.0f} GB free" for w in docker_storage()))
+                + (", ".join(f"{w} {free:.0f} GB free" for w, free in docker_free()) or "not known"))
             log(f"it takes {', '.join(self.tasks)}, " + (f"with its GPU ({self.gpu_said})" if self.gpu_said else
                                                          "with its GPU" if self.gpu else "on the CPU"))
             st = autostart_state()
@@ -1574,9 +1712,52 @@ def docker_memory_gb() -> float | None:
         return None
 
 
+# Docker Desktop's virtual machine's disk, a sparse file (macOS's, then Linux's), which jobs' images fill
+DESKTOP_DISK = "Docker Desktop's disk"
+DESKTOP_RAW = ("~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw", "~/.docker/desktop/vms/0/data/Docker.raw")
+
+
+def docker_free() -> list[tuple[str, float]]:
+    """Where Docker keeps images here, and the room left there (GB): docker_storage()'s folders; or, where Docker runs
+    in Docker Desktop's virtual machine (as on a Mac), whose folders this computer doesn't have, its disk
+    (desktop_disk_free()). Empty if neither can be read (another virtual machine's, as OrbStack's or Colima's)."""
+    try:
+        r = subprocess.run(["docker", "info", "--format", "{{.OperatingSystem}}"], capture_output=True, text=True, timeout=60)
+        desktop = r.returncode == 0 and "Docker Desktop" in r.stdout
+    except (OSError, subprocess.SubprocessError):
+        desktop = False
+    if desktop:
+        for raw in DESKTOP_RAW:
+            free = desktop_disk_free(Path(raw).expanduser())
+            if free is not None:
+                return [(f"{DESKTOP_DISK} ({raw})", free)]
+        return []
+    out = []
+    for where in docker_storage():
+        try:
+            out.append((str(where), free_gb(where)))
+        except OSError:
+            pass
+    return out
+
+
+def desktop_disk_free(raw: Path) -> float | None:
+    """The room left on Docker Desktop's disk (GB): what its sparse file may grow by, up to the limit set in Docker
+    Desktop (the file's size) from what it holds (its blocks), and no more than this computer's own disk has free;
+    None if there's no such file."""
+    try:
+        st = os.stat(raw)
+        return min(max(0, st.st_size - st.st_blocks * 512) / GB, free_gb(raw.parent))
+    except OSError:
+        return None
+
+
 def docker_storage() -> list[Path]:
     """Where Docker keeps images here: its data root, and containerd's, which Docker's containerd image store uses."""
-    r = subprocess.run(["docker", "info", "--format", "{{.DockerRootDir}}"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["docker", "info", "--format", "{{.DockerRootDir}}"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return []
     out = [Path(r.stdout.strip())] if r.returncode == 0 and r.stdout.strip() else []
     out += [Path("/var/lib/containerd")]
     seen, keep = set(), []
@@ -1654,11 +1835,16 @@ def main() -> None:
     if args.forget_token:
         log(f"forgot the token remembered for {conf.get('server')}" if forget_token(home) else "no token was remembered")
         return
-    if not args.check and conf.get("service") == UNIT and not os.environ.get("INVOCATION_ID"):
-        r = quiet(["systemctl", "--user", "is-active", "--quiet", UNIT])
-        if r and r.returncode == 0:     # the same token's, twice over
-            raise SystemExit(f"It's running already, as your {UNIT} service: journalctl --user -u {UNIT} -f shows what it's "
-                             f"doing. To run it here instead, systemctl --user stop {UNIT} first.")
+    if not args.check and conf.get("service") == UNIT and not os.environ.get("INVOCATION_ID") and not as_agent():
+        if sys.platform == "darwin":
+            if agent_props().get("ActiveState") == "active":
+                raise SystemExit(f"It's running already, as your {AGENT} agent: tail -f {AGENT_LOG} shows what it's doing. "
+                                 f"To run it here instead, launchctl bootout {agent_target()} first.")
+        else:
+            r = quiet(["systemctl", "--user", "is-active", "--quiet", UNIT])
+            if r and r.returncode == 0:     # the same token's, twice over
+                raise SystemExit(f"It's running already, as your {UNIT} service: journalctl --user -u {UNIT} -f shows what "
+                                 f"it's doing. To run it here instead, systemctl --user stop {UNIT} first.")
     if args.register and args.token:
         ap.error("--register makes a new token, so not with --token")
     if args.server and args.server != conf.get("server") and not args.token or args.register:
@@ -1685,6 +1871,8 @@ def main() -> None:
         args.token, conf["name"] = register(args.server, args.name if args.name is not None else conf.get("name"))
         conf["token"] = args.token
     save_conf(home, conf)
+    if as_agent():
+        trim_agent_log()
     signal.signal(signal.SIGTERM, _stop)    # as Ctrl-C: the job goes back to the server
     try:
         Worker(args).run()

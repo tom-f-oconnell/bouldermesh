@@ -10,6 +10,7 @@
 #   or [GPU image], and <registry>:<commit>-gpu: remote machines pull it by that name, and hal runs it.
 # - Machines without a GPU's, which only filter photos (deploy/worker-cpu.Dockerfile: no COLMAP, OpenMVS or CUDA), for
 #   x86-64 and, where Docker here can run ARM64 (QEMU's binfmt), ARM64 too, for Apple Silicon Macs: <registry>:<commit>-cpu.
+#   Without that, deploy/ship.sh has GitHub build the ARM64 half once it has pushed this (worker-cpu-arm64.yml).
 #   CPU=0 skips it; without it, those machines run the server's image, on x86-64 only.
 # GPU=0 builds only the server's (and the CPU workers'). The registry is ghcr.io/<owner>/bouldermesh, the owner from the GitHub remote, unless
 # REGISTRY says otherwise.
@@ -40,8 +41,8 @@ if [ "${CPU:-1}" != 0 ]; then
     if docker buildx inspect 2>/dev/null | grep -q 'linux/arm64'; then
         platforms=$platforms,linux/arm64
     else
-        echo "note: Docker here can't build for ARM64 (no QEMU binfmt: docker run --privileged --rm tonistiigi/binfmt --install arm64),"
-        echo "      so $cpu is for x86-64 only, and Apple Silicon Macs can't filter"
+        echo "note: Docker here can't build for ARM64 (no QEMU binfmt), so $cpu is for x86-64 here: deploy/ship.sh has GitHub"
+        echo "      build its ARM64 half, for Apple Silicon Macs (.github/workflows/worker-cpu-arm64.yml)"
     fi
     docker buildx build --platform "$platforms" --load --build-arg BOULDERMESH_COMMIT="$commit" -f "$tmp/deploy/worker-cpu.Dockerfile" \
         -t "$cpu" "$tmp"

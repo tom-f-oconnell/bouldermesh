@@ -1,0 +1,84 @@
+# The ARM64 half of the image machines without a GPU run (deploy/worker-cpu.Dockerfile), for Apple Silicon Macs and other
+# ARM64 machines: built on GitHub's ARM64 runners, as hal can't build for ARM64 without emulating it. deploy/ship.sh
+# starts it, once it has pushed a build's x86-64 image (<registry>:<commit>-cpu), with that name and the commit; it
+# builds the same commit for ARM64, checks the image starts and has what jobs need, and makes <commit>-cpu name both
+# halves (and :latest-cpu too, if that's still the same build's). Nothing is done if the image has ARM64 already (as
+# from a deploy/build.sh whose Docker could build it). By hand:
+#     gh workflow run worker-cpu-arm64.yml -f image=ghcr.io/<owner>/bouldermesh:<commit>-cpu -f commit=<its whole hash>
+name: Worker CPU image for ARM64
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "the x86-64 image deploy/ship.sh pushed, such as ghcr.io/<owner>/bouldermesh:abc1234-cpu"
+        required: true
+      commit:
+        description: "the commit it was built from, its whole hash"
+        required: true
+permissions:
+  contents: read
+  packages: write
+concurrency: { group: "worker-cpu-arm64-${{ inputs.image }}", cancel-in-progress: false }
+defaults:
+  run:
+    shell: bash
+jobs:
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    env:
+      IMAGE: ${{ inputs.image }}
+      COMMIT: ${{ inputs.commit }}
+    steps:
+      - name: Check what was asked for
+        run: |
+          owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr 'A-Z' 'a-z')
+          [[ "$IMAGE" =~ ^ghcr\.io/$owner/[a-z0-9._-]+:([0-9a-f]{7,40})-cpu$ ]] || { echo "not one of this repository's CPU images: $IMAGE" >&2; exit 1; }
+          short=${BASH_REMATCH[1]}
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$COMMIT" == "$short"* ]] || { echo "$COMMIT isn't the whole hash of $short" >&2; exit 1; }
+          echo "SHORT=$short" >> "$GITHUB_ENV"
+          echo "REPO=${IMAGE%:*}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: Its x86-64 half, and whether it has ARM64 already
+        run: |
+          raw=$(docker buildx imagetools inspect --raw "$IMAGE")
+          kind=$(jq -r '.mediaType // ""' <<< "$raw")
+          if [[ "$kind" == *index* || "$kind" == *manifest.list* ]]; then
+            if jq -e '.manifests[] | select(.platform.architecture == "arm64")' <<< "$raw" > /dev/null; then
+              echo "$IMAGE has ARM64 already: nothing to do"; echo "DONE=1" >> "$GITHUB_ENV"; exit 0
+            fi
+            amd64=$(jq -r '[.manifests[] | select(.platform.architecture == "amd64")][0].digest // ""' <<< "$raw")
+          else
+            amd64=$(docker buildx imagetools inspect "$IMAGE" --format '{{json .Manifest}}' | jq -r .digest)
+          fi
+          [ -n "$amd64" ] || { echo "$IMAGE has no x86-64 image" >&2; exit 1; }
+          echo "AMD64=$amd64" >> "$GITHUB_ENV"
+      - if: env.DONE != '1'
+        uses: actions/checkout@v5
+        with: { ref: "${{ inputs.commit }}" }
+      - if: env.DONE != '1'
+        uses: docker/setup-buildx-action@v3
+      - name: Build it for ARM64
+        if: env.DONE != '1'
+        run: |
+          docker buildx build --platform linux/arm64 --load --build-arg BOULDERMESH_COMMIT="$SHORT" \
+            -f deploy/worker-cpu.Dockerfile -t worker-cpu:arm64 .
+      - name: Check it starts, with what jobs need
+        if: env.DONE != '1'
+        run: |
+          docker run --rm worker-cpu:arm64 sh -c 'uname -m | grep -qx aarch64 && python3 -c "import cv2, torch, open_clip, rtmlib, onnxruntime, numpy, PIL; print(\"torch\", torch.__version__, \"onnxruntime\", onnxruntime.__version__)" && python3 backend/remote_job.py --help > /dev/null'
+      - name: Push it, and name both halves as one
+        if: env.DONE != '1'
+        run: |
+          docker buildx build --platform linux/arm64 --build-arg BOULDERMESH_COMMIT="$SHORT" -f deploy/worker-cpu.Dockerfile \
+            --provenance=false --output "type=image,name=$REPO,push-by-digest=true,push=true" --metadata-file "$RUNNER_TEMP/meta.json" .
+          arm64=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/meta.json")
+          before=$(docker buildx imagetools inspect --raw "$REPO:latest-cpu" 2>/dev/null || true)
+          docker buildx imagetools create -t "$IMAGE" "$REPO@$AMD64" "$REPO@$arm64"
+          # :latest-cpu too, unless a newer build has been pushed since
+          if jq -e --arg d "$AMD64" '.manifests[]? | select(.digest == $d)' <<< "$before" > /dev/null 2>&1 \
+             || [ "$(docker buildx imagetools inspect "$REPO:latest-cpu" --format '{{json .Manifest}}' 2>/dev/null | jq -r .digest)" = "$AMD64" ]; then
+            docker buildx imagetools create -t "$REPO:latest-cpu" "$REPO@$AMD64" "$REPO@$arm64"
+            echo "and $REPO:latest-cpu"
+          fi
+          docker buildx imagetools inspect "$IMAGE"

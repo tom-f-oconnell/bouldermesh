@@ -40,6 +40,21 @@ push() {    # local image, name, also as
     DOCKER_CONFIG=${cfg:-${DOCKER_CONFIG:-$HOME/.docker}} docker push -q "$2"
     DOCKER_CONFIG=${cfg:-${DOCKER_CONFIG:-$HOME/.docker}} docker push -q "$3"
 }
+# the CPU image's ARM64 half, for Apple Silicon Macs, built on GitHub (.github/workflows/worker-cpu-arm64.yml), which
+# adds it to the name just pushed, unless that has it already; its commit has to be on GitHub for that
+arm64_on_github() {
+    local commit full
+    commit=$(echo "$env" | sed -n 's/^BOULDERMESH_COMMIT=//p')
+    case "$1" in ghcr.io/*) ;; *) return 0 ;; esac
+    full=$(git -C "$dir" rev-parse --verify -q "$commit^{commit}") && [ -n "$(git -C "$dir" branch -r --contains "$full" 2>/dev/null)" ] ||
+        { echo "warning: $commit isn't on GitHub, so $1 has no ARM64 half (Apple Silicon Macs can't use it): push it, then" \
+               "gh workflow run worker-cpu-arm64.yml -f image=$1 -f commit=<its whole hash>" >&2; return 0; }
+    if (cd "$dir" && gh workflow run worker-cpu-arm64.yml -f image="$1" -f commit="$full" > /dev/null 2>&1); then
+        echo "image $1: its ARM64 half is building on GitHub (gh run list -w worker-cpu-arm64.yml), and is added to it in about 15 min"
+    else
+        echo "warning: couldn't start the ARM64 build of $1 on GitHub (gh workflow run worker-cpu-arm64.yml): Apple Silicon Macs can't use it" >&2
+    fi
+}
 if [ -z "$pushed" ]; then
     echo "image $image: not from deploy/build.sh, so not pushed (remote machines run the image the admin page names)"
 elif [ -n "${NO_PUSH:-}" ]; then
@@ -61,6 +76,7 @@ else
     if [ -n "$cpu" ]; then
         if docker image inspect "$cpu" > /dev/null 2>&1; then
             push "$cpu" "$cpu" "${cpu%:*}:latest-cpu"   # every platform it was built for
+            arm64_on_github "$cpu"
         else
             echo "warning: machines without a GPU will pull $cpu, which isn't here to push: build it with deploy/build.sh" >&2
         fi
