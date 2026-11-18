@@ -5,6 +5,9 @@ for when App Store Connect's own page doesn't offer one: and if Apple refuses, i
     python3 app/ci/testflight-group.py <issuer id>               the groups there are, and their links
     python3 app/ci/testflight-group.py <issuer id> --make        an external group "Testers", with a public link,
                                                                  and the latest build added (sent for beta review)
+    python3 app/ci/testflight-group.py <issuer id> --publish <build number> ["what to test"]
+        once Apple has processed that build (waits up to 45 minutes), adds it to every external group and sends it for
+        beta review, so that whoever joined from the public link gets it: what testflight.yml does after each upload
 
 The API key is the one app/ci/ios-signing.sh keeps (~/.bouldermesh-ios-signing/AuthKey_<id>.p8; SIGNING_DIR changes
 where); the issuer id is on App Store Connect's Users and Access, Integrations, App Store Connect API page. Needs PyJWT
@@ -51,6 +54,49 @@ def call(tok: str, method: str, path: str, body: dict | None = None) -> dict:
         sys.exit(f"App Store Connect refused {method} {path} ({e.code}): {said}")
 
 
+def publish(issuer: str, app: str, number: str, notes: str) -> None:
+    """Adds build `number`, once processed, to the app's external groups, with `notes` as its "What to Test", and sends
+    it for beta review. Apple refusing the review (one already waiting, or Test Information missing) only warns."""
+    deadline = time.time() + 45 * 60
+    while True:
+        tok = token(issuer)     # each lasts 20 minutes
+        found = call(tok, "GET", f"/builds?filter[app]={app}&filter[version]={number}&limit=1")["data"]
+        state = found[0]["attributes"].get("processingState") if found else "not yet listed"
+        if state == "VALID":
+            break
+        if state in ("FAILED", "INVALID"):
+            sys.exit(f"Apple's processing of build {number} ended {state}")
+        if time.time() > deadline:
+            sys.exit(f"build {number} still {state} after 45 minutes: add it to the group in App Store Connect")
+        print(f"build {number}: {state}", flush=True)
+        time.sleep(60)
+    build = found[0]["id"]
+    if notes:
+        locs = call(tok, "GET", f"/builds/{build}/betaBuildLocalizations")["data"]
+        if locs:
+            call(tok, "PATCH", f"/betaBuildLocalizations/{locs[0]['id']}", {"data": {
+                "type": "betaBuildLocalizations", "id": locs[0]["id"], "attributes": {"whatsNew": notes[:4000]}}})
+        else:
+            call(tok, "POST", "/betaBuildLocalizations", {"data": {"type": "betaBuildLocalizations",
+                 "attributes": {"locale": "en-US", "whatsNew": notes[:4000]},
+                 "relationships": {"build": {"data": {"type": "builds", "id": build}}}}})
+    groups = [g for g in call(tok, "GET", f"/apps/{app}/betaGroups?limit=50")["data"]
+              if not g["attributes"].get("isInternalGroup")]
+    if not groups:
+        sys.exit("no external group to add it to: make one (--make)")
+    for g in groups:
+        call(tok, "POST", f"/betaGroups/{g['id']}/relationships/builds", {"data": [{"type": "builds", "id": build}]})
+        print(f"build {number} added to {g['attributes'].get('name')!r}")
+    req = urllib.request.Request(API + "/betaAppReviewSubmissions", method="POST", data=json.dumps({"data": {
+        "type": "betaAppReviewSubmissions", "relationships": {"build": {"data": {"type": "builds", "id": build}}}}}).encode(),
+        headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=60).read()
+        print("sent for beta review: testers get it once Apple approves (minutes for a version already approved)")
+    except urllib.error.HTTPError as e:
+        print(f"::warning::build {number} not sent for beta review ({e.code}): {e.read().decode(errors='replace')[:500]}")
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         sys.exit(__doc__)
@@ -59,6 +105,9 @@ def main() -> None:
     if not apps:
         sys.exit(f"no app with bundle id {BUNDLE} on this account")
     app = apps[0]["id"]
+    if "--publish" in sys.argv:
+        rest = sys.argv[sys.argv.index("--publish") + 1:]
+        return publish(sys.argv[1], app, rest[0], rest[1] if len(rest) > 1 else "")
     groups = call(tok, "GET", f"/apps/{app}/betaGroups?limit=50")["data"]
     for g in groups:
         a = g["attributes"]

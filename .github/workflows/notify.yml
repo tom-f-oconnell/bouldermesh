@@ -1,0 +1,30 @@
+# A notification on the admin's phone through ntfy as each of the other workflows ends: how it went, and a tap opens the
+# run. The topic is the secret NTFY_TOPIC (gh secret set NTFY_TOPIC): the admin page's notification topic, or a whole
+# https://<ntfy server>/<topic> address; without it, nothing is sent.
+name: Notify
+on:
+  workflow_run:
+    workflows: ["Phone apps", "TestFlight"]
+    types: [completed]
+jobs:
+  ntfy:
+    runs-on: ubuntu-latest
+    env:
+      TOPIC: ${{ secrets.NTFY_TOPIC }}
+    steps:
+      - if: env.TOPIC != ''
+        env:
+          NAME: ${{ github.event.workflow_run.name }}
+          RESULT: ${{ github.event.workflow_run.conclusion }}
+          RUN: ${{ github.event.workflow_run.html_url }}
+          TITLE: ${{ github.event.workflow_run.display_title }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          case "$TOPIC" in *://*) url=$TOPIC ;; *) url=https://ntfy.sh/$TOPIC ;; esac
+          case "$RESULT" in
+            success) tags=white_check_mark priority=default ;;
+            failure) tags=x priority=high ;;
+            *) tags=grey_question priority=default ;;
+          esac
+          curl -fsS -H "Title: $NAME: $RESULT" -H "Tags: $tags" -H "Priority: $priority" -H "Click: $RUN" \
+            --data-binary "${SHA:0:7} $TITLE" "$url" > /dev/null

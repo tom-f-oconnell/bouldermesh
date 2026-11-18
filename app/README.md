@@ -139,12 +139,16 @@ secrets are set it only says so. Setting them up, once, with an Apple developer 
    Store (it needn't be the one under the icon).
 6. `app/ci/ios-signing.sh secrets AuthKey_<key id>.p8 <issuer id> <team id> <profile>.mobileprovision` (the team ID is
    under *Membership details*) sets the workflow's seven secrets with `gh`; then `gh workflow run testflight.yml`.
+7. Optional: `gh secret set NTFY_TOPIC` with the admin page's ntfy topic (or a whole `https://<server>/<topic>`), and
+   `.github/workflows/notify.yml` sends a notification to it as each run of this and *Phone apps* ends.
 
 **Giving it to the people you invite:** in App Store Connect's *TestFlight* tab, make an *external* group, add a build
 to it (Apple reviews the first build of each version, usually within a day), and turn on its *Public Link*. Put that
 link (`https://testflight.apple.com/join/…`) in the admin page's *The iPhone app's TestFlight public link*: the site
 then shows it, with the Android app's latest build, to whoever joins from an invite (right after joining) and under
 their name at the top of the page. All they do: install TestFlight, open the link on the phone, *Accept*, *Install*.
+The link stays the same: each later upload is added to the external groups and sent for beta review by the workflow
+itself, once Apple has processed it, with the commit's subject as its *What to Test*.
 
 A build shows in App Store Connect's *TestFlight* tab a few minutes after the run, once Apple has processed it. To put it
 on someone's iPhone, add them as a tester: an *internal* tester (a user of your App Store Connect team, up to 100)

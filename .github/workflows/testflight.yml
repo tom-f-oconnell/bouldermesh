@@ -1,8 +1,9 @@
 # The iPhone app, signed for the App Store and uploaded to TestFlight, from which a tester's iPhone installs it (no Mac,
 # no cable). Every push to main that changes the iPhone app's own code or its build (not the Android app's, the docs,
 # CI's scripts or this file: so that a build number only rises with the app), or by hand (gh workflow run
-# testflight.yml). Each upload's build number is this workflow's run number. Its seven secrets come from app/ci/ios-signing.sh (app/README.md, "TestFlight"):
-# without them it says so and does nothing.
+# testflight.yml). Each upload's build number is this workflow's run number; once Apple has processed it, it goes to the
+# external groups (the public link) and to beta review (app/ci/testflight-group.py --publish). Its seven secrets come
+# from app/ci/ios-signing.sh (app/README.md, "TestFlight"): without them it says so and does nothing.
 name: TestFlight
 on:
   push:
@@ -111,6 +112,14 @@ jobs:
             -exportPath "$RUNNER_TEMP/export" -authenticationKeyPath "$ASC_KEY_PATH" -authenticationKeyID "$KEY_ID" \
             -authenticationKeyIssuerID "$ISSUER" | tail -40
           echo "::notice::Uploaded build $BUILD (0.1.0). It shows in App Store Connect's TestFlight once Apple has processed it (minutes)."
+      - name: To the public link's testers, once Apple has processed it
+        if: env.READY == 'true'
+        env:
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/asc" && "$RUNNER_TEMP/asc/bin/pip" install -q pyjwt cryptography
+          SIGNING_DIR="$RUNNER_TEMP/keys" "$RUNNER_TEMP/asc/bin/python" app/ci/testflight-group.py "$ISSUER" \
+            --publish "$BUILD" "$(git log -1 --format=%s)"
       - name: The keychain and key gone
         if: always() && env.READY == 'true'
         run: |
