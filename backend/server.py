@@ -6559,8 +6559,9 @@ def beta_ready(mid: str) -> bool:
     waiting = rec.get("waiting_videos") or []
     if waiting and any(youtube_mod.cached(u) for u in waiting):     # each video's beta as soon as it's here
         return True
-    if waiting:     # one here that wasn't waited for, as a mesh queued before videos were done one by one
-        done = {v.get("url") for v in rec.get("videos") or [] if v.get("status") in ("done", "no holds found")}
+    if waiting:     # one here that wasn't waited for, as a mesh queued before videos were done one by one; not one
+        # tried already that failed, which would be sent to a machine again every few seconds, failing each time
+        done = {v.get("url") for v in rec.get("videos") or []}
         try:
             if any(u not in done and youtube_mod.cached(u) for u in beta_mod.videos(MESHES / mid)):
                 return True

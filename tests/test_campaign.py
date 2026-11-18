@@ -1850,6 +1850,8 @@ assert server.beta_ready(mid), "the first video is here"
 server.beta_mod.save(md, {"status": "queued", "videos": [{"url": url, "status": "done"}], "waiting_videos": [url2]})
 via_was, server.youtube_mod.via = server.youtube_mod.via, "volunteers"
 assert not server.beta_ready(mid), "nothing new here, and only volunteers fetch videos"
+server.beta_mod.save(md, {"status": "queued", "videos": [{"url": url, "status": "failed: IndexError: x"}], "waiting_videos": [url2]})
+assert not server.beta_ready(mid), "one that failed here isn't sent again until another comes (Gerty, Nov 17: every 15 s)"
 server.youtube_mod.via = via_was
 server.beta_mod.videos = lambda d: {url: {"tag": "aaaaaaaa", "title": "t", "uploader": "u", "frames": {"yt_aaaaaaaa_000.jpg": {}}}}
 server.beta_mod.save(md, {"status": "done", "videos": []})

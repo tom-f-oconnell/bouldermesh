@@ -504,7 +504,9 @@ def _pose_model(log: Log):
     # the tracker makes its own model, from whatever it's given to call: here, one with these files
     model = functools.partial(BodyWithFeet, det=det, pose=pose, det_input_size=POSE["det_input_size"],
                               pose_input_size=POSE["pose_input_size"])
-    return PoseTracker(model, det_frequency=DET_EVERY, backend="onnxruntime", device="cpu")
+    # tracking off: climber() picks the climber itself, and rtmlib's IoU tracking can lose count of its own ids and
+    # fail a whole video (IndexError: pop from empty list, Nov 17); detections still carry over between DET_EVERY
+    return PoseTracker(model, det_frequency=DET_EVERY, tracking=False, backend="onnxruntime", device="cpu")
 
 
 def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, tracker, tmp: Path, log: Log,
