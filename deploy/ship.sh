@@ -46,7 +46,8 @@ arm64_on_github() {
     local commit full
     commit=$(echo "$env" | sed -n 's/^BOULDERMESH_COMMIT=//p')
     case "$1" in ghcr.io/*) ;; *) return 0 ;; esac
-    full=$(git -C "$dir" rev-parse --verify -q "$commit^{commit}") && [ -n "$(git -C "$dir" branch -r --contains "$full" 2>/dev/null)" ] ||
+    # asked of GitHub, not of origin/main here: a push to the URL rather than to origin leaves that behind
+    full=$(git -C "$dir" rev-parse --verify -q "$commit^{commit}") && (cd "$dir" && gh api "repos/{owner}/{repo}/commits/$full" --silent 2>/dev/null) ||
         { echo "warning: $commit isn't on GitHub, so $1 has no ARM64 half (Apple Silicon Macs can't use it): push it, then" \
                "gh workflow run worker-cpu-arm64.yml -f image=$1 -f commit=<its whole hash>" >&2; return 0; }
     if (cd "$dir" && gh workflow run worker-cpu-arm64.yml -f image="$1" -f commit="$full" > /dev/null 2>&1); then
