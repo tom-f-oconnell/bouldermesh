@@ -1088,11 +1088,13 @@ from your invite), <i>Accept</i>, and <i>Install</i>. New versions come through 
 
 <h3>2. Sign it in</h3>
 <ul>
-<li><b>Android, signed in to this site in the phone's browser:</b> press your name at the top of the main page, then
+<li><b>Signed in to this site in the phone's browser:</b> press your name at the top of the main page, then
 <i>Sign the app in</i>: the app opens, signed in as you.</li>
-<li><b>Otherwise (and on an iPhone):</b> on the site, press your name, then <i>Sign in another device</i>, for a code; in
-the app's <i>Settings</i>, paste the code (or your invite link).</li>
+<li><b>Otherwise:</b> on the site, press your name, then <i>Sign in another device</i>, for a code; type it in the app
+(or, on Android, scan its QR).</li>
 </ul>
+<p>The app says the same the first time it opens, until it's signed in or you press <i>Not now</i>; <i>Settings</i>
+has it too.</p>
 
 <h3>3. Before you go</h3>
 <ul>

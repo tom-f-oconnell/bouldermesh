@@ -6349,8 +6349,9 @@ async function showAdded(dlg){
   });
 }
 // where an account gets the phone apps (GET /api/account's apps): Android's latest build; the iPhone's through TestFlight
-// appsHtml()'s "Sign the app in" on an Android phone: a pairing code of the account's, handed to the app by a link it
-// answers to (bouldermesh://pair, MainActivity.signInFrom()), which signs it in and credits its photos to this name
+// appsHtml()'s "Sign the app in" on a phone: a pairing code of the account's, handed to the app by a link it answers to
+// (bouldermesh://pair: Android's MainActivity.signInFrom(), the iPhone's Main.kt openLink()), which signs it in and
+// credits its photos to this name
 function bindApps(dlg){
   const b = dlg.querySelector('.appsign');
   if (!b) return;
@@ -6359,7 +6360,8 @@ function bindApps(dlg){
     b.disabled = true; say.textContent = '';
     try {
       const r = await api('/api/account/pair', { method: 'POST', json: {} });
-      const url = `intent://pair?code=${encodeURIComponent(r.code)}&server=${encodeURIComponent(location.origin)}#Intent;scheme=bouldermesh;package=sh.boulderme.app;end`;
+      const q = `pair?code=${encodeURIComponent(r.code)}&server=${encodeURIComponent(location.origin)}`;
+      const url = /Android/i.test(navigator.userAgent) ? `intent://${q}#Intent;scheme=bouldermesh;package=sh.boulderme.app;end` : `bouldermesh://${q}`;
       say.innerHTML = `If the app didn't open, <a href="${esc(url)}">open it here</a>. It needs installing first, from the button above.`;
       location.href = url;
     }
@@ -6382,7 +6384,9 @@ function appsHtml(){
     <p style="margin:0 0 10px;font-size:13px">Open the downloaded file, then allow this browser to install it. The app offers each newer version itself.</p>
     <p style="margin:0 0 4px">Once it's installed: <button class="sm sec appsign">Sign the app in as ${esc(account?.name || 'you')}</button></p>
     <p class="appsignsay" style="margin:0 0 10px;font-size:13px"></p>`;
-  if (ios) return `${head}<ul style="margin:0 0 10px"><li>${iph}</li></ul>`;
+  if (ios) return `${head}<ul style="margin:0 0 10px"><li>${iph}</li></ul>${a.iphone ? `
+    <p style="margin:0 0 4px">Once it's installed: <button class="sm sec appsign">Sign the app in as ${esc(account?.name || 'you')}</button></p>
+    <p class="appsignsay" style="margin:0 0 10px;font-size:13px"></p>` : ''}`;
   return `${head}<ul style="margin:0 0 6px"><li>${and}</li><li>${iph}</li></ul>
     <p style="margin:0 0 10px;font-size:13px">On a computer: open this site on the phone and sign in there (<i>Sign in another device</i>, in your
     account), or send the phone these links.</p>`;
@@ -6454,6 +6458,8 @@ if (statusCache.editing === 'token') {
   }
   if (token && !editor && !account) toast(accountInfo ? 'This browser is no longer signed in: its token wasn\'t accepted.' : 'The editing token kept in this browser wasn\'t accepted.', 6000);
 }
+const appAsked = location.hash === '#app';
+if (appAsked) history.replaceState(null, '', location.pathname + location.search);
 if (accountInfo) {
   showAccount();
   if (account && inviteCode) { stripInvite(); toast(`This browser is already signed in, as ${account.name}: the invite wasn't used.`, 8000); }
@@ -6462,6 +6468,14 @@ if (accountInfo) {
   if (account && !account.accepted) openTerms(welcome);
   else if (inviteCode && !account) openJoin(inviteCode);
   else if (account && welcome) openWelcome();
+  // the phone app's prompt to sign in opened the site here (app/shared SignInHelp.link()): the account's panel, with its
+  // "Sign the app in"; or, in a browser that isn't signed in, where to go instead
+  else if (appAsked && account) openAccount();
+  else if (appAsked) acctDlg(`<p><b>This browser isn't signed in.</b></p>
+    <p>To sign the app in, open this site in the browser you joined in, press your name at the top, then <i>Sign the app in</i>. If your
+    invite link opened inside an email or chat app, that app is where you joined.</p>
+    <p>Joined on a computer or another phone? There, press your name, then <i>Sign in another device</i>, and type its code in the app.</p>
+    <div class="row" style="justify-content:flex-end"><button class="sm close">Close</button></div>`);
 }
 else if (inviteCode && !thumbMode) toast('This copy of the site has no accounts to join.', 8000);
 if (statusCache.admin) { $('#admin').style.display = ''; $('#admin').onclick = openAdmin; }

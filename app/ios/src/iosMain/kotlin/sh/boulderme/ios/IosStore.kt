@@ -28,6 +28,9 @@ class IosStore {
     var terms: Int          // the version of the terms accepted on this phone (0: none): nothing else works until the current one is
         get() = prefs.integerForKey("terms").toInt()
         set(v) = prefs.setInteger(v.toLong(), forKey = "terms")
+    var signInAsked: Boolean    // the first-opening prompt to sign in (Home's) was left once: not shown again
+        get() = prefs.boolForKey("sign_in_asked")
+        set(v) = prefs.setBool(v, forKey = "sign_in_asked")
     var anonFirst: Boolean  // holds others marked privately are asked for from the start of a capture, not at its end
         get() = prefs.boolForKey("anon_first")
         set(v) = prefs.setBool(v, forKey = "anon_first")

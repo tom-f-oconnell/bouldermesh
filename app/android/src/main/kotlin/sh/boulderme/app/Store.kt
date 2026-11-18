@@ -23,6 +23,9 @@ class Store(context: Context) {
     var terms: Int          // the version of the terms accepted on this phone (0: none): nothing else works until the current one is
         get() = prefs.getInt("terms", 0)
         set(v) = prefs.edit().putInt("terms", v).apply()
+    var signInAsked: Boolean    // the first-opening prompt to sign in (SignInScreen) was left once: not shown again
+        get() = prefs.getBoolean("sign_in_asked", false)
+        set(v) = prefs.edit().putBoolean("sign_in_asked", v).apply()
     var anonFirst: Boolean  // holds others marked privately are asked for from the start of a capture, not at its end
         get() = prefs.getBoolean("anon_first", false)
         set(v) = prefs.edit().putBoolean("anon_first", v).apply()

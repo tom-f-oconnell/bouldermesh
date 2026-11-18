@@ -24,6 +24,7 @@ shot() {    # shot <name> [extras for the intent]
 if [ "$ONLY" != capture ]; then
     shot terms --es terms show
     shot home
+    shot signin --es screen signin
     shot settings --es screen settings
     shot calibrate --es screen calibrate
 fi

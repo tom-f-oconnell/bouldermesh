@@ -74,6 +74,15 @@ fun makeRow(vararg views: UIView): UIStackView {
     return row
 }
 
+/** Says something, with an OK; shown over whatever's on top of this screen. */
+fun UIViewController.tell(title: String, message: String) {
+    val alert = UIAlertController.alertControllerWithTitle(title, message, UIAlertControllerStyleAlert)
+    alert.addAction(UIAlertAction.actionWithTitle("OK", UIAlertActionStyleDefault, null))
+    var top: UIViewController = navigationController ?: this
+    while (true) top = top.presentedViewController ?: break
+    top.presentViewController(alert, animated = true, completion = null)
+}
+
 /** Asks a yes or no. */
 fun UIViewController.confirm(title: String, message: String, yes: String, no: String, danger: Boolean = false, then: () -> Unit) {
     val alert = UIAlertController.alertControllerWithTitle(title, message, UIAlertControllerStyleAlert)

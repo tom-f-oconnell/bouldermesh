@@ -43,6 +43,8 @@ sealed interface Screen {
     /** getFirst: download the first mesh listed without being asked (for trying it in an emulator). */
     data class Browse(val getFirst: Boolean = false) : Screen
     data object Settings : Screen
+    /** On first opening, not signed in: how to sign in from where the account was joined. */
+    data object SignIn : Screen
     data object Calibrate : Screen
     /** mesh: the mesh being added to, or null for a rock with none. */
     data class Capture(val mesh: String?, val name: String, val set: String? = null) : Screen      // set: the set of beta it's for
@@ -77,6 +79,7 @@ class MainActivity : ComponentActivity() {
         store = Store(this); api = Api(store); sensors = PhoneSensors(this)
         Crashes.watch(store.crashes)
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) tryOut()
+        if (store.token.isEmpty() && !store.signInAsked && screen == Screen.Home) screen = Screen.SignIn
         signInFrom(intent)
         if (intent?.action == Updates.ACTION) Updates.installerSaid(this, intent)
         topHalf = store.topHalf
@@ -91,7 +94,10 @@ class MainActivity : ComponentActivity() {
                Box(Modifier.fillMaxSize().background(Color.Black)) {
                 Surface(Modifier.fillMaxWidth().fillMaxHeight(if (topHalf) HALF_SHARE.toFloat() else 1f)) {
                     val go: (Screen) -> Unit = { screen = it }
-                    BackHandler(enabled = screen != Screen.Home && screen !is Screen.Capture) { screen = backOf(screen) }
+                    BackHandler(enabled = screen != Screen.Home && screen !is Screen.Capture) {
+                        if (screen == Screen.SignIn) store.signInAsked = true
+                        screen = backOf(screen)
+                    }
                     var accepted by remember { mutableStateOf(store.terms >= TERMS_VERSION) }
                     if (!accepted) TermsScreen { store.terms = TERMS_VERSION; accepted = true; ensureArCore() }
                     else when (val s = screen) {
@@ -101,6 +107,7 @@ class MainActivity : ComponentActivity() {
                                 Screen.Home -> HomeScreen(this@MainActivity, go)
                                 is Screen.Browse -> BrowseScreen(this@MainActivity, s.getFirst, go)
                                 Screen.Settings -> SettingsScreen(this@MainActivity, go)
+                                Screen.SignIn -> SignInScreen(this@MainActivity, go)
                                 Screen.Calibrate -> CalibrateScreen(this@MainActivity, go)
                                 is Screen.Done -> DoneScreen(this@MainActivity, s.id, go)
                                 is Screen.Upload -> UploadScreen(this@MainActivity, s.id, go)
@@ -120,7 +127,7 @@ class MainActivity : ComponentActivity() {
     /**
      * In a debug build, for trying it in an emulator with nobody to press anything (app/ci/screens-android.sh): extras
      * on the intent that starts it set the server (`--es server <address>`) and open a screen straight away (`--es
-     * screen browse|settings|calibrate|capture|viewer|upload|photo`, with `--ez get true` to download the first mesh listed,
+     * screen browse|settings|signin|calibrate|capture|viewer|upload|photo`, with `--ez get true` to download the first mesh listed,
      * `--es mesh <id>` for the mesh to capture: the first downloaded if not given, `none` for a rock with no mesh; the
      * viewer shows the first downloaded; upload and photo show a capture on the phone, `--es capture <id>` or the newest;
      * `--es sample <url of a zip>` puts a capture on the phone first).
@@ -131,6 +138,7 @@ class MainActivity : ComponentActivity() {
         // CI's runs skip the terms (but for the terms' own screen); anyone else's start of a debug build, as testers install
         // from android-latest, is asked to accept them as a release build's would be
         if (tryingOut || intent.hasExtra("terms")) store.terms = if (intent.getStringExtra("terms") == "show") 0 else TERMS_VERSION
+        if (tryingOut) store.signInAsked = true     // the prompt to sign in only on its own screen (`--es screen signin`)
         // a capture to put on the phone first, as a zip of its folder (app/ci/sample_capture.py): the shell can't write
         // into the app's files on Android 11, so it's fetched from the machine running the emulator
         intent.getStringExtra("sample")?.let { url ->
@@ -150,6 +158,7 @@ class MainActivity : ComponentActivity() {
         screen = when (intent.getStringExtra("screen")) {
             "browse" -> Screen.Browse(intent.getBooleanExtra("get", false))
             "settings" -> Screen.Settings
+            "signin" -> Screen.SignIn
             "calibrate" -> Screen.Calibrate
             "capture" -> {
                 val asked = intent.getStringExtra("mesh")
@@ -191,7 +200,10 @@ class MainActivity : ComponentActivity() {
                 val name = api.signIn(code)
                 if (name != null) "Signed in as $name" + (if (store.credit == name) ": photos are credited to $name." else ".") else "Paired: this phone can upload now."
             } catch (e: Exception) { "Signing in failed: ${e.message}" }
-            runOnUiThread { Toast.makeText(this, said, Toast.LENGTH_LONG).show() }
+            runOnUiThread {
+                Toast.makeText(this, said, Toast.LENGTH_LONG).show()
+                if (store.token.isNotEmpty() && screen == Screen.SignIn) screen = Screen.Home
+            }
         }.start()
     }
 

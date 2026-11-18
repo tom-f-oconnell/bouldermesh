@@ -52,6 +52,7 @@ import sh.boulderme.core.GpsAverager
 import sh.boulderme.core.MagCalibration
 import sh.boulderme.core.MeshRow
 import sh.boulderme.core.TERMS
+import sh.boulderme.core.SignInHelp
 import androidx.compose.foundation.layout.safeDrawingPadding
 import sh.boulderme.core.Plan
 import sh.boulderme.core.Vec3
@@ -287,6 +288,50 @@ fun TermsScreen(accept: () -> Unit) {
         Text(TERMS)
         Button(onClick = accept, modifier = Modifier.fillMaxWidth()) { Text("I agree") }
         Text("Without this the app can't be used.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+// ------------------------------------------------------------------------------------------------------------ sign in
+/**
+ * On first opening, while the phone isn't signed in: how to sign it in from where the account was joined (SignInHelp),
+ * a browser on this phone first. Leaving it, or signing in, means it isn't shown again (Settings has the same).
+ */
+@Composable
+fun SignInScreen(a: MainActivity, go: (Screen) -> Unit) {
+    var code by remember { mutableStateOf("") }
+    var said by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val server = a.store.server
+    fun signIn(text: String) = scope.launch {
+        busy = true; said = null
+        try {
+            val name = withContext(Dispatchers.IO) { a.api.signIn(text) }
+            a.store.signInAsked = true
+            android.widget.Toast.makeText(a, if (name != null) "Signed in as $name." else "Paired: this phone can upload now.", android.widget.Toast.LENGTH_LONG).show()
+            go(Screen.Home)
+        } catch (e: Exception) { said = "Signing in failed: ${e.message}" }
+        busy = false
+    }
+    Page("Sign in") {
+        Text(SignInHelp.INTRO)
+        Section("Joined in a browser on this phone")
+        Text(SignInHelp.samePhone(server))
+        OutlinedButton(onClick = {
+            runCatching { a.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(SignInHelp.link(server)))) }
+                .onFailure { said = "No browser opened: open ${SignInHelp.site(server)} yourself." }
+        }) { Text("Open ${SignInHelp.site(server)}") }
+        Text(SignInHelp.OPEN_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Section("Joined on a computer or another phone")
+        Text(SignInHelp.otherDevice(server, scan = true))
+        Button(enabled = !busy, onClick = { scanQr(a) { text, why -> if (text != null) signIn(text) else if (why != null) said = why } }) { Text("Scan") }
+        OutlinedTextField(code, { code = it }, label = { Text("Code from the other device") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Button(enabled = !busy && code.isNotBlank(), onClick = { signIn(code) }) { Text(if (busy) "Signing in…" else "Sign in") }
+        said?.let { Text(it, color = BAD) }
+        Text(SignInHelp.NOT_JOINED, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Section("Later")
+        OutlinedButton(onClick = { a.store.signInAsked = true; go(Screen.Home) }) { Text("Not now") }
+        Text(SignInHelp.LATER, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

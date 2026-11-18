@@ -22,6 +22,9 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"      # each TestFlight upload's its own (the workflow's run number)
         ITSAppUsesNonExemptEncryption: false     # only HTTPS: exempt, so App Store Connect doesn't ask with each build
         UILaunchScreen: {}
+        CFBundleURLTypes:      # the site's "Sign the app in": bouldermesh://pair?code=…&server=… (Main.kt, openLink())
+          - CFBundleURLName: sh.boulderme.app.pair
+            CFBundleURLSchemes: [bouldermesh]
         UIRequiredDeviceCapabilities: [arkit]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSCameraUsageDescription: "To photograph the rock, and to track where the phone is as it does."

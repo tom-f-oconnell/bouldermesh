@@ -3,6 +3,8 @@ package sh.boulderme.ios
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.useContents
 import platform.CoreGraphics.CGRectMake
+import platform.Foundation.NSURLComponents
+import platform.Foundation.NSURLQueryItem
 import platform.Foundation.NSUserDefaults
 import platform.UIKit.UIApplication
 import platform.UIKit.UIScreen
@@ -31,13 +33,15 @@ class App {
  * the first mesh listed, `-mesh <id>` for the mesh to capture (the first downloaded if not given; `none` for a rock with
  * no mesh), `-capture <id>` for the capture upload and photo show (the newest if not given; viewer: the first mesh
  * downloaded), and
- * `-server <address>`, which iOS itself reads into the setting of that name for that launch.
+ * `-server <address>`, which iOS itself reads into the setting of that name for that launch (so do `-terms 1` and
+ * `-sign_in_asked NO`, which shows the first opening's prompt to sign in).
  */
 fun rootViewController(): UIViewController {
     Crashes.watch()
     val app = App()
     app.sensors.start()
     val home = Home(app)
+    running = app to home
     val nav = UINavigationController(rootViewController = home.screen)
     val args = NSUserDefaults.standardUserDefaults
     when (args.stringForKey("screen")) {
@@ -70,4 +74,44 @@ fun topHalf(on: Boolean) {
     val window = UIApplication.sharedApplication.keyWindow ?: return
     val (w, h) = UIScreen.mainScreen.bounds.useContents { size.width to size.height }
     window.setFrame(CGRectMake(0.0, 0.0, w, if (on) h * sh.boulderme.core.HALF_SHARE else h))
+}
+
+private var running: Pair<App, Home>? = null
+
+/**
+ * Signs in with a code (or a link with one), crediting photos to the account's name if they're credited to nobody yet;
+ * then done(what to say, whether it worked), on the main thread.
+ */
+fun signIn(app: App, code: String, done: (String, Boolean) -> Unit) = app.api.pair(code, app.store.credit) { token, why ->
+    if (token == null) return@pair done("Signing in failed: $why", false)
+    app.store.token = token
+    app.store.signInAsked = true
+    app.api.account { half ->
+        topHalf(half)
+        done(app.store.credit.takeIf { it.isNotBlank() }?.let { "Signed in: photos are credited to $it." } ?: "Signed in: this phone can upload now.", true)
+    }
+}
+
+/**
+ * A link the app was opened by (AppDelegate.swift): the site's "Sign the app in" on this phone (frontend/index.html,
+ * appsHtml()), bouldermesh://pair?code=<a pairing code of the account's>&server=<the site>. A link for a server other
+ * than the app's is refused, so a link from elsewhere can't send this phone's captures somewhere else. Answers whether
+ * it was one of the app's.
+ */
+fun openLink(url: String): Boolean {
+    val (app, home) = running ?: return false
+    val link = NSURLComponents.componentsWithString(url) ?: return false
+    if (link.scheme != "bouldermesh" || link.host != "pair") return false
+    val query = link.queryItems?.mapNotNull { it as? NSURLQueryItem }?.associate { it.name to it.value } ?: emptyMap()
+    val code = query["code"]?.takeIf { it.isNotBlank() } ?: return true
+    val server = query["server"]?.trimEnd('/')
+    if (server != null && server != app.store.server.trimEnd('/')) {
+        home.screen.tell("Not signed in", "That link is for $server, and this app sends to ${app.store.server}: change Server in Settings first.")
+        return true
+    }
+    signIn(app, code) { said, ok ->
+        home.rebuild()
+        home.screen.tell(if (ok) "Signed in" else "Not signed in", said)
+    }
+    return true
 }

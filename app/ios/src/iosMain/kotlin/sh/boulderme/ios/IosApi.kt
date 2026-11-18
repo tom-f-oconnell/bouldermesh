@@ -100,11 +100,13 @@ class IosApi(private val store: IosStore) {
     /** Tells the server this phone's account accepts the terms, as it did on the phone: nothing, for the site's own token. */
     /**
      * Asks who this phone's token is for, and keeps whether its role draws the app in the top half only
-     * (IosStore.topHalf); then done(that), on the main thread. Without an answer, what was kept stays.
+     * (IosStore.topHalf), crediting photos to the account's name if they're credited to nobody yet; then done(that),
+     * on the main thread. Without an answer, what was kept stays.
      */
     fun account(done: (Boolean) -> Unit) = call("/api/account") { bytes, _ ->
         val user = bytes?.let { runCatching { json.parseToJsonElement(it.decodeToString()).jsonObject["user"] }.getOrNull() }
         if (bytes != null) store.topHalf = (user as? JsonObject)?.get("role")?.jsonPrimitive?.content == sh.boulderme.core.HALF_ROLE
+        (user as? JsonObject)?.get("name")?.jsonPrimitive?.content?.takeIf { store.credit.isBlank() }?.let { store.credit = it }
         done(store.topHalf)
     }
 

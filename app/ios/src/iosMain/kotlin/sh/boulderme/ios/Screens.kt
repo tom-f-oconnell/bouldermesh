@@ -8,6 +8,9 @@ import platform.UIKit.UIModalPresentationFullScreen
 import platform.UIKit.UITextField
 import platform.UIKit.secondaryLabelColor
 import sh.boulderme.core.TERMS
+import sh.boulderme.core.SignInHelp
+import platform.Foundation.NSURL
+import platform.UIKit.UIApplication
 import sh.boulderme.core.TERMS_VERSION
 import sh.boulderme.core.GpsAverager
 import sh.boulderme.core.MagCalibration
@@ -42,6 +45,44 @@ class Home(private val app: App) : Form("BoulderMesh") {
         screen.presentViewController(c, animated = true, completion = null)
     }
 
+    private var code = ""
+    private var said: Pair<String, Boolean>? = null
+    private var signingIn = false
+
+    /**
+     * On first opening, while the phone isn't signed in: how to sign it in from where the account was joined
+     * (SignInHelp), a browser on this phone first. Signing in, or Not now, means it isn't shown again (Settings has the same).
+     */
+    private fun signInPrompt() {
+        val server = app.store.server
+        section("Sign in")
+        text(SignInHelp.INTRO)
+        section("Joined in a browser on this phone")
+        text(SignInHelp.samePhone(server))
+        button("Open ${SignInHelp.site(server)}") {
+            NSURL.URLWithString(SignInHelp.link(server))?.let { UIApplication.sharedApplication.openURL(it, options = emptyMap<Any?, Any>(), completionHandler = null) }
+        }
+        text(SignInHelp.OPEN_NOTE, UIColor.secondaryLabelColor, small = true)
+        section("Joined on a computer or another phone")
+        text(SignInHelp.otherDevice(server, scan = false))
+        field("Code from the other device", code) { code = it }
+        button(if (signingIn) "Signing in…" else "Sign in", Look.FILLED, enabled = !signingIn) {
+            if (code.isBlank()) return@button
+            signingIn = true; said = null; rebuild()
+            signIn(app, code) { words, ok ->
+                signingIn = false
+                said = words to ok
+                if (ok) { code = ""; screen.tell("Signed in", words) }
+                rebuild()
+            }
+        }
+        said?.let { text(it.first, if (it.second) GOOD else BAD) }
+        text(SignInHelp.NOT_JOINED, UIColor.secondaryLabelColor, small = true)
+        section("Later")
+        button("Not now", Look.PLAIN) { app.store.signInAsked = true; rebuild() }
+        text(SignInHelp.LATER, UIColor.secondaryLabelColor, small = true)
+    }
+
     override fun build() {
         if (app.store.terms < TERMS_VERSION) {      // the terms, before anything else: the app goes no further until they're accepted
             section("Before you start")
@@ -50,6 +91,7 @@ class Home(private val app: App) : Form("BoulderMesh") {
             text("Without this the app can't be used.", small = true)
             return
         }
+        if (app.store.token.isEmpty() && !app.store.signInAsked) return signInPrompt()
         text("Photograph a boulder so that its mesh comes out whole, level, the right size and in the right place. " +
             "The app says where to stand and takes each photo when it's worth taking.", UIColor.secondaryLabelColor)
 
@@ -201,8 +243,9 @@ class Settings(private val app: App) : Form("Settings") {
         field("Pairing link or code", code) { code = it }
         button("Pair", Look.FILLED) {
             if (code.isBlank()) return@button
-            app.api.pair(code, app.store.credit) { token, why ->
-                said = if (token != null) { app.store.token = token; code = ""; app.api.account { topHalf(it) }; "Paired: this phone can upload now." to true } else "Pairing failed: $why" to false
+            signIn(app, code) { words, ok ->
+                said = words to ok
+                if (ok) code = ""
                 rebuild()
             }
         }

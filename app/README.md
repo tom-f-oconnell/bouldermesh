@@ -45,8 +45,10 @@ mesh's own targets come back after it. For a phone out of sight, *Settings* has 
 when a photo is kept, and a tick over and over while a photo from where the phone is would add nothing. With Auto on,
 move until the ticking stops, hold still, and wait for the bell.
 
-Uploading needs an account or the site's editing token. On an Android phone signed in to the site, your account's
-*Sign the app in* opens the app signed in, with your photos credited to your account's name. Otherwise, in *Settings*,
+Uploading needs an account or the site's editing token. The first time the app opens, it asks to be signed in, with
+both ways below, until it is or *Not now* is pressed. On a phone signed in to the site, your account's *Sign the app in*
+opens the app signed in, with your photos credited to your account's name (the app's *Open boulderme.sh* opens the site
+on that panel). Otherwise, in *Settings*,
 paste an invite link, a code from *Sign in another device* on the site, or the link from the admin page's *Pair a
 phone*. The app's own *Sign in another device* (in *Settings*) gives a code for signing in on a computer: there, *Edit…*,
 *Sign in with a code*.
