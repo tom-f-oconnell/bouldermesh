@@ -173,7 +173,7 @@ capture runs (app/shared EventLog.kt), a line for each change and not each frame
 its camera up), `phase`, `tracking`, `says` and `hint` (when what's asked for changes), `frames` (every 5 s: fps, the
 longest gap, untracked frames), `level` (each whole turn on the spot: whether taken, and everything its fit found, as
 the record's levels have it, with why one was rejected: "few", "singular" or "not_gravity"), `level_redo` (a direction
-of the turn cleared to face again, with the fit so far), `level_limit` (Looser or Stricter), `level_skipped` (with the
+of the turn cleared to face again, with the fit so far), `level_limit` (Looser or Stricter), `level_limit_refused` (Looser past the phone's own down), `level_skipped` (with the
 fit so far and the phone's own down's likely error), `down_note` (the tracking lost its place after a turn: how many
 photos the turn set right, and whether a turn again was offered), `turn_again`, `down_note_dismissed`,
 `imu_clock` (how far the motion sensors' clock is from the camera's, found by matching the gyroscope to the tracking: the

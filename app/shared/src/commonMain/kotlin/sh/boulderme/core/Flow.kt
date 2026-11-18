@@ -51,12 +51,13 @@ data class LevelUi(val faced: List<Int>, val facing: Int, val wobbleNow: Double,
                    val agreeDeg: Double?, val agreeOk: Double, val tooFast: Boolean,
                    val ownDeg: Double = CaptureFlow.OWN_GUESS_DEG,     // how far off the phone's own down likely is, and what says so
                    val ownFrom: String = "",
-                   val canLooser: Boolean = false, val canStricter: Boolean = false) {
+                   val canLooser: Boolean = false, val canStricter: Boolean = false,
+                   val helps: Boolean = true) {    // the agreement asked for likely gives a better down than the phone's own: else warn
     /** How far off down likely comes out (9 times in 10) with the directions agreeing just within agreeOk, the phone turned about upright. */
     val expectedDeg: Double get() = LevelTurn.ERROR_PER_SPREAD * agreeOk
 
     /** What the agreement asked for comes to, against the phone's own down: said each time it's changed, and under the gauges. */
-    fun limitText(): String = CaptureFlow.limitText(agreeOk, ownDeg, ownFrom)
+    fun limitText(): String = CaptureFlow.limitText(agreeOk, ownDeg, ownFrom, canStricter)
 
     /** How far to turn to face the nearest direction to be faced again: degrees, to the left if positive; null if none is. */
     fun redoTurnDeg(): Int? {
@@ -131,6 +132,9 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         private set
     private var turn = LevelTurn()
     private var turnSpell = 1               // the spell of tracking the turn being read is in: a new one starts it afresh
+    // a limit kept from before that's no better than the phone's own (as its earlier turns, or the guess, have it) is
+    // tightened to the loosest that is, if any is
+    init { if (!helps(this.levelLimit)) this.levelLimit = LEVEL_LIMITS.lastOrNull { helps(it) } ?: LEVEL_LIMITS.first() }
     private var levelChecked = -1           // how many directions were read when the turn was last checked, and when
     private var levelCheckT = -1.0
     private var agree: Double? = null
@@ -294,8 +298,24 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         return OWN_GUESS_DEG to "a guess: three Pixel 6 captures' photos put it at 0.3 to 0.4°, other phones untried"
     }
 
-    /** Asks the turn's directions to agree less closely: easier to finish, down less sure. Returns the new limit. */
-    fun looser(): Double = setLimit(LEVEL_LIMITS.firstOrNull { it > levelLimit } ?: levelLimit)
+    /** Whether asking the directions to agree within `limitDeg` likely gives a better down than the phone's own. */
+    fun helps(limitDeg: Double): Boolean = LevelTurn.ERROR_PER_SPREAD * limitDeg < ownDown().first
+
+    /**
+     * Asks the turn's directions to agree less closely: easier to finish, down less sure. Not so loosely that the turn
+     * would likely be no better than the phone's own down: that's refused, saying why. Returns the limit then.
+     */
+    fun looser(): Double {
+        val next = LEVEL_LIMITS.firstOrNull { it > levelLimit } ?: return levelLimit
+        if (!helps(next)) {
+            val (own, from) = ownDown()
+            event("level_limit_refused", "deg" to next, "expected_deg" to LevelTurn.ERROR_PER_SPREAD * next, "own_deg" to own)
+            note = "Not looser: at ${hundredths(next)}° down would likely be within ${hundredths(LevelTurn.ERROR_PER_SPREAD * next)}°, " +
+                "no better than the phone's own (about ${hundredths(own)}° off, $from). Skip the turn instead, if it can't be held steadier."
+            return levelLimit
+        }
+        return setLimit(next)
+    }
 
     /** Asks them to agree more closely. Returns the new limit. */
     fun stricter(): Double = setLimit(LEVEL_LIMITS.lastOrNull { it < levelLimit } ?: levelLimit)
@@ -612,7 +632,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 }
                 val lvl = if (phase == Phase.LEVEL) ownDown().let { (own, from) ->
                     LevelUi(turn.states().toList(), turn.facing, turn.wobbleNow, turn.wobbleTurn, LevelTurn.WOBBLE_OK, agree, levelLimit, gyroRadS > LevelTurn.MAX_TURNING,
-                        own, from, levelLimit < LEVEL_LIMITS.last(), levelLimit > LEVEL_LIMITS.first()) } else null
+                        own, from, LEVEL_LIMITS.firstOrNull { it > levelLimit }?.let { helps(it) } ?: false, levelLimit > LEVEL_LIMITS.first(), helps(levelLimit)) } else null
                 ui = base.copy(phase = phase, note = note, turnX = 0.0, turnY = 0.0, total = turn.sectors, done = if (phase == Phase.LEVEL) turn.filled else turn.sectors,
                     level = lvl, text = "To find which way is down: turn slowly all the way round on the spot, the phone held as for a photo. " +
                         "It needn't be upright, only steady and at the same angle to you all the way round")
@@ -750,11 +770,12 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         private fun hundredths(x: Double) = kotlin.math.round(x * 100) / 100
 
         /** What asking a turn's directions to agree within `limitDeg` comes to, against the phone's own down (`ownDeg` off, as `ownFrom` says). */
-        fun limitText(limitDeg: Double, ownDeg: Double, ownFrom: String): String {
+        fun limitText(limitDeg: Double, ownDeg: Double, ownFrom: String, canStricter: Boolean = true): String {
             val expected = LevelTurn.ERROR_PER_SPREAD * limitDeg
             return "Asks the directions to agree within ${hundredths(limitDeg)}°: down then likely within ${hundredths(expected)}°, " +
                 "against about ${hundredths(ownDeg)}° off for the phone's own ($ownFrom)." +
-                (if (expected >= ownDeg) " That's no better than the phone's own: loosening it this far doesn't help." else "")
+                (if (expected < ownDeg) "" else if (canStricter) " Warning: at this, the turn is likely no better than the phone's own. Press Stricter."
+                 else " Warning: the phone's own down looks about as good as a turn can do here: skipping it costs little.")
         }
     }
 }

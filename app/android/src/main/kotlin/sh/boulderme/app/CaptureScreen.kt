@@ -95,7 +95,7 @@ private fun LevelGauges(l: LevelUi) {
             }
             Text(l.steadyText(), color = if (l.tooFast) WARN else Color.White, style = MaterialTheme.typography.bodySmall)
             Text(l.agreeText(), color = l.agreeDeg?.let { if (it <= l.agreeOk) GOOD else WARN } ?: Color.White, style = MaterialTheme.typography.bodySmall)
-            Text(l.limitText(), color = Color.White.copy(alpha = 0.8f), style = MaterialTheme.typography.bodySmall)
+            Text(l.limitText(), color = if (l.helps) Color.White.copy(alpha = 0.8f) else WARN, style = MaterialTheme.typography.bodySmall)
             l.redoText()?.let { Text(it, color = WARN, style = MaterialTheme.typography.bodySmall) }
         }
     }

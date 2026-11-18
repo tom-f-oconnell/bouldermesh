@@ -226,9 +226,16 @@ class FlowTest {
         assertTrue("0.5° off (this phone's last 3 turns)" in flow.skipWarning() && "within 0.16°" in flow.skipWarning(), flow.skipWarning())
         assertEquals(0.7, flow.looser()); assertEquals(0.4, flow.stricter()); assertEquals(0.4, flow.stricter())
         assertTrue(said.map { it.first } == listOf(0.7, 0.4) && "\"e\":\"level_limit\"" in flow.logText())
+        // not looser than the phone's own down (0.5° by its last turns): 1.0° gives 0.4°, 1.5° would give 0.6°
         repeat(4) { flow.looser() }
-        val loose = LevelUi(emptyList(), 0, 0.0, 0.0, 0.8, null, flow.levelLimit, false, 0.5, "x")
-        assertTrue(flow.levelLimit == 2.5 && "within 1.0°" in loose.limitText() && "no better than the phone's own" in loose.limitText(), loose.limitText())
+        val note = flow.frame(TestWorld.look(Vec3.ZERO, Vec3(0.0, 0.1, 1.0)), true, 0.0, 0.004, 0.01, 90).ui
+        assertTrue(flow.levelLimit == 1.0 && "Not looser" in note.note && note.level?.canLooser == false && note.level?.helps == true, "${flow.levelLimit} ${note.note}")
+        assertTrue("\"e\":\"level_limit_refused\"" in flow.logText())
+        val loose = LevelUi(emptyList(), 0, 0.0, 0.0, 0.8, null, 2.5, false, 0.5, "x", canStricter = true, helps = false)
+        assertTrue("within 1.0°" in loose.limitText() && "Warning" in loose.limitText() && "Stricter" in loose.limitText(), loose.limitText())
+        // a limit kept from before that no longer helps is tightened at the start
+        assertEquals(1.0, CaptureFlow(CaptureSession(null, null, "f7", "test", "a phone", 0.0), levelLimit = 2.5, ownTilts = listOf(0.5)).levelLimit)
+        assertEquals(0.4, CaptureFlow(CaptureSession(null, null, "f8", "test", "a phone", 0.0), levelLimit = 2.5, ownTilts = listOf(0.05)).levelLimit, "none helps: the strictest")
         repeat(4) { flow.stricter() }
         // a world a degree off level, a turn in it, then photos round a rock with no mesh
         var down = Quat.axisAngle(Vec3(0.0, 0.0, 1.0), 1.0 * TestWorld.rad).rotate(Vec3(0.0, -1.0, 0.0))

@@ -660,7 +660,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             counts.text = listOfNotNull("${now.done}/${now.total} ${if (now.guided) "parts" else "sides and spots"}", if (now.holds > 0 && now.guided) "${now.holdsDone}/${now.holds} holds" else null,
                 "${now.kept} photos", if (now.rejected > 0) "${now.rejected} not kept" else null).joinToString(" · ")
         }
-        val redo = if (levelling) now.level?.redoText() else null
+        // a direction to face again, or an agreement asked for that's no better than the phone's own, in the warning's colour
+        val redo = if (levelling) listOfNotNull(now.level?.redoText(), now.level?.takeIf { !it.helps }?.limitText()).joinToString("\n").ifEmpty { null } else null
         readings.text = redo ?: now.sensors
         readings.hidden = redo == null && !(now.phase == Phase.CAPTURE && now.sensors.isNotEmpty())
         // which way to turn, when what's wanted is out of the picture

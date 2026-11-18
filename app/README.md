@@ -89,7 +89,8 @@ in Terms.kt), from the next start (or at once when signing in). The phone's own 
     rest is cleared as soon as it shows (orange on the ring, with which way to turn to face it again); the rest are kept.
   - **Looser / Stricter** set how closely the directions must agree (0.4° at first, up to 2.5°; the phone remembers
     the choice). Each says what down then likely comes to (about 0.4 times the agreement), against the phone's own
-    down without the turn. Past where the turn does no better, it says so.
+    down without the turn. It won't go looser than where the turn would do no better than the phone's own, and warns
+    (orange) if the phone's own turns out better than what's asked for mid-turn.
   - **Skip** asks first, saying how far off the phone's own down likely is: from this turn so far, the phone's
     earlier turns, or a guess of 0.5° (three Pixel 6 captures' photos put it at 0.3-0.4°).
   - **Down holds only while the phone keeps its place.** If it loses it for over a second, its world may move, so
