@@ -65,48 +65,66 @@
   .aws,.ssh,.pull{display:none}
   body.p-aws .aws, body.p-ssh .ssh, body.p-pull .pull{display:block}
   body.p-aws .grid.aws{display:grid}
+  #tabs{display:flex;gap:4px;flex-wrap:wrap;max-width:860px;margin:0 auto;padding:10px 16px 0}
+  #tabs button{background:none;border:1px solid transparent;border-bottom:2px solid transparent;color:var(--mute);padding:7px 12px;border-radius:6px 6px 0 0;font:inherit;cursor:pointer}
+  #tabs button:hover{color:var(--fg)}
+  #tabs button[aria-selected=true]{color:var(--fg);border-bottom-color:var(--acc)}
+  #tabs .badge{margin-left:6px;background:var(--warn);color:#111;border-radius:9px;padding:0 6px;font-size:11px;font-weight:700}
+  .pane[hidden]{display:none}
+  @media (max-width:480px){#tabs{padding:8px 8px 0;gap:0} #tabs button{padding:7px 8px}}
 </style>
 </head>
 <body>
 <header><h1>BoulderMesh admin</h1><span class="note" id="where"></span></header>
+<nav id="tabs" role="tablist"><button type="button" role="tab" id="tabbtn-status" data-tab="status">Status<span class="badge" hidden></span></button><button type="button" role="tab" id="tabbtn-meshing" data-tab="meshing">Meshing<span class="badge" hidden></span></button><button type="button" role="tab" id="tabbtn-machines" data-tab="machines">Machines<span class="badge" hidden></span></button><button type="button" role="tab" id="tabbtn-site" data-tab="site">Site<span class="badge" hidden></span></button><button type="button" role="tab" id="tabbtn-people" data-tab="people">People<span class="badge" hidden></span></button></nav>
 <main>
   <div id="backupbanner" hidden></div>
   <div id="lostblocks" hidden></div>
+  <div class="pane" id="tab-status" role="tabpanel" aria-labelledby="tabbtn-status">
+  <section id="times">
+    <h2>How long meshes take</h2>
+    <div class="row" style="margin-top:0"><select id="times-since" style="width:auto" aria-label="Which meshes">
+      <option value="week">Made in the last 7 days</option><option value="all">All meshes</option></select></div>
+    <div id="times-body"></div>
+    <details style="margin-top:10px"><summary>Jobs stopped lately</summary><div id="stops"></div></details>
+    <div class="note">Medians, by what made them and how many photos went in. <b>Meshing</b>: the reconstruction's tools, as long
+      as they ran; <b>CPU</b>: the CPU time they used; <b>start to finish</b>: from starting it to the mesh saved, with any wait
+      for a machine and sending photos and results; <b>waited</b>: for a machine to take it. <b>VGGT</b>: how many it placed
+      when COLMAP couldn't, and the time that added. Meshes made before this was kept have only their tools' times, from
+      their logs (counted as "from logs").</div>
+  </section>
+  <section id="room">
+    <h2>Room for data</h2>
+    <div id="room-body" class="note"></div>
+    <div id="room-bars" class="bars" role="table" aria-label="What the data takes, by kind"></div>
+    <div id="room-more" class="note"></div>
+    <div class="grid"><div><label>The most the data may take (GB; 0 for no limit)</label><input type="number" id="room-cap" min="0" step="2.5"></div>
+      <div class="row" style="margin-top:22px"><button id="room-save">Save</button></div></div>
+    <div class="grid"><div><label>Notify me when less than this % of the cap is left</label><input type="number" id="room-warn-pct" min="0" max="50" step="0.1"></div>
+      <div><label>Or when less than this many GB is (0: use the %)</label><input type="number" id="room-warn-gb" min="0" step="0.5"></div></div>
+    <div class="note" id="room-warn-note"></div>
+    <div class="grid"><div><label>Above this % of the cap, offload to the backup what it holds and nothing uses (0: never)</label>
+      <input type="number" id="room-offload" min="0" max="100" step="5"></div></div>
+    <div class="note" id="room-offload-note"></div>
+    <div class="grid"><div><label class="choice" style="margin-top:8px"><input type="checkbox" id="room-stopped"> Offload the data of areas stopped a while
+      <small>(their climbs still to mesh stop counting as in use; resuming one brings its data back first, if there's room)</small></label></div>
+      <div><label>Stopped this many days or more</label><input type="number" id="room-stopped-days" min="0" max="365" step="0.5"></div></div>
+    <div class="row"><button class="sec" id="room-measure">Measure now</button><button class="danger" id="room-rejected">Delete the photos the filter rejected</button></div>
+  </section>
+  <section id="backups">
+    <h2>Backups</h2>
+    <div class="note" id="backupnote"></div>
+    <div class="row"><button class="sec" id="backupnow" title="The backup machine starts a whole copy at its next check-in (every 5 minutes): nothing connects from here to it">Back up now</button>
+      <span class="note" id="backupasked"></span></div>
+    <div class="note" id="manifestnote"></div>
+    <table id="backupdays"></table>
+  </section>
   <section id="ranges" hidden>
     <h2>Cloudflare's addresses</h2>
     <div id="ranges-body"></div>
   </section>
-
-  <section>
-    <h2>What the main site shows</h2>
-    <div><b>Mesh textures</b> <span class="note" id="tex-counts"></span></div>
-    <label class="choice"><input type="radio" name="tex" value="all"> All <small>(as built, from every photo)</small></label>
-    <label class="choice"><input type="radio" name="tex" value="permitted"> Only from photos clearly free to copy <small>(a mesh's texture if all its photos are, or else one made from only those, or none)</small></label>
-    <label class="choice"><input type="radio" name="tex" value="none"> None <small>(every mesh plain grey)</small></label>
-    <div class="row"><button class="sec" id="retex">Make textures from only the photos free to copy</button><span class="note" id="retex-note"></span></div>
-    <div class="row"><input type="text" id="texagain-ids" placeholder="mesh ids, e.g. c2a6a38ed672 ebdeeb2837f9" style="flex:1;min-width:200px">
-      <button class="sec" id="texagain" title="Colour these meshes again from their photos, keeping their shape and cleanup: a minute or two each, where meshing again takes ten or more. Each one's old texture is kept beside it, in texture-before/">Texture again</button>
-      <button class="sec" id="texblack" disabled title="Texture again every current mesh whose texture came out patched with black (OpenMVS 2.4.0's unpatched TextureMesh): found by looking at each one's texture, on a thread of the server's own at low priority">Texture again the black-patched</button></div>
-    <div id="texblack-note" class="note"></div>
-    <div id="texagain-list" class="note"></div>
-    <div style="margin-top:14px"><b>Source photos and video frames</b></div>
-    <label class="choice"><input type="radio" name="src" value="all"> Show all <small>(as now)</small></label>
-    <label class="choice"><input type="radio" name="src" value="link"> Show those free to copy, and only link to the rest <small>(their copies here aren't shown)</small></label>
-    <label class="choice"><input type="radio" name="src" value="permitted"> Show only those free to copy <small>(the rest aren't shown or linked)</small></label>
-    <label class="choice"><input type="checkbox" id="via-links"> A climb never meshed on its own opens the mesh made for another climb on its boulder <small>(the "via" links of areas before boulder meshes: saying it has no mesh of its own, and which it shows)</small></label>
-    <label class="choice"><input type="checkbox" id="small-thumbs"> With either of those, still show the rest as small copies <small>(at most 160 px, linking to where each came from, as image search engines do)</small></label>
-    <div class="grid" style="margin-top:14px"><div><label>The map opens around a boulder this many km across <small>(its narrower side)</small></label><input type="number" id="map-km" min="0.05" step="0.25"></div>
-      <div><label>A mesh opens first as a simplified copy of about this many faces <small>(0: none)</small></label><input type="number" id="preview-faces" min="0" max="5000000" step="10000">
-        <div class="note" id="pack-note"></div></div></div>
-    <label>The iPhone app's TestFlight public link <small>(https://testflight.apple.com/join/…; shown only to accounts, and to whoever opens an invite; empty: none)</small></label><input type="text" id="testflight-url" maxlength="100" placeholder="https://testflight.apple.com/join/…">
-    <label>The "?" tab's Donate button goes to <small>(an https:// address; empty: no button)</small></label><input type="text" id="donate-url" maxlength="300" placeholder="https://…">
-    <div class="note">Then the rest of it comes, with a sharper texture. A copy is made only for a mesh with at least twice as
-      many faces. Fewer show sooner but coarser: about 7 bytes a face, so 150,000 (the default) is about 1 MB, and on
-      Caveman (1.5 million faces) looks the same at a phone's size. A change makes every mesh's copies again, one at a
-      time in the background (about an hour for 230 meshes on a 2-core server); until each is made, it opens as before.</div>
-    <div class="note">"Free to copy" means public domain, CC0, or a Creative Commons licence without No Derivatives, or your own uploads. Mountain Project, OpenBeta and web images, and YouTube's standard licence, aren't. See license_considerations.md.</div>
-  </section>
-
+  </div>
+  <div class="pane" id="tab-meshing" role="tabpanel" aria-labelledby="tabbtn-meshing">
   <section>
     <h2>Areas</h2>
     <label>An area's climbs that share their lowest Mountain Project area with others it lists</label>
@@ -164,7 +182,8 @@
     <label class="choice"><input type="checkbox" id="prune-videos"> Delete kept videos none of whose frames is placed in any mesh, once their climbs are done
       <small>(beta can't use them; only harvesting again would, which fetches them again. Checked hourly; their details stay)</small></label>
   </section>
-
+  </div>
+  <div class="pane" id="tab-machines" role="tabpanel" aria-labelledby="tabbtn-machines">
   <section id="compute">
     <h2>Compute</h2>
     <div id="slots" class="note"></div>
@@ -211,7 +230,6 @@
       <div id="mach-new"></div>
     </div>
   </section>
-
   <section id="vols">
     <h2>Volunteers fetching YouTube videos</h2>
     <div class="note" id="vol-note"></div>
@@ -233,7 +251,6 @@
       <button class="sec" id="vol-details">Fetch videos' missing details (licences)</button><button class="danger" id="vol-cancel">Drop what's queued</button></div>
     <div class="note" id="vol-queue"></div>
   </section>
-
   <section id="reg">
     <h2>Volunteers and machines that register themselves</h2>
     <div class="note">The volunteer and worker scripts make their own tokens and register them here, with a name if their user
@@ -266,54 +283,56 @@
       <div class="row" style="margin-top:22px"><button class="sec" id="ntfy-topics">Make new topics</button><button class="sec" id="ntfy-test">Send a test</button></div></div>
     <div id="ntfy-body" class="note"></div>
   </section>
-
-  <section id="room">
-    <h2>Room for data</h2>
-    <div id="room-body" class="note"></div>
-    <div id="room-bars" class="bars" role="table" aria-label="What the data takes, by kind"></div>
-    <div id="room-more" class="note"></div>
-    <div class="grid"><div><label>The most the data may take (GB; 0 for no limit)</label><input type="number" id="room-cap" min="0" step="2.5"></div>
-      <div class="row" style="margin-top:22px"><button id="room-save">Save</button></div></div>
-    <div class="grid"><div><label>Notify me when less than this % of the cap is left</label><input type="number" id="room-warn-pct" min="0" max="50" step="0.1"></div>
-      <div><label>Or when less than this many GB is (0: use the %)</label><input type="number" id="room-warn-gb" min="0" step="0.5"></div></div>
-    <div class="note" id="room-warn-note"></div>
-    <div class="grid"><div><label>Above this % of the cap, offload to the backup what it holds and nothing uses (0: never)</label>
-      <input type="number" id="room-offload" min="0" max="100" step="5"></div></div>
-    <div class="note" id="room-offload-note"></div>
-    <div class="grid"><div><label class="choice" style="margin-top:8px"><input type="checkbox" id="room-stopped"> Offload the data of areas stopped a while
-      <small>(their climbs still to mesh stop counting as in use; resuming one brings its data back first, if there's room)</small></label></div>
-      <div><label>Stopped this many days or more</label><input type="number" id="room-stopped-days" min="0" max="365" step="0.5"></div></div>
-    <div class="row"><button class="sec" id="room-measure">Measure now</button><button class="danger" id="room-rejected">Delete the photos the filter rejected</button></div>
+  <section>
+    <h2>Credentials</h2>
+    <div class="note" id="cred-note"></div>
+    <div class="grid">
+      <div><label>AWS access key id <span data-status="aws.access_key_id"></span></label><input type="password" data-secret="aws.access_key_id" autocomplete="off"></div>
+      <div><label>AWS secret access key <span data-status="aws.secret_access_key"></span></label><input type="password" data-secret="aws.secret_access_key" autocomplete="off"></div>
+    </div>
+    <div class="note">For AWS EC2 instances. Without them, AWS's usual places are used (~/.aws, or an instance role); the instances get an SSH key of their own.</div>
+    <label>SSH private key <span data-status="ssh.private_key"></span></label><textarea data-secret="ssh.private_key" autocomplete="off"></textarea>
+    <div class="note">For machines reached over SSH: one key for all of them.</div>
+    <div class="row"><button id="savecreds">Save credentials</button><span class="note">Saved encrypted, and never shown again: leave a field empty to keep what's there.</span></div>
   </section>
-
-  <section id="backups">
-    <h2>Backups</h2>
-    <div class="note" id="backupnote"></div>
-    <div class="row"><button class="sec" id="backupnow" title="The backup machine starts a whole copy at its next check-in (every 5 minutes): nothing connects from here to it">Back up now</button>
-      <span class="note" id="backupasked"></span></div>
-    <div class="note" id="manifestnote"></div>
-    <table id="backupdays"></table>
+  </div>
+  <div class="pane" id="tab-site" role="tabpanel" aria-labelledby="tabbtn-site">
+  <section>
+    <h2>What the main site shows</h2>
+    <div><b>Mesh textures</b> <span class="note" id="tex-counts"></span></div>
+    <label class="choice"><input type="radio" name="tex" value="all"> All <small>(as built, from every photo)</small></label>
+    <label class="choice"><input type="radio" name="tex" value="permitted"> Only from photos clearly free to copy <small>(a mesh's texture if all its photos are, or else one made from only those, or none)</small></label>
+    <label class="choice"><input type="radio" name="tex" value="none"> None <small>(every mesh plain grey)</small></label>
+    <div class="row"><button class="sec" id="retex">Make textures from only the photos free to copy</button><span class="note" id="retex-note"></span></div>
+    <div class="row"><input type="text" id="texagain-ids" placeholder="mesh ids, e.g. c2a6a38ed672 ebdeeb2837f9" style="flex:1;min-width:200px">
+      <button class="sec" id="texagain" title="Colour these meshes again from their photos, keeping their shape and cleanup: a minute or two each, where meshing again takes ten or more. Each one's old texture is kept beside it, in texture-before/">Texture again</button>
+      <button class="sec" id="texblack" disabled title="Texture again every current mesh whose texture came out patched with black (OpenMVS 2.4.0's unpatched TextureMesh): found by looking at each one's texture, on a thread of the server's own at low priority">Texture again the black-patched</button></div>
+    <div id="texblack-note" class="note"></div>
+    <div id="texagain-list" class="note"></div>
+    <div style="margin-top:14px"><b>Source photos and video frames</b></div>
+    <label class="choice"><input type="radio" name="src" value="all"> Show all <small>(as now)</small></label>
+    <label class="choice"><input type="radio" name="src" value="link"> Show those free to copy, and only link to the rest <small>(their copies here aren't shown)</small></label>
+    <label class="choice"><input type="radio" name="src" value="permitted"> Show only those free to copy <small>(the rest aren't shown or linked)</small></label>
+    <label class="choice"><input type="checkbox" id="via-links"> A climb never meshed on its own opens the mesh made for another climb on its boulder <small>(the "via" links of areas before boulder meshes: saying it has no mesh of its own, and which it shows)</small></label>
+    <label class="choice"><input type="checkbox" id="small-thumbs"> With either of those, still show the rest as small copies <small>(at most 160 px, linking to where each came from, as image search engines do)</small></label>
+    <div class="grid" style="margin-top:14px"><div><label>The map opens around a boulder this many km across <small>(its narrower side)</small></label><input type="number" id="map-km" min="0.05" step="0.25"></div>
+      <div><label>A mesh opens first as a simplified copy of about this many faces <small>(0: none)</small></label><input type="number" id="preview-faces" min="0" max="5000000" step="10000">
+        <div class="note" id="pack-note"></div></div></div>
+    <label>The iPhone app's TestFlight public link <small>(https://testflight.apple.com/join/…; shown only to accounts, and to whoever opens an invite; empty: none)</small></label><input type="text" id="testflight-url" maxlength="100" placeholder="https://testflight.apple.com/join/…">
+    <label>The "?" tab's Donate button goes to <small>(an https:// address; empty: no button)</small></label><input type="text" id="donate-url" maxlength="300" placeholder="https://…">
+    <div class="note">Then the rest of it comes, with a sharper texture. A copy is made only for a mesh with at least twice as
+      many faces. Fewer show sooner but coarser: about 7 bytes a face, so 150,000 (the default) is about 1 MB, and on
+      Caveman (1.5 million faces) looks the same at a phone's size. A change makes every mesh's copies again, one at a
+      time in the background (about an hour for 230 meshes on a 2-core server); until each is made, it opens as before.</div>
+    <div class="note">"Free to copy" means public domain, CC0, or a Creative Commons licence without No Derivatives, or your own uploads. Mountain Project, OpenBeta and web images, and YouTube's standard licence, aren't. See license_considerations.md.</div>
   </section>
-
-  <section id="times">
-    <h2>How long meshes take</h2>
-    <div class="row" style="margin-top:0"><select id="times-since" style="width:auto" aria-label="Which meshes">
-      <option value="week">Made in the last 7 days</option><option value="all">All meshes</option></select></div>
-    <div id="times-body"></div>
-    <details style="margin-top:10px"><summary>Jobs stopped lately</summary><div id="stops"></div></details>
-    <div class="note">Medians, by what made them and how many photos went in. <b>Meshing</b>: the reconstruction's tools, as long
-      as they ran; <b>CPU</b>: the CPU time they used; <b>start to finish</b>: from starting it to the mesh saved, with any wait
-      for a machine and sending photos and results; <b>waited</b>: for a machine to take it. <b>VGGT</b>: how many it placed
-      when COLMAP couldn't, and the time that added. Meshes made before this was kept have only their tools' times, from
-      their logs (counted as "from logs").</div>
-  </section>
-
   <section id="feedback">
     <h2>Comments and bug reports</h2>
     <div class="note" id="fb-note"></div>
     <div id="fb-list"></div>
   </section>
-
+  </div>
+  <div class="pane" id="tab-people" role="tabpanel" aria-labelledby="tabbtn-people">
   <section id="people" hidden>
     <h2>People</h2>
     <div class="note">Accounts, each made from an invite: whoever opens its link picks a name, accepts the terms, and may then make their
@@ -332,26 +351,13 @@
     <div id="inv-new"></div>
     <div id="inv-list"></div>
   </section>
-
   <section id="pairing">
     <h2>Editing from a phone</h2>
     <div class="note" id="pair-note"></div>
     <div class="row"><button class="sec" id="pair-show">Show a QR for a phone</button></div>
     <div id="pair-body"></div>
   </section>
-
-  <section>
-    <h2>Credentials</h2>
-    <div class="note" id="cred-note"></div>
-    <div class="grid">
-      <div><label>AWS access key id <span data-status="aws.access_key_id"></span></label><input type="password" data-secret="aws.access_key_id" autocomplete="off"></div>
-      <div><label>AWS secret access key <span data-status="aws.secret_access_key"></span></label><input type="password" data-secret="aws.secret_access_key" autocomplete="off"></div>
-    </div>
-    <div class="note">For AWS EC2 instances. Without them, AWS's usual places are used (~/.aws, or an instance role); the instances get an SSH key of their own.</div>
-    <label>SSH private key <span data-status="ssh.private_key"></span></label><textarea data-secret="ssh.private_key" autocomplete="off"></textarea>
-    <div class="note">For machines reached over SSH: one key for all of them.</div>
-    <div class="row"><button id="savecreds">Save credentials</button><span class="note">Saved encrypted, and never shown again: leave a field empty to keep what's there.</span></div>
-  </section>
+  </div>
 </main>
 <div id="msg"></div>
 <script>
@@ -741,6 +747,7 @@ function render(s){
     + (nt.last_error ? `<div class="bad">${esc(nt.last_error)}</div>` : '') + (nt.waiting_summary ? `<div>${nt.waiting_summary} registration(s) waiting for the next summary.</div>` : '');
   renderPairing(s.pairing);
   renderPeople(s.users);
+  renderBadges(s);
   keep('#users-quota', v['users.quota_mb']);
   const cr = s.secrets;
   $('#cred-note').innerHTML = cr.can_save ? 'Credentials can be saved here, encrypted with BOULDERMESH_SECRETS_KEY.'
@@ -809,6 +816,44 @@ document.addEventListener('click', async ev => {
 // the live server, and every 10 s they piled up). A failed one from the page's own polling says so only once it has
 // failed twice running, in words, as the server restarting or a tunnel blinking are passing; one asked for says at once.
 let refreshing = null, refreshFails = 0;
+// ---- tabs: which one is open is kept in the address (#machines), so a reload or a link opens it again ----------------
+const TABS = [...document.querySelectorAll('#tabs [data-tab]')].map(b => b.dataset.tab);
+let newestFb = null;     // the newest comment's time as last shown: the Site tab's count is of those after it
+function showTab(name){
+  if (!TABS.includes(name)) name = TABS[0];
+  for (const t of TABS) {
+    $(`#tab-${t}`).hidden = t !== name;
+    $(`#tabbtn-${t}`).setAttribute('aria-selected', String(t === name));
+  }
+  if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
+  if (name === 'site' && newestFb != null) { try { localStorage.setItem('admin.fbSeen', newestFb); } catch (e) {} renderBadges(state); }
+}
+document.querySelectorAll('#tabs [data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
+showTab(location.hash.slice(1));
+
+// how many things on each tab wait for you: what asks for approval, comments not seen yet, and Cloudflare's addresses gone wrong
+function renderBadges(s){
+  if (!s) return;
+  const open = x => x.status !== 'revoked' && x.status !== 'denied';
+  const machines = (s.compute?.machines?.machines || []).filter(m => open(m) && (m.provisional || m.held)).length
+    + (s.volunteers?.volunteers || []).filter(x => open(x) && x.provisional).length;
+  const people = s.users?.on ? (s.users.added || []).filter(x => !x.approved && !x.deleted_at).length : 0;
+  const fb = s.feedback?.recent || [];
+  newestFb = fb.length ? String(fb[0].time) : null;
+  let seen = null;
+  try { seen = localStorage.getItem('admin.fbSeen'); } catch (e) {}
+  if (seen == null && newestFb != null) { seen = newestFb; try { localStorage.setItem('admin.fbSeen', seen); } catch (e) {} }     // first visit: what's there already counts as seen
+  const t = f => new Date(f.time).getTime(), seenT = seen == null ? -Infinity : new Date(seen).getTime();
+  let site = fb.filter(f => t(f) > seenT).length;
+  if (!$('#tab-site').hidden && site) { try { localStorage.setItem('admin.fbSeen', newestFb); } catch (e) {} site = 0; }
+  const counts = { status: $('#ranges').hidden ? 0 : '!', machines, site, people };
+  for (const tab of TABS) {
+    const b = $(`#tabbtn-${tab} .badge`), n = counts[tab];
+    b.hidden = !n; b.textContent = n || '';
+  }
+}
+
 function refresh(polled = false){
   if (refreshing) return refreshing;
   refreshing = (async () => {
