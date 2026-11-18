@@ -26,6 +26,12 @@ class Store(context: Context) {
     var anonFirst: Boolean  // holds others marked privately are asked for from the start of a capture, not at its end
         get() = prefs.getBoolean("anon_first", false)
         set(v) = prefs.edit().putBoolean("anon_first", v).apply()
+    var dingKept: Boolean   // a soft bell each time a photo is kept
+        get() = prefs.getBoolean("ding_kept", false)
+        set(v) = prefs.edit().putBoolean("ding_kept", v).apply()
+    var tickSame: Boolean   // a tick over and over while a photo from where the phone is would add nothing
+        get() = prefs.getBoolean("tick_same", false)
+        set(v) = prefs.edit().putBoolean("tick_same", v).apply()
     var credit: String      // who photos are credited to, under the licence they're sent with
         get() = prefs.getString("credit", "") ?: ""
         set(v) = prefs.edit().putString("credit", v.trim()).apply()

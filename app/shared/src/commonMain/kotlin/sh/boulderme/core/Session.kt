@@ -16,7 +16,8 @@ data class FrameIn(val pose: CameraPose, val gyroRadS: Double, val exposureS: Do
 data class FrameOut(val hint: Hint, val shoot: Boolean, val progress: Progress, val blurPx: Double,
                     val still: Boolean = false,     // a photo taken now should be a full-size still: it's of a hold wanted in detail
                     val status: String = "",        // how that hold stands, in a line
-                    val steadyS: Double = 0.0)      // how long the phone has held still enough for a photo, to this frame
+                    val steadyS: Double = 0.0,      // how long the phone has held still enough for a photo, to this frame
+                    val redundant: Boolean = false) // something's still to do, but a photo from just here would add nothing to it
 
 /** Something to draw in the world: a hold, an edge or a marked spot, coloured by how done it is (Coverage.LEVEL_*). */
 data class Marker(val id: String, val world: Vec3, val radiusM: Double, val level: Int, val kind: String, val current: Boolean,
@@ -133,6 +134,26 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     /** Starts capturing a rock with no mesh: its middle, in the world. */
     fun startOrbit(centre: Vec3) { orbit = Orbit(centre) }
 
+    /**
+     * Starts another ring all round the rock, from another height. With a mesh, the first: round its middle, kept away
+     * from the height most photos so far were taken from. Returns its number, or null with a mesh not yet lined up.
+     */
+    fun newRing(): Int? {
+        if (orbit == null) {
+            val g = guide ?: return null; val f = fit ?: return null
+            val (lo, hi) = g.bounds()
+            val ys = shots.filter { it.kept }.mapNotNull { it.blob.ar?.p?.getOrNull(1) }.sorted()
+            val usual = if (ys.isNotEmpty()) ys[ys.size / 2] else lastPose?.centre?.y ?: return null
+            orbit = Orbit(f.apply((lo + hi) * 0.5), others = listOf(usual))
+        }
+        return orbit!!.newRing().n
+    }
+
+    /** Whether photos now go by a ring round the rock, rather than the mesh's targets: with no mesh, or while a ring asked for is unfinished. */
+    private fun ringOn(): Boolean { val o = orbit ?: return false; return coverage == null || o.active?.let { !o.ringDone(it) } == true }
+    /** The number of the ring photos go by now; 0 if none. */
+    val ringNow: Int get() = if (ringOn()) orbit?.active?.n ?: 0 else 0
+
     // ---- as it goes --------------------------------------------------------------------------------------------------
     fun frame(f: FrameIn): FrameOut {
         lastPose?.let { was ->      // how fast the phone is moving, smoothed over about a sixth of a second
@@ -143,7 +164,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         val none = Progress(0, 0, 0, 0, 0)
         if (!f.tracking) steadySince = null
         if (!f.tracking) return FrameOut(Hint(Hint.Kind.NONE, "Hold on: the phone is finding where it is. Move it slowly over the rock."), false, cov?.progress() ?: orb?.progress() ?: none, 0.0)
-        if (cov != null) {
+        if (cov != null && !ringOn()) {
             if (fitNow == null) return FrameOut(Hint(Hint.Kind.NONE, "Line the mesh up with the rock first"), false, cov.progress(), 0.0)
             val inMesh = f.pose.into(fitNow)
             cov.lens(f.pose.lens); cov.detailLens = f.stillLens
@@ -161,14 +182,16 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             var hint = cov.hint(eye, target, f.uprightDeg)
             val worth = cov.gain(eye) > 0
             if (hint.kind == Hint.Kind.SHOOT && steadyS < STEADY_FOR_S) hint = hint.copy(text = "Hold still: the phone is moving")
-            return FrameOut(hint, auto && steadyS >= STEADY_FOR_S && worth && f.t - lastShotT >= MIN_GAP_S, progress, blur, still, if (close) cov.status(target!!) else "", steadyS)
+            return FrameOut(hint, auto && steadyS >= STEADY_FOR_S && worth && f.t - lastShotT >= MIN_GAP_S, progress, blur, still, if (close) cov.status(target!!) else "", steadyS, !worth)
         }
         if (orb != null) {
             val blur = Quality.blurPx(f.gyroRadS, speed, f.exposureS, f.pose.lens.fx, f.pose.centre.distance(orb.centre))
             val steadyS = steadyFor(blur, f.t)
             var hint = orb.hint(f.pose)
             if (hint.kind == Hint.Kind.SHOOT && steadyS < STEADY_FOR_S) hint = hint.copy(text = "Hold still: the phone is moving")
-            return FrameOut(hint, auto && steadyS >= STEADY_FOR_S && orb.useful(f.pose) && f.t - lastShotT >= MIN_GAP_S, orb.progress(), blur, steadyS = steadyS)
+            val useful = orb.useful(f.pose)
+            return FrameOut(hint, auto && steadyS >= STEADY_FOR_S && useful && f.t - lastShotT >= MIN_GAP_S, orb.progress(), blur, steadyS = steadyS,
+                redundant = !useful && hint.kind != Hint.Kind.DONE)
         }
         return FrameOut(Hint(Hint.Kind.NONE, "Tap the middle of the rock to start"), false, none, 0.0)
     }
@@ -200,7 +223,9 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         lastShotT = s.t
         val cov = coverage; val orb = orbit; val fitNow = fit
         val inMesh = if (cov != null && fitNow != null) s.pose.into(fitNow) else null
+        val ring = ringOn()
         val far = when {
+            ring && orb != null -> s.pose.centre.distance(orb.centre)
             inMesh != null && cov != null -> current?.let { cov.state(it) }?.let { if (it.target.isView) VIEW_FAR_M else inMesh.centre.distance(it.target.point) * cov.metresPerUnit }
             orb != null -> s.pose.centre.distance(orb.centre)
             else -> null
@@ -228,11 +253,8 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         else if (matching?.best != null && matching.best!! < FEW_LINKS) warn.add("few matches with the photos near it (best ${matching.best}): meshing may not join it up")
         if (s.arPoints != null && s.arPoints < FEW_AR_POINTS) warn.add("the phone's tracking sees few points here (${s.arPoints})")
         if (verdict.ok && !s.card && s.features != null) { matched.addLast(Triple(name, s.pose, s.features)); if (matched.size > MATCHED_MOST) matched.removeFirst() }
-        val helped = if (!verdict.ok || s.card) emptyList() else when {
-            inMesh != null && cov != null -> cov.addShot(inMesh)
-            orb != null -> orb.add(s.pose)
-            else -> emptyList()
-        }
+        val helped = if (!verdict.ok || s.card) emptyList() else
+            (if (inMesh != null && cov != null) cov.addShot(inMesh) else emptyList()) + (if (orb != null && (ring || cov == null)) orb.add(s.pose) else emptyList())
         // down three ways: the tracking's own; the tracking's with what a turn on the spot found (the one used, if there was
         // a turn); and this photo's accelerometer alone, less what the turn found the phone adds, kept to check the others by
         val found = level

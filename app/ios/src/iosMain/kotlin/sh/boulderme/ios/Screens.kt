@@ -174,6 +174,12 @@ class Settings(private val app: App) : Form("Settings") {
         field("Server", app.store.server) { app.store.server = it.ifBlank { IosStore.DEFAULT_SERVER } }
         field("Credit my photos to", app.store.credit) { app.store.credit = it.take(80) }
         text("Photos you send are published under Creative Commons Attribution 4.0 (CC BY 4.0): the site and anyone else may use them, crediting this name.")
+        section("Sounds while capturing")
+        button(if (app.store.dingKept) "A bell when a photo is kept: on" else "A bell when a photo is kept: off", Look.PLAIN) { app.store.dingKept = !app.store.dingKept; rebuild() }
+        button(if (app.store.tickSame) "Ticking while there's nothing new to photograph from where the phone is: on" else "Ticking while there's nothing new to photograph from where the phone is: off", Look.PLAIN) {
+            app.store.tickSame = !app.store.tickSame; rebuild()
+        }
+        text("For a phone out of sight, up on a pole with Auto on: the ticking stops when the phone is somewhere new, and the bell says the photo from there was kept.")
         section("Uploading")
         button(if (app.store.anonFirst) "Holds others marked privately: asked for from the start" else "Holds others marked privately: asked about at the end", Look.PLAIN) {
             app.store.anonFirst = !app.store.anonFirst; rebuild()

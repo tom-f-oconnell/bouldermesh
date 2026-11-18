@@ -123,6 +123,7 @@ last before) and `k_src: "derived"` (its lens was worked out from the tracking c
                           photo's blob says the same (lic, by). The server keeps both with the mesh's record of its photos
     progress              {total, done, skipped, holds, holds_done}
     shots                 [{name, blob, kept, why, notes, helped}]: every photo taken, kept or not, with its readings
+                          (helped: the targets it counted for; round a rock, `sector<k>` of the first ring, `ring<n>_sector<k>` of others)
 
 **The points** (`points.bin`, kept in the project as `capture-points.bin`): what the phone's tracking found of the world,
 one to each 5 cm, 20,000 at most to a spell. Noisy to a centimetre or so, except from a lidar.
@@ -152,7 +153,8 @@ capture runs (app/shared EventLog.kt), a line for each change and not each frame
 its camera up), `phase`, `tracking`, `says` and `hint` (when what's asked for changes), `frames` (every 5 s: fps, the
 longest gap, untracked frames), `level`, `level_redo` (a direction of the turn on the spot cleared to face again),
 `imu_clock` (how far the motion sensors' clock is from the camera's, found by matching the gyroscope to the tracking: the
-first few tries and each change), `tap_model`, `tap_rock`, `refine`, `fit_confirmed`, `spell`, `shoot`,
+first few tries and each change), `tap_model`, `tap_rock`, `refine`, `fit_confirmed`, `spell`, `ring` (another ring
+round the rock asked for: its number), `shoot`,
 `shot`, `no_shot`, `error`, `start_failed`, and the screen's buttons. Its upload never holds the rest up.
 
 **Crashes**: what the app wrote as it crashed, one file each, sent with the next capture uploaded to

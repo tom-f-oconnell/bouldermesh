@@ -31,6 +31,12 @@ phone yet**: see [What's been checked](#whats-been-checked).
 A rock with no mesh: *Capture a new rock…*, tap its middle, and walk round as much of it as you can; *Can't reach that
 side* for the rest, and *Mark a hold* for anything that needs close-ups.
 
+*Another ring* (with or without a mesh) asks for the rock all round again from another height: hold the phone at least
+0.9 m higher or lower than before (crouched, or up on a pole), and keep it near that height all the way round; the
+mesh's own targets come back after it. For a phone out of sight, *Settings* has two sounds, both off at first: a bell
+when a photo is kept, and a tick over and over while a photo from where the phone is would add nothing. With Auto on,
+move until the ticking stops, hold still, and wait for the bell.
+
 Uploading needs an account or the site's editing token. On an Android phone signed in to the site, your account's
 *Sign the app in* opens the app signed in, with your photos credited to your account's name. Otherwise, in *Settings*,
 paste an invite link, a code from *Sign in another device* on the site, or the link from the admin page's *Pair a

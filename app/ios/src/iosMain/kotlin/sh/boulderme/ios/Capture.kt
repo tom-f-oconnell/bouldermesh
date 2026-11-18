@@ -201,6 +201,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     init { plan?.let { app.store.keepPlan(id, it.mesh) } }
     private val core = CaptureSession(plan.takeIf { guide != null }, guide, id, IosStore.APP, machine(), NSDate().timeIntervalSince1970)
     private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = this@CaptureController.app.store.credit.ifBlank { null } }, set, app.store.anonFirst)
+    private val sounds = Sounds()
+    private val dingKept = app.store.dingKept; private val tickSame = app.store.tickSame
     private val arSession = "a" + (100000..999999).random()
     private val sceneView = ARSCNView()
     private val scene = SCNScene()
@@ -374,6 +376,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         }
         if (out.markers != drawn) { drawn = out.markers; mark(out.markers) }
         show(out.ui)
+        if (out.tick && tickSame) sounds.tick()
         if (out.shoot) takeStill()
         else out.grab?.let { grab(frame, seen, it, now) }
         GC.collect()        // lets go of the frame just read
@@ -508,6 +511,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
                 val stored = pose.turned(turn)
                 val out = flow.shot(ShotIn(stored, sample, stats, exposure, iso, null, tracking, arSession, now, unix, SENSOR_ORIENTATION, sample.gyro?.norm ?: 0.0, turn,
                     features = features))
+                if (out.kept && dingKept) sounds.ding()
                 if (out.kept) dispatch_async(background) {
                     val ok = writeJpeg(frame, "$dir/photos/${out.record.name}", out.userComment, sample, stored.lens, exposure, turn, unix)
                     dispatch_async(dispatch_get_main_queue()) { if (ok) save() else flow.say("A photo couldn't be saved.") }
@@ -644,7 +648,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         val turn = (now.phase == Phase.CAPTURE || now.phase == Phase.SCENERY) && hypot(now.turnX, now.turnY) > 0.3
         arrow.hidden = !turn
         if (turn) arrow.transform = CGAffineTransformMakeRotation(atan2(-now.turnY, now.turnX))     // the screen's y runs down
-        val want = "${now.phase}/${now.auto}/${now.canSkip}/${now.reach}/${now.canCard}/${now.card}/${now.askMore}/${now.scenery > 0}/${now.marking}/${now.guided}/${now.pairs > 0}/${now.kept > 0}/${now.waiting}"
+        val want = "${now.phase}/${now.auto}/${now.canSkip}/${now.reach}/${now.canCard}/${now.card}/${now.askMore}/${now.scenery > 0}/${now.marking}/${now.guided}/${now.pairs > 0}/${now.kept > 0}/${now.waiting}/${now.ring}"
         if (want != buttonsFor) { buttonsFor = want; offer(now) }
     }
 
@@ -667,6 +671,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
                 buttons.addArrangedSubview(if (now.guided) makeRow(makeButton("Skip this", enabled = now.canSkip) { flow.skip() }, makeButton("Doing: ${now.reach}") { flow.toggleWide() },
                         *(if (now.canCard || now.card) arrayOf(makeButton(if (now.card) "No card" else "Card photo") { flow.toggleCard() }) else emptyArray()))
                     else makeRow(makeButton(if (now.marking) "Tap the hold…" else "Mark a hold") { flow.toggleMarking() }, makeButton("Can't reach that side") { flow.blockSide() }))
+                buttons.addArrangedSubview(if (now.guided && now.ring > 0) makeRow(makeButton(if (now.ring > 1) "Another ring (on ${now.ring})" else "Another ring") { flow.newRing() }, makeButton("Can't reach that side") { flow.blockSide() })
+                    else makeRow(makeButton(if (now.ring > 1) "Another ring (on ${now.ring})" else "Another ring") { flow.newRing() }))
                 buttons.addArrangedSubview(makeRow(makeButton(if (now.scenery > 0) "Scenery (more)" else "Scenery") { flow.startScenery()?.let { flow.say(it) } }))
             }
             Phase.SCENERY -> buttons.addArrangedSubview(makeRow(makeButton("Back to the rock", Look.FILLED) { flow.endScenery() }, leave))

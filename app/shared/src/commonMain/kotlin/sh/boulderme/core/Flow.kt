@@ -28,6 +28,7 @@ data class CaptureUi(
     val card: Boolean = false,
     val waiting: Boolean = false,   // Take was pressed: the photo is taken once the phone holds still
     val level: LevelUi? = null,     // how the turn on the spot is going, while it's going
+    val ring: Int = 0,              // the ring round the rock photos go by now (0: none, the mesh's targets)
 )
 
 /**
@@ -80,7 +81,8 @@ data class LevelUi(val faced: List<Int>, val facing: Int, val wobbleNow: Double,
 class FlowOut(val ui: CaptureUi, val guide: Similarity?, val solid: Boolean, val alpha: Float, val levels: IntArray?, val markers: List<Marker>, val shoot: Boolean,
               val still: Boolean = false,      // the photo to take is a full-size still, where the phone can: of a hold wanted in detail
               val card: Boolean = false,       // and it's the one with a card in it: say so in shot() (ShotIn.card)
-              val grab: String? = null)        // keep this frame, as the tracking has it, for the scenery ("walk" or "pano"): hand it to scenery()
+              val grab: String? = null,        // keep this frame, as the tracking has it, for the scenery ("walk" or "pano"): hand it to scenery()
+              val tick: Boolean = false)       // sound a tick now, if the app's set to: a photo from here would add nothing (TICK_S apart)
 
 /**
  * A capture as its screen goes through it, for both phones' apps: they tell it each camera frame, each tap and each
@@ -122,6 +124,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     private var wantShot = false
     private var wantAt: Double? = null    // the first frame after Take was pressed
     private var inFlight = false
+    private var lastTick = -1e9
+    private var lastShotT = -1e9
     private var rejected = 0
     private var note = ""
     private var sensorNote = ""
@@ -220,6 +224,13 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     fun addSpot() { if (phase == Phase.CONFIRM) { event("align_add_spot"); phase = Phase.GHOST; ghost = null; note = "" } }
 
     /** With no mesh: the side the hint is sending you round to can't be reached. */
+    /** Starts another ring round the rock, from another height. */
+    fun newRing() {
+        val n = session.newRing()
+        event("ring", "n" to n)
+        note = if (n == null) "Line the mesh up with the rock first" else "Ring $n: all round again, from at least ${Coverage.metres(Orbit.RING_APART_M)} higher or lower than before"
+        levelsDirty = true
+    }
     fun blockSide() { event("block_side"); lastPose?.let { session.orbit?.blockNext(it) } }
 
     /** Something went wrong the person should know of (a photo that couldn't be saved). */
@@ -484,8 +495,11 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 val shoot = (if (cardNext) pressed else out.shoot || pressed) && !inFlight
                 if (shoot) { inFlight = true; wantShot = false; cardShot = cardNext; event("shoot", "auto" to out.shoot, "still" to out.still, "card" to cardNext, "blur_px" to out.blurPx, "steady_s" to out.steadyS) }
                 else if (wantShot && !steady) ui = ui.copy(text = "Hold still: the photo is taken as soon as the phone is steady")
-                ui = ui.copy(waiting = wantShot, note = note)
-                return FlowOut(ui, session.fit, false, 0.75f, levels, markers, shoot, out.still, shoot && cardNext)
+                ui = ui.copy(waiting = wantShot, note = note, ring = session.ringNow)
+                // ticks while a photo from here would add nothing, quiet for a moment round each photo, so its ding is heard alone
+                val tick = out.redundant && !shoot && !inFlight && t - lastTick >= TICK_S && t - lastShotT >= TICK_S
+                if (tick) lastTick = t
+                return FlowOut(ui, session.fit, false, 0.75f, levels, markers, shoot, out.still, shoot && cardNext, tick = tick)
             }
             else -> { ui = base; return FlowOut(ui, null, false, 0f, null, emptyList(), false) }
         }
@@ -494,6 +508,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     /** The photo frame() asked for, taken. A photo not kept is to be deleted. */
     fun shot(s: ShotIn): ShotOut {
         inFlight = false
+        lastShotT = s.t
         // the points found of what it shows, all told, one to each 5 cm: how much of it the tracking could make out
         val cells = cloud.values.count { p -> s.pose.project(p)?.let { it.depth in 0.1..12.0 && it.u in 0.0..s.pose.lens.w.toDouble() && it.v in 0.0..s.pose.lens.h.toDouble() } == true }
         val out = session.shot(s.copy(arSession = spell(s.arSession), card = s.card || cardShot, arPoints = s.arPoints ?: trackedNow, arCells = cells))
@@ -536,6 +551,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         const val REFINE_LEAST = 150
         const val REFINE_EVERY_S = 3.0
         const val LOST_S = 1.0              // tracking lost for longer than this starts a new spell: shorter is a blink, with its world kept
+        const val TICK_S = 0.8              // how often the tick sounds, while a photo from where the phone is would add nothing
         const val WAIT_S = 8.0              // how long a press of Take waits for the phone to hold still
         const val STEADY_SCENERY_PX = 1.5   // a scenery frame is kept only with the phone turning less than smears it this much
         const val ORBIT_ROCK_M = 2.0        // how far a rock with no mesh is taken to reach from its middle, for the walk round it

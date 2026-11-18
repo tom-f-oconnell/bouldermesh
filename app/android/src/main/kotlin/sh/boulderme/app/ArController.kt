@@ -69,6 +69,8 @@ class ArController(
     private val lock = Any()        // round every use of the flow: frames are drawn on one thread, photos judged on another
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+    private val sounds = Sounds()
+    private val dingKept = store.dingKept; private val tickSame = store.tickSame
     private var session: Session? = null
     private var installAsked = false
     private var background: Background? = null
@@ -138,7 +140,7 @@ class ArController(
     fun close() {
         val s = session
         session = null
-        worker.execute { s?.close() }
+        worker.execute { s?.close(); sounds.release() }
         worker.shutdown()
     }
 
@@ -159,6 +161,7 @@ class ArController(
     fun restartAlign() = synchronized(lock) { flow.restartAlign() }
     fun addSpot() = synchronized(lock) { flow.addSpot() }
     fun blockSide() = synchronized(lock) { flow.blockSide() }
+    fun newRing() = synchronized(lock) { flow.newRing() }
 
     /** Writes the capture's record and what's to upload beside its photos: after each photo kept, so that one cut short isn't lost. */
     private fun save(last: Boolean = false): Int = synchronized(lock) {
@@ -229,6 +232,7 @@ class ArController(
             guideRenderer?.draw(mvp, out.alpha, out.solid)
         }
         markerRenderer?.draw(out.markers, viewProj, height * proj[5], plan)       // a metre across at a metre off, in pixels
+        if (out.tick && tickSame) sounds.tick()
         if (out.shoot) takeStill(frame, pose, exposure, gyro, now)
         else out.grab?.let { grabFrame(frame, pose, exposure, gyro, now, it) }
         if (now - lastUi > 0.12) { lastUi = now; main.post { onUi(out.ui) } }
@@ -307,6 +311,7 @@ class ArController(
                 val features = runCatching { Features.of(nv21, w, h, w, turn) }.getOrNull()     // for a warning if it won't match the photos near it
                 val out = synchronized(lock) { flow.shot(ShotIn(stored, sample, stats, shutter, iso, focus, true, arSession, now, unix, sensorOrientation, gyro, turn, features = features)) }
                 if (out.kept) {
+                    if (dingKept) sounds.ding()
                     val file = File(File(dir, "photos"), out.record.name)
                     val pixels = turnNv21(nv21, w, h, turn)
                     val (sw, sh) = if (turn == 90 || turn == 270) h to w else w to h

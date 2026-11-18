@@ -47,6 +47,45 @@ class SessionTest {
         assertEquals(Hint.Kind.DONE, o.hint(pose).kind, "every other side is out of reach")
     }
 
+    @Test fun ringsFromOtherHeights() {
+        val mid = Vec3(0.0, 1.0, 0.0)
+        val o = Orbit(mid)
+        fun at(k: Int, y: Double): CameraPose { val a = (k + 0.5) * 2 * kotlin.math.PI / o.sectors; return TestWorld.look(Vec3(3 * sin(a), y, 3 * cos(a)), mid) }
+        // one ring, at whatever height: then it's done
+        for (k in 0 until o.sectors) repeat(Orbit.SECTOR_SHOTS) { o.add(at(k, 1.5 + 0.1 * (k % 3))) }
+        assertTrue(o.progress().finished && "All round done" in o.hint(at(0, 1.5)).text)
+        // another: nothing from the first one's height counts, nor is worth taking, until the phone is well away from it
+        assertEquals(2, o.newRing().n)
+        assertTrue(!o.progress().finished && o.progress().total == 2 * o.sectors)
+        assertTrue(!o.useful(at(0, 1.8)) && o.add(at(0, 1.8)).isEmpty() && o.hint(at(0, 1.8)).kind == Hint.Kind.GO, o.hint(at(0, 1.8)).text)
+        assertTrue(o.useful(at(0, 3.5)), "up on a pole")
+        assertEquals(listOf("ring2_sector0"), o.add(at(0, 3.5)))
+        // its height is now set: lower than that is pointed back up, and counts for nothing
+        val low = o.hint(at(1, 2.6))
+        assertTrue(low.kind == Hint.Kind.GO && "raise" in low.text && low.turnY > 0, low.text)
+        assertTrue(o.add(at(1, 2.6)).isEmpty())
+        for (k in 0 until o.sectors) repeat(Orbit.SECTOR_SHOTS) { o.add(at(k, 3.5 + 0.2 * (k % 2))) }
+        assertTrue(o.progress().finished && "Ring 2 done" in o.hint(at(0, 3.5)).text)
+        assertTrue(o.ring.all { it.shots == Orbit.SECTOR_SHOTS }, "the first ring's photos are its own")
+    }
+
+    @Test fun aRingRoundAMeshedRock() {
+        val s = session()
+        val far = TestWorld.look(truth.apply(Vec3(0.0, 1.5, 6.0)), truth.apply(Vec3(0.0, 1.0, 0.0)))
+        s.frame(FrameIn(far, 0.0, 0.004, true, 0.0))
+        take(s, far, 0.1)
+        assertEquals(1, s.newRing())
+        assertEquals(1, s.ringNow)
+        // the ring goes first, kept away from where photos were taken from so far; the mesh's targets after it
+        val same = s.frame(FrameIn(far, 0.0, 0.004, true, 1.0))
+        assertTrue(same.hint.kind == Hint.Kind.GO && "higher or lower" in same.hint.text && same.redundant, same.hint.text)
+        val pole = TestWorld.look(truth.apply(Vec3(0.0, 1.5, 6.0)) + Vec3(0.0, 2.0, 0.0), truth.apply(Vec3(0.0, 1.0, 0.0)))
+        val up = (0..10).map { s.frame(FrameIn(pole, 0.0, 0.004, true, 2.0 + 0.1 * it)) }
+        assertTrue(up.any { it.shoot } && up.none { it.redundant }, up.last().hint.text)
+        assertTrue(take(s, pole, 3.1).helped.any { it.startsWith("sector") })
+        assertTrue(s.frame(FrameIn(pole, 0.0, 0.004, true, 3.5)).redundant, "nothing more from just there")
+    }
+
     @Test fun whereEarlierPhotosWereTakenComesFirst() {
         // an earlier photo was taken 4 units (5 m) out from the wall, looking at it
         val from = Target("v0", "view", listOf(0.5, 1.2, 4.0), listOf(0.0, 0.0, -1.0), 0.8, prio = 2)

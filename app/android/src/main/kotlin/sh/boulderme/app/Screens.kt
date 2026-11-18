@@ -281,6 +281,8 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
     var server by remember { mutableStateOf(a.store.server) }
     var credit by remember { mutableStateOf(a.store.credit) }
     var anonFirst by remember { mutableStateOf(a.store.anonFirst) }
+    var dingKept by remember { mutableStateOf(a.store.dingKept) }
+    var tickSame by remember { mutableStateOf(a.store.tickSame) }
     var token by remember { mutableStateOf(a.store.token) }
     var code by remember { mutableStateOf("") }
     var said by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
@@ -289,6 +291,13 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
     Page("Settings", back = { go(Screen.Home) }) {
         OutlinedTextField(server, { server = it; a.store.server = it.ifBlank { Store.DEFAULT_SERVER } }, label = { Text("Server") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+        Section("Sounds while capturing")
+        TextButton(onClick = { dingKept = !dingKept; a.store.dingKept = dingKept }) { Text(if (dingKept) "A bell when a photo is kept: on" else "A bell when a photo is kept: off") }
+        TextButton(onClick = { tickSame = !tickSame; a.store.tickSame = tickSame }) {
+            Text(if (tickSame) "Ticking while there's nothing new to photograph from where the phone is: on" else "Ticking while there's nothing new to photograph from where the phone is: off")
+        }
+        Text("For a phone out of sight, up on a pole with Auto on: the ticking stops when the phone is somewhere new, and the bell says the photo from there was kept.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Section("Uploading")
         OutlinedTextField(credit, { credit = it.take(80); a.store.credit = credit }, label = { Text("Credit my photos to") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Text("Photos you send are published under Creative Commons Attribution 4.0 (CC BY 4.0): the site and anyone else may use them, crediting this name.",

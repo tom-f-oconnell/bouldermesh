@@ -31,6 +31,12 @@ class IosStore {
     var anonFirst: Boolean  // holds others marked privately are asked for from the start of a capture, not at its end
         get() = prefs.boolForKey("anon_first")
         set(v) = prefs.setBool(v, forKey = "anon_first")
+    var dingKept: Boolean   // a soft bell each time a photo is kept
+        get() = prefs.boolForKey("ding_kept")
+        set(v) = prefs.setBool(v, forKey = "ding_kept")
+    var tickSame: Boolean   // a tick over and over while a photo from where the phone is would add nothing
+        get() = prefs.boolForKey("tick_same")
+        set(v) = prefs.setBool(v, forKey = "tick_same")
     var credit: String      // who photos are credited to, under the licence they're sent with
         get() = prefs.stringForKey("credit") ?: ""
         set(v) = prefs.setObject(v.trim(), forKey = "credit")

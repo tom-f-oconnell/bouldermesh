@@ -239,6 +239,35 @@ class FlowTest {
         assertFalse(flow.frame(pose, true, 0.0, 0.004, 20.0, 90).shoot)
     }
 
+    @Test fun ticksWhileThereIsNothingNewHere() {
+        val flow = CaptureFlow(CaptureSession(null, null, "f6", "test", "a phone", 0.0))
+        flow.skipLevel()
+        val mid = Vec3(0.0, 1.0, 3.0)
+        val pose = TestWorld.look(Vec3(0.0, 1.5, 0.0), mid)
+        flow.frame(pose, true, 0.0, 0.004, 0.0, 90)
+        flow.tap(pose.centre, pose.forward) { mid }
+        // somewhere new: no ticking, and the photo taken once still
+        var t = 0.0
+        val first = (0..10).map { t = 0.1 * it; flow.frame(pose, true, 0.0, 0.004, t, 90) }
+        assertTrue(first.none { it.tick } && first.any { it.shoot })
+        assertTrue(flow.shot(shot(pose, t)).kept)
+        // then, staying put: ticks, TICK_S apart, none in the moment after the photo
+        val after = (1..40).map { flow.frame(pose, true, 0.0, 0.004, t + 0.1 * it, 90) }
+        val ticks = after.withIndex().filter { it.value.tick }.map { t + 0.1 * (it.index + 1) }
+        assertTrue(ticks.size in 3..5 && ticks.first() >= t + CaptureFlow.TICK_S - 1e-9 && ticks.zipWithNext().all { (a, b) -> b - a >= CaptureFlow.TICK_S - 1e-9 }, "$ticks")
+        assertTrue(after.none { it.shoot })
+        // stepped round somewhere new: quiet again
+        val moved = TestWorld.look(Vec3(1.0, 1.5, 0.3), mid)
+        assertFalse(flow.frame(moved, true, 0.0, 0.004, t + 10.0, 90).tick)
+    }
+
+    @Test fun theSoundsAreWavs() {
+        val wav = Chime.wav(Chime.ding)
+        assertEquals("RIFF", wav.copyOfRange(0, 4).decodeToString())
+        assertEquals(44 + Chime.ding.size * 2, wav.size)
+        assertTrue(Chime.tick.size < Chime.ding.size && Chime.ding.maxOf { kotlin.math.abs(it.toInt()) } < Short.MAX_VALUE * 0.6)
+    }
+
     @Test fun trackingLostAndBack() {
         val plan = TestWorld.plan().copy(key = "abc123def456", made = 1.7e9, guide = GuideInfo(patches = 12, sha1 = "0123abcd"))
         val flow = CaptureFlow(CaptureSession(plan, TestWorld.guide(), "f4", "test", "a phone", 0.0))
