@@ -30,6 +30,8 @@ data class CaptureUi(
     val level: LevelUi? = null,     // how the turn on the spot is going, while it's going
     val ring: Int = 0,              // the ring round the rock photos go by now (0: none, the mesh's targets)
     val flash: Boolean = false,     // a photo is being taken now: flash the screen, so one taken by itself is seen to be
+    val tieLeft: Int = 0,           // a capture carried on: photos of the rock still wanted before its scenery is placed by them
+    val unplaced: Int = 0,          // frames of the scenery taken in a spell of tracking with too few photos to place them by
 )
 
 /**
@@ -137,6 +139,11 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     private val cloud = HashMap<Long, Vec3>()       // what the tracking has found of the world, since it last lost its place
     private val past = ArrayList<Pair<Vec3, Int>>() // and before that, each with which spell of tracking found it
     private var block = 1                           // spells of tracking so far: a new one each time it was lost and came back
+    private var firstSpell = 1                      // this visit's first: after a capture finished earlier's, if this carries it on
+    private var earlierLog = ""
+    /** The phone tracking's name for a capture carried on (reopen()), which the app goes on giving its photos; null for a new one. */
+    var arBase: String? = null
+        private set
     private var lostAt: Double? = null
     private var tracked = false
     private var lastRefine = 0.0
@@ -164,7 +171,28 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     fun event(e: String, vararg fields: Pair<String, Any?>) = log.add(now, e, *fields)
 
     /** The log as it stands, a JSON line each. */
-    fun logText(): String = log.text()
+    fun logText(): String = earlierLog + log.text()
+
+    /**
+     * Carries on a capture finished earlier (Reopen), from what was saved of it: its record, tracked points and log.
+     * Down is found and the rock lined up afresh, as this visit's tracking is a world of its own: its photos and
+     * frames are the next spell's, under the earlier name (arBase), and its scenery is placed by the photos of the rock
+     * taken in it, so CaptureSession.TIE_SHOTS are asked for before the walk round.
+     */
+    fun reopen(earlier: CaptureRecord, points: ByteArray?, log: String) {
+        session.restore(earlier)
+        val pts = points?.let { readPoints(it) } ?: emptyList()
+        past += pts
+        val spells = earlier.shots.mapNotNull { it.blob.ar?.s } + earlier.scenery.map { it.ar.s } + earlier.marked.mapNotNull { it.s }
+        block = ((spells.map { spellNumber(it) } + pts.map { it.second }).maxOrNull() ?: 0) + 1
+        firstSpell = block
+        arBase = spells.firstOrNull()?.substringBefore('.')
+        earlierLog = log.let { if (it.isEmpty() || it.endsWith("\n")) it else it + "\n" }
+        event("reopen", "photos" to session.shotCount, "scenery" to session.sceneryCount, "spell" to block)
+    }
+
+    /** Photos of the rock still wanted in this visit before its scenery can be placed (0 but for a capture carried on). */
+    val tieLeft: Int get() = if (firstSpell == 1) 0 else kotlin.math.max(0, CaptureSession.TIE_SHOTS - session.keptInSpell(block))
 
     /** The answer to "photograph the holds others marked privately too?" (CaptureUi.askMore): asked once. */
     fun more(yes: Boolean) { event("more", "yes" to yes); askedMore = true; if (yes) { session.anon = true; session.setScope(Scope(minPrio = reach)); levelsDirty = true } }
@@ -176,6 +204,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
      */
     fun startScenery(): String? {
         if (phase != Phase.CAPTURE) return "Start taking photos first."
+        tieLeft.takeIf { it > 0 }?.let { return "First $it more photo${if (it == 1) "" else "s"} of the rock, from round it: this visit's scenery is placed on the mesh by them." }
         val w = walk ?: run {
             val fit = session.fit; val g = guide; val orb = session.orbit
             when {
@@ -411,7 +440,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         }
         val base = ui.copy(phase = phase, kept = session.shotCount, scenery = session.sceneryCount, rejected = rejected, note = note, sensors = sensorNote, auto = session.auto, wide = wide, marking = marking,
             reach = when (reach) { 1 -> "whole rock"; 2 -> "its climbs"; else -> "only the holds of $setName" }, card = cardNext, target = "", canCard = false, askMore = 0,
-            pairs = session.taps.size, tracking = tracking, level = null)
+            pairs = session.taps.size, tracking = tracking, level = null, tieLeft = tieLeft, unplaced = session.unplacedScenery(firstSpell))
         if (!tracking) {
             ui = base.copy(text = "Hold on: the phone is finding where it is. Move it slowly, looking at the rock.", turnX = 0.0, turnY = 0.0)
             return FlowOut(ui, null, false, 0f, null, emptyList(), false)
@@ -503,6 +532,9 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                     holdsDone = p.holdsDone, canSkip = plan != null && out.hint.targetId != null, target = out.status, canCard = out.status.isNotEmpty())
                 val left = if (out.hint.kind == Hint.Kind.DONE && !askedMore) session.coverage?.anonLeft() ?: 0 else 0
                 if (left > 0) ui = ui.copy(askMore = left, text = "Done. $left more hold${if (left == 1) " has" else "s have"} been marked here by others, privately. Photograph ${if (left == 1) "it" else "them"} too?")
+                val tie = tieLeft
+                if (tie > 0 && (out.hint.kind == Hint.Kind.DONE || out.redundant)) ui = ui.copy(text = "Take $tie more photo${if (tie == 1) "" else "s"} of the rock " +
+                    "from round it (press Take): they place this visit's scenery and panorama on the mesh")
                 if (cardNext) ui = ui.copy(text = "Hold a bank card flat on the rock beside the hold, all of it in the picture and out of any glare, and press the shutter")
                 // the button's photo waits for the phone to hold still, as one taken by itself does; a card photo is taken only by the button
                 val steady = out.steadyS >= CaptureSession.STEADY_FOR_S

@@ -92,7 +92,9 @@ EXIF UserComment, `BMSH1:` followed by JSON in plain ASCII:
                           world) in its frame, +Y up; "normal" or "limited". s is the app's name for the capture's tracking,
                           with ".2", ".3"… after each time tracking was lost for over a second and came back: its world
                           may then be somewhere else, so places are only comparable within one s, and even there are a
-                          strong hint rather than exact (tracking drifts by about a hundredth of the way walked)
+                          strong hint rather than exact (tracking drifts by about a hundredth of the way walked). A
+                          capture carried on after it was finished (shared Reopen.kt) goes on under the same s, its
+                          later visit the next spell; its record keeps its first `started`, fit and level
     k                     {fx, fy, cx, cy, w, h}: the lens, for this picture's size
     exp                   {t, iso, focus_m}
     q                     {sharp, blur_px, clip_hi, clip_lo, ok}: how it was judged
@@ -164,7 +166,8 @@ capture runs (app/shared EventLog.kt), a line for each change and not each frame
 its camera up), `phase`, `tracking`, `says` and `hint` (when what's asked for changes), `frames` (every 5 s: fps, the
 longest gap, untracked frames), `level`, `level_redo` (a direction of the turn on the spot cleared to face again),
 `imu_clock` (how far the motion sensors' clock is from the camera's, found by matching the gyroscope to the tracking: the
-first few tries and each change), `tap_model`, `tap_rock`, `refine`, `fit_confirmed`, `spell`, `ring` (another ring
+first few tries and each change), `tap_model`, `tap_rock`, `refine`, `fit_confirmed`, `spell`, `reopen` (a capture carried on: the lines after it are
+the later visit's, their t from its own first frame), `ring` (another ring
 round the rock asked for: its number), `shoot`,
 `shot`, `no_shot`, `error`, `start_failed`, and the screen's buttons. Its upload never holds the rest up.
 

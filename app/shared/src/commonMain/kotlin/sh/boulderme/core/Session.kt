@@ -51,7 +51,7 @@ data class ShotOut(val record: ShotRecord, val kept: Boolean, val why: List<Stri
  * @param id this capture's own name, in its photos' names.
  * @param app the app and its version; device: the phone.
  */
-class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val app: String, val device: String, private val started: Double) {
+class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val app: String, val device: String, private var started: Double) {
     val coverage: Coverage? = plan?.let { Coverage(it, guide) }
     var orbit: Orbit? = null
         private set
@@ -84,6 +84,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     private var lastShotT = -1e9
     private var steadySince: Double? = null
     private var kept = 0
+    private var earlier: CaptureRecord? = null      // the capture as it was finished, if this carries it on (restore())
 
     val mode: String get() = if (plan != null) "plan" else "orbit"
     val shotCount: Int get() = kept
@@ -163,17 +164,59 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         val id: String; var inMesh: Vec3? = null
         if (cov != null && f != null) {
             val m = f.inverse().apply(world)
-            val g = guide; val n = nearest
-            val face = if (g != null && n != null) n.of(m, MARK_NEAR_M / cov.metresPerUnit)?.first else null
-            val normal = if (face != null) g!!.normal(face) else lastPose?.let { (f.inverse().apply(it.centre) - m).unit() } ?: Vec3(0.0, 0.0, 1.0)
             id = "p${marked.size + 1}"
-            cov.add(Target(id, "hold", m.toList(), normal.toList(), MARK_REACH_M / cov.metresPerUnit, prio = 3, from = "phone",
-                climbs = cov.scope.climbs.sorted(), sets = listOfNotNull(cov.scope.set), detailM = MARK_DETAIL_M))
+            holdTarget(cov, id, m, lastPose?.let { (f.inverse().apply(it.centre) - m).unit() })
             inMesh = m
-        } else if (orb != null) id = orb.addSpot(world).id
+        } else if (orb != null) id = orb.addSpot(world).id.let { s -> if (marked.any { it.id == s }) "$s.$spell" else s }     // a spot of a capture carried on
         else return null
         marked.add(Marked(id, world, spell, inMesh))
         return id
+    }
+
+    /** A hold marked on the phone, as a target at `m` in the mesh: facing as the mesh does there, else `away` (towards the phone). */
+    private fun holdTarget(cov: Coverage, id: String, m: Vec3, away: Vec3?) {
+        val g = guide; val n = nearest
+        val face = if (g != null && n != null) n.of(m, MARK_NEAR_M / cov.metresPerUnit)?.first else null
+        val normal = if (face != null) g!!.normal(face) else away ?: Vec3(0.0, 0.0, 1.0)
+        cov.add(Target(id, "hold", m.toList(), normal.toList(), MARK_REACH_M / cov.metresPerUnit, prio = 3, from = "phone",
+            climbs = cov.scope.climbs.sorted(), sets = listOfNotNull(cov.scope.set), detailM = MARK_DETAIL_M))
+    }
+
+    /**
+     * Takes up a capture finished earlier, to carry it on (CaptureFlow.reopen()): its photos, scenery and marked holds
+     * are kept, and named on from. With a mesh, what its photos covered counts again, by the fit they were taken with,
+     * and what was skipped stays skipped. Its tracking's world isn't this one: the rock is lined up afresh.
+     */
+    fun restore(was: CaptureRecord) {
+        earlier = was
+        started = was.started
+        shots.addAll(was.shots); kept = shots.count { it.kept }
+        scenery.addAll(was.scenery)
+        val cov = coverage
+        val fitWas = was.fit?.let { Similarity(it.scale, Quat.of(it.rot), Vec3.of(it.shift)) }
+        if (cov != null && fitWas != null) cov.metresPerUnit = fitWas.scale     // until this visit's lining up says
+        for (h in was.marked) {
+            marked.add(Marked(h.id, Vec3.of(h.p), spellNumber(h.s), h.m?.let { Vec3.of(it) }))
+            if (cov != null && h.m != null) holdTarget(cov, h.id, Vec3.of(h.m), null)
+        }
+        if (cov != null && fitWas != null) {
+            for (s in shots) {
+                val ar = s.blob.ar; val k = s.blob.k
+                if (!s.kept || s.blob.ref != null || ar == null || k == null) continue
+                cov.addShot(CameraPose(Vec3.of(ar.p), Quat.of(ar.q), Lens(k.fx, k.fy, k.cx, k.cy, k.w, k.h)).into(fitWas))
+            }
+        }
+        for ((id, why) in was.skipped) cov?.skip(id, why)
+    }
+
+    /** The photos kept in spell `n` of the phone's tracking (1 the first), but for those of a card: what ties that spell's scenery to the mesh. */
+    fun keptInSpell(n: Int): Int = shots.count { it.kept && it.blob.ref == null && it.blob.ar != null && spellNumber(it.blob.ar.s) == n }
+
+    /** The frames of the scenery, from spell `from` of the tracking on, in a spell with fewer than TIE_SHOTS photos kept: likely not placed. */
+    fun unplacedScenery(from: Int = 1): Int {
+        if (scenery.isEmpty()) return 0
+        val photos = shots.filter { it.kept && it.blob.ref == null && it.blob.ar != null }.groupingBy { spellNumber(it.blob.ar!!.s) }.eachCount()
+        return scenery.count { val n = spellNumber(it.ar.s); n >= from && (photos[n] ?: 0) < TIE_SHOTS }
     }
 
     /** Whether photos now go by a ring round the rock, rather than the mesh's targets: with no mesh, or while a ring asked for is unfinished. */
@@ -375,10 +418,11 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             id = id, app = app, device = device, mesh = plan?.mesh?.takeIf { it.isNotEmpty() }, climbs = cov?.scope?.climbs?.sorted() ?: emptyList(),
             plan = plan?.let { RecordPlan(it.key, it.made, it.guide.sha1) },
             started = started, ended = ended, mode = mode,
-            fit = fit?.let { RecordFit(it.scale, it.rot.toList(), it.shift.toList(), it.tiltDeg, taps.size, refined?.matched, refined?.rmsM) },
-            place = place?.let { RecordPlace(it.lat, it.lng, it.alt, it.accM, it.n, it.seconds) },
-            calibration = calibration,
-            level = level?.let { RecordLevel(it.down.toList(), it.tiltDeg, it.offset.toList(), it.offsetDeg, it.spreadDeg, it.sectors, it.samples) },
+            // a capture carried on keeps its first visit's fit and turn on the spot, each in that visit's world: its photos' own downs are this one's
+            fit = earlier?.fit ?: fit?.let { RecordFit(it.scale, it.rot.toList(), it.shift.toList(), it.tiltDeg, taps.size, refined?.matched, refined?.rmsM) },
+            place = listOfNotNull(place?.let { RecordPlace(it.lat, it.lng, it.alt, it.accM, it.n, it.seconds) }, earlier?.place).minByOrNull { it.accM },
+            calibration = calibration ?: earlier?.calibration,
+            level = earlier?.level ?: level?.let { RecordLevel(it.down.toList(), it.tiltDeg, it.offset.toList(), it.offsetDeg, it.spreadDeg, it.sectors, it.samples) },
             downAgreeDeg = shots.filter { it.kept }.mapNotNull { r -> r.blob.down?.let { d -> r.blob.downAcc?.let { a -> angleDeg(Vec3.of(d), Vec3.of(a)) } } }
                 .sorted().let { if (it.isEmpty()) null else it[it.size / 2] },
             skipped = cov?.states?.filter { it.skipped != null }?.associate { it.target.id to it.skipped!! } ?: emptyMap(),
@@ -414,6 +458,8 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         const val USUAL_FROM = 5        // photos kept before their sharpness says what's usual
         const val VIEW_FAR_M = 3.0      // how far off the rock is taken to be from where an earlier photo was taken, for judging blur
         const val VIEW_RING_M = 0.25    // the ring drawn where an earlier photo was taken
+        const val TIE_SHOTS = 8         // photos kept in a spell of tracking for its scenery to be placed: the server ties a spell by 4 of
+                                        // them its mesh places (backend/frames.py LEAST), and not every photo is placed
         const val DOWN_DOUBT_DEG = 1.5  // a photo's down by the turn on the spot and by its own accelerometer further apart than this is said
     }
 }

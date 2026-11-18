@@ -18,6 +18,8 @@ import sh.boulderme.core.GpsAverager
 import sh.boulderme.core.MagCalibration
 import sh.boulderme.core.MeshRow
 import sh.boulderme.core.Plan
+import sh.boulderme.core.Reopen
+import sh.boulderme.core.UploadState
 
 private fun summary(p: Plan): String {
     val holds = p.targets.count { it.isHold }
@@ -361,6 +363,25 @@ class Done(private val app: App, private val id: String) : Form("Captured") {
         text("Uploading publishes them under CC BY 4.0, credited to ${app.store.credit.ifBlank { "nobody by name (set one in Settings)" }}.")
         if (app.store.token.isEmpty()) text("Uploading needs the site's editing token: see Settings.", WARN)
         text(if (u.done) "It's on the server." else "It stays on the phone until it's sent: go back to carry on later.", UIColor.secondaryLabelColor, small = true)
+        reopenButton(app, id, u)
         button("What's in it") { push(UploadForm(app, id)) }
     }
+}
+
+/**
+ * Adding to a capture finished but not sent, while still at the rock: scenery, a panorama or photos missed (Reopen).
+ * Nothing once any of it has been sent; why not, if it can't be.
+ */
+fun Form.reopenButton(app: App, id: String, u: UploadState) {
+    val sent = u.done || u.meshAsked || u.recordSent || u.pointsSent || u.logSent || u.sent.isNotEmpty() || u.scenerySent.isNotEmpty()
+    if (sent || app.uploader.busy(id)) return
+    val record = Reopen.record(Files.readText("${app.store.captureDir(id)}/capture.json"))
+    Reopen.cannot(record, u.mesh?.let { app.store.plan(it)?.key }, sent)?.let { text(it, UIColor.secondaryLabelColor, small = true); return }
+    button("Add more: scenery, a panorama or photos") {
+        val c = CaptureController(app, u.mesh, u.name, record?.detail?.set, reopen = id) { rebuild() }
+        c.modalPresentationStyle = UIModalPresentationFullScreen
+        screen.presentViewController(c, animated = true, completion = null)
+    }
+    val here = app.sensors.place.result()
+    Reopen.far(record, here?.lat, here?.lng)?.let { text(it, WARN, small = true) }
 }

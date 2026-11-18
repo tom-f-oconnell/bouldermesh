@@ -25,6 +25,9 @@ phone yet**: see [What's been checked](#whats-been-checked).
    when one came out blurred or badly lit. *Skip this* leaves what can't be reached (too high, the back). *Take* takes
    one whatever is in view, as soon as you hold still (*Hold still…* while it waits, up to 8 s).
 5. **Finish**, then *Upload* once you have signal. The server meshes your photos together with the mesh's own.
+   Missed the scenery or the panorama? While you're still at the rock and nothing is sent, *Add more* on the capture
+   carries it on: the turn on the spot again (the panorama), line up again, then 8 or so photos of the rock before
+   *Scenery*, as they place this visit's frames on the mesh.
 6. **Once it's meshed**, *View mesh* on its capture shows it in the site's own viewer. Home asks the server how each
    upload stands whenever it comes up (*Check if meshed* asks again); press a capture for what it holds, grouped by
    what each photo was for (each climb, the card, tying to the old photos, the scenery), with what's been sent ticked.

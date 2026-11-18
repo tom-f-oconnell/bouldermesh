@@ -56,6 +56,7 @@ import sh.boulderme.core.TERMS
 import sh.boulderme.core.SignInHelp
 import androidx.compose.foundation.layout.safeDrawingPadding
 import sh.boulderme.core.Plan
+import sh.boulderme.core.Reopen
 import sh.boulderme.core.Vec3
 
 val GOOD = Color(0xFF58C27D)
@@ -532,9 +533,26 @@ fun DoneScreen(a: MainActivity, id: String, go: (Screen) -> Unit) {
         if (!u.done) Button(enabled = !Uploader.busy(id) && u.photos >= 3, onClick = { Uploader.start(a.store, a.api, id) }) { Text(if (u.sent.isEmpty()) "Upload now" else "Carry on uploading") }
         Text("Uploading publishes them under CC BY 4.0, credited to ${a.store.credit.ifBlank { "nobody by name (set one in Settings)" }}.", style = MaterialTheme.typography.bodySmall)
         if (a.store.token.isEmpty()) Text("Uploading needs the site's editing token: see Settings.", color = WARN)
+        ReopenButton(a, id, u, go)
         OutlinedButton(onClick = { go(Screen.Upload(id)) }) { Text("What's in it") }
         OutlinedButton(onClick = { go(Screen.Home) }) { Text(if (u.done) "Home" else "Later: it stays on the phone") }
     }
+}
+
+/**
+ * Adding to a capture finished but not sent, while still at the rock: scenery, a panorama or photos missed (Reopen).
+ * Nothing once any of it has been sent; why not, if it can't be.
+ */
+@Composable
+fun ReopenButton(a: MainActivity, id: String, u: Store.Upload, go: (Screen) -> Unit) {
+    val sent = u.done || u.meshAsked || u.recordSent || u.pointsSent || u.logSent || u.sent.isNotEmpty() || u.scenerySent.isNotEmpty()
+    if (sent || Uploader.busy(id)) return
+    val record = remember(id) { Reopen.record(runCatching { java.io.File(a.store.captureDir(id), "capture.json").readText() }.getOrNull()) }
+    val why = Reopen.cannot(record, u.mesh?.let { a.store.plan(it)?.key }, sent)
+    if (why != null) { Text(why, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant); return }
+    OutlinedButton(onClick = { go(Screen.Capture(u.mesh, u.name, record?.detail?.set, reopen = id)) }) { Text("Add more: scenery, a panorama or photos") }
+    val here = a.sensors.place.result()
+    Reopen.far(record, here?.lat, here?.lng)?.let { Text(it, color = WARN, style = MaterialTheme.typography.bodySmall) }
 }
 
 /**

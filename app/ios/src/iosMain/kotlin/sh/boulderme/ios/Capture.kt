@@ -135,6 +135,8 @@ import platform.posix.utsname
 import sh.boulderme.core.Axes
 import sh.boulderme.core.CameraPose
 import sh.boulderme.core.CaptureFlow
+import sh.boulderme.core.Reopen
+import sh.boulderme.core.unplacedSaid
 import sh.boulderme.core.CaptureSession
 import sh.boulderme.core.CaptureUi
 import sh.boulderme.core.Coverage
@@ -193,17 +195,23 @@ private fun machine(): String = memScoped { val u = alloc<utsname>(); uname(u.pt
  * memory is swept after each: a frame Kotlin has seen is kept until then, and ARKit stops giving pictures once many are.
  */
 @OptIn(NativeRuntimeApi::class)
-class CaptureController(private val app: App, mesh: String?, private val name: String, set: String? = null, private val done: (String?) -> Unit) : UIViewController(nibName = null, bundle = null) {
+class CaptureController(private val app: App, mesh: String?, private val name: String, set: String? = null,
+                        reopen: String? = null,     // the id of a capture finished earlier, to carry on (Reopen)
+                        private val done: (String?) -> Unit) : UIViewController(nibName = null, bundle = null) {
     private val plan = mesh?.let { app.store.plan(it) }
     private val guide: GuideMesh? = if (plan != null && mesh != null) app.store.guide(mesh) else null
-    val id: String = (NSDate().timeIntervalSince1970.toLong()).toString(36) + (100..999).random()
+    val id: String = reopen ?: ((NSDate().timeIntervalSince1970.toLong()).toString(36) + (100..999).random())
     private val dir = app.store.captureDir(id)
     init { plan?.let { app.store.keepPlan(id, it.mesh) } }
     private val core = CaptureSession(plan.takeIf { guide != null }, guide, id, IosStore.APP, machine(), NSDate().timeIntervalSince1970)
     private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = this@CaptureController.app.store.credit.ifBlank { null } }, set, app.store.anonFirst)
+    init {
+        if (reopen != null) flow.reopen(Reopen.record(Files.readText("$dir/capture.json")) ?: error("the record of $reopen can't be read"),
+            Files.readBytes("$dir/points.bin"), Files.readText("$dir/capture-log.jsonl") ?: "")
+    }
     private val sounds = Sounds()
     private val dingKept = app.store.dingKept; private val tickSame = app.store.tickSame
-    private val arSession = "a" + (100000..999999).random()
+    private val arSession = flow.arBase ?: ("a" + (100000..999999).random())
     private val sceneView = ARSCNView()
     private val scene = SCNScene()
     private val ciContext = CIContext.context()
@@ -615,7 +623,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         Files.write("$dir/capture-log.jsonl", flow.logText())
         // and the points ARKit tracked, for whatever places the photos on the server: now and then, and at the end
         if (last || core.shotCount % 8 == 1) Files.write("$dir/points.bin", flow.points())
-        app.store.saveUpload(id, UploadState(name = "$name (capture)", mesh = plan?.mesh, photos = core.shotCount))     // nothing's sent before it's finished
+        // nothing's sent before it's finished; a capture carried on keeps what it had
+        app.store.saveUpload(id, (app.store.upload(id) ?: UploadState(name = "$name (capture)")).copy(mesh = plan?.mesh, photos = core.shotCount))
     }
 
     // ---- what's said and offered ---------------------------------------------------------------------------------------
@@ -704,7 +713,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             }
         }
         if (kept == 0) go()
-        else confirm("Finish this capture?", "$kept photos kept" + (if (ui.total > 0 && ui.done < ui.total) ", with ${ui.total - ui.done} of ${ui.total} still to do. What's there is still worth sending." else "."),
+        else confirm("Finish this capture?", "$kept photos kept" + (if (ui.total > 0 && ui.done < ui.total) ", with ${ui.total - ui.done} of ${ui.total} still to do. What's there is still worth sending." else ".") + ui.unplacedSaid(),
             "Finish", "Carry on") { go() }
     }
 }

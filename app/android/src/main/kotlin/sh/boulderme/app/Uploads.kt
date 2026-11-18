@@ -135,6 +135,7 @@ fun UploadScreen(a: MainActivity, id: String, go: (Screen) -> Unit) {
             item {
                 val (said, color) = uploadSaid(u, null, server)
                 Text(said, color = color)
+                ReopenButton(a, id, u, go)
                 server?.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh ->
                     TextButton(onClick = { go(Screen.Viewer(mesh, u.name, Screen.Upload(id))) }) { Text("View its mesh") }
                     KeepMesh(a, mesh, u.name)

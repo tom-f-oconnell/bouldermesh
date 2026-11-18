@@ -47,7 +47,8 @@ sealed interface Screen {
     data object SignIn : Screen
     data object Calibrate : Screen
     /** mesh: the mesh being added to, or null for a rock with none. */
-    data class Capture(val mesh: String?, val name: String, val set: String? = null) : Screen      // set: the set of beta it's for
+    data class Capture(val mesh: String?, val name: String, val set: String? = null,      // set: the set of beta it's for
+                       val reopen: String? = null) : Screen                                // a capture finished earlier, to carry on (Reopen)
     data class Done(val id: String) : Screen
     /** A capture on this phone: what it holds, by what each part was for; and one of its photos (or scenery's frames). */
     data class Upload(val id: String) : Screen

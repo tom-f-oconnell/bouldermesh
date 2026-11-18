@@ -47,6 +47,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import sh.boulderme.core.CaptureUi
 import sh.boulderme.core.LevelUi
 import sh.boulderme.core.Phase
+import sh.boulderme.core.unplacedSaid
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -116,7 +117,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
         }
         return
     }
-    val controller = remember { ArController(a, a.store, a.sensors, plan, guide, what.name + " (capture)", what.set) { ui = it } }
+    val controller = remember { ArController(a, a.store, a.sensors, plan, guide, if (what.reopen != null) what.name else what.name + " (capture)", what.set, what.reopen) { ui = it } }
     val view = remember {
         GLSurfaceView(a).apply {
             preserveEGLContextOnPause = true
@@ -220,7 +221,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
 
     if (leaving) AlertDialog(onDismissRequest = { leaving = false },
         title = { KeepDialogInTopHalf(); Text(if (ui.kept > 0) "Finish this capture?" else "Leave?") },
-        text = { Text(if (ui.kept > 0) "${ui.kept} photos kept" + (if (ui.total > 0 && ui.done < ui.total) ", with ${ui.total - ui.done} of ${ui.total} still to do. What's there is still worth sending." else ".") else "No photos have been kept.") },
+        text = { Text((if (ui.kept > 0) "${ui.kept} photos kept" + (if (ui.total > 0 && ui.done < ui.total) ", with ${ui.total - ui.done} of ${ui.total} still to do. What's there is still worth sending." else ".") else "No photos have been kept.") + ui.unplacedSaid()) },
         confirmButton = { TextButton(onClick = {
             leaving = false
             if (ui.kept > 0) { controller.finish(); go(Screen.Done(controller.id)) } else { a.store.deleteCapture(controller.id); go(Screen.Home) }

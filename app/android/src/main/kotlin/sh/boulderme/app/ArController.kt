@@ -30,6 +30,7 @@ import com.google.ar.core.exceptions.NotYetAvailableException
 import sh.boulderme.core.Axes
 import sh.boulderme.core.CameraPose
 import sh.boulderme.core.CaptureFlow
+import sh.boulderme.core.Reopen
 import sh.boulderme.core.Features
 import sh.boulderme.core.LICENCE
 import sh.boulderme.core.CaptureSession
@@ -58,14 +59,20 @@ import javax.microedition.khronos.opengles.GL10
  */
 class ArController(
     private val activity: Activity, private val store: Store, private val sensors: PhoneSensors,
-    private val plan: Plan?, guide: GuideMesh?, private val name: String, set: String?, private val onUi: (CaptureUi) -> Unit,
+    private val plan: Plan?, guide: GuideMesh?, private val name: String, set: String?,
+    reopen: String? = null,         // the id of a capture finished earlier, to carry on (Reopen)
+    private val onUi: (CaptureUi) -> Unit,
 ) : GLSurfaceView.Renderer {
-    val id: String = java.lang.Long.toString(System.currentTimeMillis() / 1000, 36) + (100..999).random()
+    val id: String = reopen ?: (java.lang.Long.toString(System.currentTimeMillis() / 1000, 36) + (100..999).random())
     private val dir = store.captureDir(id)
     init { plan?.let { store.keepPlan(id, it.mesh) } }
     private val guide = guide.takeIf { plan != null }
     private val core = CaptureSession(plan, this.guide, id, BuildInfo.APP, "${Build.MANUFACTURER} ${Build.MODEL}", System.currentTimeMillis() / 1000.0)
     private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = store.credit.ifBlank { null } }, set, store.anonFirst)
+    init {
+        if (reopen != null) flow.reopen(Reopen.record(File(dir, "capture.json").readText()) ?: error("the record of $reopen can't be read"),
+            File(dir, "points.bin").takeIf { it.exists() }?.readBytes(), File(dir, "capture-log.jsonl").takeIf { it.exists() }?.readText() ?: "")
+    }
     private val lock = Any()        // round every use of the flow: frames are drawn on one thread, photos judged on another
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -79,7 +86,7 @@ class ArController(
     private val view = FloatArray(16); private val proj = FloatArray(16); private val viewProj = FloatArray(16); private val mvp = FloatArray(16)
     private var width = 1; private var height = 1
     private var sensorOrientation = 90
-    private val arSession = "a" + (System.nanoTime() % 100000)
+    private val arSession = flow.arBase ?: ("a" + (System.nanoTime() % 100000))
     @Volatile private var pendingTap: FloatArray? = null
 
     /** How the screen is turned from the way the phone is naturally held, in quarter turns (Surface.ROTATION_*). */
@@ -170,7 +177,7 @@ class ArController(
         File(dir, "capture-log.jsonl").writeText(flow.logText())
         // and the points ARCore tracked, for whatever places the photos on the server: now and then, and at the end
         if (last || core.shotCount % 8 == 1) File(dir, "points.bin").writeBytes(flow.points())
-        store.saveUpload(id, Store.Upload(name = name, mesh = plan?.mesh, photos = core.shotCount))
+        store.saveUpload(id, (store.upload(id) ?: Store.Upload(name = name)).copy(name = name, mesh = plan?.mesh, photos = core.shotCount))     // a capture carried on keeps its project
         core.shotCount
     }
 
