@@ -54,6 +54,7 @@ import beta as beta_mod  # noqa: E402
 import captureplan  # noqa: E402
 import scale as scale_mod  # noqa: E402
 import compute  # noqa: E402
+import ec2fleet  # noqa: E402
 import diagnostics  # noqa: E402
 import glbpack  # noqa: E402
 import heading as heading_mod  # noqa: E402
@@ -8230,6 +8231,10 @@ def reap_machines() -> None:
     while True:
         time.sleep(60)
         try:
+            FLEET.sweep()       # EC2 machines started from the admin page: ended once their climb is done, or by AWS
+        except Exception as e:
+            print(f"ec2: sweep failed ({type(e).__name__}: {e})", flush=True)
+        try:
             MACHINES.sweep()    # machines that stopped asking: offline, in their record
             MACHINES.hourly()   # and once an hour, each one's time working, idle, held back or offline
         except Exception as e:
@@ -8266,7 +8271,7 @@ def compute_state() -> dict:
     return {"workers": [{"name": w.name, "remote": w.remote, "error": w.error, "busy": slot_doing(w)}
                         for w in _workers if not w.retired],
             "pool": _pool.status() if _pool else None, "local_meshing": _local_meshing,
-            "machines": {**MACHINES.state(), "served": bool(WORKER_PORT), "url": WORKER_URL}}
+            "machines": {**MACHINES.state(), "served": bool(WORKER_PORT), "url": WORKER_URL}, "ec2": FLEET.state()}
 
 
 # ----------------------------------------------------------------- machines that connect here for work
@@ -9016,6 +9021,9 @@ MACHINES = pullwork.Board(DATA / "compute" / "machines.sqlite", DATA / "compute"
                           jobctl, machine_rules, lambda m: NOTIFIER.registered("machine", m, f" ({m['client'] or 'a worker script'})"),
                           came_went=came_went("machine"), idle_why=lambda: machines_idle_why(), downloaded=script_downloaded("worker"),
                           cpu_image=lambda image: cpu_image_for(image), describe=lambda task, label: describe_job(task, label))
+FLEET = ec2fleet.Fleet(DATA / "compute" / "ec2.sqlite", MACHINES, lambda: compute_settings(),
+                       lambda: {k: settings().secret(k) for k in ("aws.access_key_id", "aws.secret_access_key")},
+                       lambda: server_id(), lambda: WORKER_URL, notify=lambda title, text: NOTIFIER.send(title, text, priority=4))
 
 
 def cpu_image_for(image: str) -> str:
@@ -11731,6 +11739,27 @@ def admin_test(_: dict) -> dict:
     return {"result": prov.test() if prov else "nothing to test: this server does everything itself"}
 
 
+def ec2_pull() -> None:
+    if settings().get("compute.provider") != "pull":
+        raise ValueError("EC2 machines started here connect for work: choose \"Machines that connect here for work\" first")
+
+
+def admin_ec2_start(body: dict) -> dict:
+    ec2_pull()
+    r = FLEET.start(body.get("instance_type"))
+    return {"result": f"started {r['name']} ({r['instance_id']}{', spot' if r['spot'] else ''}): it joins the machines once "
+                      "it's up, in a few minutes, and its first climb waits for the image to download"}
+
+
+def admin_ec2_stop(body: dict) -> dict:
+    return {"result": FLEET.stop(str(body.get("id") or ""), after_job=bool(body.get("after_job")))}
+
+
+def admin_ec2_test(body: dict) -> dict:
+    ec2_pull()
+    return {"result": FLEET.test(body.get("instance_type"))}
+
+
 def admin_end_nodes(_: dict) -> dict:
     ended = 0
     for pool in [_pool, *_old_pools]:
@@ -11742,6 +11771,10 @@ def admin_end_nodes(_: dict) -> dict:
     for iid in (prov.leftovers() if prov else []):
         if iid not in busy:
             prov.stop(compute.Node(host="", user="", id=iid))
+            ended += 1
+    for r in FLEET.state()["machines"]:
+        if not r["ended"]:
+            FLEET.stop(r["instance_id"])
             ended += 1
     return {"result": f"ended {ended} machine(s); any in use end when their climb is done"}
 
@@ -11984,7 +12017,7 @@ def main() -> None:
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
                                        "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-rescind": admin_user_rescind, "user-change": admin_user_change,
                                        "user-signin": admin_user_signin, "user-delete": admin_user_delete, "submission": admin_submission, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
-                                       "machine-revoke": admin_machine_revoke, "clear-rejected": admin_clear_rejected,
+                                       "machine-revoke": admin_machine_revoke, "ec2-start": admin_ec2_start, "ec2-stop": admin_ec2_stop, "ec2-test": admin_ec2_test, "clear-rejected": admin_clear_rejected,
                                        "volunteers-forget": lambda _: {"result": f"forgot {VOLUNTEERS.forget_gone()} volunteer(s)"},
                                        "machines-forget": lambda _: {"result": f"forgot {MACHINES.forget_gone()} machine(s)"},
                                        "volunteer-approve": admin_volunteer_approve, "volunteer-deny": admin_volunteer_deny,

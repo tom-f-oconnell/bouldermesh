@@ -1438,6 +1438,15 @@ scale.json, poses.json, scale_people.json, objects.json), and nothing else.
 What's specific to a provider is only starting and ending machines, so the rest works with any machine
 with Docker that SSH reaches. Adding GCP would be another class like `AWSProvider`.
 
+**EC2 machines that connect here** (`backend/ec2fleet.py`). The server takes machines from one provider at a time, and
+the machines that connect here (atlas, hal) are the main ones, so EC2 joins them as more of the same, not as a
+provider: an instance runs the worker script with a token of its own, made approved, and asks for work like the rest.
+They're started and ended by hand on the admin page (the user's choice, Nov 18), not on a backlog. Ending one once its
+climb is done gives it no new climb meanwhile (the board's `parked`, kept over a restart), and the server ends it
+within a minute of its climb ending. Their tag isn't the "aws" provider's, which ends its own instances left from
+before a restart. Nothing reaches into them, so they need no security group of their own; the metadata service is
+closed to their jobs' containers (one hop), as the user data holds the token. Each start downloads the 18 GB image.
+
 ## Scenes around meshes (`backend/splat.py`)
 
 The viewer's *Scene* background is a sky over ground the colour of the rock's foot (the mean colour of its lowest 6% by

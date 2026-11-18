@@ -272,11 +272,7 @@ class AWSProvider:
             subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "bouldermesh-worker", "-f", str(self.key_file)], check=True)
 
     def _client(self, service: str):
-        import boto3
-        kw = {"region_name": self.s["compute.aws.region"]}
-        if self.creds.get("aws.access_key_id") and self.creds.get("aws.secret_access_key"):
-            kw.update(aws_access_key_id=self.creds["aws.access_key_id"], aws_secret_access_key=self.creds["aws.secret_access_key"])
-        return boto3.client(service, **kw)
+        return aws_client(self.s, self.creds, service)
 
     def _ami(self) -> str:
         return self.s["compute.aws.ami"] or self._client("ssm").get_parameter(Name=DLAMI)["Parameter"]["Value"]
@@ -397,6 +393,15 @@ nohup /usr/local/bin/bouldermesh-watchdog > /dev/null 2>&1 &
             if "DryRunOperation" not in str(e):
                 raise
         return f"account {ident['Account']}: allowed to start {self.s['compute.aws.instance_type']} from {self._ami()}"
+
+
+def aws_client(settings: dict, creds: dict, service: str):
+    """A boto3 client in the admin page's region, with its credentials if it has them, else AWS's usual ones."""
+    import boto3
+    kw = {"region_name": settings["compute.aws.region"]}
+    if creds.get("aws.access_key_id") and creds.get("aws.secret_access_key"):
+        kw.update(aws_access_key_id=creds["aws.access_key_id"], aws_secret_access_key=creds["aws.secret_access_key"])
+    return boto3.client(service, **kw)
 
 
 def _key_file(keys_dir: Path, name: str, text: str) -> Path:

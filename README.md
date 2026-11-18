@@ -1033,6 +1033,17 @@ machine. *Run more on* adds up to that many machines (2 by default):
   stops. Elsewhere it says what to install by hand. Started without Docker, or without the toolkit on a machine with an
   NVIDIA GPU, the script says so and stops, before registering.
 
+  **EC2 machines that connect here**: with this choice, *Start an EC2 machine* (under *Machines*) starts an EC2 GPU
+  instance of the AWS settings' type (or the one typed beside the button) that runs this script as a service, with a
+  token of its own, so it works alongside the machines you run yourself. Nothing starts or ends one by itself: it runs
+  until *End now* (its climb waits for another machine) or *End after its climb* (it's given no new one, and ends once
+  that's done). If AWS ends one itself, as when it takes back a spot instance, its token is revoked and your phone is
+  told. *Check it could start one* is a dry run. It needs WORKER_URL, the AWS credentials, and AWS's quota for GPU
+  instances ("All G and VT Spot Instance Requests", or the on-demand one), which is 0 on a new account until you ask for
+  more. It uses the region, spot, disk (at least the AMI's own and 60 GB more), AMI (AWS's Deep Learning GPU image, which has Docker and NVIDIA's toolkit),
+  subnet and security group (empty: the VPC's default, as nothing needs to reach in) of the AWS settings. Its first
+  climb waits for the image to download (about 18 GB). The spot cost shown is at the price when it started, without its disk.
+
   The first time, it makes the machine's token, asks a name (optional) and registers it; the machine then waits under
   *Machines* (shown with this choice) for *Approve*, here or from a notification on your phone (see "Approving
   volunteers and machines" below). Or *Add machine* there shows a command with a token of the admin page's, approved
@@ -1437,6 +1448,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_provenance.py  # offline: where each mesh's photos came from
     python3 tests/test_compute.py     # offline: running reconstructions on other machines, through stand-ins for ssh and AWS
     python3 tests/test_pullwork.py    # offline: machines that connect here for work, through the script and a stand-in for docker; registering, approval, held meshes
+    python3 tests/test_ec2fleet.py    # offline: EC2 machines that connect here, started and ended from the admin page, through stand-ins for AWS
     python3 tests/test_notify.py      # offline: ntfy notifications, their signed Approve and Deny, following the replies
     python3 tests/test_backup.py      # offline: the server's database snapshots, and deploy/backup.sh copying a stand-in server
     python3 tests/test_admin.py       # offline: the admin page's settings, credentials and photo permissions

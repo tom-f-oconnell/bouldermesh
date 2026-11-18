@@ -64,7 +64,7 @@
   .fb{border-top:1px solid var(--line);padding:8px 0} .fb .note{margin:0 0 4px} .fbtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
   .aws,.ssh,.pull{display:none}
   body.p-aws .aws, body.p-ssh .ssh, body.p-pull .pull{display:block}
-  body.p-aws .grid.aws{display:grid}
+  body.p-aws .grid.aws, body.p-pull .grid.pull{display:grid}
   #tabs{display:flex;gap:4px;flex-wrap:wrap;max-width:860px;margin:0 auto;padding:10px 16px 0}
   #tabs button{background:none;border:1px solid transparent;border-bottom:2px solid transparent;color:var(--mute);padding:7px 12px;border-radius:6px 6px 0 0;font:inherit;cursor:pointer}
   #tabs button:hover{color:var(--fg)}
@@ -206,11 +206,11 @@
     </div>
     <div class="ssh aws pull"><label>Docker image the machines run (pushed to a registry they can pull from)</label><input type="text" id="image" placeholder="ghcr.io/you/bouldermesh:latest"><div class="note" id="image-note"></div></div>
     <div class="ssh"><label>Machines (one user@host[:port] a line), with Docker and the image</label><textarea id="hosts"></textarea></div>
-    <div class="grid aws">
+    <div class="grid aws pull">
       <div><label>Region</label><input type="text" id="region"></div>
       <div><label>Instance type</label><input type="text" id="itype"></div>
       <div><label>AMI (empty: AWS's latest Deep Learning base GPU AMI)</label><input type="text" id="ami"></div>
-      <div><label>Security group (empty: made, open to SSH from this server only)</label><input type="text" id="sg"></div>
+      <div><label>Security group (empty: for AWS instances started when needed, one made, open to SSH from this server only; for EC2 machines that connect here, the VPC's default)</label><input type="text" id="sg"></div>
       <div><label>Subnet (empty: the default VPC's)</label><input type="text" id="subnet"></div>
       <div><label>Disk (GB)</label><input type="number" id="vol" min="30"></div>
       <div><label>Instance profile (for pulling from ECR)</label><input type="text" id="profile"></div>
@@ -228,6 +228,19 @@
         <div class="row" style="margin-top:22px"><button id="mach-add">Add machine</button></div>
       </div>
       <div id="mach-new"></div>
+    </div>
+    <div id="ec2">
+      <h3>EC2 machines that connect here</h3>
+      <div class="note">Each runs the worker script on an EC2 GPU instance with a token of its own, so it works like the
+        machines above, alongside them. It runs until you end it here: nothing starts or ends one by itself, though AWS can
+        take back a spot instance (you're told). It uses the AWS settings above (region, spot, disk, AMI, subnet, security
+        group) and the AWS credentials on this page, and needs WORKER_URL set. Its first climb waits for the image to
+        download (about 18 GB). The cost shown is for spot instances only, at the price when each started, without its disk.</div>
+      <div id="ec2-list"></div>
+      <div class="grid">
+        <div><label>Instance type <small>(empty: the one above)</small></label><input type="text" id="ec2-type" placeholder="g4dn.2xlarge"></div>
+        <div class="row" style="margin-top:22px"><button id="ec2-start">Start an EC2 machine</button><button class="sec" id="ec2-test">Check it could start one</button></div>
+      </div>
     </div>
   </section>
   <section id="vols">
@@ -578,6 +591,22 @@ function render(s){
   $('#mach-list').innerHTML += goneLine('mach', ms.machines.filter(m => gone(m.status)), 'machine');
   const waiting = ms.jobs.filter(j => j.state === 'queued');
   if (waiting.length) $('#mach-list').innerHTML += `<div class="note">${waiting.length} climb(s) waiting for a machine.</div>`;
+  const fleet = s.compute.ec2 || { machines: [] }, live = fleet.machines.filter(r => !r.ended), ended = fleet.machines.filter(r => r.ended);
+  $('#ec2').style.display = v['compute.provider'] === 'pull' || live.length ? '' : 'none';
+  $('#ec2-type').placeholder = v['compute.aws.instance_type'];
+  const machOf = id => ms.machines.find(m => m.id === id);
+  const ec2Row = r => {
+    const m = machOf(r.machine_id);
+    return `<tr><td>${esc(r.name)}<div class="note">${esc(r.instance_id)}, ${esc(r.instance_type)}${r.spot ? ', spot' : ''}${r.zone ? `, ${esc(r.zone)}` : ''}${r.address ? `, ${esc(r.address)}` : ''}</div></td>
+      <td>${r.ended ? `<span class="note">${esc(r.ended_why || 'ended')}</span>` : `${esc(r.state || '')}${m ? `, <span class="${m.status === 'working' ? 'ok' : m.status === 'held back' ? 'warn' : ''}">${esc(m.status)}</span>` : ''}${
+        r.stop_after_job ? '<div class="note warn">ends once its climb is done</div>' : ''}`}</td>
+      <td>${r.hours.toFixed(1)} h${r.cost !== null ? ` <span class="note">(~$${r.cost.toFixed(2)})</span>` : ''}</td>
+      <td>${r.ended ? '' : `${r.stop_after_job ? '' : `<button data-ec2after="${esc(r.instance_id)}" title="It's given no new climb, and ends once the one it has is done (at once, if it has none)">End after its climb</button> `}<button class="danger" data-ec2now="${esc(r.instance_id)}">End now</button>`}</td></tr>`;
+  };
+  const head = '<tr><th>Machine</th><th>Now</th><th>Up</th><th></th></tr>';
+  $('#ec2-list').innerHTML = (live.length ? `<table>${head}${live.map(ec2Row).join('')}</table>` : '<div class="note">None running.</div>')
+    + (ended.length ? `<details><summary class="note">${ended.length} ended in the last week</summary><table>${head}${ended.map(ec2Row).join('')}</table></details>` : '')
+    + (fleet.url ? '' : '<div class="note warn">WORKER_URL isn\'t set, so an EC2 machine wouldn\'t know where to connect.</div>');
   if ((ms.changes || []).length) $('#mach-list').innerHTML += `<details${machChangesOpen ? ' open' : ''} id="mach-changes"><summary class="note">Latest changes</summary><table>${
     ms.changes.map(c => `<tr><td>${new Date(c.start * 1000).toLocaleString()}</td><td>${esc(c.name || c.machine)}</td><td>${esc(c.state)}${c.why ? `: ${esc(c.why)}` : ''}</td></tr>`).join('')}</table></details>`;
   $('#mach-changes')?.addEventListener('toggle', ev => { machChangesOpen = ev.target.open; });
@@ -872,7 +901,7 @@ async function save(changes, compute){
   try { const s = await call('/api/admin/settings', changes); if (compute) editing = false; render(s); msg('Saved'); }
   catch (e) { msg(e.message, 8000); refresh(); }
 }
-$('#compute').addEventListener('input', ev => { if (ev.target.id === 'mach-name') return; editing = true; $('#unsaved').textContent = 'Not saved yet'; });
+$('#compute').addEventListener('input', ev => { if (ev.target.id === 'mach-name' || ev.target.id === 'ec2-type') return; editing = true; $('#unsaved').textContent = 'Not saved yet'; });
 document.querySelectorAll('input[name=tex]').forEach(r => r.onchange = () => save({ 'site.textures': r.value }));
 document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => save({ 'site.sources': r.value }));
 $('#small-thumbs').onchange = () => save({ 'site.small_thumbs': $('#small-thumbs').checked });
@@ -891,6 +920,19 @@ $('#savecreds').onclick = async () => {
   try { render(await call('/api/admin/secrets', Object.fromEntries(fields.map(f => [f.dataset.secret, f.value])))); fields.forEach(f => f.value = ''); msg('Credentials saved'); }
   catch (e) { msg(e.message, 8000); }
 };
+$('#ec2-start').onclick = async () => {
+  const type = $('#ec2-type').value.trim() || $('#ec2-type').placeholder;
+  if (!confirm(`Start an EC2 ${type}${$('#spot').checked ? ' spot' : ''} instance? It costs money until you end it here.`)) return;
+  msg('Starting…', 60000);
+  try { msg((await call('/api/admin/actions/ec2-start', { instance_type: $('#ec2-type').value.trim() })).result, 12000); refresh(); } catch (e) { msg(e.message, 12000); }
+};
+$('#ec2-test').onclick = async () => { msg('Checking…', 60000); try { msg((await call('/api/admin/actions/ec2-test', { instance_type: $('#ec2-type').value.trim() })).result, 12000); } catch (e) { msg(e.message, 12000); } };
+$('#ec2-list').addEventListener('click', async ev => {
+  const d = ev.target.dataset, id = d.ec2after || d.ec2now;
+  if (!id) return;
+  if (d.ec2now && !confirm('End this EC2 machine now? A climb it\'s meshing waits for another machine.')) return;
+  try { msg((await call('/api/admin/actions/ec2-stop', { id, after_job: !!d.ec2after })).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); }
+});
 $('#test').onclick = async () => { msg('Testing…', 60000); try { msg((await call('/api/admin/actions/test', {})).result, 12000); } catch (e) { msg(e.message, 12000); } };
 $('#end').onclick = async () => { if (!confirm('End every cloud machine this server started? Jobs on them wait and run again.')) return; try { msg((await call('/api/admin/actions/end-nodes', {})).result); refresh(); } catch (e) { msg(e.message, 8000); } };
 function showMachine(r){

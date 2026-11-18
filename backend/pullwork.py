@@ -175,6 +175,7 @@ class Board:
         self.downloaded = downloaded
         self._said: dict[str, tuple[str, float]] = {}   # each machine's reason for its state last logged, and when
         self.paused: str | None = None      # why no new job is given out (the server about to restart), but DRAIN_TASKS; those running go on
+        self.parked: dict[str, str] = {}    # machines given no new job, by id, with why (an EC2 machine to end once its job is done)
         self._hour = int(time.time() // 3600)
         self.log = lambda line: log(line) if log is not print else print(line, flush=True)
         self.held = db_path.parent / "held"     # what provisional machines made, for climbs to take once they're approved
@@ -469,6 +470,11 @@ class Board:
             return None
         return "; ".join(f"{m.get('name')} is held back ({c['why']})" for m, c in states)
 
+    def busy(self, mid: str) -> bool:
+        """Whether a machine has a job running."""
+        with self.cond:
+            return any(j.machine == mid and j.state == "running" for j in self.jobs.values())
+
     def connected(self) -> bool:
         """Whether a machine has asked for work or reported lately."""
         cut = time.time() - CONNECTED
@@ -537,6 +543,10 @@ class Board:
             self._state(m, "awaiting approval")
             return {"wait": 300, "why": "waiting for approval by whoever runs this site: only approved machines filter photos, "
                                         "find beta or find sizes", "provisional": True}
+        parked = self.parked.get(m["id"])
+        if parked and not self.busy(m["id"]):
+            self._state(m, "held back", parked)
+            return {"wait": POLL, "why": f"held back: {parked}", "held": True}
         held = str(client.get("held") or "")[:200]
         if held:    # its owner's work, or memory short: as its script says
             self._state(m, "held back", held)
