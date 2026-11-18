@@ -93,7 +93,7 @@ fun signIn(app: App, code: String, done: (String, Boolean) -> Unit) = app.api.pa
 }
 
 /**
- * A link the app was opened by (AppDelegate.swift): the site's "Sign the app in" on this phone (frontend/index.html,
+ * A link the app was opened by (AppDelegate.swift, SceneDelegate): the site's "Sign the app in" on this phone (frontend/index.html,
  * appsHtml()), bouldermesh://pair?code=<a pairing code of the account's>&server=<the site>. A link for a server other
  * than the app's is refused, so a link from elsewhere can't send this phone's captures somewhere else. Answers whether
  * it was one of the app's.

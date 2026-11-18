@@ -14,7 +14,9 @@ UDID=$(xcrun simctl list devices available -j | python3 -c '
 import json, re, sys
 found = [(runtime, d) for runtime, ds in json.load(sys.stdin)["devices"].items() if "iOS" in runtime for d in ds if d["name"].startswith("iPhone")]
 # the version is the numbers right after "iOS-" (Xcode 27 adds more after them, such as "iOS-27-0-iPhone19")
-found.sort(key=lambda f: [int(n) for n in re.search(r"iOS-(\d+(?:-\d+)*)", f[0]).group(1).split("-")])
+# and an iPhone with one screen ("iPhone 17", "iPhone 17 Pro"), where there is one: a folding one's two can't be pictured as one
+found.sort(key=lambda f: ([int(n) for n in re.search(r"iOS-(\d+(?:-\d+)*)", f[0]).group(1).split("-")],
+                          bool(re.fullmatch(r"iPhone \d+( Pro)?", f[1]["name"]))))
 print(found[-1][1]["udid"])')
 [ -n "$UDID" ] || { echo "::error::no iPhone simulator found"; xcrun simctl list runtimes; exit 1; }
 echo "simulator $UDID"
