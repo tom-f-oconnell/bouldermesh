@@ -78,7 +78,6 @@ class MainActivity : ComponentActivity() {
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) tryOut()
         signInFrom(intent)
         if (intent?.action == Updates.ACTION) Updates.installerSaid(this, intent)
-        if (!tryingOut) Updates.lookQuietly()       // a newer build, offered on the Home screen
         topHalf = store.topHalf
         store.onTopHalf = { v -> runOnUiThread { topHalf = v } }
         // the account's name (if paired before the app filled it in itself) and whether its role draws in the top half only
@@ -199,6 +198,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         sensors.start(has(Manifest.permission.ACCESS_FINE_LOCATION))
         ensureArCore()
+        if (!tryingOut) Updates.look(unlessWithinMs = 10 * 60_000L)     // a newer build, offered on the Home screen
     }
 
     /**

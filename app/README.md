@@ -100,8 +100,9 @@ under a name that stays, a direct download: https://github.com/tom-f-oconnell/bo
 (the volunteer page's *Data collection* links to it, with how testers install, sign in and use the apps).
 
 Every build is signed with one key, so each installs over the last, keeping captures not yet sent, and the app updates
-itself: it looks for a newer build as it starts (the release's title says its build number, CI's run number, which is
-its `versionCode`) and offers *Update* on its Home screen, which downloads it and hands it to Android's installer (the
+itself: it looks for a newer build each time it comes to the front, at most every 10 minutes (the release's title says
+its build number, CI's run number, which is its `versionCode`), and offers *Update* on its Home screen and in *Settings*
+(which shows the build and commit installed, and has *Check for updates*), which downloads it and hands it to Android's installer (the
 person confirms; the first time, Android asks them to let the app install apps). The key is the repo's secrets
 `ANDROID_SIGNING_KEYSTORE` (base64 of a PKCS12 file, alias `bouldermesh`) and `ANDROID_SIGNING_PASSWORD`; its copy on hal
 is in `/data/tom/android-toolchain/signing/` (`signing.env` gives Gradle `BM_SIGNING_KEYSTORE` and
@@ -153,7 +154,7 @@ them by themselves. Each build lasts 90 days. The camera screen needs a real iPh
 simulator); what it does there comes back to the server with each capture (`capture-log.jsonl`), and TestFlight sends
 crash reports to App Store Connect.
 
-To try either against a test server rather than the site, set its address in *Settings*. Plain `http://` works for one
+To try either against a test server rather than the site, set its address in *Settings*, under *Advanced*. Plain `http://` works for one
 on your own network (a debug build on Android; local addresses on an iPhone); anything else has to be https.
 
 The iPhone app is Kotlin too (`ios/src/iosMain`, on UIKit, ARKit and SceneKit), started by a few lines of Swift, so

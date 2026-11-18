@@ -301,10 +301,26 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
     var code by remember { mutableStateOf("") }
     var said by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
     var other by remember { mutableStateOf<Pair<String?, String>?>(null) }     // a code for another device, and what to do with it
+    var advanced by remember { mutableStateOf(false) }
+    val update by Updates.state.collectAsState()
     val scope = rememberCoroutineScope()
     Page("Settings", back = { go(Screen.Home) }) {
-        OutlinedTextField(server, { server = it; a.store.server = it.ifBlank { Store.DEFAULT_SERVER } }, label = { Text("Server") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+        Section("This app")
+        Text("BoulderMesh ${BuildInfo.VERSION}, build ${BuildInfo.BUILD}, commit ${BuildInfo.COMMIT}")
+        val newer = update.newer
+        when {
+            newer != null -> {
+                Text("A newer build is ready: build ${newer.build}, commit ${newer.commit}.")
+                Button(enabled = update.busy == null, onClick = { Updates.state.value = update.copy(busy = "Starting…", error = null); Updates.install(a, newer) }) {
+                    Text(update.busy ?: "Update")
+                }
+                update.error?.let { Text(it, color = BAD) }
+            }
+            update.looking -> Text("Looking for a newer build…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            update.failed != null -> Text("Couldn't look for a newer build: ${update.failed}", color = BAD)
+            update.checked != null -> Text("This is the newest build.", color = GOOD)
+        }
+        if (newer == null) OutlinedButton(enabled = !update.looking, onClick = { Updates.look() }) { Text("Check for updates") }
         Section("Sounds while capturing")
         TextButton(onClick = { dingKept = !dingKept; a.store.dingKept = dingKept }) { Text(if (dingKept) "A bell when a photo is kept: on" else "A bell when a photo is kept: off") }
         TextButton(onClick = { tickSame = !tickSame; a.store.tickSame = tickSame }) {
@@ -362,7 +378,13 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
                 code?.let { SelectionContainer { Text(it, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) } }
             }
         }
-        Text("BoulderMesh ${BuildInfo.VERSION}, build ${BuildInfo.BUILD} (${BuildInfo.COMMIT})", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        TextButton(onClick = { advanced = !advanced }) { Text(if (advanced) "▾ Advanced" else "▸ Advanced") }
+        if (advanced) {
+            OutlinedTextField(server, { server = it; a.store.server = it.ifBlank { Store.DEFAULT_SERVER } }, label = { Text("Server") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+            Text("Where captures are sent and meshes come from. Only change it to try a test server.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 

@@ -29,8 +29,12 @@ object Updates {
     /** A newer build than this one: its build number, commit, and where its APK is. */
     data class Newer(val build: Int, val commit: String, val apk: String, val bytes: Long)
 
-    /** What the Home screen says: the newer build found, if any, and how installing it is going. */
-    data class State(val newer: Newer? = null, val busy: String? = null, val error: String? = null)
+    /**
+     * What the Home screen and Settings say: the newer build found, if any, and how installing it is going; and the
+     * last look's outcome (checked: when, or null if never; looking: one under way; failed: why it couldn't look).
+     */
+    data class State(val newer: Newer? = null, val busy: String? = null, val error: String? = null,
+                     val checked: Long? = null, val looking: Boolean = false, val failed: String? = null)
     val state = MutableStateFlow(State())
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -52,10 +56,22 @@ object Updates {
         return Newer(build, m.groupValues[1], asset["browser_download_url"]!!.jsonPrimitive.content, asset["size"]?.jsonPrimitive?.long ?: 0)
     }
 
-    /** Looks for a newer build, quietly: nothing said if it can't. */
-    fun lookQuietly() = Thread {
-        runCatching { check() }.getOrNull()?.let { state.value = state.value.copy(newer = it) }
-    }.start()
+    /**
+     * Looks for a newer build in the background, keeping what it found (or why it couldn't) in [state]. With
+     * unlessWithinMs, not if the last look was that recent: the app looks each time it comes to the front.
+     */
+    fun look(unlessWithinMs: Long = 0) {
+        val now = System.currentTimeMillis()
+        val s = state.value
+        if (s.looking || (s.checked != null && now - s.checked < unlessWithinMs)) return
+        state.value = s.copy(looking = true)
+        Thread {
+            val got = runCatching { check() }
+            state.value = state.value.copy(looking = false, checked = System.currentTimeMillis(),
+                newer = got.getOrNull() ?: state.value.newer.takeIf { got.isFailure },
+                failed = got.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName })
+        }.start()
+    }
 
     /**
      * Downloads the newer build and hands it to Android's installer, which asks the person to confirm. If this app
