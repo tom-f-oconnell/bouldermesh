@@ -17,7 +17,7 @@ defaults:
     shell: bash       # with pipefail: a build piped through tail still fails the step
 jobs:
   upload:
-    runs-on: macos-26     # Xcode 26: App Store Connect takes only apps built with the iOS 26 SDK or later (Nov 2026)
+    runs-on: xcode-27     # Xcode 27: App Store Connect takes only apps built with the iOS 27 SDK or later from April 2027
     env:
       READY: ${{ secrets.ASC_KEY_P8 != '' && secrets.IOS_DIST_P12 != '' && secrets.IOS_APPSTORE_PROFILE != '' && secrets.APPLE_TEAM_ID != '' }}
       BUILD: ${{ github.run_number }}
@@ -30,11 +30,11 @@ jobs:
       - uses: actions/setup-java@v5
         if: env.READY == 'true'
         with: { distribution: temurin, java-version: "21" }
-      - name: The newest Xcode 26 on the runner, whose iOS 26 SDK the upload needs
+      - name: The newest Xcode 27 on the runner, whose iOS 27 SDK the upload needs
         if: env.READY == 'true'
         run: |
-          x=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          [ -n "$x" ] || { echo "::error::no Xcode 26 on this runner: App Store Connect refuses builds from an older SDK"; ls -d /Applications/Xcode*.app; exit 1; }
+          x=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$x" ] || { echo "::error::no Xcode 27 on this runner: App Store Connect refuses builds from an older SDK"; ls -d /Applications/Xcode*.app; exit 1; }
           sudo xcode-select -s "$x/Contents/Developer"
           xcodebuild -version
       - if: env.READY == 'true'
