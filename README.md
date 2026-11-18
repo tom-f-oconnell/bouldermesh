@@ -759,7 +759,8 @@ answers these only from itself (`GET /api/deploy`, `POST /api/deploy/drain`), th
   climb takes up the mesh after (a project's own, on *Retry*), unless `MESH_RULES` or its inputs changed; areas'
   climbs pause and carry on, and jobs started by hand get 10 minutes. On the server,
   `docker compose exec -T bouldermesh python3 cli.py jobs` says what's running.
-- Changes only to what runs on hal (the worker script, `deploy/backup.sh`, the systemd units) need no deploy: restart the
+- `deploy/backup.sh` runs on the server from its checkout, so a `git pull` there brings changes to it, with no restart.
+- Changes only to what runs on hal (the worker script, the systemd units) need no deploy: restart the
   worker (`sudo systemctl restart bouldermesh-worker`), or copy a changed unit into `/etc/systemd/system/` and
   `sudo systemctl daemon-reload`.
 - Volunteers' and machines' scripts from version 3 update themselves from the server once it serves a newer one (a
@@ -842,8 +843,10 @@ public, as the Projects tab shows it, so it reveals where photos came from and t
 credentials. Back up `data/` yourself: a mesh is an hour of compute. Compute credentials are kept as before
 (encrypted on the admin page, or in `.env`), and cloud machines accept SSH only from this server's address.
 
-**Backups.** Once the public server harvests by itself, its data exists nowhere else. `deploy/backup.sh`, on another
-machine (hal), copies it each night over SSH, with nothing connecting to that machine, into `BACKUP_DIR`:
+**Backups.** Once the public server harvests by itself, its data exists nowhere else. `deploy/backup.sh` copies it each
+night into `BACKUP_DIR`. It runs either on the server, into a Hetzner Storage Box mounted there (as now, since Nov 18,
+2026), or on another machine (hal, before then), which pulls it over SSH with nothing connecting to that machine. Its
+layout:
 
 - `current/`: the server's `data/` and `.env` as they are now, but not its caches of web pages and models, uploads in
   progress or work folders. The `.env` holds the editing token and the key saved credentials are encrypted with, so the
@@ -857,8 +860,8 @@ machine (hal), copies it each night over SSH, with nothing connecting to that ma
   pages), kept 30 days (`KEEP_DAYS`).
 
 Each night's report says how much room is left on the backup's disk, and your phone is told when it's under
-`WARN_FREE_GB` (200): `archive/` only grows, by several GB a day while areas run, so the backup then wants a machine
-with more room (move `BACKUP_DIR` there, with its keys and timers).
+`WARN_FREE_GB` (200): `archive/` only grows, by several GB a day while areas run, so the backup then wants more room
+(a bigger Storage Box, or `BACKUP_DIR` moved to a machine with more, with its keys and timers).
 
 The server is in use while it copies, so a file can go between rsync listing it and copying it (replaced by a newer
 version, moved to `rejected/`, deleted). That leaves this copy's file as it was, so nothing is lost, and the copy runs
@@ -866,7 +869,23 @@ once more straight away to take what those became. Kept files (meshes, photos, m
 named in that night's report, and the admin page shows them in orange; the next night's copy brings them. A job's
 staging folders (`data/compute/bm-*`) aren't copied. Any other error fails the night.
 
-It uses a key of its own with no passphrase, which the server takes only for reading its checkout with rsync. On hal:
+*Into a Storage Box, on the server.* A Storage Box can't run the script, and one far from the server (hal, in LA) is too
+slow to write to over a mount, so the server mounts the box over sshfs and runs the script itself. The server then
+holds the box's key, so the box's snapshots (*Snapshots* in the Hetzner Console, daily) are what protects the backup
+should the server be broken into: they can't be deleted over SSH. On the box, turn on *SSH support* and *External
+reachability*; then on the server (`uNNNNNN` the box's user):
+
+    ssh-keygen -t ed25519 -N '' -C 'bouldermesh backup to storage box' -f ~/.ssh/storagebox
+    ssh-copy-id -p 23 -s -i ~/.ssh/storagebox uNNNNNN@uNNNNNN.your-storagebox.de      # the box's password, once
+    sudo apt install sshfs
+    sudo cp deploy/bouldermesh-storagebox.service /etc/systemd/system/     # then edit its BOX there
+
+then the commands at the top of `deploy/backup-storagebox.conf` (the services' drop-in, which runs them here, into the
+mount, with the handshake run directly), and `sudo systemctl enable --now bouldermesh-storagebox.service`. Without the
+mount, the script copies nothing (`BACKUP_MOUNT`).
+
+*On another machine, pulling over SSH.* It uses a key of its own with no passphrase, which the server takes only for
+reading its checkout with rsync. On hal:
 
     ssh-keygen -t ed25519 -N '' -C 'bouldermesh backup' -f ~/.ssh/bouldermesh_backup
     printf 'command="rrsync -ro /home/tom/bouldermesh",restrict %s\n' "$(cat ~/.ssh/bouldermesh_backup.pub)" | ssh bouldermesh 'cat >> ~/.ssh/authorized_keys'
@@ -874,9 +893,8 @@ It uses a key of its own with no passphrase, which the server takes only for rea
     sudo cp deploy/bouldermesh-backup.service deploy/bouldermesh-backup.timer /etc/systemd/system/
     sudo systemctl daemon-reload && sudo systemctl enable --now bouldermesh-backup.timer
 
-To back up now, outside the night's run, with what it's doing shown until it's done: `deploy/backup-now.sh` (it starts
-the service, follows its log, and says how it went; Ctrl-C stops only the following).
-Or from the admin page's **Back up now**: the server only notes the wish, which the backup machine's frequent run
+To back up now, outside the night's run, with what it's doing shown until it's done: `deploy/backup-now.sh`, on the machine running
+it (it starts the service, follows its log, and says how it went; Ctrl-C stops only the following). Or from the admin page's **Back up now**: the server only notes the wish, which the backup's frequent run
 (`bouldermesh-restore.timer`, every 5 minutes) reads through its handshake and answers with a whole copy at once;
 nothing connects from the server to the backup. One copy runs at a time.
 
@@ -910,8 +928,11 @@ size, time or SHA-1, is lost: your phone is told at once (urgently), and a job t
 waiting, at the top of the admin page in red, with *Re-mesh without it* (it goes on with what's here, which may replace a
 current mesh with one made from less) and *Leave as is* (an area's climb goes back as it was). Nothing a blocked job
 would make or replace goes ahead before that. Without a good manifest for 26 h (counted from the first start with this
-check, before the first one), offloading pauses, and your phone is told once. hal's copy is the only copy of what's
-offloaded: a second copy, or a server big enough not to offload, is the real fix. That needs a second key on hal, which the server takes only for the handshake
+check, before the first one), offloading pauses, and your phone is told once. The backup holds the only copy of what's
+offloaded: a second copy, or a server big enough not to offload, is the real fix. Only one copy may hold the handshake
+(a second, on another machine, runs without its key): two would each tell the server what they hold. On the server, the
+handshake runs directly (`BACKUP_HANDSHAKE`, in the drop-in). Pulling from another machine needs a second key there,
+which the server takes only for the handshake
 (`deploy/backup-handshake.py`: saying when a good copy began, what's wanted back, and sending it):
 
     ssh-keygen -t ed25519 -N '' -C 'bouldermesh backup handshake' -f ~/.ssh/bouldermesh_handshake
@@ -1197,7 +1218,7 @@ volunteers and for connecting the public site to whichever server harvests.
   can only use a video with a frame placed in a mesh, which was about half of those harvests used (387 of 739 on hal):
   the rest are deleted (`prune_videos()`, hourly) once every climb that took frames from them, and its boulder's mesh,
   is settled, and they haven't been used for 6 hours; their details stay, and only harvesting again would fetch them
-  again. One offloaded to hal's backup is forgotten there. The admin page's *Areas* turns this off.
+  again. One offloaded to the backup is forgotten there. The admin page's *Areas* turns this off.
 
 Volunteers reach the public site's `/volunteer/`, which Caddy passes to a port that answers nothing else (`VOLUNTEER_PORT`,
 47613 in Compose, on loopback only). By default that's the public server's own app, which harvests, with its meshes made

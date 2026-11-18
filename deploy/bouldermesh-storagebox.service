@@ -1,0 +1,22 @@
+# Mounts a Hetzner Storage Box over sshfs, for the backup to run on the public server itself (README, "Backups"): the
+# box keeps the copy, as it can't run deploy/backup.sh. It needs a key of the server's own, with no passphrase, that the
+# box takes (port 23). Edit BOX below (the box's user@host), then:
+#     sudo cp deploy/bouldermesh-storagebox.service /etc/systemd/system/
+#     sudo systemctl daemon-reload && sudo systemctl enable --now bouldermesh-storagebox.service
+[Unit]
+Description=BoulderMesh: the Storage Box the backup goes to, mounted at ~/storagebox
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tom
+Environment=BOX=uNNNNNN@uNNNNNN.your-storagebox.de MOUNT=/home/tom/storagebox KEY=/home/tom/.ssh/storagebox
+ExecStartPre=/bin/mkdir -p ${MOUNT}
+# not through a connection shared with another ssh (ControlMaster), nor an agent's other keys
+ExecStart=/usr/bin/sshfs -f -p 23 -o IdentityFile=${KEY},IdentitiesOnly=yes,IdentityAgent=none,BatchMode=yes,ControlMaster=no,ControlPath=none,ServerAliveInterval=15,ServerAliveCountMax=4,reconnect,idmap=user ${BOX}: ${MOUNT}
+ExecStopPost=-/usr/bin/fusermount3 -uz ${MOUNT}
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

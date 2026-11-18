@@ -1010,7 +1010,7 @@ $('#room-rejected').onclick = async () => {
   const backed = !when ? red('None of them is in a backup: no backup of this site has been confirmed.')
     : !c.unbacked_files ? green('All of them are in the backup: good to go.')
     : red(`${photos(c.unbacked_files)} (${size(c.unbacked_bytes)}) ${c.unbacked_files === 1 ? 'is' : 'are'} not in the backup`);
-  const first = c.unbacked_files || !when ? `<br>To keep them, back up first, on hal:<span class="cmd"><code>~/src/bouldermesh/deploy/backup-now.sh</code>`
+  const first = c.unbacked_files || !when ? `<br>To keep them, back up first, with this page's <b>Back up now</b>, or on the machine running the backup (the server, for the Storage Box):<span class="cmd"><code>~/src/bouldermesh/deploy/backup-now.sh</code>`
     + `<button type="button" class="sec sm copy">Copy</button></span>It shows the backup's progress until it's done (or see this page's backup line); then come back.` : '';
   const backedN = c.files - c.unbacked_files;
   const go = await askDanger('Delete every photo the filter rejected?', { html: `${photos(c.files)} (${size(c.bytes)}), from every project not being harvested or meshed now. `

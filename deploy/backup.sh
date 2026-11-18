@@ -2,6 +2,10 @@
 # Pulls a copy of a BoulderMesh server's data to this machine: once the public server harvests by itself, its database
 # and meshes exist nowhere else. Run here (hal), not there; nothing connects to this machine:
 #     deploy/backup.sh tom@178.105.53.11:     (or a local directory, for a copy of one here)
+# Or on the server itself, into a Hetzner Storage Box mounted over sshfs (bouldermesh-storagebox.service): the source is
+# then the checkout's folder, BACKUP_MOUNT the mount, which must be there (else this copies nothing), and BACKUP_HANDSHAKE
+# runs the handshake there without SSH (deploy/backup-storagebox.conf). A second copy (another machine, as above) runs
+# without the handshake key: only one copy may tell the server what it holds.
 # The source is the server's checkout (~/bouldermesh), as SSH with the backup key gives it: the public server takes that
 # key only for read-only rsync of that folder (rrsync -ro), so the source is host: with nothing after the colon
 # (README, "Backups"). BACKUP_KEY names the key (~/.ssh/bouldermesh_backup); BACKUP_SSH replaces the ssh command.
@@ -29,8 +33,9 @@
 #                     of meshes replaced), moved out of that night's changed/ (deploy/backup-archive.py)
 #   changed/<date>/   the rest of what that night's copy replaced or deleted in current/ (records rewritten, web cache
 #                     pages), kept KEEP_DAYS (30)
-# Each night's report says how much room is left on this disk; under WARN_FREE_GB (200) the server tells your phone,
-# and under URGENT_FREE_GB (50), when the copies are about to fail for want of room, urgently.
+# Each night's report says how much room is left on this disk (on BACKUP_HOST, or this machine's name); under
+# WARN_FREE_GB (200) the server tells your phone, and under URGENT_FREE_GB (50), when the copies are about to fail for
+# want of room, urgently.
 set -eu
 only_restore=
 if [ "${1:-}" = --restore-only ]; then
@@ -46,6 +51,11 @@ urgent_free=$(( ${URGENT_FREE_GB:-50} * 1073741824 ))
 key=${BACKUP_KEY:-$HOME/.ssh/bouldermesh_backup}
 hkey=${BACKUP_HANDSHAKE_KEY:-$HOME/.ssh/bouldermesh_handshake}
 day=$(date +%F)
+if [ -n "${BACKUP_MOUNT:-}" ] && ! mountpoint -q "$BACKUP_MOUNT"; then
+    # and no report: its room left would be the server's own disk's
+    echo "$BACKUP_MOUNT isn't mounted (the Storage Box, bouldermesh-storagebox.service): nothing copied" >&2
+    exit 1
+fi
 mkdir -p "$dest/current" "$dest/changed" "$dest/db" "$dest/archive"
 chmod 700 "$dest"
 case "$src" in
@@ -75,7 +85,7 @@ report() {
     done)
     printf '{"status":"%s","began":%s,"ended":%s,"bytes":%s,"why":"%s","host":"%s","kept":[%s],"archive":%s,"disk_free":%s,"disk_warn":%s,"disk_urgent":%s}' \
         "$1" "${started:-null}" "$(date +%s)" "$(du -sb "$dest/current" 2>/dev/null | cut -f1 || echo 0)" "$(printf '%s' "$2" | tr -d '"\\\n')" \
-        "$(hostname)" "${kept%,}" "$(du -sb "$dest/archive" 2>/dev/null | cut -f1 || echo 0)" \
+        "${BACKUP_HOST:-$(hostname)}" "${kept%,}" "$(du -sb "$dest/archive" 2>/dev/null | cut -f1 || echo 0)" \
         "$(df -B1 --output=avail "$dest" 2>/dev/null | tail -1 | tr -d ' ' || echo null)" "$warn_free" "$urgent_free" \
         | $handshake report > /dev/null 2>&1 || echo "couldn't tell the server how the copy went" >&2
 }

@@ -116,6 +116,12 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
     assert r.returncode == 1 and "no data/ at" in r.stderr and "nothing copied" in r.stderr, r.stdout + r.stderr
     assert sorted(p.relative_to(dest) for p in (dest / "current").rglob("*")) == before, "current/ left as it was"
     print("nothing to copy OK")
+    # into a Storage Box's mount (BACKUP_MOUNT) that isn't mounted: nothing copied onto the disk under it
+    (TMP / "box").mkdir()
+    r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), str(checkout)],
+                       env={**env, "BACKUP_MOUNT": str(TMP / "box"), "BACKUP_DIR": str(TMP / "box" / "backups")}, capture_output=True, text=True)
+    assert r.returncode == 1 and "isn't mounted" in r.stderr and not any((TMP / "box").iterdir()), r.stdout + r.stderr
+    print("unmounted box OK")
 
     # offloading's handshake (deploy/backup-handshake.py, here run directly): what the server offloaded is kept here,
     # whatever the server's copy does; a good copy says when it began; and what's wanted back is sent back
