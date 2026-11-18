@@ -234,6 +234,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     private val readings = makeLabel("", WARN, size = 13.0)       // what the last photo's readings lacked, which it was kept in spite of
     private val bar = UIProgressView(progressViewStyle = UIProgressViewStyle.UIProgressViewStyleDefault)
     private val arrow = makeLabel("➤", UIColor.whiteColor, bold = true, size = 72.0)
+    private val flash = UIView()        // over the picture as a photo is taken
     private val buttons = UIStackView()
     private var buttonsFor = ""
     private var ui = CaptureUi()
@@ -258,6 +259,11 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         for (v in listOf(hint, note, bar, counts, readings)) top.addArrangedSubview(v)
         buttons.axis = UILayoutConstraintAxisVertical
         buttons.spacing = 6.0
+        flash.backgroundColor = UIColor.whiteColor.colorWithAlphaComponent(0.45)
+        flash.hidden = true
+        flash.userInteractionEnabled = false
+        flash.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(flash)
         arrow.textAlignment = NSTextAlignmentCenter
         arrow.hidden = true
         arrow.translatesAutoresizingMaskIntoConstraints = false
@@ -266,6 +272,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         val constraints = ArrayList<NSLayoutConstraint>()
         constraints += listOf(sceneView.topAnchor.constraintEqualToAnchor(view.topAnchor), sceneView.bottomAnchor.constraintEqualToAnchor(view.bottomAnchor),
             sceneView.leadingAnchor.constraintEqualToAnchor(view.leadingAnchor), sceneView.trailingAnchor.constraintEqualToAnchor(view.trailingAnchor),
+            flash.topAnchor.constraintEqualToAnchor(view.topAnchor), flash.bottomAnchor.constraintEqualToAnchor(view.bottomAnchor),
+            flash.leadingAnchor.constraintEqualToAnchor(view.leadingAnchor), flash.trailingAnchor.constraintEqualToAnchor(view.trailingAnchor),
             arrow.centerXAnchor.constraintEqualToAnchor(view.centerXAnchor), arrow.centerYAnchor.constraintEqualToAnchor(view.centerYAnchor))
         for ((box, atTop) in listOf(top to true, buttons to false)) {
             val shade = UIView()         // a dark panel behind the words and the buttons, so that they read over any rock
@@ -647,6 +655,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         // which way to turn, when what's wanted is out of the picture
         val turn = (now.phase == Phase.CAPTURE || now.phase == Phase.SCENERY) && hypot(now.turnX, now.turnY) > 0.3
         arrow.hidden = !turn
+        flash.hidden = !now.flash
         if (turn) arrow.transform = CGAffineTransformMakeRotation(atan2(-now.turnY, now.turnX))     // the screen's y runs down
         val want = "${now.phase}/${now.auto}/${now.canSkip}/${now.reach}/${now.canCard}/${now.card}/${now.askMore}/${now.scenery > 0}/${now.marking}/${now.guided}/${now.pairs > 0}/${now.kept > 0}/${now.waiting}/${now.ring}"
         if (want != buttonsFor) { buttonsFor = want; offer(now) }

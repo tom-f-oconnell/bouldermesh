@@ -206,21 +206,37 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             val blur = Quality.blurPx(f.gyroRadS, speed, f.exposureS, eye.lens.fx, far)
             val steadyS = steadyFor(blur, f.t)      // counted when all's done too: Take still takes one
             if (target == null) return FrameOut(Hint(Hint.Kind.DONE, if (progress.total == 0) "Nothing to do here: widen what counts" else "Done: every part that counts is covered. Finish, or widen to the rest."), false, progress, blur, steadyS = steadyS)
-            var hint = cov.hint(eye, target, f.uprightDeg)
             val worth = cov.gain(eye) > 0
-            if (hint.kind == Hint.Kind.SHOOT && steadyS < STEADY_FOR_S) hint = hint.copy(text = "Hold still: the phone is moving")
+            val hint = shootHint(cov.hint(eye, target, f.uprightDeg), worth, steadyS)
             return FrameOut(hint, auto && steadyS >= STEADY_FOR_S && worth && f.t - lastShotT >= MIN_GAP_S, progress, blur, still, if (close) cov.status(target!!) else "", steadyS, !worth)
         }
         if (orb != null) {
             val blur = Quality.blurPx(f.gyroRadS, speed, f.exposureS, f.pose.lens.fx, f.pose.centre.distance(orb.centre))
             val steadyS = steadyFor(blur, f.t)
-            var hint = orb.hint(f.pose)
-            if (hint.kind == Hint.Kind.SHOOT && steadyS < STEADY_FOR_S) hint = hint.copy(text = "Hold still: the phone is moving")
             val useful = orb.useful(f.pose)
+            val hint = shootHint(orb.hint(f.pose), useful, steadyS)
             return FrameOut(hint, auto && steadyS >= STEADY_FOR_S && useful && f.t - lastShotT >= MIN_GAP_S, orb.progress(), blur, steadyS = steadyS,
                 redundant = !useful && hint.kind != Hint.Kind.DONE)
         }
         return FrameOut(Hint(Hint.Kind.NONE, "Tap the middle of the rock to start"), false, none, 0.0)
+    }
+
+    /**
+     * A hint to take a photo, said as what will happen: with Auto on, that it takes itself once the phone holds still;
+     * with it off, to press Take. A photo from here that would add nothing (`worth` false) isn't asked for: a step along is.
+     */
+    private fun shootHint(h: Hint, worth: Boolean, steadyS: Double): Hint {
+        if (h.kind != Hint.Kind.SHOOT) return h
+        // what the hint said besides "hold still": a ring's number before it, why this photo after it
+        val at = h.text.indexOf("old still").takeIf { it >= 1 } ?: return h
+        val lead = h.text.substring(0, at - 1); val why = h.text.substring(at + "old still".length).removePrefix(":").trim()
+        val say = when {
+            !worth -> return h.copy(kind = Hint.Kind.ANGLE, text = lead + (if (lead.isEmpty()) "G" else "g") + "ot this view: step along a little, or point at another part")
+            !auto -> if (steadyS < STEADY_FOR_S) "hold still and press Take" else "press Take"
+            steadyS < STEADY_FOR_S -> "hold still: the photo takes itself once the phone is steady"
+            else -> "taking the photo…"
+        }
+        return h.copy(text = lead + (if (lead.isEmpty()) say.replaceFirstChar { it.uppercase() } else say) + if (why.isEmpty()) "" else " ($why)")
     }
 
     /** How long the phone has been still enough for a photo, up to this frame at `t` whose blur is `blur`: 0 if it isn't now. */

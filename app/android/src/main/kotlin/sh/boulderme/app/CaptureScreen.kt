@@ -143,6 +143,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
 
     Box(Modifier.fillMaxSize()) {
         AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
+        if (ui.flash) Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = 0.45f)))      // a photo being taken
         // which way to turn, when what's wanted is out of the picture
         if ((ui.phase == Phase.CAPTURE || ui.phase == Phase.SCENERY) && hypot(ui.turnX, ui.turnY) > 0.3) Canvas(Modifier.align(Alignment.Center).size(120.dp)) {
             val angle = atan2(-ui.turnY, ui.turnX).toFloat()        // the screen's y runs down

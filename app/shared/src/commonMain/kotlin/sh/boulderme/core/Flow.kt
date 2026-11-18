@@ -29,6 +29,7 @@ data class CaptureUi(
     val waiting: Boolean = false,   // Take was pressed: the photo is taken once the phone holds still
     val level: LevelUi? = null,     // how the turn on the spot is going, while it's going
     val ring: Int = 0,              // the ring round the rock photos go by now (0: none, the mesh's targets)
+    val flash: Boolean = false,     // a photo is being taken now: flash the screen, so one taken by itself is seen to be
 )
 
 /**
@@ -124,6 +125,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     private var wantShot = false
     private var wantAt: Double? = null    // the first frame after Take was pressed
     private var inFlight = false
+    private var autoShot = false            // the photo in flight was taken by itself, not by Take
+    private var shotAt = -1e9
     private var lastTick = -1e9
     private var lastShotT = -1e9
     private var rejected = 0
@@ -231,7 +234,16 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         note = if (n == null) "Line the mesh up with the rock first" else "Ring $n: all round again, from at least ${Coverage.metres(Orbit.RING_APART_M)} higher or lower than before"
         levelsDirty = true
     }
-    fun blockSide() { event("block_side"); lastPose?.let { session.orbit?.blockNext(it) } }
+    fun blockSide() {
+        val way = lastPose?.let { session.orbit?.blockNext(it) }
+        event("block_side", "then" to way)
+        note = when (way) {
+            null -> "Nothing to mark: no side is being asked for now"
+            0 -> "Marked out of reach. Every side you can walk to is done"
+            else -> "Marked out of reach: go back round the other way, to your ${if (way < 0) "left" else "right"}"
+        }
+        levelsDirty = true
+    }
 
     /** Something went wrong the person should know of (a photo that couldn't be saved). */
     fun say(what: String) { event("error", "what" to what); note = what }
@@ -498,9 +510,9 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 if (wantShot && !steady && t - wantAt!! > WAIT_S) { wantShot = false; event("shutter_lapsed", "blur_px" to out.blurPx); note = "Not taken: the phone didn't hold still. Brace it, or move more slowly, and press Take again." }
                 val pressed = wantShot && steady
                 val shoot = (if (cardNext) pressed else out.shoot || pressed) && !inFlight
-                if (shoot) { inFlight = true; wantShot = false; cardShot = cardNext; event("shoot", "auto" to out.shoot, "still" to out.still, "card" to cardNext, "blur_px" to out.blurPx, "steady_s" to out.steadyS) }
+                if (shoot) { inFlight = true; autoShot = !pressed; shotAt = t; wantShot = false; cardShot = cardNext; event("shoot", "auto" to out.shoot, "still" to out.still, "card" to cardNext, "blur_px" to out.blurPx, "steady_s" to out.steadyS) }
                 else if (wantShot && !steady) ui = ui.copy(text = "Hold still: the photo is taken as soon as the phone is steady")
-                ui = ui.copy(waiting = wantShot, note = note, ring = session.ringNow)
+                ui = ui.copy(waiting = wantShot, note = note, ring = session.ringNow, flash = t - shotAt < FLASH_S)
                 // ticks while a photo from here would add nothing, quiet for a moment round each photo, so its ding is heard alone
                 val tick = out.redundant && !shoot && !inFlight && t - lastTick >= TICK_S && t - lastShotT >= TICK_S
                 if (tick) lastTick = t
@@ -524,7 +536,9 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         if (cardShot && out.kept) { cardNext = false; levelsDirty = true }
         cardShot = false
         sensorNote = out.record.notes.joinToString(" · ")
-        if (out.kept) { note = ""; levelsDirty = true } else { rejected++; note = "Not kept: ${out.why.joinToString("; ")}." }
+        val how = if (autoShot) "taken by itself (Auto)" else "taken"
+        if (out.kept) { note = "Photo ${session.shotCount} $how and kept"; levelsDirty = true }
+        else { rejected++; note = "Not kept, the photo $how: ${out.why.joinToString("; ")}." }
         return out
     }
 
@@ -556,6 +570,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         const val REFINE_LEAST = 150
         const val REFINE_EVERY_S = 3.0
         const val LOST_S = 1.0              // tracking lost for longer than this starts a new spell: shorter is a blink, with its world kept
+        const val FLASH_S = 0.25            // how long the screen flashes as a photo is taken
         const val TICK_S = 0.8              // how often the tick sounds, while a photo from where the phone is would add nothing
         const val WAIT_S = 8.0              // how long a press of Take waits for the phone to hold still
         const val STEADY_SCENERY_PX = 1.5   // a scenery frame is kept only with the phone turning less than smears it this much

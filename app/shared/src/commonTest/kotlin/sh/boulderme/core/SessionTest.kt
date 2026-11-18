@@ -40,11 +40,34 @@ class SessionTest {
         val o = Orbit(Vec3.ZERO)
         val pose = TestWorld.look(Vec3(0.0, 1.0, 3.0), Vec3(0.0, 1.0, 0.0))
         repeat(Orbit.SECTOR_SHOTS) { o.add(pose) }
-        assertEquals(Hint.Kind.FACE, o.hint(pose).kind)
-        assertTrue(o.blockNext(pose))
+        val was = o.hint(pose)
+        assertEquals(Hint.Kind.FACE, was.kind)
+        // a wall that way: it sends you round the other way at once, not on to the next side beyond the wall
+        val then = assertNotNull(o.blockNext(pose))
         assertEquals(1, o.ring.count { it.blocked })
-        repeat(20) { o.blockNext(pose) }
+        assertTrue(then.toDouble() == -was.turnX && o.hint(pose).turnX == -was.turnX, o.hint(pose).text)
+        // and one the other way: what's left beyond both can't be walked to
+        assertEquals(0, o.blockNext(pose))
         assertEquals(Hint.Kind.DONE, o.hint(pose).kind, "every other side is out of reach")
+        assertNull(o.blockNext(pose))
+    }
+
+    @Test fun shootHintsSayWhatHappens() {
+        val s = CaptureSession(null, null, "t9", "test", "phone", 0.0)
+        val mid = Vec3(0.0, 1.0, 0.0)
+        s.startOrbit(mid)
+        val pose = TestWorld.look(Vec3(0.0, 1.0, 3.0), mid)
+        assertTrue("takes itself" in s.frame(FrameIn(pose, 0.0, 0.004, true, 0.0)).hint.text)
+        val out = s.frame(FrameIn(pose, 0.0, 0.004, true, 1.0))
+        assertTrue(out.shoot && "Taking" in out.hint.text, out.hint.text)
+        take(s, pose, 1.0)
+        // the sector wants another, but not from just here: it asks for a step, rather than to hold still for nothing
+        val same = s.frame(FrameIn(pose, 0.0, 0.004, true, 3.0))
+        assertTrue(!same.shoot && same.redundant && same.hint.kind == Hint.Kind.ANGLE && "step along" in same.hint.text, same.hint.text)
+        s.auto = false
+        val aside = TestWorld.look(Vec3(0.6, 1.0, 2.9), mid)
+        s.frame(FrameIn(aside, 0.0, 0.004, true, 4.0))
+        assertTrue("press Take" in s.frame(FrameIn(aside, 0.0, 0.004, true, 5.0)).hint.text)
     }
 
     @Test fun ringsFromOtherHeights() {

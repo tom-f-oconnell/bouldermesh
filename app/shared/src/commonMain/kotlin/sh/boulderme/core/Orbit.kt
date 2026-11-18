@@ -108,24 +108,37 @@ class Orbit(val centre: Vec3, val sectors: Int = 12, private val others: List<Do
             spots.count { it.skipped }, spots.size, spots.count { it.done() && !it.skipped })
     }
 
-    /** The nearest side still to do from sector `here`: which way round it is (to the left the sector number falls) and how many sectors off; `sectors` off if none. */
+    private fun todo(r: Ring, s: Int) = !ring[s].blocked && shotsAt(r, s) < SECTOR_SHOTS
+
+    /**
+     * The nearest side still to do from sector `here`, walking round without crossing a side out of reach: which way
+     * round it is (to the left the sector number falls) and how many sectors off; `sectors` off if none.
+     */
     private fun next(here: Int): Pair<Int, Int> {
         var best = -1; var bestSteps = sectors
         val r = active ?: return best to bestSteps
-        for (k in 1 until sectors) for (sign in intArrayOf(-1, 1)) {
+        for (sign in intArrayOf(-1, 1)) for (k in 1 until sectors) {
             val s = ((here + sign * k) % sectors + sectors) % sectors
-            if (!ring[s].blocked && shotsAt(r, s) < SECTOR_SHOTS && k < bestSteps) { best = sign; bestSteps = k }
+            if (ring[s].blocked) break
+            if (shotsAt(r, s) < SECTOR_SHOTS) { if (k < bestSteps) { best = sign; bestSteps = k }; break }
         }
         return best to bestSteps
     }
 
-    /** Marks the side hint() is sending you round to as out of reach. Returns whether there was one. */
-    fun blockNext(pose: CameraPose): Boolean {
+    /**
+     * Marks the side hint() is sending you round to as out of reach: a wall, so the hint sends you round the other way
+     * at once. Sides left only beyond walls both ways can't be walked to, and are marked too. Returns which way round
+     * the next side to do now is (-1 left, 1 right; 0 if none is left), or null if there was nothing to mark.
+     */
+    fun blockNext(pose: CameraPose): Int? {
         val here = sectorOf(pose.centre)
         val (sign, steps) = next(here)
-        if (steps == sectors) return false
+        if (steps == sectors) return null
         block(((here + sign * steps) % sectors + sectors) % sectors)
-        return true
+        val (then, thenSteps) = next(here)
+        if (thenSteps < sectors) return then
+        active?.let { r -> for (s in 0 until sectors) if (s != here && todo(r, s)) block(s) }
+        return 0
     }
 
     fun hint(pose: CameraPose): Hint {
