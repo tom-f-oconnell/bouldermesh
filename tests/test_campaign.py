@@ -3853,4 +3853,30 @@ finally:
     server.run_job = real_run
     server.q("DELETE FROM projects WHERE id='nx0000000001'", write=True)
 print("mesh next OK")
+
+# --- what an account added, approved or declined from the owner's phone: who, its name and when it was taken ----------
+ana = server.ACCOUNTS.join(server.ACCOUNTS.invite()["code"], "Ana Phone")["user"]
+taken = time.time() - 3 * 3600
+for pid in ("ad0000000001", "ad0000000002"):
+    server.q("INSERT INTO projects(id,name,created,kind,status,user_id,approved) VALUES(?,?,?,?,'new',?,0)", pid, f"Rock {pid[-1]}",
+             time.time(), "user", ana["id"], write=True)
+    (server.PROJECTS / pid / "photos").mkdir(parents=True, exist_ok=True)
+(server.PROJECTS / "ad0000000001" / "photos" / "a.jpg").write_bytes(b"x")
+(server.PROJECTS / "ad0000000001" / server.CAPTURE_FILE).write_text(json.dumps({"v": 5, "started": taken}))
+try:
+    title, text = server.added_note(server.q("SELECT * FROM projects WHERE id='ad0000000001'", one=True))
+    assert title == "Added by Ana Phone: Rock 1" and 'Ana Phone added 1 photo as "Rock 1", taken ' in text, text
+    assert time.strftime("%H:%M UTC", time.gmtime(taken)) in text and "(3 h before this notification)" in text, text
+    assert ", uploaded " in server.added_note(server.q("SELECT * FROM projects WHERE id='ad0000000002'", one=True))[1], "no record: when it came"
+    assert server.notify_act("approve", "project", "ad0000000001") == 'approved "Rock 1": meshed in its turn, and shown'
+    assert server.q("SELECT approved, approved_by FROM projects WHERE id='ad0000000001'", one=True) == {"approved": 1, "approved_by": "the owner"}
+    assert "already approved" in server.notify_act("deny", "project", "ad0000000001"), "decided since: left to the admin page"
+    assert server.notify_act("deny", "project", "ad0000000002") == 'declined "Rock 2"'
+    assert server.q("SELECT approved FROM projects WHERE id='ad0000000002'", one=True)["approved"] == -1
+    assert "no project" in server.notify_act("approve", "project", "nothing00001")
+finally:
+    for pid in ("ad0000000001", "ad0000000002"):
+        server.q("DELETE FROM projects WHERE id=?", pid, write=True)
+        shutil.rmtree(server.PROJECTS / pid, ignore_errors=True)
+print("added things approved from a phone OK")
 print("ALL CAMPAIGN TESTS PASSED")

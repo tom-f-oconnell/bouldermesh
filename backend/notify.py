@@ -145,8 +145,8 @@ class Notifier:
         settings: the admin page's settings now (notify.* among them).
         key_file: where the signing key is kept, made when it's first needed.
         state_file: the last reply read, so that a restart doesn't act on one twice.
-        act: does what a reply asks, (verb, kind, id) -> what it did, as text: "approve" or "deny" a "volunteer" or a
-            "machine" by its id, or "ping" (the test's button).
+        act: does what a reply asks, (verb, kind, id) -> what it did, as text: "approve" or "deny" a "volunteer", a
+            "machine" or a "project" (what an account added) by its id, or "ping" (the test's button).
     """
 
     def __init__(self, settings: Callable[[], dict], key_file: Path, state_file: Path, act: Callable[[str, str, str], str],
@@ -230,11 +230,12 @@ class Notifier:
             self.log(f"notify: {self.last_error}")
             return False
 
-    def buttons(self, kind: str, rid: str) -> list[dict]:
+    def buttons(self, kind: str, rid: str, deny: str = "Deny") -> list[dict]:
+        """Approve and Deny (or what `deny` calls it), each posting its signed reply to the reply topic."""
         c = self.conf()
         url = f"{c['server']}/{c['reply_topic']}"
         return [{"action": "http", "label": label, "url": url, "method": "POST", "body": self.signed(verb, kind, rid), "clear": True}
-                for verb, label in (("approve", "Approve"), ("deny", "Deny"))]
+                for verb, label in (("approve", "Approve"), ("deny", deny))]
 
     def registered(self, kind: str, row: dict, detail: str = "") -> None:
         """A client registered itself: a notification with Approve and Deny, or, past BATCH's few, a place in a summary

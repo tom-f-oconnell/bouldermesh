@@ -1222,6 +1222,10 @@ and *Deny*, or after three in ten minutes, one summary of the rest. The taps go 
 server follows, signed so that no one else can make them; but anyone who learns the first topic's name can read the
 notifications, and so tap them, so keep it private, and *Make new topics* if it gets out. design.md has why.
 
+**What accounts add:** when an account asks for a mesh of what it added, your phone is told who, the name they gave it
+and when its photos were taken (UTC, and how long before the notification), with *Approve* and *Decline*: the same as
+on the admin page's People. Something approved or declined there since is left alone.
+
 **Joining and leaving:** your phone is also told, by name, when a worker (a machine lending itself) or a downloader (a
 volunteer) joins, as it starts asking for work, and leaves: its script stopped (it says goodbye, from worker script 5 and
 volunteer script 6) or it hasn't been heard from for 10 minutes (a worker) or 30 (a volunteer: its script says it's still

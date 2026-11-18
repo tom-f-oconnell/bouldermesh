@@ -8648,12 +8648,27 @@ def submit_reconstruct(pid: str) -> dict:
         return {"queued": True}
     q("UPDATE projects SET status=?, progress=NULL, job=?, job_at=? WHERE id=?", HELD, json.dumps({"type": "reconstruct", "pid": pid, "internet": internet}),
       time.time(), pid, write=True)
-    who = (ACCOUNTS.get(proj["user_id"]) or {}).get("name") or "someone"
-    photos = PROJECTS / pid / "photos"
-    n = sum(1 for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.exists() else 0
-    threading.Thread(target=NOTIFIER.send, args=("Something added, to look at", f"{who} added {plural(n, 'photo')} as \"{proj['name']}\". "
-                     "It will be meshed when nothing else is waiting, or sooner once approved (the admin page's People).", None, 3, ["inbox_tray"]), daemon=True).start()
+    if NOTIFIER.conf()["enabled"]:
+        threading.Thread(target=NOTIFIER.send, args=(*added_note(proj), NOTIFIER.buttons("project", pid, "Decline"), 3, ["inbox_tray"]),
+                         daemon=True).start()
     return {"queued": False, "held": True, "why": "it will be meshed when the machines have nothing else to do, or sooner once it's approved"}
+
+
+def added_note(proj: dict, now: float | None = None) -> tuple[str, str]:
+    """The owner's notification that an account added something, held for approval: a title, and who added it, under
+    what name, and when its photos were taken (the phone's record says; or else when it came)."""
+    who = (ACCOUNTS.get(proj["user_id"]) or {}).get("name") or "someone"
+    photos = PROJECTS / proj["id"] / "photos"
+    n = sum(1 for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.exists() else 0
+    started = (_read_json(PROJECTS / proj["id"] / CAPTURE_FILE) or {}).get("started")
+    at, verb = (started, "taken") if isinstance(started, (int, float)) and started > 0 else (proj["created"], "uploaded")
+    ago = max(0, (now or time.time()) - at)
+    ago = (f"{round(ago / 60)} min" if ago < 5400 else f"{ago / 3600:.0f} h" if ago < 48 * 3600 else f"{ago / 86400:.0f} days")
+    when = time.strftime("%a %d %b %Y, %H:%M UTC", time.gmtime(at))
+    return (f"Added by {who}: {proj['name']}",
+            f"{who} added {plural(n, 'photo')} as \"{proj['name']}\", {verb} {when} ({ago} before this notification). "
+            "Approve to mesh it soon and show it on the site, or Decline; or on the admin page's People. Until then "
+            "it's meshed when nothing else is waiting.")
 
 
 def mesh_next(pid: str) -> dict:
@@ -11464,9 +11479,24 @@ VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteer
 
 
 def notify_act(verb: str, kind: str, rid: str) -> str:
-    """What a phone's reply to a notification asks (notify.py): approve or deny a volunteer or a machine, or the test's ping."""
+    """What a phone's reply to a notification asks (notify.py): approve or deny a volunteer, a machine or what an
+    account added (a project: deny declines it), or the test's ping. Only what still waits is changed: anything since
+    decided is left to the admin page."""
     if verb == "ping":
         return "the button reached the server"
+    if kind == "project":
+        proj = q("SELECT * FROM projects WHERE id=?", rid, one=True)
+        if not proj or not proj.get("user_id"):
+            return f"no project {rid} here any more"
+        name = f"\"{proj['name']}\""
+        if proj.get("deleted_at"):
+            return f"{name} was deleted by its account: keep or remove it on the admin page's People"
+        if proj.get("approved") in (1, -1):
+            return f"{name} was already {'approved' if proj['approved'] == 1 else 'declined'}: change that on the admin page's People, if you mean to"
+        if verb not in ("approve", "deny"):
+            return f"nothing to do for {verb}"
+        approve_project(rid, {"role": "owner", "name": "the owner"}, verb == "approve")
+        return f"approved {name}: meshed in its turn, and shown" if verb == "approve" else f"declined {name}"
     found = VOLUNTEERS.get(rid) if kind == "volunteer" else MACHINES.get(rid) if kind == "machine" else None
     if not found:
         return f"no {kind} {rid} here any more"
