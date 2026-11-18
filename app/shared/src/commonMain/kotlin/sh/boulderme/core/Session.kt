@@ -61,7 +61,14 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         private set
     val taps = ArrayList<Pair<Vec3, Vec3>>()
     var auto = true                     // photos take themselves when one's worth taking
-    var level: Level? = null            // which way is down, if a turn on the spot found it: else the tracking's own
+    /** Which way is down, if a turn on the spot found it (else the tracking's own): for photos of its spell only (levelSpell). */
+    var level: Level? = null
+        private set
+    /** The spell of the phone's tracking (1 the first) the latest turn on the spot was in: its down holds in that world alone. */
+    var levelSpell = 0
+        private set
+    private val levels = ArrayList<Pair<Int, RecordLevel>>()        // this visit's turns, each with its spell
+    private var earlierLevels: List<RecordLevel> = emptyList()      // and those of the capture carried on, as it recorded them
     var calibration: RecordCalibration? = null
     var place: GpsAverager.Result? = null
     var set: String? = null             // the set of beta the capture is for, if one was chosen: its holds are wanted in detail
@@ -207,7 +214,29 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             }
         }
         for ((id, why) in was.skipped) cov?.skip(id, why)
+        // each earlier turn on the spot holds in its own spell's world: kept as recorded, for the server to level by. A
+        // record from before v 6 has one, in the first spell
+        earlierLevels = was.levels.ifEmpty { listOfNotNull(was.level?.let { it.copy(s = it.s ?: firstSpellName(was)) }) }
     }
+
+    private fun firstSpellName(was: CaptureRecord): String? = (was.shots.mapNotNull { it.blob.ar?.s } + was.scenery.map { it.ar.s }).firstOrNull()?.substringBefore('.')
+
+    /**
+     * Down as a turn on the spot found it, in spell `spell` of the phone's tracking, the directions having been asked
+     * to agree within `limitDeg`: photos and frames of that spell take it from now on, those of others the tracking's own.
+     */
+    fun setLevel(found: Level, spell: Int, limitDeg: Double? = null) {
+        level = found; levelSpell = spell
+        levels.add(spell to RecordLevel(found.down.toList(), found.tiltDeg, found.offset.toList(), found.offsetDeg, found.spreadDeg, found.sectors, found.samples,
+            null, found.expectedDeg, found.axisTiltDeg, found.gravity, found.forceMean, limitDeg))
+    }
+
+    /** The turn on the spot's down, if there was one and spell `spell` is the one it was found in; else null. */
+    private fun levelFor(spell: Int): Level? = level?.takeIf { spell == levelSpell }
+
+    /** The photos kept since the latest turn on the spot with its down: those the mesh is levelled by (0 with no turn). */
+    fun keptWithTurn(): Int = if (level == null) 0 else
+        shots.count { it.kept && it.blob.ref == null && it.blob.downSrc == "turn" && spellNumber(it.blob.ar?.s) == levelSpell }
 
     /** The photos kept in spell `n` of the phone's tracking (1 the first), but for those of a card: what ties that spell's scenery to the mesh. */
     fun keptInSpell(n: Int): Int = shots.count { it.kept && it.blob.ref == null && it.blob.ar != null && spellNumber(it.blob.ar.s) == n }
@@ -295,8 +324,10 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     fun sceneryShot(kind: String, pose: CameraPose, t: Double, arSession: String, turnedDeg: Int, stats: ImageStats?, blurPx: Double?): SceneryShot {
         val n = scenery.count { it.kind == kind } + 1
         val name = if (kind == "pano") "pano_${id}_${n.toString().padStart(2, '0')}.jpg" else "scn_${id}_${n.toString().padStart(3, '0')}.jpg"
+        val found = levelFor(spellNumber(arSession))
+        val down = Axes.downInImage(pose, found?.down ?: Vec3(0.0, -1.0, 0.0))
         val shot = SceneryShot(name, kind, t, BlobAr(arSession, pose.centre.toList(), pose.rot.toList()), pose.lens.let { BlobLens(it.fx, it.fy, it.cx, it.cy, it.w, it.h) },
-            turnedDeg, stats?.sharp, blurPx)
+            turnedDeg, stats?.sharp, blurPx, down.toList(), if (found != null) "turn" else "ar", found?.expectedDeg)
         scenery.add(shot)
         return shot
     }
@@ -342,10 +373,13 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         val helped = if (!verdict.ok || s.card) emptyList() else
             (if (inMesh != null && cov != null) cov.addShot(inMesh) else emptyList()) + (if (orb != null && (ring || cov == null)) orb.add(s.pose) else emptyList())
         // down three ways: the tracking's own; the tracking's with what a turn on the spot found (the one used, if there was
-        // a turn); and this photo's accelerometer alone, less what the turn found the phone adds, kept to check the others by
-        val found = level
+        // a turn in this photo's spell of tracking: another spell's world has a down of its own); and this photo's
+        // accelerometer alone, less what the last turn found the phone adds (that's the phone's, whatever the world),
+        // kept to check the others by
+        val found = levelFor(spellNumber(s.arSession))
+        val offset = level?.offset
         val force = s.sensors.accel?.takeIf { grades.gravityOk }?.let { Axes.forceInImage(it, s.sensorOrientation) }
-        val downAcc = force?.let { -Axes.turn(if (found != null) it - found.offset else it, s.turnedDeg).unit() }     // the offset is in the sensor's axes
+        val downAcc = force?.let { -Axes.turn(if (offset != null) it - offset else it, s.turnedDeg).unit() }     // the offset is in the sensor's axes
         val downTrack = if (s.tracking) Axes.downInImage(s.pose) else null
         val downAr = if (s.tracking && found != null) Axes.downInImage(s.pose, found.down) else downTrack
         val down = downAr ?: downAcc
@@ -358,7 +392,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
         val blob = ShotBlob(
             app = app, device = device, cap = id, i = shots.size + 1, t = s.unix,
             down = down?.toList(), downSrc = if (downAr != null) (if (found != null) "turn" else "ar") else if (downAcc != null) "accel" else null,
-            downAcc = downAcc?.toList(), downTrack = downTrack?.takeIf { found != null }?.toList(), turn = s.turnedDeg,
+            downAcc = downAcc?.toList(), downTrack = downTrack?.takeIf { found != null }?.toList(), downExp = found?.expectedDeg?.takeIf { downAr != null }, turn = s.turnedDeg,
             heading = s.sensors.headingDeg?.takeIf { grades.headingOk }, headingAcc = s.sensors.headingAccDeg,
             gps = s.sensors.gps?.let { BlobGps(it.lat, it.lng, it.alt, it.accM, s.t - it.t) },
             ar = BlobAr(s.arSession, s.pose.centre.toList(), s.pose.rot.toList(), if (s.tracking) "normal" else "limited", s.span, if (s.paused) 1 else null),
@@ -418,20 +452,23 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             id = id, app = app, device = device, mesh = plan?.mesh?.takeIf { it.isNotEmpty() }, climbs = cov?.scope?.climbs?.sorted() ?: emptyList(),
             plan = plan?.let { RecordPlan(it.key, it.made, it.guide.sha1) },
             started = started, ended = ended, mode = mode,
-            // a capture carried on keeps its first visit's fit and turn on the spot, each in that visit's world: its photos' own downs are this one's
+            // a capture carried on keeps its first visit's fit, in that visit's world: its photos' own downs are this one's
             fit = earlier?.fit ?: fit?.let { RecordFit(it.scale, it.rot.toList(), it.shift.toList(), it.tiltDeg, taps.size, refined?.matched, refined?.rmsM) },
             place = listOfNotNull(place?.let { RecordPlace(it.lat, it.lng, it.alt, it.accM, it.n, it.seconds) }, earlier?.place).minByOrNull { it.accM },
             calibration = calibration ?: earlier?.calibration,
-            level = earlier?.level ?: level?.let { RecordLevel(it.down.toList(), it.tiltDeg, it.offset.toList(), it.offsetDeg, it.spreadDeg, it.sectors, it.samples) },
+            levels = earlierLevels + levels.map { (n, l) -> l.copy(s = spellName(n)) },
             downAgreeDeg = shots.filter { it.kept }.mapNotNull { r -> r.blob.down?.let { d -> r.blob.downAcc?.let { a -> angleDeg(Vec3.of(d), Vec3.of(a)) } } }
                 .sorted().let { if (it.isEmpty()) null else it[it.size / 2] },
             skipped = cov?.states?.filter { it.skipped != null }?.associate { it.target.id to it.skipped!! } ?: emptyMap(),
             progress = p?.let { RecordProgress(it.total, it.done, it.skipped, it.holds, it.holdsDone) },
             detail = set?.let { id -> cov?.let { RecordDetail(id, it.reached()) } }, licence = licence, credit = credit,
             shots = shots.toList(), scenery = scenery.toList(),
-            marked = marked.map { h -> RecordMarked(h.id, arBase()?.let { if (h.spell > 1) "$it.${h.spell}" else it }, h.world.toList(), h.mesh?.toList()) },
+            marked = marked.map { h -> RecordMarked(h.id, spellName(h.spell), h.world.toList(), h.mesh?.toList()) },
         )
     }
+
+    /** Spell `n`'s name, as its photos' ar.s have it; null before anything was taken to name it by. */
+    private fun spellName(n: Int): String? = arBase()?.let { if (n > 1) "$it.$n" else it }
 
     /** The phone tracking's own name for the capture's session, without its spell: as its photos have it. */
     private fun arBase(): String? = (shots.firstOrNull { it.blob.ar != null }?.blob?.ar?.s ?: scenery.firstOrNull()?.ar?.s)?.substringBefore('.')

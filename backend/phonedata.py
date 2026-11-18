@@ -5,7 +5,8 @@ Each photo carries its readings in its own file, so that they go wherever the ph
 machine's job): in the EXIF UserComment, as MARK followed by JSON. app/FORMAT.md has every field. Those used here:
 
   down       gravity, a unit vector in the stored pixels' axes: x along the rows, y down the columns, z the way the camera
-             looks (as orientation.down_in_image() gives an iPhone's)
+             looks (as orientation.down_in_image() gives an iPhone's); down_src where it came from ("turn": a turn on the
+             spot in the same spell of tracking, how far off likely in down_exp; "ar"; "accel"), read by orientation.py
   ar         {s, p}: the phone's place when it was taken, in metres, in the frame its motion tracking (ARKit, ARCore)
              kept for session s: +Y up
   gps        {lat, lng, acc}: its fix then, and how far off it says that may be, in metres

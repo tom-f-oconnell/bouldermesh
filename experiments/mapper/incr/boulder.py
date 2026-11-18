@@ -492,8 +492,9 @@ def level_of(root: Path) -> dict | None:
         return None
     pri = json.loads(f.read_text())["photos"]
     P = stats.poses(root / "model")
-    downs = [cp.down_in_model(pri[n], R) for n, (R, _) in P.items() if n in pri and pri[n].get("down")]
-    return cp.level(downs)
+    placed = [n for n in P if n in pri and pri[n].get("down")]
+    use = {id(e) for e in cp.surest([pri[n] for n in placed])}
+    return cp.level([cp.down_in_model(pri[n], P[n][0]) for n in placed if id(pri[n]) in use])
 
 
 def retexture(s: st.State, former: Path, out: Path, cond: str = "dev") -> dict | None:

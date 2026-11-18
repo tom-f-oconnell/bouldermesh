@@ -68,7 +68,8 @@ class ArController(
     init { plan?.let { store.keepPlan(id, it.mesh) } }
     private val guide = guide.takeIf { plan != null }
     private val core = CaptureSession(plan, this.guide, id, BuildInfo.APP, "${Build.MANUFACTURER} ${Build.MODEL}", System.currentTimeMillis() / 1000.0)
-    private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = store.credit.ifBlank { null } }, set, store.anonFirst)
+    private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = store.credit.ifBlank { null } }, set, store.anonFirst, store.levelLimit, store.levelTilts)
+        .apply { onSettings = { limit, tilts -> store.levelLimit = limit; store.levelTilts = tilts } }
     init {
         if (reopen != null) flow.reopen(Reopen.record(File(dir, "capture.json").readText()) ?: error("the record of $reopen can't be read"),
             File(dir, "points.bin").takeIf { it.exists() }?.readBytes(), File(dir, "capture-log.jsonl").takeIf { it.exists() }?.readText() ?: "")
@@ -153,6 +154,11 @@ class ArController(
 
     fun tap(x: Float, y: Float) { pendingTap = floatArrayOf(x, y) }     // met with the world on the drawing thread, in its next frame
     fun skipLevel() = synchronized(lock) { flow.skipLevel() }
+    fun skipWarning(): String = synchronized(lock) { flow.skipWarning() }
+    fun looser() = synchronized(lock) { flow.looser() }
+    fun stricter() = synchronized(lock) { flow.stricter() }
+    fun turnAgain() = synchronized(lock) { flow.turnAgain() }
+    fun dismissDownNote() = synchronized(lock) { flow.dismissDownNote() }
     fun shutter() = synchronized(lock) { flow.shutter() }
     fun setAuto(on: Boolean) = synchronized(lock) { flow.setAuto(on) }
     fun skip() = synchronized(lock) { flow.skip() }

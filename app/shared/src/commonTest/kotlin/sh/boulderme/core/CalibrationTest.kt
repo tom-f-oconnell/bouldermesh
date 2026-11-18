@@ -92,6 +92,56 @@ class CalibrationTest {
         assertFalse(little.add(q, c * 1.2), "jolted")
     }
 
+    /**
+     * A turn as real ones go: the phone held steadily at one angle (as the screen asks), each direction's readings
+     * carrying a pull of the hand's of its own, half a degree's worth. The part of the phone's offset along the turn's
+     * axis can't be told from gravity, and was left to a slight ridge, so that wobble alone set it and threw gravity's
+     * strength off: every turn on a Pixel 6 came out as "readings that aren't gravity's". Pinned, none does.
+     */
+    private fun steadyTurn(rnd: Random, lean: Quat = Quat(1.0, 0.0, 0.0, 0.0), scale: Double = 1.0, hand: Double = 0.5): Pair<LevelTurn, Vec3> {
+        val down = Quat.axisAngle(Vec3(1.0, 0.0, 0.3), 0.5 * TestWorld.rad).rotate(Vec3(0.0, -1.0, 0.0))
+        val bias = Vec3(rnd.nextDouble(-0.2, 0.2), rnd.nextDouble(-0.2, 0.2), rnd.nextDouble(-0.2, 0.2))
+        val base = TestWorld.look(Vec3.ZERO, Vec3(0.0, 0.1, 1.0))
+        val turn = LevelTurn()
+        for (sector in 0 until 12) {
+            val pull = Vec3(rnd.nextDouble(-1.0, 1.0), rnd.nextDouble(-1.0, 1.0), rnd.nextDouble(-1.0, 1.0)).unit() * (hand * TestWorld.rad * Sensors.G)
+            for (i in 0 until 30) {
+                val yaw = (sector + (i + 0.5) / 30) * 30 * TestWorld.rad
+                val pose = CameraPose(Vec3.ZERO, lean * Quat.yaw(yaw) * base.rot, base.lens)
+                val force = pose.rot.conj().rotate(-down * Sensors.G + pull)
+                val noise = Vec3(rnd.nextDouble(-0.05, 0.05), rnd.nextDouble(-0.05, 0.05), rnd.nextDouble(-0.05, 0.05))
+                turn.add(pose, Axes.forceInImage(force) * scale + bias + noise, gyroRadS = 0.3)
+            }
+        }
+        return turn to down
+    }
+
+    @Test fun aSteadyTurnWithTheHandsWobble() {
+        val errors = (0 until 30).map { seed ->
+            val (turn, down) = steadyTurn(Random(seed))
+            val d = turn.diagnose()
+            val level = assertNotNull(turn.solve(), "seed $seed: ${d.why}, gravity ${d.gravity} against ${d.forceMean}")
+            assertTrue(level.axisTiltDeg < 1.0, "turned about upright: ${level.axisTiltDeg}")
+            angleDeg(level.down, down) to level.expectedDeg
+        }
+        // as good as the hand allows, and said honestly: within what it expects 9 times in 10 or so
+        assertTrue(errors.maxOf { it.first } < 0.6 && errors.count { it.first <= it.second } >= 24, "$errors")
+        // an accelerometer reading 4% high (its scale is the phone's) still reads as gravity, at gravity's direction
+        val (high, down) = steadyTurn(Random(3), scale = 1.04)
+        val level = assertNotNull(high.solve())
+        assertTrue(TestWorld.near(level.forceMean, 1.04 * Sensors.G, 0.05) && angleDeg(level.down, down) < 0.4, "$level")
+    }
+
+    @Test fun aTurnAboutALeaningAxis() {
+        // turned as on a turntable tipped 15 degrees, as when the phone is kept square to a slope: the lean is measured,
+        // and what it may leave in down is counted in what's expected
+        val (turn, down) = steadyTurn(Random(7), lean = Quat.axisAngle(Vec3(1.0, 0.0, 0.0), 15 * TestWorld.rad), hand = 0.1)
+        val level = assertNotNull(turn.solve())
+        assertTrue(TestWorld.near(level.axisTiltDeg, 15.0, 1.5), "${level.axisTiltDeg}")
+        assertTrue(angleDeg(level.down, down) <= level.expectedDeg + 0.05 && level.expectedDeg > LevelTurn.ERROR_PER_SPREAD * level.spreadDeg, "$level")
+        assertTrue(TestWorld.near(LevelTurn.expectedDeg(0.5, 2.0, 0.0), 0.2, 1e-9) && LevelTurn.expectedDeg(0.0, 2.0, 30.0) > 0.99)
+    }
+
     @Test fun magnetometer() {
         val rnd = Random(5)
         val offset = Vec3(12.0, -30.0, 7.0)

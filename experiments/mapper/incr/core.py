@@ -1011,7 +1011,7 @@ def capture_priors(root: Path, record: Path, threads: int) -> dict:
         if not sh.get("kept", True) or sh["name"] not in ids:
             continue
         cam = cp.pose(b)
-        entry = {"spell": cp.spell_of(b), "i": b.get("i"), "t": b.get("t"), "down": b.get("down"), "still": b.get("still"),
+        entry = {"spell": cp.spell_of(b), "i": b.get("i"), "t": b.get("t"), "down": b.get("down"), "down_src": b.get("down_src"), "still": b.get("still"),
                  "ref": b.get("ref"), "ref_hold": b.get("ref_hold"), "card": cp.is_card(b), "lic": b.get("lic") or rec.get("licence"),
                  "by": b.get("by") or rec.get("credit"), "k_src": b.get("k_src"), "span": (b.get("ar") or {}).get("span"),
                  "paused": (b.get("ar") or {}).get("paused")}
@@ -1195,13 +1195,14 @@ def level_report(root: Path, model: Path) -> dict | None:
         return None
     pri = json.loads(f.read_text())["photos"]
     rec = pycolmap.Reconstruction(str(model))
-    downs = []
+    placed = []
     for i in rec.reg_image_ids():
         im = rec.image(i)
         p = pri.get(im.name)
         if p and p.get("down"):
-            downs.append(cp.down_in_model(p, im.cam_from_world().rotation.matrix()))
-    return cp.level(downs)
+            placed.append((p, im.cam_from_world().rotation.matrix()))
+    use = {id(p) for p in cp.surest([p for p, _ in placed])}
+    return cp.level([cp.down_in_model(p, R) for p, R in placed if id(p) in use])
 
 
 # ---------------------------------------------------------------- a state from a mesh that has none

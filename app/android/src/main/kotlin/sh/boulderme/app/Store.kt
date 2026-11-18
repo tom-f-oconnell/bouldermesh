@@ -116,6 +116,12 @@ class Store(context: Context) {
     var magNote: String
         get() = prefs.getString("mag_note", "") ?: ""
         set(v) = prefs.edit().putString("mag_note", v).apply()
+    var levelLimit: Double          // degrees the turn on the spot's directions are asked to agree within, as last chosen
+        get() = prefs.getFloat("level_limit", sh.boulderme.core.CaptureFlow.LEVEL_SPREAD_MOST.toFloat()).toDouble()
+        set(v) = prefs.edit().putFloat("level_limit", v.toFloat()).apply()
+    var levelTilts: List<Double>    // how far off this phone's own down was in its last turns on the spot, in degrees
+        get() = (prefs.getString("level_tilts", "") ?: "").split(",").mapNotNull { it.toDoubleOrNull() }
+        set(v) = prefs.edit().putString("level_tilts", v.joinToString(",")).apply()
 
     // ---- meshes kept for use with no signal ---------------------------------------------------------------------------
     fun savePlan(mesh: String, plan: String, guide: ByteArray) {

@@ -1922,6 +1922,22 @@ that correction, with the tracking's own and the photo's accelerometer reading k
 world that shifts mid-capture shows as the two drifting apart. The mesh's report says which it got
 (`keep_capture_level()`). What the turn can't fix is the reconstruction bending a wall, which is a separate error.
 
+- **What the fit can't tell.** Turned about one axis, the part of the phone's offset along that axis looks exactly
+  like gravity. It's pinned at zero (`LevelTurn.PIN`). It was left to a tiny ridge at first, so the hand's wobble set
+  it, which threw gravity's strength off by over 0.6 m/s². Every turn on a Pixel 6 (3 captures, Nov 2026) was then
+  rejected as "not gravity". In simulation of steady, upright turns with half a degree of wobble per direction, the
+  ridge rejected 1 in 5 and the pin none, at the same accuracy.
+- **Upright doesn't matter; a leaning axis does.** Any constant angle, or wobble, costs a few hundredths of a degree.
+  Turning about an axis that leans (the phone kept square to a slope) leaves the pinned part in down. The turn
+  measures the lean from its own poses and adds it to the error it expects.
+- **Expected error.** 0.4 times the directions' spread (9 times in 10, from simulated turns with 0.1-1.5° of wobble
+  per direction), combined with the lean's part. The spread asked for can be loosened on the phone, which says what
+  each choice comes to against the phone's own down.
+- **One world each.** A turn's down holds only in the spell of tracking it was read in. Photos of other spells get
+  the tracking's own, and the record keeps every turn with its spell (`levels`, record v 6). The server levels a mesh
+  by the photos a turn set right when there are 3 placed: each spell's by its median, the spells weighed by photos
+  over expected error squared. So a later visit's turn (a capture carried on) outweighs a worse earlier one.
+
 **Calibration.** The compass is checked rather than corrected: readings while the phone is turned every which way
 should lie on a sphere whose radius is the Earth's field, and the phone's own rating has to be at least medium; each
 photo's heading is then dropped if the field's strength is off this capture's usual by 15% (a bolt, a car). The lens

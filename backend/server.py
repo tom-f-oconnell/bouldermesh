@@ -2081,25 +2081,33 @@ def prefer_mesh(mid: str, on: bool = True) -> bool:
 
 def keep_capture_level(mid: str, pid: str, log=None) -> dict | None:
     """With a mesh made from photos the app took: how the app found which way is down, kept in the mesh's orientation
-    report as "capture". From the capture's record: its turn on the spot (how far the phone's tracking was off, how far
-    one accelerometer reading would have been, and how well the directions faced agreed: the last is how far to trust
-    it), and how far each photo's down was from its own accelerometer's, in the middle. None if its project has no record."""
+    report as "capture". From the capture's record: each turn on the spot ("turns", each in its spell of tracking; "turn"
+    the surest): how far the phone's tracking was off, how far one accelerometer reading would have been, how well the
+    directions faced agreed and how far off down likely is from that; and how far each photo's down was from its own
+    accelerometer's, in the middle. None if its project has no record."""
     rec = _read_json(PROJECTS / pid / CAPTURE_FILE)
     if not isinstance(rec, dict):
         return None
-    level = rec.get("level") if isinstance(rec.get("level"), dict) else None
+    # each turn on the spot, with its spell of tracking (v 6's levels); before v 6, the one as `level`
+    levels = [lv for lv in rec.get("levels") or [] if isinstance(lv, dict)] or ([rec["level"]] if isinstance(rec.get("level"), dict) else [])
     number = lambda v: round(float(v), 2) if isinstance(v, (int, float)) else None  # noqa: E731
+    turns = [{**{k: number(lv.get(k)) for k in ("tilt_deg", "offset_deg", "spread_deg", "expected_deg", "axis_tilt_deg", "limit_deg")},
+              "sectors": lv.get("sectors"), "s": str(lv["s"])[:40] if lv.get("s") else None} for lv in levels]
+    best = min(turns, key=lambda t: t["expected_deg"] if t["expected_deg"] is not None else 99.0) if turns else None
     note = {"photos": sum(1 for s in rec.get("shots") or [] if isinstance(s, dict) and s.get("kept")),
             "device": str(rec["device"])[:80] if rec.get("device") else None, "app": str(rec["app"])[:60] if rec.get("app") else None,
-            "turn": {**{k: number(level.get(k)) for k in ("tilt_deg", "offset_deg", "spread_deg")}, "sectors": level.get("sectors")} if level else None,
-            "down_agree_deg": number(rec.get("down_agree_deg"))}
+            "turn": best, "turns": turns, "down_agree_deg": number(rec.get("down_agree_deg"))}
     report = orientation.load(MESHES / mid)
     if report is not None:
         report["capture"] = note
         orientation.save(MESHES / mid, report)
     if log:
-        log("capture: down " + (f"by a turn on the spot whose {note['turn']['sectors']} directions agree to {note['turn']['spread_deg']}°; the phone's "
-                                f"tracking had it {note['turn']['tilt_deg']}° off" if note["turn"] else "as the phone's tracking had it: no turn on the spot")
+        t = note["turn"]
+        log("capture: down " + (f"by a turn on the spot whose {t['sectors']} directions agree to {t['spread_deg']}°"
+                                + (f", likely within {t['expected_deg']}°" if t["expected_deg"] is not None else "")
+                                + f"; the phone's tracking had it {t['tilt_deg']}° off"
+                                + (f" ({len(note['turns'])} turns, each in its own spell of tracking)" if len(note["turns"]) > 1 else "")
+                                if t else "as the phone's tracking had it: no turn on the spot")
             + (f"; photos' accelerometers within {note['down_agree_deg']}° of it" if note["down_agree_deg"] is not None else ""))
     return note
 

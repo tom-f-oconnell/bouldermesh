@@ -32,6 +32,8 @@ data class CaptureUi(
     val flash: Boolean = false,     // a photo is being taken now: flash the screen, so one taken by itself is seen to be
     val tieLeft: Int = 0,           // a capture carried on: photos of the rock still wanted before its scenery is placed by them
     val unplaced: Int = 0,          // frames of the scenery taken in a spell of tracking with too few photos to place them by
+    val downNote: String = "",      // what became of the turn on the spot's down when the tracking lost its place: shown until dismissed
+    val turnAgain: Boolean = false, // and the turn should be done again: offer it (CaptureFlow.turnAgain())
 )
 
 /**
@@ -46,7 +48,16 @@ data class CaptureUi(
  * @param tooFast the phone is turning too quickly for its readings to be used.
  */
 data class LevelUi(val faced: List<Int>, val facing: Int, val wobbleNow: Double, val wobbleTurn: Double, val wobbleOk: Double,
-                   val agreeDeg: Double?, val agreeOk: Double, val tooFast: Boolean) {
+                   val agreeDeg: Double?, val agreeOk: Double, val tooFast: Boolean,
+                   val ownDeg: Double = CaptureFlow.OWN_GUESS_DEG,     // how far off the phone's own down likely is, and what says so
+                   val ownFrom: String = "",
+                   val canLooser: Boolean = false, val canStricter: Boolean = false) {
+    /** How far off down likely comes out (9 times in 10) with the directions agreeing just within agreeOk, the phone turned about upright. */
+    val expectedDeg: Double get() = LevelTurn.ERROR_PER_SPREAD * agreeOk
+
+    /** What the agreement asked for comes to, against the phone's own down: said each time it's changed, and under the gauges. */
+    fun limitText(): String = CaptureFlow.limitText(agreeOk, ownDeg, ownFrom)
+
     /** How far to turn to face the nearest direction to be faced again: degrees, to the left if positive; null if none is. */
     fun redoTurnDeg(): Int? {
         val n = faced.size
@@ -96,13 +107,30 @@ class FlowOut(val ui: CaptureUi, val guide: Similarity?, val solid: Boolean, val
  * tapped on the real rock, twice, line the mesh up (GHOST, ROCK); the fit is shown over the rock to check (CONFIRM), and
  * tightens against the points the phone tracks; then photos (CAPTURE). With none: the rock's middle is tapped (CENTRE).
  */
-class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFromStart: Boolean = false) {
+/**
+ * @param levelLimit degrees the turn on the spot's directions are asked to agree within (one of LEVEL_LIMITS: the app
+ *   keeps the last chosen); ownTilts how far off the phone's own down was in its earlier turns (degrees, Level.tiltDeg),
+ *   to say what skipping the turn costs. onSettings is told both whenever either changes, for the app to keep.
+ */
+class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFromStart: Boolean = false,
+                  levelLimit: Double = LEVEL_SPREAD_MOST, ownTilts: List<Double> = emptyList()) {
+    /** Degrees the turn on the spot's directions must agree within, for it to be believed (looser(), stricter()). */
+    var levelLimit = LEVEL_LIMITS.minByOrNull { kotlin.math.abs(it - levelLimit) }!!
+        private set
+    /** How far off the phone's own down was in its turns so far, the latest last (at most OWN_KEPT). */
+    val ownTilts: List<Double> get() = tilts.toList()
+    private val tilts = ArrayList(ownTilts.takeLast(OWN_KEPT))
+    var onSettings: ((Double, List<Double>) -> Unit)? = null
+    private var returnTo: Phase? = null     // a turn done again (turnAgain()): where it goes back to after
+    private var downNote = ""
+    private var turnAgainAsked = false
     private val plan = session.plan
     private val guide = session.guide
     private val afterLevel = if (plan != null && guide != null) Phase.GHOST else Phase.CENTRE
     var phase = Phase.LEVEL
         private set
     private var turn = LevelTurn()
+    private var turnSpell = 1               // the spell of tracking the turn being read is in: a new one starts it afresh
     private var levelChecked = -1           // how many directions were read when the turn was last checked, and when
     private var levelCheckT = -1.0
     private var agree: Double? = null
@@ -186,6 +214,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         val spells = earlier.shots.mapNotNull { it.blob.ar?.s } + earlier.scenery.map { it.ar.s } + earlier.marked.mapNotNull { it.s }
         block = ((spells.map { spellNumber(it) } + pts.map { it.second }).maxOrNull() ?: 0) + 1
         firstSpell = block
+        turnSpell = block
         arBase = spells.firstOrNull()?.substringBefore('.')
         earlierLog = log.let { if (it.isEmpty() || it.endsWith("\n")) it else it + "\n" }
         event("reopen", "photos" to session.shotCount, "scenery" to session.sceneryCount, "spell" to block)
@@ -238,8 +267,64 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
 
     fun noGrab(why: String? = null) { grabbing = false; if (why != null) event("no_grab", "why" to why) }
 
-    /** Goes on without the turn on the spot: down is then as the phone's tracking has it. */
-    fun skipLevel() { if (phase == Phase.LEVEL) { event("level_skipped", "filled" to turn.filled); phase = afterLevel; note = "" } }
+    /** Goes on without the turn on the spot: down is then as the phone's tracking has it. Ask first (skipWarning()). */
+    fun skipLevel() {
+        if (phase != Phase.LEVEL) return
+        val (own, from) = ownDown()
+        event("level_skipped", "filled" to turn.filled, "own_deg" to own, "own_from" to from, "limit_deg" to levelLimit, *turn.diagnose(LevelTurn.CHECK_LEAST).fields())
+        phase = returnTo ?: afterLevel; returnTo = null; note = ""
+    }
+
+    /** What going on without the turn costs, for a prompt to confirm it before skipLevel(). */
+    fun skipWarning(): String {
+        val (own, from) = ownDown()
+        return "Without the turn, down is the phone's own, likely about ${hundredths(own)}° off ($from). " +
+            "With the turn, at the agreement asked for now, it's likely within ${hundredths(LevelTurn.ERROR_PER_SPREAD * levelLimit)}°. " +
+            "A wall's steepness in the mesh is off by as much. Go on without it?"
+    }
+
+    /**
+     * How far off the phone's own down likely is, and what says so: this turn's directions read so far, if enough
+     * agree; else this phone's earlier turns; else a guess.
+     */
+    fun ownDown(): Pair<Double, String> {
+        val d = turn.diagnose(LevelTurn.CHECK_LEAST)
+        if (d.why == null && d.tiltDeg != null && (d.spreadDeg ?: 99.0) <= levelLimit) return d.tiltDeg to "by this turn's ${d.sectors} directions so far"
+        if (tilts.isNotEmpty()) return tilts.sorted()[tilts.size / 2] to "this phone's last ${if (tilts.size == 1) "turn" else "${tilts.size} turns"}"
+        return OWN_GUESS_DEG to "a guess: three Pixel 6 captures' photos put it at 0.3 to 0.4°, other phones untried"
+    }
+
+    /** Asks the turn's directions to agree less closely: easier to finish, down less sure. Returns the new limit. */
+    fun looser(): Double = setLimit(LEVEL_LIMITS.firstOrNull { it > levelLimit } ?: levelLimit)
+
+    /** Asks them to agree more closely. Returns the new limit. */
+    fun stricter(): Double = setLimit(LEVEL_LIMITS.lastOrNull { it < levelLimit } ?: levelLimit)
+
+    private fun setLimit(deg: Double): Double {
+        if (deg != levelLimit) {
+            levelLimit = deg; levelChecked = -1
+            event("level_limit", "deg" to deg, "expected_deg" to LevelTurn.ERROR_PER_SPREAD * deg)
+            val (own, from) = ownDown()
+            note = limitText(deg, own, from)
+            onSettings?.invoke(levelLimit, ownTilts)
+        }
+        return levelLimit
+    }
+
+    /**
+     * Does the turn on the spot again, in the tracking's world as it is now (after it lost its place, the earlier
+     * turn's down doesn't hold here), then goes back to what was being done.
+     */
+    fun turnAgain() {
+        event("turn_again", "phase" to phase.name, "spell" to block)
+        if (phase == Phase.LEVEL) return
+        returnTo = phase; phase = Phase.LEVEL
+        turn = LevelTurn(); turnSpell = block; levelChecked = -1; agree = null; levelNote = false
+        downNote = ""; turnAgainAsked = false; note = ""
+    }
+
+    /** Leaves the note of what became of down (CaptureUi.downNote) and the offer of a turn again. */
+    fun dismissDownNote() { event("down_note_dismissed", "turn_again" to turnAgainAsked); downNote = ""; turnAgainAsked = false }
     /** Takes a photo once the phone holds still enough for it: at once if it already is, else within the next WAIT_S. */
     fun shutter() { event("shutter", "waiting" to wantShot); if (!wantShot) { wantShot = true; wantAt = null } }
     fun setAuto(on: Boolean) { event("auto", "on" to on); session.auto = on }
@@ -361,6 +446,35 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         return out
     }
 
+    /**
+     * The tracking came back after losing its place, perhaps in a world of its own: a turn being read starts afresh, and
+     * a turn's down holds only for the photos of its spell. The mesh's down comes from those, so too few of them is
+     * warned of, with a turn again offered.
+     */
+    private fun newSpell(lostS: Double) {
+        val lvl = session.level
+        val inTurn = session.keptWithTurn()
+        event("spell", "n" to block, "lost_s" to lostS, "level_spell" to session.levelSpell.takeIf { lvl != null }, "kept_in_level_spell" to inTurn)
+        if (phase == Phase.LEVEL) {
+            turn = LevelTurn(); turnSpell = block; levelChecked = -1; agree = null
+            note = "The phone lost its place, so the turn starts again: its world may have moved."
+            return
+        }
+        if (lvl == null) return
+        val tie = CaptureSession.TIE_SHOTS
+        if (inTurn >= tie) {
+            downNote = "The phone lost its place. The turn's down holds for the $inTurn photos taken since it, not those from now on: " +
+                "the mesh is levelled by those photos, and the rest follow through the mesh."
+            turnAgainAsked = false
+        } else {
+            downNote = "The phone lost its place, with only $inTurn photo${if (inTurn == 1) "" else "s"} taken since the turn on the spot " +
+                "(at least $tie are needed to level the mesh by it reliably). Its down doesn't hold for photos from now on. " +
+                "Turn on the spot again?" + (if (tieLeft > 0) " The $tieLeft photos of the rock asked for after it count for both." else "")
+            turnAgainAsked = true
+        }
+        event("down_note", "turn_again" to turnAgainAsked, "kept_in_level_spell" to inTurn)
+    }
+
     /** The name of the spell of tracking a photo was taken in: the app's own for the capture, with which spell after the first. */
     private fun spell(base: String) = if (block > 1) "$base.$block" else base
 
@@ -435,12 +549,16 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         // tracking that was lost for more than a moment may have come back with its world somewhere else: photos and points
         // from then on are another spell's, tied to the earlier ones by what they show rather than by where the phone says it was
         if (!tracking) { if (tracked && lostAt == null) lostAt = t } else {
-            if (lostAt?.let { t - it >= LOST_S } == true) { event("spell", "n" to block + 1, "lost_s" to t - lostAt!!); past += cloud.values.map { it to block }; cloud.clear(); block++ }
+            if (lostAt?.let { t - it >= LOST_S } == true) {
+                past += cloud.values.map { it to block }; cloud.clear(); block++
+                newSpell(t - lostAt!!)
+            }
             lostAt = null; tracked = true
         }
         val base = ui.copy(phase = phase, kept = session.shotCount, scenery = session.sceneryCount, rejected = rejected, note = note, sensors = sensorNote, auto = session.auto, wide = wide, marking = marking,
             reach = when (reach) { 1 -> "whole rock"; 2 -> "its climbs"; else -> "only the holds of $setName" }, card = cardNext, target = "", canCard = false, askMore = 0,
-            pairs = session.taps.size, tracking = tracking, level = null, tieLeft = tieLeft, unplaced = session.unplacedScenery(firstSpell))
+            pairs = session.taps.size, tracking = tracking, level = null, tieLeft = tieLeft, unplaced = session.unplacedScenery(firstSpell),
+            downNote = downNote, turnAgain = turnAgainAsked)
         if (!tracking) {
             ui = base.copy(text = "Hold on: the phone is finding where it is. Move it slowly, looking at the rock.", turnX = 0.0, turnY = 0.0)
             return FlowOut(ui, null, false, 0f, null, emptyList(), false)
@@ -462,34 +580,42 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                     val c = turn.check()
                     agree = c?.agreeDeg
                     if (levelNote && 3 !in turn.states()) { note = ""; levelNote = false }      // what was cleared has been faced again
-                    if (c != null && c.agreeDeg > LEVEL_SPREAD_MOST && (c.withoutDeg <= LEVEL_SPREAD_MOST || c.sectors >= LEVEL_CLEAR_FROM)) {
+                    if (c != null && c.agreeDeg > levelLimit && (c.withoutDeg <= levelLimit || c.sectors >= LEVEL_CLEAR_FROM)) {
                         event("level_redo", "sector" to c.worst, "of" to c.sectors, "agree_deg" to c.agreeDeg, "without_deg" to c.withoutDeg,
-                            "wobble_deg" to turn.sectorWobbles()[c.worst], "wobble_turn_deg" to turn.wobbleTurn)
+                            "wobble_deg" to turn.sectorWobbles()[c.worst], "wobble_turn_deg" to turn.wobbleTurn, "limit_deg" to levelLimit,
+                            *turn.diagnose(LevelTurn.CHECK_LEAST).fields())
                         turn.clear(c.worst)
                         levelNote = true
                         levelChecked = turn.filled
-                        note = if (c.withoutDeg <= LEVEL_SPREAD_MOST) "One direction was read unsteadily: it is to be faced again, and the rest are kept."
-                            else "Too unsteady so far: the directions agree to ${hundredths(c.agreeDeg)}°, and need ${hundredths(LEVEL_SPREAD_MOST)}°. " +
-                                "The worst is cleared to face again: turn more slowly, elbows in, and pause facing each way."
+                        note = if (c.withoutDeg <= levelLimit) "One direction was read unsteadily: it is to be faced again, and the rest are kept."
+                            else "Too unsteady so far: the directions agree to ${hundredths(c.agreeDeg)}°, and need ${hundredths(levelLimit)}°. " +
+                                "The worst is cleared to face again: turn more slowly, elbows in, and pause facing each way. Or ask less of it (Looser)."
                     } else if (turn.filled == turn.sectors) {
+                        val d = turn.diagnose()
                         val found = turn.solve()
-                        event("level", "found" to (found != null), "spread_deg" to found?.spreadDeg, "tilt_deg" to found?.tiltDeg, "offset_deg" to found?.offsetDeg,
-                            "samples" to found?.samples, "wobble_turn_deg" to turn.wobbleTurn, "taken" to (found != null && found.spreadDeg <= LEVEL_SPREAD_MOST))
-                        if (found != null && found.spreadDeg <= LEVEL_SPREAD_MOST) {
-                            session.level = found
-                            note = "Down found: the ${found.sectors} directions agree to ${hundredths(found.spreadDeg)}°. The phone's tracking had it ${hundredths(found.tiltDeg)}° off, " +
-                                "and one reading of its accelerometer would have been ${hundredths(found.offsetDeg)}° off."
-                            phase = afterLevel
+                        val taken = found != null && found.spreadDeg <= levelLimit
+                        event("level", "found" to (found != null), "taken" to taken, "limit_deg" to levelLimit, "wobble_turn_deg" to turn.wobbleTurn,
+                            "sector_wobbles" to turn.sectorWobbles(), "spell" to turnSpell, *d.fields())
+                        if (found != null && taken) {
+                            session.setLevel(found, turnSpell, levelLimit)
+                            tilts.add(found.tiltDeg); while (tilts.size > OWN_KEPT) tilts.removeAt(0)
+                            onSettings?.invoke(levelLimit, ownTilts)
+                            note = "Down found: likely within ${hundredths(found.expectedDeg)}° (the ${found.sectors} directions agree to ${hundredths(found.spreadDeg)}°). " +
+                                "The phone's own had it ${hundredths(found.tiltDeg)}° off, and one reading of its accelerometer would have been ${hundredths(found.offsetDeg)}° off. " +
+                                "It holds while the phone keeps its place: should it lose it, you're told."
+                            phase = returnTo ?: afterLevel; returnTo = null
                         } else if (found == null) {        // readings that aren't gravity's at all: nothing in them to keep
                             turn = LevelTurn(); levelChecked = 0
-                            note = "The readings of that turn didn't add up: once more, more slowly."
+                            note = "The readings of that turn didn't add up (${d.why}): once more, more slowly."
                         }
                     }
                 }
-                val lvl = if (phase == Phase.LEVEL) LevelUi(turn.states().toList(), turn.facing, turn.wobbleNow, turn.wobbleTurn, LevelTurn.WOBBLE_OK,
-                    agree, LEVEL_SPREAD_MOST, gyroRadS > LevelTurn.MAX_TURNING) else null
+                val lvl = if (phase == Phase.LEVEL) ownDown().let { (own, from) ->
+                    LevelUi(turn.states().toList(), turn.facing, turn.wobbleNow, turn.wobbleTurn, LevelTurn.WOBBLE_OK, agree, levelLimit, gyroRadS > LevelTurn.MAX_TURNING,
+                        own, from, levelLimit < LEVEL_LIMITS.last(), levelLimit > LEVEL_LIMITS.first()) } else null
                 ui = base.copy(phase = phase, note = note, turnX = 0.0, turnY = 0.0, total = turn.sectors, done = if (phase == Phase.LEVEL) turn.filled else turn.sectors,
-                    level = lvl, text = "To find which way is down: hold the phone upright, as for a photo, and turn slowly all the way round on the spot")
+                    level = lvl, text = "To find which way is down: turn slowly all the way round on the spot, the phone held as for a photo. " +
+                        "It needn't be upright, only steady and at the same angle to you all the way round")
                 // and a frame for each step of the turn, for a panorama of what's far off
                 val grab = if (!grabbing && pano.wanted(pose, sceneryBlurPx(gyroRadS, exposureS, pose.lens.fx) <= STEADY_SCENERY_PX)) "pano" else null
                 if (grab != null) grabbing = true
@@ -608,10 +734,27 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         const val STEADY_SCENERY_PX = 1.5   // a scenery frame is kept only with the phone turning less than smears it this much
         const val ORBIT_ROCK_M = 2.0        // how far a rock with no mesh is taken to reach from its middle, for the walk round it
         const val SPAN_S = 5.0              // how often how frames are coming is logged
-        const val LEVEL_SPREAD_MOST = 0.4   // degrees the directions of a turn on the spot may disagree by, for it to be believed
+        const val LEVEL_SPREAD_MOST = 0.4   // degrees the directions of a turn on the spot may disagree by, for it to be believed, at first
+        /** What that can be set to (looser(), stricter()): down then likely within LevelTurn.ERROR_PER_SPREAD times as much. */
+        val LEVEL_LIMITS = listOf(0.4, 0.7, 1.0, 1.5, 2.5)
+        const val OWN_KEPT = 10             // the phone's own down's error in its last this many turns is kept, to say what skipping costs
+        /**
+         * How far off a phone's own down is taken to be, before any turn of its own says: three Pixel 6 captures' photos,
+         * each fitted for gravity and the phone's accelerometer offset as a turn is, put the tracking's down 0.28, 0.28 and
+         * 0.43 degrees off, each give or take about 0.3.
+         */
+        const val OWN_GUESS_DEG = 0.5
         const val LEVEL_CLEAR_FROM = 8      // directions read from which the worst is cleared even when clearing it alone won't do
         const val LEVEL_CHECK_S = 0.5
 
         private fun hundredths(x: Double) = kotlin.math.round(x * 100) / 100
+
+        /** What asking a turn's directions to agree within `limitDeg` comes to, against the phone's own down (`ownDeg` off, as `ownFrom` says). */
+        fun limitText(limitDeg: Double, ownDeg: Double, ownFrom: String): String {
+            val expected = LevelTurn.ERROR_PER_SPREAD * limitDeg
+            return "Asks the directions to agree within ${hundredths(limitDeg)}°: down then likely within ${hundredths(expected)}°, " +
+                "against about ${hundredths(ownDeg)}° off for the phone's own ($ownFrom)." +
+                (if (expected >= ownDeg) " That's no better than the phone's own: loosening it this far doesn't help." else "")
+        }
     }
 }

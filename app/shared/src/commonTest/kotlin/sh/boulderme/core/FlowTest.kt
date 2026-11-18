@@ -209,7 +209,78 @@ class FlowTest {
         // told from it, no longer does once the phone looks down from where it looked level
         assertTrue(angleDeg(Vec3.of(blob.downAcc!!), Vec3.of(blob.down!!)) < 0.5, "${angleDeg(Vec3.of(blob.downAcc!!), Vec3.of(blob.down!!))}")
         val record = flow.session.record(99.0)
-        assertTrue(TestWorld.near(record.level!!.tiltDeg, 1.0, 0.05) && record.level!!.sectors == 12 && record.downAgreeDeg!! < 0.5 && "\"down_agree_deg\"" in record.json())
+        val lv = record.levels.single()
+        assertTrue(TestWorld.near(lv.tiltDeg, 1.0, 0.05) && lv.sectors == 12 && lv.s == "a" && lv.expectedDeg!! < 0.1 && lv.limitDeg == CaptureFlow.LEVEL_SPREAD_MOST &&
+            record.level == null && record.downAgreeDeg!! < 0.5 && "\"down_agree_deg\"" in record.json(), "$lv")
+        assertTrue(blob.downExp == lv.expectedDeg, "a photo says how far off its down likely is")
+        // the log says everything the fit found
+        val line = flow.logText().lines().first { "\"e\":\"level\"" in it }
+        assertTrue(listOf("gravity", "force_mean", "axis_tilt_deg", "expected_deg", "offset", "sector_wobbles", "limit_deg").all { "\"$it\"" in line }, line)
+    }
+
+    @Test fun downHoldsInItsOwnSpellOfTracking() {
+        val said = ArrayList<Pair<Double, List<Double>>>()
+        val flow = CaptureFlow(CaptureSession(null, null, "f6", "test", "a phone", 0.0), ownTilts = listOf(0.3, 0.5, 0.9))
+        flow.onSettings = { limit, tilts -> said.add(limit to tilts) }
+        // what the turn's agreement asks for, and what going without it costs, said as numbers
+        assertTrue("0.5° off (this phone's last 3 turns)" in flow.skipWarning() && "within 0.16°" in flow.skipWarning(), flow.skipWarning())
+        assertEquals(0.7, flow.looser()); assertEquals(0.4, flow.stricter()); assertEquals(0.4, flow.stricter())
+        assertTrue(said.map { it.first } == listOf(0.7, 0.4) && "\"e\":\"level_limit\"" in flow.logText())
+        repeat(4) { flow.looser() }
+        val loose = LevelUi(emptyList(), 0, 0.0, 0.0, 0.8, null, flow.levelLimit, false, 0.5, "x")
+        assertTrue(flow.levelLimit == 2.5 && "within 1.0°" in loose.limitText() && "no better than the phone's own" in loose.limitText(), loose.limitText())
+        repeat(4) { flow.stricter() }
+        // a world a degree off level, a turn in it, then photos round a rock with no mesh
+        var down = Quat.axisAngle(Vec3(0.0, 0.0, 1.0), 1.0 * TestWorld.rad).rotate(Vec3(0.0, -1.0, 0.0))
+        var t = 0.0
+        fun turnRound() {
+            for (i in 0 until 400) {
+                val yaw = i * TestWorld.rad
+                val pose = TestWorld.look(Vec3.ZERO, Vec3(kotlin.math.sin(yaw), 0.1, kotlin.math.cos(yaw)))
+                t += 0.05; flow.frame(pose, true, 0.3, 0.004, t, 90, Axes.forceInImage(pose.rot.conj().rotate(-down * Sensors.G)) + Vec3(0.2, 0.0, 0.1))
+                if (flow.phase != Phase.LEVEL) return
+            }
+        }
+        turnRound()
+        assertEquals(Phase.CENTRE, flow.phase)
+        val rock = Vec3(0.0, 1.0, 3.0)
+        val pose = TestWorld.look(Vec3(0.0, 1.5, 0.0), rock)
+        flow.tap(pose.centre, pose.forward) { rock }
+        fun take(): ShotRecord {
+            flow.shutter()
+            assertTrue((0 until 3).any { t += 0.5; flow.frame(pose, true, 0.0, 0.004, t, 90).shoot }, "held still, the photo is taken")
+            val accel = Axes.forceInImage(pose.rot.conj().rotate(-down * Sensors.G)) + Vec3(0.2, 0.0, 0.1)
+            return flow.shot(ShotIn(pose, SensorSample(accel, Vec3.ZERO, t = t), sharp, 0.004, 80.0, 1.3, true, "a", t, 1.7e9)).record
+        }
+        repeat(2) { assertEquals("turn", take().blob.downSrc) }
+        // the tracking loses its place and comes back in a world of its own, two degrees off the other way
+        flow.frame(pose, false, 0.0, 0.004, t + 0.1, 90); t += 2.0
+        down = Quat.axisAngle(Vec3(0.0, 0.0, 1.0), -2.0 * TestWorld.rad).rotate(Vec3(0.0, -1.0, 0.0))
+        var ui = flow.frame(pose, true, 0.0, 0.004, t, 90).ui
+        assertTrue(ui.turnAgain && "only 2 photos" in ui.downNote && "Turn on the spot again?" in ui.downNote, ui.downNote)
+        assertTrue("\"e\":\"down_note\"" in flow.logText() && "\"kept_in_level_spell\":2" in flow.logText())
+        // photos now aren't given the first world's down
+        val lost = take()
+        assertTrue(lost.blob.ar!!.s == "a.2" && lost.blob.downSrc == "ar" && lost.blob.downExp == null, "${lost.blob}")
+        // turned again, in this world: then back to the photos, and theirs is this turn's
+        flow.turnAgain()
+        assertEquals(Phase.LEVEL, flow.phase)
+        turnRound()
+        ui = flow.frame(pose, true, 0.0, 0.004, t + 0.1, 90).ui
+        assertTrue(flow.phase == Phase.CAPTURE && !ui.turnAgain && ui.downNote.isEmpty() && flow.session.levelSpell == 2, "${flow.phase}")
+        val again = take()
+        assertTrue(again.blob.downSrc == "turn" && near(Vec3.of(again.blob.down!!), pose.rot.conj().rotate(down), 2e-3), "${again.blob.down}")
+        // the record has both turns, each with its spell
+        val record = flow.session.record(99.0)
+        assertEquals(listOf("a", "a.2"), record.levels.map { it.s })
+        assertTrue(near(record.levels[1].tiltDeg, 2.0, 0.05) && flow.ownTilts.takeLast(2).let { near(it[0], 1.0, 0.05) && near(it[1], 2.0, 0.05) })
+        // with enough photos before it was lost, it says so, and asks nothing
+        repeat(CaptureSession.TIE_SHOTS) { take() }
+        flow.frame(pose, false, 0.0, 0.004, t + 0.1, 90); t += 2.0
+        ui = flow.frame(pose, true, 0.0, 0.004, t, 90).ui
+        assertTrue(!ui.turnAgain && "holds for the ${CaptureSession.TIE_SHOTS + 1} photos taken since it" in ui.downNote, ui.downNote)
+        flow.dismissDownNote()
+        assertTrue(flow.frame(pose, true, 0.0, 0.004, t + 0.1, 90).ui.downNote.isEmpty())
     }
 
     @Test fun takeWaitsForTheButtonsPhotoToBeSteady() {
@@ -301,7 +372,7 @@ class FlowTest {
         assertNull(flow.refineDue(100.0), "and the fit isn't tightened against points from before, whose world may not be this one")
         // the record names the plan it went by
         val record = flow.session.record(99.0)
-        assertTrue(record.v == 5 && record.plan == RecordPlan("abc123def456", 1.7e9, "0123abcd") && "\"plan\":{\"key\":\"abc123def456\"" in record.json(), record.json().take(300))
+        assertTrue(record.v == 6 && record.plan == RecordPlan("abc123def456", 1.7e9, "0123abcd") && "\"plan\":{\"key\":\"abc123def456\"" in record.json(), record.json().take(300))
         assertEquals(listOf("a", "a", "a.2"), record.shots.map { it.blob.ar!!.s })
     }
 

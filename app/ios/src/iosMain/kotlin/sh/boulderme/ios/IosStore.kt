@@ -60,6 +60,12 @@ class IosStore {
     var magNote: String
         get() = prefs.stringForKey("mag_note") ?: ""
         set(v) = prefs.setObject(v, forKey = "mag_note")
+    var levelLimit: Double          // degrees the turn on the spot's directions are asked to agree within, as last chosen
+        get() = prefs.stringForKey("level_limit")?.toDoubleOrNull() ?: sh.boulderme.core.CaptureFlow.LEVEL_SPREAD_MOST
+        set(v) = prefs.setObject(v.toString(), forKey = "level_limit")
+    var levelTilts: List<Double>    // how far off this phone's own down was in its last turns on the spot, in degrees
+        get() = (prefs.stringForKey("level_tilts") ?: "").split(",").mapNotNull { it.toDoubleOrNull() }
+        set(v) = prefs.setObject(v.joinToString(","), forKey = "level_tilts")
 
     // ---- meshes kept for use with no signal ---------------------------------------------------------------------------
     fun savePlan(mesh: String, plan: String, guide: ByteArray) {

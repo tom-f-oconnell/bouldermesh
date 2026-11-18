@@ -271,8 +271,15 @@ orientation.save(server.MESHES / new_mid, {"method": "iphone", "iphone": {"statu
     "mesh": mid, "shots": [{"kept": True}, {"kept": False}, {"kept": True}], "down_agree_deg": 0.2345,
     "level": {"down": [0.01, -0.9999, 0.0], "tilt_deg": 0.5731, "offset": [0, 0.1, 0.2], "offset_deg": 1.31, "spread_deg": 0.1249, "sectors": 12, "samples": 300}}))
 kept = server.keep_capture_level(new_mid, mine, said.append)
-assert kept == {"photos": 2, "device": None, "app": None, "turn": {"tilt_deg": 0.57, "offset_deg": 1.31, "spread_deg": 0.12, "sectors": 12}, "down_agree_deg": 0.23}, kept
+old_turn = {"tilt_deg": 0.57, "offset_deg": 1.31, "spread_deg": 0.12, "expected_deg": None, "axis_tilt_deg": None, "limit_deg": None, "sectors": 12, "s": None}
+assert kept == {"photos": 2, "device": None, "app": None, "turn": old_turn, "turns": [old_turn], "down_agree_deg": 0.23}, kept
 assert orientation.load(server.MESHES / new_mid)["capture"] == kept and "12 directions agree to 0.12°" in said[-1], said[-1]
+# a record of v 6: a turn in each of two spells (a capture carried on), the surer taken as "turn"
+lv = {"down": [0.0, -1.0, 0.0], "offset": [0, 0, 0], "offset_deg": 1.0, "sectors": 12, "samples": 300}
+(server.PROJECTS / mine / server.CAPTURE_FILE).write_text(json.dumps({"mesh": mid, "shots": [], "levels": [
+    {**lv, "tilt_deg": 0.4, "spread_deg": 1.2, "expected_deg": 0.48, "s": "a1"}, {**lv, "tilt_deg": 0.3, "spread_deg": 0.3, "expected_deg": 0.12, "s": "a1.2"}]}))
+kept = server.keep_capture_level(new_mid, mine, said.append)
+assert kept["turn"]["s"] == "a1.2" and [t["s"] for t in kept["turns"]] == ["a1", "a1.2"] and "likely within 0.12°" in said[-1] and "2 turns" in said[-1], said[-1]
 (server.PROJECTS / mine / server.CAPTURE_FILE).write_text(json.dumps({"mesh": mid, "shots": []}))
 assert server.keep_capture_level(new_mid, mine, said.append)["turn"] is None and "no turn on the spot" in said[-1]
 # and the points its tracking found are kept beside its record

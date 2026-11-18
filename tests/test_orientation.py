@@ -160,6 +160,33 @@ with tempfile.TemporaryDirectory() as td:
     r = o.check(model, images)
     assert r["iphone"]["status"] == "used" and abs(r["iphone"]["off_estimate_deg"] - 12) < 1 and r["iphone"]["readings_agree_deg"] > 40, r["iphone"]
 
+    # photos from the app whose down a turn on the spot set right: those alone level it, each spell of tracking by its
+    # own turn, and a sure turn outweighs a loose one
+    import json  # noqa: E402
+    import phonedata  # noqa: E402
+
+    def app_photo(path, down, src, exp, s):
+        exif = Image.Exif()
+        blob = {"v": 1, "down": [float(x) for x in down], "down_src": src, "down_exp": exp, "ar": {"s": s, "p": [0, 0, 0], "q": [1, 0, 0, 0]}}
+        exif.get_ifd(phonedata.EXIF_IFD)[phonedata.USER_COMMENT] = b"ASCII\0\0\0" + phonedata.MARK + json.dumps(blob).encode()
+        Image.new("RGB", (32, 24), (90, 90, 90)).save(path, exif=exif)
+    loose = rotation_about_x(15) @ np.array([0.0, -1.0, 0.0])
+    app_photo(images / "ddg_a.jpg", cam @ true_down, "turn", 0.1, "a1")
+    app_photo(images / "ddg_b.jpg", cam @ true_down, "turn", 0.1, "a1")
+    app_photo(images / "ddg_none.jpg", cam @ loose, "turn", 1.0, "a1.2")
+    assert o.reading(images / "ddg_a.jpg")["src"] == "turn" and o.reading(images / "ddg_a.jpg")["s"] == "a1"
+    r = o.check(model, images)
+    p = r["iphone"]
+    assert p["status"] == "used" and o._angle(p["down"], true_down) < 0.1, (p, o._angle(p["down"], true_down))
+    assert p["turns"] == [{"s": "a1", "photos": 2, "expected_deg": 0.1}, {"s": "a1.2", "photos": 1, "expected_deg": 1.0}], p["turns"]
+    # fewer than TURN_LEAST such photos: all readings count, as before
+    app_photo(images / "ddg_none.jpg", cam @ true_down, "ar", None, "a1.2")
+    r = o.check(model, images)
+    assert r["iphone"]["status"] == "used" and "turns" not in r["iphone"], r["iphone"]
+    photo(images / "ddg_a.jpg", reading_for(cam, true_down), 1)
+    photo(images / "ddg_b.jpg", reading_for(cam, true_down), 1)
+    photo(images / "ddg_none.jpg", reading_for(cam, far), 6)
+
     # old meshes: cameras gone, so all that can be said is what their photos hold
     r = o.no_cameras(images)
     assert r["iphone"] == {"status": "no_cameras", "kept_with_readings": 4} and not r["cameras_kept"], r

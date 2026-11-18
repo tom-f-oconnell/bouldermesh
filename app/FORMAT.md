@@ -82,9 +82,11 @@ EXIF UserComment, `BMSH1:` followed by JSON in plain ASCII:
 
     v, app, device, cap, i, t   the format's version; the app and phone; the capture; which photo of it; when (Unix seconds)
     down                  gravity, a unit vector in the stored pixels' axes: x along the rows, y down the columns, z the
-                          way the camera looks. down_src: "turn" (the phone's tracking, set right by the capture's turn on
-                          the spot), "ar" (the tracking as it was: no turn) or "accel". down_track: the tracking's own, where
-                          a turn changed it. down_acc: this photo's accelerometer alone, less what the turn found the phone adds
+                          way the camera looks. down_src: "turn" (the phone's tracking, set right by a turn on the spot in
+                          the same spell of tracking), "ar" (the tracking as it was: no turn in this spell) or "accel".
+                          down_exp: with "turn", how far off that turn's down likely is (degrees, 9 times in 10). down_track:
+                          the tracking's own, where a turn changed it. down_acc: this photo's accelerometer alone, less what
+                          the last turn found the phone adds
     turn                  how far clockwise (0, 90, 180, 270) the sensor's picture was turned to store it
     heading, heading_acc  where the camera pointed, degrees from true north, if the compass could be trusted
     gps                   {lat, lng, alt, acc, age}: the last fix, how far off it says it may be (m) and how old (s)
@@ -94,7 +96,7 @@ EXIF UserComment, `BMSH1:` followed by JSON in plain ASCII:
                           may then be somewhere else, so places are only comparable within one s, and even there are a
                           strong hint rather than exact (tracking drifts by about a hundredth of the way walked). A
                           capture carried on after it was finished (shared Reopen.kt) goes on under the same s, its
-                          later visit the next spell; its record keeps its first `started`, fit and level
+                          later visit the next spell; its record keeps its first `started` and fit, and every visit's turns
     k                     {fx, fy, cx, cy, w, h}: the lens, for this picture's size
     exp                   {t, iso, focus_m}
     q                     {sharp, blur_px, clip_hi, clip_lo, ok}: how it was judged
@@ -107,18 +109,22 @@ last before) and `k_src: "derived"` (its lens was worked out from the tracking c
 
 **The record** (`capture.json`, kept whole in the project):
 
-    v, id, app, device, started, ended     v is 5 (1: no plan, level or down_agree_deg; one `ar.s` whatever happened; 2: no detail, licence or credit; 4: no marked)
+    v, id, app, device, started, ended     v is 6 (1: no plan, level or down_agree_deg; one `ar.s` whatever happened; 2: no detail, licence or credit; 4: no marked; 5: `level`, not `levels`)
     plan                  {key, made, guide}: the plan the capture went by, and its guide's sha1
     mesh, climbs          the mesh it adds to (none: a rock with no mesh), and the climbs it was kept to, if any
     mode                  "plan" or "orbit"
     fit                   {scale, rot, shift, tilt_deg, taps, matched, rms_m}: the mesh-to-world fit used; tilt_deg is how
                           far off level the mesh turned out to be, and scale its metres a unit
     place                 {lat, lng, alt, acc_m, n, seconds}: its GPS fixes averaged, the phone moving about the rock
-    level                 {down, tilt_deg, offset, offset_deg, spread_deg, sectors, samples}: which way is down in the
-                          tracking's world, by a turn on the spot; how far the tracking's own was off; what the phone adds to
-                          its accelerometer (m/s2, in the axes of the picture as the sensor reads it: before any photo's
-                          `turn`) and how many degrees that's worth; and how far the
-                          directions faced disagreed, which is how far to trust it. None if the turn was skipped
+    levels                [{s, down, tilt_deg, offset, offset_deg, spread_deg, sectors, samples, expected_deg, axis_tilt_deg,
+                          gravity, force_mean, limit_deg}]: each turn on the spot that found down, in the world of its
+                          spell of tracking s (as a photo's ar.s) and only there: which way is down there; how far the
+                          tracking's own was off; what the phone adds to its accelerometer (m/s2, in the axes of the picture
+                          as the sensor reads it: before any photo's `turn`) and how many degrees that's worth; how far the
+                          directions faced disagreed; how far off down likely is from that and from how far the axis turned
+                          about leaned (axis_tilt_deg); gravity's strength found and the accelerometer's mean reading; and
+                          the agreement asked for. Empty if every turn was skipped. Before v 6, `level`: one such, without s
+                          (the first spell) or what follows samples
     down_agree_deg        how far each kept photo's down was from its own accelerometer's, in the middle
     calibration           {mag_offset, mag_field_ut, mag_rms_ut}
     skipped               {target: why}
@@ -154,7 +160,8 @@ to each 5 cm}. The warnings (Session's FEW_CORNERS, FEW_LINKS, FEW_AR_POINTS) ar
 
 **Scenery** (record v 4, `scenery`): frames of what's around the rock, for the site's backdrop, never meshed: those of
 a walk round it (kind "walk", `scn_<capture>_<nnn>.jpg`) and of the turn on the spot (kind "pano",
-`pano_<capture>_<nn>.jpg`), each {name, kind, t, ar: {s, p, q} as a photo's, k: its lens, turn, sharp, blur_px}, for the
+`pano_<capture>_<nn>.jpg`), each {name, kind, t, ar: {s, p, q} as a photo's, k: its lens, turn, sharp, blur_px, down,
+down_src, down_exp as a photo's (record v 6)}, for the
 picture as stored (upright, EXIF Orientation 1, no readings in its EXIF). Sent after the request to mesh, each to
 `POST /api/projects/<id>/scenery` (multipart, kept in the project's scenery/), then `POST /api/projects/<id>/scenery/done`;
 the server fits them once the capture's mesh is made (backend/splat.py) and puts `scene.splat`, `scene-small.splat`,
@@ -164,9 +171,13 @@ the server fits them once the capture's mesh is made (backend/splat.py) and puts
 `capture-log.jsonl`): JSON lines, each {t: seconds since the capture's first frame, e: what, ...}, written as the
 capture runs (app/shared EventLog.kt), a line for each change and not each frame: `start`, `camera` (how the app set
 its camera up), `phase`, `tracking`, `says` and `hint` (when what's asked for changes), `frames` (every 5 s: fps, the
-longest gap, untracked frames), `level`, `level_redo` (a direction of the turn on the spot cleared to face again),
+longest gap, untracked frames), `level` (each whole turn on the spot: whether taken, and everything its fit found, as
+the record's levels have it, with why one was rejected: "few", "singular" or "not_gravity"), `level_redo` (a direction
+of the turn cleared to face again, with the fit so far), `level_limit` (Looser or Stricter), `level_skipped` (with the
+fit so far and the phone's own down's likely error), `down_note` (the tracking lost its place after a turn: how many
+photos the turn set right, and whether a turn again was offered), `turn_again`, `down_note_dismissed`,
 `imu_clock` (how far the motion sensors' clock is from the camera's, found by matching the gyroscope to the tracking: the
-first few tries and each change), `tap_model`, `tap_rock`, `refine`, `fit_confirmed`, `spell`, `reopen` (a capture carried on: the lines after it are
+first few tries and each change), `tap_model`, `tap_rock`, `refine`, `fit_confirmed`, `spell` (with the turn's spell and its photos), `reopen` (a capture carried on: the lines after it are
 the later visit's, their t from its own first frame), `ring` (another ring
 round the rock asked for: its number), `shoot`,
 `shot`, `no_shot`, `error`, `start_failed`, and the screen's buttons. Its upload never holds the rest up.

@@ -13,7 +13,8 @@ phone yet**: see [What's been checked](#whats-been-checked).
    signal.
 2. **Before a capture**, *Calibrate* the compass: half a minute of turning the phone every which way, away from metal.
 3. **At the rock**, press *Capture* on its mesh. It first asks for **one slow turn all the way round on the spot**, with
-   the phone held upright as for a photo: that's how it finds which way is down (below). Then a small model of the
+   the phone held as for a photo, steadily and at the same angle to you all the way round (it needn't be upright): that's how
+   it finds which way is down (below). Then a small model of the
    mesh appears in front of you:
    - tap a spot on the model that you can find on the rock, then tap the same spot on the real rock;
    - do that once more, with a spot well to one side of the first;
@@ -81,13 +82,22 @@ in Terms.kt), from the next start (or at once when signing in). The phone's own 
   accelerometer's zero is typically off by a degree or so, and it doesn't sit exactly square to the camera. Both are
   fixed to the phone, though, and gravity to the world: so over a turn on the spot the phone's errors point every way in
   turn and cancel, as a spirit level's does when it's turned end for end. Nothing level or plumb is needed. The screen
-  says afterwards how well the twelve directions agreed (under 0.4° is needed), how far the phone's own tracking had
-  been off, and how far one reading would have been.
-  During the turn, a ring shows each direction (green once read), a bar how still the phone is now against what it
-  should stay under, and how well the directions read so far agree. From five directions on, one that spoils the rest
-  is cleared as soon as it shows (orange on the ring, with which way to turn to face it again); the rest are kept. Each photo then
-  carries down as the turn found it, and its own accelerometer's beside it, and the screen says if the two drift apart.
-  In simulation this finds down to under 0.1°; on a phone it hasn't been tried.
+  says afterwards how far off down likely is, how far the phone's own tracking had been off, and how far one reading
+  would have been.
+  - During the turn, a ring shows each direction (green once read), a bar how still the phone is now against what it
+    should stay under, and how well the directions read so far agree. From five directions on, one that spoils the
+    rest is cleared as soon as it shows (orange on the ring, with which way to turn to face it again); the rest are kept.
+  - **Looser / Stricter** set how closely the directions must agree (0.4° at first, up to 2.5°; the phone remembers
+    the choice). Each says what down then likely comes to (about 0.4 times the agreement), against the phone's own
+    down without the turn. Past where the turn does no better, it says so.
+  - **Skip** asks first, saying how far off the phone's own down likely is: from this turn so far, the phone's
+    earlier turns, or a guess of 0.5° (three Pixel 6 captures' photos put it at 0.3-0.4°).
+  - **Down holds only while the phone keeps its place.** If it loses it for over a second, its world may move, so
+    photos from then on aren't given the turn's down, and the screen says so. With fewer than 8 photos taken since the
+    turn, it offers **Turn again**, in the new world; the mesh is levelled by the photos a turn set right.
+  Each photo carries down as the turn found it, and its own accelerometer's beside it, and the screen says if the two
+  drift apart. In simulation this finds down to about 0.1°. On a Pixel 6 the turn never finished until a fix in
+  Nov 2026 (every one came out "didn't add up"); since then it's untried on a phone.
 - **A photo isn't kept** if the phone's own motion would have smeared it by more than 1.5 pixels (from its gyroscope,
   its speed and the shutter time), if it's much softer than this capture's others, if more than 5% of it is blown out
   or 25% black, or if the phone had lost track of where it was.

@@ -95,6 +95,7 @@ private fun LevelGauges(l: LevelUi) {
             }
             Text(l.steadyText(), color = if (l.tooFast) WARN else Color.White, style = MaterialTheme.typography.bodySmall)
             Text(l.agreeText(), color = l.agreeDeg?.let { if (it <= l.agreeOk) GOOD else WARN } ?: Color.White, style = MaterialTheme.typography.bodySmall)
+            Text(l.limitText(), color = Color.White.copy(alpha = 0.8f), style = MaterialTheme.typography.bodySmall)
             l.redoText()?.let { Text(it, color = WARN, style = MaterialTheme.typography.bodySmall) }
         }
     }
@@ -108,6 +109,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
     var ui by remember { mutableStateOf(CaptureUi()) }
     var failed by remember { mutableStateOf<String?>(null) }
     var leaving by remember { mutableStateOf(false) }
+    var skipping by remember { mutableStateOf<String?>(null) }     // what going without the turn costs, while that's asked
     val plan = remember { what.mesh?.let { a.store.plan(it) } }
     val guide = remember { what.mesh?.let { a.store.guide(it) } }
     if (what.mesh != null && (plan == null || guide == null)) {
@@ -172,13 +174,23 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                     Text("${ui.done}/${ui.total} directions round the rock · ${ui.scenery} frames of the scenery (a backdrop: they needn't be perfect)",
                         color = Color.White, style = MaterialTheme.typography.bodySmall)
                 }
+                // what became of the turn's down when the tracking lost its place
+                if (ui.downNote.isNotEmpty()) Text(ui.downNote, color = if (ui.turnAgain) WARN else Color.White, style = MaterialTheme.typography.bodySmall)
                 // what the last photo's readings lacked, which it was kept in spite of
                 if (ui.phase == Phase.CAPTURE && ui.sensors.isNotEmpty()) Text(ui.sensors, color = WARN, style = MaterialTheme.typography.bodySmall)
             }
             FlowRow(Modifier.fillMaxWidth().background(SHADE, RoundedCornerShape(10.dp)).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
+                if (ui.downNote.isNotEmpty() && ui.phase != Phase.LEVEL) {
+                    if (ui.turnAgain) Button(onClick = { controller.turnAgain() }) { Text("Turn again") }
+                    FilledTonalButton(onClick = { controller.dismissDownNote() }) { Text(if (ui.turnAgain) "Not now" else "OK") }
+                }
                 when (ui.phase) {
                     Phase.LEVEL -> {
-                        TextButton(onClick = { controller.skipLevel() }) { Text("Skip: trust the phone's own") }
+                        ui.level?.let { l ->
+                            FilledTonalButton(onClick = { controller.looser() }, enabled = l.canLooser) { Text("Looser") }
+                            FilledTonalButton(onClick = { controller.stricter() }, enabled = l.canStricter) { Text("Stricter") }
+                        }
+                        TextButton(onClick = { skipping = controller.skipWarning() }) { Text("Skip: trust the phone's own") }
                         TextButton(onClick = { leaving = true }) { Text("Leave") }
                     }
                     Phase.GHOST, Phase.ROCK -> {
@@ -217,6 +229,14 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                 }
             }
         }
+    }
+
+    skipping?.let { warning ->
+        AlertDialog(onDismissRequest = { skipping = null },
+            title = { KeepDialogInTopHalf(); Text("Go on without the turn?") },
+            text = { Text(warning) },
+            confirmButton = { TextButton(onClick = { skipping = null; controller.skipLevel() }) { Text("Skip it") } },
+            dismissButton = { TextButton(onClick = { skipping = null }) { Text("Do the turn") } })
     }
 
     if (leaving) AlertDialog(onDismissRequest = { leaving = false },

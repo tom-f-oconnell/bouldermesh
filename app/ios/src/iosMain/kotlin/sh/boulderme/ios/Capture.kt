@@ -204,7 +204,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     private val dir = app.store.captureDir(id)
     init { plan?.let { app.store.keepPlan(id, it.mesh) } }
     private val core = CaptureSession(plan.takeIf { guide != null }, guide, id, IosStore.APP, machine(), NSDate().timeIntervalSince1970)
-    private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = this@CaptureController.app.store.credit.ifBlank { null } }, set, app.store.anonFirst)
+    private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = this@CaptureController.app.store.credit.ifBlank { null } }, set, app.store.anonFirst,
+        app.store.levelLimit, app.store.levelTilts).apply { onSettings = { limit, tilts -> this@CaptureController.app.store.levelLimit = limit; this@CaptureController.app.store.levelTilts = tilts } }
     init {
         if (reopen != null) flow.reopen(Reopen.record(Files.readText("$dir/capture.json")) ?: error("the record of $reopen can't be read"),
             Files.readBytes("$dir/points.bin"), Files.readText("$dir/capture-log.jsonl") ?: "")
@@ -633,9 +634,10 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         if (now.phase == Phase.CAPTURE && !whiteLocked) lockWhite()
         hint.text = failed ?: now.text
         hint.textColor = if (failed != null) BAD else UIColor.whiteColor
-        note.text = listOf(now.target, now.note).filter { it.isNotEmpty() }.joinToString("\n")
-        note.hidden = now.note.isEmpty() && now.target.isEmpty()
-        note.textColor = if (now.note.startsWith("Not kept")) WARN else UIColor.whiteColor
+        // with what became of the turn's down when the tracking lost its place, until dismissed
+        note.text = listOf(now.target, now.note, now.downNote).filter { it.isNotEmpty() }.joinToString("\n")
+        note.hidden = now.note.isEmpty() && now.target.isEmpty() && now.downNote.isEmpty()
+        note.textColor = if (now.note.startsWith("Not kept") || now.turnAgain) WARN else UIColor.whiteColor
         val levelling = now.phase == Phase.LEVEL && failed == null && now.tracking
         val capturing = now.phase == Phase.CAPTURE && now.total > 0
         val walking = now.phase == Phase.SCENERY
@@ -651,7 +653,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             // how still, as a bar running to three times what's acceptable, with a mark at it
             val meter = l?.let { val k = (it.wobbleNow / it.wobbleOk * 4).toInt().coerceIn(0, 12)
                 (0 until 12).joinToString("") { i -> if (i == 4) "|" else if (i < k) "■" else "□" } }
-            counts.text = listOfNotNull("${now.done} of ${now.total} directions faced", meter?.let { "$it  ${l.steadyText()}" }, l?.agreeText()).joinToString("\n")
+            counts.text = listOfNotNull("${now.done} of ${now.total} directions faced", meter?.let { "$it  ${l.steadyText()}" }, l?.agreeText(), l?.limitText()).joinToString("\n")
         }
         if (capturing) {
             bar.progress = now.done.toFloat() / now.total
@@ -666,15 +668,23 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         arrow.hidden = !turn
         flash.hidden = !now.flash
         if (turn) arrow.transform = CGAffineTransformMakeRotation(atan2(-now.turnY, now.turnX))     // the screen's y runs down
-        val want = "${now.phase}/${now.auto}/${now.canSkip}/${now.reach}/${now.canCard}/${now.card}/${now.askMore}/${now.scenery > 0}/${now.marking}/${now.guided}/${now.pairs > 0}/${now.kept > 0}/${now.waiting}/${now.ring}"
+        val want = "${now.phase}/${now.auto}/${now.canSkip}/${now.reach}/${now.canCard}/${now.card}/${now.askMore}/${now.scenery > 0}/${now.marking}/${now.guided}/${now.pairs > 0}/${now.kept > 0}/${now.waiting}/${now.ring}/${now.downNote.isNotEmpty()}/${now.turnAgain}/${now.level?.canLooser}/${now.level?.canStricter}"
         if (want != buttonsFor) { buttonsFor = want; offer(now) }
     }
 
     private fun offer(now: CaptureUi) {
         for (v in buttons.arrangedSubviews) (v as? UIView)?.removeFromSuperview()
+        if (now.downNote.isNotEmpty() && now.phase != Phase.LEVEL) buttons.addArrangedSubview(makeRow(*listOfNotNull(
+            if (now.turnAgain) makeButton("Turn again", Look.FILLED) { flow.turnAgain() } else null,
+            makeButton(if (now.turnAgain) "Not now" else "OK") { flow.dismissDownNote() }).toTypedArray()))
         val leave = makeButton(if (now.kept > 0) "Finish" else "Leave", if (now.kept > 0) Look.FILLED else Look.PLAIN, color = if (now.kept > 0) GOOD else UIColor.whiteColor) { leave() }
         when (now.phase) {
-            Phase.LEVEL -> buttons.addArrangedSubview(makeRow(makeButton("Skip: trust the phone's own", Look.PLAIN, color = UIColor.whiteColor) { flow.skipLevel() }, leave))
+            Phase.LEVEL -> {
+                buttons.addArrangedSubview(makeRow(makeButton("Looser", enabled = now.level?.canLooser ?: false) { flow.looser() },
+                    makeButton("Stricter", enabled = now.level?.canStricter ?: false) { flow.stricter() }))
+                buttons.addArrangedSubview(makeRow(makeButton("Skip: trust the phone's own", Look.PLAIN, color = UIColor.whiteColor) {
+                    confirm("Go on without the turn?", flow.skipWarning(), "Skip it", "Do the turn") { flow.skipLevel() } }, leave))
+            }
             Phase.GHOST, Phase.ROCK -> {
                 buttons.addArrangedSubview(makeRow(makeButton("Turn it") { flow.turnGhost(45.0) }, makeButton("Bring it here") { flow.bringGhost() }))
                 buttons.addArrangedSubview(if (now.pairs > 0 || now.phase == Phase.ROCK) makeRow(makeButton("Start again", Look.PLAIN) { flow.restartAlign() }, leave) else makeRow(leave))

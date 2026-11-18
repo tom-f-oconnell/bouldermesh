@@ -73,7 +73,9 @@ object Axes {
 }
 
 /**
- * Which way is truly down in the world the phone's tracking keeps, as a turn on the spot found it (LevelTurn).
+ * Which way is truly down in the world the phone's tracking keeps, as a turn on the spot found it (LevelTurn). It holds
+ * only in that world: the spell of tracking the turn was in (a world the tracking starts afresh, after losing its place
+ * or on another visit, has a down of its own).
  *
  * @param down a unit vector in the tracking's world.
  * @param tiltDeg how far the tracking's own down (-Y) was from it.
@@ -81,10 +83,29 @@ object Axes {
  *   sensor reads it out (before any turn to store it upright; m/s2): the sensor's zero error and how it sits against
  *   the camera, as far as the turn could tell them from gravity.
  * @param spreadDeg how far the directions faced still disagree with that taken out: how good the answer is.
+ * @param gravity the strength of gravity the fit found (m/s2), and forceMean what the accelerometer read on average:
+ *   the two differ only by the phone's own errors.
+ * @param axisTiltDeg how far the axis the phone was turned about leaned from down. The part of the phone's offset along
+ *   that axis can't be told from gravity, so a leaning turn leaves some of it in down (LevelTurn.expectedDeg()).
+ * @param expectedDeg how far off down likely is (9 times in 10), from the spread and the lean.
  */
-data class Level(val down: Vec3, val tiltDeg: Double, val offset: Vec3, val spreadDeg: Double, val sectors: Int, val samples: Int) {
+data class Level(val down: Vec3, val tiltDeg: Double, val offset: Vec3, val spreadDeg: Double, val sectors: Int, val samples: Int,
+                 val gravity: Double = Sensors.G, val forceMean: Double = Sensors.G, val axisTiltDeg: Double = 0.0, val expectedDeg: Double = 0.0) {
     /** How far off one accelerometer reading alone would have put down, in degrees. */
     val offsetDeg: Double get() = atan2(offset.norm, Sensors.G) * 180 / PI
+}
+
+/**
+ * Everything the fit of a turn found, whether or not it was taken: for the log, and for saying how well a turn would do.
+ * `why`: null if it gave an answer; else "few" (fewer directions read than asked for), "singular" (the readings don't
+ * pin it down) or "not_gravity" (the strength it found is too far from what the accelerometer read).
+ */
+data class LevelFit(val why: String?, val sectors: Int, val samples: Int, val gravity: Double?, val forceMean: Double?, val spreadDeg: Double?,
+                    val tiltDeg: Double?, val offset: Vec3?, val offsetDeg: Double?, val axisTiltDeg: Double?, val expectedDeg: Double?, val down: Vec3?) {
+    /** As fields of a log line. */
+    fun fields(): Array<Pair<String, Any?>> = arrayOf("why" to why, "sectors" to sectors, "samples" to samples, "gravity" to gravity, "force_mean" to forceMean,
+        "spread_deg" to spreadDeg, "tilt_deg" to tiltDeg, "offset" to offset?.toList(), "offset_deg" to offsetDeg, "axis_tilt_deg" to axisTiltDeg,
+        "expected_deg" to expectedDeg, "down" to down?.toList())
 }
 
 /**
@@ -99,7 +120,7 @@ data class Level(val down: Vec3, val tiltDeg: Double, val offset: Vec3, val spre
  * spoils it; clear() lets that one alone be faced again, rather than the whole turn.
  */
 class LevelTurn(val sectors: Int = 12) {
-    private class Sum { var n = 0; val r = DoubleArray(9); var m = Vec3.ZERO; var f = Vec3.ZERO; var wobble = 0.0 }
+    private class Sum { var n = 0; val r = DoubleArray(9); var m = Vec3.ZERO; var f = Vec3.ZERO; var wobble = 0.0; var norm = 0.0 }
     private val sums = Array(sectors) { Sum() }
     var samples = 0
         private set
@@ -161,7 +182,7 @@ class LevelTurn(val sectors: Int = 12) {
         val cx = pose.rot.rotate(Vec3(1.0, 0.0, 0.0)); val cy = pose.rot.rotate(Vec3(0.0, 1.0, 0.0)); val cz = pose.rot.rotate(Vec3(0.0, 0.0, 1.0))
         val cols = arrayOf(cx, cy, cz)
         for (j in 0 until 3) { s.r[j] += cols[j].x; s.r[3 + j] += cols[j].y; s.r[6 + j] += cols[j].z }      // row-major: image axes to world
-        s.m += world; s.f += force; s.wobble += d * d
+        s.m += world; s.f += force; s.wobble += d * d; s.norm += accel.norm
         s.n++; samples++
         if (s.n >= PER_SECTOR_LEAST) cleared[sector] = false
         wobbleSum += d * d; wobbleN++
@@ -172,31 +193,42 @@ class LevelTurn(val sectors: Int = 12) {
     fun clear(sector: Int) {
         val s = sums[sector]
         samples -= s.n
-        s.n = 0; s.r.fill(0.0); s.m = Vec3.ZERO; s.f = Vec3.ZERO; s.wobble = 0.0
+        s.n = 0; s.r.fill(0.0); s.m = Vec3.ZERO; s.f = Vec3.ZERO; s.wobble = 0.0; s.norm = 0.0
         cleared[sector] = true
     }
 
-    private class Fit(val u: Vec3, val c: Vec3, val off: Double, val k: Int)
+    private class Fit(val u: Vec3, val c: Vec3, val off: Double, val k: Int, val forceMean: Double) {
+        val gravityOk: Boolean get() = abs(u.norm - forceMean) <= NOT_GRAVITY
+    }
 
     /**
      * Each reading, turned into the world, is gravity's force u plus the phone's own offset c turned as the phone
-     * was: u + R c. Least squares over the directions' means gives both; the part of c along gravity can't be told
-     * from gravity's strength and is left at nothing, which changes no direction.
+     * was: u + R c. Least squares over the directions' means gives both. Turned about one axis, the part of c along the
+     * phone's direction that stays on that axis can't be told from u along it: it's pinned at nothing (PIN), which
+     * changes only gravity's strength when the axis is plumb. Left to a slight ridge, it took up whatever the hand's
+     * wobble said and threw gravity's strength off, so that real turns held steadily upright came out as "not gravity".
      */
-    private fun fit(used: List<Sum>): Fit? {
+    private fun fitRaw(used: List<Sum>): Fit? {
         if (used.size < 3) return null
         val k = used.size.toDouble()
         val a = Array(6) { DoubleArray(6) }; val b = DoubleArray(6)
         for (i in 0 until 3) { a[i][i] = k; a[3 + i][3 + i] = k * (1 + RIDGE) }
+        var axis = Vec3.ZERO        // the phone's own direction that the tracking's up runs along, on the whole
+        var norm = 0.0
         for (s in used) {
             val n = s.n.toDouble()
             for (i in 0 until 3) for (j in 0 until 3) { a[i][3 + j] += s.r[3 * i + j] / n; a[3 + j][i] += s.r[3 * i + j] / n }
             val m = s.m / n; val f = s.f / n
             b[0] += m.x; b[1] += m.y; b[2] += m.z; b[3] += f.x; b[4] += f.y; b[5] += f.z
+            axis += Vec3(s.r[3], s.r[4], s.r[5]) / n
+            norm += s.norm / n
+        }
+        if (axis.norm > 1e-9) {
+            val e = axis.unit(); val ev = doubleArrayOf(e.x, e.y, e.z)
+            for (i in 0 until 3) for (j in 0 until 3) a[3 + i][3 + j] += PIN * k * ev[i] * ev[j]
         }
         val x = MagCalibration.solveLinear(a, b) ?: return null
         val u = Vec3(x[0], x[1], x[2]); val c = Vec3(x[3], x[4], x[5])
-        if (abs(u.norm - Sensors.G) > 0.6) return null
         var off = 0.0
         for (s in used) {
             val n = s.n.toDouble()
@@ -204,7 +236,44 @@ class LevelTurn(val sectors: Int = 12) {
             val e = s.m / n - u - rc
             off += e dot e
         }
-        return Fit(u, c, off, used.size)
+        return Fit(u, c, off, used.size, norm / k)
+    }
+
+    private fun fit(used: List<Sum>): Fit? = fitRaw(used)?.takeIf { it.gravityOk }
+
+    /**
+     * How far the axis the phone was turned about leaned from `down`, in degrees: from the turn between each two
+     * neighbouring directions read (numbered round the circle, so each such turn is the same way round).
+     */
+    private fun axisTilt(down: Vec3): Double? {
+        var sum = Vec3.ZERO
+        for (i in 0 until sectors) {
+            val p = sums[i]; val q = sums[(i + 1) % sectors]
+            if (p.n < PER_SECTOR_LEAST || q.n < PER_SECTOR_LEAST) continue
+            // M = Rq Rp^T, whose skew part points along the axis turned about
+            val m = Array(3) { r -> DoubleArray(3) { c -> (0 until 3).sumOf { j -> q.r[3 * r + j] / q.n * (p.r[3 * c + j] / p.n) } } }
+            sum += Vec3(m[2][1] - m[1][2], m[0][2] - m[2][0], m[1][0] - m[0][1])
+        }
+        if (sum.norm < 1e-9) return null
+        val d = angleDeg(sum, down)
+        return min(d, 180 - d)
+    }
+
+    /** What the fit of the directions read so far comes to, taken or not (LevelFit), from `least` of them. */
+    fun diagnose(least: Int = sectors): LevelFit {
+        val used = sums.filter { it.n >= PER_SECTOR_LEAST }
+        fun none(why: String) = LevelFit(why, used.size, samples, null, null, null, null, null, null, null, null, null)
+        if (used.size < max(3, least)) return none("few")
+        val f = fitRaw(used) ?: return none("singular")
+        val down = -f.u.unit()
+        val spread = atan2(sqrt(f.off / used.size), f.u.norm) * 180 / PI
+        val offsetDeg = atan2(f.c.norm, Sensors.G) * 180 / PI
+        val axis = axisTilt(down)
+        // the offset's part along the axis was pinned at nothing, so gravity's strength took it up: how far that is from
+        // standard gravity says how big it may have been (with the accelerometer's scale error, and local gravity's 0.3%)
+        val hidden = atan2(kotlin.math.hypot(f.c.norm, f.u.norm - Sensors.G), Sensors.G) * 180 / PI
+        return LevelFit(if (f.gravityOk) null else "not_gravity", used.size, samples, f.u.norm, f.forceMean, spread, angleDeg(down, Vec3(0.0, -1.0, 0.0)),
+            f.c, offsetDeg, axis, expectedDeg(spread, hidden, axis ?: 0.0), down)
     }
 
     /** How far the directions of a fit disagree, as it would be expected to come out with all of them read alike. */
@@ -241,11 +310,9 @@ class LevelTurn(val sectors: Int = 12) {
 
     /** The answer, from the directions with readings enough; null with fewer than `least` of them, or readings that aren't gravity's. */
     fun solve(least: Int = sectors): Level? {
-        val used = sums.filter { it.n >= PER_SECTOR_LEAST }
-        if (used.size < least) return null
-        val f = fit(used) ?: return null
-        val down = -f.u.unit()
-        return Level(down, angleDeg(down, Vec3(0.0, -1.0, 0.0)), f.c, atan2(sqrt(f.off / used.size), f.u.norm) * 180 / PI, used.size, samples)
+        val d = diagnose(least)
+        if (d.why != null) return null
+        return Level(d.down!!, d.tiltDeg!!, d.offset!!, d.spreadDeg!!, d.sectors, d.samples, d.gravity!!, d.forceMean!!, d.axisTiltDeg ?: 0.0, d.expectedDeg!!)
     }
 
     companion object {
@@ -255,6 +322,21 @@ class LevelTurn(val sectors: Int = 12) {
         const val MAX_TURNING = 0.9         // radians a second: a turn quicker than about 7 seconds isn't read
         const val MAX_JOLT = 1.0            // m/s2 from g
         const val RIDGE = 1e-4
+        const val PIN = 100.0               // how hard the offset's part along the turn's axis is held at nothing (fitRaw())
+        const val NOT_GRAVITY = 0.6         // m/s2 the strength found may be from what the accelerometer reads on average
+        /**
+         * Down's likely error (9 times in 10) for each degree the directions of a whole turn disagree by (spreadDeg),
+         * from simulated turns of 12 directions whose readings each carried the hand's own wobble (0.1 to 1.5 degrees a
+         * direction): 0.37 to 0.4 above a spread of 0.4 degrees.
+         */
+        const val ERROR_PER_SPREAD = 0.4
+
+        /**
+         * How far off down likely is (9 times in 10), for a turn whose directions disagree by `spreadDeg`, whose phone
+         * may add up to `offsetDeg` of its own along the axis it was turned about, which leaned `axisTiltDeg` from down.
+         */
+        fun expectedDeg(spreadDeg: Double, offsetDeg: Double, axisTiltDeg: Double): Double =
+            kotlin.math.hypot(ERROR_PER_SPREAD * spreadDeg, offsetDeg * kotlin.math.sin(axisTiltDeg * PI / 180))
         const val CHECK_LEAST = 5           // directions read before check() says anything: with fewer, the fit bends to them
         const val FREE = 5                  // what the fit is free to choose: u, and c but for its part along u
         const val RECENT_S = 1.0

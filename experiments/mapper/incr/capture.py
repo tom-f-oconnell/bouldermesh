@@ -148,8 +148,10 @@ def readings(photo: Path) -> dict | None:
 
 def record(path: Path) -> dict:
     r = json.loads(Path(path).read_text())
-    if r.get("v") not in (1, 2, 3, 4):      # 4 adds only scenery (app/FORMAT.md), never meshed, which this leaves alone
-        raise ValueError(f"a capture record of version {r.get('v')}: this reads 1 to 4")
+    # 4 adds only scenery (app/FORMAT.md), never meshed, which this leaves alone; 5 marked holds; 6 a turn on the spot
+    # per spell of tracking (levels), whose photos say so in their own down_src
+    if r.get("v") not in (1, 2, 3, 4, 5, 6):
+        raise ValueError(f"a capture record of version {r.get('v')}: this reads 1 to 6")
     return r
 
 
@@ -205,6 +207,16 @@ def down_in_model(blob: dict, R_world_to_cam) -> np.ndarray | None:
         return None
     v = np.asarray(R_world_to_cam, float).T @ np.asarray(d, float)
     return v / np.linalg.norm(v)
+
+
+TURN_LEAST = 3      # placed photos whose down a turn on the spot set right, for those alone to say (backend/orientation.py's)
+
+
+def surest(entries: list[dict]) -> list[dict]:
+    """Of photos' readings (priors' entries), those a turn on the spot set right (down_src "turn", in its own spell's
+    world), when there are TURN_LEAST of them: the rest have only the phone's tracking's own down. Else all."""
+    turn = [e for e in entries if e.get("down_src") == "turn"]
+    return turn if len(turn) >= TURN_LEAST else entries
 
 
 def level(downs: list[np.ndarray]) -> dict | None:

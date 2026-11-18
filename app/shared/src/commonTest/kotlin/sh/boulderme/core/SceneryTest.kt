@@ -74,7 +74,8 @@ class SceneryTest {
         assertEquals(Phase.CAPTURE, flow.phase)
         // kept in the record, apart from the photos, each with where the tracking had it
         val record = flow.session.record(9.0)
-        assertTrue(record.v == 5 && record.scenery.map { it.name } == listOf("pano_f5_01.jpg", "scn_f5_001.jpg") && record.shots.isEmpty())
+        assertTrue(record.v == 6 && record.scenery.map { it.name } == listOf("pano_f5_01.jpg", "scn_f5_001.jpg") && record.shots.isEmpty())
+        assertTrue(record.scenery.all { it.downSrc == "ar" && it.down != null }, "with no turn, the tracking's own down")
         assertTrue(record.scenery[1].ar.p == listOf(0.0, 1.5, 6.0) && record.scenery[1].kind == "walk" && record.scenery[1].sharp == 1.0 && "\"scenery\":[" in record.json())
         assertTrue(listOf("scenery_start", "scenery", "scenery_end").all { "\"e\":\"$it\"" in flow.logText() })
     }

@@ -82,12 +82,17 @@ def down_in_image(v: list[float], tag: int | None) -> list[float] | None:
 
 def reading(path: Path) -> dict | None:
     """A photo's gravity reading, as BoulderMesh's apps record it with theirs (phonedata.py) or else an iPhone's own:
-    "down" in image axes, and how far it looked up, in degrees."""
+    "down" in image axes, and how far it looked up, in degrees. An app's also says where its down came from ("src":
+    "turn", "ar" or "accel"), with a turn on the spot's how far off it likely is ("exp", degrees), and the spell of
+    tracking it was taken in ("s"): a turn's down holds only in its spell's world."""
     from PIL import Image
     import phonedata
-    down = phonedata.down(phonedata.read(path))
+    blob = phonedata.read(path)
+    down = phonedata.down(blob)
     if down:
-        return {"down": down, "pitch": math.degrees(math.asin(max(-1.0, min(1.0, -down[2])))), "from": "app"}
+        exp = blob.get("down_exp")
+        return {"down": down, "pitch": math.degrees(math.asin(max(-1.0, min(1.0, -down[2])))), "from": "app", "src": blob.get("down_src"),
+                "exp": float(exp) if isinstance(exp, (int, float)) and exp > 0 else None, "s": str((blob.get("ar") or {}).get("s") or "")}
     try:
         with Image.open(path) as im:
             exif = im.getexif()
@@ -200,14 +205,20 @@ def check(model: Path, images: Path) -> dict:
         if p.name in placed:
             c = next(c for c in cameras if c["name"] == p.name)
             d = _matrix(c["q"]).T @ np.asarray(r["down"])
-            readings.append({"photo": p.name, "pitch_deg": round(r["pitch"], 1), "down": d})
+            readings.append({"photo": p.name, "pitch_deg": round(r["pitch"], 1), "down": d, "src": r.get("src"), "exp": r.get("exp"), "s": r.get("s")})
     report = {"created": time.time(), "method": "photos", "placed": len(cameras), "cameras_kept": True,
               "estimate": {"down": [0.0, -1.0, 0.0], "photos_agree_deg": None if agree is None else round(agree, 1)},
               "iphone": {"status": "no_readings", "kept_with_readings": kept, "placed_with_readings": len(readings)}}
     if not readings:
         return report
-    ds = np.array([r["down"] for r in readings])
-    mean = np.median(ds, axis=0) if len(ds) >= 3 else ds.mean(axis=0)
+    turns = _by_turns(readings)
+    if turns:
+        mean, used = turns
+        report["iphone"]["turns"] = used
+        ds = np.array([r["down"] for r in readings if r.get("src") == "turn"])
+    else:
+        ds = np.array([r["down"] for r in readings])
+        mean = np.median(ds, axis=0) if len(ds) >= 3 else ds.mean(axis=0)
     mean = mean / np.linalg.norm(mean)
     off = _angle(mean, down)
     report["iphone"].update({
@@ -216,6 +227,32 @@ def check(model: Path, images: Path) -> dict:
         "readings": [{"photo": r["photo"], "pitch_deg": r["pitch_deg"], "off_estimate_deg": round(_angle(r["down"], down), 1)} for r in readings]})
     report["iphone"]["status"] = "used" if off <= MAX_DISAGREEMENT else "rejected"
     return report
+
+
+TURN_LEAST = 3          # placed photos whose down a turn on the spot set right, for those alone to level the mesh
+TURN_EXP_LEAST = 0.05   # degrees: no turn is counted as surer than this
+TURN_EXP_UNKNOWN = 0.3  # and one that didn't say, as this
+
+
+def _by_turns(readings: list[dict]):
+    """Down from the placed photos whose down a turn on the spot found (src "turn"), when there are TURN_LEAST of
+    them: those of each spell of tracking (each its own world, with its own turn) taken together by their median, and
+    the spells weighed by how many photos each has over its turn's likely error squared. A later visit's turn (a
+    capture carried on) thereby outweighs a worse earlier one. Returns (down, [{s, photos, expected_deg}]) or None.
+    """
+    import numpy as np
+    turn = [r for r in readings if r.get("src") == "turn"]
+    if len(turn) < TURN_LEAST:
+        return None
+    total, used = np.zeros(3), []
+    for s in sorted({r.get("s") or "" for r in turn}):
+        mine = [r for r in turn if (r.get("s") or "") == s]
+        med = np.median(np.array([r["down"] for r in mine]), axis=0)
+        exps = sorted(r["exp"] for r in mine if r.get("exp"))
+        exp = max(TURN_EXP_LEAST, exps[len(exps) // 2] if exps else TURN_EXP_UNKNOWN)
+        total += med / np.linalg.norm(med) * len(mine) / exp ** 2
+        used.append({"s": s, "photos": len(mine), "expected_deg": round(exp, 2)})
+    return total / np.linalg.norm(total), used
 
 
 def after_levelling(report: dict, q) -> dict:

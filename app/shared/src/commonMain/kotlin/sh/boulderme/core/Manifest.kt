@@ -16,6 +16,7 @@ data class ShotBlob(
     @SerialName("down_src") val downSrc: String? = null,
     @SerialName("down_acc") val downAcc: List<Double>? = null,
     @SerialName("down_track") val downTrack: List<Double>? = null,
+    @SerialName("down_exp") val downExp: Double? = null,    // with down_src "turn": how far off that turn's down likely is (Level.expectedDeg)
     val turn: Int = 0,                      // how far clockwise the sensor's picture was turned to store it upright
     val heading: Double? = null,
     @SerialName("heading_acc") val headingAcc: Double? = null,
@@ -88,19 +89,22 @@ data class RecordHold(
 /**
  * A frame for the scenery round the rock (SceneryWalk, PanoTurn), not for its mesh: its file (in the capture's
  * scenery/, never with its photos), "walk" or "pano", when, where the tracking had it (ar, as a photo's: for the
- * picture as stored, turned by `turn`), its lens (k), and how sharp it was and how much the phone's turning smeared it.
+ * picture as stored, turned by `turn`), its lens (k), how sharp it was and how much the phone's turning smeared it, and
+ * which way down was in it as a photo's is (down, down_src "turn" or "ar", down_exp).
  */
 @Serializable
 data class SceneryShot(val name: String, val kind: String, val t: Double, val ar: BlobAr, val k: BlobLens, val turn: Int = 0,
-                       val sharp: Double? = null, @SerialName("blur_px") val blurPx: Double? = null)
+                       val sharp: Double? = null, @SerialName("blur_px") val blurPx: Double? = null,
+                       val down: List<Double>? = null, @SerialName("down_src") val downSrc: String? = null, @SerialName("down_exp") val downExp: Double? = null)
 
 /** A whole capture, as sent to the server beside its photos (POST /api/projects/<id>/capture). */
 @Serializable
 data class CaptureRecord(
-    val v: Int = 5,                         // 2: plan, level, down_agree_deg; `ar.s` changes when tracking was lost and came back; accel_bias gone
+    val v: Int = 6,                         // 2: plan, level, down_agree_deg; `ar.s` changes when tracking was lost and came back; accel_bias gone
                                             // 3: detail, licence, credit; a photo's ref, still, ar.span
                                             // 4: scenery
                                             // 5: marked
+                                            // 6: levels (each turn on the spot, with its spell) in place of level
     val id: String,
     val app: String,
     val device: String,
@@ -113,7 +117,8 @@ data class CaptureRecord(
     val fit: RecordFit? = null,
     val place: RecordPlace? = null,
     val calibration: RecordCalibration? = null,
-    val level: RecordLevel? = null,
+    val levels: List<RecordLevel> = emptyList(),    // each turn on the spot that found down, in the world of its spell (s)
+    val level: RecordLevel? = null,                 // before v 6: the one turn, in the first spell; read, never written
     @SerialName("down_agree_deg") val downAgreeDeg: Double? = null,
     val skipped: Map<String, String> = emptyMap(),
     val progress: RecordProgress? = null,
@@ -143,9 +148,16 @@ data class RecordFit(val scale: Double, val rot: List<Double>, val shift: List<D
                      val taps: Int, val matched: Int? = null, @SerialName("rms_m") val rmsM: Double? = null)
 
 @Serializable data class RecordPlace(val lat: Double, val lng: Double, val alt: Double? = null, @SerialName("acc_m") val accM: Double, val n: Int, val seconds: Double)
-/** Which way is down, as a turn on the spot found it (Level): in the tracking's world, with how far the tracking's own was off and how well the turn's directions agreed. */
+/**
+ * Which way is down, as a turn on the spot found it (Level): in the world of the tracking's spell `s` (as a photo's
+ * ar.s) and only there, with how far the tracking's own was off, how well the turn's directions agreed, and how far off
+ * it likely is (expected_deg; null before v 6, as are the rest after samples).
+ */
 @Serializable data class RecordLevel(val down: List<Double>, @SerialName("tilt_deg") val tiltDeg: Double, val offset: List<Double>, @SerialName("offset_deg") val offsetDeg: Double,
-                                     @SerialName("spread_deg") val spreadDeg: Double, val sectors: Int, val samples: Int)
+                                     @SerialName("spread_deg") val spreadDeg: Double, val sectors: Int, val samples: Int, val s: String? = null,
+                                     @SerialName("expected_deg") val expectedDeg: Double? = null, @SerialName("axis_tilt_deg") val axisTiltDeg: Double? = null,
+                                     val gravity: Double? = null, @SerialName("force_mean") val forceMean: Double? = null,
+                                     @SerialName("limit_deg") val limitDeg: Double? = null)
 @Serializable data class RecordCalibration(@SerialName("mag_offset") val magOffset: List<Double>? = null,
                                            @SerialName("mag_field_ut") val magFieldUt: Double? = null, @SerialName("mag_rms_ut") val magRmsUt: Double? = null)
 @Serializable data class RecordProgress(val total: Int, val done: Int, val skipped: Int, val holds: Int, @SerialName("holds_done") val holdsDone: Int)

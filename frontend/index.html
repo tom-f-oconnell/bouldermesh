@@ -2008,7 +2008,7 @@ function downSummary(o){
   if (!o) return '';
   const p = o.iphone;
   const turn = o.capture?.turn;    // photos taken with the app, which found down by a turn on the spot: how well its directions agreed
-  if (p.status === 'used' && turn) return `down by the app's turn on the spot, whose directions agree to ${turn.spread_deg}°`;
+  if (p.status === 'used' && turn) return `down by the app's turn on the spot, ${turn.expected_deg != null ? `likely within ${turn.expected_deg}°` : `whose directions agree to ${turn.spread_deg}°`}`;
   if (p.status === 'used' && o.capture) return `down from the app's photos, as the phone's tracking had it`;
   if (p.status === 'used') return `down from iPhone, ${p.off_estimate_deg}° from the estimate`;
   if (p.status === 'rejected' || p.status === 'not_applied') return `down estimated, ${p.off_estimate_deg}° from iPhone`;

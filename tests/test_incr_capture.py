@@ -79,7 +79,7 @@ def test_points_file():
 def test_fixtures():
     """The record and readings the app's tests write."""
     r = cp.record(FIXTURES / "app" / "capture.json")
-    assert r["v"] in (2, 3, 4) and r["shots"][0]["name"] == "cap_k1_001.jpg"
+    assert r["v"] in (2, 3, 4, 5, 6) and r["shots"][0]["name"] == "cap_k1_001.jpg"
     blob = json.loads((FIXTURES / "app" / "shot.txt").read_text().split("BMSH1:", 1)[1])
     cam = cp.pose(blob)
     assert near(cam.centre, [1.0, 2.0, 3.0], 1e-12) and cam.lens["w"] == 4000
@@ -128,6 +128,14 @@ def test_refit_tie_undone():
     back = cp.cameras_moved(theirs, cp.undo_tie(tie))
     again = frames.tie(former, back)
     assert abs(again["scale"] - 1) < 1e-6 and again["rot_deg"] < 1e-4 and again["rms"] < 1e-5
+
+
+def test_surest():
+    """Photos whose down a turn on the spot set right level a model alone, once there are enough of them."""
+    turn = [{"down": [0, 1, 0], "down_src": "turn"} for _ in range(cp.TURN_LEAST)]
+    rest = [{"down": [0, 1, 0], "down_src": "ar"} for _ in range(5)]
+    assert cp.surest(turn + rest) == turn
+    assert cp.surest(turn[:-1] + rest) == turn[:-1] + rest, "too few: all of them"
 
 
 def test_relevel():
