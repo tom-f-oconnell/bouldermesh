@@ -86,9 +86,8 @@ CLIENT_VERSION = 1          # the oldest script that speaks to this
 # Trials: how a volunteer's script runs yt-dlp, chosen for it on the admin page, to compare one way with another in
 # youtube_log (A/B tests). Each is a name and what it sets, from the few things scripts from version 14 let the server
 # choose (their own TRIAL_KEYS): player_client, yt-dlp's YouTube clients for videos and their details. Older scripts
-# carry on as they are.
-TRIALS = {"mweb": {"what": "YouTube's mobile web client, which asks for a PO token for every video's stream",
-                   "player_client": "mweb"}}
+# carry on as they are. None now: the mweb trial (Nov 17-18, 2026) is over (design.md, "PO tokens and mweb didn't help").
+TRIALS: dict[str, dict] = {}
 
 
 def clean_details(info: dict, video_id: str) -> dict:

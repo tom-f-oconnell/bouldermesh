@@ -1199,6 +1199,23 @@ itself; two would need two update paths), the server names a trial per volunteer
 only the settings it knows (`TRIAL_KEYS`), each checked, so a server can't make it run anything else. Each task's
 report names its trial, which `youtube_log` keeps.
 
+**PO tokens and mweb didn't help (Nov 18, 2026), so both are gone.** ace-3 ran the `mweb` trial (YouTube's mobile web
+client, which uses a PO token for every stream) for 22 hours from Nov 17 19:14 UTC, with taytay as the control on
+yt-dlp's default clients, both on yt-dlp nightly 2026.11.16 and bgutil 2.0.2:
+
+| | videos | tokens used | throttled (403) | refused | fetched in 24 h |
+|---|---|---|---|---|---|
+| ace-3, mweb | 64 | 63 | 20 (31%) | 0 | 49 |
+| taytay, default | 81 | 2 | 7 (9%) | 1 | 73 |
+
+Tokens were made every time (no failures), and yet with them the stream was refused three times as often. It ran a
+few videos, a 403, an hour's rest, then often a 403 again at once. Without mweb, the default clients almost never ask
+for a token (10 of ~630 videos Nov 15-17), and the 403s there all came without one: the 403s aren't about tokens.
+So script 15 removes bgutil (it uninstalls the plugin, which yt-dlp would otherwise still load, and deletes its 250 MB
+folder), and `TRIALS` is empty. `youtube_log` keeps the `pot` and `trial` of the rows from then, and the trials
+mechanism stays for the next comparison. Earlier throttling (~4.5% Nov 15-17, ~9% on the control Nov 18) looks like
+YouTube's own day-to-day strictness with these addresses, which only fewer requests from an address eases.
+
 **Which yt-dlp, and how often the phone hears.** Volunteers run yt-dlp's nightly builds by default (since Nov 14,
 2026): when YouTube changes something, a stable release lags the fix by days or weeks, and the nightlies carry it first.
 A nightly that breaks is rolled back from the admin page (`volunteers.yt_dlp`), each script reinstalling stable at its

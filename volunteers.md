@@ -36,9 +36,8 @@ The script explains this again the first time it runs, and asks you to agree.
   - macOS: install it from [python.org](https://www.python.org/downloads/), or with Homebrew: `brew install python`.
   - Windows: install it from [python.org](https://www.python.org/downloads/), and tick *Add python.exe to PATH*.
   - Debian or Ubuntu: Python is there, but its `venv` module may not be: `sudo apt install python3-venv`.
-- About 400 MB of space, for yt-dlp and Deno (the JavaScript runtime yt-dlp needs for YouTube), and a yt-dlp plugin and
-  script that make the "proof of origin" tokens YouTube asks for (bgutil-ytdlp-pot-provider, about 250 MB of it), which
-  the script installs in a folder of its own. Nothing else on your computer is changed.
+- About 150 MB of space, for yt-dlp and Deno (the JavaScript runtime yt-dlp needs for YouTube), which the script
+  installs in a folder of its own. Nothing else on your computer is changed.
 
 ### Setting it up and running it
 

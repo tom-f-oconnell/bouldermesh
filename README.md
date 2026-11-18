@@ -1192,17 +1192,14 @@ volunteers and for connecting the public site to whichever server harvests.
 - **Which yt-dlp:** the scripts (version 11 on) install yt-dlp's nightly builds, which follow YouTube's changes days or
   weeks before a release does, and update them daily. The admin page's Volunteers section switches them to stable, to
   roll back (`volunteers.yt_dlp`); each script switches at its next ask for work.
-- **PO tokens:** the scripts (version 13 on) also install bgutil-ytdlp-pot-provider (pinned, `POT_VERSION`): its yt-dlp
-  plugin from PyPI, and its token script from its GitHub release, whose packages Deno installs (about 250 MB, in the
-  volunteer's own folder). For each video, yt-dlp has the script make the PO ("proof of origin") token YouTube asks of a
-  video's stream, which it may refuse without one (HTTP 403). Where it can't be set up, the script fetches without and
-  tries again daily; its line on the admin page says "PO tokens: bgutil 2.0.2" or "no PO tokens: <why>", and each
-  task's report says whether a token was used, which *How YouTube treated them* counts (and lists any that failed).
+- **PO tokens:** scripts 13 and 14 installed bgutil-ytdlp-pot-provider for YouTube's "proof of origin" tokens; script
+  15 removes it again, as tokens didn't stop the 403s, and with the mweb client made them three times as common
+  (design.md, "PO tokens and mweb didn't help"). *How YouTube treated them* still shows the rows from then.
 - **Trials (A/B tests):** the menu beside a volunteer's YouTube health puts it in one of `TRIALS` (backend/volunteers.py),
   which its script (version 14 on) runs from its next ask for work; *How YouTube treated them* then keeps its tasks in
   rows of their own, tagged with the trial. A trial may set only what the script allows (its `TRIAL_KEYS`, checked
-  there): today `player_client`, yt-dlp's YouTube clients for videos and their details (`mweb`: the mobile web client,
-  which asks for a PO token for every stream). A new kind of setting needs a new script version.
+  there): today `player_client`, yt-dlp's YouTube clients for videos and their details. There are none now (the mweb
+  trial ended on Nov 18); the menu shows when there are. A new kind of setting needs a new script version.
 - **An area's climbs wait for them:** a climb whose harvest asked volunteers for a search or videos has what they
   fetched added once it's come, and is meshed once, rather than meshed without them first; after 24 h
   (`VOLUNTEER_WAIT_HOURS`) it's meshed with what's come. Adding keeps the photos it had (asking for them back from the
