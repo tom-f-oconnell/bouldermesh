@@ -75,7 +75,7 @@ class Fleet:
     def _url(self) -> str:
         url = (self.url() or "").rstrip("/")
         if not re.match(r"https?://[^\s'\"]+$", url):
-            raise ValueError("this server's address for machines isn't known: set WORKER_URL (such as https://boulderme.sh)")
+            raise ValueError("this server's address for machines isn't known: set WORKER_URL, VOLUNTEER_URL or SITE_HOST (such as https://boulderme.sh)")
         return url
 
     def user_data(self, url: str, token: str) -> str:

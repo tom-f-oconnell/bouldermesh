@@ -234,7 +234,7 @@
       <div class="note">Each runs the worker script on an EC2 GPU instance with a token of its own, so it works like the
         machines above, alongside them. It runs until you end it here: nothing starts or ends one by itself, though AWS can
         take back a spot instance (you're told). It uses the AWS settings above (region, spot, disk, AMI, subnet, security
-        group) and the AWS credentials on this page, and needs WORKER_URL set. Its first climb waits for the image to
+        group) and the AWS credentials on this page, and needs this server's address for machines (WORKER_URL, else VOLUNTEER_URL or SITE_HOST). Its first climb waits for the image to
         download (about 18 GB). The cost shown is for spot instances only, at the price when each started, without its disk.</div>
       <div id="ec2-list"></div>
       <div class="grid">
@@ -606,7 +606,7 @@ function render(s){
   const head = '<tr><th>Machine</th><th>Now</th><th>Up</th><th></th></tr>';
   $('#ec2-list').innerHTML = (live.length ? `<table>${head}${live.map(ec2Row).join('')}</table>` : '<div class="note">None running.</div>')
     + (ended.length ? `<details><summary class="note">${ended.length} ended in the last week</summary><table>${head}${ended.map(ec2Row).join('')}</table></details>` : '')
-    + (fleet.url ? '' : '<div class="note warn">WORKER_URL isn\'t set, so an EC2 machine wouldn\'t know where to connect.</div>');
+    + (fleet.url ? '' : '<div class="note warn">Neither WORKER_URL, VOLUNTEER_URL nor SITE_HOST is set, so an EC2 machine wouldn\'t know where to connect.</div>');
   if ((ms.changes || []).length) $('#mach-list').innerHTML += `<details${machChangesOpen ? ' open' : ''} id="mach-changes"><summary class="note">Latest changes</summary><table>${
     ms.changes.map(c => `<tr><td>${new Date(c.start * 1000).toLocaleString()}</td><td>${esc(c.name || c.machine)}</td><td>${esc(c.state)}${c.why ? `: ${esc(c.why)}` : ''}</td></tr>`).join('')}</table></details>`;
   $('#mach-changes')?.addEventListener('toggle', ev => { machChangesOpen = ev.target.open; });
