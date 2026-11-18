@@ -1042,7 +1042,15 @@ machine. *Run more on* adds up to that many machines (2 by default):
   instances ("All G and VT Spot Instance Requests", or the on-demand one), which is 0 on a new account until you ask for
   more. It uses the region, spot, disk (at least the AMI's own and 60 GB more), AMI (AWS's Deep Learning GPU image, which has Docker and NVIDIA's toolkit),
   subnet and security group (empty: the VPC's default, as nothing needs to reach in) of the AWS settings. Its first
-  climb waits for the image to download (about 18 GB). The spot cost shown is at the price when it started, without its disk.
+  climb waits for the image to download (about 18 GB).
+
+  What they cost comes out of a balance you top up there (*Add to the balance*; less than 0 takes some away). It's
+  estimated each minute from each instance's price (on-demand from AWS's price list; spot from its zone's price, looked
+  up hourly), its disk and its public address, so the credentials also need `ec2:DescribeSpotPriceHistory` and
+  `pricing:GetProducts`. Data sent out isn't counted (well under a cent a climb), nor anything else on the account: an
+  AWS Budget is the backstop for that. One starts only with an hour of itself left. Your phone is told with a fifth of
+  the last top-up left. With none left, they're given no new climb and end once theirs is done, or at once $2 past it;
+  a top-up before then lets them carry on.
 
   The first time, it makes the machine's token, asks a name (optional) and registers it; the machine then waits under
   *Machines* (shown with this choice) for *Approve*, here or from a notification on your phone (see "Approving

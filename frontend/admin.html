@@ -235,7 +235,15 @@
         machines above, alongside them. It runs until you end it here: nothing starts or ends one by itself, though AWS can
         take back a spot instance (you're told). It uses the AWS settings above (region, spot, disk, AMI, subnet, security
         group) and the AWS credentials on this page, and needs this server's address for machines (WORKER_URL, else VOLUNTEER_URL or SITE_HOST). Its first climb waits for the image to
-        download (about 18 GB). The cost shown is for spot instances only, at the price when each started, without its disk.</div>
+        download (about 18 GB).</div>
+      <div class="note">What they cost comes out of a balance you top up here: estimated each minute from each one's price
+        (on-demand from AWS's price list, spot from its zone's price, looked up hourly), its disk and its public address,
+        but not data sent out (well under a cent a climb). One starts only with an hour of it left. You're told on your phone
+        with a fifth of the last top-up left. With none left, they're given no new climb and end once theirs is done, or at
+        once $2 past it; a top-up before then lets them carry on.</div>
+      <div id="ec2-balance" style="margin-top:8px"></div>
+      <div class="inline" style="margin-top:6px"><input type="number" id="ec2-amount" step="any" placeholder="dollars" style="width:110px">
+        <button class="sec" id="ec2-topup">Add to the balance</button> <small class="note">(less than 0 takes some away)</small></div>
       <div id="ec2-list"></div>
       <div class="grid">
         <div><label>Instance type <small>(empty: the one above)</small></label><input type="text" id="ec2-type" placeholder="g4dn.2xlarge"></div>
@@ -600,9 +608,12 @@ function render(s){
     return `<tr><td>${esc(r.name)}<div class="note">${esc(r.instance_id)}, ${esc(r.instance_type)}${r.spot ? ', spot' : ''}${r.zone ? `, ${esc(r.zone)}` : ''}${r.address ? `, ${esc(r.address)}` : ''}</div></td>
       <td>${r.ended ? `<span class="note">${esc(r.ended_why || 'ended')}</span>` : `${esc(r.state || '')}${m ? `, <span class="${m.status === 'working' ? 'ok' : m.status === 'held back' ? 'warn' : ''}">${esc(m.status)}</span>` : ''}${
         r.stop_after_job ? '<div class="note warn">ends once its climb is done</div>' : ''}`}</td>
-      <td>${r.hours.toFixed(1)} h${r.cost !== null ? ` <span class="note">(~$${r.cost.toFixed(2)})</span>` : ''}</td>
+      <td>${r.hours.toFixed(1)} h <span class="note">(~$${r.cost.toFixed(2)}${!r.ended && r.rate !== null ? `, $${r.rate.toFixed(3)}/h` : ''})</span></td>
       <td>${r.ended ? '' : `${r.stop_after_job ? '' : `<button data-ec2after="${esc(r.instance_id)}" title="It's given no new climb, and ends once the one it has is done (at once, if it has none)">End after its climb</button> `}<button class="danger" data-ec2now="${esc(r.instance_id)}">End now</button>`}</td></tr>`;
   };
+  const bal = fleet.balance;
+  if (bal) $('#ec2-balance').innerHTML = `<b class="${bal.left <= 0 ? 'bad' : bal.last && bal.left <= 0.2 * bal.last ? 'warn' : ''}">$${bal.left.toFixed(2)} left</b>
+    <span class="note">of $${bal.topped.toFixed(2)} topped up in all${bal.per_hour ? `; $${bal.per_hour.toFixed(2)} an hour running${bal.hours_left !== null ? `, about ${bal.hours_left} h left` : ''}` : ''}</span>`;
   const head = '<tr><th>Machine</th><th>Now</th><th>Up</th><th></th></tr>';
   $('#ec2-list').innerHTML = (live.length ? `<table>${head}${live.map(ec2Row).join('')}</table>` : '<div class="note">None running.</div>')
     + (ended.length ? `<details><summary class="note">${ended.length} ended in the last week</summary><table>${head}${ended.map(ec2Row).join('')}</table></details>` : '')
@@ -901,7 +912,7 @@ async function save(changes, compute){
   try { const s = await call('/api/admin/settings', changes); if (compute) editing = false; render(s); msg('Saved'); }
   catch (e) { msg(e.message, 8000); refresh(); }
 }
-$('#compute').addEventListener('input', ev => { if (ev.target.id === 'mach-name' || ev.target.id === 'ec2-type') return; editing = true; $('#unsaved').textContent = 'Not saved yet'; });
+$('#compute').addEventListener('input', ev => { if (['mach-name', 'ec2-type', 'ec2-amount'].includes(ev.target.id)) return; editing = true; $('#unsaved').textContent = 'Not saved yet'; });
 document.querySelectorAll('input[name=tex]').forEach(r => r.onchange = () => save({ 'site.textures': r.value }));
 document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => save({ 'site.sources': r.value }));
 $('#small-thumbs').onchange = () => save({ 'site.small_thumbs': $('#small-thumbs').checked });
@@ -925,6 +936,12 @@ $('#ec2-start').onclick = async () => {
   if (!confirm(`Start an EC2 ${type}${$('#spot').checked ? ' spot' : ''} instance? It costs money until you end it here.`)) return;
   msg('Starting…', 60000);
   try { msg((await call('/api/admin/actions/ec2-start', { instance_type: $('#ec2-type').value.trim() })).result, 12000); refresh(); } catch (e) { msg(e.message, 12000); }
+};
+$('#ec2-topup').onclick = async () => {
+  const amount = +$('#ec2-amount').value;
+  if (!amount) { msg('Give an amount in dollars', 6000); return; }
+  if (!confirm(amount > 0 ? `Add $${amount.toFixed(2)} to the EC2 balance?` : `Take $${(-amount).toFixed(2)} from the EC2 balance?`)) return;
+  try { msg((await call('/api/admin/actions/ec2-topup', { amount })).result, 8000); $('#ec2-amount').value = ''; refresh(); } catch (e) { msg(e.message, 8000); }
 };
 $('#ec2-test').onclick = async () => { msg('Checking…', 60000); try { msg((await call('/api/admin/actions/ec2-test', { instance_type: $('#ec2-type').value.trim() })).result, 12000); } catch (e) { msg(e.message, 12000); } };
 $('#ec2-list').addEventListener('click', async ev => {

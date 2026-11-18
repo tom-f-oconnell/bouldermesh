@@ -11755,6 +11755,14 @@ def admin_ec2_stop(body: dict) -> dict:
     return {"result": FLEET.stop(str(body.get("id") or ""), after_job=bool(body.get("after_job")))}
 
 
+def admin_ec2_topup(body: dict) -> dict:
+    try:
+        amount = float(body.get("amount"))
+    except (TypeError, ValueError):
+        raise ValueError("give an amount in dollars, such as 50") from None
+    return {"result": "EC2 balance: " + FLEET.top_up(amount)}
+
+
 def admin_ec2_test(body: dict) -> dict:
     ec2_pull()
     return {"result": FLEET.test(body.get("instance_type"))}
@@ -12017,7 +12025,7 @@ def main() -> None:
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
                                        "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-rescind": admin_user_rescind, "user-change": admin_user_change,
                                        "user-signin": admin_user_signin, "user-delete": admin_user_delete, "submission": admin_submission, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
-                                       "machine-revoke": admin_machine_revoke, "ec2-start": admin_ec2_start, "ec2-stop": admin_ec2_stop, "ec2-test": admin_ec2_test, "clear-rejected": admin_clear_rejected,
+                                       "machine-revoke": admin_machine_revoke, "ec2-start": admin_ec2_start, "ec2-stop": admin_ec2_stop, "ec2-test": admin_ec2_test, "ec2-topup": admin_ec2_topup, "clear-rejected": admin_clear_rejected,
                                        "volunteers-forget": lambda _: {"result": f"forgot {VOLUNTEERS.forget_gone()} volunteer(s)"},
                                        "machines-forget": lambda _: {"result": f"forgot {MACHINES.forget_gone()} machine(s)"},
                                        "volunteer-approve": admin_volunteer_approve, "volunteer-deny": admin_volunteer_deny,

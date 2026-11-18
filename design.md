@@ -1446,6 +1446,10 @@ climb is done gives it no new climb meanwhile (the board's `parked`, kept over a
 within a minute of its climb ending. Their tag isn't the "aws" provider's, which ends its own instances left from
 before a restart. Nothing reaches into them, so they need no security group of their own; the metadata service is
 closed to their jobs' containers (one hop), as the user data holds the token. Each start downloads the 18 GB image.
+Their spending comes out of a balance the user tops up (Nov 18), kept here rather than by AWS: AWS's billing runs hours
+behind, so a limit there overshoots. Each minute each running instance is charged its rate since the last charge (its
+price, plus its disk and public IPv4 address at us-east-1's prices), so a change of spot price applies from when it was
+seen. At none, machines finish their climbs (an hour of a climb is cheaper than meshing it again) up to $2 over.
 
 ## Scenes around meshes (`backend/splat.py`)
 

@@ -7,6 +7,7 @@ climb is done (given no new one meanwhile), and AWS ending one itself. Offline.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -56,8 +57,20 @@ class FakeEC2:
                 raise Exception("InvalidInstanceID.NotFound")
             self.instances[iid]["State"] = {"Name": "terminated"}
 
-    def describe_spot_price_history(self, **kw):
-        return {"SpotPriceHistory": [{"SpotPrice": "0.2950"}]}
+    spot = {"us-east-1a": 0.295, "us-east-1b": 0.31}
+
+    def describe_spot_price_history(self, InstanceTypes, ProductDescriptions, StartTime, AvailabilityZone=None):
+        return {"SpotPriceHistory": [{"SpotPrice": f"{p:.4f}", "AvailabilityZone": z} for z, p in self.spot.items()
+                                     if AvailabilityZone in (None, z)]}
+
+
+class FakePricing:
+    def get_products(self, ServiceCode, Filters, MaxResults):
+        f = {x["Field"]: x["Value"] for x in Filters}
+        assert ServiceCode == "AmazonEC2" and f["regionCode"] == "us-east-1" and f["operatingSystem"] == "Linux"
+        usd = {"g4dn.2xlarge": "0.7520000000", "g6.4xlarge": "1.3232000000"}.get(f["instanceType"])
+        return {"PriceList": [json.dumps({"terms": {"OnDemand": {"x": {"priceDimensions": {"y": {"pricePerUnit": {"USD": usd}}}}}}})]
+                if usd else []}
 
 
 class FakeSSM:
@@ -74,7 +87,7 @@ class FakeSTS:
 TMP = Path(tempfile.mkdtemp(prefix="bouldermesh-ec2-"))
 board = pullwork.Board(TMP / "machines.sqlite", TMP / "jobs", lambda: "ghcr.io/me/bouldermesh:abc-gpu", JobControl())
 ec2 = FakeEC2()
-clients = {"ec2": ec2, "ssm": FakeSSM(), "sts": FakeSTS()}
+clients = {"ec2": ec2, "ssm": FakeSSM(), "sts": FakeSTS(), "pricing": FakePricing()}
 s = {**settings_mod.DEFAULTS, "compute.provider": "pull"}
 url = ["https://boulders.example"]
 told = []
@@ -83,7 +96,7 @@ fleet = ec2fleet.Fleet(TMP / "ec2.sqlite", board, lambda: s, lambda: {}, lambda:
 
 # --- checking, without starting one or making a token -----------------------------------------------------------------
 out = fleet.test()
-assert "account 1234" in out and "g4dn.2xlarge" in out and "ami-dl" in out, out
+assert "account 1234" in out and "g4dn.2xlarge" in out and "ami-dl" in out and "about $0.33" in out, out
 assert ec2.calls[-1][1]["DryRun"] and not board.q("SELECT * FROM machines"), "a dry run, and no machine made"
 try:
     fleet.test("not a type; rm -rf /")
@@ -93,6 +106,19 @@ except ValueError as e:
 print("checking OK")
 
 # --- starting one: a machine of its own, and what the instance runs ---------------------------------------------------
+try:
+    fleet.start()
+    raise AssertionError("should have refused")
+except ValueError as e:
+    assert "top it up first" in str(e) and "$0.00 left" in str(e), e
+assert not board.q("SELECT * FROM machines"), "nothing made"
+for bad in (0, "x", 1e6):
+    try:
+        fleet.top_up(bad)
+        raise AssertionError("should have refused")
+    except ValueError:
+        pass
+assert fleet.top_up(100) == "$100.00 left"
 r = fleet.start()
 assert r["instance_id"] == "i-1" and r["instance_type"] == "g4dn.2xlarge" and r["spot"] == 1 and not r["ended"], r
 m = board.get(r["machine_id"])
@@ -114,11 +140,17 @@ script = TMP / "user-data.sh"
 script.write_text(ud)
 assert subprocess.run(["bash", "-n", str(script)]).returncode == 0, "its user data parses"
 
-r2 = fleet.start("g6.4xlarge")
-assert r2["instance_type"] == "g6.4xlarge" and board.get(r2["machine_id"])["name"] == "EC2 g6.4xlarge"
+assert r["price"] == 0.31 and r["volume_gb"] == 210, "a spot price before its zone is known: the dearest zone's"
+r2 = fleet.start("g6.4xlarge", spot=False)
+assert r2["instance_type"] == "g6.4xlarge" and board.get(r2["machine_id"])["name"] == "EC2 g6.4xlarge" and r2["price"] == 1.3232
+try:
+    fleet.start("g9.unknown", spot=False)
+    raise AssertionError("should have refused")
+except ValueError as e:
+    assert "couldn't find what" in str(e) and "pricing:GetProducts" in str(e), e
 before = len(board.q("SELECT * FROM machines"))
 try:
-    fleet.start("p5.48xlarge")
+    fleet.start("p5.48xlarge", spot=True)
     raise AssertionError("should have failed")
 except ValueError as e:
     assert "VcpuLimitExceeded" in str(e)
@@ -137,6 +169,14 @@ print("starting OK")
 fleet.sweep()
 r = fleet.row("i-1")
 assert r["state"] == "running" and r["address"] == "203.0.113.1" and r["zone"] == "us-east-1a" and r["price"] == 0.295, r
+ec2.spot["us-east-1a"] = 0.4
+fleet.sweep()
+assert fleet.row("i-1")["price"] == 0.295, "looked up again only hourly"
+fleet.q("UPDATE ec2 SET price_at=? WHERE instance_id='i-1'", time.time() - ec2fleet.SPOT_EVERY - 1)
+fleet.sweep()
+assert fleet.row("i-1")["price"] == 0.4
+ec2.spot["us-east-1a"] = 0.295
+fleet.q("UPDATE ec2 SET price=0.295 WHERE instance_id='i-1'")
 st = fleet.state()
 assert [x["instance_id"] for x in st["machines"]] == ["i-2", "i-1"] and st["machines"][1]["cost"] == 0.0, st
 print("sweep OK")
@@ -193,4 +233,62 @@ calls = len(ec2.calls)
 fleet.sweep()
 assert len(ec2.calls) == calls, "nothing running: no calls to AWS"
 print("ending OK")
+
+# --- the balance: charged by the minute, told as it runs low, stopped as it runs out --------------------------------
+for x in fleet.q("SELECT * FROM ec2 WHERE ended IS NULL"):
+    fleet.stop(x["instance_id"])
+b = fleet.balance()
+spent0 = b["spent"]
+assert b["topped"] == 100 and b["per_hour"] == 0 and b["hours_left"] is None and abs(b["left"] - (100 - spent0)) < 1e-6, b
+fleet.top_up(-(b["left"] - 10))     # $10 left
+ec2.spot["us-east-1b"] = 0.295      # the same in every zone, so the same once its zone is known
+r5 = fleet.start()
+rate = ec2fleet.rate_of(r5["price"], r5["volume_gb"])
+assert abs(rate - (0.295 + 210 * ec2fleet.DISK_RATE + ec2fleet.ADDRESS_RATE)) < 1e-9
+assert abs(fleet.balance()["per_hour"] - rate) < 1e-3
+
+
+def ago(hours):     # as if it had run this many hours unbilled
+    fleet.q("UPDATE ec2 SET costed_at=? WHERE instance_id=?", time.time() - hours * 3600, r5["instance_id"])
+
+
+ago(2)
+fleet.sweep()
+b = fleet.balance()
+assert abs(b["left"] - (10 - 2 * rate)) < 0.01 and abs(fleet.row(r5["instance_id"])["cost"] - 2 * rate) < 0.01, b
+assert not told or "low" not in told[-1][0]
+ago((b["left"] - 1) / rate)     # $1 left: under a fifth of the $10 after the last top-up
+fleet.sweep()
+assert "running low" in told[-1][0] and "$1.00 left" in told[-1][1], told[-1]
+n = len(told)
+fleet.sweep()
+assert len(told) == n, "told once"
+try:
+    fleet.start("g6.4xlarge", spot=False)
+    raise AssertionError("should have refused")
+except ValueError as e:
+    assert "top it up first" in str(e) and "less than 1 h" in str(e), e
+mid5 = r5["machine_id"]
+job.state, job.machine = "running", mid5
+ago(1.5 / rate)     # $0.50 past the end
+fleet.sweep()
+r5 = fleet.row(r5["instance_id"])
+assert r5["stop_after_job"] and r5["stop_why"] == "balance" and not r5["ended"] and mid5 in board.parked, r5
+assert "balance spent" in told[-1][0] and "end once theirs is done" in told[-1][1], told[-1]
+assert "carry on" in fleet.top_up(5) and mid5 not in board.parked and not fleet.row(r5["instance_id"])["stop_after_job"], \
+    "a top-up lets it carry on"
+ago((fleet.balance()["left"] + 0.1) / rate)
+fleet.sweep()
+assert fleet.row(r5["instance_id"])["stop_why"] == "balance" and not fleet.row(r5["instance_id"])["ended"]
+ago((fleet.balance()["left"] + ec2fleet.OVERRUN + 0.1) / rate)
+fleet.sweep()
+r5 = fleet.row(r5["instance_id"])
+assert r5["ended"] and "past the end of the EC2 balance" in r5["ended_why"] and board.get(mid5)["revoked"], r5
+assert "machines ended" in told[-1][0]
+spent = fleet.balance()["spent"]
+fleet.sweep()
+assert fleet.balance()["spent"] == spent, "nothing charged once ended"
+st = fleet.state()
+assert st["balance"]["left"] < 0 and st["machines"][0]["cost"] > 0 and st["machines"][0]["rate"] == round(rate, 4), st
+print("balance OK")
 print("ALL EC2 FLEET TESTS PASSED")
