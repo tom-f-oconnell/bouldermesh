@@ -11,7 +11,10 @@ const val TERMS = "BoulderMesh is a community project: using it to capture or ad
     "Only add what is yours to license this way. What you add is reviewed before it is shown, and may be declined or removed. Meshes that also draw on other people's photos stay under those photos' own terms."
 
 /**
- * The account role (backend/accounts.py ROLES) whose phones draw the apps in the top half of the screen only: a user
- * otherwise, for a phone whose screen's lower half is broken.
+ * The account role (backend/accounts.py ROLES) whose phones draw the apps in the top of the screen only (HALF_SHARE of
+ * its height): a user otherwise, for a phone whose screen's lower part is broken.
  */
 const val HALF_ROLE = "george"
+
+/** How much of the screen's height, from the top, the apps draw in for HALF_ROLE: what George's phone can still show. */
+const val HALF_SHARE = 0.6

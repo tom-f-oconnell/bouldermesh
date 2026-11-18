@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.window.DialogWindowProvider
 import android.view.Gravity
+import sh.boulderme.core.HALF_SHARE
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -88,7 +89,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme()) {
               CompositionLocalProvider(LocalTopHalf provides topHalf) {
                Box(Modifier.fillMaxSize().background(Color.Black)) {
-                Surface(Modifier.fillMaxWidth().fillMaxHeight(if (topHalf) 0.5f else 1f)) {
+                Surface(Modifier.fillMaxWidth().fillMaxHeight(if (topHalf) HALF_SHARE.toFloat() else 1f)) {
                     val go: (Screen) -> Unit = { screen = it }
                     BackHandler(enabled = screen != Screen.Home && screen !is Screen.Capture) { screen = backOf(screen) }
                     var accepted by remember { mutableStateOf(store.terms >= TERMS_VERSION) }

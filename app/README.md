@@ -51,9 +51,9 @@ paste an invite link, a code from *Sign in another device* on the site, or the l
 phone*. The app's own *Sign in another device* (in *Settings*) gives a code for signing in on a computer: there, *Edit…*,
 *Sign in with a code*.
 
-**A phone with the lower half of its screen broken:** give its account the role *george* (admin page, *People*; or
-invite as one). Signed in with it, both apps draw everything, dialogs too, in the top half of the screen, from the
-next start (or at once when signing in). The phone's own keyboard still comes up at the bottom.
+**A phone with the lower part of its screen broken:** give its account the role *george* (admin page, *People*; or
+invite as one). Signed in with it, both apps draw everything, dialogs too, in the top 60% of the screen (`HALF_SHARE`
+in Terms.kt), from the next start (or at once when signing in). The phone's own keyboard still comes up at the bottom.
 
 ## More
 

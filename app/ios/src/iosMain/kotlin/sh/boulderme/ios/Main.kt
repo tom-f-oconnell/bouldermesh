@@ -62,12 +62,12 @@ fun rootViewController(): UIViewController {
 }
 
 /**
- * Draws the whole app, alerts and all, in the top half of the screen (for a phone whose screen's lower half is broken),
- * or in all of it.
+ * Draws the whole app, alerts and all, in the top of the screen (HALF_SHARE of it, for a phone whose screen's lower
+ * part is broken), or in all of it.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun topHalf(on: Boolean) {
     val window = UIApplication.sharedApplication.keyWindow ?: return
     val (w, h) = UIScreen.mainScreen.bounds.useContents { size.width to size.height }
-    window.setFrame(CGRectMake(0.0, 0.0, w, if (on) h / 2 else h))
+    window.setFrame(CGRectMake(0.0, 0.0, w, if (on) h * sh.boulderme.core.HALF_SHARE else h))
 }
