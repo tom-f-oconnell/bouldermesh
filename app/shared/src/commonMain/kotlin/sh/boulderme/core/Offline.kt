@@ -109,25 +109,34 @@ object Offline {
  * what of the API the page asks for is kept however the server answered (a mesh with no cleanup answers 404).
  *
  * Args:
- *     fetch: fetches an address (the server's paths given whole), answering its status, type and body, or why it couldn't.
+ *     fetch: fetches an address (the server's paths given whole), answering its status, type and body, or why it couldn't;
+ *         meanwhile telling `got` how many bytes of it have come so far, if it can.
  *     lib: a library kept already, by address, with its body. keep: keeps a file, answering what it's kept as.
  *     done: the copy's index once all is kept, or why not.
+ *     progress: how much of the copy has come, 0 to 1, said as it grows (by half a percent or more): by the bytes of the
+ *         files the server gave a size for (the mesh and its textures, nearly all of it), else by the files.
  */
 class OfflineFetch(
     private val bundle: OfflineBundle, private val textures: Boolean, private val server: String,
-    private val fetch: (url: String, done: (status: Int, type: String?, body: ByteArray?, why: String?) -> Unit) -> Unit,
+    private val fetch: (url: String, got: (Long) -> Unit, done: (status: Int, type: String?, body: ByteArray?, why: String?) -> Unit) -> Unit,
     private val lib: (key: String) -> Pair<KeptFile, ByteArray?>?,
     private val keep: (key: String, lib: Boolean, status: Int, type: String?, body: ByteArray) -> KeptFile,
     private val now: Double,
     private val done: (OfflineIndex?, String?) -> Unit,
+    private val progress: (Double) -> Unit = {},
 ) {
     private val todo = ArrayDeque(Offline.wanted(bundle, textures))
+    private val total = todo.sumOf { it.bytes ?: 0L }
+    private var files = todo.size
+    private var finished = 0
+    private var sized = 0L      // bytes of the files finished that the server gave a size for
+    private var said = -1
     private val seen = HashSet(todo.map { it.url })
     private val found = HashSet<String>()      // modules found imported, not named by the bundle: kept if they come
     private val kept = LinkedHashMap<String, KeptFile>()
     private var bytes = 0L
 
-    fun start() = next()
+    fun start() { tell(0); next() }
 
     private fun next() {
         while (true) {
@@ -137,19 +146,21 @@ class OfflineFetch(
             if (had != null) {
                 kept[key] = had.first
                 had.second?.let { follow(f.url, had.first.type, it) }
+                finish(f)
                 continue
             }
             val address = if (f.url.startsWith("/")) server.trimEnd('/') + f.url else f.url
-            fetch(address) { status, type, body, why ->
+            fetch(address, { n -> tell(minOf(n, f.bytes ?: 0L)) }) { status, type, body, why ->
                 val api = f.url.startsWith("/api/")
                 when {
-                    f.url in found && (body == null || status !in 200..299) -> next()
+                    f.url in found && (body == null || status !in 200..299) -> { finish(f); next() }
                     body == null -> done(null, "${f.url}: ${why ?: "no answer"}")
                     status !in 200..299 && !api -> done(null, "${f.url}: the server answered $status")
                     else -> {
                         kept[key] = keep(key, f.lib, status, type, body)
                         bytes += body.size
                         if (f.lib) follow(f.url, type, body)
+                        finish(f)
                         next()
                     }
                 }
@@ -160,6 +171,15 @@ class OfflineFetch(
 
     private fun follow(url: String, type: String?, body: ByteArray) {
         if (type?.contains("javascript") != true && !url.endsWith(".js")) return
-        for (dep in Offline.imports(url, body.decodeToString())) if (seen.add(dep)) { found.add(dep); todo.addLast(OfflineFile(dep, lib = true)) }
+        for (dep in Offline.imports(url, body.decodeToString())) if (seen.add(dep)) { found.add(dep); todo.addLast(OfflineFile(dep, lib = true)); files++ }
+    }
+
+    private fun finish(f: OfflineFile) { finished++; sized += f.bytes ?: 0L; tell(0) }
+
+    /** Says how far the copy has got, `current` bytes into the file being fetched. */
+    private fun tell(current: Long) {
+        val part = if (total > 0) (sized + current).toDouble() / total else finished.toDouble() / maxOf(files, 1)
+        val step = (part.coerceIn(0.0, 1.0) * 200).toInt()
+        if (step != said) { said = step; progress(step / 200.0) }
     }
 }

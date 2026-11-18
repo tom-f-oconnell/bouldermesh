@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
@@ -107,7 +108,7 @@ private fun Thumb(file: File, sent: Boolean, modifier: Modifier, open: () -> Uni
 
 /** How a capture stands, in words and colour: on the phone, being sent, or what the server says of it. */
 fun uploadSaid(u: Store.Upload, sending: String?, server: UploadStatus?): Pair<String, Color> = when {
-    sending != null -> sending to Color.Unspecified
+    sending != null -> sending to if (sending == Uploader.WAITING) WAIT else Color.Unspecified
     server != null && (u.meshAsked || u.done) -> server.said().let { (text, tone) -> text to toneColor(tone) }
     u.done -> "Sent: the server is meshing it, or has" to GOOD
     u.note.isNotEmpty() -> "Stopped: ${u.note}" to BAD
@@ -253,10 +254,17 @@ fun KeepMesh(a: MainActivity, mesh: String, name: String) {
     var bundle by remember { mutableStateOf<sh.boulderme.core.OfflineBundle?>(null) }
     var busy by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var got by remember { mutableStateOf<Double?>(null) }      // how much has come while keeping it; -1 while waiting for Wi-Fi
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val k = kept
     if (k != null) Text(if (k.textures) "Kept on this phone, for viewing with no signal" else "Kept on this phone without its textures, for viewing with no signal",
         style = MaterialTheme.typography.bodySmall, color = GOOD)
+    else if (busy != null && got != null) {
+        val got = got ?: 0.0
+        Text(if (got < 0) "Waiting for Wi-Fi: meshes are got only over Wi-Fi (Settings)" else "Keeping… ${(got * 100).toInt()}%",
+            style = MaterialTheme.typography.bodySmall, color = if (got < 0) WAIT else Color.Unspecified)
+        if (got >= 0) androidx.compose.material3.LinearProgressIndicator(progress = { got.toFloat() }, modifier = Modifier.fillMaxWidth())
+    }
     else TextButton(enabled = busy == null, onClick = {
         busy = "Asking…"; error = null
         scope.launch { runCatching { withContext(Dispatchers.IO) { a.api.offline(mesh) } }.fold({ bundle = it }, { error = it.message }); busy = null }
@@ -264,10 +272,15 @@ fun KeepMesh(a: MainActivity, mesh: String, name: String) {
     error?.let { Text(it, color = BAD, style = MaterialTheme.typography.bodySmall) }
     bundle?.let { b ->
         KeepChoice(name, listOf(b.bytes), dismiss = { bundle = null }) { textures ->
-            bundle = null; busy = "Keeping…"
+            bundle = null; busy = "Keeping…"; got = 0.0
             scope.launch {
-                runCatching { withContext(Dispatchers.IO) { a.store.offline.fetch(a.api, a.store, mesh, textures, b) } }.fold({ kept = it }, { error = it.message })
-                busy = null
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        a.store.offline.fetch(a.api, a.store, mesh, textures, b, progress = { got = it },
+                            wait = { val was = got; a.store.awaitDownloads({ isActive }) { got = -1.0 }; if (got == -1.0) got = was })
+                    }
+                }.fold({ kept = it }, { if (it is kotlinx.coroutines.CancellationException) throw it; error = it.message })
+                busy = null; got = null
             }
         }
     }

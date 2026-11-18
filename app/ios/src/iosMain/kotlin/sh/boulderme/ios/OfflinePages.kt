@@ -27,6 +27,7 @@ import platform.darwin.NSObject
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
 import sh.boulderme.core.KeptFile
+import platform.Foundation.NSTimer
 import sh.boulderme.core.Offline
 import sh.boulderme.core.OfflineBundle
 import sh.boulderme.core.OfflineFetch
@@ -73,34 +74,57 @@ class IosOffline(private val store: IosStore) {
         return Files.readBytes(if (lib) "$libDir/${k.file}" else "${dir(index.mesh)}/${k.file}")?.let { k to it }
     }
 
-    /** Keeps a mesh's files for the viewer, with its textures or without; what was kept of it before goes first. Answers on the main thread. */
-    fun fetch(api: IosApi, mesh: String, textures: Boolean, bundle: OfflineBundle, done: (OfflineIndex?, String?) -> Unit) {
+    /**
+     * Keeps a mesh's files for the viewer, with its textures or without; what was kept of it before goes first. Answers
+     * on the main thread.
+     *
+     * Args:
+     *     progress: how much has come, 0 to 1, as it grows (OfflineFetch's).
+     *     waiting: told when a file waits for Wi-Fi (true; meshes are got only over Wi-Fi), and when it stops waiting.
+     */
+    fun fetch(api: IosApi, mesh: String, textures: Boolean, bundle: OfflineBundle, progress: (Double) -> Unit = {}, waiting: (Boolean) -> Unit = {},
+              done: (OfflineIndex?, String?) -> Unit) {
         remove(mesh)
         OfflineFetch(bundle, textures, store.server,
-            fetch = { url, answer -> raw(url) { status, type, body, why -> answer(status, type, body, why) } },
+            fetch = { url, got, answer ->
+                var waited = false
+                Net.await({ store.downloadWifiOnly }, { waited = true; waiting(true) }) {
+                    if (waited) waiting(false)
+                    raw(url, got = got) { status, type, body, why -> answer(status, type, body, why) }
+                }
+            },
             lib = ::lib, keep = { key, lib, status, type, body -> keep(mesh, key, lib, status, type, body) },
             now = platform.Foundation.NSDate().timeIntervalSince1970,
             done = { index, why ->
                 if (index != null) Files.write("${dir(mesh)}/index.json", json.encodeToString(OfflineIndex.serializer(), index)) else remove(mesh)
                 done(index, why)
-            }).start()
+            }, progress = progress).start()
     }
 
-    /** Fetches any address, the server's with this phone's token: its status, type and body whatever the status; on the main thread. */
-    fun raw(url: String, timeout: Double = 120.0, done: (Int, String?, ByteArray?, String?) -> Unit) {
+    /**
+     * Fetches any address, the server's with this phone's token: its status, type and body whatever the status; on the
+     * main thread. `got` is told how many bytes of it have come, a few times a second while they do.
+     */
+    fun raw(url: String, timeout: Double = 120.0, got: ((Long) -> Unit)? = null, done: (Int, String?, ByteArray?, String?) -> Unit) {
         val u = NSURL.URLWithString(url) ?: return done(0, null, null, "not an address: $url")
         val req = NSMutableURLRequest.requestWithURL(u)
         req.setHTTPMethod("GET")
         req.setTimeoutInterval(timeout)
         req.setValue("BoulderMeshApp/${IosStore.VERSION} (iOS)", forHTTPHeaderField = "User-Agent")
         if (url.startsWith(store.server.trimEnd('/') + "/") && store.token.isNotEmpty()) req.setValue("Bearer ${store.token}", forHTTPHeaderField = "Authorization")
-        NSURLSession.sharedSession.dataTaskWithRequest(req) { data, response, error ->
+        var watch: NSTimer? = null
+        val task = NSURLSession.sharedSession.dataTaskWithRequest(req) { data, response, error ->
             val r = response as? NSHTTPURLResponse
             val status = r?.statusCode?.toInt() ?: 0
             val type = r?.allHeaderFields?.entries?.firstOrNull { (it.key as? String)?.lowercase() == "content-type" }?.value as? String
             val bytes = data?.toBytes()
-            dispatch_async(dispatch_get_main_queue()) { if (error != null || r == null) done(0, null, null, error?.localizedDescription ?: "no answer") else done(status, type, bytes ?: ByteArray(0), null) }
-        }.resume()
+            dispatch_async(dispatch_get_main_queue()) {
+                watch?.invalidate()
+                if (error != null || r == null) done(0, null, null, error?.localizedDescription ?: "no answer") else done(status, type, bytes ?: ByteArray(0), null)
+            }
+        }
+        if (got != null) watch = NSTimer.scheduledTimerWithTimeInterval(0.25, repeats = true) { _ -> got(task.countOfBytesReceived) }
+        task.resume()
     }
 
     /** Whether the server answers within a few seconds: if not, the viewer shows what's kept. */

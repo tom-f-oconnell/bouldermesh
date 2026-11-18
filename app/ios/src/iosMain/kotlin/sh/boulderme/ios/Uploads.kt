@@ -1,5 +1,6 @@
 package sh.boulderme.ios
 
+import platform.UIKit.UIProgressView
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.readValue
 import kotlinx.cinterop.useContents
@@ -71,7 +72,7 @@ class Statuses(private val store: IosStore, private val api: IosApi) {
 
 /** How a capture stands, in words and colour: on the phone, being sent, or what the server says of it. */
 fun uploadSaid(u: UploadState, sending: String?, server: UploadStatus?): Pair<String, UIColor?> = when {
-    sending != null -> sending to null
+    sending != null -> sending to if (sending == Uploader.WAITING) WAIT else null
     server != null && (u.meshAsked || u.done) -> server.said().let { (text, tone) -> text to toneColor(tone) }
     u.done -> "Sent: the server is meshing it, or has" to GOOD
     u.note.isNotEmpty() -> "Stopped: ${u.note}" to BAD
@@ -131,6 +132,8 @@ private fun thumb(path: String, sent: Boolean, open: () -> Unit): UIView {
 /** One capture: what it holds, grouped by what each part was for, with what's been sent ticked; each photo opens. */
 class UploadForm(private val app: App, private val id: String) : Form("What's in it") {
     private var keeping: String? = null
+    private var keepPart = 0.0          // how much of its mesh has come, while keeping it
+    private var keepBar: Pair<UILabel, UIProgressView>? = null
     private var keepError: String? = null
     override fun appear() { app.statuses.refresh { rebuild() } }
 
@@ -145,6 +148,7 @@ class UploadForm(private val app: App, private val id: String) : Form("What's in
             button("View its mesh", Look.FILLED) { push(ViewerController(app, mesh, u.name)) }
             val kept = app.store.offline.index(mesh)
             if (kept != null) text(if (kept.textures) "Kept on this phone, for viewing with no signal" else "Kept on this phone without its textures, for viewing with no signal", GOOD, small = true)
+            else if (keeping == "Keeping…") keepBar = text("Keeping… ${(keepPart * 100).toInt()}%", small = true) to progress(keepPart)
             else button(keeping ?: "Keep for viewing with no signal", Look.PLAIN) {
                 if (keeping != null) return@button
                 keeping = "Asking…"; rebuild()
@@ -153,8 +157,12 @@ class UploadForm(private val app: App, private val id: String) : Form("What's in
                     if (bundle == null) { keepError = why; rebuild(); return@offline }
                     rebuild()
                     screen.keepChoice(u.name, listOf(bundle.bytes)) { textures ->
-                        keeping = "Keeping…"; rebuild()
-                        app.store.offline.fetch(app.api, mesh, textures, bundle) { _, whyNot -> keeping = null; keepError = whyNot; rebuild() }
+                        keeping = "Keeping…"; keepPart = 0.0; rebuild()
+                        app.store.offline.fetch(app.api, mesh, textures, bundle,
+                            progress = { part -> keepPart = part; keepBar?.let { (label, bar) -> label.text = "Keeping… ${(part * 100).toInt()}%"; bar.progress = part.toFloat() } },
+                            waiting = { on -> keeping = if (on) "Waiting for Wi-Fi: meshes are got only over Wi-Fi (Settings)" else "Keeping…"; rebuild() }) { _, whyNot ->
+                            keeping = null; keepBar = null; keepError = whyNot; rebuild()
+                        }
                     }
                 }
             }

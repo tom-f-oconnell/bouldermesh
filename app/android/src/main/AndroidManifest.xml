@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- whether it's on Wi-Fi, for Settings' "only over Wi-Fi" -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- the app updating itself from the newest build (Update.kt): Android asks the person first, each time -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />

@@ -32,6 +32,10 @@ phone yet**: see [What's been checked](#whats-been-checked).
    a wireframe if it was kept without textures); an upload's mesh can be kept too (*Keep for viewing with no signal*,
    on its screen).
 
+Meshes and captures go over Wi-Fi or mobile data alike unless *Settings* says *only over Wi-Fi* for either: then the
+app waits for unmetered Wi-Fi (not a phone's hotspot) and carries on by itself once there is one, while it's open.
+A mesh being got shows a bar of how much of it has come.
+
 A rock with no mesh: *Capture a new rock…*, tap its middle, and walk round as much of it as you can; *Can't reach that
 side* for the rest, and *Mark a hold* for anything that needs close-ups.
 

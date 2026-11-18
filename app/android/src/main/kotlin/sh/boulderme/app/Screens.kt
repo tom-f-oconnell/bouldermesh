@@ -46,6 +46,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import sh.boulderme.core.GpsAverager
@@ -210,6 +211,8 @@ fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
     var busy by remember { mutableStateOf(setOf<String>()) }
     var viewing by remember { mutableStateOf(rows.orEmpty().associate { it.id to a.store.offline.index(it.id) }) }
     var asking by remember { mutableStateOf<List<MeshRow>?>(null) }     // which to keep, once it's said how
+    var progress by remember { mutableStateOf(mapOf<String, Double>()) }  // how much of each being got has come
+    var waiting by remember { mutableStateOf<String?>(null) }           // the one waiting for Wi-Fi
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
         try { rows = withContext(Dispatchers.IO) { a.api.meshes() } } catch (e: Exception) { error = "Couldn't list the meshes: ${e.message}" }
@@ -224,16 +227,22 @@ fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
         busy = busy + list.map { it.id }
         scope.launch {
             for (r in list) {
+                progress = progress + (r.id to 0.0)
                 try {
-                    if (r.id !in have) {
-                        val (plan, guide) = withContext(Dispatchers.IO) { a.api.plan(r.id) }
-                        a.store.savePlan(r.id, plan, guide)
-                        have = have + r.id
+                    withContext(Dispatchers.IO) {
+                        val wait = { a.store.awaitDownloads({ isActive }) { waiting = r.id }; waiting = null }
+                        if (r.id !in have) {
+                            wait()
+                            val (plan, guide) = a.api.plan(r.id)
+                            a.store.savePlan(r.id, plan, guide)
+                            have = have + r.id
+                        }
+                        val index = a.store.offline.fetch(a.api, a.store, r.id, textures, progress = { progress = progress + (r.id to it) }, wait = wait)
+                        viewing = viewing + (r.id to index)
                     }
-                    val index = withContext(Dispatchers.IO) { a.store.offline.fetch(a.api, a.store, r.id, textures) }
-                    viewing = viewing + (r.id to index)
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e
                 } catch (e: Exception) { error = "${r.name}: ${e.message}" }
-                busy = busy - r.id
+                busy = busy - r.id; progress = progress - r.id
             }
         }
     }
@@ -257,8 +266,11 @@ fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
             if (near.size > 1 && search.isBlank()) OutlinedButton(onClick = { asking = near.take(40) }) { Text("Get the ${minOf(near.size, 40)} within 2 km") }
             Text(if (here == null) "No GPS fix yet: listed by name." else "Nearest first.", style = MaterialTheme.typography.bodySmall)
         }
+        if (a.store.downloadWifiOnly) Text(if (waiting != null) "Waiting for Wi-Fi: meshes are got only over Wi-Fi (Settings)." else "Meshes are got only over Wi-Fi (Settings).",
+            style = MaterialTheme.typography.bodySmall, color = if (waiting != null) WAIT else MaterialTheme.colorScheme.onSurfaceVariant)
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
             items(shown, key = { it.id }) { r ->
+                Column {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(r.name.ifEmpty { r.id })
@@ -267,12 +279,17 @@ fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     val kept = viewing[r.id]
+                    val got = progress[r.id]
                     when {
-                        r.id in busy -> Text("Getting…")
+                        waiting == r.id -> Text("Waiting for Wi-Fi", color = WAIT)
+                        got != null -> Text("Getting… ${(got * 100).toInt()}%")
+                        r.id in busy -> Text("Queued")
                         r.id in have && kept != null -> Text(if (kept.textures) "On phone" else "On phone · wireframe", color = GOOD)
                         r.id in have -> TextButton(onClick = { asking = listOf(r) }) { Text("Keep for viewing") }
                         else -> TextButton(onClick = { asking = listOf(r) }) { Text("Get") }
                     }
+                }
+                progress[r.id]?.let { got -> LinearProgressIndicator(progress = { got.toFloat() }, modifier = Modifier.fillMaxWidth()) }
                 }
             }
         }
@@ -342,6 +359,8 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
     var anonFirst by remember { mutableStateOf(a.store.anonFirst) }
     var dingKept by remember { mutableStateOf(a.store.dingKept) }
     var tickSame by remember { mutableStateOf(a.store.tickSame) }
+    var downWifi by remember { mutableStateOf(a.store.downloadWifiOnly) }
+    var upWifi by remember { mutableStateOf(a.store.uploadWifiOnly) }
     var token by remember { mutableStateOf(a.store.token) }
     var code by remember { mutableStateOf("") }
     var said by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
@@ -372,6 +391,11 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
             Text(if (tickSame) "Ticking while there's nothing new to photograph from where the phone is: on" else "Ticking while there's nothing new to photograph from where the phone is: off")
         }
         Text("For a phone out of sight, up on a pole with Auto on: the ticking stops when the phone is somewhere new, and the bell says the photo from there was kept.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Section("Wi-Fi or mobile data")
+        TextButton(onClick = { downWifi = !downWifi; a.store.downloadWifiOnly = downWifi }) { Text(if (downWifi) "Getting meshes: only over Wi-Fi" else "Getting meshes: over Wi-Fi or mobile data") }
+        TextButton(onClick = { upWifi = !upWifi; a.store.uploadWifiOnly = upWifi }) { Text(if (upWifi) "Sending captures: only over Wi-Fi" else "Sending captures: over Wi-Fi or mobile data") }
+        Text("Only over Wi-Fi waits for one (not a phone's hotspot), and carries on by itself once there's one, while the app is open.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Section("Uploading")
         OutlinedTextField(credit, { credit = it.take(80); a.store.credit = credit }, label = { Text("Credit my photos to") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -503,7 +527,7 @@ fun DoneScreen(a: MainActivity, id: String, go: (Screen) -> Unit) {
         val scenery = (java.io.File(a.store.captureDir(id), "scenery").listFiles() ?: emptyArray()).filter { it.name.endsWith(".jpg") }
         if (scenery.isNotEmpty()) Text("And ${scenery.size} frames of the scenery round the rock (${scenery.sumOf { it.length() } / 1_000_000} MB), sent last: Wi-Fi is best for them.")
         val status = sending[id]
-        if (status != null) Text(status, color = if (u.done) GOOD else if (status.startsWith("Stopped")) BAD else Color.Unspecified)
+        if (status != null) Text(status, color = if (u.done) GOOD else if (status.startsWith("Stopped")) BAD else if (status == Uploader.WAITING) WAIT else Color.Unspecified)
         if (Uploader.busy(id)) LinearProgressIndicator(progress = { if (u.photos > 0) u.sent.size.toFloat() / u.photos else 0f }, modifier = Modifier.fillMaxWidth())
         if (!u.done) Button(enabled = !Uploader.busy(id) && u.photos >= 3, onClick = { Uploader.start(a.store, a.api, id) }) { Text(if (u.sent.isEmpty()) "Upload now" else "Carry on uploading") }
         Text("Uploading publishes them under CC BY 4.0, credited to ${a.store.credit.ifBlank { "nobody by name (set one in Settings)" }}.", style = MaterialTheme.typography.bodySmall)

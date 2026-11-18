@@ -49,21 +49,32 @@ class OfflineTest {
             "https://boulderme.sh/meshes/ab/mesh.glb?lod=preview&v=v1" to Triple(200, "model/gltf-binary", "glb"),
             "https://boulderme.sh/meshes/ab/t.jpg?max=2048" to Triple(200, "image/jpeg", "jpg"))
         val libs = HashMap<String, Pair<KeptFile, ByteArray?>>()
+        val said = ArrayList<Double>()
         fun run(textures: Boolean, fail: String? = null): Pair<OfflineIndex?, String?> {
             var out: Pair<OfflineIndex?, String?>? = null
+            said.clear()
             OfflineFetch(bundle, textures, server,
-                fetch = { url, done -> asked.add(url); val a = answers[url]!!; if (url == fail) done(0, null, null, "no signal") else done(a.first, a.second, a.third.encodeToByteArray(), null) },
+                fetch = { url, got, done ->
+                    asked.add(url); val a = answers[url]!!
+                    if (url == fail) done(0, null, null, "no signal") else { got(400); got(800); done(a.first, a.second, a.third.encodeToByteArray(), null) }
+                },
                 lib = { libs[it] },
                 keep = { key, lib, status, type, body -> KeptFile(if (lib) "lib-${libs.size}" else "f${key.length}", status, type).also { if (lib) libs[key] = it to body } },
-                now = 1.0, done = { i, why -> out = i to why }).start()
+                now = 1.0, done = { i, why -> out = i to why }, progress = { said.add(it) }).start()
             return assertNotNull(out)
         }
         val (plain, why) = run(false)
         assertNull(why)
+        // by the sized files' bytes: the mesh's 1000 is all of it without textures, and comes 400 and 800 at a time
+        assertEquals(listOf(0.0, 0.4, 0.8, 1.0), said.map { kotlin.math.round(it * 100) / 100 }, "how far it's got")
+        assertTrue(said.zipWithNext().all { (a, b) -> b > a }, "only ever growing")
         assertTrue(plain!!.files.keys.none { "t.jpg" in it } && !plain.textures, "without its textures")
         assertTrue("https://cdn.example/lib/b.js" in plain.files && plain.files["/api/meshes/ab/cleanup"]!!.status == 404, "what the library imports; the API as it answered")
         asked.clear()
         val (textured, _) = run(true)
+        assertEquals(1.0, said.last())
+        fun near(x: Double) = said.any { kotlin.math.abs(it - x) < 0.006 }
+        assertTrue(near(1000.0 / 6000) && near(1800.0 / 6000), "the textures' bytes count too: $said")
         assertTrue(textured!!.textures && "/meshes/ab/t.jpg?max=2048" in textured.files)
         assertTrue(asked.none { "cdn.example" in it }, "libraries kept already aren't fetched again: $asked")
         assertTrue(run(true, "https://boulderme.sh/meshes/ab/mesh.glb?lod=preview&v=v1").second!!.contains("no signal"), "the mesh has to come")

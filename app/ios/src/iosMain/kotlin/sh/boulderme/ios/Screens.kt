@@ -1,5 +1,7 @@
 package sh.boulderme.ios
 
+import platform.UIKit.UIProgressView
+import platform.UIKit.UILabel
 import platform.Foundation.NSDate
 import platform.Foundation.timeIntervalSince1970
 import platform.AudioToolbox.AudioServicesPlaySystemSound
@@ -150,6 +152,9 @@ class Browse(private val app: App, private var getFirst: Boolean = false) : Form
     private var shown = 40
     private val busy = HashSet<String>()
     private var asked = false
+    private val got = HashMap<String, Double>()         // how much of each being got has come
+    private var waiting: String? = null                 // the one waiting for Wi-Fi
+    private val bars = HashMap<String, Pair<UILabel, UIProgressView>>()     // shown for those, to move without building it all again
 
     private fun metres(r: MeshRow): Double? {
         val here = app.sensors.fix; val lat = r.lat; val lng = r.lng
@@ -161,18 +166,34 @@ class Browse(private val app: App, private var getFirst: Boolean = false) : Form
         val r = list.firstOrNull() ?: return
         busy.addAll(list.map { it.id })
         rebuild()
+        got[r.id] = 0.0
         fun after(why: String?) {
             if (why != null) error = "${r.name}: $why"
-            busy.remove(r.id)
+            busy.remove(r.id); got.remove(r.id)
             if (list.size > 1) get(list.drop(1), textures) else rebuild()
         }
+        fun wait(on: Boolean) { waiting = if (on) r.id else null; rebuild() }
         fun viewer() = app.api.offline(r.id) { bundle, why ->
-            if (bundle == null) after("the viewer's copy: $why") else app.store.offline.fetch(app.api, r.id, textures, bundle) { _, whyNot -> after(whyNot?.let { "the viewer's copy: $it" }) }
+            if (bundle == null) after("the viewer's copy: $why")
+            else app.store.offline.fetch(app.api, r.id, textures, bundle, progress = { got[r.id] = it; show(r.id) }, waiting = ::wait) { _, whyNot ->
+                after(whyNot?.let { "the viewer's copy: $it" })
+            }
         }
         if (app.store.plan(r.id) != null) viewer()
-        else app.api.plan(r.id) { plan, guide, why ->
-            if (plan != null && guide != null) { app.store.savePlan(r.id, plan, guide); viewer() } else after(why)
+        else Net.await({ app.store.downloadWifiOnly }, { wait(true) }) {
+            if (waiting == r.id) wait(false)
+            app.api.plan(r.id) { plan, guide, why ->
+                if (plan != null && guide != null) { app.store.savePlan(r.id, plan, guide); viewer() } else after(why)
+            }
         }
+    }
+
+    /** Moves a mesh's bar to how much of it has come. */
+    private fun show(id: String) {
+        val (label, bar) = bars[id] ?: return
+        val part = got[id] ?: return
+        label.text = "Getting… ${(part * 100).toInt()}%"
+        bar.progress = part.toFloat()
     }
 
     private fun ask(list: List<MeshRow>) = screen.keepChoice(if (list.size == 1) list[0].name.ifEmpty { "this mesh" } else "these ${list.size} meshes",
@@ -200,6 +221,9 @@ class Browse(private val app: App, private var getFirst: Boolean = false) : Form
         val have = app.store.downloaded().map { it.mesh }.toSet()
         val match = all.filter { r -> search.isBlank() || r.name.contains(search, true) || r.climbs.any { it.contains(search, true) } }
             .sortedWith(compareBy<MeshRow> { metres(it) ?: Double.MAX_VALUE }.thenBy { it.name.lowercase() })
+        bars.clear()
+        if (app.store.downloadWifiOnly) text(if (waiting != null) "Waiting for Wi-Fi: meshes are got only over Wi-Fi (Settings)." else "Meshes are got only over Wi-Fi (Settings).",
+            if (waiting != null) WAIT else UIColor.secondaryLabelColor, small = true)
         val near = match.filter { (metres(it) ?: 1e9) <= 2000 && it.id !in have && it.id !in busy }
         if (near.size > 1 && search.isBlank()) button("Get the ${minOf(near.size, 40)} within 2 km") { ask(near.take(40)) }
         text(if (app.sensors.fix == null) "No GPS fix yet: listed by name." else "Nearest first.", small = true)
@@ -209,7 +233,9 @@ class Browse(private val app: App, private var getFirst: Boolean = false) : Form
             text(listOfNotNull(far, if (r.holds > 0) "${r.holds} holds marked" else null, r.climbs.take(3).joinToString(", ").ifEmpty { null }).joinToString(" · "), UIColor.secondaryLabelColor, small = true)
             val kept = app.store.offline.index(r.id)
             when {
-                r.id in busy -> text("Getting…", small = true)
+                waiting == r.id -> text("Waiting for Wi-Fi", WAIT, small = true)
+                r.id in got -> { bars[r.id] = text("Getting…", small = true) to progress(got[r.id] ?: 0.0); show(r.id) }
+                r.id in busy -> text("Queued", small = true)
                 r.id in have && kept != null -> text(if (kept.textures) "On this phone" else "On this phone · wireframe", GOOD, small = true)
                 r.id in have -> button("Keep for viewing") { ask(listOf(r)) }
                 else -> button("Get") { ask(listOf(r)) }
@@ -234,6 +260,14 @@ class Settings(private val app: App) : Form("Settings") {
             app.store.tickSame = !app.store.tickSame; rebuild()
         }
         text("For a phone out of sight, up on a pole with Auto on: the ticking stops when the phone is somewhere new, and the bell says the photo from there was kept.")
+        section("Wi-Fi or mobile data")
+        button(if (app.store.downloadWifiOnly) "Getting meshes: only over Wi-Fi" else "Getting meshes: over Wi-Fi or mobile data", Look.PLAIN) {
+            app.store.downloadWifiOnly = !app.store.downloadWifiOnly; rebuild()
+        }
+        button(if (app.store.uploadWifiOnly) "Sending captures: only over Wi-Fi" else "Sending captures: over Wi-Fi or mobile data", Look.PLAIN) {
+            app.store.uploadWifiOnly = !app.store.uploadWifiOnly; rebuild()
+        }
+        text("Only over Wi-Fi waits for one (not a phone's hotspot), and carries on by itself once there's one, while the app is open.", UIColor.secondaryLabelColor, small = true)
         section("Uploading")
         button(if (app.store.anonFirst) "Holds others marked privately: asked for from the start" else "Holds others marked privately: asked about at the end", Look.PLAIN) {
             app.store.anonFirst = !app.store.anonFirst; rebuild()
@@ -321,7 +355,7 @@ class Done(private val app: App, private val id: String) : Form("Captured") {
         text("${u.photos} photos kept, each with which way was down, where the phone was and which way it faced.")
         app.store.scenery(id).size.takeIf { it > 0 }?.let { text("And $it frames of the scenery round the rock, sent last: Wi-Fi is best for them.") }
         if (u.photos < 3) text("That's too few to mesh.", BAD)
-        app.uploader.state[id]?.let { text(it, if (u.done) GOOD else if (it.startsWith("Stopped")) BAD else null) }
+        app.uploader.state[id]?.let { text(it, if (u.done) GOOD else if (it.startsWith("Stopped")) BAD else if (it == Uploader.WAITING) WAIT else null) }
         if (busy) progress(if (u.photos > 0) u.sent.size.toDouble() / u.photos else 0.0)
         if (!u.done) button(if (u.sent.isEmpty()) "Upload now" else "Carry on uploading", Look.FILLED, !busy && u.photos >= 3) { app.uploader.start(id); rebuild() }
         text("Uploading publishes them under CC BY 4.0, credited to ${app.store.credit.ifBlank { "nobody by name (set one in Settings)" }}.")

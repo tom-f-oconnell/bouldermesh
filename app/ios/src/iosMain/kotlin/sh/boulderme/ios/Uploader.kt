@@ -6,6 +6,11 @@ package sh.boulderme.ios
  * again. All on the main thread, a step at a time as the server answers.
  */
 class Uploader(private val store: IosStore, private val api: IosApi) {
+    companion object {
+        /** What one that's waiting says: captures are sent only over Wi-Fi (IosStore.uploadWifiOnly), and it isn't on one. */
+        const val WAITING = "Waiting for Wi-Fi: captures are sent only over Wi-Fi (Settings)"
+    }
+
     /** What each capture being sent is doing, in words, by its id. */
     val state = HashMap<String, String>()
     private val running = HashSet<String>()
@@ -29,13 +34,22 @@ class Uploader(private val store: IosStore, private val api: IosApi) {
         if (store.token.isEmpty()) return stop(id, "the server's editing token isn't set (Settings)")
         if (u.project != null) return next(id)
         say(id, "Starting…")
-        api.acceptTerms { api.createProject(u.name) { project, why ->
+        wifi(id) { api.acceptTerms { api.createProject(u.name) { project, why ->
             if (project == null) stop(id, why ?: "no project") else { store.saveUpload(id, u.copy(project = project)); next(id) }
-        } }
+        } } }
+    }
+
+    /** Before each thing sent: if it's to go only over Wi-Fi, waits for one, then on with what it was doing. */
+    private fun wifi(id: String, then: () -> Unit) {
+        val was = state[id]
+        var waited = false
+        Net.await({ store.uploadWifiOnly }, { waited = true; say(id, WAITING) }) { if (waited) was?.let { say(id, it) }; then() }
     }
 
     /** The next thing still to send, then this again once it's gone. */
-    private fun next(id: String) {
+    private fun next(id: String) = wifi(id) { step(id) }
+
+    private fun step(id: String) {
         val u = store.upload(id)
         val project = u?.project
         if (u == null || project == null) return stop(id, "this capture's record is missing")

@@ -76,29 +76,47 @@ class OfflineStore(private val root: File) {
     /**
      * Keeps a mesh's files for the viewer (blocking: call off the main thread), with its textures or without; what was
      * kept of it before goes first. Returns its index. Raises IOException, in words, if a file the page needs didn't come.
+     *
+     * Args:
+     *     progress: how much has come, 0 to 1, as it grows (OfflineFetch's).
+     *     wait: blocks before each file until it may be fetched (Store.awaitDownloads()).
      */
-    fun fetch(api: Api, store: Store, mesh: String, textures: Boolean, bundle: OfflineBundle = api.offline(mesh)): OfflineIndex {
+    fun fetch(api: Api, store: Store, mesh: String, textures: Boolean, bundle: OfflineBundle = api.offline(mesh),
+              progress: (Double) -> Unit = {}, wait: () -> Unit = {}): OfflineIndex {
         clear(mesh)
         var got: OfflineIndex? = null; var why: String? = null
         OfflineFetch(bundle, textures, store.server,
-            fetch = { url, done -> runCatching { api.raw(url) }.fold({ (status, type, body) -> done(status, type, body, null) }, { done(0, null, null, it.message) }) },
+            fetch = { url, bytes, done ->
+                wait()
+                runCatching { api.raw(url, got = bytes) }.fold({ (status, type, body) -> done(status, type, body, null) }, { done(0, null, null, it.message) })
+            },
             lib = ::lib, keep = { key, lib, status, type, body -> keep(mesh, key, lib, status, type, body) },
-            now = System.currentTimeMillis() / 1000.0, done = { i, w -> got = i; why = w }).start()
+            now = System.currentTimeMillis() / 1000.0, done = { i, w -> got = i; why = w }, progress = progress).start()
         val index = got ?: run { clear(mesh); throw IOException(why ?: "it couldn't be kept") }
         save(index)
         return index
     }
 }
 
-/** Fetches any address, the server's with this phone's token: its status, type and body, whatever the status. */
-fun Api.raw(url: String, server: String = store.server, timeoutMs: Int = 120_000): Triple<Int, String?, ByteArray> {
+/**
+ * Fetches any address, the server's with this phone's token: its status, type and body, whatever the status. `got` is
+ * told how many bytes of the body have come, as they do.
+ */
+fun Api.raw(url: String, server: String = store.server, timeoutMs: Int = 120_000, got: ((Long) -> Unit)? = null): Triple<Int, String?, ByteArray> {
     val c = URL(url).openConnection() as HttpURLConnection
     c.connectTimeout = minOf(15_000, timeoutMs); c.readTimeout = timeoutMs
     c.setRequestProperty("User-Agent", "BoulderMeshApp/${BuildInfo.VERSION} (Android)")
     if (url.startsWith(server.trimEnd('/') + "/") && store.token.isNotEmpty()) c.setRequestProperty("Authorization", "Bearer ${store.token}")
     try {
         val code = c.responseCode
-        val body = (if (code in 200..299) c.inputStream else c.errorStream)?.use { it.readBytes() } ?: ByteArray(0)
+        val body = (if (code in 200..299) c.inputStream else c.errorStream)?.use { input ->
+            if (got == null) input.readBytes() else {
+                val out = java.io.ByteArrayOutputStream(maxOf(c.contentLength, 32 * 1024))
+                val chunk = ByteArray(64 * 1024)
+                while (true) { val n = input.read(chunk); if (n < 0) break; out.write(chunk, 0, n); got(out.size().toLong()) }
+                out.toByteArray()
+            }
+        } ?: ByteArray(0)
         return Triple(code, c.contentType, body)
     } finally { c.disconnect() }
 }

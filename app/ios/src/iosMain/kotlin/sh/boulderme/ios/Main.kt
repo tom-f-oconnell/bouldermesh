@@ -23,6 +23,8 @@ class App {
     val sensors = IosSensors()
     val uploader = Uploader(store, api)
     val statuses = Statuses(store, api)
+
+    init { Net.onWifi }     // starts watching the network, so that it's known before it's asked
 }
 
 /**

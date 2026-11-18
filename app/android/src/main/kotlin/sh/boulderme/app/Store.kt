@@ -1,6 +1,8 @@
 package sh.boulderme.app
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.builtins.MapSerializer
@@ -15,6 +17,7 @@ import java.io.File
 
 /** What the app keeps on the phone: its settings, the plans and guides downloaded for use with no signal, and captures. */
 class Store(context: Context) {
+    private val connectivity = context.getSystemService(ConnectivityManager::class.java)
     private val prefs = context.getSharedPreferences("bouldermesh", Context.MODE_PRIVATE)
     private val root: File = context.getExternalFilesDir(null) ?: context.filesDir
     private val plans = File(root, "plans").apply { mkdirs() }
@@ -48,6 +51,33 @@ class Store(context: Context) {
     var token: String
         get() = prefs.getString("token", "") ?: ""
         set(v) = prefs.edit().putString("token", v.trim()).apply()
+
+    var downloadWifiOnly: Boolean   // meshes are got only over Wi-Fi, waiting for it if need be
+        get() = prefs.getBoolean("download_wifi_only", false)
+        set(v) = prefs.edit().putBoolean("download_wifi_only", v).apply()
+    var uploadWifiOnly: Boolean     // captures are sent only over Wi-Fi, waiting for it if need be
+        get() = prefs.getBoolean("upload_wifi_only", false)
+        set(v) = prefs.edit().putBoolean("upload_wifi_only", v).apply()
+
+    /** Whether the phone is on Wi-Fi (or a cable) that isn't metered, as a phone's hotspot is: what "only over Wi-Fi" waits for. */
+    fun onWifi(): Boolean {
+        val caps = connectivity?.let { it.getNetworkCapabilities(it.activeNetwork) } ?: return false
+        return (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+    }
+
+    /**
+     * Blocks until meshes may be got: at once, unless they're got only over Wi-Fi and it isn't on it. Calls `waiting`
+     * first if it has to wait; raises CancellationException once `alive` says the one waiting has gone.
+     */
+    fun awaitDownloads(alive: () -> Boolean, waiting: () -> Unit = {}) {
+        var told = false
+        while (downloadWifiOnly && !onWifi()) {
+            if (!alive()) throw kotlinx.coroutines.CancellationException("no longer wanted")
+            if (!told) { told = true; waiting() }
+            Thread.sleep(2000)
+        }
+    }
 
     var magNote: String
         get() = prefs.getString("mag_note", "") ?: ""

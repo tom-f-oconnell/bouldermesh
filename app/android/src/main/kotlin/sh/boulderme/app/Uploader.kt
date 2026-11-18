@@ -3,6 +3,7 @@ package sh.boulderme.app
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -16,6 +17,9 @@ import java.util.concurrent.ConcurrentHashMap
  * closed) carries on from there when asked again.
  */
 object Uploader {
+    /** What one that's waiting says: captures are sent only over Wi-Fi (Store.uploadWifiOnly), and it isn't on one. */
+    const val WAITING = "Waiting for Wi-Fi: captures are sent only over Wi-Fi (Settings)"
+
     /** What each capture being sent is doing, in words, by its id. */
     val state = MutableStateFlow<Map<String, String>>(emptyMap())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -28,6 +32,14 @@ object Uploader {
     fun start(store: Store, api: Api, id: String) {
         if (!running.add(id)) return
         scope.launch {
+            // before each thing sent: if it's to go only over Wi-Fi, until there's one, then on with what it was doing
+            suspend fun wifi() {
+                val was = state.value[id]
+                if (!store.uploadWifiOnly || store.onWifi()) return
+                say(id, WAITING)
+                while (store.uploadWifiOnly && !store.onWifi()) delay(2000)
+                was?.let { say(id, it) }
+            }
             var u = store.upload(id)
             try {
                 if (u == null) throw IOException("this capture's record is missing")
@@ -38,6 +50,7 @@ object Uploader {
                 var project = u.project
                 if (project == null) {
                     say(id, "Starting…")
+                    wifi()
                     api.acceptTerms()
                     project = api.createProject(u.name)
                     u = u.copy(project = project); store.saveUpload(id, u)
@@ -45,29 +58,35 @@ object Uploader {
                 for ((i, f) in photos.withIndex()) {
                     if (f.name in u!!.sent) continue
                     say(id, "Sending photo ${i + 1} of ${photos.size}")
+                    wifi()
                     api.uploadPhoto(project, f)
                     u = u.copy(sent = u.sent + f.name); store.saveUpload(id, u)
                 }
                 if (!u!!.recordSent) {
                     say(id, "Sending its record")
+                    wifi()
                     api.sendRecord(project, File(dir, "capture.json").readText())
                     u = u.copy(recordSent = true); store.saveUpload(id, u)
                 }
                 val points = File(dir, "points.bin")
                 if (!u.pointsSent && points.exists()) {
                     say(id, "Sending what its tracking found")
+                    wifi()
                     api.sendPoints(project, points)
                     u = u.copy(pointsSent = true); store.saveUpload(id, u)
                 }
                 // how it went on the phone, and any crash since: for working out what happened; neither holds the rest up
                 val log = File(dir, "capture-log.jsonl")
-                if (!u.logSent && log.exists()) runCatching {
+                if (!u.logSent && log.exists()) {
                     say(id, "Sending how it went")
-                    api.sendLog(project, "log", log)
-                    u = u!!.copy(logSent = true); store.saveUpload(id, u!!)
+                    wifi()
+                    runCatching { api.sendLog(project, "log", log) }.onSuccess {
+                        u = u!!.copy(logSent = true); store.saveUpload(id, u!!)
+                    }
                 }
                 for (crash in store.crashes.listFiles().orEmpty().sortedBy { it.name }) runCatching { api.sendLog(project, "crash", crash); crash.delete() }
                 say(id, "Asking for it to be meshed")
+                wifi()
                 try { api.reconstruct(project) } catch (e: IOException) { if ("already running" !in (e.message ?: "")) throw e }      // asked before, and cut off
                 u = u!!.copy(meshAsked = true); store.saveUpload(id, u!!)
                 // then the scenery round the rock, last, as it's the most to send and only a backdrop
@@ -75,10 +94,11 @@ object Uploader {
                 for ((i, f) in frames.withIndex()) {
                     if (f.name in u!!.scenerySent) continue
                     say(id, "Sending the scenery: ${i + 1} of ${frames.size}")
+                    wifi()
                     api.uploadScenery(project, f)
                     u = u.copy(scenerySent = u.scenerySent + f.name); store.saveUpload(id, u)
                 }
-                if (frames.isNotEmpty() && !u!!.sceneryDone) { api.sceneryDone(project); u = u.copy(sceneryDone = true); store.saveUpload(id, u) }
+                if (frames.isNotEmpty() && !u!!.sceneryDone) { wifi(); api.sceneryDone(project); u = u.copy(sceneryDone = true); store.saveUpload(id, u) }
                 u = u!!.copy(done = true, note = ""); store.saveUpload(id, u)
                 say(id, "Sent: the server is meshing it")
             } catch (e: Exception) {

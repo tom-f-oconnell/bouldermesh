@@ -49,6 +49,12 @@ class IosStore {
     var topHalf: Boolean    // the account's role (HALF_ROLE) has the app drawn in the screen's top half only
         get() = prefs.boolForKey("top_half")
         set(v) = prefs.setBool(v, forKey = "top_half")
+    var downloadWifiOnly: Boolean   // meshes are got only over Wi-Fi, waiting for it if need be (Net)
+        get() = prefs.boolForKey("download_wifi_only")
+        set(v) = prefs.setBool(v, forKey = "download_wifi_only")
+    var uploadWifiOnly: Boolean     // captures are sent only over Wi-Fi, waiting for it if need be
+        get() = prefs.boolForKey("upload_wifi_only")
+        set(v) = prefs.setBool(v, forKey = "upload_wifi_only")
     var magNote: String
         get() = prefs.stringForKey("mag_note") ?: ""
         set(v) = prefs.setObject(v, forKey = "mag_note")

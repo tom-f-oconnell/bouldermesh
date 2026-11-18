@@ -30,7 +30,7 @@ class OfflineCheck {
         val bundle = Plan.json.decodeFromString(OfflineBundle.serializer(), raw("$server/api/capture/offline/$mesh").third.decodeToString())
         var index: OfflineIndex? = null; var why: String? = null
         OfflineFetch(bundle, textures == "1", server,
-            fetch = { url, done -> runCatching { raw(url) }.fold({ (s, t, b) -> done(s, t, b, null) }, { done(0, null, null, it.message) }) },
+            fetch = { url, _, done -> runCatching { raw(url) }.fold({ (s, t, b) -> done(s, t, b, null) }, { done(0, null, null, it.message) }) },
             lib = { libs[it] },
             keep = { key, lib, status, type, body -> KeptFile("f${files.size}", status, type).also { files[it.file] = body; File(dir, it.file).writeBytes(body); if (lib) libs[key] = it to body } },
             now = 0.0, done = { i, w -> index = i; why = w }).start()
