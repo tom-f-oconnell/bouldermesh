@@ -9,7 +9,9 @@ import os
 import pathlib
 import struct
 import sys
+import shutil
 import tempfile
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
@@ -217,8 +219,27 @@ assert "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" in url
 assert all(f.get("lib") for f in off["files"] if f["url"].startswith("https://")) and "/api/meshes" in urls and f"/api/meshes/{mid}/cleanup" in urls
 whole = next(f for f in off["files"] if f["url"] == f"/meshes/{mid}/mesh.ply?v={off['v']}")
 assert whole["bytes"] == (mdir / "mesh.ply").stat().st_size and off["bytes"] == {"plain": whole["bytes"], "textured": whole["bytes"]}, off["bytes"]
+assert f"/api/meshes/{mid}/beta" in urls, "its beta, to show with no signal"
 assert server.offline_bundle("0" * 12) is None
 print("what the viewer fetches OK")
+# whether a phone's copy of a mesh is as the server has it: its plan's key, which changes with its holds; a rebuild's mesh
+plan_now = server.capture_plan(mid)
+assert server.capture_fresh([mid], None) == {mid: {"key": plan_now["key"]}}, "as the phone's plan has it"
+time.sleep(0.01)
+beta.delete_set(mdir, beta.new_set(mdir, name="Gone again")["id"])
+assert server.capture_fresh([mid], None)[mid]["key"] != plan_now["key"], "its beta changed: the phone's copy is older"
+assert server.capture_fresh([mid], None)[mid]["key"] == server.capture_plan(mid)["key"], "and getting it again catches up"
+new_mid = "cb" * 6
+(server.MESHES / new_mid).mkdir()
+(server.MESHES / new_mid / "cameras.json").write_text(json.dumps(cams))
+server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES(?,?,?,?,?)", new_mid, "A Wall again", "mesh.ply", "project:y", 2.0, write=True)
+server.q("UPDATE meshes SET replaced_by=? WHERE id=?", new_mid, mid, write=True)
+got = server.capture_fresh([mid, "0" * 12, "x"], None)
+assert got == {mid: {"newer": new_mid, "newer_name": "A Wall again"}, "0" * 12: {"gone": True}, "x": {"gone": True}}, got
+server.q("UPDATE meshes SET replaced_by=NULL WHERE id=?", mid, write=True)
+server.q("DELETE FROM meshes WHERE id=?", new_mid, write=True)
+shutil.rmtree(server.MESHES / new_mid)
+print("whether a phone's copy is current OK")
 
 # --- the server's: the meshes a capture can add to, and a capture meshed together with the photos of the one it adds to ----
 (row,) = server.capture_meshes()

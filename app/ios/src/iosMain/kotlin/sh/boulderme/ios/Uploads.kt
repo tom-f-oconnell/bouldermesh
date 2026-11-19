@@ -89,6 +89,53 @@ class Statuses(private val store: IosStore, private val api: IosApi) {
     }
 }
 
+/**
+ * Whether the meshes kept on the phone are as the server has them now (MeshFresh, by mesh), asked each time Home or Get
+ * meshes comes up while there's a connection, never on its own; and bringing one up to date: its plan and the viewer's
+ * copy got again, or for one rebuilt, the newer mesh got in its place (the old one then goes, unless a capture still to
+ * be sent goes by it).
+ */
+class MeshUpdates(private val store: IosStore, private val api: IosApi) {
+    var state: Map<String, sh.boulderme.core.MeshFresh> = emptyMap()
+    val busy = HashMap<String, String>()        // those being brought up to date, with how far they've got
+    var error: String? = null
+
+    fun refresh(then: () -> Unit) = Net.known {
+        val have = store.downloaded().map { it.mesh }
+        if (have.isEmpty() || !Net.online) return@known
+        api.fresh(have) { got, _ -> if (got != null) { state = got; then() } }     // with none, what it said last stands
+    }
+
+    fun update(mesh: String, then: () -> Unit) {
+        val fresh = state[mesh] ?: return
+        if (mesh in busy) return
+        busy[mesh] = "Starting…"; error = null; then()
+        val target = fresh.newer ?: mesh
+        val textures = store.offline.index(mesh)?.textures
+        fun after(why: String?) {
+            busy.remove(mesh)
+            if (why != null) error = "Couldn't update it: $why"
+            else if (fresh.newer != null && sh.boulderme.core.MeshFresh.mayDrop(mesh, store.captureIds().mapNotNull { store.upload(it) }.filter { !it.done }.map { it.mesh }))
+                store.removePlan(mesh)
+            then()
+            if (why == null) refresh(then)
+        }
+        Net.await({ store.downloadWifiOnly }, { busy[mesh] = "Waiting for Wi-Fi"; then() }) {
+            api.plan(target) { plan, guide, why ->
+                if (plan == null || guide == null) return@plan after(why)
+                store.savePlan(target, plan, guide)
+                if (textures == null) return@plan after(null)
+                api.offline(target) { bundle, whyNot ->
+                    if (bundle == null) after("the viewer's copy: $whyNot")
+                    else store.offline.fetch(api, target, textures, bundle, progress = { busy[mesh] = "Getting… ${(it * 100).toInt()}%"; then() }) { _, w ->
+                        after(w?.let { "the viewer's copy: $it" })
+                    }
+                }
+            }
+        }
+    }
+}
+
 /** How a capture stands, in words and colour: on the phone, being sent, or what the server says of it. */
 fun uploadSaid(u: UploadState, sending: String?, server: UploadStatus?): Pair<String, UIColor?> = when {
     sending != null -> sending to if (sending == Uploader.WAITING) WAIT else null

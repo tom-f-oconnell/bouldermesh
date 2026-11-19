@@ -11,10 +11,14 @@ Each side's tests read files the other really wrote (`shared/src/jvmTest/resourc
                                           current meshes a capture can add to; bytes, what keeping one for the viewer takes
     GET /api/capture/offline/<mesh>       {mesh, v, page, files: [{url, bytes, texture, lib}], bytes}: every file the
                                           site's viewer fetches to show a mesh (its page, scripts, the CDN modules its
-                                          script imports, the API it waits for, the mesh and its textures at 2048), kept
+                                          script imports, the API it waits for, the mesh's beta, the mesh and its textures at 2048), kept
                                           by the apps (shared Offline.kt) and given back to the page by address with no
                                           signal; without its textures, the page is opened with ?notex (a wireframe)
     GET /api/capture/plan/<mesh>          the plan below
+    GET /api/capture/fresh?ids=<mesh>,…   {mesh: {key} | {newer, newer_name} | {gone: true}}: whether each mesh kept on the
+                                          phone is current: its plan's key now (another than the kept plan's: get the
+                                          plan and the viewer's copy again), the current mesh a rebuild made of it, or
+                                          gone with nothing in its place (MeshFresh in shared Listing.kt)
     GET /api/capture/guide/<mesh>.bin     the guide below, at the plan's guide_url
     GET /api/capture/status?ids=<project>,…     {project: {status, mesh, approved, left, failure, mesh_gone}}: how each of
                                           the phone's uploads stands (UploadStatus in shared Contents.kt says it in words);

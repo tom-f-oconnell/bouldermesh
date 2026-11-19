@@ -117,6 +117,10 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
     val sent by Statuses.sent.collectAsState()
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { Statuses.refresh(a.store, a.api) }      // each time Home comes up: whether what was sent is meshed yet
+    LaunchedEffect(Unit) { MeshUpdates.refresh(a) }                 // and whether the meshes kept here changed on the server
+    val fresh by MeshUpdates.state.collectAsState()
+    val updating by MeshUpdates.busy.collectAsState()
+    val updateFailed by MeshUpdates.error.collectAsState()
 
     Page("BoulderMesh") {
         update.newer?.let { newer ->        // the app's newer build (Update.kt): installs over this one, keeping its captures
@@ -140,6 +144,11 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(p.name.ifEmpty { p.mesh }, fontWeight = FontWeight.SemiBold)
                 Text(summary(p), style = MaterialTheme.typography.bodySmall)
+                val f = fresh[p.mesh]
+                f?.said(p.key)?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = WARN) }
+                if (f != null && f.stale(p.key)) OutlinedButton(enabled = p.mesh !in updating, onClick = { scope.launch { MeshUpdates.update(a, p.mesh); tick++ } }) {
+                    Text(updating[p.mesh] ?: f.action)
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { start(Screen.Capture(p.mesh, p.name.ifEmpty { p.mesh })) }) { Text("Capture") }
                     OutlinedButton(onClick = { go(Screen.Viewer(p.mesh, p.name.ifEmpty { p.mesh })) }) { Text("View") }
@@ -152,6 +161,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                 }
             }
         }
+        updateFailed?.let { Text(it, color = BAD, style = MaterialTheme.typography.bodySmall) }
         OutlinedButton(onClick = { go(Screen.Browse()) }, modifier = Modifier.fillMaxWidth()) { Text("Get meshes…") }
 
         Section("A rock with no mesh")
@@ -244,6 +254,12 @@ fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
     LaunchedEffect(Unit) {
         try { rows = withContext(Dispatchers.IO) { a.api.meshes() } } catch (e: Exception) { error = "Couldn't list the meshes: ${e.message}" }
     }
+    LaunchedEffect(Unit) { MeshUpdates.refresh(a) }
+    val fresh by MeshUpdates.state.collectAsState()
+    val updating by MeshUpdates.busy.collectAsState()
+    val plans = remember(have, updating) { a.store.downloaded().associateBy { it.mesh } }
+    // a mesh here a rebuild replaced: listed by its newer one, which brings it up to date in its place
+    val replaced = remember(fresh, plans) { plans.keys.mapNotNull { old -> fresh[old]?.newer?.let { it to old } }.toMap() }
     LaunchedEffect(rows) { viewing = withContext(Dispatchers.IO) { rows.orEmpty().associate { it.id to a.store.offline.index(it.id) } } }
     val here = a.sensors.fix
     fun metres(r: MeshRow): Double? { val lat = r.lat; val lng = r.lng; return if (here != null && lat != null && lng != null) GpsAverager.metresApart(here.lat, here.lng, lat, lng) else null }
@@ -307,10 +323,15 @@ fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
                     }
                     val kept = viewing[r.id]
                     val got = progress[r.id]
+                    val old = replaced[r.id]?.takeIf { r.id !in have }        // the phone has an older version of it
+                    val stale = plans[r.id]?.let { p -> fresh[r.id]?.stale(p.key) } == true
                     when {
                         waiting == r.id -> Text("Waiting for Wi-Fi", color = WAIT)
                         got != null -> Text("Getting… ${(got * 100).toInt()}%")
                         r.id in busy -> Text("Queued")
+                        (old ?: r.id) in updating -> Text(updating[old ?: r.id] ?: "Updating…")
+                        old != null -> TextButton(onClick = { scope.launch { MeshUpdates.update(a, old); have = a.store.downloaded().map { it.mesh }.toSet() } }) { Text("Get, in place of the older one") }
+                        stale -> TextButton(onClick = { scope.launch { MeshUpdates.update(a, r.id); viewing = viewing + (r.id to a.store.offline.index(r.id)) } }) { Text("Update") }
                         r.id in have && kept != null -> Text(if (kept.textures) "On phone" else "On phone · wireframe", color = GOOD)
                         r.id in have -> TextButton(onClick = { asking = listOf(r) }) { Text("Keep for viewing") }
                         else -> TextButton(onClick = { asking = listOf(r) }) { Text("Get") }

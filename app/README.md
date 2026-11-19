@@ -9,8 +9,10 @@ phone yet**: see [What's been checked](#whats-been-checked).
 
 1. **While you have signal**, open *Get meshes…* and get the boulders you'll visit (nearest first; *Get the N within
    2 km* takes them all). It asks whether to keep each with its textures or without (shown as a wireframe), saying
-   what each takes. They're kept on the phone, with their holds, for capturing and for the viewer, and work with no
-   signal.
+   what each takes. They're kept on the phone, with their holds and beta, for capturing and for the viewer, and work
+   with no signal. When Home or *Get meshes* comes up with signal, each kept mesh whose holds, beta, mesh or size have
+   changed on the server says so, with *Update*; one rebuilt there offers *Get the newer mesh*, which takes the old one's
+   place (the old one stays while a capture still to be sent was taken to add to it).
 2. **Before a capture**, *Calibrate* the compass: half a minute of turning the phone every which way, away from metal.
 3. **At the rock**, press *Capture* on its mesh. It first asks for **one slow turn all the way round on the spot**, with
    the phone held as for a photo, steadily and at the same angle to you all the way round (it needn't be upright): that's how

@@ -42,6 +42,7 @@ class Home(private val app: App) : Form("BoulderMesh") {
     override fun appear() {
         app.uploader.onChange = { rebuild() }
         app.statuses.refresh { rebuild() }      // each time Home comes up: whether what was sent is meshed yet
+        app.meshUpdates.refresh { rebuild() }   // and whether the meshes kept here changed on the server
     }
 
     fun capture(mesh: String?, name: String, set: String? = null) {
@@ -106,6 +107,9 @@ class Home(private val app: App) : Form("BoulderMesh") {
         for (p in plans) {
             text(p.name.ifEmpty { p.mesh }, bold = true)
             text(summary(p), small = true)
+            val f = app.meshUpdates.state[p.mesh]
+            f?.said(p.key)?.let { text(it, WARN, small = true) }
+            if (f != null && f.stale(p.key)) button(app.meshUpdates.busy[p.mesh] ?: f.action, enabled = p.mesh !in app.meshUpdates.busy) { app.meshUpdates.update(p.mesh) { rebuild() } }
             row(makeButton("Capture", Look.FILLED) { capture(p.mesh, p.name.ifEmpty { p.mesh }) },
                 makeButton("View") { push(ViewerController(app, p.mesh, p.name.ifEmpty { p.mesh })) },
                 makeButton("Remove", Look.PLAIN) { app.store.removePlan(p.mesh); rebuild() })
@@ -113,6 +117,7 @@ class Home(private val app: App) : Form("BoulderMesh") {
             if (p.setsWithHolds.isNotEmpty()) text("Or for a set of beta, its holds in detail:", small = true)
             for (set in p.setsWithHolds) button("${set.name ?: "Beta"} (${set.targets.size} hold${if (set.targets.size == 1) "" else "s"})") { capture(p.mesh, p.name.ifEmpty { p.mesh }, set.id) }
         }
+        app.meshUpdates.error?.let { text(it, BAD, small = true) }
         button("Get meshes…") { push(Browse(app)) }
 
         section("A rock with no mesh")
@@ -225,6 +230,7 @@ class Browse(private val app: App, private var getFirst: Boolean = false) : Form
     override fun build() {
         if (!asked) {
             asked = true
+            app.meshUpdates.refresh { rebuild() }
             app.api.meshes { got, why ->
                 rows = got; error = why?.let { "Couldn't list the meshes: $it" }
                 rebuild()
@@ -241,7 +247,11 @@ class Browse(private val app: App, private var getFirst: Boolean = false) : Form
     }
 
     private fun list(all: List<MeshRow>) {
-        val have = app.store.downloaded().map { it.mesh }.toSet()
+        val plans = app.store.downloaded().associateBy { it.mesh }
+        val have = plans.keys
+        val fresh = app.meshUpdates.state
+        // a mesh here a rebuild replaced: listed by its newer one, which brings it up to date in its place
+        val replaced = plans.keys.mapNotNull { old -> fresh[old]?.newer?.let { it to old } }.toMap()
         val match = all.filter { r -> search.isBlank() || r.name.contains(search, true) || r.climbs.any { it.contains(search, true) } }
             .sortedWith(compareBy<MeshRow> { metres(it) ?: Double.MAX_VALUE }.thenBy { it.name.lowercase() })
         bars.clear()
@@ -255,10 +265,15 @@ class Browse(private val app: App, private var getFirst: Boolean = false) : Form
             text(r.name.ifEmpty { r.id }, bold = true)
             text(listOfNotNull(far, if (r.holds > 0) "${r.holds} holds marked" else null, r.climbs.take(3).joinToString(", ").ifEmpty { null }).joinToString(" · "), UIColor.secondaryLabelColor, small = true)
             val kept = app.store.offline.index(r.id)
+            val old = replaced[r.id]?.takeIf { r.id !in have }        // the phone has an older version of it
+            val stale = plans[r.id]?.let { p -> fresh[r.id]?.stale(p.key) } == true
             when {
                 waiting == r.id -> text("Waiting for Wi-Fi", WAIT, small = true)
                 r.id in got -> { bars[r.id] = text("Getting…", small = true) to progress(got[r.id] ?: 0.0); show(r.id) }
                 r.id in busy -> text("Queued", small = true)
+                (old ?: r.id) in app.meshUpdates.busy -> text(app.meshUpdates.busy[old ?: r.id] ?: "Updating…", small = true)
+                old != null -> button("Get, in place of the older one") { app.meshUpdates.update(old) { rebuild() } }
+                stale -> button("Update") { app.meshUpdates.update(r.id) { rebuild() } }
                 r.id in have && kept != null -> text(if (kept.textures) "On this phone" else "On this phone · wireframe", GOOD, small = true)
                 r.id in have -> button("Keep for viewing") { ask(listOf(r)) }
                 else -> button("Get") { ask(listOf(r)) }

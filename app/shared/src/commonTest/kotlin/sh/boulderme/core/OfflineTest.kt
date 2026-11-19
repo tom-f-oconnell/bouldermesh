@@ -79,4 +79,14 @@ class OfflineTest {
         assertTrue(asked.none { "cdn.example" in it }, "libraries kept already aren't fetched again: $asked")
         assertTrue(run(true, "https://boulderme.sh/meshes/ab/mesh.glb?lod=preview&v=v1").second!!.contains("no signal"), "the mesh has to come")
     }
+
+    @Test fun saysWhetherAKeptMeshIsCurrent() {
+        val got = Plan.json.decodeFromString(kotlinx.serialization.builtins.MapSerializer(kotlinx.serialization.serializer<String>(), MeshFresh.serializer()),
+            """{"a": {"key": "k1"}, "b": {"key": "k2"}, "c": {"newer": "c2", "newer_name": "Wall"}, "d": {"gone": true}}""")
+        assertNull(got["a"]!!.said("k1")); assertTrue(!got["a"]!!.stale("k1"), "as the phone has it")
+        assertTrue(got["b"]!!.stale("k1") && got["b"]!!.said("k1")!!.startsWith("Changed") && got["b"]!!.action == "Update", "its holds or beta changed")
+        assertTrue(got["c"]!!.stale("k1") && got["c"]!!.action == "Get the newer mesh", "rebuilt")
+        assertTrue(!got["d"]!!.stale("k1") && got["d"]!!.said("k1")!!.startsWith("No longer"), "gone: nothing to get, the copy kept")
+        assertTrue(MeshFresh.mayDrop("old", listOf("other", null)) && !MeshFresh.mayDrop("old", listOf("old")), "kept while a capture to send goes by it")
+    }
 }

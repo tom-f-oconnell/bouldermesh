@@ -177,6 +177,12 @@ class IosApi(private val store: IosStore) {
         }
     }
 
+    /** Whether each of these meshes kept on the phone is as the server has it now, or was rebuilt or is gone. */
+    fun fresh(meshes: Collection<String>, done: (Map<String, sh.boulderme.core.MeshFresh>?, String?) -> Unit) = call("/api/capture/fresh?ids=" + meshes.joinToString(",")) { bytes, why ->
+        val got = bytes?.let { runCatching { json.decodeFromString(MapSerializer(String.serializer(), sh.boulderme.core.MeshFresh.serializer()), it.decodeToString()) }.getOrNull() }
+        if (got != null) done(got, null) else done(null, why ?: "the answer couldn't be read")
+    }
+
     /** How each of these uploads (project ids) stands on the server: whether it's meshed, and as what. */
     fun status(projects: Collection<String>, done: (Map<String, UploadStatus>?, String?) -> Unit) = call("/api/capture/status?ids=" + projects.joinToString(",")) { bytes, why ->
         val got = bytes?.let { runCatching { json.decodeFromString(MapSerializer(String.serializer(), UploadStatus.serializer()), it.decodeToString()) }.getOrNull() }

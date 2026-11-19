@@ -52,6 +52,10 @@ class Api(internal val store: Store) {
     fun status(projects: Collection<String>): Map<String, UploadStatus> =
         json.decodeFromString(MapSerializer(String.serializer(), UploadStatus.serializer()), read(open("/api/capture/status?ids=" + projects.joinToString(","))).decodeToString())
 
+    /** Whether each of these meshes kept on the phone is as the server has it now, or was rebuilt or is gone. */
+    fun fresh(meshes: Collection<String>): Map<String, sh.boulderme.core.MeshFresh> =
+        json.decodeFromString(MapSerializer(String.serializer(), sh.boulderme.core.MeshFresh.serializer()), read(open("/api/capture/fresh?ids=" + meshes.joinToString(","))).decodeToString())
+
     /**
      * The account's captures kept on the server, newest first; null where this phone's token isn't an account's (the
      * site's own) or there's none.

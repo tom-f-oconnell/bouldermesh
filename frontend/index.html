@@ -5020,7 +5020,7 @@ const hasBeta = m => !!(m && (m.marked || m.beta?.holds));
 // signed-in account: a new mesh has none to show, and this is the way in to marking them), pressed while it's drawn
 function showBetaButton(){
   const b = $('#vbeta'), m = shownMesh && meshesById[shownMesh];
-  b.hidden = !m || !(hasBeta(m) || mayBeta()) || thumbMode;
+  b.hidden = !m || !(hasBeta(m) || (mayBeta() && !APP)) || thumbMode;     // the apps' viewer has no marking: there only to show it
   b.title = hasBeta(m) ? 'Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.'
     : 'Mark holds on this mesh, as a set of beta of your own. Press again to hide it.';
   b.setAttribute('aria-pressed', String(!!betaState && betaState.mid === shownMesh));

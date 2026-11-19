@@ -1691,10 +1691,7 @@ def capture_plan(mid: str) -> dict | None:
     if not m or not d.is_dir():
         return None
     scale = metres_per_unit(mid)
-    stamp = "|".join(f"{f.name}:{f.stat().st_mtime_ns}" for f in sorted(d.iterdir())
-                     if f.name in ("mesh.glb", "mesh.ply", "cameras.json", "cleanup.json", viewpoints.FILE, beta_mod.FILE, beta_mod.HOLDS_FILE,
-                                   beta_mod.SETS_FILE))
-    want = captureplan.key(stamp, 0, scale)
+    want = plan_key(mid, scale)
     with _plan_lock:
         plan = captureplan.load(d, want)
         if plan is None:
@@ -1720,6 +1717,41 @@ def capture_plan(mid: str) -> dict | None:
     facing = mesh_heading(mid)
     return {**plan, "mesh": mid, "name": m["name"], "lat": m["lat"], "lng": m["lng"], "heading_deg": facing["deg"] if facing else None,
             "guide_url": f"/api/capture/guide/{mid}.bin?v={plan['guide']['sha1']}"}
+
+
+def plan_key(mid: str, scale=None) -> str:
+    """What a mesh's plan for the phone apps is made from (captureplan.key()): its mesh, cameras, cleanup, views, holds
+    and beta, and its scale. A phone whose copy went by another has an older one (capture_fresh())."""
+    d = MESHES / mid
+    stamp = "|".join(f"{f.name}:{f.stat().st_mtime_ns}" for f in sorted(d.iterdir())
+                     if f.name in ("mesh.glb", "mesh.ply", "cameras.json", "cleanup.json", viewpoints.FILE, beta_mod.FILE, beta_mod.HOLDS_FILE,
+                                   beta_mod.SETS_FILE))
+    return captureplan.key(stamp, 0, metres_per_unit(mid) if scale is None else scale)
+
+
+def capture_fresh(ids: list[str], me: dict | None) -> dict[str, dict]:
+    """For the phone apps: whether each mesh they keep is as the server has it now, by id. {key} (its plan's key now:
+    another than the phone's plan has means its holds, beta, mesh or size changed), {newer, newer_name} (it was rebuilt:
+    the current mesh that replaces it), or {gone} (no longer here, and nothing replaces it)."""
+    waiting = unapproved_meshes()
+    visible = lambda mid: mid not in waiting or (me and (me["role"] == "owner" or waiting[mid] == me["id"]))  # noqa: E731
+    out: dict[str, dict] = {}
+    for mid in ids[:200]:
+        row = q("SELECT id, replaced_by FROM meshes WHERE id=?", mid, one=True)
+        if not row or not visible(mid):
+            out[mid] = {"gone": True}
+            continue
+        now, seen = row, {mid}
+        while now and now["replaced_by"] and now["replaced_by"] not in seen:      # an older version's newest
+            seen.add(now["replaced_by"])
+            now = q("SELECT id, name, replaced_by FROM meshes WHERE id=?", now["replaced_by"], one=True)
+        if now and now["id"] != mid and visible(now["id"]) and (MESHES / now["id"] / "cameras.json").exists():
+            out[mid] = {"newer": now["id"], "newer_name": now["name"]}
+        elif (MESHES / mid).is_dir():
+            out[mid] = {"key": plan_key(mid)}
+        else:
+            out[mid] = {"gone": True}
+    return out
 
 
 def capture_meshes() -> list[dict]:
@@ -1803,7 +1835,7 @@ def offline_bundle(mid: str) -> dict | None:
     no signal. Each {url, bytes (if known), texture (one of its textures), lib (from a CDN, the same for every mesh)}:
     the page and its own files; the CDN files its markup names, and the modules its script imports (those import
     others, which are the app's to follow); what of the API it waits for before it shows the mesh (OFFLINE_API, the
-    climbs list, the mesh's cleanup); and the mesh.
+    climbs list, the mesh's cleanup and beta); and the mesh.
 
     Returns:
         {mesh, v, page, files, bytes: {plain, textured}}; None if there's no such mesh, or it has no file.
@@ -1825,7 +1857,7 @@ def offline_bundle(mid: str) -> dict | None:
             libs.append(imports[prefix] + spec[len(prefix):] if prefix.endswith("/") else imports[prefix])
     files += [{"url": u, "lib": True} for u in dict.fromkeys(libs)]
     files += [{"url": u} for u in OFFLINE_API + ("/api/climbs?limit=100&offset=0", "/api/climbs?meshed=1&limit=100&offset=0",
-                                                 f"/api/meshes/{mid}/cleanup")]
+                                                 f"/api/meshes/{mid}/cleanup", f"/api/meshes/{mid}/beta")]
     files.append(got["glb"])
     if got["faces"]:
         files.append(got["faces"])
@@ -10097,6 +10129,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(rows)
             if p == "/api/capture/meshes":   # for the phone apps: the meshes a capture can add to
                 return self.send_json(capture_meshes())
+            if p == "/api/capture/fresh":   # for the phone apps: whether the meshes they keep changed, or were rebuilt (?ids=a,b,…)
+                ids = [x for x in ",".join(qs.get("ids") or []).split(",") if re.fullmatch(r"[0-9a-f]+", x)]
+                return self.send_json(capture_fresh(ids, self.who()))
             if p == "/api/capture/status":   # for the phone apps: whether each of their uploads is meshed yet (?ids=a,b,…)
                 ids = [x for x in ",".join(qs.get("ids") or []).split(",") if re.fullmatch(r"[0-9a-f]+", x)]
                 return self.send_json(capture_status(ids, self.who()))
