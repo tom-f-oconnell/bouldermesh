@@ -656,13 +656,13 @@ chosen, and the uploader is asked on the project's card and in the apps which it
 lists those put in an area automatically, to look over; until then, that area's moderators can't approve them.
 
 Areas are looked up in an index (`DATA_DIR/areas.sqlite`), filled ahead of time, as Mountain Project has no search by
-position (in Docker, run these with `docker compose exec app`):
+position (in Docker, run these with `docker compose exec bouldermesh python3 cli.py …`):
 
 ```
-python cli.py area-index openbeta                 # OpenBeta's copy of Mountain Project's areas: ~40 min; almost all US
-python cli.py area-index mp <area URL> --max 100   # Mountain Project's own, from that area down, a page a minute
-python cli.py area-index compare                  # what Mountain Project says against OpenBeta's copy
-python cli.py area-for 34.0124 -116.1627          # the area an upload taken there would be put in, and why
+python3 cli.py area-index openbeta                # OpenBeta's copy of Mountain Project's areas: ~40 min; almost all US
+python3 cli.py area-index mp <area URL> --max 100  # Mountain Project's own, from that area down, a page a minute
+python3 cli.py area-index compare                 # what Mountain Project says against OpenBeta's copy
+python3 cli.py area-for 34.0124 -116.1627         # the area an upload taken there would be put in, and why
 ```
 
 Outside the US only Mountain Project's own pages have areas, so read down from a region before uploads come from it
