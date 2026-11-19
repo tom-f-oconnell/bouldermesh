@@ -110,12 +110,12 @@ class Home(private val app: App) : Form("BoulderMesh") {
             val f = app.meshUpdates.state[p.mesh]
             f?.said(p.key)?.let { text(it, WARN, small = true) }
             if (f != null && f.stale(p.key)) button(app.meshUpdates.busy[p.mesh] ?: f.action, enabled = p.mesh !in app.meshUpdates.busy) { app.meshUpdates.update(p.mesh) { rebuild() } }
-            row(makeButton("Capture", Look.FILLED) { capture(p.mesh, p.name.ifEmpty { p.mesh }) },
+            row(makeButton("Capture more", Look.FILLED) { capture(p.mesh, p.name.ifEmpty { p.mesh }) },
                 makeButton("View") { push(ViewerController(app, p.mesh, p.name.ifEmpty { p.mesh })) },
                 makeButton("Remove", Look.PLAIN) { app.store.removePlan(p.mesh); rebuild() })
             // for one of its sets of beta: that set's holds from close, all round, as a replica of them needs
             if (p.setsWithHolds.isNotEmpty()) text("Or for a set of beta, its holds in detail:", small = true)
-            for (set in p.setsWithHolds) button("${set.name ?: "Beta"} (${set.targets.size} hold${if (set.targets.size == 1) "" else "s"})") { capture(p.mesh, p.name.ifEmpty { p.mesh }, set.id) }
+            for (set in p.setsWithHolds) button("Capture hold closeups${set.name?.let { " for $it" } ?: ""} (${set.targets.size} hold${if (set.targets.size == 1) "" else "s"})") { capture(p.mesh, p.name.ifEmpty { p.mesh }, set.id) }
         }
         app.meshUpdates.error?.let { text(it, BAD, small = true) }
         button("Get meshes…") { push(Browse(app)) }
