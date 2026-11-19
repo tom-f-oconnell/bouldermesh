@@ -268,9 +268,13 @@ def run(B: str, tmp: Path) -> None:
         st, r = req(B, "POST", f"/api/capture/locate/{m['id']}", {"frames": [frame]})
         assert st == 200 and [a["id"] for a in r["located"]] == [5] and r["located"][0]["inliers"] > 50, (st, r)
         print(f"locate: a real reconstruction's pack made and fetched, a photo placed ({r['located'][0]['inliers']} inliers, {r['ms']} ms) OK")
+        (md / "scale.json").write_text(json.dumps({"status": "done", "metres_per_unit": 0.7, "sd": 0.031, "method": "phone"}))
+        with urllib.request.urlopen(B + f"/api/capture/plan/{m['id']}") as resp:
+            fr = json.loads(resp.read())["frame"]
+        assert (fr["metres_per_unit"], fr["scale_guessed"], fr["scale_sd"]) == (0.7, False, 0.031), fr     # how far off its size likely is
         for f in rec_from.iterdir():    # the project as it was, for what follows
             (pdir / f.name).unlink()
-        for f in ("reconstruction.tar.gz", "locate.bin", "locate.json"):
+        for f in ("reconstruction.tar.gz", "locate.bin", "locate.json", "scale.json"):
             (md / f).unlink()
     t = m["timings"]      # how long it took, and where, kept with it
     assert t["where"] == "this server" and not t["remote"] and 0 <= t["wall"] < 600 and not t["from_log"], t

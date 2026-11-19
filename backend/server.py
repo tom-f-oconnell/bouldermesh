@@ -1768,7 +1768,8 @@ def capture_plan(mid: str) -> dict | None:
             plan = captureplan.make(d, holds, [{**c, "view": views.get(c["id"])} for c in climbs.values()], scale, want,
                                     sets=[{"id": one["id"], "name": one["name"], "climb": one.get("climb")} for one in sets])
     facing = mesh_heading(mid)
-    return {**plan, "mesh": mid, "name": m["name"], "lat": m["lat"], "lng": m["lng"], "heading_deg": facing["deg"] if facing else None,
+    frame = {**plan["frame"], "scale_sd": scale_sd(mid) if not plan["frame"].get("scale_guessed") else None}
+    return {**plan, "frame": frame, "mesh": mid, "name": m["name"], "lat": m["lat"], "lng": m["lng"], "heading_deg": facing["deg"] if facing else None,
             "guide_url": f"/api/capture/guide/{mid}.bin?v={plan['guide']['sha1']}", "locate_url": locate_url(mid)}
 
 
@@ -2384,6 +2385,14 @@ def metres_per_unit(mid: str) -> float | None:
     """How many metres one of a mesh's units is, if its size was found (scale.py)."""
     rec = scale_mod.load(MESHES / mid) or {}
     v = rec.get("metres_per_unit") or (rec.get("previous") or {}).get("metres_per_unit")     # the last found, while found again
+    return float(v) if isinstance(v, (int, float)) and v > 0 else None
+
+
+def scale_sd(mid: str) -> float | None:
+    """How far off a mesh's found size (metres_per_unit()) likely is, relative (scale.py's sd, of its log), if known."""
+    rec = scale_mod.load(MESHES / mid) or {}
+    rec = rec if rec.get("metres_per_unit") else rec.get("previous") or {}
+    v = rec.get("sd")
     return float(v) if isinstance(v, (int, float)) and v > 0 else None
 
 
