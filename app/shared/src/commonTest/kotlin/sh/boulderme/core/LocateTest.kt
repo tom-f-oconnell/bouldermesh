@@ -28,11 +28,13 @@ class LocateTest {
         assertTrue(near(fit.apply(p), truth.apply(p), 1e-6))
         assertTrue(near(fit.scale, 1.25, 1e-9))
         val close = listOf(frame(1, Vec3(0.0, 1.5, 3.0), 0.0), frame(2, Vec3(0.4, 1.4, 3.1), 0.2))
-        val known = Locate.fromLocated(close.map { it.first }, close.map { it.second }, 1.3)
-        assertEquals("plan", known.scaleFrom, "a known size is kept while the cameras are close together")
-        assertTrue(near(assertNotNull(known.fit).scale, 1.3, 1e-12))
-        val wide = listOf(frame(1, Vec3(-1.0, 1.5, 3.0), 0.0), frame(2, Vec3(1.0, 1.4, 3.2), 0.2), frame(3, Vec3(0.0, 1.6, 2.8), -0.3))
-        assertEquals("cameras", Locate.fromLocated(wide.map { it.first }, wide.map { it.second }, 1.3).scaleFrom, "but not once they're far apart")
+        val both = Locate.fromLocated(close.map { it.first }, close.map { it.second }, 1.3)
+        assertEquals("both", both.scaleFrom)
+        val k = assertNotNull(both.fit).scale
+        assertTrue(k > 1.25 && k < 1.3 && 1.3 - k < k - 1.25, "cameras close together: nearer the plan's size ($k)")
+        val wide = listOf(frame(1, Vec3(-4.0, 1.5, 3.0), 0.0), frame(2, Vec3(4.0, 1.4, 3.2), 0.2), frame(3, Vec3(0.0, 1.6, 2.8), -0.3))
+        val k2 = assertNotNull(Locate.fromLocated(wide.map { it.first }, wide.map { it.second }, 1.3).fit).scale
+        assertTrue(k2 - 1.25 < 1.3 - k2, "far apart: nearer the cameras' ($k2)")
     }
 
     @Test fun oneFrameNeedsTheScale() {

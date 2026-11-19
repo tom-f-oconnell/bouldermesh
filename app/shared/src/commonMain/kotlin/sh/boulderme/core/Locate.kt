@@ -5,6 +5,8 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.startCoroutine
 import kotlin.math.abs
 import kotlin.math.acos
+import kotlin.math.exp
+import kotlin.math.ln
 import kotlin.math.sqrt
 
 /**
@@ -46,10 +48,13 @@ object Locate {
     /** Camera centres need to be at least this far apart, in metres, to say the mesh's size from them. */
     const val MIN_BASELINE_M = 0.5
     /**
-     * A size the plan knows (measured by phones, about 2.5% off) is kept until the cameras are this far apart: from
-     * cameras a metre or so apart it came out 4-8% off on two gym captures (bm1's LocateCheck, 2026-11-18).
+     * How far off each frame's camera is, in metres, in the mesh and in the world together (placement and the tracking's
+     * drift): the size from cameras `apart` metres apart is then about this / apart off, as a share (bm1's LocateCheck
+     * on two gym captures, 2026-11-18). A size the plan knows is taken as PLAN_SCALE_SD off; the two are weighted by
+     * how far off each is likely to be.
      */
-    const val PLAN_SCALE_UNTIL_M = 2.0
+    const val CENTRE_SD_M = 0.12
+    const val PLAN_SCALE_SD = 0.025
 
     /** How a set of placed frames was turned into a fit, or why it wasn't. */
     data class Result(val fit: Similarity?, val frames: Int, val turnSpreadDeg: Double, val centreOffM: Double,
@@ -103,9 +108,13 @@ object Locate {
         val apart = pairs.maxOf { it.second.centre.distance(mw) } * 2
         var sm = 0.0; var sws = 0.0
         for ((m, w) in pairs) { sm += (m.centre - mm).let { it dot it }; sws += (w.centre - mw).let { it dot it } }
+        val cameras = if (pairs.size >= 2 && apart >= MIN_BASELINE_M && sm > 1e-12) sqrt(sws / sm) else null
         val (k, from) = when {
-            scale != null && apart < PLAN_SCALE_UNTIL_M -> scale to "plan"
-            pairs.size >= 2 && apart >= MIN_BASELINE_M && sm > 1e-12 -> sqrt(sws / sm) to "cameras"
+            cameras != null && scale != null -> {
+                val wc = (apart / CENTRE_SD_M).let { it * it }; val wp = 1 / (PLAN_SCALE_SD * PLAN_SCALE_SD)
+                exp((wc * ln(cameras) + wp * ln(scale)) / (wc + wp)) to "both"
+            }
+            cameras != null -> cameras to "cameras"
             scale != null -> scale to "plan"
             else -> return Result(null, pairs.size, spread, 0.0, "", "the mesh's size isn't known and the frames were too close together to say it")
         }
