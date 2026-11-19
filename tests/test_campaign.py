@@ -2312,7 +2312,7 @@ assert (c["mapper_below"], c["mapper_more"]) == (60, 2)
 seen_mapper = []
 pipeline.reconstruct = lambda *a, **k: (seen_mapper.append(meshopts.given()), fake_reconstruct(*a, **k))[1]
 run_all(c["id"], 10)
-assert seen_mapper == [{"retry_below": 0.6, "more": 2}] and meshopts.given() is None, seen_mapper
+assert seen_mapper == [{"method": "incremental", "retry_below": 0.6, "more": 2}] and meshopts.given() == {"method": "incremental"}, (seen_mapper, meshopts.given())  # the mapper always sent
 server.set_campaign_options(c["id"], {"mapper_below": 0})
 assert server.q("SELECT mapper_below, mapper_more FROM campaigns WHERE id=?", c["id"], one=True) == {"mapper_below": 0, "mapper_more": 2}
 for bad in ({"mapper_below": 101}, {"mapper_more": 6}, {"mapper_more": "x"}, {"mapper_below": True}):
@@ -3824,6 +3824,7 @@ try:
     said = server.check_backup_disk()
     assert said and "150 GB left" in said and "hal" in said and "40 GB" in said, said
     assert server.check_backup_disk() is None, "once a report"
+    assert (server.DATA / server.BACKUP_DISK_TOLD).read_text() == "1.0", "kept for after a restart"
     rp.write_text(json.dumps({"status": "ok", "received": 2.0, "disk_free": 300 * 2**30, "disk_warn": 200 * 2**30}))
     assert server.check_backup_disk() is None, "room enough"
     told.clear()
@@ -3833,6 +3834,7 @@ try:
 finally:
     server.NOTIFIER.send = real_send
     rp.unlink()
+    (server.DATA / server.BACKUP_DISK_TOLD).unlink(missing_ok=True)
     if had is not None:
         rp.write_text(had)
 print("backup disk warning OK")

@@ -11684,21 +11684,27 @@ def apply_settings() -> None:
 BACKUP_STALE_HOURS = 36     # the backup copies each night: a good copy older than this means it has stopped
 
 
-_backup_disk_told: dict = {"received": None}
+BACKUP_DISK_TOLD = "backup-disk-told"     # the report check_backup_disk() last told of: kept, so a restart doesn't tell again
 BACKUP_URGENT_GB = 50       # the urgent level, where a report doesn't say its own (one from before deploy/backup.sh did)
 
 
 def check_backup_disk() -> str | None:
     """Tell your phone, once for each night's report, when the backup's disk has less room than its report's disk_warn
     (deploy/backup.sh's WARN_FREE_GB): what it keeps for good (archive/) only grows. Under its disk_urgent
-    (URGENT_FREE_GB), where the next copies may fail for want of room, urgently. What was said, or None."""
+    (URGENT_FREE_GB), where the next copies may fail for want of room, urgently. Which report was told of is kept in
+    data/ (BACKUP_DISK_TOLD): on Nov 18, 2026 each restart told again of hal's last report, after the backup had moved.
+    What was said, or None."""
     rep = backup_state()["report"] or {}
     free, warn = rep.get("disk_free"), rep.get("disk_warn")
     urgent = rep.get("disk_urgent") if isinstance(rep.get("disk_urgent"), (int, float)) else BACKUP_URGENT_GB * 2**30
+    try:
+        told = (DATA / BACKUP_DISK_TOLD).read_text().strip()
+    except OSError:
+        told = None
     if not isinstance(free, (int, float)) or not isinstance(warn, (int, float)) or free >= max(warn, urgent) \
-            or rep.get("received") == _backup_disk_told["received"]:
+            or str(rep.get("received")) == told:
         return None
-    _backup_disk_told["received"] = rep.get("received")
+    (DATA / BACKUP_DISK_TOLD).write_text(str(rep.get("received")))
     where = f"the disk the backup is on ({rep.get('host') or 'the backup machine'})"
     kept = f"what it keeps for good takes {(rep.get('archive') or 0) / 2**30:.0f} GB"
     if free < urgent:
