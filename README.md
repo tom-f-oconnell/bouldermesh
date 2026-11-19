@@ -614,9 +614,9 @@ licence recorded for each photo where the source gives one (Commons, Flickr). It
 placed in the mesh, or for meshes from before Nov 1, every photo it was given.
 `GET /api/meshes/{id}/sources` lists each photo with its URL, page, credit and licence.
 
-A reconstruction is levelled from the gravity readings iPhones record in their photos, if any of its
-placed photos has one. Otherwise down is estimated by assuming most photos were taken upright. The
-view shows both and how far apart they are, or why there's no reading. Meshes have no real-world size.
+A reconstruction is levelled from the phone gravity readings in its photos (those BoulderMesh's apps
+record, or an iPhone's own), if any of its placed photos has one. Otherwise down is estimated by
+assuming most photos were taken upright. The view shows both and how far apart they are, or why there's no reading. Meshes have no real-world size.
 
 Reconstructions come with stray pieces, so each one hides those that have under 1% of the main piece's
 faces, or are over 5x sparser. This never changes the mesh's own files: on the view, *Edit* lets you

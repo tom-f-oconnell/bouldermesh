@@ -629,11 +629,13 @@ def load(mesh_dir: Path) -> dict | None:
 
 
 def summary(record: dict | None) -> dict | None:
-    """For the list of meshes: how far finding it got, and what it found."""
+    """For the list of meshes: how far finding it got, and what it found (listed: the videos with holds, which the
+    view's list of them shows)."""
     if not record:
         return None
     return {"status": record["status"], "progress": record.get("progress"), "at": record.get("at"), "note": record.get("note"),
             "waiting": record.get("waiting"), "videos": len(record["videos"]), "holds": sum(len(v.get("holds") or []) for v in record["videos"]),
+            "listed": sum(1 for v in record["videos"] if v.get("holds")),
             "waiting_videos": len(record.get("waiting_videos") or [])}
 
 

@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.LruCache
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -256,6 +257,8 @@ fun ViewerScreen(a: MainActivity, s: Screen.Viewer, go: (Screen) -> Unit) {
                         if (request.isForMainFrame) failed = error.description?.toString() ?: "no connection"
                     }
                 }
+                // a WebView has no navigator.share: the page's Share sends its links to the phone's share sheet through this
+                addJavascriptInterface(ShareSheet(ctx), "BoulderMeshApp")
                 // the page keeps its token in the site's own storage: put this phone's there, then open the mesh, in the
                 // site's viewer alone (app)
                 val page = "$server/m/${s.mesh}?app=android" + if (copy != null && !copy.textures) "&notex=1" else ""
@@ -263,6 +266,16 @@ fun ViewerScreen(a: MainActivity, s: Screen.Viewer, go: (Screen) -> Unit) {
                 loadDataWithBaseURL("$server/", "<!doctype html><script>try{$keep}catch(e){};location.replace(${JsonPrimitive(page)})</script>", "text/html", "utf-8", null)
             }
         }, onRelease = { it.destroy() })
+    }
+}
+
+/** What the viewer's page may ask of the app (as window.BoulderMeshApp): a link, to the phone's share sheet. */
+class ShareSheet(private val ctx: android.content.Context) {
+    @JavascriptInterface
+    fun share(title: String, url: String) {
+        if (!url.startsWith("https://") && !url.startsWith("http://")) return
+        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, url).putExtra(Intent.EXTRA_SUBJECT, title)
+        runCatching { ctx.startActivity(Intent.createChooser(send, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
     }
 }
 
