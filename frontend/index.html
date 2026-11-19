@@ -1155,13 +1155,23 @@ $('#vmap').onclick = () => {
 let amap = null, areaLayer = null, areaFitted = false, areaKey = '', meshesReady = false, campaignsCache = null;
 const AREAS_KEPT = 'bm_areas';
 const AREA_LOOKS = [      // [the states it covers, colour, what the legend says]: not red, green or orange, kept for bad, good and warnings
-  [['running', 'stopping'], '#3f6fe0', 'active'],
-  [['queued', 'waiting'], '#e0b84a', 'waiting its turn'],
+  [['running', 'stopping', 'jobs running'], '#3f6fe0', 'active'],
+  [['queued', 'waiting', 'jobs waiting'], '#e0b84a', 'waiting its turn'],
   [['low priority'], '#9a5fe0', 'low priority: remaking old meshes'],
   [['stopped', 'data offloaded'], '#8a8f98', 'stopped'],
   [['done', 'partial'], '#2aa9c9', 'done: nothing left to do'],
 ];
 const areaState = st => AREA_LOOKS.find(x => x[0].includes(st)) || null;
+// An area whose own run is stopped or done, with its projects still being meshed or waiting to be (asked for on their
+// own, as remakes): what's going on, for its label and state; null if nothing is
+function areaJobs(c, st){
+  const j = c?.jobs;
+  if (!j || !['stopped', 'data offloaded', 'done', 'partial'].includes(st) || !(j.running || j.waiting)) return null;
+  const remake = j.remaking >= j.running + j.waiting, run = ['done', 'partial'].includes(st) ? 'done' : 'stopped';
+  const said = j.running ? `${remake ? 'remaking' : 'meshing'} ${j.running}${j.waiting ? `, ${j.waiting} waiting` : ''}`
+    : `${j.waiting} waiting to be ${remake ? 'remade' : 'meshed'}`;
+  return { st: j.running ? 'jobs running' : 'jobs waiting', said: `${said} (area run ${run})` };
+}
 const plural2 = (n, one, many = one + 'es') => `${n} ${n === 1 ? one : many}`;
 function areaMap(){
   if (!amap) {
@@ -1241,8 +1251,8 @@ function areaPoints(){
   return names.map(a => {
     const ms = at[a] || [], c = byName[a];
     const lat = ms.length ? ms.reduce((t, m) => t + m.lat, 0) / ms.length : c?.lat, lng = ms.length ? ms.reduce((t, m) => t + m.lng, 0) / ms.length : c?.lng;
-    const st = c ? (c.state === 'done' && !c.complete ? 'partial' : c.state || c.status) : null;
-    return { a, lat, lng, n: ms.length, st };
+    const st = c ? (c.state === 'done' && !c.complete ? 'partial' : c.state || c.status) : null, jobs = areaJobs(c, st);
+    return { a, lat, lng, n: ms.length, st: jobs?.st || st, ...(jobs ? { note: jobs.said } : {}) };
   }).filter(x => x.lat != null && x.lng != null);
 }
 function drawAreas(){
@@ -1259,7 +1269,7 @@ function drawAreas(){
   if (areaLayer) areaLayer.clearLayers(); else areaLayer = L.featureGroup().addTo(amap);
   for (const p of pts) {
     const look = editor ? areaState(p.st) : null, colour = look ? look[1] : '#5cc8ff';
-    const said = [esc(p.a), plural2(p.n, 'mesh'), ...(editor && look ? [esc(look[2].split(':')[0])] : [])].join(' · ');
+    const said = [esc(p.a), plural2(p.n, 'mesh'), ...(editor && look ? [esc(p.note || look[2].split(':')[0])] : [])].join(' · ');
     L.circleMarker([p.lat, p.lng], { radius: Math.min(22, 7 + 2.5 * Math.sqrt(p.n)), color: colour, weight: 2, fillOpacity: p.n ? .6 : .25 })
       .bindTooltip(said, { permanent: true, direction: 'right', offset: [10, 0], className: 'arealabel' })
       .on('click', () => p.n ? listArea(p.a) : (document.querySelector('.tabs button[data-tab=areas]').click(), setFull(false)))
@@ -3371,16 +3381,28 @@ function boulderHtml(c){
   const seen = m => m.view ? `from ${plural(m.view.photos, 'photo')} of its own` : m.unplaced ? `none of its ${m.unplaced} photos were placed` : 'none of its own photos in it';
   const busy = b.project && BUSY.includes(b.project.status);
   const name = b.url ? `<a href="${esc(b.url)}" target="_blank" rel="noopener" title="Its page on Mountain Project">${esc(b.name)}</a>` : esc(b.name);
-  const group = b.kind === 'group';
+  const group = b.kind === 'group', reading = b.kind == null && c.source === 'mountainproject';
   const where = group ? `In <b>${name}</b>, a Mountain Project area of several boulders` : b.kind === 'unknown'
-    ? `In <b>${name}</b> <small title="${esc(b.why || '')}">(Mountain Project doesn't say it's one boulder)</small>` : `On the boulder <b>${name}</b>`;
+    ? `In <b>${name}</b> <small title="${esc(b.why || '')}">(Mountain Project doesn't say it's one boulder)</small>`
+    : `On the boulder <b>${name}</b>${reading ? ' <small class="reading">(reading its Mountain Project page…)</small>' : ''}`;
+  const running = (b.areas || []).filter(a => ['running', 'stopping'].includes(a.status)), stopped = (b.areas || []).filter(a => !running.includes(a));
+  const offer = !group && b.kind !== 'unknown' && (b.kind === 'boulder' || b.climbs.length);
+  const count = [b.routes ? `${b.routes} on Mountain Project` : '', `${b.known} known here`].filter(Boolean).join(', ');
+  const areaLine = a => `the area <b>${esc(a.name)}</b>`;
+  const note = busy ? `<a href="#" data-proj="${b.project.id}">${b.project.status === 'queued' ? 'queued to be meshed' : 'being meshed now'}</a>`
+    : running.length ? `${areaLine(running[0])} will mesh it once its ${plural(running[0].climbs, 'climb')} on it are through`
+    : b.done ? 'Its mesh is from the photos its climbs have now' : b.project?.status === 'failed' ? `<a href="#" data-proj="${b.project.id}">meshing it failed</a>` : '';
+  const later = !busy && !running.length && stopped.length ? `<div class="meta">${areaLine(stopped[0])} (${esc(stopped[0].status)}) would mesh it too, when started again</div>` : '';
+  const button = !offer || busy || running.length ? ''
+    : b.done ? `<button class="sm sec meshboulder again" title="Its photos haven't changed since it was meshed, so this makes the same again">Mesh it again anyway</button>`
+    : `<button class="sm sec meshboulder" title="Makes a mesh of the whole boulder from every photo of its climbs, kept apart from each climb's own, and works out where each climb is seen from">${b.meshes.length ? 'Mesh the boulder again' : 'Mesh the whole boulder'} <small>(${count})</small></button>`;
   return `<div class="meta" style="margin-top:8px">${where}</div>
     ${b.meshes.length || b.shared.length ? `<div class="chips">${b.meshes.map(m => `<span class="chip" data-bmesh="${m.id}" title="${m.view ? 'Shows it from where this climb\'s own photos were taken' : 'Its photos of this climb weren\'t placed in it, so it opens as any mesh does'}">▣ ${esc(m.name)} <small>${esc(seen(m))}</small></span>`).join('')}
       ${b.shared.map(m => `<span class="chip" data-mesh="${m.id}" title="An area linked this climb to the mesh made for ${esc(m.made_for)}, as it's on the same boulder: it may not show this climb's side">▣ ${esc(m.name)} <small>made for ${esc(m.made_for)}</small></span>`).join('')}</div>` : ''}
     ${b.climbs.length ? `<div class="meta">${group ? 'Also in it' : 'Also on it'}: ${b.climbs.map(o => `<a href="#" data-climb="${o.id}">${esc(o.name)}</a>${o.meshes.length ? ' <span title="has a mesh of its own">▣</span>' : ''}`).join(', ')}</div>` : ''}
-    <div class="row w" style="margin-top:4px"><span class="grow meta">${busy ? `<a href="#" data-proj="${b.project.id}">${b.project.status === 'queued' ? 'queued to be meshed' : 'being meshed now'}</a>` : b.project?.status === 'failed' ? `<a href="#" data-proj="${b.project.id}">meshing it failed</a>` : ''}</span>
-      ${b.climbs.length && !group ? `<button class="sm sec meshboulder" ${busy ? 'disabled' : ''} title="Makes a mesh of the whole boulder from every photo of its climbs, kept apart from each climb's own, and works out where each climb is seen from">${b.meshes.length ? 'Mesh the boulder again' : 'Mesh the boulder from all its climbs\' photos'}</button>` : ''}</div>`;
+    ${later}<div class="row w" style="margin-top:4px"><span class="grow meta">${note}</span>${button}</div>`;
 }
+const boulderReads = new Set();     // climbs whose boulder's page the card has asked to have read, once a load
 async function openClimb(id, focus=true){
   const c = await api('/api/climbs/' + id);
   const data = c.data || {};
@@ -3442,10 +3464,12 @@ async function openClimb(id, focus=true){
   d.querySelectorAll('[data-mesh]').forEach(ch => ch.onclick = () => viewMesh(ch.dataset.mesh, null, 'climb'));
   d.querySelectorAll('[data-bmesh]').forEach(ch => ch.onclick = async () => { if (!meshesById[ch.dataset.bmesh]) await refreshMeshes(); viewMesh(ch.dataset.bmesh, id, 'climb'); });
   d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
-  d.querySelector('.meshboulder')?.addEventListener('click', async () => {
-    const again = c.boulder.meshes.length ? ' again, as a new version' : '';
-    if (!ask(`Mesh ${c.boulder.name}${again} from the photos of all ${c.boulder.climbs.length + 1} climbs known on it? Those never harvested are harvested first, at about a minute each for their Mountain Project pages, and stay as their own harvests. Meshing then takes most of an hour. No climb's own mesh is changed.`)) return;
-    try { const r = await api(`/api/climbs/${id}/boulder`, { method: 'POST' }); toast('Queued → see Projects tab'); active = r.project_id; d.remove(); openClimb(id, false); poll(); }
+  d.querySelector('.meshboulder')?.addEventListener('click', async ev => {
+    const b = c.boulder, same = ev.currentTarget.classList.contains('again');
+    const again = b.meshes.length ? ' again, as a new version' : '';
+    const which = b.routes ? `every climb on it: ${b.routes} on its Mountain Project page, ${b.known} known here so far` : `all ${b.known} climbs known on it`;
+    if (!ask(`Mesh ${b.name}${again} from the photos of ${which}?${same ? ' Its photos are the same as when it was last meshed.' : ''} Those never harvested are harvested first, at about a minute each for their Mountain Project pages, and stay as their own harvests; those harvested already aren't again. Meshing then takes most of an hour. No climb's own mesh is changed.`)) return;
+    try { const r = await api(`/api/climbs/${id}/boulder`, { method: 'POST', json: { again: same } }); toast('Queued → see Projects tab'); active = r.project_id; d.remove(); openClimb(id, false); poll(); }
     catch (e) { toast(e.message, 6000); }
   });
   d.querySelectorAll('[data-proj]').forEach(ch => ch.onclick = () => { document.querySelector('.tabs button[data-tab=projects]').click(); active = ch.dataset.proj; refreshProjects(); });
@@ -3471,6 +3495,12 @@ async function openClimb(id, focus=true){
   d.querySelector('.del').onclick = async () => { if (await askDanger(`Delete climb "${c.name}"?`, 'Its meshes are kept.', 'Delete climb')) { await api('/api/climbs/' + id, { method: 'DELETE' }); closeClimb(); refreshClimbs(); refreshMeshes(); } };
   placeClimb(d, id);
   if (focus) d.scrollIntoView({ block: 'nearest' });
+  if (editor && c.boulder && c.boulder.kind == null && c.source === 'mountainproject' && !boulderReads.has(id)) {
+    boulderReads.add(id);     // a climb imported on its own: whether it's on one boulder, and how many climbs are on it
+    api(`/api/climbs/${id}/boulder/read`, { method: 'POST' })
+      .then(r => { if (r.boulder?.kind != null && openClimbId === id && d.isConnected) openClimb(id, false); else d.querySelector('.reading')?.remove(); })
+      .catch(() => d.querySelector('.reading')?.remove());
+  }
 }
 
 $('#imp-go').onclick = async () => {
@@ -3863,7 +3893,7 @@ async function refreshCampaigns(kept = null){
   // low priority (only remaking old meshes) under the rest; within each, those whose projects machines are working for (a
   // mesh's size or beta, say) first, the rest in their order (#place)
   // three bands, as projects: going on; low priority (only remaking old meshes); then stopped and done (or finishing)
-  const band = c => { const st = c.state || c.status; return st === 'low priority' ? 3 : ['stopped', 'done'].includes(st) ? 6 : 0; };
+  const band = c => { const st = c.state || c.status; return areaJobs(c, st) ? 0 : st === 'low priority' ? 3 : ['stopped', 'done'].includes(st) ? 6 : 0; };
   const busy = c => band(c) + ((areasAtWork.get(c.id) || []).some(w => w.state === 'running') ? 0 : areasAtWork.has(c.id) ? 1 : 2);
   const fresh = kept || await api('/api/campaigns');
   $('#campaigns').classList.toggle('stale', !!kept); $('#areas-loading').hidden = !kept;
@@ -3908,7 +3938,9 @@ async function refreshCampaigns(kept = null){
       const sumUp = [`Run for: ${(c.runs_said || []).join('; ') || 'nothing yet'}`, `${c.meshed ?? 0} of ${plural(c.climbs ?? 0, 'climb')} meshed`,
         ...(toCome ? [`${toCome} of its meshes still have beta or their size to come`] : []),
         ...(atWork.length ? [`machines at work for it: ${atWork.length}`] : [])].join('. ');
-      const st = state === 'done' && !c.complete ? { label: 'partial', cls: '', tip: sumUp }
+      const jobs = areaJobs(c, state === 'done' && !c.complete ? 'partial' : state);
+      const st = jobs ? { label: jobs.said, cls: jobs.st === 'jobs running' ? 'running' : '', tip: sumUp }
+        : state === 'done' && !c.complete ? { label: 'partial', cls: '', tip: sumUp }
         : state === 'done' && atWork.length ? { label: 'finishing: machines still at work', cls: 'running', tip: sumUp }
         : state === 'done' && toCome ? { label: `meshed; ${toCome} with beta or size to come`, cls: 'running', tip: sumUp }
         : { label: state === 'low priority' ? 'low priority: remaking old meshes' : state,

@@ -805,12 +805,41 @@ def boulder_kind(boulder: str | None, area_url: str | None, log=print) -> str | 
     kind, why = mp_mod.area_kind(area.name, area.description)
     for key in dict.fromkeys([boulder, json.dumps(list(area.area_path)) if area.area_path else boulder]):
         q("INSERT OR REPLACE INTO boulders(key, name, url, kind, why, routes, checked) VALUES(?,?,?,?,?,?,?)", key,
-          (area.name or "").strip("* "), area_url, kind, why, len(area.raw.get("routes") or []), time.time(), write=True)
+          (area.name or "").strip("* "), area_url, kind, why, sum(bool(r[2]) for r in area.raw.get("routes") or []), time.time(),
+          write=True)    # its graded problems, as adopt_page_climbs() takes them
     log(f"{(area.name or '').strip('* ')}: " + {"boulder": "one boulder", "group": "several boulders",
                                                  "unknown": "not clearly one boulder"}[kind] + f", as {why}")
     if kind != "boulder":
         settle_groups(boulder)
     return kind
+
+
+_reading: set[str] = set()     # boulders whose page boulder_read() is reading now
+_reading_lock = threading.Lock()
+
+
+def boulder_read(climb: dict) -> str | None:
+    """What a climb's lowest area is (boulder_kind()), its Mountain Project page read now if it hasn't been, as an area
+    would: for a climb imported on its own, so that its card can offer to mesh its whole boulder. Up to a minute or two
+    (Mountain Project's Crawl-delay); None if its page can't be read, or it's being read already.
+
+    Args:
+        climb: as climb_row() has it.
+    """
+    boulder = boulder_of(climb["area_path"])
+    if not boulder or climb.get("source") != "mountainproject" or leaf_kind(boulder) is not None:
+        return leaf_kind(boulder)
+    with _reading_lock:
+        if boulder in _reading:
+            return None
+        _reading.add(boulder)
+    try:
+        data = climb.get("data")
+        data = data if isinstance(data, dict) else json.loads(q("SELECT data FROM climbs WHERE id=?", climb["id"], one=True)["data"] or "{}")
+        return boulder_kind(boulder, climb_area_url(Climb.from_dict(data)))
+    finally:
+        with _reading_lock:
+            _reading.discard(boulder)
 
 
 def climb_area_url(climb: Climb) -> str | None:
@@ -923,6 +952,27 @@ def boulder_unchanged(boulder: str) -> str | None:
         except OSError:
             return None
     return proj["mesh_id"]
+
+
+def boulder_area_work(boulder: str) -> list[dict]:
+    """The areas that will mesh a boulder whole (settle_boulder()), with climbs on it still to go through first or
+    queued to mesh it: [{id, name, status, climbs}], the area's own status, and how many of those climbs. One that isn't
+    running only does so once started again."""
+    if settings().get("areas.meshes") != "boulders" or not pools_whole(boulder):
+        return []
+    rows = q("""SELECT c.id, c.name, c.status, COUNT(*) AS climbs FROM campaign_items ci JOIN campaigns c ON c.id=ci.campaign_id
+                WHERE ci.boulder=? AND (ci.status IN ('pending','running','waiting','harvested') OR ci.redo IN ('boulder','pool'))
+                  AND (SELECT COUNT(*) FROM campaign_items x WHERE x.campaign_id=c.id AND x.boulder=ci.boulder) >= 2
+                GROUP BY c.id ORDER BY c.created""", boulder)
+    return [dict(r) for r in rows]
+
+
+def boulder_done(boulder: str) -> str | None:
+    """A boulder's current mesh, if making it again would only repeat it: from the photos its climbs' harvests hold now
+    (boulder_unchanged()), and no problem its Mountain Project page lists left out."""
+    mesh = boulder_unchanged(boulder)
+    routes = (q("SELECT routes FROM boulders WHERE key=?", boulder, one=True) or {}).get("routes")
+    return mesh if mesh and not (routes and routes > len(boulder_climbs(boulder))) else None
 
 
 def boulder_name(boulder: str) -> str:
@@ -1279,9 +1329,10 @@ def boulder_info(climb: dict) -> dict | None:
     shared = q(f"""SELECT m.id, m.name, l.note, ({MADE_FOR}) AS made_for FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
                    WHERE l.climb_id=? AND l.note LIKE ? AND m.replaced_by IS NULL""", SHARED + "%", climb["id"], SHARED + "%")
     proj = boulder_project(boulder)
-    kind = q("SELECT kind, why, url FROM boulders WHERE key=?", boulder, one=True)
+    kind = q("SELECT kind, why, url, routes FROM boulders WHERE key=?", boulder, one=True)
     named = leaf_kind(boulder, {}) == "group"
     return {"key": boulder, "name": boulder_name(boulder), "meshes": meshes, "kind": "group" if named else kind and kind["kind"],
+            "routes": kind and kind["routes"], "known": len(climbs), "areas": boulder_area_work(boulder), "done": boulder_done(boulder),
             "why": "its name says so" if named else kind and kind["why"], "url": (kind and kind["url"]) or boulder_url(boulder),
             "shared": [{"id": s["id"], "name": s["name"], "made_for": s["made_for"] or s["note"][len(SHARED):]} for s in shared],
             "climbs": [{"id": c["id"], "name": c["name"], "grade": c["grade"], "meshes": own.get(c["id"], [])}
@@ -7686,18 +7737,40 @@ def active_areas(camps: list[dict]) -> set[str]:
     return on
 
 
+def area_jobs() -> dict[str, dict]:
+    """Each area's projects being meshed or waiting to be, whatever its own run is doing (one stopped or done can still
+    have its climbs' or boulders' meshes made again, asked for on their own): {area: {running, waiting, remaking (of
+    those, how many have a mesh already)}}, for areas with any."""
+    busy = {r["id"]: r for r in q("SELECT id, status, mesh_id FROM projects WHERE status IN ('queued','running','harvesting')")}
+    if not busy:
+        return {}
+    out: dict[str, dict] = {}
+    for pid, areas in project_areas().items():
+        p = busy.get(pid)
+        if not p:
+            continue
+        for area in dict.fromkeys(a["id"] for a in areas):
+            n = out.setdefault(area, {"running": 0, "waiting": 0, "remaking": 0})
+            n["waiting" if p["status"] == "queued" else "running"] += 1
+            n["remaking"] += bool(p["mesh_id"])
+    return out
+
+
 def campaigns_listed() -> list[dict]:
     """Every area for the Areas pane, each with "state": "running" for one being worked on (active_areas()), "queued"
     for one running that waits its turn, "waiting" for one running with no climb to take now (they wait for volunteers,
-    or for the rest of their boulder's), otherwise its status; and "place", its place in the order areas are taken.
+    or for the rest of their boulder's), otherwise its status; "place", its place in the order areas are taken; and
+    "jobs", its projects being meshed or waiting to be, if any (area_jobs()).
     Those being worked on first, the one with the newest mesh first; then those queued and waiting, in the order they're
     taken; then the rest, newest first."""
     camps = q("SELECT * FROM campaigns ORDER BY created DESC")
     active = active_areas(camps)
     order = [c["id"] for c in sorted((c for c in camps if c["status"] == "running"), key=lambda c: (c.get("priority") or 0, c["created"]))]
+    jobs = area_jobs()
     out = []
     for c in camps:
         v = campaign_view(c)
+        v["jobs"] = jobs.get(c["id"])
         v["state"] = (("running" if c["id"] in active else "queued" if v["next"] else "waiting") if c["status"] == "running"
                       else c["status"])
         own_going = c["status"] == "stopping" or (c["status"] == "running" and v["next"])
@@ -10687,6 +10760,13 @@ class Handler(BaseHTTPRequestHandler):
                 link_mesh(m[1], body["climb_id"], body.get("note"))
                 return self.send_json({"linked": True}, 201)
 
+            m = re.fullmatch(r"/api/climbs/([0-9a-f]+)/boulder/read", p)
+            if m:   # its boulder as its card says it (boulder_info()), its Mountain Project page read first if it hasn't been
+                climb = climb_row(m[1], full=True)
+                if not climb:
+                    return self.send_json({"error": "not found"}, 404)
+                boulder_read(climb)
+                return self.send_json({"boulder": boulder_info(climb)})
             m = re.fullmatch(r"/api/climbs/([0-9a-f]+)/boulder", p)
             if m:   # mesh its boulder from every photo of its climbs, harvesting those that haven't been first (run_boulder())
                 climb = climb_row(m[1])
@@ -10695,6 +10775,13 @@ class Handler(BaseHTTPRequestHandler):
                 boulder = boulder_of(climb["area_path"])
                 if not boulder:
                     return self.send_json({"error": "its area holds several boulders, so which one it's on isn't known"}, 409)
+                if boulder_read(climb) == "unknown":
+                    return self.send_json({"error": "Mountain Project doesn't say its area is one boulder, so it isn't meshed as one"}, 409)
+                areas = [a for a in boulder_area_work(boulder) if a["status"] in ("running", "stopping")]
+                if areas:
+                    return self.send_json({"error": f"the area {areas[0]['name']} will mesh it, once its climbs on it are through"}, 409)
+                if not self.read_json().get("again") and boulder_done(boulder):
+                    return self.send_json({"error": "its mesh was made from the photos its climbs have now: nothing new to mesh it from"}, 409)
                 return self.send_json(*mesh_boulder(boulder))
 
             # ---- climbs

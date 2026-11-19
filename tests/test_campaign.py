@@ -238,6 +238,42 @@ again = server.q("SELECT * FROM projects WHERE id=?", proj["id"], one=True)
 assert again["status"] == "done" and again["mesh_id"] != mesh["id"], again
 assert server.q("SELECT replaced_by FROM meshes WHERE id=?", mesh["id"], one=True)["replaced_by"] == again["mesh_id"]
 assert "pooling its climbs' photos again" in server.read_log(proj["id"])
+# a climb's card on meshing its whole boulder (boulder_info()): what Mountain Project counts on it, whether that would
+# only repeat its mesh, and the areas that will mesh it anyway
+alpha_row = server.climb_row(got["Alpha"]["climb_id"])
+info = server.boulder_info(alpha_row)
+assert info["done"] == again["mesh_id"] and info["areas"] == [] and info["known"] == 2 and info["routes"] is None, info
+server.q("INSERT OR REPLACE INTO boulders(key, name, url, kind, why, routes, checked) VALUES(?,?,?,?,?,?,?)",
+         boulder, "Alpha Boulder", "https://x/alpha-boulder", "boulder", "test", 3, 0, write=True)
+info = server.boulder_info(alpha_row)
+assert info["kind"] == "boulder" and info["routes"] == 3 and info["done"] is None, ("a problem its page lists isn't known", info)
+server.q("UPDATE boulders SET routes=2 WHERE key=?", boulder, write=True)
+assert server.boulder_info(alpha_row)["done"] == again["mesh_id"]
+was = {r["source_id"]: r["status"] for r in server.q("SELECT source_id, status FROM campaign_items WHERE boulder=?", boulder)}
+camp_was = server.campaign_status(c["id"])
+server.q("UPDATE campaign_items SET status='pending' WHERE boulder=?", boulder, write=True)
+server.q("UPDATE campaigns SET status='running' WHERE id=?", c["id"], write=True)
+assert server.boulder_area_work(boulder) == [], "areas.meshes 'climbs': its climbs are meshed on their own, not the boulder"
+server.settings().update({"areas.meshes": "boulders"})
+assert [(w["id"], w["climbs"], w["status"]) for w in server.boulder_area_work(boulder)] == [(c["id"], 2, "running")]
+server.settings().update({"areas.meshes": "climbs"})
+for sid, st in was.items():
+    server.q("UPDATE campaign_items SET status=? WHERE source_id=? AND boulder=?", st, sid, boulder, write=True)
+server.q("UPDATE campaigns SET status=? WHERE id=?", camp_was, c["id"], write=True)
+assert server.boulder_area_work(boulder) == []
+# a climb imported on its own: its boulder's page read once, when its card asks (boulder_read())
+assert server.boulder_read(alpha_row) == "boulder", "read already: not again"
+server.q("DELETE FROM boulders WHERE key=?", boulder, write=True)
+asked, real_kind, real_url = [], server.boulder_kind, server.climb_area_url
+server.boulder_kind = lambda b, url, log=print: asked.append((b, url)) or "boulder"
+server.climb_area_url = lambda climb: "https://x/alpha-boulder"
+try:
+    assert server.boulder_read(alpha_row) == "boulder" and asked == [(boulder, "https://x/alpha-boulder")], asked
+    assert server.boulder_read({**alpha_row, "source": "openbeta"}) is None and len(asked) == 1, "only Mountain Project's"
+finally:
+    server.boulder_kind, server.climb_area_url = real_kind, real_url
+print("whole boulder offer OK")
+
 # a climb that only shares a mesh is shown as via the climb it was made for, not whichever climb an area linked it
 # through, which may only have shared it too
 alpha, alpha2 = got["Alpha"]["climb_id"], got["Alpha2"]["climb_id"]
@@ -2476,6 +2512,13 @@ assert [v["name"] for v in server.campaigns_listed()][:2] == ["area 1", "area 0"
 server.stop_campaign(old["id"])
 w2.campaign = None
 assert {v["name"]: v["state"] for v in server.campaigns_listed()} == {"area 0": "stopped", "area 1": "running", "area 2": "running"}
+# a stopped area's climb meshed again on its own (as remakes are): its area says so, whatever its own run's state
+server.q("INSERT INTO projects(id, name, status, created, mesh_id) VALUES('5eedab1e0001', 'remade', 'queued', 1.0, 'm0')", write=True)
+server.q("UPDATE campaign_items SET project_id='5eedab1e0001' WHERE campaign_id=? AND name='Beta'", old["id"], write=True)
+area0 = next(v for v in server.campaigns_listed() if v["name"] == "area 0")
+assert area0["state"] == "stopped" and area0["jobs"] == {"running": 0, "waiting": 1, "remaking": 1}, area0["jobs"]
+server.q("UPDATE projects SET status='done' WHERE id='5eedab1e0001'", write=True)
+assert next(v for v in server.campaigns_listed() if v["name"] == "area 0")["jobs"] is None, "nothing going on"
 server._workers[:] = [server._first]
 # Alpha and Alpha2 share a boulder: while their climbs are harvested, what each harvest kept; then, pooled, what each gives
 camp = server.q("SELECT * FROM campaigns WHERE id=?", mid_["id"], one=True)
