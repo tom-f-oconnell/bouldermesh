@@ -10026,6 +10026,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_file(small, cache="public, max-age=86400") if small else self.send_json({"error": "not found"}, 404)
                 return self.send_file(PROJECTS / m[1] / folder / m[3])
             # ---- meshes
+            if p == "/api/meshes/mark":     # cheap to ask often: changes when /api/meshes would (a mesh made, gone, replaced)
+                r = q("SELECT COUNT(*) AS n, MAX(created) AS t, COUNT(replaced_by) AS old FROM meshes", one=True)
+                return self.send_json({"mark": f"{r['n']}:{r['t'] or 0}:{r['old']}"})
             if p == "/api/meshes":
                 rows = q("SELECT * FROM meshes ORDER BY created DESC")
                 waiting = unapproved_meshes()       # made from what an account added, not yet approved: its account's and the owner's to see

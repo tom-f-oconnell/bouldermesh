@@ -3761,15 +3761,18 @@ async function poll(){
       if (now !== shown || !list.every(p => projectCards.has(p.id))) await refreshProjects();
       else await Promise.all(list.filter(p => BUSY.includes(p.status)).map(p => loadDetail(p.id, projectCards.get(p.id))));
       shown = now;
-      if (!busy) {
-        const made = list.map(p => p.mesh_id || '').join();
-        if (made !== pollMeshes) {      // only when one has a new mesh: the lists are big to fetch and draw again
-          pollMeshes = made;
+      // a new mesh, whatever else is still going (a queue that never empties kept them from the lists till a reload);
+      // only then, as the lists are big to fetch and draw again
+      const made = list.map(p => p.mesh_id || '').join();
+      if (made !== pollMeshes) {
+        const first = pollMeshes === null;
+        pollMeshes = made;
+        if (!first || !busy) {
           await refreshMeshes(); await refreshClimbs();
           if (openClimbId) openClimb(openClimbId, false);   // the job may have changed what it shows
         }
-        break;
       }
+      if (!busy) break;
       await new Promise(r => setTimeout(r, 2500));
     }
   } catch (e) {   // e.g. the server restarting: the area loop or the next action starts this again
@@ -3789,7 +3792,7 @@ $('#pname').addEventListener('keydown', e => { if (e.key === 'Enter') $('#create
 const ORDER_NAMES = { popularity: 'most popular first', rating: 'highest rated first', data: 'most photos and videos first' };
 const ITEM_NAMES = { done: 'meshed', skipped: 'skipped', failed: 'failed', waiting: 'waiting for volunteers', harvested: 'harvested, for its boulder' };
 const stars = v => v == null ? '' : `★${(+v).toFixed(1)}`;
-let campaignShown = null, meshedShown = null;
+let campaignShown = null, meshedShown = null, meshMark = '';
 const COPY_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h1.5"/></svg>';
 const COPIED_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg>';
 // over plain HTTP (a LAN address) there's no clipboard API, but a selected textarea can still be copied
@@ -3970,7 +3973,10 @@ async function refreshCampaigns(kept = null){
       el.appendChild(d);
     }
   }
-  const meshed = list.map(c => c.counts.done || 0).join();
+  // and any other new mesh (an app's capture, a job asked for), by the server's cheap mark of its meshes
+  const mark = await api('/api/meshes/mark').then(r => r.mark).catch(() => meshMark);
+  meshMark = mark;
+  const meshed = list.map(c => c.counts.done || 0).join() + '|' + mark;
   if (meshedShown !== null && meshed !== meshedShown) { await refreshMeshes(); await refreshClimbs(); }
   meshedShown = meshed;
   return list;

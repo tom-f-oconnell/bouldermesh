@@ -297,8 +297,10 @@ def run(B: str, tmp: Path) -> None:
     pipeline.write_ply(ply, [(0, 0, 0), (1, 0, 0), (0, 1, 0)], [(255, 0, 0)] * 3, [(0, 1, 2)])
     atlas = io.BytesIO()
     Image.new("RGB", (3000, 1000), (200, 40, 40)).save(atlas, "PNG")
+    mark_before = req(B, "GET", "/api/meshes/mark")[1]["mark"]
     st, up = req(B, "POST", "/api/meshes", files=[("files", "cube.ply", ply.read_bytes()), ("files", "atlas.png", atlas.getvalue())],
                  fields={"name": "uploaded", "climb_id": cid})
+    assert req(B, "GET", "/api/meshes/mark")[1]["mark"] != mark_before, "a new mesh changes the mark the page checks for one"
     for ask, want, fmt in (("", (3000, 1000), "PNG"), ("?max=2048", (2048, 683), "JPEG"), ("?max=2048", (2048, 683), "JPEG"),   # again: from its copy
                            ("?max=4096", (3000, 1000), "JPEG"), ("?max=8192", (3000, 1000), "JPEG"),     # as a JPEG, however large
                            ("?max=7", (3000, 1000), "PNG"), ("?max=x", (3000, 1000), "PNG")):
