@@ -3843,6 +3843,9 @@ try:
     server.set_item("ag0000000001", "a3", status="pending", retry=1)
     server.q("UPDATE projects SET status='queued' WHERE id IN ('ap0000000001', 'ap0000000004')", write=True)  # a1's, and a4's own
     g = server.again_progress()["ag0000000001"]
+    assert (g["total"], g["on_hold"], g["queued"], g["done"]) == (3, 2, 1, 0), "its climbs wait for the area; a4's project doesn't"
+    server.q("UPDATE campaigns SET status='running' WHERE id='ag0000000001'", write=True)
+    g = server.again_progress()["ag0000000001"]
     assert (g["total"], g["queued"], g["done"]) == (3, 3, 0), g
     server.q("UPDATE projects SET status='running' WHERE id='ap0000000004'", write=True)
     server.set_item("ag0000000001", "a1", status="done", redo=None)

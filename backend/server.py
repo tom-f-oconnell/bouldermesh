@@ -8040,7 +8040,8 @@ def again_progress(areas: dict[str, list[dict]] | None = None) -> dict[str, dict
     and boulders retried or remade on their own. Only the latest stretch counts, from when something was queued again
     with nothing else of the area's already going: {area: {since, total, done, failed, stopped (or interrupted, as by a
     restart, and not retried yet), active (being worked on now),
-    paused, waiting (for volunteers, or for the rest of its boulder's), queued (the rest)}}, for areas with any still to go.
+    paused, waiting (for volunteers, or for the rest of its boulder's), on_hold (its climbs queued again, while the area
+    isn't running), queued (the rest)}}, for areas with any still to go.
     A project counted as one of the area's climbs isn't counted again for itself."""
     marks = q("SELECT kind, campaign_id, id, queued, ended FROM again_marks WHERE ended IS NULL OR ended > ?",
               time.time() - 30 * 86400)
@@ -8061,7 +8062,7 @@ def again_progress(areas: dict[str, list[dict]] | None = None) -> dict[str, dict
         elif m["id"] in projects:
             for cid in dict.fromkeys(a["id"] for a in areas.get(m["id"], []) if a.get("id")):
                 by.setdefault(cid, []).append(m)
-    out = {}
+    out, running = {}, {r["id"] for r in q("SELECT id FROM campaigns WHERE status IN ('running','stopping')")}
     for cid, ms in by.items():
         mine = {items[(cid, m["id"])]["project_id"] for m in ms if m["kind"] == "item"} - {None}
         ms = sorted((m for m in ms if m["kind"] == "item" or m["id"] not in mine), key=lambda m: m["queued"])
@@ -8074,7 +8075,8 @@ def again_progress(areas: dict[str, list[dict]] | None = None) -> dict[str, dict
         ms = ms[start:]
         if all(m["ended"] is not None for m in ms):
             continue
-        n = {"since": ms[0]["queued"], "total": len(ms), "done": 0, "failed": 0, "stopped": 0, "active": 0, "paused": 0, "waiting": 0, "queued": 0}
+        n = {"since": ms[0]["queued"], "total": len(ms), "done": 0, "failed": 0, "stopped": 0, "active": 0, "paused": 0, "waiting": 0, "queued": 0,
+             "on_hold": 0}
         for m in ms:
             if m["kind"] == "item":
                 i = items[(cid, m["id"])]
@@ -8086,7 +8088,8 @@ def again_progress(areas: dict[str, list[dict]] | None = None) -> dict[str, dict
             if m["ended"] is not None:
                 n["failed" if status == "failed" else "stopped" if status in ("stopped", "interrupted") else "done"] += 1
             else:
-                n["active" if busy else "paused" if paused else "waiting" if waiting else "queued"] += 1
+                n["active" if busy else "paused" if paused else "waiting" if waiting else
+                  "queued" if m["kind"] == "project" or cid in running else "on_hold"] += 1
         out[cid] = n
     return out
 

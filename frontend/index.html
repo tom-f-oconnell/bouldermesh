@@ -1019,7 +1019,7 @@ const isHeavy = s => s.state === 'running' && ((s.typical || 0) >= HEAVY || step
 function againBar(g){
   if (!g) return '';
   const fin = g.done + g.failed + g.stopped, when = new Date(g.since * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
-  const bits = [g.active && `${g.active} being worked on`, g.queued && `${g.queued} waiting their turn`, g.waiting && `${g.waiting} waiting for volunteers or their boulder`,
+  const bits = [g.active && `${g.active} being worked on`, g.queued && `${g.queued} waiting their turn`, g.on_hold && `${g.on_hold} to go when the area runs again`, g.waiting && `${g.waiting} waiting for volunteers or their boulder`,
                 g.paused && `${g.paused} paused`, g.failed && `${g.failed} failed`, g.stopped && `${g.stopped} stopped or interrupted`].filter(Boolean);
   return `<div style="margin-top:6px" title="Its climbs queued again (to check for new photos, rebuild, remake an old mesh...) and its climbs' and boulders' projects retried or remade on their own, since ${esc(when)}, when the latest of it began">${countBar(fin / g.total)}<small>Done again: ${fin}/${g.total} finished${bits.length ? ` · ${bits.join(' · ')}` : ''} (since ${esc(when)})</small></div>`;
 }
