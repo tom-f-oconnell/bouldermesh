@@ -14,6 +14,8 @@ import platform.UIKit.UIButtonConfiguration
 import platform.UIKit.UIColor
 import platform.UIKit.UIControlEventEditingChanged
 import platform.UIKit.UIFont
+import platform.UIKit.NSDirectionalEdgeInsetsMake
+import platform.UIKit.NSFontAttributeName
 import platform.UIKit.UILabel
 import platform.UIKit.UILayoutConstraintAxisHorizontal
 import platform.UIKit.UILayoutConstraintAxisVertical
@@ -41,14 +43,18 @@ val BAD: UIColor get() = UIColor.systemRedColor
 
 enum class Look { FILLED, TINTED, PLAIN }
 
-/** A button that does `action` when pressed. */
-fun makeButton(title: String, look: Look = Look.TINTED, enabled: Boolean = true, color: UIColor? = null, action: () -> Unit): UIButton {
+/** A button that does `action` when pressed; `fontSize`, its title's size if not the usual. */
+fun makeButton(title: String, look: Look = Look.TINTED, enabled: Boolean = true, color: UIColor? = null, fontSize: Double? = null, action: () -> Unit): UIButton {
     val config = when (look) {
         Look.FILLED -> UIButtonConfiguration.filledButtonConfiguration()
         Look.TINTED -> UIButtonConfiguration.tintedButtonConfiguration()
         Look.PLAIN -> UIButtonConfiguration.plainButtonConfiguration()
     }
     if (color != null) { if (look == Look.FILLED) config.baseBackgroundColor = color else config.baseForegroundColor = color }
+    if (fontSize != null) {
+        config.titleTextAttributesTransformer = { attrs -> (attrs ?: emptyMap<Any?, Any?>()) + (NSFontAttributeName to UIFont.systemFontOfSize(fontSize)) }
+        config.contentInsets = NSDirectionalEdgeInsetsMake(2.0, 10.0, 2.0, 10.0)      // a bigger title in a button no taller
+    }
     val b = UIButton.buttonWithConfiguration(config, primaryAction = UIAction.actionWithTitle(title, image = null, identifier = null) { _ -> action() })
     b.enabled = enabled
     return b

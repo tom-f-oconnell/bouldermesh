@@ -14,7 +14,23 @@ import sh.boulderme.core.SignInHelp
 import platform.Foundation.NSURL
 import platform.UIKit.UIApplication
 import sh.boulderme.core.TERMS_VERSION
+import sh.boulderme.core.CaptureGuide
 import sh.boulderme.core.GpsAverager
+import platform.Foundation.NSAttributedString
+import platform.Foundation.NSMutableAttributedString
+import platform.Foundation.create
+import platform.Foundation.appendAttributedString
+import platform.UIKit.navigationItem
+import platform.UIKit.NSFontAttributeName
+import platform.UIKit.NSForegroundColorAttributeName
+import platform.UIKit.NSLinkAttributeName
+import platform.UIKit.UIBarButtonItem
+import platform.UIKit.UIEdgeInsetsMake
+import platform.UIKit.UIFont
+import platform.UIKit.UILayoutConstraintAxisHorizontal
+import platform.UIKit.UIStackView
+import platform.UIKit.UITextView
+import platform.UIKit.accessibilityLabel
 import sh.boulderme.core.MagCalibration
 import sh.boulderme.core.MeshRow
 import sh.boulderme.core.Plan
@@ -27,6 +43,22 @@ private fun summary(p: Plan): String {
     val todo = p.targets.count { it.prio >= 2 && !it.isHold }
     val high = ((p.frame.height * p.frame.metresPerUnit) * 10).toInt() / 10.0
     return "$holds holds and $todo parts on its climbs to photograph · about $high m high" + if (p.frame.scaleGuessed) " (a guess)" else ""
+}
+
+/** A line of text that ends in a link: `lead`, then `link`, which opens `url` when tapped. */
+private fun linkText(lead: String, link: String, url: String): UITextView {
+    val font = UIFont.systemFontOfSize(16.0)
+    val s = NSMutableAttributedString()
+    s.appendAttributedString(NSAttributedString.create(string = lead, attributes = mapOf<Any?, Any?>(NSFontAttributeName to font, NSForegroundColorAttributeName to UIColor.secondaryLabelColor)))
+    s.appendAttributedString(NSAttributedString.create(string = link, attributes = mapOf<Any?, Any?>(NSFontAttributeName to font, NSLinkAttributeName to NSURL.URLWithString(url))))
+    val v = UITextView()
+    v.setAttributedText(s)
+    v.setEditable(false)
+    v.scrollEnabled = false
+    v.backgroundColor = UIColor.clearColor
+    v.setTextContainerInset(UIEdgeInsetsMake(0.0, 0.0, 0.0, 0.0))
+    v.textContainer.lineFragmentPadding = 0.0
+    return v
 }
 
 private fun beep() = AudioServicesPlaySystemSound(1113u)
@@ -45,7 +77,20 @@ class Home(private val app: App) : Form("BoulderMesh") {
         app.meshUpdates.refresh { rebuild() }   // and whether the meshes kept here changed on the server
     }
 
-    fun capture(mesh: String?, name: String, set: String? = null) {
+    init {      // top right: Calibrate, and Settings as the site's gear, as tall as the buttons beside it
+        val bar = UIStackView()
+        bar.axis = UILayoutConstraintAxisHorizontal
+        bar.spacing = 8.0
+        bar.addArrangedSubview(makeButton("Calibrate") { push(Calibrate(app)) })
+        bar.addArrangedSubview(makeButton("⚙\uFE0E", fontSize = 22.0) { push(Settings(app)) }.apply { accessibilityLabel = "Settings" })
+        screen.navigationItem.rightBarButtonItem = UIBarButtonItem(customView = bar)
+    }
+
+    /** Starts a capture; before the phone's first (`guide`), says how one goes. */
+    fun capture(mesh: String?, name: String, set: String? = null, guide: Boolean = true) {
+        if (guide && !app.store.guideSeen) return screen.confirm(CaptureGuide.TITLE, CaptureGuide.text(), "Start", "Cancel") {
+            app.store.guideSeen = true; capture(mesh, name, set, false)
+        }
         val c = CaptureController(app, mesh, name, set) { id -> if (id != null) push(Done(app, id)) }
         c.modalPresentationStyle = UIModalPresentationFullScreen
         screen.presentViewController(c, animated = true, completion = null)
@@ -100,6 +145,7 @@ class Home(private val app: App) : Form("BoulderMesh") {
         if (app.store.token.isEmpty() && !app.store.signInAsked) return signInPrompt()
         text("Photograph a boulder so that its mesh comes out whole, level, the right size and in the right place. " +
             "The app says where to stand and takes each photo when it's worth taking.", UIColor.secondaryLabelColor)
+        add(linkText("To browse existing meshes, visit the site at ", "boulderme.sh", "https://boulderme.sh"))
 
         section("Add to a mesh")
         val plans = app.store.downloaded()
@@ -166,9 +212,6 @@ class Home(private val app: App) : Form("BoulderMesh") {
                 row(makeButton("View mesh", Look.FILLED) { push(ViewerController(app, mesh, x.title)) })
             }
         }
-
-        section("This phone")
-        row(makeButton("Calibrate") { push(Calibrate(app)) }, makeButton("Settings") { push(Settings(app)) })
     }
 }
 
@@ -292,6 +335,8 @@ class Settings(private val app: App) : Form("Settings") {
         field("Server", app.store.server) { app.store.server = it.ifBlank { IosStore.DEFAULT_SERVER } }
         field("Credit my photos to", app.store.credit) { app.store.credit = it.take(80) }
         text("Photos you send are published under Creative Commons Attribution 4.0 (CC BY 4.0): the site and anyone else may use them, crediting this name.")
+        section("Capturing")
+        button(CaptureGuide.TITLE) { screen.tell(CaptureGuide.TITLE, CaptureGuide.text()) }
         section("Sounds while capturing")
         button(if (app.store.dingKept) "A bell when a photo is kept: on" else "A bell when a photo is kept: off", Look.PLAIN) { app.store.dingKept = !app.store.dingKept; rebuild() }
         button(if (app.store.tickSame) "Ticking while there's nothing new to photograph from where the phone is: on" else "Ticking while there's nothing new to photograph from where the phone is: off", Look.PLAIN) {

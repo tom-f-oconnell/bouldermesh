@@ -49,7 +49,19 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import sh.boulderme.core.CaptureGuide
 import sh.boulderme.core.GpsAverager
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
+import androidx.compose.ui.unit.sp
 import sh.boulderme.core.MagCalibration
 import sh.boulderme.core.MeshRow
 import sh.boulderme.core.TERMS
@@ -65,15 +77,32 @@ val WARN = Color(0xFFF0A030)
 val BAD = Color(0xFFE5564B)
 
 @Composable
-internal fun Page(title: String, back: (() -> Unit)? = null, content: @Composable () -> Unit) {
+internal fun Page(title: String, back: (() -> Unit)? = null, actions: (@Composable RowScope.() -> Unit)? = null, content: @Composable () -> Unit) {
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (back != null) TextButton(onClick = back) { Text("‹ Back") }
-            Text(title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(vertical = 12.dp))
+            Text(title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(vertical = 12.dp).weight(1f))
+            actions?.invoke(this)
         }
         content()
         Spacer(Modifier.height(24.dp))
     }
+}
+
+/** How a capture goes, step by step (CaptureGuide), with `ok` as its button. */
+@Composable
+internal fun GuideDialog(ok: String, dismiss: () -> Unit, go: () -> Unit) {
+    AlertDialog(onDismissRequest = dismiss, title = { Text(CaptureGuide.TITLE) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                for ((head, body) in CaptureGuide.STEPS) Column {
+                    Text(head, fontWeight = FontWeight.SemiBold)
+                    Text(body, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = go) { Text(ok) } },
+        dismissButton = { if (ok != "OK") TextButton(onClick = dismiss) { Text("Cancel") } })
 }
 
 @Composable
@@ -105,10 +134,12 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
         } else refused = true
         wanted = null
     }
-    val start: (Screen.Capture) -> Unit = { c ->
+    var guiding by remember { mutableStateOf<Screen.Capture?>(null) }
+    val begin: (Screen.Capture) -> Unit = { c ->
         if (a.has(Manifest.permission.CAMERA) && a.has(Manifest.permission.ACCESS_FINE_LOCATION)) go(c)
         else { wanted = c; ask.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
     }
+    val start: (Screen.Capture) -> Unit = { c -> if (a.store.guideSeen) begin(c) else guiding = c }     // the first capture: how it goes, first
     LaunchedEffect(sending) { tick++ }
     val update by Updates.state.collectAsState()
     val statuses by Statuses.state.collectAsState()
@@ -122,7 +153,11 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
     val updating by MeshUpdates.busy.collectAsState()
     val updateFailed by MeshUpdates.error.collectAsState()
 
-    Page("BoulderMesh") {
+    Page("BoulderMesh", actions = {
+        OutlinedButton(onClick = { go(Screen.Calibrate) }) { Text("Calibrate") }
+        OutlinedButton(onClick = { go(Screen.Settings) }, contentPadding = PaddingValues(horizontal = 10.dp),
+            modifier = Modifier.semantics { contentDescription = "Settings" }) { Text("⚙\uFE0E", fontSize = 24.sp, lineHeight = 24.sp) }
+    }) {
         update.newer?.let { newer ->        // the app's newer build (Update.kt): installs over this one, keeping its captures
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -136,6 +171,10 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
         }
         Text("Photograph a boulder so that its mesh comes out whole, level, the right size and in the right place. " +
             "The app says where to stand and takes each photo when it's worth taking.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(buildAnnotatedString {
+            append("To browse existing meshes, visit the site at ")
+            withLink(LinkAnnotation.Url("https://boulderme.sh", TextLinkStyles(SpanStyle(color = MaterialTheme.colorScheme.primary, textDecoration = TextDecoration.Underline)))) { append("boulderme.sh") }
+        }, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (refused) Text("Capturing needs the camera: allow it in the phone's settings for this app.", color = BAD)
 
         Section("Add to a mesh")
@@ -214,13 +253,8 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                 }
             }
         }
-
-        Section("This phone")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { go(Screen.Calibrate) }) { Text("Calibrate") }
-            OutlinedButton(onClick = { go(Screen.Settings) }) { Text("Settings") }
-        }
     }
+    guiding?.let { c -> GuideDialog("Start", dismiss = { guiding = null }) { guiding = null; a.store.guideSeen = true; begin(c) } }
 
     if (naming) {
         var name by remember { mutableStateOf("") }
@@ -414,6 +448,7 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
     var said by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
     var other by remember { mutableStateOf<Pair<String?, String>?>(null) }     // a code for another device, and what to do with it
     var advanced by remember { mutableStateOf(false) }
+    var guide by remember { mutableStateOf(false) }
     val update by Updates.state.collectAsState()
     val scope = rememberCoroutineScope()
     Page("Settings", back = { go(Screen.Home) }) {
@@ -433,6 +468,8 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
             update.checked != null -> Text("This is the newest build.", color = GOOD)
         }
         if (newer == null) OutlinedButton(enabled = !update.looking, onClick = { Updates.look() }) { Text("Check for updates") }
+        Section("Capturing")
+        OutlinedButton(onClick = { guide = true }) { Text(CaptureGuide.TITLE) }
         Section("Sounds while capturing")
         TextButton(onClick = { dingKept = !dingKept; a.store.dingKept = dingKept }) { Text(if (dingKept) "A bell when a photo is kept: on" else "A bell when a photo is kept: off") }
         TextButton(onClick = { tickSame = !tickSame; a.store.tickSame = tickSame }) {
@@ -503,6 +540,7 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
+    if (guide) GuideDialog("OK", dismiss = { guide = false }) { guide = false }
 }
 
 // ---------------------------------------------------------------------------------------------------------- calibrate

@@ -59,7 +59,7 @@ fun rootViewController(): UIViewController {
         }
         "capture" -> dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1_000_000_000L), dispatch_get_main_queue()) {     // once the window is up
             val mesh = args.stringForKey("mesh")?.takeIf { it != "none" } ?: app.store.downloaded().firstOrNull()?.mesh?.takeIf { args.stringForKey("mesh") == null }
-            home.capture(mesh, mesh?.let { app.store.plan(it)?.name } ?: "A rock")
+            home.capture(mesh, mesh?.let { app.store.plan(it)?.name } ?: "A rock", guide = false)
         }
     }
     // the window in the screen's top half only, for an account whose role asks for it: as kept, then as the server says

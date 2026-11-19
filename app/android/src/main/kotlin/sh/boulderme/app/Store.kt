@@ -32,6 +32,9 @@ class Store(context: Context) {
     var signInAsked: Boolean    // the first-opening prompt to sign in (SignInScreen) was left once: not shown again
         get() = prefs.getBoolean("sign_in_asked", false)
         set(v) = prefs.edit().putBoolean("sign_in_asked", v).apply()
+    var guideSeen: Boolean  // how a capture goes (CaptureGuide) was shown before this phone's first capture: not again
+        get() = prefs.getBoolean("guide_seen", false)
+        set(v) = prefs.edit().putBoolean("guide_seen", v).apply()
     var anonFirst: Boolean  // holds others marked privately are asked for from the start of a capture, not at its end
         get() = prefs.getBoolean("anon_first", false)
         set(v) = prefs.edit().putBoolean("anon_first", v).apply()
