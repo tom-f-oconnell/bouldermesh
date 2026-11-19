@@ -32,6 +32,8 @@ class LocateTest {
         assertEquals("both", both.scaleFrom)
         val k = assertNotNull(both.fit).scale
         assertTrue(k > 1.25 && k < 1.3 && 1.3 - k < k - 1.25, "cameras close together: nearer the plan's size ($k)")
+        val loose = assertNotNull(Locate.fromLocated(close.map { it.first }, close.map { it.second }, 1.3, scaleSd = 0.5).fit).scale
+        assertTrue(loose < k, "a plan's size likely far off counts for less ($loose)")
         val wide = listOf(frame(1, Vec3(-4.0, 1.5, 3.0), 0.0), frame(2, Vec3(4.0, 1.4, 3.2), 0.2), frame(3, Vec3(0.0, 1.6, 2.8), -0.3))
         val k2 = assertNotNull(Locate.fromLocated(wide.map { it.first }, wide.map { it.second }, 1.3).fit).scale
         assertTrue(k2 - 1.25 < 1.3 - k2, "far apart: nearer the cameras' ($k2)")

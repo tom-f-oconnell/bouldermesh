@@ -50,7 +50,7 @@ object Locate {
     /**
      * How far off each frame's camera is, in metres, in the mesh and in the world together (placement and the tracking's
      * drift): the size from cameras `apart` metres apart is then about this / apart off, as a share (bm1's LocateCheck
-     * on two gym captures, 2026-11-18). A size the plan knows is taken as PLAN_SCALE_SD off; the two are weighted by
+     * on two gym captures, 2026-11-18). A size the plan knows is taken as its own scale_sd off (PLAN_SCALE_SD if it doesn't say); the two are weighted by
      * how far off each is likely to be.
      */
     const val CENTRE_SD_M = 0.12
@@ -67,8 +67,9 @@ object Locate {
      *
      * @param located frames placed against the mesh, each with an id among `frames`.
      * @param scale metres a mesh unit, if known (not a guess): used when the cameras are too close together to say.
+     * @param scaleSd how far off `scale` likely is, as a share (the plan's frame.scale_sd); PLAN_SCALE_SD if not said.
      */
-    fun fromLocated(located: List<Located>, frames: List<LocateFrame>, scale: Double?): Result {
+    fun fromLocated(located: List<Located>, frames: List<LocateFrame>, scale: Double?, scaleSd: Double? = null): Result {
         val byId = frames.associateBy { it.id }
         // one answer for each frame (the phone and the server may both have placed it): the one with most matches
         val good = located.filter { it.inliers >= MIN_INLIERS && it.rmsPx <= MAX_RMS_PX && it.id in byId }
@@ -87,14 +88,14 @@ object Locate {
                 if (best == null) best = Result(null, 1, 0.0, 0.0, "", if (good.size == 1) "one frame placed, too weakly to go by alone" else "the frames placed disagree")
                 continue
             }
-            val r = fitOf(g.map { good[it].mesh to byId.getValue(good[it].id).world }, scale)
+            val r = fitOf(g.map { good[it].mesh to byId.getValue(good[it].id).world }, scale, scaleSd?.takeIf { it > 0 } ?: PLAN_SCALE_SD)
             if (r.fit != null) return r
             if (best == null || best.fit == null && best.frames < r.frames) best = r
         }
         return best!!
     }
 
-    private fun fitOf(pairs: List<Pair<CameraPose, CameraPose>>, scale: Double?): Result {
+    private fun fitOf(pairs: List<Pair<CameraPose, CameraPose>>, scale: Double?, scaleSd: Double): Result {
         val turns = pairs.map { (m, w) -> (w.rot * m.rot.conj()).unit() }
         val first = turns[0]
         var sw = 0.0; var sx = 0.0; var sy = 0.0; var sz = 0.0
@@ -111,7 +112,7 @@ object Locate {
         val cameras = if (pairs.size >= 2 && apart >= MIN_BASELINE_M && sm > 1e-12) sqrt(sws / sm) else null
         val (k, from) = when {
             cameras != null && scale != null -> {
-                val wc = (apart / CENTRE_SD_M).let { it * it }; val wp = 1 / (PLAN_SCALE_SD * PLAN_SCALE_SD)
+                val wc = (apart / CENTRE_SD_M).let { it * it }; val wp = 1 / (scaleSd * scaleSd)
                 exp((wc * ln(cameras) + wp * ln(scale)) / (wc + wp)) to "both"
             }
             cameras != null -> cameras to "cameras"

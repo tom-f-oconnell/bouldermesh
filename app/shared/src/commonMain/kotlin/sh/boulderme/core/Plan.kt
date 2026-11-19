@@ -58,6 +58,7 @@ data class Frame(
     val height: Double = 1.0,
     @SerialName("metres_per_unit") val metresPerUnit: Double = 1.0,
     @SerialName("scale_guessed") val scaleGuessed: Boolean = true,
+    @SerialName("scale_sd") val scaleSd: Double? = null,       // how far off metres_per_unit likely is, as a share (sd of its log); null if guessed or unknown
 )
 
 @Serializable

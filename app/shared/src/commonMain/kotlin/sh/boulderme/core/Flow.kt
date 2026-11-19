@@ -443,8 +443,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     fun located(found: List<Located>, by: String, frames: Int = 1) {
         locTried += frames
         locFound.addAll(found)
-        val scale = plan?.frame?.takeIf { !it.scaleGuessed }?.metresPerUnit
-        val r = Locate.fromLocated(locFound, locFrames, scale)
+        val known = plan?.frame?.takeIf { !it.scaleGuessed }
+        val r = Locate.fromLocated(locFound, locFrames, known?.metresPerUnit, known?.scaleSd)
         event("located", "by" to by, "placed" to found.size, "inliers" to found.map { it.inliers }, "rms_px" to found.map { kotlin.math.round(it.rmsPx * 10) / 10 },
             "fit" to (r.fit != null), "frames" to r.frames, "turn_spread_deg" to r.turnSpreadDeg, "centre_off_m" to r.centreOffM, "scale_from" to r.scaleFrom, "why" to r.why)
         val fit = r.fit ?: return
