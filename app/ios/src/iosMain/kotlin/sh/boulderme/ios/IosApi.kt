@@ -89,6 +89,12 @@ class IosApi(private val store: IosStore) {
         if (b != null) done(b, null) else done(null, why ?: "the server's answer couldn't be read")
     }
 
+    /** A mesh's locate pack (PhoneLocate), by its plan's locate_url; null if it names none or the pack isn't made yet. */
+    fun locatePack(plan: sh.boulderme.core.Plan, done: (ByteArray?) -> Unit) {
+        if (plan.locateUrl.isEmpty()) { done(null); return }
+        fetch(plan.locateUrl, timeout = 30.0) { bytes, _, code -> done(if (code == 200) bytes else null) }
+    }
+
     /** A mesh's plan and guide, as text and bytes, to keep. */
     fun plan(mesh: String, done: (String?, ByteArray?, String?) -> Unit) = call("/api/capture/plan/$mesh") { bytes, why ->
         val text = bytes?.decodeToString()

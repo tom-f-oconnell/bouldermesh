@@ -36,6 +36,14 @@ class LocatePack(val xyz: FloatArray, val point: IntArray, val photo: IntArray, 
     }
 }
 
+/** Places frames on the phone, against a mesh's pack: each on its own, one after another (a second or more each). */
+class PhoneLocator(private val pack: LocatePack) : Locator {
+    override suspend fun locate(plan: Plan, frames: List<LocateFrame>): List<Located> = frames.mapNotNull { f ->
+        val lens = f.world.lens.scaledTo(f.w, f.h)
+        PhoneLocate.place(pack, f.grey, f.w, f.h, lens)?.let { Located(f.id, it.pose(lens), it.inliers, it.rmsPx, "phone") }
+    }
+}
+
 object PhoneLocate {
     const val RATIO = 0.8
     const val REPROJ_PX = 4.0
@@ -57,16 +65,8 @@ object PhoneLocate {
      * @return null if fewer than Locate.MIN_INLIERS matches agree on a place.
      */
     fun place(pack: LocatePack, grey: ByteArray, w: Int, h: Int, lens: Lens, random: Random = Random(1)): Placed? {
-        var g = grey; var gw = w; var gh = h; var k = 1
-        while (max(gw, gh) > SIDE * 1.4) {      // halve, each pixel the mean of four
-            val nw = gw / 2; val nh = gh / 2
-            val out = ByteArray(nw * nh)
-            for (y in 0 until nh) for (x in 0 until nw) {
-                val a = 2 * y * gw + 2 * x
-                out[y * nw + x] = (((g[a].toInt() and 0xff) + (g[a + 1].toInt() and 0xff) + (g[a + gw].toInt() and 0xff) + (g[a + gw + 1].toInt() and 0xff) + 2) / 4).toByte()
-            }
-            g = out; gw = nw; gh = nh; k *= 2
-        }
+        val (g, gw, gh) = shrink(grey, w, h)
+        val k = w / gw
         val f = Sift.of(g, gw, gh, max = FEATURES)
         // back to the picture's pixels: a halved pixel's centre is between the four it came from
         val xs = DoubleArray(f.size) { f.xs[it] * k + (k - 1) / 2.0 }; val ys = DoubleArray(f.size) { f.ys[it] * k + (k - 1) / 2.0 }
@@ -75,6 +75,25 @@ object PhoneLocate {
         val img = m.map { (q, _) -> xs[q] to ys[q] }
         val obj = m.map { (_, p) -> Vec3(pack.xyz[3 * p].toDouble(), pack.xyz[3 * p + 1].toDouble(), pack.xyz[3 * p + 2].toDouble()) }
         return ransac(obj, img, lens, random)?.let { it.copy(matched = m.size) }
+    }
+
+    /**
+     * A grey picture with rows `stride` apart, as w*h bytes with none between rows, halved (each pixel the mean of
+     * four) until it's at most about `side` across: (pixels, width, height).
+     */
+    fun shrink(grey: ByteArray, w: Int, h: Int, stride: Int = w, side: Int = SIDE): Triple<ByteArray, Int, Int> {
+        var g = if (stride == w) grey else ByteArray(w * h).also { out -> for (y in 0 until h) grey.copyInto(out, y * w, y * stride, y * stride + w) }
+        var gw = w; var gh = h
+        while (max(gw, gh) > side * 1.4) {
+            val nw = gw / 2; val nh = gh / 2
+            val out = ByteArray(nw * nh)
+            for (y in 0 until nh) for (x in 0 until nw) {
+                val a = 2 * y * gw + 2 * x
+                out[y * nw + x] = (((g[a].toInt() and 0xff) + (g[a + 1].toInt() and 0xff) + (g[a + gw].toInt() and 0xff) + (g[a + gw + 1].toInt() and 0xff) + 2) / 4).toByte()
+            }
+            g = out; gw = nw; gh = nh
+        }
+        return Triple(g, gw, gh)
     }
 
     /** The frame's features matched to pack points: (feature, point), one match to each point, by Lowe's ratio against other points. */

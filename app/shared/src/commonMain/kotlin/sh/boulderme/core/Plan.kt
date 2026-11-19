@@ -16,6 +16,7 @@ data class Plan(
     val lng: Double? = null,
     @SerialName("heading_deg") val headingDeg: Double? = null,
     @SerialName("guide_url") val guideUrl: String = "",
+    @SerialName("locate_url") val locateUrl: String = "",      // its locate pack (PhoneLocate), if the server can make one
     val frame: Frame = Frame(),
     val guide: GuideInfo = GuideInfo(),
     val need: Map<String, Need> = emptyMap(),

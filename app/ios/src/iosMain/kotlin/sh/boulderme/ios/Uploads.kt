@@ -124,6 +124,7 @@ class MeshUpdates(private val store: IosStore, private val api: IosApi) {
             api.plan(target) { plan, guide, why ->
                 if (plan == null || guide == null) return@plan after(why)
                 store.savePlan(target, plan, guide)
+                fetchLocatePack(store, api, target)
                 if (textures == null) return@plan after(null)
                 api.offline(target) { bundle, whyNot ->
                     if (bundle == null) after("the viewer's copy: $whyNot")

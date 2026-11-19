@@ -96,7 +96,8 @@ data class LevelUi(val faced: List<Int>, val facing: Int, val wobbleNow: Double,
 class FlowOut(val ui: CaptureUi, val guide: Similarity?, val solid: Boolean, val alpha: Float, val levels: IntArray?, val markers: List<Marker>, val shoot: Boolean,
               val still: Boolean = false,      // the photo to take is a full-size still, where the phone can: of a hold wanted in detail
               val card: Boolean = false,       // and it's the one with a card in it: say so in shot() (ShotIn.card)
-              val grab: String? = null,        // keep this frame, as the tracking has it, for the scenery ("walk" or "pano"): hand it to scenery()
+              val grab: String? = null,        // keep this frame, as the tracking has it, for the scenery ("walk" or "pano"): hand it to scenery();
+                                               // or "locate": its grey picture to place against the mesh, to locateFrame()
               val tick: Boolean = false)       // sound a tick now, if the app's set to: a photo from here would add nothing (TICK_S apart)
 
 /**
@@ -156,6 +157,13 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     private var ghostTurn = 0.0
     private var ghostScale = 1.0           // the small model's scale as first placed: zooming is kept within ZOOM_LEAST..ZOOM_MOST of it
     private var meshTap: Vec3? = null
+    /** Whether the app can place frames against the mesh (Locator: on the phone with its pack, or on the server). */
+    var canLocate = false
+    private val locFrames = ArrayList<LocateFrame>()    // frames grabbed to place against the mesh, and those placed
+    private val locFound = ArrayList<Located>()
+    private var lastLocGrab = -1e9
+    private var locTried = 0                            // answers had from the locators, placed or not
+    private var locNext = 0                             // the next frame's id: never reused, so answers about frames from before Start again match none
     private val tapMarks = ArrayList<Marker>()      // spots tapped on the rock, in the world
     private val modelMarks = ArrayList<Vec3>()      // and on the small model, in the mesh's coordinates: they move with it
     private var wantShot = false
@@ -410,7 +418,51 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         ghost = g.copy(shift = g.shift + (b - a))
     }
     fun confirmFit() { if (phase == Phase.CONFIRM) { event("fit_confirmed", "taps" to session.taps.size, "refined_rms_m" to session.refined?.rmsM); phase = Phase.CAPTURE; levelsDirty = true; note = "" } }
-    fun restartAlign() { if (plan == null) return; event("align_restart", "phase" to phase.name); session.clearTaps(); tapMarks.clear(); modelMarks.clear(); meshTap = null; ghost = null; phase = Phase.GHOST; note = "" }
+    fun restartAlign() {
+        if (plan == null) return
+        event("align_restart", "phase" to phase.name); session.clearTaps(); tapMarks.clear(); modelMarks.clear(); meshTap = null; ghost = null; phase = Phase.GHOST; note = ""
+        locFrames.clear(); locFound.clear(); locTried = 0; lastLocGrab = -1e9
+    }
+
+    /**
+     * The frame FlowOut.grab "locate" asked for: its grey picture (as the tracking has it, not turned upright) and its
+     * camera then. Returns it, for the app to hand to its Locators (off this thread), and their answers to located().
+     */
+    fun locateFrame(grey: ByteArray, w: Int, h: Int, pose: CameraPose): LocateFrame {
+        grabbing = false
+        val f = LocateFrame(locNext++, grey, w, h, CameraPose(pose.centre, pose.rot, pose.lens.scaledTo(w, h)))
+        locFrames.add(f)
+        event("locate_frame", "id" to f.id, "size" to "${w}x$h")
+        return f
+    }
+
+    /**
+     * What a Locator made of frames from locateFrame(): those it placed (none, if it placed none). Lines the mesh up
+     * once Locate.fromLocated() trusts what's been placed so far, unless it was lined up by hand meanwhile.
+     */
+    fun located(found: List<Located>, by: String, frames: Int = 1) {
+        locTried += frames
+        locFound.addAll(found)
+        val scale = plan?.frame?.takeIf { !it.scaleGuessed }?.metresPerUnit
+        val r = Locate.fromLocated(locFound, locFrames, scale)
+        event("located", "by" to by, "placed" to found.size, "inliers" to found.map { it.inliers }, "rms_px" to found.map { kotlin.math.round(it.rmsPx * 10) / 10 },
+            "fit" to (r.fit != null), "frames" to r.frames, "turn_spread_deg" to r.turnSpreadDeg, "centre_off_m" to r.centreOffM, "scale_from" to r.scaleFrom, "why" to r.why)
+        val fit = r.fit ?: return
+        if (phase != Phase.GHOST && phase != Phase.ROCK) return
+        session.located(fit)
+        tapMarks.clear(); modelMarks.clear(); meshTap = null
+        phase = Phase.CONFIRM; levelsDirty = true
+        note = "Lined up by itself, from ${r.frames} view${if (r.frames == 1) "" else "s"} matched to the mesh's photos" + if (by == "server") " (on the server)." else "."
+    }
+
+    /** Whether to grab a frame to place against the mesh now: every LOCATE_EVERY_S while steady, from a new view, up to LOCATE_MOST. */
+    private fun wantsLocate(pose: CameraPose, tracking: Boolean, t: Double, steady: Boolean): Boolean {
+        if (!canLocate || grabbing || !tracking || !steady || t - lastLocGrab < LOCATE_EVERY_S || locFrames.size >= LOCATE_MOST) return false
+        val f = locFrames.lastOrNull()?.world
+        if (f != null && f.centre.distance(pose.centre) < LOCATE_MOVED_M && angleDeg(f.forward, pose.forward) < LOCATE_TURNED_DEG) return false
+        lastLocGrab = t
+        return true
+    }
     fun addSpot() { if (phase == Phase.CONFIRM) { event("align_add_spot"); phase = Phase.GHOST; ghost = null; note = "" } }
 
     /** With no mesh: the side the hint is sending you round to can't be reached. */
@@ -698,12 +750,15 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 val g = ghost ?: placeGhost(pose).also { ghost = it; ghostScale = it.scale }
                 fresh()
                 val n = session.taps.size
-                ui = base.copy(turnX = 0.0, turnY = 0.0, text = if (phase == Phase.ROCK) "Now tap the same spot on the real rock"
+                val auto = if (!canLocate) "" else if (locFrames.size >= LOCATE_MOST && locTried >= locFrames.size) "\n\nIt couldn't line itself up from what it saw: tap to line it up."
+                    else "\n\nOr hold the phone still pointing at the rock, from a step or two away: it's trying to line itself up (${locFrames.size} view${if (locFrames.size == 1) "" else "s"} so far)."
+                ui = base.copy(turnX = 0.0, turnY = 0.0, text = (if (phase == Phase.ROCK) "Now tap the same spot on the real rock"
                     else if (n >= 2) "Tap another spot on the small model that you can find on the rock, well to one side of the others"
                     else "Tap a spot on the small model that you can find on the rock (${n + 1} of 2). Pick two far apart, and not one above the other. " +
-                        "Drag to turn it, pinch to zoom, two fingers to move it.")
+                        "Drag to turn it, pinch to zoom, two fingers to move it.") + auto)
                 val onModel = modelMarks.mapIndexed { i, p -> Marker("m$i", g.apply(p), 0.03 * g.scale / ghostScale, Coverage.LEVEL_PART, ALIGN, false) }
-                return FlowOut(ui, g, true, 1.25f, levels, modelHolds(g, pose) + onModel + tapMarks, false)
+                val grab = if (wantsLocate(pose, tracking, t, sceneryBlurPx(gyroRadS, exposureS, pose.lens.fx) <= STEADY_SCENERY_PX)) { grabbing = true; "locate" } else null
+                return FlowOut(ui, g, true, 1.25f, levels, modelHolds(g, pose) + onModel + tapMarks, false, grab = grab)
             }
             Phase.CONFIRM -> {
                 fresh()
@@ -822,6 +877,10 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         const val TICK_S = 0.8              // how often the tick sounds, while a photo from where the phone is would add nothing
         const val WAIT_S = 8.0              // how long a press of Take waits for the phone to hold still
         const val STEADY_SCENERY_PX = 1.5   // a scenery frame is kept only with the phone turning less than smears it this much
+        const val LOCATE_EVERY_S = 1.5      // frames to place against the mesh are grabbed at most this often,
+        const val LOCATE_MOST = 8           // this many at most before it's left to taps,
+        const val LOCATE_MOVED_M = 0.15     // each from at least this far from the last, or turned this far from it
+        const val LOCATE_TURNED_DEG = 8.0
         const val ORBIT_ROCK_M = 2.0        // how far a rock with no mesh is taken to reach from its middle, for the walk round it
         const val SPAN_S = 5.0              // how often how frames are coming is logged
         const val LEVEL_SPREAD_MOST = 0.4   // degrees the directions of a turn on the spot may disagree by, for it to be believed, at first

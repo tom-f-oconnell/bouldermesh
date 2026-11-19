@@ -85,6 +85,15 @@ class Api(internal val store: Store) {
         return read(c).decodeToString()
     }
 
+    /** A mesh's locate pack (PhoneLocate), by its plan's locate_url; null if it names none or the pack isn't made yet. */
+    fun locatePack(plan: sh.boulderme.core.Plan): ByteArray? {
+        if (plan.locateUrl.isEmpty()) return null
+        val c = open(plan.locateUrl)
+        c.connectTimeout = 8_000; c.readTimeout = 30_000
+        if (c.responseCode != 200) { c.errorStream?.close(); return null }
+        return read(c)
+    }
+
     /** A mesh's plan and guide, as text and bytes, to keep. */
     fun plan(mesh: String): Pair<String, ByteArray> {
         val text = read(open("/api/capture/plan/$mesh")).decodeToString()

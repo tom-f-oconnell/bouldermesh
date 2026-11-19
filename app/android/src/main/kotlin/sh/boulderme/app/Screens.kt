@@ -312,6 +312,7 @@ fun BrowseScreen(a: MainActivity, getFirst: Boolean, go: (Screen) -> Unit) {
                             wait()
                             val (plan, guide) = a.api.plan(r.id)
                             a.store.savePlan(r.id, plan, guide)
+                            runCatching { a.store.plan(r.id)?.let { p -> a.api.locatePack(p)?.let { a.store.saveLocatePack(r.id, it) } } }     // for lining up with no taps and no signal
                             have = have + r.id
                         }
                         val index = a.store.offline.fetch(a.api, a.store, r.id, textures, progress = { progress = progress + (r.id to it) }, wait = wait)

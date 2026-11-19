@@ -72,6 +72,7 @@ class IosStore {
 
     // ---- meshes kept for use with no signal ---------------------------------------------------------------------------
     fun savePlan(mesh: String, plan: String, guide: ByteArray) {
+        Files.delete("$plans/$mesh.locate")             // a pack from before may be of the mesh before it was made again
         Files.write("$plans/$mesh.bin", guide)
         Files.write("$plans/$mesh.json", plan)       // last, so that a plan there is one with its guide
     }
@@ -81,7 +82,12 @@ class IosStore {
     /** A copy of the plan a capture goes by, kept with it: what each of its photos was for is told from it, after the plan's gone. */
     fun keepPlan(id: String, mesh: String) { Files.readBytes("$plans/$mesh.json")?.let { Files.write("${captureDir(id)}/plan.json", it) } }
 
-    fun removePlan(mesh: String) { Files.delete("$plans/$mesh.json"); Files.delete("$plans/$mesh.bin"); offline.remove(mesh) }
+    /** A mesh's locate pack, kept beside its plan once fetched (fetchLocatePack()); null if none is kept or it can't be read. */
+    fun locatePack(mesh: String): sh.boulderme.core.LocatePack? =
+        Files.readBytes("$plans/$mesh.locate")?.let { runCatching { sh.boulderme.core.LocatePack.parse(it) }.getOrNull() }
+    fun saveLocatePack(mesh: String, pack: ByteArray) = Files.write("$plans/$mesh.locate", pack)
+
+    fun removePlan(mesh: String) { Files.delete("$plans/$mesh.json"); Files.delete("$plans/$mesh.bin"); Files.delete("$plans/$mesh.locate"); offline.remove(mesh) }
     /** Meshes kept for the viewer with no signal. */
     val offline: IosOffline by lazy { IosOffline(this) }
     fun downloaded(): List<Plan> = Files.list(plans).filter { it.endsWith(".json") }.mapNotNull { plan(it.removeSuffix(".json")) }.sortedBy { it.name.lowercase() }

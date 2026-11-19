@@ -137,6 +137,8 @@ import platform.darwin.DISPATCH_QUEUE_PRIORITY_DEFAULT
 import platform.darwin.simd_float4x4
 import platform.posix.uname
 import platform.posix.utsname
+import sh.boulderme.core.Locate
+import sh.boulderme.core.PhoneLocate
 import sh.boulderme.core.Axes
 import sh.boulderme.core.CameraPose
 import sh.boulderme.core.CaptureFlow
@@ -214,6 +216,12 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     init {
         if (reopen != null) flow.reopen(Reopen.record(Files.readText("$dir/capture.json")) ?: error("the record of $reopen can't be read"),
             Files.readBytes("$dir/points.bin"), Files.readText("$dir/capture-log.jsonl") ?: "")
+    }
+    private val locators = locators(app, plan.takeIf { guide != null })
+    private val locBusy = BooleanArray(locators.size)      // main thread only: a frame goes only to a Locator that's free
+    init {
+        flow.canLocate = locators.isNotEmpty()
+        if (plan != null) fetchLocatePack(app.store, app.api, plan.mesh)
     }
     private val sounds = Sounds()
     private val dingKept = app.store.dingKept; private val tickSame = app.store.tickSame
@@ -403,7 +411,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         show(out.ui)
         if (out.tick && tickSame) sounds.tick()
         if (out.shoot) takeStill()
-        else out.grab?.let { grab(frame, seen, it, now) }
+        else out.grab?.let { if (it == "locate") locateGrab(frame, seen) else grab(frame, seen, it, now) }
         GC.collect()        // lets go of the frame just read
     }
 
@@ -628,6 +636,42 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
                     dispatch_async(dispatch_get_main_queue()) { if (!ok) flow.say("A frame of the scenery couldn't be saved.") }
                 }
             }
+        }
+    }
+
+    /** Hands the frame the tracking has now to each Locator that isn't busy with another (CaptureFlow.locateFrame()). */
+    private fun locateGrab(frame: ARFrame, pose: CameraPose) {
+        val buffer = frame.capturedImage
+        val p = plan ?: return
+        dispatch_async(background) {
+            val grey = greyOf(buffer)
+            dispatch_async(dispatch_get_main_queue()) {
+                if (grey == null) { flow.noGrab("no picture"); return@dispatch_async }
+                val f = flow.locateFrame(grey.first, grey.second, grey.third, pose)
+                for ((i, named) in locators.withIndex()) {
+                    if (locBusy[i]) continue
+                    locBusy[i] = true
+                    dispatch_async(background) {
+                        Locate.start(named.second, p, listOf(f)) { found ->
+                            dispatch_async(dispatch_get_main_queue()) { locBusy[i] = false; flow.located(found, named.first) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** The camera's picture's brightness (its first plane), w by h with no padding, halved to at most about PhoneLocate.SIDE * 1.4 across. */
+    private fun greyOf(buffer: CVPixelBufferRef?): Triple<ByteArray, Int, Int>? {
+        if (buffer == null || CVPixelBufferGetPlaneCount(buffer) < 1uL) return null
+        CVPixelBufferLockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly)
+        try {
+            val w = CVPixelBufferGetWidthOfPlane(buffer, 0u).toInt(); val h = CVPixelBufferGetHeightOfPlane(buffer, 0u).toInt()
+            val stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0u).toInt()
+            val base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0u) ?: return null
+            return PhoneLocate.shrink(base.readBytes(stride * (h - 1) + w), w, h, stride)
+        } finally {
+            CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly)
         }
     }
 

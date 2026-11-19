@@ -106,6 +106,9 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
 
     fun clearTaps() { taps.clear(); fit = null; refined = null }
 
+    /** Lines the mesh up by a fit found with no taps (Locate.fromLocated()): taps so far are dropped. */
+    fun located(f: Similarity) { taps.clear(); refined = null; setFit(f) }
+
     private fun solveTaps(): Similarity? {
         val f = Registration.fromTaps(taps) ?: return null
         setFit(f)

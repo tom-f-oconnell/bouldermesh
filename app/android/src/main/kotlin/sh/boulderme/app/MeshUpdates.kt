@@ -19,6 +19,7 @@ fun keepMesh(a: MainActivity, mesh: String, viewer: Boolean?, again: Boolean = f
         wait()
         val (plan, guide) = a.api.plan(mesh)
         a.store.savePlan(mesh, plan, guide)
+        runCatching { a.store.plan(mesh)?.let { p -> a.api.locatePack(p)?.let { a.store.saveLocatePack(mesh, it) } } }     // for lining up with no taps and no signal
     }
     if (viewer != null) a.store.offline.fetch(a.api, a.store, mesh, viewer, progress = progress, wait = wait)
 }

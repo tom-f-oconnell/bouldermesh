@@ -257,7 +257,7 @@ class Browse(private val app: App, private var getFirst: Boolean = false) : Form
         else Net.await({ app.store.downloadWifiOnly }, { wait(true) }) {
             if (waiting == r.id) wait(false)
             app.api.plan(r.id) { plan, guide, why ->
-                if (plan != null && guide != null) { app.store.savePlan(r.id, plan, guide); viewer() } else after(why)
+                if (plan != null && guide != null) { app.store.savePlan(r.id, plan, guide); fetchLocatePack(app.store, app.api, r.id); viewer() } else after(why)
             }
         }
     }

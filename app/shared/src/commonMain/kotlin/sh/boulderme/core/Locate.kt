@@ -1,5 +1,8 @@
 package sh.boulderme.core
 
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.coroutines.startCoroutine
 import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.sqrt
@@ -32,7 +35,7 @@ object Locate {
     /** Fewest matches agreeing on a frame's place for it to count. */
     const val MIN_INLIERS = 25
     /** How far off a frame's matches may be once placed, on average, in pixels, for it to count. */
-    const val MAX_RMS_PX = 3.0
+    const val MAX_RMS_PX = 2.5
     /** One frame alone is trusted only with this many agreeing matches, this close: else two must agree. */
     const val ALONE_INLIERS = 100
     const val ALONE_RMS_PX = 2.0
@@ -57,12 +60,31 @@ object Locate {
      */
     fun fromLocated(located: List<Located>, frames: List<LocateFrame>, scale: Double?): Result {
         val byId = frames.associateBy { it.id }
+        // one answer for each frame (the phone and the server may both have placed it): the one with most matches
         val good = located.filter { it.inliers >= MIN_INLIERS && it.rmsPx <= MAX_RMS_PX && it.id in byId }
-        val pairs = good.map { l -> l.mesh to byId.getValue(l.id).world }
-        if (pairs.isEmpty()) return Result(null, 0, 0.0, 0.0, "", "no frame placed with $MIN_INLIERS matches")
-        if (pairs.size == 1 && (good[0].inliers < ALONE_INLIERS || good[0].rmsPx > ALONE_RMS_PX))
-            return Result(null, 1, 0.0, 0.0, "", "one frame placed, too weakly to go by alone")
-        // the turn taking each frame's mesh camera to its world camera: world = turn * mesh
+            .groupBy { it.id }.values.map { same -> same.maxBy { it.inliers } }
+        if (good.isEmpty()) return Result(null, 0, 0.0, 0.0, "", "no frame placed with $MIN_INLIERS matches")
+        // the turn taking each frame's mesh camera to its world camera (world = turn * mesh); the frames that agree
+        // with each frame's, the most of them (a frame placed wrongly agrees with none, and is left out)
+        val turns = good.map { l -> (byId.getValue(l.id).world.rot * l.mesh.rot.conj()).unit() }
+        val groups = good.indices.map { i -> good.indices.filter { j -> quatAngleDeg(turns[i], turns[j]) <= MAX_TURN_SPREAD_DEG } }
+        val ranked = groups.distinct().sortedWith(compareByDescending<List<Int>> { it.size }.thenByDescending { it.sumOf { i -> good[i].inliers } })
+        if (ranked.size >= 2 && ranked[0].size == ranked[1].size && ranked[0].toSet() != ranked[1].toSet())
+            return Result(null, good.size, 0.0, 0.0, "", "the frames placed disagree, as many one way as another")
+        var best: Result? = null
+        for (g in ranked) {
+            if (g.size == 1 && (good[g[0]].inliers < ALONE_INLIERS || good[g[0]].rmsPx > ALONE_RMS_PX)) {
+                if (best == null) best = Result(null, 1, 0.0, 0.0, "", if (good.size == 1) "one frame placed, too weakly to go by alone" else "the frames placed disagree")
+                continue
+            }
+            val r = fitOf(g.map { good[it].mesh to byId.getValue(good[it].id).world }, scale)
+            if (r.fit != null) return r
+            if (best == null || best.fit == null && best.frames < r.frames) best = r
+        }
+        return best!!
+    }
+
+    private fun fitOf(pairs: List<Pair<CameraPose, CameraPose>>, scale: Double?): Result {
         val turns = pairs.map { (m, w) -> (w.rot * m.rot.conj()).unit() }
         val first = turns[0]
         var sw = 0.0; var sx = 0.0; var sy = 0.0; var sz = 0.0
@@ -89,6 +111,16 @@ object Locate {
             else -> ""
         }
         return Result(if (why.isEmpty()) fit else null, pairs.size, spread, off, from, why)
+    }
+
+    /**
+     * Runs a Locator from code that isn't a coroutine (neither app needs kotlinx.coroutines for it): `done` is told
+     * what it placed (nothing, if it failed), on whichever thread it finished on. A Locator that never suspends (the
+     * phone's) runs on the calling thread, so call this off the drawing thread.
+     */
+    fun start(locator: Locator, plan: Plan, frames: List<LocateFrame>, done: (List<Located>) -> Unit) {
+        val work: suspend () -> List<Located> = { locator.locate(plan, frames) }
+        work.startCoroutine(Continuation(EmptyCoroutineContext) { done(it.getOrDefault(emptyList())) })
     }
 
     private fun quatAngleDeg(a: Quat, b: Quat): Double {
