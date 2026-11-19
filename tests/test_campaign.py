@@ -3827,6 +3827,42 @@ finally:
     server.q("DELETE FROM meshes WHERE id='dd0000000001'", write=True)
     server._steps_left["at"] = 0
 print("steps still to do OK")
+# how far an area's work done again has got: climbs queued again, and its climbs' projects retried on their own, from
+# when the latest stretch of it began; a project counted with its climb isn't counted twice
+server.q("DELETE FROM again_marks", write=True)
+server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status) VALUES('ag0000000001','Again Area','0','popularity',?,'stopped')",
+         time.time(), write=True)
+for sid, status, pid in (("a1", "done", "ap0000000001"), ("a2", "done", "ap0000000002"), ("a3", "failed", None), ("a4", "done", "ap0000000004")):
+    server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,status,project_id) VALUES('ag0000000001',?,1,?,?,?)",
+             sid, "Climb " + sid, status, pid, write=True)
+for pid in ("ap0000000001", "ap0000000002", "ap0000000004"):
+    server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,'harvest','done')", pid, pid, time.time(), write=True)
+try:
+    assert "ag0000000001" not in server.again_progress(), "nothing queued again: no bar"
+    server.set_item("ag0000000001", "a1", status="pending", redo="more+rebuild", was="done")
+    server.set_item("ag0000000001", "a3", status="pending", retry=1)
+    server.q("UPDATE projects SET status='queued' WHERE id IN ('ap0000000001', 'ap0000000004')", write=True)  # a1's, and a4's own
+    g = server.again_progress()["ag0000000001"]
+    assert (g["total"], g["queued"], g["done"]) == (3, 3, 0), g
+    server.q("UPDATE projects SET status='running' WHERE id='ap0000000004'", write=True)
+    server.set_item("ag0000000001", "a1", status="done", redo=None)
+    server.q("UPDATE projects SET status='done' WHERE id='ap0000000001'", write=True)
+    g = server.again_progress()["ag0000000001"]
+    assert (g["total"], g["done"], g["active"], g["queued"]) == (3, 1, 1, 1), g
+    server.set_item("ag0000000001", "a3", status="failed")
+    server.q("UPDATE projects SET status='interrupted' WHERE id='ap0000000004'", write=True)
+    assert "ag0000000001" not in server.again_progress(), "all of it finished: no bar"
+    time.sleep(0.05)
+    server.q("UPDATE projects SET status='queued' WHERE id='ap0000000002'", write=True)   # later, a new stretch of its own
+    g = server.again_progress()["ag0000000001"]
+    assert (g["total"], g["queued"], g["done"]) == (1, 1, 0), g
+    assert server.campaigns_listed() and next(c for c in server.campaigns_listed() if c["id"] == "ag0000000001")["again_progress"] == g
+finally:
+    server.q("DELETE FROM campaign_items WHERE campaign_id='ag0000000001'", write=True)
+    server.q("DELETE FROM campaigns WHERE id='ag0000000001'", write=True)
+    server.q("DELETE FROM projects WHERE id LIKE 'ap00000000%'", write=True)
+    server.q("DELETE FROM again_marks", write=True)
+print("work done again, counted OK")
 # each limit and order an area is run with is noted, and said per order with the most it went to; an area is "complete"
 # (done, not partial) only when its list finished with no limit and something was meshed
 server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status,max_meshes,runs) VALUES('ee0000000001','Runs Area','0',"

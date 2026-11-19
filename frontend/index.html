@@ -1014,6 +1014,15 @@ const HEAVY = 120;      // seconds a step takes, or usually takes, to get a time
 const isHeavy = s => s.state === 'running' && ((s.typical || 0) >= HEAVY || stepLeft(s).going >= HEAVY);
 // a bar of what's done (a step's count, or its tool's own fraction), labelled with it, and for a heavy step a bar of
 // its time (its time left beside it), in the time colour
+// how far an area's work done again has got (again_progress()): its climbs queued again, and its projects retried or
+// remade on their own, since the latest of it began
+function againBar(g){
+  if (!g) return '';
+  const fin = g.done + g.failed + g.stopped, when = new Date(g.since * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  const bits = [g.active && `${g.active} being worked on`, g.queued && `${g.queued} waiting their turn`, g.waiting && `${g.waiting} waiting for volunteers or their boulder`,
+                g.paused && `${g.paused} paused`, g.failed && `${g.failed} failed`, g.stopped && `${g.stopped} stopped or interrupted`].filter(Boolean);
+  return `<div style="margin-top:6px" title="Its climbs queued again (to check for new photos, rebuild, remake an old mesh...) and its climbs' and boulders' projects retried or remade on their own, since ${esc(when)}, when the latest of it began">${countBar(fin / g.total)}<small>Done again: ${fin}/${g.total} finished${bits.length ? ` · ${bits.join(' · ')}` : ''} (since ${esc(when)})</small></div>`;
+}
 function countBar(fill, cls = ''){
   const w = (100 * Math.max(0, Math.min(1, fill))).toFixed(1);
   return `<div class="bar ${cls}" title="${Math.round(w)}%"><i style="width:${w}%"></i></div>`;
@@ -3999,6 +4008,7 @@ async function refreshCampaigns(kept = null){
         <div class="meta" style="margin-top:6px"><b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${n.paused ? ` · ${n.paused} paused` : ''}${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${c.old_queued ? ` · <span class="lowp" title="Their only meshes were made before the rules for what an area meshes last changed, or are another climb's: looked for new photos and meshed again, only when no area has anything else to take. This never starts or resumes the area's own list.">${plural(c.old_queued, 'old mesh', 'old meshes')} being remade, at low priority</span>` : ''}${c.needs_backup ? ` · <span style="color:var(--warn)" title="Their photos were offloaded to the backup to make room: each is asked for back as its turn comes, and waits for it (the backup sends them within half an hour)">needs data from the backup (${c.needs_backup})</span>` : ''}${c.blocked ? ` · <span style="color:var(--bad)" title="What they need was lost from the backup: nothing of them is made or replaced until the admin page says to mesh them again without it, or leave them as they are">${c.blocked} blocked: data lost from the backup</span>` : ''}${n.beyond ? ` · ${n.beyond} more past the limit` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
         ${(() => { const fin = (n.done || 0) + (n.skipped || 0) + (n.failed || 0), all = fin + left + (n.waiting || 0) + (n.harvested || 0);
           return all ? `${countBar(fin / all)}<small>${fin}/${all} climbs finished (meshed, skipped or failed)</small>` : ''; })()}
+        ${againBar(c.again_progress)}
         ${c.note ? `<div class="notice" style="margin-top:6px">${esc(c.note)}</div>` : ''}
         <div class="now">${currentHtml(c)}</div>
         <div class="row" style="margin-top:8px">

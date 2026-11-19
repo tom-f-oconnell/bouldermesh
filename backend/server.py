@@ -338,6 +338,33 @@ def init_db() -> None:
                      ("paused", "REAL"), ("rerun_rules", "INTEGER"), ("old_rerun", "INTEGER DEFAULT 0"), ("blocked", "TEXT")):
             if c not in cols:
                 con.execute(f"ALTER TABLE campaign_items ADD COLUMN {c} {t}")
+        # what's queued to be done again (an area's climb queued again, or a project with something already finished
+        # retried or remade), and when it finished, by triggers, so that the Areas tab can show how far each area's work
+        # done again has got (again_progress()): kind "item" (id: the climb's source_id in campaign_id) or "project"
+        fresh = not con.execute("SELECT 1 FROM sqlite_master WHERE name='again_marks'").fetchone()
+        con.execute("CREATE TABLE IF NOT EXISTS again_marks(kind TEXT, campaign_id TEXT, id TEXT, queued REAL, ended REAL, "
+                    "PRIMARY KEY(kind, campaign_id, id))")
+        opened = (f"VALUES({{kind}}, {{cid}}, NEW.{{id}}, {now_sql}, NULL) ON CONFLICT(kind, campaign_id, id) DO UPDATE SET "
+                  f"queued=CASE WHEN ended IS NULL THEN queued ELSE {now_sql} END, ended=NULL")
+        con.execute(f"""CREATE TRIGGER IF NOT EXISTS again_item_queued AFTER UPDATE OF status, redo ON campaign_items
+            WHEN (OLD.redo IS NULL AND NEW.redo IS NOT NULL) OR (OLD.status IN ('done','skipped','failed') AND NEW.status IN ('pending','running'))
+            BEGIN INSERT INTO again_marks {opened.format(kind="'item'", cid="NEW.campaign_id", id="source_id")}; END""")
+        con.execute(f"""CREATE TRIGGER IF NOT EXISTS again_item_ended AFTER UPDATE OF status ON campaign_items
+            WHEN NEW.status IN ('done','skipped','failed') BEGIN UPDATE again_marks SET ended={now_sql}
+              WHERE kind='item' AND campaign_id=NEW.campaign_id AND id=NEW.source_id AND ended IS NULL; END""")
+        con.execute(f"""CREATE TRIGGER IF NOT EXISTS again_project_queued AFTER UPDATE OF status ON projects
+            WHEN NEW.status IN ('queued','running','harvesting') AND COALESCE(OLD.status, 'new') NOT IN ('new','queued','running','harvesting')
+            BEGIN INSERT INTO again_marks {opened.format(kind="'project'", cid="''", id="id")}; END""")
+        con.execute(f"""CREATE TRIGGER IF NOT EXISTS again_project_ended AFTER UPDATE OF status ON projects
+            WHEN OLD.status IN ('queued','running','harvesting') AND NEW.status NOT IN ('queued','running','harvesting')
+            BEGIN UPDATE again_marks SET ended={now_sql} WHERE kind='project' AND id=NEW.id AND ended IS NULL; END""")
+        if fresh:   # what was already queued again as these began: counted from now
+            now = time.time()
+            con.execute("INSERT INTO again_marks SELECT 'item', campaign_id, source_id, ?, NULL FROM campaign_items "
+                        "WHERE status IN ('pending','running') AND (redo IS NOT NULL OR COALESCE(old_rerun, 0)=1)", (now,))
+            con.execute("INSERT INTO again_marks SELECT 'project', '', id, ?, NULL FROM projects "
+                        "WHERE status IN ('queued','running','harvesting') AND (mesh_id IS NOT NULL OR status='queued')", (now,))
+        con.execute("DELETE FROM again_marks WHERE ended < ?", (time.time() - 30 * 86400,))
         # climbs queued to be harvested again from scratch for what volunteers fetched, not started yet: added to instead,
         # since Nov 12, 2026 (run_harvest()'s add)
         con.execute("UPDATE campaign_items SET redo=CASE redo WHEN 'harvest' THEN 'more' ELSE 'more+rebuild' END "
@@ -7986,7 +8013,7 @@ def active_areas(camps: list[dict]) -> set[str]:
     return on
 
 
-def area_jobs() -> dict[str, dict]:
+def area_jobs(areas: dict[str, list[dict]] | None = None) -> dict[str, dict]:
     """Each area's projects being meshed or waiting to be, whatever its own run is doing (one stopped or done can still
     have its climbs' or boulders' meshes made again, asked for on their own): {area: {running, waiting, remaking (of
     those, how many have a mesh already)}}, for areas with any."""
@@ -7994,14 +8021,73 @@ def area_jobs() -> dict[str, dict]:
     if not busy:
         return {}
     out: dict[str, dict] = {}
-    for pid, areas in project_areas().items():
+    for pid, of in (project_areas() if areas is None else areas).items():
         p = busy.get(pid)
         if not p:
             continue
-        for area in dict.fromkeys(a["id"] for a in areas):
+        for area in dict.fromkeys(a["id"] for a in of):
             n = out.setdefault(area, {"running": 0, "waiting": 0, "remaking": 0})
             n["waiting" if p["status"] == "queued" else "running"] += 1
             n["remaking"] += bool(p["mesh_id"])
+    return out
+
+
+AGAIN_BUSY = ("queued", "running", "harvesting")
+
+
+def again_progress(areas: dict[str, list[dict]] | None = None) -> dict[str, dict]:
+    """How far each area's work done again has got (again_marks): its climbs queued again, and the projects of its climbs
+    and boulders retried or remade on their own. Only the latest stretch counts, from when something was queued again
+    with nothing else of the area's already going: {area: {since, total, done, failed, stopped (or interrupted, as by a
+    restart, and not retried yet), active (being worked on now),
+    paused, waiting (for volunteers, or for the rest of its boulder's), queued (the rest)}}, for areas with any still to go.
+    A project counted as one of the area's climbs isn't counted again for itself."""
+    marks = q("SELECT kind, campaign_id, id, queued, ended FROM again_marks WHERE ended IS NULL OR ended > ?",
+              time.time() - 30 * 86400)
+    if not any(m["ended"] is None for m in marks):
+        return {}
+    items = {(r["campaign_id"], r["source_id"]): r for r in q(
+        "SELECT ci.campaign_id, ci.source_id, ci.status, ci.paused, ci.project_id, p.status AS pstatus FROM campaign_items ci "
+        "JOIN again_marks a ON a.kind='item' AND a.campaign_id=ci.campaign_id AND a.id=ci.source_id "
+        "LEFT JOIN projects p ON p.id=ci.project_id")}
+    projects = {r["id"]: r for r in q("SELECT p.id, p.status FROM projects p JOIN again_marks a ON a.kind='project' AND a.id=p.id")}
+    if areas is None:
+        areas = project_areas() if any(m["kind"] == "project" for m in marks) else {}
+    by: dict[str, list[dict]] = {}
+    for m in marks:
+        if m["kind"] == "item":
+            if (m["campaign_id"], m["id"]) in items:
+                by.setdefault(m["campaign_id"], []).append(m)
+        elif m["id"] in projects:
+            for cid in dict.fromkeys(a["id"] for a in areas.get(m["id"], []) if a.get("id")):
+                by.setdefault(cid, []).append(m)
+    out = {}
+    for cid, ms in by.items():
+        mine = {items[(cid, m["id"])]["project_id"] for m in ms if m["kind"] == "item"} - {None}
+        ms = sorted((m for m in ms if m["kind"] == "item" or m["id"] not in mine), key=lambda m: m["queued"])
+        start, until = 0, None      # the latest stretch: none of it was queued while nothing before it was still to go
+        for k, m in enumerate(ms):
+            if until is not None and m["queued"] > until:
+                start = k
+            ends = m["ended"] if m["ended"] is not None else float("inf")
+            until = ends if until is None or k == start else max(until, ends)
+        ms = ms[start:]
+        if all(m["ended"] is not None for m in ms):
+            continue
+        n = {"since": ms[0]["queued"], "total": len(ms), "done": 0, "failed": 0, "stopped": 0, "active": 0, "paused": 0, "waiting": 0, "queued": 0}
+        for m in ms:
+            if m["kind"] == "item":
+                i = items[(cid, m["id"])]
+                status, busy = i["status"], i["status"] == "running" or i["pstatus"] in ("running", "harvesting")
+                paused, waiting = i["paused"], i["status"] in ("waiting", "harvested")
+            else:
+                status = projects[m["id"]]["status"]
+                busy, paused, waiting = status in ("running", "harvesting"), False, False
+            if m["ended"] is not None:
+                n["failed" if status == "failed" else "stopped" if status in ("stopped", "interrupted") else "done"] += 1
+            else:
+                n["active" if busy else "paused" if paused else "waiting" if waiting else "queued"] += 1
+        out[cid] = n
     return out
 
 
@@ -8015,11 +8101,15 @@ def campaigns_listed() -> list[dict]:
     camps = q("SELECT * FROM campaigns ORDER BY created DESC")
     active = active_areas(camps)
     order = [c["id"] for c in sorted((c for c in camps if c["status"] == "running"), key=lambda c: (c.get("priority") or 0, c["created"]))]
-    jobs = area_jobs()
+    busy = q("SELECT 1 FROM projects WHERE status IN ('queued','running','harvesting') LIMIT 1") or \
+        q("SELECT 1 FROM again_marks WHERE kind='project' AND ended IS NULL LIMIT 1")
+    areas = project_areas() if busy else {}     # read once, for both
+    jobs, again = area_jobs(areas), again_progress(areas)
     out = []
     for c in camps:
         v = campaign_view(c)
         v["jobs"] = jobs.get(c["id"])
+        v["again_progress"] = again.get(c["id"])
         v["state"] = (("running" if c["id"] in active else "queued" if v["next"] else "waiting") if c["status"] == "running"
                       else c["status"])
         own_going = c["status"] == "stopping" or (c["status"] == "running" and v["next"])
