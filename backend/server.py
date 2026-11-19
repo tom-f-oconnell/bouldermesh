@@ -52,6 +52,8 @@ import admin as admin_mod  # noqa: E402
 import accounts as accounts_mod  # noqa: E402
 import beta as beta_mod  # noqa: E402
 import captureplan  # noqa: E402
+import locateapi  # noqa: E402
+import reconstruction  # noqa: E402
 import scale as scale_mod  # noqa: E402
 import compute  # noqa: E402
 import ec2fleet  # noqa: E402
@@ -1767,7 +1769,60 @@ def capture_plan(mid: str) -> dict | None:
                                     sets=[{"id": one["id"], "name": one["name"], "climb": one.get("climb")} for one in sets])
     facing = mesh_heading(mid)
     return {**plan, "mesh": mid, "name": m["name"], "lat": m["lat"], "lng": m["lng"], "heading_deg": facing["deg"] if facing else None,
-            "guide_url": f"/api/capture/guide/{mid}.bin?v={plan['guide']['sha1']}"}
+            "guide_url": f"/api/capture/guide/{mid}.bin?v={plan['guide']['sha1']}", "locate_url": locate_url(mid)}
+
+
+def locate_url(mid: str) -> str | None:
+    """Where the apps fetch a mesh's locate pack (locateapi.pack()), by its version once it's made (when it was), or
+    None if the mesh has no reconstruction to make one from. Asking doesn't make it: fetching it does."""
+    d = MESHES / mid
+    if not (d / reconstruction.FILE).is_file():
+        return None
+    try:
+        made = json.loads((d / (locateapi.PACK_FILES[locateapi.PHONE] + ".json")).read_text())["made"]
+        fresh = (d / (locateapi.PACK_FILES[locateapi.PHONE] + ".bin")).stat().st_mtime_ns >= (d / reconstruction.FILE).stat().st_mtime_ns
+    except (OSError, ValueError, KeyError):
+        fresh = False
+    return f"/api/capture/locate-pack/{mid}.bin" + (f"?v={int(made * 1000)}" if fresh else "")
+
+
+def locate_resolve(mid: str, photos: bool) -> tuple[Path, list[Path]]:
+    """For placing frames against a mesh (locateapi.Packs): its folder, and with `photos` the folders its photos are
+    in (its project's, then those it pooled from), asked back from the backup if they're there."""
+    m = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
+    d = MESHES / mid
+    if not m or not d.is_dir():
+        raise locateapi.Refused(404, "not found")
+    if not photos:
+        return d, []
+    if not (m["source"] or "").startswith("project:"):
+        raise locateapi.Refused(409, "only a mesh made here from a project's photos can have frames placed against it")
+    pid = m["source"].split(":", 1)[1]
+    pooled: list[str] = []
+    for f, key in ((PROJECTS / pid / "sources.json", "files"), (d / "photo_sources.json", "photos")):
+        try:
+            pooled += [x["pooled_from"] for x in json.loads(f.read_text()).get(key) or [] if x.get("pooled_from")]
+        except (OSError, ValueError, AttributeError):
+            pass
+    pids = [pid] + sorted(set(pooled) - {pid})
+    pids = [p for p in pids if (PROJECTS / p).is_dir()]
+    try:
+        need_back(pids, "lining up with no taps")
+    except PhotosAway:
+        raise locateapi.Refused(503, "this mesh's photos are coming back from the backup: try again in an hour", retry_s=1800) from None
+    except LostData as e:
+        raise locateapi.Refused(409, str(e)) from None
+    return d, [PROJECTS / p / "photos" for p in pids]
+
+
+def _locate():
+    import locate     # backend/locate.py: OpenCV, read when first needed
+    return locate
+
+
+locateapi.PACKS = locateapi.Packs(locate_resolve, lambda *a, **k: _locate().build_pack(*a, **k),
+                                  lambda path: _locate().load_pack(path))
+LOCATE_LIMITS = locateapi.Limits()
 
 
 def plan_key(mid: str, scale=None) -> str:
@@ -9726,6 +9781,51 @@ class Handler(BaseHTTPRequestHandler):
         user = self.who()
         return user is not None and user["accepted"]
 
+    def unseen(self, mid: str) -> bool:
+        """Whether a mesh waits to be approved, and isn't the sender's to see (theirs, or they're the site's owner)."""
+        waiting = unapproved_meshes()
+        me = self.who()
+        return mid in waiting and not (me and (me["role"] == "owner" or waiting[mid] == me["id"]))
+
+    def locate_pack(self, mid: str, versioned: bool) -> None:
+        """GET /api/capture/locate-pack/<mesh>.bin: the pack the apps place frames against with no signal (locate.py),
+        made when first asked for: 503 with how long to wait till then. Kept a year when asked for by its version."""
+        if self.unseen(mid):
+            return self.send_json({"error": "not found"}, 404)
+        try:
+            f = locateapi.pack(mid)
+        except locateapi.Refused as e:
+            return self.send_json(e.answer(), e.code, headers={"Retry-After": str(e.extra["retry_s"])} if "retry_s" in e.extra else None)
+        if f is None:
+            wait = locateapi.PACKS.retry_s(mid, locateapi.PHONE)
+            return self.send_json({"error": "this mesh's pack is being made: try again soon", "retry_s": wait}, 503,
+                                  headers={"Retry-After": str(wait)})
+        return self.send_file(f, cache="public, max-age=31536000, immutable" if versioned else "no-cache")
+
+    def locate_frames(self, mid: str) -> None:
+        """POST /api/capture/locate/<mesh>: a phone's frames placed against a mesh (locateapi.answer()), from anyone
+        who may see it, within locateapi's limits: one at a time and so many a minute, by account or else address."""
+        if self.cross_site():
+            return self.send_json({"error": "refused: sent from another site's page"}, 403)
+        me = self.who()
+        if self.unseen(mid):
+            return self.send_json({"error": "not found"}, 404)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if not 0 < n <= locateapi.MAX_BODY:
+            self.close_connection = True
+            return self.send_json({"error": f"send 1 to {locateapi.MAX_FRAMES} frames of at most {locateapi.MAX_JPEG // 2**20} MB each"}, 413)
+        try:
+            body = self.read_json()
+        except ValueError:
+            return self.send_json({"error": "send JSON: {frames: [{id, jpeg_b64, lens}]}"}, 400)
+        who = f"account:{me['id']}" if me and me["id"] else "owner" if me else f"address:{self.address_string()}"
+        got, code = locateapi.answer(mid, body, who, locateapi.PACKS, LOCATE_LIMITS, lambda *a, **k: _locate().place(*a, **k))
+        headers = {"Retry-After": str(got["retry_s"])} if "retry_s" in got else None
+        return self.send_json(got, code, headers=headers)
+
     def account(self, p: str) -> None:
         """POST /api/account/...: join {invite, name}, pair/take {code} (from anyone: the invite or code is what's
         checked), and for an account's own token: terms {version}, pair, signout {everywhere?}."""
@@ -10223,6 +10323,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "not found"}, 404)
                 got = offline_bundle(m[1])
                 return self.send_json(got) if got else self.send_json({"error": "not found"}, 404)
+            m = re.fullmatch(r"/api/capture/locate-pack/([0-9a-f]+)\.bin", p)
+            if m:   # what the apps place frames against to line a mesh up with no taps, kept with it for no signal
+                return self.locate_pack(m[1], bool(qs.get("v")))
             m = re.fullmatch(r"/api/capture/guide/([0-9a-f]+)\.bin", p)
             if m:   # and the light copy of it they draw, by the version its plan names
                 return self.send_file(MESHES / m[1] / captureplan.DIR / captureplan.GUIDE_FILE, cache="public, max-age=31536000, immutable")
@@ -10488,6 +10591,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.pair()
         if p.startswith("/api/account/"):    # an account's own: joining, its terms, its devices
             return self.account(p)
+        m = re.fullmatch(r"/api/capture/locate/([0-9a-f]+)", p)
+        if m:   # also from any visitor who may see the mesh: lining it up with no taps (locateapi.py)
+            return self.locate_frames(m[1])
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/rating", p)
         if m:   # also from any visitor
             return self.rate(m[1])

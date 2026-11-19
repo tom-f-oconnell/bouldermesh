@@ -70,6 +70,21 @@ class Api(internal val store: Store) {
     /** Every file the site's viewer fetches to show a mesh, to keep for showing it with no signal (OfflineStore). */
     fun offline(mesh: String): sh.boulderme.core.OfflineBundle = json.decodeFromString(read(open("/api/capture/offline/$mesh")).decodeToString())
 
+    /**
+     * Frames placed against a mesh on the server (ServerLocate's request), as its answer's text: within `seconds` all
+     * told, or an IOException.
+     */
+    fun locate(mesh: String, body: String, seconds: Double): String {
+        val c = open("/api/capture/locate/$mesh", "POST")
+        c.connectTimeout = (seconds * 500).toInt(); c.readTimeout = (seconds * 1000).toInt()
+        c.doOutput = true
+        c.setRequestProperty("Content-Type", "application/json")
+        val bytes = body.toByteArray()
+        c.setFixedLengthStreamingMode(bytes.size)
+        c.outputStream.use { it.write(bytes) }
+        return read(c).decodeToString()
+    }
+
     /** A mesh's plan and guide, as text and bytes, to keep. */
     fun plan(mesh: String): Pair<String, ByteArray> {
         val text = read(open("/api/capture/plan/$mesh")).decodeToString()

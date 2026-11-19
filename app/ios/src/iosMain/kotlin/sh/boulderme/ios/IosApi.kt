@@ -37,12 +37,13 @@ class IosApi(private val store: IosStore) {
         fetch(path, method, body, type) { bytes, why, _ -> done(bytes, why) }
 
     /** As call(), also answering the HTTP status (0: none came). */
-    private fun fetch(path: String, method: String = "GET", body: NSData? = null, type: String? = null, done: (ByteArray?, String?, Int) -> Unit) {
+    private fun fetch(path: String, method: String = "GET", body: NSData? = null, type: String? = null, timeout: Double = 120.0,
+                      done: (ByteArray?, String?, Int) -> Unit) {
         val url = NSURL.URLWithString(store.server + path)
         if (url == null) { done(null, "the server's address isn't one", 0); return }
         val req = NSMutableURLRequest.requestWithURL(url)
         req.setHTTPMethod(method)
-        req.setTimeoutInterval(120.0)
+        req.setTimeoutInterval(timeout)
         req.setValue("BoulderMeshApp/${IosStore.VERSION} (iOS)", forHTTPHeaderField = "User-Agent")
         if (store.token.isNotEmpty()) req.setValue("Bearer ${store.token}", forHTTPHeaderField = "Authorization")
         if (type != null) req.setValue(type, forHTTPHeaderField = "Content-Type")
@@ -66,6 +67,15 @@ class IosApi(private val store: IosStore) {
         }
 
     private fun quoted(s: String) = JsonPrimitive(s).toString()
+
+    /**
+     * Frames placed against a mesh on the server (ServerLocate's request): its answer's text, or null with why, within
+     * `seconds`.
+     */
+    fun locate(mesh: String, body: String, seconds: Double, done: (String?, String?) -> Unit) =
+        fetch("/api/capture/locate/$mesh", "POST", body.encodeToByteArray().toData(), "application/json", seconds) { bytes, why, _ ->
+            done(bytes?.decodeToString(), why)
+        }
 
     /** The current meshes made from photos, which a capture can add to. */
     fun meshes(done: (List<MeshRow>?, String?) -> Unit) = call("/api/capture/meshes") { bytes, why ->

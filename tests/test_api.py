@@ -236,6 +236,42 @@ def run(B: str, tmp: Path) -> None:
     assert m["lat"] == 37.74172 and m["climbs"][0]["id"] == cid, m
     assert abs(time.time() - m["created"]) < 600, m
     print("reconstructed mesh auto-linked:", m["name"], m["lat"], m["lng"])
+    frame = {"id": 1, "jpeg_b64": base64.b64encode(simple_img(5, 640, 480)).decode(), "lens": {"fx": 500, "fy": 500, "cx": 320, "cy": 240, "w": 640, "h": 480}}
+    st, r = req(B, "POST", f"/api/capture/locate/{m['id']}", {"frames": [frame]})     # lining up with no taps (locateapi.py)
+    assert st == 409 and "no reconstruction" in r["error"], (st, r)     # a demo mesh keeps none
+    assert req(B, "POST", "/api/capture/locate/abcdef123456", {"frames": [frame]})[0] == 404
+    assert req(B, "POST", f"/api/capture/locate/{m['id']}", {"frames": []})[0] == 400
+    print("locate: answers without a reconstruction OK")
+    assert req(B, "GET", f"/api/capture/locate-pack/{m['id']}.bin")[0] == 409
+    real = Path("/data/tom/bouldermesh-backups/current/data")       # hal's copy of the server's: a real reconstruction, if here
+    if (real / "meshes/102cf17adbd0/reconstruction.tar.gz").is_file() and HAVE_CV:
+        md, pdir = tmp / "data" / "meshes" / m["id"], tmp / "data" / "projects" / pid / "photos"
+        rec_from = real / "projects" / json.loads((real / "meshes/102cf17adbd0/inputs.json").read_text())["project"] / "photos"
+        shutil.copy(real / "meshes/102cf17adbd0/reconstruction.tar.gz", md)
+        for f in rec_from.iterdir():
+            shutil.copy(f, pdir)
+        st, r = req(B, "GET", f"/api/capture/locate-pack/{m['id']}.bin")
+        assert st == 503 and r["retry_s"] >= 5, (st, r)
+        for _ in range(240):
+            with urllib.request.urlopen(B + f"/api/capture/plan/{m['id']}") as resp:
+                url = json.loads(resp.read())["locate_url"]
+            if "?v=" in url:
+                break
+            time.sleep(0.5)
+        with urllib.request.urlopen(B + url) as resp:
+            assert resp.read(4) == b"BMLP" and "immutable" in resp.headers["Cache-Control"], resp.headers
+        img = cv2.imread(str(rec_from / "yt_fcb9cabe_023.jpg"), cv2.IMREAD_GRAYSCALE)     # one of its own photos
+        k = 1280 / max(img.shape)
+        img = cv2.resize(img, None, fx=k, fy=k) if k < 1 else img
+        lens = {"fx": 0.8 * img.shape[1], "fy": 0.8 * img.shape[1], "cx": img.shape[1] / 2, "cy": img.shape[0] / 2, "w": img.shape[1], "h": img.shape[0]}
+        frame = {"id": 5, "jpeg_b64": base64.b64encode(cv2.imencode(".jpg", img)[1].tobytes()).decode(), "lens": lens}
+        st, r = req(B, "POST", f"/api/capture/locate/{m['id']}", {"frames": [frame]})
+        assert st == 200 and [a["id"] for a in r["located"]] == [5] and r["located"][0]["inliers"] > 50, (st, r)
+        print(f"locate: a real reconstruction's pack made and fetched, a photo placed ({r['located'][0]['inliers']} inliers, {r['ms']} ms) OK")
+        for f in rec_from.iterdir():    # the project as it was, for what follows
+            (pdir / f.name).unlink()
+        for f in ("reconstruction.tar.gz", "locate.bin", "locate.json"):
+            (md / f).unlink()
     t = m["timings"]      # how long it took, and where, kept with it
     assert t["where"] == "this server" and not t["remote"] and 0 <= t["wall"] < 600 and not t["from_log"], t
     assert (tmp / "data" / "meshes" / m["id"] / "timings.json").exists()
