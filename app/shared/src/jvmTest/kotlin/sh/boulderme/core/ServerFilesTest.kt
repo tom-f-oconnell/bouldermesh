@@ -111,7 +111,9 @@ class ServerFilesTest {
             heading = 123.4, gps = BlobGps(34.0, -116.0, 1200.0, 3.0, 0.5), ar = BlobAr("a", listOf(1.0, 2.0, 3.0), listOf(1.0, 0.0, 0.0, 0.0)),
             k = BlobLens(3000.0, 3000.0, 2000.0, 1500.0, 4000, 3000), exp = BlobExposure(0.004, 80.0, 2.0), q = BlobQuality(1.0, 0.2, 0.0, 0.0, true))
         val record = CaptureRecord(id = "k1", app = "test 0.1", device = "a phone", mesh = "cacacacacaca", started = 1.0, ended = 2.0, mode = "plan",
-            shots = listOf(ShotRecord("cap_k1_001.jpg", blob, true)), marked = listOf(RecordMarked("p1", "a", listOf(1.0, 1.5, 0.5), listOf(0.1, 1.2, 1.9))))
+            shots = listOf(ShotRecord("cap_k1_001.jpg", blob, true)), marked = listOf(RecordMarked("p1", "a", listOf(1.0, 1.5, 0.5), listOf(0.1, 1.2, 1.9)),
+                RecordMarked("g1", "a", listOf(0.5, 1.2, 0.3))),
+            gym = RecordGym("yellow", "#f0d020", 1.0, "colour", listOf(listOf(84.0, -5.0, 80.0)), listOf(RecordGymHold("g1", listOf(0.5, 1.2, 0.3), 0.06, 3)), 40, 0))
         same("app/shot.txt", blob.userComment())
         val odd = blob.copy(device = "Téléphone 📱").userComment()
         assertTrue(odd.all { it.code < 128 } && "T\\u00e9l\\u00e9phone \\ud83d\\udcf1" in odd, odd)

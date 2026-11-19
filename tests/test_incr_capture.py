@@ -79,7 +79,7 @@ def test_points_file():
 def test_fixtures():
     """The record and readings the app's tests write."""
     r = cp.record(FIXTURES / "app" / "capture.json")
-    assert r["v"] in (2, 3, 4, 5, 6) and r["shots"][0]["name"] == "cap_k1_001.jpg"
+    assert r["v"] in (2, 3, 4, 5, 6, 7) and r["shots"][0]["name"] == "cap_k1_001.jpg"
     blob = json.loads((FIXTURES / "app" / "shot.txt").read_text().split("BMSH1:", 1)[1])
     cam = cp.pose(blob)
     assert near(cam.centre, [1.0, 2.0, 3.0], 1e-12) and cam.lens["w"] == 4000

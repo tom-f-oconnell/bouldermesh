@@ -167,7 +167,7 @@ class MarkerRenderer {
                 GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
             }
             val level = LEVEL_COLORS[m.level]
-            val role = plan?.roleColor(m.role)?.toFloatArray()
+            val role = m.rgb?.let { c -> floatArrayOf((c shr 16 and 0xff) / 255f, (c shr 8 and 0xff) / 255f, (c and 0xff) / 255f) } ?: plan?.roleColor(m.role)?.toFloatArray()
             if (m.kind == CaptureFlow.ALIGN) { ring(floatArrayOf(0f, 0f, 0f), 0.8f, 1f, 0f, 0.3f, cross = true); ring(floatArrayOf(1f, 1f, 1f), 1f, 1f, 0f, 0.16f, cross = true); continue }
             if (m.current) ring(floatArrayOf(1f, 1f, 1f), 0.95f, 1.3f, 0.86f, 1f)
             if (role != null && m.kind == CaptureFlow.MODEL_HOLD) ring(role, 0.75f, 1f, 0.68f, 1f)

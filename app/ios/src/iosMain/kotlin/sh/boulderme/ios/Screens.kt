@@ -89,11 +89,11 @@ class Home(private val app: App) : Form("BoulderMesh") {
     }
 
     /** Starts a capture; before the phone's first (`guide`), says how one goes. */
-    fun capture(mesh: String?, name: String, set: String? = null, guide: Boolean = true) {
+    fun capture(mesh: String?, name: String, set: String? = null, guide: Boolean = true, gym: Boolean = false) {
         if (guide && !app.store.guideSeen) return screen.confirm(CaptureGuide.TITLE, CaptureGuide.text(), "Start", "Cancel") {
-            app.store.guideSeen = true; capture(mesh, name, set, false)
+            app.store.guideSeen = true; capture(mesh, name, set, false, gym)
         }
-        val c = CaptureController(app, mesh, name, set) { id -> if (id != null) push(Done(app, id)) }
+        val c = CaptureController(app, mesh, name, set, gym = gym) { id -> if (id != null) push(Done(app, id)) }
         c.modalPresentationStyle = UIModalPresentationFullScreen
         screen.presentViewController(c, animated = true, completion = null)
     }
@@ -171,6 +171,8 @@ class Home(private val app: App) : Form("BoulderMesh") {
 
         section("A rock with no mesh")
         button("Capture a new rock…") { screen.ask("What is it?", "The rock's or climb's name", "Start") { capture(null, it.take(60)) } }
+        // a gym climb: one of its holds tapped, the rest of its colour found in the photos
+        button("Capture a gym climb…") { screen.ask("Which climb?", "The gym and climb, e.g. \"Yellow V3, the cave\"", "Start") { capture(null, it.take(60), gym = true) } }
 
         val ids = app.store.captureIds()
         if (ids.isNotEmpty()) section("Captures on this phone")

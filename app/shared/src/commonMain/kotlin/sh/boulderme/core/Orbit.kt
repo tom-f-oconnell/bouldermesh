@@ -3,6 +3,7 @@ package sh.boulderme.core
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.floor
+import kotlin.math.hypot
 import kotlin.math.tan
 
 /**
@@ -20,11 +21,17 @@ class Orbit(val centre: Vec3, val sectors: Int = 12, private val others: List<Do
         var y: Double? = null
         val shots = IntArray(sectors)
     }
-    class Spot(val id: String, val p: Vec3) {
+    /**
+     * A spot to photograph close up from several directions: a marked hold, or a gym climb's hold found by its colour
+     * (`gym`: then where it is is refined as more photos find it, and a hold out of reach asks for less, `needGsdM`).
+     */
+    class Spot(val id: String, var p: Vec3, val gym: Boolean = false) {
         val dirs = ArrayList<Vec3>()
         var bestGsdM: Double? = null
         var skipped = false
-        fun done() = skipped || (dirs.size >= SPOT_VIEWS && (bestGsdM ?: 1.0) <= SPOT_GSD_M)
+        var needGsdM = SPOT_GSD_M
+        var rM = 0.08
+        fun done() = skipped || (dirs.size >= SPOT_VIEWS && (bestGsdM ?: 1.0) <= needGsdM)
     }
 
     val ring = Array(sectors) { Sector() }      // the first ring's photos, and which sides are out of reach, for every ring
@@ -52,7 +59,23 @@ class Orbit(val centre: Vec3, val sectors: Int = 12, private val others: List<Do
         (others + rings.filter { it !== r }.mapNotNull { it.y }).all { abs(pose.centre.y - it) >= RING_APART_M }
     fun inRing(pose: CameraPose, r: Ring): Boolean = !heights || if (r.y == null) startsAway(pose, r) else abs(off(pose, r)) <= RING_BAND_M
 
-    fun addSpot(p: Vec3): Spot = Spot("s${spots.size}", p).also { spots.add(it) }
+    fun addSpot(p: Vec3, id: String? = null, gym: Boolean = false): Spot = Spot(id ?: "s${spots.size}", p, gym).also { spots.add(it) }
+    fun spot(id: String): Spot? = spots.firstOrNull { it.id == id }
+    fun removeSpot(id: String) { spots.removeAll { it.id == id } }
+    fun skipSpot(id: String): Boolean = spot(id)?.let { it.skipped = true; true } ?: false
+
+    /**
+     * Marks the sides of the rock more than `keepDeg` round from the side `from` is on as out of reach: a wall, seen
+     * from in front of it, has no back to walk round to.
+     */
+    fun blockBehind(from: Vec3, keepDeg: Double = WALL_KEEP_DEG) {
+        val facing = atan2(from.x - centre.x, from.z - centre.z)
+        for (k in 0 until sectors) {
+            val mid = (k + 0.5) * 2 * kotlin.math.PI / sectors
+            var d = abs(mid - facing) % (2 * kotlin.math.PI); if (d > kotlin.math.PI) d = 2 * kotlin.math.PI - d
+            if (d * 180 / kotlin.math.PI > keepDeg) block(k)
+        }
+    }
     fun block(sector: Int, blocked: Boolean = true) { ring[sector].blocked = blocked }
 
     private fun looksAtRock(pose: CameraPose) = angleDeg(pose.forward, centre - pose.centre) < 40.0
@@ -66,9 +89,9 @@ class Orbit(val centre: Vec3, val sectors: Int = 12, private val others: List<Do
     private fun spotGain(pose: CameraPose, s: Spot): Boolean {
         if (s.done()) return false
         val gsd = seesSpot(pose, s) ?: return false
-        if (gsd > SPOT_GSD_M * Coverage.GOOD_ENOUGH) return false
+        if (gsd > s.needGsdM * Coverage.GOOD_ENOUGH) return false
         val towards = (pose.centre - s.p).unit()
-        return s.dirs.none { angleDeg(it, towards) < VIEW_DEG } || (s.bestGsdM ?: 1.0) > SPOT_GSD_M && gsd <= SPOT_GSD_M
+        return s.dirs.none { angleDeg(it, towards) < VIEW_DEG } || (s.bestGsdM ?: 1.0) > s.needGsdM && gsd <= s.needGsdM
     }
 
     /** Whether a photo from here adds anything: a spot's view, or the rock from somewhere new. */
@@ -95,7 +118,7 @@ class Orbit(val centre: Vec3, val sectors: Int = 12, private val others: List<Do
             val gsd = seesSpot(pose, s) ?: continue
             if (s.bestGsdM == null || gsd < s.bestGsdM!!) s.bestGsdM = gsd
             val towards = (pose.centre - s.p).unit()
-            if (gsd <= SPOT_GSD_M * Coverage.GOOD_ENOUGH && s.dirs.none { angleDeg(it, towards) < VIEW_DEG }) { s.dirs.add(towards); helped.add(s.id) }
+            if (gsd <= s.needGsdM * Coverage.GOOD_ENOUGH && s.dirs.none { angleDeg(it, towards) < VIEW_DEG }) { s.dirs.add(towards); helped.add(s.id) }
         }
         last = pose
         return helped
@@ -141,11 +164,21 @@ class Orbit(val centre: Vec3, val sectors: Int = 12, private val others: List<Do
         return 0
     }
 
-    fun hint(pose: CameraPose): Hint {
-        spots.firstOrNull { !it.done() && seesSpot(pose, it) != null }?.let { s ->
+    /**
+     * @param uprightDeg how far clockwise the picture is turned to be shown upright (Coverage.hint()): which way to
+     *   turn to a spot out of the picture is said as the screen has it.
+     * @param what what a spot is called: "the spot you marked", or a gym climb's "yellow hold"; `high` whether one is
+     *   out of reach from the ground.
+     */
+    fun hint(pose: CameraPose, uprightDeg: Int = 0, what: (Spot) -> String = { "the spot you marked" }, high: (Spot) -> Boolean = { false }): Hint {
+        spots.filter { !it.done() && seesSpot(pose, it) != null }.minByOrNull { pose.centre.distance(it.p) }?.let { s ->
             val dm = pose.centre.distance(s.p)
             val gsd = dm / pose.lens.fx
-            if (gsd > SPOT_GSD_M) return Hint(Hint.Kind.CLOSER, "Move ${Coverage.metres(dm - SPOT_GSD_M * pose.lens.fx)} closer to the spot you marked", s.id, moveM = dm - SPOT_GSD_M * pose.lens.fx)
+            if (gsd > s.needGsdM) {
+                val move = dm - s.needGsdM * pose.lens.fx
+                if (high(s) && pose.centre.y < s.p.y - 0.5) return Hint(Hint.Kind.CLOSER, "Hold the phone up as high as you can, below ${what(s)}", s.id, turnY = 1.0, moveM = move)
+                return Hint(Hint.Kind.CLOSER, "Move ${Coverage.metres(move)} closer to ${what(s)}", s.id, moveM = move)
+            }
             val towards = (pose.centre - s.p).unit()
             if (s.dirs.any { angleDeg(it, towards) < VIEW_DEG })
                 return Hint(Hint.Kind.ANGLE, "Good. Step ${Coverage.metres(dm * tan(VIEW_DEG * 1.3 * kotlin.math.PI / 180))} to one side for another angle on it", s.id)
@@ -163,9 +196,17 @@ class Orbit(val centre: Vec3, val sectors: Int = 12, private val others: List<Do
         if (shotsAt(r, here) < SECTOR_SHOTS && !ring[here].blocked) return Hint(Hint.Kind.SHOOT, say("hold still"))
         val (best, bestSteps) = next(here)
         if (bestSteps == sectors) {
-            val left = spots.count { !it.done() }
-            return if (left > 0) Hint(Hint.Kind.TURN, "Now the ${if (left == 1) "spot" else "$left spots"} you marked: go up close")
-            else Hint(Hint.Kind.DONE, if (heights) "Ring ${r.n} done, all round. Finish, or another ring from another height" else "All round done. Finish, another ring from another height, or mark holds for close-ups")
+            val next = spots.filter { !it.done() }.minByOrNull { pose.centre.distance(it.p) }
+            if (next != null) {
+                val c = pose.rot.conj().rotate(next.p - pose.centre)
+                val (sx, sy) = Coverage.toScreen(c.x, c.y, uprightDeg)
+                val n = hypot(sx, sy).let { if (it > 1e-9) it else 1.0 }
+                val word = if (c.z < 0 && hypot(c.x, c.y) < -c.z) "round" else if (abs(sx) >= abs(sy)) (if (sx > 0) "right" else "left") else (if (sy > 0) "down" else "up")
+                val left = spots.count { !it.done() }
+                return Hint(Hint.Kind.TURN, if (word == "round") "Turn round, to ${what(next)} ($left still to photograph close up)"
+                    else "Point the camera $word, at ${what(next)} ($left still to photograph close up)", next.id, turnX = sx / n, turnY = -sy / n)
+            }
+            return Hint(Hint.Kind.DONE, if (heights) "Ring ${r.n} done, all round. Finish, or another ring from another height" else "All round done. Finish, another ring from another height, or mark holds for close-ups")
         }
         return Hint(Hint.Kind.FACE, say("step round to your ${if (best < 0) "left" else "right"}, or mark that side as out of reach"), turnX = best.toDouble())
     }
@@ -179,5 +220,6 @@ class Orbit(val centre: Vec3, val sectors: Int = 12, private val others: List<Do
         const val VIEW_DEG = 15.0
         const val RING_BAND_M = 0.5         // a photo this near a ring's height is of that ring
         const val RING_APART_M = 0.9        // and a new ring starts at least this far above or below the others
+        const val WALL_KEEP_DEG = 80.0      // a gym's wall: the sides this far round from where it was tapped from are those to walk to
     }
 }

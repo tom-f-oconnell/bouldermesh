@@ -48,7 +48,8 @@ sealed interface Screen {
     data object Calibrate : Screen
     /** mesh: the mesh being added to, or null for a rock with none. */
     data class Capture(val mesh: String?, val name: String, val set: String? = null,      // set: the set of beta it's for
-                       val reopen: String? = null) : Screen                                // a capture finished earlier, to carry on (Reopen)
+                       val reopen: String? = null,                                         // a capture finished earlier, to carry on (Reopen)
+                       val gym: Boolean = false) : Screen                                  // a gym climb, its holds found by their colour
     data class Done(val id: String) : Screen
     /** A capture on this phone: what it holds, by what each part was for; and one of its photos (or scenery's frames). */
     data class Upload(val id: String) : Screen
@@ -164,7 +165,7 @@ class MainActivity : ComponentActivity() {
             "capture" -> {
                 val asked = intent.getStringExtra("mesh")
                 val mesh = asked?.takeIf { it != "none" } ?: store.downloaded().firstOrNull()?.mesh?.takeIf { asked == null }
-                Screen.Capture(mesh, mesh?.let { store.plan(it)?.name } ?: "A rock", intent.getStringExtra("set"))
+                Screen.Capture(mesh, mesh?.let { store.plan(it)?.name } ?: "A rock", intent.getStringExtra("set"), gym = intent.getBooleanExtra("gym", false))
             }
             "viewer" -> store.downloaded().firstOrNull()?.let { Screen.Viewer(it.mesh, it.name) } ?: Screen.Home
             "upload", "photo" -> (intent.getStringExtra("capture") ?: store.captureIds().firstOrNull())?.let { id ->

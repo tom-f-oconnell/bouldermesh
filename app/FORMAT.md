@@ -147,6 +147,14 @@ last before) and `k_src: "derived"` (its lens was worked out from the tracking c
                           the phone's fit put it in that mesh's coordinates (m). Once the capture is meshed, the server puts
                           them on the mesh, by the photos of their spell it placed (phone_holds()), as a set of beta of the
                           account's, "Marked on the phone", each a hand until changed; and on the mesh it added to, once tied
+                          (a gym climb's set is named after its colour: "Yellow climb (gym)"). A gym climb's holds found by
+                          their colour are here too, ids g<n>, in the spell of its last photo
+    gym                   {name, rgb, tolerance, finder, tapped, holds: [{id, p, r_m, photos, picked}], colour_blobs,
+                          model_blobs} (v 7): a gym climb captured by its holds' colour: what the colour was called and
+                          drawn in ("#rrggbb"), how widely it was taken (1 as first set), whether the colour finder's patches
+                          or a hold-finding model's counted, the CIELAB colour of each hold tapped as being of it, the holds
+                          found (in the tracking's world, as marked's; picked if tapped; photos: how many found it), and
+                          how many patches each finder found in all its photos
 
 **The points** (`points.bin`, kept in the project as `capture-points.bin`): what the phone's tracking found of the world,
 one to each 5 cm, 20,000 at most to a spell. Noisy to a centimetre or so, except from a lidar.

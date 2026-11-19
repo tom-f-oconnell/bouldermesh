@@ -149,9 +149,10 @@ def readings(photo: Path) -> dict | None:
 def record(path: Path) -> dict:
     r = json.loads(Path(path).read_text())
     # 4 adds only scenery (app/FORMAT.md), never meshed, which this leaves alone; 5 marked holds; 6 a turn on the spot
-    # per spell of tracking (levels), whose photos say so in their own down_src
-    if r.get("v") not in (1, 2, 3, 4, 5, 6):
-        raise ValueError(f"a capture record of version {r.get('v')}: this reads 1 to 6")
+    # per spell of tracking (levels), whose photos say so in their own down_src; 7 a gym climb's holds found by colour
+    # (gym), which are in marked too
+    if r.get("v") not in (1, 2, 3, 4, 5, 6, 7):
+        raise ValueError(f"a capture record of version {r.get('v')}: this reads 1 to 7")
     return r
 
 

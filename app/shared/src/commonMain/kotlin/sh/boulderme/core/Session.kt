@@ -21,7 +21,8 @@ data class FrameOut(val hint: Hint, val shoot: Boolean, val progress: Progress, 
 
 /** Something to draw in the world: a hold, an edge or a marked spot, coloured by how done it is (Coverage.LEVEL_*). */
 data class Marker(val id: String, val world: Vec3, val radiusM: Double, val level: Int, val kind: String, val current: Boolean,
-                  val role: String? = null)     // a hold's: what it's drawn in is the plan's colour for it, as the site draws it
+                  val role: String? = null,     // a hold's: what it's drawn in is the plan's colour for it, as the site draws it
+                  val rgb: Int? = null)         // or this colour (0xRRGGBB): a gym climb's hold, its own
 
 /**
  * A photo just taken: where from, as stored (its pose and lens are the stored picture's: CameraPose.turned() of the
@@ -36,6 +37,8 @@ data class ShotIn(
     val span: BlobSpan? = null, val paused: Boolean = false, val lensDerived: Boolean = false,
     val card: Boolean = false,          // a bank card lies beside the hold being photographed: kept for its size, and counted for nothing else
     val features: Features? = null,     // its corners (Features.of()), to match against the photos near it: for a warning only
+    val blobs: List<Blob>? = null,      // in a gym capture: its patches of one colour (Blobs.find()), and those a hold-finding model found, if the phone has one
+    val modelBlobs: List<Blob>? = null,
     val arPoints: Int? = null,          // the points the tracking was following as it was taken, and those it had found in what it shows
     val arCells: Int? = null,
 )
@@ -55,6 +58,8 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     val coverage: Coverage? = plan?.let { Coverage(it, guide) }
     var orbit: Orbit? = null
         private set
+    /** A gym climb's holds, found by their colour, in a capture for one (CaptureFlow's gym): each a spot of the orbit. */
+    var gym: Gym? = null
     var fit: Similarity? = null
         private set
     var refined: Registration.Refined? = null
@@ -147,6 +152,21 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
 
     /** Starts capturing a rock with no mesh: its middle, in the world. */
     fun startOrbit(centre: Vec3) { orbit = Orbit(centre) }
+
+    /**
+     * Makes the orbit's spots the gym climb's holds as now found: new ones added, those no longer found taken away,
+     * and each where it's now found, asking as finely as a phone can photograph it from the ground.
+     */
+    fun syncGym() {
+        val g = gym ?: return; val orb = orbit ?: return
+        val fx = lastPose?.lens?.fx ?: shots.lastOrNull { it.kept }?.blob?.k?.fx ?: DEFAULT_FX
+        val ids = g.holds.map { it.id }.toSet()
+        for (s in orb.spots.filter { it.gym && it.id !in ids }) orb.removeSpot(s.id)
+        for (h in g.holds) {
+            val s = orb.spot(h.id) ?: orb.addSpot(h.p, h.id, gym = true)
+            s.p = h.p; s.rM = h.rM; s.needGsdM = g.bestGsdM(h.p, fx)
+        }
+    }
 
     /**
      * Starts another ring all round the rock, from another height. With a mesh, the first: round its middle, kept away
@@ -289,7 +309,10 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             val blur = Quality.blurPx(f.gyroRadS, speed, f.exposureS, f.pose.lens.fx, f.pose.centre.distance(orb.centre))
             val steadyS = steadyFor(blur, f.t)
             val useful = orb.useful(f.pose)
-            val hint = shootHint(orb.hint(f.pose), useful, steadyS)
+            val g = gym
+            val raw = orb.hint(f.pose, f.uprightDeg, { s -> if (s.gym && g?.colour != null) "the ${g.colour!!.name} hold" else "the spot you marked" }, { s -> s.gym && g?.high(s.p) == true })
+            current = raw.targetId?.takeIf { orb.spot(it) != null }
+            val hint = shootHint(raw, useful, steadyS)
             return FrameOut(hint, auto && steadyS >= STEADY_FOR_S && useful && f.t - lastShotT >= MIN_GAP_S, orb.progress(), blur, steadyS = steadyS,
                 redundant = !useful && hint.kind != Hint.Kind.DONE)
         }
@@ -425,7 +448,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     }
 
     /** Leaves the target being asked for (out of reach, or not wanted), and goes on to the next. */
-    fun skipCurrent(why: String) { current?.let { coverage?.skip(it, why) }; current = null }
+    fun skipCurrent(why: String) { current?.let { if (orbit?.skipSpot(it) != true) coverage?.skip(it, why) }; current = null }
 
     var anon = false                    // holds of sets kept private count too: from the start if the app's setting says, or once asked at the end
     fun setScope(scope: Scope) { coverage?.scope = scope.copy(set = set, anon = anon); current = null }
@@ -441,8 +464,10 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             val mine = if (cov.detail(s)) (s.target.detailM ?: radius) else radius      // a hold wanted in detail: the part of the rock that's wanted
             out.add(Marker(s.target.id, f.apply(s.target.point), mine, cov.level(s), s.target.kind, s.target.id == current, s.target.role.takeIf { s.target.isHold }))
         }
+        val rgb = gym?.colour?.rgb
         orbit?.spots?.forEach { s ->
-            out.add(Marker(s.id, s.p, 0.08, if (s.skipped) Coverage.LEVEL_SKIPPED else if (s.done()) Coverage.LEVEL_DONE else if (s.dirs.isNotEmpty()) Coverage.LEVEL_PART else Coverage.LEVEL_TODO, "hold", false))
+            out.add(Marker(s.id, s.p, if (s.gym) s.rM else 0.08, if (s.skipped) Coverage.LEVEL_SKIPPED else if (s.done()) Coverage.LEVEL_DONE else if (s.dirs.isNotEmpty()) Coverage.LEVEL_PART else Coverage.LEVEL_TODO,
+                "hold", s.id == current, rgb = if (s.gym) rgb else null))
         }
         return out
     }
@@ -466,7 +491,9 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             progress = p?.let { RecordProgress(it.total, it.done, it.skipped, it.holds, it.holdsDone) },
             detail = set?.let { id -> cov?.let { RecordDetail(id, it.reached()) } }, licence = licence, credit = credit,
             shots = shots.toList(), scenery = scenery.toList(),
-            marked = marked.map { h -> RecordMarked(h.id, spellName(h.spell), h.world.toList(), h.mesh?.toList()) },
+            marked = marked.map { h -> RecordMarked(h.id, spellName(h.spell), h.world.toList(), h.mesh?.toList()) } +
+                (gym?.let { g -> g.holds.map { RecordMarked(it.id, spellName(g.spell), it.p.toList()) } } ?: emptyList()),
+            gym = gym?.record(),
         )
     }
 
@@ -477,6 +504,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     private fun arBase(): String? = (shots.firstOrNull { it.blob.ar != null }?.blob?.ar?.s ?: scenery.firstOrNull()?.ar?.s)?.substringBefore('.')
 
     companion object {
+        const val DEFAULT_FX = 1500.0   // a phone's tracking frames' focal length, pixels, until one says
         const val MARK_NEAR_M = 0.3     // a hold marked on the phone faces the way the mesh does within this of it
         const val MARK_REACH_M = 0.15   // as a target: this far round it (the server's captureplan.HOLD_RADIUS_M)
         const val MARK_DETAIL_M = 0.075 // and the hold itself, wanted in detail (beta.HOLD_R_M)

@@ -31,6 +31,8 @@ import sh.boulderme.core.Locate
 import sh.boulderme.core.Locator
 import sh.boulderme.core.PhoneLocate
 import sh.boulderme.core.Axes
+import sh.boulderme.core.Blobs
+import sh.boulderme.core.Picture
 import sh.boulderme.core.CameraPose
 import sh.boulderme.core.CaptureFlow
 import sh.boulderme.core.Reopen
@@ -65,6 +67,7 @@ class ArController(
     private val plan: Plan?, guide: GuideMesh?, private val name: String, set: String?,
     reopen: String? = null,         // the id of a capture finished earlier, to carry on (Reopen)
     private val locators: List<Pair<String, Locator>> = emptyList(),   // what places frames against the mesh, by name ("phone", "server")
+    gym: Boolean = false,           // a gym climb: its holds found by their colour (CaptureFlow's gym)
     private val onUi: (CaptureUi) -> Unit,
 ) : GLSurfaceView.Renderer {
     val id: String = reopen ?: (java.lang.Long.toString(System.currentTimeMillis() / 1000, 36) + (100..999).random())
@@ -72,7 +75,7 @@ class ArController(
     init { plan?.let { store.keepPlan(id, it.mesh) } }
     private val guide = guide.takeIf { plan != null }
     private val core = CaptureSession(plan, this.guide, id, BuildInfo.APP, "${Build.MANUFACTURER} ${Build.MODEL}", System.currentTimeMillis() / 1000.0)
-    private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = store.credit.ifBlank { null } }, set, store.anonFirst, store.levelLimit, store.levelTilts)
+    private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = store.credit.ifBlank { null } }, set, store.anonFirst, store.levelLimit, store.levelTilts, gym = gym && plan == null)
         .apply { onSettings = { limit, tilts -> store.levelLimit = limit; store.levelTilts = tilts } }
     init {
         if (reopen != null) flow.reopen(Reopen.record(File(dir, "capture.json").readText()) ?: error("the record of $reopen can't be read"),
@@ -82,6 +85,7 @@ class ArController(
     private val locating = locators.map { Executors.newSingleThreadExecutor() }      // one thread each, and a frame only to one that's free
     private val locBusy = locators.map { java.util.concurrent.atomic.AtomicBoolean(false) }
     private val lock = Any()        // round every use of the flow: frames are drawn on one thread, photos judged on another
+    private val gymOn = flow.isGym
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val sounds = Sounds()
@@ -181,6 +185,10 @@ class ArController(
     fun setAuto(on: Boolean) = synchronized(lock) { flow.setAuto(on) }
     fun skip() = synchronized(lock) { flow.skip() }
     fun toggleMarking() = synchronized(lock) { flow.toggleMarking() }
+    fun gymTap(mode: String) = synchronized(lock) { flow.gymTap(mode) }
+    fun gymWider() = synchronized(lock) { flow.gymWider() }
+    fun gymNarrower() = synchronized(lock) { flow.gymNarrower() }
+    fun gymFinder(f: String) = synchronized(lock) { flow.gymFinder(f) }
     fun toggleWide() = synchronized(lock) { flow.toggleWide() }
     fun toggleCard() = synchronized(lock) { flow.toggleCard() }
     fun startScenery() = synchronized(lock) { flow.startScenery()?.let { flow.say(it) } }
@@ -252,7 +260,7 @@ class ArController(
             // the first few tries, and then each time what's used changes: not a line every two seconds
             clocked?.takeIf { clockSaid++ < 5 || kotlin.math.abs(it.usedS - clockUsed) > 0.002 }?.let { clockUsed = it.usedS; flow.event("imu_clock", "offset_s" to it.offsetS, "fit_rad_s" to it.fitRadS, "motion_rad_s" to it.motionRadS, "taken" to it.taken,
                 "used_s" to it.usedS, "newest_after_s" to it.lagS, "frame_age_s" to now - shotAt) }
-            if (tap != null && tracking) { val (from, along) = ray(tap[0], tap[1]); flow.tap(from, along) { hit(frame, tap) } }
+            if (tap != null && tracking) { val (from, along) = ray(tap[0], tap[1]); flow.tap(from, along, if (gymOn) ({ picture(frame, pose) }) else null) { hit(frame, tap) } }
             while (true) { val g = gestures.poll() ?: break; if (tracking) g() }
             // the slow half of tightening the fit holds no lock: frames go on being drawn meanwhile
             flow.refineDue(now)?.let { work -> worker.execute { val found = flow.tighter(work); synchronized(lock) { flow.tightened(work, found) } } }
@@ -287,6 +295,15 @@ class ArController(
             if (ok) return h.hitPose.let { Vec3(it.tx().toDouble(), it.ty().toDouble(), it.tz().toDouble()) }
         }
         return null
+    }
+
+    /** The camera's picture now, small and in colour, upright as a photo is stored, with the camera as that picture has it: for a tap on a gym climb's hold. */
+    private fun picture(frame: Frame, pose: CameraPose): Pair<Picture, CameraPose>? {
+        val image: Image = try { frame.acquireCameraImage() } catch (e: Exception) { return null }
+        val w = image.width; val h = image.height
+        val nv21 = try { toNv21(image) } finally { image.close() }
+        val turn = Axes.uprightTurn(Axes.downInImage(pose), uprightDeg())
+        return Picture.ofYuv(nv21, w, nv21, w * h, w, w, h, vFirst = true, turn = turn) to pose.turned(turn)
     }
 
     /** The ray a point of the screen looks along, in the world. */
@@ -341,7 +358,10 @@ class ArController(
                 val turn = Axes.uprightTurn(Axes.downInImage(pose), upright)
                 val stored = pose.turned(turn)
                 val features = runCatching { Features.of(nv21, w, h, w, turn) }.getOrNull()     // for a warning if it won't match the photos near it
-                val out = synchronized(lock) { flow.shot(ShotIn(stored, sample, stats, shutter, iso, focus, true, arSession, now, unix, sensorOrientation, gyro, turn, features = features)) }
+                // a gym climb's: its patches of one colour, to find the climb's holds in
+                val blobs = if (gymOn) runCatching { Blobs.find(Picture.ofYuv(nv21, w, nv21, w * h, w, w, h, vFirst = true, turn = turn)) }.getOrNull() else null
+                val out = synchronized(lock) { flow.shot(ShotIn(stored, sample, stats, shutter, iso, focus, true, arSession, now, unix, sensorOrientation, gyro, turn,
+                    features = features, blobs = blobs)) }
                 if (out.kept) {
                     if (dingKept) sounds.ding()
                     val file = File(File(dir, "photos"), out.record.name)

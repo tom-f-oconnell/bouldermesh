@@ -2166,19 +2166,20 @@ def phone_holds(mid: str, pid: str, log=None, target: str | None = None) -> dict
     proj = q("SELECT user_id FROM projects WHERE id=?", pid, one=True)
     user = ACCOUNTS.get(proj["user_id"]) if proj and proj.get("user_id") else None
     places = [(mid, holds)]
+    name = beta_mod.capture_set_name(rec)
     tie = frames.load(MESHES / mid) if target else None
     if tie and tie.get("status") == "tied" and tie.get("of") == target:
         places.append((target, [{**h, "p": [round(x, 5) for x in frames.back(tie, h["p"])]} for h in holds]))
     for where, these in places:
         try:
-            one = beta_mod.capture_set(MESHES / where, pid, these, user["id"] if user else None, user["name"] if user else None)
+            one = beta_mod.capture_set(MESHES / where, pid, these, user["id"] if user else None, user["name"] if user else None, name=name)
             out["sets"].append({"mesh": where, "set": one["id"]})
         except ValueError as e:
             say(f"capture: the holds marked on the phone weren't added to mesh {where}: {e}")
     if out["sets"]:
         meshes_changed()
     say(f"capture: {len(holds)} of the {plural(len(marked), 'hold')} marked on the phone put on "
-        + " and ".join(f"mesh {s['mesh']}" for s in out["sets"]) + f", as the set of beta \"{beta_mod.CAPTURE_SET_NAME}\""
+        + " and ".join(f"mesh {s['mesh']}" for s in out["sets"]) + f", as the set of beta \"{name}\""
         + (f"; {len(marked) - len(holds)} left out, too few photos of their spell of the tracking placed" if len(holds) < len(marked) else ""))
     return out
 

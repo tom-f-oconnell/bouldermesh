@@ -111,6 +111,9 @@ assert theirs["gps"]["acc"] == 3.0 and theirs["down_src"] == "ar" and theirs["k"
 assert phonedata.down(theirs) and abs(phonedata.down(theirs)[1] - 0.98 / math.hypot(0.98, 0.2)) < 1e-9
 sent_record = json.loads((FIXTURES / "app" / "capture.json").read_text())
 assert sent_record["mesh"] == "ca" * 6 and sent_record["shots"][0]["name"] == "cap_k1_001.jpg" and sent_record["shots"][0]["blob"] == theirs, sent_record
+# a gym climb's holds, found by their colour, go in a set named after it
+assert beta.capture_set_name(sent_record) == "Yellow climb (gym)" and beta.capture_set_name({"gym": None}) == beta.CAPTURE_SET_NAME
+assert any(m["id"] == "g1" for m in sent_record["marked"]) and sent_record["gym"]["holds"][0]["r_m"] == 0.06, sent_record["gym"]
 print("what the apps read and write OK")
 
 # --- a photo's readings, in its own file --------------------------------------------------------------------------------

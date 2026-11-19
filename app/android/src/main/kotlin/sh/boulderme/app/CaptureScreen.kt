@@ -45,6 +45,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import sh.boulderme.core.CaptureUi
+import sh.boulderme.core.GymUi
 import sh.boulderme.core.LevelUi
 import sh.boulderme.core.Phase
 import sh.boulderme.core.unplacedSaid
@@ -141,6 +142,16 @@ private class ModelTouch(ctx: android.content.Context, private val c: ArControll
     }
 }
 
+/** A gym climb's colour, as a swatch, with how many of its holds have been found and photographed close up, and how widely its colour is taken. */
+@Composable
+private fun GymLine(g: GymUi) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.size(14.dp).background(Color(0xFF000000 or g.rgb.toLong()), RoundedCornerShape(3.dp)))
+        Text("${g.done}/${g.holds} ${g.name} holds photographed close up · colour ${g.tolerance + 1} of ${g.tolerances} wide" +
+            if (g.finders.size > 1) " · found by ${g.finder}" else "", color = Color.White, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
 /** The camera with the mesh and what's left to photograph drawn over it, the hint, and the few buttons a capture has. */
 @OptIn(ExperimentalLayoutApi::class)
 @SuppressLint("ClickableViewAccessibility")
@@ -159,7 +170,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
         }
         return
     }
-    val controller = remember { ArController(a, a.store, a.sensors, plan, guide, if (what.reopen != null) what.name else what.name + " (capture)", what.set, what.reopen, locators(a, plan)) { ui = it } }
+    val controller = remember { ArController(a, a.store, a.sensors, plan, guide, if (what.reopen != null) what.name else what.name + " (capture)", what.set, what.reopen, locators(a, plan), what.gym) { ui = it } }
     val view = remember {
         GLSurfaceView(a).apply {
             preserveEGLContextOnPause = true
@@ -204,6 +215,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                     Text("${ui.done} of ${ui.total} directions faced", color = Color.White, style = MaterialTheme.typography.bodySmall)
                     ui.level?.let { LevelGauges(it) }
                 }
+                ui.gym?.let { g -> if (ui.phase == Phase.CAPTURE) GymLine(g) }
                 if (ui.phase == Phase.CAPTURE && ui.total > 0) {
                     LinearProgressIndicator(progress = { ui.done.toFloat() / ui.total }, modifier = Modifier.fillMaxWidth())
                     Text(listOfNotNull("${ui.done}/${ui.total} ${if (ui.guided) "parts" else "sides and spots"}", if (ui.holds > 0 && ui.guided) "${ui.holdsDone}/${ui.holds} holds" else null,
@@ -254,6 +266,15 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                             if (ui.canSkip) FilledTonalButton(onClick = { controller.skip() }) { Text("Skip this") }
                             FilledTonalButton(onClick = { controller.toggleWide() }) { Text("Doing: ${ui.reach}") }
                             if (ui.canCard || ui.card) FilledTonalButton(onClick = { controller.toggleCard() }) { Text(if (ui.card) "No card" else "Card photo") }
+                        }
+                        ui.gym?.let { g ->
+                            FilledTonalButton(onClick = { controller.gymTap("add") }) { Text(if (g.tap == "add") "Tap a hold of it…" else "Add a ${g.name} hold") }
+                            FilledTonalButton(onClick = { controller.gymTap("drop") }) { Text(if (g.tap == "drop") "Tap its ring…" else "Not part of it") }
+                            if (ui.canSkip && plan == null) FilledTonalButton(onClick = { controller.skip() }) { Text("Skip this") }
+                            FilledTonalButton(onClick = { controller.gymNarrower() }, enabled = g.tolerance > 0) { Text("Colour: narrower") }
+                            FilledTonalButton(onClick = { controller.gymWider() }, enabled = g.tolerance < g.tolerances - 1) { Text("Colour: wider") }
+                            if (g.finders.size > 1) FilledTonalButton(onClick = { controller.gymFinder(g.finders[(g.finders.indexOf(g.finder) + 1) % g.finders.size]) }) {
+                                Text("Found by: ${g.finder}") }
                         }
                         FilledTonalButton(onClick = { controller.toggleMarking() }) { Text(if (ui.marking) "Tap the hold…" else "Mark a hold") }
                         if (plan == null || ui.ring > 0) FilledTonalButton(onClick = { controller.blockSide() }) { Text("Can't reach that side") }

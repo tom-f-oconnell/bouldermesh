@@ -140,6 +140,8 @@ import platform.posix.utsname
 import sh.boulderme.core.Locate
 import sh.boulderme.core.PhoneLocate
 import sh.boulderme.core.Axes
+import sh.boulderme.core.Blobs
+import sh.boulderme.core.Picture
 import sh.boulderme.core.CameraPose
 import sh.boulderme.core.CaptureFlow
 import sh.boulderme.core.Reopen
@@ -204,6 +206,7 @@ private fun machine(): String = memScoped { val u = alloc<utsname>(); uname(u.pt
 @OptIn(NativeRuntimeApi::class)
 class CaptureController(private val app: App, mesh: String?, private val name: String, set: String? = null,
                         reopen: String? = null,     // the id of a capture finished earlier, to carry on (Reopen)
+                        gym: Boolean = false,       // a gym climb: its holds found by their colour (CaptureFlow's gym)
                         private val done: (String?) -> Unit) : UIViewController(nibName = null, bundle = null) {
     private val plan = mesh?.let { app.store.plan(it) }
     private val guide: GuideMesh? = if (plan != null && mesh != null) app.store.guide(mesh) else null
@@ -212,7 +215,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     init { plan?.let { app.store.keepPlan(id, it.mesh) } }
     private val core = CaptureSession(plan.takeIf { guide != null }, guide, id, IosStore.APP, machine(), NSDate().timeIntervalSince1970)
     private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = this@CaptureController.app.store.credit.ifBlank { null } }, set, app.store.anonFirst,
-        app.store.levelLimit, app.store.levelTilts).apply { onSettings = { limit, tilts -> this@CaptureController.app.store.levelLimit = limit; this@CaptureController.app.store.levelTilts = tilts } }
+        app.store.levelLimit, app.store.levelTilts, gym = gym && mesh == null).apply { onSettings = { limit, tilts -> this@CaptureController.app.store.levelLimit = limit; this@CaptureController.app.store.levelTilts = tilts } }
+    private val gymOn = flow.isGym
     init {
         if (reopen != null) flow.reopen(Reopen.record(Files.readText("$dir/capture.json")) ?: error("the record of $reopen can't be read"),
             Files.readBytes("$dir/points.bin"), Files.readText("$dir/capture-log.jsonl") ?: "")
@@ -464,8 +468,9 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         val seen = HashSet<String>()
         for (m in markers) {
             seen.add(m.id)
-            val role = core.plan?.roleColor(m.role)     // a hold: its ring is its role's colour, as the site draws it, with how done it is in its middle
-            val key = "${m.id}/${m.level}/${m.current}/${(m.radiusM * 100).roundToInt()}/${m.role}"
+            // a hold: its ring is its role's colour, as the site draws it (a gym climb's, the climb's own), with how done it is in its middle
+            val role = m.rgb?.let { c -> listOf((c shr 16 and 0xff) / 255f, (c shr 8 and 0xff) / 255f, (c and 0xff) / 255f) } ?: core.plan?.roleColor(m.role)
+            val key = "${m.id}/${m.level}/${m.current}/${(m.radiusM * 100).roundToInt()}/${m.role}/${m.rgb}"
             var node = rings[m.id]
             if (node == null || node.name != key) {
                 node?.removeFromParentNode()
@@ -567,7 +572,13 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     fun tapped(g: UITapGestureRecognizer) {
         val (x, y) = g.locationInView(sceneView).useContents { x to y }
         val (near, along) = ray(x, y)
-        flow.tap(near, along) {
+        val frame = if (flow.isGym) sceneView.session.currentFrame else null
+        val picture: (() -> Pair<Picture, CameraPose>?)? = frame?.let { f -> {
+            val pose = poseOf(f.camera)
+            val turn = Axes.uprightTurn(Axes.downInImage(pose), UPRIGHT_DEG)
+            colourPicture(f.capturedImage, turn)?.let { it to pose.turned(turn) }
+        } }
+        flow.tap(near, along, picture) {
             // where ARKit says that point of the screen meets the world: the lidar's surface, a plane it's found, or its best guess at one
             val query = sceneView.raycastQueryFromPoint(CGPointMake(x, y), allowingTarget = ARRaycastTarget.ARRaycastTargetEstimatedPlane, alignment = ARRaycastTargetAlignment.ARRaycastTargetAlignmentAny)
             val hit = query?.let { sceneView.session.raycast(it).firstOrNull() as? ARRaycastResult }
@@ -601,10 +612,12 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         val turn = Axes.uprightTurn(Axes.downInImage(pose), UPRIGHT_DEG)
         dispatch_async(background) {
             val (stats, features) = lumaStats(buffer, turn)
+            // a gym climb's: its patches of one colour, to find the climb's holds in
+            val blobs = if (gymOn) colourPicture(buffer, turn)?.let { runCatching { Blobs.find(it) }.getOrNull() } else null
             dispatch_async(dispatch_get_main_queue()) {
                 val stored = pose.turned(turn)
                 val out = flow.shot(ShotIn(stored, sample, stats, exposure, iso, null, tracking, arSession, now, unix, SENSOR_ORIENTATION, sample.gyro?.norm ?: 0.0, turn,
-                    features = features))
+                    features = features, blobs = blobs))
                 if (out.kept && dingKept) sounds.ding()
                 if (out.kept) dispatch_async(background) {
                     val ok = writeJpeg(frame, "$dir/photos/${out.record.name}", out.userComment, sample, stored.lens, exposure, turn, unix)
@@ -670,6 +683,25 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             val stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0u).toInt()
             val base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0u) ?: return null
             return PhoneLocate.shrink(base.readBytes(stride * (h - 1) + w), w, h, stride)
+        } finally {
+            CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly)
+        }
+    }
+
+    /** The camera's picture small and in colour (its brightness plane and its CbCr one), turned by `turn` as the photo is stored: a gym climb's. */
+    private fun colourPicture(buffer: CVPixelBufferRef?, turn: Int): Picture? {
+        if (buffer == null || CVPixelBufferGetPlaneCount(buffer) < 2uL) return null
+        CVPixelBufferLockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly)
+        try {
+            val w = CVPixelBufferGetWidthOfPlane(buffer, 0u).toInt(); val h = CVPixelBufferGetHeightOfPlane(buffer, 0u).toInt()
+            val stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0u).toInt()
+            val cStride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 1u).toInt(); val ch = CVPixelBufferGetHeightOfPlane(buffer, 1u).toInt()
+            val cw = CVPixelBufferGetWidthOfPlane(buffer, 1u).toInt()
+            val luma = CVPixelBufferGetBaseAddressOfPlane(buffer, 0u)?.readBytes(stride * (h - 1) + w) ?: return null
+            val chroma = CVPixelBufferGetBaseAddressOfPlane(buffer, 1u)?.readBytes(cStride * (ch - 1) + cw * 2) ?: return null
+            return Picture.ofYuv(luma, stride, chroma, 0, cStride, w, h, vFirst = false, turn = turn)
+        } catch (e: Exception) {
+            return null
         } finally {
             CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly)
         }
@@ -770,7 +802,9 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         }
         if (capturing) {
             bar.progress = now.done.toFloat() / now.total
-            counts.text = listOfNotNull("${now.done}/${now.total} ${if (now.guided) "parts" else "sides and spots"}", if (now.holds > 0 && now.guided) "${now.holdsDone}/${now.holds} holds" else null,
+            counts.text = listOfNotNull(now.gym?.let { g -> "${g.done}/${g.holds} ${g.name} holds photographed close up · colour ${g.tolerance + 1} of ${g.tolerances} wide" +
+                    if (g.finders.size > 1) " · found by ${g.finder}" else "" },
+                "${now.done}/${now.total} ${if (now.guided) "parts" else "sides and spots"}", if (now.holds > 0 && now.guided) "${now.holdsDone}/${now.holds} holds" else null,
                 "${now.kept} photos", if (now.rejected > 0) "${now.rejected} not kept" else null).joinToString(" · ")
         }
         // a direction to face again, or an agreement asked for that's no better than the phone's own, in the warning's colour
@@ -782,7 +816,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         arrow.hidden = !turn
         flash.hidden = !now.flash
         if (turn) arrow.transform = CGAffineTransformMakeRotation(atan2(-now.turnY, now.turnX))     // the screen's y runs down
-        val want = "${now.phase}/${now.auto}/${now.canSkip}/${now.reach}/${now.canCard}/${now.card}/${now.askMore}/${now.scenery > 0}/${now.marking}/${now.guided}/${now.pairs > 0}/${now.kept > 0}/${now.waiting}/${now.ring}/${now.downNote.isNotEmpty()}/${now.turnAgain}/${now.level?.canLooser}/${now.level?.canStricter}"
+        val want = "${now.phase}/${now.auto}/${now.canSkip}/${now.reach}/${now.canCard}/${now.card}/${now.askMore}/${now.scenery > 0}/${now.marking}/${now.guided}/${now.pairs > 0}/${now.kept > 0}/${now.waiting}/${now.ring}/${now.downNote.isNotEmpty()}/${now.turnAgain}/${now.level?.canLooser}/${now.level?.canStricter}/${now.gym?.copy(holds = 0, done = 0)}"
         if (want != buttonsFor) { buttonsFor = want; offer(now) }
     }
 
@@ -810,6 +844,13 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             Phase.CAPTURE -> {
                 if (now.askMore > 0) buttons.addArrangedSubview(makeRow(makeButton("Photograph ${if (now.askMore == 1) "it" else "them"} too", Look.FILLED) { flow.more(true) }, makeButton("No") { flow.more(false) }))
                 buttons.addArrangedSubview(makeRow(makeButton(if (now.waiting) "Hold still…" else "Take", Look.FILLED) { flow.shutter() }, makeButton(if (now.auto) "Auto: on" else "Auto: off") { flow.setAuto(!now.auto) }, leave))
+                now.gym?.let { g ->
+                    buttons.addArrangedSubview(makeRow(makeButton(if (g.tap == "add") "Tap a hold of it…" else "Add a ${g.name} hold") { flow.gymTap("add") },
+                        makeButton(if (g.tap == "drop") "Tap its ring…" else "Not part of it") { flow.gymTap("drop") }, makeButton("Skip this", enabled = now.canSkip) { flow.skip() }))
+                    buttons.addArrangedSubview(makeRow(*listOfNotNull(makeButton("Colour: narrower", enabled = g.tolerance > 0) { flow.gymNarrower() },
+                        makeButton("Colour: wider", enabled = g.tolerance < g.tolerances - 1) { flow.gymWider() },
+                        if (g.finders.size > 1) makeButton("Found by: ${g.finder}") { flow.gymFinder(g.finders[(g.finders.indexOf(g.finder) + 1) % g.finders.size]) } else null).toTypedArray()))
+                }
                 buttons.addArrangedSubview(if (now.guided) makeRow(makeButton("Skip this", enabled = now.canSkip) { flow.skip() }, makeButton("Doing: ${now.reach}") { flow.toggleWide() },
                         *(if (now.canCard || now.card) arrayOf(makeButton(if (now.card) "No card" else "Card photo") { flow.toggleCard() }) else emptyArray()))
                     else makeRow(makeButton(if (now.marking) "Tap the hold…" else "Mark a hold") { flow.toggleMarking() }, makeButton("Can't reach that side") { flow.blockSide() }))

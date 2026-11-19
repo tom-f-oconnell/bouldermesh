@@ -55,6 +55,13 @@ A mesh being got shows a bar of how much of it has come.
 A rock with no mesh: *Capture a new rock…*, tap its middle, and walk round as much of it as you can; *Can't reach that
 side* for the rest, and *Mark a hold* for anything that needs close-ups.
 
+A gym climb: *Capture a gym climb…*, then tap one of its holds. The others of its colour are found in each photo as
+you take them, ringed in that colour, and asked for close up (from the ground: one too high asks only for what a phone
+held up can do). *Not part of it*, then a ring, leaves out another climb's hold of the same colour; *Add a … hold* adds
+one it missed; *Colour: narrower* / *wider* change how near a colour has to be. Once meshed, its holds are a set of beta
+of yours named after the colour ("Yellow climb (gym)"). It goes by colour alone: holds the colour of the wall behind
+them, climbs marked with tape, and holds two climbs share aren't told apart.
+
 *Mark a hold* (with or without a mesh): tap a hold on the rock, and it's asked for close up. Once the capture is meshed,
 the holds you marked are on the mesh as a set of beta of yours, *Marked on the phone* (each a hand hold: change the
 roles in the site's *Beta* tab), and on the mesh you were adding to as well.

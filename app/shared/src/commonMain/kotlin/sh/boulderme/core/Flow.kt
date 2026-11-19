@@ -34,7 +34,17 @@ data class CaptureUi(
     val unplaced: Int = 0,          // frames of the scenery taken in a spell of tracking with too few photos to place them by
     val downNote: String = "",      // what became of the turn on the spot's down when the tracking lost its place: shown until dismissed
     val turnAgain: Boolean = false, // and the turn should be done again: offer it (CaptureFlow.turnAgain())
+    val gym: GymUi? = null,         // a gym climb's colour, once picked
 )
+
+/**
+ * How a gym climb's capture stands: its colour's name and what its holds are drawn in, how many have been found and
+ * photographed close up, how widely the colour is taken (`tolerance` of `tolerances` steps, the middle the default),
+ * what a tap on the picture does now (`tap`: "add" a hold of the colour, "drop" one found that isn't of the climb; null
+ * neither), and which finder's patches count (`finder`, of `finders`: "colour", and "model" where the phone has one).
+ */
+data class GymUi(val name: String, val rgb: Int, val holds: Int, val done: Int, val tolerance: Int, val tolerances: Int, val tap: String?,
+                 val finder: String, val finders: List<String>)
 
 /**
  * How the turn on the spot is going, for the screen to show beside its progress.
@@ -114,8 +124,12 @@ class FlowOut(val ui: CaptureUi, val guide: Similarity?, val solid: Boolean, val
  *   keeps the last chosen); ownTilts how far off the phone's own down was in its earlier turns (degrees, Level.tiltDeg),
  *   to say what skipping the turn costs. onSettings is told both whenever either changes, for the app to keep.
  */
+/**
+ * @param gym a gym climb, with no mesh: the first tap is on one of its holds, whose colour picks out the rest of them
+ *   in the photos (Gym), each then asked for close up as a marked hold is; the wall is walked along, not round.
+ */
 class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFromStart: Boolean = false,
-                  levelLimit: Double = LEVEL_SPREAD_MOST, ownTilts: List<Double> = emptyList()) {
+                  levelLimit: Double = LEVEL_SPREAD_MOST, ownTilts: List<Double> = emptyList(), gym: Boolean = false) {
     /** Degrees the turn on the spot's directions must agree within, for it to be believed (looser(), stricter()). */
     var levelLimit = LEVEL_LIMITS.minByOrNull { kotlin.math.abs(it - levelLimit) }!!
         private set
@@ -142,6 +156,10 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     private var levelNote = false
     var marking = false
         private set
+    /** What a tap on the picture does to a gym climb's holds now: "add" one of its colour, "drop" one found; null neither. */
+    var gymTap: String? = null
+        private set
+    private val gym: Gym? = if (gym && session.plan == null) Gym().also { session.gym = it } else null
     /** What counts: 1 the whole rock (what a texture of the capture's own needs), 2 its climbs, 3 only the holds of the capture's set of beta. */
     var reach = 1
         private set
@@ -359,7 +377,26 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     fun shutter() { event("shutter", "waiting" to wantShot); if (!wantShot) { wantShot = true; wantAt = null } }
     fun setAuto(on: Boolean) { event("auto", "on" to on); session.auto = on }
     fun skip() { event("skip", "target" to session.currentTarget); session.skipCurrent("skipped on the phone"); levelsDirty = true }
-    fun toggleMarking() { marking = !marking; event("marking", "on" to marking) }
+    fun toggleMarking() { marking = !marking; gymTap = null; event("marking", "on" to marking) }
+
+    /** The next tap adds a hold of the gym climb's colour ("add"), or leaves out a hold found that isn't of it ("drop"); pressed again, neither. */
+    fun gymTap(mode: String) { gymTap = if (gymTap == mode) null else mode; marking = false; event("gym_tap", "mode" to gymTap) }
+    /** Takes the climb's colour more widely (more holds count as it) or more narrowly. */
+    fun gymWider() = gymChanged("gym_wider", gym?.widen())
+    fun gymNarrower() = gymChanged("gym_narrower", gym?.narrow())
+    /** Which finder's patches count: "colour" or "model" (Gym.FINDER_*). */
+    fun gymFinder(f: String) { val g = gym ?: return; g.useFinder(f); gymChanged("gym_finder", true, "finder" to f) }
+
+    private fun gymChanged(e: String, changed: Boolean?, vararg more: Pair<String, Any?>) {
+        val g = gym ?: return
+        if (changed != true) { note = "It can't go any ${if (e == "gym_wider") "wider" else "narrower"}"; return }
+        session.syncGym(); levelsDirty = true
+        event(e, "tolerance" to g.colour?.tolerance, "holds" to g.holds.size, *more)
+        note = "${g.holds.size} ${g.colour?.name} hold${if (g.holds.size == 1) "" else "s"} found so far"
+    }
+
+    /** Where a ray from the phone lands in a picture seen by `pose`: (u, v), or null if behind it. */
+    private fun pixel(pose: CameraPose, from: Vec3, along: Vec3): Pair<Double, Double>? = pose.project(from + along * 2.0)?.let { it.u to it.v }
     /** What counts, round to the next: the whole rock, its climbs, and (for a set of beta) only its holds. */
     fun toggleWide() { event("reach", "from" to reach); reach = if (reach >= (if (setName != null) 3 else 2)) 1 else reach + 1; session.setScope(Scope(minPrio = reach)); levelsDirty = true }
     /** The next photo taken is one with a bank card flat on the rock beside the hold: its size, to a fraction of a millimetre. */
@@ -493,8 +530,10 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
      * @param from, along the ray the tapped point looks along, in the world (along a unit vector).
      * @param hit where the phone's tracking says that ray meets the real world, or null if it can't say; asked only
      *   when the tap is one on the rock.
+     * @param picture the camera's picture as the tap saw it (Picture, upright as a photo is stored, with the camera as
+     *   that picture has it), or null if it can't be had; asked only for a tap on a gym climb's hold.
      */
-    fun tap(from: Vec3, along: Vec3, hit: () -> Vec3?) {
+    fun tap(from: Vec3, along: Vec3, picture: (() -> Pair<Picture, CameraPose>?)? = null, hit: () -> Vec3?) {
         when (phase) {
             Phase.GHOST -> {
                 val g = ghost ?: return; val mesh = guide ?: return
@@ -525,9 +564,35 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
             Phase.CENTRE -> {
                 val world = hit()
                 if (world == null) note = "The phone hasn't made out the rock there yet: move a little and tap again."
+                else if (gym != null) {
+                    val pic = picture?.invoke()
+                    val got = pic?.let { (p, pose) -> pixel(pose, from, along)?.let { (u, v) -> gym.pick(p, pose, u, v, world, block, add = false) } }
+                    event("gym_pick", "found" to (got != null), "picture" to (pic != null), "name" to gym.colour?.name, "lab" to got?.let { listOf(it.l, it.a, it.b) }, "holds" to gym.holds.size)
+                    if (got == null) { note = if (pic == null) "The camera's picture couldn't be read: tap again." else "No colour to go by there: tap right on a hold of the climb."; return }
+                    session.startOrbit(world)
+                    session.orbit!!.blockBehind(from)
+                    session.syncGym()
+                    phase = Phase.CAPTURE; levelsDirty = true
+                    note = "The climb's holds are ${gym.colour!!.name}: those of its colour are found in each photo, then asked for close up. " +
+                        "Other climbs' holds of this colour nearby are found too: Not part of it, then tap one, leaves it out."
+                }
                 else { session.startOrbit(world); phase = Phase.CAPTURE; note = ""; levelsDirty = true }
             }
-            Phase.CAPTURE -> if (marking) {
+            Phase.CAPTURE -> if (gym != null && gymTap == "add") {
+                val pic = picture?.invoke()
+                val world = hit()
+                val got = pic?.let { (p, pose) -> pixel(pose, from, along)?.let { (u, v) -> gym.pick(p, pose, u, v, world, block, add = true) } }
+                event("gym_add", "found" to (got != null), "hit" to (world != null), "lab" to got?.let { listOf(it.l, it.a, it.b) }, "holds" to gym.holds.size)
+                if (got == null) { note = if (pic == null) "The camera's picture couldn't be read: tap again." else "No colour to go by there: tap right on a hold."; return }
+                gymTap = null; session.syncGym(); levelsDirty = true
+                note = "Added. ${gym.holds.size} ${gym.colour?.name} hold${if (gym.holds.size == 1) "" else "s"} found so far"
+            } else if (gym != null && gymTap == "drop") {
+                val id = gym.drop(from, along)
+                event("gym_drop", "id" to id, "holds" to gym.holds.size)
+                if (id == null) { note = "No hold found near there: tap on one of the rings."; return }
+                gymTap = null; session.syncGym(); levelsDirty = true
+                note = "Left out: it isn't asked for, nor sent as one of the climb's"
+            } else if (marking) {
                 val world = hit()
                 if (world == null) note = "The phone hasn't made out the rock there yet: move a little and tap again."
                 else {
@@ -683,7 +748,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         val base = ui.copy(phase = phase, kept = session.shotCount, scenery = session.sceneryCount, rejected = rejected, note = note, sensors = sensorNote, auto = session.auto, wide = wide, marking = marking,
             reach = when (reach) { 1 -> "whole rock"; 2 -> "its climbs"; else -> "only the holds of $setName" }, card = cardNext, target = "", canCard = false, askMore = 0,
             pairs = session.taps.size, tracking = tracking, level = null, tieLeft = tieLeft, unplaced = session.unplacedScenery(firstSpell),
-            downNote = downNote, turnAgain = turnAgainAsked)
+            downNote = downNote, turnAgain = turnAgainAsked, gym = gymUi())
         if (!tracking) {
             ui = base.copy(text = "Hold on: the phone is finding where it is. Move it slowly, looking at the rock.", turnX = 0.0, turnY = 0.0)
             return FlowOut(ui, null, false, 0f, null, emptyList(), false)
@@ -775,7 +840,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 return FlowOut(ui, session.fit, false, 0.3f, null, emptyList(), false, grab = grab)
             }
             Phase.CENTRE -> {
-                ui = base.copy(text = "Tap the middle of the rock")
+                ui = base.copy(text = if (gym != null) "Tap a hold of the climb you're capturing: its colour picks out the rest of its holds" else "Tap the middle of the rock")
                 return FlowOut(ui, null, false, 0f, null, emptyList(), false)
             }
             Phase.CAPTURE -> {
@@ -785,7 +850,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 fresh()
                 val p = out.progress
                 ui = base.copy(text = out.hint.text, turnX = out.hint.turnX, turnY = out.hint.turnY, total = p.total, done = p.done + p.skipped, holds = p.holds,
-                    holdsDone = p.holdsDone, canSkip = plan != null && out.hint.targetId != null, target = out.status, canCard = out.status.isNotEmpty())
+                    holdsDone = p.holdsDone, canSkip = out.hint.targetId != null && (plan != null || session.orbit?.spot(out.hint.targetId) != null),
+                    target = out.status, canCard = out.status.isNotEmpty())
                 val left = if (out.hint.kind == Hint.Kind.DONE && !askedMore) session.coverage?.anonLeft() ?: 0 else 0
                 if (left > 0) ui = ui.copy(askMore = left, text = "Done. $left more hold${if (left == 1) " has" else "s have"} been marked here by others, privately. Photograph ${if (left == 1) "it" else "them"} too?")
                 val tie = tieLeft
@@ -822,6 +888,14 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
             "corners" to out.record.blob.feat?.n, "tried" to out.record.blob.feat?.tried, "best_links" to out.record.blob.feat?.best, "ar_pts" to out.record.blob.feat?.arPts,
             "ar_cells" to out.record.blob.feat?.arCells)
         if (cardShot && out.kept) { cardNext = false; levelsDirty = true }
+        if (gym != null && out.kept && !s.card && !cardShot && s.blobs != null) {
+            val was = gym.holds.size
+            gym.addPhoto(out.record.name, s.pose, block, s.blobs, s.modelBlobs, cloud.values)
+            session.syncGym(); levelsDirty = true
+            event("gym_photo", "name" to out.record.name, "colour_blobs" to s.blobs.size, "model_blobs" to s.modelBlobs?.size,
+                "matched" to gym.colour?.let { c -> s.blobs.count { c.matches(it) } }, "model_matched" to gym.colour?.let { c -> s.modelBlobs?.count { c.matches(it) } },
+                "holds" to gym.holds.size, "new" to gym.holds.size - was)
+        }
         cardShot = false
         sensorNote = out.record.notes.joinToString(" · ")
         val how = if (autoShot) "taken by itself (Auto)" else "taken"
@@ -829,6 +903,19 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         else { rejected++; note = "Not kept, the photo $how: ${out.why.joinToString("; ")}." }
         return out
     }
+
+    private fun gymUi(): GymUi? {
+        val g = gym ?: return null; val c = g.colour ?: return null
+        val spots = session.orbit?.spots?.filter { it.gym } ?: emptyList()
+        return GymUi(c.name, c.rgb, g.holds.size, spots.count { it.done() }, HoldColour.TOLERANCES.indexOfFirst { it >= c.tolerance - 1e-9 }, HoldColour.TOLERANCES.size,
+            gymTap, g.finder, if (g.hasModel || gymModel) listOf(Gym.FINDER_COLOUR, Gym.FINDER_MODEL) else listOf(Gym.FINDER_COLOUR))
+    }
+
+    /** The app has a hold-finding model and gives its patches (ShotIn.modelBlobs): it can be chosen as the finder from the start. */
+    var gymModel = false
+
+    /** Whether this is a gym climb's capture: its photos' patches are wanted (ShotIn.blobs). */
+    val isGym: Boolean get() = gym != null
 
     /** The photo frame() asked for couldn't be taken. */
     fun noShot(why: String? = null) { event("no_shot", "why" to why); inFlight = false; if (why != null) note = why }

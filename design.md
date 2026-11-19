@@ -1969,6 +1969,35 @@ know which made a mesh. Once sized, a mesh whose app photos' fixes agree to 5 m 
 (`place_from_phone()`), with where it was kept. What took each upload is kept with its project, for whatever a phone
 model's lens or sensors turn out to need.
 
+**Gym climbs, by their holds' colour (`Gym.kt`).** A gym climb's holds are usually all one colour, unlike those of
+the other climbs on its stretch of wall, so one tapped hold names the rest. *Capture a gym climb…* is a capture with no
+mesh whose first tap is on a hold: its colour (CIELAB, the mean of the patch tapped) is the climb's, the sides behind
+the wall are marked out of reach, and every hold of that colour found in the photos becomes a spot to photograph close
+up, as a marked hold is. Taps can add another hold of it (widening what counts), leave one out ("not part of it": another
+climb's of the same colour, kept out by place), or take the colour wider or narrower.
+
+- *Finding patches (A, the colour finder).* Each kept photo is made small (320 pixels on its longer side), its colours
+  shifted so that its near-greys average to grey (a phone's white balance tints them, by a different amount each photo
+  on Android), and split into patches of one colour: neighbouring pixels join if their hue is within 10° (colourful
+  ones) or their brightness within 7 (grey ones). Patches smaller than 5 pixels or bigger than 12% of the picture (a
+  wall, a painted panel, a volume) are left out, and a grey one counts only if 12 darker or lighter than round it. Every
+  photo's patches of every colour are kept, so the colour can be changed or widened at any time.
+- *Placing them.* A patch's ray (through its middle) is good to a centimetre or two; how far along it it is, from the
+  phone's tracked points inside it, is far rougher. So that gives only a guess, which the rays of every photo that
+  passes near it (one each) then place, by least squares, four times over, closing in from 12 cm to 3 cm. A hold needs
+  three photos' rays, or two agreeing with the tracked points; and it must be found in 40% of the photos it's in view
+  of, as rays of different holds of one colour meet by chance. On the two Pixel 6 captures at a gym in hal's copy of
+  the server's data (GymCheck, a check by hand), real holds were found in 50-100% of the photos they were in view of and
+  chance meetings in 5-30%; green holds on a white wall were found and ringed on the holds, with a few rings left on no hold (likely holds hidden behind others from that photo).
+- *Out of reach.* A hold higher than a phone held up (2.1 m above the floor, taken as 1.45 m below where photos are
+  taken from) asks for the finest view a phone can get from below it, 35 cm out, rather than half a millimetre a pixel.
+- *Not handled.* Climbs that share a hold (most often a start, the climb splitting two ways from it, the split usually
+  obvious to a climber); climbs marked with tape rather than colour, and board walls lit by LEDs; holds the colour of the
+  wall behind them (blue on blue panels; on painted stripes, a patch of stripe can pass for a hold); two shades one
+  climber would call different but a camera barely does (amber against yellow is 19° of hue: in at the widest setting);
+  heavily chalked holds, washed towards white; holds of two colours. A hold-finding model (B) is the way past the wall's
+  colours: it says what's a hold, and colour then only has to say whose.
+
 **Not yet.** Neither app has run on a phone. Sharpness thresholds are guesses. There's no choosing which climbs to
 capture for (the core has it: `Scope.climbs`), no QR scan for pairing, and uploads are over the site's ordinary
 routes, so a capture of a few hundred photos wants Wi-Fi.

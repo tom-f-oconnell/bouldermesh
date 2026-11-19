@@ -422,7 +422,7 @@ class FlowTest {
         assertNull(flow.refineDue(100.0), "and the fit isn't tightened against points from before, whose world may not be this one")
         // the record names the plan it went by
         val record = flow.session.record(99.0)
-        assertTrue(record.v == 6 && record.plan == RecordPlan("abc123def456", 1.7e9, "0123abcd") && "\"plan\":{\"key\":\"abc123def456\"" in record.json(), record.json().take(300))
+        assertTrue(record.v == 7 && record.plan == RecordPlan("abc123def456", 1.7e9, "0123abcd") && "\"plan\":{\"key\":\"abc123def456\"" in record.json(), record.json().take(300))
         assertEquals(listOf("a", "a", "a.2"), record.shots.map { it.blob.ar!!.s })
     }
 

@@ -100,11 +100,12 @@ data class SceneryShot(val name: String, val kind: String, val t: Double, val ar
 /** A whole capture, as sent to the server beside its photos (POST /api/projects/<id>/capture). */
 @Serializable
 data class CaptureRecord(
-    val v: Int = 6,                         // 2: plan, level, down_agree_deg; `ar.s` changes when tracking was lost and came back; accel_bias gone
+    val v: Int = 7,                         // 2: plan, level, down_agree_deg; `ar.s` changes when tracking was lost and came back; accel_bias gone
                                             // 3: detail, licence, credit; a photo's ref, still, ar.span
                                             // 4: scenery
                                             // 5: marked
                                             // 6: levels (each turn on the spot, with its spell) in place of level
+                                            // 7: gym
     val id: String,
     val app: String,
     val device: String,
@@ -128,6 +129,7 @@ data class CaptureRecord(
     val shots: List<ShotRecord>,
     val scenery: List<SceneryShot> = emptyList(),   // frames of what's around the rock, for the site's backdrop
     val marked: List<RecordMarked> = emptyList(),   // holds marked on the phone, to add to the mesh as a set of beta
+    val gym: RecordGym? = null,             // a gym climb's, found by their colour: its holds are in marked too
 ) {
     fun json(): String = Plan.json.encodeToString(serializer(), this)
 }
@@ -138,6 +140,15 @@ data class CaptureRecord(
  * spell it placed; and, with a mesh to go by, where in that mesh's coordinates the phone's fit put it (m).
  */
 @Serializable data class RecordMarked(val id: String, val s: String?, val p: List<Double>, val m: List<Double>? = null)
+
+/**
+ * A gym climb captured by its holds' colour (Gym): what the colour was called and drawn in, how widely it was taken
+ * (tolerance), which finder's patches counted, the colours of the holds tapped as being of it (CIELAB), the holds found
+ * (in the world of the spell the last photo was in; `picked` if tapped), and how many patches each finder found in all.
+ */
+@Serializable data class RecordGym(val name: String, val rgb: String, val tolerance: Double, val finder: String, val tapped: List<List<Double>>,
+                                   val holds: List<RecordGymHold>, @SerialName("colour_blobs") val colourBlobs: Int, @SerialName("model_blobs") val modelBlobs: Int)
+@Serializable data class RecordGymHold(val id: String, val p: List<Double>, @SerialName("r_m") val rM: Double, val photos: Int, val picked: Int? = null)
 
 /** The plan a capture went by: what it was made from (its key), when, and its guide. A mesh's frame can change between a plan's download and a capture's upload. */
 @Serializable data class RecordPlan(val key: String, val made: Double, val guide: String)

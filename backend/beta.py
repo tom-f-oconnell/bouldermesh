@@ -865,7 +865,16 @@ def new_set(mesh_dir: Path, name=None, climb=None, author=None, source: dict | N
 CAPTURE_SET_NAME = "Marked on the phone"
 
 
-def capture_set(mesh_dir: Path, capture: str, holds: list[dict], owner: str | None = None, author: str | None = None) -> dict:
+def capture_set_name(record: dict) -> str:
+    """What the set of a capture's holds marked on the phone is called: a gym climb's (its record's "gym", its holds
+    found by their colour) after that colour, "Yellow climb (gym)"; else CAPTURE_SET_NAME."""
+    gym = record.get("gym") if isinstance(record, dict) else None
+    name = gym.get("name") if isinstance(gym, dict) else None
+    return f"{_text(name, 20).capitalize()} climb (gym)" if isinstance(name, str) and name.strip() else CAPTURE_SET_NAME
+
+
+def capture_set(mesh_dir: Path, capture: str, holds: list[dict], owner: str | None = None, author: str | None = None,
+                name: str = CAPTURE_SET_NAME) -> dict:
     """The set of beta of the holds marked on a phone in a capture (its project's id), made the first time it's asked
     for, with each hold a hand until its maker says. Asked again (a mesh made again, or approved later), it's the set
     made before, as it now is: whatever its owner has changed of it stays.
@@ -876,7 +885,7 @@ def capture_set(mesh_dir: Path, capture: str, holds: list[dict], owner: str | No
     one = next((s for s in load_sets(mesh_dir) if (s.get("from") or {}).get("capture") == capture), None)
     if one is not None:
         return one
-    made = new_set(mesh_dir, CAPTURE_SET_NAME, author=author, owner=owner)
+    made = new_set(mesh_dir, name, author=author, owner=owner)
     sets = load_sets(mesh_dir)
     one = next(s for s in sets if s["id"] == made["id"])
     one.update({"from": {"capture": capture}, "holds": _checked([{"p": h["p"], "role": h.get("role") or "hand"} for h in holds][:SET_HOLDS_MOST])})

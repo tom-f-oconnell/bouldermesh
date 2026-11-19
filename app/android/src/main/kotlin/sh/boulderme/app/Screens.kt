@@ -124,6 +124,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
     val captures = remember(tick) { a.store.captureIds().mapNotNull { id -> a.store.upload(id)?.let { id to it } } }
     val sending by Uploader.state.collectAsState()
     var naming by remember { mutableStateOf(false) }
+    var gym by remember { mutableStateOf(false) }      // what's being named is a gym climb
     var removing by remember { mutableStateOf<String?>(null) }
     var wanted by remember { mutableStateOf<Screen.Capture?>(null) }
     var refused by remember { mutableStateOf(false) }
@@ -204,7 +205,8 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
         OutlinedButton(onClick = { go(Screen.Browse()) }, modifier = Modifier.fillMaxWidth()) { Text("Get meshes…") }
 
         Section("A rock with no mesh")
-        OutlinedButton(onClick = { naming = true }, modifier = Modifier.fillMaxWidth()) { Text("Capture a new rock…") }
+        OutlinedButton(onClick = { gym = false; naming = true }, modifier = Modifier.fillMaxWidth()) { Text("Capture a new rock…") }
+        OutlinedButton(onClick = { gym = true; naming = true }, modifier = Modifier.fillMaxWidth()) { Text("Capture a gym climb…") }
 
         val check = @Composable {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -258,9 +260,14 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
 
     if (naming) {
         var name by remember { mutableStateOf("") }
-        AlertDialog(onDismissRequest = { naming = false }, title = { KeepDialogInTopHalf(); Text("What is it?") },
-            text = { OutlinedTextField(name, { name = it.take(60) }, label = { Text("The rock's or climb's name") }, singleLine = true) },
-            confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = { naming = false; start(Screen.Capture(null, name.trim())) }) { Text("Start") } },
+        AlertDialog(onDismissRequest = { naming = false }, title = { KeepDialogInTopHalf(); Text(if (gym) "Which climb?" else "What is it?") },
+            text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (gym) Text("You'll tap one of its holds: the others of that colour are found in the photos and asked for close up. " +
+                    "It goes by colour alone, so other climbs' holds of the same colour nearby are found too: leave those out as they come.",
+                    style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(name, { name = it.take(60) }, label = { Text(if (gym) "The gym and climb, e.g. \"Yellow V3, the cave\"" else "The rock's or climb's name") }, singleLine = true)
+            } },
+            confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = { naming = false; start(Screen.Capture(null, name.trim(), gym = gym)) }) { Text("Start") } },
             dismissButton = { TextButton(onClick = { naming = false }) { Text("Cancel") } })
     }
     removing?.let { id ->
