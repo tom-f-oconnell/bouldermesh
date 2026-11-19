@@ -3451,13 +3451,20 @@ server.jobs.put({"type": "boulder", "pid": att["1"]["project"]})
 server.q("INSERT INTO meshes(id,name,filename,source,created,size,demo,boulder) VALUES('n3wb0uld3r00','Peabody','m.ply',?,?,1,0,?)",
          f"project:{bproj['id']}", time.time(), leaf, write=True)
 server.supersede(bmesh, "n3wb0uld3r00")
-assert server.q("SELECT status FROM projects WHERE id=?", att["1"]["project"], one=True)["status"] == "superseded" and server.jobs.empty()
-assert "-- superseded: its boulder's mesh" in (server.PROJECTS / att["1"]["project"] / "job.log").read_text()
+status1 = lambda: server.q("SELECT status FROM projects WHERE id=?", att["1"]["project"], one=True)["status"]  # noqa: E731
+assert status1() == "queued" and not server.jobs.empty(), "not before the new one has placed its climbs"
 assert server.q("SELECT replaced_by FROM meshes WHERE id=?", p3["mesh_id"], one=True)["replaced_by"] is None, "the only mesh of Arm yet"
-assert server.retire_old_rests("n3wb0uld3r00") == []
+server.settle_versions("n3wb0uld3r00")
+assert status1() == "queued" and server.q("SELECT replaced_by FROM meshes WHERE id=?", p3["mesh_id"], one=True)["replaced_by"] is None
 (server.MESHES / "n3wb0uld3r00").mkdir(exist_ok=True)
 (server.MESHES / "n3wb0uld3r00" / "views.json").write_text(json.dumps({"climbs": {ids["Arm"]: {"photos": 1, "of": 1}}}))
-assert server.retire_old_rests("n3wb0uld3r00") == [p3["mesh_id"]]
+server.settle_versions("n3wb0uld3r00")
+assert status1() == "queued", "scene 1 is of Pea, which the new one neither places nor meshes apart: its only chance of a mesh"
+assert server.q("SELECT replaced_by FROM meshes WHERE id=?", p3["mesh_id"], one=True)["replaced_by"] == "n3wb0uld3r00", "Arm's placed"
+server.save_rest("n3wb0uld3r00", {"models": [{"name": "1", "counts": True, "climbs": [ids["Pea"]], "photos": []}]})
+server.settle_versions("n3wb0uld3r00")
+assert status1() == "superseded" and server.jobs.empty(), "the new one meshes Pea's scene itself"
+assert "-- superseded: its boulder's mesh" in (server.PROJECTS / att["1"]["project"] / "job.log").read_text()
 assert server.q("SELECT replaced_by FROM meshes WHERE id=?", p3["mesh_id"], one=True)["replaced_by"] == "n3wb0uld3r00"
 assert not server.q("SELECT 1 FROM mesh_links WHERE mesh_id=?", p3["mesh_id"]), "its climbs no longer go to it"
 server.make_current(bmesh)
@@ -3475,7 +3482,7 @@ try:
     assert server.q("SELECT status FROM projects WHERE id=?", p3["id"], one=True)["status"] == "skipped"
     server.q("UPDATE meshes SET replaced_by='n3wb0uld3r00' WHERE id=?", bmesh, write=True)
     server.settle_rests()
-    assert server.q("SELECT status FROM projects WHERE id=?", att["1"]["project"], one=True)["status"] == "superseded"
+    assert server.q("SELECT status FROM projects WHERE id=?", att["1"]["project"], one=True)["status"] == "superseded", "covered"
     server.q("UPDATE meshes SET replaced_by=NULL WHERE id=?", bmesh, write=True)
 finally:
     server.diversity_mod.judge = real_judge

@@ -1344,16 +1344,15 @@ def boulder_info(climb: dict) -> dict | None:
 
 def supersede(old: str, new: str) -> None:
     """A rebuilt mesh takes over from the one it replaces: its climbs, and its place in area lists.
-    The old one stays, as an older version of the new one. Meshing what the old one left out (run_rest()) stops, if
-    it hasn't finished (drop_rest_jobs()), as the new one has its own; meshes made of that stay current until the new
-    one, or a mesh of what it left out, places their climbs (retire_old_rests()). Going back to one brings back its own."""
+    The old one stays, as an older version of the new one. Once the new one has placed its climbs and recorded what it
+    left out, meshing what the old one left out stops where the new one covers it, and meshes made of that retire where
+    it places their climbs (settle_versions()). Going back to one brings back its own."""
     for link in q("SELECT climb_id, note FROM mesh_links WHERE mesh_id=?", old):
         link_mesh(new, link["climb_id"], link["note"])
     q("DELETE FROM mesh_links WHERE mesh_id=?", old, write=True)
     q("UPDATE campaign_items SET mesh_id=? WHERE mesh_id=?", new, old, write=True)
     q("UPDATE meshes SET replaced_by=? WHERE id=? OR replaced_by=?", new, old, old, write=True)
     q("UPDATE meshes SET replaced_by=NULL WHERE id=?", new, write=True)
-    drop_rest_jobs(old, f"its boulder's mesh {old} was replaced by {new}, which has its own")
     for r in q("SELECT id, boulder, replaced_by FROM meshes WHERE boulder LIKE ?", f"%{REST_MARK}%"):
         if not is_rest(r["boulder"]) or r["id"] in (old, new):
             continue
@@ -1373,7 +1372,7 @@ def make_current(mid: str) -> None:
     supersede(m["replaced_by"], mid)
     if m["source"].startswith("project:"):
         q("UPDATE projects SET mesh_id=? WHERE id=?", mid, m["source"].split(":", 1)[1], write=True)
-    retire_old_rests(mid)
+    settle_versions(mid)
     meshes_changed()
 
 
@@ -2943,16 +2942,35 @@ def rest_poor(harvest: str | None) -> bool:
         return False
 
 
-def drop_rest_jobs(parent: str, why: str) -> list[str]:
-    """Stop meshing what boulder's mesh parent left out, where that hasn't finished: taken out of the queue, or
-    stopped where it runs, and marked superseded (or skipped, where its photos were too few to try anyway), so nothing
-    takes it up again. Returns the projects it stopped."""
-    out = []
+def rest_covers(head: str) -> set[str]:
+    """The climbs boulder's mesh head places, or meshes apart what it left out of: those of each scene of that which
+    counts, tried or not, and those its current meshes of that place."""
+    row = q("SELECT boulder FROM meshes WHERE id=?", head, one=True)
+    out = mesh_climbs(head, row["boulder"]) if row else set()
+    rec = load_rest(head) or {}
+    for x in rest_attempts(rec):
+        out |= set(x.get("climbs") or []) if "models" in rec else set(rec.get("apart") or [])
+    for r in q("SELECT id, boulder FROM meshes WHERE boulder LIKE ? AND replaced_by IS NULL", f"%{REST_MARK}%"):
+        if is_rest(r["boulder"]) and rest_parent(r["boulder"]) == head:
+            out |= mesh_climbs(r["id"], r["boulder"])
+    return out
+
+
+def drop_rest_jobs(parent: str, head: str, why: str) -> list[str]:
+    """Stop meshing what boulder's mesh parent, an older version of head, left out, where that hasn't finished and
+    head covers its climbs (rest_covers()): taken out of the queue, or stopped where it runs, and marked superseded
+    (or skipped, where its photos were too few to try anyway), so nothing takes it up again. One with a climb head
+    doesn't cover carries on, as the only chance of a mesh of it. Returns the projects it stopped."""
+    out, covers = [], None
     for r in q("SELECT id, boulder, status, harvest FROM projects WHERE kind='boulder' AND boulder LIKE ? AND status NOT IN "
                f"({','.join('?' * len(REST_SETTLED))})", f"%{REST_MARK}%", *REST_SETTLED):
         if not is_rest(r["boulder"]) or rest_parent(r["boulder"]) != parent:
             continue
         poor = r["status"] == "harvested" and rest_poor(r["harvest"])
+        if not poor:
+            covers = rest_covers(head) if covers is None else covers
+            if not set(pool_members(r["boulder"])) <= covers:
+                continue
         q("UPDATE projects SET status=?, progress=NULL WHERE id=?", "skipped" if poor else "superseded", r["id"], write=True)
         halt_job(r["id"])
         if not poor:
@@ -2988,16 +3006,29 @@ def retire_old_rests(head: str, log=print) -> list[str]:
     return out
 
 
+def settle_versions(head: str, log=print) -> None:
+    """Once boulder's mesh head has placed its climbs and recorded what it left out: what its older versions left out
+    stops being meshed where head covers it (drop_rest_jobs()), and their meshes of it retire where head or its own
+    place their climbs (retire_old_rests())."""
+    for r in q("SELECT id FROM meshes WHERE replaced_by=? AND boulder IS NOT NULL", head):
+        if drop_rest_jobs(r["id"], head, f"its boulder's mesh {r['id']} was replaced by {head}, which places its climbs or "
+                          "meshes them apart itself"):
+            log(f"rest: meshing what older version {r['id']} left out stopped, where this covers it")
+    retire_old_rests(head, log)
+
+
 def settle_rests() -> None:
-    """After a restart: meshing what replaced boulders' meshes left out stops, where it hadn't finished
-    (drop_rest_jobs()); a rest project whose photos were too few to mesh is skipped, not left harvested; and the meshes
-    of what older versions left out retire, where the current one's place their climbs (retire_old_rests())."""
+    """After a restart: meshing what replaced boulders' meshes left out stops, where it hadn't finished and the
+    current version covers it (drop_rest_jobs()); a rest project whose photos were too few to mesh is skipped, not
+    left harvested; and the meshes of what older versions left out retire, where the current one's place their climbs
+    (retire_old_rests())."""
     replaced = {r["id"]: r["replaced_by"] for r in q("SELECT id, replaced_by FROM meshes WHERE replaced_by IS NOT NULL")}
     parents = {rest_parent(r["boulder"]) for r in q("SELECT boulder FROM projects WHERE kind='boulder' AND boulder LIKE ? AND status "
                                                      f"NOT IN ({','.join('?' * len(REST_SETTLED))})", f"%{REST_MARK}%", *REST_SETTLED)
                if is_rest(r["boulder"])}
     for parent in parents & set(replaced):
-        drop_rest_jobs(parent, f"its boulder's mesh {parent} was replaced by {replaced[parent]}, which has its own")
+        drop_rest_jobs(parent, replaced[parent], f"its boulder's mesh {parent} was replaced by {replaced[parent]}, which places "
+                       "its climbs or meshes them apart itself")
     for r in q("SELECT id, boulder, harvest FROM projects WHERE kind='boulder' AND status='harvested' AND boulder LIKE ?", f"%{REST_MARK}%"):
         if is_rest(r["boulder"]) and rest_poor(r["harvest"]):
             q("UPDATE projects SET status='skipped' WHERE id=?", r["id"], write=True)
@@ -3974,7 +4005,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             if not is_pool(proj["boulder"]):    # however it was asked for: an area, its boulder's job, or Rebuild
                 keep_rest(mid, pid, log, queue=settings().get("boulders.rest_auto"), untied=False)
                 log_shares(mid, log)
-                retire_old_rests(mid, log)
+                settle_versions(mid, log)
         if not worse:
             retire_covered(mid, log)
         meshes_changed()
