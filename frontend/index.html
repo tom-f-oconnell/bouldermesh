@@ -3387,7 +3387,7 @@ function boulderHtml(c){
     : `On the boulder <b>${name}</b>${reading ? ' <small class="reading">(reading its Mountain Project page…)</small>' : ''}`;
   const running = (b.areas || []).filter(a => ['running', 'stopping'].includes(a.status)), stopped = (b.areas || []).filter(a => !running.includes(a));
   const offer = !group && b.kind !== 'unknown' && (b.kind === 'boulder' || b.climbs.length);
-  const count = [b.routes ? `${b.routes} on Mountain Project` : '', `${b.known} known here`].filter(Boolean).join(', ');
+  const count = [b.routes ? `${plural(b.routes, 'climb')} on Mountain Project` : '', `${b.known} known here`].filter(Boolean).join(', ');
   const areaLine = a => `the area <b>${esc(a.name)}</b>`;
   const note = busy ? `<a href="#" data-proj="${b.project.id}">${b.project.status === 'queued' ? 'queued to be meshed' : 'being meshed now'}</a>`
     : running.length ? `${areaLine(running[0])} will mesh it once its ${plural(running[0].climbs, 'climb')} on it are through`
