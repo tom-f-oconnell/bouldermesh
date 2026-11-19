@@ -139,7 +139,7 @@ class Home(private val app: App) : Form("BoulderMesh") {
                 screen.confirm("Delete this capture?", if (u.done) "Its photos are on the server; this takes them off the phone." else "Its ${u.photos} photos haven't all been sent, and can't be got back.",
                     "Delete", "Keep", danger = true) { app.store.deleteCapture(id); rebuild() }
             }
-            val view = server?.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh -> makeButton("View mesh", Look.FILLED) { push(ViewerController(app, mesh, u.name)) } }
+            val view = server?.meshed?.let { mesh -> makeButton("View mesh", Look.FILLED) { push(ViewerController(app, mesh, u.name)) } }
             val send = if (u.done) null else makeButton(if (u.sent.isEmpty()) "Upload" else "Carry on", Look.FILLED, !busy) { app.uploader.start(id); rebuild() }
             row(*listOfNotNull(send, view, delete).toTypedArray())
         }
@@ -157,7 +157,7 @@ class Home(private val app: App) : Form("BoulderMesh") {
             val server = app.statuses.state[x.id] ?: UploadStatus(x.status, x.mesh, approved = true)
             val (status, tone) = server.said()
             text((if (x.created > 0) ago(x.created) + " · " else "") + "${x.photos} photo${if (x.photos == 1) "" else "s"} · $status", toneColor(tone), small = true)
-            server.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh ->
+            server.meshed?.let { mesh ->
                 row(makeButton("View mesh", Look.FILLED) { push(ViewerController(app, mesh, x.title)) })
             }
         }

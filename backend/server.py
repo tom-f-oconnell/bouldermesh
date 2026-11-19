@@ -6845,7 +6845,7 @@ def splat_worker() -> None:
 
 # ---- a capture's scenery: frames walked round the rock, fitted as a splat behind its mesh (splat.py) ------------------
 SCENERY_DONE = "DONE"           # in a project's scenery/: its app has sent every frame
-SCENERY_VERSION = 18            # the oldest machines' script that fits it (remote_job.py --task splat)
+SCENERY_VERSION = 27            # the oldest machines' script that fits it (remote_job.py --task splat): 18 to 26 refused its frames
 SCENERY_WAIT = 1800             # seconds before trying again, when no machine with a GPU could take it
 _sceneries: "queue.Queue[str]" = queue.Queue()
 _scenery_busy: set[str] = set()
@@ -7863,7 +7863,9 @@ def run_job(job: dict) -> None:
 
 
 def worker(w: Worker | None = None) -> None:
-    """A worker's thread: jobs people asked for first (on this server's workers only), then areas' climbs.
+    """A worker's thread: jobs people asked for first, then areas' climbs. Jobs are taken by this server's workers, or,
+    when it meshes nothing itself, by every worker: each then waits on a machine, and one job no machine takes would
+    otherwise hold up all the rest behind it (on Nov 17-18, 2026, the apps' captures, for a day).
     Once the server is stopping, it takes no more of either."""
     w = w or _first
     _here.worker = w
@@ -7873,9 +7875,9 @@ def worker(w: Worker | None = None) -> None:
             time.sleep(2)
             continue
         use_processing_cores()      # each time round, as the admin page may have changed it
-        if not w.remote:
-            try:
-                job = jobs.get(timeout=CAMPAIGN_POLL)
+        if not w.remote or not _local_meshing:
+            try:    # a remote worker doesn't wait for one: it has areas' climbs to get on with
+                job = jobs.get_nowait() if w.remote else jobs.get(timeout=CAMPAIGN_POLL)
             except queue.Empty:
                 job = None
             if job and _stopping:   # it came as the stop began: it stays queued, to be marked interrupted

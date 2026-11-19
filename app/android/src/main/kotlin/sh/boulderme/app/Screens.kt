@@ -177,7 +177,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                 Text(status, style = MaterialTheme.typography.bodySmall, color = color)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (!u.done) Button(enabled = !Uploader.busy(id), onClick = { Uploader.start(a.store, a.api, id) }) { Text(if (u.sent.isEmpty()) "Upload" else "Carry on") }
-                    server?.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh ->
+                    server?.meshed?.let { mesh ->
                         Button(onClick = { go(Screen.Viewer(mesh, u.name)) }) { Text("View mesh") }
                     }
                     TextButton(enabled = !Uploader.busy(id), onClick = { removing = id }) { Text("Delete") }
@@ -199,7 +199,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                 val (status, tone) = server.said()
                 val day = if (x.created > 0) android.text.format.DateUtils.formatDateTime(a, (x.created * 1000).toLong(), android.text.format.DateUtils.FORMAT_SHOW_DATE) + " · " else ""
                 Text("$day${x.photos} photo${if (x.photos == 1) "" else "s"} · $status", style = MaterialTheme.typography.bodySmall, color = toneColor(tone))
-                server.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh ->
+                server.meshed?.let { mesh ->
                     Button(onClick = { go(Screen.Viewer(mesh, x.title)) }) { Text("View mesh") }
                 }
             }

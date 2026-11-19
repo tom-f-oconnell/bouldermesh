@@ -164,7 +164,7 @@ class UploadForm(private val app: App, private val id: String) : Form("What's in
         val (said, color) = uploadSaid(u, null, server)
         text(said, color)
         reopenButton(app, id, u)
-        server?.mesh?.takeIf { server.status == "done" && !server.meshGone }?.let { mesh ->
+        server?.meshed?.let { mesh ->
             button("View its mesh", Look.FILLED) { push(ViewerController(app, mesh, u.name)) }
             val kept = app.store.offline.index(mesh)
             if (kept != null) text(if (kept.textures) "Kept on this phone, for viewing with no signal" else "Kept on this phone without its textures, for viewing with no signal", GOOD, small = true)

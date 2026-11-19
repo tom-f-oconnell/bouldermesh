@@ -59,6 +59,12 @@ class ContentsTest {
         assertEquals("Meshed" to "good", UploadStatus("done", "m1", approved = true).said())
         assertEquals("bad", UploadStatus("done", "m1", meshGone = true).said().second)
         assertEquals("Waiting its turn to be meshed" to "wait", UploadStatus("held").said())
+        // made again (as when the mapper changed): it has its mesh meanwhile, to view
+        assertEquals("Meshed; waiting its turn to be made again" to "good", UploadStatus("queued", "m1", approved = true).said())
+        assertEquals("Meshed; being made again now" to "good", UploadStatus("running", "m1").said())
+        assertEquals("m1", UploadStatus("queued", "m1").meshed)
+        assertEquals("Waiting its turn to be meshed" to "wait", UploadStatus("queued", "m1", meshGone = true).said())
+        assertEquals(null, UploadStatus("queued", "m1", meshGone = true).meshed)
         assertEquals("Meshing failed: too few photos placed" to "bad", UploadStatus("failed", failure = "too few photos placed").said())
         val got = Plan.json.decodeFromString(kotlinx.serialization.builtins.MapSerializer(kotlinx.serialization.serializer<String>(), UploadStatus.serializer()),
             """{"ab": {"status": "done", "mesh": "m1", "approved": true, "left": [], "failure": null, "mesh_gone": false}, "cd": {"status": "gone"}}""")

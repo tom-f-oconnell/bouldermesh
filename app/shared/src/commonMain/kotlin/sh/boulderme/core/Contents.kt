@@ -117,13 +117,22 @@ object CaptureContents {
 @Serializable
 data class UploadStatus(val status: String = "", val mesh: String? = null, val approved: Boolean = false, val left: List<String> = emptyList(),
                         val failure: String? = null, @SerialName("mesh_gone") val meshGone: Boolean = false) {
+    /** Its mesh, to view, if it has one still there: while it's being made again too. */
+    val meshed: String? get() = mesh?.takeIf { !meshGone }
+
     /** How it stands, in words, and how it's coloured: "good", "bad", "warn" or "wait". */
-    fun said(): Pair<String, String> = when (status) {
-        "done" -> if (mesh != null && !meshGone) ("Meshed" + (if (left.isNotEmpty()) "; ${left.joinToString(", ")}" else "") +
+    fun said(): Pair<String, String> = when {
+        status == "done" -> if (meshed != null) ("Meshed" + (if (left.isNotEmpty()) "; ${left.joinToString(", ")}" else "") +
             if (approved) "" else ". Only you can see it until it's approved") to "good"
             else "Finished, but no mesh came of it" to "bad"
-        "new", "queued", "pending", "held", "waiting", "harvested" -> "Waiting its turn to be meshed" to "wait"
-        "running", "harvesting" -> "Being meshed now" to "wait"
+        meshed != null && status in WAITING -> "Meshed; waiting its turn to be made again" to "good"
+        meshed != null && status in RUNNING -> "Meshed; being made again now" to "good"
+        else -> notMeshed()
+    }
+
+    private fun notMeshed(): Pair<String, String> = when (status) {
+        in WAITING -> "Waiting its turn to be meshed" to "wait"
+        in RUNNING -> "Being meshed now" to "wait"
         "failed" -> ("Meshing failed" + (failure?.let { ": $it" } ?: "")) to "bad"
         "interrupted" -> "Meshing was interrupted: it will be tried again" to "warn"
         "stopped", "stopping" -> "Meshing was stopped on the server" to "warn"
@@ -131,6 +140,9 @@ data class UploadStatus(val status: String = "", val mesh: String? = null, val a
         else -> "On the server ($status)" to "wait"
     }
 }
+
+private val WAITING = setOf("new", "queued", "pending", "held", "waiting", "harvested")     // an upload's statuses, by what they say
+private val RUNNING = setOf("running", "harvesting")
 
 /**
  * One of the account's captures as the server keeps it (an entry of its /api/account/projects): listed by the apps when

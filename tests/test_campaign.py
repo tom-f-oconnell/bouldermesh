@@ -811,6 +811,33 @@ server.print = real_print
 server._workers[:] = [server._first]
 print("interrupted jobs OK")
 
+# --- with no meshing here, machines' workers take jobs people asked for too: one stuck waiting holds up no other ---------
+saved = (server.run_job, server.next_campaign_step, server._local_meshing)
+ran_jobs = []
+server.run_job = lambda job: ran_jobs.append(job["pid"])
+server.next_campaign_step = lambda: False
+server._local_meshing = False
+try:
+    taker = server.Worker("remote 1", remote=True)
+    threading.Thread(target=server.worker, args=(taker,), daemon=True).start()
+    server.jobs.put({"type": "reconstruct", "pid": "stuck-behind", "internet": False})
+    for _ in range(50):
+        if ran_jobs:
+            break
+        time.sleep(0.1)
+    assert ran_jobs == ["stuck-behind"], ran_jobs
+    server._local_meshing = True
+    time.sleep(0.3)
+    server.jobs.put({"type": "reconstruct", "pid": "for-this-server", "internet": False})
+    time.sleep(2.5)
+    assert ran_jobs == ["stuck-behind"] and server.jobs.qsize() == 1, "meshing here: only this server's workers take them"
+finally:
+    taker.retired = True
+    with server.jobs.mutex:
+        server.jobs.queue.clear()
+    server.run_job, server.next_campaign_step, server._local_meshing = saved
+print("machines' workers take jobs OK")
+
 # --- new meshes get a cleanup, existing ones are caught up, and failing only costs that -----------
 fresh()
 cleaned, real_clean = [], server.meshclean.clean

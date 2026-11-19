@@ -379,6 +379,27 @@ finally:
     worker.quiet, worker.since_boot, worker.nvidia_hardware, worker.shutil.which, worker.log = real
 print("waiting for the driver OK")
 
+# --- a job's input: what remote_job.py's tasks are sent unpacks, anything else is refused
+import io
+import tarfile
+with tempfile.TemporaryDirectory() as tmp:
+    def packed(*names: str) -> pathlib.Path:
+        f = pathlib.Path(tmp) / "in.tar"
+        with tarfile.open(f, "w") as tar:
+            for n in names:
+                info = tarfile.TarInfo(n)
+                info.size = 1
+                tar.addfile(info, io.BytesIO(b"x"))
+        return f
+    worker.extract(packed("task.json", "photos/a.jpg", "scenery/pano_01.jpg", "scenery/walk_02.jpg"), pathlib.Path(tmp) / "job")
+    assert (pathlib.Path(tmp) / "job" / "scenery" / "pano_01.jpg").is_file(), "a capture's scenery"
+    try:
+        worker.extract(packed("photos/a.jpg", "elsewhere/x"), pathlib.Path(tmp) / "job2")
+        raise AssertionError("took a folder no job has")
+    except RuntimeError as e:
+        assert "shouldn't" in str(e)
+print("a job's input OK")
+
 # --- elsewhere: --setup says what to install by hand
 assert worker.os_release() is not None
 print("ALL WORKER SETUP TESTS PASSED")
