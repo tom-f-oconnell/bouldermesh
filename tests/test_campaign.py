@@ -4043,6 +4043,16 @@ try:
     assert title == "Added by Ana Phone: Rock 1" and 'Ana Phone added 1 photo as "Rock 1", taken ' in text, text
     assert time.strftime("%H:%M UTC", time.gmtime(taken)) in text and "(3 h before this notification)" in text, text
     assert ", uploaded " in server.added_note(server.q("SELECT * FROM projects WHERE id='ad0000000002'", one=True))[1], "no record: when it came"
+    # what the notification opens and shows: the page of its photos, and one of them; nothing with no address, or no photos
+    assert server.added_links(server.q("SELECT * FROM projects WHERE id='ad0000000001'", one=True)) == {}, "no SITE_URL"
+    real_site, server.SITE_URL = server.SITE_URL, "https://example.org/"
+    try:
+        assert server.added_links(server.q("SELECT * FROM projects WHERE id='ad0000000001'", one=True)) == {
+            "click": "https://example.org/added/ad0000000001", "attach": "https://example.org/photos/ad0000000001/a.jpg?thumb"}
+        assert "Tap to see them all" in server.added_note(server.q("SELECT * FROM projects WHERE id='ad0000000001'", one=True))[1]
+        assert server.added_links(server.q("SELECT * FROM projects WHERE id='ad0000000002'", one=True)) == {}, "no photos"
+    finally:
+        server.SITE_URL = real_site
     assert server.notify_act("approve", "project", "ad0000000001") == 'approved "Rock 1": meshed in its turn, and shown'
     assert server.q("SELECT approved, approved_by FROM projects WHERE id='ad0000000001'", one=True) == {"approved": 1, "approved_by": "the owner"}
     assert "already approved" in server.notify_act("deny", "project", "ad0000000001"), "decided since: left to the admin page"

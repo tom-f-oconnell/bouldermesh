@@ -9103,19 +9103,23 @@ def contribution_prio(proj: dict) -> int:
 
 
 def submit_reconstruct(pid: str) -> dict:
-    """An account asks for its project's mesh: queued if it's approved, or else held until nothing else wants meshing
-    (contribution_pump()); the owner's phone is told there's something to look at."""
+    """An account asks for its project's mesh: queued if it's approved (meshed next, as mesh_next() does, if its account
+    is set so), or else held until nothing else wants meshing (contribution_pump()); the owner's phone is told there's
+    something to look at."""
     proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
     internet = proj["kind"] in ("harvest", "boulder")
     if proj.get("approved") == 1:
         q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
         queue_job({"type": "reconstruct", "pid": pid, "internet": internet})
+        if (ACCOUNTS.get(proj["user_id"]) or {}).get("mesh_next"):
+            append_log(pid, "meshed next, as its account is set to be")
+            return {"queued": True, "next": mesh_next(pid)["result"]}
         return {"queued": True}
     q("UPDATE projects SET status=?, progress=NULL, job=?, job_at=? WHERE id=?", HELD, json.dumps({"type": "reconstruct", "pid": pid, "internet": internet}),
       time.time(), pid, write=True)
     if NOTIFIER.conf()["enabled"]:
         threading.Thread(target=NOTIFIER.send, args=(*added_note(proj), NOTIFIER.buttons("project", pid, "Decline"), 3, ["inbox_tray"]),
-                         daemon=True).start()
+                         kwargs=added_links(proj), daemon=True).start()
     return {"queued": False, "held": True, "why": "it will be meshed when the machines have nothing else to do, or sooner once it's approved"}
 
 
@@ -9130,10 +9134,52 @@ def added_note(proj: dict, now: float | None = None) -> tuple[str, str]:
     ago = max(0, (now or time.time()) - at)
     ago = (f"{round(ago / 60)} min" if ago < 5400 else f"{ago / 3600:.0f} h" if ago < 48 * 3600 else f"{ago / 86400:.0f} days")
     when = time.strftime("%a %d %b %Y, %H:%M UTC", time.gmtime(at))
+    soon = "next" if (ACCOUNTS.get(proj["user_id"]) or {}).get("mesh_next") else "soon"
     return (f"Added by {who}: {proj['name']}",
             f"{who} added {plural(n, 'photo')} as \"{proj['name']}\", {verb} {when} ({ago} before this notification). "
-            "Approve to mesh it soon and show it on the site, or Decline; or on the admin page's People. Until then "
+            + ("Tap to see them all. " if SITE_URL and n else "")
+            + f"Approve to mesh it {soon} and show it on the site, or Decline; or on the admin page's People. Until then "
             "it's meshed when nothing else is waiting.")
+
+
+def added_links(proj: dict) -> dict:
+    """What the owner's notification of something added opens and shows (NOTIFIER.send's click and attach): its page of
+    photos (added_page()), and a small copy of one from the middle. Nothing where SITE_URL isn't set, or there are no photos."""
+    names = added_photos(proj["id"])
+    if not SITE_URL or not names:
+        return {}
+    base = SITE_URL.rstrip("/")
+    return {"click": f"{base}/added/{proj['id']}", "attach": f"{base}/photos/{proj['id']}/{names[len(names) // 2]}?thumb"}
+
+
+def added_photos(pid: str) -> list[str]:
+    photos = PROJECTS / pid / "photos"
+    return sorted(f.name for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.is_dir() else []
+
+
+ADDED_PAGE_MOST = 200       # photos shown on what an account added's page
+
+
+def added_page(pid: str) -> bytes | None:
+    """A plain page of what an account added: who, under what name, how it stands, and its photos, small, each opening
+    full size. For the owner's phone, from the notification asking to approve it, where there's no editing token: so it's
+    open to whoever has the (random) id, as its photos are. None if there's no such thing added."""
+    proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
+    if not proj or not proj.get("user_id"):
+        return None
+    row, names = submission_row(proj), added_photos(pid)
+    e = html.escape
+    state = {1: "approved", -1: "declined"}.get(proj.get("approved"), "waiting to be approved")
+    pics = "".join(f'<a href="/photos/{pid}/{e(n)}"><img src="/photos/{pid}/{e(n)}?thumb" loading="lazy" alt="{e(n)}"></a>' for n in names[:ADDED_PAGE_MOST])
+    more = f"<p>and {len(names) - ADDED_PAGE_MOST} more</p>" if len(names) > ADDED_PAGE_MOST else ""
+    return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>{e(proj['name'])}</title>
+<style>body{{font:15px system-ui,sans-serif;margin:16px;background:#fff;color:#222}}
+@media (prefers-color-scheme:dark){{body{{background:#161616;color:#ddd}}}}
+div{{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:4px}}img{{width:100%;aspect-ratio:1;object-fit:cover;display:block}}</style></head>
+<body><h3>{e(proj['name'])}</h3><p>Added by {e(row['user'] or 'someone')}, {time.strftime('%a %d %b %Y, %H:%M UTC', time.gmtime(proj['created']))}:
+{plural(len(names), 'photo')}, {state}. Approve or decline from the notification, or on the admin page's People.</p>
+<div>{pics}</div>{more}</body></html>""".encode()
 
 
 def mesh_next(pid: str) -> dict:
@@ -9204,7 +9250,8 @@ def link_contribution(pid: str) -> None:
 
 def approve_project(pid: str, by: dict, ok: bool = True) -> dict:
     """Approve or decline what an account added. Approved: it's no longer counted against the account, its mesh is linked
-    and shown, and a mesh still to make moves ahead of the backfill.
+    and shown, and a mesh still to make moves ahead of the backfill (or is meshed next, as mesh_next() does, if its
+    account is set so).
 
     Raises:
         ValueError: there's no such thing added, or `by` may not approve it.
@@ -9218,11 +9265,15 @@ def approve_project(pid: str, by: dict, ok: bool = True) -> dict:
     append_log(pid, f"{'approved' if ok else 'declined'} by {by.get('name') or 'the owner'}")
     if ok:
         proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
-        MACHINES.reprioritise(pid, contribution_prio(proj))     # a mesh of it already waiting for a machine
-        if proj["status"] == HELD:
-            q("UPDATE projects SET status='queued' WHERE id=?", pid, write=True)
-            queue_job(json.loads(proj["job"]))
+        if (ACCOUNTS.get(proj["user_id"]) or {}).get("mesh_next") and proj["status"] in (HELD, "queued", "running"):
+            append_log(pid, "meshed next, as its account is set to be")
+            mesh_next(pid)
         else:
+            MACHINES.reprioritise(pid, contribution_prio(proj))     # a mesh of it already waiting for a machine
+            if proj["status"] == HELD:
+                q("UPDATE projects SET status='queued' WHERE id=?", pid, write=True)
+                queue_job(json.loads(proj["job"]))
+        if proj["status"] != HELD:
             link_contribution(pid)
     return submission_row(q("SELECT * FROM projects WHERE id=?", pid, one=True))
 
@@ -9698,9 +9749,10 @@ def admin_user_delete(body: dict) -> dict:
 
 
 def admin_user_change(body: dict) -> dict:
-    """An account's role, areas, quota, name, or whether it's closed: {id, ...those to change}; sign_out: forget its devices."""
+    """An account's role, areas, quota, name, whether what it adds is meshed next (mesh_next), or whether it's closed:
+    {id, ...those to change}; sign_out: forget its devices."""
     try:
-        ACCOUNTS.change(str(body.get("id")), {k: body[k] for k in ("role", "areas", "quota_mb", "disabled", "name") if k in body})
+        ACCOUNTS.change(str(body.get("id")), {k: body[k] for k in ("role", "areas", "quota_mb", "disabled", "mesh_next", "name") if k in body})
         if body.get("sign_out"):
             ACCOUNTS.sign_out(str(body.get("id")))
     except accounts_mod.Refused as e:
@@ -10738,6 +10790,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not (PROJECTS / m[1]).is_dir():
                     return self.send_json({"error": "not found"}, 404)
                 return self.send_json({"groups": photo_groups(m[1], (qs.get("climb") or [None])[0])})
+            m = re.fullmatch(r"/added/([0-9a-f]+)", p)
+            if m:   # what an account added, for the owner's phone (added_page())
+                page = added_page(m[1])
+                return self.send_body(page, "text/html; charset=utf-8", 200, {"Cache-Control": "no-store"}) if page \
+                    else self.send_json({"error": "not found"}, 404)
             m = re.fullmatch(r"/photos/([0-9a-f]+)/(rejected/)?([A-Za-z0-9._-]+)", p)
             if m:   # rejected photos are named <reason>_<name>; ?thumb: a small copy (photo_thumb())
                 name = m[3].split("_", 1)[1] if m[2] and "_" in m[3] else m[3]
@@ -11133,8 +11190,10 @@ class Handler(BaseHTTPRequestHandler):
                 if limited(me) and user_used(me["id"]) >= user_quota(me):
                     return self.send_json({"error": "you're at your storage limit: export and delete something you added, or wait for it to be approved"}, 413)
                 (PROJECTS / pid / "photos").mkdir(parents=True)
-                q("INSERT INTO projects(id,name,created,kind,climb_id,user_id,approved) VALUES(?,?,?,?,?,?,?)", pid, name, time.time(),
-                  "user", body.get("climb_id"), me["id"], None if me["id"] is None else int(me["role"] in ("moderator", "owner")), write=True)
+                pre = me["id"] is not None and me["role"] in accounts_mod.PRE_APPROVED
+                q("INSERT INTO projects(id,name,created,kind,climb_id,user_id,approved,approved_by,approved_at) VALUES(?,?,?,?,?,?,?,?,?)", pid, name,
+                  time.time(), "user", body.get("climb_id"), me["id"], None if me["id"] is None else int(pre), "pre-approved" if pre else None,
+                  time.time() if pre else None, write=True)
                 return self.send_json({"id": pid, "name": name}, 201)
             m = re.fullmatch(r"/api/submissions/([0-9a-f]+)/(approve|decline)", p)
             if m:   # what an account added, by the owner or a moderator of its area
@@ -12277,7 +12336,8 @@ def notify_act(verb: str, kind: str, rid: str) -> str:
         if verb not in ("approve", "deny"):
             return f"nothing to do for {verb}"
         approve_project(rid, {"role": "owner", "name": "the owner"}, verb == "approve")
-        return f"approved {name}: meshed in its turn, and shown" if verb == "approve" else f"declined {name}"
+        nxt = (ACCOUNTS.get(proj["user_id"]) or {}).get("mesh_next")
+        return f"approved {name}: meshed {'next' if nxt else 'in its turn'}, and shown" if verb == "approve" else f"declined {name}"
     found = VOLUNTEERS.get(rid) if kind == "volunteer" else MACHINES.get(rid) if kind == "machine" else None
     if not found:
         return f"no {kind} {rid} here any more"

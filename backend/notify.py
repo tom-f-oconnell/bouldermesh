@@ -208,8 +208,10 @@ class Notifier:
         return parts[0], parts[1], parts[2]
 
     # -- sending ------------------------------------------------------------------------------------------------------
-    def send(self, title: str, message: str, actions: list[dict] | None = None, priority: int = 3, tags=None) -> bool:
-        """Publish a notification now; whether ntfy took it."""
+    def send(self, title: str, message: str, actions: list[dict] | None = None, priority: int = 3, tags=None,
+             click: str | None = None, attach: str | None = None) -> bool:
+        """Publish a notification now; whether ntfy took it. click: the address tapping it opens; attach: a picture's
+        address, which the phone shows with it."""
         c = self.conf()
         if not c["enabled"]:
             return False
@@ -218,6 +220,10 @@ class Notifier:
             body["tags"] = tags
         if actions:
             body["actions"] = actions
+        if click:
+            body["click"] = click
+        if attach:
+            body["attach"] = attach
         req = urllib.request.Request(c["server"], data=json.dumps(body).encode(), method="POST",
                                      headers={"Content-Type": "application/json", "User-Agent": USER_AGENT})
         try:

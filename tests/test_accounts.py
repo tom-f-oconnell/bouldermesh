@@ -282,6 +282,34 @@ with tempfile.TemporaryDirectory() as tmp:
         assert next(x for x in admin("user-signin", {"id": ed["id"]})["users"]["list"] if x["id"] == ed["id"])["quota"] is None
         assert req(B, "POST", f"/api/projects/{pid}/photos", headers=ED, files=[photo(7)])[0] == 200, "Ana's, which an editor may add to"
         assert req(B, "DELETE", f"/api/projects/{theirs['id']}", headers=ED)[2] == {"deleted": theirs["id"]}, "deleted, not only marked"
+
+        # an uploader: a user whose uploads are approved as they come, and queued, not held
+        up, UP = join("Uma")
+        admin("user-change", {"id": up["id"], "role": "uploader"})
+        st, _, made = req(B, "POST", "/api/projects", {"name": "Uma's rock"}, UP)
+        req(B, "POST", f"/api/projects/{made['id']}/photos", headers=UP, files=[photo(i) for i in range(3)])
+        row = next(x for x in req(B, "GET", "/api/submissions", headers=AUTH)[2]["added"] if x["id"] == made["id"])
+        assert row["approved"] == 1 and row["approved_by"] == "pre-approved", row
+        assert req(B, "POST", f"/api/projects/{made['id']}/reconstruct", {}, UP)[2] == {"queued": True}
+        assert req(B, "POST", "/api/projects", {"name": "x"}, UP)[0] == 201 and bad("user-change", {"id": up["id"], "role": "boss"})[0] == 400
+        # Mesh next for an account: an uploader's at once; a user's once it's approved
+        st, _, state = req(A, "POST", "/api/admin/actions/user-change", {"id": up["id"], "mesh_next": True})
+        assert st == 200 and next(x for x in state["users"]["list"] if x["id"] == up["id"])["mesh_next"] is True
+        st, _, again = req(B, "POST", "/api/projects", {"name": "Uma's other"}, UP)
+        req(B, "POST", f"/api/projects/{again['id']}/photos", headers=UP, files=[photo(i) for i in range(3)])
+        st, _, r = req(B, "POST", f"/api/projects/{again['id']}/reconstruct", {}, UP)
+        assert st == 202 and r["queued"] and "next" in r, r
+        ana_next = req(B, "POST", "/api/projects", {"name": "Ana's next"}, ANA)[2]["id"]
+        req(B, "POST", f"/api/projects/{ana_next}/photos", headers=ANA, files=[photo(i) for i in range(3)])
+        admin("user-change", {"id": ana["id"], "mesh_next": True, "quota_mb": 100})
+        assert req(B, "POST", f"/api/projects/{ana_next}/reconstruct", {}, ANA)[2]["held"], "not approved: held still"
+        req(B, "POST", f"/api/submissions/{ana_next}/approve", {}, AUTH)
+        assert "meshed next, as its account is set to be" in (tmp / "data" / "projects" / ana_next / "job.log").read_text()
+        # its page of photos, for the owner's phone from the notification
+        st, _, page = req(B, "GET", f"/added/{ana_next}")
+        page = page.decode()
+        assert st == 200 and page.count(f'src="/photos/{ana_next}/') == 3 and "Added by Ana" in page, page
+        assert req(B, "GET", "/added/0123456789ab")[0] == 404
     finally:
         out = srv.stop()
 print("what accounts add OK")

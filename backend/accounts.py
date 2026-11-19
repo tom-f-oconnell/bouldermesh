@@ -6,9 +6,14 @@ token is. No passwords and no email. Another device (the phone app) gets a token
 signed-in one asks for. Only hashes of tokens, invites and codes are kept.
 
 Roles: "owner" (everything; whoever holds the site's EDIT_TOKEN is the owner too, with no account), "moderator" (may
-approve what's added to the areas they're given, `areas`: campaign ids, or "*" for all), "user", and "george": a user whose
-phone apps draw only in the top half of the screen (for a phone whose screen's lower half is broken). What a user's token
-may do is a short list of routes in server.py (ALLOWED there): anything not on it still needs the owner.
+approve what's added to the areas they're given, `areas`: campaign ids, or "*" for all), "user", "uploader": a user whose
+uploads are approved as they come (pre-approved: queued to mesh in a user's turn, with nothing for the owner to decide),
+and "george": a user whose phone apps draw only in the top half of the screen (for a phone whose screen's lower half is
+broken). What a user's token may do is a short list of routes in server.py (ALLOWED there): anything not on it still
+needs the owner.
+
+Any account may also be set to have what it adds meshed next (`mesh_next`), as the admin page's "Mesh next" would do
+for each: once it's approved, or at once for those approved as they come.
 
 The terms are accepted once, before anything is sent (TERMS, TERMS_VERSION): an account that hasn't accepted the
 current version is refused uploads, and the apps don't go past their first screen without it.
@@ -25,8 +30,9 @@ import threading
 import time
 from pathlib import Path
 
-ROLES = ("owner", "moderator", "user", "george")
-RANK = {"owner": 0, "moderator": 1, "user": 2, "george": 2}      # whose work goes first: the owner's, moderators', then users'
+ROLES = ("owner", "moderator", "user", "uploader", "george")
+PRE_APPROVED = ("owner", "moderator", "uploader")     # roles whose uploads are approved as they come
+RANK = {"owner": 0, "moderator": 1, "user": 2, "uploader": 2, "george": 2}      # whose work goes first: the owner's, moderators', then users'
 NAME_MAX = 40
 INVITE_DAYS = 14
 PAIR_SECONDS = 600
@@ -75,6 +81,8 @@ class Accounts:
                     expires REAL, used_by TEXT, used_at REAL);
                 CREATE TABLE IF NOT EXISTS pairings(hash TEXT PRIMARY KEY, user_id TEXT, expires REAL);
             """)
+            if "mesh_next" not in {r[1] for r in con.execute("PRAGMA table_info(users)")}:
+                con.execute("ALTER TABLE users ADD COLUMN mesh_next INTEGER DEFAULT 0")
 
     def _con(self):
         con = sqlite3.connect(self.path, timeout=30)
@@ -91,7 +99,7 @@ class Accounts:
         if row is None:
             return None
         return {**row, "areas": json.loads(row["areas"]) if row.get("areas") else [], "disabled": bool(row["disabled"]),
-                "accepted": row.get("terms") == TERMS_VERSION}
+                "mesh_next": bool(row.get("mesh_next")), "accepted": row.get("terms") == TERMS_VERSION}
 
     # ---- invites -------------------------------------------------------------------------------------------------------
     def invite(self, role: str = "user", areas: list | None = None, note: str | None = None, days: float = INVITE_DAYS,
@@ -166,7 +174,7 @@ class Accounts:
 
     # ---- changing one --------------------------------------------------------------------------------------------------
     def change(self, uid: str, changes: dict) -> dict:
-        """Change an account's role, areas, quota_mb (None: the site's default), disabled or name: those given."""
+        """Change an account's role, areas, quota_mb (None: the site's default), disabled, mesh_next or name: those given."""
         user = self.get(uid)
         if user is None:
             raise Refused("there's no such account")
@@ -181,6 +189,8 @@ class Accounts:
             if quota is not None and (isinstance(quota, bool) or not isinstance(quota, (int, float)) or quota < 0):
                 raise Refused("a quota is megabytes, or nothing for the site's own")
             self._q("UPDATE users SET quota_mb=? WHERE id=?", quota, uid)
+        if "mesh_next" in changes:
+            self._q("UPDATE users SET mesh_next=? WHERE id=?", int(bool(changes["mesh_next"])), uid)
         if "disabled" in changes:
             self._q("UPDATE users SET disabled=? WHERE id=?", int(bool(changes["disabled"])), uid)
             if changes["disabled"]:
