@@ -3522,13 +3522,10 @@ function projectState(p){
   return { label: `${base}; ${what} to come`, cls: 'queued', tip: `Still to do: ${left.join('; ')}` };
 }
 async function refreshProjects(){
-  // low priority (remaking an old mesh) under everything else; within each, what's being worked on first: running or
-  // harvesting, or a machine at work for it (its mesh's beta or size, say); then what's queued or waiting for a machine;
-  // the rest in the server's order
   // three bands: what's going on (running, harvesting, queued, or a machine at work for it); then low priority (remaking
   // an old mesh); then the rest (meshed, stopped, failed...). Within each, worked on first, then waiting, then in order
-  const active = p => ['running', 'harvesting', 'queued'].includes(p.status) || (p.work || []).length > 0;
-  const rank = p => (p.low_priority ? 3 : active(p) ? 0 : 6) + ((['running', 'harvesting'].includes(p.status) || (p.work || []).some(w => w.state === 'running')) ? 0
+  const going = p => ['running', 'harvesting', 'queued'].includes(p.status) || (p.work || []).length > 0;
+  const rank = p => (p.low_priority ? 3 : going(p) ? 0 : 6) + ((['running', 'harvesting'].includes(p.status) || (p.work || []).some(w => w.state === 'running')) ? 0
     : (p.status === 'queued' || (p.work || []).length) ? 1 : 2);
   const list = (await api('/api/projects')).map((p, i) => [p, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
   areasAtWork = new Map();
