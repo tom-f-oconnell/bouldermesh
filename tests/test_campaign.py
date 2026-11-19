@@ -3461,6 +3461,23 @@ assert status1() == "queued" and server.q("SELECT replaced_by FROM meshes WHERE 
 server.settle_versions("n3wb0uld3r00")
 assert status1() == "queued", "scene 1 is of Pea, which the new one neither places nor meshes apart: its only chance of a mesh"
 assert server.q("SELECT replaced_by FROM meshes WHERE id=?", p3["mesh_id"], one=True)["replaced_by"] == "n3wb0uld3r00", "Arm's placed"
+# and if it fails or is cut short, it's tried again as a current one's would be: an error from the admin page, cut
+# short after a restart (with boulders.rest_auto)
+while not server.jobs.empty():
+    server.jobs.get_nowait()
+server.q("UPDATE projects SET status='failed' WHERE id=?", att["1"]["project"], write=True)
+server.rest_attempt(bmesh, "1", status="error")
+assert bmesh in server.rest_waiting() and server.rest_resume() == 0, "an error only from the admin page"
+assert server.rest_queue_all() >= 1 and status1() == "queued" and server.jobs.get_nowait()["pid"] == att["1"]["project"]
+assert "-- carrying on: the current version" in (server.PROJECTS / att["1"]["project"] / "job.log").read_text()
+server.q("UPDATE projects SET status='superseded' WHERE id=?", att["1"]["project"], write=True)    # as 0e87125 left some
+server.settings().update({"boulders.rest_auto": True})
+try:
+    assert server.rest_resume() == 1 and status1() == "queued" and server.jobs.get_nowait()["pid"] == att["1"]["project"]
+finally:
+    server.settings().update({"boulders.rest_auto": False})
+assert server.jobs.empty()
+server.jobs.put({"type": "boulder", "pid": att["1"]["project"]})
 server.save_rest("n3wb0uld3r00", {"models": [{"name": "1", "counts": True, "climbs": [ids["Pea"]], "photos": []}]})
 server.settle_versions("n3wb0uld3r00")
 assert status1() == "superseded" and server.jobs.empty(), "the new one meshes Pea's scene itself"

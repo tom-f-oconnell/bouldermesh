@@ -2928,6 +2928,48 @@ def rest_resume() -> int:
             if again:
                 save_rest(m["id"], rec)
                 n += len(again)
+    return n + requeue_stale(lambda a: rest_state(a) in REST_CUT)
+
+
+def stale_rests(due) -> list[dict]:
+    """Scenes older versions of boulders' meshes left out, tied to them, whose meshing is due (due(attempt)) and has a
+    climb the current version doesn't cover (rest_covers()): the only chance of a mesh of it, which drop_rest_jobs()
+    leaves be. [{parent, model, members, project}]"""
+    replaced = {r["id"]: r["replaced_by"] for r in q("SELECT id, replaced_by FROM meshes WHERE replaced_by IS NOT NULL")}
+    out, covers = [], {}
+    for r in q("SELECT id, boulder FROM projects WHERE kind='boulder' AND boulder LIKE ? AND status NOT IN ('done','skipped')",
+               f"%{REST_MARK}%"):
+        if not is_rest(r["boulder"]):
+            continue
+        parent, model = rest_ref(r["boulder"])
+        head = replaced.get(parent)
+        rec = load_rest(parent) if head and model else None
+        entry = next((m for m in (rec or {}).get("models") or [] if m.get("name") == model and m.get("counts")), None)
+        if entry is None or not due(entry.get("attempt")):
+            continue
+        members = set(pool_members(r["boulder"]))
+        if head not in covers:
+            covers[head] = rest_covers(head)
+        if not members <= covers[head]:
+            out.append({"parent": parent, "model": model, "members": sorted(members), "project": r["id"]})
+    return out
+
+
+def requeue_stale(due) -> int:
+    """Queue again each scene stale_rests(due) finds, carrying on from where it got to. Returns how many."""
+    n = 0
+    for x in stale_rests(due):
+        with _rest_lock:
+            rec = load_rest(x["parent"])
+            entry = next((m for m in (rec or {}).get("models") or [] if m.get("name") == x["model"]), None)
+            leaf = q("SELECT boulder FROM meshes WHERE id=?", x["parent"], one=True)
+            if entry is None or not leaf:
+                continue
+            append_log(x["project"], "-- carrying on: the current version of its boulder's mesh neither places all its climbs "
+                       "nor meshes them apart itself")
+            entry["attempt"] = queue_rest(x["parent"], leaf["boulder"], x["model"], x["members"], resume=True)
+            save_rest(x["parent"], rec)
+            n += 1
     return n
 
 
@@ -3037,24 +3079,27 @@ def settle_rests() -> None:
 
 
 def rest_waiting() -> list[str]:
-    """Current boulders' meshes with a scene they left out, tied to them, to mesh apart, never tried or cut short. Not
-    those from before ties were recorded, whose left-out photos nothing checks are of a rock their photos see (meshing
-    the boulder again records them)."""
+    """Current boulders' meshes with a scene they left out, tied to them, to mesh apart, never tried or cut short; and
+    older versions with one the current version doesn't cover (stale_rests()). Not those from before ties were
+    recorded, whose left-out photos nothing checks are of a rock their photos see (meshing the boulder again records
+    them)."""
     out = []
     for m in q("SELECT id, boulder FROM meshes WHERE boulder IS NOT NULL AND replaced_by IS NULL"):
         rec = None if is_pool(m["boulder"]) else load_rest(m["id"])
         if rec and "models" in rec and any(rest_due(x.get("attempt")) for x in rest_attempts(rec)):
             out.append(m["id"])
-    return out
+    return out + sorted({x["parent"] for x in stale_rests(rest_due)})
 
 
 def rest_queue_all() -> int:
     """The admin page's: queue meshing what every current boulder's mesh left out, where that was never tried, or was
-    cut short. Returns for how many meshes."""
-    n = 0
+    cut short; and what older versions left out that the current one doesn't cover (stale_rests()), the same way.
+    Returns for how many meshes."""
+    n = len({x["parent"] for x in stale_rests(rest_due)})
+    requeue_stale(rest_due)
     for mid in rest_waiting():
-        m = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
-        if m and m["source"].startswith("project:"):
+        m = q("SELECT source, replaced_by FROM meshes WHERE id=?", mid, one=True)
+        if m and not m["replaced_by"] and m["source"].startswith("project:"):
             rec = keep_rest(mid, m["source"].split(":", 1)[1], print, untied=False)
             n += bool(rec and any(rest_state(x.get("attempt")) in REST_BUSY for x in rest_attempts(rec)))
     return n
