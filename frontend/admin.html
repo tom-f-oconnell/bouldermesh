@@ -372,6 +372,15 @@
     <div id="inv-new"></div>
     <div id="inv-list"></div>
   </section>
+  <section id="gps-areas">
+    <h2>Uploads' areas, from their GPS</h2>
+    <div class="note">Uploads not of a climb in an area are put in the area their photos' GPS is in: one listed here, or else Mountain
+      Project's area of the place. These were put there automatically and haven't been looked over: until they are, that area's
+      moderators can't approve them. Where several areas are close by, the one listing more boulder problems than routes was chosen,
+      and its uploader is asked which.</div>
+    <div id="gps-areas-list"></div>
+    <div class="row"><button class="sec" id="gps-areas-match">Look up uploads with no area yet</button></div>
+  </section>
   <section id="pairing">
     <h2>Editing from a phone</h2>
     <div class="note" id="pair-note"></div>
@@ -787,6 +796,7 @@ function render(s){
     + (nt.last_error ? `<div class="bad">${esc(nt.last_error)}</div>` : '') + (nt.waiting_summary ? `<div>${nt.waiting_summary} registration(s) waiting for the next summary.</div>` : '');
   renderPairing(s.pairing);
   renderPeople(s.users);
+  renderGpsAreas(s);
   renderBadges(s);
   keep('#users-quota', v['users.quota_mb']);
   const cr = s.secrets;
@@ -1181,6 +1191,32 @@ $('#inv-make').onclick = async () => {
   } catch (e) { msg(e.message, 8000); }
 };
 $('#users-quota').onchange = () => save({ 'users.quota_mb': +$('#users-quota').value });
+// uploads put in an area by their GPS, not yet looked over: OK as it is, another of the areas close by, or look it up again
+function renderGpsAreas(s){
+  const rows = s.area_reviews || [], when = t => new Date(t * 1000).toLocaleString();
+  const link = a => a.url ? `<a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.name)}</a>` : esc(a.name);
+  const where = x => x.position ? `<a href="https://www.openstreetmap.org/?mlat=${x.position.lat}&mlon=${x.position.lng}#map=16/${x.position.lat}/${x.position.lng}" target="_blank" rel="noopener">${x.position.lat}, ${x.position.lng}</a>
+    <div class="note">from ${x.position.n} of ${x.position.of} photos</div>` : '–';
+  $('#gps-areas-list').innerHTML = (s.area_index ? '' : '<div class="warn">There\'s no index of areas yet: run <code>cli.py area-index openbeta</code> (README, "Areas from GPS").</div>')
+    + (rows.length ? `<table><tr><th>Upload</th><th>By</th><th>Where</th><th>Area</th><th></th></tr>${rows.map(x => `<tr><td>${esc(x.name)}<div class="note">${when(x.created)}</div></td>
+      <td>${esc(x.user || '(the site)')}</td><td>${where(x)}</td>
+      <td>${x.name ? `${x.campaign ? `${esc(x.name)} <small class="note">(listed here)</small>` : link(x)}` : '<span class="warn">none</span>'}<div class="note">${esc(x.why || '')}</div>
+        ${x.choices.length > 1 ? `<select data-gps-pick="${esc(x.id)}" style="width:auto">${x.choices.map((c, k) => `<option value="${k}">${esc(c.name)} (${c.boulders} problems, ${c.routes} routes, ${Math.round(c.km * 1000)} m)</option>`).join('')}</select>` : ''}</td>
+      <td>${x.name ? `<button class="sm" data-gps="ok" data-id="${esc(x.id)}">OK</button> ` : ''}${x.choices.length > 1 ? `<button class="sec sm" data-gps="choose" data-id="${esc(x.id)}">Use the one picked</button> ` : ''}<button class="sec sm" data-gps="again" data-id="${esc(x.id)}">Look up again</button></td></tr>`).join('')}</table>`
+    : '<div class="note">Nothing to look over.</div>');
+}
+$('#gps-areas-list').addEventListener('click', async ev => {
+  const d = ev.target.dataset;
+  if (!d.gps) return;
+  const body = { id: d.id, do: d.gps };
+  if (d.gps === 'choose') body.k = +$(`[data-gps-pick="${CSS.escape(d.id)}"]`).value;
+  try { render(await call('/api/admin/actions/area', body)); msg({ ok: 'Looked over', choose: 'Put in that area', again: 'Looking it up again: it shows here once done' }[d.gps]); }
+  catch (e) { msg(e.message, 8000); }
+});
+$('#gps-areas-match').onclick = async () => {
+  try { const r = await call('/api/admin/actions/area', { do: 'match-all' }); render(r); msg(r.result, 6000); }
+  catch (e) { msg(e.message, 8000); }
+};
 $('#added-list').addEventListener('click', async ev => {
   const d = ev.target.dataset;
   if (!d.sub) return;

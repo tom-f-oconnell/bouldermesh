@@ -32,6 +32,14 @@
                                                        which current meshes would be made from other inputs by the code
                                                        now (photos, pooling, filter, mapper settings, MESH_RULES), from
                                                        caches, with no meshing (server.inputs_check()); exits 1 if any
+  python cli.py area-index openbeta [--country USA] [--index FILE]
+                                                       put OpenBeta's areas (where each is, its MP id, its climbs) in the
+                                                       index uploads are put in areas from by GPS (~40 min for all)
+  python cli.py area-index mp <area URL or id> [--max N]  and Mountain Project's own, from that area down: a page a
+                                                       minute (its Crawl-delay), at most N pages a run (default 100;
+                                                       0: no limit); a run again carries on where it stopped
+  python cli.py area-index compare                     Mountain Project's areas read so far against OpenBeta's copy
+  python cli.py area-for <lat> <lng> [--offline]       the area an upload taken there would be put in, and why
   python cli.py splat <mesh_id> [--steps N] [--out FILE] [--data DIR]
                                                        fit the splat of what's around a reconstructed mesh, for the
                                                        viewer's Scene background (needs CUDA torch and gsplat: splat.py)
@@ -111,8 +119,19 @@ def main():
     ic.add_argument("--data")
     sp = sub.add_parser("splat"); sp.add_argument("mesh_id"); sp.add_argument("--steps", type=int, default=7000)
     sp.add_argument("--out"); sp.add_argument("--data")
+    ai = sub.add_parser("area-index", help="fill the index of where areas are, for putting uploads in areas by GPS")
+    ai.add_argument("source", choices=["openbeta", "mp", "compare"])
+    ai.add_argument("root", nargs="?", help="mp: the area (URL or id) to read down from")
+    ai.add_argument("--country", action="append", help="openbeta: only this country (as OpenBeta names it, e.g. USA)")
+    ai.add_argument("--max", type=int, default=100, help="mp: stop after reading this many pages (0: no limit)")
+    ai.add_argument("--index", help="the index (default DATA_DIR/areas.sqlite)")
+    af = sub.add_parser("area-for", help="the area a position is in, by the index"); af.add_argument("lat", type=float)
+    af.add_argument("lng", type=float); af.add_argument("--index"); af.add_argument("--offline", action="store_true",
+                                                                                     help="read no Mountain Project page")
     a = ap.parse_args()
 
+    if a.cmd in ("area-index", "area-for"):
+        sys.exit(area_index(a))
     if a.cmd == "splat":
         sys.exit(splat(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.mesh_id, a.steps, a.out))
 
@@ -557,6 +576,48 @@ def span_check() -> int:
     ratios = sorted(r[3] for r in rows)
     print(f"{len(rows)} videos in {len({r[0] for r in rows})} meshes: span/final median {statistics.median(ratios):.2f}, "
           f"within 25% for {sum(0.8 <= x <= 1.25 for x in ratios)} of them")
+    return 0
+
+
+def area_index(a) -> int:
+    """area-index and area-for (areamatch.py)."""
+    import re
+    import areamatch
+    from climbs import openbeta
+    from climbs.common import http
+    index = Path(a.index or Path(os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data") / "areas.sqlite")
+    con = areamatch.connect(index)
+
+    def page(mp_id):
+        url = f"https://www.mountainproject.com/area/{mp_id}"
+        area, _, _ = mountainproject.parse_area(http.get_text(url), url)
+        return area.area_path[:-1], [re.search(r"/area/(\d+)", u)[1] for u in area.area_urls[:-1]]
+
+    if a.cmd == "area-for":
+        print(json.dumps(areamatch.match(con, a.lat, a.lng, None if a.offline else page), indent=1))
+        return 0
+    if a.source == "openbeta":
+        n, failed = areamatch.crawl_openbeta(con, lambda q, v, cache: openbeta.gql(q, v, use_cache=cache), a.country)
+        print(f"{n} areas from OpenBeta in {index}")
+        if failed:
+            print(f"left out, as OpenBeta kept failing (run again to try them): {'; '.join(failed)}", file=sys.stderr)
+            return 1
+    elif a.source == "mp":
+        root = mountainproject.area_id(a.root or "")
+        if not root:
+            print("give the Mountain Project area to read down from, as its URL or id", file=sys.stderr)
+            return 2
+
+        def read(url):
+            return mountainproject.parse_area(http.get_text(url), url)
+        n = areamatch.crawl_mp(con, root, read, a.max or None)
+        print(f"{n} pages read from Mountain Project into {index}")
+    else:
+        out = areamatch.compare(con)
+        print(json.dumps({k: v if not isinstance(v, list) else v[:50] for k, v in out.items()}, indent=1))
+        print(f"of {out['mp']} areas read from Mountain Project: {out['matched']} in OpenBeta's copy, {len(out['missing'])} missing "
+              f"from it, {len(out['moved'])} over 1 km off, {len(out['renamed'])} named otherwise, "
+              f"{len(out['moved_to'])} under another parent", file=sys.stderr)
     return 0
 
 

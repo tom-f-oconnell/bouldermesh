@@ -113,10 +113,26 @@ object CaptureContents {
     }
 }
 
+/** One of the areas an upload's GPS is close to, for its uploader to say which it's in. */
+@Serializable
+data class AreaChoice(val name: String = "", val boulders: Int? = null, val routes: Int? = null) {
+    /** As its button says it: its name, and what Mountain Project lists in it. */
+    fun label(): String = name + if (boulders != null && routes != null) " ($boulders problems, $routes routes)" else ""
+}
+
+/**
+ * The area the server put an upload in, by where its photos were taken; with ask, several are close by and nobody has
+ * said which, so its uploader is asked (its choices, the one it's in first; POST /api/projects/<id>/area {k}).
+ */
+@Serializable
+data class UploadArea(val name: String? = null, val auto: Boolean = false, val ask: Boolean = false, val choices: List<AreaChoice> = emptyList()) {
+    fun said(): String? = name?.let { "In the area $it" + if (auto) ", by where its photos were taken" else "" }
+}
+
 /** What the server says of one of this phone's uploads (its /api/capture/status). */
 @Serializable
 data class UploadStatus(val status: String = "", val mesh: String? = null, val approved: Boolean = false, val left: List<String> = emptyList(),
-                        val failure: String? = null, @SerialName("mesh_gone") val meshGone: Boolean = false) {
+                        val failure: String? = null, @SerialName("mesh_gone") val meshGone: Boolean = false, val area: UploadArea? = null) {
     /** Its mesh, to view, if it has one still there: while it's being made again too. */
     val meshed: String? get() = mesh?.takeIf { !meshGone }
 

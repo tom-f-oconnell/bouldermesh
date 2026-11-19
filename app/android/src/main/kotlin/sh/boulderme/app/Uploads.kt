@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -35,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,6 +54,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
 import sh.boulderme.core.CaptureContents
 import sh.boulderme.core.SentCapture
+import sh.boulderme.core.UploadArea
 import sh.boulderme.core.UploadStatus
 import java.io.File
 
@@ -154,6 +157,7 @@ fun UploadScreen(a: MainActivity, id: String, go: (Screen) -> Unit) {
                 val (said, color) = uploadSaid(u, null, server)
                 Text(said, color = color)
                 ReopenButton(a, id, u, go)
+                server?.area?.let { AreaQuestion(a, u.project ?: "", it) }
                 server?.meshed?.let { mesh ->
                     TextButton(onClick = { go(Screen.Viewer(mesh, u.name, Screen.Upload(id))) }) { Text("View its mesh") }
                     KeepMesh(a, mesh, u.name)
@@ -192,6 +196,28 @@ fun UploadScreen(a: MainActivity, id: String, go: (Screen) -> Unit) {
             item { Spacer(Modifier.padding(12.dp)) }
         }
     }
+}
+
+/** The area the server put an upload in by its GPS; and, where several are close by, which it's in, asked. */
+@Composable
+private fun AreaQuestion(a: MainActivity, project: String, area: UploadArea) {
+    val scope = rememberCoroutineScope()
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    area.said()?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    if (!area.ask) return
+    Text("Which area is it in? Where its photos were taken is close to ${area.choices.size} of them:", color = WAIT)
+    area.choices.forEachIndexed { k, c ->
+        OutlinedButton(enabled = !busy, onClick = {
+            busy = true
+            scope.launch {
+                error = runCatching { withContext(Dispatchers.IO) { a.api.chooseArea(project, k) } }.exceptionOrNull()?.let { "Couldn't say so: ${it.message}" }
+                Statuses.refresh(a.store, a.api)
+                busy = false
+            }
+        }) { Text(c.label() + if (k == 0) " · as it is" else "") }
+    }
+    error?.let { Text(it, color = BAD, style = MaterialTheme.typography.bodySmall) }
 }
 
 /** One photo of a capture, whole, with what it was for and its readings. */

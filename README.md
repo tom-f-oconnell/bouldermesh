@@ -646,6 +646,30 @@ well, and has *Show this one first* to choose which of them their climbs open. M
 all the photos into a new mesh. What took each upload's photos is kept with its project. Neither app has run on a phone
 yet.
 
+## Areas from GPS
+
+An upload that isn't of a climb in an area here (a capture of a new rock, say) is put in the area its photos' GPS is
+in, when meshing is asked for: an area listed here that holds the place, or else Mountain Project's area of it (the
+parent of the area holding its boulders), which needn't be listed here. Where several are close by, as where Mountain
+Project has one area for a place's routes and another for its problems, the one listing more problems than routes is
+chosen, and the uploader is asked on the project's card and in the apps which it's in. The admin page's *People* tab
+lists those put in an area automatically, to look over; until then, that area's moderators can't approve them.
+
+Areas are looked up in an index (`DATA_DIR/areas.sqlite`), filled ahead of time, as Mountain Project has no search by
+position (in Docker, run these with `docker compose exec app`):
+
+```
+python cli.py area-index openbeta                 # OpenBeta's copy of Mountain Project's areas: ~40 min; almost all US
+python cli.py area-index mp <area URL> --max 100   # Mountain Project's own, from that area down, a page a minute
+python cli.py area-index compare                  # what Mountain Project says against OpenBeta's copy
+python cli.py area-for 34.0124 -116.1627          # the area an upload taken there would be put in, and why
+```
+
+Outside the US only Mountain Project's own pages have areas, so read down from a region before uploads come from it
+(a minute an area: a few hundred take some hours). Its pages share the site's minute between requests with
+harvests, so a long run is better on another machine, with `--index` and the file copied over. *Look up uploads with
+no area yet*, on the admin page, does those that came before the index.
+
 ## Run it as a service
 
 To have systemd start the Docker Compose stack at boot, restart it if it fails, and keep its log:
@@ -1359,6 +1383,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/projects/{id}/photos (multipart "photos") · POST /api/projects/{id}/reconstruct
     POST /api/projects/{id}/retry                       a failed, stopped or interrupted project, from its last finished step
     POST /api/projects/{id}/stop                        its job (an area's climb in it is paused there instead)
+    POST /api/projects/{id}/area {k}                    which of the areas close by its GPS it's in (its "area" choices)
     GET  /api/projects/{id}/effects                     what stopping or deleting it would do: {stop, delete: {says, blocked}}
     POST /api/projects/retry-interrupted                every project a restart interrupted
     GET  /api/jobs                                      what a restart would interrupt (jobs outside areas) or pause (areas' climbs)

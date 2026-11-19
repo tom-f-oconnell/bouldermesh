@@ -188,6 +188,8 @@ class Api(internal val store: Store) {
 
     /** All the scenery's frames are there: the server fits the backdrop once its mesh is made. */
     fun sceneryDone(project: String) { postJson("/api/projects/$project/scenery/done", "{}") }
+    /** Which of the areas close by an upload is in (UploadArea.choices[k]), as its uploader says. */
+    fun chooseArea(project: String, k: Int) { postJson("/api/projects/$project/area", "{\"k\": $k}") }
 
     fun sendPoints(project: String, file: File) {
         val c = open("/api/projects/$project/capture/points", "POST")

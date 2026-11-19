@@ -49,6 +49,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
 import admin as admin_mod  # noqa: E402
+import areamatch  # noqa: E402
 import accounts as accounts_mod  # noqa: E402
 import beta as beta_mod  # noqa: E402
 import captureplan  # noqa: E402
@@ -366,6 +367,11 @@ def init_db() -> None:
             con.execute("ALTER TABLE meshes ADD COLUMN preferred REAL")
         cols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
         for c in ("device", "app"):     # what took its photos: the phone, and the app if one of ours (note_device())
+            if c not in cols:
+                con.execute(f"ALTER TABLE projects ADD COLUMN {c} TEXT")
+        # area: the area an upload is in by its photos' GPS, as match_area() put it (JSON); area_campaign: that area's id
+        # here, if the site lists it
+        for c in ("area", "area_campaign"):
             if c not in cols:
                 con.execute(f"ALTER TABLE projects ADD COLUMN {c} TEXT")
         for n, since in sorted(MESH_RULES_SINCE.items()):     # those made before it was kept: by when they were made
@@ -1973,12 +1979,13 @@ def offline_bundle(mid: str) -> dict | None:
 
 def capture_status(ids: list[str], me: dict | None) -> dict[str, dict]:
     """How a phone's uploads stand, by project id, for the apps to say whether each is meshed: {status, mesh, approved,
-    left (what's still to come beyond meshing: steps_left()), failure, mesh_gone}. A project whoever asks may not see
+    left (what's still to come beyond meshing: steps_left()), failure, mesh_gone, area (area_view(): with "ask", its
+    uploader is to be asked which of its choices it's in)}. A project whoever asks may not see
     (another account's, not approved), or that's gone, is {"status": "gone"}."""
     out: dict[str, dict] = {}
     left = steps_left()
     for pid in ids[:200]:
-        proj = q("SELECT id, status, mesh_id, user_id, approved, deleted_at FROM projects WHERE id=?", pid, one=True)
+        proj = q("SELECT id, status, mesh_id, user_id, approved, deleted_at, area FROM projects WHERE id=?", pid, one=True)
         seen = proj and not proj["deleted_at"] and (not proj["user_id"] or proj["approved"] == 1 or
                                                     (me and (me["role"] == "owner" or proj["user_id"] == me["id"])))
         if not seen:
@@ -1989,7 +1996,8 @@ def capture_status(ids: list[str], me: dict | None) -> dict[str, dict]:
             failure = (last_failure(pid, "FAILED: " if proj["status"] == "failed" else "INTERRUPTED: ").splitlines() or [""])[0][:200] or None
         mid = proj["mesh_id"]
         out[pid] = {"status": proj["status"], "mesh": mid, "approved": not proj["user_id"] or proj["approved"] == 1,
-                    "left": left.get(pid, []), "failure": failure, "mesh_gone": bool(mid) and not (MESHES / mid).is_dir()}
+                    "left": left.get(pid, []), "failure": failure, "mesh_gone": bool(mid) and not (MESHES / mid).is_dir(),
+                    "area": area_view(proj["area"])}
     return out
 
 
@@ -4114,8 +4122,8 @@ def timings_brief(rec: dict | None) -> dict | None:
 
 def mesh_areas():
     """A function giving a mesh row (with its climbs, and boulder_climbs for a boulder's own) the names of the areas it
-    was made for (those whose list holds it as a climb's mesh, or else lists its climbs), and the Mountain Project
-    path of its first climb's area, top first."""
+    was made for (those whose list holds it as a climb's mesh, or else lists its climbs; or else the area its upload's
+    GPS put it in), and the Mountain Project path of its first climb's area, top first."""
     made_for: dict[str, set] = {}
     by_climb: dict[str, set] = {}
     # a climb an area lists is its, linked yet or not: one imported on its own is matched by its Mountain Project id
@@ -4126,10 +4134,17 @@ def mesh_areas():
         for climb in {r["climb_id"], mp.get(r["source_id"])} - {None}:
             by_climb.setdefault(climb, set()).add(r["name"])
     paths = {c["id"]: c["area_path"] for c in q("SELECT id, area_path FROM climbs WHERE area_path IS NOT NULL")}
+    by_gps = {}     # an upload's, by its photos' GPS: the area here, or Mountain Project's
+    for p in q("SELECT id, area FROM projects WHERE area IS NOT NULL"):
+        v = area_view(p["area"])
+        if v and v["name"]:
+            by_gps[f"project:{p['id']}"] = v["name"]
 
     def of(m: dict) -> tuple[list[str], list[str] | None]:
         climbs = [c["id"] for c in m.get("climbs") or [] if not c.get("shared")] + [c["id"] for c in m.get("boulder_climbs") or []]
         names = made_for.get(m["id"]) or set().union(*(by_climb.get(c, set()) for c in climbs))
+        if not names and m.get("source") in by_gps:
+            names = {by_gps[m["source"]]}
         path = next((paths[c] for c in climbs if c in paths), None)
         try:
             path = json.loads(path) if path else None
@@ -6105,7 +6120,8 @@ def project_areas() -> dict[str, list[dict]]:
     """The areas each project was made for, for the Projects tab: {project id: [{id and name (the area's), kind ("climb"
     for a climb's own harvest; "boulder", "group" or "rest" for the project of a boulder's mesh, of a group of climbs'
     whose photos match, or of what a boulder's mesh left out), and for a climb, its name ("climb"), its status on the
-    list and whether it's paused; else how many of the area's climbs it's of ("climbs")}]}."""
+    list and whether it's paused; else how many of the area's climbs it's of ("climbs"); or "gps" for an upload put in
+    an area by its photos' GPS, with area_view()'s fields (its id None if the site doesn't list it)}]}."""
     items = _area_items()
     by: dict[str, dict[str, list[dict]]] = {"boulder": {}, "pool": {}, "climb_id": {}}
     out: dict[str, list[dict]] = {}
@@ -6131,6 +6147,10 @@ def project_areas() -> dict[str, list[dict]]:
             old = any(i["old_rerun"] and i["status"] in UNFINISHED for i in mine)
             out.setdefault(p["id"], []).append({"id": area, "name": mine[0]["area"], "kind": kind, "climbs": len(mine),
                                                 **({"old_rerun": True} if old else {})})
+    for p in q("SELECT id, area FROM projects WHERE area IS NOT NULL"):     # an upload's, by its photos' GPS
+        v = area_view(p["area"])
+        if v and (v["name"] or v["auto"]):
+            out.setdefault(p["id"], []).append({"id": v.get("campaign"), "kind": "gps", **v})
     return out
 
 
@@ -8901,7 +8921,7 @@ ACCOUNTS = accounts_mod.Accounts(DATA / "accounts.sqlite")
 USER_MAY = (("POST", r"/api/meshes/[0-9a-f]+/beta/sets"), ("PATCH", r"/api/meshes/[0-9a-f]+/beta/sets/[0-9a-z]+"),
             ("DELETE", r"/api/meshes/[0-9a-f]+/beta/sets/[0-9a-z]+"),
             # what it adds: a project of its own (photos, videos, an app's capture), meshed when its turn comes
-            ("POST", r"/api/projects"), ("POST", r"/api/projects/[0-9a-f]+/(photos|capture|capture/points|capture/log|capture/crash|reconstruct|scenery|scenery/done)"),
+            ("POST", r"/api/projects"), ("POST", r"/api/projects/[0-9a-f]+/(photos|capture|capture/points|capture/log|capture/crash|reconstruct|scenery|scenery/done|area)"),
             ("DELETE", r"/api/projects/[0-9a-f]+"), ("POST", r"/api/submissions/[0-9a-f]+/(approve|decline)"))
 OWNER = {"id": None, "name": None, "role": "owner", "areas": ["*"], "accepted": True, "quota_mb": None, "created": None}
 JOIN_TRIES, JOIN_WINDOW = 10, 3600      # invites and pairing codes one address may try in an hour
@@ -8961,10 +8981,12 @@ def user_quota(user: dict) -> int | None:
 
 
 def areas_of_project(proj: dict) -> list[str]:
-    """The areas a project's climb is in: whose moderators may approve it."""
-    if not proj.get("climb_id"):
-        return []
-    return [r["campaign_id"] for r in q("SELECT DISTINCT campaign_id FROM campaign_items WHERE climb_id=?", proj["climb_id"])]
+    """The areas a project's climb is in, or that its GPS put it in once that's settled (area_settled()): whose
+    moderators may approve it."""
+    out = [r["campaign_id"] for r in q("SELECT DISTINCT campaign_id FROM campaign_items WHERE climb_id=?", proj["climb_id"])] if proj.get("climb_id") else []
+    if proj.get("area_campaign") and proj["area_campaign"] not in out and area_settled(json.loads(proj.get("area") or "null")):
+        out.append(proj["area_campaign"])
+    return out
 
 
 def may_approve(user: dict | None, proj: dict) -> bool:
@@ -9141,13 +9163,244 @@ def purge_deleted(need: int = 0) -> list[str]:
     return gone
 
 
+AREA_INDEX = DATA / "areas.sqlite"     # where Mountain Project's areas are (areamatch.py; filled by cli.py area-index)
+AREA_PHOTOS = 40        # photos read for an upload's position, spread through it
+_area_lock = threading.Lock()
+
+
+def photo_gps(path: Path) -> tuple[float, float] | None:
+    """Where a photo was taken: the fix an app of ours kept in it (phonedata), or else its EXIF GPS; None if neither."""
+    import phonedata
+    g = (phonedata.read(path) or {}).get("gps") or {}
+    try:
+        if g.get("lat") is not None and g.get("lng") is not None:
+            return float(g["lat"]), float(g["lng"])
+    except (TypeError, ValueError):
+        pass
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            gps = im.getexif().get_ifd(0x8825)
+        if not gps or 2 not in gps or 4 not in gps:
+            return None
+        deg = lambda v: float(v[0]) + float(v[1]) / 60 + float(v[2]) / 3600
+        lat, lng = deg(gps[2]), deg(gps[4])
+        return (-lat if gps.get(1) == "S" else lat), (-lng if gps.get(3) == "W" else lng)
+    except Exception:
+        return None
+
+
+def project_position(pid: str) -> dict | None:
+    """Where a project's photos were taken: the median of their GPS fixes ({lat, lng, n, of}); None if none has one."""
+    photos = PROJECTS / pid / "photos"
+    files = sorted(f for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.is_dir() else []
+    step = max(1, len(files) // AREA_PHOTOS)
+    fixes = [g for g in (photo_gps(f) for f in files[::step][:AREA_PHOTOS]) if g and (abs(g[0]) > 1e-6 or abs(g[1]) > 1e-6)
+             and abs(g[0]) <= 90 and abs(g[1]) <= 180]
+    if not fixes:
+        return None
+    return {"lat": round(statistics.median(f[0] for f in fixes), 6), "lng": round(statistics.median(f[1] for f in fixes), 6),
+            "n": len(fixes), "of": len(files[::step][:AREA_PHOTOS])}
+
+
+def mp_breadcrumb(mp_id: str) -> tuple[list[str], list[str]]:
+    """The areas above a Mountain Project area, top first: (names, ids), from its page (a minute's wait, unless cached)."""
+    url = f"https://www.mountainproject.com/area/{mp_id}"
+    from climbs.common import http
+    area, _, _ = mp_mod.parse_area(http.get_text(url), url)
+    return area.area_path[:-1], [re.search(r"/area/(\d+)", u)[1] for u in area.area_urls[:-1]]
+
+
+def area_campaign(cand: dict) -> str | None:
+    """The area listed here that a candidate area is in (the lowest, if several): by Mountain Project ids where known,
+    else by name along its path."""
+    camps = q("SELECT id, name, area_id FROM campaigns WHERE area_id IS NOT NULL ORDER BY created")
+    chain = [str(i) for i in (cand.get("mp_up") or []) + [cand.get("mp_id")] if i]
+    if chain:
+        hits = [c for c in camps if str(c["area_id"]) in chain]
+        return max(hits, key=lambda c: chain.index(str(c["area_id"])))["id"] if hits else None
+    names = [areamatch.plain(n) for n in cand.get("path") or []]
+    hits = [c for c in camps if areamatch.plain(c["name"]) in names]
+    return max(hits, key=lambda c: names.index(areamatch.plain(c["name"])))["id"] if hits else None
+
+
+def area_choice(cand: dict) -> dict:
+    """What's kept of a candidate area: {mp_id, name, path, boulders, routes, km, campaign (its id here, if listed),
+    campaign_name, url}."""
+    camp = area_campaign(cand)
+    name = q("SELECT name FROM campaigns WHERE id=?", camp, one=True)["name"] if camp else None
+    return {"mp_id": cand.get("mp_id"), "name": cand["name"], "path": cand.get("path") or [], "boulders": cand.get("boulders"),
+            "routes": cand.get("routes"), "km": cand.get("km"), "campaign": camp, "campaign_name": name,
+            "url": f"https://www.mountainproject.com/area/{cand['mp_id']}" if cand.get("mp_id") else None}
+
+
+def project_has_area(proj: dict) -> str | None:
+    """Why a project needs no area by its GPS (its climb is in an area here; it adds to a mesh), or None."""
+    if proj.get("kind") != "user":
+        return "not an upload"
+    if proj.get("climb_id") and q("SELECT 1 FROM campaign_items WHERE climb_id=? LIMIT 1", proj["climb_id"], one=True):
+        return "its climb is in an area here"
+    if proj.get("climb_id"):
+        return "it's of a climb"
+    rec = _read_json(PROJECTS / proj["id"] / CAPTURE_FILE)
+    if isinstance(rec, dict) and rec.get("mesh"):
+        return "it adds to a mesh"
+    return None
+
+
+def match_area(pid: str, again: bool = False, fetch_page=mp_breadcrumb) -> dict | None:
+    """Put an upload in the area its photos' GPS says it's in (areamatch.match()): one the site lists, the lowest that
+    holds it, or else Mountain Project's area of it (which the site needn't list). Of several close by, the one chosen
+    is kept with the others, for its uploader to pick from instead (choose_area()), and it's marked as put there
+    automatically, to be looked over (review_area()). Done once, unless again; never over a person's choice.
+
+    Returns:
+        The project's area record (projects.area), or None if it needs none (project_has_area()).
+    """
+    with _area_lock:
+        proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
+        if not proj or project_has_area(proj):
+            return None
+        was = json.loads(proj["area"]) if proj.get("area") else None
+        if was and (not again or not was.get("auto")):
+            return was
+    pos = project_position(pid)
+    rec = {"auto": True, "at": time.time(), "position": pos}
+    if not pos:
+        rec["why"] = "none of its photos has a GPS position"
+    elif not AREA_INDEX.exists():
+        rec["why"] = "there's no index of areas yet (cli.py area-index)"
+    else:
+        con = areamatch.connect(AREA_INDEX)
+        try:
+            found = areamatch.match(con, pos["lat"], pos["lng"], fetch_page)
+        finally:
+            con.close()
+        rec["why"] = found["why"]
+        if found["choice"]:
+            choices, seen = [], set()
+            for c in found["choices"]:
+                ch = area_choice(c)
+                key = ("c", ch["campaign"]) if ch["campaign"] else ("m", ch["mp_id"] or ch["name"])
+                if key not in seen:     # several of Mountain Project's areas in one listed here: that one, once
+                    seen.add(key)
+                    choices.append(ch)
+            rec.update(choices[0], choices=choices)
+    with _area_lock:
+        now = q("SELECT area FROM projects WHERE id=?", pid, one=True)
+        if now and now["area"] and not json.loads(now["area"]).get("auto"):
+            return json.loads(now["area"])      # a person chose meanwhile
+        q("UPDATE projects SET area=?, area_campaign=? WHERE id=?", json.dumps(rec), rec.get("campaign"), pid, write=True)
+    append_log(pid, f"area: {('in ' + (rec.get('campaign_name') or rec['name']) + ' (' + rec['why'] + ')') if rec.get('name') else 'none: ' + rec['why']}"
+               + (f"; {len(rec['choices']) - 1} other area(s) close by, for its uploader to choose from" if len(rec.get("choices") or []) > 1 else ""))
+    return rec
+
+
+def match_area_later(pid: str) -> None:
+    def run():
+        try:
+            match_area(pid)
+        except Exception as e:
+            append_log(pid, f"area: finding it by GPS failed ({type(e).__name__}: {e})")
+    threading.Thread(target=run, daemon=True, name=f"area-{pid}").start()
+
+
+def choose_area(pid: str, k: int, who: dict | None, review: bool = False) -> dict:
+    """An upload's area, as a person chose it from its choices (k: which), by its uploader or, with review, the site's
+    owner looking over where it was put. Either way it's no longer automatic."""
+    proj = q("SELECT area FROM projects WHERE id=?", pid, one=True)
+    rec = json.loads(proj["area"]) if proj and proj["area"] else None
+    if not rec or not rec.get("choices"):
+        raise ValueError("this upload has no areas to choose from")
+    if not 0 <= k < len(rec["choices"]):
+        raise ValueError("no such choice")
+    ch = dict(rec["choices"][k])
+    rec.update(ch, auto=False, chosen_at=time.time(), chosen_by=(who or {}).get("name") or ("the owner" if review else None))
+    if review:
+        rec["reviewed"] = time.time()
+    q("UPDATE projects SET area=?, area_campaign=? WHERE id=?", json.dumps(rec), ch.get("campaign"), pid, write=True)
+    append_log(pid, f"area: {ch.get('campaign_name') or ch['name']}, as {rec['chosen_by'] or 'its uploader'} chose")
+    return rec
+
+
+def review_area(pid: str) -> dict:
+    """The site's owner says an upload's area, put by its GPS, is right: from then on, it counts as that area's (its
+    moderators may approve it)."""
+    proj = q("SELECT area FROM projects WHERE id=?", pid, one=True)
+    rec = json.loads(proj["area"]) if proj and proj["area"] else None
+    if not rec or not rec.get("name"):
+        raise ValueError("this upload isn't in an area")
+    rec["reviewed"] = time.time()
+    q("UPDATE projects SET area=? WHERE id=?", json.dumps(rec), pid, write=True)
+    return rec
+
+
+def area_settled(rec: dict | None) -> bool:
+    """Whether an upload's area counts for who may approve it: a person chose it, or the owner looked it over."""
+    return bool(rec and rec.get("name") and (not rec.get("auto") or rec.get("reviewed")))
+
+
+def area_view(raw: str | None) -> dict | None:
+    """An upload's area as the site and the apps show it: {name (the area here, or Mountain Project's), campaign, url,
+    auto, reviewed, ask (whether its uploader should be asked which: several close by, none chosen), choices: [{name,
+    campaign, url, boulders, routes, km}], why}."""
+    rec = json.loads(raw) if raw else None
+    if not rec:
+        return None
+    pick = lambda c: {"name": c.get("campaign_name") or c["name"], "mp_name": c["name"], "campaign": c.get("campaign"), "url": c.get("url"),
+                      "boulders": c.get("boulders"), "routes": c.get("routes"), "km": c.get("km")}
+    return {**(pick(rec) if rec.get("name") else {"name": None}), "auto": bool(rec.get("auto")), "reviewed": rec.get("reviewed"),
+            "ask": bool(rec.get("auto")) and len(rec.get("choices") or []) > 1, "choices": [pick(c) for c in rec.get("choices") or []],
+            "why": rec.get("why")}
+
+
+def match_all_areas(again: bool = False) -> dict:
+    """match_area() for every upload not yet put in an area (with again, those put automatically too)."""
+    n, found = 0, 0
+    for p in q("SELECT id FROM projects WHERE kind='user' AND deleted_at IS NULL" + ("" if again else " AND area IS NULL")):
+        rec = match_area(p["id"], again=again)
+        n += rec is not None
+        found += bool(rec and rec.get("name"))
+    return {"result": f"{plural(n, 'upload')} looked up: {found} put in an area"}
+
+
+def area_reviews() -> list[dict]:
+    """Uploads put in an area by their GPS that the owner hasn't looked over, and those it found none for, newest first."""
+    out = []
+    for p in q("SELECT id, name, created, user_id, area FROM projects WHERE area IS NOT NULL AND deleted_at IS NULL ORDER BY created DESC"):
+        rec = json.loads(p["area"])
+        if rec.get("auto") and not rec.get("reviewed"):
+            out.append({"id": p["id"], "name": p["name"], "created": p["created"], "user": (ACCOUNTS.get(p["user_id"]) or {}).get("name"),
+                        "position": rec.get("position"), **area_view(p["area"])})
+    return out
+
+
+def admin_area(body: dict) -> dict:
+    """An upload's area, from the admin page: {id, do: "ok" (as it is) | "choose" (with k) | "again" (look it up
+    again)}; or {do: "match-all"}: look up those not put in one yet."""
+    do = body.get("do")
+    if do == "match-all":   # in the background, as each may wait for a page from Mountain Project (a minute apart)
+        threading.Thread(target=match_all_areas, daemon=True, name="areas-all").start()
+        return {**admin_state(), "result": "Looking them up: each shows here once it's done (one may take a few minutes)"}
+    pid = str(body.get("id"))
+    if do == "ok":
+        review_area(pid)
+    elif do == "choose":
+        choose_area(pid, int(body.get("k", -1)), None, review=True)
+    elif do == "again":
+        threading.Thread(target=match_area, args=(pid, True), daemon=True, name=f"area-{pid}").start()
+    else:
+        raise ValueError("do is ok, choose, again or match-all")
+    return admin_state()
+
+
 def submission_row(proj: dict) -> dict:
     user = ACCOUNTS.get(proj["user_id"]) or {}
     photos = PROJECTS / proj["id"] / "photos"
     capture = _read_json(PROJECTS / proj["id"] / CAPTURE_FILE) or {}
     return {"id": proj["id"], "name": proj["name"], "created": proj["created"], "status": proj["status"], "user": user.get("name"), "user_id": proj["user_id"],
             "approved": proj.get("approved"), "approved_by": proj.get("approved_by"), "deleted_at": proj.get("deleted_at"), "mesh": proj.get("mesh_id"),
-            "climb_id": proj.get("climb_id"), "adds_to": capture.get("mesh"), "device": proj.get("device"),
+            "climb_id": proj.get("climb_id"), "adds_to": capture.get("mesh"), "device": proj.get("device"), "area": area_view(proj.get("area")),
             "photos": sum(1 for f in photos.iterdir() if f.suffix.lower() in PHOTO_EXT) if photos.exists() else 0, "bytes": project_bytes(proj["id"])}
 
 
@@ -10362,6 +10615,7 @@ class Handler(BaseHTTPRequestHandler):
                 proj["progress"] = with_typicals(json.loads(proj["progress"]), proj.get("harvest"), m[1]) if proj.get("progress") else None
                 proj["harvest"] = json.loads(proj["harvest"]) if proj.get("harvest") else None
                 proj["known_object"] = known_object(m[1])
+                proj["area"] = area_view(proj.get("area"))
                 rejected = PROJECTS / m[1] / "rejected"
                 try:
                     clipped = "boulder" in json.loads((PROJECTS / m[1] / "relevance.json").read_text()).get("methods", [])
@@ -10888,6 +11142,13 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         drop_file(data)
                 return self.send_json({"saved": saved})
+            m = re.fullmatch(r"/api/projects/([0-9a-f]+)/area", p)
+            if m:   # {k}: which of the areas close by its GPS it's in, as its uploader says (choose_area())
+                try:
+                    rec = choose_area(m[1], int(self.read_json().get("k", -1)), self.who())
+                except (TypeError, ValueError) as e:
+                    return self.send_json({"error": str(e)}, 400)
+                return self.send_json({"area": area_view(json.dumps(rec))})
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/scenery/done", p)
             if m:   # all its scenery is here: its backdrop is fitted once its mesh is made (now, if it is)
                 return self.send_json(*scenery_done(m[1]))
@@ -10924,6 +11185,8 @@ class Handler(BaseHTTPRequestHandler):
                 n = len([f for f in (PROJECTS / pid / "photos").iterdir() if f.suffix.lower() in PHOTO_EXT])
                 if n < (1 if not pipeline.real_pipeline_ready() else 3):
                     return self.send_json({"error": "upload at least 3 overlapping photos"}, 400)
+                if proj["kind"] == "user":
+                    match_area_later(pid)       # its area, by its photos' GPS, unless it has one
                 if q("SELECT 1 FROM projects WHERE id=? AND user_id IS NOT NULL", pid, one=True):
                     return self.send_json(submit_reconstruct(pid), 202)     # an account's: in its turn
                 q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
@@ -12135,7 +12398,8 @@ def admin_state() -> dict:
             counts["can_retexture"] += bool(found)
             counts["need_rebuild"] += bool(why and "rebuild" in why)
     return {"users": {"list": [{**u, "used": user_used(u["id"]), "quota": user_quota(u)} for u in ACCOUNTS.users()], "invites": ACCOUNTS.invites(),
-                      "on": bool(EDIT_TOKEN) and not READ_ONLY, "added": submissions(OWNER)},
+                      "on": bool(EDIT_TOKEN) and not READ_ONLY, "added": submissions(OWNER)}, "area_reviews": area_reviews(),
+            "area_index": AREA_INDEX.exists(),
             "settings": settings().all(), "secrets": settings().secrets_status(), "compute": compute_state(),
             "policy": counts, "retexture_queued": len(_retexturing), "site_port": int(os.environ.get("PORT", "8470")),
             "proxy_ranges": RANGES.state() if RANGES else None, "version": VERSION,
@@ -12445,7 +12709,7 @@ def main() -> None:
                                        "volunteer-trial": admin_volunteer_trial,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
                                        "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-rescind": admin_user_rescind, "user-change": admin_user_change,
-                                       "user-signin": admin_user_signin, "user-delete": admin_user_delete, "submission": admin_submission, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
+                                       "user-signin": admin_user_signin, "user-delete": admin_user_delete, "submission": admin_submission, "area": admin_area, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
                                        "machine-revoke": admin_machine_revoke, "ec2-start": admin_ec2_start, "ec2-stop": admin_ec2_stop, "ec2-test": admin_ec2_test, "ec2-topup": admin_ec2_topup, "clear-rejected": admin_clear_rejected,
                                        "volunteers-forget": lambda _: {"result": f"forgot {VOLUNTEERS.forget_gone()} volunteer(s)"},
                                        "machines-forget": lambda _: {"result": f"forgot {MACHINES.forget_gone()} machine(s)"},

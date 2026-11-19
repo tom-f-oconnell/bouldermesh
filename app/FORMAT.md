@@ -20,9 +20,12 @@ Each side's tests read files the other really wrote (`shared/src/jvmTest/resourc
                                           plan and the viewer's copy again), the current mesh a rebuild made of it, or
                                           gone with nothing in its place (MeshFresh in shared Listing.kt)
     GET /api/capture/guide/<mesh>.bin     the guide below, at the plan's guide_url
-    GET /api/capture/status?ids=<project>,…     {project: {status, mesh, approved, left, failure, mesh_gone}}: how each of
+    GET /api/capture/status?ids=<project>,…     {project: {status, mesh, approved, left, failure, mesh_gone, area}}: how each of
                                           the phone's uploads stands (UploadStatus in shared Contents.kt says it in words);
                                           one that's gone, or another account's not yet approved, is {status: "gone"}.
+                                          area: {name, auto, ask, choices: [{name, boulders, routes}]}, the area its photos'
+                                          GPS put it in (UploadArea); with ask, its uploader is asked which of the
+                                          choices it's in, and POST /api/projects/<project>/area {k} says so
                                           A mesh is then shown in the site's own viewer, /m/<mesh>, in a web view given the
                                           phone's token (as the page keeps it: localStorage bm_token)
 

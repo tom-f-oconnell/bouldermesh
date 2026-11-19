@@ -202,6 +202,8 @@ class UploadForm(private val app: App, private val id: String) : Form("What's in
     private var keepPart = 0.0          // how much of its mesh has come, while keeping it
     private var keepBar: Pair<UILabel, UIProgressView>? = null
     private var keepError: String? = null
+    private var choosing = false        // an area chosen, being told the server
+    private var areaError: String? = null
     override fun appear() { app.statuses.refresh { rebuild() } }
 
     override fun build() {
@@ -212,6 +214,22 @@ class UploadForm(private val app: App, private val id: String) : Form("What's in
         val (said, color) = uploadSaid(u, null, server)
         text(said, color)
         reopenButton(app, id, u)
+        server?.area?.let { area ->     // the area it's in, by its GPS; and where several are close by, which, asked
+            area.said()?.let { text(it, small = true) }
+            if (area.ask && u.project != null) {
+                text("Which area is it in? Where its photos were taken is close to ${area.choices.size} of them:", WAIT)
+                area.choices.forEachIndexed { k, c ->
+                    button(c.label() + if (k == 0) " · as it is" else "", Look.PLAIN, !choosing) {
+                        choosing = true; areaError = null; rebuild()
+                        app.api.chooseArea(u.project!!, k) { why ->
+                            areaError = why?.let { "Couldn't say so: $it" }
+                            app.statuses.refresh { choosing = false; rebuild() }
+                        }
+                    }
+                }
+                areaError?.let { text(it, BAD, small = true) }
+            }
+        }
         server?.meshed?.let { mesh ->
             button("View its mesh", Look.FILLED) { push(ViewerController(app, mesh, u.name)) }
             val kept = app.store.offline.index(mesh)

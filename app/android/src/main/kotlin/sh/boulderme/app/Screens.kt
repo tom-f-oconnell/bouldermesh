@@ -226,6 +226,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                 val server = u.project?.let { statuses[it] }
                 val (status, color) = uploadSaid(u, sending[id]?.takeIf { Uploader.busy(id) }, server)
                 Text(status, style = MaterialTheme.typography.bodySmall, color = color)
+                if (server?.area?.ask == true) Text("Which area is it in? Open it to say", style = MaterialTheme.typography.bodySmall, color = WAIT)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (!u.done) Button(enabled = !Uploader.busy(id), onClick = { Uploader.start(a.store, a.api, id) }) { Text(if (u.sent.isEmpty()) "Upload" else "Carry on") }
                     server?.meshed?.let { mesh ->

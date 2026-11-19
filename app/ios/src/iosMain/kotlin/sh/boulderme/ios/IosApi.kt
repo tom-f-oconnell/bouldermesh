@@ -149,6 +149,8 @@ class IosApi(private val store: IosStore) {
 
     /** All the scenery's frames are there: the server fits the backdrop once its mesh is made. */
     fun sceneryDone(project: String, done: (String?) -> Unit) = post("/api/projects/$project/scenery/done", "{}") { obj, why -> done(if (obj != null) null else why ?: "it wasn't taken") }
+    /** Which of the areas close by an upload is in (UploadArea.choices[k]), as its uploader says. */
+    fun chooseArea(project: String, k: Int, done: (String?) -> Unit) = post("/api/projects/$project/area", "{\"k\": $k}") { obj, why -> done(if (obj != null) null else why) }
 
     private fun uploadTo(route: String, path: String, name: String, done: (String?) -> Unit) {
         val file = NSData.dataWithContentsOfFile(path)

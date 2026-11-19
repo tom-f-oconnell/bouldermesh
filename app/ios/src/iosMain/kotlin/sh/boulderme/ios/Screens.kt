@@ -191,6 +191,7 @@ class Home(private val app: App) : Form("BoulderMesh") {
             val server = u.project?.let { app.statuses.state[it] }
             val (status, color) = uploadSaid(u, app.uploader.state[id]?.takeIf { busy }, server)
             text(status, color, small = true)
+            if (server?.area?.ask == true) text("Which area is it in? Open it to say", WAIT, small = true)
             val delete = makeButton("Delete", Look.PLAIN, !busy) {
                 screen.confirm("Delete this capture?", if (u.done) "Its photos are on the server; this takes them off the phone." else "Its ${u.photos} photos haven't all been sent, and can't be got back.",
                     "Delete", "Keep", danger = true) { app.store.deleteCapture(id); rebuild() }

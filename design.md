@@ -2001,3 +2001,26 @@ climb's of the same colour, kept out by place), or take the colour wider or narr
 **Not yet.** Neither app has run on a phone. Sharpness thresholds are guesses. There's no choosing which climbs to
 capture for (the core has it: `Scope.climbs`), no QR scan for pairing, and uploads are over the site's ordinary
 routes, so a capture of a few hundred photos wants Wi-Fi.
+
+## Uploads' areas from GPS (`backend/areamatch.py`)
+
+**Why an index here.** Mountain Project has no API and no search by position, and asks for a minute between pages.
+OpenBeta's API has `cragsNear`, but it failed or answered with errors when tried (Nov 18), and its whole tree comes in
+`bulkAreas` pages instead (53k areas in ~40 min, Nov 19, one 502 retried). So both go into a local index, looked up with no request.
+
+**OpenBeta's copy is the US, and partial.** It was seeded from Mountain Project years ago: its lowest areas mostly
+carry their MP id, areas above them often don't (Joshua Tree National Park has none), and outside the US it has almost
+nothing. Above a lowest area, the MP id comes from that area's own MP breadcrumb (one page, cached 30 days). Mountain
+Project's own pages, read region by region, fill the rest and are the check on OpenBeta's copy (`compare()`).
+
+**Which level.** The user chose the parent of the area holding the boulders: two levels above the nearest lowest area
+with climbs. An area listed here that holds it wins, the lowest if several, so uploads join the areas the site has.
+
+**Several close by.** Lowest areas within 200 m of the nearest (or twice as far) are candidates. Ranking by the most
+boulder problems picked a neighbouring circuit 300 m off over the boulder 25 m away in Hidden Valley, so problems vs.
+routes only decides between a place's route and bouldering areas, and distance decides among the rest.
+
+**Trust.** Automatic, as the user wanted, but marked: an area's moderators may approve an upload by its GPS only after
+a person chose or looked over its area; moderators exist only for areas listed here. It's a label, and changes nothing
+meshed, so `MESH_RULES` stays.
+

@@ -3653,6 +3653,12 @@ async function refreshProjects(){
       refreshProjects();
     };
     d.querySelectorAll('a[data-area]').forEach(a => a.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); showArea(a.dataset.area); });
+    d.querySelector('.area-save')?.addEventListener('click', async ev => {
+      ev.stopPropagation();
+      try { await api(`/api/projects/${p.id}/area`, { method: 'POST', json: { k: +d.querySelector('.area-pick').value } }); toast('Saved: it\'s in that area'); refreshProjects(); }
+      catch (e) { toast(e.message, 8000); }
+    });
+    d.querySelector('.area-pick')?.addEventListener('click', ev => ev.stopPropagation());
     d.onclick = ev => { if (ev.target.tagName !== 'BUTTON') { active = p.id; loadDetail(p.id, d); } };
     el.appendChild(d);
     projectCards.set(p.id, d);
@@ -3668,8 +3674,20 @@ const AREA_STATES = { pending: 'still to go', running: 'in progress', waiting: '
 const AREA_KINDS = { boulder: 'the mesh of its boulder', group: 'the mesh of a group of its climbs whose photos match',
                      rest: 'the mesh of what its boulder\'s mesh left out' };
 function projectAreasHtml(p){
-  return (p.areas || []).map(a => `<div class="meta" style="margin-top:4px">For the area <a href="#" data-area="${esc(a.id)}" title="Its card, on the Areas tab">${esc(a.name)}</a>:
+  return (p.areas || []).map(a => a.kind === 'gps' ? gpsAreaHtml(p, a) : `<div class="meta" style="margin-top:4px">For the area <a href="#" data-area="${esc(a.id)}" title="Its card, on the Areas tab">${esc(a.name)}</a>:
     ${a.kind === 'climb' ? `${esc(a.climb)}, ${a.paused ? 'paused' : AREA_STATES[a.status] || esc(a.status)}` : `${AREA_KINDS[a.kind] || esc(a.kind)}, of ${plural(a.climbs, 'climb')} on its list`}</div>`).join('');
+}
+// an upload's area, by its photos' GPS: the area here (its card) or on Mountain Project; and, where several are close by and
+// nobody has chosen, which it's in, asked of whoever may change it
+const areaLink = a => a.campaign ? `<a href="#" data-area="${esc(a.campaign)}" title="Its card, on the Areas tab">${esc(a.name)}</a>`
+  : a.url ? `<a href="${esc(a.url)}" target="_blank" rel="noopener" title="Its page on Mountain Project">${esc(a.name)}</a>` : esc(a.name);
+function gpsAreaHtml(p, a){
+  if (!a.name) return `<div class="meta" style="margin-top:4px">No area from its GPS: ${esc(a.why || 'none found')}</div>`;
+  const may = editor || (account && p.user_id === account.id);
+  const ask = a.ask && may ? `<div class="notice" style="margin-top:6px">Which area is it in? Its GPS is close to ${plural(a.choices.length, 'area')}:
+      <select class="area-pick" aria-label="Which area it's in">${a.choices.map((c, k) => `<option value="${k}"${k === 0 ? ' selected' : ''}>${esc(c.name)}${c.boulders != null ? ` (${c.boulders} problems, ${c.routes} routes)` : ''}</option>`).join('')}</select>
+      <button class="sm area-save">This one</button></div>` : '';
+  return `<div class="meta" style="margin-top:4px">In the area ${areaLink(a)}, by its photos' GPS${a.auto ? ` <small title="${esc(a.why || '')}">(put there automatically${a.reviewed ? ', looked over' : ''})</small>` : ''}</div>${ask}`;
 }
 async function showArea(id){
   document.querySelector('.tabs button[data-tab=areas]').click();
