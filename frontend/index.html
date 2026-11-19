@@ -3640,7 +3640,7 @@ function progressHtml(p){
   const pr = p.progress;
   if (p.status === 'queued') return '<div class="status queued" style="margin-top:8px">Queued: waits for any job ahead of it</div>';
   if (!pr || !(BUSY.includes(p.status) || p.status === 'failed')) return '';
-  const rows = pr.steps.map(s => `<span class="${s.state}">${s.state==='done'?'✓':s.state==='failed'?'✕':s.state==='running'?'▸':'·'} ${esc(s.label)}</span>
+  const rows = pr.steps.map(s => `<span class="${s.state}">${s.state==='done'?'✓':s.state==='failed'?'✕':s.state==='running'?'▸':'·'} ${esc(s.label)}${s.seconds != null ? ` (${Math.round(s.seconds)}s)` : ''}</span>
     ${countBar(stepDone(s).fill, s.state)}${s.state==='running'?`<span></span><span class="detail">${stepDone(s).said}${stepWhere(s)}</span>`
       + (isHeavy(s) ? `<span></span>${stepTimeBar(s).bar}<span></span><span class="detail time">${stepTimeBar(s).said}</span>` : '') :''}`).join('');
   const busy = BUSY.includes(p.status);
