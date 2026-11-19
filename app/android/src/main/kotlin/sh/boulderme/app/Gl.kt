@@ -129,8 +129,8 @@ class GuideRenderer(private val guide: GuideMesh) {
 }
 
 /**
- * Rings in the world: holds, edges and marked spots. A hold's ring is its role's colour, as the site draws it, a little
- * see-through, with a dot in its middle for how done it is (on the small model, the ring alone); the others are
+ * Rings in the world: holds, edges and marked spots. A hold's ring is its role's colour, as the site draws it, with a
+ * dot in its middle for how done it is (on the small model, the ring alone, a little see-through); the others are
  * coloured by how done they are. The one being asked for has a white ring round it. A spot tapped to line the mesh up
  * is a white cross, edged in black, unlike any hold.
  */
@@ -171,7 +171,7 @@ class MarkerRenderer {
             if (m.kind == CaptureFlow.ALIGN) { ring(floatArrayOf(0f, 0f, 0f), 0.8f, 1f, 0f, 0.3f, cross = true); ring(floatArrayOf(1f, 1f, 1f), 1f, 1f, 0f, 0.16f, cross = true); continue }
             if (m.current) ring(floatArrayOf(1f, 1f, 1f), 0.95f, 1.3f, 0.86f, 1f)
             if (role != null && m.kind == CaptureFlow.MODEL_HOLD) ring(role, 0.75f, 1f, 0.68f, 1f)
-            else if (role != null) { ring(role, 0.75f, 1f, 0.72f, 1f); ring(level, 0.75f, 1f, 0f, 0.3f) }
+            else if (role != null) { ring(role, 0.95f, 1f, 0.72f, 1f); ring(level, 0.9f, 1f, 0f, 0.3f) }
             else if (!m.current) ring(level, 0.9f, 1f, 0.72f, 1f)
         }
         GLES20.glDisableVertexAttribArray(pos)

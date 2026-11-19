@@ -449,7 +449,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
 
     /**
      * Rings in the world: holds, edges and marked spots, coloured by how done they are; the one being asked for in white.
-     * A hold's is its role's colour, a little see-through (on the small model, the ring alone); a spot tapped to line
+     * A hold's is its role's colour (on the small model, the ring alone, a little see-through); a spot tapped to line
      * the mesh up is a white cross edged in black, unlike any hold.
      */
     private fun mark(markers: List<Marker>) {
@@ -477,7 +477,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
                 mat.diffuse.contents = if (role != null) UIColor.colorWithRed(role[0].toDouble(), role[1].toDouble(), role[2].toDouble(), 1.0)
                     else if (m.current) UIColor.whiteColor else UIColor.colorWithRed(c[0].toDouble(), c[1].toDouble(), c[2].toDouble(), 1.0)
                 mat.readsFromDepthBuffer = false        // seen through the rock and the mesh, wherever they are
-                if (role != null) mat.transparency = 0.75
+                if (m.kind == CaptureFlow.MODEL_HOLD) mat.transparency = 0.75
                 torus.materials = listOf(mat)
                 val ring = SCNNode.nodeWithGeometry(torus)
                 ring.renderingOrder = 10
@@ -492,7 +492,6 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
                     inside.lightingModelName = SCNLightingModelConstant
                     inside.diffuse.contents = if (m.current) UIColor.whiteColor else UIColor.colorWithRed(c[0].toDouble(), c[1].toDouble(), c[2].toDouble(), 1.0)
                     inside.readsFromDepthBuffer = false
-                    inside.transparency = 0.75
                     dot.materials = listOf(inside)
                     val middle = SCNNode.nodeWithGeometry(dot)
                     middle.renderingOrder = 10
