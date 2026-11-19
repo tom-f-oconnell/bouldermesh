@@ -267,7 +267,9 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   #viewnote{display:none;position:absolute;top:40px;left:22px;max-width:640px;background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-line);border-radius:6px;padding:6px 10px;font-size:12px;z-index:2}
   #viewnote button{margin-left:8px}
   /* bottom left of the view: the beta of the mesh in view, on and off */
-  #vbeta{position:absolute;left:12px;bottom:12px;z-index:3} #vbeta[hidden]{display:none}
+  /* Beta at the bottom left, one height in each layout, so the stray pieces sit above it with the gap between buttons */
+  #viewer{--vbeta-h:22px} #vbeta{position:absolute;left:12px;bottom:12px;z-index:3;height:var(--vbeta-h);box-sizing:border-box} #vbeta[hidden]{display:none}
+  #viewer:has(#vbeta:not([hidden])) #pieces{bottom:calc(12px + var(--vbeta-h) + 6px)}
   #vbeta[aria-pressed=true]{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
   /* above it while beta shows: the videos its holds came from, each shown or not, and one picked out */
   #vbetavids{position:absolute;left:12px;bottom:52px;z-index:3;max-width:min(360px,calc(100% - 24px));max-height:40%;overflow:auto;
@@ -435,7 +437,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
     #hud{display:none!important}
     #orient,#viewnote{top:56px;bottom:auto;left:8px;right:8px;max-width:none;max-height:35%;overflow:auto} #viewnote{z-index:3}
     #pieces{top:auto;bottom:12px;left:8px;right:auto;max-width:calc(100% - 175px);max-height:35%;overflow:auto}
-    #vbeta{left:8px;font-size:14px;padding:6px 12px} #viewer:has(#vbeta:not([hidden])) #pieces{bottom:56px}   /* stray pieces above it */
+    #viewer{--vbeta-h:30px} #vbeta{left:8px;font-size:14px;padding:0 12px}
     #vbetavids{left:8px;bottom:56px;max-height:30%;font-size:13px} #viewer:has(#vbetavids:not([hidden])) #pieces{display:none!important}
     #ratebtn{font-size:14px;padding:6px 12px} #vcorner #vinfo,#vcorner #vreport{padding:6px 10px}
     /* the rating box above the corner's buttons, its right edge at theirs, not off the screen to the left of Rate */
@@ -456,7 +458,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   html.app #orient,html.app #viewnote{top:54px}
   /* its buttons all one height, a finger's: Rate and Beta with their words, the icons' scaled up as they are drawn
      elsewhere (a little wider than high), and share at the left of settings */
-  html.app #ratebtn,html.app #vbeta{font-size:14px;height:34px;padding:0 12px;box-sizing:border-box}
+  html.app #ratebtn,html.app #vbeta{font-size:14px;height:34px;padding:0 12px;box-sizing:border-box} html.app #viewer{--vbeta-h:34px}
   html.app #vcorner #vinfo,html.app #vcorner #vreport,html.app #appbar>button:not([hidden]){height:34px;min-width:39px;padding:0 10px;box-sizing:border-box;
     display:inline-flex;align-items:center;justify-content:center}
   html.app #vinfo svg,html.app #vreport svg,html.app #vshare svg{width:16px;height:16px;vertical-align:0}
