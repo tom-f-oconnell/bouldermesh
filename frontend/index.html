@@ -3367,6 +3367,14 @@ async function viewClimbMesh(id, via = 'climb', hide = {}){
   toast('No mesh is linked to this climb yet.');
   return false;
 }
+// a project's machine job (machine_work()): running, waiting for a machine, or kept from before a restart, which no
+// machine is given until the project carries on (Retry, or its area's run) and takes it up
+function workTag(w) {
+  const what = esc(w.what.replace(/ (of|for)$/, ''));
+  if (w.state === 'running') return `<span class="tag" title="${esc(w.machine || 'a machine')} has been at it ${w.minutes ?? 0} min">${what} on ${esc(w.machine || 'a machine')}</span>`;
+  if (w.kept) return `<span class="tag" title="Kept from before a restart, for the project to take up when it carries on (Retry, or its area's run): no machine is given it until then${w.drop_at ? `. Dropped at ${new Date(w.drop_at * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })} if nothing has` : ''}">${what}, kept for a retry</span>`;
+  return `<span class="tag" title="waiting for a machine">${what}, waiting</span>`;
+}
 const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', waiting: 'waiting for volunteers', harvested: 'harvested, for its boulder\'s mesh', done: 'meshed', failed: 'failed', skipped: 'skipped' };
 // The boulder a climb is on: its own mesh, made from the photos of every climb on it, seen from where this climb's own
 // photos were taken; meshes an area linked this climb to that were made for another climb on it; and the other climbs.
@@ -3577,7 +3585,11 @@ async function refreshProjects(){
   const going = p => ['running', 'harvesting', 'queued'].includes(p.status) || (p.work || []).length > 0;
   const rank = p => (p.low_priority ? 3 : going(p) ? 0 : 6) + ((['running', 'harvesting'].includes(p.status) || (p.work || []).some(w => w.state === 'running')) ? 0
     : (p.status === 'queued' || (p.work || []).length) ? 1 : 2);
-  const list = (await api('/api/projects')).map((p, i) => [p, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
+  const list = (await api('/api/projects')).map((p, i) => {
+    // a job kept from before a restart isn't work under way: shown apart (workTag()), and not counted as being worked on
+    p.kept = (p.work || []).filter(w => w.kept); p.work = (p.work || []).filter(w => !w.kept);
+    return [p, i];
+  }).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
   areasAtWork = new Map();
   for (const p of list) for (const a of (p.work || []).length ? p.areas || [] : []) areasAtWork.set(a.id, [...(areasAtWork.get(a.id) || []), ...p.work]);
   areasLeft = new Map();
@@ -3594,7 +3606,7 @@ async function refreshProjects(){
   for (const p of list) {
     const d = document.createElement('div'); d.className = 'card' + (p.id===active ? ' active' : '');
     const busy = BUSY.includes(p.status);
-    d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':p.kind==='boulder'?'<span class="tag climb" title="Every photo its climbs\' harvests found, together">boulder</span>':''}</b><span class="statcol"><span class="status ${projectState(p).cls}" title="${esc(projectState(p).tip)}">${esc(projectState(p).label)}${p.demo?' (demo)':''}</span>${offloadedTag(p.away_bytes, 'its photos were', 'Retry')}</span>${(p.work || []).map(w => `<span class="tag" title="${w.state === 'running' ? `${esc(w.machine || 'a machine')} has been at it ${w.minutes ?? 0} min` : 'waiting for a machine'}">${esc(w.what.replace(/ (of|for)$/, ''))}${w.state === 'running' ? ` on ${esc(w.machine || 'a machine')}` : ', waiting'}</span>`).join('')}${p.low_priority ? `<span class="tag low" title="${LOW_TIP}">low priority</span>` : ''}</div>
+    d.innerHTML = `<div class="row"><b class="grow">${esc(p.name)}${p.kind==='harvest'?'<span class="tag climb">harvest</span>':p.kind==='boulder'?'<span class="tag climb" title="Every photo its climbs\' harvests found, together">boulder</span>':''}</b><span class="statcol"><span class="status ${projectState(p).cls}" title="${esc(projectState(p).tip)}">${esc(projectState(p).label)}${p.demo?' (demo)':''}</span>${offloadedTag(p.away_bytes, 'its photos were', 'Retry')}</span>${[...(p.work || []), ...(p.kept || [])].map(workTag).join('')}${p.low_priority ? `<span class="tag low" title="${LOW_TIP}">low priority</span>` : ''}</div>
       ${projectAreasHtml(p)}
       <div class="row" style="margin-top:8px">
         <label class="file"><button class="sec sm" type="button">Add photos or videos</button><input type="file" multiple accept="image/jpeg,image/png,video/*"></label>

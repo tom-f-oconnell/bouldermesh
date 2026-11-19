@@ -9500,7 +9500,8 @@ def machine_work() -> dict[str, list]:
             pid = by_name.get(label[len("filter: "):])
         if pid:
             out.setdefault(pid, []).append({"task": j["task"], "what": JOB_KINDS.get(j["task"], j["task"]), "state": j["state"],
-                                            "machine": j.get("machine"), "minutes": j.get("minutes")})
+                                            "machine": j.get("machine"), "minutes": j.get("minutes"),
+                                            **({"kept": True, "drop_at": j["drop_at"]} if j.get("kept") else {})})
     return out
 
 

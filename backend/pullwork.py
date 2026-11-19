@@ -222,7 +222,8 @@ class Board:
             return
         spec = {"input": str(j.input), "size": j.size, "internet": j.internet, "image": j.image, "state": j.state,
                 "machine": j.machine, "machine_name": j.machine_name, "taken": j.taken, "out_size": j.out_size, "error": j.error,
-                "version": j.version, "gpu_mb": j.gpu_mb, "same": j.same, "result_line": j.result_line, "prio": j.prio}
+                "version": j.version, "gpu_mb": j.gpu_mb, "same": j.same, "result_line": j.result_line, "prio": j.prio,
+                "orphaned": j.orphaned}
         self.q("UPDATE machine_jobs SET live=1, spec=? WHERE id=?", json.dumps(spec), j.id)
 
     def reprioritise(self, label: str, prio: int) -> int:
@@ -249,7 +250,7 @@ class Board:
                         image=s["image"], created=r["created"] or now, state=s["state"], machine=s.get("machine"),
                         machine_name=s.get("machine_name"), taken=s.get("taken"), touched=now, out_size=s.get("out_size"),
                         error=s.get("error"), task=r["task"], version=int(s.get("version") or 1), gpu_mb=int(s.get("gpu_mb") or 0),
-                        owner=0, same=s.get("same"), result_line=s.get("result_line"), orphaned=now, prio=int(s.get("prio") or 0))
+                        owner=0, same=s.get("same"), result_line=s.get("result_line"), orphaned=s.get("orphaned") or now, prio=int(s.get("prio") or 0))
             except (TypeError, ValueError, KeyError):
                 self.q("UPDATE machine_jobs SET live=0, outcome=COALESCE(outcome, 'gone'), ended=COALESCE(ended, ?) WHERE id=?", now, r["id"])
                 continue
@@ -263,6 +264,7 @@ class Board:
                 self._ended(j, "gone")
                 continue
             self.jobs[j.id] = j
+            self._save(j)     # with when it was first orphaned, so ORPHAN_AFTER counts from then, not from each restart
             keep |= {j.input.name, j.output.name}
         for f in self.files.iterdir() if self.files.is_dir() else []:   # what the jobs that ended with the restart left
             if f.name not in keep:
@@ -995,7 +997,9 @@ class Board:
         now = time.time()
         with self.cond:
             jobs = [{"id": j.id, "project": j.label, "task": j.task, "state": j.state, "machine": j.machine_name, "machine_id": j.machine,
-                     "minutes": round((now - (j.taken or j.created)) / 60, 1)} for j in self.jobs.values()]
+                     "minutes": round((now - (j.taken or j.created)) / 60, 1),
+                     "kept": bool(j.owner == 0 and j.orphaned), "drop_at": j.orphaned + ORPHAN_AFTER if j.owner == 0 and j.orphaned else None}
+                    for j in self.jobs.values()]
             seen = dict(self.seen)
         machines, rules = [], {**RULES, **self.rules()}
         held = {}

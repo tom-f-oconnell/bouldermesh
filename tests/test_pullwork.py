@@ -993,6 +993,12 @@ board = pullwork.Board(TMP / "data" / "compute" / "machines.sqlite", TMP / "data
 assert {j.label: (j.state, j.owner) for j in board.jobs.values()} == {"restart": ("running", 0), "waiting-one": ("queued", 0)}, board.jobs
 assert board.jobs[kept_id].input.exists() and not plain.input.exists(), "a kept job's photos stay; another's go"
 assert "wait" in board.work(board.machine(order_box["token"]), "10.0.0.8", {"version": SCRIPT_VERSION}), "nothing to take it up: not given out"
+shown = {j["project"]: j for j in board.state()["jobs"]}
+assert shown["waiting-one"]["kept"] and shown["waiting-one"]["drop_at"] > time.time() + pullwork.ORPHAN_AFTER - 60, shown
+first = board.jobs[kept_id].orphaned
+again = pullwork.Board(TMP / "data" / "compute" / "machines.sqlite", TMP / "data" / "compute" / "jobs", lambda: image[0], ctl)
+assert again.jobs[kept_id].orphaned == first, "another restart doesn't put off dropping it"
+del again
 httpd = pullwork.serve(board, "127.0.0.1", port, lambda line: None)
 assert httpd
 out, _ = proc.communicate(timeout=120)

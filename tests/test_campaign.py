@@ -3781,10 +3781,13 @@ server.MACHINES.state = lambda: {"jobs": [
     {"project": "filter: Worked Climb (harvest)", "task": "filter", "state": "queued", "machine": None, "minutes": 0.1},
     {"project": "bb0000000002", "task": "reconstruct", "state": "running", "machine": "hal-2", "minutes": 5.0},
     {"project": "beta: ffffffffffff", "task": "beta", "state": "running", "machine": "Gerty", "minutes": 1.0},
-    {"project": "size: aa0000000001", "task": "scale", "state": "done", "machine": "atlas", "minutes": 9.0}]}
+    {"project": "size: aa0000000001", "task": "scale", "state": "done", "machine": "atlas", "minutes": 9.0},
+    {"project": "bb0000000001", "task": "reconstruct", "state": "queued", "machine": None, "minutes": 600.0, "kept": True, "drop_at": 123.0}]}
 try:
     work = server.machine_work()
-    assert work["bb0000000001"] == [{"task": "scale", "what": "finding the size of", "state": "running", "machine": "atlas", "minutes": 2.0}], work
+    assert work["bb0000000001"] == [{"task": "scale", "what": "finding the size of", "state": "running", "machine": "atlas", "minutes": 2.0},
+                                    {"task": "reconstruct", "what": "meshing", "state": "queued", "machine": None, "minutes": 600.0,
+                                     "kept": True, "drop_at": 123.0}], "one kept from before a restart, marked so"
     assert [w["task"] for w in work["bb0000000002"]] == ["filter", "reconstruct"], work
     assert len(work) == 2, "an unknown mesh's job, and a finished one, left out"
     d = server.describe_job("scale", "size: aa0000000001")
