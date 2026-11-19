@@ -20,6 +20,8 @@ phone yet**: see [What's been checked](#whats-been-checked).
    mesh appears in front of you:
    - tap a spot on the model that you can find on the rock, then tap the same spot on the real rock (as in the site's
      viewer, one finger turns the model, a pinch zooms in on a spot, two fingers move it; *Bring it here* puts it back);
+   - the beta's holds show on the model in their colours, as on the site, to help find spots; each spot you tap is
+     marked with a white cross;
    - do that once more, with a spot well to one side of the first;
    - the mesh is drawn over the rock. If it sits on it, press *It fits: start*. If not, *Add a spot* or *Start again*.
 4. **Follow the words at the top.** It first walks you to a few rings in the air: where earlier photos of the rock

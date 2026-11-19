@@ -47,9 +47,12 @@ class FlowTest {
         assertEquals(Phase.ROCK, flow.phase)
         flow.orbitGhost(30.0, 0.0)
         val out = flow.frame(pose, true, 0.0, 0.004, 0.6, 90)
-        assertTrue(out.markers.size == 1 && near(out.markers[0].world, out.guide!!.apply(Vec3(0.0, 1.5, 0.0)), 0.1), "its mark goes round with it")
+        val aligns = out.markers.filter { it.kind == CaptureFlow.ALIGN }
+        assertTrue(aligns.size == 1 && near(aligns[0].world, out.guide!!.apply(Vec3(0.0, 1.5, 0.0)), 0.1), "its mark goes round with it")
         flow.bringGhost()
         assertTrue(near(assertNotNull(flow.frame(pose, true, 0.0, 0.004, 0.7, 90).guide).scale, ghost.scale, 1e-9), "Bring it here: as first put")
+        flow.orbitGhost(180.0, 0.0)
+        assertTrue(flow.frame(pose, true, 0.0, 0.004, 0.8, 90).markers.none { it.kind == CaptureFlow.MODEL_HOLD }, "holds on its far side aren't drawn through it")
     }
 
     @Test fun fromTheSmallModelToPhotos() {
@@ -78,7 +81,10 @@ class FlowTest {
         assertTrue(flow.phase == Phase.ROCK && "made out" in flow.frame(pose, true, 0.0, 0.004, 0.4, 90).ui.note, "nothing found there: asked again")
         flow.tap(eye, pose.forward) { truth.apply(a) }
         out = flow.frame(pose, true, 0.0, 0.004, 0.5, 90)
-        assertTrue(flow.phase == Phase.GHOST && out.ui.pairs == 1 && "2 of 2" in out.ui.text && out.markers.size == 2, out.ui.text)
+        assertTrue(flow.phase == Phase.GHOST && out.ui.pairs == 1 && "2 of 2" in out.ui.text && out.markers.count { it.kind == CaptureFlow.ALIGN } == 2, out.ui.text)
+        val onModel = out.markers.filter { it.kind == CaptureFlow.MODEL_HOLD }
+        assertTrue(onModel.map { it.role }.toSet() == setOf("start", "finish") && near(onModel.first { it.role == "start" }.world, out.guide!!.apply(Vec3(-0.5, 1.0, 0.0)), 1e-9),
+            "the beta's holds on the small model, in their roles: $onModel")
         tapModel(b)
         flow.tap(eye, pose.forward) { truth.apply(b) }
         assertEquals(Phase.CONFIRM, flow.phase)

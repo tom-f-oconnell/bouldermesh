@@ -460,7 +460,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 val spot = meshTap ?: return
                 val world = hit()
                 if (world == null) { event("tap_rock", "hit" to false); note = "The phone hasn't made out the rock there yet: move a little and tap again."; return }
-                tapMarks.add(Marker("w${tapMarks.size}", world, 0.05, Coverage.LEVEL_DONE, "hold", false))
+                tapMarks.add(Marker("w${tapMarks.size}", world, 0.05, Coverage.LEVEL_DONE, ALIGN, false))
                 val fit = session.tap(spot, world)
                 event("tap_rock", "hit" to true, "pairs" to session.taps.size, "fit" to (fit != null), "scale" to fit?.scale, "tilt_deg" to fit?.tiltDeg,
                     "scale_vs_server" to session.scaleAgainstServer())
@@ -702,13 +702,13 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                     else if (n >= 2) "Tap another spot on the small model that you can find on the rock, well to one side of the others"
                     else "Tap a spot on the small model that you can find on the rock (${n + 1} of 2). Pick two far apart, and not one above the other. " +
                         "Drag to turn it, pinch to zoom, two fingers to move it.")
-                val onModel = modelMarks.mapIndexed { i, p -> Marker("m$i", g.apply(p), 0.03 * g.scale / ghostScale, Coverage.LEVEL_PART, "hold", true) }
-                return FlowOut(ui, g, true, 2.5f, levels, onModel + tapMarks, false)
+                val onModel = modelMarks.mapIndexed { i, p -> Marker("m$i", g.apply(p), 0.03 * g.scale / ghostScale, Coverage.LEVEL_PART, ALIGN, false) }
+                return FlowOut(ui, g, true, 2.5f, levels, modelHolds(g, pose) + onModel + tapMarks, false)
             }
             Phase.CONFIRM -> {
                 fresh()
                 ui = base.copy(turnX = 0.0, turnY = 0.0, text = "Is the coloured mesh sitting on the rock? It tightens by itself as you look it over.")
-                return FlowOut(ui, session.fit, false, 0.8f, levels, markers, false)
+                return FlowOut(ui, session.fit, false, 0.4f, levels, markers, false)
             }
             Phase.SCENERY -> {
                 val w = walk!!
@@ -717,7 +717,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 val grab = if (!grabbing && w.wanted(pose, t, sceneryBlurPx(gyroRadS, exposureS, pose.lens.fx) <= STEADY_SCENERY_PX)) "walk" else null
                 if (grab != null) grabbing = true
                 ui = base.copy(text = h.text, turnX = h.turnX, turnY = h.turnY, total = w.total, done = w.done, canSkip = false, target = "", canCard = false)
-                return FlowOut(ui, session.fit, false, 0.3f, null, emptyList(), false, grab = grab)
+                return FlowOut(ui, session.fit, false, 0.15f, null, emptyList(), false, grab = grab)
             }
             Phase.CENTRE -> {
                 ui = base.copy(text = "Tap the middle of the rock")
@@ -749,7 +749,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 // ticks while a photo from here would add nothing, quiet for a moment round each photo, so its ding is heard alone
                 val tick = out.redundant && !shoot && !inFlight && t - lastTick >= TICK_S && t - lastShotT >= TICK_S
                 if (tick) lastTick = t
-                return FlowOut(ui, session.fit, false, 0.75f, levels, markers, shoot, out.still, shoot && cardNext, tick = tick)
+                return FlowOut(ui, session.fit, false, 0.375f, levels, markers, shoot, out.still, shoot && cardNext, tick = tick)
             }
             else -> { ui = base; return FlowOut(ui, null, false, 0f, null, emptyList(), false) }
         }
@@ -778,6 +778,17 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     /** The photo frame() asked for couldn't be taken. */
     fun noShot(why: String? = null) { event("no_shot", "why" to why); inFlight = false; if (why != null) note = why }
 
+    /**
+     * The beta's holds on the small model, in their roles' colours as the site draws them (MODEL_HOLD), those on its
+     * side towards the phone: what to line it up by. A hold with no role (one kept private) isn't shown.
+     */
+    private fun modelHolds(g: Similarity, pose: CameraPose): List<Marker> = plan?.targets.orEmpty().mapNotNull { h ->
+        if (!h.isHold || h.role == null) return@mapNotNull null
+        val at = g.apply(h.point)
+        if (h.normal.norm > 0.5 && (g.dir(h.normal) dot (pose.centre - at)) < 0) return@mapNotNull null
+        Marker("h:${h.id}", at, h.r * g.scale, Coverage.LEVEL_OUT, MODEL_HOLD, false, h.role)
+    }
+
     /** The small model, a metre in front and a little below the eye, the side its photos were taken from towards the phone. */
     private fun placeGhost(pose: CameraPose): Similarity {
         val g = guide!!; val pl = plan!!
@@ -796,6 +807,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
 
     companion object {
         const val GHOST_ACROSS_M = 0.6      // how big the small model is drawn
+        const val ALIGN = "align"           // a Marker's kind: a spot tapped to line the mesh up (a white cross, unlike any hold)
+        const val MODEL_HOLD = "model_hold" // and a hold on the small model: its role's colour alone
         const val GHOST_AHEAD_M = 1.1
         const val ZOOM_LEAST = 0.3          // how much smaller and bigger than it's first placed the small model can be made
         const val ZOOM_MOST = 25.0

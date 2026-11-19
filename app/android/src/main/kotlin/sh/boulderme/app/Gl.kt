@@ -4,6 +4,7 @@ import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import com.google.ar.core.Coordinates2d
 import com.google.ar.core.Frame
+import sh.boulderme.core.CaptureFlow
 import sh.boulderme.core.Coverage
 import sh.boulderme.core.GuideMesh
 import sh.boulderme.core.Marker
@@ -128,15 +129,20 @@ class GuideRenderer(private val guide: GuideMesh) {
 }
 
 /**
- * Rings in the world: holds, edges and marked spots. A hold's ring is its role's colour, as the site draws it, with a
- * dot in its middle for how done it is; the others are coloured by how done they are. The one being asked for has a
- * white ring round it.
+ * Rings in the world: holds, edges and marked spots. A hold's ring is its role's colour, as the site draws it, a little
+ * see-through, with a dot in its middle for how done it is (on the small model, the ring alone); the others are
+ * coloured by how done they are. The one being asked for has a white ring round it. A spot tapped to line the mesh up
+ * is a white cross, edged in black, unlike any hold.
  */
 class MarkerRenderer {
     private val prog = program(
         "uniform mat4 u_ViewProj; uniform float u_Scale; uniform float u_Radius; attribute vec3 a_Pos; " +
             "void main() { gl_Position = u_ViewProj * vec4(a_Pos, 1.0); gl_PointSize = clamp(u_Radius * u_Scale / gl_Position.w, 14.0, 260.0); }",
-        "precision mediump float; uniform vec4 u_Col; void main() { float d = length(gl_PointCoord - vec2(0.5)) * 2.0; if (d > u_Out || d < u_In) discard; gl_FragColor = u_Col; }".replace("uniform vec4 u_Col;", "uniform vec4 u_Col; uniform float u_In; uniform float u_Out;"),
+        "precision mediump float; uniform vec4 u_Col; uniform float u_In; uniform float u_Out; uniform float u_Cross; void main() { " +
+            "vec2 q = gl_PointCoord - vec2(0.5); float d = length(q) * 2.0; " +
+            // a cross: within u_Out (a share of the point's half width) of either diagonal, inside its circle
+            "if (u_Cross > 0.5) { if (d > 1.0 || min(abs(q.x - q.y), abs(q.x + q.y)) * 1.4142 > u_Out) discard; } " +
+            "else if (d > u_Out || d < u_In) discard; gl_FragColor = u_Col; }",
     )
     private val one = floats(3)
 
@@ -153,7 +159,8 @@ class MarkerRenderer {
         for (m in markers) {
             one.position(0); one.put(m.world.x.toFloat()); one.put(m.world.y.toFloat()); one.put(m.world.z.toFloat()); one.position(0)
             GLES20.glVertexAttribPointer(pos, 3, GLES20.GL_FLOAT, false, 0, one)
-            fun ring(c: FloatArray, alpha: Float, size: Float, inner: Float, outer: Float) {     // inner, outer: of the point's own radius
+            fun ring(c: FloatArray, alpha: Float, size: Float, inner: Float, outer: Float, cross: Boolean = false) {     // inner, outer: of the point's own radius
+                GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "u_Cross"), if (cross) 1f else 0f)
                 GLES20.glUniform4f(GLES20.glGetUniformLocation(prog, "u_Col"), c[0], c[1], c[2], alpha)
                 GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "u_Radius"), size * m.radiusM.toFloat())
                 GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "u_In"), inner); GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "u_Out"), outer)
@@ -161,8 +168,10 @@ class MarkerRenderer {
             }
             val level = LEVEL_COLORS[m.level]
             val role = plan?.roleColor(m.role)?.toFloatArray()
+            if (m.kind == CaptureFlow.ALIGN) { ring(floatArrayOf(0f, 0f, 0f), 0.8f, 1f, 0f, 0.3f, cross = true); ring(floatArrayOf(1f, 1f, 1f), 1f, 1f, 0f, 0.16f, cross = true); continue }
             if (m.current) ring(floatArrayOf(1f, 1f, 1f), 0.95f, 1.3f, 0.86f, 1f)
-            if (role != null) { ring(role, 0.95f, 1f, 0.72f, 1f); ring(level, 0.9f, 1f, 0f, 0.3f) }
+            if (role != null && m.kind == CaptureFlow.MODEL_HOLD) ring(role, 0.75f, 1f, 0.68f, 1f)
+            else if (role != null) { ring(role, 0.75f, 1f, 0.72f, 1f); ring(level, 0.75f, 1f, 0f, 0.3f) }
             else if (!m.current) ring(level, 0.9f, 1f, 0.72f, 1f)
         }
         GLES20.glDisableVertexAttribArray(pos)

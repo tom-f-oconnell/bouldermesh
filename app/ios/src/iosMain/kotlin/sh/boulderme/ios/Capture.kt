@@ -97,6 +97,7 @@ import platform.ImageIO.kCGImagePropertyTIFFMake
 import platform.ImageIO.kCGImagePropertyTIFFModel
 import platform.ImageIO.kCGImagePropertyTIFFSoftware
 import platform.SceneKit.SCNBillboardConstraint
+import platform.SceneKit.SCNBox
 import platform.SceneKit.SCNGeometry
 import platform.SceneKit.SCNGeometryElement
 import platform.SceneKit.SCNGeometryPrimitiveTypeTriangles
@@ -395,7 +396,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         if (fit != null) {
             if (guideNode.geometry == null) colour()
             guideNode.transform = matrix(fit)
-            guideNode.opacity = if (out.solid) 0.95 else 0.45
+            guideNode.opacity = if (out.solid) 0.95 else 0.6 * out.alpha     // over the rock: 0.225 while capturing, as see-through as Android's
             if (out.solid != solid) { solid = out.solid; (guideNode.geometry?.materials?.firstOrNull() as? SCNMaterial)?.writesToDepthBuffer = solid }
         }
         if (out.markers != drawn) { drawn = out.markers; mark(out.markers) }
@@ -446,7 +447,11 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         guideNode.geometry = geometry
     }
 
-    /** Rings in the world: holds, edges and marked spots, coloured by how done they are; the one being asked for in white. */
+    /**
+     * Rings in the world: holds, edges and marked spots, coloured by how done they are; the one being asked for in white.
+     * A hold's is its role's colour, a little see-through (on the small model, the ring alone); a spot tapped to line
+     * the mesh up is a white cross edged in black, unlike any hold.
+     */
     private fun mark(markers: List<Marker>) {
         val seen = HashSet<String>()
         for (m in markers) {
@@ -456,6 +461,14 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             var node = rings[m.id]
             if (node == null || node.name != key) {
                 node?.removeFromParentNode()
+                if (m.kind == CaptureFlow.ALIGN) {
+                    node = cross(m.radiusM)
+                    node.name = key
+                    scene.rootNode.addChildNode(node)
+                    rings[m.id] = node
+                    node.position = SCNVector3Make(m.world.x.toFloat(), m.world.y.toFloat(), m.world.z.toFloat())
+                    continue
+                }
                 val r = m.radiusM * (if (m.current) 1.25 else 1.0)
                 val torus = SCNTorus.torusWithRingRadius(r, pipeRadius = r * 0.12)
                 val c = LEVEL_RGB[m.level.coerceIn(0, LEVEL_RGB.size - 1)]
@@ -464,6 +477,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
                 mat.diffuse.contents = if (role != null) UIColor.colorWithRed(role[0].toDouble(), role[1].toDouble(), role[2].toDouble(), 1.0)
                     else if (m.current) UIColor.whiteColor else UIColor.colorWithRed(c[0].toDouble(), c[1].toDouble(), c[2].toDouble(), 1.0)
                 mat.readsFromDepthBuffer = false        // seen through the rock and the mesh, wherever they are
+                if (role != null) mat.transparency = 0.75
                 torus.materials = listOf(mat)
                 val ring = SCNNode.nodeWithGeometry(torus)
                 ring.renderingOrder = 10
@@ -472,12 +486,13 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
                 node.name = key
                 node.constraints = listOf(SCNBillboardConstraint.billboardConstraint())
                 node.addChildNode(ring)
-                if (role != null) {
+                if (role != null && m.kind != CaptureFlow.MODEL_HOLD) {
                     val dot = SCNSphere.sphereWithRadius(r * 0.22)
                     val inside = SCNMaterial()
                     inside.lightingModelName = SCNLightingModelConstant
                     inside.diffuse.contents = if (m.current) UIColor.whiteColor else UIColor.colorWithRed(c[0].toDouble(), c[1].toDouble(), c[2].toDouble(), 1.0)
                     inside.readsFromDepthBuffer = false
+                    inside.transparency = 0.75
                     dot.materials = listOf(inside)
                     val middle = SCNNode.nodeWithGeometry(dot)
                     middle.renderingOrder = 10
@@ -489,6 +504,25 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             node.position = SCNVector3Make(m.world.x.toFloat(), m.world.y.toFloat(), m.world.z.toFloat())
         }
         for (gone in rings.keys.filter { it !in seen }) rings.remove(gone)?.removeFromParentNode()
+    }
+
+    /** A white cross r across each way from its middle, edged in black, facing the camera. */
+    private fun cross(r: Double): SCNNode {
+        val node = SCNNode()
+        node.constraints = listOf(SCNBillboardConstraint.billboardConstraint())
+        for ((colour, thick, order) in listOf(Triple(UIColor.blackColor, 0.3, 10L), Triple(UIColor.whiteColor, 0.16, 11L))) for (turn in listOf(1, -1)) {
+            val bar = SCNBox.boxWithWidth(2 * r * (1 + thick * 0.3), height = r * thick, length = r * 0.01, chamferRadius = 0.0)
+            val mat = SCNMaterial()
+            mat.lightingModelName = SCNLightingModelConstant
+            mat.diffuse.contents = colour
+            mat.readsFromDepthBuffer = false
+            bar.materials = listOf(mat)
+            val arm = SCNNode.nodeWithGeometry(bar)
+            arm.renderingOrder = order
+            arm.eulerAngles = SCNVector3Make(0f, 0f, (turn * kotlin.math.PI / 4).toFloat())
+            node.addChildNode(arm)
+        }
+        return node
     }
 
     // ---- taps ---------------------------------------------------------------------------------------------------------
