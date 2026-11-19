@@ -16,7 +16,7 @@ class LocateTest {
         val mesh = CameraPose(c, Quat.yaw(yaw), lens)
         val s = wrongBy ?: truth
         val world = CameraPose(s.apply(c), (s.rot * mesh.rot).unit(), lens)
-        return Located(id, mesh, 80, 1.0, "phone") to LocateFrame(id, ByteArray(0), 640, 480, world)
+        return Located(id, mesh, 150, 1.0, "phone") to LocateFrame(id, ByteArray(0), 640, 480, world)
     }
 
     @Test fun framesGiveTheFit() {
@@ -47,5 +47,9 @@ class LocateTest {
         assertTrue(r.why.isNotEmpty())
         val weak = listOf(frame(1, Vec3(0.0, 1.5, 3.0), 0.0).let { it.first.copy(inliers = 5) to it.second })
         assertNull(Locate.fromLocated(weak.map { it.first }, weak.map { it.second }, 1.25).fit, "too few matches")
+        val alone = listOf(frame(1, Vec3(0.0, 1.5, 3.0), 0.0).let { it.first.copy(inliers = 40) to it.second })
+        assertNull(Locate.fromLocated(alone.map { it.first }, alone.map { it.second }, 1.25).fit, "one frame, too weakly placed to go by alone")
+        val two = listOf(frame(1, Vec3(0.0, 1.5, 3.0), 0.0), frame(2, Vec3(0.3, 1.5, 3.0), 0.1)).map { it.first.copy(inliers = 40) to it.second }
+        assertNotNull(Locate.fromLocated(two.map { it.first }, two.map { it.second }, 1.25).fit, "but two that agree will do")
     }
 }

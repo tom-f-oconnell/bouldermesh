@@ -31,6 +31,11 @@ fun interface Locator {
 object Locate {
     /** Fewest matches agreeing on a frame's place for it to count. */
     const val MIN_INLIERS = 25
+    /** How far off a frame's matches may be once placed, on average, in pixels, for it to count. */
+    const val MAX_RMS_PX = 3.0
+    /** One frame alone is trusted only with this many agreeing matches, this close: else two must agree. */
+    const val ALONE_INLIERS = 100
+    const val ALONE_RMS_PX = 2.0
     /** Frames' turns from the mesh to the world further apart than this, in degrees, aren't the same fit. */
     const val MAX_TURN_SPREAD_DEG = 4.0
     /** A frame whose camera lands further than this, in metres, from where its tracking had it, disagrees. */
@@ -52,8 +57,11 @@ object Locate {
      */
     fun fromLocated(located: List<Located>, frames: List<LocateFrame>, scale: Double?): Result {
         val byId = frames.associateBy { it.id }
-        val pairs = located.filter { it.inliers >= MIN_INLIERS }.mapNotNull { l -> byId[l.id]?.let { l.mesh to it.world } }
+        val good = located.filter { it.inliers >= MIN_INLIERS && it.rmsPx <= MAX_RMS_PX && it.id in byId }
+        val pairs = good.map { l -> l.mesh to byId.getValue(l.id).world }
         if (pairs.isEmpty()) return Result(null, 0, 0.0, 0.0, "", "no frame placed with $MIN_INLIERS matches")
+        if (pairs.size == 1 && (good[0].inliers < ALONE_INLIERS || good[0].rmsPx > ALONE_RMS_PX))
+            return Result(null, 1, 0.0, 0.0, "", "one frame placed, too weakly to go by alone")
         // the turn taking each frame's mesh camera to its world camera: world = turn * mesh
         val turns = pairs.map { (m, w) -> (w.rot * m.rot.conj()).unit() }
         val first = turns[0]
