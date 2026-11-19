@@ -82,7 +82,9 @@ class Home(private val app: App) : Form("BoulderMesh") {
         bar.axis = UILayoutConstraintAxisHorizontal
         bar.spacing = 8.0
         bar.addArrangedSubview(makeButton("Calibrate") { push(Calibrate(app)) })
-        bar.addArrangedSubview(makeButton("⚙\uFE0E", fontSize = 22.0) { push(Settings(app)) }.apply { accessibilityLabel = "Settings" })
+        val gear = makeButton("⚙\uFE0E", fontSize = 30.0) { push(Settings(app)) }.apply { accessibilityLabel = "Settings" }
+        gear.widthAnchor.constraintEqualToAnchor(gear.heightAnchor, multiplier = 1.3).setActive(true)     // else the bar stretches it
+        bar.addArrangedSubview(gear)
         screen.navigationItem.rightBarButtonItem = UIBarButtonItem(customView = bar)
     }
 
@@ -156,7 +158,8 @@ class Home(private val app: App) : Form("BoulderMesh") {
             val f = app.meshUpdates.state[p.mesh]
             f?.said(p.key)?.let { text(it, WARN, small = true) }
             if (f != null && f.stale(p.key)) button(app.meshUpdates.busy[p.mesh] ?: f.action, enabled = p.mesh !in app.meshUpdates.busy) { app.meshUpdates.update(p.mesh) { rebuild() } }
-            row(makeButton("Capture more", Look.FILLED) { capture(p.mesh, p.name.ifEmpty { p.mesh }) },
+            row(makeButton("Capture more", Look.FILLED) { capture(p.mesh, p.name.ifEmpty { p.mesh }) }
+                    .apply { setContentCompressionResistancePriority(1000f, forAxis = UILayoutConstraintAxisHorizontal) },     // on one line
                 makeButton("View") { push(ViewerController(app, p.mesh, p.name.ifEmpty { p.mesh })) },
                 makeButton("Remove", Look.PLAIN) { app.store.removePlan(p.mesh); rebuild() })
             // for one of its sets of beta: that set's holds from close, all round, as a replica of them needs
