@@ -5016,10 +5016,13 @@ function stopBeta(){
   $('#beta-open').innerHTML = ''; showMarkButton(); renderBetaList(); showBetaButton(); renderBetaVids(); woke();
 }
 const hasBeta = m => !!(m && (m.marked || m.beta?.holds));
-// the view's Beta button: there when the mesh in view has beta, pressed while it's drawn
+// the view's Beta button: there when the mesh in view has beta, or to whoever may mark holds on it (an editor, or a
+// signed-in account: a new mesh has none to show, and this is the way in to marking them), pressed while it's drawn
 function showBetaButton(){
   const b = $('#vbeta'), m = shownMesh && meshesById[shownMesh];
-  b.hidden = !hasBeta(m) || thumbMode;
+  b.hidden = !m || !(hasBeta(m) || mayBeta()) || thumbMode;
+  b.title = hasBeta(m) ? 'Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.'
+    : 'Mark holds on this mesh, as a set of beta of your own. Press again to hide it.';
   b.setAttribute('aria-pressed', String(!!betaState && betaState.mid === shownMesh));
 }
 $('#vbeta').onclick = () => betaState?.mid === shownMesh ? stopBeta() : shownMesh && current && startBeta(shownMesh);
@@ -6306,6 +6309,7 @@ function stripInvite(){
 function showAccount(){
   const b = $('#me');
   document.body.classList.toggle('account', !!account?.accepted);
+  showBetaButton();
   b.style.display = account ? '' : 'none';
   if (!account) return;
   b.textContent = account.name; b.onclick = openAccount;
