@@ -18,7 +18,8 @@ phone yet**: see [What's been checked](#whats-been-checked).
    the phone held as for a photo, steadily and at the same angle to you all the way round (it needn't be upright): that's how
    it finds which way is down (below). Then a small model of the
    mesh appears in front of you:
-   - tap a spot on the model that you can find on the rock, then tap the same spot on the real rock;
+   - tap a spot on the model that you can find on the rock, then tap the same spot on the real rock (as in the site's
+     viewer, one finger turns the model, a pinch zooms in on a spot, two fingers move it; *Bring it here* puts it back);
    - do that once more, with a spot well to one side of the first;
    - the mesh is drawn over the rock. If it sits on it, press *It fits: start*. If not, *Add a spot* or *Start again*.
 4. **Follow the words at the top.** It first walks you to a few rings in the air: where earlier photos of the rock

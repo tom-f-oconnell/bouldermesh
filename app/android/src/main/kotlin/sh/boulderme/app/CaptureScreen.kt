@@ -101,6 +101,46 @@ private fun LevelGauges(l: LevelUi) {
     }
 }
 
+/**
+ * Touches on the camera's view: a tap is a tap (on the small model, or the rock); while the small model shows, one
+ * finger dragged turns it and two pinch it bigger or smaller and move it, as the site's viewer does a mesh.
+ */
+private class ModelTouch(ctx: android.content.Context, private val c: ArController) : android.view.View.OnTouchListener {
+    private val slop = android.view.ViewConfiguration.get(ctx).scaledTouchSlop
+    private val scale = android.view.ScaleGestureDetector(ctx, object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        override fun onScale(d: android.view.ScaleGestureDetector): Boolean { if (c.modelShown()) c.zoom(d.scaleFactor, d.focusX, d.focusY); return true }
+    })
+    private var downX = 0f; private var downY = 0f
+    private var lastX = 0f; private var lastY = 0f
+    private var moved = false; private var multi = false
+
+    /** The middle of the fingers down, leaving out one being lifted. */
+    private fun middle(e: MotionEvent): Pair<Float, Float> {
+        val up = if (e.actionMasked == MotionEvent.ACTION_POINTER_UP) e.actionIndex else -1
+        var x = 0f; var y = 0f; var n = 0
+        for (i in 0 until e.pointerCount) if (i != up) { x += e.getX(i); y += e.getY(i); n++ }
+        return if (n == 0) e.x to e.y else x / n to y / n
+    }
+
+    override fun onTouch(v: android.view.View, e: MotionEvent): Boolean {
+        scale.onTouchEvent(e)
+        val (x, y) = middle(e)
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { downX = x; downY = y; moved = false; multi = false }
+            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> multi = true
+            MotionEvent.ACTION_MOVE -> {
+                if (!moved && kotlin.math.hypot(x - downX, y - downY) > slop) moved = true
+                if ((moved || multi) && c.modelShown()) {
+                    if (e.pointerCount == 1) c.orbit(x - lastX, y - lastY) else c.pan(lastX, lastY, x, y)
+                }
+            }
+            MotionEvent.ACTION_UP -> if (!moved && !multi) c.tap(e.x, e.y)
+        }
+        lastX = x; lastY = y
+        return true
+    }
+}
+
 /** The camera with the mesh and what's left to photograph drawn over it, the hint, and the few buttons a capture has. */
 @OptIn(ExperimentalLayoutApi::class)
 @SuppressLint("ClickableViewAccessibility")
@@ -128,7 +168,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
             setRenderer(controller)
             renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
             keepScreenOn = true
-            setOnTouchListener { _, e -> if (e.action == MotionEvent.ACTION_UP) controller.tap(e.x, e.y); true }
+            setOnTouchListener(ModelTouch(a, controller))
         }
     }
     DisposableEffect(Unit) {

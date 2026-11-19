@@ -153,6 +153,16 @@ class ArController(
     }
 
     fun tap(x: Float, y: Float) { pendingTap = floatArrayOf(x, y) }     // met with the world on the drawing thread, in its next frame
+
+    // the small model turned, zoomed and moved by fingers, as the site's viewer does a mesh: on the drawing thread too,
+    // where the screen's rays are known
+    private val gestures = java.util.concurrent.ConcurrentLinkedQueue<() -> Unit>()
+    fun modelShown() = synchronized(lock) { flow.modelShown }
+    /** One finger dragged by dx, dy pixels: a drag the screen's height is a whole turn. */
+    fun orbit(dx: Float, dy: Float) { gestures.add { if (height > 0) flow.orbitGhost(360.0 * dx / height, 360.0 * dy / height) } }
+    fun zoom(factor: Float, x: Float, y: Float) { gestures.add { val (from, along) = ray(x, y); flow.zoomGhost(factor.toDouble(), from, along) } }
+    /** Two fingers whose middle moved from x0, y0 to x1, y1. */
+    fun pan(x0: Float, y0: Float, x1: Float, y1: Float) { gestures.add { val (from, now) = ray(x1, y1); flow.panGhost(from, ray(x0, y0).second, now) } }
     fun skipLevel() = synchronized(lock) { flow.skipLevel() }
     fun skipWarning(): String = synchronized(lock) { flow.skipWarning() }
     fun looser() = synchronized(lock) { flow.looser() }
@@ -235,6 +245,7 @@ class ArController(
             clocked?.takeIf { clockSaid++ < 5 || kotlin.math.abs(it.usedS - clockUsed) > 0.002 }?.let { clockUsed = it.usedS; flow.event("imu_clock", "offset_s" to it.offsetS, "fit_rad_s" to it.fitRadS, "motion_rad_s" to it.motionRadS, "taken" to it.taken,
                 "used_s" to it.usedS, "newest_after_s" to it.lagS, "frame_age_s" to now - shotAt) }
             if (tap != null && tracking) { val (from, along) = ray(tap[0], tap[1]); flow.tap(from, along) { hit(frame, tap) } }
+            while (true) { val g = gestures.poll() ?: break; if (tracking) g() }
             // the slow half of tightening the fit holds no lock: frames go on being drawn meanwhile
             flow.refineDue(now)?.let { work -> worker.execute { val found = flow.tighter(work); synchronized(lock) { flow.tightened(work, found) } } }
             flow.frame(pose, tracking, gyro, exposure, now, uprightDeg(), accel, sensorOrientation)

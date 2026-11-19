@@ -61,7 +61,7 @@ Each side's tests read files the other really wrote (`shared/src/jvmTest/resourc
                           the apps leave these until the rest is done, then ask
     climbs                [{id, name, grade}]
 
-**The guide** (`guide.bin`, little-endian): a copy of the mesh of at most 12,000 faces, to draw and to cast rays at.
+**The guide** (`guide.bin`, little-endian): a copy of the mesh of at most 60,000 faces, to draw and to cast rays at.
 
     "BMG1", uint32 vertices, uint32 faces, uint32 patches
     float32 x, y, z                for each vertex

@@ -61,7 +61,7 @@ assert near and all(min(np.linalg.norm(np.array(t["p"]) - np.array(h["p"])) for 
 assert any(t["prio"] == 1 for t in kinds["patch"]), "the rest is rock all the same"
 assert plan["frame"]["metres_per_unit"] == 1.2 and not plan["frame"]["scale_guessed"] and plan["need"]["hold"]["gsd_mm"] < plan["need"]["patch"]["gsd_mm"]
 # where to photograph it from again: a few of the places its photos were taken, that between them show what they all saw
-assert plan["need"]["hold"]["ladder"] == 2.0 and plan["bridge"] == {"within_m": 1.0, "deg": 20.0} and plan["v"] == 3
+assert plan["need"]["hold"]["ladder"] == 2.0 and plan["bridge"] == {"within_m": 1.0, "deg": 20.0} and plan["v"] == 4
 # its sets of beta, each with its holds among the targets; and what a capture for one of them asks of its holds
 assert [t["sets"] for t in kinds["hold"]] == [["s1"], []] and plan["sets"] == [
     {"id": "s1", "name": "The line", "climb": "c1", "targets": [kinds["hold"][0]["id"]]}, {"id": "s2", "name": "Empty", "climb": None, "targets": []}], plan["sets"]

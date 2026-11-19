@@ -119,6 +119,10 @@ import platform.UIKit.UILayoutConstraintAxisVertical
 import platform.UIKit.UIProgressView
 import platform.UIKit.UIProgressViewStyle
 import platform.UIKit.UIStackView
+import platform.UIKit.UIGestureRecognizerStateCancelled
+import platform.UIKit.UIGestureRecognizerStateEnded
+import platform.UIKit.UIPanGestureRecognizer
+import platform.UIKit.UIPinchGestureRecognizer
 import platform.UIKit.UITapGestureRecognizer
 import platform.UIKit.UIView
 import platform.UIKit.UIViewController
@@ -258,6 +262,9 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         sceneView.automaticallyUpdatesLighting = false
         view.addSubview(sceneView)
         sceneView.addGestureRecognizer(UITapGestureRecognizer(target = this, action = NSSelectorFromString("tapped:")))
+        // the small model turned, zoomed and moved as the site's viewer does a mesh: one finger turns it, two pinch and move it
+        sceneView.addGestureRecognizer(UIPanGestureRecognizer(target = this, action = NSSelectorFromString("dragged:")).apply { maximumNumberOfTouches = 1u })
+        sceneView.addGestureRecognizer(UIPinchGestureRecognizer(target = this, action = NSSelectorFromString("pinched:")))
         sceneView.scene = scene
         scene.rootNode.addChildNode(guideNode)
         guideNode.hidden = true
@@ -485,12 +492,41 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     }
 
     // ---- taps ---------------------------------------------------------------------------------------------------------
+    /** The ray a point of the screen looks along, in the world. */
+    private fun ray(x: Double, y: Double): Pair<Vec3, Vec3> {
+        val near = sceneView.unprojectPoint(SCNVector3Make(x.toFloat(), y.toFloat(), 0f)).useContents { Vec3(this.x.toDouble(), this.y.toDouble(), this.z.toDouble()) }
+        val far = sceneView.unprojectPoint(SCNVector3Make(x.toFloat(), y.toFloat(), 1f)).useContents { Vec3(this.x.toDouble(), this.y.toDouble(), this.z.toDouble()) }
+        return near to (far - near).unit()
+    }
+
+    @ObjCAction
+    fun dragged(g: UIPanGestureRecognizer) {
+        if (!flow.modelShown) return
+        val (dx, dy) = g.translationInView(sceneView).useContents { x to y }
+        g.setTranslation(CGPointMake(0.0, 0.0), inView = sceneView)
+        val h = sceneView.bounds.useContents { size.height }.takeIf { it > 0 } ?: return
+        flow.orbitGhost(360 * dx / h, 360 * dy / h)       // a drag the screen's height: a whole turn, as the site's viewer
+    }
+
+    private var pinchAt: Pair<Double, Double>? = null
+    @ObjCAction
+    fun pinched(g: UIPinchGestureRecognizer) {
+        val (x, y) = g.locationInView(sceneView).useContents { x to y }
+        val was = pinchAt
+        val on = g.state != UIGestureRecognizerStateEnded && g.state != UIGestureRecognizerStateCancelled && g.numberOfTouches >= 2u
+        pinchAt = if (on) x to y else null      // a finger lifted moves the middle of them: not a move of the model
+        if (!flow.modelShown || !on) return
+        val (from, along) = ray(x, y)
+        flow.zoomGhost(g.scale, from, along)
+        g.scale = 1.0
+        if (was != null) flow.panGhost(from, ray(was.first, was.second).second, along)       // the fingers moved together: it goes with them
+    }
+
     @ObjCAction
     fun tapped(g: UITapGestureRecognizer) {
         val (x, y) = g.locationInView(sceneView).useContents { x to y }
-        val near = sceneView.unprojectPoint(SCNVector3Make(x.toFloat(), y.toFloat(), 0f)).useContents { Vec3(this.x.toDouble(), this.y.toDouble(), this.z.toDouble()) }
-        val far = sceneView.unprojectPoint(SCNVector3Make(x.toFloat(), y.toFloat(), 1f)).useContents { Vec3(this.x.toDouble(), this.y.toDouble(), this.z.toDouble()) }
-        flow.tap(near, (far - near).unit()) {
+        val (near, along) = ray(x, y)
+        flow.tap(near, along) {
             // where ARKit says that point of the screen meets the world: the lidar's surface, a plane it's found, or its best guess at one
             val query = sceneView.raycastQueryFromPoint(CGPointMake(x, y), allowingTarget = ARRaycastTarget.ARRaycastTargetEstimatedPlane, alignment = ARRaycastTargetAlignment.ARRaycastTargetAlignmentAny)
             val hit = query?.let { sceneView.session.raycast(it).firstOrNull() as? ARRaycastResult }

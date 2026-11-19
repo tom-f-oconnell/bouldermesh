@@ -154,8 +154,10 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     private var cardShot = false
     private var ghost: Similarity? = null
     private var ghostTurn = 0.0
+    private var ghostScale = 1.0           // the small model's scale as first placed: zooming is kept within ZOOM_LEAST..ZOOM_MOST of it
     private var meshTap: Vec3? = null
-    private val tapMarks = ArrayList<Marker>()
+    private val tapMarks = ArrayList<Marker>()      // spots tapped on the rock, in the world
+    private val modelMarks = ArrayList<Vec3>()      // and on the small model, in the mesh's coordinates: they move with it
     private var wantShot = false
     private var wantAt: Double? = null    // the first frame after Take was pressed
     private var inFlight = false
@@ -354,10 +356,61 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     fun toggleWide() { event("reach", "from" to reach); reach = if (reach >= (if (setName != null) 3 else 2)) 1 else reach + 1; session.setScope(Scope(minPrio = reach)); levelsDirty = true }
     /** The next photo taken is one with a bank card flat on the rock beside the hold: its size, to a fraction of a millimetre. */
     fun toggleCard() { cardNext = !cardNext; event("card", "on" to cardNext) }
-    fun turnGhost(degrees: Double) { event("ghost_turn", "deg" to degrees); ghostTurn += degrees * PI / 180; ghost = null }
+    fun turnGhost(degrees: Double) { event("ghost_turn", "deg" to degrees); ghostTurn += degrees * PI / 180; orbitGhost(degrees, 0.0) }
     fun bringGhost() { event("ghost_bring"); ghost = null }
+
+    /** Whether the small model is on the screen, for drags and pinches to move it (orbitGhost(), zoomGhost(), panGhost()). */
+    val modelShown: Boolean get() = ghost != null && (phase == Phase.GHOST || phase == Phase.ROCK)
+    private val shownGhost: Similarity? get() = if (modelShown) ghost else null
+
+    /** The small model's middle, in the world. */
+    private fun ghostMiddle(g: Similarity): Vec3 = guide!!.bounds().let { (lo, hi) -> g.apply((lo + hi) / 2.0) }
+
+    /** Where a ray meets the plane through the small model's middle that faces the camera (null: it doesn't, ahead). */
+    private fun onGhostPlane(g: Similarity, from: Vec3, along: Vec3): Vec3? {
+        val n = lastPose?.forward ?: along
+        val d = along dot n
+        if (d < 1e-6) return null
+        val t = ((ghostMiddle(g) - from) dot n) / d
+        return if (t > 0) from + along * t else null
+    }
+
+    /**
+     * Turns the small model about its middle as a finger dragged across it would, as the site's viewer turns a mesh:
+     * yawDeg about up (a drag sideways), pitchDeg about the camera's sideways axis (a drag up or down).
+     */
+    fun orbitGhost(yawDeg: Double, pitchDeg: Double) {
+        val g = shownGhost ?: return
+        val c = ghostMiddle(g)
+        var q = Quat.yaw(yawDeg * PI / 180)
+        val side = lastPose?.rot?.rotate(Vec3(1.0, 0.0, 0.0))
+        if (side != null && pitchDeg != 0.0) q = Quat.axisAngle(side, pitchDeg * PI / 180) * q
+        ghost = Similarity(g.scale, (q * g.rot).unit(), q.rotate(g.shift - c) + c)
+    }
+
+    /**
+     * Makes the small model bigger (factor > 1) or smaller about the spot of it under a pinch (the ray from, along: the
+     * middle of the fingers), or where that ray meets its middle's depth if it misses, as the site's viewer zooms to the
+     * pointer.
+     */
+    fun zoomGhost(factor: Double, from: Vec3, along: Vec3) {
+        val g = shownGhost ?: return; val mesh = guide ?: return
+        val k = (g.scale * factor).coerceIn(ghostScale * ZOOM_LEAST, ghostScale * ZOOM_MOST) / g.scale
+        if (k == 1.0) return
+        val inv = g.inverse()
+        val hit = mesh.raycast(inv.apply(from), inv.dir(along).unit())?.let { g.apply(inv.apply(from) + inv.dir(along).unit() * it) }
+        val pivot = hit ?: onGhostPlane(g, from, along) ?: ghostMiddle(g)
+        ghost = Similarity(g.scale * k, g.rot, pivot + (g.shift - pivot) * k)
+    }
+
+    /** Moves the small model as two fingers drag it: what was under the ray from, was, is under from, now, at its middle's depth. */
+    fun panGhost(from: Vec3, was: Vec3, now: Vec3) {
+        val g = shownGhost ?: return
+        val a = onGhostPlane(g, from, was) ?: return; val b = onGhostPlane(g, from, now) ?: return
+        ghost = g.copy(shift = g.shift + (b - a))
+    }
     fun confirmFit() { if (phase == Phase.CONFIRM) { event("fit_confirmed", "taps" to session.taps.size, "refined_rms_m" to session.refined?.rmsM); phase = Phase.CAPTURE; levelsDirty = true; note = "" } }
-    fun restartAlign() { if (plan == null) return; event("align_restart", "phase" to phase.name); session.clearTaps(); tapMarks.clear(); meshTap = null; ghost = null; phase = Phase.GHOST; note = "" }
+    fun restartAlign() { if (plan == null) return; event("align_restart", "phase" to phase.name); session.clearTaps(); tapMarks.clear(); modelMarks.clear(); meshTap = null; ghost = null; phase = Phase.GHOST; note = "" }
     fun addSpot() { if (phase == Phase.CONFIRM) { event("align_add_spot"); phase = Phase.GHOST; ghost = null; note = "" } }
 
     /** With no mesh: the side the hint is sending you round to can't be reached. */
@@ -400,7 +453,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 event("tap_model", "hit" to true)
                 val spot = o + d * t
                 meshTap = spot
-                tapMarks.add(Marker("m${tapMarks.size}", g.apply(spot), 0.03, Coverage.LEVEL_PART, "hold", true))
+                modelMarks.add(spot)
                 phase = Phase.ROCK; note = ""
             }
             Phase.ROCK -> {
@@ -412,7 +465,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 event("tap_rock", "hit" to true, "pairs" to session.taps.size, "fit" to (fit != null), "scale" to fit?.scale, "tilt_deg" to fit?.tiltDeg,
                     "scale_vs_server" to session.scaleAgainstServer())
                 note = ""
-                phase = if (fit != null) { tapMarks.clear(); levelsDirty = true; Phase.CONFIRM } else {
+                phase = if (fit != null) { tapMarks.clear(); modelMarks.clear(); levelsDirty = true; Phase.CONFIRM } else {
                     if (session.taps.size >= 2) note = "Those are too nearly one above the other to tell which way it's turned."
                     Phase.GHOST
                 }
@@ -642,13 +695,15 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 return FlowOut(ui, null, false, 0f, null, emptyList(), false, grab = grab)
             }
             Phase.GHOST, Phase.ROCK -> {
-                val g = ghost ?: placeGhost(pose).also { ghost = it }
+                val g = ghost ?: placeGhost(pose).also { ghost = it; ghostScale = it.scale }
                 fresh()
                 val n = session.taps.size
                 ui = base.copy(turnX = 0.0, turnY = 0.0, text = if (phase == Phase.ROCK) "Now tap the same spot on the real rock"
                     else if (n >= 2) "Tap another spot on the small model that you can find on the rock, well to one side of the others"
-                    else "Tap a spot on the small model that you can find on the rock (${n + 1} of 2). Pick two far apart, and not one above the other.")
-                return FlowOut(ui, g, true, 2.5f, levels, tapMarks.toList(), false)
+                    else "Tap a spot on the small model that you can find on the rock (${n + 1} of 2). Pick two far apart, and not one above the other. " +
+                        "Drag to turn it, pinch to zoom, two fingers to move it.")
+                val onModel = modelMarks.mapIndexed { i, p -> Marker("m$i", g.apply(p), 0.03 * g.scale / ghostScale, Coverage.LEVEL_PART, "hold", true) }
+                return FlowOut(ui, g, true, 2.5f, levels, onModel + tapMarks, false)
             }
             Phase.CONFIRM -> {
                 fresh()
@@ -742,6 +797,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     companion object {
         const val GHOST_ACROSS_M = 0.6      // how big the small model is drawn
         const val GHOST_AHEAD_M = 1.1
+        const val ZOOM_LEAST = 0.3          // how much smaller and bigger than it's first placed the small model can be made
+        const val ZOOM_MOST = 25.0
         const val CELL_M = 0.05             // tracked points are kept one to each of these
         const val CLOUD_MOST = 20000
         const val REFINE_POINTS = 2000

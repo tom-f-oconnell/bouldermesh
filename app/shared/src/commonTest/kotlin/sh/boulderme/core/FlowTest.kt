@@ -15,6 +15,43 @@ class FlowTest {
     private fun shot(pose: CameraPose, t: Double, stats: ImageStats = sharp) =
         ShotIn(pose, SensorSample(Vec3(0.0, 9.81, 0.0), Vec3.ZERO, t = t), stats, 0.004, 80.0, 1.3, true, "a", t, 1.7e9 + t)
 
+    @Test fun theSmallModelTurnsZoomsAndMoves() {
+        val flow = CaptureFlow(CaptureSession(TestWorld.plan(), TestWorld.guide(), "f1", "test", "a phone", 0.0))
+        flow.skipLevel()
+        val eye = truth.apply(Vec3(0.0, 1.5, 4.0))
+        val pose = TestWorld.look(eye, truth.apply(Vec3(0.0, 1.5, 0.0)))
+        assertFalse(flow.modelShown, "not until a frame has put it in front")
+        val ghost = assertNotNull(flow.frame(pose, true, 0.0, 0.004, 0.1, 90).guide)
+        assertTrue(flow.modelShown)
+        val spot = Vec3(-1.0, 0.5, 0.0)
+        // a pinch on a spot of it: that spot stays put as it grows, and only so far
+        flow.zoomGhost(3.0, eye, (ghost.apply(spot) - eye).unit())
+        var g = assertNotNull(flow.frame(pose, true, 0.0, 0.004, 0.2, 90).guide)
+        assertTrue(near(g.scale, ghost.scale * 3, 1e-9) && near(g.apply(spot), ghost.apply(spot), 0.02), "zoomed about the pinch: $g")
+        repeat(10) { flow.zoomGhost(3.0, eye, pose.forward) }
+        g = assertNotNull(flow.frame(pose, true, 0.0, 0.004, 0.3, 90).guide)
+        assertTrue(near(g.scale, ghost.scale * CaptureFlow.ZOOM_MOST, 1e-9), "no bigger than ZOOM_MOST")
+        // two fingers moved together: what was under them goes with them, at its middle's depth
+        flow.bringGhost()
+        val before = assertNotNull(flow.frame(pose, true, 0.0, 0.004, 0.35, 90).guide)
+        val middle = before.apply(Vec3(0.0, 1.5, 0.0))
+        val side = pose.rot.rotate(Vec3(1.0, 0.0, 0.0))
+        flow.panGhost(eye, (middle - eye).unit(), (middle + side * 0.2 - eye).unit())
+        g = assertNotNull(flow.frame(pose, true, 0.0, 0.004, 0.4, 90).guide)
+        assertTrue(near(g.apply(Vec3(0.0, 1.5, 0.0)), middle + side * 0.2, 1e-6) && g.scale == before.scale, "moved 20 cm sideways")
+        // a finger dragged turns it about its middle, which stays put; a spot tapped on it then is where it's drawn now
+        flow.orbitGhost(90.0, 20.0)
+        val turned = assertNotNull(flow.frame(pose, true, 0.0, 0.004, 0.5, 90).guide)
+        assertTrue(near(turned.apply(Vec3(0.0, 1.5, 0.0)), g.apply(Vec3(0.0, 1.5, 0.0)), 0.05) && !near(turned.apply(spot), g.apply(spot), 0.05))
+        flow.tap(eye, (turned.apply(Vec3(0.0, 1.5, 0.0)) - eye).unit()) { error("a tap on the model asks nothing of the world") }
+        assertEquals(Phase.ROCK, flow.phase)
+        flow.orbitGhost(30.0, 0.0)
+        val out = flow.frame(pose, true, 0.0, 0.004, 0.6, 90)
+        assertTrue(out.markers.size == 1 && near(out.markers[0].world, out.guide!!.apply(Vec3(0.0, 1.5, 0.0)), 0.1), "its mark goes round with it")
+        flow.bringGhost()
+        assertTrue(near(assertNotNull(flow.frame(pose, true, 0.0, 0.004, 0.7, 90).guide).scale, ghost.scale, 1e-9), "Bring it here: as first put")
+    }
+
     @Test fun fromTheSmallModelToPhotos() {
         val flow = CaptureFlow(CaptureSession(TestWorld.plan(), TestWorld.guide(), "f1", "test", "a phone", 0.0))
         assertEquals(Phase.LEVEL, flow.phase)

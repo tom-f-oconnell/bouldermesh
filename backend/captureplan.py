@@ -22,9 +22,9 @@ import struct
 import time
 from pathlib import Path
 
-VERSION = 3             # goes up when a plan or guide made before would be read wrongly, or should be made again
+VERSION = 4             # goes up when a plan or guide made before would be read wrongly, or should be made again
 DIR, PLAN_FILE, GUIDE_FILE = "capture", "plan.json", "guide.bin"
-GUIDE_FACES = 12000     # at most, in the light mesh
+GUIDE_FACES = 60000     # at most, in the light mesh: fine enough for the small model to show holds, zoomed in on
 PATCH_CELLS = 10        # a patch: a box this share of the mesh's size, and the way its faces face
 VIEW_DEG = 15.0         # directions further apart than this count as different
 FACING_DEG = 75.0       # a face seen more edge-on than this isn't seen
@@ -78,7 +78,7 @@ def decimate(V, F, max_faces: int = GUIDE_FACES):
     lo = np.percentile(V[np.unique(F)], 0.5, axis=0)
     hi = np.percentile(V[np.unique(F)], 99.5, axis=0)
     size = float((hi - lo).max()) or 1.0
-    k = 160.0
+    k = 320.0
     while True:
         n = int(k) + 4
         keys = np.clip(np.floor((V - lo) / (size / k)).astype(np.int64) + 1, 0, n - 1)

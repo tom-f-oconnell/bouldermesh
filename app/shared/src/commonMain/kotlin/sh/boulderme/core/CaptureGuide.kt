@@ -16,8 +16,9 @@ object CaptureGuide {
             "Skip trusts the phone's own down instead, which is less exact.",
         "2. Line up the mesh (adding to one)" to
             "A small model of the mesh appears. Tap a spot on it that you can find on the real rock, then tap that " +
-            "spot on the rock. Do it twice, with spots far apart and not one above the other. Turn it and Bring it " +
-            "here move the model if it's in the way.\n" +
+            "spot on the rock. Do it twice, with spots far apart and not one above the other. As in the site's viewer, " +
+            "drag one finger to turn the model, pinch to zoom in on a spot, and drag two fingers to move it; Turn it and " +
+            "Bring it here (back as it first was) help too.\n" +
             "Then check that the coloured mesh sits on the rock, and press It fits: start (or Add a spot).",
         "2. Or tap the middle (a new rock)" to
             "For a rock with no mesh yet, tap the middle of the rock on the screen instead.",

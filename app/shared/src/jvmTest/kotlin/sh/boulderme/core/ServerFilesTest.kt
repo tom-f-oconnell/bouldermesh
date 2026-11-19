@@ -28,7 +28,7 @@ class ServerFilesTest {
         assertTrue(plan.targets.any { it.isEdge && it.beyond != null })
         assertEquals(guide.patches, plan.targets.count { it.kind == "patch" }, "a target for each of the guide's patches")
         assertTrue(plan.cameras.size == 9 && plan.climbs.single().name == "Alpha")
-        assertTrue(plan.v == 3 && plan.key == "0123456789ab" && plan.needOf("hold").ladder == 2.0 && plan.bridge == Bridge(1.0, 20.0))
+        assertTrue(plan.v == 4 && plan.key == "0123456789ab" && plan.needOf("hold").ladder == 2.0 && plan.bridge == Bridge(1.0, 20.0))
         // its sets of beta, what its roles are drawn in, and what a capture for a set asks of its holds
         assertEquals(listOf(PlanSet("s1", "The line", "c1", listOf("h0")), PlanSet("s2", "Empty", null, emptyList())), plan.sets)
         assertTrue(plan.roles["start"] == "#19d23c" && plan.roles.size == 4)

@@ -1848,7 +1848,7 @@ two different pictures depending on who opens it (bm2 found splat.py and scale.p
 The apps therefore turn each photo upright on the phone and write Orientation 1, with its camera, lens and `down` given
 for the picture as stored (`CameraPose.turned()`): cheap there, and nothing downstream has to know.
 
-**What to photograph: the plan.** For a mesh, `captureplan.py` makes a 12,000-face copy to draw (`guide.bin`) and
+**What to photograph: the plan.** For a mesh, `captureplan.py` makes a copy of at most 60,000 faces to draw (`guide.bin`) and
 targets, all in the mesh's own coordinates: the holds its beta found or an editor marked (0.5 mm of rock a pixel from 4
 directions), patches of rock (1.5 mm from 3; those by a hold or in a climb's view matter more than the rest, the ground
 not at all), and edges where the mesh stops (photos past them are what extend it). Each comes with what the mesh's own
