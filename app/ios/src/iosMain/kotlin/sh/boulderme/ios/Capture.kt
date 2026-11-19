@@ -396,7 +396,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         if (fit != null) {
             if (guideNode.geometry == null) colour()
             guideNode.transform = matrix(fit)
-            guideNode.opacity = if (out.solid) 0.95 else 0.6 * out.alpha     // over the rock: 0.225 while capturing, as see-through as Android's
+            guideNode.opacity = if (out.solid) 0.5 else 0.45
             if (out.solid != solid) { solid = out.solid; (guideNode.geometry?.materials?.firstOrNull() as? SCNMaterial)?.writesToDepthBuffer = solid }
         }
         if (out.markers != drawn) { drawn = out.markers; mark(out.markers) }

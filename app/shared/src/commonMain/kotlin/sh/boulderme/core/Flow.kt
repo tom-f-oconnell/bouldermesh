@@ -703,12 +703,12 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                     else "Tap a spot on the small model that you can find on the rock (${n + 1} of 2). Pick two far apart, and not one above the other. " +
                         "Drag to turn it, pinch to zoom, two fingers to move it.")
                 val onModel = modelMarks.mapIndexed { i, p -> Marker("m$i", g.apply(p), 0.03 * g.scale / ghostScale, Coverage.LEVEL_PART, ALIGN, false) }
-                return FlowOut(ui, g, true, 2.5f, levels, modelHolds(g, pose) + onModel + tapMarks, false)
+                return FlowOut(ui, g, true, 1.25f, levels, modelHolds(g, pose) + onModel + tapMarks, false)
             }
             Phase.CONFIRM -> {
                 fresh()
                 ui = base.copy(turnX = 0.0, turnY = 0.0, text = "Is the coloured mesh sitting on the rock? It tightens by itself as you look it over.")
-                return FlowOut(ui, session.fit, false, 0.4f, levels, markers, false)
+                return FlowOut(ui, session.fit, false, 0.8f, levels, markers, false)
             }
             Phase.SCENERY -> {
                 val w = walk!!
@@ -717,7 +717,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 val grab = if (!grabbing && w.wanted(pose, t, sceneryBlurPx(gyroRadS, exposureS, pose.lens.fx) <= STEADY_SCENERY_PX)) "walk" else null
                 if (grab != null) grabbing = true
                 ui = base.copy(text = h.text, turnX = h.turnX, turnY = h.turnY, total = w.total, done = w.done, canSkip = false, target = "", canCard = false)
-                return FlowOut(ui, session.fit, false, 0.15f, null, emptyList(), false, grab = grab)
+                return FlowOut(ui, session.fit, false, 0.3f, null, emptyList(), false, grab = grab)
             }
             Phase.CENTRE -> {
                 ui = base.copy(text = "Tap the middle of the rock")
@@ -749,7 +749,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 // ticks while a photo from here would add nothing, quiet for a moment round each photo, so its ding is heard alone
                 val tick = out.redundant && !shoot && !inFlight && t - lastTick >= TICK_S && t - lastShotT >= TICK_S
                 if (tick) lastTick = t
-                return FlowOut(ui, session.fit, false, 0.375f, levels, markers, shoot, out.still, shoot && cardNext, tick = tick)
+                return FlowOut(ui, session.fit, false, 0.75f, levels, markers, shoot, out.still, shoot && cardNext, tick = tick)
             }
             else -> { ui = base; return FlowOut(ui, null, false, 0f, null, emptyList(), false) }
         }

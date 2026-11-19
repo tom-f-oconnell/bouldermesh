@@ -6,6 +6,12 @@ on:
   push:
     paths: ["app/**", ".github/workflows/apps.yml", "tests/capture_fixture.py"]
   workflow_dispatch:
+    inputs:
+      only:
+        description: "Which app to build and check (both, by default)"
+        type: choice
+        options: [both, android, ios]
+        default: both
 permissions:
   contents: write       # the android-latest release
 defaults:
@@ -16,6 +22,7 @@ env:
   ADMIN_PORT: "47614"
 jobs:
   ios:
+    if: inputs.only != 'android'
     runs-on: xcode-27      # the iOS 27 SDK, which App Store Connect requires from April 2027 (testflight.yml)
     steps:
       - uses: actions/checkout@v5
@@ -47,6 +54,7 @@ jobs:
         with: { name: ios-screens, path: screens }
 
   android:
+    if: inputs.only != 'ios'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
