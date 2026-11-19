@@ -938,6 +938,9 @@ const tipSeen = (key, all = false) => {
 const toast = (msg, ms=3500) => { if (overMesh()) return; const t=$('#toast'); t.textContent=msg; t.style.display='block'; clearTimeout(toastT); toastT=setTimeout(()=>t.style.display='none', ms); };
 const fmtSize = n => n>1e6 ? (n/1e6).toFixed(1)+' MB' : (n/1e3).toFixed(0)+' kB';
 const fmtWhen = t => new Date(t * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+// how long a finished step took: "45s", "12m", "1hr53m"
+const tookFor = s => { const r = Math.round(s), m = Math.round(r / 60);
+  return r < 60 ? `${r}s` : m < 60 ? `${m}m` : `${Math.floor(m / 60)}hr${m % 60 ? `${m % 60}m` : ''}`; };
 const fmtDur = s => s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
 // a step's time left, in seconds: at its own pace once that's clear (5% done, a minute in), else from how long it usually
 // takes ("typical", from the server's past runs) less the time it's been going. over: it's taken longer than usual;
@@ -3640,7 +3643,7 @@ function progressHtml(p){
   const pr = p.progress;
   if (p.status === 'queued') return '<div class="status queued" style="margin-top:8px">Queued: waits for any job ahead of it</div>';
   if (!pr || !(BUSY.includes(p.status) || p.status === 'failed')) return '';
-  const rows = pr.steps.map(s => `<span class="${s.state}">${s.state==='done'?'✓':s.state==='failed'?'✕':s.state==='running'?'▸':'·'} ${esc(s.label)}${s.seconds != null ? ` (${Math.round(s.seconds)}s)` : ''}</span>
+  const rows = pr.steps.map(s => `<span class="${s.state}">${s.state==='done'?'✓':s.state==='failed'?'✕':s.state==='running'?'▸':'·'} ${esc(s.label)}${s.seconds != null ? ` (${tookFor(s.seconds)})` : ''}</span>
     ${countBar(stepDone(s).fill, s.state)}${s.state==='running'?`<span></span><span class="detail">${stepDone(s).said}${stepWhere(s)}</span>`
       + (isHeavy(s) ? `<span></span>${stepTimeBar(s).bar}<span></span><span class="detail time">${stepTimeBar(s).said}</span>` : '') :''}`).join('');
   const busy = BUSY.includes(p.status);
