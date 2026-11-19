@@ -3550,8 +3550,9 @@ let areasLeft = new Map();       // area id: how many of its meshed projects hav
 // mesh's beta or size, say), and "harvested" as what it is, photos gathered and not (yet) meshed
 const PROJECT_NAMES = { new: 'new', queued: 'queued to mesh', harvesting: 'gathering photos', harvested: 'photos gathered',
   running: 'meshing', done: 'meshed', failed: 'failed', stopped: 'stopped', interrupted: 'interrupted by a restart',
-  waiting: 'waiting for its photos' };
+  waiting: 'waiting for its photos', skipped: 'skipped: too few photos', superseded: 'superseded' };
 const PROJECT_TIPS = { harvested: 'Its photos are gathered: it is meshed with the rest of its boulder\'s, or when asked (Reconstruct)',
+  skipped: 'Its photos were too few, or too alike, to mesh', superseded: 'Of what an older version of its boulder\'s mesh left out: the new version meshes what it left out instead',
   waiting: 'Waiting for volunteers\' YouTube searches and videos, or for the rest of its boulder\'s climbs' };
 const gbOf = b => b >= 2 ** 30 ? `${(b / 2 ** 30).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 2 ** 20))} MB`;
 // "data offloaded", in a bubble of its own below a project's or an area's state, with how much in its title

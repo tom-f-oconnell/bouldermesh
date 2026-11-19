@@ -3441,19 +3441,54 @@ try:
     assert server.rest_resume() == 1 and server.jobs.get_nowait()["pid"] == att["1"]["project"], "and with it, after a restart"
 finally:
     server.settings().update({"boulders.rest_auto": False})
-# re-meshing the boulder: the meshes of what the old mesh left out go with it, and come back with it
+# re-meshing the boulder: meshing what the old mesh left out stops where it hadn't finished; the meshes made of that
+# stay current until the new one, or a mesh of what it left out, places their climbs, and come back with the old one
 assert server.q("SELECT replaced_by FROM meshes WHERE id=?", p3["mesh_id"], one=True)["replaced_by"] is None
 server.q("UPDATE meshes SET replaced_by=NULL WHERE id=?", p3["mesh_id"], write=True)
 server.link_mesh(p3["mesh_id"], ids["Arm"], server.REST_LINK)
+server.q("UPDATE projects SET status='queued' WHERE id=?", att["1"]["project"], write=True)
+server.jobs.put({"type": "boulder", "pid": att["1"]["project"]})
 server.q("INSERT INTO meshes(id,name,filename,source,created,size,demo,boulder) VALUES('n3wb0uld3r00','Peabody','m.ply',?,?,1,0,?)",
          f"project:{bproj['id']}", time.time(), leaf, write=True)
 server.supersede(bmesh, "n3wb0uld3r00")
+assert server.q("SELECT status FROM projects WHERE id=?", att["1"]["project"], one=True)["status"] == "superseded" and server.jobs.empty()
+assert "-- superseded: its boulder's mesh" in (server.PROJECTS / att["1"]["project"] / "job.log").read_text()
+assert server.q("SELECT replaced_by FROM meshes WHERE id=?", p3["mesh_id"], one=True)["replaced_by"] is None, "the only mesh of Arm yet"
+assert server.retire_old_rests("n3wb0uld3r00") == []
+(server.MESHES / "n3wb0uld3r00").mkdir(exist_ok=True)
+(server.MESHES / "n3wb0uld3r00" / "views.json").write_text(json.dumps({"climbs": {ids["Arm"]: {"photos": 1, "of": 1}}}))
+assert server.retire_old_rests("n3wb0uld3r00") == [p3["mesh_id"]]
 assert server.q("SELECT replaced_by FROM meshes WHERE id=?", p3["mesh_id"], one=True)["replaced_by"] == "n3wb0uld3r00"
 assert not server.q("SELECT 1 FROM mesh_links WHERE mesh_id=?", p3["mesh_id"]), "its climbs no longer go to it"
 server.make_current(bmesh)
 assert server.q("SELECT replaced_by FROM meshes WHERE id=?", p3["mesh_id"], one=True)["replaced_by"] is None
 assert [r["climb_id"] for r in server.q("SELECT climb_id FROM mesh_links WHERE mesh_id=?", p3["mesh_id"])] == [ids["Arm"]]
 assert server.q("SELECT replaced_by FROM meshes WHERE id='n3wb0uld3r00'", one=True)["replaced_by"] == bmesh
+# after a restart: what replaced meshes left out stops; a rest project whose photos were too few is skipped, not harvested
+server.q("UPDATE projects SET status='interrupted' WHERE id=?", att["1"]["project"], write=True)
+server.q("UPDATE projects SET status='harvested', harvest=? WHERE id=?", json.dumps({"diversity": {"verdict": "poor"}}), p3["id"], write=True)
+real_judge = server.diversity_mod.judge
+server.diversity_mod.judge = lambda d: (d or {}).get("verdict", "good")
+try:
+    server.settle_rests()
+    assert server.q("SELECT status FROM projects WHERE id=?", att["1"]["project"], one=True)["status"] == "interrupted", "bmesh is current again"
+    assert server.q("SELECT status FROM projects WHERE id=?", p3["id"], one=True)["status"] == "skipped"
+    server.q("UPDATE meshes SET replaced_by='n3wb0uld3r00' WHERE id=?", bmesh, write=True)
+    server.settle_rests()
+    assert server.q("SELECT status FROM projects WHERE id=?", att["1"]["project"], one=True)["status"] == "superseded"
+    server.q("UPDATE meshes SET replaced_by=NULL WHERE id=?", bmesh, write=True)
+finally:
+    server.diversity_mod.judge = real_judge
+server.q("UPDATE projects SET status='done' WHERE id=?", p3["id"], write=True)
+# a boulder rebuilt as asked (Rebuild: its project reconstructed) records and queues what it left out, as its boulder's job does
+real_keep, kept = server.keep_rest, []
+server.keep_rest = lambda mid, pid, log, queue=True, untied=True: kept.append((mid, pid, untied))
+try:
+    rebuilt = server.run_reconstruct(bproj["id"], internet=True)
+finally:
+    server.keep_rest = real_keep
+assert rebuilt and kept == [(rebuilt, bproj["id"], False)], kept
+server.make_current(bmesh)
 # a pool of climbs whose photos match never takes over a pool of what a boulder's mesh left out
 assert server.pool_for(leaf, [ids["Arm"], ids["Body"]]) != key3 and server.pool_members(key3) == [ids["Arm"]]
 # a climb tried in it only if a photo of its harvests was pooled into it (a harvest that found none keeps it a group)

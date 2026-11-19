@@ -1344,21 +1344,20 @@ def boulder_info(climb: dict) -> dict | None:
 
 def supersede(old: str, new: str) -> None:
     """A rebuilt mesh takes over from the one it replaces: its climbs, and its place in area lists.
-    The old one stays, as an older version of the new one. The meshes of what the old one left out (run_rest()) go with
-    it, as older versions of the new one, which has its own; going back to one brings back its own."""
+    The old one stays, as an older version of the new one. Meshing what the old one left out (run_rest()) stops, if
+    it hasn't finished (drop_rest_jobs()), as the new one has its own; meshes made of that stay current until the new
+    one, or a mesh of what it left out, places their climbs (retire_old_rests()). Going back to one brings back its own."""
     for link in q("SELECT climb_id, note FROM mesh_links WHERE mesh_id=?", old):
         link_mesh(new, link["climb_id"], link["note"])
     q("DELETE FROM mesh_links WHERE mesh_id=?", old, write=True)
     q("UPDATE campaign_items SET mesh_id=? WHERE mesh_id=?", new, old, write=True)
     q("UPDATE meshes SET replaced_by=? WHERE id=? OR replaced_by=?", new, old, old, write=True)
     q("UPDATE meshes SET replaced_by=NULL WHERE id=?", new, write=True)
+    drop_rest_jobs(old, f"its boulder's mesh {old} was replaced by {new}, which has its own")
     for r in q("SELECT id, boulder, replaced_by FROM meshes WHERE boulder LIKE ?", f"%{REST_MARK}%"):
         if not is_rest(r["boulder"]) or r["id"] in (old, new):
             continue
-        if rest_parent(r["boulder"]) == old and r["replaced_by"] is None:
-            q("UPDATE meshes SET replaced_by=? WHERE id=?", new, r["id"], write=True)
-            q("DELETE FROM mesh_links WHERE mesh_id=? AND note=?", r["id"], REST_LINK, write=True)
-        elif rest_parent(r["boulder"]) == new and r["replaced_by"] == new:
+        if rest_parent(r["boulder"]) == new and r["replaced_by"] == new:
             q("UPDATE meshes SET replaced_by=NULL WHERE id=?", r["id"], write=True)
             members = set(pool_members(r["boulder"]))
             for cid in (viewpoints.load(MESHES / r["id"]) or {}).get("climbs") or {}:
@@ -1374,6 +1373,7 @@ def make_current(mid: str) -> None:
     supersede(m["replaced_by"], mid)
     if m["source"].startswith("project:"):
         q("UPDATE projects SET mesh_id=? WHERE id=?", mid, m["source"].split(":", 1)[1], write=True)
+    retire_old_rests(mid)
     meshes_changed()
 
 
@@ -2897,7 +2897,8 @@ def log_shares(mid: str, log) -> None:
 def rest_existing_meshes() -> None:
     """What boulders' meshes made before the rest was kept left out (keep_rest()): kept, not queued, as only their
     cards' boulder or group depends on it; the admin page queues those with any to mesh (rest_queue_all()). Then, with
-    boulders.rest_auto, what a restart cut short carries on (rest_resume())."""
+    boulders.rest_auto, what a restart cut short carries on (rest_resume()). First, settle_rests()."""
+    settle_rests()
     for m in q("SELECT m.id, m.source, m.boulder FROM meshes m WHERE m.boulder IS NOT NULL AND m.replaced_by IS NULL"):
         if is_pool(m["boulder"]) or load_rest(m["id"]) or not (MESHES / m["id"]).is_dir():
             continue
@@ -2929,6 +2930,79 @@ def rest_resume() -> int:
                 save_rest(m["id"], rec)
                 n += len(again)
     return n
+
+
+REST_SETTLED = ("done", "skipped", "superseded")     # rest projects' statuses with nothing left to run
+
+
+def rest_poor(harvest: str | None) -> bool:
+    """Whether a rest project's photos were judged too few to mesh (run_rest()), from its harvest summary."""
+    try:
+        return diversity_mod.judge((json.loads(harvest or "{}") or {}).get("diversity")) == "poor"
+    except (TypeError, ValueError):
+        return False
+
+
+def drop_rest_jobs(parent: str, why: str) -> list[str]:
+    """Stop meshing what boulder's mesh parent left out, where that hasn't finished: taken out of the queue, or
+    stopped where it runs, and marked superseded (or skipped, where its photos were too few to try anyway), so nothing
+    takes it up again. Returns the projects it stopped."""
+    out = []
+    for r in q("SELECT id, boulder, status, harvest FROM projects WHERE kind='boulder' AND boulder LIKE ? AND status NOT IN "
+               f"({','.join('?' * len(REST_SETTLED))})", f"%{REST_MARK}%", *REST_SETTLED):
+        if not is_rest(r["boulder"]) or rest_parent(r["boulder"]) != parent:
+            continue
+        poor = r["status"] == "harvested" and rest_poor(r["harvest"])
+        q("UPDATE projects SET status=?, progress=NULL WHERE id=?", "skipped" if poor else "superseded", r["id"], write=True)
+        halt_job(r["id"])
+        if not poor:
+            append_log(r["id"], f"-- superseded: {why}")
+            out.append(r["id"])
+    return out
+
+
+def retire_old_rests(head: str, log=print) -> list[str]:
+    """The meshes of what older versions of boulder's mesh head left out, still current, whose climbs head or a current
+    mesh of what it left out places, become older versions of head, as they would have when it replaced them: until
+    then, they're the only meshes of those climbs. Returns the meshes it retired."""
+    row = q("SELECT boulder, replaced_by FROM meshes WHERE id=?", head, one=True)
+    if not row or row["replaced_by"] or not row["boulder"] or is_pool(row["boulder"]):
+        return []
+    older = {r["id"] for r in q("SELECT id FROM meshes WHERE replaced_by=?", head)}
+    rests = [r for r in q("SELECT id, boulder FROM meshes WHERE boulder LIKE ? AND replaced_by IS NULL", f"%{REST_MARK}%")
+             if is_rest(r["boulder"])]
+    covers = mesh_climbs(head, row["boulder"])
+    for r in rests:
+        if rest_parent(r["boulder"]) == head:
+            covers |= mesh_climbs(r["id"], r["boulder"])
+    out = []
+    for r in rests:
+        if rest_parent(r["boulder"]) in older and mesh_climbs(r["id"], r["boulder"]) <= covers:
+            q("UPDATE meshes SET replaced_by=? WHERE id=?", head, r["id"], write=True)
+            q("DELETE FROM mesh_links WHERE mesh_id=? AND note=?", r["id"], REST_LINK, write=True)
+            out.append(r["id"])
+    if out:
+        meshes_changed()
+        log(f"rest: {', '.join(out)}, of what older versions of it left out, now older versions of it: it, or a mesh of what "
+            "it left out, places their climbs")
+    return out
+
+
+def settle_rests() -> None:
+    """After a restart: meshing what replaced boulders' meshes left out stops, where it hadn't finished
+    (drop_rest_jobs()); a rest project whose photos were too few to mesh is skipped, not left harvested; and the meshes
+    of what older versions left out retire, where the current one's place their climbs (retire_old_rests())."""
+    replaced = {r["id"]: r["replaced_by"] for r in q("SELECT id, replaced_by FROM meshes WHERE replaced_by IS NOT NULL")}
+    parents = {rest_parent(r["boulder"]) for r in q("SELECT boulder FROM projects WHERE kind='boulder' AND boulder LIKE ? AND status "
+                                                     f"NOT IN ({','.join('?' * len(REST_SETTLED))})", f"%{REST_MARK}%", *REST_SETTLED)
+               if is_rest(r["boulder"])}
+    for parent in parents & set(replaced):
+        drop_rest_jobs(parent, f"its boulder's mesh {parent} was replaced by {replaced[parent]}, which has its own")
+    for r in q("SELECT id, boulder, harvest FROM projects WHERE kind='boulder' AND status='harvested' AND boulder LIKE ?", f"%{REST_MARK}%"):
+        if is_rest(r["boulder"]) and rest_poor(r["harvest"]):
+            q("UPDATE projects SET status='skipped' WHERE id=?", r["id"], write=True)
+    for r in q("SELECT DISTINCT replaced_by FROM meshes WHERE replaced_by IS NOT NULL AND boulder IS NOT NULL"):
+        retire_old_rests(r["replaced_by"])
 
 
 def rest_waiting() -> list[str]:
@@ -3764,6 +3838,7 @@ def run_rest(pid: str, key: str, resume: bool, log, tracker) -> None:
     if verdict == "poor":
         log("not enough viewpoint diversity for photogrammetry - skipping reconstruction")
         tracker.skip_rest()
+        q("UPDATE projects SET status='skipped' WHERE id=?", pid, write=True)
         attempt(status="poor", mesh=None, climbs=[])
         return
     attempt(status="running")
@@ -3779,6 +3854,8 @@ def run_rest(pid: str, key: str, resume: bool, log, tracker) -> None:
             q("UPDATE meshes SET name=? WHERE id=?", climbs_named(placed), p["mesh_id"], write=True)
         log(f"rest: places {plural(len(placed), 'climb')} by their own photos")
         attempt(status="done", mesh=p["mesh_id"], climbs=placed)
+        head = q("SELECT replaced_by FROM meshes WHERE id=?", parent, one=True)
+        retire_old_rests((head or {}).get("replaced_by") or parent, log)
     else:
         why = too_few_placed(pid)
         attempt(status="failed" if why else "error", mesh=None, climbs=[], why=why or last_failure(pid))
@@ -3894,6 +3971,10 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         record_sources(mid, pid, log)
         if proj["kind"] == "boulder" and not worse:
             place_climbs(mid, pid, log)
+            if not is_pool(proj["boulder"]):    # however it was asked for: an area, its boulder's job, or Rebuild
+                keep_rest(mid, pid, log, queue=settings().get("boulders.rest_auto"), untied=False)
+                log_shares(mid, log)
+                retire_old_rests(mid, log)
         if not worse:
             retire_covered(mid, log)
         meshes_changed()
@@ -4441,7 +4522,7 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
         try:
             run_rest(pid, boulder, resume, lambda s: append_log(pid, s), tracker)
         except (compute.ComputeUnavailable, Cancelled) as e:    # not how it went: it waits to be queued again, and carries on
-            q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
+            q("UPDATE projects SET status='stopped' WHERE id=? AND status!='superseded'", pid, write=True)
             rest_attempt(parent, model, project=pid, status="waiting" if isinstance(e, compute.ComputeUnavailable) else "stopped",
                          why=str(e) or None)
             raise
@@ -4529,9 +4610,6 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
         done = q("SELECT status, mesh_id FROM projects WHERE id=?", pid, one=True)
         if done["status"] == "done":
             shutil.rmtree(pdir / "work", ignore_errors=True)   # most of its disk use, and only useful to itself
-            if not is_pool(boulder) and done["mesh_id"]:
-                keep_rest(done["mesh_id"], pid, log, queue=settings().get("boulders.rest_auto"), untied=False)
-                log_shares(done["mesh_id"], log)
     except compute.ComputeUnavailable:
         raise
     except Exception as e:
@@ -5904,11 +5982,7 @@ def stop_project(pid: str) -> tuple[dict, int]:
         for i in held:
             pause_item(i["campaign_id"], i["source_id"])
         return {"paused": [{"area": i["area"], "climb": i["name"]} for i in held]}, 200
-    with jobs.mutex:
-        waiting = [j for j in jobs.queue if j.get("pid") == pid]
-        for j in waiting:
-            jobs.queue.remove(j)
-    on = [w for w in list(_workers) if w.job and w.job["job"].get("pid") == pid]
+    waiting, on = halt_job(pid, stop=False)
     if not waiting and not on:
         return {"error": "nothing of it is queued or running"}, 409
     job = json.loads(proj["job"]) if proj["job"] else (on[0].job["job"] if on else waiting[0])
@@ -5917,6 +5991,20 @@ def stop_project(pid: str) -> tuple[dict, int]:
     for w in on:
         w.control.stop()
     return {"stopped": True}, 200
+
+
+def halt_job(pid: str, stop: bool = True) -> tuple[list[dict], list]:
+    """Take a project's jobs out of the queue, and with stop, stop the workers running one (with the tool each runs,
+    and any job it handed a machine). Returns the jobs taken out, and the workers running one."""
+    with jobs.mutex:
+        waiting = [j for j in jobs.queue if j.get("pid") == pid]
+        for j in waiting:
+            jobs.queue.remove(j)
+    on = [w for w in list(_workers) if w.job and w.job["job"].get("pid") == pid]
+    if stop:
+        for w in on:
+            w.control.stop()
+    return waiting, on
 
 
 ITEM_STATES = {"pending": "still to go", "running": "in progress", "waiting": "waiting for volunteers' YouTube searches and videos",
@@ -6874,7 +6962,7 @@ def prune_videos() -> dict:
                                                     "WHERE t.kind='video' AND w.applied=0")}
     except Exception:
         wanted = set()
-    unsettled = {r["id"] for r in q("SELECT id FROM projects WHERE status NOT IN ('done','failed','harvested')")}
+    unsettled = {r["id"] for r in q("SELECT id FROM projects WHERE status NOT IN ('done','failed','harvested','skipped','superseded')")}
     for r in q("SELECT ci.project_id, ci.campaign_id, ci.boulder FROM campaign_items ci WHERE ci.project_id IS NOT NULL AND "
                "(ci.status IN ('pending','running','waiting','harvested') OR (ci.boulder IS NOT NULL AND EXISTS (SELECT 1 FROM "
                "campaign_items o WHERE o.campaign_id=ci.campaign_id AND o.boulder=ci.boulder AND o.status IN "
@@ -8025,7 +8113,7 @@ def run_job(job: dict) -> None:
             run_boulder(job["pid"], resume=job.get("resume", False))
     except Cancelled:   # stopped by hand (stop_project()), which said so: left stopped, whatever the job made of it
         if job.get("pid"):
-            q("UPDATE projects SET status='stopped' WHERE id=?", job["pid"], write=True)
+            q("UPDATE projects SET status='stopped' WHERE id=? AND status!='superseded'", job["pid"], write=True)
     except Exception as e:  # never let the worker die
         append_log(job.get("pid", "?"), f"worker error: {e!r}")
     finally:
