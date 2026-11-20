@@ -202,6 +202,29 @@ with tempfile.TemporaryDirectory() as td:
     assert vids[1]["tracks"]["lh"] == [line] and vids[2] == {"url": "u3", "holds": [], "tracks": {"lh": []}}, vids
     assert beta.redraw_lines(d) == 0, "not again"
 
+# --- a video's beta frame by frame, for looking at beside the video: holds back through each frame's homography ---------
+with tempfile.TemporaryDirectory() as td:
+    d = pathlib.Path(td)
+    (d / "cameras.json").write_text(json.dumps([{"name": "a.jpg", **cam}, {"name": "b.jpg", "q": [1, 0, 0, 0], "t": [0, 0, 5]}]))
+    kp, sc = [[100.0, 100.0]] * 26, [0.9] * 26
+    kp[9], kp[7] = [50.0, 60.0], [40.0, 40.0]       # left wrist, elbow: the hand's point HAND_REACH past the wrist
+    half = [0.5, 0, 0, 0, 0.5, 0, 0, 0, 1]           # the video's frames half the placed photo's size
+    (d / beta.POSES_FILE).write_text(json.dumps({"https://youtu.be/abcdefghijk": [
+        {"t": 0.25, "kp": kp, "sc": sc, "ref": "a.jpg", "H": [2, 0, 0, 0, 2, 0, 0, 0, 1]},
+        {"t": 0.75, "kp": kp, "sc": sc, "ref": None, "H": None},
+        {"t": 1.25, "kp": kp, "sc": sc, "ref": "b.jpg", "H": half}]}))
+    hold = {"id": 0, "role": "start", "p": X, "contacts": [{"limb": "lh", "t0": 0.25, "t1": 1.25}]}
+    beta.save(d, {"status": "done", "videos": [{"url": "https://youtu.be/abcdefghijk", "tag": "0123abcd", "holds": [hold], "frames": 3}]})
+    assert beta.frames_seen(d, "ffffffff") is None
+    got = beta.frames_seen(d, "0123abcd")
+    assert got["fps"] == beta.FPS and got["frames"] == 3 and len(got["poses"]) == 3 and got["limbs"]["lf"] == "foot", got.keys()
+    first, unmatched, lensless = got["poses"]
+    hu, hv = beta.project(cam, (640, 480), X)
+    assert first["holds"] == [[0, round(hu / 2, 1), round(hv / 2, 1)]], first["holds"]
+    assert close(first["limbs"]["lh"], [50 + beta.HAND_REACH * 10, 60 + beta.HAND_REACH * 20], 0.06), first["limbs"]
+    assert unmatched["holds"] == [] and unmatched["ref"] is None, "matched no placed frame"
+    assert lensless["holds"] == [] and lensless["ref"] == "b.jpg", "a placed frame without its lens's size kept"
+
 # --- YouTube refusing partway: it waits, and then does only the videos it hadn't ---------------------------------
 from climbs import youtube  # noqa: E402
 with tempfile.TemporaryDirectory() as td:

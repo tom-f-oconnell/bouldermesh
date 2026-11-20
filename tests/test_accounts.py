@@ -133,6 +133,23 @@ with tempfile.TemporaryDirectory() as tmp:
         for method, path in (("POST", f"/api/meshes/{mid}/holds"), ("POST", "/api/campaigns"), ("POST", "/api/projects/retry-interrupted"), ("DELETE", f"/api/meshes/{mid}"), ("PATCH", f"/api/meshes/{mid}")):
             assert req(B, method, path, {"holds": []}, ANA)[0] == 401, f"{method} {path} is the owner's"
         assert req(B, "POST", f"/api/meshes/{mid}/beta/sets", {"name": "x"})[0] == 401, "and nobody's without a token"
+        # the owner's look at a video's beta beside it, and the video by a signed link, a range at a time
+        beta.save(tmp / "data" / "meshes" / mid, {"status": "done", "videos": [{"url": "https://youtu.be/abcdefghijk", "tag": "0123abcd", "holds": [], "frames": 0}]})
+        (tmp / "data" / "cache" / "videos").mkdir(parents=True, exist_ok=True)
+        (tmp / "data" / "cache" / "videos" / "abcdefghijk.mp4").write_bytes(bytes(range(100)))
+        dbg = f"/api/meshes/{mid}/beta/debug/0123abcd"
+        assert req(B, "GET", dbg)[0] == 401 and req(B, "GET", dbg, headers=ANA)[0] == 403, "the owner's alone"
+        st, _, seen = req(B, "GET", dbg, headers=AUTH)
+        assert st == 200 and seen["poses"] == [] and seen["away"] is None and seen["video"].startswith(f"/api/meshes/{mid}/beta/video/0123abcd?"), seen
+        assert req(B, "GET", f"/api/meshes/{mid}/beta/debug/ffffffff", headers=AUTH)[0] == 404
+        st, h, body = req(B, "GET", seen["video"])
+        assert st == 200 and body == bytes(range(100)) and h["Content-Type"] == "video/mp4" and h["Accept-Ranges"] == "bytes", (st, h)
+        st, h, body = req(B, "GET", seen["video"], headers={"Range": "bytes=10-19"})
+        assert st == 206 and body == bytes(range(10, 20)) and h["Content-Range"] == "bytes 10-19/100", (st, h)
+        assert req(B, "GET", seen["video"], headers={"Range": "bytes=-5"})[2] == bytes(range(95, 100))
+        assert req(B, "GET", seen["video"], headers={"Range": "bytes=200-"})[0] == 416
+        assert req(B, "GET", seen["video"][:-4] + "0000")[0] == 403, "a link not signed here"
+        assert req(B, "GET", seen["video"].replace("0123abcd", "0123abce"))[0] == 403, "nor for another video"
         # a set not shared: its owner's and the site's owner's to see; and not to copy by anyone else
         st, _, quiet = req(B, "POST", f"/api/meshes/{mid}/beta/sets", {"name": "Quiet", "shared": False}, AUTH)
         names = lambda h=None: [s["name"] for s in req(B, "GET", f"/api/meshes/{mid}/beta", headers=h)[2]["sets"]]     # noqa: E731

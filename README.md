@@ -430,6 +430,13 @@ where their photos were placed, so they need rebuilding first. Each new mesh wit
 has its beta found straight after, while its videos are still kept (*Find beta in each new mesh* on the
 admin page's *Areas*); on machines that connect here, meshing comes first, then beta and size.
 
+To see where finding beta goes wrong, an editor has a *Debug* button on each video in the list over the view. It
+plays the video with what was found drawn over it: the climber the pose model saw (dashed where it wasn't sure), each
+hand's and foot's point of contact, and the holds, ringed thicker while held. A timeline below shows which frames had
+a climber and matched a placed photo, and each limb's holds. The view follows along with dots where each limb met the
+rock and bigger rings on the holds held; clicking one of the video's holds there goes to when it was first held.
+`,` and `.` step a frame looked at. A video moved to the backup can be asked back from there.
+
 *Mark holds* lets you set the holds yourself: clicking the rock adds a start hold, and clicking a hold
 again makes it a hand hold, then a finish hold, then a foot hold, then removes it, as setting a climb in
 the Tension Board app does. These are saved with the mesh, apart from those found in videos.

@@ -732,6 +732,66 @@ def annotate(photo: Path, cam: dict, result: dict, out: Path) -> None:
     cv2.imwrite(str(out), im, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
 
+# Halpe26's bones, for drawing a climber: arms, shoulders and hips, legs, feet, head
+SKELETON = ((5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (11, 12), (18, 5), (18, 6), (18, 19), (19, 11), (19, 12), (11, 13),
+            (13, 15), (12, 14), (14, 16), (15, 20), (15, 22), (15, 24), (16, 21), (16, 23), (16, 25), (17, 0), (0, 18),
+            (0, 1), (0, 2), (1, 3), (2, 4))
+
+
+def frames_seen(mesh_dir: Path, tag: str) -> dict | None:
+    """One video's beta as it was found frame by frame, to look at beside the video: for the site's owner, to see where
+    finding it goes wrong.
+
+    Args:
+        tag: the video's tag in beta.json.
+
+    Returns:
+        None if the mesh has no video with that tag; else its beta.json entry (holds, tracks, centre...) with FPS,
+        MAX_SECONDS, KP_MIN, SKELETON and LIMBS, and poses: each frame its climber was found in, {t, kp, sc, ref,
+        limbs, holds}, in the frame's pixels (as cut for finding it: at most 720 high). limbs is each hand's and foot's
+        point of contact (limb_points()), holds [[id, x, y]] where each hold appears in the frame, through the placed
+        frame it matched (ref) and the homography into that, reversed: none where it matched none, or that frame's lens
+        size wasn't kept.
+    """
+    import numpy as np
+    record = load(mesh_dir)
+    v = next((x for x in (record or {}).get("videos", []) if x.get("tag") == tag), None)
+    if v is None:
+        return None
+    try:
+        poses = json.loads((mesh_dir / POSES_FILE).read_text()).get(v["url"]) or []
+    except (FileNotFoundError, json.JSONDecodeError):
+        poses = []
+    try:
+        cams = {c["name"]: c for c in json.loads((mesh_dir / "cameras.json").read_text())}
+    except (FileNotFoundError, json.JSONDecodeError):
+        cams = {}
+    holds, out = v.get("holds") or [], []
+    for f in poses:
+        ref, H = f.get("ref"), f.get("H")
+        cam = cams.get(ref) if ref and H else None
+        lens_ = (cam or {}).get("lens") or {}
+        seen = []
+        if lens_.get("width") and lens_.get("height"):
+            try:
+                Hi = np.linalg.inv(np.asarray(H, float).reshape(3, 3))
+            except np.linalg.LinAlgError:
+                Hi = None
+            for h in holds if Hi is not None else ():
+                uv = project(cam, (lens_["width"], lens_["height"]), h["p"])
+                if uv is None:
+                    continue
+                q = Hi @ np.array([uv[0], uv[1], 1.0])
+                if q[2] > 1e-12:
+                    seen.append([h["id"], round(float(q[0] / q[2]), 1), round(float(q[1] / q[2]), 1)])
+        points = limb_points(np.asarray(f["kp"], float), np.asarray(f["sc"], float))
+        out.append({"t": f["t"], "kp": f["kp"], "sc": f["sc"], "ref": ref if H else None,
+                    "limbs": {k: None if p is None else [round(p[0], 1), round(p[1], 1)] for k, p in points.items()},
+                    "holds": seen})
+    return {**v, "fps": FPS, "max_seconds": MAX_SECONDS, "kp_min": KP_MIN, "skeleton": SKELETON,
+            "limbs": {k: kind for k, (kind, _, _) in LIMBS.items()}, "poses": out}
+
+
 # ------------------------------------------------------------------ a mesh
 def videos(mesh_dir: Path) -> dict[str, dict]:
     """A mesh's videos with frames placed in it: {url: {tag, title, uploader, frames: {name: camera}}}."""

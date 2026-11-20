@@ -7734,6 +7734,37 @@ def remote_beta(mid: str, pid: str, log) -> None:
                                    "error": f"{len(absent)} of its videos aren't here yet"})
 
 
+# The owner's look at a video's beta beside it (beta.frames_seen()) plays the video from the cache by a link signed here:
+# a <video> can't send the owner's token. Links last VIDEO_LINK_HOURS, and none outlast a restart.
+VIDEO_LINK_KEY = secrets.token_bytes(32)
+VIDEO_LINK_HOURS = 12
+VIDEO_TYPES = {".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mkv": "video/x-matroska", ".mov": "video/quicktime"}
+
+
+def _video_sig(mid: str, tag: str, until: int) -> str:
+    return hmac.new(VIDEO_LINK_KEY, f"{mid}/{tag}/{until}".encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def video_link(mid: str, tag: str) -> str:
+    """A link to a beta video of a mesh's, signed, for VIDEO_LINK_HOURS."""
+    until = int(time.time() + VIDEO_LINK_HOURS * 3600)
+    return f"/api/meshes/{mid}/beta/video/{tag}?e={until}&s={_video_sig(mid, tag, until)}"
+
+
+def video_link_ok(mid: str, tag: str, until: str, sig: str) -> bool:
+    try:
+        when = int(until)
+    except ValueError:
+        return False
+    return when > time.time() and hmac.compare_digest(sig.encode(), _video_sig(mid, tag, when).encode())
+
+
+def beta_video_file(mid: str, tag: str) -> Path | None:
+    """A mesh's beta video with this tag, from the cache, if it's here."""
+    v = next((x for x in (beta_mod.load(MESHES / mid) or {}).get("videos", []) if x.get("tag") == tag), None)
+    return youtube_mod.cached(v["url"]) if v and v.get("url") else None
+
+
 def remote_scale(mid: str, pid: str, climbs: list[dict], log) -> None:
     """scale_mod.estimate(), on a machine that connects here."""
     mesh_dir = MESHES / mid
@@ -10909,6 +10940,45 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             self.close_connection = True    # the client went away
 
+    def send_ranged(self, path: Path, ctype: str, cache: str = "private, no-store") -> None:
+        """Send a file, or the one range of it asked for (Range: bytes=a-b, a-, -n), as a <video> asks to seek."""
+        size = path.stat().st_size
+        start, end, partial = 0, size - 1, False
+        m = re.fullmatch(r"bytes=(\d*)-(\d*)", (self.headers.get("Range") or "").strip())
+        if m and (m[1] or m[2]):
+            partial = True
+            if m[1]:
+                start, end = int(m[1]), min(int(m[2]), size - 1) if m[2] else size - 1
+            else:
+                start = max(0, size - int(m[2]))
+            if start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                return self.end_headers()
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Accept-Ranges", "bytes")
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Cache-Control", cache)
+        self.end_headers()
+        if self.head_only:
+            return
+        try:
+            with open(path, "rb") as f:
+                f.seek(start)
+                left = end - start + 1
+                while left > 0:
+                    chunk = f.read(min(2**20, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            self.close_connection = True    # the player went on to another range, or away
+
     def read_body(self) -> bytes:
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -11479,6 +11549,27 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/capture/guide/([0-9a-f]+)\.bin", p)
             if m:   # and the light copy of it they draw, by the version its plan names
                 return self.send_file(MESHES / m[1] / captureplan.DIR / captureplan.GUIDE_FILE, cache="public, max-age=31536000, immutable")
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta/debug/([0-9a-f]{8})", p)
+            if m:   # the site's owner's look at one video's beta beside it: its climber in each frame, and the holds seen
+                if READ_ONLY or (EDIT_TOKEN and not self.is_editor()):
+                    return self.send_json({"error": "that's for the site's owner"}, 401 if self.who() is None else 403)
+                found = beta_mod.frames_seen(MESHES / m[1], m[2]) if (MESHES / m[1]).is_dir() else None
+                if found is None:
+                    return self.send_json({"error": "not found"}, 404)
+                vid = youtube_mod.video_id(found.get("url") or "")
+                away = _away(video_ids=[vid]) if vid and not beta_video_file(m[1], m[2]) else []
+                wanted = away and q("SELECT wanted FROM offloads WHERE path=?", away[0]["path"], one=True)
+                found.update(video=video_link(m[1], m[2]) if beta_video_file(m[1], m[2]) else None,
+                             away={"bytes": sum(r["bytes"] or 0 for r in away), "asked": bool(wanted and wanted["wanted"])} if away else None)
+                return self.send_json(found)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta/video/([0-9a-f]{8})", p)
+            if m:   # that video, by the signed link it gives
+                if not video_link_ok(m[1], m[2], (qs.get("e") or [""])[0], (qs.get("s") or [""])[0]):
+                    return self.send_json({"error": "that link has run out, or isn't one"}, 403)
+                src = beta_video_file(m[1], m[2])
+                if not src:
+                    return self.send_json({"error": "not here now"}, 404)
+                return self.send_ranged(src, VIDEO_TYPES.get(src.suffix.lower(), "application/octet-stream"))
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
             if m:   # what each video's climber did, and the holds marked by hand
                 if not (MESHES / m[1]).is_dir():
@@ -12148,6 +12239,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not queue_beta(m[1], ahead=True):
                     return self.send_json({"error": "already finding it"}, 409)
                 return self.send_json({"queued": True}, 202)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta/debug/([0-9a-f]{8})/fetch", p)
+            if m:   # a video the owner's look at its beta wants, back from the backup on its next run
+                found = beta_mod.frames_seen(MESHES / m[1], m[2]) if (MESHES / m[1]).is_dir() else None
+                vid = youtube_mod.video_id((found or {}).get("url") or "")
+                if not vid:
+                    return self.send_json({"error": "not found"}, 404)
+                return self.send_json({"bytes": bring_back(_away(video_ids=[vid]), "the video")})
             if p == "/api/meshes/beta-all":     # every mesh with videos whose beta hasn't been found
                 if not beta_mod.available():
                     return self.send_json({"error": "finding beta needs rtmlib and onnxruntime (in the Docker image)"}, 501)
