@@ -75,17 +75,25 @@ object HoldReview {
      * round it; null if no photo of that spell has it in view (or its spell isn't known).
      */
     fun view(record: CaptureRecord, m: RecordMarked, rM: Double): HoldView? {
-        val p = Vec3.of(m.p)
-        var best: HoldView? = null
-        for (s in record.shots) {
+        val poses = record.shots.mapNotNull { s ->
             val ar = s.blob.ar; val k = s.blob.k
-            if (!s.kept || s.blob.ref != null || ar == null || k == null || ar.s != m.s) continue
-            val at = CameraPose(Vec3.of(ar.p), Quat.of(ar.q), Lens(k.fx, k.fy, k.cx, k.cy, k.w, k.h)).project(p) ?: continue
+            if (!s.kept || s.blob.ref != null || ar == null || k == null || ar.s != m.s) null
+            else s.name to CameraPose(Vec3.of(ar.p), Quat.of(ar.q), Lens(k.fx, k.fy, k.cx, k.cy, k.w, k.h))
+        }
+        return best(poses, Vec3.of(m.p), rM)
+    }
+
+    /** Of these photos (each its name and pose, as stored), the one a hold at `p`, `rM` round, is largest in, with room round it. */
+    fun best(photos: List<Pair<String, CameraPose>>, p: Vec3, rM: Double): HoldView? {
+        var best: HoldView? = null
+        for ((name, pose) in photos) {
+            val k = pose.lens
+            val at = pose.project(p) ?: continue
             if (at.depth < 0.1) continue
             val r = rM * k.fx / at.depth
             val room = max(r * 1.5, min(k.w, k.h) * 0.05)
             if (at.u < room || at.v < room || at.u > k.w - room || at.v > k.h - room) continue
-            if (best == null || r > best.rPx) best = HoldView(s.name, at.u, at.v, r, k.w, k.h)
+            if (best == null || r > best.rPx) best = HoldView(name, at.u, at.v, r, k.w, k.h)
         }
         return best
     }

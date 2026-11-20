@@ -35,11 +35,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import sh.boulderme.core.CaptureRecord
 import sh.boulderme.core.HoldReview
 import sh.boulderme.core.HoldView
+import sh.boulderme.core.ReviewHold
 import java.io.File
 import kotlin.math.max
 import kotlin.math.min
@@ -73,30 +76,58 @@ fun HoldsScreen(a: MainActivity, id: String, go: (Screen) -> Unit) {
                     "Only those ticked are uploaded and added to the mesh.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { keep = holds.filter { it.found }.map { it.id }.toSet() }) { Text("Tick all") }
-                    OutlinedButton(onClick = { keep = emptySet() }) { Text("Untick all") }
+                    OutlinedButton(onClick = { keep = emptySet() }) { Text("Reject all") }
                 }
             }
-            items(holds, key = { it.id }) { h ->
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxWidth().clickable(enabled = h.found) { keep = if (h.id in keep) keep - h.id else keep + h.id }) {
-                    Box(Modifier.size(110.dp).background(MaterialTheme.colorScheme.surfaceVariant)) {
-                        h.view?.let { v -> HoldCrop(File(dir, "photos/" + v.photo), v) } ?: Text("Not in view in any photo", style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.align(Alignment.Center).padding(6.dp))
-                    }
-                    Column(Modifier.weight(1f)) {
-                        Text(h.id, fontWeight = FontWeight.SemiBold)
-                        Text(h.how, style = MaterialTheme.typography.bodySmall)
-                    }
-                    if (h.found) Checkbox(checked = h.id in keep, onCheckedChange = { keep = if (it) keep + h.id else keep - h.id })
-                    else Text("Kept", style = MaterialTheme.typography.bodySmall, color = GOOD)
-                }
-            }
+            items(holds, key = { it.id }) { h -> HoldRow(h, dir, h.id in keep) { keep = if (it) keep + h.id else keep - h.id } }
         }
         val dropped = found - keep.size
         Button(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), onClick = {
             File(dir, "capture.json").writeText(HoldReview.keep(record, keep).json())
             go(Screen.Done(id))
         }) { Text(if (dropped == 0) "Keep all ${holds.size}" else "Keep ${holds.size - dropped}, leave out $dropped") }
+    }
+}
+
+/** A hold to check: a piece of the photo it's seen best in, ringed, where it came from, and (if found) whether it's kept. */
+@Composable
+fun HoldRow(h: ReviewHold, dir: File, kept: Boolean, set: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxWidth().clickable(enabled = h.found) { set(!kept) }) {
+        Box(Modifier.size(110.dp).background(MaterialTheme.colorScheme.surfaceVariant)) {
+            h.view?.let { v -> HoldCrop(File(dir, "photos/" + v.photo), v) } ?: Text("Not in view in any photo", style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.align(Alignment.Center).padding(6.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(h.id, fontWeight = FontWeight.SemiBold)
+            Text(h.how, style = MaterialTheme.typography.bodySmall)
+        }
+        if (h.found) Checkbox(checked = kept, onCheckedChange = set)
+        else Text("Kept", style = MaterialTheme.typography.bodySmall, color = GOOD)
+    }
+}
+
+/**
+ * Over the camera, while capturing a gym climb: the holds just found, to keep (asked for close up from then on) or
+ * reject. `done` with those ticked; Reject all with none.
+ */
+@Composable
+fun CheckHoldsPanel(holds: List<ReviewHold>, dir: File, done: (Set<String>?) -> Unit) {
+    var keep by remember(holds) { mutableStateOf(holds.map { it.id }.toSet()) }
+    Dialog(onDismissRequest = { done(null) }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Check the holds found", style = MaterialTheme.typography.titleLarge)
+        Text("Only guesses, by colour: untick any that isn't a hold of the climb (the ring shows which). Those kept are asked for close up; " +
+            "the rest are left out.", style = MaterialTheme.typography.bodySmall)
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
+            items(holds, key = { it.id }) { h -> HoldRow(h, dir, h.id in keep) { keep = if (it) keep + h.id else keep - h.id } }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { done(keep) }) { Text(if (keep.size == holds.size) "Keep all ${holds.size}" else "Keep ${keep.size}, reject ${holds.size - keep.size}") }
+            OutlinedButton(onClick = { done(emptySet()) }) { Text("Reject all") }
+            TextButton(onClick = { done(null) }) { Text("Later") }
+        }
+    }
     }
 }
 

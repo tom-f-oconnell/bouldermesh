@@ -193,6 +193,8 @@ class ArController(
     fun gymWider() = synchronized(lock) { flow.gymWider() }
     fun gymNarrower() = synchronized(lock) { flow.gymNarrower() }
     fun gymFinder(f: String) = synchronized(lock) { flow.gymFinder(f) }
+    fun gymToCheck() = synchronized(lock) { flow.gymToCheck() }
+    fun gymCheck(keep: Collection<String>?, reject: Collection<String>?) = synchronized(lock) { flow.gymCheck(keep, reject) }
     fun toggleWide() = synchronized(lock) { flow.toggleWide() }
     fun toggleCard() = synchronized(lock) { flow.toggleCard() }
     val sceneryOn: Boolean get() = flow.sceneryOn

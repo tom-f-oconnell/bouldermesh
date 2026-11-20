@@ -154,15 +154,16 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
     fun startOrbit(centre: Vec3) { orbit = Orbit(centre) }
 
     /**
-     * Makes the orbit's spots the gym climb's holds as now found: new ones added, those no longer found taken away,
-     * and each where it's now found, asking as finely as a phone can photograph it from the ground.
+     * Makes the orbit's spots the gym climb's holds as now found and kept (Gym.Hold.ok): new ones added, those no longer
+     * found or kept taken away, and each where it's now found, asking as finely as a phone can photograph it from the ground.
      */
     fun syncGym() {
         val g = gym ?: return; val orb = orbit ?: return
         val fx = lastPose?.lens?.fx ?: shots.lastOrNull { it.kept }?.blob?.k?.fx ?: DEFAULT_FX
-        val ids = g.holds.map { it.id }.toSet()
+        val ids = g.holds.filter { it.ok }.map { it.id }.toSet()
         for (s in orb.spots.filter { it.gym && it.id !in ids }) orb.removeSpot(s.id)
         for (h in g.holds) {
+            if (!h.ok) continue         // found but not checked yet: not asked for until kept
             val s = orb.spot(h.id) ?: orb.addSpot(h.p, h.id, gym = true)
             s.p = h.p; s.rM = h.rM; s.needGsdM = g.bestGsdM(h.p, fx)
         }
@@ -469,6 +470,8 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             out.add(Marker(s.id, s.p, if (s.gym) s.rM else 0.08, if (s.skipped) Coverage.LEVEL_SKIPPED else if (s.done()) Coverage.LEVEL_DONE else if (s.dirs.isNotEmpty()) Coverage.LEVEL_PART else Coverage.LEVEL_TODO,
                 "hold", s.id == current, rgb = if (s.gym) rgb else null))
         }
+        // a gym climb's holds found but not checked yet: grey, as what doesn't count yet
+        gym?.unchecked?.forEach { h -> out.add(Marker(h.id, h.p, h.rM, Coverage.LEVEL_OUT, "hold", false, rgb = rgb)) }
         return out
     }
 
@@ -494,7 +497,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             marked = marked.map { h -> RecordMarked(h.id, spellName(h.spell), h.world.toList(), h.mesh?.toList()) } +
                 (gym?.let { g -> g.holds.map { RecordMarked(it.id, spellName(g.spell), it.p.toList()) } } ?: emptyList()),
             gym = gym?.record(),
-            checked = earlier?.checked.orEmpty(),
+            checked = (earlier?.checked.orEmpty() + (gym?.holds?.filter { it.ok && !it.picked }?.map { it.id } ?: emptyList())).distinct(),
         )
     }
 

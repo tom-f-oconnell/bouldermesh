@@ -302,8 +302,11 @@ class Gym {
     /** A photo's patches: those of the colour finder (A) and, where the phone has a model, the model's (B); each with where it is, if known. */
     class Photo(val name: String, val pose: CameraPose, val spell: Int, val colour: List<Blob>, val model: List<Blob>?,
                 val colourAt: List<Vec3?>, val modelAt: List<Vec3?>?)
-    /** A hold of the climb: where, how far round, in how many photos it was found, and its id as a spot of the capture. */
-    class Hold(val id: String, var p: Vec3, var rM: Double, var photos: Int, var picked: Boolean = false)
+    /**
+     * A hold of the climb: where, how far round, in how many photos it was found, and its id as a spot of the capture;
+     * `picked` if tapped, `ok` if tapped or kept when it was checked (keep()): only those are asked for close up.
+     */
+    class Hold(val id: String, var p: Vec3, var rM: Double, var photos: Int, var picked: Boolean = false, var ok: Boolean = false)
     private class Pick(val p: Vec3, val blob: Blob, val spell: Int)
 
     val photos = ArrayList<Photo>()
@@ -313,6 +316,8 @@ class Gym {
     var finder = FINDER_COLOUR
     private val picks = ArrayList<Pick>()
     private val dropped = ArrayList<Pair<Vec3, Int>>()      // holds said not to be part of it, each with its spell
+    private val kept = ArrayList<Pair<Vec3, Int>>()         // and those said to be, as found then
+    private val keptIds = HashSet<String>()
     val holds = ArrayList<Hold>()
     private var nextId = 1
     var spell = 1
@@ -354,6 +359,33 @@ class Gym {
         dropped.add(h.p to spell)
         refresh()
         return h.id
+    }
+
+    /** The holds found that haven't been checked yet: not asked for close up until kept. */
+    val unchecked: List<Hold> get() = holds.filter { !it.ok }
+
+    /** Says the holds `ids` (null: all those unchecked) are the climb's: they're asked for close up from now on. */
+    fun keep(ids: Collection<String>? = null) {
+        for (h in holds) if (!h.ok && (ids == null || h.id in ids)) { kept.add(h.p to spell); keptIds.add(h.id) }
+        refresh()
+    }
+
+    /** Says the holds `ids` (null: all those unchecked) aren't the climb's: left out from then on, as drop() leaves one. Returns how many. */
+    fun reject(ids: Collection<String>? = null): Int {
+        val these = holds.filter { !it.picked && (if (ids == null) !it.ok else it.id in ids) }
+        for (h in these) dropped.add(h.p to spell)
+        refresh()
+        return these.size
+    }
+
+    /** Where a hold is seen best in the photos of the spell now (HoldReview.best), for checking it. */
+    fun view(h: Hold): HoldView? = HoldReview.best(photos.filter { it.spell == spell }.map { it.name to it.pose }, h.p, h.rM)
+
+    /** Where a hold came from, in words. */
+    fun how(h: Hold): String = when {
+        h.picked -> "Tapped by you"
+        finder == FINDER_MODEL -> "Found by the hold-finding model, then its colour (${colour?.name}, as the hold you tapped), in ${h.photos} photos"
+        else -> "Found by its colour (${colour?.name}, as the hold you tapped), in ${h.photos} photos"
     }
 
     fun widen(): Boolean = step(1)
@@ -435,6 +467,7 @@ class Gym {
             if (old != null) was.remove(old)
             val h = old ?: Hold("g${nextId++}", g.p, g.rM, 0)
             h.p = g.p; h.rM = g.rM.coerceIn(MIN_R_M, MAX_R_M); h.photos = g.photos; h.picked = g.picked
+            h.ok = g.picked || h.id in keptIds || kept.any { (p, s) -> s == spell && p.distance(g.p) <= max(DROP_M, g.rM) }
             holds.add(h)
         }
     }

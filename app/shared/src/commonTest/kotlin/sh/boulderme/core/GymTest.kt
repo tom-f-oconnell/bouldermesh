@@ -115,8 +115,14 @@ class GymTest {
         assertEquals(yellows.size - 1, gym.holds.size)
         assertNull(gym.drop(eye, (Vec3(1.4, 0.2, 0.0) - eye).unit()), "nothing near")
         // the record has its colour and holds
+        // found holds are unchecked until kept; rejecting all leaves out only those, never the one tapped
+        assertTrue(gym.unchecked.size == yellows.size - 2 && gym.holds.single { it.ok }.picked)
+        gym.keep(listOf(gym.unchecked.first().id))
+        assertEquals(yellows.size - 3, gym.unchecked.size)
+        assertEquals(yellows.size - 3, gym.reject())
+        assertTrue(gym.holds.size == 2 && gym.unchecked.isEmpty(), "${gym.holds.map { it.id to it.ok }}")
         val r = assertNotNull(gym.record())
-        assertTrue(r.name == "yellow" && r.holds.size == yellows.size - 1 && r.rgb.startsWith("#") && r.colourBlobs > 0, "$r")
+        assertTrue(r.name == "yellow" && r.holds.size == 2 && r.rgb.startsWith("#") && r.colourBlobs > 0, "$r")
     }
 
     @Test fun holdsWithNoTrackedPointsAreFoundWhereThreePhotosAgree() {
@@ -183,12 +189,23 @@ class GymTest {
         }
         for (x in listOf(-0.8, -0.3, 0.3, 0.8)) take(at(x))
         ui = flow.frame(at(0.0), true, 0.0, 0.004, t + 0.1, 0).ui
-        assertEquals(yellows.size, ui.gym?.holds)
+        // those found, not tapped, are to check first: drawn grey, and not asked for until kept
+        assertTrue(ui.gym?.holds == 1 && ui.gym?.unchecked == yellows.size - 1, "${ui.gym}")
+        assertEquals(1, flow.session.orbit!!.spots.count { it.gym })
+        assertEquals(yellows.size - 1, flow.session.markers().count { it.rgb != null && it.level == Coverage.LEVEL_OUT })
+        val toCheck = flow.gymToCheck()
+        assertTrue(toCheck.size == yellows.size - 1 && toCheck.all { it.found && it.how.startsWith("Found by its colour (yellow") && it.view != null }, "$toCheck")
+        val no = flow.session.gym!!.unchecked.maxByOrNull { it.p.distance(Vec3(0.0, 1.6, 0.0)) }!!.id     // one away from the close-up below
+        flow.gymCheck(toCheck.map { it.id } - no, listOf(no))
+        ui = flow.frame(at(0.0), true, 0.0, 0.004, t + 0.1, 0).ui
+        assertTrue(ui.gym?.holds == yellows.size - 1 && ui.gym?.unchecked == 0, "${ui.gym}")
+        assertTrue(flow.session.gym!!.holds.none { it.id == no }, "the one rejected is left out")
+        assertTrue(flow.session.record(99.0).let { r -> r.checked.toSet() == toCheck.map { it.id }.toSet() - no && HoldReview.unchecked(r).isEmpty() })
         assertTrue("compass" !in ui.sensors, "a gym capture doesn't ask for the compass to be calibrated: ${ui.sensors}")
         val spots = flow.session.orbit!!.spots.filter { it.gym }
-        assertEquals(yellows.size, spots.size)
+        assertEquals(yellows.size - 1, spots.size)
         val markers = flow.session.markers().filter { it.rgb != null }
-        assertTrue(markers.size == yellows.size && markers.all { it.rgb == flow.session.gym!!.colour!!.rgb }, "drawn in the climb's colour")
+        assertTrue(markers.size == yellows.size - 1 && markers.all { it.rgb == flow.session.gym!!.colour!!.rgb }, "drawn in the climb's colour")
         // it asks for them close up, and one can be skipped
         val close = TestWorld.look(Vec3(0.0, 1.6, 0.6), Vec3(0.0, 1.6, 0.0), lens)
         ui = flow.frame(close, true, 0.0, 0.004, t + 0.2, 0).ui
@@ -197,7 +214,7 @@ class GymTest {
         assertTrue(flow.session.orbit!!.spots.count { it.skipped } == 1)
         // and they're sent as holds marked on the phone, with the climb's colour
         val record = flow.session.record(99.0)
-        assertTrue(record.gym?.name == "yellow" && record.marked.count { it.id.startsWith("g") } == yellows.size, "${record.marked}")
+        assertTrue(record.gym?.name == "yellow" && record.marked.count { it.id.startsWith("g") } == yellows.size - 1, "${record.marked}")
         assertTrue("\"e\":\"gym_photo\"" in flow.logText() && "\"e\":\"gym_pick\"" in flow.logText())
     }
 }

@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import sh.boulderme.core.ReviewHold
 import sh.boulderme.core.CaptureUi
 import sh.boulderme.core.GymUi
 import sh.boulderme.core.LevelUi
@@ -161,6 +162,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
     var failed by remember { mutableStateOf<String?>(null) }
     var leaving by remember { mutableStateOf(false) }
     var skipping by remember { mutableStateOf<String?>(null) }     // what going without the turn costs, while that's asked
+    var checking by remember { mutableStateOf<List<ReviewHold>?>(null) }    // a gym climb's holds found, being checked
     val plan = remember { what.mesh?.let { a.store.plan(it) } }
     val guide = remember { what.mesh?.let { a.store.guide(it) } }
     if (what.mesh != null && (plan == null || guide == null)) {
@@ -216,6 +218,15 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                     ui.level?.let { LevelGauges(it) }
                 }
                 ui.gym?.let { g -> if (ui.phase == Phase.CAPTURE) GymLine(g) }
+                ui.gym?.takeIf { it.unchecked > 0 && ui.phase == Phase.CAPTURE }?.let { g ->
+                    Text("${g.unchecked} ${g.name} hold${if (g.unchecked == 1) "" else "s"} found to check (grey rings): not asked for close up until kept",
+                        color = WARN, style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Button(onClick = { checking = controller.gymToCheck() }) { Text("Check them") }
+                        FilledTonalButton(onClick = { controller.gymCheck(null, emptyList()) }) { Text("Keep all") }
+                        FilledTonalButton(onClick = { controller.gymCheck(emptyList(), null) }) { Text("Reject all") }
+                    }
+                }
                 if (ui.phase == Phase.CAPTURE && ui.total > 0) {
                     LinearProgressIndicator(progress = { ui.done.toFloat() / ui.total }, modifier = Modifier.fillMaxWidth())
                     Text(listOfNotNull("${ui.done}/${ui.total} ${if (ui.guided) "parts" else "sides and spots"}", if (ui.holds > 0 && ui.guided) "${ui.holdsDone}/${ui.holds} holds" else null,
@@ -289,6 +300,13 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                     else -> TextButton(onClick = { leaving = true }) { Text("Leave") }
                 }
             }
+        }
+    }
+
+    checking?.let { holds ->
+        CheckHoldsPanel(holds, a.store.captureDir(controller.id)) { keep ->
+            checking = null
+            if (keep != null) controller.gymCheck(keep, holds.map { it.id }.filter { it !in keep })
         }
     }
 

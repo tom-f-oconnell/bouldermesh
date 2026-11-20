@@ -159,7 +159,7 @@ last before) and `k_src: "derived"` (its lens was worked out from the tracking c
                           found (in the tracking's world, as marked's; picked if tapped; photos: how many found it), and
                           how many patches each finder found in all its photos
     checked               [id] (v 8): holds of marked the app found by itself (a gym climb's, not tapped), each looked over
-                          and kept by the uploader on the phone before sending. Those left out are gone from marked and
+                          and kept by the uploader on the phone, while capturing or before sending. Those left out are gone from marked and
                           gym's holds; a capture with found holds not in checked isn't sent
 
 **The points** (`points.bin`, kept in the project as `capture-points.bin`): what the phone's tracking found of the world,

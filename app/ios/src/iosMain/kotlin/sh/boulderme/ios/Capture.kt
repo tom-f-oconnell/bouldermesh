@@ -1,5 +1,7 @@
 package sh.boulderme.ios
 
+import platform.UIKit.UINavigationController
+
 import kotlinx.cinterop.CValue
 import kotlinx.cinterop.cValue
 import kotlinx.cinterop.get
@@ -826,6 +828,14 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         if (want != buttonsFor) { buttonsFor = want; offer(now) }
     }
 
+    /** The gym climb's holds found and not yet checked, over the camera, to keep or reject. */
+    private fun checkHolds() {
+        val holds = flow.gymToCheck()
+        if (holds.isEmpty()) return
+        val form = CheckHoldsForm(holds, "$dir/photos") { keep -> if (keep != null) flow.gymCheck(keep, holds.map { it.id }.filter { it !in keep }) }
+        presentViewController(UINavigationController(rootViewController = form.screen), animated = true, completion = null)
+    }
+
     private fun offer(now: CaptureUi) {
         for (v in buttons.arrangedSubviews) (v as? UIView)?.removeFromSuperview()
         if (now.downNote.isNotEmpty() && now.phase != Phase.LEVEL) buttons.addArrangedSubview(makeRow(*listOfNotNull(
@@ -850,6 +860,12 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
             Phase.CAPTURE -> {
                 if (now.askMore > 0) buttons.addArrangedSubview(makeRow(makeButton("Photograph ${if (now.askMore == 1) "it" else "them"} too", Look.FILLED) { flow.more(true) }, makeButton("No") { flow.more(false) }))
                 buttons.addArrangedSubview(makeRow(makeButton(if (now.waiting) "Hold still…" else "Take", Look.FILLED) { flow.shutter() }, makeButton(if (now.auto) "Auto: on" else "Auto: off") { flow.setAuto(!now.auto) }, leave))
+                now.gym?.takeIf { it.unchecked > 0 }?.let { g ->
+                    buttons.addArrangedSubview(makeLabel("${g.unchecked} ${g.name} hold${if (g.unchecked == 1) "" else "s"} found to check (grey rings): not asked for close up until kept",
+                        WARN, size = 13.0))
+                    buttons.addArrangedSubview(makeRow(makeButton("Check them", Look.FILLED) { checkHolds() },
+                        makeButton("Keep all") { flow.gymCheck(null, emptyList()) }, makeButton("Reject all") { flow.gymCheck(emptyList(), null) }))
+                }
                 now.gym?.let { g ->
                     buttons.addArrangedSubview(makeRow(makeButton(if (g.tap == "add") "Tap a hold of it…" else "Add a ${g.name} hold") { flow.gymTap("add") },
                         makeButton(if (g.tap == "drop") "Tap its ring…" else "Not part of it") { flow.gymTap("drop") }, makeButton("Skip this", enabled = now.canSkip) { flow.skip() }))

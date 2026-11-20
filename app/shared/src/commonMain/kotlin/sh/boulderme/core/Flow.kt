@@ -41,10 +41,11 @@ data class CaptureUi(
  * How a gym climb's capture stands: its colour's name and what its holds are drawn in, how many have been found and
  * photographed close up, how widely the colour is taken (`tolerance` of `tolerances` steps, the middle the default),
  * what a tap on the picture does now (`tap`: "add" a hold of the colour, "drop" one found that isn't of the climb; null
- * neither), and which finder's patches count (`finder`, of `finders`: "colour", and "model" where the phone has one).
+ * neither), which finder's patches count (`finder`, of `finders`: "colour", and "model" where the phone has one), and
+ * how many holds were found that haven't been checked (`unchecked`: not asked for, nor counted in `holds`, until kept).
  */
 data class GymUi(val name: String, val rgb: Int, val holds: Int, val done: Int, val tolerance: Int, val tolerances: Int, val tap: String?,
-                 val finder: String, val finders: List<String>)
+                 val finder: String, val finders: List<String>, val unchecked: Int = 0)
 
 /**
  * How the turn on the spot is going, for the screen to show beside its progress.
@@ -390,6 +391,21 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     fun gymNarrower() = gymChanged("gym_narrower", gym?.narrow())
     /** Which finder's patches count: "colour" or "model" (Gym.FINDER_*). */
     fun gymFinder(f: String) { val g = gym ?: return; g.useFinder(f); gymChanged("gym_finder", true, "finder" to f) }
+
+    /** The gym climb's holds found and not yet checked, each with where it came from and where it's seen best. */
+    fun gymToCheck(): List<ReviewHold> = gym?.let { g -> g.unchecked.sortedByDescending { it.photos }.map { ReviewHold(it.id, true, g.how(it), g.view(it)) } } ?: emptyList()
+
+    /** Says the holds found `ids` (null: all those unchecked) are the climb's, to be asked for close up; `reject` those not (kept: null, all the others). */
+    fun gymCheck(keep: Collection<String>?, reject: Collection<String>?) {
+        val g = gym ?: return
+        val was = g.unchecked.size
+        if (keep == null || keep.isNotEmpty()) g.keep(keep)
+        val out = if (reject == null || reject.isNotEmpty()) g.reject(reject) else 0
+        session.syncGym(); levelsDirty = true
+        event("gym_check", "unchecked" to was, "kept" to (keep?.size ?: (was - out)), "rejected" to out, "holds" to g.holds.count { it.ok })
+        val k = g.holds.count { it.ok }
+        note = "${k} ${g.colour?.name} hold${if (k == 1) "" else "s"} kept" + if (out > 0) ", $out left out" else ""
+    }
 
     private fun gymChanged(e: String, changed: Boolean?, vararg more: Pair<String, Any?>) {
         val g = gym ?: return
@@ -892,19 +908,26 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
             "corners" to out.record.blob.feat?.n, "tried" to out.record.blob.feat?.tried, "best_links" to out.record.blob.feat?.best, "ar_pts" to out.record.blob.feat?.arPts,
             "ar_cells" to out.record.blob.feat?.arCells)
         if (cardShot && out.kept) { cardNext = false; levelsDirty = true }
+        var newHolds = 0
         if (gym != null && out.kept && !s.card && !cardShot && s.blobs != null) {
             val was = gym.holds.size
+            val uncheckedWas = gym.unchecked.size
             gym.addPhoto(out.record.name, s.pose, block, s.blobs, s.modelBlobs, cloud.values)
             session.syncGym(); levelsDirty = true
             event("gym_photo", "name" to out.record.name, "colour_blobs" to s.blobs.size, "model_blobs" to s.modelBlobs?.size,
                 "matched" to gym.colour?.let { c -> s.blobs.count { c.matches(it) } }, "model_matched" to gym.colour?.let { c -> s.modelBlobs?.count { c.matches(it) } },
-                "holds" to gym.holds.size, "new" to gym.holds.size - was)
+                "holds" to gym.holds.size, "new" to gym.holds.size - was, "unchecked" to gym.unchecked.size)
+            newHolds = gym.unchecked.size - uncheckedWas
         }
         cardShot = false
         // a gym capture doesn't ask for the compass to be calibrated: its facing hardly matters indoors (Calibrate still can)
         sensorNote = out.record.notes.filter { gym == null || it != Sensors.CALIBRATE_NOTE }.joinToString(" · ")
         val how = if (autoShot) "taken by itself (Auto)" else "taken"
-        if (out.kept) { note = "Photo ${session.shotCount} $how and kept"; levelsDirty = true }
+        if (out.kept) {
+            note = "Photo ${session.shotCount} $how and kept"; levelsDirty = true
+            if (newHolds > 0 && gym != null) note += ". ${gym.unchecked.size} ${gym.colour?.name} hold${if (gym.unchecked.size == 1) "" else "s"} found to check (grey rings): " +
+                "only those you keep are asked for close up"
+        }
         else { rejected++; note = "Not kept, the photo $how: ${out.why.joinToString("; ")}." }
         return out
     }
@@ -912,8 +935,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     private fun gymUi(): GymUi? {
         val g = gym ?: return null; val c = g.colour ?: return null
         val spots = session.orbit?.spots?.filter { it.gym } ?: emptyList()
-        return GymUi(c.name, c.rgb, g.holds.size, spots.count { it.done() }, HoldColour.TOLERANCES.indexOfFirst { it >= c.tolerance - 1e-9 }, HoldColour.TOLERANCES.size,
-            gymTap, g.finder, if (g.hasModel || gymModel) listOf(Gym.FINDER_COLOUR, Gym.FINDER_MODEL) else listOf(Gym.FINDER_COLOUR))
+        return GymUi(c.name, c.rgb, g.holds.count { it.ok }, spots.count { it.done() }, HoldColour.TOLERANCES.indexOfFirst { it >= c.tolerance - 1e-9 }, HoldColour.TOLERANCES.size,
+            gymTap, g.finder, if (g.hasModel || gymModel) listOf(Gym.FINDER_COLOUR, Gym.FINDER_MODEL) else listOf(Gym.FINDER_COLOUR), g.unchecked.size)
     }
 
     /** The app has a hold-finding model and gives its patches (ShotIn.modelBlobs): it can be chosen as the finder from the start. */
