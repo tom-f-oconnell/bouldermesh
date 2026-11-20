@@ -362,6 +362,16 @@ class Broker:
                "WHERE state='queued' AND tries>=?", time.time(), MAX_TRIES)
 
     # -- the volunteer's side ---------------------------------------------------------------------------------------
+    def pending_tasks(self, purpose: str, refs) -> list[dict]:
+        """What's still coming for this purpose and any of these refs: each task once, with when it was last moved on
+        ("moved": wanted, given out, or heard of from its volunteer, whichever came last)."""
+        refs = list(dict.fromkeys(refs))
+        if not refs:
+            return []
+        return self.q(f"SELECT DISTINCT t.id, t.kind, t.state, t.created, t.assigned, t.touched, t.tries, "
+                      f"max(t.created, COALESCE(t.assigned, 0), COALESCE(t.touched, 0)) AS moved FROM wants w JOIN tasks t ON t.id=w.task "
+                      f"WHERE w.purpose=? AND w.ref IN ({','.join('?' * len(refs))}) AND t.state IN ('queued','assigned')", purpose, *refs)
+
     def pending(self, purpose: str, ref: str) -> int:
         """How many things wanted for this purpose and ref are still coming."""
         return self.q("SELECT count(DISTINCT t.id) AS n FROM wants w JOIN tasks t ON t.id=w.task WHERE w.purpose=? AND w.ref=? "

@@ -1346,6 +1346,9 @@ coming: dict[str, int] = {}     # project -> what volunteers still have to fetch
 plan: list[int] = []            # what each harvest leaves them to fetch
 real_pending = server.VOLUNTEERS.pending
 server.VOLUNTEERS.pending = lambda purpose, ref: coming.get(ref, 0) if purpose == "harvest" else 0
+moved: dict[str, float] = {}      # project -> when what's coming for it last moved on (now, if not said)
+server.VOLUNTEERS.pending_tasks = lambda purpose, refs: [{"moved": moved.get(r, time.time())} for r in refs for _ in range(coming.get(r, 0))] \
+    if purpose == "harvest" else []
 meshed: list[str] = []
 
 
@@ -1384,7 +1387,8 @@ run_all(c["id"])
 it = items(c["id"])["Alpha"]
 assert it["status"] == "done" and it["mesh_id"] and meshed == [pid] and harvested.count("Alpha") == 3, (it, meshed)
 assert server.campaign_status(c["id"]) == "done" and not server.q("SELECT note FROM campaigns WHERE id=?", c["id"], one=True)["note"]
-# one that has waited long enough is meshed with what's come, and doesn't wait again
+# one that has waited long enough, while what's coming still moves on, waits on; once nothing has for
+# videos.give_up_hours, it's meshed with what's come, and doesn't wait again
 fresh()
 meshed.clear()
 plan[:] = [1, 1]
@@ -1393,8 +1397,12 @@ run_all(c["id"])
 assert items(c["id"])["Beta"]["status"] == "waiting"
 server.q("UPDATE campaign_items SET waiting_since=?", time.time() - server.VOLUNTEER_WAIT - 60, write=True)
 run_all(c["id"])
+assert items(c["id"])["Beta"]["status"] == "waiting" and not meshed, "still moving on"
+moved[items(c["id"])["Beta"]["project_id"]] = time.time() - 13 * 3600
+run_all(c["id"])
 it = items(c["id"])["Beta"]
 assert it["status"] == "done" and len(meshed) == 1 and harvested.count("Beta") == 2, (it, meshed)
+moved.clear()
 # what came while it was still being harvested, too late for that harvest: given again as it starts waiting, so it's
 # harvested again then, not a day later
 fresh()

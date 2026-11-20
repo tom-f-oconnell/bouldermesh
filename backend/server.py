@@ -240,6 +240,8 @@ def init_db() -> None:
           id TEXT PRIMARY KEY, name TEXT, area_id TEXT, ord TEXT, created REAL, note TEXT,
           status TEXT,                 -- running | stopping | stopped | done
           only_retries INTEGER DEFAULT 0);   -- run only its retries, and then stop
+        -- a boulder or climb held up by videos volunteers are still fetching: since when, how many, when the phone was told
+        CREATE TABLE IF NOT EXISTS video_holds(key TEXT PRIMARY KEY, what TEXT, since REAL, coming INTEGER, seen REAL, notified REAL);
         CREATE TABLE IF NOT EXISTS campaign_items(
           campaign_id TEXT, source_id TEXT, rank INTEGER, name TEXT, grade TEXT, stars REAL, url TEXT,
           boulder TEXT, data TEXT, media INTEGER, climb_id TEXT, project_id TEXT, mesh_id TEXT,
@@ -5744,7 +5746,7 @@ def run_campaign_item(camp: dict, item: dict) -> None:
                 boulder_kind(full["boulder"], climb_area_url(c), lambda s: append_log(pid, s))
             pool = pooled(cid, full["boulder"])
             try:
-                run_harvest(pid, set(HARVEST_SOURCES), not pool, resume=resume, wait=may_wait(item),
+                run_harvest(pid, set(HARVEST_SOURCES), not pool, resume=resume, wait=may_wait(item, pid),
                             need_youtube=not camp.get("without_youtube"))
             except Cancelled:
                 q("UPDATE projects SET status='stopped' WHERE id=?", pid, write=True)
@@ -5756,8 +5758,8 @@ def run_campaign_item(camp: dict, item: dict) -> None:
                 raise
             p = q("SELECT status,mesh_id,harvest FROM projects WHERE id=?", pid, one=True)
             if p["status"] == "waiting" or (pool and p["status"] != "failed" and (
-                    (may_wait(item) and VOLUNTEERS.pending("harvest", pid)) or unchecked(camp, pid))):
-                wait_for_volunteers(cid, sid, pid, item.get("waiting_since") if may_wait(item) else None)
+                    (may_wait(item, pid) and VOLUNTEERS.pending("harvest", pid)) or unchecked(camp, pid))):
+                wait_for_volunteers(cid, sid, pid, item.get("waiting_since") if may_wait(item, pid) else None)
                 return
             if pool and p["status"] != "failed":    # its boulder is meshed from it and its neighbours' (settle_boulder())
                 append_log(pid, "harvested for its boulder's mesh, made from every photo of the climbs on it once they're all harvested")
@@ -5821,6 +5823,15 @@ def settle_boulder(camp_id: str, boulder: str | None) -> bool:
     harvested = [i for i in items if i["status"] == "harvested"]
     if not harvested:
         return False
+    # nor while volunteers are still fetching videos for any climb on it, whatever its status (one done or skipped
+    # before had its videos wanted again by a search, say), until they've come or stopped moving on
+    coming = videos_moving([h for c in boulder_climbs(boulder) for h in climb_harvests(c["id"])])
+    key = f"boulder|{camp_id}|{boulder}"
+    if coming:
+        name = (json.loads(boulder)[-1] if boulder.startswith("[") else boulder)
+        hold(key, name, len(coming))
+        return False
+    unhold(key)
     mesh = boulder_unchanged(boulder) if camp.get("same_photos_once", 1) != 0 else None
     if mesh:    # as when a climb harvested for it resumes after its mesh was made: that mesh is theirs
         q("UPDATE campaign_items SET status='done', mesh_id=?, retry=0, note=?, updated=? WHERE campaign_id=? AND boulder=? "
@@ -5851,9 +5862,76 @@ def boulder_meshed(camp_id: str, source_id: str, end: dict, failed: bool) -> dic
     return {**end, "status": status, "note": note, **({"mesh_id": mesh} if mesh else {})}
 
 
-def may_wait(item: dict) -> bool:
-    """Whether an area's climb may wait for volunteers: until VOLUNTEER_WAIT after it first did."""
-    return not item.get("waiting_since") or time.time() - item["waiting_since"] < VOLUNTEER_WAIT
+def may_wait(item: dict, pid: str | None = None) -> bool:
+    """Whether an area's climb may wait for volunteers: until VOLUNTEER_WAIT after it first did, and after that for as
+    long as what they're fetching for its harvest (pid) still moves on (videos_moving())."""
+    return not item.get("waiting_since") or time.time() - item["waiting_since"] < VOLUNTEER_WAIT or bool(pid and videos_moving([pid]))
+
+
+def videos_moving(pids) -> list[dict]:
+    """What volunteers are still to fetch for these harvests that has moved on (been wanted, given out, or heard of from
+    its volunteer) within videos.give_up_hours: what a boulder or climb waits for. [] if nothing is coming, or all of it
+    has sat that long, which is then given up on."""
+    cut = time.time() - float(settings().get("videos.give_up_hours") or 12) * 3600
+    try:
+        return [t for t in VOLUNTEERS.pending_tasks("harvest", pids) if (t["moved"] or 0) >= cut]
+    except Exception:  # noqa: BLE001 - nothing then holds it up
+        return []
+
+
+# ---------------------------------------------------- boulders and climbs held up by their videos (the phone is told)
+_holds_lock = threading.Lock()
+
+
+def hold(key: str, what: str, coming: int) -> None:
+    """A boulder or climb is held up by coming videos: when it first was is kept (video_holds), for hold_alerts()."""
+    with _holds_lock:
+        q("INSERT OR IGNORE INTO video_holds(key, what, since) VALUES(?,?,?)", key, what, time.time(), write=True)
+        q("UPDATE video_holds SET coming=?, seen=? WHERE key=?", coming, time.time(), key, write=True)
+
+
+def unhold(key: str, log=None) -> None:
+    with _holds_lock:
+        row = q("SELECT since FROM video_holds WHERE key=?", key, one=True)
+        if row:
+            q("DELETE FROM video_holds WHERE key=?", key, write=True)
+            if log:
+                log(f"held up by its videos for {(time.time() - row['since']) / 3600:.1f} h")
+
+
+def hold_alerts() -> int:
+    """Say on the phone, once each, which boulders and climbs videos have held up longer than videos.hold_alert_hours,
+    and let go of holds nothing has looked at in an hour (whatever held them is gone). Returns how many were said."""
+    hours = float(settings().get("videos.hold_alert_hours") or 0)
+    q("DELETE FROM video_holds WHERE seen < ?", time.time() - 3600, write=True)
+    if hours <= 0:
+        return 0
+    rows = q("SELECT * FROM video_holds WHERE notified IS NULL AND since < ?", time.time() - hours * 3600)
+    for r in rows:
+        q("UPDATE video_holds SET notified=? WHERE key=?", time.time(), r["key"], write=True)
+        threading.Thread(target=NOTIFIER.send, args=(
+            "Videos are holding up a mesh", f"{r['what']} has waited {(time.time() - r['since']) / 3600:.1f} h for {r['coming']} "
+            f"YouTube video(s) volunteers are still fetching (given up after {settings().get('videos.give_up_hours')} h with no "
+            "progress)", None, 3, ["hourglass"]), daemon=True).start()
+    return len(rows)
+
+
+def holds_worker() -> None:
+    """Every few minutes: the phone told of long holds; boulders held up by videos looked at again (settle_boulder()),
+    so that one whose videos came, or were given up on, is meshed."""
+    while True:
+        time.sleep(300)
+        try:
+            for r in q("SELECT campaign_id, source_id, name, project_id FROM campaign_items WHERE status='waiting' AND project_id IS NOT NULL"):
+                n = VOLUNTEERS.pending("harvest", r["project_id"])
+                if n:
+                    hold(f"climb|{r['campaign_id']}|{r['source_id']}", r["name"], n)
+            for r in q("SELECT key FROM video_holds WHERE key LIKE 'boulder|%'"):
+                _, camp_id, boulder = r["key"].split("|", 2)
+                settle_boulder(camp_id, boulder)
+            hold_alerts()
+        except Exception as e:  # noqa: BLE001 - next time
+            print(f"error: video holds: {type(e).__name__}: {e}", flush=True)
 
 
 def youtube_checked(summary: dict | None) -> bool:
@@ -5880,16 +5958,24 @@ def wait_for_volunteers(cid: str, sid: str, pid: str, since: float | None) -> No
             "waiting for its YouTube search, which no volunteer has been asked for (there are none): add one, or let its "
             "area mesh without")
     set_item(cid, sid, status="waiting", waiting_since=since or time.time(), redo=None, retry=0, redo_started=0, note=note)
+    if n:
+        hold(f"climb|{cid}|{sid}", (q("SELECT name FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True) or {}).get("name") or sid, n)
     VOLUNTEERS.resettle("harvest", pid)
 
 
 def settle_waiting(camp_id: str, only_old: bool = False) -> None:
-    """An area's climbs that have waited for volunteers for VOLUNTEER_WAIT: harvested again and meshed with what's come.
-    Only those queued again as their meshes are old (queue_old()) if only_old."""
-    q("UPDATE campaign_items SET status='pending', retry=1, redo='more+rebuild', was='waiting', redo_started=0, note=? "
-      f"WHERE campaign_id=? AND status='waiting' AND waiting_since<?{' AND old_rerun>=1' if only_old else ''}",
-      f"waited {VOLUNTEER_WAIT / 3600:.0f} h for volunteers: meshing it with what's come", camp_id, time.time() - VOLUNTEER_WAIT,
-      write=True)
+    """An area's climbs that have waited for volunteers for VOLUNTEER_WAIT, and whose videos have stopped moving on
+    (videos_moving()): harvested again and meshed with what's come. Only those queued again as their meshes are old
+    (queue_old()) if only_old."""
+    for r in q("SELECT source_id, project_id, name FROM campaign_items WHERE campaign_id=? AND status='waiting' AND waiting_since<?"
+               f"{' AND old_rerun>=1' if only_old else ''}", camp_id, time.time() - VOLUNTEER_WAIT):
+        coming = videos_moving([r["project_id"]]) if r["project_id"] else []
+        if coming:      # still moving on: it waits on (videos.give_up_hours without, and it's given up on)
+            hold(f"climb|{camp_id}|{r['source_id']}", r["name"], len(coming))
+            continue
+        unhold(f"climb|{camp_id}|{r['source_id']}")
+        set_item(camp_id, r["source_id"], status="pending", retry=1, redo="more+rebuild", was="waiting", redo_started=0,
+                 note="waited for volunteers until nothing more came: meshing it with what's come")
 
 
 # ------------------------------------------------------------------ how much room the data takes (storage.cap_gb)
@@ -7209,7 +7295,10 @@ def run_redo(camp: dict, item: dict) -> None:
         set_item(cid, sid, status="running", note=None)
         if first in ("harvest", "videos", "more", "new", "refilter") and not row["redo_started"]:    # a rebuild that started was harvested already
             end = _harvest_again(row, log)
-            if row["was"] == "waiting" and not row["mesh_id"] and may_wait(row) and VOLUNTEERS.pending("harvest", row["project_id"]):
+            # waiting for what volunteers are fetching, whatever it had: a climb with a mesh being made again (its old
+            # one's, say) used to go on without, and its videos came after its boulder's mesh (Nov 20: 187 of 213 late
+            # frames were of videos wanted before their mesh was made)
+            if may_wait(row, row["project_id"]) and videos_moving([row["project_id"]]):
                 log("waiting for more from volunteers: the YouTube videos their search found")
                 return wait_for_volunteers(cid, sid, row["project_id"], row["waiting_since"])
             if row["was"] == "waiting" and not row["mesh_id"] and unchecked(camp, row["project_id"]):   # tried again later
@@ -13711,13 +13800,39 @@ def volunteers_widespread(n: int, of: int, example: str) -> None:
         "daily), rather than one address's trouble."), kwargs={"priority": 4, "tags": ["warning"]}, daemon=True).start()
 
 
-def volunteer_rank(purpose: str, ref: str) -> int:
+def volunteer_rank(purpose: str, ref: str) -> float:
     """How soon volunteers get what's wanted for purpose and ref (volunteers.Broker's rank): regular areas' and people's
-    harvests first (0), then beta and the rest (1), then low-priority areas' harvests (2: low_projects()), oldest first
-    within each, so that an area set to low priority doesn't hold up the others' YouTube videos."""
+    harvests first (0), then beta and the rest (1), then low-priority areas' harvests (2: low_projects()), so that an
+    area set to low priority doesn't hold up the others' YouTube videos. Within each, harvests' go a boulder at a time
+    (volunteer_focus()), so that one boulder's mesh isn't held up by videos shared out with another's."""
     if purpose == "harvest":
-        return 2 if ref in low_projects() else 0
+        return (2 if ref in low_projects() else 0) + volunteer_focus(ref)
     return 3 if purpose == "research" else 1
+
+
+_focus: dict = {"at": 0.0, "of": {}}
+FOCUS_EVERY = 60    # seconds volunteer_focus()'s reading is kept
+
+
+def volunteer_focus(ref: str) -> float:
+    """Where a harvest's wanted videos come among others of the same rank, as a fraction under 0.1: its boulder's (or,
+    where it has none, its climb's) earliest wanted video first, so that all of one boulder's go before the next's,
+    and the boulder waiting longest is meshed first. Read again at most every FOCUS_EVERY seconds."""
+    if time.time() - _focus["at"] > FOCUS_EVERY:
+        first = {r["ref"]: r["t"] for r in VOLUNTEERS.q(
+            "SELECT w.ref, min(w.created) AS t FROM wants w JOIN tasks t ON t.id=w.task WHERE w.purpose='harvest' "
+            "AND t.state IN ('queued','assigned') GROUP BY w.ref")}
+        group = {}
+        for r in q(f"SELECT p.id, c.area_path FROM projects p LEFT JOIN climbs c ON c.id=p.climb_id WHERE p.id IN "
+                   f"({','.join('?' * len(first)) or 'NULL'})", *first):
+            group[r["id"]] = r["area_path"] or r["id"]
+        earliest: dict = {}
+        for pid, t in first.items():
+            g = group.get(pid, pid)
+            earliest[g] = min(earliest.get(g, t), t)
+        _focus.update(at=time.time(), of={pid: earliest[group.get(pid, pid)] for pid in first})
+    t = _focus["of"].get(ref)
+    return min(0.0999, t / 1e11) if t else 0.0999
 
 
 VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteers", volunteer_delivered, volunteer_ready,
@@ -13975,7 +14090,7 @@ def admin_state() -> dict:
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
             "stops": [dict(r) for r in q("SELECT at, kind, id, name, was FROM job_stops ORDER BY at DESC LIMIT 30")],
             "texture_again": texture_again_state(), "black_textures": black_textures(),
-            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "youtube_research": research_status(), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "tiers": {k: v for k, v in mesh_tiers().items() if k != "ids"} | {"texture_ids": mesh_tiers()["ids"]["texture"]}, "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "youtube_research": research_status(), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "video_holds": q("SELECT what, since, coming, notified FROM video_holds ORDER BY since"), "tiers": {k: v for k, v in mesh_tiers().items() if k != "ids"} | {"texture_ids": mesh_tiers()["ids"]["texture"]}, "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q), "backup": backup_state(),
             "manifest": {**manifest_state(), "quiet": manifest_quiet(), "hours": MANIFEST_HOURS}, "lost_blocks": lost_blocks()}
 
@@ -14247,6 +14362,7 @@ def main() -> None:
     threading.Thread(target=skyline_worker, daemon=True).start()
     threading.Thread(target=adopt_old_pools, daemon=True).start()
     threading.Thread(target=retire_all_covered, daemon=True, name="retire-covered").start()
+    threading.Thread(target=holds_worker, daemon=True, name="video-holds").start()
     threading.Thread(target=rest_existing_meshes, daemon=True).start()
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
     threading.Thread(target=shape_existing_meshes, daemon=True).start()

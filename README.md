@@ -1292,8 +1292,13 @@ volunteers and for connecting the public site to whichever server harvests.
   there): today `player_client`, yt-dlp's YouTube clients for videos and their details. There are none now (the mweb
   trial ended on Nov 18); the menu shows when there are. A new kind of setting needs a new script version.
 - **An area's climbs wait for them:** a climb whose harvest asked volunteers for a search or videos has what they
-  fetched added once it's come, and is meshed once, rather than meshed without them first; after 24 h
-  (`VOLUNTEER_WAIT_HOURS`) it's meshed with what's come. Adding keeps the photos it had (asking for them back from the
+  fetched added once it's come, and is meshed once, rather than meshed without them first. It waits as long as what's
+  coming moves on (wanted, given out, or heard of from a volunteer): once none of it has for the admin page's give-up
+  time (12 h; at least 24 h, `VOLUNTEER_WAIT_HOURS`, in all), it's meshed with what's come. A climb being made again
+  (its old mesh remade, say) waits too, and a boulder isn't meshed while videos are coming for any climb on it, whatever
+  that climb's state. One held longer than the admin page's alert time (2 h) is said on the phone, once; the admin
+  page lists what's held now. Volunteers are given one boulder's videos before the next's, the one waiting longest
+  first, so that two waiting boulders don't share them out and both wait. Adding keeps the photos it had (asking for them back from the
   backup first, if they were offloaded, and waiting for them as for a machine): only YouTube is looked at, videos framed
   before aren't framed again, and the filter judges only the new frames.
 - **What's asked of them:** with *Fetch videos from YouTube* at its default, videos a harvest or finding beta couldn't
@@ -1577,6 +1582,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_terrain.py     # offline: elevation squares, with stand-ins for USGS's and IGN's services
     python3 tests/test_skyline.py     # offline: facing from a made-up skyline, and each way it gives up early
     python3 tests/test_incremental.py # offline: adding photos to a kept model: the re-solve gates, the pipeline's side
+    python3 tests/test_video_holds.py # offline: boulders and climbs held up by videos, given up on, the phone told, a boulder at a time
     python3 tests/test_tiers.py       # offline: what made each mesh, what's out of date by tier, remaking a tier
     python3 tests/test_textmask.py    # offline: text masked for texturing (the detector itself only if cached, or MODELS=1)
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
