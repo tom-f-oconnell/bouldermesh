@@ -4054,9 +4054,13 @@ def _new_photos(rec: dict, mesh_made: float) -> int | None:
                     if h not in (then.get(cid) or []):      # a harvest it didn't pool: all of its photos
                         n += len(meshinputs.photos_in(folder)) if not photos_away(h) else 1
                     elif folder.stat().st_mtime > mesh_made and not photos_away(h):
-                        # one it pooled: the photos added since (a folder changes too when photos leave it, or come
-                        # back from the backup with their own times: 92 of 115 such on Nov 20, none new)
-                        n += sum(p.stat().st_mtime > mesh_made for p in meshinputs.photos_in(folder))
+                        # one it pooled: the photos it hasn't by name, of those it pooled (rec's "pooled"); where that
+                        # wasn't recorded, those written since. Not every photo: a folder changes too when photos leave
+                        # it or come back from the backup (92 of 115 such on Nov 20, none new), and harvesting again
+                        # writes the same photos anew
+                        had = set(rec.get("pooled") or [])
+                        n += sum((p.name not in had) if rec.get("pooled") is not None else (p.stat().st_mtime > mesh_made)
+                                 for p in meshinputs.photos_in(folder))
                 except OSError:
                     continue
         return n

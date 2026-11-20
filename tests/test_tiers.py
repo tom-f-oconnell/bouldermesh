@@ -157,6 +157,10 @@ try:
     assert server._new_photos(rec, now - 100) == 1, "a new video's frame"
     harvest("h3", "c1", ["d.jpg", "e.jpg"], now - 50)
     assert server._new_photos(rec, now - 100) == 3, "and a newer harvest of a climb it pooled, whole"
+    # where what it pooled is recorded by name: the same photos written anew (harvested again) aren't new
+    for n in ("a.jpg", "b.jpg"):
+        (server.PROJECTS / "h1" / "photos" / n).write_bytes(b"jpg")
+    assert server._new_photos({**rec, "pooled": ["a.jpg", "b.jpg", "c.jpg"]}, now - 100) == 3, "the frame and the newer harvest"
     print("a boulder's new photos OK")
     print("ALL TIERS TESTS PASSED")
 finally:
