@@ -508,7 +508,8 @@ class RemoteExecutor:
         self.pool, self.image, self.command, self.jobctl = pool, image, command, jobctl
 
     def reconstruct(self, images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool = True, internet: bool = False,
-                    tracker=None) -> tuple[Path, bool]:
+                    tracker=None, add_to: Path | None = None) -> tuple[Path, bool]:
+        # add_to: nodes over SSH are sent only photos and masks, so every photo is placed there
         from progress import Tracker
         node = self.pool.acquire(log)
         broken = False

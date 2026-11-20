@@ -25,6 +25,7 @@ from typing import Callable
 
 import diagnostics
 import gputurn
+import incremental
 import meshopts
 import occlusion
 import orientation
@@ -389,7 +390,7 @@ def steps() -> list[tuple[str, str, float]]:
     if not real_pipeline_ready():
         return [("demo", "Build demo mesh", 1)]
     people = occlusion.available()
-    out = ([("people", "Find people in photos", 1)] if people else []) + [
+    out = ([("people", "Find people in photos", 1)] if people else []) + [("add", "Add photos to its model", 10),
         ("features", "Find features", 3), ("matching", "Match photos", 15), ("mapper", "Place cameras", 40),
         ("rest", "Place the rest", 2), ("level", "Level the model", 1), ("undistort", "Undistort photos", 1)]
     out += ([("people-undistorted", "Mask people for dense steps", 1)] if people else []) + [
@@ -607,6 +608,48 @@ def _upright(model: Path, images: Path, work: Path, log: Log, tracker: Tracker) 
     except RuntimeError as e:  # only costs the orientation
         log(f"levelling failed ({e}); keeping COLMAP's orientation")
         return model
+
+
+def _add_photos(add_to: Path, images: Path, masks: Path | None, work: Path, log: Log, tracker: Tracker, use_gpu: bool) -> dict | None:
+    """Add the photos a mesh's model lacks to it (incremental.add()), leaving work/ as placing them all would have, with
+    its steps up to the rest step marked done. None where that can't be done here (no pycolmap, no kept model or
+    features, no new photos), or a gate says to solve it all again: then work/ is left as if nothing had been tried,
+    for placing every photo, and what was decided kept for the mesh (incremental.ADD_FILE)."""
+    log("== COLMAP: adding photos to the mesh's model")
+    tracker.update("add", 0, "adding photos to its model")
+    unpacked, record = work / "kept", None
+    try:
+        if reconstruction.unpack(add_to, unpacked) is None:
+            raise incremental.Unavailable("it kept no reconstruction")
+        gpu = use_gpu and gpu_choice(True)[0]
+        record = incremental.add(add_to, unpacked, images, masks, work, log, COLMAP, lambda cmd: _run(cmd, work, log), gpu)
+        if record.get("kind") != "add":
+            log(f"nothing added ({record.get('why')}): placing every photo")
+            record = None
+    except incremental.Resolve as e:
+        log(f"FULL RE-SOLVE: {e}")
+        (work / incremental.ADD_FILE).write_text(json.dumps(e.info, indent=1))
+    except incremental.Unavailable as e:
+        log(f"photos can't be added to its model here ({e}): placing every photo")
+        (work / incremental.ADD_FILE).write_text(json.dumps({"kind": "unavailable", "to": add_to.name, "why": str(e)}, indent=1))
+    except Cancelled:
+        raise
+    except Exception as e:  # noqa: BLE001 - an add that fails is no reason not to place them all
+        log(f"adding photos to its model failed ({type(e).__name__}: {e}): placing every photo")
+        (work / incremental.ADD_FILE).write_text(json.dumps({"kind": "failed", "to": add_to.name, "why": f"{type(e).__name__}: {e}"}, indent=1))
+    if record is None:      # as if nothing had been tried
+        for f in [*work.glob("database.db*"), work / "sparse"]:
+            shutil.rmtree(f, ignore_errors=True) if f.is_dir() else f.unlink(missing_ok=True)
+        (work / "sparse").mkdir(exist_ok=True)
+        return None
+    (work / incremental.ADD_FILE).write_text(json.dumps(record, indent=1))
+    build = json.loads((unpacked / "build.json").read_text())
+    (work / EXTRACT_FILE).write_text(json.dumps(build.get("extract") or {}))
+    (work / MAPPER_FILE).write_text(json.dumps({"mapper": "add", "to": add_to.name, "why": "photos added to its model",
+                                                "colmap": colmap_build(), "before": build.get("mapper")}, indent=1))
+    for step in ("features", "matching", "mapper", "rest", "sift-judged"):
+        _finish(work, step)
+    return record
 
 
 def _round_info(info: dict) -> dict:
@@ -1160,9 +1203,13 @@ def _swap_back_placing(work: Path) -> None:
 
 
 def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool,
-                               internet: bool = False, min_registered: int = MIN_REGISTERED, tracker: Tracker | None = None) -> Path:
+                               internet: bool = False, min_registered: int = MIN_REGISTERED, tracker: Tracker | None = None,
+                               add_to: Path | None = None) -> Path:
     """internet=True tunes COLMAP for unordered photos from many cameras (per-image intrinsics,
     affine-shape SIFT, domain-size pooling, guided matching) - slower but far more tolerant.
+
+    add_to: a mesh's folder (or its kept reconstruction and features alone) to add the photos it lacks to its model,
+    rather than place every photo again (_add_photos()); placed from scratch where it can't be, or a gate says so.
 
     Steps that finish are recorded in work/, so called again on the same work/ after an interruption,
     this carries on from there. Within a step, matching keeps its pairs and densifying its depth maps;
@@ -1274,6 +1321,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             _finish(work, "rest")
         return model, registered
 
+    if add_to is not None and not _finished(work, "mapper"):    # where it's added, placing has nothing left to do
+        _add_photos(add_to, images, masks, work, log, tracker, use_gpu)
     model, registered = place()
     extract = json.loads((work / EXTRACT_FILE).read_text()) if (work / EXTRACT_FILE).exists() else {}
     if internet and extract.get("device") == "gpu" and not rejected.exists() and not _finished(work, "sift-judged"):
@@ -1344,6 +1393,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             shutil.copyfile(work / MODELS_FILE, out_dir / MODELS_FILE)
         if (work / FALLBACKS_FILE).exists():
             shutil.copyfile(work / FALLBACKS_FILE, out_dir / FALLBACKS_FILE)
+        if (work / incremental.ADD_FILE).exists():     # photos added to a mesh's model, or a full solve a gate asked for
+            shutil.copyfile(work / incremental.ADD_FILE, out_dir / incremental.ADD_FILE)
         how = json.loads((work / MAPPER_FILE).read_text()) if (work / MAPPER_FILE).exists() else None
         if how:
             (out_dir / MAPPER_FILE).write_text(json.dumps(how, indent=1))
@@ -1587,12 +1638,13 @@ def demo_relief(images: Path, out_dir: Path, log: Log, grid: int = 96) -> Path:
 
 # --------------------------------------------------------------------------
 def reconstruct(images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool = False,
-                internet: bool = False, tracker: Tracker | None = None) -> tuple[Path, bool]:
-    """Returns (mesh_path, is_demo). internet=True for harvested web photo collections."""
+                internet: bool = False, tracker: Tracker | None = None, add_to: Path | None = None) -> tuple[Path, bool]:
+    """Returns (mesh_path, is_demo). internet=True for harvested web photo collections; add_to as
+    reconstruct_colmap_openmvs() has it."""
     n = len([p for p in images.iterdir() if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".png")])
     log(f"{n} photo(s) in {images}")
     if real_pipeline_ready():
-        return reconstruct_colmap_openmvs(images, work, out_dir, log, use_gpu, internet=internet, tracker=tracker), False
+        return reconstruct_colmap_openmvs(images, work, out_dir, log, use_gpu, internet=internet, tracker=tracker, add_to=add_to), False
     missing = [k for k, v in tools_available().items() if not v and k != "TextureMesh"]
     log(f"COLMAP/OpenMVS not found ({', '.join(missing)} missing) - falling back to DEMO mode. "
         "Install them (see Dockerfile) for real photogrammetry.")

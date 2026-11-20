@@ -129,12 +129,12 @@ def unpack(mesh_dir: Path, dest: Path) -> dict | None:
 
 # ------------------------------------------------------------------------- features, kept apart (since PIPELINE_VERSION 2)
 FEATURES_FILE = "features.db.gz"    # beside the mesh: its photos' keypoints and descriptors, offloadable on their own
-FEATURES_KEPT = ("cameras", "images", "keypoints", "descriptors", "rigs", "frames", "pose_priors")
+FEATURES_LEFT_OUT = ("matches", "two_view_geometries")    # in the kept reconstruction's pairs.db already, or not needed
 
 
 def keep_features(db: Path, out_dir: Path, log: Callable[[str], None]) -> Path | None:
-    """Keep a mesh's photos' features beside it (FEATURES_FILE: COLMAP's database with only FEATURES_KEPT's tables
-    filled, gzipped), so that photos added later are matched against the same features its model's points came from:
+    """Keep a mesh's photos' features beside it (FEATURES_FILE: COLMAP's database without FEATURES_LEFT_OUT's tables
+    filled, gzipped: its photos, lenses, COLMAP 4's rigs and frames, keypoints and descriptors), so that photos added later are matched against the same features its model's points came from:
     GPU SIFT gives slightly different ones from run to run (Nov 20: 1 to 12 of 76 photos). Never fails the mesh."""
     if not db.is_file():
         return None
@@ -145,7 +145,7 @@ def keep_features(db: Path, out_dir: Path, log: Callable[[str], None]) -> Path |
         try:
             src.backup(out)
             for (t,) in out.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
-                if t not in FEATURES_KEPT and not t.startswith("sqlite_"):
+                if t in FEATURES_LEFT_OUT:
                     out.execute(f"DELETE FROM {t}")
             out.commit()
             out.execute("VACUUM")

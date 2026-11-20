@@ -145,6 +145,27 @@ RUN mkdir -p /opt/colmap4/bin /opt/colmap4/lib && cp /opt/colmap4-built/bin/colm
 
 FROM colmap4-${COLMAP4} AS colmap4
 
+# pycolmap 4.2.1, built from the same patched COLMAP, Ceres and libraries as colmap4 above (COLMAP4=cuda only): for adding
+# photos to a mesh's kept model (backend/incremental.py), as experiments/mapper/incr builds it. Its extension finds its
+# libraries in /opt/colmap4/lib (its RPATH, which unlike a RUNPATH also finds theirs), so that nothing else in the
+# image loads them. COLMAP4=cpu has none: photos are then never added to a model, and every photo is placed.
+FROM colmap4-cuda AS pycolmap-cuda
+RUN apt-get update && apt-get install -y --no-install-recommends python3-dev python3-pip patchelf && rm -rf /var/lib/apt/lists/* \
+ && pip install --break-system-packages --no-cache-dir scikit-build-core "pybind11==3.0.4" numpy \
+ && cd /opt/colmap && CMAKE_BUILD_PARALLEL_LEVEL="$(( $(nproc) / 2 + 1 ))" pip install --break-system-packages --no-cache-dir \
+      --no-build-isolation --no-deps --target /opt/pycolmap . -Ccmake.define.GENERATE_STUBS=OFF -Ccmake.define.CCACHE_ENABLED=OFF \
+      -Cbuild-dir=/tmp/pycolmap-build -Ccmake.define.CUDA_ENABLED=ON -Ccmake.define.CMAKE_CUDA_ARCHITECTURES=all-major \
+      -Ccmake.define.cudss_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss -Ccmake.define.Eigen3_DIR=/usr/local/share/eigen3/cmake \
+      -Ccmake.define.ONNX_ENABLED=OFF -Ccmake.define.CASPAR_ENABLED=OFF -Ccmake.define.DOWNLOAD_ENABLED=OFF \
+      -Ccmake.define.GUI_ENABLED=OFF -Ccmake.define.OPENGL_ENABLED=OFF -Ccmake.define.CMAKE_BUILD_TYPE=Release -Ccmake.build-type=Release \
+ && rm -rf /tmp/pycolmap-build \
+ && patchelf --force-rpath --set-rpath /opt/colmap4/lib /opt/pycolmap/pycolmap/_core*.so
+
+FROM ubuntu:24.04 AS pycolmap-cpu
+RUN mkdir -p /opt/pycolmap
+
+FROM pycolmap-${COLMAP4} AS pycolmap
+
 FROM ubuntu:24.04 AS build
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -304,6 +325,9 @@ COPY --from=colmap4 /opt/colmap4 /opt/colmap4
 RUN ln -s /opt/colmap4/colmap4 /usr/local/bin/colmap4 && colmap4 -h | head -1 | grep -q "COLMAP 4.2.1" \
  && { [ "$COLMAP4" != cuda ] || colmap4 -h | head -1 | grep -q "with CUDA"; }
 ENV COLMAP4_BIN=/usr/local/bin/colmap4
+COPY --from=pycolmap /opt/pycolmap /opt/pycolmap
+RUN echo /opt/pycolmap > /usr/lib/python3/dist-packages/pycolmap-opt.pth \
+ && { [ "$COLMAP4" != cuda ] || python3 -c "import pycolmap; assert pycolmap.__version__.startswith('4.2.1'), pycolmap.__version__"; }
 COPY --from=mvs /usr/local/bin/OpenMVS /usr/local/bin/OpenMVS
 # with MVS=24: its CUDA build for depth maps, and the OpenCV both its builds link (empty folders otherwise)
 COPY --from=mvs /usr/local/bin/OpenMVS-cuda /usr/local/bin/OpenMVS-cuda

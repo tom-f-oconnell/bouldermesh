@@ -109,7 +109,8 @@ from pathlib import Path
 # 24: says what each job is (meshing, finding beta or size, filtering, scenery) and of which project or mesh, with its link
 # 26: on a Mac, --check offers to start it by itself as a launchd agent; checks the room on Docker Desktop's disk
 # 27: takes a scenery job's frames (scenery/), which before it refused as something a job shouldn't hold
-VERSION = 28
+# 29: takes a mesh's kept reconstruction and features (kept/), for adding photos to its model (incremental.py)
+VERSION = 29
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter", "splat")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
@@ -120,7 +121,7 @@ GPU_LEAST_MB = {"reconstruct": 7600, "beta": 4000, "scale": 4000, "filter": 4000
 SMALL_GPU_MB = min(GPU_LEAST_MB.values())
 BOOT_GRACE = 300            # seconds after the computer starts in which a GPU's driver that doesn't answer yet is waited for
 CPU_TASKS = ("filter", "beta")     # what a machine without a GPU takes, unless --tasks says otherwise
-INPUTS = ("photos", "masks", "mesh", "videos", "more", "scenery", "cache.sqlite", "task.json")   # what a job's folder may hold
+INPUTS = ("photos", "masks", "mesh", "videos", "more", "scenery", "cache.sqlite", "task.json", "kept")   # what a job's folder may hold
 SEND_EVERY = 5              # seconds between reports of a job's log, which also tell the server it's alive
 AWAY_MAX = 3600             # seconds a job carries on with the server out of reach (as it restarts) before it's given up
 AWAY_EVERY = 60             # the most seconds between tries to reach it again meanwhile
@@ -1793,7 +1794,8 @@ def docker_storage() -> list[Path]:
 
 
 def extract(tar_path: Path, dest: Path) -> None:
-    """Unpack what the job needs (photos, masks, a mesh, videos, a capture's scenery, its task.json): only files and folders, under INPUTS."""
+    """Unpack what the job needs (photos, masks, a mesh, videos, a capture's scenery, its task.json, a mesh's kept
+    reconstruction and features to add photos to): only files and folders, under INPUTS."""
     with tarfile.open(tar_path) as tar:
         members = tar.getmembers()
         for t in members:

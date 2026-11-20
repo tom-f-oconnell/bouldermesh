@@ -810,11 +810,13 @@ class Board:
 
     # -- the climb's side: what compute.RemoteExecutor does, for these machines ---------------------------------------
     def reconstruct(self, images: Path, work: Path, out_dir: Path, log, use_gpu: bool = True, internet: bool = False,
-                    tracker=None, same: dict | None = None) -> tuple[Path, bool]:
+                    tracker=None, same: dict | None = None, add_to: Path | None = None) -> tuple[Path, bool]:
         """Reconstruct a project's photos on a machine that connects here: what pipeline.reconstruct does, there.
 
         Args:
             images: the project's photos/, next to its masks/, which go too and come back with new ones.
+            add_to: a folder of a mesh's kept reconstruction and features, sent as kept/: the photos its model lacks are
+                added to it there (pipeline.reconstruct()'s add_to), from a machine's script of version 29 on.
             same: {"rules": MESH_RULES, "fingerprint": its inputs' fingerprint (meshinputs.py), or None if unknown}: the
                 job is kept over a restart, and one kept from before it for this project is taken up if made under
                 the same (_reattach()), and dropped otherwise. Without it, nothing is kept or taken up.
@@ -827,6 +829,8 @@ class Board:
         """
         project = images.parent
         files = {part: project / part for part in ("photos", "masks") if (project / part).is_dir()}
+        if add_to is not None and add_to.is_dir():
+            files["kept"] = add_to
         made = self._take_held(project, files, log)
         if made:
             result, tar = made

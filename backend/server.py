@@ -58,6 +58,7 @@ import beta as beta_mod  # noqa: E402
 import captureplan  # noqa: E402
 import locateapi  # noqa: E402
 import reconstruction  # noqa: E402
+import incremental as incremental_mod  # noqa: E402
 import scale as scale_mod  # noqa: E402
 import compute  # noqa: E402
 import ec2fleet  # noqa: E402
@@ -4095,7 +4096,8 @@ def mesh_tiers(fresh: bool = False) -> dict:
         if n:
             ids["new_data"].append(m["id"])
             photos += n
-    report = {"pipeline_version": pipeline.PIPELINE_VERSION, "texture_version": pipeline.TEXTURE_VERSION, "meshes": len(rows),
+    adds = adds_summary()
+    report = {"pipeline_version": pipeline.PIPELINE_VERSION, "texture_version": pipeline.TEXTURE_VERSION, "meshes": len(rows), "adds": adds,
               "rules": rules, "pipeline": len(ids["pipeline"]), "fallback": {"n": len(ids["fallback"]), "why": dict(why)},
               "texture": len(ids["texture"]), "texture_unkept": unkept, "new_data": len(ids["new_data"]), "new_photos": photos,
               "ids": ids, "at": time.time()}
@@ -4103,11 +4105,41 @@ def mesh_tiers(fresh: bool = False) -> dict:
     return report
 
 
-def queue_remakes(mids: list[str], tier: str) -> dict:
+def adds_summary() -> dict:
+    """How adding photos to meshes' models has gone, from each mesh's incremental.ADD_FILE: how many were added to, how
+    many gave way to a full re-solve and by which gate (with what each measured), how many couldn't be added to here or
+    failed, and the median seconds of an add's own part against a full solve's whole tools' time."""
+    out = {"add": 0, "resolve": {}, "unavailable": 0, "failed": 0, "resolves": [], "add_seconds": None, "resolve_seconds": None}
+    add_s, solve_s = [], []
+    for d in MESHES.iterdir() if MESHES.exists() else []:
+        rec = _read_json(d / incremental_mod.ADD_FILE)
+        if not rec:
+            continue
+        kind = rec.get("kind")
+        if kind == "add":
+            out["add"] += 1
+            add_s.append(((rec.get("seconds") or {}).get("all")) or 0)
+        elif kind == "resolve":
+            gate = (rec.get("decision") or {}).get("gate") or "?"
+            out["resolve"][gate] = out["resolve"].get(gate, 0) + 1
+            out["resolves"].append({"mesh": d.name, "to": rec.get("to"), "gate": gate, "measured": (rec.get("decision") or {}).get("measured")})
+            t = (mesh_timings(d.name) or {}).get("tools_seconds")
+            if t:
+                solve_s.append(t)
+        elif kind in ("unavailable", "failed"):
+            out[kind] += 1
+    out["add_seconds"] = round(statistics.median(add_s)) if add_s else None
+    out["resolve_seconds"] = round(statistics.median(solve_s)) if solve_s else None
+    out["resolves"] = out["resolves"][-20:]
+    return out
+
+
+def queue_remakes(mids: list[str], tier: str, add: bool = False) -> dict:
     """Queue these meshes to be made again at low priority (old_rerun REMAKE_RANKS[tier]), taken only when no area has
     anything else (_claim_old()), from the photos they have: a climb's own mesh by rebuilding its climb, a boulder's by
     meshing its boulder again (even from the same photos, unless it's for new photos), a pool's by meshing its climbs
-    together again, each on an area's climb of it that isn't busy. A rest goes with its boulder's mesh; a mesh no area
+    together again, each on an area's climb of it that isn't busy; for new photos with add, by adding them to its model
+    (incremental.py) where it kept its features, else from scratch. A rest goes with its boulder's mesh; a mesh no area
     lists is left (counted apart). Returns {queued, busy, not_in_area}."""
     rank, out = REMAKE_RANKS[tier], {"queued": 0, "busy": 0, "not_in_area": 0}
     note = {"pipeline": "made by an older pipeline", "fallback": "made from the CPU's SIFT without GPU SIFT's being tried or judged",
@@ -4117,20 +4149,22 @@ def queue_remakes(mids: list[str], tier: str) -> dict:
         rec = meshinputs.load(MESHES / mid) or {}
         kind, pid = rec.get("kind"), rec.get("project")
         proj = q("SELECT boulder FROM projects WHERE id=?", pid, one=True) if pid else None
+        adding = tier == "new_data" and add and (MESHES / mid / reconstruction.FEATURES_FILE).is_file() or tier == "new_data" and add \
+            and offload_mod.away(q, f"meshes/{mid}/{reconstruction.FEATURES_FILE}")
         if kind in ("climb", "other"):
             rows, redo, pool = q(f"SELECT ci.campaign_id, ci.source_id, ci.status FROM campaign_items ci WHERE ci.project_id=? AND {free} "
-                                 "ORDER BY ci.rank", pid), "rebuild", None
+                                 "ORDER BY ci.rank", pid), "add" if adding else "rebuild", None
             any_row = q("SELECT 1 FROM campaign_items WHERE project_id=?", pid, one=True)
         elif kind == "boulder" and rec.get("leaf"):
             rows = q(f"SELECT ci.campaign_id, ci.source_id, ci.status FROM campaign_items ci WHERE ci.boulder=? AND {free} ORDER BY ci.rank",
                      rec["leaf"])
-            redo, pool = ("boulder" if tier == "new_data" else "boulder+again"), None
+            redo, pool = ("boulder+add" if adding else "boulder" if tier == "new_data" else "boulder+again"), None
             any_row = q("SELECT 1 FROM campaign_items WHERE boulder=?", rec["leaf"], one=True)
         elif kind == "pool" and proj and proj["boulder"] and rec.get("pool"):
             marks = ",".join("?" * len(rec["pool"]))
             rows = q(f"SELECT ci.campaign_id, ci.source_id, ci.status FROM campaign_items ci WHERE ci.climb_id IN ({marks}) AND {free} "
                      "ORDER BY ci.rank", *rec["pool"])
-            redo, pool = "cluster", proj["boulder"]
+            redo, pool = ("cluster+add" if adding else "cluster"), proj["boulder"]
             any_row = q(f"SELECT 1 FROM campaign_items WHERE climb_id IN ({marks})", *rec["pool"], one=True)
         else:
             out["not_in_area"] += 1
@@ -4497,12 +4531,41 @@ def place_climbs(mid: str, pid: str, log) -> None:
         log(f"placing its climbs failed ({type(e).__name__}: {e})")
 
 
+def kept_for_add(mid: str, pdir: Path, remote: bool, log) -> Path | None:
+    """What adding photos to a mesh's model needs (its kept reconstruction and features, its check and how it was made):
+    its own folder here, or for a machine a folder of those alone in the project (kept/), sent as the job's kept/. None,
+    said in the log, if it kept no features (made before PIPELINE_VERSION 2). Its features are asked back first if
+    offloaded (PhotosAway: the job waits for them)."""
+    d = MESHES / mid
+    if not (d / reconstruction.FILE).is_file() or not (d / reconstruction.FEATURES_FILE).is_file() and not offload_mod.away(
+            q, f"meshes/{mid}/{reconstruction.FEATURES_FILE}"):
+        log(f"mesh {mid} kept no {'reconstruction' if not (d / reconstruction.FILE).is_file() else 'features'}: every photo is placed")
+        return None
+    path = f"meshes/{mid}/{reconstruction.FEATURES_FILE}"
+    if offload_mod.lost(q, [path]):
+        log(f"mesh {mid}'s features were lost from the backup: every photo is placed")
+        return None
+    if offload_mod.want(DATA, q, [path]):
+        raise PhotosAway(f"adding photos to mesh {mid}: its features are in the backup, and have been asked for back")
+    if not remote:
+        return d
+    kept = pdir / "kept"
+    shutil.rmtree(kept, ignore_errors=True)
+    kept.mkdir()
+    for name in (reconstruction.FILE, reconstruction.FEATURES_FILE, "check.json", incremental_mod.ADD_FILE):
+        if (d / name).is_file():
+            shutil.copyfile(d / name, kept / name)
+    return kept
+
+
 def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = None, resume: bool = False,
-                    keep_better: bool = False) -> str | None:
+                    keep_better: bool = False, add_to: str | None = None) -> str | None:
     """Make a project's mesh.
 
     Args:
         resume: carry on from the last step an interrupted run finished, rather than from scratch.
+        add_to: a mesh whose model the project's photos it lacks are added to (incremental.py), where it kept its
+            reconstruction and features (asked back from the backup first, if offloaded); else every photo is placed.
         keep_better: if this places fewer photos than the project's mesh before, from photos that included every one
             that mesh placed (fewer_placed()), that one stays the current one, and this is kept as an older version of it.
 
@@ -4540,7 +4603,13 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         tracker.at("machine" if remote else "server")
         # on machines that connect here, the job outlasts a restart, and is taken up again under the same rules and inputs
         same = {"same": {"rules": MESH_RULES, "fingerprint": inputs_fingerprint(inputs)}} if remote and _executor is MACHINES else {}
-        mesh_path, demo = build(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker, **same)
+        kept = kept_for_add(add_to, pdir, remote, log) if add_to else None
+        try:
+            mesh_path, demo = build(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker, **same,
+                                    **({"add_to": kept} if kept else {}))
+        finally:
+            if kept is not None and kept.parent == pdir:
+                shutil.rmtree(kept, ignore_errors=True)
         flat, sheet = meshmetrics.thickness(mesh_path), meshmetrics.sheet_spread(mesh_path)
         if flat is not None and flat < meshmetrics.FLAT_BELOW or sheet is not None and sheet < meshmetrics.SHEET_BELOW:
             aside = pdir / "flat-mesh"      # a photo on a card, flat or bent: a failure, kept aside to look at
@@ -5154,7 +5223,7 @@ def mesh_boulder(boulder: str) -> tuple[dict, int]:
     return {"queued": True, "project_id": pid, "position": jobs.qsize()}, 202
 
 
-def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better: bool = False) -> None:
+def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better: bool = False, add_to: str | None = None) -> None:
     """Mesh a whole boulder from every photo its climbs' harvests found, in a project and mesh of its own, which
     take nothing from any climb's own; then work out where on it each climb is seen from (viewpoints.py), by the
     photos from its own page and videos. A climb's own harvests stay as they are, to mesh it from on its own.
@@ -5259,7 +5328,7 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
             log("not enough viewpoint diversity for photogrammetry, even with every climb's photos - skipping reconstruction")
             tracker.skip_rest()
             return
-        run_reconstruct(pid, internet=True, tracker=tracker, resume=resume, keep_better=keep_better)
+        run_reconstruct(pid, internet=True, tracker=tracker, resume=resume, keep_better=keep_better, add_to=add_to)
         done = q("SELECT status, mesh_id FROM projects WHERE id=?", pid, one=True)
         if done["status"] == "done":
             shutil.rmtree(pdir / "work", ignore_errors=True)   # most of its disk use, and only useful to itself
@@ -6673,7 +6742,7 @@ def halt_job(pid: str, stop: bool = True) -> tuple[list[dict], list]:
 
 ITEM_STATES = {"pending": "still to go", "running": "in progress", "waiting": "waiting for volunteers' YouTube searches and videos",
                "harvested": "harvested, waiting for the rest of its boulder's", "done": "meshed", "skipped": "skipped", "failed": "failed"}
-OWN_REDOS = ("harvest", "videos", "more", "new", "refilter", "rebuild", "rebuild-changed", "try-skipped", "own")   # done in a climb's own project
+OWN_REDOS = ("harvest", "videos", "more", "new", "refilter", "rebuild", "rebuild-changed", "try-skipped", "own", "add")   # done in a climb's own project
 MESHES_FOR = ("boulder", "pool", "cluster")     # done in the project of the climb's boulder, or of a group of climbs
 
 
@@ -6866,6 +6935,8 @@ REDO_NAMES = {"harvest": "harvest again", "videos": "look for new videos", "rebu
               "harvest+rebuild": "harvest again and rebuild", "videos+rebuild": "look for new videos and rebuild",
               "boulder": "mesh its boulder from every climb's photos", "pool": "mesh its boulder from every climb's photos",
               "boulder+again": "mesh its boulder again from every climb's photos, whatever's changed",
+              "add": "add its new photos to its mesh's model", "boulder+add": "add its climbs' new photos to its boulder's mesh's model",
+              "cluster+add": "add new photos to the model of its mesh with the climbs its photos match",
               "try-skipped": "try meshing, as the viewpoint check would let it now",
               "own": "mesh it on its own, as its boulder's mesh hardly shows it",
               "cluster": "mesh it with the climbs its photos match"}
@@ -7055,7 +7126,8 @@ def _rebuild(cid: str, row: dict, log) -> dict:
     set_item(cid, row["source_id"], redo_started=1)
     append_log(pid, "-- carrying on rebuilding" if resume else "-- rebuilding")
     camp = q("SELECT keep_better FROM campaigns WHERE id=?", cid, one=True) or {}
-    made = run_reconstruct(pid, internet=True, resume=resume, keep_better=camp.get("keep_better", 1) != 0)
+    add_to = row["mesh_id"] if row.get("redo") == "add" and row["mesh_id"] else None     # its new photos added to its mesh's model
+    made = run_reconstruct(pid, internet=True, resume=resume, keep_better=camp.get("keep_better", 1) != 0, add_to=add_to)
     p = q("SELECT status,mesh_id FROM projects WHERE id=?", pid, one=True)
     if made and p["status"] == "done" and row["mesh_id"] and p["mesh_id"] == row["mesh_id"] != made:
         shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)
@@ -7091,7 +7163,8 @@ def _boulder_again(cid: str, row: dict) -> dict:
     resume = bool(row["redo_started"] and proj and proj["status"] in ("stopped", "interrupted", "failed", "harvesting", "running"))
     pid = boulder_project_made(boulder)
     set_item(cid, row["source_id"], redo_started=1)
-    run_boulder(pid, resume=resume, keep_better=camp.get("keep_better", 1) != 0)
+    add_to = (proj or {}).get("mesh_id") if row.get("redo") == "boulder+add" else None     # its climbs' new photos, added to its model
+    run_boulder(pid, resume=resume, keep_better=camp.get("keep_better", 1) != 0, add_to=add_to)
     p = q("SELECT status, mesh_id, harvest FROM projects WHERE id=?", pid, one=True)
     harvest = json.loads(p["harvest"]) if p["harvest"] else {}
     of = harvest.get("climbs") or {}
@@ -7268,7 +7341,8 @@ def _run_cluster_redo(camp: dict, row: dict) -> None:
             pid = boulder_project_made(key)
             set_item(cid, sid, redo_started=1)
             keep = (q("SELECT keep_better FROM campaigns WHERE id=?", cid, one=True) or {}).get("keep_better", 1) != 0
-            run_boulder(pid, resume=resume, fetch=False, keep_better=keep)
+            add_to = (proj or {}).get("mesh_id") if row.get("redo") == "cluster+add" else None
+            run_boulder(pid, resume=resume, fetch=False, keep_better=keep, add_to=add_to)
             p = q("SELECT status, mesh_id, harvest FROM projects WHERE id=?", pid, one=True)
             if p["status"] == "done" and p["mesh_id"]:
                 for m in members:
@@ -14103,11 +14177,11 @@ def admin_retexture(_: dict) -> dict:
 
 def admin_remake_tier(body: dict) -> dict:
     """Queue the meshes of one of mesh_tiers()'s tiers to be made again at low priority (queue_remakes()):
-    {"tier": "pipeline" | "fallback" | "new_data"}."""
+    {"tier": "pipeline" | "fallback" | "new_data", "add": true to add new photos to meshes' models rather than remake}."""
     tier = body.get("tier")
     if tier not in REMAKE_RANKS:
         raise ValueError(f"tier must be one of {', '.join(REMAKE_RANKS)}")
-    got = queue_remakes(mesh_tiers(fresh=True)["ids"][tier], tier)
+    got = queue_remakes(mesh_tiers(fresh=True)["ids"][tier], tier, add=bool(body.get("add")))
     return {"result": f"queued {got['queued']} to be made again at low priority" + (f"; {got['busy']} already queued or busy" if got["busy"] else "")
             + (f"; {got['not_in_area']} not in any area, left (remake each from its project's card)" if got["not_in_area"] else "")}
 

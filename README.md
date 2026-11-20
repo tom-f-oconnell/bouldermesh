@@ -298,6 +298,17 @@ CPU-SIFT ones last), on an area's climb of each: a climb's mesh by rebuilding it
 again, a pool's by meshing its climbs together again. Raise `PIPELINE_VERSION` with any change to how photos are
 placed or meshed, and `TEXTURE_VERSION` with any change to texturing alone.
 
+**Adding photos to a model.** *Add new photos* on the admin page adds the photos a mesh wasn't made from to its model
+(backend/incremental.py, through pycolmap 4.2.1 in the machines' image), rather than placing every photo again: the new
+photos' features made as the mesh's were, matched with every photo, registered with the model's cameras and lenses held
+and refined alone, then levelled, sized and meshed as any mesh is. Only meshes that kept their features (since pipeline
+version 2) can be; others are remade whole. It gives way to a full re-solve when the model would grow by more than half
+since its last full solve, when under half of 6 or more new photos linked to it can be placed, when photos joined to it
+by verified matches are left out that weren't at its last full solve, or when it passed its own check and fails it with
+them. Each new mesh keeps `add.json` saying which happened, and for a re-solve the gate and what it measured; the admin
+page counts them, with the latest re-solves. In a job's timings, an add is the step *Add photos to its model*, and the
+features-to-rest steps have no time; a re-solve has both. Machines take adds from script version 29 on.
+
 A mesh is *old by data* when a newer one, made under the same rules, is of every climb it's of, and was made from photos
 it lacked (by what each was made from, `inputs.json`; where that wasn't kept, when its photos are some of the newer
 one's). It stays current, and isn't deleted, but visitors' lists of a boulder's meshes leave it out too, and editors see
@@ -1565,6 +1576,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_heading.py     # offline: which way a mesh faces, from photos' compasses and Mountain Project's text, and which wins
     python3 tests/test_terrain.py     # offline: elevation squares, with stand-ins for USGS's and IGN's services
     python3 tests/test_skyline.py     # offline: facing from a made-up skyline, and each way it gives up early
+    python3 tests/test_incremental.py # offline: adding photos to a kept model: the re-solve gates, the pipeline's side
     python3 tests/test_tiers.py       # offline: what made each mesh, what's out of date by tier, remaking a tier
     python3 tests/test_textmask.py    # offline: text masked for texturing (the detector itself only if cached, or MODELS=1)
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
