@@ -9,8 +9,8 @@ first hands' holds are start holds, the last hands' finish holds, other hands' h
 only feet touched foot holds. People's masks only say where people are, not which parts are hands
 and which feet, which is why a pose model is used.
 
-  beta.json      per video: its holds, each limb's track on the mesh, the climber's centre's (centre, in
-                 pieces), and how far it got
+  beta.json      per video: its holds, each limb's track on the mesh and the climber's centre's (centre), both
+                 in pieces with spikes taken out, and how far it got
   beta_<tag>.jpg the video's placed frame most matched, with the tracks and holds drawn on it
   holds.json     holds marked by hand in the viewer: [{p: [x, y, z], role}]
   beta_poses.json per video, each frame's climber: {t, kp, sc, ref, H}, all their keypoints and scores,
@@ -446,7 +446,7 @@ def centre_track(mesh: "Mesh", cams: dict[str, dict], sizes: dict[str, tuple[int
         X = views[ref].hit(q[:2] / q[2])[0]
         if X is not None:
             out.append([round(float(f["t"]), 2), *(round(float(x), 5) for x in X)])
-    return pieces(despike(out, SPIKE * mesh.size), SPIKE * mesh.size)
+    return in_pieces(out, mesh.size)
 
 
 def despike(track: list[list[float]], radius: float, window: float = SPIKE_SECONDS) -> list[list[float]]:
@@ -480,12 +480,23 @@ def pieces(track: list[list[float]], jump: float, gap: float = GAP_SECONDS, leas
     return [r for r in out if len(r) >= least]
 
 
-def add_centres(mesh_dir: Path) -> int:
-    """Give each video of a mesh's beta.json with no centre track one, from POSES_FILE: for beta found before there
-    were centre tracks. A placed frame's size is its lens's, so its photo isn't needed.
+def in_pieces(track: list, size: float) -> list[list[list[float]]]:
+    """A track ([[t, x, y, z]], in time order) as it's kept and drawn: spikes taken out (despike()), in pieces
+    (pieces()), for a rock of this size."""
+    return pieces(despike(track, SPIKE * size), SPIKE * size)
+
+
+def _flat(track: list) -> bool:
+    """Whether a track is as tracks were kept before they were in pieces: [[t, x, y, z]]."""
+    return bool(track) and isinstance(track[0][0], (int, float))
+
+
+def redraw_lines(mesh_dir: Path) -> int:
+    """For beta found before its lines were filtered: each video's limbs' tracks in pieces (in_pieces()), and a
+    centre track from POSES_FILE where it has none. A placed frame's size is its lens's, so its photo isn't needed.
 
     Returns:
-        How many videos were given one.
+        How many videos were changed.
     """
     record = load(mesh_dir)
     if not record or record.get("status") == "running":
@@ -493,23 +504,28 @@ def add_centres(mesh_dir: Path) -> int:
     try:
         poses = json.loads((mesh_dir / POSES_FILE).read_text())
     except (FileNotFoundError, json.JSONDecodeError):
-        return 0
-    todo = [v for v in record.get("videos") or [] if "centre" not in v and v.get("url") in poses]
+        poses = {}
+    old = lambda v: any(_flat(tr) for tr in (v.get("tracks") or {}).values()) or ("centre" not in v and v.get("url") in poses)  # noqa: E731
+    todo = [v for v in record.get("videos") or [] if old(v)]
     if not todo:
         return 0
-    cams = {c["name"]: c for c in json.loads((mesh_dir / "cameras.json").read_text())}
-    sizes = {n: (c["lens"]["width"], c["lens"]["height"]) for n, c in cams.items()
-             if (c.get("lens") or {}).get("width") and c["lens"].get("height")}
-    mesh, views = Mesh.load(mesh_dir), {}
-    made = {v["url"]: centre_track(mesh, cams, sizes, poses[v["url"]], views) for v in todo}
+    mesh, views, made = Mesh.load(mesh_dir), {}, {}
+    if any("centre" not in v and v.get("url") in poses for v in todo):
+        cams = {c["name"]: c for c in json.loads((mesh_dir / "cameras.json").read_text())}
+        sizes = {n: (c["lens"]["width"], c["lens"]["height"]) for n, c in cams.items()
+                 if (c.get("lens") or {}).get("width") and c["lens"].get("height")}
+        made = {v["url"]: centre_track(mesh, cams, sizes, poses[v["url"]], views) for v in todo if "centre" not in v and v.get("url") in poses}
     now = load(mesh_dir)    # as it is now: a search may have started meanwhile
     if not now or now.get("status") == "running":
         return 0
     n = 0
     for v in now.get("videos") or []:
+        if not old(v):
+            continue
+        v["tracks"] = {limb: in_pieces(tr, mesh.size) if _flat(tr) else tr for limb, tr in (v.get("tracks") or {}).items()}
         if "centre" not in v and v.get("url") in made:
             v["centre"] = made[v["url"]]
-            n += 1
+        n += 1
     if n:
         save(mesh_dir, now)
     return n
@@ -636,9 +652,9 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
 
     Returns:
         {frames, with_climber, placed_frames, approximate_lens, holds, tracks, centre, reference, poses}: tracks are
-        each limb's [t, x, y, z] on the mesh, centre the climber's (centre_track()), reference the placed frame most
-        matched, poses the climber in each frame they're found in: {t, kp, sc, ref, H}, ref and H None where it
-        matched no placed frame.
+        each limb's [t, x, y, z] on the mesh, in pieces (in_pieces()), centre the climber's (centre_track()),
+        reference the placed frame most matched, poses the climber in each frame they're found in: {t, kp, sc, ref,
+        H}, ref and H None where it matched no placed frame.
     """
     import cv2
     import numpy as np
@@ -686,7 +702,8 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
     reference = max(used, key=used.get) if used else None
     return {"frames": len(frames), "with_climber": seen, "placed_frames": sum(used.values()),
             "approximate_lens": any(lens(placed[n], sizes[n])[4] for n in used), "reference": reference, "holds": result,
-            "tracks": {limb: [[round(t, 2), *(round(float(x), 5) for x in p)] for t, p in tr if p is not None] for limb, tr in tracks.items()},
+            "tracks": {limb: in_pieces([[round(t, 2), *(round(float(x), 5) for x in p)] for t, p in tr if p is not None], mesh.size)
+                       for limb, tr in tracks.items()},
             "centre": centre_track(mesh, placed, sizes, poses, views), "poses": poses}
 
 
@@ -696,11 +713,12 @@ def annotate(photo: Path, cam: dict, result: dict, out: Path) -> None:
     im = cv2.imread(str(photo))
     size = (im.shape[1], im.shape[0])
     for limb, tr in result["tracks"].items():
-        pts = [project(cam, size, p[1:]) for p in tr]
         colour = (235, 235, 235) if LIMBS[limb][0] == "hand" else (60, 200, 255)
-        for a, b in zip(pts, pts[1:]):
-            if a and b:
-                cv2.line(im, tuple(map(int, a)), tuple(map(int, b)), colour, max(1, size[0] // 640), cv2.LINE_AA)
+        for piece in tr:
+            pts = [project(cam, size, p[1:]) for p in piece]
+            for a, b in zip(pts, pts[1:]):
+                if a and b:
+                    cv2.line(im, tuple(map(int, a)), tuple(map(int, b)), colour, max(1, size[0] // 640), cv2.LINE_AA)
     r = max(8, size[0] // 75)     # open rings, as the viewer draws them
     w = max(2, r // 4)
     for h in result["holds"]:

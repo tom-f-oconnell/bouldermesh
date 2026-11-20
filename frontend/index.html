@@ -5233,9 +5233,10 @@ function drawBeta(){
   };
   for (const v of betaState.found?.videos || []) {
     if (!betaState.shown.has(v.tag)) continue;
-    for (const [limb, track] of Object.entries(v.tracks || {})) {
-      if (track.length < 2) continue;
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(track.map(t => new THREE.Vector3(t[1], t[2], t[3]))),
+    // each limb's track in pieces; beta not yet redrawn (beta.redraw_lines()) has one, unfiltered
+    for (const [limb, track] of Object.entries(v.tracks || {})) for (const piece of typeof track[0]?.[0] === 'number' ? [track] : track) {
+      if (piece.length < 2) continue;
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(piece.map(t => new THREE.Vector3(t[1], t[2], t[3]))),
         new THREE.LineBasicMaterial({ color: limb.endsWith('h') ? 0xe8e8e8 : 0xffc83c, transparent: true, opacity: .55 }));
       line.userData.beta = true; g.add(line);
     }

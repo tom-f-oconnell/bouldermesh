@@ -2428,22 +2428,22 @@ def heading_existing_meshes() -> None:
             time.sleep(0.05)
 
 
-def centres_existing_meshes() -> None:
-    """Give videos whose beta was found before there were centre tracks one each (beta.add_centres()), newest mesh
-    first, at the lowest CPU priority."""
+def lines_existing_meshes() -> None:
+    """Filter the lines of beta found before they were (beta.redraw_lines()): its limbs' tracks, and a centre track
+    added from its kept poses; newest mesh first, at the lowest CPU priority."""
     os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
     n = 0
     for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL ORDER BY created DESC"):
         d = MESHES / m["id"]
-        if not (d / beta_mod.POSES_FILE).exists():
+        if not (d / beta_mod.FILE).exists():
             continue
         try:
-            n += beta_mod.add_centres(d)
+            n += beta_mod.redraw_lines(d)
         except Exception as e:
-            print(f"centre tracks for mesh {m['id']} failed ({type(e).__name__}: {e})", flush=True)
+            print(f"beta lines for mesh {m['id']} failed ({type(e).__name__}: {e})", flush=True)
         time.sleep(0.05)
     if n:
-        print(f"centre tracks added for {plural(n, 'video')}, from their kept poses", flush=True)
+        print(f"beta lines filtered for {plural(n, 'video')}", flush=True)
 
 
 # which way meshes face from their photos' skyline (skyline.py): in the background, one at a time, at the lowest CPU
@@ -13236,7 +13236,7 @@ def main() -> None:
     threading.Thread(target=orient_existing_meshes, daemon=True).start()
     threading.Thread(target=source_existing_meshes, daemon=True).start()
     threading.Thread(target=heading_existing_meshes, daemon=True).start()
-    threading.Thread(target=centres_existing_meshes, daemon=True, name="centres-backfill").start()
+    threading.Thread(target=lines_existing_meshes, daemon=True, name="beta-lines-backfill").start()
     threading.Thread(target=skyline_worker, daemon=True).start()
     threading.Thread(target=adopt_old_pools, daemon=True).start()
     threading.Thread(target=rest_existing_meshes, daemon=True).start()

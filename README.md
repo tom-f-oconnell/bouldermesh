@@ -423,9 +423,9 @@ too). *Find beta* looks at each video with frames placed in the mesh. It finds t
 feet with a pose model, casts them onto the mesh, and keeps the points where one stayed still for at
 least a second. The first holds the hands used are start holds, the last ones finish holds, and holds
 only feet touched are foot holds. Each video has its own holds and tracks (hands white, feet yellow, and
-the climber's centre cyan: halfway between the middles of their shoulders and hips), which can be shown or
-hidden, and a picture of its frame with the tracks and holds drawn on it. Expect a few minutes per
-video on a CPU. Meshes built before Nov 3 didn't keep their cameras' lenses, and those before Nov 1
+the climber's centre cyan: halfway between the middles of their shoulders and hips; spikes and short
+glitches left out), which can be shown or hidden, and a picture of its frame with the tracks and holds
+drawn on it. Expect a few minutes per video on a CPU. Meshes built before Nov 3 didn't keep their cameras' lenses, and those before Nov 1
 where their photos were placed, so they need rebuilding first. Each new mesh with video frames placed in it
 has its beta found straight after, while its videos are still kept (*Find beta in each new mesh* on the
 admin page's *Areas*); on machines that connect here, meshing comes first, then beta and size.

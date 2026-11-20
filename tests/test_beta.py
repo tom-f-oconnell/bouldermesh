@@ -194,11 +194,13 @@ with tempfile.TemporaryDirectory() as td:
     assert len(got) == 1 and [p[0] for p in got[0]] == [0.5, 1.0, 1.5] and close(got[0][0][1:], X, 1e-4), got
     (d / "cameras.json").write_text(json.dumps([{"name": "a.jpg", **cam}]))
     (d / beta.POSES_FILE).write_text(json.dumps({"u1": frames}))
-    beta.save(d, {"status": "done", "videos": [{"url": "u1", "holds": []}, {"url": "u2", "holds": []}]})
-    assert beta.add_centres(d) == 1, "only the video with poses kept"
+    beta.save(d, {"status": "done", "videos": [{"url": "u1", "holds": [], "tracks": {"lh": []}}, {"url": "u2", "holds": [], "tracks": {"lh": line}},
+                                                {"url": "u3", "holds": [], "tracks": {"lh": []}}]})
+    assert beta.redraw_lines(d) == 2, "the video with poses kept, and the one with a track to filter"
     vids = beta.load(d)["videos"]
     assert close(vids[0]["centre"][0][0][1:], X, 1e-4) and "centre" not in vids[1], vids
-    assert beta.add_centres(d) == 0, "not again"
+    assert vids[1]["tracks"]["lh"] == [line] and vids[2] == {"url": "u3", "holds": [], "tracks": {"lh": []}}, vids
+    assert beta.redraw_lines(d) == 0, "not again"
 
 # --- YouTube refusing partway: it waits, and then does only the videos it hadn't ---------------------------------
 from climbs import youtube  # noqa: E402
