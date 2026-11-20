@@ -128,6 +128,11 @@ in Terms.kt), from the next start (or at once when signing in). The phone's own 
   needs photographing from about 70 cm or nearer. An iPhone gives its full 12 megapixels while tracking, and its
   shutter is kept to 1/120 s or shorter.
 - A capture's mesh is new, beside the one it adds to, and linked to the same climbs: which to keep is yours.
+- **Adding a JavaScript bridge to the web views** (an iOS `WKScriptMessageHandler`, or Android's
+  `addJavascriptInterface`) needs a change in the site too. The page's error reports drop messages naming `WKWebView`
+  (`NOT_OURS` in frontend/index.html, `NOISE` in backend/sitehealth.py), since Brave on iOS throws "The WKWebView was
+  deallocated before the message was delivered" from its own bridge. Once the app has a bridge of its own, that error
+  could be ours, so narrow the pattern to Brave's (or drop it) at the same time. Neither app has a bridge as of Nov 2026.
 
 ## Building
 
