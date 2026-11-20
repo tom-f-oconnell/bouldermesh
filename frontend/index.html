@@ -3982,8 +3982,12 @@ function currentHtml(c){
 async function refreshCampaigns(kept = null){
   // low priority (only remaking old meshes) under the rest; within each, those whose projects machines are working for (a
   // mesh's size or beta, say) first, the rest in their order (#place)
-  // three bands, as projects: going on; low priority (only remaking old meshes); then stopped and done (or finishing)
-  const band = c => { const st = c.state || c.status; return areaJobs(c, st) ? 0 : st === 'low priority' ? 3 : ['stopped', 'done'].includes(st) ? 6 : 0; };
+  // three bands, as projects: going on; low priority (set so, or only remaking old meshes), even while machines work for it,
+  // as it only takes what the others leave; then stopped and done (or finishing)
+  const band = c => {
+    const st = c.state || c.status, jobs = areaJobs(c, st);
+    return !jobs && ['stopped', 'done'].includes(st) ? 6 : c.low_priority || st === 'low priority' ? 3 : 0;
+  };
   const busy = c => band(c) + ((areasAtWork.get(c.id) || []).some(w => w.state === 'running') ? 0 : areasAtWork.has(c.id) ? 1 : 2);
   const fresh = kept || await api('/api/campaigns');
   $('#campaigns').classList.toggle('stale', !!kept); $('#areas-loading').hidden = !kept;
