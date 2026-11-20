@@ -164,7 +164,7 @@ class Home(private val app: App) : Form("BoulderMesh") {
                 makeButton("Remove", Look.PLAIN) { app.store.removePlan(p.mesh); rebuild() })
             // for one of its sets of beta: that set's holds from close, all round, as a replica of them needs
             if (p.setsWithHolds.isNotEmpty()) text("Or for a set of beta, its holds in detail:", small = true)
-            for (set in p.setsWithHolds) button("Capture hold closeups${set.name?.let { " for $it" } ?: ""} (${set.targets.size} hold${if (set.targets.size == 1) "" else "s"})") { capture(p.mesh, p.name.ifEmpty { p.mesh }, set.id) }
+            for (set in p.setsWithHolds) button("Capture hold closeups${set.name?.takeIf { p.setsWithHolds.size > 1 }?.let { ": $it" } ?: ""} (${set.targets.size} hold${if (set.targets.size == 1) "" else "s"})") { capture(p.mesh, p.name.ifEmpty { p.mesh }, set.id) }
         }
         app.meshUpdates.error?.let { text(it, BAD, small = true) }
         button("Get meshes…") { push(Browse(app)) }

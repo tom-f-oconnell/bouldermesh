@@ -429,4 +429,25 @@ with tempfile.TemporaryDirectory() as tmp:
     (pdir / "capture.json").write_text(json.dumps({"shots": [{"name": "cap_001.jpg"}]}))
     assert provenance.captured(pdir) == {}, "a record from before captures said: as any upload"
 print("a capture's licence OK")
+
+# --- a rebuilt mesh takes over its older version's sets of beta, at the same spots of the rock ----------------------------
+old_v, new_v, own_v = "ab" * 6, "cd" * 6, "ef" * 6
+for one, cs in ((old_v, cams), (new_v, [moved(c, s_true, R_true, t_true) for c in cams]), (own_v, [moved(c, s_true, R_true, t_true) for c in cams])):
+    (server.MESHES / one).mkdir()
+    (server.MESHES / one / "cameras.json").write_text(json.dumps(cs))
+    server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES(?,?,?,?,?)", one, "gym2 (capture)", "mesh.ply", "project:rb", 5.0, write=True)
+made = beta.new_set(server.MESHES / old_v, name="Beta", owner="u1")
+beta.save_sets(server.MESHES / old_v, [{**made, "holds": [{"id": "h1", "p": [0.0, 1.0, 2.0], "role": "start"}]}])
+server.supersede(old_v, new_v)
+got = beta.load_sets(server.MESHES / new_v)
+assert [(one["id"], one["name"], one["owner"], one["from"]) for one in got] == [(made["id"], "Beta", "u1", {"mesh": old_v, "set": made["id"]})], got
+assert got[0]["holds"][0]["id"] == "h1" and np.allclose(got[0]["holds"][0]["p"], s_true * R_true @ [0.0, 1.0, 2.0] + t_true, atol=1e-4), got
+beta.save_sets(server.MESHES / new_v, [])
+server.make_current(old_v), server.make_current(new_v)
+assert beta.load_sets(server.MESHES / new_v) == [], "sets deleted from the newer version aren't brought back"
+# meshes rebuilt before sets were carried over get them at startup, unless they have a record of their own
+server.q("UPDATE meshes SET replaced_by=? WHERE id=?", own_v, old_v, write=True)
+assert server.carry_sets_existing() == 1 and beta.load_sets(server.MESHES / own_v)[0]["holds"][0]["id"] == "h1"
+assert server.carry_sets_existing() == 0, "once"
+print("a rebuilt mesh's sets of beta OK")
 print("ALL CAPTURE TESTS PASSED")

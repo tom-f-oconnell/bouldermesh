@@ -197,7 +197,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                 // for one of its sets of beta: that set's holds from close, all round, as a replica of them needs
                 if (p.setsWithHolds.isNotEmpty()) Text("Or for a set of beta, its holds in detail:", style = MaterialTheme.typography.bodySmall)
                 for (set in p.setsWithHolds) OutlinedButton(onClick = { start(Screen.Capture(p.mesh, p.name.ifEmpty { p.mesh }, set.id)) }) {
-                    Text("Capture hold closeups${set.name?.let { " for $it" } ?: ""} (${set.targets.size} hold${if (set.targets.size == 1) "" else "s"})")
+                    Text("Capture hold closeups${set.name?.takeIf { p.setsWithHolds.size > 1 }?.let { ": $it" } ?: ""} (${set.targets.size} hold${if (set.targets.size == 1) "" else "s"})")
                 }
             }
         }

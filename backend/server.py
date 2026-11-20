@@ -1386,6 +1386,11 @@ def supersede(old: str, new: str) -> None:
     q("UPDATE campaign_items SET mesh_id=? WHERE mesh_id=?", new, old, write=True)
     q("UPDATE meshes SET replaced_by=? WHERE id=? OR replaced_by=?", new, old, old, write=True)
     q("UPDATE meshes SET replaced_by=NULL WHERE id=?", new, write=True)
+    try:
+        if carry_sets_between(old, new):
+            meshes_changed()
+    except Exception as e:
+        print(f"carrying sets of beta from mesh {old} to {new} failed ({type(e).__name__}: {e})", flush=True)
     for r in q("SELECT id, boulder, replaced_by FROM meshes WHERE boulder LIKE ?", f"%{REST_MARK}%"):
         if not is_rest(r["boulder"]) or r["id"] in (old, new):
             continue
@@ -2150,11 +2155,7 @@ def tie_capture(mid: str, target: str, log=None, how: str = "cameras") -> dict |
         size = metres_per_unit(mid)
         found["rms_m"] = round(found["rms"] * size, 3) if size else None
         move = lambda point: [round(x, 5) for x in frames.apply(found, point)]  # noqa: E731
-        sets = beta_mod.load_sets(theirs)
-        if sets and not beta_mod.load_sets(mine):       # its sets of beta, each as it was, at the same spots of the rock
-            beta_mod.save_sets(mine, [{**one, "holds": [{**h, "id": h.get("id") or beta_mod.hold_id(h["p"]), "p": move(h["p"])} for h in one["holds"]],
-                                       "from": {"mesh": target, "set": one["id"]}} for one in sets])
-            carried.append(f"{plural(len(sets), 'set')} of beta ({plural(sum(len(one['holds']) for one in sets), 'hold')})")
+        carried += carry_sets(mine, theirs, found)
         views = viewpoints.load(theirs)
         if views and (views.get("climbs") or {}) and viewpoints.load(mine) is None:
             moved = {cid: {**v, **{k: move(v[k]) for k in ("eye", "target") if isinstance(v.get(k), list)}} for cid, v in views["climbs"].items()}
@@ -2216,6 +2217,57 @@ def phone_holds(mid: str, pid: str, log=None, target: str | None = None) -> dict
         + " and ".join(f"mesh {s['mesh']}" for s in out["sets"]) + f", as the set of beta \"{name}\""
         + (f"; {len(marked) - len(holds)} left out, too few photos of their spell of the tracking placed" if len(holds) < len(marked) else ""))
     return out
+
+
+def has_own_sets(mesh_dir: Path) -> bool:
+    """Whether a mesh has a record of sets of beta of its own, even an emptied one (all its sets deleted)."""
+    return (mesh_dir / beta_mod.SETS_FILE).exists() or (mesh_dir / beta_mod.HOLDS_FILE).exists()
+
+
+def carry_sets(mine: Path, theirs: Path, found: dict) -> list[str]:
+    """Another mesh's sets of beta, each as it was, at the same spots of the rock in this one (by `found`, the tie
+    frames.tie() found taking that mesh's coordinates to this one's), where this one has no record of sets of its own.
+
+    Returns:
+        What was carried over, said for a log: [] or ["N sets of beta (M holds)"].
+    """
+    sets = beta_mod.load_sets(theirs)
+    if not sets or has_own_sets(mine):
+        return []
+    move = lambda point: [round(x, 5) for x in frames.apply(found, point)]  # noqa: E731
+    beta_mod.save_sets(mine, [{**one, "holds": [{**h, "id": h.get("id") or beta_mod.hold_id(h["p"]), "p": move(h["p"])} for h in one["holds"]],
+                               "from": {"mesh": theirs.name, "set": one["id"]}} for one in sets])
+    return [f"{plural(len(sets), 'set')} of beta ({plural(sum(len(one['holds']) for one in sets), 'hold')})"]
+
+
+def carry_sets_between(old: str, new: str) -> list[str]:
+    """A mesh's sets of beta carried to the version of it that takes over (supersede()), where that has none of its
+    own, by the cameras the two placed from the same photos (frames.tie()). [] where they share too few to be tied."""
+    theirs, mine = MESHES / old, MESHES / new
+    if not beta_mod.load_sets(theirs) or has_own_sets(mine):
+        return []
+    try:
+        found = frames.tie(json.loads((theirs / "cameras.json").read_text()), json.loads((mine / "cameras.json").read_text()))
+    except (OSError, ValueError):
+        return []
+    return carry_sets(mine, theirs, found) if found["status"] == "tied" else []
+
+
+def carry_sets_existing() -> int:
+    """At startup, for meshes that took over from an older version before supersede() carried sets of beta over: each
+    current one with no record of sets of its own gets those of the newest of its older versions that has some.
+    Returns how many did."""
+    n = 0
+    for r in q("SELECT id, replaced_by FROM meshes WHERE replaced_by IS NOT NULL ORDER BY created DESC"):
+        if has_own_sets(MESHES / r["id"]):
+            try:
+                if carry_sets_between(r["id"], r["replaced_by"]):
+                    n += 1
+            except Exception as e:
+                print(f"carrying sets of beta from mesh {r['id']} to {r['replaced_by']} failed ({type(e).__name__}: {e})", flush=True)
+    if n:
+        meshes_changed()
+    return n
 
 
 def mesh_tie(mid: str) -> dict | None:
@@ -12825,6 +12877,9 @@ def main() -> None:
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
     threading.Thread(target=inputs_existing_meshes, daemon=True, name="inputs-backfill").start()
     threading.Thread(target=backfill_step_runs, daemon=True).start()
+    carried = carry_sets_existing()
+    if carried:
+        print(f"{carried} mesh(es) given the sets of beta of the older version they took over from", flush=True)
     for d in MESHES.iterdir() if MESHES.exists() else []:
         beta_mod.carry_on(d)        # finding beta and size carry on after a restart, like areas
         if scale_mod.carry_on(d):
