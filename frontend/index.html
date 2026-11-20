@@ -2504,6 +2504,9 @@ async function loadLocalGltf(url){
 // A mesh's progress while it loads: on a phone over whichever view is showing, moving to the view once it's ready to see,
 // rather than to an empty view; on a wider screen over the middle of the view. Returns what to call when it's done.
 let loadSeq = 0, loadingUpdate = null;
+// meshes asked for (loadMeshUrl()), so one that finishes after a later one was asked for isn't shown over it; and their
+// count as the page's address began opening its own (openFromAddress()), which then gives way to one opened by hand
+let meshLoads = 0, addressMeshLoads = null;
 function loading(label){
   const seq = ++loadSeq, el = $('#loading');
   loadingUpdate = null;
@@ -2525,7 +2528,7 @@ function loading(label){
 // local: one of the files an editor chose, from its object URL, with nothing sent
 async function loadMeshUrl(url, filename, label, id, local = false){
   // the page address's mesh: the view stays as chosen meanwhile, if it was (the areas' tab, the map)
-  const since = local ? null : addressLoad;
+  const since = local ? null : addressLoad, mine = ++meshLoads;
   addressLoad = null;
   const passive = () => since !== null && viewChosen > since;
   if (!local) endLocal();
@@ -2582,6 +2585,7 @@ async function loadMeshUrl(url, filename, label, id, local = false){
       obj = await loader.loadAsync(at(url), progress);
     } else throw new Error('unsupported format .' + ext);
     if (local && localMesh?.url !== url) return loaded();     // discarded or replaced while it loaded
+    if (mine !== meshLoads) return;     // another asked for since, which has the view and the loading box
     if (phone.matches && !passive()) showRight('3d');
     loaded();
     obj.userData.meshId = id || null;     // which mesh it is, for beta started while it loaded (betaInView())
@@ -2610,6 +2614,7 @@ async function loadMeshUrl(url, filename, label, id, local = false){
       toast('Could not show this file', 6000); $('#viewing').textContent = 'Could not show ' + filename; return viewNote('Could not show this file here: ' + why);
     }
     if (loadingView?.id === id) loadingView = null;
+    if (mine !== meshLoads) return reportError('mesh', e, { mesh: id, file: filename });
     loaded(); reportError('mesh', e, { mesh: id, file: filename }); toast('Could not load mesh: ' + e.message, 6000); $('#viewing').textContent = 'Could not load: ' + e.message; viewNote('Could not load this mesh: ' + e.message, again); }
 }
 
@@ -4741,16 +4746,20 @@ function newestOf(id){
   for (let n = 0; m?.replaced_by && meshesById[m.replaced_by] && n < 50; n++) m = meshesById[m.replaced_by];
   return m?.id;
 }
+// whether the page's address is still opening its own mesh (via 'link') though one was opened by hand since it began
+const addressGivenWay = via => via === 'link' && addressMeshLoads !== null && meshLoads > addressMeshLoads;
 // What the page's address opens as it starts: a climb's, a boulder's or a mesh's link, or an old #mesh= one
 async function openFromAddress(){
   const m = location.pathname.match(/^\/([cbm])\/([^/]+?)\/?$/);
   if (!m) return openLinked();
   const [, kind, key] = m;
   addressLoad = viewChosen;      // its mesh's load leaves the view alone if one is chosen before it's shown
+  addressMeshLoads = meshLoads;
   try {
     if (kind === 'm' && thumbMode) return await drawThumb(key);
     if (kind === 'm') return await openExact(key, new URLSearchParams(location.search).get('from'));
     const r = await api(`/api/links/${kind}/${encodeURIComponent(decodeURIComponent(key))}`);
+    if (addressGivenWay('link')) return;
     if (kind === 'b') return pickBoulder(r, true);
     if (!(await viewClimbMesh(r.id, 'link'))) return openClimb(r.id);
     if (r.same?.length) {   // others of the same name have links of their own, with something added
@@ -4762,7 +4771,7 @@ async function openFromAddress(){
       }
     }
   } catch (e) { toast(e.message, 8000); }
-  finally { addressLoad = null; }
+  finally { addressLoad = addressMeshLoads = null; }
 }
 // The camera as the picture's renderer is to set it: given (with fit, one the server chose, moved back as far as all of
 // the rock needs), else from where the climb it's of was photographed (the one with most photos placed, on a boulder's),
@@ -4836,6 +4845,7 @@ async function openExact(id, fromSlug){
 // home of (bold) and others it shows, then its climbs no mesh places. From a link, a boulder with one mesh opens it.
 async function pickBoulder(r, fromLink = false){
   if (r.meshes.some(x => !meshesById[x.id])) await refreshMeshes();
+  if (fromLink && addressGivenWay('link')) return;
   const items = r.meshes.filter(x => meshesById[x.id] && (editor || !(meshesById[x.id].old || meshesById[x.id].old_data))), names = Object.fromEntries(r.climbs.map(c => [c.id, named(c)]));
   const open = id => { linkedBoulder = { slug: r.slug, meshes: items.map(x => x.id) }; return viewMesh(id, null, fromLink ? 'link' : 'boulder'); };
   if (fromLink && items.length === 1) return open(items[0].id);
@@ -4879,7 +4889,7 @@ function markShown(){
 }
 function viewMesh(id, from, via = '', climb = null){
   const m = meshesById[id];
-  if (!m) return;
+  if (!m || addressGivenWay(via)) return;
   viewVia = via;
   viewedClimb = climb;
   if (!linkedBoulder?.meshes.includes(id)) linkedBoulder = null;
