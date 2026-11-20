@@ -6198,9 +6198,7 @@ def _claim(w: Worker, low: bool | None = None):
         settle_waiting(camp["id"])
         for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND status='harvested'", camp["id"]):
             settle_boulder(camp["id"], b["boulder"])     # as after a restart between its last harvest and queueing its mesh
-        for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND boulder IS NOT NULL "
-                   "AND status IN ('done','skipped','failed')", camp["id"]):
-            settle_clusters(camp["id"], b["boulder"])
+        settle_all_clusters(camp["id"])
         items = ordered_pending(camp)
         waiting = bool(items)
         if camp["only_retries"]:
@@ -6856,18 +6854,43 @@ def plural(n: int, one: str) -> str:
 _settled: dict[tuple[str, str], tuple] = {}     # (area, lowest area) -> its climbs' states when settle_clusters() last looked
 
 
-def settle_clusters(camp_id: str, leaf: str) -> int:
+def settle_all_clusters(camp_id: str) -> int:
+    """settle_clusters() for each lowest area of an area's with a climb through, from one reading of its climbs and of
+    boulder_kinds(), passing over those whose climbs haven't changed since it last looked. Each worker does this every
+    CAMPAIGN_POLL seconds: one at a time, reading the boulders table and each one's climbs again, it took most of the
+    server's CPU (Nov 2026, ~650 lowest areas). Returns how many were queued."""
+    kinds, by = boulder_kinds(), {}
+    for r in q("SELECT boulder, source_id, climb_id, status, redo, was, rank, updated FROM campaign_items WHERE campaign_id=? "
+               "AND boulder IS NOT NULL ORDER BY rank", camp_id):
+        by.setdefault(r["boulder"], []).append(r)
+    queued = 0
+    for leaf, items in by.items():
+        if not any(i["status"] in ("done", "skipped", "failed") for i in items):
+            continue
+        if _settled.get((camp_id, leaf)) == _settle_seen(items):
+            continue
+        queued += settle_clusters(camp_id, leaf, kinds, items)
+    return queued
+
+
+def _settle_seen(items: list[dict]) -> tuple:
+    """What settle_clusters() remembers of a lowest area's climbs, to pass it over until they change."""
+    return tuple((i["source_id"], i["status"], i["redo"], i["updated"]) for i in items)
+
+
+def settle_clusters(camp_id: str, leaf: str, kinds: dict | None = None, items: list[dict] | None = None) -> int:
     """Once an area's climbs of a lowest area that isn't one boulder are all through (none pending, running, waiting or
     queued again), those whose photos are of one rock (clusters(), by the links worked out as each was harvested)
     queued to mesh together as a pool, on the first of them in the area's order, unless they have been, these same
     climbs. Not one boulder's, whose mesh's left-out photos are meshed together instead (keep_rest()). Returns how many
-    were queued."""
-    kind = leaf_kind(leaf)
+    were queued. kinds (boulder_kinds()) and items (its climbs' rows, in order) as settle_all_clusters() read them."""
+    kind = leaf_kind(leaf, kinds)
     if kind is None:
         return 0
-    items = q("SELECT source_id, climb_id, status, redo, was, rank, updated FROM campaign_items WHERE campaign_id=? AND boulder=? "
-              "ORDER BY rank", camp_id, leaf)
-    seen = tuple((i["source_id"], i["status"], i["redo"], i["updated"]) for i in items)
+    if items is None:
+        items = q("SELECT source_id, climb_id, status, redo, was, rank, updated FROM campaign_items WHERE campaign_id=? AND boulder=? "
+                  "ORDER BY rank", camp_id, leaf)
+    seen = _settle_seen(items)
     if _settled.get((camp_id, leaf)) == seen:
         return 0
     _settled[(camp_id, leaf)] = seen
