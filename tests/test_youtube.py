@@ -241,4 +241,28 @@ assert out["youtube_checked"] is False, out
 steps = {x["key"]: x for x in t.snapshot()["steps"]}
 assert steps["video"]["state"] == "done" and "volunteers asked for 1 search" in steps["video"]["detail"], steps["video"]
 print("YouTube alongside photos OK")
+# the search without the place, once the one with it found nothing of the climb; and what it found kept for judging later
+d = pathlib.Path(tempfile.mkdtemp(prefix="bm-wide-"))
+saved = (yt.SEARCHES, yt.WIDE_LOG, yt.via, yt.wide_retry)
+yt.SEARCHES, yt.WIDE_LOG, yt.via, yt.wide_retry = d / "s", d / "wide.jsonl", "volunteers", True
+try:
+    peanut = Climb(source="mountainproject", source_id="8", url="", name="The Peanut", grade="V7", search_place="Horse Flats",
+                   area_path=["California", "Angeles National Forest", "Horse Flats", "Main Area", "Peanut Boulder"])
+    yt.save_search(yt.query(peanut), [{"id": "aaaaaaaaaaa", "title": "Something else V7", "duration": 60}], "volunteer")
+    asked, st = [], {}
+    assert yt.search(peanut, lambda s: None, want=lambda w: True, asked=asked, state=st) == []
+    assert asked == ["The Peanut V7"] and st == {"checked": False, "words": "The Peanut V7"}, (asked, st)
+    yt.save_search("The Peanut V7", [{"id": "aaaaaaaaaaa", "title": "Something else V7", "duration": 60},
+                                     {"id": "bbbbbbbbbbb", "title": "The Peanut V7", "duration": 60},
+                                     {"id": "ccccccccccc", "title": "The Peanut V7 - Horse Flats", "duration": 60}], "volunteer")
+    for _ in range(2):      # a harvest again uses it from the cache: kept once
+        st = {}
+        got = yt.search(peanut, lambda s: None, state=st)
+        assert [m.url[-11:] for m in got] == ["bbbbbbbbbbb", "ccccccccccc"] and st["checked"], (got, st)
+    lines = [json.loads(x) for x in yt.WIDE_LOG.read_text().splitlines()]
+    assert len(lines) == 1 and lines[0]["narrow"] == "The Peanut V7 Horse Flats" and lines[0]["distinctive"], lines
+    assert [(r["url"][-11:], r["kept"], r["placed"]) for r in lines[0]["results"]] == [("bbbbbbbbbbb", True, False), ("ccccccccccc", True, True)], lines
+finally:
+    yt.SEARCHES, yt.WIDE_LOG, yt.via, yt.wide_retry = saved
+print("search without the place OK")
 print("ALL YOUTUBE TESTS PASSED")

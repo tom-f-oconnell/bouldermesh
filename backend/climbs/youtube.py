@@ -57,6 +57,7 @@ STATE_FILE = CACHE_DIR.parent / "youtube.json"
 PAGES_STATE_FILE = CACHE_DIR.parent / "youtube-pages.json"   # searches and channel pages, refused apart from videos
 VIDEO_CACHE = CACHE_DIR.parent / "videos"     # <id>.<ext> and <id>.json, its details
 SEARCHES = CACHE_DIR.parent / "youtube-searches"   # what each search found, here or by a volunteer, by its words
+WIDE_LOG = CACHE_DIR.parent / "youtube-wide.jsonl"   # what wide() searches found that the search with the place didn't (log_wide())
 SEARCH_DAYS = 30            # how long a search's results are used before searching again
 CACHE_BYTES = int(float(os.environ.get("VIDEO_CACHE_GB", "50")) * 2**30)   # the oldest used go beyond this
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
@@ -64,7 +65,7 @@ VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 # "volunteers_when_refused", here unless YouTube is refusing this server, when volunteers are asked; or "volunteers",
 # never here (a cloud server, which YouTube refuses)
 via = "volunteers_when_refused"
-wide_retry = False         # search again without its place when the search with it finds nothing of a climb (youtube.wide_retry)
+wide_retry = True          # search again without its place when the search with it finds nothing of a climb (youtube.wide_retry)
 # set by tests that run a whole server: nothing at all is asked of YouTube (searches come back empty, downloads are refused)
 OFFLINE = os.environ.get("YOUTUBE_OFFLINE") == "1"
 _gate = threading.Lock()
@@ -354,9 +355,37 @@ def search(c: Climb, log: Log, known: set[str] = frozenset(), want: Callable[[st
                 state.update(words=wide(c))
             return []
         out = more or []    # or failed: the narrower one stands
+        if more is not None:
+            log_wide(c, q, wide(c), out)
     if state is not None:
         state["checked"] = True
     return out[:MAX_MATCHES]
+
+
+def log_wide(c: Climb, narrow: str, words: str, kept: list[Media]) -> None:
+    """Keep, once for each wide search, what it found that the search with the place didn't: every result new to it,
+    whether matches() took it and why, for judging the filtering later (WIDE_LOG, a line of JSON each)."""
+    try:
+        hit, before = cached_search(words, days=1e9), cached_search(narrow, days=1e9)
+        if not hit or (WIDE_LOG.exists() and f'"wide": {json.dumps(words)}, "fetched": {hit["fetched"]}' in WIDE_LOG.read_text()):
+            return      # that search kept already (a harvest uses it again from the cache)
+        seen = {e.get("id") or e.get("url") for e in (before or {}).get("results") or []}
+        took = {m.url for m in kept}
+        ctx = context(c)
+        rows = []
+        for e in hit["results"]:
+            if (e.get("id") or e.get("url")) in seen:
+                continue
+            url = e.get("url") or (f"https://www.youtube.com/watch?v={e['id']}" if e.get("id") else None)
+            text = norm(f"{e.get('title')} {e.get('description') or ''}")
+            rows.append({"url": url, "title": e.get("title"), "description": (e.get("description") or "")[:300],
+                         "kept": url in took, "placed": any(x in text for x in ctx)})
+        line = {"at": time.time(), "climb": c.name, "grade": c.grade, "area_path": c.area_path, "place": place(c),
+                "narrow": narrow, "wide": words, "fetched": hit["fetched"], "distinctive": distinctive(c.name), "results": rows}
+        with open(WIDE_LOG, "a") as f:
+            f.write(json.dumps(line) + "\n")
+    except Exception:   # only the record is lost
+        pass
 
 
 def _search_one(c: Climb, q: str, log: Log, known: set[str], want, asked: list | None, days: float) -> list[Media] | None:

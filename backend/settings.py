@@ -55,7 +55,7 @@ DEFAULTS = {
     # rest (glbpack.py): 150,000 is about 1 MB, and on Caveman looks the same at a phone's size; 0: no previews
     "viewer.preview_faces": 150_000,
     "youtube.via": "volunteers_when_refused",   # here | volunteers_when_refused | volunteers (never here: a cloud server)
-    "youtube.wide_retry": False,   # a climb's search that finds nothing of it is followed by one without its area's name
+    "youtube.wide_retry": True,    # a climb's search that finds nothing of it is followed by one without its area's name
     "youtube.research": False,     # every climb searched by an older youtube.SEARCH_METHOD is searched again, at low priority
     # the most the data may take, in GB (0: no limit): over it, volunteers and areas wait for room (DATA_CAP_GB starts it)
     "users.quota_mb": 4000.0,              # what an account may hold at once of what it added that isn't approved yet
