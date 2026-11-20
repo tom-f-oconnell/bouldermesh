@@ -16,6 +16,7 @@ Data layout (DATA_DIR, default ./data):
 from __future__ import annotations
 
 import base64
+import collections
 import contextlib
 import copy
 import csv
@@ -10019,20 +10020,98 @@ def mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> list[di
     return rows
 
 
-MESH_LIST_TTL = 30      # seconds visitors' copy of /api/meshes is kept, unless a mesh is made, deleted or replaced sooner
-_mesh_list_kept: tuple[str, float, bytes] | None = None     # (meshes_mark(), when, the JSON)
-_mesh_list_lock = threading.Lock()
-_mesh_lists_kept: dict[tuple, tuple] = {}      # kept_mesh_list()'s, by (editor, account): (mark, when, body)
-# seconds an editor's copy is kept: what's worked out in the background (a packed copy, a preview) shows in it soon, and
-# links opened together still share one making of it
+MESH_LIST_TTL = 30      # seconds visitors' copy of /api/meshes is fresh, unless a mesh is made, deleted or replaced sooner
+# seconds an editor's copy is: what's worked out in the background (a packed copy, a preview) shows in it soon
 EDITOR_LIST_TTL = 5
+_mesh_list_lock = threading.Lock()      # one making at a time
+_mesh_lists_kept: dict = {}     # by None (visitors) or (editor, account): (mark, when, body)
+_mesh_lists_making: set = set()     # keys being made again in the background
+_mesh_list_gen = 0      # forget_mesh_list()'s count: a making begun before it isn't kept
+MESH_LIST_STATS = {"since": time.time(), "fresh": 0, "older": 0, "waited": 0, "made": collections.deque(maxlen=500),
+                   "day": {"fresh": 0, "older": 0, "waited": 0, "made": []}}
 
 
 def forget_mesh_list() -> None:
-    """Have visitors_mesh_list() made again at its next asking: after an editor's or account's change."""
-    global _mesh_list_kept
-    _mesh_list_kept = None
-    _mesh_lists_kept.clear()
+    """Have /api/meshes made again at its next asking, which waits for it: after an editor's or account's change, so
+    that it shows at once."""
+    global _mesh_list_gen
+    with _mesh_list_lock:
+        _mesh_list_gen += 1
+        _mesh_lists_kept.clear()
+
+
+def _count_mesh_list(kind: str, seconds: float | None = None) -> None:
+    """Note how an asking for /api/meshes was answered (fresh, older, waited) or that it was made (seconds), in
+    MESH_LIST_STATS, since the start and since the day's summary (site_health_loop())."""
+    if seconds is not None:
+        MESH_LIST_STATS["made"].append(seconds)
+        MESH_LIST_STATS["day"]["made"].append(seconds)
+    else:
+        MESH_LIST_STATS[kind] += 1
+        MESH_LIST_STATS["day"][kind] += 1
+
+
+def _make_mesh_list(key, make: Callable[[], dict], gen: int) -> bytes:
+    """Make a /api/meshes body and keep it under key, unless forget_mesh_list() was called since gen."""
+    mark, began = meshes_mark(), time.monotonic()
+    body = json.dumps(make(), default=str).encode()
+    _count_mesh_list("made", time.monotonic() - began)
+    if gen == _mesh_list_gen:
+        _mesh_lists_kept[key] = (mark, time.time(), body)
+    return body
+
+
+def _remake_mesh_list(key, make: Callable[[], dict], gen: int) -> None:
+    """A thread: make key's /api/meshes again, at a low CPU priority, while askers get the older copy. Not under
+    _mesh_list_lock, which an asking that must wait (after a change) would otherwise wait behind it for."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
+        _make_mesh_list(key, make, gen)
+    except Exception as e:  # noqa: BLE001 - the next asking tries again
+        print(f"error: making the list of meshes again: {type(e).__name__}: {e}", flush=True)
+    finally:
+        _mesh_lists_making.discard(key)
+
+
+def _mesh_list_for(key, ttl: float, make: Callable[[], dict]) -> bytes:
+    """/api/meshes for key: its kept copy while fresh (the same meshes_mark(), within ttl seconds); once it isn't, still
+    that copy, while it's made again in the background, so no one waits for its making (~10 s on the server's 2 busy
+    cores, Nov 2026) but the first to ask after a start or forget_mesh_list(), and those asking meanwhile."""
+    kept = _mesh_lists_kept.get(key)
+    if kept and kept[0] == meshes_mark() and time.time() - kept[1] < ttl:
+        _count_mesh_list("fresh")
+        return kept[2]
+    if kept:
+        _count_mesh_list("older")
+        if key not in _mesh_lists_making:
+            _mesh_lists_making.add(key)
+            threading.Thread(target=_remake_mesh_list, args=(key, make, _mesh_list_gen), daemon=True).start()
+        return kept[2]
+    with _mesh_list_lock:
+        kept = _mesh_lists_kept.get(key)       # made by another while this one waited
+        _count_mesh_list("waited")
+        return kept[2] if kept else _make_mesh_list(key, make, _mesh_list_gen)
+
+
+def mesh_list_stats(day: bool = False) -> dict:
+    """How /api/meshes was answered since the start (or the day's summary): askings answered fresh, from an older copy
+    while it was made again, or that waited for its making; and how long making it took (median, longest, how often)."""
+    st = MESH_LIST_STATS["day"] if day else MESH_LIST_STATS
+    made = sorted(st["made"])
+    return {"since": None if day else st["since"], "fresh": st["fresh"], "older": st["older"], "waited": st["waited"],
+            "made": len(made), "made_median": round(made[len(made) // 2], 2) if made else None,
+            "made_max": round(made[-1], 2) if made else None}
+
+
+def mesh_list_note() -> str | None:
+    """The day's /api/meshes line for the daily summary, from mesh_list_stats(day=True), which it then starts again."""
+    s = mesh_list_stats(day=True)
+    MESH_LIST_STATS["day"] = {"fresh": 0, "older": 0, "waited": 0, "made": []}
+    n = s["fresh"] + s["older"] + s["waited"]
+    if not n:
+        return None
+    return (f"The list of meshes: {n} asked, {s['fresh']} fresh, {s['older']} from an older copy while made again, "
+            f"{s['waited']} waited for it; made {s['made']} times, median {s['made_median']} s, longest {s['made_max']} s.")
 
 
 REPORT_PATH = re.compile(r"/api/(client-errors|mesh-views|page-views|nearby-overlaps|feedback)")   # visitors' reports, which change no mesh
@@ -10090,14 +10169,8 @@ def kept_mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> by
     each such (editing or not, and who) as visitors' is (visitors_mesh_list()), and forgotten after any change
     (forget_mesh_list()), so that their own changes show at once (for EDITOR_LIST_TTL). Made afresh for every asking, it took an
     editor 2-4 s, and three links opened together ~11 s each (Nov 19)."""
-    key = (editor, (me or {}).get("id"))
-    with _mesh_list_lock:
-        mark, kept = meshes_mark(), _mesh_lists_kept.get(key)
-        if kept and kept[0] == mark and time.time() - kept[1] < EDITOR_LIST_TTL:
-            return kept[2]
-        body = json.dumps(mesh_list(editor, me, waiting), default=str).encode()
-        _mesh_lists_kept[key] = (mark, time.time(), body)
-        return body
+    return _mesh_list_for((editor, (me or {}).get("id")), EDITOR_LIST_TTL,
+                          lambda: mesh_list(editor, me, waiting if waiting is not None else unapproved_meshes()))
 
 
 def visitors_mesh_list() -> bytes:
@@ -10105,15 +10178,8 @@ def visitors_mesh_list() -> bytes:
     MESH_LIST_TTL seconds and again as soon as meshes_mark() changes. Every page asks for it as it opens, and making it
     took ~2 CPU-seconds of the server's 2 cores (Nov 2026), so 20 visitors arriving together waited up to a minute.
     Those asking while it's made wait for that one rather than making their own. What only shows in it (a rating, a
-    mesh hidden or linked) reaches visitors within MESH_LIST_TTL."""
-    global _mesh_list_kept
-    with _mesh_list_lock:
-        mark, kept = meshes_mark(), _mesh_list_kept
-        if kept and kept[0] == mark and time.time() - kept[1] < MESH_LIST_TTL:
-            return kept[2]
-        body = json.dumps(mesh_list(False, None, unapproved_meshes()), default=str).encode()
-        _mesh_list_kept = (mark, time.time(), body)
-        return body
+    mesh hidden or linked) reaches visitors within MESH_LIST_TTL, and the making that takes (_mesh_list_for())."""
+    return _mesh_list_for(None, MESH_LIST_TTL, lambda: mesh_list(False, None, unapproved_meshes()))
 
 
 def unapproved_meshes() -> dict[str, str]:
@@ -10139,8 +10205,10 @@ def site_health_loop() -> None:
                 continue
             got = sitehealth_mod.for_data(DATA)
             SITE_HEALTH_SENT.write_text(day)
+            lists = mesh_list_note()
             if got:
                 title, text, look = got
+                text = (text + ("\n" + lists if lists else ""))[:1990]
                 NOTIFIER.send(title, text, priority=3 if look else 2, tags=["bar_chart"])
         except Exception as e:
             print(f"error: the day's summary: {type(e).__name__}: {e}", flush=True)
@@ -13304,7 +13372,7 @@ def admin_state() -> dict:
             "proxy_ranges": RANGES.state() if RANGES else None, "version": VERSION,
             "worker_image": compute_settings()["compute.image"], "own_image": OWN_IMAGE, "machines_image": MACHINES_IMAGE,
             "volunteers": {**VOLUNTEERS.state(), "served": bool(VOLUNTEER_PORT), "url": VOLUNTEER_URL},
-            "notify": NOTIFIER.state(), "pairing": pairing_state(), "feedback": feedback_mod.recent(FEEDBACK),
+            "notify": NOTIFIER.state(), "pairing": pairing_state(), "feedback": feedback_mod.recent(FEEDBACK), "mesh_list": mesh_list_stats(),
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
             "stops": [dict(r) for r in q("SELECT at, kind, id, name, was FROM job_stops ORDER BY at DESC LIMIT 30")],
             "texture_again": texture_again_state(), "black_textures": black_textures(),

@@ -369,6 +369,10 @@
       time in the background (about an hour for 230 meshes on a 2-core server); until each is made, it opens as before.</div>
     <div class="note">"Free to copy" means public domain, CC0, or a Creative Commons licence without No Derivatives, or your own uploads. Mountain Project, OpenBeta and web images, and YouTube's standard licence, aren't. See license_considerations.md.</div>
   </section>
+  <section id="meshlist">
+    <h2>The list of meshes</h2>
+    <div class="note" id="meshlist-note"></div>
+  </section>
   <section id="feedback">
     <h2>Comments and bug reports</h2>
     <div class="note" id="fb-note"></div>
@@ -807,6 +811,13 @@ function render(s){
   $('#ntfy-feedback').checked = v['notify.feedback']; $('#ntfy-health').checked = v['notify.site_health']; keep('#donate-url', v['site.donate_url']); keep('#testflight-url', v['apps.testflight_url']);
   // what visitors typed: only ever put in the page escaped, as text
   const fb = s.feedback;
+  const ml = s.mesh_list;
+  if (ml) {
+    const n = ml.fresh + ml.older + ml.waited, pct = x => n ? ` (${Math.round(100 * x / n)}%)` : '';
+    $('#meshlist-note').textContent = `Every page asks for it as it opens. Since the server started ${fmtFbTime(ml.since * 1000)}: asked ${n} times, `
+      + `${ml.fresh}${pct(ml.fresh)} answered from a fresh copy, ${ml.older}${pct(ml.older)} from an older one while it was made again, `
+      + `${ml.waited}${pct(ml.waited)} waited for it to be made. Made ${ml.made} times` + (ml.made ? `, median ${ml.made_median} s, longest ${ml.made_max} s.` : '.');
+  }
   $('#fb-note').textContent = fb.count ? `${fb.count} from the main site's "?" tab, kept in data/${fb.file}; the newest first.` : 'None yet. Visitors leave them on the main site\'s "?" tab.';
   $('#fb-list').innerHTML = fb.recent.map(f => `<div class="fb"><div class="note">${esc(fmtFbTime(f.time))} · ${f.kind === 'bug' ? '<span class="warn">bug report</span>' : 'comment'}${f.contact ? ` · reach them: ${esc(f.contact)}` : ''}${f.mesh ? ` · mesh ${esc(f.mesh)}` : ''}${f.page ? ` · on ${esc(f.page)}` : ''}${f.browser ? ` · <span title="${esc(f.browser)}">their browser</span>` : ''}</div><div class="fbtext">${esc(f.message)}</div></div>`).join('');
   $('#ntfy-test').disabled = !nt.enabled;
