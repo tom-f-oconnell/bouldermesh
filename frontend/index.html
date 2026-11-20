@@ -998,7 +998,8 @@ const fmtDur = s => s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s /
 // left null: no telling
 function stepLeft(s, now = Date.now() / 1000){
   if (s.state !== 'running' && s.state !== 'pending') return { left: 0 };
-  const going = s.state === 'running' && s.started ? now - s.started : 0;
+  const begun = s.run_started || s.started;     // a step running again: since this run began
+  const going = s.state === 'running' && begun ? now - begun : 0;
   if (going >= 60 && s.frac >= 0.05) return { left: going * (1 - s.frac) / s.frac, going };
   if (s.typical == null) return { left: null, going };
   return s.typical > going ? { left: s.typical - going, going, usual: s.typical } : { left: null, going, usual: s.typical, over: true };

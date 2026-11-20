@@ -11,7 +11,9 @@ from climbs.common import jobctl
 
 class Tracker:
     """Named steps of one job, each with a 0-1 fraction that only ever goes up, and once begun, when it began
-    ("started") and once ended, how long it ran ("seconds"), for timings.py.
+    ("started") and once ended, how long it ran ("seconds"), for timings.py. A step that runs again after it ended (the
+    photos placed again from the CPU's SIFT) counts the time of each run, not the span from its first start to its
+    last end, which held the steps run in between; "runs" then has each run's seconds.
 
     Args:
         steps: (key, label, weight) per step, in order, or (key, label, weight, True) for one that runs alongside
@@ -45,8 +47,10 @@ class Tracker:
             if s is None:
                 return
             changed = s["state"] != "running"
-            if changed and "started" not in s:
-                s["started"] = time.time()
+            if changed:
+                now = time.time()
+                s.setdefault("started", now)
+                s["run_from"] = now
             if changed and "where" not in s and self.where:
                 s["where"] = self.where
             for other in [] if s["parallel"] else self.steps:
@@ -127,8 +131,9 @@ class Tracker:
         s["state"] = state
         if state == "done":
             s["frac"] = 1.0
-        if "started" in s:
+        if "run_from" in s:
             s["ended"] = time.time()
+            s.setdefault("runs", []).append(s["ended"] - s.pop("run_from"))
 
     def snapshot(self) -> dict:
         counted = [s for s in self.steps if s["state"] != "skipped"]
@@ -141,7 +146,10 @@ class Tracker:
                            **({"units": s["units"]} if "units" in s else {}),
                            **({"count": s["count"]} if "count" in s else {}),
                            **({"started": round(s["started"], 1)} if "started" in s else {}),
-                           **({"seconds": round(s["ended"] - s["started"], 1)} if "ended" in s else {})} for s in self.steps]}
+                           **({"run_started": round(s["run_from"], 1)} if s.get("runs") and "run_from" in s else {}),
+                           **({"seconds": round(sum(s["runs"]), 1)} if s.get("runs") else {}),
+                           **({"runs": [round(r, 1) for r in s["runs"]]} if len(s.get("runs") or []) > 1 else {})}
+                          for s in self.steps]}
 
     def _flush(self, force: bool) -> None:
         if self._save and (force or time.time() - self._last >= 0.5):

@@ -60,7 +60,8 @@ def step_left(s: dict, now: float | None = None) -> tuple[float | None, float]:
     else its "typical" (estimate()) less the time gone, and None when there's no telling (as the page's stepLeft())."""
     if s.get("state") not in ("running", "pending"):
         return 0.0, 0.0
-    going = (now or time.time()) - s["started"] if s.get("state") == "running" and s.get("started") else 0.0
+    begun = s.get("run_started") or s.get("started")     # a step running again: since this run began
+    going = (now or time.time()) - begun if s.get("state") == "running" and begun else 0.0
     if going >= 60 and s.get("frac", 0) >= 0.05:
         return going * (1 - s["frac"]) / s["frac"], going
     t = s.get("typical")

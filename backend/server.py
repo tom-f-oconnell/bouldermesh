@@ -4534,6 +4534,21 @@ def timings_existing_meshes() -> None:
         if n:
             _timings.clear()
             print(f"timings: {n} older mesh(es) given theirs from their job logs", flush=True)
+        mended = 0
+        for d in MESHES.iterdir() if MESHES.exists() else []:
+            rec = timings_mod.load(d)
+            if rec and timings_mod.repair_placing(rec):
+                timings_mod.save(d, rec)
+                mended += 1
+                pid = (meshinputs.load(d) or {}).get("project")
+                for st in rec["steps"] if pid else []:   # its job's runs of these steps, which estimate others' time left
+                    if st.get("runs"):
+                        q("UPDATE step_runs SET seconds=? WHERE project_id=? AND step=? AND started=(SELECT MAX(started) FROM "
+                          "step_runs WHERE project_id=? AND step=?) AND seconds>?", st["seconds"], pid, st["key"], pid, st["key"],
+                          st["seconds"], write=True)
+        if mended:
+            _timings.clear()
+            print(f"timings: {mended} mesh(es) placed twice given each placing step's own time, not the span of both", flush=True)
     except Exception as e:
         print(f"timings: backfill failed ({type(e).__name__}: {e})", flush=True)
 

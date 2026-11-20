@@ -63,7 +63,7 @@ def record(log_text: str, progress: dict | None, started: float, ended: float, w
         mesh_keys: the reconstruction's own steps (pipeline.steps()), to tell them from a harvest's before them.
     """
     parsed = parse_log(log_text)
-    steps = [{"key": s["key"], "label": s["label"], "seconds": s["seconds"],
+    steps = [{"key": s["key"], "label": s["label"], "seconds": s["seconds"], **({"runs": s["runs"]} if s.get("runs") else {}),
               **({"part": "mesh" if s["key"] in mesh_keys else "harvest"} if mesh_keys is not None else {})}
              for s in (progress or {}).get("steps", []) if s.get("seconds") is not None]
     harvest = [s["seconds"] for s in steps if s.get("part") == "harvest"]
@@ -72,6 +72,38 @@ def record(log_text: str, progress: dict | None, started: float, ended: float, w
             "ended": round(ended, 1), "wall": round(ended - started, 1), "tools_seconds": sum(t["seconds"] for t in tools),
             "cpu_seconds": sum(t["cpu"] for t in tools), "peak_gb": max((t.get("peak_gb", 0) for t in tools), default=0) or None,
             "harvest_seconds": round(sum(harvest), 1) if harvest else None, **parsed, "steps": steps, "tools": tools}
+
+
+# the placing steps, as the progress tracker names them, and the job log's headings of the tools each runs
+PLACING = {"features": ("COLMAP: feature extraction",), "matching": ("COLMAP: matching",),
+           "mapper": ("COLMAP: sparse reconstruction", "COLMAP 4: sparse reconstruction"), "rest": ("COLMAP: placing the rest",)}
+
+
+def repair_placing(rec: dict) -> bool:
+    """Mend a record whose photos were placed twice (GPU SIFT's, then the CPU's) before the tracker counted each run of
+    a step apart (progress.Tracker): each placing step's seconds then ran from its first start to its last end, the
+    steps between them included (one mesh's features: 4,527 s, of which its tools ran 408). Each is made its tools' own
+    seconds from the log (tools), a run for each time its first tool heading came again; "runs_from_tools" says so.
+    Returns whether it changed anything."""
+    tools = rec.get("tools") or []
+    if sum((t.get("step") or "").startswith(PLACING["features"]) for t in tools) < 2 or rec.get("runs_from_tools"):
+        return False
+    runs: dict[str, list[float]] = {}
+    last = None
+    for t in tools:
+        key = next((k for k, heads in PLACING.items() if (t.get("step") or "").startswith(heads)), None)
+        if key is None:
+            last = None
+            continue
+        if key != last:
+            runs.setdefault(key, []).append(0.0)
+        runs[key][-1] += t["seconds"]
+        last = key
+    for s in rec.get("steps") or []:
+        if s.get("key") in runs:
+            s["seconds"], s["runs"] = round(sum(runs[s["key"]]), 1), runs[s["key"]]
+    rec["runs_from_tools"] = True
+    return True
 
 
 def save(mesh_dir: Path, rec: dict) -> None:

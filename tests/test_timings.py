@@ -18,6 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 import progress  # noqa: E402
 import timings  # noqa: E402
+from steptimes import step_left  # noqa: E402
+
+progress_left = lambda step: step_left(step)[1]  # noqa: E731
 
 REMOTE = """remote: 25 MB ready for the machines that connect here, job c5b71fca3a12
 remote: hal-2 (GPU) took it after 166 s
@@ -71,6 +74,37 @@ try:
     steps = {s["key"]: s for s in t.snapshot()["steps"]}
     assert steps["download"]["seconds"] >= 0.2 and "started" in steps["features"] and "seconds" in steps["video"], steps
     assert "started" not in steps["mapper"] and "seconds" not in steps["mapper"], "never ran"
+
+    # photos placed twice (GPU SIFT's, then the CPU's): each step counts its own runs, not the span from its first start
+    # to its last end, which held the other steps between; while running again, how long since this run began
+    t2 = progress.Tracker([("features", "Find features", 1), ("mapper", "Place cameras", 1), ("dense", "Densify", 1)])
+    t2.update("features")
+    time.sleep(0.1)
+    t2.update("mapper")
+    time.sleep(0.3)
+    t2.update("features")       # placed again
+    snap = {s["key"]: s for s in t2.snapshot()["steps"]}
+    assert snap["features"]["run_started"] > snap["features"]["started"] + 0.35, snap["features"]
+    assert progress_left(snap["features"]) < 0.1, "going since this run began"
+    time.sleep(0.1)
+    t2.update("mapper")
+    time.sleep(0.1)
+    t2.update("dense")
+    t2.finish()
+    snap = {s["key"]: s for s in t2.snapshot()["steps"]}
+    assert 0.15 < snap["features"]["seconds"] < 0.35 and len(snap["features"]["runs"]) == 2, snap["features"]
+    assert 0.35 < snap["mapper"]["seconds"] < 0.55 and "runs" not in snap["dense"], snap
+    assert timings.record("", t2.snapshot(), 0, 1, "x", None, False)["steps"][0]["runs"] == snap["features"]["runs"]
+    # records kept before that: mended from their tools' own times, once
+    twice = {"steps": [{"key": "features", "seconds": 4527.3}, {"key": "matching", "seconds": 4876.9}, {"key": "dense", "seconds": 20}],
+             "tools": [{"step": "COLMAP: feature extraction (x)", "seconds": 10}, {"step": "COLMAP: matching", "seconds": 380},
+                       {"step": "COLMAP: sparse reconstruction (mapper)", "seconds": 3703},
+                       {"step": "COLMAP: feature extraction (x)", "seconds": 398}, {"step": "COLMAP: matching", "seconds": 364},
+                       {"step": "OpenMVS: densify", "seconds": 20}]}
+    assert timings.repair_placing(twice) and not timings.repair_placing(twice), "once"
+    assert [(s["key"], s["seconds"], s.get("runs")) for s in twice["steps"]] == [
+        ("features", 408, [10, 398]), ("matching", 744, [380, 364]), ("dense", 20, None)], twice["steps"]
+    assert not timings.repair_placing({"steps": [], "tools": [{"step": "COLMAP: feature extraction (x)", "seconds": 1}]}), "placed once"
 
     # a mesh's record: where it was made, what its tools took, and its steps' times
     rec = timings.record(REMOTE, t.snapshot(), 1000.0, 1400.0, "this server", "abc1234", True)
