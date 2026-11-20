@@ -23,6 +23,12 @@ the jobs' logs for the 7 that didn't. Photos placed are in the largest model, ag
 back only when the GPU's placing is under 70% of the photos with matches. In 28 of its 43 jobs the CPU's check failed
 too, and those lost the most photos (net -155). Look again once `fallbacks.jsonl` has more cases with "kept".
 
+**To do (user, Nov 20): compare mesh quality, not only photos placed.** Nothing yet says whether a GPU-SIFT mesh or a
+CPU-SIFT one is better: the benchmark's 2-3 boulders matched in surface, and this list counts photos. Take ~10 of the
+cases with the largest differences above, mesh both placings, and compare coverage round the rock, distinct
+viewpoints, the two surfaces' agreement, and by eye (~20 meshes, 10-20 machine-hours; most cases' set-aside placing went
+with their work folders, so most need placing again first).
+
 ## Every case
 
 | When (PST) | Boulder or climb | Mesh | Trigger | GPU: placed, check | CPU: placed, check | CPU − GPU | Placement |
