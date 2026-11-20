@@ -11,6 +11,7 @@ Every step logs to a callback so the UI can show progress.
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import os
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Callable
 
 import diagnostics
+import gputurn
 import meshopts
 import occlusion
 import orientation
@@ -279,6 +281,12 @@ def _fell_back(work: Path, step: str, why: str, log: Log, **more) -> None:
     log(f"FALLBACK: {step}: {why}")
 
 
+def _gpu_turn(step: str, log: Log, wanted: bool = True):
+    """gputurn.turn() for a step that may use the GPU: its choice of GPU or CPU, made once its turn has come, and the
+    GPU's run; nothing to wait for where it won't use the GPU anyway."""
+    return gputurn.turn(step, log) if wanted else contextlib.nullcontext()
+
+
 def _gpu_or_cpu(cmd: list[str], flag: str, allowed: bool, cwd: Path, log: Log, watch: Callable[[str], None] | None = None,
                 gpu_args: list[str] | None = None) -> str:
     """Run a COLMAP step on the GPU if it can be, otherwise on the CPU.
@@ -294,15 +302,16 @@ def _gpu_or_cpu(cmd: list[str], flag: str, allowed: bool, cwd: Path, log: Log, w
     Returns:
         What it ran on: "gpu", "cpu", or "gpu+cpu" if the GPU failed partway.
     """
-    gpu, why = gpu_choice(allowed)
-    log(f"{cmd[1]}: using the {'GPU' if gpu else 'CPU'} ({why})")
-    if gpu:
-        try:
-            _run(cmd + (gpu_args or []) + [flag, "1"], cwd, log, watch)
-            return "gpu"
-        except RuntimeError as e:
-            log(f"{cmd[1]}: GPU run failed ({e}), carrying on with the CPU")
-            _fell_back(cwd, cmd[1], f"the GPU run failed ({e}): carried on with the CPU", log)
+    with _gpu_turn(cmd[1], log, allowed):
+        gpu, why = gpu_choice(allowed)
+        log(f"{cmd[1]}: using the {'GPU' if gpu else 'CPU'} ({why})")
+        if gpu:
+            try:
+                _run(cmd + (gpu_args or []) + [flag, "1"], cwd, log, watch)
+                return "gpu"
+            except RuntimeError as e:
+                log(f"{cmd[1]}: GPU run failed ({e}), carrying on with the CPU")
+                _fell_back(cwd, cmd[1], f"the GPU run failed ({e}): carried on with the CPU", log)
     _run(cmd + [flag, "0"], cwd, log, watch)
     return "gpu+cpu" if gpu else "cpu"
 
@@ -542,7 +551,8 @@ def _place_with_vggt(db: Path, images: Path, sparse: Path, work: Path, log: Log,
     log(f"== VGGT: placing the photos, as COLMAP's mapper placed only {registered}")
     tracker.update("mapper", 0, "placing them with VGGT")
     try:
-        n = vggt_place.place(COLMAP, db, images, sparse / "vggt", work / "vggt", log, lambda cmd: _run(cmd, work, log))
+        with gputurn.turn("VGGT", log):
+            n = vggt_place.place(COLMAP, db, images, sparse / "vggt", work / "vggt", log, lambda cmd: _run(cmd, work, log))
         log(f"VGGT and COLMAP placed {n} photos")
     except Cancelled:
         raise
@@ -677,17 +687,21 @@ def _global_mapper(db: Path, images: Path, sparse: Path, work: Path, log: Log, t
 
     if not _finished(work, "global"):
         start = time.time()
-        gpu, why = global_gpu_choice(use_gpu)
-        log(f"global_mapper: solving on the {'GPU' if gpu else 'CPU'} ({why})")
-        device = "gpu" if gpu else "cpu"
+        failed = None
         try:
-            try:
-                args, lines = attempt(gpu)
-            except RuntimeError as e:
-                if not gpu:
-                    raise
-                log(f"global_mapper: GPU run failed ({e}), starting it again on the CPU")
-                _fell_back(work, "global_mapper", f"the GPU run failed ({e}): started again on the CPU", log)
+            with _gpu_turn("global_mapper", log, use_gpu):
+                gpu, why = global_gpu_choice(use_gpu)
+                log(f"global_mapper: solving on the {'GPU' if gpu else 'CPU'} ({why})")
+                device = "gpu" if gpu else "cpu"
+                try:
+                    args, lines = attempt(gpu)
+                except RuntimeError as e:
+                    if not gpu:
+                        raise
+                    failed = e
+            if failed:      # on the CPU, after the GPU's turn
+                log(f"global_mapper: GPU run failed ({failed}), starting it again on the CPU")
+                _fell_back(work, "global_mapper", f"the GPU run failed ({failed}): started again on the CPU", log)
                 device = "gpu+cpu"
                 args, lines = attempt(False)
         except (RuntimeError, OSError) as e:
@@ -1071,7 +1085,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     if not _finished(work, "people") and occlusion.available():
         log("== Finding people to ignore")
         try:
-            occlusion.write_masks(images, masks, lambda f: f"{f.name}.png", log, tracker.callback("people"), gpu=use_gpu)
+            with _gpu_turn("occlusion", log, use_gpu):
+                occlusion.write_masks(images, masks, lambda f: f"{f.name}.png", log, tracker.callback("people"), gpu=use_gpu)
             _finish(work, "people")
         except Exception as e:  # e.g. the model can't be downloaded: only costs the masking
             log(f"occlusion: failed ({e}); not masking people")
@@ -1096,17 +1111,18 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             watch = _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1))
             device = None
             if internet and GPU_SIFT and use_gpu and not rejected.exists():     # plain SIFT, all on the GPU or not at all: the two find different features
-                gpu, why = gpu_choice(True)
-                log(f"feature_extractor: GPU_SIFT is set: {'plain SIFT on the GPU' if gpu else 'not this time'} ({why})")
-                if gpu:
-                    try:
-                        _run(cmd + ["--SiftExtraction.use_gpu", "1"], work, log, watch)
-                        device = "gpu"
-                    except RuntimeError as e:
-                        log(f"feature_extractor: GPU run failed ({e}): starting again on the CPU, with its usual features")
-                        _fell_back(work, "feature_extractor", f"GPU SIFT failed ({e}): started again with the CPU's SIFT", log)
-                        for f in work.glob(db.name + "*"):
-                            f.unlink()
+                with gputurn.turn("feature_extractor", log):
+                    gpu, why = gpu_choice(True)
+                    log(f"feature_extractor: GPU_SIFT is set: {'plain SIFT on the GPU' if gpu else 'not this time'} ({why})")
+                    if gpu:
+                        try:
+                            _run(cmd + ["--SiftExtraction.use_gpu", "1"], work, log, watch)
+                            device = "gpu"
+                        except RuntimeError as e:
+                            log(f"feature_extractor: GPU run failed ({e}): starting again on the CPU, with its usual features")
+                            _fell_back(work, "feature_extractor", f"GPU SIFT failed ({e}): started again with the CPU's SIFT", log)
+                            for f in work.glob(db.name + "*"):
+                                f.unlink()
             if device is None:
                 # COLMAP has no GPU version of the affine shape and domain-size pooling of the internet settings
                 cmd += AFFINE_SIFT if internet else []
@@ -1240,8 +1256,9 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
                 log(f"occlusion: the masks couldn't be moved to the undistorted photos ({type(e).__name__}: {e}); looking for people in those")
                 left = None
             if left is None or left:
-                occlusion.write_masks(dense / "images", dense / "images", name_for, log,
-                                      tracker.callback("people-undistorted"), gpu=use_gpu)
+                with _gpu_turn("occlusion", log, use_gpu):
+                    occlusion.write_masks(dense / "images", dense / "images", name_for, log,
+                                          tracker.callback("people-undistorted"), gpu=use_gpu)
             mask_args = ["--ignore-mask-label", "0"]
             _finish(work, "people-undistorted")
         except Exception as e:
@@ -1268,15 +1285,16 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         cuda, on_gpu = _mvs_cuda("DensifyPointCloud"), False
         passes = GEOMETRIC_ITERS if "--geometric-iters" in densify else 2
         if cuda:
-            gpu, why = mvs_gpu_choice(use_gpu)
-            log(f"DensifyPointCloud: using the {'GPU' if gpu else 'CPU'} ({why})")
-            if gpu:
-                try:
-                    _run([cuda, *densify, "--cuda-device", "-1"], work, log, _geometric(tracker, passes))
-                    on_gpu = True
-                except RuntimeError as e:   # the CPU build carries on from the depth maps made so far
-                    log(f"DensifyPointCloud: GPU run failed ({e}), carrying on with the CPU")
-                    _fell_back(work, "DensifyPointCloud", f"the GPU run failed ({e}): carried on with the CPU build", log)
+            with _gpu_turn("DensifyPointCloud", log, use_gpu):
+                gpu, why = mvs_gpu_choice(use_gpu)
+                log(f"DensifyPointCloud: using the {'GPU' if gpu else 'CPU'} ({why})")
+                if gpu:
+                    try:
+                        _run([cuda, *densify, "--cuda-device", "-1"], work, log, _geometric(tracker, passes))
+                        on_gpu = True
+                    except RuntimeError as e:   # the CPU build carries on from the depth maps made so far
+                        log(f"DensifyPointCloud: GPU run failed ({e}), carrying on with the CPU")
+                        _fell_back(work, "DensifyPointCloud", f"the GPU run failed ({e}): carried on with the CPU build", log)
         if not on_gpu:
             _run([_mvs("DensifyPointCloud"), *densify], work, log, _geometric(tracker, passes))
         _finish(work, "dense")

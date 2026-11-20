@@ -1,0 +1,31 @@
+# More than one worker on a machine (worker/bouldermesh_worker.py), as bouldermesh-worker.service runs one: each
+# instance (bouldermesh-worker@1, @2, ...) has its own settings and token under WORKER_HOME, and all share DATA, where
+# their jobs' GPU steps take turns (a lock file there), so that while one job's mapper runs on the CPU, another can
+# match or densify on the GPU. Register each instance once by hand, as for one worker (README, "Running reconstructions
+# elsewhere"), with a copy of the script in its own WORKER_HOME, where it replaces itself:
+#     mkdir -p ~/.bouldermesh-worker-2 && curl -o ~/.bouldermesh-worker-2/bouldermesh_worker.py https://boulders.example.com/worker/bouldermesh_worker.py
+#     python3 ~/.bouldermesh-worker-2/bouldermesh_worker.py --home ~/.bouldermesh-worker-2 --server https://boulders.example.com \
+#         --data /data/you/bouldermesh-worker --check
+# (answering no to its offer to start by itself: this unit does that). Edit User, WORKER_HOME, DATA and CPUS below, and:
+#     sudo cp deploy/bouldermesh-worker@.service /etc/systemd/system/ && sudo systemctl enable --now bouldermesh-worker@{1,2}
+# journalctl -u 'bouldermesh-worker@*' -f shows what they're doing; systemctl stop 'bouldermesh-worker@*' stops them all.
+[Unit]
+Description=BoulderMesh: reconstructions for a server that can't reach this machine (worker %i)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=tom
+Environment=WORKER_HOME=/home/tom/.bouldermesh-worker-%i
+Environment=DATA=/data/tom
+# cores each instance's jobs may use at most
+Environment=CPUS=6
+ExecStart=/usr/bin/python3 ${WORKER_HOME}/bouldermesh_worker.py --home ${WORKER_HOME} --data ${DATA} --cpus ${CPUS}
+Restart=always
+RestartSec=60
+# as in bouldermesh-worker.service: 3 is a script too old for the server that couldn't update itself
+RestartPreventExitStatus=3
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

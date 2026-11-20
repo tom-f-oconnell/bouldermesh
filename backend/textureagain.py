@@ -132,7 +132,8 @@ def texture_again(mesh_dir: Path, photos: Path, masks: Path | None, work: Path, 
             left = occlusion.warp_masks(masks, orientation.read_cameras(model), orientation.read_cameras(dense / "sparse"),
                                         dense / "images", name_for, log)
             if left:
-                occlusion.write_masks(dense / "images", dense / "images", name_for, log, gpu=use_gpu)
+                with pipeline._gpu_turn("occlusion", log, use_gpu):
+                    occlusion.write_masks(dense / "images", dense / "images", name_for, log, gpu=use_gpu)
             mask_args = ["--ignore-mask-label", "0"]
         except Exception as e:      # noqa: BLE001 - as the pipeline: textured without them
             log(f"occlusion: failed ({type(e).__name__}: {e}); texturing without the people masks")

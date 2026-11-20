@@ -48,6 +48,7 @@ MADE = {"beta": re.compile(r"beta\.json|beta_poses\.json|beta_[0-9a-f]{8}\.jpg")
 
 def splat_task(job: Path, log) -> int:
     """Fit a capture's scenery (splat.fit_capture()) into out/."""
+    import gputurn
     import splat
     tracker = PrintedTracker([("splat", "Fit the scenery", 1)])
     tracker.update("splat", 0.0)
@@ -56,7 +57,8 @@ def splat_task(job: Path, log) -> int:
         if _step(line):
             tracker.update("splat", _step(line))
     try:
-        record = splat.fit_capture(job, job / "out", said)
+        with gputurn.turn("splat", said):
+            record = splat.fit_capture(job, job / "out", said)
     except Exception as e:
         print(f"FAILED: {type(e).__name__}: {e}", flush=True)
         return 1

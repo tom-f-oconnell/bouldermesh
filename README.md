@@ -1148,7 +1148,10 @@ machine. *Run more on* adds up to that many machines (2 by default):
   doesn't answer yet, so that a service starting with it doesn't work without the GPU from then on. A machine whose
   script watches its GPU but can't say its memory is given no new job (scripts before 19 could ask before their first
   reading, and be given one of any size). Its CPU
-  use is held down by `--nice` and `--cpus` instead. A climb it has started, it finishes. It tells this server why it's
+  use is held down by `--nice` and `--cpus` instead. A climb it has started, it finishes. More than one can run on a machine
+  (`deploy/bouldermesh-worker@.service`: instances `@1`, `@2`, each with its own `--home` and token, sharing `--data`): their
+  jobs' GPU steps take turns by a lock file in `--data` (`backend/gputurn.py`), a job waiting for the other's step rather
+  than running the GPU out of memory, and none holds back for another's use of the GPU. It tells this server why it's
   held back, which keeps each machine's state as it changes (working, idle, held back, awaiting approval, offline once
   it stops asking for 2 min) and logs each change: *Machines* on the admin page shows each one's now and for how long,
   its share of the last day and week in each, and the latest changes, and a climb waiting for held-back machines says
@@ -1508,6 +1511,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_pipeline.py    # offline: reconstruction steps with COLMAP/OpenMVS stubbed, progress parsing
     python3 tests/test_reconstruction.py  # offline: what a mesh keeps of its reconstruction: the model, verified pairs, no features
     python3 tests/test_vggt_place.py  # offline: which photos VGGT places, its cameras as a COLMAP model, the rounds after
+    python3 tests/test_gputurn.py     # offline: jobs' GPU steps taking turns, between processes
     python3 tests/test_splat.py       # offline: splats' cameras and lenses, their file, the rock's box, photos for fitting
     python3 tests/test_campaign.py    # offline: meshing an area, with harvest and reconstruction stubbed: order, stopping, restarts, retries, boulders' meshes
     python3 tests/test_viewpoints.py  # offline: placing each climb on a boulder's mesh by its own photos

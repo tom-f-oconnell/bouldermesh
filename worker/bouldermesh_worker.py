@@ -33,6 +33,11 @@ It takes no climbs while others keep the GPU busy (over 50% as a median over 3 m
 what's free; it tells the server why, which keeps a record of how often each machine works, waits or is held back. A
 climb it has started, it finishes. Its CPU use is held down by --nice and --cpus.
 
+More than one can run on a machine, each with its own --home (and so its own token) and the same --data
+(deploy/bouldermesh-worker@.service). Their jobs' GPU steps then take turns, by a lock file in --data, so that two never
+run the GPU out of memory together: a job waits for the other's step to finish, its CPU steps going on meanwhile. Nor
+does one hold back for another's use of the GPU.
+
 On Debian or Ubuntu, `python3 bouldermesh_worker.py --setup` installs what's missing of Docker and, for an NVIDIA GPU
 with its driver, NVIDIA's container toolkit, and lets you use Docker, asking before each step. It never installs a GPU
 driver, and asks before restarting Docker, which stops containers running then.
@@ -104,7 +109,7 @@ from pathlib import Path
 # 24: says what each job is (meshing, finding beta or size, filtering, scenery) and of which project or mesh, with its link
 # 26: on a Mac, --check offers to start it by itself as a launchd agent; checks the room on Docker Desktop's disk
 # 27: takes a scenery job's frames (scenery/), which before it refused as something a job shouldn't hold
-VERSION = 27
+VERSION = 28
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter", "splat")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
@@ -121,6 +126,7 @@ AWAY_MAX = 3600             # seconds a job carries on with the server out of re
 AWAY_EVERY = 60             # the most seconds between tries to reach it again meanwhile
 KEPT_LINES = 20000          # a job's log kept meanwhile: the first line and the latest, beyond this
 AWAY_CODES = (502, 503, 504, 520, 521, 522, 523, 524)   # the server, or the way there (Cloudflare), is away
+GPU_LOCK = "gpu.lock"       # under --data: jobs' GPU steps take turns by it (backend/gputurn.py), however many workers run
 JOB_ID = re.compile(r"[0-9a-f]{12}")
 GB = 2**30                  # as df -h counts them
 CLIMB_GB = 3.0              # a climb's job folder at its biggest: its photos, COLMAP's and OpenMVS's work, its results
@@ -309,12 +315,21 @@ class GpuWatch:
             time.sleep(GPU_EVERY)
             s = self.sample()
             if s:
+                if not self.running and self.siblings():
+                    self.ours_until = max(self.ours_until, time.time() + 2 * GPU_EVERY)
                 self.samples.append((time.time(), *s, self.running or time.time() < self.ours_until))
                 try:
                     if s[0] is not None:
                         self._job_share(s[0])
                 except (OSError, subprocess.SubprocessError):
                     pass
+
+    @staticmethod
+    def siblings() -> bool:
+        """Whether a job of another worker on this machine is running (a container named bmw-): its use of the GPU is
+        not others' to hold back for, as its GPU steps and this one's take turns (GPU_LOCK)."""
+        r = quiet(["docker", "ps", "-q", "--filter", "name=^bmw-"])
+        return bool(r and r.returncode == 0 and r.stdout.strip())
 
     def ours(self, running: bool) -> None:
         """Mark a job of this script's as running, or ended (its use lingers in the samples for a little)."""
@@ -1323,8 +1338,12 @@ class Worker:
                     raise NotHere(f"couldn't pull {image}: {last}")
                 self.prune_pulled(image)
             self.container = f"bmw-{jid}"
+            lock = self.home / GPU_LOCK     # shared by the workers on this machine whose --data is the same
+            if self.gpu:
+                lock.touch()
             cmd = ["docker", "run", "--rm", "--init", "--name", self.container, "--user", f"{os.getuid()}:{os.getgid()}",
                    "-e", "HOME=/tmp", "-e", "DATA_DIR=/data", "-v", f"{self.home / 'data'}:/data", "-v", f"{work / 'job'}:/job",
+                   *(["-v", f"{lock}:/gpu.lock", "-e", "GPU_LOCK=/gpu.lock"] if self.gpu else []),
                    "--security-opt", "no-new-privileges", "--cap-drop", "ALL", *self.gpu,
                    *(["--cpus", str(self.args.cpus)] if self.args.cpus else []), *self.args.docker_arg, image,
                    "nice", "-n", str(self.args.nice), "python3", "/app/backend/remote_job.py", "/job",
