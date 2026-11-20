@@ -291,7 +291,16 @@ def with_token(tmp: Path) -> None:
         # visitors' list of meshes is made once and kept a while, but an editor's change is in it at once
         mine = lambda: [m["id"] for m in req(B, "GET", "/api/meshes")[2]]  # noqa: E731
         assert mid in mine() and mine() == mine()
+        cid = req(B, "POST", "/api/climbs/manual", {"name": "Hidden Arete"}, headers=AUTH)[2]["id"]
+        assert req(B, "POST", f"/api/meshes/{mid}/links", {"climb_id": cid}, headers=AUTH)[0] == 201
         assert req(B, "POST", f"/api/meshes/{mid}/hide", {"why": "a test"}, headers=AUTH)[0] == 200
+        # a climb whose only mesh is hidden: to visitors, unmeshed; editors see it counted as hidden
+        meshed = lambda **h: [c["id"] for c in req(B, "GET", "/api/climbs?meshed=1", headers=h)[2]]  # noqa: E731
+        assert cid not in meshed() and cid in meshed(**AUTH)
+        seen = req(B, "GET", f"/api/climbs/{cid}")[2]
+        assert (seen["n_links"], seen["meshes"]) == (0, []), seen
+        seen = req(B, "GET", f"/api/climbs/{cid}", headers=AUTH)[2]
+        assert (seen["n_links"], seen["n_links_hidden"], seen["meshes"][0]["hidden"]) == (1, 1, "a test"), seen
         assert mid not in mine() and mid in [m["id"] for m in req(B, "GET", "/api/meshes", headers=AUTH)[2]], "editors still see it"
         # an editor's list is kept too, and their own change is in it at once
         theirs = lambda: {m["id"]: m.get("hidden") for m in req(B, "GET", "/api/meshes", headers=AUTH)[2]}  # noqa: E731

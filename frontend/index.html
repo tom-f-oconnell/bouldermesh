@@ -14,11 +14,11 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
 </script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>
-  :root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#e6e8ee;--mute:#8b93a7;--acc:#5cc8ff;--acc-fg:#001018;--ok:#5fd68a;--bad:#ff6b6b;--warn:#ffc857;--climb:#ff9f5c;--time:#b49cff;
+  :root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#e6e8ee;--mute:#8b93a7;--dim:#b3b8c4;--acc:#5cc8ff;--acc-fg:#001018;--ok:#5fd68a;--bad:#ff6b6b;--warn:#ffc857;--climb:#ff9f5c;--time:#b49cff;
     --deep:#0a0c10;--overlay:rgba(15,17,21,.9);--overlay-soft:rgba(15,17,21,.75);--warn-bg:#2a2410;--warn-line:#5a4a18;--climb-bg:#2a1a10;--ok-bg:#102a1a;--bad-bg:#2a1010;--src-bg:#1a2030;--swatch-line:rgba(255,255,255,.6);color-scheme:dark}
-  @media (prefers-color-scheme: light){:root:not([data-theme=dark]){--bg:#f3f4f7;--panel:#fff;--line:#d7dbe3;--fg:#1b1f27;--mute:#5d6676;--acc:#0a78c0;--acc-fg:#fff;--ok:#1d8a47;--bad:#c93c3c;--warn:#8a5a00;--climb:#b9541a;--time:#6a4fc0;
+  @media (prefers-color-scheme: light){:root:not([data-theme=dark]){--bg:#f3f4f7;--panel:#fff;--line:#d7dbe3;--fg:#1b1f27;--mute:#5d6676;--dim:#4a515e;--acc:#0a78c0;--acc-fg:#fff;--ok:#1d8a47;--bad:#c93c3c;--warn:#8a5a00;--climb:#b9541a;--time:#6a4fc0;
     --deep:#e9ebf0;--overlay:rgba(255,255,255,.92);--overlay-soft:rgba(255,255,255,.8);--warn-bg:#fff4cf;--warn-line:#e4c76a;--climb-bg:#fde4d4;--ok-bg:#d9f2e2;--bad-bg:#fbdede;--src-bg:#dde9f7;--swatch-line:rgba(0,0,0,.35);color-scheme:light}}
-  :root[data-theme=light]{--bg:#f3f4f7;--panel:#fff;--line:#d7dbe3;--fg:#1b1f27;--mute:#5d6676;--acc:#0a78c0;--acc-fg:#fff;--ok:#1d8a47;--bad:#c93c3c;--warn:#8a5a00;--climb:#b9541a;--time:#6a4fc0;
+  :root[data-theme=light]{--bg:#f3f4f7;--panel:#fff;--line:#d7dbe3;--fg:#1b1f27;--mute:#5d6676;--dim:#4a515e;--acc:#0a78c0;--acc-fg:#fff;--ok:#1d8a47;--bad:#c93c3c;--warn:#8a5a00;--climb:#b9541a;--time:#6a4fc0;
     --deep:#e9ebf0;--overlay:rgba(255,255,255,.92);--overlay-soft:rgba(255,255,255,.8);--warn-bg:#fff4cf;--warn-line:#e4c76a;--climb-bg:#fde4d4;--ok-bg:#d9f2e2;--bad-bg:#fbdede;--src-bg:#dde9f7;--swatch-line:rgba(0,0,0,.35);color-scheme:light}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;height:100vh;height:100dvh;display:grid;grid-template-rows:auto 1fr}
@@ -99,6 +99,8 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   section h2 a.byname{text-transform:none;letter-spacing:0;font-size:12px;font-weight:400;color:var(--acc)}
   .card{border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--bg);margin-bottom:8px}
   .card.active{border-color:var(--acc)}
+  .chip.dim{color:var(--dim);opacity:.8}
+  .card.dim{color:var(--dim)} .card.dim .name{color:var(--dim)}     /* hidden from visitors as a failure: editors see it, greyed */
   #climbs>.card{cursor:pointer}
   #climbs>.card.multi{border-color:var(--warn);box-shadow:inset 3px 0 0 var(--warn)}   /* more than one mesh, while picked out */
   #climbs>.card,#meshes>.card{content-visibility:auto;contain-intrinsic-size:auto 110px}   /* off screen: not laid out until near */
@@ -3309,9 +3311,11 @@ function climbCard(c){
   const meshes = (c.n_links || 0) + (c.n_boulder || 0), multi = $('#c-multi').checked && meshes > 1;
   // for an editor, the green counts only meshes made under the current rules, and the old ones are counted apart
   const oldN = editor ? (c.n_links_old || 0) + (c.n_boulder_old || 0) : 0;
-  const ownN = (c.n_links || 0) - (editor ? c.n_links_old || 0 : 0), boulderN = (c.n_boulder || 0) - (editor ? c.n_boulder_old || 0 : 0);
-  const d = document.createElement('div'); d.className = 'card' + (c.id === openClimbId ? ' open' : '') + (multi ? ' multi' : ''); d.dataset.id = c.id;
-  d.innerHTML = `<div class="row"><span class="name grow">${esc(namedParts(c).name)} <small>${esc(gradeLeft(c))}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${ownN>0?`<span class="tag ok">${ownN} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">no mesh of its own · via ${esc(c.shared_of)}</span>`:''}${boulderN>0?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${oldN?`<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">${oldN} old mesh${oldN === 1 ? '' : 'es'}</span>`:''}${multi?`<span class="tag" title="Its own meshes, and pools of it with others: ${c.n_links}; its boulder's: ${c.n_boulder}">${meshes} meshes</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
+  const ownN = (c.n_links || 0) - (editor ? c.n_links_old || 0 : 0) - (c.n_links_hidden || 0), boulderN = (c.n_boulder || 0) - (editor ? c.n_boulder_old || 0 : 0) - (c.n_boulder_hidden || 0);
+  // meshes hidden from visitors as failures (only an editor's list counts them): all of them hidden, and it's as unmeshed to a visitor
+  const hiddenN = (c.n_links_hidden || 0) + (c.n_boulder_hidden || 0), allHidden = !!hiddenN && hiddenN === meshes && (c.n_shared_hidden || 0) === (c.n_shared || 0);
+  const d = document.createElement('div'); d.className = 'card' + (c.id === openClimbId ? ' open' : '') + (multi ? ' multi' : '') + (allHidden ? ' dim' : ''); d.dataset.id = c.id;
+  d.innerHTML = `<div class="row"><span class="name grow">${esc(namedParts(c).name)} <small>${esc(gradeLeft(c))}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${ownN>0?`<span class="tag ok">${ownN} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">no mesh of its own · via ${esc(c.shared_of)}</span>`:''}${boulderN>0?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${hiddenN?`<span class="tag" style="color:var(--bad)" title="${allHidden ? 'Every mesh of it is hidden from visitors as a failure: to them it has no mesh, and it isn\'t among the meshed climbs' : `${hiddenN} of its meshes ${hiddenN === 1 ? 'is' : 'are'} hidden from visitors as failures`}">${allHidden ? 'hidden: mesh failed' : `${hiddenN} mesh${hiddenN === 1 ? '' : 'es'} hidden`}</span>`:''}${oldN?`<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">${oldN} old mesh${oldN === 1 ? '' : 'es'}</span>`:''}${multi?`<span class="tag" title="Its own meshes, and pools of it with others: ${c.n_links}; its boulder's: ${c.n_boulder}">${meshes} meshes</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
       <button class="sm ${shownClimbs().has(c.id) ? '' : 'sec '}viewmesh" ${c.n_links || c.n_boulder || c.n_shared ? '' : 'disabled'} title="${c.n_links ? 'Show its newest mesh' : c.n_boulder ? 'Show its boulder\'s mesh, from where its own photos were taken' : c.n_shared ? 'Show the mesh of another climb on its boulder' : 'No mesh is linked to it yet'}">View</button></div>
     <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
     <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
@@ -3465,8 +3469,8 @@ function boulderHtml(c){
     : b.done ? `<button class="sm sec meshboulder again" title="Its photos haven't changed since it was meshed, so this makes the same again">Mesh it again anyway</button>`
     : `<button class="sm sec meshboulder" title="Makes a mesh of the whole boulder from every photo of its climbs, kept apart from each climb's own, and works out where each climb is seen from">${b.meshes.length ? 'Mesh the boulder again' : 'Mesh the whole boulder'} <small>(${count})</small></button>`;
   return `<div class="meta" style="margin-top:8px">${where}</div>
-    ${b.meshes.length || b.shared.length ? `<div class="chips">${b.meshes.map(m => `<span class="chip" data-bmesh="${m.id}" title="${m.view ? 'Shows it from where this climb\'s own photos were taken' : 'Its photos of this climb weren\'t placed in it, so it opens as any mesh does'}">▣ ${esc(m.name)} <small>${esc(seen(m))}</small></span>`).join('')}
-      ${b.shared.map(m => `<span class="chip" data-mesh="${m.id}" title="An area linked this climb to the mesh made for ${esc(m.made_for)}, as it's on the same boulder: it may not show this climb's side">▣ ${esc(m.name)} <small>made for ${esc(m.made_for)}</small></span>`).join('')}</div>` : ''}
+    ${b.meshes.length || b.shared.length ? `<div class="chips">${b.meshes.map(m => `<span class="chip${m.hidden ? ' dim' : ''}" data-bmesh="${m.id}" title="${m.hidden ? `Hidden from visitors as a failure: ${esc(m.hidden)}. ` : ''}${m.view ? 'Shows it from where this climb\'s own photos were taken' : 'Its photos of this climb weren\'t placed in it, so it opens as any mesh does'}">▣ ${esc(m.name)} <small>${esc(seen(m))}${m.hidden ? ' · hidden' : ''}</small></span>`).join('')}
+      ${b.shared.map(m => `<span class="chip${m.hidden ? ' dim' : ''}" data-mesh="${m.id}" title="${m.hidden ? `Hidden from visitors as a failure: ${esc(m.hidden)}. ` : ''}An area linked this climb to the mesh made for ${esc(m.made_for)}, as it's on the same boulder: it may not show this climb's side">▣ ${esc(m.name)} <small>made for ${esc(m.made_for)}${m.hidden ? ' · hidden' : ''}</small></span>`).join('')}</div>` : ''}
     ${b.climbs.length ? `<div class="meta">${group ? 'Also in it' : 'Also on it'}: ${b.climbs.map(o => `<a href="#" data-climb="${o.id}">${esc(o.name)}</a>${o.meshes.length ? ' <span title="has a mesh of its own">▣</span>' : ''}`).join(', ')}</div>` : ''}
     ${later}<div class="row w" style="margin-top:4px"><span class="grow meta">${note}</span>${button}</div>`;
 }
@@ -3501,7 +3505,7 @@ async function openClimb(id, focus=true){
     <div class="chips">${[...vids, ...searched].map(v=>`<a class="chip" href="${esc(v.url)}" target="_blank" rel="noopener" title="${esc(v.title||'')}">${esc(v.title ? v.title.slice(0,40) : v.url.replace(/^https?:\/\/(www\.)?/,'').slice(0,40))}</a>`).join('')}</div>
     ${sizes.length ? `<div class="meta" style="margin-top:4px">Climbers' sizes, as their videos or channels give them: ${sizes.map(esc).join(' · ')}</div>` : ''}
     <div class="meta" style="margin-top:8px">Its meshes (${c.meshes.length})</div>
-    <div class="chips">${c.meshes.map(m=>`<span class="chip" data-mesh="${m.id}">▣ ${esc(meshesById[m.id] ? meshTitle(meshesById[m.id]) : m.name)}</span>`).join('')}
+    <div class="chips">${c.meshes.map(m=>`<span class="chip${m.hidden ? ' dim' : ''}" data-mesh="${m.id}" ${m.hidden ? `title="Hidden from visitors as a failure: ${esc(m.hidden)}"` : ''}>▣ ${esc(meshesById[m.id] ? meshTitle(meshesById[m.id]) : m.name)}${m.hidden ? ' <small>hidden</small>' : ''}</span>`).join('')}
       <select class="linksel" style="width:auto;padding:2px 6px;font-size:12px"><option value="">+ link existing mesh…</option>${meshesCache.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>
     ${boulderHtml(c)}
     ${c.projects.length?`<div class="meta projs" style="margin-top:8px">Projects: ${c.projects.map(p=>`<span class="chip" data-proj="${p.id}">${esc(p.name)} <small>${p.status}</small></span>`).join(' ')}</div>`:''}
@@ -4621,7 +4625,7 @@ function renderMeshes(filter = true){
   $('#m-older').parentNode.lastChild.textContent = ` Show older versions of rebuilt meshes (${older})`;
   if (meshesCache.length && !shown.length) el.innerHTML = '<div class="status">No mesh fits the filter.</div>';
   for (const m of shown) {
-    const d = document.createElement('div'); d.className = 'card mesh';
+    const d = document.createElement('div'); d.className = 'card mesh' + (m.hidden ? ' dim' : '');
     const sole = soleClimb(m), several = ['groups', 'boulders'].includes(meshKind(m));
     // its climbs: a boulder's or a pool's, each opening it from where its own photos were taken, and those linked to it
     // (a pool's again only where they can be unlinked here)

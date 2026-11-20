@@ -716,31 +716,37 @@ def coord_doubts(fresh: bool = False) -> dict[str, dict]:
     return out
 
 
-def climb_rows(ids: list[str], data: bool = False, no_old: bool = False, no_via: bool = False) -> list[dict]:
+def climb_rows(ids: list[str], data: bool = False, no_old: bool = False, no_via: bool = False,
+               visitor: bool = False) -> list[dict]:
     """Climbs as their cards show them, in the order given (those not found left out): each with its counts of
     images and videos (with data, its data instead), of meshes linked to it as its own (n_links, n_links_old of them old:
     MESH_RULES), of its boulder's current meshes (n_boulder, n_boulder_old), and of those an area linked it to that were
-    made for another climb on it (n_shared, shared_of: the climb the newest current one was made for). A few queries for them all, rather than six each: the
+    made for another climb on it (n_shared, shared_of: the climb the newest current one was made for), and how many of
+    each are hidden from visitors as failures (n_links_hidden, n_boulder_hidden, n_shared_hidden). A few queries for them all, rather than six each: the
     Climbs tab lists up to 500, which took 2 s a search.
 
     Args:
         no_old: old meshes of either kind (OLD_ANY) aren't counted at all, as the Climbs tab's "Hide old meshes" asks.
         no_via: nor are those an area linked it to that were made for another climb (n_shared 0).
+        visitor: nor are meshes hidden from visitors (hide_mesh()), so a climb whose only mesh is hidden reads as
+            not meshed.
     """
     if not ids:
         return []
     marks = ",".join("?" * len(ids))
-    fresh = f" AND NOT {OLD_ANY}" if no_old else ""
+    fresh = (f" AND NOT {OLD_ANY}" if no_old else "") + (" AND m.hidden IS NULL" if visitor else "")
     rows = {r["id"]: r for r in q(f"SELECT * FROM climbs WHERE id IN ({marks})", *ids)}
-    own, own_old = {}, {}
-    for r in q(f"SELECT l.climb_id, {OLD_MESH} AS old, COUNT(*) n FROM mesh_links l LEFT JOIN meshes m ON m.id=l.mesh_id "
-               f"WHERE l.climb_id IN ({marks}) AND COALESCE(l.note,'') NOT LIKE ?{fresh} GROUP BY l.climb_id, old", *ids, SHARED + "%"):
+    own, own_old, own_hidden = {}, {}, {}
+    for r in q(f"SELECT l.climb_id, {OLD_MESH} AS old, COUNT(*) n, SUM(m.hidden IS NOT NULL) hid FROM mesh_links l "
+               f"LEFT JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id IN ({marks}) AND COALESCE(l.note,'') NOT LIKE ?{fresh} "
+               "GROUP BY l.climb_id, old", *ids, SHARED + "%"):
         own[r["climb_id"]] = own.get(r["climb_id"], 0) + r["n"]
+        own_hidden[r["climb_id"]] = own_hidden.get(r["climb_id"], 0) + (r["hid"] or 0)
         if r["old"]:
             own_old[r["climb_id"]] = r["n"]
-    nshared = {} if no_via else {r["climb_id"]: r["n"] for r in q(
-        f"SELECT l.climb_id, COUNT(*) n FROM mesh_links l LEFT JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id IN ({marks}) "
-        f"AND l.note LIKE ?{fresh} GROUP BY l.climb_id", *ids, SHARED + "%")}
+    nshared = {} if no_via else {r["climb_id"]: (r["n"], r["hid"] or 0) for r in q(
+        f"SELECT l.climb_id, COUNT(*) n, SUM(m.hidden IS NOT NULL) hid FROM mesh_links l LEFT JOIN meshes m ON m.id=l.mesh_id "
+        f"WHERE l.climb_id IN ({marks}) AND l.note LIKE ?{fresh} GROUP BY l.climb_id", *ids, SHARED + "%")}
     shared: dict[str, dict] = {}
     for r in [] if no_via else q(f"""SELECT l.climb_id, l.note, ({MADE_FOR}) AS made_for FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
                    WHERE l.climb_id IN ({marks}) AND l.note LIKE ?{fresh} ORDER BY m.replaced_by IS NOT NULL, m.created DESC""",
@@ -759,32 +765,32 @@ def climb_rows(ids: list[str], data: bool = False, no_old: bool = False, no_via:
         else:
             r["n_images"] = len(d.get("images") or [])
             r["n_videos"] = len(d.get("videos") or [])
-        r["n_links"], r["n_links_old"] = own.get(cid, 0), own_old.get(cid, 0)
+        r["n_links"], r["n_links_old"], r["n_links_hidden"] = own.get(cid, 0), own_old.get(cid, 0), own_hidden.get(cid, 0)
         r["boulder_key"] = boulder_of(r["area_path"])
         s = shared.get(cid)
-        r["n_shared"] = nshared.get(cid, 0)
+        r["n_shared"], r["n_shared_hidden"] = nshared.get(cid, (0, 0))
         r["shared_of"] = (s["made_for"] or s["note"][len(SHARED):]) if s else None
         out.append(r)
     keys = sorted({r["boulder_key"] for r in out if r["boulder_key"]})
-    counts, olds = {}, {}
-    for r in q(f"SELECT boulder, COUNT(*) n, SUM({OLD_MESH}) old FROM meshes m WHERE replaced_by IS NULL{fresh} AND boulder IN "
-               f"({','.join('?' * len(keys))}) GROUP BY boulder", *keys) if keys else []:
-        counts[r["boulder"]], olds[r["boulder"]] = r["n"], r["old"] or 0
+    counts = {}
+    for r in q(f"SELECT boulder, COUNT(*) n, SUM({OLD_MESH}) old, SUM(m.hidden IS NOT NULL) hid FROM meshes m "
+               f"WHERE replaced_by IS NULL{fresh} AND boulder IN ({','.join('?' * len(keys))}) GROUP BY boulder", *keys) if keys else []:
+        counts[r["boulder"]] = (r["n"], r["old"] or 0, r["hid"] or 0)
     for r in out:   # meshes of its whole boulder (run_boulder())
         key = r.pop("boulder_key")
-        r["n_boulder"], r["n_boulder_old"] = (counts.get(key, 0), olds.get(key, 0)) if key else (0, 0)
+        r["n_boulder"], r["n_boulder_old"], r["n_boulder_hidden"] = counts.get(key, (0, 0, 0)) if key else (0, 0, 0)
     return out
 
 
-def climb_row(cid: str, full=False) -> dict | None:
-    rows = climb_rows([cid], data=full)
+def climb_row(cid: str, full=False, visitor: bool = False) -> dict | None:
+    rows = climb_rows([cid], data=full, visitor=visitor)
     if not rows:
         return None
     r = rows[0]
     if full:
-        r["meshes"] = q("SELECT m.*, l.note FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=? AND COALESCE(l.note,'') NOT LIKE ?",
-                        cid, SHARED + "%")
-        r["boulder"] = boulder_info(r)
+        r["meshes"] = q("SELECT m.*, l.note FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=? AND COALESCE(l.note,'') NOT LIKE ?"
+                        + (" AND m.hidden IS NULL" if visitor else ""), cid, SHARED + "%")
+        r["boulder"] = boulder_info(r, visitor=visitor)
         r["projects"] = q("SELECT id,name,status,kind,mesh_id,harvest FROM projects WHERE climb_id=? ORDER BY created DESC", cid)
         # the areas it's in, and how far meshing it there got: an area's climbs it hasn't reached have no climb yet
         r["areas"] = q("""SELECT c.id, c.name, c.status AS area_status, ci.status, ci.note, ci.rank, ci.mesh_id, ci.project_id
@@ -1428,35 +1434,37 @@ def boulder_homes(rows: list[dict], views: dict[str, dict]) -> dict[str, str]:
     return {cid: m for (leaf, cid), (n, m) in best.items() if seen[(leaf, cid)] > 1}
 
 
-def boulder_info(climb: dict) -> dict | None:
+def boulder_info(climb: dict, visitor: bool = False) -> dict | None:
     """What a climb's card says of its boulder: the other climbs on it and their own meshes, the boulder's own
-    meshes, with this climb's view of each, and meshes areas linked it to as made for another climb on it."""
+    meshes, with this climb's view of each, and meshes areas linked it to as made for another climb on it. Each mesh
+    has why it was hidden from visitors (hide_mesh()), or None; with visitor, those hidden are left out."""
+    shown = " AND m.hidden IS NULL" if visitor else ""
     boulder = boulder_of(climb["area_path"])
     if not boulder:
         return None
     climbs = boulder_climbs(boulder)
     own = {}
-    for r in q(f"""SELECT l.climb_id, m.id, m.name FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
-                   WHERE m.replaced_by IS NULL AND COALESCE(l.note,'') NOT LIKE ? AND l.climb_id IN ({",".join("?" * len(climbs))})""",
+    for r in q(f"""SELECT l.climb_id, m.id, m.name, m.hidden FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
+                   WHERE m.replaced_by IS NULL{shown} AND COALESCE(l.note,'') NOT LIKE ? AND l.climb_id IN ({",".join("?" * len(climbs))})""",
                SHARED + "%", *[c["id"] for c in climbs]):
-        own.setdefault(r["climb_id"], []).append({"id": r["id"], "name": r["name"]})
+        own.setdefault(r["climb_id"], []).append({"id": r["id"], "name": r["name"], "hidden": r["hidden"]})
     meshes = []
     rests = [m["id"] for m in q("SELECT id, boulder FROM meshes WHERE boulder LIKE ? AND replaced_by IS NULL", boulder[:-1] + ", %")
              if is_rest(m["boulder"]) and pool_leaf(m["boulder"]) == boulder]     # and those of what its mesh left out
-    for m in q(f"SELECT id, name, created FROM meshes WHERE (boulder=? OR id IN ({','.join('?' * len(rests)) or 'NULL'})) "
-               "AND replaced_by IS NULL ORDER BY created DESC", boulder, *rests):
+    for m in q(f"SELECT id, name, created, hidden FROM meshes m WHERE (boulder=? OR id IN ({','.join('?' * len(rests)) or 'NULL'})) "
+               f"AND replaced_by IS NULL{shown} ORDER BY created DESC", boulder, *rests):
         views = viewpoints.load(MESHES / m["id"]) or {}
         meshes.append({**m, "view": (views.get("climbs") or {}).get(climb["id"]), "placed": len(views.get("climbs") or {}),
                        "unplaced": (views.get("unplaced") or {}).get(climb["id"])})
-    shared = q(f"""SELECT m.id, m.name, l.note, ({MADE_FOR}) AS made_for FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
-                   WHERE l.climb_id=? AND l.note LIKE ? AND m.replaced_by IS NULL""", SHARED + "%", climb["id"], SHARED + "%")
+    shared = q(f"""SELECT m.id, m.name, m.hidden, l.note, ({MADE_FOR}) AS made_for FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id
+                   WHERE l.climb_id=? AND l.note LIKE ? AND m.replaced_by IS NULL{shown}""", SHARED + "%", climb["id"], SHARED + "%")
     proj = boulder_project(boulder)
     kind = q("SELECT kind, why, url, routes FROM boulders WHERE key=?", boulder, one=True)
     named = leaf_kind(boulder, {}) == "group"
     return {"key": boulder, "name": boulder_name(boulder), "meshes": meshes, "kind": "group" if named else kind and kind["kind"],
             "routes": kind and kind["routes"], "known": len(climbs), "areas": boulder_area_work(boulder), "done": boulder_done(boulder),
             "why": "its name says so" if named else kind and kind["why"], "url": (kind and kind["url"]) or boulder_url(boulder),
-            "shared": [{"id": s["id"], "name": s["name"], "made_for": s["made_for"] or s["note"][len(SHARED):]} for s in shared],
+            "shared": [{"id": s["id"], "name": s["name"], "hidden": s["hidden"], "made_for": s["made_for"] or s["note"][len(SHARED):]} for s in shared],
             "climbs": [{"id": c["id"], "name": c["name"], "grade": c["grade"], "meshes": own.get(c["id"], [])}
                        for c in climbs if c["id"] != climb["id"]],
             "project": {k: proj[k] for k in ("id", "status")} if proj else None}
@@ -11955,11 +11963,12 @@ class Handler(BaseHTTPRequestHandler):
                     args.append(qs["source"][0])
                 # meshes left out: old ones of either kind, and those an area linked it to made for another climb
                 no_old, no_via = bool(qs.get("no_old")), bool(qs.get("no_via")) or not settings().get("site.via_links")
-                fresh = f" AND NOT {OLD_ANY}" if no_old else ""
+                visitor = not self.is_editor()
+                fresh = (f" AND NOT {OLD_ANY}" if no_old else "") + (" AND m.hidden IS NULL" if visitor else "")
                 if qs.get("meshed"):
                     conds.append(f"(id IN (SELECT l.climb_id FROM mesh_links l LEFT JOIN meshes m ON m.id=l.mesh_id WHERE 1{fresh}"
                                  + (" AND COALESCE(l.note,'') NOT LIKE ?" if no_via else "") + ") OR area_path IN "
-                                 f"(SELECT boulder FROM meshes m WHERE boulder IS NOT NULL{fresh}))")
+                                 f"(SELECT boulder FROM meshes m WHERE boulder IS NOT NULL AND replaced_by IS NULL{fresh}))")
                     args += [SHARED + "%"] if no_via else []
                 if conds:
                     sql += " WHERE " + " AND ".join(conds)
@@ -11972,13 +11981,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "limit and offset are whole numbers"}, 400)
                 sql += " ORDER BY " + ", ".join(order + ["created DESC"]) + f" LIMIT {limit} OFFSET {offset}"
                 ids = [r["id"] for r in q(sql, *args, *([SHARED + "%"] if qs.get("multi") else []), *(oargs if text else []))]
-                return self.send_json([{**r, "coords_doubt": doubts.get(r["id"])} for r in climb_rows(ids, no_old=no_old, no_via=no_via)])
+                return self.send_json([{**r, "coords_doubt": doubts.get(r["id"])} for r in climb_rows(ids, no_old=no_old, no_via=no_via, visitor=visitor)])
             if p == "/api/climbs/count":
                 return self.send_json({"climbs": q("SELECT count(*) AS n FROM climbs", one=True)["n"], "doubtful": len(coord_doubts()),
                                        "multi": q(f"SELECT count(*) AS n FROM climbs WHERE {MESH_COUNT} > 1", SHARED + "%", one=True)["n"]})
             m = re.fullmatch(r"/api/climbs/([0-9a-f]+)", p)
             if m:
-                r = climb_row(m[1], full=True)
+                r = climb_row(m[1], full=True, visitor=not self.is_editor())
                 if not r:
                     return self.send_json({"error": "not found"}, 404)
                 r["coords_doubt"] = coord_doubts().get(m[1])

@@ -301,6 +301,12 @@ def climb_row_by_one(cid):    # what climb_row() worked out a climb at a time, s
                       server.SHARED + "%", cid, server.SHARED + "%", one=True)
     r["n_shared"] = server.q("SELECT COUNT(*) n FROM mesh_links WHERE climb_id=? AND note LIKE ?", cid, server.SHARED + "%", one=True)["n"]
     r["shared_of"] = (shared["made_for"] or shared["note"][len(server.SHARED):]) if shared else None
+    hid = lambda sql, *a: server.q(sql + " AND m.hidden IS NOT NULL", *a, one=True)["n"]  # noqa: E731
+    r["n_links_hidden"] = hid("SELECT COUNT(*) n FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=? "
+                              "AND COALESCE(l.note,'') NOT LIKE ?", cid, server.SHARED + "%")
+    r["n_shared_hidden"] = hid("SELECT COUNT(*) n FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=? AND l.note LIKE ?",
+                               cid, server.SHARED + "%")
+    r["n_boulder_hidden"] = hid("SELECT COUNT(*) n FROM meshes m WHERE boulder=? AND replaced_by IS NULL", boulder) if boulder else 0
     return r
 
 
