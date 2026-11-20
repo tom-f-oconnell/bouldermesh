@@ -10409,10 +10409,16 @@ def site_health_loop() -> None:
             got = sitehealth_mod.for_data(DATA)
             SITE_HEALTH_SENT.write_text(day)
             lists = mesh_list_note()
+            try:
+                pace = volunteer_pace_note()
+            except Exception as e:  # noqa: BLE001 - only this line is lost
+                pace = f"(volunteers' pace couldn't be checked: {e})"
             if got:
                 title, text, look = got
-                text = (text + ("\n" + lists if lists else ""))[:1990]
-                NOTIFIER.send(title, text, priority=3 if look else 2, tags=["bar_chart"])
+                text = (text + "".join("\n" + x for x in (lists, pace) if x))[:1990]
+                NOTIFIER.send(title, text, priority=3 if look or pace else 2, tags=["bar_chart"])
+            elif pace:
+                NOTIFIER.send("Volunteers slower than usual", pace, priority=3, tags=["bar_chart"])
         except Exception as e:
             print(f"error: the day's summary: {type(e).__name__}: {e}", flush=True)
 
@@ -13367,43 +13373,67 @@ def volunteer_rules() -> dict:
             "max_waiting": s["registration.max_waiting"], "yt_dlp": s["volunteers.yt_dlp"]}
 
 
-VOLUNTEER_TROUBLE_GAP = 86400   # seconds: a volunteer's throttles and short refusals are told at most once in this many
-VOLUNTEER_REFUSED_AT_ONCE = 4   # hours: a refusal whose rest has grown to this is told at once
+VOLUNTEER_RUN_DAYS = 7      # how far back a volunteer's usual runs of throttles and refusals are looked at
+VOLUNTEER_RUN_LEAST = 3     # a run this long is told even if one as long was seen lately (2 in a row came ~2 a day, Nov 2026)
 
 
-def volunteer_trouble_summary(key: tuple, kinds: dict, hours: float, since: float, last: str) -> tuple[str, str]:
-    """What a volunteer's day of YouTube's throttles and refusals came to, in one notification (notify.Tally)."""
-    times = lambda n: {1: "once", 2: "twice"}.get(n, f"{n} times")  # noqa: E731
-    said = " and ".join(f"{'refused' if k == 'refused' else 'throttled'} it {times(n)}" for k, n in sorted(kinds.items()))
-    return (f"Volunteer {key[1]}: YouTube, since {time.strftime('%a %H:%M', time.localtime(since))}",
-            f"YouTube {said}, {hours:.0f} h resting in all. The last: {last}.")
-
-
-VOLUNTEER_TROUBLE = notify_mod.Tally(lambda title, text: threading.Thread(
-    target=NOTIFIER.send, args=(title, text), kwargs={"priority": 3, "tags": ["warning"]}, daemon=True).start(),
-    VOLUNTEER_TROUBLE_GAP, volunteer_trouble_summary)
+def trouble_runs(vid: str, since: float) -> list[int]:
+    """A volunteer's runs of throttles and refusals in a row since then, oldest first, the last one still going if
+    nothing has worked since: from youtube_log, the reports that said something of its health."""
+    runs, cur = [], 0
+    for r in VOLUNTEERS.q("SELECT status, health FROM youtube_log WHERE volunteer=? AND at>? AND health IS NOT NULL ORDER BY at",
+                          vid, since):
+        if r["health"] in ("throttled", "refused") or r["status"] == "refused":
+            cur += 1
+        elif r["health"] == "ok":
+            if cur:
+                runs.append(cur)
+            cur = 0
+    return runs + [cur]
 
 
 def volunteer_troubled(v: dict, was: str | None, now: str, why: str) -> None:
     """A volunteer's script said YouTube refuses, throttles or degrades it: on your phone, if notifications are on
-    (notify.py), in the background. Degraded, when it gets worse, and a refusal whose rest has grown to
-    VOLUNTEER_REFUSED_AT_ONCE hours, at once; throttles and shorter refusals at most once a day for each volunteer, the
-    first at once and the rest summed up (they came about hourly from Nov 13, 2026)."""
+    (notify.py), only when that's out of the ordinary. Degraded, when it gets worse, at once. Throttles and refusals
+    come singly and in pairs most days (Nov 2026), so only a run of them in a row longer than any it had in the last
+    VOLUNTEER_RUN_DAYS, and at least VOLUNTEER_RUN_LEAST long, is told: once, as it reaches that length."""
     send = lambda title, text: threading.Thread(target=NOTIFIER.send, args=(title, text),  # noqa: E731
                                                 kwargs={"priority": 3, "tags": ["warning"]}, daemon=True).start()
     if now == "degraded":
         return send(f"Volunteer {v['name']}: YouTube degraded it",
                     f"{why}. It carries on. A newer yt-dlp usually fixes this; volunteers update theirs daily.")
-    if now == "refused":    # its rest, from its refusals so far (volunteers.Broker.finish() counts this one after)
-        level = min(len(volunteers_mod.BLOCK_HOURS) - 1, (-1 if v.get("refusal_level") is None else v["refusal_level"]) + 1)
-        hours = volunteers_mod.BLOCK_HOURS[level]
-        then = f"It rests {hours} h: 1, 2, 4, then 8 while YouTube still refuses it."
-        if hours >= VOLUNTEER_REFUSED_AT_ONCE:
-            return send(f"Volunteer {v['name']}: YouTube still refuses it", f"{why}. {then}")
-    else:
-        hours, then = volunteers_mod.THROTTLE_REST / 3600, "It rests an hour."
-    VOLUNTEER_TROUBLE.add((v["id"], v["name"]), now, f"Volunteer {v['name']}: YouTube {now} it",
-                          f"{why}. {then} More of these from it come together, once a day.", hours, why)
+    *before, run = trouble_runs(v["id"], time.time() - VOLUNTEER_RUN_DAYS * 86400)
+    usual = max(before, default=0)
+    if run == max(VOLUNTEER_RUN_LEAST, usual + 1):
+        send(f"Volunteer {v['name']}: YouTube {now} it {run} times in a row",
+             f"{why}. The most in a row in the {VOLUNTEER_RUN_DAYS} days before: {usual}. It rests and tries again; "
+             "you're told again only if a run grows longer than this.")
+
+
+def volunteer_pace_note(now: float | None = None) -> str:
+    """For the day's summary: each volunteer whose videos in the last day fell clearly below its usual pace (under half its
+    median day of the week before), unless every volunteer's fell alike, as when there was less to fetch; with only one
+    volunteer, only while videos waited half a day or more for one. Empty when every pace is as usual."""
+    now = now or time.time()
+    days = {}
+    for r in VOLUNTEERS.q("SELECT volunteer, CAST((? - finished) / 86400 AS INT) AS d, COUNT(*) AS n FROM tasks "
+                          "WHERE state='done' AND kind='video' AND finished>? GROUP BY volunteer, d", now, now - 8 * 86400):
+        days.setdefault(r["volunteer"], [0] * 8)[r["d"]] += r["n"]
+    total = [sum(v[d] for v in days.values()) for d in range(8)]
+    waiting = VOLUNTEERS.q("SELECT COUNT(*) AS n FROM tasks WHERE kind='video' AND state='queued' AND created<?",
+                           now - 12 * 3600, one=True)["n"]
+    names = {r["id"]: r["name"] for r in VOLUNTEERS.q("SELECT id, name FROM volunteers WHERE revoked IS NULL")}
+    out = []
+    for vid, n in days.items():
+        week = sorted(n[1:])
+        usual = week[len(week) // 2]
+        if vid not in names or usual < 20 or n[0] >= usual / 2:
+            continue
+        shares = sorted(n[d] / total[d] for d in range(1, 8) if total[d])
+        share = n[0] / total[0] if total[0] else 0
+        if (len(days) > 1 and shares and share < shares[len(shares) // 2] / 2) or waiting:
+            out.append(f"{names[vid]} fetched {n[0]} videos in the last day; {usual} on its usual day this past week")
+    return ("Volunteers slower than usual: " + "; ".join(out) + ".") if out else ""
 
 
 def volunteers_widespread(n: int, of: int, example: str) -> None:

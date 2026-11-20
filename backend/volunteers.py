@@ -593,7 +593,7 @@ class Broker:
             return None
         self.q("UPDATE volunteers SET health=?, health_detail=?, health_at=? WHERE id=?", health, why[:300], now, v["id"])
         was = v.get("health")
-        # told when it gets worse, and every time it's refused or throttled, which the server sums up once a day
+        # told when it gets worse, and every time it's refused or throttled: the server tells only unusual runs of those
         if health in TROUBLE and (was not in TROUBLE or TROUBLE.index(health) < TROUBLE.index(was) or health != "degraded"):
             try:
                 self.troubled(v, was, health, why[:300])
