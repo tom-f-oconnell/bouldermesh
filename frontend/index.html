@@ -5084,7 +5084,8 @@ async function findBeta(mid){
   if (betaState?.mid === mid) { await loadBeta(); watchBeta(); }
 }
 async function loadBeta(){
-  const r = await api(`/api/meshes/${betaState.mid}/beta`);
+  const st = betaState, r = await api(`/api/meshes/${st.mid}/beta`);
+  if (betaState !== st) return;     // hidden, or another mesh's started, while it came
   const fresh = !betaState.found || (r.found?.videos || []).length !== (betaState.found?.videos || []).length;
   Object.assign(betaState, { found: r.found, available: r.available });
   if (!betaState.unsaved) {     // not over holds on their way to the server
@@ -5099,7 +5100,7 @@ function watchBeta(){
   betaPoll = setInterval(async () => {
     if (!betaState) return clearInterval(betaPoll);
     await loadBeta();
-    if (!['queued', 'running'].includes(betaState.found?.status)) { clearInterval(betaPoll); refreshMeshes(); }
+    if (betaState && !['queued', 'running'].includes(betaState.found?.status)) { clearInterval(betaPoll); refreshMeshes(); }
   }, 5000);
 }
 // NOTE (user, Nov 16, 2026): the Beta tab may later be for editors only, visitors seeing beta through the view's Beta
@@ -5112,8 +5113,12 @@ async function openBeta(mid){
 }
 // The beta of the mesh in view, drawn on it (the Beta tab's panel follows it)
 async function startBeta(mid){
-  betaState = { mid, found: null, sets: [], sid: null, marked: [], sel: null, shown: new Set(), marking: false };
-  await loadBeta();
+  const st = betaState = { mid, found: null, sets: [], sid: null, marked: [], sel: null, shown: new Set(), marking: false, loading: true };
+  showBetaButton();     // pressed at once, as "Beta…": its answer can wait behind the mesh's own files on a slow link
+  try { await loadBeta(); }
+  catch (e) { if (betaState === st) { stopBeta(); toast(`Couldn't get its beta: ${e.message}`, 6000); } return; }
+  finally { st.loading = false; }
+  if (betaState !== st) return;
   if (['queued', 'running'].includes(betaState.found?.status)) watchBeta();
   renderBetaList(); showBetaButton();
 }
@@ -5439,7 +5444,7 @@ function showBetaButton(){
   const b = $('#vbeta'), m = shownMesh && meshesById[shownMesh];
   b.hidden = !m || !(hasBeta(m) || (mayBeta() && !APP)) || thumbMode;     // the apps' viewer has no marking: there only to show it
   const found = betaState?.mid === shownMesh && betaState.found ? betaState.found.videos.filter(v => v.holds?.length).length : m?.beta?.listed;
-  b.innerHTML = 'Beta' + (found ? ` <span class="n" aria-label="${plural(found, 'video')} with holds">${found}</span>` : '');
+  b.innerHTML = (betaState?.mid === shownMesh && betaState.loading ? 'Beta…' : 'Beta') + (found ? ` <span class="n" aria-label="${plural(found, 'video')} with holds">${found}</span>` : '');
   b.title = hasBeta(m) ? 'Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.'
     : 'Mark holds on this mesh, as a set of beta of your own. Press again to hide it.';
   b.setAttribute('aria-pressed', String(!!betaState && betaState.mid === shownMesh));
