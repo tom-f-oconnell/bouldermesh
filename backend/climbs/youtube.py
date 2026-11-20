@@ -41,6 +41,8 @@ Log = Callable[[str], None]
 MAX_RESULTS = 15           # search results to look through per climb
 MAX_MATCHES = 4            # of which at most this many are kept
 MAX_MINUTES = 15           # longer videos are mostly compilations and vlogs, with little of any one rock
+SEARCH_METHOD = 2           # how climbs' searches are made: raised when query(), wide() or matches() change, so that
+                            # those searched before can be searched again (the admin page's "search YouTube again")
 REGION_SUFFIX = re.compile(r"\b(national|state|regional|county)\s+(park|forest|monument|recreation area)\b|\bbouldering\b|\barea\b", re.I)
 GENERIC = {"boulder", "boulders", "the boulder", "area", "bouldering"}
 GAP = (8.0, 15.0)          # seconds between one yt-dlp run and the next, at random in this range (yt-dlp's wiki: 5-10)
@@ -58,6 +60,7 @@ VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 # "volunteers_when_refused", here unless YouTube is refusing this server, when volunteers are asked; or "volunteers",
 # never here (a cloud server, which YouTube refuses)
 via = "volunteers_when_refused"
+wide_retry = False         # search again without its place when the search with it finds nothing of a climb (youtube.wide_retry)
 # set by tests that run a whole server: nothing at all is asked of YouTube (searches come back empty, downloads are refused)
 OFFLINE = os.environ.get("YOUTUBE_OFFLINE") == "1"
 _gate = threading.Lock()
@@ -196,11 +199,24 @@ def norm(text: str | None) -> str:
     return " " + " ".join(re.sub(r"[^a-z0-9]+", " ", text).split()) + " "
 
 
+def short(place: str) -> str:
+    """A place's name as people write it: "Joshua Tree National Park" and "Bishop Area" are "Joshua Tree" and "Bishop"."""
+    return " ".join(REGION_SUFFIX.sub(" ", place or "").split())
+
+
 def region(c: Climb) -> str:
-    """The best-known place a climb is in, shortened as people write it: "Joshua Tree"."""
-    place = next((p for p in c.area_path if re.search(r"\b(park|forest|valley|canyon|monument)\b", p, re.I)), None)
-    place = place or (c.area_path[1] if len(c.area_path) > 1 else (c.area_path[0] if c.area_path else ""))
-    return " ".join(REGION_SUFFIX.sub(" ", place).split())
+    """The best-known place a climb is in, shortened as people write it: "Joshua Tree". Past Mountain Project's
+    "International" and continent, as "Europe" says nothing."""
+    path = c.area_path[2:] if c.area_path[:1] == ["International"] else c.area_path
+    place = next((p for p in path if re.search(r"\b(park|forest|valley|canyon|monument)\b", p, re.I)), None)
+    place = place or (path[1] if len(path) > 1 else (path[0] if path else ""))
+    return short(place)
+
+
+def place(c: Climb) -> str:
+    """The place its search names: the climbing area it was meshed as part of ("Horse Flats", not the forest
+    "Angeles" it's in), as that's how people title their videos; else its region()."""
+    return short(c.search_place or "") or region(c)
 
 
 def v_grade(c: Climb) -> str | None:
@@ -209,23 +225,39 @@ def v_grade(c: Climb) -> str | None:
 
 
 def query(c: Climb) -> str:
-    return " ".join(x for x in (c.name, v_grade(c), region(c)) if x)
+    return " ".join(x for x in (c.name, v_grade(c), place(c)) if x)
+
+
+def wide(c: Climb) -> str:
+    """Its search without the place, for when the one with it finds nothing of it (youtube.wide_retry)."""
+    return " ".join(x for x in (c.name, v_grade(c)) if x)
 
 
 def context(c: Climb) -> list[str]:
     """Words that place a video at this climb, normalised: any one of them is enough."""
-    out = [region(c), c.boulder_name or "", *(c.area_path[-3:] if c.area_path else [])]
-    grade = v_grade(c)
+    out = [place(c), region(c), c.boulder_name or "", *(c.area_path[-3:] if c.area_path else [])]
     out = [norm(x) for x in out if x and x.strip().lower() not in GENERIC and len(x.strip()) >= 4 and x.strip().lower() != c.name.lower()]
-    if grade:
-        out.append(norm(grade))
-    return [x for x in dict.fromkeys(out) if x.strip()]
+    return [x for x in dict.fromkeys(out) if x.strip()]    # not its grade: "The Wave V1" is in many places
+
+
+def name_forms(name: str) -> list[str]:
+    """A climb's name as a title may give it, normalised: as it is, without a leading "the", and with its last word
+    singular ("Arbor Days" is often "Arbor Day")."""
+    out = [norm(name)]
+    words = out[0].split()
+    if len(words) > 1 and words[0] == "the":
+        out.append(" " + " ".join(words[1:]) + " ")
+    for w in list(out):
+        ws = w.split()
+        if ws and len(ws[-1]) > 3 and ws[-1].endswith("s") and not ws[-1].endswith("ss"):
+            out.append(" " + " ".join(ws[:-1] + [ws[-1][:-1]]) + " ")
+    return list(dict.fromkeys(out))
 
 
 def matches(c: Climb, title: str | None, description: str | None = None) -> bool:
-    """Whether a video is of this climb: its title names it, and the title or description places it."""
-    name = norm(c.name)
-    if len(name.strip()) < 3 or name not in norm(title):
+    """Whether a video is of this climb: its title names it (name_forms()), and the title or description places it."""
+    forms = [f for f in name_forms(c.name) if len(f.strip()) >= 3]
+    if not forms or not any(f in norm(title) for f in forms):
         return False
     text = norm(f"{title} {description or ''}")
     return any(x in text for x in context(c))
@@ -281,7 +313,8 @@ def search(c: Climb, log: Log, known: set[str] = frozenset(), want: Callable[[st
            asked: list | None = None, days: float = SEARCH_DAYS, state: dict | None = None) -> list[Media]:
     """Videos of a climb found by searching YouTube, best first: by what a search for its words found in the last
     `days`, here or by a volunteer, or else by searching now, unless YouTube is left to volunteers or refusing
-    this server, when volunteers are asked to search instead (the harvest carries on without).
+    this server, when volunteers are asked to search instead (the harvest carries on without). With wide_retry, a
+    search that finds nothing of it is followed by one without its place (wide()).
 
     Args:
         known: URLs it already has, which aren't returned again.
@@ -292,6 +325,25 @@ def search(c: Climb, log: Log, known: set[str] = frozenset(), want: Callable[[st
     q = query(c)
     if state is not None:
         state.update(checked=False, words=q)
+    out = _search_one(c, q, log, known, want, asked, days)
+    if out is None:
+        return []
+    if not out and wide_retry and wide(c) != q:
+        asked = [] if asked is None else asked
+        n = len(asked)
+        more = _search_one(c, wide(c), log, known, want, asked, days)
+        if more is None and len(asked) > n:     # its wider search waits for a volunteer
+            if state is not None:
+                state.update(words=wide(c))
+            return []
+        out = more or []    # or failed: the narrower one stands
+    if state is not None:
+        state["checked"] = True
+    return out[:MAX_MATCHES]
+
+
+def _search_one(c: Climb, q: str, log: Log, known: set[str], want, asked: list | None, days: float) -> list[Media] | None:
+    """search() for one set of words: the videos of the climb it found, or None if it wasn't searched."""
     hit = cached_search(q, days)
     if hit:
         log(f"youtube search: {q!r}: as {'a volunteer' if hit.get('by') == 'volunteer' else 'this server'} searched "
@@ -302,10 +354,10 @@ def search(c: Climb, log: Log, known: set[str] = frozenset(), want: Callable[[st
             why = "this server leaves YouTube to volunteers"
         elif OFFLINE:
             log("youtube search: skipped (YOUTUBE_OFFLINE is set)")
-            return []
+            return None
         elif not available():
             log("youtube search: skipped (needs yt-dlp)")
-            return []
+            return None
         else:
             try:
                 hit = save_search(q, _ytdlp(["--flat-playlist", f"ytsearch{MAX_RESULTS}:{q}"], video=False).get("entries") or [], "here")
@@ -313,7 +365,7 @@ def search(c: Climb, log: Log, known: set[str] = frozenset(), want: Callable[[st
                 why = str(e)
             except Exception as e:
                 log(f"youtube search: {q!r} failed: {e}")
-                return []
+                return None
         if not hit:
             if want and via != "here" and want(q):
                 if asked is not None:
@@ -321,9 +373,7 @@ def search(c: Climb, log: Log, known: set[str] = frozenset(), want: Callable[[st
                 log(f"youtube search: {why}: asked volunteers to search for {q!r}; this climb is harvested again when they have")
             else:
                 log(f"youtube search: {q!r} skipped: {why}")
-            return []
-    if state is not None:
-        state["checked"] = True
+            return None
     found = hit["results"]
     out = []
     for e in found:
@@ -336,7 +386,7 @@ def search(c: Climb, log: Log, known: set[str] = frozenset(), want: Callable[[st
                              source="youtube-search"))
     log(f"youtube search: {q!r} -> {len(found)} result(s), {len(out)} of this climb"
         + (f", keeping {MAX_MATCHES}" if len(out) > MAX_MATCHES else ""))
-    return out[:MAX_MATCHES]
+    return out
 
 
 def video_id(url: str) -> str | None:

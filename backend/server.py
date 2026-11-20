@@ -266,6 +266,12 @@ def init_db() -> None:
         con.execute(steptimes_mod.SCHEMA)   # how long each step of each run took, for estimates (steptimes.py)
         offload_mod.migrate(con)            # what's been offloaded to the backup, or marked to be, and its files (offload.py)
         # migrations for databases created by v0.1
+        cols = {r[1] for r in con.execute("PRAGMA table_info(climbs)")}
+        # yt_method: the youtube.SEARCH_METHOD its YouTube search was last made by; yt_tried: when research_one() last
+        # tried it and couldn't search (asked volunteers, or YouTube refused), to come back to later
+        for c, t in (("yt_method", "INTEGER"), ("yt_tried", "REAL")):
+            if c not in cols:
+                con.execute(f"ALTER TABLE climbs ADD COLUMN {c} {t}")
         cols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
         # job: the last job queued for it outside an area, to run again, as it was asked for, if a restart stops it;
         # boulder: for a boulder's project, the area path of its climbs (as climbs.area_path has it)
@@ -341,7 +347,8 @@ def init_db() -> None:
         # own_tried: when it was meshed on its own after a pooled mesh hardly showed it (before keep_rest()), once;
         # pool: for redo "cluster", the pool it meshes (pools.key); paused: when someone paused it (pause_item()), so that
         # it isn't taken until they resume it; rerun_rules: the MESH_RULES under which it was queued again as its climb's
-        # meshes were old (queue_old()), once for each; old_rerun: that's still to go or in progress; blocked: why it
+        # meshes were old (queue_old()), once for each; old_rerun: that's still to go or in progress (1), or it's queued at the
+        # same low priority for what a newer YouTube search found (2: research_one()); blocked: why it
         # can't go on (data lost from the backup) until it's approved on the admin page (lost_decide())
         for c, t in (("retry", "INTEGER DEFAULT 0"), ("redo", "TEXT"), ("was", "TEXT"), ("changed", "INTEGER DEFAULT 0"),
                      ("redo_started", "INTEGER DEFAULT 0"), ("waiting_since", "REAL"), ("own_tried", "REAL"), ("pool", "TEXT"),
@@ -475,7 +482,7 @@ def init_db() -> None:
         con.execute("UPDATE projects SET status='stopped' WHERE id IN (SELECT project_id FROM campaign_items "
                     "WHERE status='running' OR (status='pending' AND retry=1 AND redo IS NULL))")
         # one meshed again as its meshes were old goes after the rest of its area's list, but once started, next
-        con.execute("UPDATE campaign_items SET retry=1 WHERE status='running' AND old_rerun=1")
+        con.execute("UPDATE campaign_items SET retry=1 WHERE status='running' AND old_rerun>=1")
         con.execute("UPDATE campaign_items SET status='pending', note='interrupted by a restart: carrying on from where it got to' WHERE status='running'")
         con.execute("UPDATE campaigns SET status='stopped', note=NULL WHERE status='stopping'")
         started = con.execute("SELECT id, job FROM projects WHERE status IN ('running','harvesting') AND job IS NOT NULL "
@@ -859,6 +866,9 @@ def climb_obj(cid: str) -> Climb:
     # manual edits win over the cached source data
     c.lat, c.lng, c.coord_source = r["lat"], r["lng"], r["coord_source"]
     c.name, c.grade, c.boulder_name = r["name"], r["grade"], r["boulder_name"]
+    area = q("SELECT ca.name FROM campaign_items ci JOIN campaigns ca ON ca.id=ci.campaign_id WHERE ci.climb_id=? "
+             "ORDER BY ca.priority, ca.created LIMIT 1", cid, one=True)
+    c.search_place = area["name"] if area else None    # its YouTube search names the area (youtube.place())
     return c
 
 
@@ -4733,7 +4743,10 @@ def new_videos(climb_id: str, pid: str, log) -> list[str]:
     c = climb_obj(climb_id)
     used = {e["url"] for e in provenance.harvested(PROJECTS / pid).values() if e.get("source") == "youtube" and e.get("url")}
     have = {youtube_mod.video_id(u) or u for u in used | {v.url for v in c.videos}}
-    found = youtube_mod.search(c, log, want=search_wanter("harvest", pid), days=1)
+    yt: dict = {}
+    found = youtube_mod.search(c, log, want=search_wanter("harvest", pid), days=1, state=yt)
+    if yt.get("checked"):
+        q("UPDATE climbs SET yt_method=? WHERE id=?", youtube_mod.SEARCH_METHOD, climb_id, write=True)
     record_videos(climb_id, [{"url": v.url, "found_by": "search", "title": v.title, "uploader": v.credit} for v in found], log)
     known = {r["url"] for r in q("SELECT url FROM videos WHERE description IS NOT NULL")}
     for url in sorted(used - known):
@@ -4850,6 +4863,8 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                 summary["video_frames"] = (was.get("video_frames") or 0) + (summary.get("video_frames") or 0)
                 summary["queries"] = was.get("queries") or summary.get("queries")
             q("UPDATE projects SET harvest=?, status='harvested' WHERE id=?", json.dumps(summary), pid, write=True)
+            if summary.get("youtube_method"):
+                q("UPDATE climbs SET yt_method=? WHERE id=?", summary["youtube_method"], proj["climb_id"], write=True)
         verdict = diversity_mod.judge(summary.get("diversity"))     # by the current rules, for a harvest finished earlier
         log(f"harvest complete: {summary['images']} image(s), verdict {verdict}")
         coming = VOLUNTEERS.pending("harvest", pid)
@@ -5606,7 +5621,7 @@ def settle_waiting(camp_id: str, only_old: bool = False) -> None:
     """An area's climbs that have waited for volunteers for VOLUNTEER_WAIT: harvested again and meshed with what's come.
     Only those queued again as their meshes are old (queue_old()) if only_old."""
     q("UPDATE campaign_items SET status='pending', retry=1, redo='more+rebuild', was='waiting', redo_started=0, note=? "
-      f"WHERE campaign_id=? AND status='waiting' AND waiting_since<?{' AND old_rerun=1' if only_old else ''}",
+      f"WHERE campaign_id=? AND status='waiting' AND waiting_since<?{' AND old_rerun>=1' if only_old else ''}",
       f"waited {VOLUNTEER_WAIT / 3600:.0f} h for volunteers: meshing it with what's come", camp_id, time.time() - VOLUNTEER_WAIT,
       write=True)
 
@@ -6315,7 +6330,7 @@ def _claim_old(w: Worker, others: list[Worker]):
     for camp in camps:
         queue_old(camp)
         settle_waiting(camp["id"], only_old=True)
-        for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND status='harvested' AND old_rerun=1", camp["id"]):
+        for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND status='harvested' AND old_rerun>=1", camp["id"]):
             settle_boulder(camp["id"], b["boulder"])
     taken = {x.boulder for x in others if x.boulder}
     items = [(camp, i) for camp in camps for i in ordered_pending(camp, old=True) if i["old_rerun"]]
@@ -6923,7 +6938,7 @@ def run_redo(camp: dict, item: dict) -> None:
             if row["was"] == "waiting" and not row["mesh_id"] and unchecked(camp, row["project_id"]):   # tried again later
                 log("still not searched for on YouTube: not meshed yet")
                 return wait_for_volunteers(cid, sid, row["project_id"], None)
-            remake = bool(row["old_rerun"])     # its meshes are old (queue_old()): made again, whatever was found
+            remake = row["old_rerun"] == 1     # its meshes are old (queue_old()): made again, whatever was found
             if pooled(cid, row["boulder"]) and (row["was"] in ("waiting", "harvested") or (then and (end.get("changed") or remake))):
                 end = {**end, "status": "harvested", "note": HARVESTED_NOTE}     # its boulder's mesh is made again with it
             elif then and (end.get("changed") or remake or (row["was"] == "waiting" and not row["mesh_id"])):
@@ -8453,7 +8468,7 @@ def campaign_view(camp: dict) -> dict:
         counts["paused"] = len(paused)
     pending = ordered_pending(camp)
     # queued again as their meshes are old (queue_old()): at low priority, counted and listed apart from its own
-    old_next = [i for i in ordered_pending(camp, old=True) if i["old_rerun"]]
+    old_next = [i for i in ordered_pending(camp, old=True) if i["old_rerun"] == 1]
     old_counts = {r["status"]: r["n"] for r in q("SELECT status, COUNT(*) n FROM campaign_items WHERE campaign_id=? AND old_rerun=1 "
                                                   "AND status IN ('pending','running','waiting','harvested') AND paused IS NULL "
                                                   "GROUP BY status", cid)}
@@ -13153,6 +13168,99 @@ def thumb_worker() -> None:
             print(f"{mid}: drawing its picture failed: {type(e).__name__}: {e}", flush=True)
 
 
+# ----------------------------------------------------------------- searching YouTube again (youtube.research)
+RESEARCH_GAP = 60           # seconds between one climb's search and the next
+RESEARCH_RETRY = 6 * 3600   # seconds before a climb whose search couldn't be made is tried again
+_research_wake = threading.Event()
+_STALE_FROM = ("FROM campaign_items ci JOIN climbs c ON c.id=ci.climb_id JOIN projects p ON p.id=ci.project_id "
+               "JOIN campaigns ca ON ca.id=ci.campaign_id WHERE p.harvest IS NOT NULL AND COALESCE(c.yt_method, 1)<?")
+
+
+def research_stale() -> list[dict]:
+    """Areas' climbs harvested before whose YouTube search was made by an older youtube.SEARCH_METHOD, in the areas'
+    order and each one's own: {climb_id, project_id, campaign_id, source_id, tried}."""
+    return q("SELECT ci.climb_id, ci.project_id, ci.campaign_id, ci.source_id, c.yt_tried AS tried " + _STALE_FROM
+             + " GROUP BY ci.climb_id ORDER BY ca.priority, ca.created, ci.rank", youtube_mod.SEARCH_METHOD)
+
+
+def research_status() -> dict:
+    """The admin page's: how many climbs' searches are older than youtube.SEARCH_METHOD, whether they're being searched
+    again, and why its button can't be pressed, if it can't."""
+    n = q("SELECT COUNT(DISTINCT ci.climb_id) AS n " + _STALE_FROM, youtube_mod.SEARCH_METHOD, one=True)["n"]
+    on = bool(settings().get("youtube.research"))
+    why = (f"every area's climb has been searched for the newest way (method {youtube_mod.SEARCH_METHOD})" if not n else
+           f"under way: {n} climb(s) to go" if on else None)
+    return {"stale": n, "on": on, "method": youtube_mod.SEARCH_METHOD, "disabled": why}
+
+
+def admin_youtube_research(_: dict) -> dict:
+    st = research_status()
+    if st["disabled"]:
+        raise ValueError(st["disabled"])
+    settings().update({"youtube.research": True})
+    _research_wake.set()
+    return {"result": f"searching YouTube again for {st['stale']} climb(s), after everything else: those it finds new videos "
+                      "of are queued to add them and mesh again, also after everything else"}
+
+
+def research_one(r: dict) -> None:
+    """Search YouTube again for one of an area's climbs (research_stale()), and queue it, after everything else, to add
+    what's new to its photos and mesh again (old_rerun 2), if the search found videos its harvest didn't have."""
+    cid, pid = r["climb_id"], r["project_id"]
+    log = lambda s: append_log(pid, s)  # noqa: E731
+    c = climb_obj(cid)
+    used = {e["url"] for e in provenance.harvested(PROJECTS / pid).values() if e.get("source") == "youtube" and e.get("url")}
+    have = {youtube_mod.video_id(u) or u for u in used | {v.url for v in c.videos}}
+    try:
+        h = json.loads(q("SELECT harvest FROM projects WHERE id=?", pid, one=True)["harvest"] or "{}")
+        have |= {youtube_mod.video_id(v["url"]) or v["url"] for v in h.get("videos") or [] if v.get("url")}
+    except (TypeError, ValueError):
+        pass
+    yt: dict = {}
+    log(f"-- searching YouTube again, the newest way (method {youtube_mod.SEARCH_METHOD})")
+    found = youtube_mod.search(c, log, want=search_wanter("research", pid), state=yt)
+    if not yt.get("checked"):
+        q("UPDATE climbs SET yt_tried=? WHERE id=?", time.time(), cid, write=True)
+        return
+    record_videos(cid, [{"url": v.url, "found_by": "search", "title": v.title, "uploader": v.credit} for v in found], log)
+    q("UPDATE climbs SET yt_method=?, yt_tried=NULL WHERE id=?", youtube_mod.SEARCH_METHOD, cid, write=True)
+    new = [v for v in found if (youtube_mod.video_id(v.url) or v.url) not in have]
+    if not new:
+        log("no videos its harvest didn't have")
+        return
+    item = q("SELECT status, redo FROM campaign_items WHERE campaign_id=? AND source_id=?", r["campaign_id"], r["source_id"], one=True)
+    if item and item["status"] in ("done", "skipped", "failed") and not item["redo"]:
+        log(f"{plural(len(new), 'new video')}: queued to add them to its photos and mesh again, after everything else")
+        set_item(r["campaign_id"], r["source_id"], status="pending", retry=0, redo="more+rebuild", was=item["status"],
+                 redo_started=0, old_rerun=2, note=f"queued to add {plural(len(new), 'new video')} a newer YouTube search found")
+    else:
+        log(f"{plural(len(new), 'new video')}: its area's own work on it will use them")
+
+
+def research_worker() -> None:
+    """Search YouTube again for areas' climbs searched by an older youtube.SEARCH_METHOD, one at a time, while the admin
+    page has said to (youtube.research), and only while no running area has a climb of its own waiting or under way."""
+    while True:
+        _research_wake.wait(RESEARCH_GAP)
+        _research_wake.clear()
+        try:
+            if not settings().get("youtube.research"):
+                continue
+            if q("SELECT 1 FROM campaign_items ci JOIN campaigns ca ON ca.id=ci.campaign_id WHERE ca.status='running' "
+                 "AND ci.status IN ('pending','running') AND COALESCE(ci.old_rerun, 0)=0 LIMIT 1", one=True):
+                continue
+            stale = research_stale()
+            if not stale:
+                settings().update({"youtube.research": False})
+                continue
+            now = time.time()
+            r = next((x for x in stale if not x["tried"] or now - x["tried"] > RESEARCH_RETRY), None)
+            if r:
+                research_one(r)
+        except Exception as e:  # never let the thread die
+            print(f"searching YouTube again: {type(e).__name__}: {e}", flush=True)
+
+
 # ----------------------------------------------------------------- volunteers
 def search_wanter(purpose: str, ref: str):
     """What to ask volunteers for a YouTube search with, for purpose and ref, when this server won't search itself;
@@ -13199,6 +13307,9 @@ def volunteer_ready(purpose: str, ref: str) -> bool | None:
         return reharvest_with_videos(ref)
     if purpose == "beta":
         _beta_wake.set()
+    if purpose == "research":   # research_worker() comes back to it, and finds the search saved
+        q("UPDATE climbs SET yt_tried=NULL WHERE id=(SELECT climb_id FROM projects WHERE id=?)", ref, write=True)
+        _research_wake.set()
     return None
 
 
@@ -13294,7 +13405,7 @@ def volunteer_rank(purpose: str, ref: str) -> int:
     within each, so that an area set to low priority doesn't hold up the others' YouTube videos."""
     if purpose == "harvest":
         return 2 if ref in low_projects() else 0
-    return 1
+    return 3 if purpose == "research" else 1
 
 
 VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteers", volunteer_delivered, volunteer_ready,
@@ -13443,6 +13554,8 @@ def admin_volunteers_cancel(_: dict) -> dict:
 def apply_settings() -> None:
     """What changing the admin page's settings changes at once."""
     youtube_mod.via = settings().get("youtube.via")
+    youtube_mod.wide_retry = bool(settings().get("youtube.wide_retry"))
+    _research_wake.set()
     relevance_mod.MATCHER = settings().get("relevance.matcher")
     relevance_mod.RUNNER = filter_anywhere      # on a machine when one can (relevance.machines), else here
     meshopts.set_site({"texture_every": 2 if settings().get("mesh.texture_every_second") else 1,
@@ -13550,7 +13663,7 @@ def admin_state() -> dict:
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
             "stops": [dict(r) for r in q("SELECT at, kind, id, name, was FROM job_stops ORDER BY at DESC LIMIT 30")],
             "texture_again": texture_again_state(), "black_textures": black_textures(),
-            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "youtube_research": research_status(), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q), "backup": backup_state(),
             "manifest": {**manifest_state(), "quiet": manifest_quiet(), "hours": MANIFEST_HOURS}, "lost_blocks": lost_blocks()}
 
@@ -13829,6 +13942,7 @@ def main() -> None:
     threading.Thread(target=drain_watch, daemon=True, name="drain-watch").start()
     threading.Thread(target=frames_worker, daemon=True).start()
     threading.Thread(target=prune_worker, daemon=True).start()
+    threading.Thread(target=research_worker, daemon=True, name="youtube-research").start()
     threading.Thread(target=pack_worker, daemon=True).start()
     threading.Thread(target=texture_check_worker, daemon=True, name="texture-check").start()
     if thumbs_mod.available():
@@ -13857,7 +13971,7 @@ def main() -> None:
                                        "volunteer-trial": admin_volunteer_trial,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
                                        "page-views": admin_page_views,
-                                       "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-rescind": admin_user_rescind, "user-change": admin_user_change,
+                                       "volunteers-cancel": admin_volunteers_cancel, "youtube-research": admin_youtube_research, "user-invite": admin_user_invite, "user-rescind": admin_user_rescind, "user-change": admin_user_change,
                                        "user-signin": admin_user_signin, "user-delete": admin_user_delete, "submission": admin_submission, "area": admin_area, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
                                        "machine-revoke": admin_machine_revoke, "ec2-start": admin_ec2_start, "ec2-stop": admin_ec2_stop, "ec2-test": admin_ec2_test, "ec2-topup": admin_ec2_topup, "clear-rejected": admin_clear_rejected,
                                        "volunteers-forget": lambda _: {"result": f"forgot {VOLUNTEERS.forget_gone()} volunteer(s)"},

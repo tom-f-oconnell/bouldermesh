@@ -33,7 +33,27 @@ for title in ["Burlday Bash V9 (FA) Joshua Tree Bouldering", "Bittersweet V9 - J
 assert not yt.matches(relic, "Relic Hunters official trailer"), "a name needs something placing it"
 assert not yt.matches(relic, "Relics of Joshua Tree"), "whole words only"
 assert yt.matches(relic, "Relic", "Hidden Valley Area, on the Tidal Wave Boulder"), "the description can place it"
-assert yt.matches(relic, "Relic V9"), "the grade can place it"
+assert not yt.matches(relic, "Relic V9"), "the grade alone doesn't place it: many places have a Relic V9"
+assert yt.wide(relic) == "Relic V9"
+
+# its area's name over the forest it's in (2026-11-20: "Arbor Days V5 Angeles" missed Horse Flats' videos)
+arbor = Climb(source="mountainproject", source_id="1", url="", name="Arbor Days", grade="V5", boulder_name="Arbor Boulder",
+              area_path=["California", "Los Angeles Basin", "Angeles National Forest", "Highway 2 (Angeles Crest Hwy)",
+                         "Horse Flats", "Main Area", "Arbor Boulder"])
+assert yt.query(arbor) == "Arbor Days V5 Angeles", yt.query(arbor)
+arbor.search_place = "Horse Flats"
+assert yt.query(arbor) == "Arbor Days V5 Horse Flats", yt.query(arbor)
+assert yt.matches(arbor, "Arbor Day (****) V5 - Horse Flats"), "a plural name's singular"
+assert yt.matches(arbor, "Arbor Day Stand (V5) Flash - Horse Flats")
+assert not yt.matches(arbor, "Arbor Days Sit v8"), "nothing places it"
+wave = Climb(source="mountainproject", source_id="2", url="", name="The Wave", grade="V1", area_path=["California", "Horse Flats", "The Wave Boulder"])
+assert yt.matches(wave, "Wave V1 at Horse Flats"), "without its leading the"
+bleau = Climb(source="mountainproject", source_id="3", url="", name="Venus", grade="V1",
+              area_path=["International", "Europe", "France", "Fontainebleau", "Cuvier-Chatillon", "Bas Cuvier"])
+assert yt.query(bleau) == "Venus V1 Fontainebleau", "not Europe"
+bishop = Climb(source="mountainproject", source_id="4", url="", name="Smoking", grade="V0", search_place="Bishop Area",
+               area_path=["California", "Eastern Sierra", "Bishop Area", "Buttermilk Country"])
+assert yt.query(bishop) == "Smoking V0 Bishop"
 assert yt.video_id("https://www.youtube.com/watch?v=e-mg8jg4fT4") == "e-mg8jg4fT4"
 assert yt.video_id("https://youtu.be/H2EeJEvxpJI") == "H2EeJEvxpJI"
 

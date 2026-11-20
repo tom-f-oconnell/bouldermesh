@@ -729,7 +729,8 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
             "videos": [{"url": v.url, "found_by": "search" if v.source == "youtube-search" else "page", "title": v.title,
                         "uploader": v.credit, "frames": 0, **infos.get(v.url, {})} for v in videos],
             "relevance": {k: filtered[k] for k in ("methods", "counts")} if filtered else None, "asked": asked,
-            "youtube_checked": yt["checked"], **({} if yt["checked"] else {"unsearched": yt.get("words")})}
+            "youtube_checked": yt["checked"], **({} if yt["checked"] else {"unsearched": yt.get("words")}),
+            **({"youtube_method": youtube.SEARCH_METHOD} if yt["checked"] and yt.get("words") else {})}
 
 
 def _normalise_images(photos_dir: Path, log: Log) -> None:

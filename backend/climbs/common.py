@@ -113,6 +113,7 @@ class Climb:
     cross_refs: dict = field(default_factory=dict)   # {"mp_id": "...", "openbeta_uuid": "..."}
     fetched_at: float = field(default_factory=time.time)
     raw: dict = field(default_factory=dict)          # adapter-specific leftovers
+    search_place: str | None = None   # the climbing area its YouTube search names (youtube.place()), if it is in one
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)

@@ -265,6 +265,8 @@
     <label>Fetch videos from YouTube</label>
     <select id="via"><option value="volunteers_when_refused">Here, and through volunteers while YouTube refuses this server</option>
       <option value="here">Only here</option><option value="volunteers">Only through volunteers (for a cloud server, which YouTube refuses)</option></select>
+    <label class="choice"><input type="checkbox" id="wide-retry"> When a climb's search (its name, grade and area) finds nothing of it, search again without the area's name</label>
+    <div class="row"><button class="sec" id="yt-research">Search YouTube again for every area's climb searched the old way</button><span class="note" id="yt-research-note"></span></div>
     <div id="vol-trouble"></div>
     <div id="vol-list"></div>
     <div id="vol-youtube"></div>
@@ -672,6 +674,11 @@ function render(s){
   $('#rest-all').disabled = !s.rest_waiting;
   $('#remesh-note').textContent = s.untied_meshes ? `${s.untied_meshes} boulder${s.untied_meshes === 1 ? "'s mesh" : "s' meshes"}` : 'none';
   $('#remesh-untied').disabled = !s.untied_meshes;
+  const yr = s.youtube_research || {};
+  $('#yt-research').disabled = !!yr.disabled;
+  $('#yt-research').title = yr.disabled || 'One climb at a time, only while no running area has climbs of its own to do; climbs it finds new videos of are queued to add them and mesh again, after everything else';
+  $('#yt-research-note').textContent = yr.disabled || `${yr.stale} climb(s) searched the old way`;
+  $('#wide-retry').checked = v['youtube.wide_retry'];
   $('#old-meshes').innerHTML = oldMeshesNote(s.old_meshes);
   $('#rest-auto').checked = v['boulders.rest_auto'];
   if (document.activeElement !== $('#beta-parallel')) $('#beta-parallel').value = v['beta.parallel'];
@@ -1097,6 +1104,8 @@ $('#old-meshes').onclick = async e => {
   catch (err) { msg(err.message, 8000); b.disabled = false; }
 };
 $('#remesh-untied').onclick = async () => { try { msg((await call('/api/admin/actions/remesh-untied', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
+$('#yt-research').onclick = async () => { try { msg((await call('/api/admin/actions/youtube-research', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
+$('#wide-retry').onchange = () => save({ 'youtube.wide_retry': $('#wide-retry').checked });
 $('#rest-all').onclick = async () => { try { msg((await call('/api/admin/actions/rest', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#map-km').onchange = () => save({ 'site.map_km': +$('#map-km').value });
 $('#beta-parallel').onchange = () => save({ 'beta.parallel': +$('#beta-parallel').value });
