@@ -190,6 +190,23 @@ class SessionTest {
         assertEquals(4, unseen.rungCount(assertNotNull(unseen.state("h0"))))
     }
 
+    /** A photo is taken by itself only where it'd count for something: not of a hold hidden behind a flake, again and again. */
+    @Test fun noGainFromWhatsHidden() {
+        val wall = TestWorld.guide()
+        val n = wall.vertices
+        val flake = floatArrayOf(-0.7f, 0.8f, 0.6f, -0.3f, 0.8f, 0.6f, -0.3f, 1.2f, 0.6f, -0.7f, 1.2f, 0.6f)     // in front of h0
+        val guide = GuideMesh(wall.positions + flake, wall.indices + intArrayOf(n, n + 1, n + 2, n, n + 2, n + 3),
+            wall.patch + intArrayOf(GuideMesh.NO_PATCH, GuideMesh.NO_PATCH), wall.gsd + floatArrayOf(0f, 0f), wall.views + intArrayOf(0, 0), wall.patches)
+        val cov = Coverage(TestWorld.plan(), guide).apply { scope = Scope(minPrio = 3) }
+        val hold = assertNotNull(cov.state("h0"))
+        val behind = TestWorld.look(Vec3(-0.5, 1.0, 1.1), Vec3(-0.5, 1.0, 0.0))
+        assertTrue(cov.see(behind, hold, hidden = false) != null && cov.see(behind, hold) == null)
+        repeat(3) { assertTrue(cov.gain(behind) == 0 && cov.addShot(behind).isEmpty(), "held still there, nothing to take") }
+        val a = 30 * TestWorld.rad
+        val beside = TestWorld.look(Vec3(-0.5 + 1.1 * sin(a), 1.0, 1.1 * cos(a)), Vec3(-0.5, 1.0, 0.0))
+        assertTrue(cov.gain(beside, enough = 1) == 1 && "h0" in cov.addShot(beside), "seen past it, from the side")
+    }
+
     @Test fun coverageOfAPlan() {
         val cov = Coverage(TestWorld.plan(), TestWorld.guide())
         val hold = assertNotNull(cov.state("h0"))

@@ -53,6 +53,8 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
         var textured = false                // a patch: a photo taken now is square on and fine enough to texture it with
         internal var wanted: Set<Int>? = null
         internal var wantedAt = 0.0
+        internal var clearFrom: Vec3? = null     // where it was last checked for being hidden behind the rock from, and whether it was
+        internal var clearWas = true
     }
 
     private val all = ArrayList(plan.targets.map { State(it) })
@@ -294,8 +296,15 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
         } else if (facing < cosFacing) return null
         val dm = d * metresPerUnit
         if (dm > FAR_M) return null
-        if (hidden && guide != null && !guide.clear(pose.centre, p, max(t.r, 0.05 * d))) return null
+        if (hidden && !clear(pose.centre, s, d)) return null
         return Seen(dm / pose.lens.fx / max(facing, 0.2), dm, facing, towards, at.u, at.v)
+    }
+
+    /** Whether nothing of the mesh hides a target from there (d: how far off it is); kept for a camera that's barely moved since. */
+    private fun clear(from: Vec3, s: State, d: Double): Boolean {
+        if (guide == null) return true
+        s.clearFrom?.let { if (it.distance(from) * metresPerUnit < CLEAR_SAME_M) return s.clearWas }
+        return guide.clear(from, s.target.point, max(s.target.r, 0.05 * d)).also { s.clearFrom = from; s.clearWas = it }
     }
 
     private fun newDirection(s: State, towards: Vec3): Boolean = s.dirs.none { angleDeg(it, towards) < viewDeg(s) }
@@ -323,8 +332,13 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
         return helped
     }
 
-    /** How many targets in scope and still to do a photo from here would help: for taking one by itself. Nothing hidden is checked. */
-    fun gain(pose: CameraPose): Int {
+    /**
+     * How many targets in scope and still to do a photo from here would help, counting up to `enough`: for taking one by
+     * itself. As addShot() judges it, so a photo taken because of this is counted for something: a target hidden behind
+     * another part of the rock is left out, or a phone held still would take the same photo again and again. That's
+     * checked last, only of those that would otherwise count.
+     */
+    fun gain(pose: CameraPose, enough: Int = Int.MAX_VALUE): Int {
         var n = 0
         for (s in states) {
             if (!inScope(s) || s.skipped != null || done(s)) continue
@@ -332,10 +346,12 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
             val finer = bestGsdM(s)?.let { seen.gsdM < it * 0.85 } ?: true
             val need = needGsdM(s)
             val wanted = need == null || (bestGsdM(s) ?: Double.MAX_VALUE) > need
-            if (!s.target.isView && rungAt(s, seen.gsdM)?.let { it !in s.rungs } == true) { n++; continue }      // a step on the way in, not yet taken
-            if (counts(s, seen) && sideOf(s, seen.towards)?.let { it !in s.sides && it in sidesWanted(s) } == true) { n++; continue }
-            if (textures(s, seen)) { n++; continue }
-            if ((counts(s, seen) && newDirection(s, seen.towards)) || (finer && wanted && counts(s, seen))) n++
+            val helps = (!s.target.isView && rungAt(s, seen.gsdM)?.let { it !in s.rungs } == true)      // a step on the way in, not yet taken
+                || (counts(s, seen) && sideOf(s, seen.towards)?.let { it !in s.sides && it in sidesWanted(s) } == true)
+                || textures(s, seen)
+                || (counts(s, seen) && newDirection(s, seen.towards)) || (finer && wanted && counts(s, seen))
+            if (!helps || (!s.target.isView && !clear(pose.centre, s, seen.distanceM / metresPerUnit))) continue
+            if (++n >= enough) break
         }
         return n
     }
@@ -535,6 +551,7 @@ class Coverage(val plan: Plan, val guide: GuideMesh?, var metresPerUnit: Double 
     companion object {
         const val FRAME_MARGIN = 0.06       // of the picture: a target nearer its edge than this isn't well in it
         const val FAR_M = 12.0              // from further than this a photo isn't of the target
+        const val CLEAR_SAME_M = 0.01       // whether a target is hidden is checked again once the camera's moved this far
         const val TOO_CLOSE_M = 0.25
         const val MIN_STANDOFF_M = 0.35     // as near as a phone is held to rock
         const val REACH_M = 2.2             // as high as a phone is held, from the ground

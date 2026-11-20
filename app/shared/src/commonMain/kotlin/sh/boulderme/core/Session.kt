@@ -301,7 +301,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             val blur = Quality.blurPx(f.gyroRadS, speed, f.exposureS, eye.lens.fx, far)
             val steadyS = steadyFor(blur, f.t)      // counted when all's done too: Take still takes one
             if (target == null) return FrameOut(Hint(Hint.Kind.DONE, if (progress.total == 0) "Nothing to do here: widen what counts" else "Done: every part that counts is covered. Finish, or widen to the rest."), false, progress, blur, steadyS = steadyS)
-            val worth = cov.gain(eye) > 0
+            val worth = cov.gain(eye, enough = 1) > 0
             val hint = shootHint(cov.hint(eye, target, f.uprightDeg), worth, steadyS)
             return FrameOut(hint, auto && steadyS >= STEADY_FOR_S && worth && f.t - lastShotT >= MIN_GAP_S, progress, blur, still, if (close) cov.status(target!!) else "", steadyS, !worth)
         }
