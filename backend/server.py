@@ -9985,6 +9985,9 @@ MESH_LIST_TTL = 30      # seconds visitors' copy of /api/meshes is kept, unless 
 _mesh_list_kept: tuple[str, float, bytes] | None = None     # (meshes_mark(), when, the JSON)
 _mesh_list_lock = threading.Lock()
 _mesh_lists_kept: dict[tuple, tuple] = {}      # kept_mesh_list()'s, by (editor, account): (mark, when, body)
+# seconds an editor's copy is kept: what's worked out in the background (a packed copy, a preview) shows in it soon, and
+# links opened together still share one making of it
+EDITOR_LIST_TTL = 5
 
 
 def forget_mesh_list() -> None:
@@ -10006,12 +10009,12 @@ def meshes_mark() -> str:
 def kept_mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> bytes:
     """/api/meshes as an editor, or an account with meshes awaiting approval, sees it (mesh_list()), as JSON: kept for
     each such (editing or not, and who) as visitors' is (visitors_mesh_list()), and forgotten after any change
-    (forget_mesh_list()), so that their own changes show at once. Made afresh for every asking before, it took an
+    (forget_mesh_list()), so that their own changes show at once (for EDITOR_LIST_TTL). Made afresh for every asking, it took an
     editor 2-4 s, and three links opened together ~11 s each (Nov 19)."""
     key = (editor, (me or {}).get("id"))
     with _mesh_list_lock:
         mark, kept = meshes_mark(), _mesh_lists_kept.get(key)
-        if kept and kept[0] == mark and time.time() - kept[1] < MESH_LIST_TTL:
+        if kept and kept[0] == mark and time.time() - kept[1] < EDITOR_LIST_TTL:
             return kept[2]
         body = json.dumps(mesh_list(editor, me, waiting), default=str).encode()
         _mesh_lists_kept[key] = (mark, time.time(), body)
