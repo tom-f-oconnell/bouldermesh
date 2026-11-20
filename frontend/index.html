@@ -4609,7 +4609,9 @@ function renderMeshes(filter = true){
       b.title = m.hidden ? `Hidden as: ${m.hidden}. Shows it to visitors again, and its climbs this failed as meshed again`
         : 'Hides it from visitors (editors still see it) and fails its climbs in their areas, so that Retry failed meshes them again';
       b.onclick = async () => {
-        const why = m.hidden ? null : prompt('Why is it a failure?', 'a photo on a card, not a rock');
+        // what you said rating it, if you did (a bad rating, as a rule), else the usual reason, to edit
+        const said = (myRatings[m.id]?.comment || '').trim();
+        const why = m.hidden ? null : prompt('Why is it a failure?', said || 'a photo on a card, not a rock');
         if (!m.hidden && !why) return;
         await api(`/api/meshes/${m.id}/hide`, { method: 'POST', json: { why } }); await refreshMeshes(); refreshClimbs();
       };
