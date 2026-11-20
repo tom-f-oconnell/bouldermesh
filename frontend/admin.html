@@ -300,6 +300,9 @@
       address; every download is kept in data/script-downloads.jsonl)</small></label>
     <label class="choice"><input type="checkbox" id="ntfy-feedback"> and when a visitor leaves a comment or bug report <small>(its start, as plain
       text; at most one notification a minute)</small></label>
+    <label class="choice"><input type="checkbox" id="ntfy-health"> and each morning, how the site went for visitors the day before <small>(meshes
+      slow to load or given up on, views that moved badly, errors in their browsers, slow requests; <code>python cli.py site-health</code> shows
+      the same)</small></label>
     <div class="grid"><div><label>ntfy server</label><input type="text" id="ntfy-server" placeholder="https://ntfy.sh"></div>
       <div class="row" style="margin-top:22px"><button class="sec" id="ntfy-topics">Make new topics</button><button class="sec" id="ntfy-test">Send a test</button></div></div>
     <div id="ntfy-body" class="note"></div>
@@ -782,7 +785,7 @@ function render(s){
   const nt = s.notify;
   $('#ntfy-on').checked = v['notify.enabled']; keep('#ntfy-server', v['notify.server']);
   $('#ntfy-restarts').checked = v['notify.restarts']; $('#ntfy-downloads').checked = v['notify.downloads'];
-  $('#ntfy-feedback').checked = v['notify.feedback']; keep('#donate-url', v['site.donate_url']); keep('#testflight-url', v['apps.testflight_url']);
+  $('#ntfy-feedback').checked = v['notify.feedback']; $('#ntfy-health').checked = v['notify.site_health']; keep('#donate-url', v['site.donate_url']); keep('#testflight-url', v['apps.testflight_url']);
   // what visitors typed: only ever put in the page escaped, as text
   const fb = s.feedback;
   $('#fb-note').textContent = fb.count ? `${fb.count} from the main site's "?" tab, kept in data/${fb.file}; the newest first.` : 'None yet. Visitors leave them on the main site\'s "?" tab.';
@@ -1118,6 +1121,7 @@ $('#ntfy-on').onchange = () => save({ 'notify.enabled': $('#ntfy-on').checked })
 $('#ntfy-restarts').onchange = () => save({ 'notify.restarts': $('#ntfy-restarts').checked });
 $('#ntfy-downloads').onchange = () => save({ 'notify.downloads': $('#ntfy-downloads').checked });
 $('#ntfy-feedback').onchange = () => save({ 'notify.feedback': $('#ntfy-feedback').checked });
+$('#ntfy-health').onchange = () => save({ 'notify.site_health': $('#ntfy-health').checked });
 $('#donate-url').onchange = () => save({ 'site.donate_url': $('#donate-url').value });
 $('#testflight-url').onchange = () => save({ 'apps.testflight_url': $('#testflight-url').value });
 $('#ntfy-server').onchange = () => save({ 'notify.server': $('#ntfy-server').value });

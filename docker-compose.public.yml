@@ -36,6 +36,9 @@ services:
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
     pids_limit: 4096
+    logging:                                # kept to 5 files of 100 MB, about 6 days of Caddy's access log (unrotated, it reached 800 MB in 9 days)
+      driver: json-file
+      options: {max-size: "100m", max-file: "5"}
   caddy:
     image: caddy:2
     restart: unless-stopped
@@ -52,6 +55,9 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on: [bouldermesh]
+    logging:                                # kept to 5 files of 100 MB, about 6 days of Caddy's access log (unrotated, it reached 800 MB in 9 days)
+      driver: json-file
+      options: {max-size: "100m", max-file: "5"}
 volumes:
   caddy_data:
   caddy_config:

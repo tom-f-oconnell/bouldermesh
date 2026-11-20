@@ -118,6 +118,7 @@ DEFAULTS = {
     "notify.restarts": True,        # when the server is back up after a restart
     "notify.downloads": True,       # when someone downloads the worker or volunteer script, roughly from where
     "notify.feedback": True,        # when a visitor leaves a comment or bug report on the "?" tab (feedback.py)
+    "notify.site_health": True,     # each morning: how the site went for visitors the day before (sitehealth.py)
     # whose names the public leaderboard shows (leaderboard()): those who registered since the scripts said it would
     # ("new"), everyone's ("all"), or no one's ("none"); the rest as anonymous
     "leaderboard.names": "new",

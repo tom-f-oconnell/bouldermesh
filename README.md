@@ -979,6 +979,7 @@ one failed (with why).
 the checkout whose `.env` names the compose files. On the server:
 
     cd bouldermesh
+    docker compose exec -T bouldermesh python3 cli.py site-health           # the last day for visitors, in a few lines (below)
     docker compose exec -T bouldermesh python3 cli.py client-errors -n 50   # what failed in visitors' browsers, newest last
     docker compose exec -T bouldermesh python3 cli.py mesh-views --hours 24  # the meshes they've looked at lately, and how often
     docker compose exec -T bouldermesh python3 cli.py mesh-ratings          # how they rated meshes, and their comments
@@ -993,6 +994,13 @@ the page), and the browser, but not who sent it. Each mesh shown is kept too (`d
 line in the log): which, how it was opened (random, climb, meshes, map, area, project, beta, link), how long it took, and its note,
 such as a texture loaded smaller, but not who or with what. The requests for the mesh files don't tell you that, as browsers
 and Cloudflare keep copies for an hour. The same commands work on any machine running it under Docker.
+
+The same file also has each mesh given up on while it loaded (the page left, or another asked for), and how smoothly each
+moved (milliseconds a frame while turned, with the browser's graphics card). The page's first view adds how long the list of
+meshes took, and how long since the page opened. The server keeps its own requests from visitors that took 3 s or more
+(`data/slow-requests.jsonl`, and a "slow:" line in the log). **`cli.py site-health`** sums up all of it for the last day:
+how long meshes took, those given up on, views that moved badly, the 3D view lost to the graphics card, errors (new ones
+marked) and slow requests. With ntfy set up, the admin page's "each morning" box sends the same to your phone at 16:00 UTC.
 
 ## The admin page
 
@@ -1465,13 +1473,16 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/meshes/{id}/rating {browser, rating, comment}   a visitor's rating (1 bad, 2 OK, 3 good, or null) and comment,
                                                         from anyone, as client-errors are taken (120 an hour an address): one
                                                         each per browser, replaced; mesh_ratings; `cli.py mesh-ratings`
-    POST /api/mesh-views {mesh, via, seconds, note?}    a mesh a visitor's browser showed, as client-errors are taken (120 in 10
-                                                        min an address): kept in data/mesh-views.jsonl; `cli.py mesh-views`
+    POST /api/mesh-views {mesh, event?, via, seconds, note?, page_seconds?, list_seconds?, left?, frames?, gpu?}   a mesh a
+                                                        visitor's browser showed (event shown), gave up on loading (left), or
+                                                        moved (frames: {n, median_ms, p95_ms, slow}), as client-errors are
+                                                        taken (300 in 10 min an address): kept in data/mesh-views.jsonl;
+                                                        `cli.py mesh-views`, `cli.py site-health`
     POST /api/feedback {kind, message, contact?, page?, mesh?}   a comment or bug report (kind) from the "?" tab, from anyone viewing
                                                         the site (not other sites' pages; 4,000 characters, 5 an hour an
                                                         address, 200 a day in all): control and invisible characters
                                                         removed, kept in data/feedback.jsonl, and notified through ntfy
-    POST /api/client-errors {kind, message, mesh?, file?, page?, source?}   what failed in a visitor's browser, from anyone
+    POST /api/client-errors {kind, message, mesh?, file?, page?, source?, gpu?}   what failed in a visitor's browser, from anyone
                                                         viewing the site (not other sites' pages; 8 KB, 20 in 10 min an address):
                                                         kept in data/client-errors.jsonl; `python3 cli.py client-errors` lists them
 
@@ -1516,6 +1527,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_ec2fleet.py    # offline: EC2 machines that connect here, started and ended from the admin page, through stand-ins for AWS
     python3 tests/test_notify.py      # offline: ntfy notifications, their signed Approve and Deny, following the replies
     python3 tests/test_backup.py      # offline: the server's database snapshots, and deploy/backup.sh copying a stand-in server
+    python3 tests/test_sitehealth.py  # offline: the daily summary of how the site went for visitors, from made-up reports
     python3 tests/test_admin.py       # offline: the admin page's settings, credentials and photo permissions
     python3 tests/test_capture.py     # offline: plans and guides for the phone apps, readings in photos, size and place from them, captures merged
     python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job

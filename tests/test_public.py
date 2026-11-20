@@ -255,6 +255,27 @@ def with_token(tmp: Path) -> None:
             {"mesh": mid, "via": "random", "seconds": 2.3, "note": "Texture reduced to 4096 pixels", "editor": False}, seen[-1]
         assert seen[-1]["name"] and "198.51.100.20" not in json.dumps(seen), seen[-1]
         assert req(B, "POST", "/api/mesh-views", {"mesh": "0123456789ab"})[0] == 404
+        # a mesh given up on while loading, how smoothly one moved, and the page's first view's timings; an editor's told apart
+        st, _, r = req(B, "POST", "/api/mesh-views", {"mesh": mid, "event": "left", "left": "page", "seconds": 12.34, "via": "link"},
+                       headers={"X-Real-IP": "198.51.100.21"})
+        assert st == 202, (st, r)
+        req(B, "POST", "/api/mesh-views", {"mesh": mid, "event": "frames", "frames": {"n": 300, "median_ms": 61.4, "p95_ms": "x", "slow": 7},
+                                           "gpu": "ANGLE (Intel)" + "x" * 300, "memory_gb": 4, "cores": 8}, headers=AUTH)
+        req(B, "POST", "/api/mesh-views", {"mesh": mid, "event": "bogus", "seconds": 1, "page_seconds": 3.21, "list_seconds": -1})
+        seen = [json.loads(x) for x in (tmp / "data" / "mesh-views.jsonl").read_text().splitlines()]
+        left, frames, shown = seen[-3:]
+        assert left["event"] == "left" and left["left"] == "page" and left["seconds"] == 12.3 and left["editor"] is False, left
+        assert frames["frames"] == {"n": 300, "median_ms": 61, "p95_ms": None, "slow": 7} and len(frames["gpu"]) == 120, frames
+        assert frames["memory_gb"] == 4 and frames["cores"] == 8 and frames["editor"] is True, frames
+        assert "event" not in shown and shown["page_seconds"] == 3.2 and "list_seconds" not in shown, shown
+
+        # visitors' list of meshes is made once and kept a while, but an editor's change is in it at once
+        mine = lambda: [m["id"] for m in req(B, "GET", "/api/meshes")[2]]  # noqa: E731
+        assert mid in mine() and mine() == mine()
+        assert req(B, "POST", f"/api/meshes/{mid}/hide", {"why": "a test"}, headers=AUTH)[0] == 200
+        assert mid not in mine() and mid in [m["id"] for m in req(B, "GET", "/api/meshes", headers=AUTH)[2]], "editors still see it"
+        assert req(B, "POST", f"/api/meshes/{mid}/hide", {"why": None}, headers=AUTH)[0] == 200
+        assert mid in mine()
         # a visitor's rating and comment: from anyone, as reports are; one each per browser, wherever from, replaced as changed
         rate = lambda body, ip="198.51.100.30", **h: req(B, "POST", f"/api/meshes/{mid}/rating", body, headers={"X-Real-IP": ip, **h})  # noqa: E731
         st, _, r = rate({"browser": "a" * 32, "rating": 1, "comment": "holes all over"})
@@ -282,7 +303,7 @@ def with_token(tmp: Path) -> None:
         assert req(B, "POST", "/api/mesh-views", view, headers={"Origin": "https://evil.example"})[0] == 403
         out = subprocess.run([sys.executable, str(ROOT / "cli.py"), "mesh-views", "--data", str(tmp / "data")],
                              capture_output=True, text=True, check=True).stdout
-        assert f"{mid} " in out and "from random in 2.3 s" in out and "1 view(s) of 1 mesh(es); by how: random 1" in out, out
+        assert f"{mid} " in out and "from random in 2.3 s" in out and "LEFT while loading after 12.3 s (page)" in out and "2 view(s) of 1 mesh(es); by how: random 1, other 1" in out, out
         # a scene splat beside it is listed and served; the page's policy lets the splat viewer's worker run
         (tmp / "data" / "meshes" / mid / "scene.splat").write_bytes(b"\0" * 64)
         assert next(m for m in req(B, "GET", "/api/meshes")[2] if m["id"] == mid)["splat"] is True
@@ -556,6 +577,27 @@ def links_site(tmp: Path) -> None:
     print("links OK")
 
 
+def slow_requests(tmp: Path) -> None:
+    """The site's slow requests (here, with SLOW_REQUEST_SECONDS 0, every one) are kept for the daily summary: those of
+    visitors, by path with ids left out; not editors', nor files'."""
+    srv = Server(tmp, EDIT_TOKEN=TOKEN, READ_ONLY="auto", SLOW_REQUEST_SECONDS="0")
+    B = srv.url
+    try:
+        req(B, "GET", "/api/meshes")
+        req(B, "GET", "/api/jobs", headers=AUTH)
+        req(B, "GET", "/meshes/0123456789ab/mesh.glb")
+        req(B, "GET", "/m/0123456789ab")
+        req(B, "POST", "/api/projects", {"name": "x"})
+    finally:
+        out = srv.stop()
+    kept = [json.loads(x) for x in (tmp / "data" / "slow-requests.jsonl").read_text().splitlines()]
+    paths = [(k["method"], k["path"], k["code"]) for k in kept]
+    assert ("GET", "/api/meshes", 200) in paths and ("GET", "/m/<id>", 404) in paths and ("POST", "/api/projects", 401) in paths, paths
+    assert not any(p.startswith(("/meshes/", "/api/jobs")) for _, p, _ in paths), "not files, nor editors'"
+    assert all(isinstance(k["seconds"], float) for k in kept) and "slow: GET /api/meshes took" in out, out[-2000:]
+    print("slow requests OK")
+
+
 def feedback(tmp: Path) -> None:
     """The "?" tab's comments and bug reports, and its Donate button: from a visitor without the token, cleaned to plain
     text, refused when too long or not text, dropped when the hidden field is filled in, limited for one address, told to
@@ -694,6 +736,7 @@ def main() -> None:
         build(Path(td) / "c")
         in_parts(Path(td) / "d")
         scene_hidden(Path(td) / "e")
+        slow_requests(Path(td) / "slow")
         links_site(Path(td) / "f")
         feedback(Path(td) / "g")
         cut_short(Path(td) / "h")

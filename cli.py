@@ -24,6 +24,9 @@
                                                        wouldn't load, errors in the page), newest last
   python cli.py mesh-views [-n N] [--hours H] [--data DIR]  the last N meshes visitors' browsers showed, and how often
                                                        each was shown in the last H hours (default 24), and how
+  python cli.py site-health [--hours H] [--data DIR]    how the site went for visitors in the last H hours (default 24):
+                                                       meshes slow to load or given up on, views that moved badly,
+                                                       errors, slow requests (what the morning notification says)
   python cli.py script-downloads [-n N] [--data DIR]   the last N downloads of the worker and volunteer scripts: when, which,
                                                        the address, roughly where (and a map), and with what
   python cli.py mesh-ratings [-n N] [--data DIR]       visitors' ratings of meshes (bad, OK, good), each mesh's, and
@@ -113,6 +116,7 @@ def main():
     ce = sub.add_parser("client-errors"); ce.add_argument("-n", type=int, default=30); ce.add_argument("--data")
     mv = sub.add_parser("mesh-views"); mv.add_argument("-n", type=int, default=20); mv.add_argument("--hours", type=float, default=24)
     mv.add_argument("--data")
+    sh = sub.add_parser("site-health"); sh.add_argument("--hours", type=float, default=24); sh.add_argument("--data")
     mr = sub.add_parser("mesh-ratings"); mr.add_argument("-n", type=int, default=30); mr.add_argument("--data")
     sd = sub.add_parser("script-downloads"); sd.add_argument("-n", type=int, default=30); sd.add_argument("--data")
     ic = sub.add_parser("inputs-check"); ic.add_argument("--budget", type=float, default=120); ic.add_argument("--json", action="store_true")
@@ -139,6 +143,8 @@ def main():
         sys.exit(client_errors(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n))
     if a.cmd == "mesh-views":
         sys.exit(mesh_views(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n, a.hours))
+    if a.cmd == "site-health":
+        sys.exit(site_health(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.hours))
     if a.cmd == "script-downloads":
         sys.exit(script_downloads(Path(a.data or os.environ.get("DATA_DIR") or Path(__file__).resolve().parent / "data"), a.n))
     if a.cmd == "mesh-ratings":
@@ -217,15 +223,29 @@ def mesh_views(data: Path, n: int, hours: float) -> int:
         return 0
     for v in views[-n:]:
         took = f" in {v['seconds']} s" if v.get("seconds") is not None else ""
-        print(f"{v['time']} {v.get('version') or '-'} {v['mesh']} {v.get('name', '')}"
-              f"{' from ' + v['via'] if v.get('via') else ''}{took}{' (editor)' if v.get('editor') else ''}"
+        event = v.get("event", "shown")
+        what = (f" LEFT while loading after {v.get('seconds')} s ({v.get('left') or '?'})" if event == "left" else
+                f" frames: {v.get('frames')} on {v.get('gpu') or '?'}" if event == "frames" else
+                f"{' from ' + v['via'] if v.get('via') else ''}{took}")
+        print(f"{v['time']} {v.get('version') or '-'} {v['mesh']} {v.get('name', '')}{what}{' (editor)' if v.get('editor') else ''}"
               + (f"\n    {v['note']}" if v.get("note") else ""))
     since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    recent = [v for v in views if v["time"] >= since]
+    recent = [v for v in views if v["time"] >= since and v.get("event", "shown") == "shown"]
     print(f"\nin the last {hours:g} h: {len(recent)} view(s) of {len({v['mesh'] for v in recent})} mesh(es); by how: "
           + ", ".join(f"{k or 'other'} {c}" for k, c in collections.Counter(v.get("via") for v in recent).most_common()))
     for (mid, name), c in collections.Counter((v["mesh"], v.get("name", "")) for v in recent).most_common(15):
         print(f"  {c:4d}  {mid} {name}")
+    return 0
+
+
+def site_health(data: Path, hours: float) -> int:
+    """Print how the site went for visitors in the last `hours` (sitehealth.py), as the morning notification says it."""
+    import sitehealth
+    got = sitehealth.for_data(data, hours)
+    if not got:
+        print(f"nothing in the last {hours:g} h: no views, errors nor slow requests")
+        return 0
+    print(got[0] + "\n" + got[1])
     return 0
 
 

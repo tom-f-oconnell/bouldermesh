@@ -799,6 +799,10 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 const $ = s => document.querySelector(s);
 // whether this copy of the site may be changed from here: open, or with its editing token (kept in this browser)
 let editor = true, token = null;
+// what's told of each mesh's loading and moving (reportView()), declared first as the page's start may load one:
+// loadingView {id, began, via} is the mesh loading, told of as given up on if the page goes or another is asked for first;
+// frameStats {id, ms, prev} the times between frames of the mesh in view
+let viewVia = '', viewsSent = 0, listSeconds = null, firstView = true, loadingView = null, frameStats = null, gpuKnown;
 // Who this browser is signed in as, on a site with accounts (/api/account's user, and all it said): an account isn't an
 // editor, but may make sets of beta and change its own, once it has accepted the terms
 let account = null, accountInfo = null;
@@ -1509,6 +1513,7 @@ renderer.setAnimationLoop(now => {
   updateXray();
   pickRatio(now);
   renderer.render(scene, camera);
+  noteFrame(now, now - lastMove <= STILL_MS);
 });
 
 // Where most of a model is. Reconstructions can have a few stray fragments far from the rock, which
@@ -2402,6 +2407,7 @@ document.querySelectorAll('.prefsbtn').forEach(b => b.onclick = () => setPrefs(b
 document.addEventListener('pointerdown', ev => { if (document.body.classList.contains('prefs-open') && !ev.target.closest('#prefs, .prefsbtn')) setPrefs(false); });
 addEventListener('keydown', ev => { if (ev.key === 'Escape') setPrefs(false); });
 renderer.domElement.addEventListener('webglcontextlost', ev => { ev.preventDefault(); $('#viewing').textContent = 'The view stopped working: reload the page';
+  reportError('webgl-lost', 'the graphics card dropped the view', { mesh: shownMesh || undefined, gpu: gpuName() });
   if (phone.matches) showTitle('The view stopped working: reload the page');     // where a phone has room to say so
   viewNote('The graphics card dropped this view, usually because it ran out of memory. Close other tabs that use it and reload the page.'); });
 // A 1×1 image, for a GLB whose shape alone is wanted: the mesh in view has its textures already
@@ -2515,6 +2521,8 @@ async function loadMeshUrl(url, filename, label, id, local = false){
   showRate(true); showBetaButton();
   const began = performance.now(), via = viewVia;
   viewVia = '';
+  leftLoading('other'); flushFrames();
+  if (id && !local) loadingView = { id, began, via };
   $('#vfrom').style.display = 'none';
   closeBeta(id);
   if (!phone.matches && !passive()) showRight('3d');
@@ -2563,7 +2571,7 @@ async function loadMeshUrl(url, filename, label, id, local = false){
     if (passive())      // kept out of view: the button beside it now goes to it
       vmapLabel($('#areamap').classList.contains('on') ? 'areas' : $('#map').classList.contains('on') ? 'map' : '3d');
     toast(note ? 'Loaded, with a problem: see the note on the view' : 'Loaded ' + label, note ? 5000 : 1500);
-    if (id) reportView(id, via, (performance.now() - began) / 1000, note);
+    if (id) { if (loadingView?.id === id) loadingView = null; reportView(id, via, (performance.now() - began) / 1000, note); frameStats = { id, ms: [], prev: 0 }; }
     if (id) setTimeout(controlsTip, 1000);     // the first mesh a browser shows: how to move round it, once it's settled
     viewNote(note, note ? again : null);
     renderPieces();
@@ -2583,6 +2591,7 @@ async function loadMeshUrl(url, filename, label, id, local = false){
       const why = `${e.message.replace(/\.+$/, '')}. If it has other files (.bin, .mtl, textures), choose them all together. It can still be uploaded.`;
       toast('Could not show this file', 6000); $('#viewing').textContent = 'Could not show ' + filename; return viewNote('Could not show this file here: ' + why);
     }
+    if (loadingView?.id === id) loadingView = null;
     loaded(); reportError('mesh', e, { mesh: id, file: filename }); toast('Could not load mesh: ' + e.message, 6000); $('#viewing').textContent = 'Could not load: ' + e.message; viewNote('Could not load this mesh: ' + e.message, again); }
 }
 
@@ -4519,6 +4528,7 @@ addEventListener('pagehide', flushRating);
 async function refreshMeshes(){
   hideSourceTip();
   meshesCache = await api('/api/meshes'); meshesById = Object.fromEntries(meshesCache.map(m => [m.id, m]));
+  listSeconds ??= performance.now() / 1000;
   await scrollStill();
   renderMeshes(); showBetaButton();     // beta found since for the mesh in view: its button
   meshesReady = true; drawAreas();
@@ -6260,24 +6270,63 @@ async function runCompare(c, what){
 // ---------------------------------------------------------------- errors, told to the server for looking at later
 // A mesh that won't load, and errors in the page, go to /api/client-errors (data/client-errors.jsonl there). Not a texture
 // that won't load at full size, which the viewer works around and notes. A few a page, each once.
-const reported = new Set();
+// Not those of browser extensions and in-app browsers (their scripts run in the page), nor a script elsewhere's, which
+// the browser says nothing of but "Script error.". With the editing token, so that the server tells editors' apart.
+const reported = new Set(), NOT_OURS = /^Script error\.?$|window\.ethereum|__firefox__|WKWebView|ResizeObserver loop/;
+function reportHeaders(){ return { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }; }
 function reportError(kind, error, extra = {}){
   const message = String(error?.message || error || '').slice(0, 1000), key = kind + message;
-  if (!message || reported.has(key) || reported.size >= 10) return;
+  if (!message || NOT_OURS.test(message) || reported.has(key) || reported.size >= 10) return;
   reported.add(key);
-  fetch('/api/client-errors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+  fetch('/api/client-errors', { method: 'POST', headers: reportHeaders(), keepalive: true,
     body: JSON.stringify({ kind, message, page: location.pathname + location.hash, ...extra }) }).catch(() => {});
 }
 addEventListener('error', ev => { if (!/^(chrome|moz|safari)-extension:/.test(ev.filename || '')) reportError('page', ev.error || ev.message, { source: `${ev.filename || ''}:${ev.lineno || ''}` }); });
 addEventListener('unhandledrejection', ev => reportError('page', ev.reason));
 // Each mesh shown, so the server knows what's looked at: requests for the files themselves don't say, as browsers and
-// Cloudflare keep copies for an hour. Its note, if it has one (a texture loaded smaller), goes too.
-let viewVia = '', viewsSent = 0;
-function reportView(mesh, via, seconds, note){
+// Cloudflare keep copies for an hour. Its note, if it has one (a texture loaded smaller), goes too; with the page's first,
+// how long since the page opened (if a link opened it) and how long the list of meshes took. Also each given up on
+// while it loaded, and how smoothly each moved: for the server's daily summary (backend/sitehealth.py).
+function sendView(body){
   if (thumbMode || viewsSent++ >= 200) return;
-  fetch('/api/mesh-views', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
-    body: JSON.stringify({ mesh, via, seconds: Math.round(seconds * 10) / 10, note: note || undefined }) }).catch(() => {});
+  fetch('/api/mesh-views', { method: 'POST', headers: reportHeaders(), keepalive: true, body: JSON.stringify(body) }).catch(() => {});
 }
+function tenths(x){ return Math.round(x * 10) / 10; }
+function reportView(mesh, via, seconds, note){
+  const first = firstView;
+  firstView = false;
+  sendView({ mesh, via, seconds: tenths(seconds), note: note || undefined, list_seconds: first && listSeconds != null ? tenths(listSeconds) : undefined,
+             page_seconds: first && via === 'link' ? tenths(performance.now() / 1000) : undefined });
+}
+function leftLoading(left){
+  const v = loadingView;
+  loadingView = null;
+  if (v) sendView({ event: 'left', mesh: v.id, via: v.via, left, seconds: tenths((performance.now() - v.began) / 1000) });
+}
+// The time between frames drawn one after another while the view moves (not those a few times a second once it's still)
+function noteFrame(now, moving){
+  if (!frameStats) return;
+  if (moving && frameStats.prev && now - frameStats.prev < 2000 && frameStats.ms.length < 20000) frameStats.ms.push(now - frameStats.prev);
+  frameStats.prev = moving ? now : 0;
+}
+function flushFrames(keep = false){
+  const f = frameStats;
+  frameStats = keep && f ? { id: f.id, ms: [], prev: 0 } : null;
+  if (!f || f.ms.length < 60) { if (keep && f) frameStats.ms = f.ms; return; }
+  const ms = [...f.ms].sort((a, b) => a - b), at = p => Math.round(ms[Math.min(ms.length - 1, Math.floor(p * ms.length))]);
+  sendView({ event: 'frames', mesh: f.id, frames: { n: ms.length, median_ms: at(.5), p95_ms: at(.95), slow: ms.filter(x => x > 100).length },
+             gpu: gpuName(), memory_gb: navigator.deviceMemory, cores: navigator.hardwareConcurrency });
+}
+function gpuName(){     // the graphics the browser draws with, as it names it (RENDERER, or the older extension's, which Chrome needed)
+  if (gpuKnown !== undefined) return gpuKnown;
+  try {
+    const gl = renderer.getContext(), named = gl.getParameter(gl.RENDERER), x = !named || /^WebKit/.test(named) ? gl.getExtension('WEBGL_debug_renderer_info') : null;
+    gpuKnown = String((x ? gl.getParameter(x.UNMASKED_RENDERER_WEBGL) : named) || '').slice(0, 120);
+  } catch { gpuKnown = ''; }
+  return gpuKnown;
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) { leftLoading('page'); flushFrames(true); } });
+addEventListener('pagehide', () => { leftLoading('page'); flushFrames(); });
 
 // ---------------------------------------------------------------- a mesh picked at random
 // Weighted by how many faces it shows (the reconstruction's, less stray pieces hidden), by rank among the meshes: the most

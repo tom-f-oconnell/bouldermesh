@@ -67,6 +67,7 @@ import terrain as terrain_mod  # noqa: E402
 import meshclean  # noqa: E402
 import dbconn  # noqa: E402
 import feedback as feedback_mod  # noqa: E402
+import sitehealth as sitehealth_mod  # noqa: E402
 import frames  # noqa: E402
 import links as links_mod  # noqa: E402
 import thumbs as thumbs_mod  # noqa: E402
@@ -9786,9 +9787,141 @@ def submissions(user: dict | None = None, mine: str | None = None) -> list[dict]
     return [submission_row(r) for r in rows]
 
 
+def mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> list[dict]:
+    """/api/meshes: every mesh, with its climbs, boulder, ratings and links, as one asking sees them: those hidden as
+    failures only for editors, and those awaiting approval (waiting, unapproved_meshes()) only for their account and
+    whoever approves. Takes a couple of CPU-seconds with ~600 meshes (Nov 2026), so visitors get visitors_mesh_list()."""
+    rows = q("SELECT * FROM meshes ORDER BY created DESC")
+    if not editor:    # hidden as failures (hide_mesh()): only editors see them, tagged so
+        rows = [r for r in rows if not r["hidden"]]
+    if waiting:     # made from what an account added, not yet approved: its account's and the owner's to see
+        rows = [r for r in rows if r["id"] not in waiting or (me and (me["role"] == "owner" or waiting[r["id"]] == me["id"]))]
+        for r in rows:
+            if r["id"] in waiting:
+                r["awaits_approval"] = True
+    links = q("SELECT l.mesh_id, l.note, c.id, c.name, c.grade, c.url, c.area_path FROM mesh_links l JOIN climbs c ON c.id=l.climb_id")
+    by, leaves = {}, {}
+    for l in links:     # shared: an area linked it as on the same boulder as the climb the mesh was made for
+        shared = (l["note"] or "").startswith(SHARED)
+        by.setdefault(l["mesh_id"], []).append({"id": l["id"], "name": l["name"], "grade": l["grade"], "url": l["url"],
+                                                "shared": shared})
+        if not shared:
+            leaves.setdefault(l["mesh_id"], set()).add(l["area_path"])
+    urls = {}
+    on = {}
+    for c in q("SELECT c.id, c.name, c.grade, c.area_path FROM climbs c WHERE c.area_path IN "
+               "(SELECT boulder FROM meshes WHERE boulder IS NOT NULL) ORDER BY c.name"):
+        on.setdefault(c.pop("area_path"), []).append(c)
+    kinds = boulder_kinds()
+    for key in {r["boulder"] for r in rows if is_pool(r["boulder"])}:     # a pool's: its climbs
+        on[key] = [{k: c[k] for k in ("id", "name", "grade")} for c in boulder_climbs(key)]
+    areas, rated = mesh_areas(), mesh_ratings()
+    pooled_views = {r["id"]: viewpoints.load(MESHES / r["id"]) or {} for r in rows if r["boulder"]}
+    homes = boulder_homes([r for r in rows if not r.get("replaced_by")], pooled_views)
+    least = settings().get("boulders.placed_percent")
+    for r in rows:
+        r["climbs"] = by.get(r["id"], [])
+        r["rating"] = rated.get(r["id"])
+        r["old"] = mesh_is_old(r)
+        if r["boulder"]:    # a pooled mesh (a boulder's, or a pool's): its climbs, and where each is seen from
+            views = pooled_views[r["id"]]
+            r["boulder_climbs"] = [{**c, "view": (views.get("climbs") or {}).get(c["id"]),
+                                    "own": (views.get("unplaced") or {}).get(c["id"], 0)} for c in on.get(r["boulder"], [])]
+            r["pooled"] = pooled_summary(r["boulder"], r["boulder_climbs"], kinds, r["id"], homes, least)
+        # the Mountain Project page of the lowest area a mesh of several climbs is on: a pooled mesh's, or
+        # that of the climbs linked to one, when they're all on one
+        leaf = (pool_leaf(r["boulder"]) if r["boulder"] else
+                next(iter(leaves[r["id"]])) if sum(not c["shared"] for c in r["climbs"]) > 1 and len(leaves[r["id"]]) == 1 else None)
+        r["boulder_url"] = leaf_url(leaf, urls) if leaf else None
+        mesh_files_fields(r)
+        r["areas"], r["area_path"] = areas(r)
+    # the names in its climbs' and its boulder's links, for Share, and how many current meshes its boulder has
+    # (boulder_mesh_sets(): its own, what that left out, its climbs' own), for the viewer's Meshes button
+    try:    # links failing shouldn't empty the list
+        cnames, bnames = link_names()
+        sets = boulder_mesh_sets(rows, kinds)
+        leaf_of = {mid: leaf for leaf, ids in sets.items() for mid in ids}
+        current = {r["id"] for r in rows if not r.get("replaced_by")}
+        old = {r["id"] for r in rows if r["old"] or r.get("old_data")}     # either kind: left out for visitors
+        if any(c["id"] not in cnames for r in rows for c in r["climbs"]) or \
+                any(leaf not in bnames for leaf, ids in sets.items() if current.intersection(ids)):
+            cnames, bnames = link_names(force=True)     # one added since the last naming
+        for r in rows:
+            for c in r["climbs"] + r.get("boulder_climbs", []):
+                c["slug"] = cnames.get(c["id"])
+            leaf = leaf_of.get(r["id"])
+            r["boulder_link"] = {"slug": bnames[leaf], "name": boulder_name(leaf),
+                                 "meshes": sum(mid in current for mid in sets[leaf]),
+                                 "old": sum(mid in current and mid in old for mid in sets[leaf])} if leaf in bnames else None
+    except Exception as e:
+        print(f"error: meshes' links: {type(e).__name__}: {e}", flush=True)
+    return rows
+
+
+MESH_LIST_TTL = 30      # seconds visitors' copy of /api/meshes is kept, unless a mesh is made, deleted or replaced sooner
+_mesh_list_kept: tuple[str, float, bytes] | None = None     # (meshes_mark(), when, the JSON)
+_mesh_list_lock = threading.Lock()
+
+
+def forget_mesh_list() -> None:
+    """Have visitors_mesh_list() made again at its next asking: after an editor's or account's change."""
+    global _mesh_list_kept
+    _mesh_list_kept = None
+
+
+REPORT_PATH = re.compile(r"/api/(client-errors|mesh-views|nearby-overlaps|feedback)")   # visitors' reports, which change no mesh
+
+
+def meshes_mark() -> str:
+    """What changes whenever a mesh is made, deleted or replaced: /api/meshes/mark, for the page to ask cheaply."""
+    r = q("SELECT COUNT(*) AS n, MAX(created) AS t, COUNT(replaced_by) AS old FROM meshes", one=True)
+    return f"{r['n']}:{r['t'] or 0}:{r['old']}"
+
+
+def visitors_mesh_list() -> bytes:
+    """/api/meshes as anyone neither editing nor awaiting approval sees it, as JSON, made at most once in
+    MESH_LIST_TTL seconds and again as soon as meshes_mark() changes. Every page asks for it as it opens, and making it
+    took ~2 CPU-seconds of the server's 2 cores (Nov 2026), so 20 visitors arriving together waited up to a minute.
+    Those asking while it's made wait for that one rather than making their own. What only shows in it (a rating, a
+    mesh hidden or linked) reaches visitors within MESH_LIST_TTL."""
+    global _mesh_list_kept
+    with _mesh_list_lock:
+        mark, kept = meshes_mark(), _mesh_list_kept
+        if kept and kept[0] == mark and time.time() - kept[1] < MESH_LIST_TTL:
+            return kept[2]
+        body = json.dumps(mesh_list(False, None, unapproved_meshes()), default=str).encode()
+        _mesh_list_kept = (mark, time.time(), body)
+        return body
+
+
 def unapproved_meshes() -> dict[str, str]:
     """Meshes made from what accounts added that isn't approved: {mesh: the account}. Shown to that account and to whoever may approve."""
     return {r["mesh_id"]: r["user_id"] for r in q("SELECT mesh_id, user_id FROM projects WHERE user_id IS NOT NULL AND COALESCE(approved, 0)<>1 AND mesh_id IS NOT NULL")}
+
+
+SITE_HEALTH_HOUR = 16      # UTC: the day's summary is sent then, 8 in the morning in California (9 in summer)
+SITE_HEALTH_SENT = DATA / "site-health-sent"     # the UTC day it was last sent, so a restart doesn't send it twice
+
+
+def site_health_loop() -> None:
+    """A thread: once a day at SITE_HEALTH_HOUR, tell the admin's phone (notify.site_health) how the site went for
+    visitors over the last day (sitehealth.py): meshes slow to load or given up on, views that moved badly, errors in
+    their browsers, slow requests. Nothing is sent for a day with none of those nor any views."""
+    while True:
+        now = time.time()
+        due = (int(now // 86400) * 86400) + SITE_HEALTH_HOUR * 3600
+        time.sleep(max(60.0, (due if due > now else due + 86400) - now))
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        try:
+            if not settings().get("notify.site_health") or SITE_HEALTH_SENT.exists() and SITE_HEALTH_SENT.read_text().strip() == day:
+                continue
+            got = sitehealth_mod.for_data(DATA)
+            SITE_HEALTH_SENT.write_text(day)
+            if got:
+                title, text, look = got
+                NOTIFIER.send(title, text, priority=3 if look else 2, tags=["bar_chart"])
+        except Exception as e:
+            print(f"error: the day's summary: {type(e).__name__}: {e}", flush=True)
 
 
 def contribution_pump() -> None:
@@ -10065,7 +10198,7 @@ def admin_machine_diagnostics(body: dict) -> dict:
 CLIENT_ERRORS = DATA / "client-errors.jsonl"   # one report a line; the one before it, client-errors.jsonl.1, once it's full
 CLIENT_ERRORS_BYTES = 2 * 2**20                # how big the file gets before that
 CLIENT_REPORT_MAX = 8192                       # the largest report taken
-CLIENT_REPORTS = {"overlap": (30, 600), "error": (20, 600), "view": (120, 600), "rating": (120, 3600), "feedback": (5, 3600)}  # at most this many of each from one address in this many seconds
+CLIENT_REPORTS = {"overlap": (30, 600), "error": (20, 600), "view": (300, 600), "rating": (120, 3600), "feedback": (5, 3600)}  # at most this many of each from one address in this many seconds
 MESH_VIEWS = DATA / "mesh-views.jsonl"       # each mesh shown in a visitor's browser, and how it was asked for
 _client_reports: dict[tuple[str, str], list[float]] = {}
 _client_lock = threading.Lock()
@@ -10089,17 +10222,36 @@ def _client_allowed(kind: str, sender: str) -> bool:
 def _client_report(kind: str, sender: str, path: Path, line: dict) -> bool:
     """Append a report from a visitor's browser to path, unless that address has sent too many of its kind lately
     (CLIENT_REPORTS), starting a new file once it's over CLIENT_ERRORS_BYTES, the old one kept as <name>.1."""
-    now = time.time()
     with _client_lock:
         if not _client_allowed(kind, sender):
             return False
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists() and path.stat().st_size > CLIENT_ERRORS_BYTES:
-            path.replace(path.with_name(path.name + ".1"))
-        with open(path, "a") as f:
-            f.write(json.dumps({"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), "version": VERSION,
-                                **{k: v for k, v in line.items() if v is not None}}) + "\n")
+        _append_report(path, line)
     return True
+
+
+def _append_report(path: Path, line: dict) -> None:
+    """Append a line to a report file (JSON a line), with the time and this version, starting a new file once it's over
+    CLIENT_ERRORS_BYTES, the old one kept as <name>.1. Call with _client_lock held."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size > CLIENT_ERRORS_BYTES:
+        path.replace(path.with_name(path.name + ".1"))
+    with open(path, "a") as f:
+        f.write(json.dumps({"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "version": VERSION,
+                            **{k: v for k, v in line.items() if v is not None}}) + "\n")
+
+
+SLOW_REQUESTS = DATA / "slow-requests.jsonl"   # the site's requests from anyone not editing that took SLOW_SECONDS or more
+SLOW_SECONDS = float(os.environ.get("SLOW_REQUEST_SECONDS") or sitehealth_mod.SLOW_REQUEST)
+SLOW_LEFT_OUT = ("/meshes/", "/projects/")     # files, which take as long as they're big; uploads (over a MB) too
+
+
+def note_slow_request(method: str, path: str, seconds: float, code: int | None) -> None:
+    """Keep a request the site took SLOW_SECONDS or more over, in SLOW_REQUESTS and the log, for the daily summary
+    (sitehealth.py): how long, from asking to the last of its answer sent. Not who, nor what it asked beyond the path."""
+    route = re.sub(r"/[0-9a-f]{8,}(?=/|$)", "/<id>", path)[:200]
+    with _client_lock:
+        _append_report(SLOW_REQUESTS, {"method": method, "path": route, "seconds": round(seconds, 2), "code": code})
+    print(f"slow: {method} {route} took {seconds:.1f} s", flush=True)
 
 
 def record_client_error(report: dict, sender: str, user_agent: str, editor: bool) -> bool:
@@ -10108,7 +10260,8 @@ def record_client_error(report: dict, sender: str, user_agent: str, editor: bool
     sent too many lately."""
     text = lambda k, n: str(report.get(k) or "")[:n] or None  # noqa: E731
     line = {"kind": text("kind", 40), "message": text("message", 1000), "mesh": text("mesh", 40), "file": text("file", 200),
-            "page": text("page", 300), "source": text("source", 300), "browser": user_agent[:300] or None, "editor": editor}
+            "page": text("page", 300), "source": text("source", 300), "gpu": text("gpu", 120), "browser": user_agent[:300] or None,
+            "editor": editor}
     if not _client_report("error", sender, CLIENT_ERRORS, line):
         return False
     print(f"browser error ({line['kind']}){' in mesh ' + line['mesh'] if line['mesh'] else ''}: {(line['message'] or '')[:200]}", flush=True)
@@ -10202,10 +10355,21 @@ def record_feedback(report: dict, sender: str, user_agent: str, editor: bool) ->
     return True
 
 
+VIEW_EVENTS = ("shown", "left", "frames")
+
+
 def record_mesh_view(report: dict, sender: str, editor: bool) -> bool | None:
-    """Keep that a visitor's browser showed a mesh, in MESH_VIEWS and the log: which, how it was asked for (via: random, link,
-    climb, meshes, map, area, project, beta), how long it took to load, and its note if it had one. Requests for the
-    files don't say, as browsers and Cloudflare keep copies. Not who, nor their browser.
+    """Keep what a visitor's browser said of a mesh, in MESH_VIEWS and the log. Its event:
+
+    - shown (the default): which, how it was asked for (via: random, link, climb, meshes, map, area, project, beta), how
+      long it took to load (seconds), its note if it had one, and for a page's first, how long since the page opened
+      (page_seconds) and how long the meshes list took (list_seconds).
+    - left: given up on while loading (left: "page", gone from the page or its tab hidden; "other", another asked for),
+      after seconds.
+    - frames: how smoothly it moved while turned, over n frames: the median and 95th percentile milliseconds a frame,
+      and how many took over 100 ms (slow); with the browser's graphics (gpu), memory (GB) and cores, roughly.
+
+    Requests for the files don't say, as browsers and Cloudflare keep copies. Not who, nor their browser.
 
     Returns:
         None if there's no such mesh; False if that address has sent too many lately.
@@ -10214,16 +10378,33 @@ def record_mesh_view(report: dict, sender: str, editor: bool) -> bool | None:
     m = q("SELECT name FROM meshes WHERE id=?", mid, one=True) if re.fullmatch(r"[0-9a-f]{6,32}", mid) else None
     if not m:
         return None
-    try:
-        seconds = round(float(report.get("seconds")), 1)
-    except (TypeError, ValueError):
-        seconds = None
+
+    def num(k, places=1, src=report):
+        try:
+            x = float(src.get(k))
+            return (round(x, places) if places else round(x)) if math.isfinite(x) and 0 <= x < 1e7 else None
+        except (TypeError, ValueError):
+            return None
+    event = report.get("event") if report.get("event") in VIEW_EVENTS else "shown"
+    seconds = num("seconds")
     via = str(report.get("via") or "")[:20] or None
-    line = {"mesh": mid, "name": m["name"], "via": via, "seconds": seconds, "note": str(report.get("note") or "")[:300] or None,
+    line = {"mesh": mid, "name": m["name"], "event": event if event != "shown" else None, "via": via, "seconds": seconds,
             "editor": editor}
+    if event == "shown":
+        line.update(note=str(report.get("note") or "")[:300] or None, page_seconds=num("page_seconds"),
+                    list_seconds=num("list_seconds"))
+    elif event == "left":
+        line["left"] = report.get("left") if report.get("left") in ("page", "other") else None
+    else:
+        f = report.get("frames") if isinstance(report.get("frames"), dict) else {}
+        line.update(frames={k: num(k, 0, f) for k in ("n", "median_ms", "p95_ms", "slow")}, gpu=str(report.get("gpu") or "")[:120] or None,
+                    memory_gb=num("memory_gb"), cores=num("cores", 0))
     if not _client_report("view", sender, MESH_VIEWS, line):
         return False
-    print(f"viewed mesh {mid} ({m['name']}){' from ' + via if via else ''}" + (f" in {seconds} s" if seconds is not None else ""), flush=True)
+    if event == "shown":
+        print(f"viewed mesh {mid} ({m['name']}){' from ' + via if via else ''}" + (f" in {seconds} s" if seconds is not None else ""), flush=True)
+    elif event == "left":
+        print(f"left mesh {mid} ({m['name']}) loading after {seconds} s ({line['left'] or '?'})", flush=True)
     return True
 
 
@@ -10871,6 +11052,33 @@ class Handler(BaseHTTPRequestHandler):
         body = self.read_body()
         return json.loads(body or b"{}")
 
+    # -- timing, and what changes visitors' copy of the meshes list --------
+    def parse_request(self):
+        self.began, self.code = time.monotonic(), None     # from the request line read, not from waiting for it
+        return super().parse_request()
+
+    def send_response(self, code, message=None):
+        self.code = code
+        super().send_response(code, message)
+
+    def handle_one_request(self):
+        """One request, then: a change by anyone but a visitor reporting (client_report(), feedback, a rating) makes
+        visitors' /api/meshes again on its next asking, and one that took SLOW_SECONDS or more for anyone not editing
+        is noted (note_slow_request())."""
+        self.began = None
+        super().handle_one_request()
+        if self.began is None:
+            return
+        took, path = time.monotonic() - self.began, urlparse(self.path).path
+        if self.command in ("POST", "PATCH", "DELETE", "PUT") and not REPORT_PATH.fullmatch(path):
+            forget_mesh_list()
+        try:
+            if took >= SLOW_SECONDS and not path.startswith(SLOW_LEFT_OUT) and \
+                    int(self.headers.get("Content-Length") or 0) <= 2**20 and not self.is_editor():
+                note_slow_request(self.command, path, took, self.code)
+        except Exception as e:   # noting it shouldn't touch the connection
+            print(f"error: noting a slow request: {type(e).__name__}: {e}", flush=True)
+
     def log_message(self, fmt, *args):  # quieter
         # str(): send_error() logs its code first, and a TypeError there dropped the connection without an answer
         if not any(x in str(args[0] if args else "") for x in ("/api/projects", "/api/campaigns")):
@@ -11043,76 +11251,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_file(PROJECTS / m[1] / folder / m[3])
             # ---- meshes
             if p == "/api/meshes/mark":     # cheap to ask often: changes when /api/meshes would (a mesh made, gone, replaced)
-                r = q("SELECT COUNT(*) AS n, MAX(created) AS t, COUNT(replaced_by) AS old FROM meshes", one=True)
-                return self.send_json({"mark": f"{r['n']}:{r['t'] or 0}:{r['old']}"})
+                return self.send_json({"mark": meshes_mark()})
             if p == "/api/meshes":
-                rows = q("SELECT * FROM meshes ORDER BY created DESC")
-                if not self.is_editor():    # hidden as failures (hide_mesh()): only editors see them, tagged so
-                    rows = [r for r in rows if not r["hidden"]]
-                waiting = unapproved_meshes()       # made from what an account added, not yet approved: its account's and the owner's to see
-                if waiting:
-                    me = self.who()
-                    rows = [r for r in rows if r["id"] not in waiting or (me and (me["role"] == "owner" or waiting[r["id"]] == me["id"]))]
-                    for r in rows:
-                        if r["id"] in waiting:
-                            r["awaits_approval"] = True
-                links = q("SELECT l.mesh_id, l.note, c.id, c.name, c.grade, c.url, c.area_path FROM mesh_links l JOIN climbs c ON c.id=l.climb_id")
-                by, leaves = {}, {}
-                for l in links:     # shared: an area linked it as on the same boulder as the climb the mesh was made for
-                    shared = (l["note"] or "").startswith(SHARED)
-                    by.setdefault(l["mesh_id"], []).append({"id": l["id"], "name": l["name"], "grade": l["grade"], "url": l["url"],
-                                                            "shared": shared})
-                    if not shared:
-                        leaves.setdefault(l["mesh_id"], set()).add(l["area_path"])
-                urls = {}
-                on = {}
-                for c in q("SELECT c.id, c.name, c.grade, c.area_path FROM climbs c WHERE c.area_path IN "
-                           "(SELECT boulder FROM meshes WHERE boulder IS NOT NULL) ORDER BY c.name"):
-                    on.setdefault(c.pop("area_path"), []).append(c)
-                kinds = boulder_kinds()
-                for key in {r["boulder"] for r in rows if is_pool(r["boulder"])}:     # a pool's: its climbs
-                    on[key] = [{k: c[k] for k in ("id", "name", "grade")} for c in boulder_climbs(key)]
-                areas, rated = mesh_areas(), mesh_ratings()
-                pooled_views = {r["id"]: viewpoints.load(MESHES / r["id"]) or {} for r in rows if r["boulder"]}
-                homes = boulder_homes([r for r in rows if not r.get("replaced_by")], pooled_views)
-                least = settings().get("boulders.placed_percent")
-                for r in rows:
-                    r["climbs"] = by.get(r["id"], [])
-                    r["rating"] = rated.get(r["id"])
-                    r["old"] = mesh_is_old(r)
-                    if r["boulder"]:    # a pooled mesh (a boulder's, or a pool's): its climbs, and where each is seen from
-                        views = pooled_views[r["id"]]
-                        r["boulder_climbs"] = [{**c, "view": (views.get("climbs") or {}).get(c["id"]),
-                                                "own": (views.get("unplaced") or {}).get(c["id"], 0)} for c in on.get(r["boulder"], [])]
-                        r["pooled"] = pooled_summary(r["boulder"], r["boulder_climbs"], kinds, r["id"], homes, least)
-                    # the Mountain Project page of the lowest area a mesh of several climbs is on: a pooled mesh's, or
-                    # that of the climbs linked to one, when they're all on one
-                    leaf = (pool_leaf(r["boulder"]) if r["boulder"] else
-                            next(iter(leaves[r["id"]])) if sum(not c["shared"] for c in r["climbs"]) > 1 and len(leaves[r["id"]]) == 1 else None)
-                    r["boulder_url"] = leaf_url(leaf, urls) if leaf else None
-                    mesh_files_fields(r)
-                    r["areas"], r["area_path"] = areas(r)
-                # the names in its climbs' and its boulder's links, for Share, and how many current meshes its boulder has
-                # (boulder_mesh_sets(): its own, what that left out, its climbs' own), for the viewer's Meshes button
-                try:    # links failing shouldn't empty the list
-                    cnames, bnames = link_names()
-                    sets = boulder_mesh_sets(rows, kinds)
-                    leaf_of = {mid: leaf for leaf, ids in sets.items() for mid in ids}
-                    current = {r["id"] for r in rows if not r.get("replaced_by")}
-                    old = {r["id"] for r in rows if r["old"] or r.get("old_data")}     # either kind: left out for visitors
-                    if any(c["id"] not in cnames for r in rows for c in r["climbs"]) or \
-                            any(leaf not in bnames for leaf, ids in sets.items() if current.intersection(ids)):
-                        cnames, bnames = link_names(force=True)     # one added since the last naming
-                    for r in rows:
-                        for c in r["climbs"] + r.get("boulder_climbs", []):
-                            c["slug"] = cnames.get(c["id"])
-                        leaf = leaf_of.get(r["id"])
-                        r["boulder_link"] = {"slug": bnames[leaf], "name": boulder_name(leaf),
-                                             "meshes": sum(mid in current for mid in sets[leaf]),
-                                             "old": sum(mid in current and mid in old for mid in sets[leaf])} if leaf in bnames else None
-                except Exception as e:
-                    print(f"error: meshes' links: {type(e).__name__}: {e}", flush=True)
-                return self.send_json(rows)
+                editor, me = self.is_editor(), self.who()
+                waiting = unapproved_meshes()
+                if editor or (me and (me["role"] == "owner" or me["id"] in waiting.values())):
+                    return self.send_json(mesh_list(editor, me, waiting))    # theirs alone: made afresh
+                return self.send_bytes(visitors_mesh_list(), "application/json", "no-cache")
             if p == "/api/capture/meshes":   # for the phone apps: the meshes a capture can add to
                 return self.send_json(capture_meshes())
             if p == "/api/capture/fresh":   # for the phone apps: whether the meshes they keep changed, or were rebuilt (?ids=a,b,…)
@@ -13055,6 +13200,7 @@ def main() -> None:
         print(f"{plural(again, 'job')} people asked for, still waiting when the server stopped, queued again", flush=True)
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=contribution_pump, daemon=True).start()
+    threading.Thread(target=site_health_loop, daemon=True).start()
     threading.Thread(target=scenery_worker, daemon=True).start()
     threading.Thread(target=reap_machines, daemon=True).start()
     threading.Thread(target=clean_existing_meshes, daemon=True).start()
