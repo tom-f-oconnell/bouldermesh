@@ -3623,10 +3623,11 @@ function projectState(p){
   return { label: `${base}; ${what} to come`, cls: 'queued', tip: `Still to do: ${left.join('; ')}` };
 }
 async function refreshProjects(){
-  // three bands: what's going on (running, harvesting, queued, or a machine at work for it); then low priority (remaking
-  // an old mesh); then the rest (meshed, stopped, failed...). Within each, worked on first, then waiting, then in order
+  // three bands, as the Areas tab's: what's going on (running, harvesting, queued, or a machine at work for it); then what's
+  // going on at low priority (a low-priority area's, or remaking an old mesh); then the rest (meshed, stopped, failed...),
+  // whatever its priority. Within each, worked on first, then waiting, then in order
   const going = p => ['running', 'harvesting', 'queued'].includes(p.status) || (p.work || []).length > 0;
-  const rank = p => (p.low_priority ? 3 : going(p) ? 0 : 6) + ((['running', 'harvesting'].includes(p.status) || (p.work || []).some(w => w.state === 'running')) ? 0
+  const rank = p => (!going(p) ? 6 : p.low_priority ? 3 : 0) + ((['running', 'harvesting'].includes(p.status) || (p.work || []).some(w => w.state === 'running')) ? 0
     : (p.status === 'queued' || (p.work || []).length) ? 1 : 2);
   const list = (await api('/api/projects')).map((p, i) => {
     // a job kept from before a restart isn't work under way: shown apart (workTag()), and not counted as being worked on
