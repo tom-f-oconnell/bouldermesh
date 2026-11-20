@@ -298,6 +298,17 @@ def with_token(tmp: Path) -> None:
         assert theirs()[mid] == "a test" and theirs() == theirs()
         assert req(B, "POST", f"/api/meshes/{mid}/hide", {"why": None}, headers=AUTH)[0] == 200
         assert mid in mine() and theirs()[mid] is None
+        # the labelling page: open to load, its data and labels only for editors
+        st, h, page = req(B, "GET", "/label")
+        assert st == 200 and "Is it rock?" in (page if isinstance(page, str) else page.decode()), (st, h)
+        assert req(B, "GET", "/api/labels")[0] == 403
+        assert req(B, "POST", f"/api/meshes/{mid}/label", {"label": "rock"})[0] in (401, 403)
+        assert req(B, "POST", f"/api/meshes/{mid}/label", {"label": "a rock"}, headers=AUTH)[0] == 400
+        assert req(B, "POST", f"/api/meshes/{mid}/label", {"label": "card"}, headers=AUTH)[2] == {"id": mid, "label": "card"}
+        listed = req(B, "GET", "/api/labels", headers=AUTH)[2]
+        assert listed["labels"][0] == "rock" and next(m for m in listed["meshes"] if m["id"] == mid)["label"] == "card", listed
+        assert req(B, "POST", f"/api/meshes/{mid}/label", {"label": None}, headers=AUTH)[0] == 200
+        assert next(m for m in req(B, "GET", "/api/labels", headers=AUTH)[2]["meshes"] if m["id"] == mid)["label"] is None
         # a visitor's rating and comment: from anyone, as reports are; one each per browser, wherever from, replaced as changed
         rate = lambda body, ip="198.51.100.30", **h: req(B, "POST", f"/api/meshes/{mid}/rating", body, headers={"X-Real-IP": ip, **h})  # noqa: E731
         st, _, r = rate({"browser": "a" * 32, "rating": 1, "comment": "holes all over"})

@@ -1452,6 +1452,8 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     GET  /api/videos                                    every video, with the climber's size if stated
     POST /api/meshes/{id}/make-current                  go back to an older version of a rebuilt mesh
     POST /api/meshes/{id}/hide {why}                    hide it from visitors as a failure, its area climbs failed ({why: null}: show it)
+    POST /api/meshes/{id}/label {label}                 what an editor says it is: rock, card, landscape, ground, indoor or other (null: forget)
+    GET  /api/labels                                    editors: every current mesh, its label and shape measures, for /label
     GET|POST /api/meshes/{id}/beta                      the holds found in its videos, and those marked; POST finds them
     POST /api/meshes/{id}/holds {holds: [{p, role}]}    the holds marked by hand, roles start, hand, finish or foot
     GET /api/account                                    who this token is, the terms as they stand, the limits

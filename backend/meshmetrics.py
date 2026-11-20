@@ -134,13 +134,16 @@ def compute(mesh_dir: Path) -> dict:
 
 
 FLAT_BELOW = 0.025      # a mesh thinner than this share of its width is a photo on a card, not a rock (thickness())
+# a mesh whose points stray less than this share of its width from a gently curved surface is a photo on a bent card
+# (sheet_spread()): on Nov 19, 2026, the 12 meshes hidden as flat cards and Knuckleball Boulder (a slightly curved one,
+# 0.044 thick by thickness()) were all under 0.0085, and Lud Foe and Trailside Tango, photos of a boulder with the sky
+# and trees round it, 0.008-0.0092; the flattest real rock face looked at was 0.02
+SHEET_BELOW = 0.01
+SHAPE_FILE, SHAPE_VERSION = "shape.json", 1     # shape()'s, kept beside the mesh
 
 
-def thickness(glb: Path) -> float | None:
-    """How thick a mesh is for its width: the spread of its vertices along their least direction over that along their
-    most (the singular values of their positions about their mean). A rock, even one face of it, has relief, over
-    0.04 in what was looked at on Nov 19, 2026; a placing whose cameras disagree (Swiss Cheese Boulder: one photo on a
-    card), or a photo of a painting or a print, makes a flat sheet, under 0.025. None if it can't be read."""
+def _points(glb: Path):
+    """A mesh's vertex positions (at most ~50k of them, evenly), as an array; None if it can't be read."""
     import numpy as np
 
     import meshclean
@@ -150,10 +153,85 @@ def thickness(glb: Path) -> float | None:
     except Exception:  # noqa: BLE001 - no measure, so no verdict
         return None
     pts = np.asarray(pts, float)
-    if len(pts) < 3:
+    return pts[::max(1, len(pts) // 50000)] if len(pts) >= 3 else None
+
+
+def thickness(glb: Path) -> float | None:
+    """How thick a mesh is for its width: the spread of its vertices along their least direction over that along their
+    most (the singular values of their positions about their mean). A rock, even one face of it, has relief, over
+    0.04 in what was looked at on Nov 19, 2026; a placing whose cameras disagree (Swiss Cheese Boulder: one photo on a
+    card), or a photo of a painting or a print, makes a flat sheet, under 0.025. None if it can't be read."""
+    import numpy as np
+    pts = _points(glb)
+    if pts is None:
         return None
-    s = np.linalg.svd(pts[::max(1, len(pts) // 50000)] - pts.mean(0), compute_uv=False)
+    s = np.linalg.svd(pts - pts.mean(0), compute_uv=False)
     return float(s[2] / s[0]) if s[0] > 0 else None
+
+
+def sheet_spread(glb: Path) -> float | None:
+    """How far a mesh strays from a gently curved sheet, for its width: a quadratic surface fitted to its vertices over
+    their two widest directions, and the 90th percentile of their distances from it over the 95th of their reach along
+    the widest. thickness() measures against a flat plane, so a photo on a slightly bent card (Knuckleball Boulder)
+    passes it; this doesn't (SHEET_BELOW). None if it can't be read."""
+    import numpy as np
+    pts = _points(glb)
+    if pts is None or len(pts) < 50:
+        return None
+    c = pts - pts.mean(0)
+    _, _, vt = np.linalg.svd(c, full_matrices=False)
+    x, y, d = c @ vt[0], c @ vt[1], c @ vt[2]
+    reach = float(np.percentile(np.abs(x), 95))
+    if reach <= 0:
+        return None
+    a = np.c_[x * x, y * y, x * y, x, y, np.ones_like(x)]
+    coef, *_ = np.linalg.lstsq(a, d, rcond=None)
+    return float(np.percentile(np.abs(d - a @ coef), 90) / reach)
+
+
+def sky_share(mesh_dir: Path) -> float | None:
+    """The share of a mesh's texture, where it's painted, that's sky blue: photos on cards often keep the sky round the
+    rock, which a real rock's mesh rarely shows. A hint only: many real rocks have some. None without a texture."""
+    import numpy as np
+    from PIL import Image
+    tex = sorted(mesh_dir.glob("scene_dense_mesh_texture*.png")) or sorted(mesh_dir.glob("*texture*.jpg"))
+    if not tex:
+        return None
+    try:
+        with Image.open(tex[0]) as im:
+            im = im.convert("RGB")
+            im.thumbnail((512, 512))
+            px = np.asarray(im).astype(int).reshape(-1, 3)
+    except Exception:  # noqa: BLE001
+        return None
+    px = px[px.sum(1) > 30]     # what's painted, not the atlas's empty black
+    if len(px) < 100:
+        return None
+    r, g, b = px.T
+    return round(float(((b > r + 25) & (b > g + 5) & (b > 110)).mean()), 4)
+
+
+def shape(mesh_dir: Path, compute: bool = True) -> dict | None:
+    """A mesh's shape measures, for telling rock from what isn't (the labelling page, and a classifier to come):
+    {flat: thickness(), sheet: sheet_spread(), sky: sky_share()}, kept in SHAPE_FILE while its mesh.glb is unchanged.
+    With compute False, only what's kept (None if nothing is, or it's stale)."""
+    glb = mesh_dir / "mesh.glb"
+    if not glb.exists():
+        return None
+    stamp = [SHAPE_VERSION, glb.stat().st_mtime]
+    kept = _read(mesh_dir / SHAPE_FILE)
+    if kept and kept.get("stamp") == stamp:
+        return kept["shape"]
+    if not compute:
+        return None
+    flat, sheet = thickness(glb), sheet_spread(glb)
+    out = {"flat": round(flat, 4) if flat is not None else None, "sheet": round(sheet, 4) if sheet is not None else None,
+           "sky": sky_share(mesh_dir)}
+    try:
+        (mesh_dir / SHAPE_FILE).write_text(json.dumps({"stamp": stamp, "shape": out}))
+    except OSError:
+        pass
+    return out
 
 
 def load(mesh_dir: Path) -> dict:

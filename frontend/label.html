@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Label meshes · BoulderMesh</title>
+<style>
+  :root { --bg: #f6f5f2; --card: #fff; --fg: #222; --mute: #6b6b6b; --line: #ddd; --good: #1f8a3b; --bad: #c0392b; --focus: #2a6fdb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17181a; --card: #222427; --fg: #e8e8e8; --mute: #9a9a9a; --line: #3a3c40; --good: #4cc26b; --bad: #ef6b5e; --focus: #6fa3ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line); padding: 10px 16px; }
+  header h1 { font-size: 17px; margin: 0 0 4px; }
+  header p { margin: 0 0 6px; color: var(--mute); max-width: 70em; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 6px; padding: 3px 8px; cursor: pointer; }
+  button.on { border-color: var(--focus); outline: 1px solid var(--focus); }
+  main { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; padding: 12px 16px 40px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .card.focus { outline: 2px solid var(--focus); }
+  .card img { display: block; width: 100%; aspect-ratio: 1200 / 630; object-fit: cover; background: #888; }
+  .body { padding: 6px 8px 8px; }
+  .name a { color: inherit; font-weight: 600; }
+  .meta { color: var(--mute); font-size: 12px; }
+  .labels { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .labels button { font-size: 12px; padding: 2px 6px; }
+  .labels button.picked { font-weight: 700; }
+  .labels button.picked.rock { color: var(--good); border-color: var(--good); }
+  .labels button.picked.junk { color: var(--bad); border-color: var(--bad); }
+  .labels button.picked.other { border-color: var(--fg); }
+  .low { color: var(--bad); }
+  #msg { color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Is it rock?</h1>
+  <p>Label each mesh, to check the checks for junk and train a classifier on. Click a card (or use ← →), then press
+    1 rock, 2 card (a photo on a flat or bent sheet), 3 landscape, 4 ground, 5 indoor, 6 other, 0 to clear; the next card
+    is chosen. The flattest come first. <span class="low">Red</span> measures are under what the checks fail.</p>
+  <div class="row" id="filters"></div>
+  <div id="msg"></div>
+</header>
+<main id="grid"></main>
+<script>
+const KEYS = { 1: 'rock', 2: 'card', 3: 'landscape', 4: 'ground', 5: 'indoor', 6: 'other' };
+let token = null, data = null, show = 'unlabelled', focus = 0;
+try { token = localStorage.getItem('bm_token'); } catch {}
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+async function api(url, opt = {}) {
+  opt.headers = { ...(opt.headers || {}), ...(token ? { Authorization: 'Bearer ' + token } : {}) };
+  if (opt.json) { opt.body = JSON.stringify(opt.json); opt.headers['Content-Type'] = 'application/json'; opt.method ||= 'POST'; }
+  const r = await fetch(url, opt), j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+const kind = l => l === 'rock' ? 'rock' : l === 'other' ? 'other' : 'junk';
+const shown = () => data.meshes.filter(m => show === 'all' || (show === 'unlabelled' ? !m.label : m.label === show));
+function filters() {
+  const n = l => data.meshes.filter(m => l === 'all' ? true : l === 'unlabelled' ? !m.label : m.label === l).length;
+  $('#filters').innerHTML = ['unlabelled', 'all', ...data.labels].map(l =>
+    `<button data-show="${l}" class="${show === l ? 'on' : ''}">${l} (${n(l)})</button>`).join('');
+}
+function $(s) { return document.querySelector(s); }
+function measure(v, below, label) {
+  if (v == null) return '';
+  return `<span class="${below != null && v < below ? 'low' : ''}">${label} ${v}</span>`;
+}
+function draw() {
+  filters();
+  const list = shown();
+  focus = Math.min(focus, Math.max(0, list.length - 1));
+  $('#grid').innerHTML = list.map((m, i) => {
+    const s = m.shape || {};
+    return `<div class="card${i === focus ? ' focus' : ''}" data-i="${i}" data-id="${m.id}">
+      <img loading="lazy" alt="" src="/meshes/${m.id}/thumb.jpg">
+      <div class="body"><div class="name"><a href="/m/${m.id}" target="_blank" rel="noopener">${esc(m.name)}</a></div>
+      <div class="meta">${m.shape ? [measure(s.sheet, data.sheet_below, 'sheet'), measure(s.flat, data.flat_below, 'flat'),
+        s.sky != null ? `sky ${s.sky}` : ''].filter(Boolean).join(' · ') : 'not measured yet'}${m.hidden ? ` · hidden: ${esc(m.hidden)}` : ''}</div>
+      <div class="labels">${data.labels.map((l, k) => `<button data-label="${l}" class="${m.label === l ? 'picked ' + kind(l) : ''}">${k + 1} ${l}</button>`).join('')}</div></div></div>`;
+  }).join('') || '<p style="padding:16px">Nothing here.</p>';
+}
+async function label(m, l) {
+  try { await api(`/api/meshes/${m.id}/label`, { json: { label: l } }); m.label = l; $('#msg').textContent = ''; }
+  catch (e) { $('#msg').textContent = e.message; }
+}
+function moveFocus(i) {
+  const cards = [...document.querySelectorAll('.card')];
+  if (!cards.length) return;
+  focus = Math.max(0, Math.min(cards.length - 1, i));
+  cards.forEach((c, k) => c.classList.toggle('focus', k === focus));
+  cards[focus].scrollIntoView({ block: 'nearest' });
+}
+document.addEventListener('click', async ev => {
+  const f = ev.target.closest('[data-show]');
+  if (f) { show = f.dataset.show; focus = 0; return draw(); }
+  const card = ev.target.closest('.card');
+  if (!card) return;
+  const m = shown()[+card.dataset.i], b = ev.target.closest('[data-label]');
+  if (b) { await label(m, m.label === b.dataset.label ? null : b.dataset.label); const keep = focus; draw(); moveFocus(show === 'all' ? keep + 1 : keep); }
+  else if (!ev.target.closest('a')) moveFocus(+card.dataset.i);
+});
+document.addEventListener('keydown', async ev => {
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  if (ev.key === 'ArrowRight') return moveFocus(focus + 1);
+  if (ev.key === 'ArrowLeft') return moveFocus(focus - 1);
+  const m = shown()[focus];
+  if (!m || !(ev.key in KEYS || ev.key === '0')) return;
+  await label(m, ev.key === '0' ? null : KEYS[ev.key]);
+  const keep = focus; draw(); moveFocus(show === 'all' ? keep + 1 : keep);
+});
+api('/api/labels').then(d => { data = d; draw(); }).catch(e => {
+  $('#msg').textContent = `${e.message}. Open the site in this browser signed in as an editor first, then come back.`;
+});
+</script>
+</body>
+</html>

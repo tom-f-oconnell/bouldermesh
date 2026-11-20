@@ -361,6 +361,9 @@ def init_db() -> None:
         con.execute("CREATE TABLE IF NOT EXISTS job_runs(id INTEGER PRIMARY KEY, kind TEXT, project_id TEXT, mesh_id TEXT, "
                     "name TEXT, queued REAL, started REAL, ended REAL, outcome TEXT)")
         con.execute("CREATE INDEX IF NOT EXISTS job_runs_started ON job_runs(started)")
+        # what an editor says each mesh is (MESH_LABELS: rock, or the kind of junk), on the labelling page (/label), to
+        # check and train a classifier of what isn't rock on
+        con.execute("CREATE TABLE IF NOT EXISTS mesh_labels(mesh_id TEXT PRIMARY KEY, label TEXT, at REAL)")
         # what's queued to be done again (an area's climb queued again, or a project with something already finished
         # retried or remade), and when it finished, by triggers, so that the Areas tab can show how far each area's work
         # done again has got (again_progress()): kind "item" (id: the climb's source_id in campaign_id) or "project"
@@ -4287,14 +4290,15 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         # on machines that connect here, the job outlasts a restart, and is taken up again under the same rules and inputs
         same = {"same": {"rules": MESH_RULES, "fingerprint": inputs_fingerprint(inputs)}} if remote and _executor is MACHINES else {}
         mesh_path, demo = build(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker, **same)
-        flat = meshmetrics.thickness(mesh_path)
-        if flat is not None and flat < meshmetrics.FLAT_BELOW:     # a photo on a card: a failure, kept aside to look at
-            aside = pdir / "flat-mesh"
+        flat, sheet = meshmetrics.thickness(mesh_path), meshmetrics.sheet_spread(mesh_path)
+        if flat is not None and flat < meshmetrics.FLAT_BELOW or sheet is not None and sheet < meshmetrics.SHEET_BELOW:
+            aside = pdir / "flat-mesh"      # a photo on a card, flat or bent: a failure, kept aside to look at
             shutil.rmtree(aside, ignore_errors=True)
             (MESHES / mid).rename(aside)
-            raise RuntimeError(f"its mesh is flat ({flat:.3f} as thick as it's wide, under {meshmetrics.FLAT_BELOW}): a photo on a "
-                               "card, not a rock, as when its photos are placed so that none agree, or are of a picture; "
-                               f"kept in its project's {aside.name}/, not as a mesh")
+            how = (f"{flat:.3f} as thick as it's wide, under {meshmetrics.FLAT_BELOW}" if flat is not None and flat < meshmetrics.FLAT_BELOW
+                   else f"within {sheet:.4f} of its width of a gently curved sheet, under {meshmetrics.SHEET_BELOW}")
+            raise RuntimeError(f"its mesh is flat ({how}): a photo on a card, not a rock, as when its photos are placed so "
+                               f"that none agree, or are of a picture; kept in its project's {aside.name}/, not as a mesh")
         proj = q("SELECT name, climb_id, mesh_id, kind, boulder FROM projects WHERE id=?", pid, one=True)
         q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng,boulder,rules) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
           mid, mesh_name(proj["name"]), mesh_path.name, f"project:{pid}", time.time(), mesh_path.stat().st_size, int(demo),
@@ -10037,6 +10041,47 @@ def meshes_mark() -> str:
     return f"{r['n']}:{r['t'] or 0}:{r['old']}"
 
 
+MESH_LABELS = ("rock", "card", "landscape", "ground", "indoor", "other")     # the labelling page's, rock first
+
+
+def label_mesh(mid: str, label: str | None) -> tuple[dict, int]:
+    """Record what an editor says a mesh is (MESH_LABELS), or forget it (None). Returns the response and its status."""
+    if not q("SELECT 1 FROM meshes WHERE id=?", mid, one=True):
+        return {"error": "not found"}, 404
+    if label is None:
+        q("DELETE FROM mesh_labels WHERE mesh_id=?", mid, write=True)
+    elif label in MESH_LABELS:
+        q("INSERT INTO mesh_labels(mesh_id, label, at) VALUES(?,?,?) ON CONFLICT(mesh_id) DO UPDATE SET label=excluded.label, "
+          "at=excluded.at", mid, label, time.time(), write=True)
+    else:
+        return {"error": f"label must be one of {', '.join(MESH_LABELS)}"}, 400
+    return {"id": mid, "label": label}, 200
+
+
+def labels_view() -> dict:
+    """The labelling page's: every current mesh but demos, with its label and its shape measures where worked out
+    (meshmetrics.shape(); shape_existing_meshes() works them out), the flattest by sheet_spread() first, as the likeliest
+    junk, then those not measured yet."""
+    labels = {r["mesh_id"]: r["label"] for r in q("SELECT mesh_id, label FROM mesh_labels")}
+    out = []
+    for r in q("SELECT id, name, created, hidden FROM meshes WHERE replaced_by IS NULL AND COALESCE(demo, 0)=0"):
+        out.append({**r, "label": labels.get(r["id"]), "shape": meshmetrics.shape(MESHES / r["id"], compute=False)})
+    out.sort(key=lambda m: (m["shape"] is None or m["shape"].get("sheet") is None, (m["shape"] or {}).get("sheet") or 0))
+    return {"labels": MESH_LABELS, "meshes": out, "sheet_below": meshmetrics.SHEET_BELOW, "flat_below": meshmetrics.FLAT_BELOW}
+
+
+def shape_existing_meshes() -> None:
+    """At startup: each current mesh's shape measures (meshmetrics.shape()), worked out once and kept beside it, for the
+    labelling page, at the lowest CPU priority. A mesh made since is measured as the page asks, or at the next start."""
+    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    for r in q("SELECT id FROM meshes WHERE replaced_by IS NULL AND COALESCE(demo, 0)=0 ORDER BY created DESC"):
+        try:
+            meshmetrics.shape(MESHES / r["id"])
+        except Exception as e:  # noqa: BLE001 - only the measures are lost
+            print(f"shape of {r['id']}: {type(e).__name__}: {e}", flush=True)
+        time.sleep(0.2)
+
+
 def kept_mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> bytes:
     """/api/meshes as an editor, or an account with meshes awaiting approval, sees it (mesh_list()), as JSON: kept for
     each such (editing or not, and who) as visitors' is (visitors_mesh_list()), and forgotten after any change
@@ -11361,6 +11406,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if p in ("/", "/index.html"):
                 return self.send_page()
+            if p == "/label":   # the labelling page: its data only for editors (/api/labels)
+                return self.send_file(FRONTEND / "label.html")
+            if p == "/api/labels":
+                if not self.is_editor():
+                    return self.send_json({"error": "only editors label meshes"}, 403)
+                return self.send_json(labels_view())
             m = re.fullmatch(r"/static/(app\.[0-9a-f]{16}\.(?:js|css))", p)
             if m:
                 return self.send_asset(m[1])
@@ -12294,6 +12345,10 @@ class Handler(BaseHTTPRequestHandler):
             if m:   # {on: false} to take the choice back: of a capture's mesh and the one it adds to, which its climbs show first
                 on = self.read_json().get("on", True) is not False
                 return self.send_json({"preferred": on} if prefer_mesh(m[1], on) else {"error": "not found"}, 200 if q("SELECT 1 FROM meshes WHERE id=?", m[1], one=True) else 404)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/label", p)
+            if m:   # {label}: what an editor says it is (MESH_LABELS), or {label: null} to forget it
+                label = self.read_json().get("label")
+                return self.send_json(*label_mesh(m[1], str(label) if label is not None else None))
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/hide", p)
             if m:   # {why}: hidden from visitors as a failure, its climbs failed; {why: null} shows it again
                 why = self.read_json().get("why", "hidden by an editor")
@@ -13512,6 +13567,7 @@ def main() -> None:
     threading.Thread(target=adopt_old_pools, daemon=True).start()
     threading.Thread(target=rest_existing_meshes, daemon=True).start()
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
+    threading.Thread(target=shape_existing_meshes, daemon=True).start()
     threading.Thread(target=inputs_existing_meshes, daemon=True, name="inputs-backfill").start()
     threading.Thread(target=backfill_step_runs, daemon=True).start()
     carried = carry_sets_existing()
