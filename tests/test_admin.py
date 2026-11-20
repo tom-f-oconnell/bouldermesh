@@ -137,7 +137,7 @@ with tempfile.TemporaryDirectory() as td:
             return e.code, e.read()
 
     st, page = call("/")
-    assert st == 200 and b"BoulderMesh admin" in page
+    assert st == 200 and b"boulderme.sh admin" in page
     st, icon = call("/static/favicon-admin.svg")      # the link the page has: this server serves its icon itself
     assert st == 200 and icon.startswith(b"<svg") and b'href="/static/favicon-admin.svg"' in page
     st, body = call("/api/admin/settings", {"site.textures": "none"})

@@ -17,7 +17,7 @@ targets:
     info:
       path: Info.plist
       properties:
-        CFBundleDisplayName: BoulderMesh
+        CFBundleDisplayName: boulderme.sh
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"      # each TestFlight upload's its own (the workflow's run number)
         ITSAppUsesNonExemptEncryption: false     # only HTTPS: exempt, so App Store Connect doesn't ask with each build

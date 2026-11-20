@@ -152,7 +152,7 @@ def with_token(tmp: Path) -> None:
         assert st == 404 and h["Cache-Control"] == "no-store", "an older page's, gone after a restart: kept by no one"
         st, h, gz = req(B, "GET", "/", headers={"Accept-Encoding": "gzip, br"})
         assert h["Content-Encoding"] == "gzip" and gzip.decompress(gz) == page and h["Cache-Control"] == "no-cache, no-transform", h
-        assert b'<meta property="og:title" content="BoulderMesh">' in page and b'href="https://rocks.example/"' in page, "its preview"
+        assert b'<meta property="og:title" content="boulderme.sh">' in page and b'href="https://rocks.example/"' in page, "its preview"
         assert f"connect-src 'self' data: blob: http://localhost:{srv.admin_port}" in csp, \
             "buffers embedded in a mesh load as data: URLs; the Admin button may look for the admin page"
         st, h, s = req(B, "GET", "/api/status")
@@ -502,7 +502,7 @@ def links_site(tmp: Path) -> None:
         # each link's page: its title and preview; another spelling redirects; one that's no one's is a 404
         st, h, page = req(B, "GET", "/c/the-mandala")
         assert st == 200 and b'<meta property="og:title" content="The Mandala V12">' in page and \
-            b'<link rel="canonical" href="https://rocks.example/c/the-mandala">' in page and b"<title>The Mandala V12 \xc2\xb7 BoulderMesh</title>" in page, page[:1500]
+            b'<link rel="canonical" href="https://rocks.example/c/the-mandala">' in page and b"<title>The Mandala V12 \xc2\xb7 boulderme.sh</title>" in page, page[:1500]
         assert h["Cache-Control"] == "no-cache, no-transform" and "Content-Security-Policy" in h, h
         out = raw_request(port, f"GET /c/The-Mandala HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
         assert out.startswith(b"HTTP/1.0 301") and b"Location: /c/the-mandala\r\n" in out, out[:300]

@@ -14,6 +14,9 @@ phone yet**: see [What's been checked](#whats-been-checked).
    changed on the server says so, with *Update*; one rebuilt there offers *Get the newer mesh*, which takes the old one's
    place (the old one stays while a capture still to be sent was taken to add to it).
 2. **Before a capture**, *Calibrate* the compass: half a minute of turning the phone every which way, away from metal.
+   The first outdoor capture asks whether to, while it hasn't been. Each capture starts with how its kind goes (outdoor,
+   adding to a mesh, hold closeups, gym), until *Don't show again* for that kind; *Settings* shows each, and *Show tips
+   again* brings them, and the compass question, back.
 3. **At the rock**, press *Capture* on its mesh. It first asks for **one slow turn all the way round on the spot**, with
    the phone held as for a photo, steadily and at the same angle to you all the way round (it needn't be upright): that's how
    it finds which way is down (below). Then a small model of the
@@ -34,15 +37,16 @@ phone yet**: see [What's been checked](#whats-been-checked).
    Missed the scenery or the panorama? While you're still at the rock and nothing is sent, *Add more* on the capture
    carries it on: the turn on the spot again (the panorama), line up again, then 8 or so photos of the rock before
    *Scenery*, as they place this visit's frames on the mesh.
-6. **Once it's meshed**, *View mesh* on its capture shows it in the site's own viewer (`/m/<id>?app=android` or `ios`: the view alone,
-   with only the settings that apply to it at its top right, and a bug report form over it). Home asks the server how each
-   upload stands whenever it comes up and there's a connection (*Check if meshed* asks again); press a capture for what it holds, grouped by
-   what each photo was for (each climb, the card, tying to the old photos, the scenery), with what's been sent ticked.
-   *View* on a downloaded mesh shows it the same way. With no signal, the viewer shows the copy kept on the phone (as
+6. **Once it's meshed**, get it from *Get meshes…*, then *View* shows it in the site's own viewer (`/m/<id>?app=android`
+   or `ios`: the view alone, with only the settings that apply to it at its top right, and a bug report form over it).
+   *Your captures* on Home, folded away until pressed, lists the captures on the phone (with their size) and the
+   account's on the server. Home asks the server how each upload stands whenever it comes up and there's a connection
+   (*Check if meshed* asks again); press a capture for what it holds, grouped by what each photo was for (each climb,
+   the card, tying to the old photos, the scenery), with what's been sent ticked, and *View its mesh*. With no signal, the viewer shows the copy kept on the phone (as
    a wireframe if it was kept without textures); an upload's mesh can be kept too (*Keep for viewing with no signal*,
    on its screen).
 7. **Captures no longer on the phone** (deleted, sent from another phone, or lost when the app was uninstalled) are
-   listed under *Your captures on the server*, with how each stands and *View mesh*, once the phone is signed in to
+   listed under *Your captures on the server*, with how each stands, once the phone is signed in to
    your account. Uninstalling deletes the captures on the phone: on Android 10 and later, tick *Keep app data* in the
    uninstall prompt to keep them. Updating keeps them.
 
@@ -52,10 +56,10 @@ The app asks nothing of the server by itself with no connection, and never check
 comes up or a button is pressed (and, on Android, a look for a newer build at most every 10 minutes it's opened).
 A mesh being got shows a bar of how much of it has come.
 
-A rock with no mesh: *Capture a new rock…*, tap its middle, and walk round as much of it as you can; *Can't reach that
+A rock with no mesh: *Outdoor capture…* (under *From scratch*), tap its middle, and walk round as much of it as you can; *Can't reach that
 side* for the rest, and *Mark a hold* for anything that needs close-ups.
 
-A gym climb: *Capture a gym climb…*, then tap one of its holds. The others of its colour are found in each photo as
+A gym climb: *Gym capture…*, then tap one of its holds. The others of its colour are found in each photo as
 you take them, ringed in that colour, and asked for close up (from the ground: one too high asks only for what a phone
 held up can do). *Not part of it*, then a ring, leaves out another climb's hold of the same colour; *Add a … hold* adds
 one it missed; *Colour: narrower* / *wider* change how near a colour has to be. Once meshed, its holds are a set of beta

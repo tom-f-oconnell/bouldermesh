@@ -21,6 +21,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -89,25 +90,36 @@ internal fun Page(title: String, back: (() -> Unit)? = null, actions: (@Composab
     }
 }
 
-/** How a capture goes, step by step (CaptureGuide), with `ok` as its button. */
+/**
+ * How a kind of capture goes, step by step (CaptureGuide), with `ok` as its button. As a capture starts (`starting`),
+ * with "Don't show again" at the bottom: go() is told whether it was ticked.
+ */
 @Composable
-internal fun GuideDialog(ok: String, dismiss: () -> Unit, go: () -> Unit) {
-    AlertDialog(onDismissRequest = dismiss, title = { Text(CaptureGuide.TITLE) },
+internal fun GuideDialog(kind: CaptureGuide.Kind, ok: String, starting: Boolean, dismiss: () -> Unit, go: (Boolean) -> Unit) {
+    var hide by remember { mutableStateOf(false) }
+    AlertDialog(onDismissRequest = dismiss, title = { Text(CaptureGuide.title(kind)) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                for ((head, body) in CaptureGuide.STEPS) Column {
+                for ((head, body) in CaptureGuide.steps(kind)) Column {
                     Text(head, fontWeight = FontWeight.SemiBold)
                     Text(body, style = MaterialTheme.typography.bodyMedium)
                 }
+                if (starting) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(hide, { hide = it })
+                    Text("Don't show again", Modifier.weight(1f))
+                }
             }
         },
-        confirmButton = { TextButton(onClick = go) { Text(ok) } },
-        dismissButton = { if (ok != "OK") TextButton(onClick = dismiss) { Text("Cancel") } })
+        confirmButton = { TextButton(onClick = { go(hide) }) { Text(ok) } },
+        dismissButton = { if (starting) TextButton(onClick = dismiss) { Text("Cancel") } })
 }
 
 @Composable
 internal fun Section(text: String) = Text(text.uppercase(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
     modifier = Modifier.padding(top = 10.dp))
+
+/** Said of a meshed capture, as the app shows meshes only once got from Get meshes. */
+private const val VIEW_HINT = "To view its mesh, get it from Get meshes… above"
 
 private fun summary(p: Plan): String {
     val holds = p.targets.count { it.isHold }
@@ -136,11 +148,20 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
         wanted = null
     }
     var guiding by remember { mutableStateOf<Screen.Capture?>(null) }
+    var compass by remember { mutableStateOf<Screen.Capture?>(null) }
+    var showCaptures by remember { mutableStateOf(false) }
     val begin: (Screen.Capture) -> Unit = { c ->
         if (a.has(Manifest.permission.CAMERA) && a.has(Manifest.permission.ACCESS_FINE_LOCATION)) go(c)
         else { wanted = c; ask.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
     }
-    val start: (Screen.Capture) -> Unit = { c -> if (a.store.guideSeen) begin(c) else guiding = c }     // the first capture: how it goes, first
+    // how its kind of capture goes, first, unless that was said not to be shown again
+    val guide: (Screen.Capture) -> Unit = { c ->
+        if (CaptureGuide.kind(c.mesh, c.set, c.gym).key in CaptureGuide.hidden(a.store.guidesHidden)) begin(c) else guiding = c
+    }
+    // the first outdoor capture, while the compass hasn't been calibrated: whether to do that first
+    val start: (Screen.Capture) -> Unit = { c ->
+        if (!c.gym && !a.store.compassAsked && a.store.magNote.isEmpty()) compass = c else guide(c)
+    }
     LaunchedEffect(sending) { tick++ }
     val update by Updates.state.collectAsState()
     val statuses by Statuses.state.collectAsState()
@@ -154,7 +175,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
     val updating by MeshUpdates.busy.collectAsState()
     val updateFailed by MeshUpdates.error.collectAsState()
 
-    Page("BoulderMesh", actions = {
+    Page("boulderme.sh", actions = {
         OutlinedButton(onClick = { go(Screen.Calibrate) }) { Text("Calibrate") }
         OutlinedButton(onClick = { go(Screen.Settings) }, contentPadding = PaddingValues(horizontal = 10.dp),
             modifier = Modifier.semantics { contentDescription = "Settings" }) { Text("⚙\uFE0E", fontSize = 24.sp, lineHeight = 24.sp) }
@@ -204,9 +225,9 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
         updateFailed?.let { Text(it, color = BAD, style = MaterialTheme.typography.bodySmall) }
         OutlinedButton(onClick = { go(Screen.Browse()) }, modifier = Modifier.fillMaxWidth()) { Text("Get meshes…") }
 
-        Section("A rock with no mesh")
-        OutlinedButton(onClick = { gym = false; naming = true }, modifier = Modifier.fillMaxWidth()) { Text("Capture a new rock…") }
-        OutlinedButton(onClick = { gym = true; naming = true }, modifier = Modifier.fillMaxWidth()) { Text("Capture a gym climb…") }
+        Section("From scratch")
+        OutlinedButton(onClick = { gym = false; naming = true }, modifier = Modifier.fillMaxWidth()) { Text("Outdoor capture…") }
+        OutlinedButton(onClick = { gym = true; naming = true }, modifier = Modifier.fillMaxWidth()) { Text("Gym capture…") }
 
         val check = @Composable {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -218,46 +239,61 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
             checkFailed?.let { Text(it, color = WARN, style = MaterialTheme.typography.bodySmall) }
         }
         val checkHere = captures.any { it.second.meshAsked || it.second.done }
-        if (captures.isNotEmpty()) Section("Captures on this phone")
-        if (checkHere) check()
-        for ((id, u) in captures) Card(onClick = { go(Screen.Upload(id)) }, modifier = Modifier.fillMaxWidth()) {     // pressed: what's in it
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("${u.name}  ›", fontWeight = FontWeight.SemiBold)
-                val server = u.project?.let { statuses[it] }
-                val (status, color) = uploadSaid(u, sending[id]?.takeIf { Uploader.busy(id) }, server)
-                Text(status, style = MaterialTheme.typography.bodySmall, color = color)
-                if (server?.area?.ask == true) Text("Which area is it in? Open it to say", style = MaterialTheme.typography.bodySmall, color = WAIT)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (!u.done) Button(enabled = !Uploader.busy(id), onClick = { Uploader.start(a.store, a.api, id) }) { Text(if (u.sent.isEmpty()) "Upload" else "Carry on") }
-                    server?.meshed?.let { mesh ->
-                        Button(onClick = { go(Screen.Viewer(mesh, u.name)) }) { Text("View mesh") }
+        // what's been captured, on the phone and on the server: folded away until pressed
+        val sizes = remember(tick) { captures.associate { (id, _) -> id to a.store.captureDir(id).walkTopDown().filter { it.isFile }.sumOf { it.length() } } }
+        if (captures.isNotEmpty() || sent.isNotEmpty()) TextButton(onClick = { showCaptures = !showCaptures }, contentPadding = PaddingValues(0.dp)) {
+            Text((if (showCaptures) "▾ " else "▸ ") + "Your captures (${captures.size + sent.size})".uppercase(), style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (showCaptures) {
+            if (captures.isNotEmpty()) Section("Captures on this phone")
+            if (checkHere) check()
+            for ((id, u) in captures) Card(onClick = { go(Screen.Upload(id)) }, modifier = Modifier.fillMaxWidth()) {     // pressed: what's in it
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("${u.name}  ›", fontWeight = FontWeight.SemiBold)
+                    val server = u.project?.let { statuses[it] }
+                    val (status, color) = uploadSaid(u, sending[id]?.takeIf { Uploader.busy(id) }, server)
+                    Text("%.1f MB · ".format((sizes[id] ?: 0L) / 1e6) + status, style = MaterialTheme.typography.bodySmall, color = color)
+                    if (server?.area?.ask == true) Text("Which area is it in? Open it to say", style = MaterialTheme.typography.bodySmall, color = WAIT)
+                    if (server?.meshed != null) Text(VIEW_HINT, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (!u.done) Button(enabled = !Uploader.busy(id), onClick = { Uploader.start(a.store, a.api, id) }) { Text(if (u.sent.isEmpty()) "Upload" else "Carry on") }
+                        TextButton(enabled = !Uploader.busy(id), onClick = { removing = id }) { Text("Delete") }
                     }
-                    TextButton(enabled = !Uploader.busy(id), onClick = { removing = id }) { Text("Delete") }
                 }
             }
-        }
 
-        // the account's captures on the server that aren't on the phone: after the app was uninstalled, or sent from another
-        if (sent.isNotEmpty()) {
-            Section("Your captures on the server")
-            Text("Not on this phone (sent from another, or before the app was reinstalled): their photos are kept on the server.",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (!checkHere) check()
-        }
-        for (x in sent) Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(x.title, fontWeight = FontWeight.SemiBold)
-                val server = statuses[x.id] ?: UploadStatus(x.status, x.mesh, approved = true)
-                val (status, tone) = server.said()
-                val day = if (x.created > 0) android.text.format.DateUtils.formatDateTime(a, (x.created * 1000).toLong(), android.text.format.DateUtils.FORMAT_SHOW_DATE) + " · " else ""
-                Text("$day${x.photos} photo${if (x.photos == 1) "" else "s"} · $status", style = MaterialTheme.typography.bodySmall, color = toneColor(tone))
-                server.meshed?.let { mesh ->
-                    Button(onClick = { go(Screen.Viewer(mesh, x.title)) }) { Text("View mesh") }
+            // the account's captures on the server that aren't on the phone: after the app was uninstalled, or sent from another
+            if (sent.isNotEmpty()) {
+                Section("Your captures on the server")
+                Text("Not on this phone (sent from another, or before the app was reinstalled): their photos are kept on the server.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (!checkHere) check()
+            }
+            for (x in sent) Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(x.title, fontWeight = FontWeight.SemiBold)
+                    val server = statuses[x.id] ?: UploadStatus(x.status, x.mesh, approved = true)
+                    val (status, tone) = server.said()
+                    val day = if (x.created > 0) android.text.format.DateUtils.formatDateTime(a, (x.created * 1000).toLong(), android.text.format.DateUtils.FORMAT_SHOW_DATE) + " · " else ""
+                    Text("$day${x.photos} photo${if (x.photos == 1) "" else "s"} · $status", style = MaterialTheme.typography.bodySmall, color = toneColor(tone))
+                    if (server.meshed != null) Text(VIEW_HINT, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
     }
-    guiding?.let { c -> GuideDialog("Start", dismiss = { guiding = null }) { guiding = null; a.store.guideSeen = true; begin(c) } }
+    guiding?.let { c ->
+        GuideDialog(CaptureGuide.kind(c.mesh, c.set, c.gym), "Start", starting = true, dismiss = { guiding = null }) { hide ->
+            guiding = null
+            if (hide) a.store.guidesHidden = CaptureGuide.hide(a.store.guidesHidden, CaptureGuide.kind(c.mesh, c.set, c.gym))
+            begin(c)
+        }
+    }
+    compass?.let { c ->
+        AlertDialog(onDismissRequest = { compass = null }, title = { Text(CaptureGuide.COMPASS_TITLE) }, text = { Text(CaptureGuide.COMPASS_TEXT) },
+            confirmButton = { TextButton(onClick = { compass = null; a.store.compassAsked = true; go(Screen.Calibrate) }) { Text("Calibrate first") } },
+            dismissButton = { TextButton(onClick = { compass = null; a.store.compassAsked = true; guide(c) }) { Text("Not now") } })
+    }
 
     if (naming) {
         var name by remember { mutableStateOf("") }
@@ -457,12 +493,13 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
     var said by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
     var other by remember { mutableStateOf<Pair<String?, String>?>(null) }     // a code for another device, and what to do with it
     var advanced by remember { mutableStateOf(false) }
-    var guide by remember { mutableStateOf(false) }
+    var guide by remember { mutableStateOf<CaptureGuide.Kind?>(null) }
+    var hidden by remember { mutableStateOf(a.store.guidesHidden) }
     val update by Updates.state.collectAsState()
     val scope = rememberCoroutineScope()
     Page("Settings", back = { go(Screen.Home) }) {
         Section("This app")
-        Text("BoulderMesh ${BuildInfo.VERSION}, build ${BuildInfo.BUILD}, commit ${BuildInfo.COMMIT}")
+        Text("boulderme.sh ${BuildInfo.VERSION}, build ${BuildInfo.BUILD}, commit ${BuildInfo.COMMIT}")
         val newer = update.newer
         when {
             newer != null -> {
@@ -477,8 +514,17 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
             update.checked != null -> Text("This is the newest build.", color = GOOD)
         }
         if (newer == null) OutlinedButton(enabled = !update.looking, onClick = { Updates.look() }) { Text("Check for updates") }
-        Section("Capturing")
-        OutlinedButton(onClick = { guide = true }) { Text(CaptureGuide.TITLE) }
+        Section(CaptureGuide.TITLE)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (k in CaptureGuide.Kind.entries.take(2)) OutlinedButton(onClick = { guide = k }) { Text(k.title) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (k in CaptureGuide.Kind.entries.drop(2)) OutlinedButton(onClick = { guide = k }) { Text(k.title) }
+        }
+        OutlinedButton(onClick = { a.store.guidesHidden = ""; a.store.compassAsked = false; hidden = "" }) { Text("Show tips again") }
+        Text(if (hidden.isEmpty() && !a.store.compassAsked) "Each capture starts with how its kind goes, until you tick Don't show again there." else
+            "Each kind of capture you ticked Don't show again for starts with how it goes again, and the compass is asked about again.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Section("Sounds while capturing")
         TextButton(onClick = { dingKept = !dingKept; a.store.dingKept = dingKept }) { Text(if (dingKept) "A bell when a photo is kept: on" else "A bell when a photo is kept: off") }
         TextButton(onClick = { tickSame = !tickSame; a.store.tickSame = tickSame }) {
@@ -549,7 +595,7 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
-    if (guide) GuideDialog("OK", dismiss = { guide = false }) { guide = false }
+    guide?.let { k -> GuideDialog(k, "OK", starting = false, dismiss = { guide = null }) { guide = null } }
 }
 
 // ---------------------------------------------------------------------------------------------------------- calibrate
@@ -573,9 +619,6 @@ fun CalibrateScreen(a: MainActivity, go: (Screen) -> Unit) {
     LaunchedEffect(Unit) { while (true) { fixes = a.sensors.place.count; delay(1000) } }
 
     Page("Calibrate", back = { go(Screen.Home) }) {
-        Section("Which way is down")
-        Text("Nothing to do here: each capture starts by asking for one slow turn on the spot, which finds it to a fraction of a degree whatever this phone's sensors are off by.")
-
         Section("Compass · half a minute")
         Text("Away from cars, bolts and crash pads' buckles: turn the phone every which way, a slow figure of 8 that also rolls it over, until the bar fills.")
         val m = mag
@@ -606,6 +649,9 @@ fun CalibrateScreen(a: MainActivity, go: (Screen) -> Unit) {
         Text(if (!a.has(Manifest.permission.ACCESS_FINE_LOCATION)) "Location isn't allowed for this app yet: starting a capture asks for it."
             else if (place == null) "No fix yet. Under open sky it takes up to a minute."
             else "$fixes fixes so far, good to about %.1f m together. Nothing to do: a capture averages its fixes, and each photo carries its own.".format(place.accM))
+
+        Section("Which way is down")
+        Text("Nothing to do here: each capture starts by asking for one slow turn on the spot, which finds it to a fraction of a degree whatever this phone's sensors are off by.")
     }
 }
 

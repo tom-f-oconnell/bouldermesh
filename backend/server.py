@@ -10132,6 +10132,7 @@ def page_csp() -> str | None:
 
 
 ASSET_CACHE = "public, max-age=31536000, immutable"     # files named by what's in them never change
+SITE_NAME = "boulderme.sh"     # the site's name, in its pages' titles
 SITE_TEXT = "Boulders in 3D, made from photos and videos of their climbs."
 _page: dict = {"mtime": None}
 
@@ -10171,8 +10172,8 @@ def page_head(title: str, text: str, path: str | None, found: bool = True, mid: 
     image = [f'<meta property="og:image" content="{e(src)}">',
              f'<meta property="og:image:width" content="{thumbs_mod.SIZE[0]}">', f'<meta property="og:image:height" content="{thumbs_mod.SIZE[1]}">',
              f'<meta property="og:image:alt" content="{e(title)} in 3D">'] if pic else []
-    return "\n".join([f"<title>{e(title if title == 'BoulderMesh' else title + ' · BoulderMesh')}</title>",
-                      f'<meta name="description" content="{e(text)}">', '<meta property="og:site_name" content="BoulderMesh">',
+    return "\n".join([f"<title>{e(title if title == SITE_NAME else title + ' · ' + SITE_NAME)}</title>",
+                      f'<meta name="description" content="{e(text)}">', f'<meta property="og:site_name" content="{SITE_NAME}">',
                       '<meta property="og:type" content="website">', f'<meta property="og:title" content="{e(title)}">',
                       f'<meta property="og:description" content="{e(text)}">', *image,
                       f'<meta name="twitter:card" content="{"summary_large_image" if image else "summary"}">',
@@ -10249,7 +10250,7 @@ class Handler(BaseHTTPRequestHandler):
     def send_page(self, head: str | None = None, status: int = 200) -> None:
         """The page (page_parts()), with head (page_head()) for its title and preview: compressed here, as its
         no-transform keeps Caddy and Cloudflare from doing it, and checked again on each visit by its ETag."""
-        body = page_parts()["html"].replace("<title>BoulderMesh</title>", head or page_head("BoulderMesh", SITE_TEXT, "/"), 1).encode()
+        body = page_parts()["html"].replace(f"<title>{SITE_NAME}</title>", head or page_head(SITE_NAME, SITE_TEXT, "/"), 1).encode()
         tag, csp = f'"{hashlib.sha256(body).hexdigest()[:24]}"', page_csp()
         headers = {"Cache-Control": "no-cache, no-transform", "ETag": tag, "Vary": "Accept-Encoding",
                    **({"Content-Security-Policy": csp} if csp else {})}

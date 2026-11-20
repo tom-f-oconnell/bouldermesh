@@ -43,5 +43,8 @@ object Files {
         is Number -> n.toLong()
         else -> 0L
     }
+    /** The bytes of every file in a folder and those in it. */
+    fun treeSize(path: String): Long = (manager.subpathsOfDirectoryAtPath(path, error = null) ?: emptyList<Any?>())
+        .mapNotNull { it as? String }.filter { !it.endsWith("/") }.sumOf { size("$path/$it") }
     fun modified(path: String): Double = (manager.attributesOfItemAtPath(path, error = null)?.get(NSFileModificationDate) as? NSDate)?.timeIntervalSince1970 ?: 0.0
 }

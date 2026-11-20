@@ -33,9 +33,12 @@ class IosStore {
     var signInAsked: Boolean    // the first-opening prompt to sign in (Home's) was left once: not shown again
         get() = prefs.boolForKey("sign_in_asked")
         set(v) = prefs.setBool(v, forKey = "sign_in_asked")
-    var guideSeen: Boolean  // how a capture goes (CaptureGuide) was shown before this phone's first capture: not again
-        get() = prefs.boolForKey("guide_seen")
-        set(v) = prefs.setBool(v, forKey = "guide_seen")
+    var guidesHidden: String    // the kinds of capture whose guide (CaptureGuide) isn't shown as one starts: "Don't show again"
+        get() = prefs.stringForKey("guides_hidden") ?: ""
+        set(v) = prefs.setObject(v, forKey = "guides_hidden")
+    var compassAsked: Boolean   // whether to calibrate the compass was asked before an outdoor capture: not again
+        get() = prefs.boolForKey("compass_asked")
+        set(v) = prefs.setBool(v, forKey = "compass_asked")
     var anonFirst: Boolean  // holds others marked privately are asked for from the start of a capture, not at its end
         get() = prefs.boolForKey("anon_first")
         set(v) = prefs.setBool(v, forKey = "anon_first")

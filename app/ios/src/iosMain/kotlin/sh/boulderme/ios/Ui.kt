@@ -89,11 +89,23 @@ fun UIViewController.tell(title: String, message: String) {
     top.presentViewController(alert, animated = true, completion = null)
 }
 
-/** Asks a yes or no. */
-fun UIViewController.confirm(title: String, message: String, yes: String, no: String, danger: Boolean = false, then: () -> Unit) {
+/** Asks a yes or no: `then` on yes, `otherwise` (if any) on no. */
+fun UIViewController.confirm(title: String, message: String, yes: String, no: String, danger: Boolean = false, otherwise: (() -> Unit)? = null, then: () -> Unit) {
     val alert = UIAlertController.alertControllerWithTitle(title, message, UIAlertControllerStyleAlert)
-    alert.addAction(UIAlertAction.actionWithTitle(no, UIAlertActionStyleCancel, null))
+    alert.addAction(UIAlertAction.actionWithTitle(no, UIAlertActionStyleCancel, otherwise?.let { o -> { _: UIAlertAction? -> o() } }))
     alert.addAction(UIAlertAction.actionWithTitle(yes, if (danger) UIAlertActionStyleDestructive else UIAlertActionStyleDefault) { _ -> then() })
+    presentViewController(alert, animated = true, completion = null)
+}
+
+/**
+ * How a capture goes (CaptureGuide), as it starts: Start, Don't show again (which starts it too, and says so to
+ * `then`), or Cancel.
+ */
+fun UIViewController.guide(title: String, message: String, then: (hide: Boolean) -> Unit) {
+    val alert = UIAlertController.alertControllerWithTitle(title, message, UIAlertControllerStyleAlert)
+    alert.addAction(UIAlertAction.actionWithTitle("Start", UIAlertActionStyleDefault) { _ -> then(false) })
+    alert.addAction(UIAlertAction.actionWithTitle("Start, and don't show again", UIAlertActionStyleDefault) { _ -> then(true) })
+    alert.addAction(UIAlertAction.actionWithTitle("Cancel", UIAlertActionStyleCancel, null))
     presentViewController(alert, animated = true, completion = null)
 }
 

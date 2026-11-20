@@ -70,7 +70,10 @@ private fun ago(t: Double): String {
 }
 
 // --------------------------------------------------------------------------------------------------------------- home
-class Home(private val app: App) : Form("BoulderMesh") {
+/** Said of a meshed capture, as the app shows meshes only once got from Get meshes. */
+private const val VIEW_HINT = "To view its mesh, get it from Get meshes… above"
+
+class Home(private val app: App) : Form("boulderme.sh") {
     override fun appear() {
         app.uploader.onChange = { rebuild() }
         app.statuses.refresh { rebuild() }      // each time Home comes up: whether what was sent is meshed yet
@@ -88,10 +91,20 @@ class Home(private val app: App) : Form("BoulderMesh") {
         screen.navigationItem.rightBarButtonItem = UIBarButtonItem(customView = bar)
     }
 
-    /** Starts a capture; before the phone's first (`guide`), says how one goes. */
-    fun capture(mesh: String?, name: String, set: String? = null, guide: Boolean = true, gym: Boolean = false) {
-        if (guide && !app.store.guideSeen) return screen.confirm(CaptureGuide.TITLE, CaptureGuide.text(), "Start", "Cancel") {
-            app.store.guideSeen = true; capture(mesh, name, set, false, gym)
+    /**
+     * Starts a capture. Before the phone's first outdoor one, while the compass hasn't been calibrated, asks whether to
+     * do that first (`compass`); then says how its kind goes (`guide`), unless that was said not to be shown again.
+     */
+    fun capture(mesh: String?, name: String, set: String? = null, guide: Boolean = true, gym: Boolean = false, compass: Boolean = true) {
+        if (compass && !gym && !app.store.compassAsked && app.store.magNote.isEmpty()) {
+            app.store.compassAsked = true
+            return screen.confirm(CaptureGuide.COMPASS_TITLE, CaptureGuide.COMPASS_TEXT, "Calibrate first", "Not now", then = { push(Calibrate(app)) },
+                otherwise = { capture(mesh, name, set, guide, gym, compass = false) })
+        }
+        val kind = CaptureGuide.kind(mesh, set, gym)
+        if (guide && kind.key !in CaptureGuide.hidden(app.store.guidesHidden)) return screen.guide(CaptureGuide.title(kind), CaptureGuide.text(kind)) { hide ->
+            if (hide) app.store.guidesHidden = CaptureGuide.hide(app.store.guidesHidden, kind)
+            capture(mesh, name, set, false, gym, compass = false)
         }
         val c = CaptureController(app, mesh, name, set, gym = gym) { id -> if (id != null) push(Done(app, id)) }
         c.modalPresentationStyle = UIModalPresentationFullScreen
@@ -101,6 +114,7 @@ class Home(private val app: App) : Form("BoulderMesh") {
     private var code = ""
     private var said: Pair<String, Boolean>? = null
     private var signingIn = false
+    private var showCaptures = false
 
     /**
      * On first opening, while the phone isn't signed in: how to sign it in from where the account was joined
@@ -169,14 +183,19 @@ class Home(private val app: App) : Form("BoulderMesh") {
         app.meshUpdates.error?.let { text(it, BAD, small = true) }
         button("Get meshes…") { push(Browse(app)) }
 
-        section("A rock with no mesh")
-        button("Capture a new rock…") { screen.ask("What is it?", "The rock's or climb's name", "Start") { capture(null, it.take(60)) } }
+        section("From scratch")
+        button("Outdoor capture…") { screen.ask("What is it?", "The rock's or climb's name", "Start") { capture(null, it.take(60)) } }
         // a gym climb: one of its holds tapped, the rest of its colour found in the photos
-        button("Capture a gym climb…") { screen.ask("Which climb?", "The gym and climb, e.g. \"Yellow V3, the cave\"", "Start") { capture(null, it.take(60), gym = true) } }
+        button("Gym capture…") { screen.ask("Which climb?", "The gym and climb, e.g. \"Yellow V3, the cave\"", "Start") { capture(null, it.take(60), gym = true) } }
 
         val ids = app.store.captureIds()
-        if (ids.isNotEmpty()) section("Captures on this phone")
         val uploads = ids.mapNotNull { id -> app.store.upload(id)?.let { id to it } }
+        val sent = app.statuses.sent
+        // what's been captured, on the phone and on the server: folded away until pressed
+        if (uploads.isEmpty() && sent.isEmpty()) return
+        button((if (showCaptures) "▾ " else "▸ ") + "Your captures (${uploads.size + sent.size})", Look.PLAIN) { showCaptures = !showCaptures; rebuild() }
+        if (!showCaptures) return
+        if (uploads.isNotEmpty()) section("Captures on this phone")
         fun check() {
             val at = app.store.statusesAt
             row(makeButton(if (app.statuses.busy) "Checking…" else "Check if meshed", enabled = !app.statuses.busy) { app.statuses.refresh(pressed = true) { rebuild() }; rebuild() },
@@ -190,19 +209,19 @@ class Home(private val app: App) : Form("BoulderMesh") {
             button("${u.name}  ›", Look.PLAIN) { push(UploadForm(app, id)) }       // what's in it
             val server = u.project?.let { app.statuses.state[it] }
             val (status, color) = uploadSaid(u, app.uploader.state[id]?.takeIf { busy }, server)
-            text(status, color, small = true)
+            val mb = (Files.treeSize(app.store.captureDir(id)) / 100_000) / 10.0
+            text("$mb MB · $status", color, small = true)
             if (server?.area?.ask == true) text("Which area is it in? Open it to say", WAIT, small = true)
+            if (server?.meshed != null) text(VIEW_HINT, UIColor.secondaryLabelColor, small = true)
             val delete = makeButton("Delete", Look.PLAIN, !busy) {
                 screen.confirm("Delete this capture?", if (u.done) "Its photos are on the server; this takes them off the phone." else "Its ${u.photos} photos haven't all been sent, and can't be got back.",
                     "Delete", "Keep", danger = true) { app.store.deleteCapture(id); rebuild() }
             }
-            val view = server?.meshed?.let { mesh -> makeButton("View mesh", Look.FILLED) { push(ViewerController(app, mesh, u.name)) } }
             val send = if (u.done) null else makeButton(if (u.sent.isEmpty()) "Upload" else "Carry on", Look.FILLED, !busy) { app.uploader.start(id); rebuild() }
-            row(*listOfNotNull(send, view, delete).toTypedArray())
+            row(*listOfNotNull(send, delete).toTypedArray())
         }
 
         // the account's captures on the server that aren't on the phone: after the app was deleted, or sent from another
-        val sent = app.statuses.sent
         if (sent.isNotEmpty()) {
             section("Your captures on the server")
             text("Not on this phone (sent from another, or before the app was reinstalled): their photos are kept on the server.",
@@ -214,9 +233,7 @@ class Home(private val app: App) : Form("BoulderMesh") {
             val server = app.statuses.state[x.id] ?: UploadStatus(x.status, x.mesh, approved = true)
             val (status, tone) = server.said()
             text((if (x.created > 0) ago(x.created) + " · " else "") + "${x.photos} photo${if (x.photos == 1) "" else "s"} · $status", toneColor(tone), small = true)
-            server.meshed?.let { mesh ->
-                row(makeButton("View mesh", Look.FILLED) { push(ViewerController(app, mesh, x.title)) })
-            }
+            if (server.meshed != null) text(VIEW_HINT, UIColor.secondaryLabelColor, small = true)
         }
     }
 }
@@ -341,8 +358,9 @@ class Settings(private val app: App) : Form("Settings") {
         field("Server", app.store.server) { app.store.server = it.ifBlank { IosStore.DEFAULT_SERVER } }
         field("Credit my photos to", app.store.credit) { app.store.credit = it.take(80) }
         text("Photos you send are published under Creative Commons Attribution 4.0 (CC BY 4.0): the site and anyone else may use them, crediting this name.")
-        section("Capturing")
-        button(CaptureGuide.TITLE) { screen.tell(CaptureGuide.TITLE, CaptureGuide.text()) }
+        section(CaptureGuide.TITLE)
+        for (k in CaptureGuide.Kind.entries) button(k.title) { screen.tell(CaptureGuide.title(k), CaptureGuide.text(k)) }
+        button("Show tips again") { app.store.guidesHidden = ""; app.store.compassAsked = false; screen.tell("Tips", "Each kind of capture starts with how it goes again, and the compass is asked about again.") }
         section("Sounds while capturing")
         button(if (app.store.dingKept) "A bell when a photo is kept: on" else "A bell when a photo is kept: off", Look.PLAIN) { app.store.dingKept = !app.store.dingKept; rebuild() }
         button(if (app.store.tickSame) "Ticking while there's nothing new to photograph from where the phone is: on" else "Ticking while there's nothing new to photograph from where the phone is: off", Look.PLAIN) {
@@ -373,7 +391,7 @@ class Settings(private val app: App) : Form("Settings") {
             }
         }
         said?.let { text(it.first, if (it.second) GOOD else BAD) }
-        text("BoulderMesh ${IosStore.VERSION}", UIColor.secondaryLabelColor, small = true)
+        text("boulderme.sh ${IosStore.VERSION}", UIColor.secondaryLabelColor, small = true)
     }
 }
 
@@ -415,9 +433,6 @@ class Calibrate(private val app: App) : Form("Calibrate") {
     }
 
     override fun build() {
-        section("Which way is down")
-        text("Nothing to do here: each capture starts by asking for one slow turn on the spot, which finds it to a fraction of a degree whatever this phone's sensors are off by.")
-
         section("Compass · half a minute")
         text("Away from cars, bolts and crash pads' buckles: turn the phone every which way, a slow figure of 8 that also rolls it over, until the bar fills.")
         val c = mag
@@ -429,6 +444,9 @@ class Calibrate(private val app: App) : Form("Calibrate") {
         text(if (app.sensors.locationRefused) "Location isn't allowed for this app: allow it in Settings for photos to say where they were taken, and for a compass from true north."
             else if (place == null) "No fix yet. Under open sky it takes up to a minute."
             else "${app.sensors.place.count} fixes so far, good to about ${(place.accM * 10).toInt() / 10.0} m together. Nothing to do: a capture averages its fixes, and each photo carries its own.")
+
+        section("Which way is down")
+        text("Nothing to do here: each capture starts by asking for one slow turn on the spot, which finds it to a fraction of a degree whatever this phone's sensors are off by.")
     }
 }
 
