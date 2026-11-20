@@ -1175,12 +1175,12 @@ $('#vmap').onclick = () => {
 // was drawn last is kept in this browser (AREAS_KEPT) and drawn at once, until the lists come, which can take seconds.
 let amap = null, areaLayer = null, areaFitted = false, areaKey = '', meshesReady = false, campaignsCache = null;
 const AREAS_KEPT = 'bm_areas';
-const AREA_LOOKS = [      // [the states it covers, colour, what the legend says]: not red, green or orange, kept for bad, good and warnings
+const AREA_LOOKS = [      // [the states it covers, colour, what the legend says]: green only for done, and no red or orange (bad, warnings)
   [['running', 'stopping', 'jobs running'], '#3f6fe0', 'active'],
   [['queued', 'waiting', 'jobs waiting'], '#e0b84a', 'waiting its turn'],
   [['low priority'], '#9a5fe0', 'low priority: remaking old meshes'],
   [['stopped', 'data offloaded'], '#8a8f98', 'stopped'],
-  [['done', 'partial'], '#2aa9c9', 'done: nothing left to do'],
+  [['done', 'partial'], '#2e9e57', 'done: nothing left to do'],
 ];
 const areaState = st => AREA_LOOKS.find(x => x[0].includes(st)) || null;
 // An area whose own run is stopped or done, with its projects still being meshed or waiting to be (asked for on their
