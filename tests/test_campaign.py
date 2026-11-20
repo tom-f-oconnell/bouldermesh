@@ -4237,4 +4237,18 @@ assert server._queued_at.pop(id(job)) >= t0 and job == {"type": "nothing"}, "que
 with server.jobs.mutex:
     server.jobs.queue.clear()
 print("climbs' and jobs' start times OK")
+
+# the databases are in WAL mode, so a read held long doesn't make writes fail (Nov 19: four meshing jobs did)
+import sqlite3  # noqa: E402
+server.init_db()
+assert server.q("PRAGMA journal_mode", one=True)["journal_mode"] == "wal"
+reader = sqlite3.connect(f"file:{server.DATA / 'bouldermesh.sqlite'}?mode=ro", uri=True)
+held = reader.execute("SELECT id FROM projects")     # a read left open, as a slow script's
+held.fetchone()
+t0 = time.time()
+server.q("INSERT INTO mesh_labels(mesh_id, label, at) VALUES('wal-test', 'rock', 0)", write=True)
+server.q("DELETE FROM mesh_labels WHERE mesh_id='wal-test'", write=True)
+assert time.time() - t0 < 2, "a write doesn't wait for an open read"
+reader.close()
+print("WAL OK")
 print("ALL CAMPAIGN TESTS PASSED")

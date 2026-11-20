@@ -155,5 +155,9 @@ rsync -a --info=progress2 "$data/meshes/" "$dest:$remote/data/meshes/" || case $
     23|24) echo "warning: not every mesh file could be sent (see above); carrying on" ;;
     *) exit 1 ;;
 esac
-rsync -a "$snap" "$dest:$remote/data/bouldermesh.sqlite"
+# copied in by SQLite's backup API, not over the file: the database is in WAL mode (dbconn.use_wal()), and a write-ahead
+# log left beside a file copied over it would be read as the new file's
+rsync -a "$snap" "$dest:$remote/data/shipped.sqlite"
+ssh "$dest" "python3 -c 'import sqlite3, sys; sqlite3.connect(sys.argv[1]).backup(sqlite3.connect(sys.argv[2]))' \
+    '$remote/data/shipped.sqlite' '$remote/data/bouldermesh.sqlite'"
 echo "done. On $dest:  cd $remote && docker compose up -d"

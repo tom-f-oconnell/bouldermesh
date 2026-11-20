@@ -20,3 +20,15 @@ class Closing(sqlite3.Connection):
 def connect(path, **kw) -> sqlite3.Connection:
     """sqlite3.connect(), as a connection that closes as its with block ends."""
     return sqlite3.connect(path, factory=Closing, **kw)
+
+
+def use_wal(path) -> str | None:
+    """Put a database in write-ahead-log mode, which stays set in the file: readers then never block writers, nor writers
+    readers. In the rollback journal's mode (SQLite's default) a read held open for minutes, as an analysis script looping
+    over a table on Nov 19, 2026, made the server's writes fail with "database is locked", and four meshing jobs with
+    them. Returns the mode it's in, or None if it couldn't be changed now (another connection was busy)."""
+    try:
+        with connect(path, timeout=30) as con:
+            return con.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+    except sqlite3.OperationalError:
+        return None

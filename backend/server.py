@@ -188,7 +188,7 @@ def settings() -> settings_mod.Settings:
 
 
 def db() -> sqlite3.Connection:
-    con = dbconn.connect(DATA / "bouldermesh.sqlite", check_same_thread=False)    # closed as its with block ends
+    con = dbconn.connect(DATA / "bouldermesh.sqlite", check_same_thread=False, timeout=30)   # closed as its with block ends
     con.row_factory = sqlite3.Row
     return con
 
@@ -196,6 +196,9 @@ def db() -> sqlite3.Connection:
 def init_db() -> None:
     for d in (PROJECTS, MESHES):
         d.mkdir(parents=True, exist_ok=True)
+    for f in (DATA / "bouldermesh.sqlite", DATA / "volunteers.sqlite", DATA / "compute" / "machines.sqlite"):
+        if f.parent.is_dir() and dbconn.use_wal(f) != "wal":
+            print(f"warning: {f.name} isn't in WAL mode (busy): a read held long could make writes fail", flush=True)
     with db() as con:
         con.executescript("""
         CREATE TABLE IF NOT EXISTS projects(

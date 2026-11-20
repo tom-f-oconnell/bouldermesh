@@ -938,7 +938,8 @@ nothing connects from the server to the backup. One copy runs at a time.
 To restore onto a new server, put `current/data` in its checkout's `data/` and `current/.env` beside it, then copy a
 night's `db/<date>/bouldermesh.sqlite.backup` and `volunteers.sqlite.backup` into `data/`, and `machines.sqlite.backup`
 into `data/compute/`, each without its `.backup`, and `current/data/snapshots/relevance.sqlite.backup` (the filter's
-cache) into `data/cache/` as `relevance.sqlite`.
+cache) into `data/cache/` as `relevance.sqlite`. Delete any `-wal` and `-shm` files beside the ones replaced: the
+databases are in SQLite's write-ahead-log mode, and an old log would be read as the new file's.
 
 **Offloading to the backup.** Above 70% of the cap (*Room for data*'s *offload* %, `storage.offload_percent`; 0 never),
 the server deletes, down to that %, what the backup holds and nothing uses any more, oldest first in each kind and in this
