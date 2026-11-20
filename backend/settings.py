@@ -12,6 +12,7 @@ admin page only learns whether each is set.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -161,15 +162,30 @@ class Settings:
 
     def __init__(self, db_path: Path, data_dir: Path):
         self.db_path, self.data_dir = Path(db_path), Path(data_dir)
+        self._local = threading.local()
         with self._db() as con:
             con.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
 
     def _db(self):
         return dbconn.connect(self.db_path, timeout=30)
 
+    @contextlib.contextmanager
+    def snapshot(self):
+        """Within it, this thread's get() answers from one reading of them all: for work asking the same few settings
+        for each of hundreds of things (each get() otherwise opens the database: 1.4 of /api/meshes' 3 CPU-s, Nov 2026)."""
+        outer = getattr(self._local, "all", None)
+        self._local.all = outer if outer is not None else self.all()
+        try:
+            yield
+        finally:
+            self._local.all = outer
+
     def get(self, key: str):
         if key not in DEFAULTS:
             raise KeyError(key)
+        held = getattr(self._local, "all", None)
+        if held is not None:
+            return held[key]
         with self._db() as con:
             row = con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         return json.loads(row[0]) if row else DEFAULTS[key]

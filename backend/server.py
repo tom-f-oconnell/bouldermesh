@@ -500,10 +500,16 @@ def init_db() -> None:
                    if r["id"] in resumed else "-- the server restarted before this job started: it's queued again, as it was")
 
 
+BOULDERS_SQL = re.compile(r"\bboulders\b", re.I)    # a write to the boulders table: boulder_kinds() reads it again
+
+
 def q(sql: str, *args, one=False, write=False):
+    global _kinds_gen
     with _db_lock, db() as con:
         cur = con.execute(sql, args)
         if write:
+            if BOULDERS_SQL.search(sql):
+                _kinds_gen += 1
             return cur.lastrowid
         rows = [dict(r) for r in cur.fetchall()]
         return (rows[0] if rows else None) if one else rows
@@ -872,9 +878,21 @@ def leaf_kind(key: str | None, kinds: dict | None = None) -> str | None:
     return (kinds if kinds is not None else boulder_kinds()).get(key)
 
 
+_kinds_gen = 0      # writes to the boulders table (q()) so far
+_kinds_kept: tuple[int, dict] | None = None
+
+
 def boulder_kinds() -> dict[str, str]:
-    """What each lowest area read so far is (boulder_kind()): {key: "boulder" | "group" | "unknown"}."""
-    return {r["key"]: r["kind"] for r in q("SELECT key, kind FROM boulders WHERE kind IS NOT NULL")}
+    """What each lowest area read so far is (boulder_kind()): {key: "boulder" | "group" | "unknown"}. Kept until the
+    boulders table is next written: read again for each lowest area, it was most of the time the Areas tab and the
+    meshing workers took (Nov 2026). Not to be changed by callers."""
+    global _kinds_kept
+    kept, gen = _kinds_kept, _kinds_gen
+    if kept and kept[0] == gen:
+        return kept[1]
+    kinds = {r["key"]: r["kind"] for r in q("SELECT key, kind FROM boulders WHERE kind IS NOT NULL")}
+    _kinds_kept = (gen, kinds)
+    return kinds
 
 
 def pools_whole(boulder: str | None, kinds: dict | None = None) -> bool:
@@ -8452,6 +8470,17 @@ def again_progress(areas: dict[str, list[dict]] | None = None) -> dict[str, dict
     return out
 
 
+CAMPAIGNS_TTL = 10      # seconds the Areas tab's list (/api/campaigns) is fresh
+
+
+def kept_campaigns() -> bytes:
+    """/api/campaigns (campaigns_listed()) as JSON, kept as the list of meshes is (_mesh_list_for()): the same for
+    everyone, made again in the background once CAMPAIGNS_TTL old, and at once after any change through the site
+    (forget_mesh_list()). Every open Areas tab asks every 5 s while areas run, and making it took ~5 s each (Nov 20):
+    most of the server's CPU."""
+    return _mesh_list_for("campaigns", CAMPAIGNS_TTL, campaigns_listed)
+
+
 def campaigns_listed() -> list[dict]:
     """Every area for the Areas pane, each with "state": "running" for one being worked on (active_areas()), "queued"
     for one running that waits its turn, "waiting" for one running with no climb to take now (they wait for volunteers,
@@ -8459,6 +8488,11 @@ def campaigns_listed() -> list[dict]:
     "jobs", its projects being meshed or waiting to be, if any (area_jobs()).
     Those being worked on first, the one with the newest mesh first; then those queued and waiting, in the order they're
     taken; then the rest, newest first."""
+    with settings().snapshot():
+        return _campaigns_listed()
+
+
+def _campaigns_listed() -> list[dict]:
     camps = q("SELECT * FROM campaigns ORDER BY created DESC")
     active = active_areas(camps)
     order = [c["id"] for c in sorted((c for c in camps if c["status"] == "running"), key=lambda c: (c.get("priority") or 0, c["created"]))]
@@ -9976,6 +10010,11 @@ def mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> list[di
     """/api/meshes: every mesh, with its climbs, boulder, ratings and links, as one asking sees them: those hidden as
     failures only for editors, and those awaiting approval (waiting, unapproved_meshes()) only for their account and
     whoever approves. Takes a couple of CPU-seconds with ~600 meshes (Nov 2026), so visitors get visitors_mesh_list()."""
+    with settings().snapshot():
+        return _mesh_list(editor, me, waiting)
+
+
+def _mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> list[dict]:
     rows = q("SELECT * FROM meshes ORDER BY created DESC")
     if not editor:    # hidden as failures (hide_mesh()): only editors see them, tagged so
         rows = [r for r in rows if not r["hidden"]]
@@ -10075,10 +10114,12 @@ def _count_mesh_list(kind: str, seconds: float | None = None) -> None:
 
 
 def _make_mesh_list(key, make: Callable[[], dict], gen: int) -> bytes:
-    """Make a /api/meshes body and keep it under key, unless forget_mesh_list() was called since gen."""
-    mark, began = meshes_mark(), time.monotonic()
+    """Make a /api/meshes body (or /api/campaigns', key "campaigns") and keep it under key, unless forget_mesh_list()
+    was called since gen."""
+    mark, began = _list_mark(key), time.monotonic()
     body = json.dumps(make(), default=str).encode()
-    _count_mesh_list("made", time.monotonic() - began)
+    if key != "campaigns":
+        _count_mesh_list("made", time.monotonic() - began)
     if gen == _mesh_list_gen:
         _mesh_lists_kept[key] = (mark, time.time(), body)
     return body
@@ -10096,23 +10137,31 @@ def _remake_mesh_list(key, make: Callable[[], dict], gen: int) -> None:
         _mesh_lists_making.discard(key)
 
 
+def _list_mark(key) -> str:
+    """What makes a kept copy out of date at once: for the meshes' lists, meshes_mark(); the areas' have only their time."""
+    return "" if key == "campaigns" else meshes_mark()
+
+
 def _mesh_list_for(key, ttl: float, make: Callable[[], dict]) -> bytes:
     """/api/meshes for key: its kept copy while fresh (the same meshes_mark(), within ttl seconds); once it isn't, still
     that copy, while it's made again in the background, so no one waits for its making (~10 s on the server's 2 busy
     cores, Nov 2026) but the first to ask after a start or forget_mesh_list(), and those asking meanwhile."""
-    kept = _mesh_lists_kept.get(key)
-    if kept and kept[0] == meshes_mark() and time.time() - kept[1] < ttl:
-        _count_mesh_list("fresh")
+    kept, counted = _mesh_lists_kept.get(key), key != "campaigns"
+    if kept and kept[0] == _list_mark(key) and time.time() - kept[1] < ttl:
+        if counted:
+            _count_mesh_list("fresh")
         return kept[2]
     if kept:
-        _count_mesh_list("older")
+        if counted:
+            _count_mesh_list("older")
         if key not in _mesh_lists_making:
             _mesh_lists_making.add(key)
             threading.Thread(target=_remake_mesh_list, args=(key, make, _mesh_list_gen), daemon=True).start()
         return kept[2]
     with _mesh_list_lock:
         kept = _mesh_lists_kept.get(key)       # made by another while this one waited
-        _count_mesh_list("waited")
+        if counted:
+            _count_mesh_list("waited")
         return kept[2] if kept else _make_mesh_list(key, make, _mesh_list_gen)
 
 
@@ -11886,8 +11935,8 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send_json({"error": "this mesh isn't packed yet"}, 404)
                     return self.send_bytes(data, cache=cache)
                 return self.send_file(f, download="download" in qs, cache=None if "download" in qs else cache)
-            if p == "/api/campaigns":
-                return self.send_json(campaigns_listed())
+            if p == "/api/campaigns":   # kept, as the Areas tab asks every 5 s while areas run (kept_campaigns())
+                return self.send_bytes(kept_campaigns(), "application/json", "no-cache")
             # ---- climbs
             if p == "/api/climbs":   # the newest, or with q those of every climb with each of its words: limit (most 2000) from offset
                 sql, args, order = "SELECT id FROM climbs", [], []
