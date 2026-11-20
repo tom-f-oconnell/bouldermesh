@@ -1218,7 +1218,8 @@ volunteers and for connecting the public site to whichever server harvests.
 - **What they fetch:** only YouTube ids and search words this server gives them, one thing at a time: at most 15 videos
   an hour, spread over it, and 200 a day for each volunteer and each address (less, on the admin page), and apart from
   those 30 searches or channels an hour and 200 a day, each at least 8-15 s after the last; resting 1, 2, 4 then 8
-  hours when YouTube refuses them. A video comes back whole (up to 1080p, no sound, 500 MB), with its details but
+  hours when YouTube refuses them. What's wanted goes in turn: regular areas' and people's harvests first, then beta
+  and the rest, then low-priority areas' harvests, oldest first within each. A video comes back whole (up to 1080p, no sound, 500 MB), with its details but
   nothing of theirs. It must be as long as they say, and as long as another volunteer's search listed it, if one did:
   their own word alone only catches a file gone wrong; a search, its results (kept 30 days); a channel, its description, for climbers' heights.
 - **How YouTube treats them:** with each result, the script (version 5 on) says what yt-dlp warned of and how fast the

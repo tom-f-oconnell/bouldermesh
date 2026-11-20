@@ -1267,8 +1267,33 @@ def keeping_in_touch() -> None:
     print("keeping in touch OK")
 
 
+def ranked() -> None:
+    """Tasks given by what they're for (rank), then searches and videos before details, then oldest first: a regular
+    area's harvest before beta, beta before a low-priority area's harvest, whatever order they were asked for in."""
+    low = {"p-low"}
+    b = volunteers.Broker(TMP / "br" / "v.sqlite", TMP / "br" / "files", lambda *a: None, lambda *a: None,
+                          rank=lambda purpose, ref: (2 if ref in low else 0) if purpose == "harvest" else 1)
+    for vid, purpose, ref in (("aaaaaaaaaa1", "harvest", "p-low"), ("aaaaaaaaaa2", "beta", "m1"), ("aaaaaaaaaa3", "harvest", "p-low"),
+                              ("aaaaaaaaaa4", "harvest", "p-reg"), ("aaaaaaaaaa5", "beta", "m2"), ("aaaaaaaaaa6", "harvest", "p-reg")):
+        assert b.want("video", vid, purpose, ref)
+        time.sleep(0.01)
+    assert b.want("details", "aaaaaaaaaa7", "details", "u1")
+    assert b.want("video", "aaaaaaaaaa3", "beta", "m3"), "wanted for beta too: as urgent as beta"
+    order = []
+    while (t := b.next_task(["video", "details"])):
+        order.append(t["video_id"])
+        assert "wanted" not in t
+        b.q("UPDATE tasks SET state='done' WHERE id=?", t["id"])
+    assert order == ["aaaaaaaaaa4", "aaaaaaaaaa6", "aaaaaaaaaa2", "aaaaaaaaaa3", "aaaaaaaaaa5", "aaaaaaaaaa7", "aaaaaaaaaa1"], order
+    b.rank = lambda purpose, ref: 1 / 0
+    assert b.want("video", "aaaaaaaaaa8", "harvest", "p-reg") and b.next_task(["video"])["video_id"] == "aaaaaaaaaa8", \
+        "a rank that fails: oldest first, as before"
+    print("ranked OK")
+
+
 try:
     broker_alone()
+    ranked()
     tools_python()
     pacing()
     youtube_health()

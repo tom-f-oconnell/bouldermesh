@@ -12784,11 +12784,21 @@ def volunteers_widespread(n: int, of: int, example: str) -> None:
         "daily), rather than one address's trouble."), kwargs={"priority": 4, "tags": ["warning"]}, daemon=True).start()
 
 
+def volunteer_rank(purpose: str, ref: str) -> int:
+    """How soon volunteers get what's wanted for purpose and ref (volunteers.Broker's rank): regular areas' and people's
+    harvests first (0), then beta and the rest (1), then low-priority areas' harvests (2: low_projects()), oldest first
+    within each, so that an area set to low priority doesn't hold up the others' YouTube videos."""
+    if purpose == "harvest":
+        return 2 if ref in low_projects() else 0
+    return 1
+
+
 VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteers", volunteer_delivered, volunteer_ready,
                                    paused=lambda: full(), rules=volunteer_rules,
                                    registered=lambda v: NOTIFIER.registered("volunteer", v, f" ({v['client'] or 'a volunteer script'})"),
                                    troubled=volunteer_troubled, widespread=volunteers_widespread, came_went=came_went("volunteer"),
-                                   downloaded=script_downloaded("volunteer"), leaderboard=lambda: leaderboard())
+                                   downloaded=script_downloaded("volunteer"), leaderboard=lambda: leaderboard(),
+                                   rank=volunteer_rank)
 
 
 def notify_act(verb: str, kind: str, rid: str) -> str:

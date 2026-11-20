@@ -134,6 +134,9 @@ def probe_duration(path: Path) -> float | None:
         return None
 
 
+RANK_UNWANTED = 1    # next_task()'s rank for a task nothing wants any more
+
+
 class Broker:
     """Volunteers, the work for them, and what they send back.
 
@@ -155,6 +158,8 @@ class Broker:
             once (WIDESPREAD), at most once in that span.
         came_went: called with (a volunteer's row, "here" or "gone", why) when it starts being heard from or stops, not as
             it rests or waits for work (presence.py).
+        rank: called with (purpose, ref) for how urgent what a task is wanted for is: lower is given first (next_task()),
+            the oldest first among equals. All the same by default.
     """
 
     def __init__(self, db_path: Path, files: Path, delivered: Callable[[dict, Path | None, dict], None],
@@ -165,10 +170,10 @@ class Broker:
                  widespread: Callable[[int, int, str], None] = lambda n, of, example: None,
                  came_went: Callable[[dict, str, str], None] = lambda v, state, why: None,
                  downloaded: Callable[[dict], None] = lambda info: None,
-                 leaderboard: Callable[[], dict] | None = None):
+                 leaderboard: Callable[[], dict] | None = None, rank: Callable[[str, str], float] = lambda purpose, ref: 0):
         self.db_path, self.files, self.delivered, self.ready, self.probe = db_path, files, delivered, ready, probe
         self.paused, self.rules, self.registered, self.troubled, self.widespread = paused, rules, registered, troubled, widespread
-        self.came_went, self.downloaded = came_went, downloaded
+        self.came_went, self.downloaded, self.rank = came_went, downloaded, rank
         self.leaderboard = leaderboard or (lambda: {"volunteers": self.contributions(), "workers": []})
         self.widespread_said = 0.0      # when widespread() was last called
         self.lock = threading.RLock()
@@ -306,6 +311,25 @@ class Broker:
         return bool(self.q("SELECT 1 FROM volunteers WHERE revoked IS NULL AND COALESCE(status,'approved')!='provisional' LIMIT 1"))
 
     # -- what's wanted --------------------------------------------------------------------------------------------
+    def next_task(self, kinds: list[str]) -> dict | None:
+        """The queued task of these kinds to give next: by rank() (the most urgent of what each is wanted for), then
+        searches and videos before details and channels, then oldest first."""
+        rows = self.q(f"SELECT t.*, (SELECT group_concat(w.purpose || char(31) || w.ref, char(30)) FROM wants w WHERE w.task=t.id) "
+                      f"AS wanted FROM tasks t WHERE t.state='queued' AND t.kind IN ({','.join('?' * len(kinds))})", *kinds)
+        if not rows:
+            return None
+
+        def rank(row: dict) -> float:
+            wants = [w.split("\x1f", 1) for w in (row["wanted"] or "").split("\x1e") if "\x1f" in w]
+            try:
+                return min((self.rank(p, r) for p, r in wants), default=RANK_UNWANTED)
+            except Exception as e:  # noqa: BLE001 - oldest first, as before, rather than none given
+                print(f"volunteers: ranking a task failed: {e!r}", flush=True)
+                return 0
+        best = min(rows, key=lambda r: (rank(r), r["kind"] in ("details", "channel"), r["created"]))
+        best.pop("wanted", None)
+        return best
+
     def want(self, kind: str, video_id: str, purpose: str, ref: str) -> bool:
         """Ask volunteers for a video ("video") or its details ("details") by its id, a search ("search") by its
         words, or a channel's name and description ("channel") by its id, for purpose and ref (as ready() is called
@@ -385,8 +409,7 @@ class Broker:
                                           "why": f"{cap} {what if cap != 1 else ONE[what]} {per} is the most for {whose}"
                                                  + (" until you're approved" if waiting else "")}
             open_kinds = [k for k in kinds if ("searches" if k in PAGE_KINDS else "videos") not in held]
-            task = self.q(f"SELECT * FROM tasks WHERE state='queued' AND kind IN ({','.join('?' * len(open_kinds))}) "
-                          "ORDER BY kind IN ('details','channel'), created LIMIT 1", *open_kinds, one=True) if open_kinds else None
+            task = self.next_task(open_kinds) if open_kinds else None
             if not task:
                 waiting_for = [h for what, h in held.items() if self.q(
                     f"SELECT 1 FROM tasks WHERE state='queued' AND kind IN ({','.join('?' * len(kinds))}) AND kind {'IN' if what == 'searches' else 'NOT IN'} "
