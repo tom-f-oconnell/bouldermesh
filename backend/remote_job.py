@@ -6,7 +6,8 @@ mesh/ (its files) and the photos placed in it: finding its beta (beta.py), from 
 cache keeps them), or its size (scale.py), with task.json's {climbs, videos, known}; what that makes goes in out/.
 Or filtering a harvest's photos/ for those of other rocks (relevance.py): with more/ (anchors from its boulder's other
 harvests), cache.sqlite (what the server's cache knows of them) and task.json's {methods, more, prior, matcher}; out/
-gets relevance.json (its report, nothing moved) and cache.sqlite, with what it worked out.
+gets relevance.json (its report, nothing moved) and cache.sqlite, with what it worked out; with task.json's
+{diversity, order} too, diversity.json: the viewpoint check (diversity.assess_unique()) of the photos it kept, in order.
 Or fitting a capture's scenery (splat.py fit_capture()): mesh/, photos/ (the capture's photos the mesh placed), masks/,
 scenery/ (its frames) and task.json (splat.capture_task()); out/ gets the splat, its small copy, scene.json and the
 panorama.
@@ -80,7 +81,8 @@ def filter_task(job: Path, log) -> int:
         relevance.MATCHER = args["matcher"]
     photos = sorted(p for p in (job / "photos").iterdir() if p.is_file())
     more = [job / m for m in args.get("more") or [] if (job / m).is_file()]
-    tracker = PrintedTracker([("filter", "Filter off-topic photos", 1)])
+    tracker = PrintedTracker([("filter", "Filter off-topic photos", 1)] +
+                             ([("diversity", "Check viewpoint diversity", 1)] if args.get("diversity") else []))
     try:
         report = relevance.filter_photos(photos, None, log, methods=args.get("methods"), more_anchors=more,
                                          progress=lambda f=0.0, d=None: tracker.update("filter", f, d), prior=args.get("prior"))
@@ -89,10 +91,28 @@ def filter_task(job: Path, log) -> int:
         return 1
     (job / "out").mkdir(exist_ok=True)
     (job / "out" / "relevance.json").write_text(json.dumps(report))
+    if args.get("diversity"):
+        diversity_task(job, [n for n in args.get("order") or [] if n in set(report["kept"])],
+                       lambda f=0.0, d=None: tracker.update("diversity", f, d), log)
     if relevance.CACHE_FILE.is_file():
         shutil.copy(relevance.CACHE_FILE, job / "out" / "cache.sqlite")
     print("@@result " + json.dumps({"mesh": "", "files": sorted(f.name for f in (job / "out").iterdir())}), flush=True)
     return 0
+
+
+def diversity_task(job: Path, kept: list[str], progress, log) -> None:
+    """The viewpoint check of a harvest's photos kept, in the server's order, into out/diversity.json with this
+    OpenCV's version, which the server uses only if its own is the same. Nothing written if it fails, or without
+    OpenCV: the server then checks them itself."""
+    from climbs import diversity
+    try:
+        import cv2
+        report = diversity.assess_unique([job / "photos" / n for n in kept], log, progress=progress)
+    except Exception as e:  # noqa: BLE001 - the server checks them instead
+        log(f"diversity check failed here, for the server to do: {type(e).__name__}: {e}")
+        return
+    if (report.get("view_graph") or {}).get("available"):
+        (job / "out" / "diversity.json").write_text(json.dumps({"opencv": cv2.__version__, "report": report}))
 
 
 def task(job: Path, kind: str, log) -> int:

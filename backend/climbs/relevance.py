@@ -612,13 +612,18 @@ def split_rejected(project_dir: Path, log: Log, progress: Progress | None = None
 
 # ------------------------------------------------------------------------------ all together
 # Where filtering runs: None, here (filter_photos()); or what the server sets, which hands it to a machine that connects
-# to it when one is free, with the same arguments and report (and falls back to here)
+# to it when one is free, with the same arguments and report (and falls back to here). It may also take assess (see
+# run_filter())
 RUNNER: Callable[..., dict] | None = None
 
 
-def run_filter(paths: list[Path], rejected: Path | None, log: Log, **kw) -> dict:
-    """filter_photos(), where RUNNER says."""
-    return (RUNNER or filter_photos)(paths, rejected, log, **kw)
+def run_filter(paths: list[Path], rejected: Path | None, log: Log, assess: Callable[..., None] | None = None, **kw) -> dict:
+    """filter_photos(), where RUNNER says. With assess (the viewpoint check's progress), a machine doing the filtering
+    also checks the photos it keeps (diversity.assess_unique()), whose report then comes back as the report's
+    "diversity", for harvest() to use rather than check them itself; filtering here, it never does."""
+    if RUNNER:
+        return RUNNER(paths, rejected, log, assess=assess, **kw)
+    return filter_photos(paths, rejected, log, **kw)
 
 
 def export_cache(paths: list[Path], dest: Path) -> int:

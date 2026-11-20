@@ -2083,11 +2083,35 @@ try:
     (kind, files, args, label, version, take_within), = remote
     assert (kind, version, take_within) == ("filter", server.FILTER_VERSION, server.FILTER_TAKE) and label == "filter: Filtered (harvest)"
     assert files == ["cache.sqlite", "more/0/mountainproject_z.jpg", "photos/ddg_b.jpg", "photos/ddg_c.jpg", "photos/mountainproject_a.jpg"], files
-    assert args == {"methods": ["cards", "same-rock"], "more": ["more/0/mountainproject_z.jpg"], "prior": prior, "matcher": "brute"}, args
+    assert args == {"methods": ["cards", "same-rock"], "more": ["more/0/mountainproject_z.jpg"], "prior": prior, "matcher": "brute",
+                    "diversity": False, "order": [p.name for p in fphotos]}, args
+    assert "diversity" not in report, "not asked for"
     assert report["rejected"] == {"ddg_c.jpg": "nomatch"} and (fdir / "rejected" / "nomatch_ddg_c.jpg").exists() and not fphotos[2].exists()
     assert steps[-1] == (0.5, "matching: 1 of 2"), steps
     assert server.relevance_mod.cache().pairs("h", ["m1"]) == {("m1", "m2"): (42, 0.3)}, "what it matched, kept here"
     (fdir / "rejected" / "nomatch_ddg_c.jpg").rename(fphotos[2])
+    # with the viewpoint check asked for: done there too, its progress in its own step, used if its OpenCV is the same
+    real_remote, opencv = remote_filter, [server._opencv_version()]
+
+    def remote_filter_div(kind, files, args, label, log, tracker=None, version=None, take_within=None):
+        result, back = real_remote(kind, files, args, label, log, tracker, version, take_within)
+        assert args["diversity"] and args["order"] == [p.name for p in fphotos], args
+        tracker.update("diversity", 0.25, "1 of 2 photos")
+        (back / "out" / "diversity.json").write_text(json.dumps({"opencv": opencv[0], "report": {"verdict": "good"}}))
+        return result, back
+    server.MACHINES.task = remote_filter_div
+    tracked = server.Tracker([("filter", "Filter off-topic photos", 1), ("diversity", "Check viewpoint diversity", 1)], where="server")
+    report = server.filter_anywhere(fphotos, fdir / "rejected", print, progress=tracked.callback("filter"),
+                                    assess=tracked.callback("diversity"))
+    assert report["diversity"] == {"verdict": "good"}, report
+    snap = tracked.snapshot()["steps"]
+    assert snap[1]["where"] == "machine" and snap[1]["frac"] == 0.25 and snap[0]["state"] == "done", snap
+    (fdir / "rejected" / "nomatch_ddg_c.jpg").rename(fphotos[2])
+    opencv[0] = "0.0.1"
+    report = server.filter_anywhere(fphotos, fdir / "rejected", print, assess=lambda f=0.0, d=None: None)
+    assert "diversity" not in report, "another OpenCV might judge otherwise: checked here"
+    (fdir / "rejected" / "nomatch_ddg_c.jpg").rename(fphotos[2])
+    server.MACHINES.task = remote_filter
     # its step says where it's done: waiting for a machine, then on the one that took it
     tracked = server.Tracker([("filter", "Filter off-topic photos", 1)], where="server")
     server.filter_anywhere(fphotos, fdir / "rejected", print, progress=tracked.callback("filter"))
@@ -2100,8 +2124,8 @@ try:
     server.filter_anywhere(fphotos, fdir / "rejected", print, progress=tracked.callback("filter"))
     assert len(here) == 1 and tracked.snapshot()["steps"][0]["where"] == "server", tracked.snapshot()
     here.clear()
-    server.filter_anywhere(fphotos, fdir / "rejected", print)
-    assert len(here) == 1
+    server.filter_anywhere(fphotos, fdir / "rejected", print, assess=lambda f=0.0, d=None: None)
+    assert len(here) == 1 and "assess" not in here[0], "here, the harvest checks them itself"
     server.settings().update({"relevance.machines": False})
     server.MACHINES.task = remote_filter
     remote.clear()

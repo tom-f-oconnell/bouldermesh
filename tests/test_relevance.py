@@ -226,6 +226,20 @@ with tempfile.TemporaryDirectory() as td:
         assert there["rejected"] == first["rejected"] and there["kept"] == first["kept"], there
         assert all((job / "photos" / q.name).exists() for q in paths) and (job / "out" / "cache.sqlite").is_file()
         assert any("matched 0 pair(s)" in x for x in out), ("the pairs known here went with it", out)
+        # and the viewpoint check of those it kept, in the server's order, as the server would make it
+        from climbs import diversity
+        order = [q.name for q in reversed(paths)]
+        (job / "task.json").write_text(json.dumps({"methods": ["cards", "same-rock"], "more": [], "prior": None, "matcher": "brute",
+                                                   "diversity": True, "order": order}))
+        relevance.CACHE_FILE, out = job / "cache.sqlite", []
+        try:
+            assert remote_job.filter_task(job, out.append) == 0
+        finally:
+            relevance.CACHE_FILE = saved_file
+        import cv2
+        div = json.loads((job / "out" / "diversity.json").read_text())
+        kept = [job / "photos" / n for n in order if n in there["kept"]]
+        assert div["opencv"] == cv2.__version__ and div["report"] == json.loads(json.dumps(diversity.assess_unique(kept, print))), div
         print("filtering on a machine OK")
     else:
         assert "same-rock" not in relevance.filter_photos(paths, None, logs.append)["methods"]
@@ -448,6 +462,24 @@ with tempfile.TemporaryDirectory() as td:
     rep = json.loads((proj / "relevance.json").read_text())
     assert rep["rejected"] == {"yt_card.jpg": "card"} and "yt_mine.jpg" in rep["kept"] and rep["put_back"] == ["yt_mine.jpg"], rep
     assert (proj / "photos" / "yt_mine.jpg").exists() and (proj / "rejected" / "card_yt_card.jpg").exists()
+    # filtered on a machine that also checked the viewpoints: its check used, and not done again here
+    from climbs import diversity as diversity_mod
+    asked_assess = []
+
+    def machine(paths, rejected, log, assess=None, **kw):
+        asked_assess.append(assess)
+        return {"kept": [p.name for p in paths], "rejected": {}, "methods": [], "counts": {},
+                "diversity": {"verdict": "good", "from": "machine"}}
+    real_runner, real_assess = relevance.RUNNER, diversity_mod.assess_unique
+    relevance.RUNNER = machine
+    diversity_mod.assess_unique = lambda *a, **k: (_ for _ in ()).throw(AssertionError("checked here too"))
+    try:
+        harvest_mod.harvest(Climb(source="test", source_id="1", url="http://x", name="X"), proj, lambda s: None, set(), add=True)
+    finally:
+        relevance.RUNNER, diversity_mod.assess_unique = real_runner, real_assess
+    assert asked_assess and callable(asked_assess[0])
+    assert json.loads((proj / "diversity.json").read_text()) == {"verdict": "good", "from": "machine"}
+    assert "diversity" not in json.loads((proj / "relevance.json").read_text()), "not kept in the filter's report"
 print("looking again for new photos, and judging again OK")
 
 # --- the viewpoint verdict, by the current rules, from a report made under older ones ---------------

@@ -100,6 +100,9 @@ their pairs were in the server's cache: the first meshes were made on hal. Two c
   minutes what takes the server hours, and sat idle 83% of the time while harvests waited on the server (Nov 11). They
   take a filter before meshing, as the harvest waits; one not taken in 3 minutes is done on the server. The server's
   cache goes with the photos (`export_cache()`) and what the machine worked out comes back into it (`merge_cache()`).
+  The viewpoint check after it (`diversity.assess_unique()`, ORB matching of up to 120 photos pairwise) goes with it, as
+  it kept one of the 2-core server's cores busy for minutes a harvest and slowed everything else (Nov 19). It's used
+  only from a machine with the server's OpenCV version, so that a harvest is judged alike wherever it's checked.
 
 ## Does filtering help the mesh?
 

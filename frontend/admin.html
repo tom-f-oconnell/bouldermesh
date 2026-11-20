@@ -141,7 +141,7 @@
       harvested again only matches what's new. On 12 of hal's harvests FLANN kept 92 of the 101 search photos brute force
       matched (and one it didn't), and more checks didn't close the gap, so brute force stays the default.</div>
     <label class="choice"><input type="checkbox" id="filter-machines"> Filter harvests' photos on a machine that connects here, when one can
-      <small>(its script version 12 or newer; it takes them before meshing, and they're filtered here, one at a time, if none takes one within 3 minutes, as when the only machine is meshing. An earlier run's verdicts stand either way: a boulder pooled again only judges what's new)</small></label>
+      <small>(its script version 12 or newer; it takes them before meshing, and they're filtered here, one at a time, if none takes one within 3 minutes, as when the only machine is meshing. An earlier run's verdicts stand either way: a boulder pooled again only judges what's new. The machine also checks the viewpoints of the photos it keeps)</small></label>
     <label>Which mapper places a mesh's cameras</label>
     <select id="mapper-method"><option value="incremental">Incremental (COLMAP 3.9.1): as every mesh was placed before Nov 15</option>
       <option value="global">Global (COLMAP 4.2.1): 6-14 times faster, but misplaced groups of cameras in about a third of its meshes</option></select>

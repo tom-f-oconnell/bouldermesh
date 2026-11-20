@@ -689,7 +689,7 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
     _normalise_images(photos_dir, log)
     (project_dir / "sources.json").write_text(json.dumps({"climb": c.to_dict(), "queries": queries,
                                                            "files": manifest, "created": time.time()}, indent=1))
-    filtered = None
+    filtered = report = None
     try:
         paths = diversity.dedupe(photos_dir, log, progress=progress("dedupe"))
         if relevance_filter:
@@ -712,10 +712,14 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
                 paths = diversity.dedupe(photos_dir, log)
                 prior = {"put_back": (prior or {}).get("put_back") or []}
             filtered = relevance.run_filter(paths, project_dir / "rejected", log, progress=progress("filter"),
-                                            more_anchors=more, prior=prior)
+                                            more_anchors=more, prior=prior, assess=progress("diversity") or (lambda f=0.0, d=None: None))
+            report = filtered.pop("diversity", None)    # checked on the machine that filtered them, if it was one
             (project_dir / "relevance.json").write_text(json.dumps(filtered, indent=1))
             paths = [p for p in paths if p.name in set(filtered["kept"])]
-        report = diversity.assess_unique(paths, log, progress=progress("diversity"))
+            if report is not None:
+                log(f"diversity: checked on the machine that filtered them: {report.get('verdict')}")
+        if report is None:
+            report = diversity.assess_unique(paths, log, progress=progress("diversity"))
     except Exception as e:
         log(f"diversity check failed: {e}")
         report = {"error": str(e)}

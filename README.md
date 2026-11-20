@@ -147,7 +147,8 @@ area_path, boulder_name, description/location/protection, images[], videos[], cr
    machine that connects here*, on by default): it's sent the photos, the other harvests' anchors and
    what the server's cache knows of them, and sends back its report and the pairs it matched, which the
    server keeps. Machines take it before meshing, as the harvest waits for it; if none does within 3
-   minutes, or it fails, the server filters as before.
+   minutes, or it fails, the server filters as before. The machine also checks the viewpoints of the
+   photos it keeps, which the server uses if its OpenCV is the same version, and otherwise checks itself.
 4. Diversity check (`climbs/diversity.py`): with OpenCV, ORB matching + fundamental-matrix
    RANSAC between every pair to build a view graph. Pairs explained by a 2-D similarity
    (crops, re-encodes, pan/zoom) are discounted because they carry no parallax. The largest

@@ -7533,23 +7533,33 @@ def remote_scale(mid: str, pid: str, climbs: list[dict], log) -> None:
         shutil.rmtree(back, ignore_errors=True)
 
 
+def _opencv_version() -> str | None:
+    try:
+        import cv2
+        return cv2.__version__
+    except ImportError:
+        return None
+
+
 FILTER_VERSION = 12     # the oldest machines' script that filters a harvest's photos (remote_job.py --task filter)
 FILTER_TAKE = 180       # seconds a machine has to take a harvest's filtering, before it's done here instead
 
 
 class _StepProgress:
     """A remote job's progress (compute.follow() gives it a tracker) to a harvest step's progress(fraction, detail),
-    which once the machine reports says the step is on a machine (Tracker.callback()'s at())."""
+    which once the machine reports says the step is on a machine (Tracker.callback()'s at()). With others, {key: progress},
+    the machine's steps with those keys go to those, as a filter's viewpoint check to its harvest's own step."""
 
-    def __init__(self, progress):
-        self.progress, self.heard = progress, False
+    def __init__(self, progress, others: dict | None = None):
+        self.progress, self.others, self.heard = progress, others or {}, set()
 
     def update(self, key: str, frac: float = 0.0, detail: str | None = None) -> None:
-        if self.progress:
-            if not self.heard and hasattr(self.progress, "at"):
-                self.progress.at("machine")
-            self.heard = True
-            self.progress(frac, detail)
+        progress = self.others.get(key, self.progress)
+        if progress:
+            if id(progress) not in self.heard and hasattr(progress, "at"):
+                progress.at("machine")
+            self.heard.add(id(progress))
+            progress(frac, detail)
 
 
 def filter_anywhere(paths: list[Path], rejected: Path | None, log, **kw) -> dict:
@@ -7558,6 +7568,7 @@ def filter_anywhere(paths: list[Path], rejected: Path | None, log, **kw) -> dict
     does it has been in touch; otherwise, or if no machine takes it within FILTER_TAKE or it fails, here (filter_here(),
     one at a time). Either way the report is the same, and the photos it rejects are moved here."""
     if not (paths and settings().get("relevance.machines") and offloading() and MACHINES.can(FILTER_VERSION)) or kw.get("anchors") is not None:
+        kw.pop("assess", None)
         return filter_here(paths, rejected, log, **kw)
     try:
         return filter_remote(paths, rejected, log, **kw)
@@ -7568,6 +7579,7 @@ def filter_anywhere(paths: list[Path], rejected: Path | None, log, **kw) -> dict
             "filtering here")
         if hasattr(kw.get("progress"), "at"):
             kw["progress"].at("server")
+        kw.pop("assess", None)
         return filter_here(paths, rejected, log, **kw)
 
 
@@ -7590,10 +7602,13 @@ def filter_here(paths: list[Path], rejected: Path | None, log, **kw) -> dict:
 
 
 def filter_remote(paths: list[Path], rejected: Path | None, log, methods: list[str] | None = None, progress=None,
-                  more_anchors: list[Path] | None = None, prior: dict | None = None, anchors: None = None) -> dict:
+                  more_anchors: list[Path] | None = None, prior: dict | None = None, anchors: None = None,
+                  assess=None) -> dict:
     """relevance.filter_photos() on a machine that connects here: its photos, the other harvests' anchors, and what
     this server's cache knows of them go; its report and the pairs it matched come back (kept in the cache here),
-    and the photos it rejects are moved to rejected here."""
+    and the photos it rejects are moved to rejected here. With assess (a progress), the machine also checks the
+    viewpoints of those it keeps (relevance.run_filter()), which keeps a core of this 2-core server busy for minutes a
+    harvest otherwise: the report's "diversity", if it could and its OpenCV is this server's, so that it judges alike."""
     stage = Path(tempfile.mkdtemp(prefix="bm-filter-", dir=DATA / "compute"))
     try:
         files = {f"photos/{p.name}": p for p in paths}
@@ -7609,12 +7624,22 @@ def filter_remote(paths: list[Path], rejected: Path | None, log, methods: list[s
                 progress.at("waiting")
             progress(0.0)
         _, back = MACHINES.task("filter", files, {"methods": methods, "more": sorted(more), "prior": prior,
-                                                  "matcher": relevance_mod.MATCHER},
-                                f"filter: {name or pid or 'photos'}", log, tracker=_StepProgress(progress), version=FILTER_VERSION,
-                                take_within=FILTER_TAKE)
+                                                  "matcher": relevance_mod.MATCHER, "diversity": assess is not None,
+                                                  "order": [p.name for p in paths]},
+                                f"filter: {name or pid or 'photos'}", log,
+                                tracker=_StepProgress(progress, {"diversity": assess} if assess else None),
+                                version=FILTER_VERSION, take_within=FILTER_TAKE)
         try:
             report = json.loads((back / "out" / "relevance.json").read_text())
             relevance_mod.merge_cache(back / "out" / "cache.sqlite")
+            div = back / "out" / "diversity.json"
+            if assess is not None and div.is_file():
+                d = json.loads(div.read_text())
+                if d.get("opencv") == _opencv_version():
+                    report["diversity"] = d["report"]
+                else:
+                    log(f"diversity: the machine's OpenCV is {d.get('opencv')}, not this server's {_opencv_version()}: "
+                        "checked here instead, to judge alike")
         finally:
             shutil.rmtree(back, ignore_errors=True)
     finally:
