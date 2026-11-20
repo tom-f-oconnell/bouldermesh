@@ -70,6 +70,22 @@ def main() -> None:
     calm = sitehealth.note(sitehealth.summary([{"time": t(1), "mesh": "aa", "seconds": 2}], [], [], f"{DAY}00:00:00Z"))
     assert calm and not calm[2], calm
 
+    # where the page was opened from: editors' and bots' apart, places by their point, countries, linking sites, days
+    opened = [{"time": BEFORE, "country": "US", "lat": 37.4, "lng": -118.6},
+              {"time": t(1), "country": "US", "region": "California", "city": "Bishop", "lat": 37.4, "lng": -118.4, "new": True, "ref": "www.reddit.com"},
+              {"time": t(2), "country": "US", "city": "Bishop", "lat": 37.4, "lng": -118.4},
+              {"time": t(3), "country": "FR", "city": "Fontainebleau", "lat": 48.4, "lng": 2.7, "app": True},
+              {"time": t(4)},
+              {"time": t(5), "country": "US", "lat": 1.0, "lng": 1.0, "editor": True},
+              {"time": t(6), "country": "US", "lat": 2.0, "lng": 2.0, "bot": True}]
+    pv = sitehealth.page_views(opened, f"{DAY}00:00:00Z")
+    assert (pv["n"], pv["new"], pv["editor"], pv["app"], pv["unplaced"]) == (4, 1, 1, 1, 1), pv
+    assert pv["places"][0] == {"lat": 37.4, "lng": -118.4, "n": 2, "place": "Bishop, California, US"} and len(pv["places"]) == 2, pv
+    assert pv["countries"] == [("US", 2), ("FR", 1), ("?", 1)] and pv["referrers"] == [("www.reddit.com", 1)], pv
+    assert pv["days"] == [("2026-11-19", 4)], pv
+    title, text, _ = sitehealth.note(quiet, opened=pv)
+    assert text.startswith("The page opened 4 time(s) (1 in new browsers), from US 2, FR 1, ? 1."), text
+
     with tempfile.TemporaryDirectory() as td:   # from a data folder: the file and the one before it, bad lines skipped
         d = Path(td)
         (d / "mesh-views.jsonl.1").write_text(json.dumps(views[1]) + "\n")
@@ -77,6 +93,9 @@ def main() -> None:
         got = sitehealth.for_data(d, 24, now=1795135980)     # 2026-11-20T00:53Z
         assert got and got[0].startswith("BoulderMesh's day: 2 views"), got
         assert sitehealth.for_data(d, 24, now=1795135980 + 86400) is None, "a day later: none of it"
+        (d / "page-views.jsonl").write_text(json.dumps(opened[1]) + "\n")
+        spans = sitehealth.page_views_for_data(d, now=1795135980)
+        assert set(spans) == {"day", "week", "month"} and spans["week"]["n"] == 1, spans
     print("site health OK")
 
 

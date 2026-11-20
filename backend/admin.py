@@ -23,6 +23,9 @@ from typing import Callable
 
 PAGE = Path(__file__).resolve().parents[1] / "frontend" / "admin.html"
 ICON = PAGE.with_name("favicon-admin.svg")     # the page's own, as this server serves nothing else of frontend/
+# Leaflet from cdnjs and OpenStreetMap's tiles, for the map of where the site's pages were opened from
+CSP = ("default-src 'self'; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; script-src 'self' 'unsafe-inline' "
+       "https://cdnjs.cloudflare.com; img-src 'self' data: https://tile.openstreetmap.org")
 
 
 def allowed_host(host: str, in_docker: bool) -> bool:
@@ -58,7 +61,7 @@ def handler_for(ctx: Context, password: str | None):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Frame-Options", "DENY")
-            self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'")
+            self.send_header("Content-Security-Policy", CSP)
             self.end_headers()
             self.wfile.write(body)
 

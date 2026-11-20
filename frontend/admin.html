@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>boulderme.sh admin</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <link rel="icon" href="/static/favicon-admin.svg" type="image/svg+xml">
 <style>
   dialog.danger-ask{max-width:420px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:14px}
@@ -71,6 +73,12 @@
   #tabs button[aria-selected=true]{color:var(--fg);border-bottom-color:var(--acc)}
   #tabs .badge{margin-left:6px;background:var(--warn);color:#111;border-radius:9px;padding:0 6px;font-size:11px;font-weight:700}
   .pane[hidden]{display:none}
+  #views-map{height:340px;border-radius:6px;margin-top:10px;background:#0b0d11}
+  #views-map .leaflet-tile-pane{filter:invert(1) hue-rotate(180deg) brightness(.85) contrast(.9)}
+  #views-map .leaflet-tooltip{background:var(--panel);color:var(--fg);border:1px solid var(--line)}
+  #views-span button[aria-pressed=true]{border-color:var(--acc);color:var(--acc)}
+  .days{display:flex;align-items:flex-end;gap:2px;height:60px;margin-top:10px} .days div{flex:1;background:var(--acc);min-height:1px;border-radius:2px 2px 0 0} .days[hidden]{display:none}
+  #views-lists>div{min-width:0} #views-lists .name{overflow-wrap:anywhere} @media (max-width:560px){#views-lists{grid-template-columns:1fr}}
   @media (max-width:480px){#tabs{padding:8px 8px 0;gap:0} #tabs button{padding:7px 8px}}
 </style>
 </head>
@@ -321,6 +329,17 @@
   </section>
   </div>
   <div class="pane" id="tab-site" role="tabpanel" aria-labelledby="tabbtn-site">
+  <section id="views">
+    <h2>Where the site is opened from</h2>
+    <div class="row" id="views-span" style="margin-top:0"><button class="sec" data-span="day">Last day</button><button class="sec" data-span="week">Week</button><button class="sec" data-span="month">Month</button></div>
+    <div class="note" id="views-note"></div>
+    <div id="views-map"></div>
+    <div class="days" id="views-days" hidden></div>
+    <div class="grid" id="views-lists"></div>
+    <div class="note">Each time the main page opens in a browser (its script, so not most crawlers), the server keeps roughly
+      where from, as Cloudflare places the address (city, to about 10 km), and the site that linked there: not the address
+      or the browser. Editors' own (the token's) aren't counted. Kept in data/page-views.jsonl.</div>
+  </section>
   <section>
     <h2>What the main site shows</h2>
     <div><b>Mesh textures</b> <span class="note" id="tex-counts"></span></div>
@@ -881,6 +900,7 @@ function showTab(name){
     $(`#tabbtn-${t}`).setAttribute('aria-selected', String(t === name));
   }
   if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
+  if (name === 'site') setTimeout(() => loadViews(false), 0);
   if (name === 'site' && newestFb != null) { try { localStorage.setItem('admin.fbSeen', newestFb); } catch (e) {} renderBadges(state); }
 }
 document.querySelectorAll('#tabs [data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
@@ -1294,6 +1314,58 @@ $('#pair-show').onclick = async () => {
     clearTimeout(renderPairing.t); renderPairing.t = setTimeout(refresh, r.seconds * 1000 + 500);
   } catch (e) { msg(e.message, 8000); }
 };
+// ---- where the main page was opened from (Site tab): asked for when the tab opens, and each minute while it's open ----
+let pageViews = null, viewsAt = 0, viewsSpan = 'week', viewsMap = null, viewsLayer = null, viewsFitted = null;
+try { viewsSpan = localStorage.getItem('admin.viewsSpan') || 'week'; } catch (e) {}
+const regionName = (() => { try { const d = new Intl.DisplayNames(['en'], { type: 'region' }); return c => { try { return d.of(c); } catch (e) { return c; } }; } catch (e) { return c => c; } })();
+async function loadViews(force){
+  if (!force && Date.now() - viewsAt < 60000 && pageViews) return renderViews();
+  try { pageViews = await call('/api/admin/actions/page-views', {}); viewsAt = Date.now(); renderViews(); }
+  catch (e) { $('#views-note').textContent = `Couldn't get them: ${e.message}`; }
+}
+function bars(rows, label){
+  const most = Math.max(1, ...rows.map(r => r[1]));
+  return rows.length ? `<div><b>${label}</b><div class="bars">${rows.map(([name, n]) => `<div class="row"><span class="name">${esc(name)}</span><span class="track"><span class="bar" style="width:${100 * n / most}%"></span></span><span class="fig">${n}</span></div>`).join('')}</div></div>` : '';
+}
+function renderViews(){
+  for (const b of document.querySelectorAll('#views-span button')) b.setAttribute('aria-pressed', String(b.dataset.span === viewsSpan));
+  const v = pageViews?.[viewsSpan];
+  if (!v) return;
+  const span = { day: 'the last day', week: 'the last week', month: 'the last 30 days' }[viewsSpan];
+  $('#views-note').textContent = `${v.n} time${v.n === 1 ? '' : 's'} in ${span}: ${v.new} in browsers new to the site, ${v.app} in the phone apps; from ${
+    v.countries.length} countr${v.countries.length === 1 ? 'y' : 'ies'} and ${v.places.length} place${v.places.length === 1 ? '' : 's'}${
+    v.unplaced ? ` (${v.unplaced} not placed)` : ''}. Editors' own: ${v.editor}.`;
+  const days = $('#views-days');
+  days.hidden = viewsSpan === 'day' || !v.days.length;
+  if (!days.hidden) {
+    const n = viewsSpan === 'week' ? 7 : 30, byDay = Object.fromEntries(v.days), most = Math.max(1, ...v.days.map(d => d[1])), out = [];
+    for (let i = n - 1; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10), c = byDay[d] || 0;
+      out.push(`<div style="height:${100 * c / most}%" title="${d}: ${c}"></div>`);
+    }
+    days.innerHTML = out.join('');
+  }
+  $('#views-lists').innerHTML = bars(v.countries.slice(0, 12).map(([c, n]) => [c === '?' ? 'Unknown' : regionName(c), n]), 'Countries')
+    + bars(v.referrers, 'Linked from');
+  if (typeof L === 'undefined') { $('#views-map').textContent = 'The map needs Leaflet, from cdnjs.cloudflare.com, which didn\'t load.'; return; }
+  if (!viewsMap) {
+    viewsMap = L.map('views-map', { worldCopyJump: true }).setView([30, 0], 1);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 12, attribution: '© OpenStreetMap' }).addTo(viewsMap);
+    viewsLayer = L.layerGroup().addTo(viewsMap);
+  }
+  viewsMap.invalidateSize();
+  viewsLayer.clearLayers();
+  for (const p of v.places)
+    L.circleMarker([p.lat, p.lng], { radius: 4 + 3 * Math.sqrt(p.n), color: '#5cc8ff', weight: 1, fillOpacity: .45 })
+      .bindTooltip(`${esc(p.place || `${p.lat}, ${p.lng}`)}: ${p.n}`).addTo(viewsLayer);
+  if (v.places.length && viewsFitted !== viewsSpan) viewsFitted = viewsSpan, viewsMap.fitBounds(L.latLngBounds(v.places.map(p => [p.lat, p.lng])).pad(.3), { maxZoom: 6 });
+}
+document.querySelectorAll('#views-span button').forEach(b => b.onclick = () => {
+  viewsSpan = b.dataset.span;
+  try { localStorage.setItem('admin.viewsSpan', viewsSpan); } catch (e) {}
+  renderViews();
+});
+setInterval(() => { if (!$('#tab-site').hidden) loadViews(true); }, 60000);
 (async function poll(){ await refresh(true); setTimeout(poll, 10000); })();     // 10 s after each answer, not every 10 s
 </script>
 </body>

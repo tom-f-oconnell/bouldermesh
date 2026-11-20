@@ -1004,6 +1004,11 @@ how long meshes took, those given up on, views that moved badly, the 3D view los
 marked) and slow requests. Each report names the page's own build (its script's hash); one from a page older than the
 one served, a tab left open across a deploy, is marked old, and the summary lists those apart. With ntfy set up, the admin page's "each morning" box sends the same to your phone at 16:00 UTC.
 
+Each time the page opens in a browser is kept in `data/page-views.jsonl`: roughly where from, as Cloudflare's visitor
+location headers place the address (country, region, city, and its point to ~10 km), the site that linked there (its host),
+and whether the browser had opened it before; not the address or the browser. The admin page's Site tab maps them over the
+last day, week or month, and the daily summary starts with their count.
+
 ## The admin page
 
 A separate page, on port 36184, sets what the main site shows and where its reconstructions run. It
@@ -1486,6 +1491,8 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
                                                         moved (frames: {n, median_ms, p95_ms, slow}), as client-errors are
                                                         taken (300 in 10 min an address): kept in data/mesh-views.jsonl;
                                                         `cli.py mesh-views`, `cli.py site-health`
+    POST /api/page-views {path, ref?, new?, app?, build?}   the page opened (once a load), as client-errors are taken (30 in 10
+                                                        min an address): where from, by Cloudflare's headers, in data/page-views.jsonl
     POST /api/feedback {kind, message, contact?, page?, mesh?}   a comment or bug report (kind) from the "?" tab, from anyone viewing
                                                         the site (not other sites' pages; 4,000 characters, 5 an hour an
                                                         address, 200 a day in all): control and invisible characters

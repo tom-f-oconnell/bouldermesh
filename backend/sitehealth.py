@@ -3,7 +3,8 @@
 
 From the report files server.py keeps in its data folder: mesh-views.jsonl (each mesh shown, given up on while
 loading, or turned slowly), client-errors.jsonl (errors in the page, meshes that wouldn't load, the view's graphics
-lost) and slow-requests.jsonl (the site's requests that took seconds). Each line has its time, in UTC.
+lost), slow-requests.jsonl (the site's requests that took seconds) and page-views.jsonl (each time the page opened, and
+roughly where, for the admin page's map: page_views()). Each line has its time, in UTC.
 """
 from __future__ import annotations
 
@@ -14,6 +15,8 @@ import time
 from pathlib import Path
 
 FILES = ("mesh-views.jsonl", "client-errors.jsonl", "slow-requests.jsonl")
+PAGE_VIEWS = "page-views.jsonl"
+SPANS = {"day": 24, "week": 24 * 7, "month": 24 * 30}     # hours, for the admin page's map
 # errors that aren't the page's: browser extensions and in-app browsers' own scripts, and the browser's word for an
 # error in a script from elsewhere, which says nothing more
 NOISE = re.compile(r"^Script error\.?$|window\.ethereum|__firefox__|WKWebView|ResizeObserver loop")
@@ -84,13 +87,46 @@ def summary(views: list[dict], errors: list[dict], slow: list[dict], since: str,
     }
 
 
-def note(s: dict, hours: float = 24) -> tuple[str, str, bool] | None:
+def page_views(opened: list[dict], since: str, until: str | None = None) -> dict:
+    """Where the page was opened from, since until (UTC times, as summary()), by visitors (not editors, nor browsers
+    calling themselves bots): how many times (n), in browsers that hadn't opened it before (new), places as Cloudflare
+    placed them ({lat, lng, place, n}, most first), countries [code, n], sites that linked there [host, n], and the
+    count each UTC day [day, n]; with editors' own opening (editor)."""
+    within = [v for v in opened if since <= v.get("time", "") and (until is None or v["time"] < until) and not v.get("bot")]
+    vs = [v for v in within if not v.get("editor")]
+    places: dict[tuple, dict] = {}
+    for v in vs:
+        if isinstance(v.get("lat"), (int, float)) and isinstance(v.get("lng"), (int, float)):
+            p = places.setdefault((v["lat"], v["lng"]), {"lat": v["lat"], "lng": v["lng"], "n": 0, "place": None})
+            p["n"] += 1
+            p["place"] = p["place"] or ", ".join(x for x in (v.get("city"), v.get("region"), v.get("country")) if x) or None
+    return {
+        "n": len(vs), "new": sum(bool(v.get("new")) for v in vs), "editor": len(within) - len(vs),
+        "app": sum(bool(v.get("app")) for v in vs),
+        "places": sorted(places.values(), key=lambda p: -p["n"]),
+        "unplaced": sum(not isinstance(v.get("lat"), (int, float)) for v in vs),
+        "countries": collections.Counter(v.get("country") or "?" for v in vs).most_common(),
+        "referrers": collections.Counter(v["ref"] for v in vs if v.get("ref")).most_common(10),
+        "days": sorted(collections.Counter(v["time"][:10] for v in vs).items()),
+    }
+
+
+def page_views_for_data(data: Path, now: float | None = None) -> dict:
+    """page_views() over each of SPANS, from a data folder's page-views.jsonl."""
+    opened = read(data, PAGE_VIEWS)
+    return {name: page_views(opened, since_iso(hours, now)) for name, hours in SPANS.items()}
+
+
+def note(s: dict, hours: float = 24, opened: dict | None = None) -> tuple[str, str, bool] | None:
     """The summary as a notification: (title, text, whether anything in it wants looking at), or None if nothing at
-    all happened. Kept under ntfy's 2000 characters."""
+    all happened. Kept under ntfy's 2000 characters. With opened (page_views()), how often the page was opened too."""
     errs, slow = s["errors"], s["slow"]
-    if not s["views"] and not errs["n"] and not errs["old_pages"] and not slow["n"] and not s["left"]:
+    if not s["views"] and not errs["n"] and not errs["old_pages"] and not slow["n"] and not s["left"] and not (opened and opened["n"]):
         return None
     lines = [f"{s['views']} view(s) of {s['meshes']} mesh(es) in {hours:g} h."]
+    if opened and opened["n"]:
+        lines.insert(0, f"The page opened {opened['n']} time(s) ({opened['new']} in new browsers), from "
+                     + ", ".join(f"{c} {n}" for c, n in opened["countries"][:6]) + (", ..." if len(opened["countries"]) > 6 else "") + ".")
     if s["load"]:
         ld = s["load"]
         lines.append(f"Loading a mesh: median {ld['median']:g} s, 90% under {ld['p90']:g} s; {ld['slow']} over {SLOW_LOAD} s"
@@ -128,4 +164,5 @@ def since_iso(hours: float, now: float | None = None) -> str:
 def for_data(data: Path, hours: float = 24, now: float | None = None) -> tuple[str, str, bool] | None:
     """note() of the last `hours` from a data folder's report files."""
     views, errors, slow = (read(data, f) for f in FILES)
-    return note(summary(views, errors, slow, since_iso(hours, now)), hours)
+    since = since_iso(hours, now)
+    return note(summary(views, errors, slow, since), hours, page_views(read(data, PAGE_VIEWS), since))
