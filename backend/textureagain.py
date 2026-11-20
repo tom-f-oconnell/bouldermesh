@@ -32,6 +32,7 @@ import textmask
 
 Log = Callable[[str], None]
 GLB = "scene_dense_mesh_texture.glb"
+TEXTURE_FILE = "texture.json"   # in work/: how it was textured again (pipeline.texture_record()), for the mesh's record
 
 
 class NotSame(RuntimeError):
@@ -154,6 +155,7 @@ def texture_again(mesh_dir: Path, photos: Path, masks: Path | None, work: Path, 
     new = work / GLB
     if not new.is_file():
         raise RuntimeError("TextureMesh made no GLB")
+    (work / TEXTURE_FILE).write_text(json.dumps(pipeline.texture_record(dense / "images", mask_args)))
     say("check", 0.98)
     why = same_faces(old, new)
     if why:

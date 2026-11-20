@@ -38,6 +38,7 @@ import shutil
 import signal
 import sqlite3
 import statistics
+import tarfile
 import sys
 import tempfile
 import threading
@@ -3764,6 +3765,7 @@ def meshes_changed() -> None:
     """A mesh was made, replaced or deleted: what's old is worked out again (old_changed()), old by data in the
     background, once at a time (a change while it runs has it run once more)."""
     old_changed()
+    tiers_changed()
     _old_data_again.set()
     if not _old_data_lock.acquire(blocking=False):
         return
@@ -3976,6 +3978,173 @@ def inputs_of(mid: str) -> dict | None:
         if rec is not None:
             rec = meshinputs.save(MESHES / mid, rec)
     return rec
+
+
+def pipeline_backfill(mid: str) -> tuple[dict, dict]:
+    """What made a mesh from before meshes recorded it (pipeline.write_record()), as far as its files tell: counted as
+    PIPELINE_VERSION 1 and TEXTURE_VERSION 1 (before text was masked), with the features its kept reconstruction says
+    its placing was made from, and its mapper. ({pipeline}, {texture})."""
+    d = MESHES / mid
+    how = _read_json(d / pipeline.MAPPER_FILE) or {}
+    extract = None
+    if (d / reconstruction.FILE).exists():
+        try:
+            with tarfile.open(d / reconstruction.FILE) as tar:
+                extract = (json.load(tar.extractfile("build.json")) or {}).get("extract")
+        except (OSError, tarfile.TarError, KeyError, ValueError, AttributeError):
+            extract = None
+    feats = pipeline.features_record(extract, how, _read_json(d / pipeline.FALLBACKS_FILE) or []) if extract else {"kept": None, "why": None}
+    return ({"version": 1, "backfilled": True, "colmap": how.get("colmap"), "features": feats, "mapper": how.get("mapper")},
+            {"version": 1, "backfilled": True})
+
+
+def pipeline_existing_meshes() -> int:
+    """Record what made each mesh from a project whose inputs.json doesn't say (pipeline_backfill()). Returns how many."""
+    n = 0
+    for m in q("SELECT id FROM meshes WHERE source LIKE 'project:%'"):
+        rec = meshinputs.load(MESHES / m["id"])
+        if rec is None or "pipeline" in rec:
+            continue
+        try:
+            made, tex = pipeline_backfill(m["id"])
+            meshinputs.save(MESHES / m["id"], {**rec, "pipeline": made, "texture": rec.get("texture") or tex})
+            n += 1
+        except Exception as e:  # noqa: BLE001 - only this mesh's record
+            print(f"{m['id']}: recording what made it failed ({type(e).__name__}: {e})", flush=True)
+    if n:
+        tiers_changed()
+        print(f"recorded what made {n} mesh{'' if n == 1 else 'es'} from before meshes recorded it", flush=True)
+    return n
+
+
+# ------------------------------------------------------------- what's out of date, by tier (the admin page's section)
+TIERS_EVERY = 600       # seconds mesh_tiers() is kept before it's worked out again
+_tiers: dict = {"at": 0.0, "report": None}
+# remade by the admin page's buttons at low priority, after old meshes (old_rerun 1) and YouTube's re-searches (2):
+# old_rerun's value for each, the order _claim_old() takes them in
+REMAKE_RANKS = {"pipeline": 3, "new_data": 3, "fallback": 4}
+
+
+def tiers_changed() -> None:
+    _tiers["at"] = 0.0
+
+
+def _new_photos(rec: dict, mesh_made: float) -> int | None:
+    """How many photos a mesh's project, or for a boulder's or a pool's mesh its climbs' harvests, has that it wasn't
+    made from: photos added since (a climb's own), or harvests made or harvested again since (counted as their photos);
+    None where that can't be told (photos offloaded, or not recorded)."""
+    pid, kind = rec.get("project"), rec.get("kind")
+    if kind in ("climb", "other"):
+        files = (rec.get("photos") or {}).get("files")
+        if files is None or not pid or photos_away(pid):
+            return None
+        return len({p.name for p in meshinputs.photos_in(PROJECTS / pid / "photos")} - set(files))
+    if kind in ("boulder", "pool"):
+        then = rec.get("climbs")
+        if then is None:
+            return None
+        climbs = set(then) if kind == "pool" else set(then) | {c["id"] for c in boulder_climbs(rec.get("leaf") or "")}
+        n = 0
+        for cid in climbs:
+            for h in climb_harvests(cid):
+                folder = PROJECTS / h / "photos"
+                try:
+                    if h not in (then.get(cid) or []) or folder.stat().st_mtime > mesh_made:
+                        n += len(meshinputs.photos_in(folder)) if not photos_away(h) else 1
+                except OSError:
+                    continue
+        return n
+    return None
+
+
+def mesh_tiers(fresh: bool = False) -> dict:
+    """The current meshes areas and projects made, by what's out of date: made under older rules (MESH_RULES: remade
+    as their areas run), by an older pipeline (pipeline.PIPELINE_VERSION), from the CPU's SIFT for a reason other than
+    its being judged better (pipeline.fallback_tier()), textured by an older texturing (pipeline.TEXTURE_VERSION; only
+    those whose reconstruction was kept can be textured again), and with new photos they weren't made from. A mesh is
+    counted in the first of rules, pipeline and fallback that it's in; texture and new photos apart. Kept for TIERS_EVERY.
+
+    Returns:
+        {pipeline_version, texture_version, meshes, rules, pipeline, fallback: {n, why: {why: n}}, texture,
+        texture_unkept, new_data, new_photos, ids: {pipeline, fallback, texture, new_data}}.
+    """
+    if not fresh and _tiers["report"] and time.time() - _tiers["at"] < TIERS_EVERY:
+        return _tiers["report"]
+    ids: dict[str, list[str]] = {"pipeline": [], "fallback": [], "texture": [], "new_data": []}
+    rules, unkept, why, photos = 0, 0, collections.Counter(), 0
+    rows = q("SELECT id, source, rules, created FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%' ORDER BY created")
+    for m in rows:
+        rec = meshinputs.load(MESHES / m["id"]) or {}
+        made, tex = rec.get("pipeline") or {}, rec.get("texture") or {}
+        if mesh_is_old(m):
+            rules += 1
+        elif (made.get("version") or 0) < pipeline.PIPELINE_VERSION:
+            ids["pipeline"].append(m["id"])
+        elif pipeline.fallback_tier(made):
+            ids["fallback"].append(m["id"])
+            why[pipeline.fallback_tier(made)] += 1
+        if (tex.get("version") or 0) < pipeline.TEXTURE_VERSION and rec.get("kind") != "rest":
+            if (MESHES / m["id"] / reconstruction.FILE).exists():
+                ids["texture"].append(m["id"])
+            else:
+                unkept += 1
+        try:
+            n = _new_photos(rec, m["created"] or 0) if rec else None
+        except Exception:  # noqa: BLE001 - only this mesh's count
+            n = None
+        if n:
+            ids["new_data"].append(m["id"])
+            photos += n
+    report = {"pipeline_version": pipeline.PIPELINE_VERSION, "texture_version": pipeline.TEXTURE_VERSION, "meshes": len(rows),
+              "rules": rules, "pipeline": len(ids["pipeline"]), "fallback": {"n": len(ids["fallback"]), "why": dict(why)},
+              "texture": len(ids["texture"]), "texture_unkept": unkept, "new_data": len(ids["new_data"]), "new_photos": photos,
+              "ids": ids, "at": time.time()}
+    _tiers.update(at=time.time(), report=report)
+    return report
+
+
+def queue_remakes(mids: list[str], tier: str) -> dict:
+    """Queue these meshes to be made again at low priority (old_rerun REMAKE_RANKS[tier]), taken only when no area has
+    anything else (_claim_old()), from the photos they have: a climb's own mesh by rebuilding its climb, a boulder's by
+    meshing its boulder again (even from the same photos, unless it's for new photos), a pool's by meshing its climbs
+    together again, each on an area's climb of it that isn't busy. A rest goes with its boulder's mesh; a mesh no area
+    lists is left (counted apart). Returns {queued, busy, not_in_area}."""
+    rank, out = REMAKE_RANKS[tier], {"queued": 0, "busy": 0, "not_in_area": 0}
+    note = {"pipeline": "made by an older pipeline", "fallback": "made from the CPU's SIFT without GPU SIFT's being tried or judged",
+            "new_data": "it has new photos"}[tier]
+    free = "ci.status IN ('done','skipped','failed') AND ci.redo IS NULL AND ci.blocked IS NULL"
+    for mid in dict.fromkeys(mids):
+        rec = meshinputs.load(MESHES / mid) or {}
+        kind, pid = rec.get("kind"), rec.get("project")
+        proj = q("SELECT boulder FROM projects WHERE id=?", pid, one=True) if pid else None
+        if kind in ("climb", "other"):
+            rows, redo, pool = q(f"SELECT ci.campaign_id, ci.source_id, ci.status FROM campaign_items ci WHERE ci.project_id=? AND {free} "
+                                 "ORDER BY ci.rank", pid), "rebuild", None
+            any_row = q("SELECT 1 FROM campaign_items WHERE project_id=?", pid, one=True)
+        elif kind == "boulder" and rec.get("leaf"):
+            rows = q(f"SELECT ci.campaign_id, ci.source_id, ci.status FROM campaign_items ci WHERE ci.boulder=? AND {free} ORDER BY ci.rank",
+                     rec["leaf"])
+            redo, pool = ("boulder" if tier == "new_data" else "boulder+again"), None
+            any_row = q("SELECT 1 FROM campaign_items WHERE boulder=?", rec["leaf"], one=True)
+        elif kind == "pool" and proj and proj["boulder"] and rec.get("pool"):
+            marks = ",".join("?" * len(rec["pool"]))
+            rows = q(f"SELECT ci.campaign_id, ci.source_id, ci.status FROM campaign_items ci WHERE ci.climb_id IN ({marks}) AND {free} "
+                     "ORDER BY ci.rank", *rec["pool"])
+            redo, pool = "cluster", proj["boulder"]
+            any_row = q(f"SELECT 1 FROM campaign_items WHERE climb_id IN ({marks})", *rec["pool"], one=True)
+        else:
+            out["not_in_area"] += 1
+            continue
+        if not rows:
+            out["busy" if any_row else "not_in_area"] += 1
+            continue
+        r = rows[0]
+        set_item(r["campaign_id"], r["source_id"], status="pending", retry=0, redo=redo, was=r["status"], redo_started=0,
+                 old_rerun=rank, **({"pool": pool} if pool else {}), note=f"queued to {REDO_NAMES[redo]}, at low priority: {note}")
+        out["queued"] += 1
+    if out["queued"]:
+        tiers_changed()
+    return out
 
 
 def inputs_existing_meshes() -> None:
@@ -4388,7 +4557,10 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         note_fallbacks(mid, proj["name"], pid, "a machine" if remote else "this server")
         if inputs:
             try:
-                meshinputs.save(MESHES / mid, {**inputs, "mesh": mid, "made": time.time()})
+                made = _read_json(MESHES / mid / pipeline.PIPELINE_FILE) or {}     # what made it (pipeline.write_record())
+                meshinputs.save(MESHES / mid, {**inputs, "mesh": mid, "made": time.time(),
+                                               "pipeline": {k: v for k, v in made.items() if k != "texture"} or None,
+                                               "texture": made.get("texture")})
             except OSError as e:
                 log(f"keeping what it was made from failed ({e})")
         waits = q("SELECT 1 FROM projects WHERE id=? AND user_id IS NOT NULL AND COALESCE(approved, 0)<>1", pid, one=True)
@@ -6352,7 +6524,8 @@ def _claim_old(w: Worker, others: list[Worker]):
     items = [(c, i) for c, i in items if not (i["boulder"] and i["boulder"] in taken)]
     if not items:
         return None
-    camp, item = min(items, key=lambda ci: not ci[1]["retry"])     # stable: else in the areas' order
+    # old meshes first, then YouTube's re-searches, then the admin page's remakes (REMAKE_RANKS); stable: else in the areas' order
+    camp, item = min(items, key=lambda ci: (ci[1]["old_rerun"], not ci[1]["retry"]))
     set_item(camp["id"], item["source_id"], status="running")
     w.campaign, w.boulder, w.doing = camp["id"], item["boulder"] if pools_whole(item["boulder"]) else None, item["name"]
     w.item = item["source_id"]
@@ -7114,7 +7287,7 @@ def _run_cluster_redo(camp: dict, row: dict) -> None:
         raise
     except Exception as e:
         end = {"status": row["was"], "note": f"{REDO_NAMES['cluster']}: {type(e).__name__}: {e}"}
-    set_item(cid, sid, **end, redo=None, retry=0, redo_started=0, pool=None)
+    set_item(cid, sid, **end, redo=None, retry=0, redo_started=0, pool=None, old_rerun=0)
 
 
 POOLED_LINK = "pooled with the climbs its photos match"     # a mesh_links note: a pool's mesh, linked to each of its climbs
@@ -7259,7 +7432,7 @@ def _run_boulder_redo(camp: dict, row: dict) -> None:
         proj = boulder_project(b) if b else None
         if proj and proj["status"] == "done" and proj["mesh_id"]:
             boulder_meshed(cid, sid, end, failed)
-    set_item(cid, sid, **end, redo=None, retry=0, redo_started=0)
+    set_item(cid, sid, **end, redo=None, retry=0, redo_started=0, **({} if end.get("status") == "harvested" else {"old_rerun": 0}))
     if not failed:  # which climbs' photos it placed together (what it left out is meshed apart: keep_rest())
         b = q("SELECT boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)["boulder"]
         proj = boulder_project(b) if b else None
@@ -8134,6 +8307,10 @@ def run_texture_again(mid: str) -> None:
         log(f"-- {time.strftime('%Y-%m-%d %H:%M')}: texturing again")
         new = textureagain.texture_again(mesh_dir, PROJECTS / pid / "photos", PROJECTS / pid / "masks", work, log, progress=progress)
         textureagain.install(mesh_dir, new, log)
+        rec = inputs_of(mid)
+        if rec is not None and (work / textureagain.TEXTURE_FILE).exists():     # textured as this code textures now
+            meshinputs.save(mesh_dir, {**rec, "texture": json.loads((work / textureagain.TEXTURE_FILE).read_text())})
+            tiers_changed()
         queue_pack(mid)
         try:        # checked again at once, so that it leaves the admin page's list of black-patched ones
             got = texturecheck.check(mesh_dir)
@@ -8483,8 +8660,8 @@ def campaign_view(camp: dict) -> dict:
         counts["paused"] = len(paused)
     pending = ordered_pending(camp)
     # queued again as their meshes are old (queue_old()): at low priority, counted and listed apart from its own
-    old_next = [i for i in ordered_pending(camp, old=True) if i["old_rerun"] == 1]
-    old_counts = {r["status"]: r["n"] for r in q("SELECT status, COUNT(*) n FROM campaign_items WHERE campaign_id=? AND old_rerun=1 "
+    old_next = [i for i in ordered_pending(camp, old=True) if i["old_rerun"] in (1, 3, 4)]
+    old_counts = {r["status"]: r["n"] for r in q("SELECT status, COUNT(*) n FROM campaign_items WHERE campaign_id=? AND old_rerun IN (1, 3, 4) "
                                                   "AND status IN ('pending','running','waiting','harvested') AND paused IS NULL "
                                                   "GROUP BY status", cid)}
     for k, n in old_counts.items():
@@ -13708,7 +13885,7 @@ def admin_state() -> dict:
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
             "stops": [dict(r) for r in q("SELECT at, kind, id, name, was FROM job_stops ORDER BY at DESC LIMIT 30")],
             "texture_again": texture_again_state(), "black_textures": black_textures(),
-            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "youtube_research": research_status(), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "youtube_research": research_status(), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "tiers": {k: v for k, v in mesh_tiers().items() if k != "ids"} | {"texture_ids": mesh_tiers()["ids"]["texture"]}, "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q), "backup": backup_state(),
             "manifest": {**manifest_state(), "quiet": manifest_quiet(), "hours": MANIFEST_HOURS}, "lost_blocks": lost_blocks()}
 
@@ -13918,6 +14095,17 @@ def admin_retexture(_: dict) -> dict:
                       + (f"; {away} whose photos are in the backup weren't" if away else "")}
 
 
+def admin_remake_tier(body: dict) -> dict:
+    """Queue the meshes of one of mesh_tiers()'s tiers to be made again at low priority (queue_remakes()):
+    {"tier": "pipeline" | "fallback" | "new_data"}."""
+    tier = body.get("tier")
+    if tier not in REMAKE_RANKS:
+        raise ValueError(f"tier must be one of {', '.join(REMAKE_RANKS)}")
+    got = queue_remakes(mesh_tiers(fresh=True)["ids"][tier], tier)
+    return {"result": f"queued {got['queued']} to be made again at low priority" + (f"; {got['busy']} already queued or busy" if got["busy"] else "")
+            + (f"; {got['not_in_area']} not in any area, left (remake each from its project's card)" if got["not_in_area"] else "")}
+
+
 def admin_texture_again(body: dict) -> dict:
     """Queue meshes to be textured again, keeping their shape (run_texture_again()): {"ids": "<mesh ids, space or comma
     separated>"}."""
@@ -13972,7 +14160,7 @@ def main() -> None:
     threading.Thread(target=rest_existing_meshes, daemon=True).start()
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
     threading.Thread(target=shape_existing_meshes, daemon=True).start()
-    threading.Thread(target=inputs_existing_meshes, daemon=True, name="inputs-backfill").start()
+    threading.Thread(target=lambda: (inputs_existing_meshes(), pipeline_existing_meshes()), daemon=True, name="inputs-backfill").start()
     threading.Thread(target=backfill_step_runs, daemon=True).start()
     carried = carry_sets_existing()
     if carried:
@@ -14010,7 +14198,7 @@ def main() -> None:
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rejected-check": rejected_check, "backup-now": admin_backup_now, "texture-again": admin_texture_again, "rest": admin_rest,
                                        "remesh-untied": admin_remesh_untied, "inputs-check": admin_inputs_check,
-                                       "old-decide": admin_old_decide, "lost-decide": admin_lost_decide,
+                                       "old-decide": admin_old_decide, "lost-decide": admin_lost_decide, "remake-tier": admin_remake_tier,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteer-trial": admin_volunteer_trial,

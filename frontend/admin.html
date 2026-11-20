@@ -176,6 +176,13 @@
     <div class="row"><button class="sec" id="rest-all">Mesh the scenes boulders' meshes left out, tied to them</button><span class="note" id="rest-note"></span></div>
     <div class="row"><button class="sec" id="remesh-untied">Mesh again the boulders meshed before ties were recorded</button><span class="note" id="remesh-note"></span></div>
     <div id="old-meshes" class="note"></div>
+    <div id="tiers" class="note"></div>
+    <div class="row">
+      <button class="sec" id="tier-texture" title="Colour them again from their photos as meshes are textured now, keeping their shape and cleanup: a minute or two each">Texture again</button>
+      <button class="sec" id="tier-pipeline" title="Make them again from the photos they have, as meshes are made now, at low priority: only when no area has anything else, after old meshes">Remake, low priority</button>
+      <button class="sec" id="tier-fallback" title="Make them again, at the lowest priority: meshes made from the CPU's SIFT without GPU SIFT's being tried, or after it failed (not those where the CPU's was judged better)">Remake, lowest priority</button>
+      <button class="sec" id="tier-new" title="Make them again with the photos they weren't made from, at low priority: a boulder's or a pool's mesh with its climbs' new photos">Remake with new photos</button>
+    </div>
     <div class="note">A boulder's mesh tries the photos it leaves out again against itself. Of what's still left, each set
       COLMAP places together (6 photos or more) is a scene to mesh apart, as another side or rock, if it's tied to the
       boulder: it holds a climb's Mountain Project page photo, or 2 of its photos match photos the mesh placed (16 verified
@@ -448,6 +455,17 @@ function oldMeshesNote(o){
     (each queued again as its area runs)${o.needs_backup ? `, <span class="warn">${o.needs_backup} of which need data from the backup first</span>` : ''}.<br><b>Old by data: ${o.old_data || 0}</b>, of climbs a newer mesh made under the same rules, from photos
     they lacked, is of too: kept, and left out of visitors' lists of a boulder's meshes.`;
 }
+// What's out of date, by tier (server mesh_tiers()): what each button remakes or textures again, and how many
+function tiersNote(t){
+  if (!t) return '';
+  const fb = t.fallback || { n: 0, why: {} };
+  const whys = Object.entries(fb.why || {}).map(([w, n]) => `${n} ${w === 'not-tried' ? 'with GPU SIFT not tried' : 'after GPU SIFT failed'}`).join(', ');
+  return `<b>Out of date</b> (of ${t.meshes} current meshes; made by older rules: ${t.rules}, remade as their areas run):<ul>
+    <li><b>${t.pipeline}</b> made by an older pipeline (before version ${t.pipeline_version})</li>
+    <li><b>${fb.n}</b> made from the CPU's SIFT for another reason than its being judged better${whys ? ` (${esc(whys)})` : ''}</li>
+    <li><b>${t.texture}</b> textured by older texturing (before version ${t.texture_version}) that can be textured again${t.texture_unkept ? `; ${t.texture_unkept} more whose reconstruction wasn't kept need remaking first` : ''}</li>
+    <li><b>${t.new_data}</b> with ${t.new_photos} photos they weren't made from</li></ul>`;
+}
 // a confirmation for what can't be taken back: a dialog whose red button goes on (resolves true), as the site's page has
 // also: a second way to go, {label, value} (resolved with value; the main button with true, Cancel with false)
 function askDanger(title, body, go, also = null){
@@ -680,6 +698,9 @@ function render(s){
   $('#yt-research-note').textContent = yr.disabled || `${yr.stale} climb(s) searched the old way`;
   $('#wide-retry').checked = v['youtube.wide_retry'];
   $('#old-meshes').innerHTML = oldMeshesNote(s.old_meshes);
+  $('#tiers').innerHTML = tiersNote(s.tiers);
+  $('#tier-texture').disabled = !s.tiers?.texture; $('#tier-pipeline').disabled = !s.tiers?.pipeline;
+  $('#tier-fallback').disabled = !s.tiers?.fallback?.n; $('#tier-new').disabled = !s.tiers?.new_data;
   $('#rest-auto').checked = v['boulders.rest_auto'];
   if (document.activeElement !== $('#beta-parallel')) $('#beta-parallel').value = v['beta.parallel'];
   if (document.activeElement !== $('#placed-percent')) $('#placed-percent').value = v['boulders.placed_percent'];
@@ -1079,6 +1100,18 @@ $('#texblack').onclick = async () => {
   if (!ids.length || !confirm(`Texture again the ${ids.length} mesh(es) whose textures are black-patched? A minute or two each, at low priority.`)) return;
   try { msg((await call('/api/admin/actions/texture-again', { ids: ids.join(' ') })).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); }
 };
+$('#tier-texture').onclick = async () => {
+  const ids = state?.tiers?.texture_ids || [];
+  if (!ids.length || !confirm(`Texture again the ${ids.length} mesh(es) textured by older texturing? A minute or two each, at low priority.`)) return;
+  try { msg((await call('/api/admin/actions/texture-again', { ids: ids.join(' ') })).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); }
+};
+for (const [id, tier, n, what] of [['#tier-pipeline', 'pipeline', t => t.pipeline, 'made by an older pipeline, at low priority'],
+                                   ['#tier-fallback', 'fallback', t => t.fallback.n, 'made from the CPU\'s SIFT without GPU SIFT\'s being tried or judged, at the lowest priority'],
+                                   ['#tier-new', 'new_data', t => t.new_data, 'with photos they weren\'t made from, at low priority']])
+  $(id).onclick = async () => {
+    if (!state?.tiers || !confirm(`Make again the ${n(state.tiers)} mesh(es) ${what}? Each takes as long as meshing does, but only when nothing else is waiting.`)) return;
+    try { msg((await call('/api/admin/actions/remake-tier', { tier })).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); }
+  };
 $('#texagain').onclick = async () => { try { msg((await call('/api/admin/actions/texture-again', { ids: $('#texagain-ids').value })).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#retex').onclick = async () => { try { msg((await call('/api/admin/actions/retexture', {})).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#via').onchange = () => save({ 'youtube.via': $('#via').value });

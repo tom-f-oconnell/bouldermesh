@@ -287,6 +287,17 @@ stays as an older version of it; one made under the same rules never does. A bou
 one whose climbs linked only "same boulder as" it doesn't place, if they're on that boulder, as its boulder's mesh is
 shown for them anyway; the server checks for these as it starts.
 
+**Out of date, by tier.** Each mesh records what made it (`pipeline.json` beside it, then `inputs.json`'s `pipeline`
+and `texture`): `PIPELINE_VERSION` and `TEXTURE_VERSION` in backend/pipeline.py, the tools' versions, and which
+features its placing kept and why. Meshes from before that are counted as version 1 of each. The admin page counts,
+beside the old meshes, those made by an older pipeline, those made from the CPU's SIFT without GPU SIFT's being tried or
+after it failed (not where the CPU's was judged better), those textured by older texturing whose reconstruction was
+kept, and those with photos they weren't made from. *Texture again* colours the third kind again, keeping their shape;
+the others' buttons queue them to be made again from the photos they have, at low priority (after old meshes, and the
+CPU-SIFT ones last), on an area's climb of each: a climb's mesh by rebuilding it, a boulder's by meshing its boulder
+again, a pool's by meshing its climbs together again. Raise `PIPELINE_VERSION` with any change to how photos are
+placed or meshed, and `TEXTURE_VERSION` with any change to texturing alone.
+
 A mesh is *old by data* when a newer one, made under the same rules, is of every climb it's of, and was made from photos
 it lacked (by what each was made from, `inputs.json`; where that wasn't kept, when its photos are some of the newer
 one's). It stays current, and isn't deleted, but visitors' lists of a boulder's meshes leave it out too, and editors see
@@ -1551,6 +1562,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_heading.py     # offline: which way a mesh faces, from photos' compasses and Mountain Project's text, and which wins
     python3 tests/test_terrain.py     # offline: elevation squares, with stand-ins for USGS's and IGN's services
     python3 tests/test_skyline.py     # offline: facing from a made-up skyline, and each way it gives up early
+    python3 tests/test_tiers.py       # offline: what made each mesh, what's out of date by tier, remaking a tier
     python3 tests/test_textmask.py    # offline: text masked for texturing (the detector itself only if cached, or MODELS=1)
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
     python3 tests/test_scale.py       # offline: sizing people, objects and the rock on scenes built with known sizes

@@ -53,6 +53,16 @@ GPU_MATCH_ARGS = ["--TwoViewGeometry.min_num_inliers", "12"]
 # With no GPU to be had, features are the CPU's as before.
 GPU_SIFT = os.environ.get("GPU_SIFT", "1") == "1"
 AFFINE_SIFT = ["--SiftExtraction.estimate_affine_shape", "1", "--SiftExtraction.domain_size_pooling", "1"]
+# What makes a mesh, as each records it (pipeline.json beside it, then its inputs.json's "pipeline" and "texture"): when
+# these go up, the server counts meshes made under lower ones as made by an older pipeline (remade at low priority, from
+# the admin page), or textured by an older one (textured again, keeping their shape). Raise PIPELINE_VERSION with any
+# change to how photos are placed or the mesh is made from them; TEXTURE_VERSION with any change to texturing alone.
+#   PIPELINE_VERSION 1: COLMAP 3.9.1 (GPU SIFT, the CPU's as its fallback; the incremental mapper), OpenMVS 2.4: every
+#                       mesh made before versions were recorded counts as this
+#   TEXTURE_VERSION 1: people masked; 2: text laid over photos masked too (textmask.py)
+PIPELINE_VERSION = 1
+TEXTURE_VERSION = 2
+PIPELINE_FILE = "pipeline.json"
 MAX_TEXTURE = 4096      # larger atlases get split: an 8192 x 8192 one takes 270 MB in a browser, which can refuse it
 MIN_FACES = 1000        # a mesh with fewer isn't one: harvests' empty meshes had 0-574, real ones 3,870 and up (design.md)
 MIN_REGISTERED = 6      # photos COLMAP must place together for a mesh to be made from them
@@ -186,6 +196,56 @@ def mvs_version() -> tuple[int, int] | None:
         return None
     m = re.search(r"OpenMVS \S* ?v(\d+)\.(\d+)", out.stdout + out.stderr)
     return (int(m[1]), int(m[2])) if m else None
+
+
+def texture_record(images: Path, mask_args: list[str]) -> dict:
+    """How a mesh was textured, for its pipeline record: TEXTURE_VERSION, and whether people and text were masked (text
+    if textmask.add_to_masks() ran over these photos: its shares beside them)."""
+    return {"version": TEXTURE_VERSION, "masked": bool(mask_args), "text": (images.parent / textmask.SHARES).exists(),
+            "max_size": MAX_TEXTURE, "every": int(meshopts.mapper().get("texture_every") or 1)}
+
+
+def features_record(extract: dict | None, how: dict | None, fell: list[dict]) -> dict:
+    """Which features a mesh's placing was made from, and why: {kept: "gpu" | "cpu" | "gpu+cpu" | None, why}. why is
+    "judged" where the CPU's were tried after GPU SIFT's placing fell short and kept as better, "gpu-failed" where GPU
+    SIFT itself failed, "not-tried" where the CPU's were used without GPU SIFT being tried (no GPU or no room for it,
+    GPU_SIFT off, photos from a phone), or None for GPU SIFT's."""
+    kept = (extract or {}).get("device")
+    rejected = (how or {}).get("plain_sift_rejected") or {}
+    if kept == "gpu":
+        why = None
+    elif rejected.get("kept") == "cpu" or (rejected and not rejected.get("kept")):
+        why = "judged"      # before the better was kept (Nov 17), the CPU's always was, once tried
+    elif any(f.get("step") == "feature_extractor" for f in fell):
+        why = "gpu-failed"
+    else:
+        why = "not-tried"
+    return {"kept": kept, "why": why}
+
+
+def fallback_tier(record: dict | None) -> str | None:
+    """Why a mesh's features are the CPU's for a reason other than being judged better than GPU SIFT's (what the admin
+    page offers to remake at the lowest priority), or None."""
+    f = (record or {}).get("features") or {}
+    return f.get("why") if f.get("kept") in ("cpu", "gpu+cpu") and f.get("why") in ("gpu-failed", "not-tried") else None
+
+
+def write_record(work: Path, out_dir: Path, texture: dict | None) -> dict:
+    """What made this mesh (PIPELINE_FILE in out_dir): PIPELINE_VERSION, the tools' versions, the features its placing
+    kept and why, the mapper, OpenMVS's settings, and how it was textured (texture_record(), None if it wasn't)."""
+    read = lambda f: json.loads(f.read_text()) if f.exists() else None  # noqa: E731
+    how = read(work / MAPPER_FILE) or {}
+    rec = {"version": PIPELINE_VERSION, "colmap": colmap_build(), "openmvs": list(mvs_version() or []) or None,
+           "image": os.environ.get("BOULDERMESH_COMMIT") or None,
+           "features": {**features_record(read(work / EXTRACT_FILE), how, read(work / FALLBACKS_FILE) or []),
+                        "gpu_sift": GPU_SIFT, "least": PLAIN_SIFT_LEAST},
+           "mapper": how.get("mapper"), "dense": _mvs24(MVS24_DENSIFY), "mesh": _mvs24(MVS24_MESH), "texture": texture}
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / PIPELINE_FILE).write_text(json.dumps(rec, indent=1))
+    except OSError:
+        pass
+    return rec
 
 
 def texture_views(work: Path, images: Path, log=None) -> list[str]:
@@ -1350,6 +1410,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             if glb.exists():
                 out_dir.mkdir(parents=True, exist_ok=True)
                 keep_orientation()
+                write_record(work, out_dir, texture_record(dense / "images", mask_args))
                 for f in work.glob("scene_dense_mesh_texture_*"):
                     shutil.copyfile(f, out_dir / f.name)
                 return Path(shutil.copyfile(glb, out_dir / "mesh.glb"))
@@ -1358,6 +1419,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
 
     out_dir.mkdir(parents=True, exist_ok=True)
     keep_orientation()
+    write_record(work, out_dir, None)
     dst = out_dir / "mesh.ply"
     shutil.copyfile(mesh, dst)    # not its mode: OpenMVS writes PLYs readable only by whoever ran it
     return dst
