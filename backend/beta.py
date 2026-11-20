@@ -9,8 +9,8 @@ first hands' holds are start holds, the last hands' finish holds, other hands' h
 only feet touched foot holds. People's masks only say where people are, not which parts are hands
 and which feet, which is why a pose model is used.
 
-  beta.json      per video: its holds, each limb's track on the mesh, the climber's centre's (centre), and how
-                 far it got
+  beta.json      per video: its holds, each limb's track on the mesh, the climber's centre's (centre, in
+                 pieces), and how far it got
   beta_<tag>.jpg the video's placed frame most matched, with the tracks and holds drawn on it
   holds.json     holds marked by hand in the viewer: [{p: [x, y, z], role}]
   beta_poses.json per video, each frame's climber: {t, kp, sc, ref, H}, all their keypoints and scores,
@@ -55,6 +55,10 @@ KP_MIN = 0.3            # keypoint scores below this aren't used
 # Halpe26 has no keypoint at the body's middle: its centre is taken as halfway between the middle of the shoulders (5, 6)
 # and of the hips (11, 12)
 CENTRE = (5, 6, 11, 12)
+SPIKE = 0.1             # a centre point this share of the rock's size from the median of those within SPIKE_SECONDS is dropped
+SPIKE_SECONDS = 1.0
+GAP_SECONDS = 1.0       # a centre track breaks where no point is this long, or where it jumps SPIKE of the rock's size,
+LEAST_RUN = 3           # and pieces of it with fewer points than this are dropped, as glitches (a cut, a bad match)
 
 
 def available() -> bool:
@@ -423,7 +427,8 @@ def centre_track(mesh: "Mesh", cams: dict[str, dict], sizes: dict[str, tuple[int
         views: Mesh.view()s already made, by name; those made here are added.
 
     Returns:
-        [[t, x, y, z]], for the frames where it meets the mesh.
+        Its pieces (pieces()), each [[t, x, y, z]], for the frames where it meets the mesh, spikes taken out
+        (despike()).
     """
     import numpy as np
     views = {} if views is None else views
@@ -441,7 +446,38 @@ def centre_track(mesh: "Mesh", cams: dict[str, dict], sizes: dict[str, tuple[int
         X = views[ref].hit(q[:2] / q[2])[0]
         if X is not None:
             out.append([round(float(f["t"]), 2), *(round(float(x), 5) for x in X)])
+    return pieces(despike(out, SPIKE * mesh.size), SPIKE * mesh.size)
+
+
+def despike(track: list[list[float]], radius: float, window: float = SPIKE_SECONDS) -> list[list[float]]:
+    """A track ([[t, x, y, z]], in time order) without its spikes: points further than radius from the median of
+    those within window seconds of them, themselves included. A point with fewer than two others near in time is
+    kept, as there's nothing to tell it by."""
+    import numpy as np
+    if len(track) < 3:
+        return track
+    a = np.asarray(track, float)
+    t, P = a[:, 0], a[:, 1:]
+    out = []
+    for i, row in enumerate(track):
+        near = np.flatnonzero(np.abs(t - t[i]) <= window)
+        if len(near) < 3 or np.linalg.norm(P[i] - np.median(P[near], axis=0)) <= radius:
+            out.append(row)
     return out
+
+
+def pieces(track: list[list[float]], jump: float, gap: float = GAP_SECONDS, least: int = LEAST_RUN) -> list[list[list[float]]]:
+    """A track ([[t, x, y, z]], in time order) broken where it's missing for longer than gap seconds or jumps further
+    than jump: its pieces with at least `least` points."""
+    import numpy as np
+    out, run = [], []
+    for row in track:
+        if run and (row[0] - run[-1][0] > gap or np.linalg.norm(np.subtract(row[1:], run[-1][1:])) > jump):
+            out.append(run)
+            run = []
+        run.append(row)
+    out.append(run)
+    return [r for r in out if len(r) >= least]
 
 
 def add_centres(mesh_dir: Path) -> int:

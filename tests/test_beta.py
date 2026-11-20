@@ -171,6 +171,14 @@ kp[5], kp[6], kp[11], kp[12] = [100, 100], [140, 100], [104, 200], [136, 200]
 assert close(beta.centre_point(kp, sc), [120, 150])
 sc[11] = 0.1
 assert beta.centre_point(kp, sc) is None, "no hip, no centre"
+line = [[i * 0.5, i * 0.01, 0, 0] for i in range(8)]
+spiked = line[:3] + [[1.5, 0.03, 5, 0]] + line[4:]
+assert beta.despike(spiked, 0.1) == line[:3] + line[4:], "a point far off its neighbours' line goes"
+assert beta.despike(line, 0.1) == line, "a steady track is untouched"
+assert beta.despike([[0, 0, 0, 0], [5, 9, 9, 9]], 0.1) == [[0, 0, 0, 0], [5, 9, 9, 9]], "nothing near in time to tell by"
+far = [[t, 5, 0, 0] for t in (4.0, 4.5)]
+later = [[t, 0.1, 0, 0] for t in (9.0, 9.5, 10.0)]
+assert beta.pieces(line + far + later, 0.1) == [line, later], "broken at gaps and jumps, short pieces dropped"
 with tempfile.TemporaryDirectory() as td:
     d = pathlib.Path(td)
     pipeline.write_ply(d / "mesh.ply", [(-2, -2, 0), (2, -2, 0), (-2, 2, 0), (2, 2, 0)], [(9, 9, 9)] * 4, [(0, 1, 2), (1, 3, 2)])
@@ -180,13 +188,16 @@ with tempfile.TemporaryDirectory() as td:
     frames = [{"t": 0.5, "kp": kp, "sc": [1] * 26, "ref": "a.jpg", "H": [1, 0, 0, 0, 1, 0, 0, 0, 1]},
               {"t": 1.0, "kp": kp, "sc": [1] * 26, "ref": None, "H": None}]
     got = beta.centre_track(beta.Mesh.load(d), {"a.jpg": cam}, {"a.jpg": (640, 480)}, frames)
-    assert len(got) == 1 and got[0][0] == 0.5 and close(got[0][1:], X, 1e-4), got
+    assert got == [], "one point is too short a piece"
+    frames = [{**frames[0], "t": t} for t in (0.5, 1.0, 1.5)] + frames[1:]
+    got = beta.centre_track(beta.Mesh.load(d), {"a.jpg": cam}, {"a.jpg": (640, 480)}, frames)
+    assert len(got) == 1 and [p[0] for p in got[0]] == [0.5, 1.0, 1.5] and close(got[0][0][1:], X, 1e-4), got
     (d / "cameras.json").write_text(json.dumps([{"name": "a.jpg", **cam}]))
     (d / beta.POSES_FILE).write_text(json.dumps({"u1": frames}))
     beta.save(d, {"status": "done", "videos": [{"url": "u1", "holds": []}, {"url": "u2", "holds": []}]})
     assert beta.add_centres(d) == 1, "only the video with poses kept"
     vids = beta.load(d)["videos"]
-    assert close(vids[0]["centre"][0][1:], X, 1e-4) and "centre" not in vids[1], vids
+    assert close(vids[0]["centre"][0][0][1:], X, 1e-4) and "centre" not in vids[1], vids
     assert beta.add_centres(d) == 0, "not again"
 
 # --- YouTube refusing partway: it waits, and then does only the videos it hadn't ---------------------------------
