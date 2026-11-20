@@ -5236,6 +5236,11 @@ function drawBeta(){
         new THREE.LineBasicMaterial({ color: limb.endsWith('h') ? 0xe8e8e8 : 0xffc83c, transparent: true, opacity: .55 }));
       line.userData.beta = true; g.add(line);
     }
+    if ((v.centre || []).length > 1) {     // the climber's body: halfway between the middles of their shoulders and hips
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(v.centre.map(t => new THREE.Vector3(t[1], t[2], t[3]))),
+        new THREE.LineBasicMaterial({ color: 0x46c8ff, transparent: true, opacity: .8 }));
+      line.userData.beta = true; g.add(line);
+    }
     // not on faces hidden; faint while another video's are picked out (renderBetaVids())
     for (const h of v.holds || []) if (!onHiddenFace(h.p, node)) ring(h.p, h.role, 'found', !!betaState.focus && betaState.focus !== v.tag);
   }

@@ -165,6 +165,30 @@ with tempfile.TemporaryDirectory() as td:
     V, F = beta.read_ply(d / "q.ply")
     assert F.tolist() == [[0, 1, 2], [0, 2, 3]] and V.shape == (4, 3), "a quad becomes two triangles"
 
+# --- the climber's centre: halfway between shoulders' and hips' middles, cast onto the mesh, and added to old beta ---
+kp, sc = np.zeros((26, 2)), np.ones(26)
+kp[5], kp[6], kp[11], kp[12] = [100, 100], [140, 100], [104, 200], [136, 200]
+assert close(beta.centre_point(kp, sc), [120, 150])
+sc[11] = 0.1
+assert beta.centre_point(kp, sc) is None, "no hip, no centre"
+with tempfile.TemporaryDirectory() as td:
+    d = pathlib.Path(td)
+    pipeline.write_ply(d / "mesh.ply", [(-2, -2, 0), (2, -2, 0), (-2, 2, 0), (2, 2, 0)], [(9, 9, 9)] * 4, [(0, 1, 2), (1, 3, 2)])
+    u, v = beta.project(cam, (640, 480), X)
+    kp = [[0, 0]] * 26
+    kp[5], kp[6], kp[11], kp[12] = [u - 10, v - 20], [u + 10, v - 20], [u - 10, v + 20], [u + 10, v + 20]
+    frames = [{"t": 0.5, "kp": kp, "sc": [1] * 26, "ref": "a.jpg", "H": [1, 0, 0, 0, 1, 0, 0, 0, 1]},
+              {"t": 1.0, "kp": kp, "sc": [1] * 26, "ref": None, "H": None}]
+    got = beta.centre_track(beta.Mesh.load(d), {"a.jpg": cam}, {"a.jpg": (640, 480)}, frames)
+    assert len(got) == 1 and got[0][0] == 0.5 and close(got[0][1:], X, 1e-4), got
+    (d / "cameras.json").write_text(json.dumps([{"name": "a.jpg", **cam}]))
+    (d / beta.POSES_FILE).write_text(json.dumps({"u1": frames}))
+    beta.save(d, {"status": "done", "videos": [{"url": "u1", "holds": []}, {"url": "u2", "holds": []}]})
+    assert beta.add_centres(d) == 1, "only the video with poses kept"
+    vids = beta.load(d)["videos"]
+    assert close(vids[0]["centre"][0][1:], X, 1e-4) and "centre" not in vids[1], vids
+    assert beta.add_centres(d) == 0, "not again"
+
 # --- YouTube refusing partway: it waits, and then does only the videos it hadn't ---------------------------------
 from climbs import youtube  # noqa: E402
 with tempfile.TemporaryDirectory() as td:

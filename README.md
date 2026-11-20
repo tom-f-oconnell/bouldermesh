@@ -422,7 +422,8 @@ blue hand holds, magenta foot-only holds and red finish holds (start and hand ho
 too). *Find beta* looks at each video with frames placed in the mesh. It finds the climber's hands and
 feet with a pose model, casts them onto the mesh, and keeps the points where one stayed still for at
 least a second. The first holds the hands used are start holds, the last ones finish holds, and holds
-only feet touched are foot holds. Each video has its own holds and tracks, which can be shown or
+only feet touched are foot holds. Each video has its own holds and tracks (hands white, feet yellow, and
+the climber's centre cyan: halfway between the middles of their shoulders and hips), which can be shown or
 hidden, and a picture of its frame with the tracks and holds drawn on it. Expect a few minutes per
 video on a CPU. Meshes built before Nov 3 didn't keep their cameras' lenses, and those before Nov 1
 where their photos were placed, so they need rebuilding first. Each new mesh with video frames placed in it

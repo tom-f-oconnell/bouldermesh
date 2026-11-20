@@ -2428,6 +2428,24 @@ def heading_existing_meshes() -> None:
             time.sleep(0.05)
 
 
+def centres_existing_meshes() -> None:
+    """Give videos whose beta was found before there were centre tracks one each (beta.add_centres()), newest mesh
+    first, at the lowest CPU priority."""
+    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    n = 0
+    for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL ORDER BY created DESC"):
+        d = MESHES / m["id"]
+        if not (d / beta_mod.POSES_FILE).exists():
+            continue
+        try:
+            n += beta_mod.add_centres(d)
+        except Exception as e:
+            print(f"centre tracks for mesh {m['id']} failed ({type(e).__name__}: {e})", flush=True)
+        time.sleep(0.05)
+    if n:
+        print(f"centre tracks added for {plural(n, 'video')}, from their kept poses", flush=True)
+
+
 # which way meshes face from their photos' skyline (skyline.py): in the background, one at a time, at the lowest CPU
 # priority, once a mesh's size is known (its parallax check is in metres); most stop at its place's horizon, in a second
 _skylines: "queue.Queue[str]" = queue.Queue()
@@ -13207,6 +13225,7 @@ def main() -> None:
     threading.Thread(target=orient_existing_meshes, daemon=True).start()
     threading.Thread(target=source_existing_meshes, daemon=True).start()
     threading.Thread(target=heading_existing_meshes, daemon=True).start()
+    threading.Thread(target=centres_existing_meshes, daemon=True, name="centres-backfill").start()
     threading.Thread(target=skyline_worker, daemon=True).start()
     threading.Thread(target=adopt_old_pools, daemon=True).start()
     threading.Thread(target=rest_existing_meshes, daemon=True).start()

@@ -9,7 +9,8 @@ first hands' holds are start holds, the last hands' finish holds, other hands' h
 only feet touched foot holds. People's masks only say where people are, not which parts are hands
 and which feet, which is why a pose model is used.
 
-  beta.json      per video: its holds, each limb's track on the mesh, and how far it got
+  beta.json      per video: its holds, each limb's track on the mesh, the climber's centre's (centre), and how
+                 far it got
   beta_<tag>.jpg the video's placed frame most matched, with the tracks and holds drawn on it
   holds.json     holds marked by hand in the viewer: [{p: [x, y, z], role}]
   beta_poses.json per video, each frame's climber: {t, kp, sc, ref, H}, all their keypoints and scores,
@@ -51,6 +52,9 @@ POSE = {"det": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx
 # Halpe26 keypoints: wrists 9, 10; elbows 7, 8; ankles 15, 16; big toes 20, 21
 LIMBS = {"lh": ("hand", 9, 7), "rh": ("hand", 10, 8), "lf": ("foot", 15, 20), "rf": ("foot", 16, 21)}
 KP_MIN = 0.3            # keypoint scores below this aren't used
+# Halpe26 has no keypoint at the body's middle: its centre is taken as halfway between the middle of the shoulders (5, 6)
+# and of the hips (11, 12)
+CENTRE = (5, 6, 11, 12)
 
 
 def available() -> bool:
@@ -399,6 +403,82 @@ def limb_points(kp, sc) -> dict:
     return {k: (None if v is None else (float(v[0]), float(v[1]))) for k, v in out.items()}
 
 
+def centre_point(kp, sc) -> tuple[float, float] | None:
+    """Where a climber's body is in a frame (CENTRE), from one person's keypoints, or None."""
+    import numpy as np
+    if min(float(sc[i]) for i in CENTRE) < KP_MIN:
+        return None
+    x, y = np.asarray(kp, float)[list(CENTRE)].mean(axis=0)
+    return float(x), float(y)
+
+
+def centre_track(mesh: "Mesh", cams: dict[str, dict], sizes: dict[str, tuple[int, int]], frames: list[dict],
+                 views: dict | None = None) -> list[list[float]]:
+    """The climber's centre through a video, cast onto the mesh from the placed frame each of its frames matched,
+    as the hands and feet are: the rock behind them.
+
+    Args:
+        cams: placed frames' cameras.json entries, by name; sizes: those frames' sizes.
+        frames: the video's entries in POSES_FILE.
+        views: Mesh.view()s already made, by name; those made here are added.
+
+    Returns:
+        [[t, x, y, z]], for the frames where it meets the mesh.
+    """
+    import numpy as np
+    views = {} if views is None else views
+    out = []
+    for f in frames:
+        ref, H = f.get("ref"), f.get("H")
+        uv = centre_point(f["kp"], f["sc"]) if ref in cams and ref in sizes and H else None
+        if uv is None:
+            continue
+        q = np.asarray(H, float).reshape(3, 3) @ np.array([uv[0], uv[1], 1.0])
+        if abs(q[2]) < 1e-12:
+            continue
+        if ref not in views:
+            views[ref] = mesh.view(cams[ref], sizes[ref])
+        X = views[ref].hit(q[:2] / q[2])[0]
+        if X is not None:
+            out.append([round(float(f["t"]), 2), *(round(float(x), 5) for x in X)])
+    return out
+
+
+def add_centres(mesh_dir: Path) -> int:
+    """Give each video of a mesh's beta.json with no centre track one, from POSES_FILE: for beta found before there
+    were centre tracks. A placed frame's size is its lens's, so its photo isn't needed.
+
+    Returns:
+        How many videos were given one.
+    """
+    record = load(mesh_dir)
+    if not record or record.get("status") == "running":
+        return 0
+    try:
+        poses = json.loads((mesh_dir / POSES_FILE).read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return 0
+    todo = [v for v in record.get("videos") or [] if "centre" not in v and v.get("url") in poses]
+    if not todo:
+        return 0
+    cams = {c["name"]: c for c in json.loads((mesh_dir / "cameras.json").read_text())}
+    sizes = {n: (c["lens"]["width"], c["lens"]["height"]) for n, c in cams.items()
+             if (c.get("lens") or {}).get("width") and c["lens"].get("height")}
+    mesh, views = Mesh.load(mesh_dir), {}
+    made = {v["url"]: centre_track(mesh, cams, sizes, poses[v["url"]], views) for v in todo}
+    now = load(mesh_dir)    # as it is now: a search may have started meanwhile
+    if not now or now.get("status") == "running":
+        return 0
+    n = 0
+    for v in now.get("videos") or []:
+        if "centre" not in v and v.get("url") in made:
+            v["centre"] = made[v["url"]]
+            n += 1
+    if n:
+        save(mesh_dir, now)
+    return n
+
+
 def climber(kps, scs, previous=None) -> int | None:
     """Which of the people in a frame is the climber: the largest found well, or nearest where they were."""
     import numpy as np
@@ -519,9 +599,10 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
         progress: told how far it is, as text, and with frame: (frames done, of how many).
 
     Returns:
-        {frames, with_climber, placed_frames, approximate_lens, holds, tracks, reference, poses}: tracks are
-        each limb's [t, x, y, z] on the mesh, reference the placed frame most matched, poses the climber in
-        each frame they're found in: {t, kp, sc, ref, H}, ref and H None where it matched no placed frame.
+        {frames, with_climber, placed_frames, approximate_lens, holds, tracks, centre, reference, poses}: tracks are
+        each limb's [t, x, y, z] on the mesh, centre the climber's (centre_track()), reference the placed frame most
+        matched, poses the climber in each frame they're found in: {t, kp, sc, ref, H}, ref and H None where it
+        matched no placed frame.
     """
     import cv2
     import numpy as np
@@ -570,7 +651,7 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
     return {"frames": len(frames), "with_climber": seen, "placed_frames": sum(used.values()),
             "approximate_lens": any(lens(placed[n], sizes[n])[4] for n in used), "reference": reference, "holds": result,
             "tracks": {limb: [[round(t, 2), *(round(float(x), 5) for x in p)] for t, p in tr if p is not None] for limb, tr in tracks.items()},
-            "poses": poses}
+            "centre": centre_track(mesh, placed, sizes, poses, views), "poses": poses}
 
 
 def annotate(photo: Path, cam: dict, result: dict, out: Path) -> None:
