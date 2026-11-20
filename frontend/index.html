@@ -282,6 +282,17 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   #vbeta .n{display:inline-block;min-width:1.1em;margin-left:3px;padding:0 5px;border-radius:9px;background:var(--line);font-size:.85em;line-height:1.35;text-align:center}
   #vbeta[aria-pressed=true] .n{background:rgba(0,0,0,.18)}
   #vbetavids .bv .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap} #vbetavids .bv small{color:var(--mute);white-space:nowrap}
+  #vbetavids .bv .dbg{padding:0 5px;font-size:11px;line-height:1.5}
+  /* the owner's look at one video's beta beside the video (openBetaDebug()) */
+  #vbetadbg{position:absolute;top:12px;right:12px;z-index:4;width:min(520px,48%);max-height:calc(100% - 24px);overflow:auto;box-sizing:border-box;
+    background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px;font-size:12px} #vbetadbg[hidden]{display:none}
+  #vbetadbg .head{display:flex;align-items:center;gap:6px;margin-bottom:6px} #vbetadbg .head b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #vbetadbg .stage{position:relative;background:#000;line-height:0} #vbetadbg video{width:100%;height:auto;display:block}
+  #vbetadbg .stage canvas{position:absolute;left:0;top:0;pointer-events:none}
+  #vbetadbg .row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px} #vbetadbg .say{flex:1;min-width:12em;color:var(--mute)}
+  #vbetadbg canvas.tl{display:block;width:100%;height:78px;margin-top:6px;cursor:pointer;touch-action:none}
+  #vbetadbg .away{padding:10px;border:1px dashed var(--line);border-radius:4px;line-height:1.4}
+  @media (max-width:860px){ #vbetadbg{left:8px;right:8px;top:8px;width:auto;max-height:60%} }
   #pieces{display:none;position:absolute;top:12px;right:12px;max-width:340px;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;z-index:2}
   #pieces .row{margin-top:6px;gap:6px;flex-wrap:wrap}
   #pieces .tools{margin-left:0} #pieces .tools button{padding:4px 8px} #pieces label{display:inline-flex;gap:4px;align-items:center}
@@ -743,6 +754,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
         <button class="sm sec" id="vothers" hidden></button>
       </div>
       <div id="vbetavids" hidden></div>
+      <div id="vbetadbg" hidden></div>
       <button class="sm sec" id="vbeta" hidden aria-pressed="false" title="Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.">Beta</button>
       <div id="vcorner">
       <div id="rate" hidden>
@@ -4930,6 +4942,7 @@ const ROLE_CYCLE = ['start', 'hand', 'finish', 'foot'];
 // {mid, found, sets: its sets of beta, sid: the one chosen, marked: that one's holds (those shown and edited), sel: the
 //  index of the hold selected, available, shown: Set of video tags, marking, group, node, markers}
 let betaState = null;
+let dbg = null;      // the owner's look at one video's beta beside it, while open (openBetaDebug())
 // how far round its point a hold reaches, in metres (beta.py's r_m): what a close capture of it covers
 const HOLD_R = [['small', 0.04], ['one hand', 0.075], ['two hands', 0.15]], HOLD_R_M = 0.075;
 let betaChosen = {};    // the set chosen on each mesh, for this session
@@ -5120,6 +5133,7 @@ function renderBetaVids(){
     `<div class="bv${b.focus === v.tag ? ' on' : ''}" data-tag="${v.tag}" title="${esc(v.title || v.url)}${v.uploader ? ` · ${esc(v.uploader)}` : ''}">
       <input type="checkbox" ${b.shown.has(v.tag) ? 'checked' : ''} aria-label="Show its holds">
       <span class="t">${esc(v.title || v.url)}</span><small>${v.holds.length} hold${v.holds.length === 1 ? '' : 's'}</small>
+      ${editor ? `<button class="sm sec dbg" title="Play the video with the climber the pose model found and the holds it called drawn over it, the view following along">Debug</button>` : ''}
       <a href="${esc(v.url)}" target="_blank" rel="noopener" title="Open the video">▶</a></div>`).join('');
   el.querySelector('.bvhead').onclick = () => { betaVidsOpen = !betaVidsOpen; renderBetaVids(); };
   const every = el.querySelector('.bv.all input');
@@ -5138,8 +5152,9 @@ function renderBetaVids(){
       if (!ev.target.checked && b.focus === tag) b.focus = null;
       drawBeta(); renderBetaPanel();
     };
+    row.querySelector('.dbg')?.addEventListener('click', () => openBetaDebug(tag));
     row.onclick = ev => {
-      if (ev.target.closest('input, a')) return;
+      if (ev.target.closest('input, a, button')) return;
       b.focus = b.focus === tag ? null : tag;
       if (b.focus) b.shown.add(tag);
       drawBeta(); renderBetaPanel();
@@ -5149,9 +5164,270 @@ function renderBetaVids(){
 function stopBeta(){
   if (!betaState) return;
   if (betaState.group) betaState.group.parent?.remove(betaState.group);
+  closeBetaDebug();
   betaState = null; clearInterval(betaPoll);
   $('#beta-open').innerHTML = ''; showMarkButton(); renderBetaList(); showBetaButton(); renderBetaVids(); woke();
 }
+// ---- the owner's look at one video's beta beside the video (the Debug button on its row over the view, for an editor):
+// the climber the pose model found in each frame looked at and the holds called drawn over the video, a timeline of
+// what was looked at and what each hand and foot held, and the view following along: each limb where it met the rock
+// then, the climber's centre, and the holds held then drawn bigger. A hold of the video's clicked in the view goes to
+// when it was first held. Frames were looked at FPS a second: the climber is moved between two of them, but the holds
+// and points in the frame are those of the nearest one looked at, as finding beta saw them. dbg: {mid, tag, data (the
+// server's beta.frames_seen(), with the video's signed link or where it is), t, video, group, loop, seen}
+const LIMB_NAME = { lh: 'L hand', rh: 'R hand', lf: 'L foot', rf: 'R foot' };
+const LIMB_COLOR = { lh: '#f4f4f4', rh: '#b8b8b8', lf: '#ffd25a', rf: '#e0960f' };    // as the view's lines: hands white, feet yellow
+async function openBetaDebug(tag){
+  const b = betaState;
+  if (!b) return;
+  closeBetaDebug();
+  let data;
+  try { data = await api(`/api/meshes/${b.mid}/beta/debug/${tag}`); }
+  catch (e) { return toast(e.message, 6000); }
+  if (betaState !== b) return;
+  dbg = { mid: b.mid, tag, data, t: 0, last: null, holds: new Map((data.holds || []).map(h => [h.id, h])),
+          seen: new Map(data.poses.map(p => [Math.round(p.t * 100), p])) };
+  b.focus = tag; b.shown.add(tag); drawBeta(); renderBetaPanel();
+  renderBetaDebug();
+}
+function closeBetaDebug(){
+  if (!dbg) return;
+  cancelAnimationFrame(dbg.loop);
+  if (dbg.video) { dbg.video.pause(); dbg.video.removeAttribute('src'); dbg.video.load(); }
+  dbg.group?.parent?.remove(dbg.group);
+  for (const r of betaState?.rings || []) delete r.userData.boost;
+  const el = $('#vbetadbg'); el.hidden = true; el.innerHTML = '';
+  dbg = null; woke();
+}
+function renderBetaDebug(){
+  const el = $('#vbetadbg'), d = dbg.data, matched = d.poses.filter(p => p.ref).length;
+  const mb = n => `${Math.max(1, Math.round(n / 2 ** 20))} MB`;
+  el.hidden = false;
+  el.innerHTML = `<div class="head"><b title="${esc(d.title || d.url)}">${esc(d.title || d.url || 'A video')}</b>
+      ${d.url ? `<a href="${esc(d.url)}" target="_blank" rel="noopener" title="Open the video at its source">source</a>` : ''}
+      <button class="sm sec close" title="Close (Esc)">✕</button></div>
+    ${d.video ? `<div class="stage"><video controls playsinline preload="auto" src="${esc(d.video)}"></video><canvas></canvas></div>`
+      : `<div class="away">${!d.away ? 'The video isn\'t here, nor in the backup.'
+        : d.away.asked ? 'The video is in the backup and has been asked for back: the backup\'s next run brings it (half-hourly). Open this again then.'
+        : `The video is in the backup (${mb(d.away.bytes)}), not here. <button class="sm sec fetch">Ask for it back</button>`}
+        Meanwhile the timeline still moves the view along.</div>`}
+    <div class="row"><button class="sm sec prev" title="Back to the frame looked at before (,)">◀ frame</button>
+      <button class="sm sec next" title="On to the next frame looked at (.)">frame ▶</button>
+      ${d.video ? `<select class="rate" title="Speed">${[0.25, 0.5, 1, 2].map(r => `<option value="${r}" ${r === 1 ? 'selected' : ''}>${r}×</option>`).join('')}</select>` : ''}
+      <label title="The climber the pose model found, faint where it wasn't sure, and each hand's and foot's point of contact"><input type="checkbox" class="sk" checked> climber</label>
+      <label title="The holds called, where the frame looked at shows them, ringed thicker while held"><input type="checkbox" class="hl" checked> holds</label></div>
+    <div class="row"><span class="say" aria-live="polite"></span></div>
+    <canvas class="tl" title="Click or drag to go to a time"></canvas>
+    <div class="meta">${plural(d.frames || 0, 'frame')} looked at, ${d.fps} a second over the first ${d.max_seconds} s: the climber found in
+      ${d.with_climber ?? d.poses.length}, and matched to a placed frame in ${matched}. Top row:
+      <span style="color:var(--ok)">matched</span>, <span style="color:var(--warn)">climber found, not matched</span>,
+      <span style="color:var(--bad)">no climber</span>. Below it each limb's holds, by role.${d.approximate_lens ? ' Its placed frames\' lenses were approximate.' : ''}</div>`;
+  el.querySelector('.close').onclick = closeBetaDebug;
+  el.querySelector('.fetch')?.addEventListener('click', async () => {
+    try {
+      await api(`/api/meshes/${dbg.mid}/beta/debug/${dbg.tag}/fetch`, { method: 'POST' });
+      toast('Asked for: the backup\'s next run brings it (half-hourly)', 6000);
+      dbg.data.away.asked = true; renderBetaDebug();
+    } catch (e) { toast(e.message, 6000); }
+  });
+  const video = dbg.video = el.querySelector('video');
+  if (video) {
+    video.onerror = () => { el.querySelector('.say').textContent = 'This browser couldn\'t play the video: try another (Chrome plays WebM and MP4).'; };
+    el.querySelector('.rate').onchange = ev => { video.playbackRate = +ev.target.value; };
+    video.currentTime = dbg.t;
+  }
+  el.querySelector('.prev').onclick = () => debugStep(-1);
+  el.querySelector('.next').onclick = () => debugStep(1);
+  for (const c of el.querySelectorAll('.sk, .hl')) c.onchange = () => { dbg.last = null; };
+  const tl = el.querySelector('canvas.tl');
+  let dragging = false;
+  const seekAt = ev => { const g = dbg.tl; if (g) debugSeek((ev.offsetX - g.L) / g.W * g.D); };
+  tl.onpointerdown = ev => { dragging = true; tl.setPointerCapture(ev.pointerId); dbg.video?.pause(); seekAt(ev); };
+  tl.onpointermove = ev => { if (dragging) seekAt(ev); };
+  tl.onpointerup = tl.onpointercancel = () => { dragging = false; };
+  cancelAnimationFrame(dbg.loop);
+  dbg.last = null; dbg.loop = requestAnimationFrame(debugTick);
+}
+// how long the timeline is: the video's length, or as far as anything was found
+function debugLength(){
+  const d = dbg.data, v = dbg.video;
+  return Math.max(v && Number.isFinite(v.duration) ? v.duration : 0, (d.frames || 0) / d.fps, (d.poses.at(-1)?.t || 0) + 1, 1);
+}
+function debugSeek(t){
+  t = Math.min(Math.max(t, 0), debugLength());
+  if (dbg.video?.readyState) dbg.video.currentTime = t;
+  dbg.t = t;
+}
+// to the frame looked at before or after now, whether or not the climber was found in it
+function debugStep(dir){
+  const d = dbg.data, n = d.frames || 0, i = Math.round(dbg.t * d.fps - .5);
+  const at = Math.min(Math.max(0, i + dir), Math.max(0, n - 1));
+  dbg.video?.pause(); debugSeek((at + .5) / d.fps);
+}
+// the frames looked at either side of t, the nearer (if it's within half a frame and the climber was in it), and the
+// climber's keypoints between the two where both had them, a frame apart
+function debugAt(t){
+  const P = dbg.data.poses, gap = 1 / dbg.data.fps;
+  let lo = 0, hi = P.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (P[mid].t <= t) lo = mid + 1; else hi = mid; }
+  const a = P[lo - 1], b = P[lo];
+  const nearest = !a ? b : !b ? a : t - a.t <= b.t - t ? a : b;
+  const near = nearest && Math.abs(nearest.t - t) <= gap / 2 + .01 ? nearest : null;
+  if (a && b && b.t - a.t <= gap + .01) {
+    const f = (t - a.t) / (b.t - a.t);
+    return { near, kp: a.kp.map((p, k) => [p[0] + f * (b.kp[k][0] - p[0]), p[1] + f * (b.kp[k][1] - p[1])]), sc: (f < .5 ? a : b).sc };
+  }
+  return { near, kp: near?.kp, sc: near?.sc };
+}
+// the holds of the video's held at t: {hold, limb} each, a contact counted from half a frame before it began to after
+function debugHeld(t){
+  const half = .5 / dbg.data.fps, out = [];
+  for (const h of dbg.holds.values()) for (const c of h.contacts || []) if (t >= c.t0 - half && t <= c.t1 + half) out.push({ hold: h, limb: c.limb });
+  return out;
+}
+// where a track (in pieces of [t, x, y, z]) was at t: between its points either side, or the nearest within half a frame
+function debugTrackAt(track, t){
+  const half = .5 / dbg.data.fps;
+  for (const piece of typeof track?.[0]?.[0] === 'number' ? [track] : track || []) {
+    if (!piece.length || t < piece[0][0] - half || t > piece.at(-1)[0] + half) continue;
+    let i = piece.findIndex(p => p[0] > t);
+    if (i < 0) return piece.at(-1).slice(1);
+    if (i === 0) return piece[0].slice(1);
+    const a = piece[i - 1], b = piece[i];
+    if (b[0] - a[0] > 2 * half + .01) { const n = t - a[0] <= b[0] - t ? a : b; return Math.abs(n[0] - t) <= half ? n.slice(1) : null; }
+    const f = (t - a[0]) / (b[0] - a[0]);
+    return [1, 2, 3].map(k => a[k] + f * (b[k] - a[k]));
+  }
+  return null;
+}
+function debugTick(){
+  if (!dbg) return;
+  dbg.loop = requestAnimationFrame(debugTick);
+  if (dbg.video && dbg.video.readyState) dbg.t = dbg.video.currentTime;
+  const held = debugHeld(dbg.t), on = new Set(held.map(x => `${dbg.tag}/${x.hold.id}`));
+  for (const r of betaState?.rings || []) if (r.userData.hold) r.userData.boost = on.has(r.userData.hold) ? 1.8 : 1;   // drawBeta() makes them anew
+  const key = `${dbg.t}|${dbg.video?.clientWidth}|${$('#vbetadbg canvas.tl')?.clientWidth}|${betaState?.rings?.length}`;
+  if (key === dbg.last) return;
+  dbg.last = key;
+  const at = debugAt(dbg.t);
+  debugFrame(at, held); debugTimeline(); debugView(); debugSay(at, held);
+  woke();
+}
+function debugSay(at, held){
+  const d = dbg.data, t = dbg.t, el = $('#vbetadbg .say');
+  if (!el || (dbg.video?.error)) return;
+  const what = t > d.max_seconds ? `past the first ${d.max_seconds} s, which weren't looked at`
+    : !at.near ? 'no climber found in the frame looked at'
+    : at.near.ref ? `frame at ${at.near.t.toFixed(2)} s matched placed photo ${at.near.ref}`
+    : `frame at ${at.near.t.toFixed(2)} s: the climber was found, but the frame matched no placed photo, so nothing was cast onto the rock`;
+  el.textContent = `${t.toFixed(2)} s: ${what}` + (held.length ? `. Held: ${held.map(x => `${LIMB_NAME[x.limb]} on ${x.hold.id} (${x.hold.role})`).join(', ')}` : '');
+}
+function debugFrame(at, held){
+  const v = dbg.video, c = $('#vbetadbg .stage canvas');
+  if (!v || !c) return;
+  const w = v.clientWidth, h = v.clientHeight, dpr = devicePixelRatio || 1;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+    c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); c.style.width = w + 'px'; c.style.height = h + 'px';
+  }
+  const x = c.getContext('2d');
+  x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, h);
+  if (!v.videoWidth || !at.kp && !at.near) return;
+  // the frames looked at were cut to at most 720 high: their points are in those
+  const s = w / v.videoWidth / (Math.min(720, v.videoHeight) / v.videoHeight), P = p => [p[0] * s, p[1] * s];
+  const d = dbg.data, el = $('#vbetadbg'), heldIds = new Set(held.map(x => x.hold.id));
+  if (el.querySelector('.hl')?.checked) for (const [id, hx, hy] of at.near?.holds || []) {
+    const hold = dbg.holds.get(id), [px, py] = P([hx, hy]), on = heldIds.has(id), r = Math.max(6, w / 45);
+    x.beginPath(); x.arc(px, py, r, 0, 2 * Math.PI);
+    x.lineWidth = on ? 6 : 4.5; x.strokeStyle = 'rgba(0,0,0,.75)'; x.stroke();
+    x.lineWidth = on ? 3.5 : 2; x.strokeStyle = ROLES[hold?.role]?.color || '#fff'; x.stroke();
+    x.font = '600 11px system-ui, sans-serif'; x.lineWidth = 3; x.strokeStyle = 'rgba(0,0,0,.8)';
+    x.strokeText(id, px + r + 2, py - r + 4); x.fillStyle = '#fff'; x.fillText(id, px + r + 2, py - r + 4);
+  }
+  if (!el.querySelector('.sk')?.checked || !at.kp) return;
+  for (const [i, j] of d.skeleton) {
+    const sure = at.sc[i] >= d.kp_min && at.sc[j] >= d.kp_min, [ax, ay] = P(at.kp[i]), [bx, by] = P(at.kp[j]);
+    x.setLineDash(sure ? [] : [3, 3]); x.lineWidth = 2; x.strokeStyle = sure ? 'rgba(92,200,255,.95)' : 'rgba(92,200,255,.35)';
+    x.beginPath(); x.moveTo(ax, ay); x.lineTo(bx, by); x.stroke();
+  }
+  x.setLineDash([]);
+  for (const [limb, p] of Object.entries(at.near?.limbs || {})) {
+    if (!p) continue;
+    const [px, py] = P(p);
+    x.beginPath(); x.arc(px, py, 5, 0, 2 * Math.PI); x.fillStyle = LIMB_COLOR[limb]; x.fill();
+    x.lineWidth = 1.5; x.strokeStyle = 'rgba(0,0,0,.8)'; x.stroke();
+  }
+}
+function debugTimeline(){
+  const c = $('#vbetadbg canvas.tl');
+  if (!c) return;
+  const w = c.clientWidth, h = c.clientHeight, dpr = devicePixelRatio || 1;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  const x = c.getContext('2d'), css = getComputedStyle(document.documentElement), col = n => css.getPropertyValue(n).trim();
+  x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, h);
+  const d = dbg.data, L = 46, W = Math.max(10, w - L - 4), D = debugLength(), X = t => L + W * t / D, half = .5 / d.fps, rowH = 12;
+  dbg.tl = { L, W, D };
+  x.font = '10px system-ui, sans-serif';
+  const rows = ['seen', 'lh', 'rh', 'lf', 'rf'];
+  rows.forEach((r, k) => { x.fillStyle = col('--mute'); x.fillText(r === 'seen' ? 'looked at' : LIMB_NAME[r], 2, 2 + k * rowH + 9); });
+  for (let i = 0; i < (d.frames || 0); i++) {
+    const t = (i + .5) / d.fps, p = dbg.seen.get(Math.round(t * 100));
+    x.fillStyle = col(!p ? '--bad' : p.ref ? '--ok' : '--warn');
+    x.fillRect(X(t - half), 2, Math.max(1, X(t + half) - X(t - half) - .5), rowH - 3);
+  }
+  for (const hold of dbg.holds.values()) for (const ct of hold.contacts || []) {
+    const k = rows.indexOf(ct.limb);
+    if (k < 0) continue;
+    x.fillStyle = ROLES[hold.role]?.color || '#888';
+    x.fillRect(X(ct.t0 - half), 2 + k * rowH, Math.max(2, X(ct.t1 + half) - X(ct.t0 - half)), rowH - 3);
+  }
+  if (D > d.max_seconds) {     // past what was looked at
+    x.fillStyle = col('--line'); x.fillRect(X(d.max_seconds), 2, X(D) - X(d.max_seconds), rows.length * rowH - 3);
+    x.fillStyle = col('--mute'); x.fillText('not looked at', X(d.max_seconds) + 3, 2 + 2 * rowH + 9);
+  }
+  const axis = 2 + rows.length * rowH + 2, step = D > 120 ? 30 : D > 40 ? 10 : 5;
+  x.fillStyle = col('--mute'); x.strokeStyle = col('--line'); x.lineWidth = 1;
+  for (let t = 0; t <= D; t += step) {
+    x.beginPath(); x.moveTo(X(t) + .5, axis); x.lineTo(X(t) + .5, axis + 4); x.stroke();
+    x.fillText(`${t} s`, Math.min(X(t) + 2, w - 26), axis + 13);
+  }
+  x.strokeStyle = col('--fg'); x.lineWidth = 1.5;
+  x.beginPath(); x.moveTo(X(dbg.t), 0); x.lineTo(X(dbg.t), axis + 4); x.stroke();
+}
+// the view: each limb where it met the rock at t, and the climber's centre, as dots seen through the rock
+function debugView(){
+  const b = betaState, d = dbg.data;
+  if (!b?.node || !current) return;
+  if (!dbg.group || dbg.group.parent !== b.node) {
+    dbg.group?.parent?.remove(dbg.group);
+    const unit = Math.max(...mainBox(current).getSize(new THREE.Vector3()).toArray()) / b.node.getWorldScale(new THREE.Vector3()).x;
+    const g = dbg.group = new THREE.Group(), ball = new THREE.SphereGeometry(1, 16, 12);
+    for (const [k, colour] of [...Object.entries(LIMB_COLOR), ['centre', '#46c8ff']]) {
+      const m = new THREE.Mesh(ball, new THREE.MeshBasicMaterial({ color: colour, depthTest: false, transparent: true, opacity: .95 }));
+      m.scale.setScalar(unit * (k === 'centre' ? .016 : .011)); m.renderOrder = 6; m.userData = { beta: true, limb: k }; m.visible = false;
+      g.add(m);
+    }
+    g.userData.beta = true; b.node.add(g);
+  }
+  for (const m of dbg.group.children) {
+    const p = debugTrackAt(m.userData.limb === 'centre' ? d.centre : d.tracks?.[m.userData.limb], dbg.t);
+    m.visible = !!p;
+    if (p) m.position.set(p[0], p[1], p[2]);
+  }
+}
+// a click on one of the video's holds in the view goes to when it was first held
+function debugHoldClick(){
+  const rings = (betaState.rings || []).filter(r => r.visible && r.userData.hold?.startsWith(dbg.tag + '/'));
+  const hit = raycaster.intersectObjects(rings, false)[0];
+  const hold = hit && dbg.holds.get(+hit.object.userData.hold.split('/')[1]);
+  if (!hold?.contacts?.length) return false;
+  dbg.video?.pause(); debugSeek(Math.min(...hold.contacts.map(c => c.t0)));
+  return true;
+}
+addEventListener('keydown', ev => {
+  if (!dbg || ev.target.closest?.('input, textarea, select, [contenteditable]')) return;
+  if (ev.key === ',' || ev.key === '.') { ev.preventDefault(); debugStep(ev.key === ',' ? -1 : 1); }
+  else if (ev.key === 'Escape') closeBetaDebug();
+});
 const hasBeta = m => !!(m && (m.marked || m.beta?.holds));
 // the view's Beta button: there when the mesh in view has beta, or to whoever may mark holds on it (an editor, or a
 // signed-in account: a new mesh has none to show, and this is the way in to marking them), pressed while it's drawn
@@ -5249,7 +5525,7 @@ function drawBeta(){
       line.userData.beta = true; g.add(line);
     }
     // not on faces hidden; faint while another video's are picked out (renderBetaVids())
-    for (const h of v.holds || []) if (!onHiddenFace(h.p, node)) ring(h.p, h.role, 'found', !!betaState.focus && betaState.focus !== v.tag);
+    for (const h of v.holds || []) if (!onHiddenFace(h.p, node)) ring(h.p, h.role, 'found', !!betaState.focus && betaState.focus !== v.tag).userData.hold = `${v.tag}/${h.id}`;
   }
   // how far round a hold reaches, as three circles about it (lines: nothing that goes through the meshes sees them),
   // where the mesh's size is known: the selected hold's, and those given a size
@@ -5276,7 +5552,7 @@ function liftRings(){
   for (const r of betaState.rings) {
     const { at, size } = r.userData, d = eye.distanceTo(at), lift = Math.min(r.userData.lift, d / 2);
     r.position.copy(eye).sub(at).setLength(lift).add(at);
-    r.scale.setScalar(size * (d - lift) / d);     // nearer by `lift`, so smaller by as much: the same on screen
+    r.scale.setScalar(size * (r.userData.boost || 1) * (d - lift) / d);     // nearer by `lift`, so smaller by as much: the same on screen
   }
 }
 function roleCounts(holds){
@@ -5455,9 +5731,11 @@ async function setDo(what, from){
 renderer.domElement.addEventListener('click', ev => {
   const b = betaState;
   if (!b || !current || ev.detail > 1 || !pressedAt || Math.hypot(ev.clientX - pressedAt[0], ev.clientY - pressedAt[1]) > 5) return;
-  if (!b.marking && !b.markers?.length) return;
+  if (!b.marking && !b.markers?.length && !dbg) return;
   const r = renderer.domElement.getBoundingClientRect();
   raycaster.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, 1 - (ev.clientY - r.top) / r.height * 2), camera);
+  if (dbg && !b.marking && debugHoldClick()) return;
+  if (!b.marking && !b.markers?.length) return;
   const onMarker = raycaster.intersectObjects(b.markers || [], false)[0];
   if (!b.marking) {   // a click on a hold selects it, for its row in the panel
     if (!onMarker) return;
@@ -6303,6 +6581,16 @@ function sendView(body){
   if (thumbMode || viewsSent++ >= 200) return;
   fetch('/api/mesh-views', { method: 'POST', headers: reportHeaders(), keepalive: true, body: JSON.stringify({ ...body, build: PAGE_BUILD }) }).catch(() => {});
 }
+// The page opening, once: the server keeps roughly where from (Cloudflare's city for the address, not the address), for
+// the admin page's map. With the site that linked here (its host only), and whether this browser had opened it before.
+if (!thumbMode) {
+  let seen = true;
+  try { seen = !!localStorage.getItem('bm_seen'); localStorage.setItem('bm_seen', '1'); } catch {}
+  let ref = null;
+  try { const r = new URL(document.referrer); if (r.host !== location.host) ref = r.origin; } catch {}
+  fetch('/api/page-views', { method: 'POST', headers: reportHeaders(), keepalive: true,
+    body: JSON.stringify({ path: location.pathname, ref, new: !seen, app: APP, build: PAGE_BUILD }) }).catch(() => {});
+}
 function tenths(x){ return Math.round(x * 10) / 10; }
 function reportView(mesh, via, seconds, note){
   const first = firstView;
@@ -6752,7 +7040,7 @@ const linked = !thumbMode && /^\/[cbm]\//.test(location.pathname), linkCard = li
 if (linkCard) $('#loading .detail').textContent = 'Getting the list of meshes…';
 if (thumbMode) { detailChoice = 'preview'; await refreshMeshes(); openFromAddress(); }
 else {
-  await refreshClimbs(); await refreshMeshes();
+  await Promise.all([refreshClimbs(), refreshMeshes()]);     // together: each can take seconds
   const opened = openFromAddress();
   if (linkCard) opened.finally(linkCard);       // gone once its mesh's own loading takes over, or if nothing loads
   await refreshProjects(); poll(); campaignLoop();
