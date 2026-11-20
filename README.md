@@ -1419,6 +1419,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/campaigns/{id}/boulders                   its boulders with more than one climb, each meshed from all their photos
     GET  /api/videos                                    every video, with the climber's size if stated
     POST /api/meshes/{id}/make-current                  go back to an older version of a rebuilt mesh
+    POST /api/meshes/{id}/hide {why}                    hide it from visitors as a failure, its area climbs failed ({why: null}: show it)
     GET|POST /api/meshes/{id}/beta                      the holds found in its videos, and those marked; POST finds them
     POST /api/meshes/{id}/holds {holds: [{p, role}]}    the holds marked by hand, roles start, hand, finish or foot
     GET /api/account                                    who this token is, the terms as they stand, the limits

@@ -3890,6 +3890,29 @@ finally:
     server.q("DELETE FROM projects WHERE id LIKE 'ap00000000%'", write=True)
     server.q("DELETE FROM again_marks", write=True)
 print("work done again, counted OK")
+# a mesh hidden as a failure: visitors' counts leave it out, its area climbs fail (Retry failed meshes them again), and
+# shown again, those it failed are done again
+server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status) VALUES('hd0000000001','Hide Area','0','popularity',?,'stopped')",
+         time.time(), write=True)
+server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES('hm0000000001','Card','m.glb','project:hp0000000001',?)", time.time(), write=True)
+for sid, status in (("h1", "done"), ("h2", "done"), ("h3", "failed")):
+    server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,status,mesh_id) VALUES('hd0000000001',?,1,?,?,'hm0000000001')",
+             sid, sid, status, write=True)
+try:
+    assert server.hide_mesh("nope00000000", "x")[1] == 404
+    got, st = server.hide_mesh("hm0000000001", "a photo on a card, not a rock")
+    assert st == 200 and got == {"hidden": "a photo on a card, not a rock", "climbs": 2}, got
+    items = {r["source_id"]: r for r in server.q("SELECT source_id, status, note FROM campaign_items WHERE campaign_id='hd0000000001'")}
+    assert items["h1"]["status"] == "failed" and items["h1"]["note"] == server.HIDDEN_NOTE + "a photo on a card, not a rock", items
+    got, st = server.hide_mesh("hm0000000001", None)
+    assert got["climbs"] == 2 and server.q("SELECT hidden FROM meshes WHERE id='hm0000000001'", one=True)["hidden"] is None
+    items = {r["source_id"]: r["status"] for r in server.q("SELECT source_id, status FROM campaign_items WHERE campaign_id='hd0000000001'")}
+    assert items == {"h1": "done", "h2": "done", "h3": "failed"}, "only those it failed are done again"
+finally:
+    server.q("DELETE FROM campaign_items WHERE campaign_id='hd0000000001'", write=True)
+    server.q("DELETE FROM campaigns WHERE id='hd0000000001'", write=True)
+    server.q("DELETE FROM meshes WHERE id='hm0000000001'", write=True)
+print("a mesh hidden as a failure OK")
 # each limit and order an area is run with is noted, and said per order with the most it went to; an area is "complete"
 # (done, not partial) only when its list finished with no limit and something was meshed
 server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status,max_meshes,runs) VALUES('ee0000000001','Runs Area','0',"

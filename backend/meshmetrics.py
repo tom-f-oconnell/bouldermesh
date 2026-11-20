@@ -133,6 +133,29 @@ def compute(mesh_dir: Path) -> dict:
     return out
 
 
+FLAT_BELOW = 0.025      # a mesh thinner than this share of its width is a photo on a card, not a rock (thickness())
+
+
+def thickness(glb: Path) -> float | None:
+    """How thick a mesh is for its width: the spread of its vertices along their least direction over that along their
+    most (the singular values of their positions about their mean). A rock, even one face of it, has relief, over
+    0.04 in what was looked at on Nov 19, 2026; a placing whose cameras disagree (Swiss Cheese Boulder: one photo on a
+    card), or a photo of a painting or a print, makes a flat sheet, under 0.025. None if it can't be read."""
+    import numpy as np
+
+    import meshclean
+    try:
+        j, bufs = meshclean._read_glb(str(glb))
+        pts, _, _ = meshclean._geometry(j, bufs)
+    except Exception:  # noqa: BLE001 - no measure, so no verdict
+        return None
+    pts = np.asarray(pts, float)
+    if len(pts) < 3:
+        return None
+    s = np.linalg.svd(pts[::max(1, len(pts) // 50000)] - pts.mean(0), compute_uv=False)
+    return float(s[2] / s[0]) if s[0] > 0 else None
+
+
 def load(mesh_dir: Path) -> dict:
     """compute()'s, from metrics.json if it's as new as what it's worked out from; otherwise worked out again and
     kept there (if it can be)."""

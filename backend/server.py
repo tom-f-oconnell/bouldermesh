@@ -392,6 +392,8 @@ def init_db() -> None:
             con.execute("ALTER TABLE meshes ADD COLUMN adds_to TEXT")
         if "preferred" not in cols:     # when an editor chose it to be the one its climbs show first, of those tied by adds_to
             con.execute("ALTER TABLE meshes ADD COLUMN preferred REAL")
+        if "hidden" not in cols:        # why an editor hid it from visitors as a failure (hide_mesh()), NULL while shown
+            con.execute("ALTER TABLE meshes ADD COLUMN hidden TEXT")
         cols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
         for c in ("device", "app"):     # what took its photos: the phone, and the app if one of ours (note_device())
             if c not in cols:
@@ -754,7 +756,33 @@ def climb_row(cid: str, full=False) -> dict | None:
 # How many meshes a climb has, as SQL beside a climbs row (binds SHARED + "%"): those linked to it as its own (its own
 # meshes, and pools of it with others), and its boulder's (run_boulder()), as its card counts them (n_links, n_boulder)
 MESH_COUNT = ("((SELECT COUNT(*) FROM mesh_links l WHERE l.climb_id=climbs.id AND COALESCE(l.note,'') NOT LIKE ?)"
-              " + (SELECT COUNT(*) FROM meshes b WHERE b.boulder=climbs.area_path AND b.replaced_by IS NULL))")
+              " + (SELECT COUNT(*) FROM meshes b WHERE b.boulder=climbs.area_path AND b.replaced_by IS NULL AND b.hidden IS NULL))")
+
+
+HIDDEN_NOTE = "its mesh was hidden as a failure: "
+
+
+def hide_mesh(mid: str, why: str | None) -> tuple[dict, int]:
+    """Hide a mesh from visitors as a failure (a photo on a card, say), or show it again (why None). Editors still see
+    it, tagged so. The area climbs it's the mesh of are failed with why, so that Retry failed meshes them again; shown
+    again, those it failed are done again.
+
+    Returns:
+        The response, and its HTTP status.
+    """
+    if not q("SELECT 1 FROM meshes WHERE id=?", mid, one=True):
+        return {"error": "not found"}, 404
+    q("UPDATE meshes SET hidden=? WHERE id=?", why, mid, write=True)
+    if why:
+        where, args = "mesh_id=? AND status='done'", (mid,)
+        n = q(f"SELECT COUNT(*) n FROM campaign_items WHERE {where}", *args, one=True)["n"]
+        q(f"UPDATE campaign_items SET status='failed', note=?, updated=? WHERE {where}", HIDDEN_NOTE + why, time.time(), *args, write=True)
+    else:
+        where, args = "mesh_id=? AND status='failed' AND note LIKE ?", (mid, HIDDEN_NOTE + "%")
+        n = q(f"SELECT COUNT(*) n FROM campaign_items WHERE {where}", *args, one=True)["n"]
+        q(f"UPDATE campaign_items SET status='done', note=NULL, updated=? WHERE {where}", time.time(), *args, write=True)
+    meshes_changed()
+    return {"hidden": why, "climbs": n}, 200
 
 
 def mesh_count(no_old: bool = False) -> str:
@@ -763,7 +791,8 @@ def mesh_count(no_old: bool = False) -> str:
         return MESH_COUNT
     return ("((SELECT COUNT(*) FROM mesh_links l LEFT JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=climbs.id "
             f"AND COALESCE(l.note,'') NOT LIKE ? AND NOT {OLD_ANY})"
-            f" + (SELECT COUNT(*) FROM meshes m WHERE m.boulder=climbs.area_path AND m.replaced_by IS NULL AND NOT {OLD_ANY}))")
+            f" + (SELECT COUNT(*) FROM meshes m WHERE m.boulder=climbs.area_path AND m.replaced_by IS NULL AND m.hidden IS NULL "
+            f"AND NOT {OLD_ANY}))")
 
 
 def climb_obj(cid: str) -> Climb:
@@ -4090,6 +4119,14 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         # on machines that connect here, the job outlasts a restart, and is taken up again under the same rules and inputs
         same = {"same": {"rules": MESH_RULES, "fingerprint": inputs_fingerprint(inputs)}} if remote and _executor is MACHINES else {}
         mesh_path, demo = build(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker, **same)
+        flat = meshmetrics.thickness(mesh_path)
+        if flat is not None and flat < meshmetrics.FLAT_BELOW:     # a photo on a card: a failure, kept aside to look at
+            aside = pdir / "flat-mesh"
+            shutil.rmtree(aside, ignore_errors=True)
+            (MESHES / mid).rename(aside)
+            raise RuntimeError(f"its mesh is flat ({flat:.3f} as thick as it's wide, under {meshmetrics.FLAT_BELOW}): a photo on a "
+                               "card, not a rock, as when its photos are placed so that none agree, or are of a picture; "
+                               f"kept in its project's {aside.name}/, not as a mesh")
         proj = q("SELECT name, climb_id, mesh_id, kind, boulder FROM projects WHERE id=?", pid, one=True)
         q("INSERT INTO meshes(id,name,filename,source,created,size,demo,lat,lng,boulder,rules) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
           mid, mesh_name(proj["name"]), mesh_path.name, f"project:{pid}", time.time(), mesh_path.stat().st_size, int(demo),
@@ -10441,6 +10478,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def unseen(self, mid: str) -> bool:
         """Whether a mesh waits to be approved, and isn't the sender's to see (theirs, or they're the site's owner)."""
+        if not self.is_editor() and q("SELECT 1 FROM meshes WHERE id=? AND hidden IS NOT NULL", mid, one=True):
+            return True     # hidden as a failure (hide_mesh())
         waiting = unapproved_meshes()
         me = self.who()
         return mid in waiting and not (me and (me["role"] == "owner" or waiting[mid] == me["id"]))
@@ -10900,6 +10939,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"mark": f"{r['n']}:{r['t'] or 0}:{r['old']}"})
             if p == "/api/meshes":
                 rows = q("SELECT * FROM meshes ORDER BY created DESC")
+                if not self.is_editor():    # hidden as failures (hide_mesh()): only editors see them, tagged so
+                    rows = [r for r in rows if not r["hidden"]]
                 waiting = unapproved_meshes()       # made from what an account added, not yet approved: its account's and the owner's to see
                 if waiting:
                     me = self.who()
@@ -11706,6 +11747,10 @@ class Handler(BaseHTTPRequestHandler):
             if m:   # {on: false} to take the choice back: of a capture's mesh and the one it adds to, which its climbs show first
                 on = self.read_json().get("on", True) is not False
                 return self.send_json({"preferred": on} if prefer_mesh(m[1], on) else {"error": "not found"}, 200 if q("SELECT 1 FROM meshes WHERE id=?", m[1], one=True) else 404)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/hide", p)
+            if m:   # {why}: hidden from visitors as a failure, its climbs failed; {why: null} shows it again
+                why = self.read_json().get("why", "hidden by an editor")
+                return self.send_json(*hide_mesh(m[1], str(why) if why else None))
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/make-current", p)
             if m:
                 if not q("SELECT replaced_by FROM meshes WHERE id=? AND replaced_by IS NOT NULL", m[1]):
