@@ -276,6 +276,8 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
     background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12px} #vbetavids[hidden]{display:none}
   #vbetavids .bv{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:4px;cursor:pointer}
   #vbetavids .bv:hover{background:var(--line)} #vbetavids .bv.on{background:var(--src-bg);outline:1px solid var(--acc)}
+  #vbetavids .bvhead{display:flex;align-items:baseline;width:100%;margin:0 0 3px;padding:0;border:0;background:none;font:inherit;text-align:left;cursor:pointer}
+  #vbetavids .bvhead[aria-expanded=false]{margin-bottom:0} #vbetavids .bvhead .fold{font-size:10px;margin-left:auto;padding-left:8px;opacity:.8}
   #vbetavids .bv.all{border-bottom:1px solid var(--line);border-radius:4px 4px 0 0;margin-bottom:2px}
   #vbeta .n{display:inline-block;min-width:1.1em;margin-left:3px;padding:0 5px;border-radius:9px;background:var(--line);font-size:.85em;line-height:1.35;text-align:center}
   #vbeta[aria-pressed=true] .n{background:rgba(0,0,0,.18)}
@@ -5046,7 +5048,7 @@ async function loadBeta(){
     betaState.sets = r.sets || [];
     chooseSet(betaState.sets.some(s => s.id === betaState.sid) ? betaState.sid : betaChosen[betaState.mid], false);
   }
-  if (fresh) betaState.shown = new Set((r.found?.videos || []).filter(v => v.holds?.length).slice(0, 1).map(v => v.tag));   // one at a time is clearer
+  if (fresh) betaState.shown = new Set((r.found?.videos || []).filter(v => v.holds?.length).map(v => v.tag));
   drawBeta(); renderBetaPanel(); showBetaButton();
 }
 function watchBeta(){
@@ -5073,18 +5075,23 @@ async function startBeta(mid){
   renderBetaList(); showBetaButton();
 }
 // Over the view's bottom left while beta shows: each video holds were found in, with how many and a link to it; its box
-// shows or hides its holds, and picking it (again to undo) makes the others' faint
+// shows or hides its holds, and picking it (again to undo) makes the others' faint. Its heading folds the list away (and
+// back), and it stays as last left on every mesh until changed.
+let betaVidsOpen = true;
 function renderBetaVids(){
   const el = $('#vbetavids'), b = betaState, vids = (b?.found?.videos || []).filter(v => v.holds?.length);
   el.hidden = !b || b.mid !== shownMesh || !vids.length || thumbMode;
   if (el.hidden) return;
   const all = vids.every(v => b.shown.has(v.tag)), some = vids.some(v => b.shown.has(v.tag));
-  el.innerHTML = `<div class="meta" style="margin-bottom:3px">Holds from videos: tick to show, pick one to see it alone</div>`
-    + (vids.length > 1 ? `<label class="bv all"><input type="checkbox" ${all ? 'checked' : ''}><span class="t">Show all</span></label>` : '') + vids.map(v =>
+  el.innerHTML = `<button class="bvhead meta" aria-expanded="${betaVidsOpen}" title="Click to ${betaVidsOpen ? 'fold the list away' : 'show the list'}">`
+    + `Holds from videos${betaVidsOpen ? ': tick to show, pick one to see it alone' : ` (${vids.filter(v => b.shown.has(v.tag)).length} of ${vids.length} shown)`}`
+    + `<span class="fold" aria-hidden="true">${betaVidsOpen ? '▾' : '▴'}</span></button>`;
+  if (betaVidsOpen) el.innerHTML += (vids.length > 1 ? `<label class="bv all"><input type="checkbox" ${all ? 'checked' : ''}><span class="t">Show all</span></label>` : '') + vids.map(v =>
     `<div class="bv${b.focus === v.tag ? ' on' : ''}" data-tag="${v.tag}" title="${esc(v.title || v.url)}${v.uploader ? ` · ${esc(v.uploader)}` : ''}">
       <input type="checkbox" ${b.shown.has(v.tag) ? 'checked' : ''} aria-label="Show its holds">
       <span class="t">${esc(v.title || v.url)}</span><small>${v.holds.length} hold${v.holds.length === 1 ? '' : 's'}</small>
       <a href="${esc(v.url)}" target="_blank" rel="noopener" title="Open the video">▶</a></div>`).join('');
+  el.querySelector('.bvhead').onclick = () => { betaVidsOpen = !betaVidsOpen; renderBetaVids(); };
   const every = el.querySelector('.bv.all input');
   if (every) {
     every.indeterminate = some && !all;
