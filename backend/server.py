@@ -341,9 +341,26 @@ def init_db() -> None:
         # can't go on (data lost from the backup) until it's approved on the admin page (lost_decide())
         for c, t in (("retry", "INTEGER DEFAULT 0"), ("redo", "TEXT"), ("was", "TEXT"), ("changed", "INTEGER DEFAULT 0"),
                      ("redo_started", "INTEGER DEFAULT 0"), ("waiting_since", "REAL"), ("own_tried", "REAL"), ("pool", "TEXT"),
-                     ("paused", "REAL"), ("rerun_rules", "INTEGER"), ("old_rerun", "INTEGER DEFAULT 0"), ("blocked", "TEXT")):
+                     ("paused", "REAL"), ("rerun_rules", "INTEGER"), ("old_rerun", "INTEGER DEFAULT 0"), ("blocked", "TEXT"),
+                     ("started", "REAL"), ("ended", "REAL")):
             if c not in cols:
                 con.execute(f"ALTER TABLE campaign_items ADD COLUMN {c} {t}")
+        # started: when its latest go began (first taken, after any end), kept while it waits for volunteers, its boulder,
+        # a machine or a restart; ended: when that go ended (done, skipped or failed), NULL while it's under way. By
+        # triggers, so that every way its status changes counts
+        con.execute(f"""CREATE TRIGGER IF NOT EXISTS campaign_item_started AFTER UPDATE OF status ON campaign_items
+            WHEN NEW.status='running' AND (OLD.started IS NULL OR OLD.ended IS NOT NULL) BEGIN
+              UPDATE campaign_items SET started={now_sql}, ended=NULL WHERE campaign_id=NEW.campaign_id AND source_id=NEW.source_id;
+            END""")
+        con.execute(f"""CREATE TRIGGER IF NOT EXISTS campaign_item_ended AFTER UPDATE OF status ON campaign_items
+            WHEN NEW.status IN ('done','skipped','failed') AND OLD.status NOT IN ('done','skipped','failed') BEGIN
+              UPDATE campaign_items SET ended={now_sql} WHERE campaign_id=NEW.campaign_id AND source_id=NEW.source_id;
+            END""")
+        # every job run here (run_job(), and finding beta): when it was queued, started and ended, and how it ended.
+        # Machines' jobs keep theirs in machine_jobs (created, taken, ended), volunteers' in their tasks
+        con.execute("CREATE TABLE IF NOT EXISTS job_runs(id INTEGER PRIMARY KEY, kind TEXT, project_id TEXT, mesh_id TEXT, "
+                    "name TEXT, queued REAL, started REAL, ended REAL, outcome TEXT)")
+        con.execute("CREATE INDEX IF NOT EXISTS job_runs_started ON job_runs(started)")
         # what's queued to be done again (an area's climb queued again, or a project with something already finished
         # retried or remade), and when it finished, by triggers, so that the Areas tab can show how far each area's work
         # done again has got (again_progress()): kind "item" (id: the climb's source_id in campaign_id) or "project"
@@ -2614,11 +2631,15 @@ def pack_info(r: dict) -> dict | None:
 jobs: "queue.Queue[dict]" = queue.Queue()
 
 
+_queued_at: dict[int, float] = {}     # when each job in the queue was queued (by id(), the job itself), for job_runs
+
+
 def queue_job(job: dict) -> None:
     """Queue a job someone asked for, keeping a project's with the project, to run again as it was asked for
     if a restart interrupts it, or to queue again after a restart if it hadn't started (requeue_waiting())."""
+    _queued_at[id(job)] = time.time()
     if job.get("pid"):
-        q("UPDATE projects SET job=?, job_at=? WHERE id=?", json.dumps(job), time.time(), job["pid"], write=True)
+        q("UPDATE projects SET job=?, job_at=? WHERE id=?", json.dumps(job), _queued_at[id(job)], job["pid"], write=True)
     jobs.put(job)
 
 
@@ -7234,11 +7255,14 @@ def beta_worker(slot: int = 0) -> None:
                 _beta_spawn()   # others for what's left in the queue, if machines can take more
                 _beta_wake.set()
             jobctl.begin(low_priority=True)
+            run, outcome = job_run_start("beta", mid=mid), "ended"
             try:
                 run_beta(mid)
             except Exception as e:  # never let the thread die
+                outcome = f"error: {e!r}"[:300]
                 print(f"beta error on {mid}: {e!r}", flush=True)
             finally:
+                job_run_end(run, outcome)
                 with _beta_lock:
                     _beta_now.pop(mid, None)
 
@@ -8174,9 +8198,9 @@ def campaign_view(camp: dict) -> dict:
     again["triable"] = len(triable(cid))
     again["old"] = q(f"SELECT COUNT(*) n FROM campaign_items ci JOIN meshes m ON m.id=ci.mesh_id WHERE ci.campaign_id=? AND {OLD_MESH}",
                      cid, one=True)["n"]     # climbs whose mesh was made before the rules (MESH_RULES): not done yet
-    worked = q("SELECT rank,name,grade,stars,url,climb_id,mesh_id,project_id,status,note,updated FROM campaign_items "
+    worked = q("SELECT rank,name,grade,stars,url,climb_id,mesh_id,project_id,status,note,updated,started,ended FROM campaign_items "
                "WHERE campaign_id=? AND status NOT IN ('pending','running') ORDER BY updated DESC LIMIT 300", cid)
-    running = q("SELECT rank,name,grade,stars,project_id,source_id,boulder,redo,pool,updated,paused,old_rerun FROM campaign_items "
+    running = q("SELECT rank,name,grade,stars,project_id,source_id,boulder,redo,pool,updated,started,paused,old_rerun FROM campaign_items "
                 "WHERE campaign_id=? AND status='running' ORDER BY updated", cid)
     for r in running:
         # one meshing its boulder (or a group its photos matched) is on that project, not its own harvest, which is done
@@ -8502,6 +8526,27 @@ def machine_wait(cid: str) -> dict | None:
     return out
 
 
+def job_run_start(kind: str, pid: str | None = None, mid: str | None = None, queued: float | None = None) -> int | None:
+    """Record a job starting here (job_runs), named by its project or mesh; queued, when it was (a project's job_at if
+    not given). Returns its row's id, for job_run_end(); None if it couldn't be written."""
+    try:
+        name = ((q("SELECT name FROM projects WHERE id=?", pid, one=True) or {}).get("name") if pid else
+                (q("SELECT name FROM meshes WHERE id=?", mid, one=True) or {}).get("name") if mid else None)
+        if queued is None and pid:
+            queued = (q("SELECT job_at FROM projects WHERE id=?", pid, one=True) or {}).get("job_at")
+        return q("INSERT INTO job_runs(kind, project_id, mesh_id, name, queued, started) VALUES(?,?,?,?,?,?)",
+                 kind, pid, mid, name, queued, time.time(), write=True)
+    except Exception as e:  # only the record is lost
+        print(f"error: recording {kind} starting: {e!r}", flush=True)
+        return None
+
+
+def job_run_end(run: int | None, outcome: str) -> None:
+    """Record how a job job_run_start() recorded ended, and when."""
+    if run is not None:
+        q("UPDATE job_runs SET ended=?, outcome=? WHERE id=?", time.time(), outcome, run, write=True)
+
+
 def run_job(job: dict) -> None:
     """A job someone asked for, on this thread's worker."""
     w = current_worker()
@@ -8509,17 +8554,22 @@ def run_job(job: dict) -> None:
     jobctl.begin(low_priority=job["type"] in ("retexture", "texture-again", "scale", "boulder"))
     if job.get("pid"):      # so that a restart queues it again, to carry on (init_db())
         q("UPDATE projects SET job_started=? WHERE id=?", time.time(), job["pid"], write=True)
+    run = job_run_start(job["type"], job.get("pid"), job.get("mid"), _queued_at.pop(id(job), None))
+    outcome = "ended"
     low = job_is_low(job)   # a low-priority area's: its machines' jobs go after everyone else's
     try:
         with pullwork.priority(pullwork.PRIO_BACKFILL) if low else contextlib.nullcontext():
             _run_job(job, low)
     except Cancelled:   # stopped by hand (stop_project()), which said so: left stopped, whatever the job made of it
+        outcome = "stopped"
         if job.get("pid"):
             q("UPDATE projects SET status='stopped' WHERE id=? AND status!='superseded'", job["pid"], write=True)
     except Exception as e:  # never let the worker die
+        outcome = f"error: {e!r}"[:300]
         append_log(job.get("pid", "?"), f"worker error: {e!r}")
     finally:
         w.job = None
+        job_run_end(run, outcome)
         if job.get("pid"):
             q("UPDATE projects SET job_started=NULL WHERE id=?", job["pid"], write=True)
 
@@ -8770,7 +8820,7 @@ def deploy_state() -> dict:
                       "kind": KINDS.get(j["task"], j["task"]), "project_id": j["label"] if project else (mine or {}).get("project_id"),
                       "costly": j["state"] == "running" and not lasting, "elapsed": round(elapsed),
                       "eta": round(eta) if eta is not None else None, "lost": lost})
-    for r in q("SELECT c.name area, i.name, i.project_id, i.updated, i.redo, i.boulder FROM campaign_items i "
+    for r in q("SELECT c.name area, i.name, i.project_id, COALESCE(i.started, i.updated) updated, i.redo, i.boulder FROM campaign_items i "
                "JOIN campaigns c ON c.id=i.campaign_id WHERE i.status='running'"):
         # meshing its boulder (run_redo()) goes on in the boulder's project, not the climb's, which says nothing meanwhile
         bp = boulder_project(r["boulder"]) if r["boulder"] and (r["redo"] or "").split("+")[0] in ("boulder", "pool") else None

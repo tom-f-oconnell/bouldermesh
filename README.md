@@ -1158,7 +1158,9 @@ machine. *Run more on* adds up to that many machines (2 by default):
   why in its log. An idle machine's state says what this server is doing instead (areas harvesting, climbs harvested
   and waiting for the rest of their boulder's, beta waiting for videos). Every job is kept in `machine_jobs` (its
   machine, task, when it was made, taken and ended, and how: done, failed, released, or gone), each ending is logged
-  with how long it took and waited, and once an hour the server logs each machine's minutes in each state. The script
+  with how long it took and waited, and once an hour the server logs each machine's minutes in each state. Jobs run on
+  the server itself (meshing, harvests, size, textures, beta) are kept in `job_runs`: when each was queued, started and
+  ended, and how; and each area's climb keeps when its latest go started and ended, which the Areas tab shows by it. The script
   keeps its own record in `usage.jsonl` in `~/.bouldermesh-worker` (each job, and each change between working, waiting
   for climbs and held back), and logs once an hour how the hour went. Its other options: `--gpu auto|all|cdi|none` (`auto` gives the GPU
   as a CDI device where Docker has CDI on, which `--setup` offers to switch on, and else by `--gpus all`, with a warning

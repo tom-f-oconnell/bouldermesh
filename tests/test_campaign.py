@@ -4181,4 +4181,36 @@ finally:
         server.q("DELETE FROM projects WHERE id=?", pid, write=True)
         shutil.rmtree(server.PROJECTS / pid, ignore_errors=True)
 print("added things approved from a phone OK")
+
+# --- when each climb's go started and ended, whichever way its status changes; when each job here ran -----------------
+server.q("INSERT INTO campaign_items(campaign_id, source_id, name, status) VALUES('st', 'c1', 'Timed', 'pending')", write=True)
+went = lambda: server.q("SELECT started, ended FROM campaign_items WHERE campaign_id='st' AND source_id='c1'", one=True)  # noqa: E731
+assert went() == {"started": None, "ended": None}
+t0 = time.time()
+server.set_item("st", "c1", status="running")
+first = went()["started"]
+assert first and abs(first - t0) < 5 and went()["ended"] is None
+for status in ("waiting", "pending", "running", "harvested", "running"):    # volunteers, a restart, its boulder: the same go
+    server.set_item("st", "c1", status=status)
+    assert went() == {"started": first, "ended": None}, (status, went())
+server.q("UPDATE campaign_items SET status='done' WHERE campaign_id='st'", write=True)    # by raw SQL too
+assert went()["started"] == first and went()["ended"] >= first
+ended = went()["ended"]
+server.set_item("st", "c1", status="pending", redo="more+rebuild")      # queued again: the start's kept until it goes
+assert went() == {"started": first, "ended": ended}
+time.sleep(0.05)
+server.set_item("st", "c1", status="running")
+assert went()["started"] > first and went()["ended"] is None, "a new go"
+server.q("DELETE FROM campaign_items WHERE campaign_id='st'", write=True)
+
+run = server.job_run_start("scale", mid="nomesh000001", queued=t0 - 60)
+server.job_run_end(run, "ended")
+r = server.q("SELECT * FROM job_runs WHERE id=?", run, one=True)
+assert r["kind"] == "scale" and r["queued"] == t0 - 60 and r["started"] >= t0 and r["ended"] >= r["started"] and r["outcome"] == "ended", r
+job = {"type": "nothing"}
+server.queue_job(job)
+assert server._queued_at.pop(id(job)) >= t0 and job == {"type": "nothing"}, "queue_job() notes when, beside the job"
+with server.jobs.mutex:
+    server.jobs.queue.clear()
+print("climbs' and jobs' start times OK")
 print("ALL CAMPAIGN TESTS PASSED")
