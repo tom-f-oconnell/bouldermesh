@@ -119,6 +119,7 @@ object Sensors {
     const val FIELD_OFF = 0.15          // of this capture's usual field: further off, and something magnetic is near
     const val GPS_OK_M = 8.0
     const val GPS_FRESH_S = 3.0
+    const val CALIBRATE_NOTE = "compass: needs calibrating (wave the phone in a figure of 8)"
 
     /**
      * @param usualFieldUt the middle field strength of this capture's readings so far, if there are enough.
@@ -133,7 +134,7 @@ object Sensors {
             if (f < FIELD_MIN || f > FIELD_MAX) { heading = false; notes.add("compass: field of ${f.toInt()} µT isn't the Earth's alone") }
             else if (usualFieldUt != null && abs(f - usualFieldUt) > FIELD_OFF * usualFieldUt) { heading = false; notes.add("compass: something magnetic is near") }
         }
-        if (s.magAccuracy != null && s.magAccuracy < 2) { heading = false; notes.add("compass: needs calibrating (wave the phone in a figure of 8)") }
+        if (s.magAccuracy != null && s.magAccuracy < 2) { heading = false; notes.add(CALIBRATE_NOTE) }
         if (s.headingAccDeg != null && s.headingAccDeg > 25) { heading = false; notes.add("compass: unsure by ${s.headingAccDeg.toInt()}°") }
         val gps = s.gps?.let { it.accM <= GPS_OK_M && now - it.t <= GPS_FRESH_S } ?: false
         if (s.gps == null) notes.add("GPS: no fix") else if (!gps) notes.add(if (s.gps.accM > GPS_OK_M) "GPS: only good to ${s.gps.accM.toInt()} m" else "GPS: fix is ${(now - s.gps.t).toInt()} s old")

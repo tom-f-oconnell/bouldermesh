@@ -179,11 +179,12 @@ class GymTest {
         fun take(pose: CameraPose) {
             flow.shutter()
             assertTrue((0 until 3).any { t += 0.5; flow.frame(pose, true, 0.0, 0.004, t, 0).shoot })
-            flow.shot(ShotIn(pose, SensorSample(Vec3(0.0, 9.81, 0.0), Vec3.ZERO, t = t), sharp, 0.004, 80.0, 1.3, true, "a", t, 1.7e9 + t, blobs = Blobs.find(picture(pose))))
+            flow.shot(ShotIn(pose, SensorSample(Vec3(0.0, 9.81, 0.0), Vec3.ZERO, magAccuracy = 0, t = t), sharp, 0.004, 80.0, 1.3, true, "a", t, 1.7e9 + t, blobs = Blobs.find(picture(pose))))
         }
         for (x in listOf(-0.8, -0.3, 0.3, 0.8)) take(at(x))
         ui = flow.frame(at(0.0), true, 0.0, 0.004, t + 0.1, 0).ui
         assertEquals(yellows.size, ui.gym?.holds)
+        assertTrue("compass" !in ui.sensors, "a gym capture doesn't ask for the compass to be calibrated: ${ui.sensors}")
         val spots = flow.session.orbit!!.spots.filter { it.gym }
         assertEquals(yellows.size, spots.size)
         val markers = flow.session.markers().filter { it.rgb != null }

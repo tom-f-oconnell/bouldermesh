@@ -901,7 +901,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 "holds" to gym.holds.size, "new" to gym.holds.size - was)
         }
         cardShot = false
-        sensorNote = out.record.notes.joinToString(" · ")
+        // a gym capture doesn't ask for the compass to be calibrated: its facing hardly matters indoors (Calibrate still can)
+        sensorNote = out.record.notes.filter { gym == null || it != Sensors.CALIBRATE_NOTE }.joinToString(" · ")
         val how = if (autoShot) "taken by itself (Auto)" else "taken"
         if (out.kept) { note = "Photo ${session.shotCount} $how and kept"; levelsDirty = true }
         else { rejected++; note = "Not kept, the photo $how: ${out.why.joinToString("; ")}." }
