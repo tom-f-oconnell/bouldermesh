@@ -4056,8 +4056,9 @@ def _new_photos(rec: dict, mesh_made: float) -> int | None:
                     elif folder.stat().st_mtime > mesh_made and not photos_away(h):
                         # one it pooled: the photos it hasn't by name, of those it pooled (rec's "pooled"); where that
                         # wasn't recorded, those written since. Not every photo: a folder changes too when photos leave
-                        # it or come back from the backup (92 of 115 such on Nov 20, none new), and harvesting again
-                        # writes the same photos anew
+                        # it or come back from the backup (92 of 115 such on Nov 20, none new); and a photo new to one
+                        # climb's harvest may be one the boulder pooled already from another climb's (the same web
+                        # image found for both)
                         had = set(rec.get("pooled") or [])
                         n += sum((p.name not in had) if rec.get("pooled") is not None else (p.stat().st_mtime > mesh_made)
                                  for p in meshinputs.photos_in(folder))
