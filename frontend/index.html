@@ -100,6 +100,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   .card{border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--bg);margin-bottom:8px}
   .card.active{border-color:var(--acc)}
   .chip.dim{color:var(--dim);opacity:.8}
+  #meshes>.card.pinned{border-color:var(--acc);background:var(--src-bg)}   /* the mesh in the viewer, kept first */
   .card.dim{color:var(--dim)} .card.dim .name{color:var(--dim)}     /* hidden from visitors as a failure: editors see it, greyed */
   #climbs>.card{cursor:pointer}
   #climbs>.card.multi{border-color:var(--warn);box-shadow:inset 3px 0 0 var(--warn)}   /* more than one mesh, while picked out */
@@ -189,6 +190,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   .tag{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--warn-bg);color:var(--warn);margin-left:6px;white-space:nowrap}
   .meta.bad{color:var(--bad)} .meta.bad a{color:var(--bad)}
   .tag.climb{background:var(--climb-bg);color:var(--climb)} .tag.ok{background:var(--ok-bg);color:var(--ok)} .tag.bad{background:var(--bad-bg);color:var(--bad)} .tag.src{background:var(--src-bg);color:var(--acc)}
+  .mesh .grow .tag{display:inline-block;max-width:100%;box-sizing:border-box;white-space:normal;vertical-align:1px}   /* tags run on to the next line, not under the card's buttons */
   .tag.low{background:var(--line);color:var(--mute)} .lowp{color:var(--mute)}
   .chips{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
   .chip{font-size:11px;padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--fg);cursor:pointer}
@@ -234,7 +236,9 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   #viewer.quiet #hud,#viewer.quiet #viewnote,#viewer.quiet #pieces,#viewer.quiet #orient,#viewer.quiet #vclimb{display:none!important}
   /* with the notes shown (the info button), as on a phone: how it's framed and scaled at the top left, a passing note
      over that, its stray pieces at the bottom left, and Open climb at the top right */
-  #vclimb{position:absolute;top:12px;right:12px;z-index:3}
+  /* top right: Open climb, then its stray pieces under it; on a phone the notes follow them down the view */
+  #vtop{display:contents} #vtopr{position:absolute;top:12px;right:12px;z-index:3;display:flex;flex-direction:column;align-items:flex-end;gap:6px;
+    max-width:340px;max-height:calc(100% - 60px);pointer-events:none} #vtopr>*{pointer-events:auto}
   #vtitle{display:none} #viewing .area{opacity:.8}
   #linkmenu{position:absolute;z-index:4;display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:8px;
     background:var(--overlay);border:1px solid var(--line);box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:calc(100% - 16px)}
@@ -270,8 +274,10 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   #viewnote button{margin-left:8px}
   /* bottom left of the view: the beta of the mesh in view, on and off */
   /* Beta at the bottom left, one height in each layout, so the stray pieces sit above it with the gap between buttons */
-  #viewer{--vbeta-h:22px} #vbeta{position:absolute;left:12px;bottom:12px;z-index:3;height:var(--vbeta-h);box-sizing:border-box} #vbeta[hidden]{display:none}
-  #viewer:has(#vbeta:not([hidden])) #pieces{bottom:calc(12px + var(--vbeta-h) + 6px)}
+  #viewer{--vbeta-h:22px} #vbl{position:absolute;left:12px;bottom:12px;z-index:3;display:flex;align-items:center;gap:10px}
+  /* the view's bottom row of buttons (Beta, Rate, the notes' and report buttons) all one height */
+  #vbeta,#ratebtn,#vcorner>button{height:var(--vbeta-h);box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;padding-top:0;padding-bottom:0}
+  #vbeta[hidden],#vcorner>button[hidden]{display:none}
   #vbeta[aria-pressed=true]{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
   /* above it while beta shows: the videos its holds came from, each shown or not, and one picked out */
   #vbetavids{position:absolute;left:12px;bottom:52px;z-index:3;max-width:min(360px,calc(100% - 24px));max-height:40%;overflow:auto;
@@ -295,7 +301,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   #vbetadbg canvas.tl{display:block;width:100%;height:78px;margin-top:6px;cursor:pointer;touch-action:none}
   #vbetadbg .away{padding:10px;border:1px dashed var(--line);border-radius:4px;line-height:1.4}
   @media (max-width:860px){ #vbetadbg{left:8px;right:8px;top:8px;width:auto;max-height:60%} }
-  #pieces{display:none;position:absolute;top:12px;right:12px;max-width:340px;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;z-index:2}
+  #pieces{display:none;max-height:100%;overflow:auto;box-sizing:border-box;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;z-index:2}
   #pieces .row{margin-top:6px;gap:6px;flex-wrap:wrap}
   #pieces .tools{margin-left:0} #pieces .tools button{padding:4px 8px} #pieces label{display:inline-flex;gap:4px;align-items:center}
   #stroke{position:absolute;pointer-events:none;z-index:1;overflow:visible}
@@ -316,13 +322,12 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   #orient{display:none;position:absolute;left:12px;bottom:12px;max-width:430px;background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.45;z-index:2}
   @media (min-width:861px){
     #orient,#viewnote{top:60px;bottom:auto;left:12px;right:auto;max-width:430px;max-height:40%;overflow:auto} #viewnote{z-index:3}
-    #pieces{top:auto;bottom:12px;left:12px;right:auto;max-height:35%;overflow:auto}
   }
   /* a climb never meshed on its own, opened on the mesh made for another on its boulder: said over the view, always */
   #vvia{position:absolute;left:50%;transform:translateX(-50%);top:12px;z-index:3;max-width:min(560px,calc(100% - 24px));background:var(--warn-bg);
     color:var(--warn);border:1px solid var(--warn-line);border-radius:6px;padding:5px 10px;font-size:13px;text-align:center}
   @media (max-width:860px){ #vvia{top:auto;bottom:100px;left:12px;right:12px;transform:none;max-width:none} }
-  #vold{position:absolute;left:12px;bottom:12px;z-index:3;color:var(--warn);font-weight:700;font-size:13px;text-shadow:0 0 3px var(--bg),0 0 3px var(--bg)}
+  #vold{color:var(--warn);font-weight:700;font-size:13px;text-shadow:0 0 3px var(--bg),0 0 3px var(--bg)}
   #vold[hidden]{display:none}
   /* an editor's mesh files shown from this device, before they're uploaded: a row for each (two at most), what's not uploaded,
      and with two, how they're compared */
@@ -451,10 +456,12 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
        foot, left of the rating; not the mouse's controls */
     #hud{display:none!important}
     #orient,#viewnote{top:56px;bottom:auto;left:8px;right:8px;max-width:none;max-height:35%;overflow:auto} #viewnote{z-index:3}
-    #pieces{top:auto;bottom:12px;left:8px;right:auto;max-width:calc(100% - 175px);max-height:35%;overflow:auto}
-    #viewer{--vbeta-h:30px} #vbeta{left:8px;font-size:14px;padding:0 12px}
-    #vbetavids{left:8px;bottom:56px;max-height:30%;font-size:13px} #viewer:has(#vbetavids:not([hidden])) #pieces{display:none!important}
-    #ratebtn{font-size:14px;padding:6px 12px} #vcorner #vinfo,#vcorner #vreport{padding:6px 10px}
+    #vtop{display:flex;flex-direction:column;align-items:stretch;gap:6px;position:absolute;top:6px;left:8px;right:8px;max-height:calc(100% - 60px);z-index:3;pointer-events:none}
+    #vtop>*{pointer-events:auto} #vtopr{position:static;max-width:none;min-height:44px;pointer-events:none}
+    #pieces{max-width:100%;max-height:35vh} #vtop #orient,#vtop #viewnote{position:static;flex:none}
+    #viewer{--vbeta-h:30px} #vbl{left:8px} #vbeta{font-size:14px;padding:0 12px}
+    #vbetavids{left:8px;bottom:56px;max-height:30%;font-size:13px}
+    #ratebtn{font-size:14px;padding:0 12px} #vcorner #vinfo,#vcorner #vreport{padding:0 10px}
     /* the rating box above the corner's buttons, its right edge at theirs, not off the screen to the left of Rate */
     #ratemenu{position:absolute;right:0;bottom:calc(100% + 6px);width:calc(100vw - 24px - 2px);max-width:360px;box-sizing:border-box}
     #vextra{bottom:56px} #vextra button{font-size:14px;padding:6px 12px} .mthumb{width:96px} #ratemenu .seg button{padding:7px 14px;font-size:14px} #ratecomment{font-size:16px}
@@ -470,7 +477,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   html.app header,html.app aside,html.app .viewbar,html.app #vtitle,html.app #vclimb,html.app #vextra,html.app #nearby,
   html.app #map,html.app #areamap,html.app #prefs .notapp,html.app.notex #prefs .wire{display:none!important}
   #appbar{display:none} html.app #appbar{position:absolute;top:8px;right:8px;z-index:4;display:flex;gap:6px;align-items:center}
-  html.app #orient,html.app #viewnote{top:54px}
+  html.app #orient,html.app #viewnote{top:54px} html.app #vtopr{top:54px} html.app #vtop{top:50px} html.app #vtopr{min-height:0}
   /* its buttons all one height, a finger's: Rate and Beta with their words, the icons' scaled up as they are drawn
      elsewhere (a little wider than high), and share at the left of settings */
   html.app #ratebtn,html.app #vbeta{font-size:14px;height:34px;padding:0 12px;box-sizing:border-box} html.app #viewer{--vbeta-h:34px}
@@ -726,13 +733,16 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
       <div id="vtitle"><div id="vname"></div><div id="varea"></div></div>
       <div id="appbar"></div>
       <div id="linkmenu" hidden></div>
-      <div id="viewnote"></div>
-      <div id="pieces"></div>
-      <button class="sm sec" id="vclimb" hidden title="The climb this mesh is of, under Climbs, with its photos and details">Open climb</button>
+      <div id="vtop">
+        <div id="vtopr">
+          <button class="sm sec" id="vclimb" hidden title="The climb this mesh is of, under Climbs, with its photos and details">Open climb</button>
+          <div id="pieces"></div>
+        </div>
+        <div id="viewnote"></div>
+        <div id="orient"></div>
+      </div>
       <div id="nearby" hidden></div>
-      <div id="orient"></div>
       <div id="vvia" hidden></div>
-      <div id="vold" hidden title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</div>
       <div id="localbar" hidden>
         <div class="rows"></div>
         <div class="foot"><span class="only"></span>
@@ -757,7 +767,10 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
       </div>
       <div id="vbetavids" hidden></div>
       <div id="vbetadbg" hidden></div>
-      <button class="sm sec" id="vbeta" hidden aria-pressed="false" title="Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.">Beta</button>
+      <div id="vbl">
+        <button class="sm sec" id="vbeta" hidden aria-pressed="false" title="Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.">Beta</button>
+        <div id="vold" hidden title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</div>
+      </div>
       <div id="vcorner">
       <div id="rate" hidden>
         <div id="ratemenu" hidden>
@@ -4625,7 +4638,7 @@ function renderMeshes(filter = true){
   $('#m-older').parentNode.lastChild.textContent = ` Show older versions of rebuilt meshes (${older})`;
   if (meshesCache.length && !shown.length) el.innerHTML = '<div class="status">No mesh fits the filter.</div>';
   for (const m of shown) {
-    const d = document.createElement('div'); d.className = 'card mesh' + (m.hidden ? ' dim' : '');
+    const d = document.createElement('div'); d.className = 'card mesh' + (m.hidden ? ' dim' : '') + (m.id === pinnedMesh ? ' pinned' : '');
     const sole = soleClimb(m), several = ['groups', 'boulders'].includes(meshKind(m));
     // its climbs: a boulder's or a pool's, each opening it from where its own photos were taken, and those linked to it
     // (a pool's again only where they can be unlinked here)
@@ -4633,7 +4646,7 @@ function renderMeshes(filter = true){
     const chips = (m.boulder_climbs || []).map(c => `<span class="chip" data-from="${c.id}" title="${c.view ? `Look at it from where ${esc(c.name)}'s own photos were taken (${plural(c.view.photos, 'photo')})` : `None of ${esc(c.name)}'s own photos were placed in it: opens the climb`}">${c.view ? '👁 ' : ''}${esc(named(c, true))}</span>`).join('')
       + m.climbs.filter(c => editor || (c !== sole && !pooledIds.has(c.id))).map(c=>`<span class="chip${c.shared ? ' shared' : ''}" data-climb="${c.id}" ${c.shared ? 'title="Linked by an area as on the same boulder as the climb this was made for: it may not show this climb\'s side"' : ''}>${esc(named(c, true))}${c.shared ? ' <small>same boulder</small>' : ''} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('');
     const n = new Set([...pooledIds, ...m.climbs.map(c => c.id)]).size;
-    d.innerHTML = `${m.thumb ? `<img class="mthumb" loading="lazy" alt="" src="/meshes/${m.id}/thumb.small.jpg?v=${m.thumb.v}" title="View it">` : ''}<div class="grow"><span class="name">${meshNameHtml(m)}</span>${m.id === pinnedMesh ? '<span class="tag" title="The mesh in the viewer: kept first in this list, whatever the sort and filter">showing</span>' : ''}${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${m.hidden ? `<span class="tag" style="color:var(--bad)" title="Hidden from visitors as a failure: ${esc(m.hidden)}">hidden: failed</span>` : ''}${m.awaits_approval ? '<span class="tag" title="Made from what an account added, which hasn\'t been approved yet: only that account and the site\'s owner see it">waiting to be approved</span>' : ''}${editor && m.old ? '<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</span>' : ''}${editor && m.old_data && !m.old ? `<span class="tag" title="A newer mesh, made under the same rules from photos this one lacked, is of every climb this one is of: kept, but left out of visitors' lists of a boulder's meshes">old (data)</span>` : ''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
+    d.innerHTML = `${m.thumb ? `<img class="mthumb" loading="lazy" alt="" src="/meshes/${m.id}/thumb.small.jpg?v=${m.thumb.v}" title="View it">` : ''}<div class="grow"><span class="name">${meshNameHtml(m)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${m.hidden ? `<span class="tag" style="color:var(--bad)" title="Hidden from visitors as a failure: ${esc(m.hidden)}">hidden: failed</span>` : ''}${m.awaits_approval ? '<span class="tag" title="Made from what an account added, which hasn\'t been approved yet: only that account and the site\'s owner see it">waiting to be approved</span>' : ''}${editor && m.old ? '<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</span>' : ''}${editor && m.old_data && !m.old ? `<span class="tag" title="A newer mesh, made under the same rules from photos this one lacked, is of every climb this one is of: kept, but left out of visitors' lists of a boulder's meshes">old (data)</span>` : ''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
         <div class="chips">${several ? `<details class="mclimbs"${climbListsOpen.has(m.id) ? ' open' : ''}><summary>${plural(n, 'climb')}</summary><div class="chips">${chips}</div></details>` : chips}
           ${editor ? '<select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option></select>' : ''}</div></div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px">
