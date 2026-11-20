@@ -97,7 +97,7 @@ print("starting model OK")
 
 
 # the rounds after VGGT: triangulating from its placements, then adjusting, each tighter, the last into out
-def placing(why=None, links=None, fit=("cuda", 80)):
+def placing(why=None, links=None, fit=("cuda", 80), fail_at=()):
     calls = []
     saved = vggt_place.unavailable, vggt_place.capacity, vggt_place.predict
     vggt_place.unavailable, vggt_place.capacity = (lambda: why), (lambda: fit)
@@ -109,12 +109,17 @@ def placing(why=None, links=None, fit=("cuda", 80)):
 
         def run(cmd):
             calls.append(cmd)
+            if len(calls) in fail_at:
+                raise RuntimeError("colmap crashed with SIGABRT (signal 6)")
             out = Path(cmd[cmd.index("--output_path") + 1])
             (out / "images.bin").write_bytes(struct.pack("<Q", 4))
             (out / "points3D.bin").write_bytes(struct.pack("<Q", 1000 * len(calls)))
         try:
             n = vggt_place.place("colmap", db, tmp / "photos", tmp / "sparse" / "vggt", tmp / "vggt", lambda s: None, run)
-            return n, calls, json.loads((tmp / "vggt" / "placed.json").read_text()), tmp
+            kept = tmp / "vggt" / vggt_place.FAILED
+            return n, calls, {**json.loads((tmp / "vggt" / "placed.json").read_text()),
+                              **({"_kept": vggt_place.count(kept, "points3D"), "_out": vggt_place.count(tmp / "sparse" / "vggt", "points3D")}
+                                 if kept.is_dir() else {})}, tmp
         finally:
             vggt_place.unavailable, vggt_place.capacity, vggt_place.predict = saved
 
@@ -131,6 +136,16 @@ for i, (angle, err, focal) in enumerate(vggt_place.ROUNDS):
     if i:
         assert arg(tri, "--input_path") == arg(calls[2 * i - 1], "--output_path"), "each round starts from the last"
 assert record == {"by": "vggt", "photos": 4, "rounds": [list(r) for r in vggt_place.ROUNDS]}, record
+# a round after the first that fails: the round before's model is the result, and kept as what the failed one started from
+n, calls, record, tmp = placing(fail_at={3})      # round 2's triangulation
+assert n == 4 and len(calls) == 3 and record["failed"]["round"] == 2 and record["failed"]["points_before"] == 2000, record
+assert record["failed"]["angle"] == vggt_place.ROUNDS[1][0] and "SIGABRT" in record["failed"]["why"]
+assert record["_kept"] == record["_out"] == 2000, "round 1's model: the result, and kept as what round 2 started from"
+try:
+    placing(fail_at={2})                           # round 1's adjustment
+    raise AssertionError("round 1 failing leaves nothing")
+except vggt_place.RoundFailed as e:
+    assert e.info["round"] == 1 and e.info["points_before"] == 0, e.info
 try:
     placing(why="no CUDA GPU is visible")
     raise AssertionError("should say it can't run")

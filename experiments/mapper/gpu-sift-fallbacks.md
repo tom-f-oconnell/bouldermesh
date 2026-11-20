@@ -23,6 +23,15 @@ the jobs' logs for the 7 that didn't. Photos placed are in the largest model, ag
 back only when the GPU's placing is under 70% of the photos with matches. In 28 of its 43 jobs the CPU's check failed
 too, and those lost the most photos (net -155). Look again once `fallbacks.jsonl` has more cases with "kept".
 
+**If CPU fallbacks still cost too much throughput (user, Nov 20: noted, none done yet).** On the live site to Nov 20,
+the CPU was tried after GPU SIFT on 182 of 312 harvest meshes (58%; "check failed" 92, "under 70%" 89, "placed none"
+1); since the better placing has been kept, the CPU's was kept 47 times and the GPU's 58; second placings were 27.6 h,
+24% of all meshing tool time. Options:
+1. Drop the "check failed" trigger: fall back only when GPU SIFT's placing is under 70% of the photos with matches.
+2. Raise the bar for falling back: a lower share than 70%, or a check failure only by a wide margin.
+3. Fall back only when GPU SIFT placed far fewer photos than have matches (by count, not only share), so that small
+   sets with a few photos out don't pay a whole second placing.
+
 **To do (user, Nov 20): compare mesh quality, not only photos placed.** Nothing yet says whether a GPU-SIFT mesh or a
 CPU-SIFT one is better: the benchmark's 2-3 boulders matched in surface, and this list counts photos. Take ~10 of the
 cases with the largest differences above, mesh both placings, and compare coverage round the rock, distinct

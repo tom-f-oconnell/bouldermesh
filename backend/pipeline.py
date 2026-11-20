@@ -542,6 +542,11 @@ def _upright(model: Path, images: Path, work: Path, log: Log, tracker: Tracker) 
         return model
 
 
+def _round_info(info: dict) -> dict:
+    """A failed round of VGGT's placing (vggt_place.RoundFailed's info) as a fallback's details: its "why" as "error"."""
+    return {**{k: v for k, v in info.items() if k != "why"}, "error": info.get("why")}
+
+
 def _place_with_vggt(db: Path, images: Path, sparse: Path, work: Path, log: Log, tracker: Tracker, registered: int) -> None:
     """When the mapper placed too few photos: VGGT's placements, refined by COLMAP, as another model in sparse/ (vggt),
     for the largest to be chosen from as before. Failing only costs the time."""
@@ -555,8 +560,17 @@ def _place_with_vggt(db: Path, images: Path, sparse: Path, work: Path, log: Log,
         with gputurn.turn("VGGT", log):
             n = vggt_place.place(COLMAP, db, images, sparse / "vggt", work / "vggt", log, lambda cmd: _run(cmd, work, log))
         log(f"VGGT and COLMAP placed {n} photos")
+        rec = work / "vggt" / "placed.json"
+        failed = json.loads(rec.read_text()).get("failed") if rec.exists() else None
+        if failed:
+            _fell_back(work, "vggt_round", f"round {failed['round']} of VGGT's placing failed ({failed['why']}): the model from "
+                       f"round {failed['round'] - 1} was kept", log, **_round_info(failed))
     except Cancelled:
         raise
+    except vggt_place.RoundFailed as e:
+        log(f"placing them with VGGT failed: {e}")
+        _fell_back(work, "vggt_round", f"round 1 of VGGT's placing failed ({e.info['why']}): nothing was placed", log,
+                   **_round_info(e.info))
     except Exception as e:
         log(f"placing them with VGGT failed: {e}")
 
@@ -1222,6 +1236,11 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             orientation.save(out_dir, report, model)
         if _largest_model(sparse)[0] == sparse / "vggt" and (work / "vggt" / "placed.json").exists():   # the mesh's model came from VGGT's
             shutil.copyfile(work / "vggt" / "placed.json", out_dir / "placement.json")
+        # what a round of VGGT's placing that failed started from, to look into: this placing's, and the other one's
+        # where the photos were placed twice (GPU SIFT's set aside, or the CPU's put aside for it)
+        for name, where in (("", work), ("-gpu-sift", work / PLAIN_SIFT_ASIDE), ("-cpu-sift", work / "plain-sift-cpu")):
+            if (where / "vggt" / vggt_place.FAILED).is_dir():
+                shutil.make_archive(str(out_dir / f"vggt-failed-round{name}"), "gztar", where / "vggt", vggt_place.FAILED)
         if (work / MODELS_FILE).exists():
             shutil.copyfile(work / MODELS_FILE, out_dir / MODELS_FILE)
         if (work / FALLBACKS_FILE).exists():

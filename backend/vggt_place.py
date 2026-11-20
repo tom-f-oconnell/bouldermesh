@@ -17,6 +17,7 @@ import importlib.util
 import json
 import math
 import os
+import shutil
 import statistics
 import struct
 import time
@@ -39,8 +40,21 @@ ROUNDS = ((8, 150, 1), (3, 20, 1), (2, 4, 1))
 MAX_IMAGE_ID = 2147483647  # COLMAP's pair_id is this times the smaller image id, plus the larger
 
 
+FAILED = "failed_round"     # in work/: the model a round that failed started from (COLMAP's binary model), kept to look into
+
+
 class Unavailable(Exception):
     """VGGT can't run here: why."""
+
+
+class RoundFailed(RuntimeError):
+    """A round of triangulating and adjusting failed (COLMAP 3.9.1's point_triangulator aborts when its bundle
+    adjustment fails, as when filtering leaves it next to nothing): .info says which round, its tolerances, the points
+    it started from, and why."""
+
+    def __init__(self, info: dict):
+        super().__init__(f"round {info['round']} of {info['of']} failed ({info['why']})")
+        self.info = info
 
 
 def enabled() -> bool:
@@ -217,11 +231,16 @@ def place(colmap: str, db: Path, images: Path, out: Path, work: Path, log: Log, 
         out: where the model goes; work: where the steps before it go.
         run: runs a command, raising if it fails.
 
+    A round after the first that fails leaves the last round's model as the result, in out, and placed.json's
+    "failed" says so (RoundFailed's info); the model's own check then judges it, as any other. The model that round
+    started from is kept in work/FAILED.
+
     Returns:
         How many photos the model has.
 
     Raises:
-        Unavailable: VGGT can't run here; RuntimeError: too few photos are linked to place any.
+        Unavailable: VGGT can't run here; RoundFailed: the first round failed; RuntimeError: too few photos are
+        linked to place any.
     """
     why = unavailable()
     if why:
@@ -236,20 +255,35 @@ def place(colmap: str, db: Path, images: Path, out: Path, work: Path, log: Log, 
     log(f"VGGT: placed them in {time.time() - t0:.0f} s")
     model = work / "start"
     write_model(model, chosen, placed)
+    failed = None
     for i, (angle, err, refine_focal) in enumerate(rounds):
         tri, adjusted = work / f"triangulated{i}", out if i == len(rounds) - 1 else work / f"adjusted{i}"
         tri.mkdir(parents=True, exist_ok=True)
         adjusted.mkdir(parents=True, exist_ok=True)
         log(f"== COLMAP: points from those placements, round {i + 1} of {len(rounds)} (up to {angle}° and {err} px off)")
-        run([colmap, "point_triangulator", "--database_path", str(db), "--image_path", str(images),
-             "--input_path", str(model), "--output_path", str(tri),
-             "--Mapper.tri_create_max_angle_error", str(angle), "--Mapper.tri_continue_max_angle_error", str(angle),
-             "--Mapper.tri_re_max_angle_error", str(angle), "--Mapper.tri_merge_max_reproj_error", str(err),
-             "--Mapper.tri_complete_max_reproj_error", str(err), "--Mapper.filter_max_reproj_error", str(err),
-             "--Mapper.tri_ignore_two_view_tracks", "0", "--Mapper.tri_min_angle", "1", "--Mapper.filter_min_tri_angle", "1"])
-        run([colmap, "bundle_adjuster", "--input_path", str(tri), "--output_path", str(adjusted),
-             "--BundleAdjustment.refine_focal_length", str(refine_focal)])
+        try:
+            run([colmap, "point_triangulator", "--database_path", str(db), "--image_path", str(images),
+                 "--input_path", str(model), "--output_path", str(tri),
+                 "--Mapper.tri_create_max_angle_error", str(angle), "--Mapper.tri_continue_max_angle_error", str(angle),
+                 "--Mapper.tri_re_max_angle_error", str(angle), "--Mapper.tri_merge_max_reproj_error", str(err),
+                 "--Mapper.tri_complete_max_reproj_error", str(err), "--Mapper.filter_max_reproj_error", str(err),
+                 "--Mapper.tri_ignore_two_view_tracks", "0", "--Mapper.tri_min_angle", "1", "--Mapper.filter_min_tri_angle", "1"])
+            run([colmap, "bundle_adjuster", "--input_path", str(tri), "--output_path", str(adjusted),
+                 "--BundleAdjustment.refine_focal_length", str(refine_focal)])
+        except RuntimeError as e:
+            failed = {"round": i + 1, "of": len(rounds), "angle": angle, "px": err, "points_before": count(model, "points3D"),
+                      "photos": len(chosen), "why": str(e)[:300]}
+            kept = work / FAILED
+            shutil.rmtree(kept, ignore_errors=True)
+            shutil.copytree(model, kept)
+            if i == 0:
+                raise RoundFailed(failed) from e
+            log(f"VGGT + COLMAP: round {i + 1} failed ({e}): the model from round {i} is kept, for its own check to judge")
+            shutil.rmtree(out, ignore_errors=True)
+            shutil.copytree(model, out)
+            break
         log(f"VGGT + COLMAP: {count(adjusted, 'points3D')} points after round {i + 1}")
         model = adjusted
-    (work / "placed.json").write_text(json.dumps({"by": "vggt", "photos": len(chosen), "rounds": [list(r) for r in rounds]}))
+    (work / "placed.json").write_text(json.dumps({"by": "vggt", "photos": len(chosen), "rounds": [list(r) for r in rounds],
+                                                  **({"failed": failed} if failed else {})}))
     return count(out, "images") or len(chosen)

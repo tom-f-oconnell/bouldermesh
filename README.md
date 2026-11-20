@@ -512,7 +512,10 @@ makes one geometric-consistency pass over the depth maps, not OpenMVS's two (`GE
 Whenever a step falls back from the GPU to the CPU (a GPU run that failed, or GPU SIFT's placing that fell short), the
 job's log says so in a line starting `FALLBACK:` (which a machine's worker script also logs as its own), and the server
 keeps a line for it in `fallbacks.jsonl` in its data folder: the mesh, the step, why, where it ran, and for GPU SIFT
-both placings and whether the CPU's did better (`"better"`).
+both placings and whether the CPU's did better (`"better"`). A round of VGGT's placing that fails is kept the same way
+(step `vggt_round`: which round, its tolerances, the points it started from, and COLMAP's error); a later round's
+failure leaves the round before's model for the model's check to judge, and what the failed round started from is kept
+beside the mesh as `vggt-failed-round*.tar.gz`.
 
 **Which mapper places the cameras.** COLMAP 4.2.1's global mapper, built into the image as `colmap4`, places them by
 default: on the mapper benchmark's boulders it was 6-14 times faster than 3.9.1's incremental mapper. It solves on the

@@ -277,8 +277,11 @@ try:
             assert "only 4 image(s)" in str(e), e
 finally:
     restore(saved)
+crash = pipeline.vggt_place.RoundFailed({"round": 1, "of": 3, "angle": 8, "px": 150, "points_before": 0, "photos": 10,
+                                         "why": "colmap crashed with SIGABRT (signal 6)"})
 for why, fails, said in (("no CUDA GPU is visible", None, "but not here: no CUDA GPU is visible"),
-                         (None, RuntimeError("only 1 photo(s) share verified matches"), "placing them with VGGT failed: only 1")):
+                         (None, RuntimeError("only 1 photo(s) share verified matches"), "placing them with VGGT failed: only 1"),
+                         (None, crash, "FALLBACK: vggt_round: round 1 of VGGT's placing failed (colmap crashed")):
     calls, saved = with_vggt(why=why, fails=fails)
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -287,6 +290,10 @@ for why, fails, said in (("no CUDA GPU is visible", None, "but not here: no CUDA
                 raise AssertionError("too small a model should fail")
             except RuntimeError as e:
                 assert "only 2 image(s)" in str(e), e
+            fell = pathlib.Path(td) / "work" / pipeline.FALLBACKS_FILE
+            if fails is crash:      # a round that failed is recorded with what it was, beside the mesh's other fallbacks
+                got = json.loads(fell.read_text())
+                assert [(f["step"], f["round"], f["angle"]) for f in got] == [("vggt_round", 1, 8)] and said[10:] in f"FALLBACK: {got[0]['step']}: {got[0]['why']}"[10:], got
     finally:
         restore(saved)
 calls, saved = with_vggt(fails=Cancelled())     # stopping the job stops it, rather than being taken for a failure
