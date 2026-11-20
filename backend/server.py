@@ -7734,37 +7734,6 @@ def remote_beta(mid: str, pid: str, log) -> None:
                                    "error": f"{len(absent)} of its videos aren't here yet"})
 
 
-# The owner's look at a video's beta beside it (beta.frames_seen()) plays the video from the cache by a link signed here:
-# a <video> can't send the owner's token. Links last VIDEO_LINK_HOURS, and none outlast a restart.
-VIDEO_LINK_KEY = secrets.token_bytes(32)
-VIDEO_LINK_HOURS = 12
-VIDEO_TYPES = {".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mkv": "video/x-matroska", ".mov": "video/quicktime"}
-
-
-def _video_sig(mid: str, tag: str, until: int) -> str:
-    return hmac.new(VIDEO_LINK_KEY, f"{mid}/{tag}/{until}".encode(), hashlib.sha256).hexdigest()[:32]
-
-
-def video_link(mid: str, tag: str) -> str:
-    """A link to a beta video of a mesh's, signed, for VIDEO_LINK_HOURS."""
-    until = int(time.time() + VIDEO_LINK_HOURS * 3600)
-    return f"/api/meshes/{mid}/beta/video/{tag}?e={until}&s={_video_sig(mid, tag, until)}"
-
-
-def video_link_ok(mid: str, tag: str, until: str, sig: str) -> bool:
-    try:
-        when = int(until)
-    except ValueError:
-        return False
-    return when > time.time() and hmac.compare_digest(sig.encode(), _video_sig(mid, tag, when).encode())
-
-
-def beta_video_file(mid: str, tag: str) -> Path | None:
-    """A mesh's beta video with this tag, from the cache, if it's here."""
-    v = next((x for x in (beta_mod.load(MESHES / mid) or {}).get("videos", []) if x.get("tag") == tag), None)
-    return youtube_mod.cached(v["url"]) if v and v.get("url") else None
-
-
 def remote_scale(mid: str, pid: str, climbs: list[dict], log) -> None:
     """scale_mod.estimate(), on a machine that connects here."""
     mesh_dir = MESHES / mid
@@ -10025,7 +9994,7 @@ def forget_mesh_list() -> None:
     _mesh_lists_kept.clear()
 
 
-REPORT_PATH = re.compile(r"/api/(client-errors|mesh-views|page-views|nearby-overlaps|feedback)")   # visitors' reports, which change no mesh
+REPORT_PATH = re.compile(r"/api/(client-errors|mesh-views|nearby-overlaps|feedback)")   # visitors' reports, which change no mesh
 
 
 def meshes_mark() -> str:
@@ -10369,10 +10338,8 @@ def admin_machine_diagnostics(body: dict) -> dict:
 CLIENT_ERRORS = DATA / "client-errors.jsonl"   # one report a line; the one before it, client-errors.jsonl.1, once it's full
 CLIENT_ERRORS_BYTES = 2 * 2**20                # how big the file gets before that
 CLIENT_REPORT_MAX = 8192                       # the largest report taken
-CLIENT_REPORTS = {"overlap": (30, 600), "error": (20, 600), "view": (300, 600), "page": (30, 600), "rating": (120, 3600), "feedback": (5, 3600)}  # at most this many of each from one address in this many seconds
+CLIENT_REPORTS = {"overlap": (30, 600), "error": (20, 600), "view": (300, 600), "rating": (120, 3600), "feedback": (5, 3600)}  # at most this many of each from one address in this many seconds
 MESH_VIEWS = DATA / "mesh-views.jsonl"       # each mesh shown in a visitor's browser, and how it was asked for
-PAGE_VIEWS = DATA / sitehealth_mod.PAGE_VIEWS   # each time the page opened in a browser, and roughly where
-PAGE_VIEWS_BYTES = 16 * 2**20                # its own size before the next file: ~70k openings, so the admin page's month is whole
 _client_reports: dict[tuple[str, str], list[float]] = {}
 _client_lock = threading.Lock()
 
@@ -10392,21 +10359,21 @@ def _client_allowed(kind: str, sender: str) -> bool:
     return True
 
 
-def _client_report(kind: str, sender: str, path: Path, line: dict, most: int = CLIENT_ERRORS_BYTES) -> bool:
+def _client_report(kind: str, sender: str, path: Path, line: dict) -> bool:
     """Append a report from a visitor's browser to path, unless that address has sent too many of its kind lately
-    (CLIENT_REPORTS), starting a new file once it's over `most` bytes, the old one kept as <name>.1."""
+    (CLIENT_REPORTS), starting a new file once it's over CLIENT_ERRORS_BYTES, the old one kept as <name>.1."""
     with _client_lock:
         if not _client_allowed(kind, sender):
             return False
-        _append_report(path, line, most)
+        _append_report(path, line)
     return True
 
 
-def _append_report(path: Path, line: dict, most: int = CLIENT_ERRORS_BYTES) -> None:
+def _append_report(path: Path, line: dict) -> None:
     """Append a line to a report file (JSON a line), with the time and this version, starting a new file once it's over
-    `most` bytes, the old one kept as <name>.1. Call with _client_lock held."""
+    CLIENT_ERRORS_BYTES, the old one kept as <name>.1. Call with _client_lock held."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and path.stat().st_size > most:
+    if path.exists() and path.stat().st_size > CLIENT_ERRORS_BYTES:
         path.replace(path.with_name(path.name + ".1"))
     with open(path, "a") as f:
         f.write(json.dumps({"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "version": VERSION,
@@ -10590,41 +10557,6 @@ def record_mesh_view(report: dict, sender: str, editor: bool) -> bool | None:
     elif event == "left":
         print(f"left mesh {mid} ({m['name']}) loading after {seconds} s ({line['left'] or '?'})", flush=True)
     return True
-
-
-BOT_AGENT = re.compile(r"bot|crawl|spider|slurp|headless|lighthouse|preview", re.I)
-
-
-def record_page_view(report: dict, sender: str, headers, editor: bool) -> bool:
-    """Keep that the page opened in a browser (its script, so not most crawlers, which don't run it), in PAGE_VIEWS:
-    roughly where, as Cloudflare's visitor location headers say (country, region, city, and its point to a tenth of a
-    degree, ~10 km), which page (ids left out), the site that linked there (only its host), whether this browser had
-    opened it before (new), and whether it's the phone apps' (app) or calls itself a bot. Not the address, nor the browser.
-
-    Returns:
-        False if that address has sent too many lately.
-    """
-    get = lambda k: (headers.get(k) or "").strip()[:60] or None  # noqa: E731
-
-    def degrees(k):
-        try:
-            x = float(get(k) or "")
-            return round(x, 1) if math.isfinite(x) else None
-        except ValueError:
-            return None
-    ref = urlparse(str(report.get("ref") or "")[:300]).hostname
-    path = re.sub(r"/[0-9a-f]{6,32}(?=/|$)", "/<id>", str(report.get("path") or "")[:120]) or None
-    line = {"country": get("cf-ipcountry") if get("cf-ipcountry") not in ("XX", "T1") else None, "region": get("cf-region"),
-            "city": get("cf-ipcity"), "lat": degrees("cf-iplatitude"), "lng": degrees("cf-iplongitude"), "path": path,
-            "ref": ref if ref and ref != (get("host") or "").split(":")[0] else None, "new": True if report.get("new") is True else None,
-            "app": True if report.get("app") is True else None, "editor": editor or None,
-            "bot": True if BOT_AGENT.search(get("user-agent") or "") else None, **page_build_of(report)}
-    return _client_report("page", sender, PAGE_VIEWS, line, PAGE_VIEWS_BYTES)
-
-
-def admin_page_views(_: dict) -> dict:
-    """The admin page's map of where the page was opened from: sitehealth.page_views() over a day, a week and a month."""
-    return sitehealth_mod.page_views_for_data(DATA)
 
 
 RATINGS = {1: "bad", 2: "ok", 3: "good"}
@@ -10937,45 +10869,6 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             self.close_connection = True    # the client went away
 
-    def send_ranged(self, path: Path, ctype: str, cache: str = "private, no-store") -> None:
-        """Send a file, or the one range of it asked for (Range: bytes=a-b, a-, -n), as a <video> asks to seek."""
-        size = path.stat().st_size
-        start, end, partial = 0, size - 1, False
-        m = re.fullmatch(r"bytes=(\d*)-(\d*)", (self.headers.get("Range") or "").strip())
-        if m and (m[1] or m[2]):
-            partial = True
-            if m[1]:
-                start, end = int(m[1]), min(int(m[2]), size - 1) if m[2] else size - 1
-            else:
-                start = max(0, size - int(m[2]))
-            if start > end:
-                self.send_response(416)
-                self.send_header("Content-Range", f"bytes */{size}")
-                self.send_header("Content-Length", "0")
-                return self.end_headers()
-        self.send_response(206 if partial else 200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(end - start + 1))
-        self.send_header("Accept-Ranges", "bytes")
-        if partial:
-            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        self.send_header("Cache-Control", cache)
-        self.end_headers()
-        if self.head_only:
-            return
-        try:
-            with open(path, "rb") as f:
-                f.seek(start)
-                left = end - start + 1
-                while left > 0:
-                    chunk = f.read(min(2**20, left))
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    left -= len(chunk)
-        except (BrokenPipeError, ConnectionResetError, TimeoutError):
-            self.close_connection = True    # the player went on to another range, or away
-
     def read_body(self) -> bytes:
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -11225,7 +11118,6 @@ class Handler(BaseHTTPRequestHandler):
         editor = not READ_ONLY and (not EDIT_TOKEN or self.is_editor())
         kept = (record_client_error(report, self.address_string(), self.headers.get("User-Agent") or "", editor) if kind == "error"
                 else record_overlap(report, self.address_string(), editor) if kind == "overlap"
-                else record_page_view(report, self.address_string(), self.headers, editor) if kind == "page"
                 else record_mesh_view(report, self.address_string(), editor))
         if kept is None:
             return self.send_json({"error": "no such mesh"}, 404)
@@ -11546,27 +11438,6 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/capture/guide/([0-9a-f]+)\.bin", p)
             if m:   # and the light copy of it they draw, by the version its plan names
                 return self.send_file(MESHES / m[1] / captureplan.DIR / captureplan.GUIDE_FILE, cache="public, max-age=31536000, immutable")
-            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta/debug/([0-9a-f]{8})", p)
-            if m:   # the site's owner's look at one video's beta beside it: its climber in each frame, and the holds seen
-                if READ_ONLY or (EDIT_TOKEN and not self.is_editor()):
-                    return self.send_json({"error": "that's for the site's owner"}, 401 if self.who() is None else 403)
-                found = beta_mod.frames_seen(MESHES / m[1], m[2]) if (MESHES / m[1]).is_dir() else None
-                if found is None:
-                    return self.send_json({"error": "not found"}, 404)
-                vid = youtube_mod.video_id(found.get("url") or "")
-                away = _away(video_ids=[vid]) if vid and not beta_video_file(m[1], m[2]) else []
-                wanted = away and q("SELECT wanted FROM offloads WHERE path=?", away[0]["path"], one=True)
-                found.update(video=video_link(m[1], m[2]) if beta_video_file(m[1], m[2]) else None,
-                             away={"bytes": sum(r["bytes"] or 0 for r in away), "asked": bool(wanted and wanted["wanted"])} if away else None)
-                return self.send_json(found)
-            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta/video/([0-9a-f]{8})", p)
-            if m:   # that video, by the signed link it gives
-                if not video_link_ok(m[1], m[2], (qs.get("e") or [""])[0], (qs.get("s") or [""])[0]):
-                    return self.send_json({"error": "that link has run out, or isn't one"}, 403)
-                src = beta_video_file(m[1], m[2])
-                if not src:
-                    return self.send_json({"error": "not here now"}, 404)
-                return self.send_ranged(src, VIDEO_TYPES.get(src.suffix.lower(), "application/octet-stream"))
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
             if m:   # what each video's climber did, and the holds marked by hand
                 if not (MESHES / m[1]).is_dir():
@@ -11821,8 +11692,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "only from the server itself"}, 403)
             b = self.read_json()
             return self.send_json(drain(bool(b.get("on", True)), bool(b.get("now"))))
-        if p in ("/api/client-errors", "/api/mesh-views", "/api/page-views", "/api/nearby-overlaps"):    # from any visitor, not only editors
-            return self.client_report({"/api/client-errors": "error", "/api/mesh-views": "view", "/api/page-views": "page"}.get(p, "overlap"))
+        if p in ("/api/client-errors", "/api/mesh-views", "/api/nearby-overlaps"):    # from any visitor, not only editors
+            return self.client_report({"/api/client-errors": "error", "/api/mesh-views": "view"}.get(p, "overlap"))
         if p == "/api/feedback":    # also from any visitor
             return self.feedback()
         if p == "/api/pair":    # also from any visitor: the code is what's checked
@@ -12236,13 +12107,6 @@ class Handler(BaseHTTPRequestHandler):
                 if not queue_beta(m[1], ahead=True):
                     return self.send_json({"error": "already finding it"}, 409)
                 return self.send_json({"queued": True}, 202)
-            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta/debug/([0-9a-f]{8})/fetch", p)
-            if m:   # a video the owner's look at its beta wants, back from the backup on its next run
-                found = beta_mod.frames_seen(MESHES / m[1], m[2]) if (MESHES / m[1]).is_dir() else None
-                vid = youtube_mod.video_id((found or {}).get("url") or "")
-                if not vid:
-                    return self.send_json({"error": "not found"}, 404)
-                return self.send_json({"bytes": bring_back(_away(video_ids=[vid]), "the video")})
             if p == "/api/meshes/beta-all":     # every mesh with videos whose beta hasn't been found
                 if not beta_mod.available():
                     return self.send_json({"error": "finding beta needs rtmlib and onnxruntime (in the Docker image)"}, 501)
@@ -13551,7 +13415,6 @@ def main() -> None:
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteer-trial": admin_volunteer_trial,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
-                                       "page-views": admin_page_views,
                                        "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-rescind": admin_user_rescind, "user-change": admin_user_change,
                                        "user-signin": admin_user_signin, "user-delete": admin_user_delete, "submission": admin_submission, "area": admin_area, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
                                        "machine-revoke": admin_machine_revoke, "ec2-start": admin_ec2_start, "ec2-stop": admin_ec2_stop, "ec2-test": admin_ec2_test, "ec2-topup": admin_ec2_topup, "clear-rejected": admin_clear_rejected,

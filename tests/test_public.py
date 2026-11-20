@@ -275,18 +275,6 @@ def with_token(tmp: Path) -> None:
         assert frames["frames"] == {"n": 300, "median_ms": 61, "p95_ms": None, "slow": 7} and len(frames["gpu"]) == 120, frames
         assert frames["memory_gb"] == 4 and frames["cores"] == 8 and frames["editor"] is True, frames
         assert "event" not in shown and shown["page_seconds"] == 3.2 and "list_seconds" not in shown, shown
-        # the page opening: roughly where (Cloudflare's headers, to a tenth of a degree), the linking site's host, ids left out
-        cf = {"X-Real-IP": "198.51.100.22", "CF-IPCountry": "FR", "CF-IPCity": "Fontainebleau", "CF-Region": "Ile-de-France",
-              "CF-IPLatitude": "48.40471", "CF-IPLongitude": "2.70162"}
-        st, _, r = req(B, "POST", "/api/page-views", {"path": f"/m/{mid}", "ref": "https://www.reddit.com/r/bouldering/x", "new": True,
-                                                      "app": "yes"}, headers=cf)
-        assert st == 202, (st, r)
-        req(B, "POST", "/api/page-views", {"path": "/"}, headers={"X-Real-IP": "198.51.100.23", "User-Agent": "Googlebot/2.1"})
-        opened = [json.loads(x) for x in (tmp / "data" / "page-views.jsonl").read_text().splitlines()]
-        assert {k: opened[0].get(k) for k in ("country", "city", "region", "lat", "lng", "path", "ref", "new", "app", "editor")} == \
-            {"country": "FR", "city": "Fontainebleau", "region": "Ile-de-France", "lat": 48.4, "lng": 2.7, "path": "/m/<id>",
-             "ref": "www.reddit.com", "new": True, "app": None, "editor": None}, opened[0]
-        assert opened[1]["bot"] is True and "lat" not in opened[1] and "198.51.100" not in json.dumps(opened), opened
 
         # visitors' list of meshes is made once and kept a while, but an editor's change is in it at once
         mine = lambda: [m["id"] for m in req(B, "GET", "/api/meshes")[2]]  # noqa: E731
