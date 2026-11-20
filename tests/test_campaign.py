@@ -364,6 +364,33 @@ got = items(c["id"])
 again = server.q("SELECT * FROM projects WHERE kind='boulder'", one=True)
 assert reconstructed == ["Alpha Boulder (boulder)"] and again["mesh_id"] != proj["mesh_id"], reconstructed
 assert got["Alpha"]["mesh_id"] == got["Alpha2"]["mesh_id"] == again["mesh_id"] and got["Alpha2"]["status"] == "done", got["Alpha2"]
+# Rebuild changed: a climb on a boulder meshed whole meshes its boulder again, not itself; done, none is left changed
+server.q("UPDATE campaign_items SET changed=1 WHERE campaign_id=? AND name='Alpha'", c["id"], write=True)
+camp_row = lambda: server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True)  # noqa: E731
+assert server.campaign_view(camp_row())["again"]["changed"] == 1
+(server.PROJECTS / got["Alpha"]["project_id"] / "photos" / "new.jpg").write_bytes(b"jpg")    # as if harvested again since
+os.utime(server.PROJECTS / got["Alpha"]["project_id"] / "photos", (time.time() + 5, time.time() + 5))
+assert server.queue_redo(c["id"], "rebuild-changed") == 1 and items(c["id"])["Alpha"]["redo"] == "boulder"
+reconstructed.clear()
+run_all(c["id"], limit=10)
+got = items(c["id"])
+assert reconstructed == ["Alpha Boulder (boulder)"] and server.campaign_view(camp_row())["again"]["changed"] == 0, reconstructed
+assert got["Alpha"]["mesh_id"] == got["Alpha2"]["mesh_id"] == server.q("SELECT mesh_id FROM projects WHERE kind='boulder'", one=True)["mesh_id"]
+# Rebuild all: the boulder once, from the same photos all the same, and each other climb on its own; a pool of climbs
+# with any of them marked to be meshed together again once they're through
+delta_leaf = got["Delta"]["boulder"]
+server.q("INSERT INTO pools(key, leaf, members, created) VALUES(?,?,?,?)", "poolkey", delta_leaf,
+         json.dumps([got["Delta"]["climb_id"], got["Delta2"]["climb_id"]]), time.time(), write=True)
+assert not server.pool_asked_again("poolkey", None)
+assert server.queue_redo(c["id"], "rebuild") == 5 and items(c["id"])["Alpha"]["redo"] == "boulder+again"
+assert items(c["id"])["Alpha2"]["redo"] is None and server.pool_asked_again("poolkey", None)
+reconstructed.clear()
+run_all(c["id"], limit=20)
+assert sorted(reconstructed) == ["Alpha Boulder (boulder)", "Beta (harvest)", "Delta (harvest)", "Delta2 (harvest)", "Gamma (harvest)"], reconstructed
+got = items(c["id"])
+assert got["Alpha"]["mesh_id"] == got["Alpha2"]["mesh_id"] == server.q("SELECT mesh_id FROM projects WHERE kind='boulder'", one=True)["mesh_id"]
+server.q("DELETE FROM pools WHERE key='poolkey'", write=True)
+print("rebuilding a boulder meshed whole OK")
 # a boulder whose pooled photos aren't enough: its climbs are skipped with it
 fresh()
 server.q("DELETE FROM projects", write=True)

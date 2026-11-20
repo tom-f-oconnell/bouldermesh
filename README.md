@@ -283,7 +283,9 @@ and meshed again whatever that finds (on a boulder meshed whole, its boulder's m
 one never harvested is harvested and meshed as if new. Areas stopped or done aren't started for it; one running only what
 was queued again (as after *Retry*) takes them after that, and then stops. The area's card
 counts those queued so. A new mesh becomes the current one in place of each old mesh whose climbs it's of too, which
-stays as an older version of it; one made under the same rules never does.
+stays as an older version of it; one made under the same rules never does. A boulder's new mesh also takes over an old
+one whose climbs linked only "same boulder as" it doesn't place, if they're on that boulder, as its boulder's mesh is
+shown for them anyway; the server checks for these as it starts.
 
 A mesh is *old by data* when a newer one, made under the same rules, is of every climb it's of, and was made from photos
 it lacked (by what each was made from, `inputs.json`; where that wasn't kept, when its photos are some of the newer
@@ -304,7 +306,10 @@ is running they go next, and if it isn't, only they run.
 *Harvest again* gathers the photos and videos of every climb in the area that has photos of its own
 again, from scratch, keeping their meshes, so it finds what's been posted since. *Rebuild N changed*
 then meshes those whose photos changed, and *Rebuild all* meshes every climb with enough viewpoints
-again, as after a change to the pipeline. These are queued like retries. A rebuilt mesh takes over
+again, as after a change to the pipeline. On a boulder meshed whole, either meshes the boulder again from all its
+climbs' photos instead (once, on its highest-ranked climb; *Rebuild all* even if they're the same photos), and pools of
+climbs whose photos match, with any of those climbs in them, are meshed together again once their climbs are through.
+These are queued like retries. A rebuilt mesh takes over
 its climbs, and the one before it stays as an older version: *Show older versions*, under the *Meshes*
 tab's *Filter*, lists those, and *Use this version* goes back to one. The API can also look only for new videos
 (`{"videos_only": true}`), and rebuild each climb as soon as it has new photos (`{"then_rebuild": true}`). *Retry* on a failed project does the same for
@@ -363,8 +368,8 @@ well.
   meshed before ties were recorded* on the admin page does that for all of them (reading first what each one's Mountain
   Project area is, where it never was, and leaving out one whose page doesn't say it's one rock, as its climbs are pooled
   by their photos instead), or *Mesh the boulder again* on a climb's card for one. Either uses the photos as
-  harvested; only problems on the boulder's page never harvested are harvested. An area's *Rebuild all* isn't for this:
-  it meshes each climb on its own.
+  harvested; only problems on the boulder's page never harvested are harvested. An area's *Rebuild all* meshes its
+  boulders meshed whole again too, but only those with two or more of its climbs on them.
 
 **On the cards.** Meshes are named for what they're of, not how they were made. A mesh of several climbs' photos says how
 many of them it places, each counted only on the mesh of its boulder that places most of its own photos.

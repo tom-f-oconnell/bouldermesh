@@ -418,6 +418,44 @@ try:
     assert mesh(items(a["id"])["Beta"]["mesh_id"])["rules"] == server.MESH_RULES and items(a["id"])["Gamma"]["status"] == "pending"
     print("old climbs at low priority, whatever their areas' status OK")
 
+    # --- an old climb's mesh with a climb linked only via it ("same boulder as"): a new mesh of the whole boulder that
+    # places its own climb takes it over, though it doesn't place the one linked via it, if that's on the boulder; not
+    # if it's on another, nor a climb's own new mesh that leaves the via one out ------------------------------------
+    fresh()
+    server.settings().update({"areas.meshes": "boulders"})
+    rock = ["California", "JT", "Rock Boulder"]
+    key = server.boulder_key(rock)
+
+    def climb(rid: int, name: str, path: list[str]) -> str:
+        return server.upsert_climb(Climb(source="mountainproject", source_id=str(rid), url=f"https://x/{rid}", name=name,
+                                         kind="boulder", lat=34.0, lng=-116.0, area_path=path, boulder_name=path[-1]))
+    one, two, three, far = (climb(11, "One", rock), climb(12, "Two", rock), climb(13, "Three", rock),
+                            climb(14, "Far", ["California", "JT", "Far Boulder"]))
+    then = server.MESH_RULES_SINCE[server.MESH_RULES] - 3600
+
+    def add(mid: str, rules: int, boulder: str | None = None, placed: tuple = ()) -> None:
+        server.q("INSERT INTO meshes(id,name,filename,source,created,rules,boulder) VALUES(?,?,?,?,?,?,?)", mid, mid, "m.ply",
+                 f"project:p{mid}", then, rules, boulder, write=True)
+        if placed:
+            (server.MESHES / mid).mkdir(parents=True, exist_ok=True)
+            (server.MESHES / mid / "views.json").write_text(json.dumps({"climbs": list(placed)}))
+    add("o1", 0)
+    server.link_mesh("o1", one, "auto-linked from reconstruction project")
+    server.link_mesh("o1", three, server.SHARED + "One")
+    add("o2", 0)
+    server.link_mesh("o2", two, "auto-linked from reconstruction project")
+    server.link_mesh("o2", far, server.SHARED + "Two")
+    add("own3", 1)
+    server.link_mesh("own3", one, "auto-linked from reconstruction project")
+    server.old_changed()
+    assert server.retire_covered("own3") == [], "a climb's own mesh doesn't take over one with a climb via it left out"
+    add("nb", 1, key, (one, two))
+    assert server.retire_all_covered() == 1
+    assert mesh("o1")["replaced_by"] == "nb" and mesh("o2")["replaced_by"] is None, "Far isn't on the boulder"
+    assert not server.q("SELECT 1 FROM mesh_links WHERE mesh_id='o1'") and server.climb_row(three)["n_boulder"] == 1
+    assert server.retire_all_covered() == 0, "nothing left to take over"
+    print("old meshes with a climb linked via them, taken over by its boulder's OK")
+
     # --- first N: an area with a limit, done, only its old one within it remade; the next not started ----------------
     fresh()
     c = server.create_campaign("", "popularity", HEAD + row(1, "Beta", "Beta Boulder") + row(2, "Gamma", "Gamma Boulder"), max_meshes=1)
