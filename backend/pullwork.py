@@ -64,6 +64,7 @@ from volunteers import OffsetError, _client_ip, script_fetch
 PART_MAX = 64 * 2**20       # the largest part of a file either way, under Cloudflare's 100 MB a request
 MAX_OUTPUT = 4 * 2**30      # what a job may send back: a mesh, its textures, cameras and masks
 CONNECTED = 120             # seconds since a machine last asked or reported for it to count as there
+APPROVAL_WAIT = 90          # seconds a machine awaiting approval waits between asks: under CONNECTED, not to count as gone
 QUIET = 15 * 60             # a job whose machine hasn't been heard from for this long is lost
 POLL = 15                   # seconds a machine with nothing to do waits before asking again
 ORPHAN_AFTER = 24 * 3600   # a meshing job kept over a restart that no climb takes up again in this long goes
@@ -515,6 +516,13 @@ class Board:
                    str(client["gpu_name"])[:80] if client.get("gpu_name") else None, info, m["id"])
         else:
             self.q("UPDATE machines SET last_seen=?, active_at=? WHERE id=?", now, now, m["id"])
+            # about a job it's running: working, if it was taken for offline (it asks nothing until the job ends, as after
+            # this server restarted mid-job)
+            with self.cond:
+                doing = next((j for j in self.jobs.values() if j.machine == m["id"] and j.state == "running"), None)
+            cur = self.current(m["id"]) if doing else None
+            if doing and (not cur or cur["state"] != "working"):
+                self._state({**m, "last_seen": now}, "working", doing.label)
 
     def bye(self, m: dict) -> None:
         """A machine's script stopped: it's gone, at once, for telling of it (presence.py). It still counts as there
@@ -536,14 +544,14 @@ class Board:
             return {"name": m["name"], "wait": POLL, "status": "provisional" if waiting else "approved", "may_work": allowed}
         if not allowed:
             self._state(m, "awaiting approval")
-            return {"wait": 300, "why": "waiting for approval by whoever runs this site", "provisional": True}
+            return {"wait": APPROVAL_WAIT, "why": "waiting for approval by whoever runs this site", "provisional": True}
         tasks = client.get("tasks")     # what it takes (worker script 13 on): all, before; without a GPU, filtering alone
         tasks = {str(t) for t in tasks} if isinstance(tasks, list) else None
         with self.cond:     # a provisional machine takes only meshing, if anything
             self.takes[m["id"]] = ({"reconstruct"} & (tasks or {"reconstruct"})) if waiting else tasks
         if waiting and tasks is not None and "reconstruct" not in tasks:   # only meshing waits for approval, held
             self._state(m, "awaiting approval")
-            return {"wait": 300, "why": "waiting for approval by whoever runs this site: only approved machines filter photos, "
+            return {"wait": APPROVAL_WAIT, "why": "waiting for approval by whoever runs this site: only approved machines filter photos, "
                                         "find beta or find sizes", "provisional": True}
         parked = self.parked.get(m["id"])
         if parked and not self.busy(m["id"]):

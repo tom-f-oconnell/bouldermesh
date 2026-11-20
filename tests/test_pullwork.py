@@ -407,7 +407,7 @@ assert "as 'lab-box'" in out and "waiting for approval; no climbs until then" in
 lab_token = json.loads((reg_home / "config.json").read_text())["token"]
 lab = board.machine(lab_token)
 assert lab_token.startswith("bmw_") and lab["status"] == "provisional" and [n["id"] for n in news] == [lab["id"]]
-assert board.work(lab, ip, {"version": 2}) == {"wait": 300, "why": "waiting for approval by whoever runs this site", "provisional": True}
+assert board.work(lab, ip, {"version": 2}) == {"wait": pullwork.APPROVAL_WAIT, "why": "waiting for approval by whoever runs this site", "provisional": True}
 assert next(m for m in board.state()["machines"] if m["name"] == "lab-box")["status"] == "awaiting approval"
 rules["provisional_work"] = True
 board.jobs["b" * 12] = pullwork.Job(id="b" * 12, label="beta: x", input=TMP / "none.tar", size=1, internet=False, image=image[0],
@@ -1029,4 +1029,17 @@ orphan.owner, orphan.orphaned = 0, time.time() - pullwork.ORPHAN_AFTER - 1
 board.sweep()
 assert not board.jobs and not orphan.input.exists()
 print("a restart mid-job OK")
+
+# a machine that reports on a job it's running is working, though it was taken for offline (it asks for nothing until the
+# job ends, as after a restart mid-job: atlas showed offline for hours on Nov 19 while it meshed)
+m = board.machine(hal["token"])
+job = board._new_job("reconstruct", {"photos": p / "photos"}, {}, "still going", image[0])
+job.state, job.machine, job.machine_name = "running", m["id"], "hal"
+board._state(m, "offline")
+board._touch(m)
+assert board.current(m["id"])["state"] == "working" and board.current(m["id"])["why"] == "still going", board.current(m["id"])
+board._touch(m)
+assert board.q("SELECT count(*) n FROM machine_states WHERE machine_id=? AND end IS NULL", m["id"], one=True)["n"] == 1
+board._drop(job)
+print("a machine heard from about its job OK")
 print("ALL MACHINES TESTS PASSED")
