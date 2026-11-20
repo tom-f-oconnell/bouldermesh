@@ -32,6 +32,7 @@ import sh.boulderme.core.Locator
 import sh.boulderme.core.PhoneLocate
 import sh.boulderme.core.Axes
 import sh.boulderme.core.Blobs
+import sh.boulderme.core.HoldModel
 import sh.boulderme.core.Picture
 import sh.boulderme.core.CameraPose
 import sh.boulderme.core.CaptureFlow
@@ -86,6 +87,8 @@ class ArController(
     private val locBusy = locators.map { java.util.concurrent.atomic.AtomicBoolean(false) }
     private val lock = Any()        // round every use of the flow: frames are drawn on one thread, photos judged on another
     private val gymOn = flow.isGym
+    private val holdFinder: HoldFinder? = if (gymOn) HoldFinder.load(activity) else null      // B, where the APK has the model
+    init { flow.gymModel = holdFinder != null }
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val sounds = Sounds()
@@ -358,10 +361,12 @@ class ArController(
                 val turn = Axes.uprightTurn(Axes.downInImage(pose), upright)
                 val stored = pose.turned(turn)
                 val features = runCatching { Features.of(nv21, w, h, w, turn) }.getOrNull()     // for a warning if it won't match the photos near it
-                // a gym climb's: its patches of one colour, to find the climb's holds in
-                val blobs = if (gymOn) runCatching { Blobs.find(Picture.ofYuv(nv21, w, nv21, w * h, w, w, h, vFirst = true, turn = turn)) }.getOrNull() else null
+                // a gym climb's: its patches of one colour (A), and those within the holds the model finds (B), to find the climb's holds in
+                val pic = if (gymOn) runCatching { Picture.ofYuv(nv21, w, nv21, w * h, w, w, h, vFirst = true, turn = turn) }.getOrNull() else null
+                val blobs = pic?.let { runCatching { Blobs.find(it) }.getOrNull() }
+                val modelBlobs = pic?.let { p -> holdFinder?.let { HoldModel.blobs(p, it) } }
                 val out = synchronized(lock) { flow.shot(ShotIn(stored, sample, stats, shutter, iso, focus, true, arSession, now, unix, sensorOrientation, gyro, turn,
-                    features = features, blobs = blobs)) }
+                    features = features, blobs = blobs, modelBlobs = modelBlobs)) }
                 if (out.kept) {
                     if (dingKept) sounds.ding()
                     val file = File(File(dir, "photos"), out.record.name)

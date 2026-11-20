@@ -42,6 +42,13 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true }
     sourceSets["main"].java.srcDirs("src/main/kotlin")
+    // ONNX Runtime's library is 13-18 MB for each kind of processor: only 64-bit ARM's is kept, which is every phone this
+    // runs on but the oldest; elsewhere (the emulator too) the model doesn't load and the colour finder alone is used. And
+    // the libraries are compressed in the APK (7 MB, not 18), unpacked as it's installed, as updates come over mobile data
+    packaging { jniLibs {
+        excludes += listOf("lib/armeabi-v7a/libonnxruntime*.so", "lib/x86/libonnxruntime*.so", "lib/x86_64/libonnxruntime*.so")
+        useLegacyPackaging = true
+    } }
 }
 
 dependencies {
@@ -57,5 +64,6 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("com.google.ar:core:1.47.0")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")    // a gym climb's hold-finding model (HoldModel; MIT)
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")     // Settings' Scan (scanQr())
 }

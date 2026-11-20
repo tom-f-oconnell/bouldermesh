@@ -129,6 +129,21 @@ class GymTest {
         assertEquals(yellows.size, gym.holds.size)
     }
 
+    @Test fun aModelFindsHoldsTheWallsOwnColour() {
+        // a blue hold on a blue wall: one patch with the wall to the colour finder, too big to be a hold
+        val w = 80; val h = 60
+        fun inHold(x: Int, y: Int) = hypot(x - 40.0, y - 30.0) <= 6
+        val coarse = Picture.ofRgb(IntArray(w * h) { blue }, w, h, step = 4.0)
+        assertEquals(0, Blobs.find(coarse).size)
+        // the model says where the hold is: a patch of it alone, a hold whatever its colour
+        assertEquals(3 * w * h, HoldModel.input(coarse).size)
+        val seg = HoldSegmenter { _, fw, fh -> FloatArray(3 * fw * fh) { i -> val k = i / (fw * fh); val px = i % (fw * fh)
+            if (k == HoldModel.HOLD) (if (inHold(px % fw, px / fw)) 2f else -2f) else 0f } }
+        val found = assertNotNull(HoldModel.blobs(coarse, seg)).single()
+        assertTrue(found.src == "model" && hypot(found.u - 40.5 * 4, found.v - 30.5 * 4) < 8 && found.areaPx in 80.0 * 16..140.0 * 16, "$found")
+        assertNull(HoldModel.blobs(coarse) { _, _, _ -> null }, "a model that couldn't run")
+    }
+
     @Test fun aHoldOutOfReachAsksForWhatAPhoneHeldUpCanDo() {
         val gym = Gym()
         gym.addPhoto("p", at(0.0), 1, emptyList(), null, emptyList())      // held at 1.5 m: the floor is about at 0

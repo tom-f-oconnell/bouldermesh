@@ -1972,13 +1972,13 @@ know which made a mesh. Once sized, a mesh whose app photos' fixes agree to 5 m 
 model's lens or sensors turn out to need.
 
 **Gym climbs, by their holds' colour (`Gym.kt`).** A gym climb's holds are usually all one colour, unlike those of
-the other climbs on its stretch of wall, so one tapped hold names the rest. *Capture a gym climb…* is a capture with no
+the other climbs on its stretch of wall, so one tapped hold names the rest. *Gym capture…* is a capture with no
 mesh whose first tap is on a hold: its colour (CIELAB, the mean of the patch tapped) is the climb's, the sides behind
 the wall are marked out of reach, and every hold of that colour found in the photos becomes a spot to photograph close
 up, as a marked hold is. Taps can add another hold of it (widening what counts), leave one out ("not part of it": another
 climb's of the same colour, kept out by place), or take the colour wider or narrower.
 
-- *Finding patches (A, the colour finder).* Each kept photo is made small (320 pixels on its longer side), its colours
+- *Finding patches (A, the colour finder).* Each kept photo is made small (640 pixels on its longer side: at 320, half the holds of marked photos were found, at 640 two thirds), its colours
   shifted so that its near-greys average to grey (a phone's white balance tints them, by a different amount each photo
   on Android), and split into patches of one colour: neighbouring pixels join if their hue is within 10° (colourful
   ones) or their brightness within 7 (grey ones). Patches smaller than 5 pixels or bigger than 12% of the picture (a
@@ -1997,8 +1997,26 @@ climb's of the same colour, kept out by place), or take the colour wider or narr
   obvious to a climber); climbs marked with tape rather than colour, and board walls lit by LEDs; holds the colour of the
   wall behind them (blue on blue panels; on painted stripes, a patch of stripe can pass for a hold); two shades one
   climber would call different but a camera barely does (amber against yellow is 19° of hue: in at the widest setting);
-  heavily chalked holds, washed towards white; holds of two colours. A hold-finding model (B) is the way past the wall's
-  colours: it says what's a hold, and colour then only has to say whose.
+  heavily chalked holds, washed towards white; holds of two colours. The hold-finding model (B, below) is the way past
+  the wall's colours: it says what's a hold, and colour then only has to say whose.
+- *Finding holds (B, the model; `HoldModel.kt`, experiments/holds).* LR-ASPP on MobileNetV3-Large (torchvision, BSD),
+  trained on hal's GPU on three Roboflow Universe datasets (about 4,500 photos: two CC BY 4.0, credited at the bottom of
+  Settings, one public domain) to call each pixel background, hold or volume, at a phone photo's scale. Within the
+  pixels it calls a hold, patches of one colour are found as A finds them. Both run on every gym photo, and *Found by:*
+  switches which the capture uses; each photo's log has what both found. Android runs it with ONNX Runtime (64-bit ARM
+  only: the library and the 12.9 MB model add about 19 MB to the APK), the iPhone with Core ML (6.4 MB, padded to 640 x
+  640; not yet run on a phone). Scored on 6 photos with holds marked by colour that it wasn't trained on (FinderCheck):
+
+  | | Holds found | Patches right |
+  |---|---|---|
+  | A, colour | 63% | 52% |
+  | B, the model shipped | 61% | 56% |
+
+  It scored a hold IoU of 0.651 on held-out photos, against 0.525 for the same model trained at the datasets' own scale
+  and 0.594 for MobileNetV3-Small. Its gain on real gym photos is mostly what it leaves out: people, shelves, painted
+  walls. Weights cut to 8 bits (3.5 MB) labelled about 3% of pixels differently, and ran slower, not faster, on hal's
+  CPU (ONNX Runtime's dynamic quantization: 200-280 ms against 115-165 ms at 640 x 360); a calibrated static
+  quantization might run faster on a phone, untried. To be timed on a phone from its capture log.
 
 **Not yet.** Neither app has run on a phone. Sharpness thresholds are guesses. There's no choosing which climbs to
 capture for (the core has it: `Scope.climbs`), no QR scan for pairing, and uploads are over the site's ordinary

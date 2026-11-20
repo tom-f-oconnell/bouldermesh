@@ -12,7 +12,7 @@ targets:
   BoulderMesh:
     type: application
     platform: iOS
-    sources: [Sources, Assets.xcassets]      # the icon: app/make_icons.py, from the site's favicon
+    sources: [Sources, Assets.xcassets, Models]      # the icon: app/make_icons.py, from the site's favicon; Models: holds.mlpackage (experiments/holds)
     scheme: {}        # a scheme kept with the project, so that xcodebuild finds one on a machine Xcode has never opened it on
     info:
       path: Info.plist
@@ -46,7 +46,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)"
         # the Kotlin framework is a static one: what it uses of iOS is linked here
-        OTHER_LDFLAGS: "$(inherited) -framework BoulderMeshKit -framework ARKit -framework SceneKit -framework CoreMotion -framework CoreLocation -framework AVFoundation -framework ImageIO -framework CoreImage -framework CoreVideo -framework CoreMedia -framework AudioToolbox"
+        OTHER_LDFLAGS: "$(inherited) -framework BoulderMeshKit -framework ARKit -framework SceneKit -framework CoreMotion -framework CoreLocation -framework AVFoundation -framework ImageIO -framework CoreImage -framework CoreVideo -framework CoreMedia -framework AudioToolbox -framework CoreML"
     preBuildScripts:
       - name: Build the Kotlin framework
         basedOnDependencyAnalysis: false

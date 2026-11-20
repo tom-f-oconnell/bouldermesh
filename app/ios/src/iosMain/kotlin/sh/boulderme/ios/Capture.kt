@@ -141,6 +141,7 @@ import sh.boulderme.core.Locate
 import sh.boulderme.core.PhoneLocate
 import sh.boulderme.core.Axes
 import sh.boulderme.core.Blobs
+import sh.boulderme.core.HoldModel
 import sh.boulderme.core.Picture
 import sh.boulderme.core.CameraPose
 import sh.boulderme.core.CaptureFlow
@@ -217,6 +218,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = this@CaptureController.app.store.credit.ifBlank { null } }, set, app.store.anonFirst,
         app.store.levelLimit, app.store.levelTilts, gym = gym && mesh == null).apply { onSettings = { limit, tilts -> this@CaptureController.app.store.levelLimit = limit; this@CaptureController.app.store.levelTilts = tilts } }
     private val gymOn = flow.isGym
+    private val holdFinder: HoldFinder? = if (gymOn) HoldFinder.load() else null      // B, where the app has the model
+    init { flow.gymModel = holdFinder != null }
     init {
         if (reopen != null) flow.reopen(Reopen.record(Files.readText("$dir/capture.json")) ?: error("the record of $reopen can't be read"),
             Files.readBytes("$dir/points.bin"), Files.readText("$dir/capture-log.jsonl") ?: "")
@@ -612,12 +615,14 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
         val turn = Axes.uprightTurn(Axes.downInImage(pose), UPRIGHT_DEG)
         dispatch_async(background) {
             val (stats, features) = lumaStats(buffer, turn)
-            // a gym climb's: its patches of one colour, to find the climb's holds in
-            val blobs = if (gymOn) colourPicture(buffer, turn)?.let { runCatching { Blobs.find(it) }.getOrNull() } else null
+            // a gym climb's: its patches of one colour (A), and those within the holds the model finds (B), to find the climb's holds in
+            val pic = if (gymOn) colourPicture(buffer, turn) else null
+            val blobs = pic?.let { runCatching { Blobs.find(it) }.getOrNull() }
+            val modelBlobs = pic?.let { p -> holdFinder?.let { HoldModel.blobs(p, it) } }
             dispatch_async(dispatch_get_main_queue()) {
                 val stored = pose.turned(turn)
                 val out = flow.shot(ShotIn(stored, sample, stats, exposure, iso, null, tracking, arSession, now, unix, SENSOR_ORIENTATION, sample.gyro?.norm ?: 0.0, turn,
-                    features = features, blobs = blobs))
+                    features = features, blobs = blobs, modelBlobs = modelBlobs))
                 if (out.kept && dingKept) sounds.ding()
                 if (out.kept) dispatch_async(background) {
                     val ok = writeJpeg(frame, "$dir/photos/${out.record.name}", out.userComment, sample, stored.lens, exposure, turn, unix)

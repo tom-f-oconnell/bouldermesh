@@ -63,8 +63,10 @@ A gym climb: *Gym capture…*, then tap one of its holds. The others of its colo
 you take them, ringed in that colour, and asked for close up (from the ground: one too high asks only for what a phone
 held up can do). *Not part of it*, then a ring, leaves out another climb's hold of the same colour; *Add a … hold* adds
 one it missed; *Colour: narrower* / *wider* change how near a colour has to be. Once meshed, its holds are a set of beta
-of yours named after the colour ("Yellow climb (gym)"). It goes by colour alone: holds the colour of the wall behind
-them, climbs marked with tape, and holds two climbs share aren't told apart.
+of yours named after the colour ("Yellow climb (gym)"). *Found by: colour* goes by colour alone, so holds the colour
+of the wall behind them aren't found; *Found by: model* first has a small model (experiments/holds) say which pixels
+are holds, which leaves out painted walls and clutter, and finds a blue hold on a blue wall. Climbs marked with tape,
+and holds two climbs share, aren't told apart either way.
 
 *Mark a hold* (with or without a mesh): tap a hold on the rock, and it's asked for close up. Once the capture is meshed,
 the holds you marked are on the mesh as a set of beta of yours, *Marked on the phone* (each a hand hold: change the

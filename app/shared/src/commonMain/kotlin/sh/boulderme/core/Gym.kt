@@ -15,8 +15,9 @@ import kotlin.math.sqrt
  * shifted so that the grey of the wall reads as grey whatever the camera's white balance did.
  *
  * @property step how many of the stored picture's pixels each of its pixels is across.
+ * @property rgb its pixels as the camera had them (0xRRGGBB, not shifted): what a hold-finding model is given.
  */
-class Picture(val w: Int, val h: Int, val step: Double, val l: FloatArray, val a: FloatArray, val b: FloatArray) {
+class Picture(val w: Int, val h: Int, val step: Double, val l: FloatArray, val a: FloatArray, val b: FloatArray, val rgb: IntArray) {
     /** The pixel of it at the stored picture's (u, v), or -1 outside it. */
     fun at(u: Double, v: Double): Int {
         val x = (u / step).toInt(); val y = (v / step).toInt()
@@ -24,7 +25,8 @@ class Picture(val w: Int, val h: Int, val step: Double, val l: FloatArray, val a
     }
 
     companion object {
-        const val SIDE = 320            // its longer side, pixels: a hand-sized hold 3 m off is still a few of them
+        const val SIDE = 640            // its longer side, pixels: a hand-sized hold 3 m off is a few of them (at 320, half the
+                                        // holds of marked photos were found by colour; at 640, two thirds, as many of the patches right)
 
         /**
          * From a camera's YUV 4:2:0 picture with its colour in pairs of bytes a row (NV21: V first; ARKit's CbCr: U
@@ -34,7 +36,7 @@ class Picture(val w: Int, val h: Int, val step: Double, val l: FloatArray, val a
                   turn: Int = 0, side: Int = SIDE): Picture {
             val k = max(1, (max(width, height) + side - 1) / side)
             val w = width / k; val h = height / k
-            val l = FloatArray(w * h); val a = FloatArray(w * h); val b = FloatArray(w * h)
+            val l = FloatArray(w * h); val a = FloatArray(w * h); val b = FloatArray(w * h); val rgb = IntArray(w * h)
             val s = max(1, k / 4)        // only every few pixels of a big block are read: its mean barely changes
             val lab = DoubleArray(3)
             for (yy in 0 until h) for (xx in 0 until w) {
@@ -55,11 +57,13 @@ class Picture(val w: Int, val h: Int, val step: Double, val l: FloatArray, val a
                     cr += max(1, s / 2)
                 }
                 val yv = sy.toDouble() / n; val u = su.toDouble() / m - 128; val v = sv.toDouble() / m - 128
-                rgbToLab(yv + 1.402 * v, yv - 0.344136 * u - 0.714136 * v, yv + 1.772 * u, lab)
+                val r = (yv + 1.402 * v).toInt().coerceIn(0, 255); val g = (yv - 0.344136 * u - 0.714136 * v).toInt().coerceIn(0, 255)
+                val bl = (yv + 1.772 * u).toInt().coerceIn(0, 255)
+                rgbToLab(r.toDouble(), g.toDouble(), bl.toDouble(), lab)
                 val i = yy * w + xx
-                l[i] = lab[0].toFloat(); a[i] = lab[1].toFloat(); b[i] = lab[2].toFloat()
+                l[i] = lab[0].toFloat(); a[i] = lab[1].toFloat(); b[i] = lab[2].toFloat(); rgb[i] = (r shl 16) or (g shl 8) or bl
             }
-            return finish(w, h, k.toDouble(), l, a, b, turn)
+            return finish(w, h, k.toDouble(), l, a, b, rgb, turn)
         }
 
         /** From 0xRRGGBB pixels (tests, and a picture already made small). */
@@ -71,26 +75,26 @@ class Picture(val w: Int, val h: Int, val step: Double, val l: FloatArray, val a
                 rgbToLab(((c shr 16) and 0xff).toDouble(), ((c shr 8) and 0xff).toDouble(), (c and 0xff).toDouble(), lab)
                 l[i] = lab[0].toFloat(); a[i] = lab[1].toFloat(); b[i] = lab[2].toFloat()
             }
-            return finish(width, height, step, l, a, b, turn)
+            return finish(width, height, step, l, a, b, rgb.copyOf(), turn)
         }
 
-        private fun finish(w: Int, h: Int, step: Double, l: FloatArray, a: FloatArray, b: FloatArray, turn: Int): Picture {
+        private fun finish(w: Int, h: Int, step: Double, l: FloatArray, a: FloatArray, b: FloatArray, rgb: IntArray, turn: Int): Picture {
             neutral(l, a, b)
-            return when (((turn % 360) + 360) % 360) {
-                90 -> Picture(h, w, step, turned(l, w, h, 90), turned(a, w, h, 90), turned(b, w, h, 90))
-                180 -> Picture(w, h, step, turned(l, w, h, 180), turned(a, w, h, 180), turned(b, w, h, 180))
-                270 -> Picture(h, w, step, turned(l, w, h, 270), turned(a, w, h, 270), turned(b, w, h, 270))
-                else -> Picture(w, h, step, l, a, b)
-            }
+            val deg = ((turn % 360) + 360) % 360
+            if (deg != 90 && deg != 180 && deg != 270) return Picture(w, h, step, l, a, b, rgb)
+            val from = turning(w, h, deg)
+            fun f(src: FloatArray) = FloatArray(src.size) { src[from[it]] }
+            val (nw, nh) = if (deg == 180) w to h else h to w
+            return Picture(nw, nh, step, f(l), f(a), f(b), IntArray(rgb.size) { rgb[from[it]] })
         }
 
-        /** The picture w by h turned clockwise by a quarter, a half or three quarters. */
-        private fun turned(src: FloatArray, w: Int, h: Int, deg: Int): FloatArray {
-            val out = FloatArray(src.size)
+        /** For each pixel of a picture w by h turned clockwise by a quarter, a half or three quarters, the pixel it was. */
+        private fun turning(w: Int, h: Int, deg: Int): IntArray {
+            val out = IntArray(w * h)
             when (deg) {
-                90 -> for (y in 0 until w) for (x in 0 until h) out[y * h + x] = src[(h - 1 - x) * w + y]
-                180 -> for (i in src.indices) out[src.size - 1 - i] = src[i]
-                else -> for (y in 0 until w) for (x in 0 until h) out[y * h + x] = src[x * w + (w - 1 - y)]
+                90 -> for (y in 0 until w) for (x in 0 until h) out[y * h + x] = (h - 1 - x) * w + y
+                180 -> for (i in out.indices) out[out.size - 1 - i] = i
+                else -> for (y in 0 until w) for (x in 0 until h) out[y * h + x] = x * w + (w - 1 - y)
             }
             return out
         }
@@ -143,7 +147,7 @@ class Picture(val w: Int, val h: Int, val step: Double, val l: FloatArray, val a
 /**
  * A patch of one colour in a photo, that may be a hold: where it is in the stored picture (pixels), how big, its colour
  * (CIELAB, the mean of its pixels) and the brightness round it. `src`: what found it, "colour" (Blobs.find) or "model"
- * (a hold-finding model's mask, Blobs.ofMask).
+ * (colour patches within a hold-finding model's mask: Blobs.find with a mask, HoldModel).
  */
 data class Blob(val u: Double, val v: Double, val areaPx: Double, val x0: Double, val y0: Double, val x1: Double, val y1: Double,
                 val l: Double, val a: Double, val b: Double, val ringL: Double, val edge: Boolean, val src: String = "colour") {
@@ -162,9 +166,16 @@ object Blobs {
     const val MIN_PX = 5            // a patch smaller than this (of the small picture's pixels) is noise
     const val MAX_SHARE = 0.12      // and one bigger than this share of the picture a wall, a painted panel or a volume
     const val GREY_CONTRAST = 12.0  // a grey patch is a hold (a black or white one) only if this much darker or lighter than round it
+    const val MODEL_MIN_PX = 3      // within a model's holds: smaller than this is noise
+    const val MODEL_MAX_SHARE = 0.3
 
-    /** The colour finder: patches of one colour, but those too small or too big to be a hold, and grey ones as grey as round them. */
-    fun find(p: Picture): List<Blob> {
+    /**
+     * The colour finder: patches of one colour, but those too small or too big to be a hold, and grey ones as grey as
+     * round them. With a hold-finding model's `mask` (true where it says a hold is), patches only of its pixels, of
+     * any size up to a third of the picture: the model has said they're holds, and colour need only say whose. A grey
+     * one still has to stand out from round it, as the model's holds spill a little onto the wall.
+     */
+    fun find(p: Picture, mask: BooleanArray? = null): List<Blob> {
         val n = p.w * p.h
         val parent = IntArray(n) { it }
         fun root(i: Int): Int { var r = i; while (parent[r] != r) { parent[r] = parent[parent[r]]; r = parent[r] }; return r }
@@ -172,6 +183,7 @@ object Blobs {
         val c = FloatArray(n) { hypot(p.a[it], p.b[it]) }
         val hue = FloatArray(n) { (atan2(p.b[it], p.a[it]) * 180 / PI).toFloat() }
         fun alike(i: Int, j: Int): Boolean {
+            if (mask != null && (!mask[i] || !mask[j])) return false
             val ci = c[i] >= C_MIN; val cj = c[j] >= C_MIN
             if (ci != cj) return false
             val dl = abs(p.l[i] - p.l[j])
@@ -185,20 +197,15 @@ object Blobs {
             if (x + 1 < p.w && alike(i, i + 1)) join(i, i + 1)
             if (y + 1 < p.h && alike(i, i + p.w)) join(i, i + p.w)
         }
-        val label = IntArray(n) { root(it) }
+        val label = IntArray(n) { if (mask != null && !mask[it]) -1 else root(it) }
+        if (mask != null) return summarise(p, label, "model", minPx = MODEL_MIN_PX, maxShare = MODEL_MAX_SHARE) { r, grey -> !grey || abs(r.l - r.ringL) >= GREY_CONTRAST }
         return summarise(p, label, "colour") { r, grey -> !grey || abs(r.l - r.ringL) >= GREY_CONTRAST }
     }
-
-    /**
-     * What a hold-finding model's mask gives: `label` a number for each pixel of the picture (0 none, else which hold),
-     * each hold's colour the mean of its pixels'. A model's hold is a hold whatever its colour, so grey ones are kept.
-     */
-    fun ofMask(p: Picture, label: IntArray): List<Blob> = summarise(p, IntArray(label.size) { if (label[it] > 0) label[it] else -1 }, "model", minPx = 3) { _, _ -> true }
 
     private class Sum { var n = 0; var x = 0.0; var y = 0.0; var l = 0.0; var a = 0.0; var b = 0.0; var x0 = Int.MAX_VALUE; var y0 = Int.MAX_VALUE; var x1 = -1; var y1 = -1
         var ringL = 0.0; var ringN = 0; var edge = false }
 
-    private fun summarise(p: Picture, label: IntArray, src: String, minPx: Int = MIN_PX, keep: (Blob, Boolean) -> Boolean): List<Blob> {
+    private fun summarise(p: Picture, label: IntArray, src: String, minPx: Int = MIN_PX, maxShare: Double = MAX_SHARE, keep: (Blob, Boolean) -> Boolean): List<Blob> {
         val sums = HashMap<Int, Sum>()
         for (y in 0 until p.h) for (x in 0 until p.w) {
             val i = y * p.w + x; val k = label[i]
@@ -208,7 +215,7 @@ object Blobs {
             s.x0 = min(s.x0, x); s.y0 = min(s.y0, y); s.x1 = max(s.x1, x); s.y1 = max(s.y1, y)
             if (x == 0 || y == 0 || x == p.w - 1 || y == p.h - 1) s.edge = true
         }
-        val most = MAX_SHARE * p.w * p.h
+        val most = maxShare * p.w * p.h
         val wanted = sums.filterValues { it.n in minPx..most.toInt() }
         // the brightness just round each: what a grey hold has to stand out from
         for (y in 0 until p.h) for (x in 0 until p.w) {

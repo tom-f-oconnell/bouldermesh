@@ -594,6 +594,12 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
             Text("Where captures are sent and meshes come from. Only change it to try a test server.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        Section("Credits")
+        Text(sh.boulderme.core.HoldModel.CREDITS_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        for ((name, by, licence, url) in sh.boulderme.core.HoldModel.CREDITS) Text(buildAnnotatedString {
+            withLink(LinkAnnotation.Url(url, TextLinkStyles(SpanStyle(color = MaterialTheme.colorScheme.primary, textDecoration = TextDecoration.Underline)))) { append(name) }
+            append(" by $by ($licence)")
+        }, style = MaterialTheme.typography.bodySmall)
     }
     guide?.let { k -> GuideDialog(k, "OK", starting = false, dismiss = { guide = null }) { guide = null } }
 }

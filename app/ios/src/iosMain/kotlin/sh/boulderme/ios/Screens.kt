@@ -45,12 +45,14 @@ private fun summary(p: Plan): String {
     return "$holds holds and $todo parts on its climbs to photograph · about $high m high" + if (p.frame.scaleGuessed) " (a guess)" else ""
 }
 
-/** A line of text that ends in a link: `lead`, then `link`, which opens `url` when tapped. */
-private fun linkText(lead: String, link: String, url: String): UITextView {
-    val font = UIFont.systemFontOfSize(16.0)
+/** A line of text with a link in it: `lead`, then `link`, which opens `url` when tapped, then `tail`. */
+private fun linkText(lead: String, link: String, url: String, tail: String = "", size: Double = 16.0): UITextView {
+    val font = UIFont.systemFontOfSize(size)
     val s = NSMutableAttributedString()
-    s.appendAttributedString(NSAttributedString.create(string = lead, attributes = mapOf<Any?, Any?>(NSFontAttributeName to font, NSForegroundColorAttributeName to UIColor.secondaryLabelColor)))
+    val plain = mapOf<Any?, Any?>(NSFontAttributeName to font, NSForegroundColorAttributeName to UIColor.secondaryLabelColor)
+    s.appendAttributedString(NSAttributedString.create(string = lead, attributes = plain))
     s.appendAttributedString(NSAttributedString.create(string = link, attributes = mapOf<Any?, Any?>(NSFontAttributeName to font, NSLinkAttributeName to NSURL.URLWithString(url))))
+    s.appendAttributedString(NSAttributedString.create(string = tail, attributes = plain))
     val v = UITextView()
     v.setAttributedText(s)
     v.setEditable(false)
@@ -392,6 +394,9 @@ class Settings(private val app: App) : Form("Settings") {
         }
         said?.let { text(it.first, if (it.second) GOOD else BAD) }
         text("boulderme.sh ${IosStore.VERSION}", UIColor.secondaryLabelColor, small = true)
+        section("Credits")
+        text(sh.boulderme.core.HoldModel.CREDITS_NOTE, UIColor.secondaryLabelColor, small = true)
+        for ((name, by, licence, url) in sh.boulderme.core.HoldModel.CREDITS) add(linkText("", name, url, " by $by ($licence)", 13.0))
     }
 }
 

@@ -13,7 +13,8 @@ import kotlin.test.Test
  * picked in one of them. Skipped unless BM_GYM_CHECK is set: "<project folder>|<photo>|<u>|<v>|<out folder>", the
  * project as the server keeps it (capture.json, capture-points.bin, photos/), u and v in the stored photo's pixels.
  * Writes each photo with its patches of the colour boxed and the holds found ringed, and prints what was found.
- * BM_GYM_FINDER=model reads each photo's model mask from <out folder>/masks/<photo>.png (labels as 16-bit grey) instead.
+ * BM_GYM_MODEL=<holds.onnx> runs the hold-finding model on each photo too (ONNX Runtime, as the Android app does), and
+ * its patches count (B) rather than the colour finder's (A).
  */
 class GymCheck {
     @Test fun realCapture() {
@@ -21,7 +22,8 @@ class GymCheck {
         val dir = File(proj); val out = File(outName).apply { mkdirs() }
         val rec = Reopen.record(File(dir, "capture.json").readText())!!
         val points = readPoints(File(dir, "capture-points.bin").readBytes())
-        val masks = System.getenv("BM_GYM_FINDER") == "model"
+        val seg = System.getenv("BM_GYM_MODEL")?.let { OnnxSegmenter(File(it).readBytes()) }
+        val masks = seg != null
         fun picture(name: String): Pair<Picture, BufferedImage>? {
             val f = File(dir, "photos/$name").takeIf { it.exists() } ?: return null
             val img = ImageIO.read(f)
@@ -31,12 +33,7 @@ class GymCheck {
                 setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR); drawImage(img, 0, 0, w, h, null); dispose() } }
             return Picture.ofRgb(small.getRGB(0, 0, w, h, null, 0, w).map { it and 0xffffff }.toIntArray(), w, h, step = k.toDouble()) to img
         }
-        fun blobs(name: String, p: Picture): List<Blob> {
-            if (!masks) return Blobs.find(p)
-            val m = ImageIO.read(File(out, "masks/$name.png")) ?: return emptyList()
-            val label = IntArray(p.w * p.h) { i -> m.raster.getSample((i % p.w) * m.width / p.w, (i / p.w) * m.height / p.h, 0) }
-            return Blobs.ofMask(p, label)
-        }
+        fun blobs(name: String, p: Picture): List<Blob> = if (seg == null) Blobs.find(p) else HoldModel.blobs(p, seg)!!
         val shots = rec.shots.filter { it.kept && it.blob.ar != null && it.blob.k != null && it.blob.ref == null }
         fun pose(s: ShotRecord): CameraPose { val ar = s.blob.ar!!; val k = s.blob.k!!; return CameraPose(Vec3.of(ar.p), Quat.of(ar.q), Lens(k.fx, k.fy, k.cx, k.cy, k.w, k.h)) }
         val gym = Gym()
@@ -86,4 +83,15 @@ class GymCheck {
             println("${s.name}: ${found[s.name]?.size} patches of the colour")
         }
     }
+}
+
+/** The hold-finding model run by ONNX Runtime, as the Android app runs it. */
+class OnnxSegmenter(model: ByteArray) : HoldSegmenter {
+    private val env = ai.onnxruntime.OrtEnvironment.getEnvironment()
+    private val session = env.createSession(model)
+
+    override fun logits(input: FloatArray, w: Int, h: Int): FloatArray? =
+        ai.onnxruntime.OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(input), longArrayOf(1, 3, h.toLong(), w.toLong())).use { t ->
+            session.run(mapOf(session.inputNames.first() to t)).use { r -> (r[0] as ai.onnxruntime.OnnxTensor).floatBuffer.let { b -> FloatArray(b.remaining()).also { b.get(it) } } }
+        }
 }
