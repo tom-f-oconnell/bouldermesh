@@ -320,11 +320,12 @@ def jobs(server: str) -> int:
 
 
 def _deploy(server: str, drain: dict | None = None) -> dict:
-    """The server's /api/deploy (deploy_state()), or with drain, POSTed to /api/deploy/drain first."""
+    """The server's /api/deploy (deploy_state()), or with drain, what POSTing it to /api/deploy/drain says (drain()).
+    A busy server can take a minute to answer /api/deploy, hence the long timeout, as deploy.sh's own."""
     url = server.rstrip("/") + ("/api/deploy/drain" if drain is not None else "/api/deploy")
     req = urllib.request.Request(url, data=json.dumps(drain).encode() if drain is not None else None,
                                  headers={"Content-Type": "application/json"}, method="POST" if drain is not None else "GET")
-    return json.load(urllib.request.urlopen(req, timeout=30))
+    return json.load(urllib.request.urlopen(req, timeout=120))
 
 
 def _mins(s) -> str:

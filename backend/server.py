@@ -8479,14 +8479,15 @@ def drain(on: bool, now: bool = False) -> dict:
     beta, a video's frames, and machines' jobs), while what's in progress goes on; with now too, a stop doesn't wait
     for jobs to finish either (stop_when_idle()). Off, carry on as before. A restart clears it anyway, and so does
     DRAIN_LEASE passing without deploy.sh draining it again (drain_watch()), as when deploy.sh died without undoing it.
-    Machines still get short jobs meanwhile (pullwork's DRAIN_TASKS: a running harvest's filtering), only no new meshing."""
+    Machines still get short jobs meanwhile (pullwork's DRAIN_TASKS: a running harvest's filtering), only no new meshing.
+    Returns only whether it's draining: not deploy_state(), which a busy server can take a minute to work out."""
     global _draining
     _draining = {"since": (_draining or {}).get("since") or time.time(), "now": now, "until": time.time() + DRAIN_LEASE} if on else None
     MACHINES.paused = "the server is about to restart, for a new version" if on else None
     if not on:
         _beta_wake.set()
         _frames_wake.set()
-    return deploy_state()
+    return {"draining": _draining is not None, "now": bool(_draining and _draining["now"])}
 
 
 def drain_watch() -> None:
