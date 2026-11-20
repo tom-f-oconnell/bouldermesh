@@ -628,6 +628,30 @@ def load(mesh_dir: Path) -> dict | None:
         return None
 
 
+_brief: dict[Path, tuple[tuple[int, int, int], dict | None]] = {}   # brief()'s, by the file's mtime, size and inode
+BRIEF_KEYS = ("status", "ahead", "queued", "machine_wait")
+
+
+def brief(mesh_dir: Path) -> dict | None:
+    """The little of a mesh's record that the server's scans of every mesh want (BRIEF_KEYS, and waiting_videos as a
+    tuple), read again only once the file has changed: hundreds of whole records, read and parsed on every scan, held
+    the server up for most of a minute (Nov 2026)."""
+    f = mesh_dir / FILE
+    try:
+        st = f.stat()
+    except FileNotFoundError:
+        _brief.pop(mesh_dir, None)
+        return None
+    key = (st.st_mtime_ns, st.st_size, st.st_ino)
+    hit = _brief.get(mesh_dir)
+    if hit and hit[0] == key:
+        return dict(hit[1]) if hit[1] is not None else None
+    rec = load(mesh_dir)
+    out = None if rec is None else {**{k: rec.get(k) for k in BRIEF_KEYS}, "waiting_videos": tuple(rec.get("waiting_videos") or ())}
+    _brief[mesh_dir] = (key, out)
+    return dict(out) if out is not None else None
+
+
 def summary(record: dict | None) -> dict | None:
     """For the list of meshes: how far finding it got, and what it found (listed: the videos with holds, which the
     view's list of them shows)."""

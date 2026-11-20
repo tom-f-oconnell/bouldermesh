@@ -139,6 +139,12 @@ with tempfile.TemporaryDirectory() as td:
                                          "waiting_videos": 0}
     beta.carry_on(d)
     assert beta.load(d)["status"] == "queued" and beta.load(d)["resume"], "a restart queues it again, keeping what's done"
+    assert beta.brief(d) == {"status": "queued", "ahead": None, "queued": None, "machine_wait": None, "waiting_videos": ()}
+    b = beta.brief(d)
+    b["status"] = "changed"
+    assert beta.brief(d)["status"] == "queued", "a caller's copy, not the cached one"
+    beta.save(d, {"status": "done", "videos": [], "waiting_videos": ["u"]})
+    assert beta.brief(d)["status"] == "done" and beta.brief(d)["waiting_videos"] == ("u",), "read again once the file changes"
     assert beta.videos(d) == {}, "no record of its photos"
 
 # --- untextured meshes: the PLY a reconstruction keeps when texturing fails, binary or ASCII ---------------------

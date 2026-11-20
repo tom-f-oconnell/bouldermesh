@@ -6973,15 +6973,15 @@ def beta_ready(mid: str) -> bool:
     """Whether a queued mesh's beta can be looked for now: any of the videos it waits for is in the cache, or this
     server may fetch videos from YouTube now (it isn't refusing, and they aren't left to volunteers), or, where they
     are, it hasn't asked volunteers for any yet. Not while it waits for a machine to find it on."""
-    rec = beta_mod.load(MESHES / mid) or {}
-    if rec.get("machine_wait", 0) > time.time():
+    rec = beta_mod.brief(MESHES / mid) or {}
+    if (rec.get("machine_wait") or 0) > time.time():
         return False
-    waiting = rec.get("waiting_videos") or []
+    waiting = rec.get("waiting_videos") or ()
     if waiting and any(youtube_mod.cached(u) for u in waiting):     # each video's beta as soon as it's here
         return True
     if waiting:     # one here that wasn't waited for, as a mesh queued before videos were done one by one; not one
         # tried already that failed, which would be sent to a machine again every few seconds, failing each time
-        done = {v.get("url") for v in rec.get("videos") or []}
+        done = {v.get("url") for v in (beta_mod.load(MESHES / mid) or {}).get("videos") or []}
         try:
             if any(u not in done and youtube_mod.cached(u) for u in beta_mod.videos(MESHES / mid)):
                 return True
@@ -6997,11 +6997,12 @@ def beta_queue() -> list[str]:
     (mesh_old()) are dropped from it, as what replaces them gets its own."""
     found = []
     for d in MESHES.iterdir() if MESHES.exists() else []:
-        rec = beta_mod.load(d)
+        rec = beta_mod.brief(d)
         if rec and rec["status"] == "queued" and mesh_old(d.name):
-            beta_mod.save(d, {**rec, "status": "stopped", "progress": None, "at": None, "note": "not looked for: the mesh is old"})
+            beta_mod.save(d, {**(beta_mod.load(d) or rec), "status": "stopped", "progress": None, "at": None,
+                              "note": "not looked for: the mesh is old"})
         elif rec and rec["status"] == "queued":
-            found.append(((not rec.get("ahead"), rec.get("queued", 0)), d.name))
+            found.append(((not rec.get("ahead"), rec.get("queued") or 0), d.name))
     return [mid for _, mid in sorted(found)]
 
 
@@ -7040,12 +7041,16 @@ def beta_slots() -> int:
 
 
 def _beta_take() -> str | None:
-    """The next queued mesh ready to find beta in that no other beta worker has, now this one's (in _beta_now)."""
-    with _beta_lock:
-        mid = next((m for m in beta_queue() if m not in _beta_now and beta_ready(m) and not mesh_old(m)), None)
-        if mid:
-            _beta_now[mid] = {"mid": mid, "started": time.time(), "thread": threading.get_ident()}
-        return mid
+    """The next queued mesh ready to find beta in that no other beta worker has, now this one's (in _beta_now). The
+    queue is read outside _beta_lock, which jobs_state() and deploy_state() wait for."""
+    for mid in beta_queue():
+        if mid in _beta_now or not beta_ready(mid) or mesh_old(mid):
+            continue
+        with _beta_lock:
+            if mid not in _beta_now:
+                _beta_now[mid] = {"mid": mid, "started": time.time(), "thread": threading.get_ident()}
+                return mid
+    return None
 
 
 def _beta_spawn() -> None:
@@ -8537,7 +8542,8 @@ def deploy_state() -> dict:
     items, now = [], time.time()
     mesh_keys = {k[0] for k in pipeline.steps()}
     board = MACHINES.running()
-    asked = jobs_state(board)["running"]
+    js = jobs_state(board)
+    asked = js["running"]
     for_job = {j["machine_job"]["id"]: j for j in asked if j["machine_job"]}    # a machine's job -> the job here waiting for it
     with _beta_lock:
         betas = list(_beta_now.values())
@@ -8600,7 +8606,7 @@ def deploy_state() -> dict:
         items.append({"what": "finding beta here", "name": beta_name, "costly": True, "kind": "beta", "project_id": None,
                       "elapsed": round(now - b["started"]),
                       "eta": None, "lost": "starts again after"})
-    for j in jobs_state(board)["queued"]:     # nothing done yet: a project's is queued again as the server starts
+    for j in js["queued"]:     # nothing done yet: a project's is queued again as the server starts
         items.append({"what": f"{j['type']}, queued", "name": j["name"], "costly": False, "elapsed": None, "eta": None,
                       "kind": KINDS.get(j["type"], j["type"]), "project_id": j.get("project_id"),
                       "lost": "queued again after" if j.get("project_id") or j["type"] == "scale" else
