@@ -127,9 +127,12 @@ class FlowOut(val ui: CaptureUi, val guide: Similarity?, val solid: Boolean, val
 /**
  * @param gym a gym climb, with no mesh: the first tap is on one of its holds, whose colour picks out the rest of them
  *   in the photos (Gym), each then asked for close up as a marked hold is; the wall is walked along, not round.
+ * @param panorama frames are kept during the turn on the spot, for a panorama of what's far off; scenery the walk
+ *   round for the scenery can be started (startScenery(), sceneryOn). The apps turn both off for a gym climb, unless Settings has them.
  */
 class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFromStart: Boolean = false,
-                  levelLimit: Double = LEVEL_SPREAD_MOST, ownTilts: List<Double> = emptyList(), gym: Boolean = false) {
+                  levelLimit: Double = LEVEL_SPREAD_MOST, ownTilts: List<Double> = emptyList(), gym: Boolean = false,
+                  private val panorama: Boolean = true, val sceneryOn: Boolean = true) {
     /** Degrees the turn on the spot's directions must agree within, for it to be believed (looser(), stricter()). */
     var levelLimit = LEVEL_LIMITS.minByOrNull { kotlin.math.abs(it - levelLimit) }!!
         private set
@@ -264,6 +267,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
      * tapped). Returns why it can't, or null.
      */
     fun startScenery(): String? {
+        if (!sceneryOn) return "Scenery is off for gym captures: Settings can turn it on."
         if (phase != Phase.CAPTURE) return "Start taking photos first."
         tieLeft.takeIf { it > 0 }?.let { return "First $it more photo${if (it == 1) "" else "s"} of the rock, from round it: this visit's scenery is placed on the mesh by them." }
         val w = walk ?: run {
@@ -807,7 +811,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                     level = lvl, text = "To find which way is down: turn slowly all the way round on the spot, the phone held as for a photo. " +
                         "It needn't be upright, only steady and at the same angle to you all the way round")
                 // and a frame for each step of the turn, for a panorama of what's far off
-                val grab = if (!grabbing && pano.wanted(pose, sceneryBlurPx(gyroRadS, exposureS, pose.lens.fx) <= STEADY_SCENERY_PX)) "pano" else null
+                val grab = if (panorama && !grabbing && pano.wanted(pose, sceneryBlurPx(gyroRadS, exposureS, pose.lens.fx) <= STEADY_SCENERY_PX)) "pano" else null
                 if (grab != null) grabbing = true
                 return FlowOut(ui, null, false, 0f, null, emptyList(), false, grab = grab)
             }

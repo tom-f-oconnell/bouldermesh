@@ -393,6 +393,14 @@ class Settings(private val app: App) : Form("Settings") {
             }
         }
         said?.let { text(it.first, if (it.second) GOOD else BAD) }
+        section("Gym captures")
+        button(if (app.store.gymPanorama) "Photos during the turn on the spot: on" else "Photos during the turn on the spot: off", Look.PLAIN) {
+            app.store.gymPanorama = !app.store.gymPanorama; rebuild()
+        }
+        button(if (app.store.gymScenery) "Walk round for the scenery: offered" else "Walk round for the scenery: off", Look.PLAIN) {
+            app.store.gymScenery = !app.store.gymScenery; rebuild()
+        }
+        text("Off by default: a gym wall's surroundings are rarely worth a backdrop, and the turn on the spot goes the same either way.", UIColor.secondaryLabelColor, small = true)
         text("boulderme.sh ${IosStore.VERSION}", UIColor.secondaryLabelColor, small = true)
         section("Credits")
         text(sh.boulderme.core.HoldModel.CREDITS_NOTE, UIColor.secondaryLabelColor, small = true)

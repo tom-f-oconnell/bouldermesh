@@ -48,6 +48,12 @@ class IosStore {
     var tickSame: Boolean   // a tick over and over while a photo from where the phone is would add nothing
         get() = prefs.boolForKey("tick_same")
         set(v) = prefs.setBool(v, forKey = "tick_same")
+    var gymPanorama: Boolean    // a gym capture keeps frames for a panorama during its turn on the spot, as an outdoor one does
+        get() = prefs.boolForKey("gym_panorama")
+        set(v) = prefs.setBool(v, forKey = "gym_panorama")
+    var gymScenery: Boolean     // a gym capture offers the walk round for the scenery, as an outdoor one does
+        get() = prefs.boolForKey("gym_scenery")
+        set(v) = prefs.setBool(v, forKey = "gym_scenery")
     var credit: String      // who photos are credited to, under the licence they're sent with
         get() = prefs.stringForKey("credit") ?: ""
         set(v) = prefs.setObject(v.trim(), forKey = "credit")

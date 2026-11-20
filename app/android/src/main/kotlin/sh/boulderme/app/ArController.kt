@@ -76,7 +76,8 @@ class ArController(
     init { plan?.let { store.keepPlan(id, it.mesh) } }
     private val guide = guide.takeIf { plan != null }
     private val core = CaptureSession(plan, this.guide, id, BuildInfo.APP, "${Build.MANUFACTURER} ${Build.MODEL}", System.currentTimeMillis() / 1000.0)
-    private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = store.credit.ifBlank { null } }, set, store.anonFirst, store.levelLimit, store.levelTilts, gym = gym && plan == null)
+    private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = store.credit.ifBlank { null } }, set, store.anonFirst, store.levelLimit, store.levelTilts, gym = gym && plan == null,
+        panorama = !(gym && plan == null) || store.gymPanorama, sceneryOn = !(gym && plan == null) || store.gymScenery)
         .apply { onSettings = { limit, tilts -> store.levelLimit = limit; store.levelTilts = tilts } }
     init {
         if (reopen != null) flow.reopen(Reopen.record(File(dir, "capture.json").readText()) ?: error("the record of $reopen can't be read"),
@@ -194,6 +195,7 @@ class ArController(
     fun gymFinder(f: String) = synchronized(lock) { flow.gymFinder(f) }
     fun toggleWide() = synchronized(lock) { flow.toggleWide() }
     fun toggleCard() = synchronized(lock) { flow.toggleCard() }
+    val sceneryOn: Boolean get() = flow.sceneryOn
     fun startScenery() = synchronized(lock) { flow.startScenery()?.let { flow.say(it) } }
     fun endScenery() = synchronized(lock) { flow.endScenery() }
     fun more(yes: Boolean) = synchronized(lock) { flow.more(yes) }

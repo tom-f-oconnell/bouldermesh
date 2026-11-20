@@ -279,7 +279,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                         FilledTonalButton(onClick = { controller.toggleMarking() }) { Text(if (ui.marking) "Tap the hold…" else "Mark a hold") }
                         if (plan == null || ui.ring > 0) FilledTonalButton(onClick = { controller.blockSide() }) { Text("Can't reach that side") }
                         FilledTonalButton(onClick = { controller.newRing() }) { Text(if (ui.ring > 1) "Another ring (on ${ui.ring})" else "Another ring") }
-                        FilledTonalButton(onClick = { controller.startScenery() }) { Text(if (ui.scenery > 0) "Scenery (${ui.scenery})" else "Scenery") }
+                        if (controller.sceneryOn) FilledTonalButton(onClick = { controller.startScenery() }) { Text(if (ui.scenery > 0) "Scenery (${ui.scenery})" else "Scenery") }
                         Button(onClick = { leaving = true }, colors = ButtonDefaults.buttonColors(containerColor = GOOD)) { Text("Finish") }
                     }
                     Phase.SCENERY -> {

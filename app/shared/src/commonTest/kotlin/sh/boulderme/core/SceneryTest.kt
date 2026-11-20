@@ -45,6 +45,18 @@ class SceneryTest {
         assertNull(p.bucketOf(TestWorld.look(Vec3(0.0, 1.5, 0.0), Vec3(0.0, 0.0, 0.3))), "looking down at the ground")
     }
 
+    @Test fun noSceneryWhenTurnedOff() {
+        // as for a gym climb, unless Settings has them: no panorama frames during the turn, and no walk round
+        val flow = CaptureFlow(CaptureSession(null, null, "f6", "test", "a phone", 0.0), panorama = false, sceneryOn = false)
+        assertNull(flow.frame(facing(Vec3(0.0, 1.5, 0.0), Vec3(0.0, 0.0, 1.0)), true, 0.0, 0.004, 0.0, 90, Vec3(0.0, 9.81, 0.0)).grab)
+        flow.skipLevel()
+        val at = TestWorld.look(Vec3(0.0, 1.5, 4.0), rock)
+        flow.frame(at, true, 0.0, 0.004, 1.0, 90)
+        flow.tap(at.centre, at.forward) { rock }
+        assertEquals(Phase.CAPTURE, flow.phase)
+        assertTrue(flow.startScenery() != null && flow.phase == Phase.CAPTURE)
+    }
+
     @Test fun aFlowTakesFramesForTheScenery() {
         val flow = CaptureFlow(CaptureSession(null, null, "f5", "test", "a phone", 0.0))
         // during the turn on the spot: a frame for the panorama, asked for once for each step of the turn

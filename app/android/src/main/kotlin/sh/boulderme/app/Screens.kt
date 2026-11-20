@@ -486,6 +486,8 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
     var anonFirst by remember { mutableStateOf(a.store.anonFirst) }
     var dingKept by remember { mutableStateOf(a.store.dingKept) }
     var tickSame by remember { mutableStateOf(a.store.tickSame) }
+    var gymPanorama by remember { mutableStateOf(a.store.gymPanorama) }
+    var gymScenery by remember { mutableStateOf(a.store.gymScenery) }
     var downWifi by remember { mutableStateOf(a.store.downloadWifiOnly) }
     var upWifi by remember { mutableStateOf(a.store.uploadWifiOnly) }
     var token by remember { mutableStateOf(a.store.token) }
@@ -594,6 +596,15 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
             Text("Where captures are sent and meshes come from. Only change it to try a test server.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        Section("Gym captures")
+        TextButton(onClick = { gymPanorama = !gymPanorama; a.store.gymPanorama = gymPanorama }) {
+            Text(if (gymPanorama) "Photos during the turn on the spot: on" else "Photos during the turn on the spot: off")
+        }
+        TextButton(onClick = { gymScenery = !gymScenery; a.store.gymScenery = gymScenery }) {
+            Text(if (gymScenery) "Walk round for the scenery: offered" else "Walk round for the scenery: off")
+        }
+        Text("Off by default: a gym wall's surroundings are rarely worth a backdrop, and the turn on the spot goes the same either way.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Section("Credits")
         Text(sh.boulderme.core.HoldModel.CREDITS_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         for ((name, by, licence, url) in sh.boulderme.core.HoldModel.CREDITS) Text(buildAnnotatedString {

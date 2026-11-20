@@ -47,6 +47,12 @@ class Store(context: Context) {
     var tickSame: Boolean   // a tick over and over while a photo from where the phone is would add nothing
         get() = prefs.getBoolean("tick_same", false)
         set(v) = prefs.edit().putBoolean("tick_same", v).apply()
+    var gymPanorama: Boolean    // a gym capture keeps frames for a panorama during its turn on the spot, as an outdoor one does
+        get() = prefs.getBoolean("gym_panorama", false)
+        set(v) = prefs.edit().putBoolean("gym_panorama", v).apply()
+    var gymScenery: Boolean     // a gym capture offers the walk round for the scenery, as an outdoor one does
+        get() = prefs.getBoolean("gym_scenery", false)
+        set(v) = prefs.edit().putBoolean("gym_scenery", v).apply()
     var topHalf: Boolean    // the account's role (HALF_ROLE) has the app drawn in the screen's top half only
         get() = prefs.getBoolean("top_half", false)
         set(v) { prefs.edit().putBoolean("top_half", v).apply(); onTopHalf?.invoke(v) }

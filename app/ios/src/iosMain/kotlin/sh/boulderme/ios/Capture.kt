@@ -216,7 +216,8 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
     init { plan?.let { app.store.keepPlan(id, it.mesh) } }
     private val core = CaptureSession(plan.takeIf { guide != null }, guide, id, IosStore.APP, machine(), NSDate().timeIntervalSince1970)
     private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = this@CaptureController.app.store.credit.ifBlank { null } }, set, app.store.anonFirst,
-        app.store.levelLimit, app.store.levelTilts, gym = gym && mesh == null).apply { onSettings = { limit, tilts -> this@CaptureController.app.store.levelLimit = limit; this@CaptureController.app.store.levelTilts = tilts } }
+        app.store.levelLimit, app.store.levelTilts, gym = gym && mesh == null,
+        panorama = !(gym && mesh == null) || app.store.gymPanorama, sceneryOn = !(gym && mesh == null) || app.store.gymScenery).apply { onSettings = { limit, tilts -> this@CaptureController.app.store.levelLimit = limit; this@CaptureController.app.store.levelTilts = tilts } }
     private val gymOn = flow.isGym
     private val holdFinder: HoldFinder? = if (gymOn) HoldFinder.load() else null      // B, where the app has the model
     init { flow.gymModel = holdFinder != null }
@@ -863,7 +864,7 @@ class CaptureController(private val app: App, mesh: String?, private val name: S
                 buttons.addArrangedSubview(if (!now.guided) makeRow(ring)
                     else makeRow(*listOfNotNull(makeButton(if (now.marking) "Tap the hold…" else "Mark a hold") { flow.toggleMarking() }, ring,
                         if (now.ring > 0) makeButton("Can't reach that side") { flow.blockSide() } else null).toTypedArray()))
-                buttons.addArrangedSubview(makeRow(makeButton(if (now.scenery > 0) "Scenery (more)" else "Scenery") { flow.startScenery()?.let { flow.say(it) } }))
+                if (flow.sceneryOn) buttons.addArrangedSubview(makeRow(makeButton(if (now.scenery > 0) "Scenery (more)" else "Scenery") { flow.startScenery()?.let { flow.say(it) } }))
             }
             Phase.SCENERY -> buttons.addArrangedSubview(makeRow(makeButton("Back to the rock", Look.FILLED) { flow.endScenery() }, leave))
             else -> buttons.addArrangedSubview(makeRow(leave))
