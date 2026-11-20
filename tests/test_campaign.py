@@ -833,6 +833,24 @@ assert fake.stopped.is_set() and any("as no machine has taken it yet: after the 
                                      for x in said), said
 server.MACHINES.jobs.pop(mj.id)
 mj.input.unlink(missing_ok=True)
+
+# nor for one a machine has taken: it can't report back while the server stops (Caddy stops first), and a lasting
+# one carries on there anyway (Nov 19: a deploy waited 10 min for Wedge Boulder on hal-2, which couldn't finish meanwhile)
+for lasting in (False, True):
+    server._stopping, said[:] = None, []
+    w.job = {"job": {"type": "retry", "pid": ran}, "started": time.time(), "from": 0.0, "thread": -2}
+    mj = server.MACHINES._new_job("reconstruct", {}, {}, ran, "img")
+    mj.owner, mj.state, mj.machine_name = -2, "running", "hal-2"
+    if lasting:
+        mj.same = {"rules": 1, "fingerprint": "f"}
+    fake = FakeServer()
+    stopper = threading.Thread(target=server.stop_when_idle, args=(fake,))
+    stopper.start()
+    stopper.join(5)
+    assert fake.stopped.is_set() and any("as it runs on hal-2, which can't report back while this server stops: " +
+                                         ("it carries on there" if lasting else "after the restart") in x for x in said), said
+    server.MACHINES.jobs.pop(mj.id)
+    mj.input.unlink(missing_ok=True)
 w.job = {"job": {"type": "retry", "pid": ran}, "started": time.time() - 120, "from": 0.0}
 
 server._stopping, said[:] = None, []

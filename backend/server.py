@@ -8635,7 +8635,7 @@ def job_info(job: dict, run: dict | None = None) -> dict:
 def jobs_state(board: list[dict] | None = None) -> dict:
     """What a restart would stop now: jobs people started outside areas, which it interrupts (running and
     queued), and areas' climbs, which it only pauses. A running job's "machine_job" is the job on a machine that
-    connects here that it's waiting for, if it is: {id, state, machine}, from board (MACHINES.running()) if given."""
+    connects here that it's waiting for, if it is: {id, state, machine, lasting}, from board (MACHINES.running()) if given."""
     with jobs.mutex:
         waiting = list(jobs.queue)
     runs = [w.job for w in list(_workers)]
@@ -8648,7 +8648,7 @@ def jobs_state(board: list[dict] | None = None) -> dict:
 
     def running(r: dict) -> dict:
         mj = by_thread.get(r.get("thread"))
-        return {**job_info(r["job"], r), "machine_job": {k: mj[k] for k in ("id", "state", "machine")} if mj else None}
+        return {**job_info(r["job"], r), "machine_job": {k: mj[k] for k in ("id", "state", "machine", "lasting")} if mj else None}
     return {"running": [running(r) for r in runs if r], "queued": [job_info(j) for j in waiting],
             "area_climbs": q("SELECT c.name AS area, i.name, i.project_id FROM campaign_items i JOIN campaigns c ON c.id=i.campaign_id "
                              "WHERE i.status='running' ORDER BY i.updated"),
@@ -8820,7 +8820,9 @@ def deploy_state() -> dict:
 def stop_when_idle(server: ThreadingHTTPServer) -> None:
     """Stop the server (on SIGTERM) once the jobs people started outside areas have finished, as a restart
     interrupts them. Meanwhile it takes no more work, and serves the site as before. It waits at most
-    STOP_WAIT, and only for jobs that look like finishing by then. Areas' climbs aren't waited for, as a
+    STOP_WAIT, and only for jobs that look like finishing by then, done here: not for one on a machine, which can't
+    report back once Caddy (which machines reach it through) has stopped, as Compose stops it first. deploy.sh's
+    --after is what waits for those, before the stop. Areas' climbs aren't waited for, as a
     restart only pauses them. A second SIGTERM stops it at once."""
     global _stopping
     say = lambda s: print(f"stopping: {s}", flush=True)  # noqa: E731
@@ -8840,6 +8842,11 @@ def stop_when_idle(server: ThreadingHTTPServer) -> None:
             elif j["machine_job"] and j["machine_job"]["state"] == "queued" and ident(j) not in passed:
                 passed.add(ident(j))    # nothing's done yet, and no machine takes it while deploy.sh drains
                 say(f"not waiting for {job_label(j)}, as no machine has taken it yet: after the restart, {AGAIN[j['type']]}")
+            elif j["machine_job"] and ident(j) not in passed:
+                passed.add(ident(j))    # Caddy, which machines reach this server through, stops first: it can't report back
+                say(f"not waiting for {job_label(j)}, as it runs on {j['machine_job']['machine']}, which can't report back "
+                    f"while this server stops: " + ("it carries on there, and is taken up after the restart"
+                                                     if j["machine_job"]["lasting"] else f"after the restart, {AGAIN[j['type']]}"))
         waiting = [j for j in state["running"] if ident(j) not in passed]
         _stopping["waiting_for"] = [job_label(j) for j in waiting]
         left = _stopping["until"] - time.time()
