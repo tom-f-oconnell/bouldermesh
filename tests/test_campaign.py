@@ -738,6 +738,19 @@ with server.jobs.mutex:
 assert again == [{"type": "boulder", "pid": waited}, {"type": "reconstruct", "internet": True, "pid": later}], "in the order they were asked for"
 assert "queued again, as it was" in server.read_log(waited)
 assert json.loads(server.q("SELECT job FROM projects WHERE id=?", ran, one=True)["job"])["resume"], "it had started: Retry carries on with it"
+# one that a worker here had started (job_started, run_job()) is queued again by itself, carrying on, ahead of those
+# asked for after it; one an area's climb runs as part of it (no job_started) isn't
+server.q("UPDATE projects SET status='running', job_started=? WHERE id=?", time.time(), ran, write=True)
+server.q("UPDATE projects SET status='queued' WHERE id IN (?, ?)", waited, later, write=True)
+server.init_db()
+assert server.q("SELECT status, job_started FROM projects WHERE id=?", ran, one=True) == {"status": "queued", "job_started": None}
+assert server.requeue_waiting() == 3
+with server.jobs.mutex:
+    again = list(server.jobs.queue)
+    server.jobs.queue.clear()
+assert again[0] == {"type": "reconstruct", "internet": False, "pid": ran, "resume": True}, again
+assert "queued again, to carry on" in server.read_log(ran)
+server.q("UPDATE projects SET status='interrupted' WHERE id=?", ran, write=True)
 server.q("UPDATE projects SET status='interrupted' WHERE id=?", waited, write=True)
 assert server.retry_project(ran) == ({"queued": True}, 202) and server.retry_project(waited)[1] == 202
 with server.jobs.mutex:
@@ -816,7 +829,7 @@ fake = FakeServer()
 stopper = threading.Thread(target=server.stop_when_idle, args=(fake,))
 stopper.start()
 stopper.join(5)
-assert fake.stopped.is_set() and any("as no machine has taken it yet: after the restart, Retry on its project runs it" in x
+assert fake.stopped.is_set() and any("as no machine has taken it yet: after the restart, it's queued again by itself" in x
                                      for x in said), said
 server.MACHINES.jobs.pop(mj.id)
 mj.input.unlink(missing_ok=True)
@@ -838,7 +851,7 @@ time.sleep(2.5)
 assert taker.job is None and server.jobs.qsize() == 1, "no new work while stopping"
 w.job = None      # it finished
 stopper.join(5)
-assert fake.stopped.is_set() and any("1 queued job(s) won't start" in x and "Retry on its project" in x for x in said[before:]), said
+assert fake.stopped.is_set() and any("1 queued job(s) won't start" in x and "queued again by itself" in x for x in said[before:]), said
 taker.retired = True
 with server.jobs.mutex:
     server.jobs.queue.clear()
@@ -851,7 +864,7 @@ print("interrupted jobs OK")
 saved = (server.run_job, server.next_campaign_step, server._local_meshing)
 ran_jobs = []
 server.run_job = lambda job: ran_jobs.append(job["pid"])
-server.next_campaign_step = lambda: False
+server.next_campaign_step = lambda *a: False
 server._local_meshing = False
 try:
     taker = server.Worker("remote 1", remote=True)
@@ -3913,6 +3926,45 @@ finally:
     server.q("DELETE FROM campaigns WHERE id='hd0000000001'", write=True)
     server.q("DELETE FROM meshes WHERE id='hm0000000001'", write=True)
 print("a mesh hidden as a failure OK")
+# an area at low priority: its projects' jobs here go after everyone else's, and after regular areas' climbs; its
+# projects' jobs waiting on machines, and those made later, go after the others there; kept in the database
+server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status) VALUES('lw0000000001','Low Area','0','popularity',?,'stopped')",
+         time.time(), write=True)
+for pid in ("lp0000000001", "lp0000000002"):
+    server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,'harvest','queued')", pid, pid, time.time(), write=True)
+server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,status,project_id) VALUES('lw0000000001','l1',1,'L1','done','lp0000000001')",
+         write=True)
+server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES('lm0000000001','Low Mesh','m.glb','project:lp0000000001',?)",
+         time.time(), write=True)
+with server.jobs.mutex:
+    server.jobs.queue.clear()
+mjob = server.MACHINES._new_job("reconstruct", {}, {}, "lp0000000001", "img")
+try:
+    assert not server.job_is_low({"pid": "lp0000000001"}) and server.low_projects(fresh=True) == frozenset()
+    low_jobs = [{"type": "reconstruct", "pid": "lp0000000001"}, {"type": "scale", "mid": "lm0000000001"}]
+    for j in low_jobs + [{"type": "reconstruct", "pid": "lp0000000002"}]:
+        server.jobs.put(j)
+    assert server.set_area_low("nope00000000", True) is None
+    got = server.set_area_low("lw0000000001", True)
+    assert got == {"id": "lw0000000001", "low_priority": True, "machine_jobs": 1} and mjob.prio == server.pullwork.PRIO_BACKFILL, got
+    assert server.campaign_view(server.q("SELECT * FROM campaigns WHERE id='lw0000000001'", one=True))["low_priority"] == 1
+    assert [server.job_is_low(j) for j in low_jobs] == [True, True], "its project's, and its project's mesh's"
+    assert server.take_job(False) == {"type": "reconstruct", "pid": "lp0000000002"} and server.take_job(False) is None, "regular first"
+    assert server.take_job(True) == low_jobs[0] and server.take_job(True) == low_jobs[1] and server.jobs.empty()
+    server.set_area_low("lw0000000001", False)
+    assert mjob.prio == server.pullwork.PRIO_OWNER and not server.job_is_low(low_jobs[0]), "back in turn"
+    assert server.take_job(True) is None
+finally:
+    server.MACHINES.jobs.pop(mjob.id, None)
+    mjob.input.unlink(missing_ok=True)
+    with server.jobs.mutex:
+        server.jobs.queue.clear()
+    server.q("DELETE FROM campaign_items WHERE campaign_id='lw0000000001'", write=True)
+    server.q("DELETE FROM campaigns WHERE id='lw0000000001'", write=True)
+    server.q("DELETE FROM projects WHERE id LIKE 'lp00000000%'", write=True)
+    server.q("DELETE FROM meshes WHERE id='lm0000000001'", write=True)
+    server.low_projects(fresh=True)
+print("an area at low priority OK")
 # each limit and order an area is run with is noted, and said per order with the most it went to; an area is "complete"
 # (done, not partial) only when its list finished with no limit and something was meshed
 server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status,max_meshes,runs) VALUES('ee0000000001','Runs Area','0',"

@@ -249,6 +249,10 @@ list a mesh of its own (below), harvesting first its climbs the list hasn't reac
 climbs again* meshes climbs skipped for too few viewpoints that the viewpoint check would now let
 COLMAP try.
 
+*Low priority* puts an area after everyone else's work: its climbs are taken, and its projects' jobs (here and on
+the machines, waiting now or made later) run, only when nothing else is waiting. It stays so through restarts until
+*Regular priority*.
+
 *Stop now* pauses the climb in progress and *Stop after this climb* finishes it. Every finished mesh
 stays, and *Resume* carries on from the last step the climb finished. *Pause* beside one climb in progress
 stops that one alone, while the area goes on with its others. It stays paused, through restarts too, until
@@ -689,10 +693,10 @@ new code. To remove it: `sudo systemctl disable --now bouldermesh`, then delete 
 area (a harvest or reconstruction started by hand, a retry, recolouring from the admin page)
 can't carry on by themselves. So when it's stopped, the server takes no new work and first waits up to 10
 minutes for those jobs, if they look like finishing by then. Its log and the top of the page say what it's
-waiting for, and stopping it again stops it at once. Projects it doesn't wait for come back *interrupted*,
-not failed: *Retry*, or *Retry N interrupted* on the *Projects* tab, carries on with each from the last step
-it finished, as it was asked for. Those still queued, not started, are queued again as the server starts, in the
-order they were (deploy.sh lists them as "queued again after"). To see what a restart would interrupt now:
+waiting for, and stopping it again stops it at once. Those it doesn't wait for are queued again as the server
+starts, in the order they were asked for: one that had started carries on from the last step it finished (taking up
+its mesh's job on a machine, if one kept it), one not started yet as it was (deploy.sh lists them as "queued again
+after"). Only a project from before jobs were recorded comes back *interrupted*, for *Retry*. To see what a restart would interrupt now:
 
     python3 cli.py jobs                         # exits 1 if a restart would interrupt anything
 

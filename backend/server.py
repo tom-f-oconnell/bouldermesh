@@ -16,6 +16,7 @@ Data layout (DATA_DIR, default ./data):
 from __future__ import annotations
 
 import base64
+import contextlib
 import copy
 import csv
 import email.utils
@@ -281,6 +282,8 @@ def init_db() -> None:
         cols = {r[1] for r in con.execute("PRAGMA table_info(campaigns)")}
         if "only_retries" not in cols:
             con.execute("ALTER TABLE campaigns ADD COLUMN only_retries INTEGER DEFAULT 0")
+        if "low_priority" not in cols:      # its climbs and its projects' jobs go after everyone else's (set_area_low())
+            con.execute("ALTER TABLE campaigns ADD COLUMN low_priority INTEGER DEFAULT 0")
         if "without_youtube" not in cols:   # mesh climbs whose YouTube search hasn't been done (none to do it)
             con.execute("ALTER TABLE campaigns ADD COLUMN without_youtube INTEGER DEFAULT 0")
         if "priority" not in cols:          # areas are taken in this order, lowest first: as entered (next_priority())
@@ -312,6 +315,8 @@ def init_db() -> None:
         con.execute("CREATE TABLE IF NOT EXISTS job_stops(at REAL, kind TEXT, id TEXT, name TEXT, was TEXT)")
         if "next_at" not in {r[1] for r in con.execute("PRAGMA table_info(projects)")}:   # Mesh next (mesh_next())
             con.execute("ALTER TABLE projects ADD COLUMN next_at REAL")
+        if "job_started" not in {r[1] for r in con.execute("PRAGMA table_info(projects)")}:   # its job (projects.job) is
+            con.execute("ALTER TABLE projects ADD COLUMN job_started REAL")                    # running now (run_job())
         now_sql = "(julianday('now') - 2440587.5) * 86400.0"
         for table, kind in (("campaigns", "area"), ("projects", "project")):
             con.execute(f"""CREATE TRIGGER IF NOT EXISTS {table}_stopped AFTER UPDATE OF status ON {table}
@@ -434,30 +439,40 @@ def init_db() -> None:
                             (p["mesh_id"], "meshed with its boulder: " + r["note"].removeprefix("its boulder meshed from "),
                              r["campaign_id"], r["source_id"]))
         # A restart only pauses an area: its climb carries on from the last step it finished, and the
-        # area carries on by itself unless someone stopped it. Other jobs are lost, as their queue is: one that had
-        # started is marked interrupted, not failed (Retry carries on with it); one still waiting stays queued, and is
-        # queued again as the server starts (requeue_waiting()), as it was asked for. One without its job recorded
-        # (from before jobs were) is interrupted, for Retry to run.
+        # area carries on by itself unless someone stopped it. Other jobs are queued again as the server starts
+        # (requeue_waiting()), in the order they were asked for: one still waiting as it was, one that had started
+        # carrying on from the last step it finished (taking up its mesh's job on a machine, if one kept it), as Retry
+        # did when it had to be pressed. One without its job recorded (from before jobs were) is interrupted, for Retry.
         con.execute("UPDATE projects SET status='stopped' WHERE id IN (SELECT project_id FROM campaign_items "
                     "WHERE status='running' OR (status='pending' AND retry=1 AND redo IS NULL))")
         # one meshed again as its meshes were old goes after the rest of its area's list, but once started, next
         con.execute("UPDATE campaign_items SET retry=1 WHERE status='running' AND old_rerun=1")
         con.execute("UPDATE campaign_items SET status='pending', note='interrupted by a restart: carrying on from where it got to' WHERE status='running'")
         con.execute("UPDATE campaigns SET status='stopped', note=NULL WHERE status='stopping'")
-        cut = con.execute("SELECT id, status, job FROM projects WHERE status IN ('queued','running','harvesting') "
-                          "AND NOT (status='queued' AND job IS NOT NULL)").fetchall()
-        waiting = con.execute("SELECT id FROM projects WHERE status='queued' AND job IS NOT NULL").fetchall()
+        started = con.execute("SELECT id, job FROM projects WHERE status IN ('running','harvesting') AND job IS NOT NULL "
+                              "AND job_started IS NOT NULL").fetchall()     # not an area's climb's, run as part of it
+        for r in started:
+            try:
+                job = {**json.loads(r["job"]), "resume": True}      # it had started: it carries on from the last step it finished
+            except ValueError:
+                continue
+            con.execute("UPDATE projects SET status='queued', progress=NULL, job=? WHERE id=?", (json.dumps(job), r["id"]))
+        busy = "status IN ('running','harvesting') OR (status='queued' AND job IS NULL)"
+        cut = con.execute(f"SELECT id, status, job FROM projects WHERE {busy}").fetchall()
         for r in cut:
             job = json.loads(r["job"]) if r["job"] else None
             if job and r["status"] != "queued":
-                job["resume"] = True    # it had started: it carries on from the last step it finished
-            con.execute("UPDATE projects SET status='interrupted', progress=NULL, job=? WHERE id=?",
-                        (json.dumps(job) if job else None, r["id"]))
+                job["resume"] = True    # Retry carries on from the last step it finished
+            con.execute("UPDATE projects SET status='interrupted', progress=NULL, job=? WHERE id=?", (json.dumps(job) if job else None, r["id"]))
+        con.execute("UPDATE projects SET job_started=NULL WHERE job_started IS NOT NULL")
+        resumed = {r["id"] for r in started}
+        waiting = con.execute("SELECT id FROM projects WHERE status='queued' AND job IS NOT NULL").fetchall()
     for r in cut:
         append_log(r["id"], "INTERRUPTED: the server restarted " + ("before this job started: Retry runs it" if r["status"] == "queued"
                                                                     else "during this job: Retry carries on from the last step it finished"))
     for r in waiting:
-        append_log(r["id"], "-- the server restarted before this job started: it's queued again, as it was")
+        append_log(r["id"], "-- the server restarted during this job: it's queued again, to carry on from the last step it finished"
+                   if r["id"] in resumed else "-- the server restarted before this job started: it's queued again, as it was")
 
 
 def q(sql: str, *args, one=False, write=False):
@@ -2603,6 +2618,71 @@ def requeue_waiting() -> int:
         except ValueError:
             q("UPDATE projects SET status='interrupted' WHERE id=?", r["id"], write=True)
     return n
+
+
+LOW_EVERY = 30.0    # seconds low_projects() is kept between workings out (project_areas() reads every area's climbs)
+_low: dict = {"at": 0.0, "projects": frozenset()}
+
+
+def low_projects(fresh: bool = False) -> frozenset[str]:
+    """The projects of areas set to low priority (set_area_low()): their climbs' harvests, and their boulders', groups'
+    and rests' meshes, as the Projects tab ties them to areas (project_areas())."""
+    if fresh or time.time() - _low["at"] > LOW_EVERY:
+        low = {r["id"] for r in q("SELECT id FROM campaigns WHERE low_priority=1")}
+        _low.update(at=time.time(), projects=frozenset(
+            pid for pid, areas in (project_areas() if low else {}).items() if any(a.get("id") in low for a in areas)))
+    return _low["projects"]
+
+
+def job_is_low(job: dict, low: frozenset[str] | None = None) -> bool:
+    """Whether a job someone asked for is a low-priority area's (low_projects()): its project's, or its mesh's project's."""
+    low = low_projects() if low is None else low
+    if not low:
+        return False
+    pid = job.get("pid")
+    if not pid and job.get("mid"):
+        src = (q("SELECT source FROM meshes WHERE id=?", job["mid"], one=True) or {}).get("source") or ""
+        pid = src.removeprefix("project:") if src.startswith("project:") else None
+    return bool(pid) and pid in low
+
+
+def take_job(low: bool) -> dict | None:
+    """The first job in this server's queue that is (low) or isn't a low-priority area's, taken out of it; None if
+    there's none."""
+    lows = low_projects()
+    with jobs.mutex:
+        waiting = list(jobs.queue)
+    if not lows and low:
+        return None
+    pick = next((j for j in waiting if (job_is_low(j, lows) if lows else False) == low), None)
+    if pick is None:
+        return None
+    with jobs.mutex:
+        for k, j in enumerate(jobs.queue):
+            if j is pick:
+                del jobs.queue[k]
+                jobs.not_full.notify()
+                return pick
+    return None     # taken meanwhile
+
+
+def set_area_low(cid: str, low: bool) -> dict | None:
+    """Put an area at low priority, or back to regular: its climbs are taken only once no regular area has one to take
+    and no regular job is waiting, and its projects' jobs (here and on machines, those waiting now and those made
+    later) go after everyone else's, kept so over restarts. Returns the area, or None if there's none."""
+    if not q("SELECT 1 FROM campaigns WHERE id=?", cid, one=True):
+        return None
+    q("UPDATE campaigns SET low_priority=? WHERE id=?", int(low), cid, write=True)
+    prio = pullwork.PRIO_BACKFILL if low else pullwork.PRIO_OWNER
+    mine = [pid for pid, areas in project_areas().items() if any(a.get("id") == cid for a in areas)]
+    names = {r["id"]: r for r in q(f"SELECT id, name, next_at FROM projects WHERE id IN ({','.join('?' * len(mine))})", *mine)} if mine else {}
+    moved = 0
+    for pid, r in names.items():
+        if r["next_at"]:
+            continue    # said to be meshed next: it stays first
+        moved += MACHINES.reprioritise(pid, prio) + MACHINES.reprioritise(f"filter: {r['name']}", prio)
+    low_projects(fresh=True)
+    return {"id": cid, "low_priority": low, "machine_jobs": moved}
 
 
 def append_log(pid: str, line: str) -> None:
@@ -5990,10 +6070,12 @@ def snapshot_worker() -> None:
         time.sleep(SNAPSHOT_EVERY)
 
 
-def _claim(w: Worker):
+def _claim(w: Worker, low: bool | None = None):
     """Choose this worker's next climb, and mark it as running, under _claim_lock: an area's next waiting
     climb, from the area fewest other workers are on, but not one on a boulder another worker is on, whose
-    harvests use each other's photos. Areas with nothing left are settled here.
+    harvests use each other's photos. Areas with nothing left are settled here. With low False, only regular areas';
+    with low True, only low-priority areas' (set_area_low()), then climbs remade as their meshes are old (_claim_old());
+    with None, any, regular areas' first.
 
     Returns:
         (area, climb), or None.
@@ -6007,7 +6089,9 @@ def _claim(w: Worker):
             q("UPDATE campaigns SET note=? WHERE id=? AND COALESCE(note,'')!=COALESCE(?,'')", note, camp["id"], note, write=True)
     if why:
         return None
-    camps.sort(key=lambda c: sum(x.campaign == c["id"] for x in others))
+    if low is not None:
+        camps = [c for c in camps if bool(c.get("low_priority")) == low]
+    camps.sort(key=lambda c: (bool(c.get("low_priority")), sum(x.campaign == c["id"] for x in others)))
     for camp in camps:
         if shutil.disk_usage(DATA).free < CAMPAIGN_MIN_FREE:
             q("UPDATE campaigns SET status='stopped', note=? WHERE id=?",
@@ -6052,7 +6136,7 @@ def _claim(w: Worker):
         w.campaign, w.boulder, w.doing = camp["id"], item["boulder"] if pools_whole(item["boulder"]) else None, item["name"]
         w.item = item["source_id"]
         return camp, item
-    return _claim_old(w, others)
+    return None if low is False else _claim_old(w, others)
 
 
 def _claim_old(w: Worker, others: list[Worker]):
@@ -6083,21 +6167,23 @@ def _claim_old(w: Worker, others: list[Worker]):
     return camp, item
 
 
-def next_campaign_step() -> bool:
-    """Mesh the next climb of a running area on this thread's worker, if there's one it can take.
+def next_campaign_step(low: bool | None = None) -> bool:
+    """Mesh the next climb of a running area on this thread's worker, if there's one it can take: of a regular area
+    (low False), of a low-priority one (low True), or of any (None), as _claim() takes them.
 
     Returns:
         Whether there was one.
     """
     w = current_worker()
     with _claim_lock:
-        picked = _claim(w)
+        picked = _claim(w, low)
     if not picked:
         return False
     camp, item = picked
     try:
         # for its meshes, here or on a machine elsewhere; one made again as its mesh is old goes after what people added
-        with meshopts.using(mapper_of(camp)), pullwork.priority(pullwork.PRIO_BACKFILL if item.get("old_rerun") else pullwork.PRIO_OWNER):
+        backfill = item.get("old_rerun") or camp.get("low_priority")
+        with meshopts.using(mapper_of(camp)), pullwork.priority(pullwork.PRIO_BACKFILL if backfill else pullwork.PRIO_OWNER):
             run_campaign_item(camp, item)
         w.error = w.waiting = None
         settle_boulder(camp["id"], item.get("boulder"))
@@ -8402,23 +8488,12 @@ def run_job(job: dict) -> None:
     w = current_worker()
     w.job = {"job": job, "started": time.time(), "from": job_progress(job) or 0.0, "thread": threading.get_ident()}
     jobctl.begin(low_priority=job["type"] in ("retexture", "texture-again", "scale", "boulder"))
+    if job.get("pid"):      # so that a restart queues it again, to carry on (init_db())
+        q("UPDATE projects SET job_started=? WHERE id=?", time.time(), job["pid"], write=True)
+    low = job_is_low(job)   # a low-priority area's: its machines' jobs go after everyone else's
     try:
-        if job["type"] == "scale":
-            run_scale(job["mid"])
-        elif job["type"] == "retexture":
-            run_retexture(job["mid"])
-        elif job["type"] == "texture-again":
-            run_texture_again(job["mid"])
-        elif job["type"] == "reconstruct":
-            with pullwork.priority(contribution_prio(q("SELECT user_id, approved, next_at FROM projects WHERE id=?", job["pid"], one=True) or {})):
-                run_reconstruct(job["pid"], job.get("internet", False), resume=job.get("resume", False))
-        elif job["type"] == "harvest":
-            run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True), resume=job.get("resume", False),
-                        again=job.get("again", False), add=job.get("add", False), refresh=job.get("refresh", False))
-        elif job["type"] == "retry":
-            run_retry(job["pid"])
-        elif job["type"] == "boulder":
-            run_boulder(job["pid"], resume=job.get("resume", False))
+        with pullwork.priority(pullwork.PRIO_BACKFILL) if low else contextlib.nullcontext():
+            _run_job(job, low)
     except Cancelled:   # stopped by hand (stop_project()), which said so: left stopped, whatever the job made of it
         if job.get("pid"):
             q("UPDATE projects SET status='stopped' WHERE id=? AND status!='superseded'", job["pid"], write=True)
@@ -8426,6 +8501,29 @@ def run_job(job: dict) -> None:
         append_log(job.get("pid", "?"), f"worker error: {e!r}")
     finally:
         w.job = None
+        if job.get("pid"):
+            q("UPDATE projects SET job_started=NULL WHERE id=?", job["pid"], write=True)
+
+
+def _run_job(job: dict, low: bool) -> None:
+    """run_job()'s job itself."""
+    if job["type"] == "scale":
+        run_scale(job["mid"])
+    elif job["type"] == "retexture":
+        run_retexture(job["mid"])
+    elif job["type"] == "texture-again":
+        run_texture_again(job["mid"])
+    elif job["type"] == "reconstruct":
+        prio = contribution_prio(q("SELECT user_id, approved, next_at FROM projects WHERE id=?", job["pid"], one=True) or {})
+        with pullwork.priority(max(prio, pullwork.PRIO_BACKFILL) if low and prio != PRIO_NEXT else prio):
+            run_reconstruct(job["pid"], job.get("internet", False), resume=job.get("resume", False))
+    elif job["type"] == "harvest":
+        run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True), resume=job.get("resume", False),
+                    again=job.get("again", False), add=job.get("add", False), refresh=job.get("refresh", False))
+    elif job["type"] == "retry":
+        run_retry(job["pid"])
+    elif job["type"] == "boulder":
+        run_boulder(job["pid"], resume=job.get("resume", False))
 
 
 def worker(w: Worker | None = None) -> None:
@@ -8441,24 +8539,34 @@ def worker(w: Worker | None = None) -> None:
             time.sleep(2)
             continue
         use_processing_cores()      # each time round, as the admin page may have changed it
-        if not w.remote or not _local_meshing:
-            try:    # a remote worker doesn't wait for one: it has areas' climbs to get on with
-                job = jobs.get_nowait() if w.remote else jobs.get(timeout=CAMPAIGN_POLL)
-            except queue.Empty:
-                job = None
+        takes_jobs, takes_climbs = not w.remote or not _local_meshing, w.remote or _local_meshing
+        did = False
+        for low in (False, True):   # regular jobs, then regular areas' climbs; then low-priority areas' jobs and climbs
+            job = take_job(low) if takes_jobs else None
             if job and _stopping:   # it came as the stop began: it stays queued, to be marked interrupted
                 jobs.put(job)
-                continue
+                did = True
+                break
             if job:
                 run_job(job)
+                did = True
+                break
+            if w.retired or not takes_climbs:   # areas' climbs are for other machines' workers
                 continue
-        if w.retired or not (w.remote or _local_meshing):   # retired while waiting for a job; areas' climbs are for
-            continue                                        # other machines' workers
-        try:
-            if not next_campaign_step() and w.remote:
-                time.sleep(CAMPAIGN_POLL)
-        except (Exception, Cancelled) as e:  # never let the worker die
-            print(f"campaign error on {w.name}: {e!r}", flush=True)
+            try:
+                if next_campaign_step(low):
+                    did = True
+                    break
+            except (Exception, Cancelled) as e:  # never let the worker die
+                print(f"campaign error on {w.name}: {e!r}", flush=True)
+        if did or w.retired:
+            continue
+        if takes_jobs and not w.remote:     # nothing to do: wait for a job, a while
+            with jobs.not_empty:
+                if not jobs.queue:
+                    jobs.not_empty.wait(CAMPAIGN_POLL)
+        else:
+            time.sleep(CAMPAIGN_POLL)
 
 
 # ------------------------------------------------------------------ stopping, and what it would interrupt
@@ -8466,8 +8574,8 @@ STOP_WAIT = float(os.environ.get("STOP_WAIT_MINUTES", "10")) * 60   # docker-com
 _stopping: dict | None = None    # once a stop has begun: {since, until, waiting_for}
 _draining: dict | None = None    # deploy.sh about to restart it: {since, now, until}: no new work taken; with now, no waiting on stop
 DRAIN_LEASE = 300   # seconds a drain lasts unless deploy.sh says so again (it does every 30 s as it waits): one it left behind ends
-AGAIN = {"reconstruct": "Retry on its project runs it", "harvest": "Retry on its project runs it", "retry": "Retry on its project runs it",
-         "boulder": "Retry on its project runs it", "retexture": "Make textures... on the admin page runs it",
+GOES_ON = "it's queued again by itself, to carry on from the last step it finished"     # init_db()
+AGAIN = {"reconstruct": GOES_ON, "harvest": GOES_ON, "retry": GOES_ON, "boulder": GOES_ON, "retexture": "Make textures... on the admin page runs it",
          "texture-again": "Texture again on the admin page runs it",
          "scale": "it's queued again by itself"}     # what runs a job after a restart interrupted it
 
@@ -8632,10 +8740,10 @@ def deploy_state() -> dict:
             if eta is None and typical and typical > elapsed:
                 eta = typical - elapsed     # past the usual time, there's no telling
         if mine and mine["type"] != "scale":
-            lost = "interrupted: runs again when asked again"
+            lost = "ends; its job is queued again after, carrying on from the last step it finished"
         lasting = bool(j.get("lasting")) and j["task"] == "reconstruct"
         if lasting:
-            lost = ("carries on on its machine, for Retry after the restart to take up" if mine else
+            lost = ("carries on on its machine, and its job, queued again after the restart, takes it up" if mine else
                     "carries on on its machine, and its climb takes it up after") + \
                 ", unless the new version changes MESH_RULES or what it's made from"
         items.append({"what": f"{task} on {j['machine']}" if j["state"] == "running" else f"{task}, waiting for a machine",
@@ -8663,7 +8771,7 @@ def deploy_state() -> dict:
         items.append({"what": "scale here" if sizing else f"{j['type']}, {j.get('why') or 'asked for'}", "name": j["name"], "costly": True,
                       "kind": KINDS.get(j["type"], j["type"]), "project_id": j.get("project_id"),
                       "elapsed": round(now - j.get("started", now)), "eta": j.get("eta"),
-                      "lost": "starts again after" if sizing else "interrupted: runs again when asked again"})
+                      "lost": "starts again after" if sizing else "queued again after, carrying on from the last step it finished"})
     for beta_name, b in beta_here:
         items.append({"what": "finding beta here", "name": beta_name, "costly": True, "kind": "beta", "project_id": None,
                       "elapsed": round(now - b["started"]),
@@ -10849,14 +10957,14 @@ class Handler(BaseHTTPRequestHandler):
                 me = self.who()     # what an account added and nobody approved is its own and the owner's to see; what it deleted, the owner's
                 rows = [r for r in rows if not r["user_id"] or (r["approved"] == 1 and not r["deleted_at"]) or
                         (me and (me["role"] == "owner" or (r["user_id"] == me["id"] and not r["deleted_at"])))]
-                work, left = machine_work(), steps_left()
+                work, left, low = machine_work(), steps_left(), low_projects()
                 gone = {x["path"]: x["bytes"] or 0 for x in q("SELECT path, bytes FROM offloads WHERE done IS NOT NULL AND "
                                                             "approved IS NULL AND lost IS NULL AND path LIKE 'projects/%'")}
                 for r in rows:
                     if r["id"] in areas:
                         r["areas"] = areas[r["id"]]
-                        # remaking an old mesh (queue_old()): after everything else
-                        r["low_priority"] = any(a.get("old_rerun") for a in r["areas"])
+                        # remaking an old mesh (queue_old()), or a low-priority area's (set_area_low()): after everything else
+                        r["low_priority"] = any(a.get("old_rerun") for a in r["areas"]) or r["id"] in low
                     if r["id"] in work:
                         r["work"] = work[r["id"]]
                     if r["id"] in left:
@@ -11663,6 +11771,10 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 409)
                 return self.send_json(campaign_view(q("SELECT * FROM campaigns WHERE id=?", m[1], one=True)))
+            m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)/priority", p)
+            if m:   # {low: true|false}: the area's climbs and its projects' jobs after everyone else's, or back in turn
+                got = set_area_low(m[1], bool(self.read_json().get("low")))
+                return self.send_json(got) if got else self.send_json({"error": "not found"}, 404)
             m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)/retry", p)
             if m:
                 if not campaign_status(m[1]):
