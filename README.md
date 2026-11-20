@@ -1543,6 +1543,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_heading.py     # offline: which way a mesh faces, from photos' compasses and Mountain Project's text, and which wins
     python3 tests/test_terrain.py     # offline: elevation squares, with stand-ins for USGS's and IGN's services
     python3 tests/test_skyline.py     # offline: facing from a made-up skyline, and each way it gives up early
+    python3 tests/test_textmask.py    # offline: text masked for texturing (the detector itself only if cached, or MODELS=1)
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
     python3 tests/test_scale.py       # offline: sizing people, objects and the rock on scenes built with known sizes
     python3 tests/test_youtube.py     # offline: telling a climb's videos apart, climbers' sizes in text, leaving YouTube alone when it refuses

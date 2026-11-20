@@ -29,6 +29,7 @@ import meshopts
 import occlusion
 import orientation
 import reconstruction
+import textmask
 import vggt_place
 from climbs.common import Cancelled, jobctl
 from climbs.relevance import MIN_INLIERS
@@ -1316,6 +1317,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     if tex:
         log("== OpenMVS: texture mesh")
         tracker.update("texture")
+        mask_args = textmask.for_texturing(dense / "images", mask_args, log)
         try:
             # ReconstructMesh only writes the .ply, so texture it against the dense scene. GLB loads
             # directly in the viewer (and OpenMVS 2.3's OBJ writer segfaults); its texture images are

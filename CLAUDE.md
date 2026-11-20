@@ -6,3 +6,5 @@
   change to what an area meshes, or from which photos: what counts as one boulder or a group, pooling, what a boulder's
   mesh leaves out, the off-topic filter's verdicts, harvest sources, or COLMAP/OpenMVS settings that change which
   photos are placed.
+- When pointing the user at meshes or climbs to look at, give full links (https://boulderme.sh/m/<mesh id>,
+  https://boulderme.sh/c/<climb slug>), never bare IDs.

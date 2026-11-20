@@ -5,7 +5,8 @@ or two, against ten or more for a whole rebuild; for when how meshes are texture
 Each step is the pipeline's own (pipeline.py), from the photos' undistortion on:
 
   1. the kept model (cameras placed and levelled, as the mesh was made from) out of reconstruction.tar.gz;
-  2. COLMAP's image_undistorter on the project's photos, and the people masks moved as the photos were;
+  2. COLMAP's image_undistorter on the project's photos, the people masks moved as the photos were, and the text in
+     them masked too (textmask.py);
   3. OpenMVS's InterfaceCOLMAP, for a scene of those cameras;
   4. the mesh's faces, read back from its GLB in the same order (its vertices welded again where TextureMesh split them
      along texture seams), as a PLY;
@@ -27,6 +28,7 @@ import occlusion
 import orientation
 import pipeline
 import reconstruction
+import textmask
 
 Log = Callable[[str], None]
 GLB = "scene_dense_mesh_texture.glb"
@@ -137,6 +139,7 @@ def texture_again(mesh_dir: Path, photos: Path, masks: Path | None, work: Path, 
             mask_args = ["--ignore-mask-label", "0"]
         except Exception as e:      # noqa: BLE001 - as the pipeline: textured without them
             log(f"occlusion: failed ({type(e).__name__}: {e}); texturing without the people masks")
+    mask_args = textmask.for_texturing(dense / "images", mask_args, log)
     say("import", STEPS["import"][0])
     pipeline._run([pipeline._mvs("InterfaceCOLMAP"), "-i", str(dense), "-o", "scene.mvs", "--image-folder", str(dense / "images"),
                    "-w", str(work)], work, log)

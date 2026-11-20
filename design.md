@@ -264,6 +264,23 @@ other two were textured scraps of 513 and 574 faces. The smallest real mesh then
 over 50k. So a reconstruction now fails when its mesh has under 1,000 faces (`MIN_FACES`), and an area counts
 that as skipped, like too few photos placed.
 
+## Text over photos (`backend/textmask.py`)
+
+YouTube thumbnails and video frames often carry a title, a grade or a channel's logo, and TextureMesh copied these
+onto the rock like any other pixels (Nov 20: "LA MARIE-ROSE" on La Marie Rose's main face, "HIDDEN DRAGON" on Crouching
+Tiger's). Text is masked like people, but only for texturing: the masks get it after the depth maps are made, so
+which photos are placed, and the mesh's shape, don't change. A face a masked photo would have coloured is coloured
+from the next best photo that sees it.
+
+- **Masking, not dropping photos:** a thumbnail with a caption still has the best view of some faces, and masking
+  only gives up the caption's faces. On La Marie Rose (6 of 38 placed photos with text) masking removed the text,
+  and left 0.058% of the surface the empty grey, against 0.065% without it.
+- **Detector:** PaddleOCR's PP-OCRv3 English text detector in ONNX (2.4 MB), boxes grown by 0.6 of their height.
+  It found every caption by eye on the two meshes' 127 photos, with a few small boxes on plain rock, which cost
+  little as other photos cover them. About 0.3-0.6 s a photo on a CPU.
+- **Existing meshes:** "Texture again" (`textureagain.py`) masks text too, so meshes with a kept reconstruction
+  are fixed without being made again. Older ones without one get it only when remade.
+
 ## Where the time goes
 
 One Midnight Lightning job through the app on 2026-10-31: 113 photos, every core of a shared
