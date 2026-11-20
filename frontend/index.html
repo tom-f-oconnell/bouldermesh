@@ -6303,6 +6303,16 @@ function sendView(body){
   if (thumbMode || viewsSent++ >= 200) return;
   fetch('/api/mesh-views', { method: 'POST', headers: reportHeaders(), keepalive: true, body: JSON.stringify({ ...body, build: PAGE_BUILD }) }).catch(() => {});
 }
+// The page opening, once: the server keeps roughly where from (Cloudflare's city for the address, not the address), for
+// the admin page's map. With the site that linked here (its host only), and whether this browser had opened it before.
+if (!thumbMode) {
+  let seen = true;
+  try { seen = !!localStorage.getItem('bm_seen'); localStorage.setItem('bm_seen', '1'); } catch {}
+  let ref = null;
+  try { const r = new URL(document.referrer); if (r.host !== location.host) ref = r.origin; } catch {}
+  fetch('/api/page-views', { method: 'POST', headers: reportHeaders(), keepalive: true,
+    body: JSON.stringify({ path: location.pathname, ref, new: !seen, app: APP, build: PAGE_BUILD }) }).catch(() => {});
+}
 function tenths(x){ return Math.round(x * 10) / 10; }
 function reportView(mesh, via, seconds, note){
   const first = firstView;

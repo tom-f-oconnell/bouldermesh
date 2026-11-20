@@ -9994,7 +9994,7 @@ def forget_mesh_list() -> None:
     _mesh_lists_kept.clear()
 
 
-REPORT_PATH = re.compile(r"/api/(client-errors|mesh-views|nearby-overlaps|feedback)")   # visitors' reports, which change no mesh
+REPORT_PATH = re.compile(r"/api/(client-errors|mesh-views|page-views|nearby-overlaps|feedback)")   # visitors' reports, which change no mesh
 
 
 def meshes_mark() -> str:
@@ -10338,8 +10338,10 @@ def admin_machine_diagnostics(body: dict) -> dict:
 CLIENT_ERRORS = DATA / "client-errors.jsonl"   # one report a line; the one before it, client-errors.jsonl.1, once it's full
 CLIENT_ERRORS_BYTES = 2 * 2**20                # how big the file gets before that
 CLIENT_REPORT_MAX = 8192                       # the largest report taken
-CLIENT_REPORTS = {"overlap": (30, 600), "error": (20, 600), "view": (300, 600), "rating": (120, 3600), "feedback": (5, 3600)}  # at most this many of each from one address in this many seconds
+CLIENT_REPORTS = {"overlap": (30, 600), "error": (20, 600), "view": (300, 600), "page": (30, 600), "rating": (120, 3600), "feedback": (5, 3600)}  # at most this many of each from one address in this many seconds
 MESH_VIEWS = DATA / "mesh-views.jsonl"       # each mesh shown in a visitor's browser, and how it was asked for
+PAGE_VIEWS = DATA / sitehealth_mod.PAGE_VIEWS   # each time the page opened in a browser, and roughly where
+PAGE_VIEWS_BYTES = 16 * 2**20                # its own size before the next file: ~70k openings, so the admin page's month is whole
 _client_reports: dict[tuple[str, str], list[float]] = {}
 _client_lock = threading.Lock()
 
@@ -10359,21 +10361,21 @@ def _client_allowed(kind: str, sender: str) -> bool:
     return True
 
 
-def _client_report(kind: str, sender: str, path: Path, line: dict) -> bool:
+def _client_report(kind: str, sender: str, path: Path, line: dict, most: int = CLIENT_ERRORS_BYTES) -> bool:
     """Append a report from a visitor's browser to path, unless that address has sent too many of its kind lately
-    (CLIENT_REPORTS), starting a new file once it's over CLIENT_ERRORS_BYTES, the old one kept as <name>.1."""
+    (CLIENT_REPORTS), starting a new file once it's over `most` bytes, the old one kept as <name>.1."""
     with _client_lock:
         if not _client_allowed(kind, sender):
             return False
-        _append_report(path, line)
+        _append_report(path, line, most)
     return True
 
 
-def _append_report(path: Path, line: dict) -> None:
+def _append_report(path: Path, line: dict, most: int = CLIENT_ERRORS_BYTES) -> None:
     """Append a line to a report file (JSON a line), with the time and this version, starting a new file once it's over
-    CLIENT_ERRORS_BYTES, the old one kept as <name>.1. Call with _client_lock held."""
+    `most` bytes, the old one kept as <name>.1. Call with _client_lock held."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and path.stat().st_size > CLIENT_ERRORS_BYTES:
+    if path.exists() and path.stat().st_size > most:
         path.replace(path.with_name(path.name + ".1"))
     with open(path, "a") as f:
         f.write(json.dumps({"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "version": VERSION,
@@ -10557,6 +10559,41 @@ def record_mesh_view(report: dict, sender: str, editor: bool) -> bool | None:
     elif event == "left":
         print(f"left mesh {mid} ({m['name']}) loading after {seconds} s ({line['left'] or '?'})", flush=True)
     return True
+
+
+BOT_AGENT = re.compile(r"bot|crawl|spider|slurp|headless|lighthouse|preview", re.I)
+
+
+def record_page_view(report: dict, sender: str, headers, editor: bool) -> bool:
+    """Keep that the page opened in a browser (its script, so not most crawlers, which don't run it), in PAGE_VIEWS:
+    roughly where, as Cloudflare's visitor location headers say (country, region, city, and its point to a tenth of a
+    degree, ~10 km), which page (ids left out), the site that linked there (only its host), whether this browser had
+    opened it before (new), and whether it's the phone apps' (app) or calls itself a bot. Not the address, nor the browser.
+
+    Returns:
+        False if that address has sent too many lately.
+    """
+    get = lambda k: (headers.get(k) or "").strip()[:60] or None  # noqa: E731
+
+    def degrees(k):
+        try:
+            x = float(get(k) or "")
+            return round(x, 1) if math.isfinite(x) else None
+        except ValueError:
+            return None
+    ref = urlparse(str(report.get("ref") or "")[:300]).hostname
+    path = re.sub(r"/[0-9a-f]{6,32}(?=/|$)", "/<id>", str(report.get("path") or "")[:120]) or None
+    line = {"country": get("cf-ipcountry") if get("cf-ipcountry") not in ("XX", "T1") else None, "region": get("cf-region"),
+            "city": get("cf-ipcity"), "lat": degrees("cf-iplatitude"), "lng": degrees("cf-iplongitude"), "path": path,
+            "ref": ref if ref and ref != (get("host") or "").split(":")[0] else None, "new": True if report.get("new") is True else None,
+            "app": True if report.get("app") is True else None, "editor": editor or None,
+            "bot": True if BOT_AGENT.search(get("user-agent") or "") else None, **page_build_of(report)}
+    return _client_report("page", sender, PAGE_VIEWS, line, PAGE_VIEWS_BYTES)
+
+
+def admin_page_views(_: dict) -> dict:
+    """The admin page's map of where the page was opened from: sitehealth.page_views() over a day, a week and a month."""
+    return sitehealth_mod.page_views_for_data(DATA)
 
 
 RATINGS = {1: "bad", 2: "ok", 3: "good"}
@@ -11118,6 +11155,7 @@ class Handler(BaseHTTPRequestHandler):
         editor = not READ_ONLY and (not EDIT_TOKEN or self.is_editor())
         kept = (record_client_error(report, self.address_string(), self.headers.get("User-Agent") or "", editor) if kind == "error"
                 else record_overlap(report, self.address_string(), editor) if kind == "overlap"
+                else record_page_view(report, self.address_string(), self.headers, editor) if kind == "page"
                 else record_mesh_view(report, self.address_string(), editor))
         if kept is None:
             return self.send_json({"error": "no such mesh"}, 404)
@@ -11692,8 +11730,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "only from the server itself"}, 403)
             b = self.read_json()
             return self.send_json(drain(bool(b.get("on", True)), bool(b.get("now"))))
-        if p in ("/api/client-errors", "/api/mesh-views", "/api/nearby-overlaps"):    # from any visitor, not only editors
-            return self.client_report({"/api/client-errors": "error", "/api/mesh-views": "view"}.get(p, "overlap"))
+        if p in ("/api/client-errors", "/api/mesh-views", "/api/page-views", "/api/nearby-overlaps"):    # from any visitor, not only editors
+            return self.client_report({"/api/client-errors": "error", "/api/mesh-views": "view", "/api/page-views": "page"}.get(p, "overlap"))
         if p == "/api/feedback":    # also from any visitor
             return self.feedback()
         if p == "/api/pair":    # also from any visitor: the code is what's checked
@@ -13415,6 +13453,7 @@ def main() -> None:
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteer-trial": admin_volunteer_trial,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
+                                       "page-views": admin_page_views,
                                        "volunteers-cancel": admin_volunteers_cancel, "user-invite": admin_user_invite, "user-rescind": admin_user_rescind, "user-change": admin_user_change,
                                        "user-signin": admin_user_signin, "user-delete": admin_user_delete, "submission": admin_submission, "area": admin_area, "machine-add": admin_machine_add, "machine-show": admin_machine_show,
                                        "machine-revoke": admin_machine_revoke, "ec2-start": admin_ec2_start, "ec2-stop": admin_ec2_stop, "ec2-test": admin_ec2_test, "ec2-topup": admin_ec2_topup, "clear-rejected": admin_clear_rejected,
