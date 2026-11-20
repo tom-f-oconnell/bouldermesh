@@ -1089,7 +1089,7 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x===b));
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + b.dataset.tab));
   if (b.dataset.tab === 'beta') { renderBetaList(); betaLoop(); }    // its bars every 5 s while beta's found and it shows
-  if (b.dataset.tab === 'projects') poll();          // followed while it shows
+  if (b.dataset.tab === 'projects') { if (polling) projectDetails(); poll(); }     // followed while it shows (poll() draws them)
   if (b.dataset.tab === 'areas') { campaignLoop(); if (!phone.matches) { viewChosen++; showRight('areas', true); } }     // every 5 s while it shows; the areas' map beside it
 });
 // The ? tab's form: a comment or bug report, to POST /api/feedback (data/feedback.jsonl there), from anyone, editing or
@@ -3718,9 +3718,21 @@ async function refreshProjects(){
     d.onclick = ev => { if (ev.target.tagName !== 'BUTTON') { active = p.id; loadDetail(p.id, d); } };
     el.appendChild(d);
     projectCards.set(p.id, d);
-    if (projectCards.size <= 15 || busy || p.id === active) loadDetail(p.id, d);   // the rest load when clicked: an area can make hundreds
+    // the rest load when clicked: an area can make hundreds. Only while the tab shows (it opening loads them:
+    // projectDetails()), and one not busy only when it's changed since its last (detailKept)
+    d._first = projectCards.size <= 15 || busy || p.id === active;
+    d._sig = busy ? null : JSON.stringify(p);
+    if (d._first && projectsShown()) loadDetail(p.id, d, d._sig);
   }
 }
+const inSight = el => { const r = el?.getBoundingClientRect(); return !!r && r.bottom > 0 && r.top < innerHeight && r.width > 0; };
+const projectsShown = () => $('#pane-projects').classList.contains('on') && !document.hidden;
+// each project's details as last fetched, with its row of the list then: drawn again as they were while that's unchanged
+const detailKept = new Map();
+function projectDetails(){
+  for (const [id, d] of projectCards) if (d._first && !d._loaded) loadDetail(id, d, d._sig);
+}
+document.addEventListener('visibilitychange', () => { if (projectsShown()) projectDetails(); });
 const LOW_TIP = 'Remaking an old mesh (made before the rules for what an area meshes last changed, or another climb\'s), or of an area set to low priority: it runs only when nothing else is waiting, here or on the machines.';
 const BUSY = ['queued', 'running', 'harvesting'], RETRYABLE = ['failed', 'stopped', 'interrupted'];
 // a project made for an area: which, and what it is there (a climb's own harvest, with how that climb stands on the
@@ -3802,8 +3814,11 @@ async function putBack(id, card, tiles, groupButton){
   count(card.querySelector('.filtered summary b'), -done, 'Filtered out as off-topic');
   toast(`Put ${done === 1 ? 'it' : done + ' photos'} back with those kept: press Reconstruct to make a mesh with ${done === 1 ? 'it' : 'them'}`, 6000);
 }
-async function loadDetail(id, card){
-  const p = await api('/api/projects/' + id);
+async function loadDetail(id, card, sig = null){
+  card._loaded = true;    // or on its way
+  const had = sig && detailKept.get(id), p = had?.sig === sig ? had.p : await api('/api/projects/' + id);
+  if (sig) detailKept.set(id, { sig, p });
+  else detailKept.delete(id);     // asked for afresh (a click, an upload): what was kept may be out of date
   card.querySelector('.prog').innerHTML = (p.failure ? `<div class="notice" style="margin-top:8px">${esc(p.failure)}</div>` : '') + progressHtml(p);
   // only touch these when they change: rebuilding them closes the list and makes every thumbnail flash
   const fl = card.querySelector('.filtered'), filteredNames = p.filtered.map(x => x.file).join();
@@ -3880,7 +3895,9 @@ async function poll(){
       if (busy && !followed) break;
       const now = list.map(p => [p.id, p.status, p.mesh_id].join()).join(';');
       if (now !== shown || !list.every(p => projectCards.has(p.id))) await refreshProjects();
-      else await Promise.all(list.filter(p => BUSY.includes(p.status)).map(p => loadDetail(p.id, projectCards.get(p.id))));
+      else await Promise.all(list.filter(p => BUSY.includes(p.status) && inSight(projectCards.get(p.id)))
+        .map(p => loadDetail(p.id, projectCards.get(p.id))));     // a busy one's progress: those in sight
+      if (projectsShown()) projectDetails();      // any not loaded yet, as the tab opened while the list was coming
       shown = now;
       // a new mesh, whatever else is still going (a queue that never empties kept them from the lists till a reload);
       // only then, as the lists are big to fetch and draw again
