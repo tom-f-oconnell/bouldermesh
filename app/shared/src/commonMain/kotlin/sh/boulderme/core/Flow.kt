@@ -825,7 +825,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                         own, from, LEVEL_LIMITS.firstOrNull { it > levelLimit }?.let { helps(it) } ?: false, levelLimit > LEVEL_LIMITS.first(), helps(levelLimit)) } else null
                 ui = base.copy(phase = phase, note = note, turnX = 0.0, turnY = 0.0, total = turn.sectors, done = if (phase == Phase.LEVEL) turn.filled else turn.sectors,
                     level = lvl, text = "To find which way is down: turn slowly all the way round on the spot, the phone held as for a photo. " +
-                        "It needn't be upright, only steady and at the same angle to you all the way round")
+                        "It needn't be upright, only steady and at the same angle to you all the way round" +
+                        if (panorama) "" else ". The camera only follows where the phone points: no photos are kept during the turn")
                 // and a frame for each step of the turn, for a panorama of what's far off
                 val grab = if (panorama && !grabbing && pano.wanted(pose, sceneryBlurPx(gyroRadS, exposureS, pose.lens.fx) <= STEADY_SCENERY_PX)) "pano" else null
                 if (grab != null) grabbing = true
