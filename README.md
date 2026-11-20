@@ -1554,6 +1554,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_notify.py      # offline: ntfy notifications, their signed Approve and Deny, following the replies
     python3 tests/test_backup.py      # offline: the server's database snapshots, and deploy/backup.sh copying a stand-in server
     python3 tests/test_sitehealth.py  # offline: the daily summary of how the site went for visitors, from made-up reports
+    python3 tests/test_mesh_list.py   # offline: the kept list of meshes: fresh, older while made again, a change waited for
     python3 tests/test_admin.py       # offline: the admin page's settings, credentials and photo permissions
     python3 tests/test_capture.py     # offline: plans and guides for the phone apps, readings in photos, size and place from them, captures merged
     python3 tests/test_api.py         # spins up the server on a free port, runs the whole flow incl. a harvest job
