@@ -3254,6 +3254,30 @@ assert (parent["whole"], parent["split"], parent["placed"], parent["kind"]) == (
 rest_card = server.pooled_summary(rows[0]["boulder"] if rows[0]["id"] == rest_mesh else rows[1]["boulder"],
                                   [{"id": ids["Body"], "view": {"photos": 2}}, {"id": ids["Arm"], "view": None}], kinds, rest_mesh, homes)
 assert (rest_card["placed"], rest_card["rest_of"], rest_card["whole"]) == (1, boulder_mesh, False), rest_card
+# a mesh of what it left out that's no climb's best mesh is hidden from visitors (Illicit Sweetie's patch of ground,
+# Nov 19), and shown again once it's some climb's best mesh
+assert server.rest_homeless(rest_mesh) is None and server.q("SELECT hidden FROM meshes WHERE id=?", rest_mesh, one=True)["hidden"] is None
+saved_views = {m: (server.MESHES / m / "views.json").read_text() if (server.MESHES / m / "views.json").exists() else None
+               for m in (boulder_mesh, rest_mesh)}
+(server.MESHES / boulder_mesh / "views.json").write_text(json.dumps({"climbs": {ids["Pea"]: {"photos": 8}, ids["Body"]: {"photos": 5}}}))
+assert server.rest_homeless(rest_mesh) == [ids["Body"]]
+assert server.hide_homeless_rests(logged.append) == [rest_mesh]
+hidden = server.q("SELECT hidden FROM meshes WHERE id=?", rest_mesh, one=True)["hidden"]
+assert hidden.startswith(server.REST_NO_HOME) and "Body placed better" in hidden, hidden
+assert server.hide_homeless_rests(logged.append) == [], "once"
+server.hide_mesh(boulder_mesh, "a failure")     # its boulder's mesh hidden: the rest is the best mesh of Body again
+assert server.hide_homeless_rests(logged.append) == [rest_mesh] and server.q("SELECT hidden FROM meshes WHERE id=?", rest_mesh, one=True)["hidden"] is None
+server.hide_mesh(boulder_mesh, None)
+server.hide_mesh(rest_mesh, "hidden by hand")
+(server.MESHES / boulder_mesh / "views.json").write_text(json.dumps({"climbs": {ids["Body"]: {"photos": 5}}}))
+assert server.hide_homeless_rests(logged.append) == [] and server.q("SELECT hidden FROM meshes WHERE id=?", rest_mesh, one=True)["hidden"] == "hidden by hand", \
+    "one hidden for another reason is left as it is"
+server.hide_mesh(rest_mesh, None)
+for m, text in saved_views.items():
+    if text is None:
+        (server.MESHES / m / "views.json").unlink(missing_ok=True)
+    else:
+        (server.MESHES / m / "views.json").write_text(text)
 # meshing what it left out failed, or nothing was left out to: one boulder
 rec = server.load_rest(boulder_mesh)
 server.save_rest(boulder_mesh, {**rec, "attempt": {**rec["attempt"], "status": "failed", "mesh": None, "climbs": []}})

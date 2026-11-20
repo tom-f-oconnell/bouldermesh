@@ -3134,6 +3134,7 @@ def rest_existing_meshes() -> None:
     cards' boulder or group depends on it; the admin page queues those with any to mesh (rest_queue_all()). Then, with
     boulders.rest_auto, what a restart cut short carries on (rest_resume()). First, settle_rests()."""
     settle_rests()
+    hide_homeless_rests()
     for m in q("SELECT m.id, m.source, m.boulder FROM meshes m WHERE m.boulder IS NOT NULL AND m.replaced_by IS NULL"):
         if is_pool(m["boulder"]) or load_rest(m["id"]) or not (MESHES / m["id"]).is_dir():
             continue
@@ -3253,6 +3254,52 @@ def drop_rest_jobs(parent: str, head: str, why: str) -> list[str]:
         halt_job(r["id"])
         if not poor:
             append_log(r["id"], f"-- superseded: {why}")
+            out.append(r["id"])
+    return out
+
+
+REST_NO_HOME = "made from photos its boulder's mesh left out, and no climb's best mesh"
+
+
+def rest_homeless(mid: str) -> list[str] | None:
+    """The climbs a current mesh of what a boulder's mesh left out places, if it's the best mesh (boulder_homes()) of
+    none of them, each placed by more of its own photos in another current mesh of the boulder; None if it's some
+    climb's best mesh, or isn't such a mesh. One placing no climb at all is no climb's best mesh either ([])."""
+    m = q("SELECT boulder, replaced_by FROM meshes WHERE id=?", mid, one=True)
+    if not m or m["replaced_by"] or not is_rest(m["boulder"]):
+        return None
+    leaf = pool_leaf(m["boulder"])
+    ids = set(boulder_mesh_sets().get(leaf, [])) | {mid}
+    rows = q(f"SELECT id, boulder FROM meshes WHERE (id IN ({','.join('?' * len(ids))}) AND hidden IS NULL) OR id=?", *ids, mid)
+    views = {r["id"]: viewpoints.load(MESHES / r["id"]) or {} for r in rows if r["boulder"]}
+    climbs = list((views.get(mid) or {}).get("climbs") or {})
+    homes = boulder_homes(rows, views)
+    return None if any(homes.get(c, mid) == mid for c in climbs) else climbs
+
+
+def hide_homeless_rests(log=print) -> list[str]:
+    """Hide from visitors (hide_mesh(), REST_NO_HOME) each current mesh of what a boulder's mesh left out that's no
+    climb's best mesh (rest_homeless()): it shows only what another mesh of the boulder shows better, or nothing of a
+    climb, as a patch of ground with crash pads that Illicit Sweetie Boulder's left out (Nov 19). Editors still see it.
+    One hidden so that's become some climb's best mesh is shown again. Returns those whose visibility changed."""
+    out = []
+    for r in q("SELECT id, name, boulder, hidden FROM meshes WHERE boulder LIKE ? AND replaced_by IS NULL", f"%{REST_MARK}%"):
+        if not is_rest(r["boulder"]) or (r["hidden"] and not r["hidden"].startswith(REST_NO_HOME)):
+            continue
+        try:
+            climbs = rest_homeless(r["id"])
+        except Exception as e:  # noqa: BLE001 - left as it is
+            log(f"rest: couldn't tell whether {r['id']} is any climb's best mesh: {e!r}")
+            continue
+        if climbs is not None and not r["hidden"]:
+            names = [(q("SELECT name FROM climbs WHERE id=?", c, one=True) or {}).get("name") or c for c in climbs]
+            hide_mesh(r["id"], REST_NO_HOME + (f": {', '.join(names)} placed better in another mesh of the boulder" if names
+                                                else ": it places none"))
+            log(f"rest: {r['id']} ({r['name']}) hidden from visitors, {REST_NO_HOME}")
+            out.append(r["id"])
+        elif climbs is None and r["hidden"]:
+            hide_mesh(r["id"], None)
+            log(f"rest: {r['id']} ({r['name']}) shown again: it's now some climb's best mesh")
             out.append(r["id"])
     return out
 
@@ -4168,6 +4215,7 @@ def run_rest(pid: str, key: str, resume: bool, log, tracker) -> None:
         attempt(status="done", mesh=p["mesh_id"], climbs=placed)
         head = q("SELECT replaced_by FROM meshes WHERE id=?", parent, one=True)
         retire_old_rests((head or {}).get("replaced_by") or parent, log)
+        hide_homeless_rests(log)
     else:
         why = too_few_placed(pid)
         attempt(status="failed" if why else "error", mesh=None, climbs=[], why=why or last_failure(pid))
