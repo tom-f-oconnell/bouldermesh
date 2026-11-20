@@ -1001,7 +1001,8 @@ moved (milliseconds a frame while turned, with the browser's graphics card). The
 meshes took, and how long since the page opened. The server keeps its own requests from visitors that took 3 s or more
 (`data/slow-requests.jsonl`, and a "slow:" line in the log). **`cli.py site-health`** sums up all of it for the last day:
 how long meshes took, those given up on, views that moved badly, the 3D view lost to the graphics card, errors (new ones
-marked) and slow requests. With ntfy set up, the admin page's "each morning" box sends the same to your phone at 16:00 UTC.
+marked) and slow requests. Each report names the page's own build (its script's hash); one from a page older than the
+one served, a tab left open across a deploy, is marked old, and the summary lists those apart. With ntfy set up, the admin page's "each morning" box sends the same to your phone at 16:00 UTC.
 
 ## The admin page
 
@@ -1474,7 +1475,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/meshes/{id}/rating {browser, rating, comment}   a visitor's rating (1 bad, 2 OK, 3 good, or null) and comment,
                                                         from anyone, as client-errors are taken (120 an hour an address): one
                                                         each per browser, replaced; mesh_ratings; `cli.py mesh-ratings`
-    POST /api/mesh-views {mesh, event?, via, seconds, note?, page_seconds?, list_seconds?, left?, frames?, gpu?}   a mesh a
+    POST /api/mesh-views {mesh, event?, via, seconds, note?, page_seconds?, list_seconds?, left?, frames?, gpu?, build?}   a mesh a
                                                         visitor's browser showed (event shown), gave up on loading (left), or
                                                         moved (frames: {n, median_ms, p95_ms, slow}), as client-errors are
                                                         taken (300 in 10 min an address): kept in data/mesh-views.jsonl;
@@ -1483,7 +1484,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
                                                         the site (not other sites' pages; 4,000 characters, 5 an hour an
                                                         address, 200 a day in all): control and invisible characters
                                                         removed, kept in data/feedback.jsonl, and notified through ntfy
-    POST /api/client-errors {kind, message, mesh?, file?, page?, source?, gpu?}   what failed in a visitor's browser, from anyone
+    POST /api/client-errors {kind, message, mesh?, file?, page?, source?, gpu?, build?}   what failed in a visitor's browser, from anyone
                                                         viewing the site (not other sites' pages; 8 KB, 20 in 10 min an address):
                                                         kept in data/client-errors.jsonl; `python3 cli.py client-errors` lists them
 

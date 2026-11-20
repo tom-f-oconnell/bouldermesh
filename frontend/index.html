@@ -802,6 +802,9 @@ let editor = true, token = null;
 // what's told of each mesh's loading and moving (reportView()), declared first as the page's start may load one:
 // loadingView {id, began, via} is the mesh loading, told of as given up on if the page goes or another is asked for first;
 // frameStats {id, ms, prev} the times between frames of the mesh in view
+// this page's build: the name the server gave its script (app.<hash>.js, server.py's page_parts()), in reports, so that one
+// from a tab left open across a deploy is told apart
+const PAGE_BUILD = import.meta.url.match(/\/app\.([0-9a-f]{16})\.js/)?.[1];
 let viewVia = '', viewsSent = 0, listSeconds = null, firstView = true, loadingView = null, frameStats = null, gpuKnown;
 // Who this browser is signed in as, on a site with accounts (/api/account's user, and all it said): an account isn't an
 // editor, but may make sets of beta and change its own, once it has accepted the terms
@@ -6284,7 +6287,7 @@ function reportError(kind, error, extra = {}){
   if (!message || NOT_OURS.test(message) || reported.has(key) || reported.size >= 10) return;
   reported.add(key);
   fetch('/api/client-errors', { method: 'POST', headers: reportHeaders(), keepalive: true,
-    body: JSON.stringify({ kind, message, page: location.pathname + location.hash, ...extra }) }).catch(() => {});
+    body: JSON.stringify({ kind, message, page: location.pathname + location.hash, build: PAGE_BUILD, ...extra }) }).catch(() => {});
 }
 addEventListener('error', ev => { if (!/^(chrome|moz|safari)-extension:/.test(ev.filename || '')) reportError('page', ev.error || ev.message, { source: `${ev.filename || ''}:${ev.lineno || ''}` }); });
 addEventListener('unhandledrejection', ev => reportError('page', ev.reason));
@@ -6294,7 +6297,7 @@ addEventListener('unhandledrejection', ev => reportError('page', ev.reason));
 // while it loaded, and how smoothly each moved: for the server's daily summary (backend/sitehealth.py).
 function sendView(body){
   if (thumbMode || viewsSent++ >= 200) return;
-  fetch('/api/mesh-views', { method: 'POST', headers: reportHeaders(), keepalive: true, body: JSON.stringify(body) }).catch(() => {});
+  fetch('/api/mesh-views', { method: 'POST', headers: reportHeaders(), keepalive: true, body: JSON.stringify({ ...body, build: PAGE_BUILD }) }).catch(() => {});
 }
 function tenths(x){ return Math.round(x * 10) / 10; }
 function reportView(mesh, via, seconds, note){

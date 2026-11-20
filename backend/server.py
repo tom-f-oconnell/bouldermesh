@@ -10272,6 +10272,16 @@ def note_slow_request(method: str, path: str, seconds: float, code: int | None) 
     print(f"slow: {method} {route} took {seconds:.1f} s", flush=True)
 
 
+def page_build_of(report: dict) -> dict:
+    """The build of the page a report came from (the hash in its script's name, app.<hash>.js), and whether it's older
+    than the page served now ("old": a tab left open across a deploy, still running what was fixed since); {} if it
+    didn't say, as pages before Nov 20, 2026 didn't."""
+    build = str(report.get("build") or "")
+    if not re.fullmatch(r"[0-9a-f]{16}", build):
+        return {}
+    return {"build": build, "old": True if f"app.{build}.js" not in page_parts()["assets"] else None}
+
+
 def record_client_error(report: dict, sender: str, user_agent: str, editor: bool) -> bool:
     """Keep what a visitor's browser said went wrong (a mesh that wouldn't load, an error in the page), for looking at
     later: in CLIENT_ERRORS and the log. Who sent it isn't kept, only their browser. Returns False if that address has
@@ -10279,10 +10289,11 @@ def record_client_error(report: dict, sender: str, user_agent: str, editor: bool
     text = lambda k, n: str(report.get(k) or "")[:n] or None  # noqa: E731
     line = {"kind": text("kind", 40), "message": text("message", 1000), "mesh": text("mesh", 40), "file": text("file", 200),
             "page": text("page", 300), "source": text("source", 300), "gpu": text("gpu", 120), "browser": user_agent[:300] or None,
-            "editor": editor}
+            "editor": editor, **page_build_of(report)}
     if not _client_report("error", sender, CLIENT_ERRORS, line):
         return False
-    print(f"browser error ({line['kind']}){' in mesh ' + line['mesh'] if line['mesh'] else ''}: {(line['message'] or '')[:200]}", flush=True)
+    print(f"browser error ({line['kind']}){' in mesh ' + line['mesh'] if line['mesh'] else ''}{' from an old page' if line.get('old') else ''}: "
+          f"{(line['message'] or '')[:200]}", flush=True)
     return True
 
 
@@ -10407,7 +10418,7 @@ def record_mesh_view(report: dict, sender: str, editor: bool) -> bool | None:
     seconds = num("seconds")
     via = str(report.get("via") or "")[:20] or None
     line = {"mesh": mid, "name": m["name"], "event": event if event != "shown" else None, "via": via, "seconds": seconds,
-            "editor": editor}
+            "editor": editor, **page_build_of(report)}
     if event == "shown":
         line.update(note=str(report.get("note") or "")[:300] or None, page_seconds=num("page_seconds"),
                     list_seconds=num("list_seconds"))

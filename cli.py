@@ -297,7 +297,8 @@ def client_errors(data: Path, n: int) -> int:
         return 0
     for r in reports[-n:]:
         where = " ".join(x for x in (f"mesh {r['mesh']}" if r.get("mesh") else "", r.get("source") or "", r.get("page") or "") if x)
-        print(f"{r['time']} {r.get('version') or '-'} {r['kind']}: {r.get('message', '')[:300]}\n    {where} | {r.get('browser', '')[:120]}")
+        page = f" page {r['build'][:8]}{' (OLDER than the one served)' if r.get('old') else ''}" if r.get("build") else ""
+        print(f"{r['time']} {r.get('version') or '-'}{page} {r['kind']}: {r.get('message', '')[:300]}\n    {where} | {r.get('browser', '')[:120]}")
     return 0
 
 

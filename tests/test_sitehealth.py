@@ -36,7 +36,8 @@ def main() -> None:
               {"time": t(3), "kind": "page", "message": "Script error."},
               {"time": t(3), "kind": "page", "message": "undefined is not an object (evaluating 'window.ethereum.selectedAddress = undefined')"},
               {"time": t(4), "kind": "page", "message": "p.filtered is undefined", "editor": True},
-              {"time": t(5), "kind": "webgl-lost", "message": "the graphics card dropped the view", "gpu": "Mali-G52"}]
+              {"time": t(5), "kind": "webgl-lost", "message": "the graphics card dropped the view", "gpu": "Mali-G52"},
+              {"time": t(6), "kind": "page", "message": "invalid assignment to const 'active'", "build": "0c915be0aaaaaaaa", "old": True}]
     slow = [{"time": t(6), "method": "GET", "path": "/api/meshes", "seconds": 4.2},
             {"time": t(7), "method": "GET", "path": "/api/meshes", "seconds": 9.0},
             {"time": t(8), "method": "GET", "path": "/m/<id>", "seconds": 3.1}]
@@ -52,13 +53,15 @@ def main() -> None:
     top = {e["message"]: e for e in errs["top"]}
     assert not top["Failed to fetch"]["new"] and top["p.filtered is undefined"]["new"], "seen before the day, or not"
     assert "Script error." not in top and not any("ethereum" in m for m in top), "extensions' and others' scripts left out"
+    assert errs["old_pages"] == 1 and "invalid assignment to const 'active'" not in top, "an old page's: apart"
     assert s["slow"] == {"n": 3, "top": [("GET /api/meshes", 2, 9.0), ("GET /m/<id>", 1, 3.1)]}, s["slow"]
 
     title, text, look = sitehealth.note(s)
     assert look and "12 views" in title and "3 slow requests" in title, title
     for bit in ("12 view(s) of 2 mesh(es)", "2 over 10 s, slowest Caveman at 12 s", "Page open to first mesh: median 5 s",
                 "Given up on while loading: 2 (1 by leaving", "Moved badly", "Mali-G52 1", "lost to the graphics card",
-                "NEW page: p.filtered is undefined", "GET /api/meshes 2x (up to 9 s)"):
+                "NEW page: p.filtered is undefined", "GET /api/meshes 2x (up to 9 s)",
+                "pages older than the one served (tabs left open across a deploy): 1, as 1x invalid assignment"):
         assert bit in text, (bit, text)
     assert len(text) < 2000
 

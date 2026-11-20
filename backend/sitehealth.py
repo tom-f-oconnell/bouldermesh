@@ -46,7 +46,8 @@ def _pct(xs: list[float], p: float) -> float:
 def summary(views: list[dict], errors: list[dict], slow: list[dict], since: str, until: str | None = None) -> dict:
     """Counts of what happened from since to until (UTC times as the files write them, "2026-11-19T16:00:00Z"): views
     by visitors (not editors), how long meshes took, those given up on, views that moved badly, errors by message
-    (new: not reported in the files before since), and slow requests by path."""
+    (new: not reported in the files before since), apart from those of pages older than the one served then (old), and
+    slow requests by path."""
     within = lambda r: since <= r.get("time", "") and (until is None or r["time"] < until)  # noqa: E731
     vs = [v for v in views if within(v) and not v.get("editor")]
     shown = [v for v in vs if v.get("event", "shown") == "shown"]
@@ -56,10 +57,12 @@ def summary(views: list[dict], errors: list[dict], slow: list[dict], since: str,
     left = [v for v in vs if v.get("event") == "left"]
     frames = [v for v in vs if v.get("event") == "frames" and isinstance(v.get("frames"), dict)]
     jerky = [v for v in frames if (v["frames"].get("median_ms") or 0) > SLOW_FRAMES_MS]
-    errs = [e for e in errors if within(e) and not NOISE.search(e.get("message") or "")]
+    every = [e for e in errors if within(e) and not NOISE.search(e.get("message") or "")]
+    errs = [e for e in every if not e.get("old")]     # from pages older than the one served then: what's live may have fixed it
+    old = [e for e in every if e.get("old")]
     before = {(e.get("kind"), e.get("message")) for e in errors if e.get("time", "") < since}
     by_err = collections.Counter((e.get("kind"), e.get("message")) for e in errs)
-    gone = [e for e in errs if e.get("kind") == "webgl-lost"]
+    gone = [e for e in every if e.get("kind") == "webgl-lost"]
     sl = [r for r in slow if within(r)]
     by_path = collections.defaultdict(list)
     for r in sl:
@@ -75,7 +78,8 @@ def summary(views: list[dict], errors: list[dict], slow: list[dict], since: str,
         "frames": {"n": len(frames), "jerky": len(jerky),
                    "gpus": collections.Counter(v.get("gpu") or "?" for v in jerky).most_common(3)} if frames else None,
         "errors": {"n": len(errs), "editor": sum(bool(e.get("editor")) for e in errs), "lost_view": len(gone),
-                   "top": [{"kind": k, "message": m, "n": n, "new": (k, m) not in before} for (k, m), n in by_err.most_common(6)]},
+                   "top": [{"kind": k, "message": m, "n": n, "new": (k, m) not in before} for (k, m), n in by_err.most_common(6)],
+                   "old_pages": len(old), "old_top": collections.Counter(e.get("message") for e in old).most_common(2)},
         "slow": {"n": len(sl), "top": sorted(((p, len(xs), max(xs)) for p, xs in by_path.items()), key=lambda t: -t[1])[:5]},
     }
 
@@ -84,7 +88,7 @@ def note(s: dict, hours: float = 24) -> tuple[str, str, bool] | None:
     """The summary as a notification: (title, text, whether anything in it wants looking at), or None if nothing at
     all happened. Kept under ntfy's 2000 characters."""
     errs, slow = s["errors"], s["slow"]
-    if not s["views"] and not errs["n"] and not slow["n"] and not s["left"]:
+    if not s["views"] and not errs["n"] and not errs["old_pages"] and not slow["n"] and not s["left"]:
         return None
     lines = [f"{s['views']} view(s) of {s['meshes']} mesh(es) in {hours:g} h."]
     if s["load"]:
@@ -106,6 +110,9 @@ def note(s: dict, hours: float = 24) -> tuple[str, str, bool] | None:
     if errs["n"]:
         lines.append(f"Errors: {errs['n']}" + (f" ({errs['editor']} editors')" if errs["editor"] else "") + ":")
         lines += [f"  {e['n']}x {'NEW ' if e['new'] else ''}{e['kind']}: {(e['message'] or '')[:110]}" for e in errs["top"]]
+    if errs["old_pages"]:
+        lines.append(f"Errors from pages older than the one served (tabs left open across a deploy): {errs['old_pages']}, as "
+                     + "; ".join(f"{n}x {(m or '')[:60]}" for m, n in errs["old_top"]) + ".")
     if slow["n"]:
         lines.append(f"Requests over {SLOW_REQUEST:g} s: {slow['n']}: " + "; ".join(f"{p} {n}x (up to {m:g} s)" for p, n, m in slow["top"]))
     look = bool(any(e["new"] for e in errs["top"]) or slow["n"] or errs["lost_view"] or (s["load"] and s["load"]["slow"])

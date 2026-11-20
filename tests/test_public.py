@@ -173,6 +173,13 @@ def with_token(tmp: Path) -> None:
         kept = [json.loads(x) for x in (tmp / "data" / "client-errors.jsonl").read_text().splitlines()]
         assert kept[-1]["kind"] == "mesh" and kept[-1]["mesh"] == "abc123" and len(kept[-1]["message"]) == 1000, kept[-1]
         assert kept[-1]["browser"] == "TestBrowser/1" and kept[-1]["editor"] is False and "198.51.100.7" not in json.dumps(kept), kept[-1]
+        # the build of the page it came from: one no longer served is marked old (a tab left open across a deploy)
+        page = urllib.request.urlopen(B + "/").read().decode()
+        now = re.search(r"/static/app\.([0-9a-f]{16})\.js", page)[1]
+        for build, old in ((now, None), ("0123456789abcdef", True), ("not a build", "none")):
+            req(B, "POST", "/api/client-errors", {**report, "build": build}, headers={"X-Real-IP": "198.51.100.10"})
+            got = json.loads((tmp / "data" / "client-errors.jsonl").read_text().splitlines()[-1])
+            assert (got.get("build"), got.get("old")) == ((build, old) if old != "none" else (None, None)), got
         assert req(B, "POST", "/api/client-errors", report, headers={"Origin": "https://evil.example"})[0] == 403
         assert req(B, "POST", "/api/client-errors", b"x" * 9000)[0] == 413
         assert req(B, "POST", "/api/client-errors", b"[1]")[0] == 400
