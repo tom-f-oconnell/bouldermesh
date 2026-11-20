@@ -45,6 +45,10 @@ SEARCH_METHOD = 2           # how climbs' searches are made: raised when query()
                             # those searched before can be searched again (the admin page's "search YouTube again")
 REGION_SUFFIX = re.compile(r"\b(national|state|regional|county)\s+(park|forest|monument|recreation area)\b|\bbouldering\b|\barea\b", re.I)
 GENERIC = {"boulder", "boulders", "the boulder", "area", "bouldering"}
+# words many climbs' names share, which don't tell one from another (distinctive())
+PLAIN_WORDS = set("""the a an of and on in to unnamed unknown problem arete crack traverse roof dyno mantle sit start stand low high
+left right center centre direct variation var face slab corner prow lip boulder project classic easy hard
+one two three four five six seven eight nine ten i ii iii iv v""".split())
 GAP = (8.0, 15.0)          # seconds between one yt-dlp run and the next, at random in this range (yt-dlp's wiki: 5-10)
 SLEEP_REQUESTS = ["--sleep-requests", "0.75"]   # between the requests within one run, as yt-dlp's `-t sleep` does
 BLOCK_HOURS = (1, 2, 4, 8)  # how long to leave YouTube alone after its bot check, each time it's still there
@@ -237,7 +241,16 @@ def context(c: Climb) -> list[str]:
     """Words that place a video at this climb, normalised: any one of them is enough."""
     out = [place(c), region(c), c.boulder_name or "", *(c.area_path[-3:] if c.area_path else [])]
     out = [norm(x) for x in out if x and x.strip().lower() not in GENERIC and len(x.strip()) >= 4 and x.strip().lower() != c.name.lower()]
-    return [x for x in dict.fromkeys(out) if x.strip()]    # not its grade: "The Wave V1" is in many places
+    out += [" " + x.split(" ", 2)[2] for x in out if x.startswith(" the ") and len(x) > 10]    # "The Tramway" titled "Tramway"
+    return [x for x in dict.fromkeys(out) if x.strip()]    # not its grade alone: "The Wave V1" is in many places
+
+
+def distinctive(name: str) -> bool:
+    """Whether a climb's name is unusual enough that it and its grade alone say a video is of it: two words that many
+    names share (PLAIN_WORDS) don't count, or one of six letters or more ("Spleef", "Arbor Days"; not "The Fin" or
+    "Scoop Problem")."""
+    words = [w for w in norm(name).split() if w not in PLAIN_WORDS and not w.isdigit()]
+    return len(words) >= 2 or any(len(w) >= 6 for w in words)
 
 
 def name_forms(name: str) -> list[str]:
@@ -255,12 +268,16 @@ def name_forms(name: str) -> list[str]:
 
 
 def matches(c: Climb, title: str | None, description: str | None = None) -> bool:
-    """Whether a video is of this climb: its title names it (name_forms()), and the title or description places it."""
+    """Whether a video is of this climb: its title names it (name_forms()), and the title or description places it, or
+    the title gives its grade too and its name is distinctive()."""
     forms = [f for f in name_forms(c.name) if len(f.strip()) >= 3]
     if not forms or not any(f in norm(title) for f in forms):
         return False
     text = norm(f"{title} {description or ''}")
-    return any(x in text for x in context(c))
+    if any(x in text for x in context(c)):
+        return True
+    grade = v_grade(c)
+    return bool(grade) and re.search(rf"\b{grade.lower()}\b", norm(title)) is not None and distinctive(c.name)
 
 
 def _ytdlp(args: list[str], timeout: int = 180, video: bool = True) -> dict:

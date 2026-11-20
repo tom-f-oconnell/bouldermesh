@@ -33,7 +33,7 @@ for title in ["Burlday Bash V9 (FA) Joshua Tree Bouldering", "Bittersweet V9 - J
 assert not yt.matches(relic, "Relic Hunters official trailer"), "a name needs something placing it"
 assert not yt.matches(relic, "Relics of Joshua Tree"), "whole words only"
 assert yt.matches(relic, "Relic", "Hidden Valley Area, on the Tidal Wave Boulder"), "the description can place it"
-assert not yt.matches(relic, "Relic V9"), "the grade alone doesn't place it: many places have a Relic V9"
+assert not yt.matches(relic, "Relic V9"), "the grade alone doesn't place a plain name: many places have a Relic V9"
 assert yt.wide(relic) == "Relic V9"
 
 # its area's name over the forest it's in (2026-11-20: "Arbor Days V5 Angeles" missed Horse Flats' videos)
@@ -45,7 +45,16 @@ arbor.search_place = "Horse Flats"
 assert yt.query(arbor) == "Arbor Days V5 Horse Flats", yt.query(arbor)
 assert yt.matches(arbor, "Arbor Day (****) V5 - Horse Flats"), "a plural name's singular"
 assert yt.matches(arbor, "Arbor Day Stand (V5) Flash - Horse Flats")
-assert not yt.matches(arbor, "Arbor Days Sit v8"), "nothing places it"
+assert not yt.matches(arbor, "Arbor Days Sit v8"), "nothing places it, and another grade"
+assert yt.matches(arbor, "Arbor Day V5"), "a distinctive name and its grade"
+assert not yt.matches(arbor, "Arbor Day"), "a distinctive name without its grade"
+fin = Climb(source="mountainproject", source_id="5", url="", name="The Fin", grade="V1", area_path=["California", "Joshua Tree National Park", "The Fin Boulder"])
+assert not yt.matches(fin, "The Fin V1/2 - Priest Draw Bouldering"), "a plain name needs a place"
+scoop = Climb(source="mountainproject", source_id="6", url="", name="Scoop Problem", grade="V2", area_path=["California", "Joshua Tree National Park", "X"])
+assert not yt.matches(scoop, "Castle Hill Bouldering Big Yellow Scoop Problem (V2)")
+tram = Climb(source="mountainproject", source_id="7", url="", name="Flash Gordon", grade="V3", search_place="The Tramway",
+             area_path=["California", "San Jacinto Mountains", "The Tramway", "Conquest Ridge", "Some Boulder"])
+assert yt.matches(tram, "Flash Gordon v3 (Tramway)"), "its area without its leading the"
 wave = Climb(source="mountainproject", source_id="2", url="", name="The Wave", grade="V1", area_path=["California", "Horse Flats", "The Wave Boulder"])
 assert yt.matches(wave, "Wave V1 at Horse Flats"), "without its leading the"
 bleau = Climb(source="mountainproject", source_id="3", url="", name="Venus", grade="V1",
