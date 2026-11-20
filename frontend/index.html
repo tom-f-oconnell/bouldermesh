@@ -2584,6 +2584,7 @@ async function loadMeshUrl(url, filename, label, id, local = false){
     if (local && localMesh?.url !== url) return loaded();     // discarded or replaced while it loaded
     if (phone.matches && !passive()) showRight('3d');
     loaded();
+    obj.userData.meshId = id || null;     // which mesh it is, for beta started while it loaded (betaInView())
     showObject(obj, label, !!id && meshesById[id]?.source !== 'upload');
     if (passive())      // kept out of view: the button beside it now goes to it
       vmapLabel($('#areamap').classList.contains('on') ? 'areas' : $('#map').classList.contains('on') ? 'map' : '3d');
@@ -5449,7 +5450,10 @@ function showBetaButton(){
     : 'Mark holds on this mesh, as a set of beta of your own. Press again to hide it.';
   b.setAttribute('aria-pressed', String(!!betaState && betaState.mid === shownMesh));
 }
-$('#vbeta').onclick = () => betaState?.mid === shownMesh ? stopBeta() : shownMesh && current && startBeta(shownMesh);
+// pressed while the mesh still loads, its beta is fetched at once and drawn as the mesh appears (loadMeshUrl())
+$('#vbeta').onclick = () => betaState?.mid === shownMesh ? stopBeta() : shownMesh && startBeta(shownMesh);
+// whether the mesh in view is the one beta is for: not the one before it, still shown while beta's loads
+const betaInView = () => !!betaState && !!current && current.userData.meshId === betaState.mid;
 function closeBeta(id){
   if (!betaState || betaState.mid === id) return showBetaButton();
   stopBeta();
@@ -5506,7 +5510,7 @@ function onHiddenFace(p, node){
   return hidden;
 }
 function drawBeta(){
-  if (!betaState || !current) return;
+  if (!betaInView()) return;
   if (betaState.group) betaState.group.parent?.remove(betaState.group);
   const node = meshNode(), g = new THREE.Group();
   // the boulder's size as the view frames it (not stray pieces), in the units of the node the holds are in
@@ -5739,7 +5743,7 @@ async function setDo(what, from){
 }
 renderer.domElement.addEventListener('click', ev => {
   const b = betaState;
-  if (!b || !current || ev.detail > 1 || !pressedAt || Math.hypot(ev.clientX - pressedAt[0], ev.clientY - pressedAt[1]) > 5) return;
+  if (!betaInView() || ev.detail > 1 || !pressedAt || Math.hypot(ev.clientX - pressedAt[0], ev.clientY - pressedAt[1]) > 5) return;
   if (!b.marking && !b.markers?.length && !dbg) return;
   const r = renderer.domElement.getBoundingClientRect();
   raycaster.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, 1 - (ev.clientY - r.top) / r.height * 2), camera);
