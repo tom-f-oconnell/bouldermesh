@@ -135,6 +135,29 @@ try:
         pass
     assert server.REMAKE_RANKS["fallback"] > server.REMAKE_RANKS["pipeline"] > 1
     print("remaking a tier OK")
+
+    # a boulder's mesh: photos written into a harvest it pooled since count, those that only left it (or came back
+    # from the backup with their own times) don't; a harvest it didn't pool counts whole
+    def harvest(hid: str, cid: str, names, when: float) -> None:
+        server.q("INSERT INTO projects(id,name,created,status,kind,climb_id,harvest) VALUES(?,?,?,?,?,?,?)", hid, hid, when, "harvested",
+                 "harvest", cid, "{}", write=True)
+        (server.PROJECTS / hid / "photos").mkdir(parents=True)
+        for n in names:
+            f = server.PROJECTS / hid / "photos" / n
+            f.write_bytes(b"jpg")
+            os.utime(f, (when, when))
+    rec = {"project": "pb", "kind": "boulder", "leaf": "[]", "climbs": {"c1": ["h1"], "c2": ["h2"]}, "photos": None}
+    harvest("h1", "c1", ["a.jpg", "b.jpg"], now - 500)
+    harvest("h2", "c2", ["c.jpg"], now - 500)
+    (server.PROJECTS / "h1" / "photos" / "gone.jpg").write_bytes(b"x")
+    (server.PROJECTS / "h1" / "photos" / "gone.jpg").unlink()      # the folder changed, nothing came
+    assert server._new_photos(rec, now - 100) == 0
+    f = server.PROJECTS / "h2" / "photos" / "yt_new_000.jpg"
+    f.write_bytes(b"jpg")
+    assert server._new_photos(rec, now - 100) == 1, "a new video's frame"
+    harvest("h3", "c1", ["d.jpg", "e.jpg"], now - 50)
+    assert server._new_photos(rec, now - 100) == 3, "and a newer harvest of a climb it pooled, whole"
+    print("a boulder's new photos OK")
     print("ALL TIERS TESTS PASSED")
 finally:
     import shutil

@@ -4032,8 +4032,9 @@ def tiers_changed() -> None:
 
 def _new_photos(rec: dict, mesh_made: float) -> int | None:
     """How many photos a mesh's project, or for a boulder's or a pool's mesh its climbs' harvests, has that it wasn't
-    made from: photos added since (a climb's own), or harvests made or harvested again since (counted as their photos);
-    None where that can't be told (photos offloaded, or not recorded)."""
+    made from: a climb's own photos it wasn't made from; for a boulder's or a pool's, the photos of harvests it didn't
+    pool (a climb's newer harvest, or a climb on the boulder it didn't pool), and photos written since it was made into
+    those it did (new videos' frames, say); None where that can't be told (photos offloaded, or not recorded)."""
     pid, kind = rec.get("project"), rec.get("kind")
     if kind in ("climb", "other"):
         files = (rec.get("photos") or {}).get("files")
@@ -4050,8 +4051,12 @@ def _new_photos(rec: dict, mesh_made: float) -> int | None:
             for h in climb_harvests(cid):
                 folder = PROJECTS / h / "photos"
                 try:
-                    if h not in (then.get(cid) or []) or folder.stat().st_mtime > mesh_made:
+                    if h not in (then.get(cid) or []):      # a harvest it didn't pool: all of its photos
                         n += len(meshinputs.photos_in(folder)) if not photos_away(h) else 1
+                    elif folder.stat().st_mtime > mesh_made and not photos_away(h):
+                        # one it pooled: the photos added since (a folder changes too when photos leave it, or come
+                        # back from the backup with their own times: 92 of 115 such on Nov 20, none new)
+                        n += sum(p.stat().st_mtime > mesh_made for p in meshinputs.photos_in(folder))
                 except OSError:
                     continue
         return n
