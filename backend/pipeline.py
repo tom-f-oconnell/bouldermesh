@@ -59,17 +59,23 @@ AFFINE_SIFT = ["--SiftExtraction.estimate_affine_shape", "1", "--SiftExtraction.
 # change to how photos are placed or the mesh is made from them; TEXTURE_VERSION with any change to texturing alone.
 #   PIPELINE_VERSION 1: COLMAP 3.9.1 (GPU SIFT, the CPU's as its fallback; the incremental mapper), OpenMVS 2.4: every
 #                       mesh made before versions were recorded counts as this
+#                    2: COLMAP 4.2.1 throughout, features kept for adding photos to a mesh's model later
 #   TEXTURE_VERSION 1: people masked; 2: text laid over photos masked too (textmask.py)
-PIPELINE_VERSION = 1
+PIPELINE_VERSION = 2
 TEXTURE_VERSION = 2
 PIPELINE_FILE = "pipeline.json"
 MAX_TEXTURE = 4096      # larger atlases get split: an 8192 x 8192 one takes 270 MB in a browser, which can refuse it
 MIN_FACES = 1000        # a mesh with fewer isn't one: harvests' empty meshes had 0-574, real ones 3,870 and up (design.md)
 MIN_REGISTERED = 6      # photos COLMAP must place together for a mesh to be made from them
-COLMAP = shutil.which("colmap")
+COLMAP4 = os.environ.get("COLMAP4_BIN") or shutil.which("colmap4")
+# COLMAP 4.2.1 does every step (features, matching, the mappers, the rest step, levelling, undistorting), since
+# PIPELINE_VERSION 2 (Tom, Nov 20: one version throughout, for adding photos to a kept model through pycolmap 4.2.1).
+# The image's COLMAP 3.9.1 ("colmap") is no longer used. Its options are 4.2.1's: FeatureExtraction.* and
+# FeatureMatching.* where 3.9.1 had SiftExtraction.* and SiftMatching.*, and --default_random_seed.
+COLMAP = os.environ.get("COLMAP_BIN") or COLMAP4
 # Which mapper places the cameras. "global": COLMAP 4.2.1's global mapper (the image's colmap4, Dockerfile), on a copy of
-# the database, its models converted for 3.9.1, which does everything else; today's incremental mapper is the fallback
-# (_global_mapper()). "incremental": COLMAP 3.9.1's mapper, as every mesh was placed before. In the mapper benchmark
+# the database; the incremental mapper is the fallback (_global_mapper()). "incremental": COLMAP's incremental mapper,
+# the default since Nov 17 (the global mapper misplaced groups of cameras: experiments/mapper/global-mapper-issues.md). In the mapper benchmark
 # (design.md, "The global mapper") the global mapper placed the cameras 6-14 times faster with as many photos placed,
 # once the cameras it leaves seeing next to none of its points are taken out (UNTIED) for the rest step to place.
 MAPPER = os.environ.get("MAPPER", "")     # set: this image's choice, whatever the site's (benchmarks, tests)
@@ -80,7 +86,6 @@ def mapper_method() -> str:
     mesh.mapper, sent with each job to a machine), "global" or "incremental". Every other step is the same either way:
     GPU SIFT, its fallback, the consistent-cameras step, OpenMVS 2.4 with one geometric pass, thinned texturing."""
     return MAPPER or meshopts.mapper().get("method") or "incremental"
-COLMAP4 = os.environ.get("COLMAP4_BIN") or shutil.which("colmap4")
 UNTIED = 15             # a camera the global mapper leaves seeing fewer of its model's points than this is taken out
 # The global mapper solves on the GPU (global positioning, and bundle adjustments of 50 photos or more: COLMAP's own
 # threshold) when its COLMAP 4 has CUDA and this much GPU memory is free, as in every benchmark run behind the switch.
@@ -127,7 +132,8 @@ def colmap_has_cuda() -> bool:
     if not COLMAP:
         return False
     try:
-        return "with CUDA" in subprocess.run([COLMAP, "-h"], capture_output=True, text=True, timeout=30).stdout
+        out = subprocess.run([COLMAP, "-h"], capture_output=True, text=True, timeout=30)
+        return "with CUDA" in out.stdout + out.stderr     # COLMAP 4 writes its help to stderr
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -140,7 +146,8 @@ def colmap_build(colmap: str | None = None) -> str | None:
     if not colmap:
         return None
     try:
-        lines = subprocess.run([colmap, "-h"], capture_output=True, text=True, timeout=30).stdout.splitlines()
+        out = subprocess.run([colmap, "-h"], capture_output=True, text=True, timeout=30)
+        lines = (out.stdout or out.stderr).splitlines()    # COLMAP 4 writes its help to stderr
     except (OSError, subprocess.SubprocessError):
         return None
     return " ".join(l.strip() for l in lines[:3] if l.strip()) or None
@@ -410,7 +417,7 @@ def _phases(tracker: Tracker, key: str, *phases: tuple[str, float, float]) -> Ca
 
 
 def _matching(tracker: Tracker) -> Callable[[str], None]:
-    rx = re.compile(r"Matching block \[(\d+)/(\d+), (\d+)/(\d+)\]")
+    rx = re.compile(r"(?:Matching|Processing) block \[(\d+)/(\d+), (\d+)/(\d+)\]")     # 3.9.1's, 4.2.1's
 
     def watch(line: str) -> None:
         m = rx.search(line)
@@ -421,7 +428,7 @@ def _matching(tracker: Tracker) -> Callable[[str], None]:
 
 
 def _mapper(tracker: Tracker, n_images: int) -> Callable[[str], None]:
-    rx = re.compile(r"Registering image #\d+ \((\d+)\)")
+    rx = re.compile(r"Registering image #\d+ \((?:num_reg_frames=)?(\d+)\)")     # 3.9.1's, 4.2.1's
 
     def watch(line: str) -> None:
         m = rx.search(line)
@@ -904,7 +911,7 @@ def _incremental_mapper(db: Path, images: Path, sparse: Path, work: Path, log: L
     attempt = failed = fewer = 0
     while True:
         try:
-            _run(cmd + ["--random_seed", str(attempt)], work, log, _mapper(tracker, n_images))
+            _run(cmd + ["--default_random_seed", str(attempt)], work, log, _mapper(tracker, n_images))
             ran = True
         except RuntimeError as e:
             ran, problem = False, str(e)
@@ -939,6 +946,23 @@ def _incremental_mapper(db: Path, images: Path, sparse: Path, work: Path, log: L
 # CPU's by more than two runs' do, and on 9f3b it placed 133 against 141). What the GPU's run made is kept aside in
 # work/PLAIN_SIFT_ASIDE, and why in work/PLAIN_SIFT_FILE and mapper.json ("plain_sift_rejected").
 PLAIN_SIFT_LEAST = 0.7
+GPU_SIFT_RETRIES = 2        # tries again of photos GPU SIFT left out (a GPU out of memory), before the CPU's SIFT is used
+GPU_SIFT_LEFT_OUT = 0.05    # the share of photos it may still leave out (unreadable ones), and keep its features
+
+
+def extracted(db: Path) -> int | None:
+    """How many photos a COLMAP database has features of; None where it can't be told (no database)."""
+    import sqlite3
+    if not db.is_file():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            return con.execute("SELECT COUNT(*) FROM keypoints WHERE rows > 0").fetchone()[0]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
 PLAIN_SIFT_FILE = "plain-sift.json"
 PLAIN_SIFT_ASIDE = "plain-sift"
 # what placing the photos leaves in work/, set aside to place them again, and the steps that made it
@@ -1175,7 +1199,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         cmd = [COLMAP, "feature_extractor", "--database_path", str(db), "--image_path", str(images),
                "--ImageReader.camera_model", "SIMPLE_RADIAL"]
         if internet:
-            cmd += ["--ImageReader.single_camera", "0", "--SiftExtraction.max_image_size", "2400"]
+            cmd += ["--ImageReader.single_camera", "0", "--FeatureExtraction.max_image_size", "2400"]
         else:
             cmd += ["--ImageReader.single_camera", "1"]
         if masks:
@@ -1191,7 +1215,22 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
                     log(f"feature_extractor: GPU_SIFT is set: {'plain SIFT on the GPU' if gpu else 'not this time'} ({why})")
                     if gpu:
                         try:
-                            _run(cmd + ["--SiftExtraction.use_gpu", "1"], work, log, watch)
+                            _run(cmd + ["--FeatureExtraction.use_gpu", "1"], work, log, watch)
+                            # COLMAP 4.2.1 carries on past a GPU that ran out of memory (or whose context broke), leaving
+                            # photos out without failing (Nov 20 on hal's shared GPU: 26 of 76): those it left out are
+                            # tried again on the GPU, where COLMAP does only photos the database lacks
+                            def short() -> int:
+                                got = extracted(db)
+                                return 0 if got is None else n_images - got
+                            for again in range(GPU_SIFT_RETRIES):
+                                left = short()
+                                if left <= 0:
+                                    break
+                                log(f"feature_extractor: {left} photo(s) left out on the GPU: trying them again ({again + 1} of {GPU_SIFT_RETRIES})")
+                                _run(cmd + ["--FeatureExtraction.use_gpu", "1"], work, log)
+                            left = short()
+                            if left > GPU_SIFT_LEFT_OUT * n_images:
+                                raise RuntimeError(f"{left} of {n_images} photos still left out on the GPU")
                             device = "gpu"
                         except RuntimeError as e:
                             log(f"feature_extractor: GPU run failed ({e}): starting again on the CPU, with its usual features")
@@ -1201,7 +1240,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             if device is None:
                 # COLMAP has no GPU version of the affine shape and domain-size pooling of the internet settings
                 cmd += AFFINE_SIFT if internet else []
-                device = _gpu_or_cpu(cmd, "--SiftExtraction.use_gpu", use_gpu and not internet, work, log, watch)
+                device = _gpu_or_cpu(cmd, "--FeatureExtraction.use_gpu", use_gpu and not internet, work, log, watch)
             (work / EXTRACT_FILE).write_text(json.dumps({"args": reconstruction.extract_args(cmd), "device": device,
                                                           **({"plain_sift": "rejected"} if rejected.exists() else {})}))
             _finish(work, "features")
@@ -1212,8 +1251,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             # smaller blocks than the default 50 only make for finer progress: all pairs get matched either way
             cmd = [COLMAP, "exhaustive_matcher", "--database_path", str(db), "--ExhaustiveMatching.block_size", "20"]
             if internet:
-                cmd += ["--SiftMatching.guided_matching", "1"]
-            _gpu_or_cpu(cmd, "--SiftMatching.use_gpu", use_gpu, work, log, _matching(tracker), GPU_MATCH_ARGS)
+                cmd += ["--FeatureMatching.guided_matching", "1"]
+            _gpu_or_cpu(cmd, "--FeatureMatching.use_gpu", use_gpu, work, log, _matching(tracker), GPU_MATCH_ARGS)
             _finish(work, "matching")
 
         if not _finished(work, "mapper"):
@@ -1310,6 +1349,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             (out_dir / MAPPER_FILE).write_text(json.dumps(how, indent=1))
         extract = json.loads((work / EXTRACT_FILE).read_text()) if (work / EXTRACT_FILE).exists() else None
         reconstruction.keep(model, db, out_dir, log, colmap_build(), extract, how)
+        reconstruction.keep_features(db, out_dir, log)
         check_model(model, db, out_dir, log)
 
     if not _finished(work, "undistort"):

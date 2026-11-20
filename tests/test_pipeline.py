@@ -32,12 +32,16 @@ w("I20261030 07:44:25.833164   107 feature_matching.cc:231] Matching block [1/2,
 assert frac("matching") == 0 and detail("matching") == "block 1 of 4", (frac("matching"), detail("matching"))
 w("I20261030 07:48:14.438452   107 feature_matching.cc:231] Matching block [2/2, 1/2]")
 assert frac("matching") == 0.5, frac("matching")
+w("I20261120 21:15:16.901552   266 pairing.cc:214] Processing block [2/2, 2/2]")     # COLMAP 4.2.1's
+assert frac("matching") == 0.75, frac("matching")
 
 w = pipeline._mapper(t, 72)
 w("Registering image #47 (18)")
 assert frac("mapper") == 0.25 and "18 of 72" in detail("mapper"), detail("mapper")
 w("Registering image #39 (3)")   # a new model starts over: the bar stays put
 assert frac("mapper") == 0.25, frac("mapper")
+w("I20261120 21:15:36.754166   322 incremental_pipeline.cc:620] Registering image #6 (num_reg_frames=36)")     # COLMAP 4.2.1's
+assert frac("mapper") == 0.5, frac("mapper")
 
 w = pipeline._geometric(t)
 w("Estimated depth-maps 16 (50.00%, 2s, ETA 1m)...")
@@ -488,7 +492,7 @@ def flags(cmds, tool, flag):
     return [c[c.index(flag) + 1] for c in cmds if c[1] == tool]
 
 
-MATCH, EXTRACT = "--SiftMatching.use_gpu", "--SiftExtraction.use_gpu"
+MATCH, EXTRACT = "--FeatureMatching.use_gpu", "--FeatureExtraction.use_gpu"
 pipeline.GPU_SIFT = False       # the internet settings' own SIFT first; GPU_SIFT (on by default) below
 cmds, logged = gpu_run(True, 17000)
 assert flags(cmds, "exhaustive_matcher", MATCH) == ["1"], cmds
@@ -580,6 +584,21 @@ try:
     assert "--SiftExtraction.domain_size_pooling" not in first and "--SiftExtraction.domain_size_pooling" in second and second[-1] == "0", sift_cmds
     assert any("starting again on the CPU" in l for l in sift_logged), sift_logged
     assert any(l.startswith("FALLBACK: feature_extractor: GPU SIFT failed") for l in sift_logged), sift_logged
+    # photos the GPU left out without failing (out of memory: COLMAP 4.2.1 carries on): tried again on the GPU; still left
+    # out, the CPU's SIFT from the start
+    real_extracted = pipeline.extracted
+    try:
+        counts = iter([2, 8])
+        pipeline.extracted = lambda db: next(counts, 8)
+        sift_cmds, sift_logged = gpu_run(True, 17000)
+        assert flags(sift_cmds, "feature_extractor", EXTRACT) == ["1", "1"], sift_cmds
+        assert any("6 photo(s) left out on the GPU: trying them again (1 of 2)" in l for l in sift_logged), sift_logged
+        pipeline.extracted = lambda db: 2
+        sift_cmds, sift_logged = gpu_run(True, 17000)
+        assert flags(sift_cmds, "feature_extractor", EXTRACT) == ["1", "1", "1", "0"], sift_cmds
+        assert any("6 of 8 photos still left out on the GPU" in l for l in sift_logged), sift_logged
+    finally:
+        pipeline.extracted = real_extracted
 finally:
     pipeline.GPU_SIFT = False
 gpu_cmd, cpu_cmd = [c for c in cmds if c[1] == "exhaustive_matcher"]

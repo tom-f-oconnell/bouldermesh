@@ -717,7 +717,7 @@ function render(s){
   if (document.activeElement !== $('#room-stopped-days')) $('#room-stopped-days').value = v['storage.stopped_days'];
   const off = s.offload || {}, sum = o => Object.values(o || {}).reduce((t, k) => t + k.bytes, 0);
   const KIND = { 'photos': ['photo folder', 'photo folders'], 'rejected photos': ['folder of rejected photos', 'folders of rejected photos'],
-                 'videos': ['video', 'videos'], 'older meshes': ['file of an older mesh', 'files of older meshes'] };
+                 'videos': ['video', 'videos'], 'features': ['mesh\'s features', 'meshes\' features'], 'older meshes': ['file of an older mesh', 'files of older meshes'] };
   const kinds = o => Object.entries(o || {}).map(([k, x]) => `${x.n.toLocaleString()} ${(KIND[k] || [k, k])[x.n === 1 ? 0 : 1]}`).join(', ');
   $('#room-offload-note').innerHTML = !off.backed_up
     ? 'The backup hasn\'t confirmed a copy here yet, so nothing is offloaded: it needs the handshake\'s key (README, "Backups").'
@@ -725,7 +725,7 @@ function render(s){
       + (sum(off.away) ? `Offloaded to it: <b>${amount(sum(off.away))}</b> (${kinds(off.away)}). ` : 'Nothing is offloaded to it. ')
       + (sum(off.marked) ? `Marked to go once a manifest from it shows it holds them: ${amount(sum(off.marked))} (${kinds(off.marked)})${off.confirmed ? `, ${off.confirmed} shown so` : ''}. ` : '')
       + (off.wanted ? `<span class="warn">${off.wanted} asked back by jobs that need them, which its next run sends.</span> ` : '')
-      + 'It goes: photos the filter rejected (after 3 days), videos once their climbs are meshed and beta found, photos of climbs meshed 2 weeks ago or skipped a month ago, then older meshes\' files; and the web cache\'s month-old pages.';
+      + 'It goes: photos the filter rejected (after 3 days), videos once their climbs are meshed and beta found, photos of climbs meshed 2 weeks ago or skipped a month ago, the features kept by meshes made 2 weeks ago (for adding photos to them), then older meshes\' files; and the web cache\'s month-old pages.';
   $('#room-warn-note').innerHTML = u.warn_at === undefined ? 'With a cap, and notifications on (below), your phone is told when the room left under it is less than this, and when it\'s reached.'
     : `Told when less than <b>${amount(u.warn_at)}</b> is left${u.warn_climbs ? `, about ${worth(u.warn_climbs)} at their average (a climb's data and a mesh)` : ''}; `
       + `${amount(Math.max(0, u.left))} is left now${u.climbs ? `, about ${worth(Math.max(0, u.climbs))}` : ''}. Needs notifications on (below).`;

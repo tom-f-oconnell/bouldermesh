@@ -528,13 +528,16 @@ both placings and whether the CPU's did better (`"better"`). A round of VGGT's p
 failure leaves the round before's model for the model's check to judge, and what the failed round started from is kept
 beside the mesh as `vggt-failed-round*.tar.gz`.
 
-**Which mapper places the cameras.** COLMAP 4.2.1's global mapper, built into the image as `colmap4`, places them by
-default: on the mapper benchmark's boulders it was 6-14 times faster than 3.9.1's incremental mapper. It solves on the
-GPU where one has 1 GB free (it's built with CUDA and cuDSS, as the benchmark's was), and on the CPU otherwise or if the
-GPU run fails; the job's log and `mapper.json` say which, and how many of its solves ran on each. COLMAP 3.9.1 still
-does everything else. `MAPPER=incremental` goes back to 3.9.1's mapper, which is also what runs whenever the global
-mapper can't be used, fails, or places fewer than 6 photos. Each mesh has a `mapper.json` beside it saying which mapper
-placed its cameras, and why.
+**Which COLMAP, and which mapper.** COLMAP 4.2.1 (`colmap4` in the image) does every step since pipeline version 2:
+features (GPU SIFT, the CPU's SIFT as its fallback; photos GPU SIFT leaves out without failing, as a GPU out of memory
+does, are tried again on it twice before the CPU's is used), matching, the mappers, the rest step, levelling and
+undistorting. The image's COLMAP 3.9.1 is no longer used. COLMAP's incremental mapper places the cameras by default;
+the global mapper (6-14 times faster on the benchmark's boulders, but it misplaced groups of cameras on a third of the
+site's meshes) is the admin page's other choice, or `MAPPER=global`, with the incremental mapper whenever it can't be
+used, fails, or places fewer than 6 photos. Each mesh has a `mapper.json` beside it saying which mapper placed its
+cameras, and why, and since version 2 keeps its photos' features (`features.db.gz`, about 1.2 MB a photo: GPU SIFT
+doesn't give the same ones again), for adding photos to its model later; meshes made 2 weeks ago have theirs
+offloaded first when room is needed.
 [design.md](design.md#the-global-mapper-backendpipelinepy-mapper) has the measurements, and what isn't known yet.
 [benchmarking.md](benchmarking.md) keeps what's been measured about making a mesh faster without making it worse, what
 was decided from it, and what to try next.

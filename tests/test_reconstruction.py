@@ -49,10 +49,10 @@ with tempfile.TemporaryDirectory() as td:
     database(td / "database.db")
     said = []
     cmd = ["colmap", "feature_extractor", "--database_path", str(td / "database.db"), "--image_path", str(td / "photos"),
-           "--ImageReader.single_camera", "0", "--ImageReader.mask_path", str(td / "masks"), "--SiftExtraction.max_image_size", "2400"]
+           "--ImageReader.single_camera", "0", "--ImageReader.mask_path", str(td / "masks"), "--FeatureExtraction.max_image_size", "2400"]
     args = reconstruction.extract_args(cmd)
     assert args == ["--database_path", "<database>", "--image_path", "<photos>", "--ImageReader.single_camera", "0",
-                    "--ImageReader.mask_path", "<masks>", "--SiftExtraction.max_image_size", "2400"], args
+                    "--ImageReader.mask_path", "<masks>", "--FeatureExtraction.max_image_size", "2400"], args
 
     kept = reconstruction.keep(model, td / "database.db", out, said.append, "COLMAP 3.9.1 (Commit x with CUDA)", {"args": args, "device": "cpu"},
                                {"mapper": "global", "untied": ["3.jpg"]})
@@ -86,4 +86,27 @@ with tempfile.TemporaryDirectory() as td:
     assert reconstruction.keep(td / "text", td / "database.db", td / "out3", said.append) is None
     assert reconstruction.unpack(td / "out3", td / "back3") is None, "a mesh that kept none"
     print("reconstruction kept OK")
+
+    # the features, kept apart; and the database put back together from them and the kept pairs
+    said.clear()
+    feats = reconstruction.keep_features(td / "database.db", out, said.append)
+    assert feats == out / reconstruction.FEATURES_FILE and "features: kept" in said[-1], said
+    assert not (td / "features.db").exists() and not list(out.glob("*.partial")), "nothing left behind"
+    whole = reconstruction.full_database(out, back, td / "whole.db")
+    c = sqlite3.connect(whole)
+    count = lambda t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]  # noqa: E731
+    assert [count(t) for t in ("images", "cameras", "keypoints", "descriptors", "two_view_geometries")] == [2, 1, 2, 2, 1]
+    assert count("matches") == 0, "raw matches stay left out"
+    a = sqlite3.connect(td / "database.db")
+    assert c.execute("SELECT data FROM descriptors WHERE image_id=2").fetchone() == a.execute("SELECT data FROM descriptors WHERE image_id=2").fetchone()
+    assert c.execute("SELECT data FROM two_view_geometries").fetchone() == a.execute("SELECT data FROM two_view_geometries").fetchone()
+    a.close()
+    c.close()
+    try:
+        reconstruction.full_database(td / "out3", back, td / "w2.db")
+        raise AssertionError("a mesh that kept no features")
+    except FileNotFoundError:
+        pass
+    assert reconstruction.keep_features(td / "none.db", out, said.append) is None
+    print("features kept OK")
 print("ALL RECONSTRUCTION TESTS PASSED")

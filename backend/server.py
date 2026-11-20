@@ -5955,11 +5955,12 @@ def check_room() -> None:
 # deleted, oldest first in each kind, in this order, down to that %: photos the filter rejected (after REJECTED_DAYS);
 # fetched videos, once every climb they're of has been meshed (or skipped, or failed) and beta has been found in it, in each of
 # its meshes; the photos and people masks of climbs and boulders meshed MESHED_DAYS ago, or skipped SKIPPED_DAYS ago,
-# none of whose boulder's climbs are still to be harvested or meshed; and the big files of older versions of meshes
-# replaced MESHED_DAYS ago. The web cache's pages older than CACHE_DAYS go too, without the backup (it keeps none).
+# none of whose boulder's climbs are still to be harvested or meshed; the features meshes made MESHED_DAYS ago keep for
+# adding photos to them; and the big files of older versions of meshes replaced MESHED_DAYS ago. The web cache's pages
+# older than CACHE_DAYS go too, without the backup (it keeps none).
 REJECTED_DAYS, MESHED_DAYS, SKIPPED_DAYS, CACHE_DAYS = 3, 14, 30, 30
 MESH_FILE_MIN = 2**20     # an older mesh's files this big or bigger (its mesh and textures, not its small records)
-OFFLOAD_KINDS = ("rejected photos", "videos", "photos", "older meshes")
+OFFLOAD_KINDS = ("rejected photos", "videos", "photos", "features", "older meshes")
 
 
 class PhotosAway(compute.ComputeUnavailable):
@@ -6162,6 +6163,11 @@ def offload_candidates() -> list[tuple[str, str, str]]:
                 d = PROJECTS / p["id"] / part
                 if d.is_dir() and any(d.iterdir()):
                     out.append((f"projects/{p['id']}/{part}", "photos", p["id"]))
+    # the features meshes keep for adding photos to them (reconstruction.FEATURES_FILE), of meshes made a while ago:
+    # asked back when photos are added
+    for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL AND created < ? ORDER BY created", now - MESHED_DAYS * 86400):
+        if (MESHES / m["id"] / reconstruction.FEATURES_FILE).is_file():
+            out.append((f"meshes/{m['id']}/{reconstruction.FEATURES_FILE}", "features", m["id"]))
     # older versions of meshes, replaced a while ago: their big files
     for m in q("SELECT m.id FROM meshes m JOIN meshes n ON n.id=m.replaced_by WHERE n.created < ? ORDER BY m.created",
                now - MESHED_DAYS * 86400):
