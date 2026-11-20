@@ -66,7 +66,9 @@ one it missed; *Colour: narrower* / *wider* change how near a colour has to be. 
 of yours named after the colour ("Yellow climb (gym)"). *Found by: colour* goes by colour alone, so holds the colour
 of the wall behind them aren't found; *Found by: model* first has a small model (experiments/holds) say which pixels
 are holds, which leaves out painted walls and clutter, and finds a blue hold on a blue wall. Climbs marked with tape,
-and holds two climbs share, aren't told apart either way.
+and holds two climbs share, aren't told apart either way. Before it's uploaded, *Check its holds* lists every hold found,
+each with where it came from (colour or model, in how many photos) and a piece of the photo it's clearest in, ringed:
+untick any that isn't the climb's. Upload stays off until they've been looked over.
 
 *Mark a hold* (with or without a mesh): tap a hold on the rock, and it's asked for close up. Once the capture is meshed,
 the holds you marked are on the mesh as a set of beta of yours, *Marked on the phone* (each a hand hold: change the

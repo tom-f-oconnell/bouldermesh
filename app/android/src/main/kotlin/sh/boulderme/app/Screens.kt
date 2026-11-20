@@ -50,6 +50,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import sh.boulderme.core.HoldReview
 import sh.boulderme.core.CaptureGuide
 import sh.boulderme.core.GpsAverager
 import androidx.compose.foundation.layout.PaddingValues
@@ -134,6 +135,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
     var tick by remember { mutableIntStateOf(0) }       // bumped to read the store again
     val plans = remember(tick) { a.store.downloaded() }
     val captures = remember(tick) { a.store.captureIds().mapNotNull { id -> a.store.upload(id)?.let { id to it } } }
+    val unchecked = remember(captures) { captures.associate { (id, u) -> id to (!u.recordSent && captureRecord(a, id)?.let { HoldReview.unchecked(it).isNotEmpty() } == true) } }
     val sending by Uploader.state.collectAsState()
     var naming by remember { mutableStateOf(false) }
     var gym by remember { mutableStateOf(false) }      // what's being named is a gym climb
@@ -257,7 +259,8 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                     if (server?.area?.ask == true) Text("Which area is it in? Open it to say", style = MaterialTheme.typography.bodySmall, color = WAIT)
                     if (server?.meshed != null) Text(VIEW_HINT, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (!u.done) Button(enabled = !Uploader.busy(id), onClick = { Uploader.start(a.store, a.api, id) }) { Text(if (u.sent.isEmpty()) "Upload" else "Carry on") }
+                        if (!u.done && !u.recordSent && unchecked[id] == true) Button(onClick = { go(Screen.Holds(id)) }) { Text("Check its holds") }
+                        else if (!u.done) Button(enabled = !Uploader.busy(id), onClick = { Uploader.start(a.store, a.api, id) }) { Text(if (u.sent.isEmpty()) "Upload" else "Carry on") }
                         TextButton(enabled = !Uploader.busy(id), onClick = { removing = id }) { Text("Delete") }
                     }
                 }
@@ -687,7 +690,14 @@ fun DoneScreen(a: MainActivity, id: String, go: (Screen) -> Unit) {
         val status = sending[id]
         if (status != null) Text(status, color = if (u.done) GOOD else if (status.startsWith("Stopped")) BAD else if (status == Uploader.WAITING) WAIT else Color.Unspecified)
         if (Uploader.busy(id)) LinearProgressIndicator(progress = { if (u.photos > 0) u.sent.size.toFloat() / u.photos else 0f }, modifier = Modifier.fillMaxWidth())
-        if (!u.done) Button(enabled = !Uploader.busy(id) && u.photos >= 3, onClick = { Uploader.start(a.store, a.api, id) }) { Text(if (u.sent.isEmpty()) "Upload now" else "Carry on uploading") }
+        val record = remember(id, sending) { captureRecord(a, id) }
+        val unchecked = if (u.recordSent || record == null) 0 else HoldReview.unchecked(record).size
+        if (record != null && !u.recordSent) HoldReview.said(record)?.let { said ->
+            Text(said)
+            if (unchecked > 0) Text("Check the ones the app found before uploading: they're only its guesses.", color = WARN)
+            OutlinedButton(onClick = { go(Screen.Holds(id)) }) { Text(if (unchecked > 0) "Check its holds" else "Look at its holds again") }
+        }
+        if (!u.done) Button(enabled = !Uploader.busy(id) && u.photos >= 3 && unchecked == 0, onClick = { Uploader.start(a.store, a.api, id) }) { Text(if (u.sent.isEmpty()) "Upload now" else "Carry on uploading") }
         Text("Uploading publishes them under CC BY 4.0, credited to ${a.store.credit.ifBlank { "nobody by name (set one in Settings)" }}.", style = MaterialTheme.typography.bodySmall)
         if (a.store.token.isEmpty()) Text("Uploading needs the site's editing token: see Settings.", color = WARN)
         ReopenButton(a, id, u, go)

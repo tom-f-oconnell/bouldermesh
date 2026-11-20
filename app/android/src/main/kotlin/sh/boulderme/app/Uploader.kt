@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
+import sh.boulderme.core.HoldReview
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
@@ -51,6 +52,8 @@ object Uploader {
                 val photos = (File(dir, "photos").listFiles() ?: emptyArray()).filter { it.name.endsWith(".jpg") }.sortedBy { it.name }
                 if (photos.size < 3) throw IOException("a mesh needs at least 3 photos")
                 if (store.token.isEmpty()) throw IOException("the server's editing token isn't set (Settings)")
+                if (!u.recordSent && HoldReview.parse(File(dir, "capture.json").readText())?.let { HoldReview.unchecked(it).isNotEmpty() } == true)
+                    throw IOException("check the holds the app found first (Check its holds)")
                 var project = u.project
                 if (project == null) {
                     say(id, "Starting…")

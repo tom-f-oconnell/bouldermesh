@@ -51,6 +51,8 @@ sealed interface Screen {
                        val reopen: String? = null,                                         // a capture finished earlier, to carry on (Reopen)
                        val gym: Boolean = false) : Screen                                  // a gym climb, its holds found by their colour
     data class Done(val id: String) : Screen
+    /** Before uploading: the holds the app found by itself, to keep or leave out (HoldReview). */
+    data class Holds(val id: String) : Screen
     /** A capture on this phone: what it holds, by what each part was for; and one of its photos (or scenery's frames). */
     data class Upload(val id: String) : Screen
     data class Photo(val id: String, val name: String, val scenery: Boolean, val group: String) : Screen
@@ -61,6 +63,7 @@ sealed interface Screen {
 /** Where Back goes from a screen. */
 fun backOf(s: Screen): Screen = when (s) {
     is Screen.Photo -> Screen.Upload(s.id)
+    is Screen.Holds -> Screen.Done(s.id)
     is Screen.Viewer -> s.back
     else -> Screen.Home
 }
@@ -112,6 +115,7 @@ class MainActivity : ComponentActivity() {
                                 Screen.SignIn -> SignInScreen(this@MainActivity, go)
                                 Screen.Calibrate -> CalibrateScreen(this@MainActivity, go)
                                 is Screen.Done -> DoneScreen(this@MainActivity, s.id, go)
+                                is Screen.Holds -> HoldsScreen(this@MainActivity, s.id, go)
                                 is Screen.Upload -> UploadScreen(this@MainActivity, s.id, go)
                                 is Screen.Photo -> PhotoScreen(this@MainActivity, s, go)
                                 is Screen.Viewer -> ViewerScreen(this@MainActivity, s, go)

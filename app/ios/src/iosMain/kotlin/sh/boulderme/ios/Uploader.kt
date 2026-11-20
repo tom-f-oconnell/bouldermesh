@@ -1,5 +1,7 @@
 package sh.boulderme.ios
 
+import sh.boulderme.core.HoldReview
+
 /**
  * Sends captures to the server: a project of its own for each, its photos one at a time, then its record, then asks for
  * it to be meshed. What's been sent is written down as it goes, so that one cut off carries on from there when asked
@@ -32,6 +34,8 @@ class Uploader(private val store: IosStore, private val api: IosApi) {
         if (u == null) return stop(id, "this capture's record is missing")
         if (store.photos(id).size < 3) return stop(id, "a mesh needs at least 3 photos")
         if (store.token.isEmpty()) return stop(id, "the server's editing token isn't set (Settings)")
+        if (!u.recordSent && HoldReview.parse(Files.readText("${store.captureDir(id)}/capture.json"))?.let { HoldReview.unchecked(it).isNotEmpty() } == true)
+            return stop(id, "check the holds the app found first (Check its holds)")
         if (u.project != null) return next(id)
         say(id, "Starting…")
         wifi(id) { api.acceptTerms { api.createProject(u.name) { project, why ->

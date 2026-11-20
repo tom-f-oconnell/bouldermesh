@@ -100,12 +100,13 @@ data class SceneryShot(val name: String, val kind: String, val t: Double, val ar
 /** A whole capture, as sent to the server beside its photos (POST /api/projects/<id>/capture). */
 @Serializable
 data class CaptureRecord(
-    val v: Int = 7,                         // 2: plan, level, down_agree_deg; `ar.s` changes when tracking was lost and came back; accel_bias gone
+    val v: Int = 8,                         // 2: plan, level, down_agree_deg; `ar.s` changes when tracking was lost and came back; accel_bias gone
                                             // 3: detail, licence, credit; a photo's ref, still, ar.span
                                             // 4: scenery
                                             // 5: marked
                                             // 6: levels (each turn on the spot, with its spell) in place of level
                                             // 7: gym
+                                            // 8: checked
     val id: String,
     val app: String,
     val device: String,
@@ -130,6 +131,7 @@ data class CaptureRecord(
     val scenery: List<SceneryShot> = emptyList(),   // frames of what's around the rock, for the site's backdrop
     val marked: List<RecordMarked> = emptyList(),   // holds marked on the phone, to add to the mesh as a set of beta
     val gym: RecordGym? = null,             // a gym climb's, found by their colour: its holds are in marked too
+    val checked: List<String> = emptyList(),    // holds of marked the app found (not tapped), kept by the uploader looking them over (HoldReview)
 ) {
     fun json(): String = Plan.json.encodeToString(serializer(), this)
 }

@@ -35,6 +35,7 @@ import sh.boulderme.core.MagCalibration
 import sh.boulderme.core.MeshRow
 import sh.boulderme.core.Plan
 import sh.boulderme.core.Reopen
+import sh.boulderme.core.HoldReview
 import sh.boulderme.core.UploadState
 import sh.boulderme.core.UploadStatus
 
@@ -219,7 +220,9 @@ class Home(private val app: App) : Form("boulderme.sh") {
                 screen.confirm("Delete this capture?", if (u.done) "Its photos are on the server; this takes them off the phone." else "Its ${u.photos} photos haven't all been sent, and can't be got back.",
                     "Delete", "Keep", danger = true) { app.store.deleteCapture(id); rebuild() }
             }
-            val send = if (u.done) null else makeButton(if (u.sent.isEmpty()) "Upload" else "Carry on", Look.FILLED, !busy) { app.uploader.start(id); rebuild() }
+            val unchecked = !u.done && !u.recordSent && captureRecord(app, id)?.let { HoldReview.unchecked(it).isNotEmpty() } == true
+            val send = if (u.done) null else if (unchecked) makeButton("Check its holds", Look.FILLED) { push(HoldsForm(app, id)) }
+                else makeButton(if (u.sent.isEmpty()) "Upload" else "Carry on", Look.FILLED, !busy) { app.uploader.start(id); rebuild() }
             row(*listOfNotNull(send, delete).toTypedArray())
         }
 
@@ -477,7 +480,14 @@ class Done(private val app: App, private val id: String) : Form("Captured") {
         if (u.photos < 3) text("That's too few to mesh.", BAD)
         app.uploader.state[id]?.let { text(it, if (u.done) GOOD else if (it.startsWith("Stopped")) BAD else if (it == Uploader.WAITING) WAIT else null) }
         if (busy) progress(if (u.photos > 0) u.sent.size.toDouble() / u.photos else 0.0)
-        if (!u.done) button(if (u.sent.isEmpty()) "Upload now" else "Carry on uploading", Look.FILLED, !busy && u.photos >= 3) { app.uploader.start(id); rebuild() }
+        val record = if (u.recordSent) null else captureRecord(app, id)
+        val unchecked = record?.let { HoldReview.unchecked(it).size } ?: 0
+        record?.let { HoldReview.said(it) }?.let { said ->
+            text(said)
+            if (unchecked > 0) text("Check the ones the app found before uploading: they're only its guesses.", WARN)
+            button(if (unchecked > 0) "Check its holds" else "Look at its holds again", if (unchecked > 0) Look.FILLED else Look.TINTED) { push(HoldsForm(app, id)) }
+        }
+        if (!u.done) button(if (u.sent.isEmpty()) "Upload now" else "Carry on uploading", Look.FILLED, !busy && u.photos >= 3 && unchecked == 0) { app.uploader.start(id); rebuild() }
         text("Uploading publishes them under CC BY 4.0, credited to ${app.store.credit.ifBlank { "nobody by name (set one in Settings)" }}.")
         if (app.store.token.isEmpty()) text("Uploading needs the site's editing token: see Settings.", WARN)
         text(if (u.done) "It's on the server." else "It stays on the phone until it's sent: go back to carry on later.", UIColor.secondaryLabelColor, small = true)

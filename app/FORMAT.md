@@ -116,7 +116,7 @@ last before) and `k_src: "derived"` (its lens was worked out from the tracking c
 
 **The record** (`capture.json`, kept whole in the project):
 
-    v, id, app, device, started, ended     v is 6 (1: no plan, level or down_agree_deg; one `ar.s` whatever happened; 2: no detail, licence or credit; 4: no marked; 5: `level`, not `levels`)
+    v, id, app, device, started, ended     v is 8 (1: no plan, level or down_agree_deg; one `ar.s` whatever happened; 2: no detail, licence or credit; 4: no marked; 5: `level`, not `levels`)
     plan                  {key, made, guide}: the plan the capture went by, and its guide's sha1
     mesh, climbs          the mesh it adds to (none: a rock with no mesh), and the climbs it was kept to, if any
     mode                  "plan" or "orbit"
@@ -158,6 +158,9 @@ last before) and `k_src: "derived"` (its lens was worked out from the tracking c
                           or a hold-finding model's counted, the CIELAB colour of each hold tapped as being of it, the holds
                           found (in the tracking's world, as marked's; picked if tapped; photos: how many found it), and
                           how many patches each finder found in all its photos
+    checked               [id] (v 8): holds of marked the app found by itself (a gym climb's, not tapped), each looked over
+                          and kept by the uploader on the phone before sending. Those left out are gone from marked and
+                          gym's holds; a capture with found holds not in checked isn't sent
 
 **The points** (`points.bin`, kept in the project as `capture-points.bin`): what the phone's tracking found of the world,
 one to each 5 cm, 20,000 at most to a spell. Noisy to a centimetre or so, except from a lidar.

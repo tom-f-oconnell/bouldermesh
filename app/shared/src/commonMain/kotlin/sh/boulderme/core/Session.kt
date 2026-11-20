@@ -494,6 +494,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
             marked = marked.map { h -> RecordMarked(h.id, spellName(h.spell), h.world.toList(), h.mesh?.toList()) } +
                 (gym?.let { g -> g.holds.map { RecordMarked(it.id, spellName(g.spell), it.p.toList()) } } ?: emptyList()),
             gym = gym?.record(),
+            checked = earlier?.checked.orEmpty(),
         )
     }
 
