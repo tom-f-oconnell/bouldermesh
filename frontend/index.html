@@ -357,7 +357,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   #ratemenu{display:flex;flex-direction:column;gap:6px;width:min(300px,calc(100vw - 48px));padding:8px;border-radius:8px;
     background:var(--overlay);border:1px solid var(--line);box-shadow:0 4px 16px rgba(0,0,0,.3);font-size:12px}
   #ratemenu .seg{margin-left:0;align-self:flex-start} #ratemenu .seg button{padding:4px 12px}
-  #ratemenu .ratefoot{display:flex;justify-content:space-between;gap:8px} #ratestate{text-align:right}
+  #ratemenu .ratefoot{display:flex;justify-content:space-between;gap:8px} #ratestate{text-align:right} #ratehide{align-self:flex-start} #ratehide[hidden]{display:none}
   #ratecomment{width:100%;box-sizing:border-box;resize:none;overflow-y:auto;min-height:32px;font:inherit;font-size:13px}
   #ratebtn.r1,#rateseg button.on[data-r="1"]{color:var(--bad)} #ratebtn.r3,#rateseg button.on[data-r="3"]{color:var(--ok)}
   #ratebtn[aria-expanded=true]{background:var(--line)} #ratebtn .fold{font-size:10px;margin-left:5px;opacity:.8}
@@ -762,6 +762,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
           <span class="seg" id="rateseg" title="How good this mesh is. Click your choice again to take it back."><button data-r="1">Bad</button><button data-r="2">OK</button><button data-r="3">Good</button></span>
           <textarea id="ratecomment" rows="1" maxlength="2000" placeholder="A comment on this mesh (optional)" aria-label="A comment on this mesh"></textarea>
           <div class="meta ratefoot"><span id="rateavg" title="Everyone's ratings, on average: bad 1, OK 2, good 3"></span><span id="ratestate"></span></div>
+          <button class="sm sec" id="ratehide" hidden></button>
         </div>
         <button class="sm sec" id="ratebtn" title="Rate this mesh: bad, OK or good, with a comment if you like. Kept in this browser, and sent to the site. Click again to fold the box away." aria-expanded="false">Rate</button>
       </div>
@@ -4548,6 +4549,14 @@ function showRate(changed = false){
   $('#rateseg').querySelectorAll('button').forEach(b => b.classList.toggle('on', +b.dataset.r === r));
   const t = $('#ratecomment');
   if (document.activeElement !== t) { t.value = myRatings[id]?.comment || ''; if (!menu.hidden) growComment(); }
+  const m = meshesById[id], h = $('#ratehide');
+  h.hidden = !(editor && m);
+  if (!h.hidden) {
+    h.textContent = m.hidden ? 'Show to visitors' : 'Hide as a failure';
+    h.title = m.hidden ? `Hidden as: ${m.hidden}. Shows it to visitors again, and its climbs this failed as meshed again`
+      : 'Hides it from visitors (editors still see it) and fails its climbs in their areas, so that Retry failed meshes them again. Your comment above is the reason it starts with.';
+    h.onclick = () => { flushRating(); hideAsFailure(m); };
+  }
   if (changed) { showAvg(meshesById[id]?.rating); $('#ratestate').textContent = ''; }
 }
 function flushRating(){ if (ratePending) sendRating(ratePending); }
@@ -4583,6 +4592,15 @@ const climbListsOpen = new Set();
 // a mesh card's download button: an arrow down onto a tray
 const DOWNLOAD_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8.5M4.25 7 8 10.75 11.75 7M2.5 11v2.5h11V11"/></svg>';
 // the list as fetched, sorted and filtered; with filter false, the filter's own controls aren't drawn again (a slider being moved)
+// hidden from visitors as a failure, or shown again: from its card, or the viewer's Rate box
+async function hideAsFailure(m){
+  // what you said rating it, if you did (a bad rating, as a rule), else the usual reason, to edit
+  const said = (myRatings[m.id]?.comment || '').trim();
+  const why = m.hidden ? null : prompt('Why is it a failure?', said || 'a photo on a card, not a rock');
+  if (!m.hidden && !why) return;
+  await api(`/api/meshes/${m.id}/hide`, { method: 'POST', json: { why } }); await refreshMeshes(); refreshClimbs(); showRate();
+}
+let pinnedMesh = null;    // the mesh in the viewer, its card kept first in the Meshes tab
 function renderMeshes(filter = true){
   const el = $('#meshes'); el.innerHTML = meshesCache.length ? '' : '<div class="status">No meshes yet.</div>';
   const older = meshesCache.filter(m => m.replaced_by).length;
@@ -4595,6 +4613,8 @@ function renderMeshes(filter = true){
   const key = meshView.sort, sign = meshView.desc ? -1 : 1;
   shown.sort((a, b) => { const x = meshMetric(a, key), y = meshMetric(b, key); return (x == null) - (y == null) || sign * ((x ?? 0) - (y ?? 0)); });
   const narrowed = shown.length < all.length;
+  pinnedMesh = shownMesh && meshesById[shownMesh] ? shownMesh : null;
+  if (pinnedMesh) { const i = shown.findIndex(m => m.id === pinnedMesh); shown.unshift(i >= 0 ? shown.splice(i, 1)[0] : meshesById[pinnedMesh]); }
   $('#m-filter-note').textContent = narrowed ? `(showing ${shown.length} of ${all.length})` : '';
   // each mesh once, however many climbs link to it; a boulder's own mesh and its climbs' own are each one
   $('#m-count').textContent = meshesCache.length ? `(${narrowed ? `${shown.length} shown of ` : ''}${meshesCache.length - older}${$('#m-older').checked && older ? `, and ${older} older` : ''})` : '';
@@ -4609,7 +4629,7 @@ function renderMeshes(filter = true){
     const chips = (m.boulder_climbs || []).map(c => `<span class="chip" data-from="${c.id}" title="${c.view ? `Look at it from where ${esc(c.name)}'s own photos were taken (${plural(c.view.photos, 'photo')})` : `None of ${esc(c.name)}'s own photos were placed in it: opens the climb`}">${c.view ? '👁 ' : ''}${esc(named(c, true))}</span>`).join('')
       + m.climbs.filter(c => editor || (c !== sole && !pooledIds.has(c.id))).map(c=>`<span class="chip${c.shared ? ' shared' : ''}" data-climb="${c.id}" ${c.shared ? 'title="Linked by an area as on the same boulder as the climb this was made for: it may not show this climb\'s side"' : ''}>${esc(named(c, true))}${c.shared ? ' <small>same boulder</small>' : ''} <span class="unlink" data-unlink="${c.id}" title="unlink">✕</span></span>`).join('');
     const n = new Set([...pooledIds, ...m.climbs.map(c => c.id)]).size;
-    d.innerHTML = `${m.thumb ? `<img class="mthumb" loading="lazy" alt="" src="/meshes/${m.id}/thumb.small.jpg?v=${m.thumb.v}" title="View it">` : ''}<div class="grow"><span class="name">${meshNameHtml(m)}</span>${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${m.hidden ? `<span class="tag" style="color:var(--bad)" title="Hidden from visitors as a failure: ${esc(m.hidden)}">hidden: failed</span>` : ''}${m.awaits_approval ? '<span class="tag" title="Made from what an account added, which hasn\'t been approved yet: only that account and the site\'s owner see it">waiting to be approved</span>' : ''}${editor && m.old ? '<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</span>' : ''}${editor && m.old_data && !m.old ? `<span class="tag" title="A newer mesh, made under the same rules from photos this one lacked, is of every climb this one is of: kept, but left out of visitors' lists of a boulder's meshes">old (data)</span>` : ''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
+    d.innerHTML = `${m.thumb ? `<img class="mthumb" loading="lazy" alt="" src="/meshes/${m.id}/thumb.small.jpg?v=${m.thumb.v}" title="View it">` : ''}<div class="grow"><span class="name">${meshNameHtml(m)}</span>${m.id === pinnedMesh ? '<span class="tag" title="The mesh in the viewer: kept first in this list, whatever the sort and filter">showing</span>' : ''}${m.demo?'<span class="tag">demo</span>':''}${m.replaced_by?'<span class="tag">older version</span>':''}${m.hidden ? `<span class="tag" style="color:var(--bad)" title="Hidden from visitors as a failure: ${esc(m.hidden)}">hidden: failed</span>` : ''}${m.awaits_approval ? '<span class="tag" title="Made from what an account added, which hasn\'t been approved yet: only that account and the site\'s owner see it">waiting to be approved</span>' : ''}${editor && m.old ? '<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</span>' : ''}${editor && m.old_data && !m.old ? `<span class="tag" title="A newer mesh, made under the same rules from photos this one lacked, is of every climb this one is of: kept, but left out of visitors' lists of a boulder's meshes">old (data)</span>` : ''}${pooledTags(m)}${ratingTags(m)}${m.texture === 'hidden' ? '<span class="tag" title="Hidden on the admin page, as not all its photos are clearly free to copy">texture hidden</span>' : m.texture === 'permitted' ? '<span class="tag" title="Made from only its photos that are clearly free to copy">open-photo texture</span>' : ''}<br><small>${esc(m.filename)} · ${fmtSize(m.size)} · ${m.source==='upload'?'uploaded':'reconstructed'} ${fmtWhen(m.created)} · 📍 ${fmtLL(m.lat,m.lng)}${m.cleanup?.hidden ? ` · ${m.cleanup.hidden} stray piece${m.cleanup.hidden === 1 ? '' : 's'} hidden` : ''}${m.orientation ? ` · ${downSummary(m.orientation)}` : ''}</small>
         <div class="chips">${several ? `<details class="mclimbs"${climbListsOpen.has(m.id) ? ' open' : ''}><summary>${plural(n, 'climb')}</summary><div class="chips">${chips}</div></details>` : chips}
           ${editor ? '<select class="linksel" style="width:auto;padding:1px 6px;font-size:11px"><option value="">+ link climb…</option></select>' : ''}</div></div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px">
@@ -4630,13 +4650,7 @@ function renderMeshes(filter = true){
       const b = document.createElement('button'); b.className = 'sm sec w'; b.textContent = m.hidden ? 'Show to visitors' : 'Hide as a failure';
       b.title = m.hidden ? `Hidden as: ${m.hidden}. Shows it to visitors again, and its climbs this failed as meshed again`
         : 'Hides it from visitors (editors still see it) and fails its climbs in their areas, so that Retry failed meshes them again';
-      b.onclick = async () => {
-        // what you said rating it, if you did (a bad rating, as a rule), else the usual reason, to edit
-        const said = (myRatings[m.id]?.comment || '').trim();
-        const why = m.hidden ? null : prompt('Why is it a failure?', said || 'a photo on a card, not a rock');
-        if (!m.hidden && !why) return;
-        await api(`/api/meshes/${m.id}/hide`, { method: 'POST', json: { why } }); await refreshMeshes(); refreshClimbs();
-      };
+      b.onclick = () => hideAsFailure(m);
       d.querySelector('.chips').before(b);
     }
     const tied = m.replaced_by ? [] : tiedMeshes(m);    // a capture's mesh and the one it adds to, beside each other
@@ -4900,6 +4914,7 @@ function shownClimbs(){
 // What shows which mesh is in view: on a phone, the Viewer button, with its climb under it (grey until there's one,
 // with Random blue meanwhile, as the way in), and the climbs' View buttons, the one shown blue
 function markShown(){
+  if ((shownMesh && meshesById[shownMesh] ? shownMesh : null) !== pinnedMesh && meshesCache.length) renderMeshes(false);
   const m = shownMesh && meshesById[shownMesh], has = !!m || !!localMesh, b = $('#tofull');
   const picked = m && viewedClimb && [...m.climbs, ...(m.boulder_climbs || []), ...climbsCache].find(c => c.id === viewedClimb);
   const name = picked ? named(picked) : $('#vname').textContent || m?.name || '';
