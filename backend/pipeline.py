@@ -1067,10 +1067,11 @@ def _said(summary: dict) -> str:
 
 def plain_sift_better(gpu: dict, cpu: dict) -> bool:
     """Whether the CPU's placing did better than the GPU's it replaced: its check passed where the GPU's failed, or it
-    placed more photos and its check didn't fail."""
+    placed more photos and its check didn't fail, or failed as the GPU's did (Nov 20: a GPU placing of 21 of 44 photos,
+    70 degrees off, was kept over the CPU's 44 of 44 as both failed)."""
     if cpu["ok"] and gpu["ok"] is False:
         return True
-    return cpu["placed"] > gpu["placed"] and cpu["ok"] is not False
+    return cpu["placed"] > gpu["placed"] and (cpu["ok"] is not False or gpu["ok"] is False)
 
 
 def _set_aside_placing(work: Path) -> None:

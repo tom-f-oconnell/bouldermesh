@@ -631,6 +631,8 @@ assert pipeline._plain_sift_short({"placed": 0, "matched": 50, "ok": False, "why
 B = pipeline.plain_sift_better
 assert B({"placed": 90, "ok": False}, {"placed": 80, "ok": True}) and B({"placed": 50, "ok": True}, {"placed": 60, "ok": None})
 assert not B({"placed": 90, "ok": True}, {"placed": 80, "ok": True}) and not B({"placed": 50, "ok": True}, {"placed": 60, "ok": False})
+assert B({"placed": 21, "ok": False}, {"placed": 44, "ok": False}), "both failing: the one placing more"
+assert not B({"placed": 44, "ok": False}, {"placed": 21, "ok": False})
 
 
 def sift_fallback(gpu_ok: bool, interrupt_cpu: bool = False, gpu_n: int = 12, cpu_n: int = 12):
