@@ -6722,7 +6722,7 @@ function pickWeighted(pool, rand = Math.random()){
 let lastRandom = null;
 async function randomMesh(){
   if (!meshesCache?.length) await refreshMeshes();
-  const current = (meshesCache || []).filter(m => !m.replaced_by && !m.demo);
+  const current = (meshesCache || []).filter(m => !m.replaced_by && !m.demo && !m.hidden);   // not those hidden as failures (an editor's list has them)
   if (!current.length) return toast('No meshes yet.');
   const m = pickWeighted(current.length > 1 ? current.filter(m => m.id !== lastRandom) : current);   // not the same one twice running
   lastRandom = m.id;
