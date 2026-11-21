@@ -44,6 +44,7 @@ import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Config
 import com.google.ar.core.Coordinates2d
 import com.google.ar.core.Session
+import kotlinx.serialization.json.put
 import sh.boulderme.core.Gym
 import sh.boulderme.core.HoldColour
 import sh.boulderme.core.HoldProbe
@@ -63,6 +64,13 @@ data class LiveUi(val boxes: List<LiveBox> = emptyList(), val rgb: Int? = null, 
  * again from the hold there. ARCore only shows the camera here: nothing is tracked, kept or sent.
  */
 class HoldLiveController(private val activity: MainActivity, private val onUi: (LiveUi) -> Unit) : GLSurfaceView.Renderer {
+    // what's kept, for looking at later (and again in HoldLab, as a source of photos): each tap's frame, as a JPEG, with
+    // what was found in it and how, in <files>/holdlive/<when it began>/
+    val dir: java.io.File = java.io.File(activity.filesDir, "holdlive/" + java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date()))
+    @Volatile private var saveNext = false
+    @Volatile var saved = 0
+        private set
+    fun saveFrame() { saveNext = true }
     @Volatile var finder = Gym.FINDER_COLOUR
     @Volatile var tolerance = 1.0
     @Volatile var margin = 0f
@@ -105,7 +113,8 @@ class HoldLiveController(private val activity: MainActivity, private val onUi: (
         val bg = background ?: return
         val frame = try { s.setCameraTextureName(bg.texture); s.setDisplayGeometry(activity.windowManager.defaultDisplay.rotation, width, height); s.update() } catch (e: Exception) { return }
         bg.draw(frame)
-        tap?.let { t -> tap = null; FloatArray(2).also { frame.transformCoordinates2d(Coordinates2d.VIEW, t, Coordinates2d.IMAGE_PIXELS, it) }.let { tapAt = doubleArrayOf(it[0].toDouble(), it[1].toDouble()) } }
+        tap?.let { t -> tap = null; FloatArray(2).also { frame.transformCoordinates2d(Coordinates2d.VIEW, t, Coordinates2d.IMAGE_PIXELS, it) }.let { tapAt = doubleArrayOf(it[0].toDouble(), it[1].toDouble()) }
+            saveNext = true; lastRun = 0L }     // each tap's frame is kept, and found again at once
         val now = System.currentTimeMillis()
         if (now - lastRun > 250 && busy.compareAndSet(false, true)) {
             lastRun = now
@@ -114,6 +123,7 @@ class HoldLiveController(private val activity: MainActivity, private val onUi: (
                 val w = image.width; val h = image.height
                 val nv21 = try { nv21(image) } finally { image.close() }
                 val at = tapAt; val f = finder; val tol = tolerance; val m = margin
+                val keep = saveNext.also { saveNext = false }
                 worker.execute {
                     try {
                         val began = System.currentTimeMillis()
@@ -121,6 +131,7 @@ class HoldLiveController(private val activity: MainActivity, private val onUi: (
                         val r = HoldProbe.run(p, model, f, at?.get(0), at?.get(1), tol, m)
                         found = r to p.step
                         lastMs = System.currentTimeMillis() - began
+                        if (keep) runCatching { keep(nv21, w, h, at, f, tol, m, r, p.step) }
                     } catch (_: Exception) {
                     } finally { busy.set(false) }
                 }
@@ -147,6 +158,27 @@ class HoldLiveController(private val activity: MainActivity, private val onUi: (
         activity.runOnUiThread { onUi(LiveUi(boxes, r.rgb, said, lastMs)) }
     }
     @Volatile private var lastMs = 0L
+
+    /** A frame kept: frame-N.jpg (the camera image, as it came), and frame-N.json with the tap, the settings and what was found. */
+    private fun keep(nv21: ByteArray, w: Int, h: Int, at: DoubleArray?, finder: String, tol: Double, margin: Float, r: HoldProbe.Result, step: Double) {
+        dir.mkdirs()
+        val n = ++saved
+        java.io.FileOutputStream(java.io.File(dir, "frame-$n.jpg")).use { android.graphics.YuvImage(nv21, android.graphics.ImageFormat.NV21, w, h, null).compressToJpeg(android.graphics.Rect(0, 0, w, h), 92, it) }
+        fun box(b: sh.boulderme.core.Blob) = kotlinx.serialization.json.buildJsonObject {
+            put("u", b.u); put("v", b.v); put("area_px", b.areaPx); put("box", kotlinx.serialization.json.JsonArray(listOf(b.x0, b.y0, b.x1, b.y1).map { kotlinx.serialization.json.JsonPrimitive(it) }))
+            put("lab", kotlinx.serialization.json.JsonArray(listOf(b.l, b.a, b.b).map { kotlinx.serialization.json.JsonPrimitive(it) })); put("ring_l", b.ringL); put("matched", b in r.matches); put("picked", b == r.picked)
+        }
+        val rec = kotlinx.serialization.json.buildJsonObject {
+            put("at", System.currentTimeMillis() / 1000.0); put("image", kotlinx.serialization.json.JsonArray(listOf(w, h).map { kotlinx.serialization.json.JsonPrimitive(it) }))
+            put("picture_step", step); put("finder", finder); put("tolerance", tol); put("margin", margin)
+            put("tap", at?.let { kotlinx.serialization.json.JsonArray(it.map { x -> kotlinx.serialization.json.JsonPrimitive(x) }) } ?: kotlinx.serialization.json.JsonNull)
+            put("colour_name", r.name); put("has_model", model != null)
+            put("colour", kotlinx.serialization.json.JsonArray(r.colour.map(::box)))
+            put("model", r.model?.let { kotlinx.serialization.json.JsonArray(it.map(::box)) } ?: kotlinx.serialization.json.JsonNull)
+            put("device", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}"); put("app", "${BuildInfo.VERSION} ${BuildInfo.COMMIT}")
+        }
+        java.io.File(dir, "frame-$n.json").writeText(rec.toString())
+    }
 
     private fun nv21(image: Image): ByteArray {
         val w = image.width; val h = image.height
@@ -212,7 +244,7 @@ fun HoldLiveScreen(a: MainActivity, go: (Screen) -> Unit) {
                 style = Stroke(if (b.picked) 7f else if (b.on) 4f else 1.5f))
         }
         Column(Modifier.align(Alignment.TopStart).safeDrawingPadding().padding(8.dp).background(Color(0x99000000)).padding(8.dp)) {
-            Text((failed ?: ui.said) + if (ui.ms > 0) " · ${ui.ms} ms" else "", color = Color.White)
+            Text((failed ?: ui.said) + (if (ui.ms > 0) " · ${ui.ms} ms" else "") + (if (controller.saved > 0) " · ${controller.saved} kept" else ""), color = Color.White)
         }
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().safeDrawingPadding().background(Color(0xAA000000)).padding(8.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -220,6 +252,7 @@ fun HoldLiveScreen(a: MainActivity, go: (Screen) -> Unit) {
                 FilterChip(selected = finder != Gym.FINDER_COLOUR, enabled = controller.hasModel, onClick = { finder = Gym.FINDER_MODEL; controller.finder = finder },
                     label = { Text(if (controller.hasModel) "Model (B)" else "No model here") })
                 TextButton(onClick = { controller.clearTap() }) { Text("Clear the tap") }
+                TextButton(onClick = { controller.saveFrame() }) { Text("Keep frame") }
                 TextButton(onClick = { go(Screen.HoldLab) }) { Text("Back") }
             }
             Text("Colour tolerance ×${HoldColour.TOLERANCES[tol]}", color = Color.White)

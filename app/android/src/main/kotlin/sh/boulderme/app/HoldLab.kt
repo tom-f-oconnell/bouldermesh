@@ -99,10 +99,13 @@ fun HoldLabScreen(a: MainActivity, go: (Screen) -> Unit) {
         if (c != null && file == null) {
             if (c.isEmpty()) {
                 val ids = remember { a.store.captureIds().filter { (File(a.store.captureDir(it), "photos").list()?.size ?: 0) > 0 } }
-                if (ids.isEmpty()) Text("No captures with photos on this phone.")
+                val live = remember { (File(a.filesDir, "holdlive").listFiles() ?: emptyArray()).filter { d -> d.list()?.any { it.endsWith(".jpg") } == true }.sortedByDescending { it.name } }
+                if (ids.isEmpty() && live.isEmpty()) Text("No captures with photos on this phone.")
                 for (id in ids) TextButton(onClick = { capture = id }) { Text("${a.store.upload(id)?.name ?: id} (${File(a.store.captureDir(id), "photos").list()?.size ?: 0} photos)") }
+                for (d in live) TextButton(onClick = { capture = "live:" + d.name }) { Text("Live frames kept ${d.name} (${d.list()?.count { it.endsWith(".jpg") } ?: 0})") }
             } else {
-                val photos = remember(c) { (File(a.store.captureDir(c), "photos").listFiles() ?: emptyArray()).filter { it.name.endsWith(".jpg") }.sortedBy { it.name } }
+                val folder = if (c.startsWith("live:")) File(a.filesDir, "holdlive/" + c.removePrefix("live:")) else File(a.store.captureDir(c), "photos")
+                val photos = remember(c) { (folder.listFiles() ?: emptyArray()).filter { it.name.endsWith(".jpg") }.sortedBy { it.name } }
                 TextButton(onClick = { capture = "" }) { Text("‹ Other captures") }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     for (f in photos.take(120)) Thumb(f) { file = f; tap = null; capture = null }
