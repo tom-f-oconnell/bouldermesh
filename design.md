@@ -1258,6 +1258,30 @@ The costs fall on volunteers: YouTube's terms forbid downloading except through 
 other addresses is plainly a way around its per-address limit, and a refused address gets the bot check for everyone on
 that network for hours. The script says so and asks them to agree before it starts.
 
+### Checking what volunteers send (`backend/storyboards.py`)
+
+A volunteer could send another video than the one asked for. The length check (`listed_duration()`) catches only a
+video of another length, and only when someone else has seen that video. So videos are also checked against their
+storyboards: the small frames YouTube's seek bar shows, grids of tiles every few seconds through the whole video.
+
+- **Where they come from.** They're served from i.ytimg.com, YouTube's image servers. yt-dlp lists them among a
+  video's formats, so the sending volunteer's script sends their addresses with the video at no extra cost. An
+  address only counts if it's i.ytimg.com's and names that video, so the sender can't choose the images.
+- **Who fetches them.** A trusted volunteer, never the server (whose one datacenter address fetching every storyboard
+  would make a pattern), never the sender, nor anyone at the sender's address. The smallest useful storyboard is
+  usually one image, so a check is one image request from a home address, as when someone scrubs a video's seek bar.
+- **When the sender's addresses don't work from another IP**, the checker asks YouTube's player for them itself
+  (`check_fresh`): one request, as for a video's details, taking a video's turn, but no download.
+- **Comparing.** The server keeps small grey frames of the video, stretched and letterboxed to the tiles' shape, and
+  matches each tile against the frames within its interval and a half of its time. The share of tiles that match
+  gives the verdict. A mismatch is told on the phone; nothing is held back or revoked on its own.
+- **How many.** All of untrusted volunteers' videos and a fifth of trusted ones' (admin page). Volunteers who had
+  sent 100 videos when this came in (Nov 20, 2026) were trusted from the start.
+
+Re-downloading a video from a trusted volunteer would check every frame, but costs a whole video's throttling and
+refusal risk, and couldn't be compared byte for byte anyway. What a storyboard misses, tampering shorter than its
+interval, has little to gain for meshing.
+
 ## Registering, and approving from a phone (`backend/registration.py`, `backend/notify.py`)
 
 Handing out tokens by hand doesn't scale past a few people, so the volunteer and worker scripts make their own token,

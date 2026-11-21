@@ -115,6 +115,11 @@ DEFAULTS = {
     "volunteers.provisional_work": True,
     "volunteers.provisional_per_hour": 3,
     "volunteers.provisional_per_day": 10,
+    # the share of volunteers' videos checked against YouTube's storyboards by a trusted volunteer (volunteers.RULES):
+    # of those not trusted, and of trusted ones; and whether a checker may ask YouTube's player for a storyboard itself
+    "volunteers.check_new": 1.0,
+    "volunteers.check_trusted": 0.2,
+    "volunteers.check_fresh": True,
     "machines.provisional_work": False,
     "registration.per_address_day": 5,     # registrations a day from one address, of each kind
     "registration.max_waiting": 30,        # provisional ones waiting at once, of each kind; more must wait
@@ -138,6 +143,7 @@ CHOICES = {"compute.provider": ("none", "ssh", "aws", "pull"), "site.textures": 
 LIMITS = {"users.quota_mb": (0, 1_000_000), "site.map_km": (0.05, 2000), "boulders.placed_percent": (0, 100), "beta.parallel": (1, 16), "viewer.preview_faces": (0, 5_000_000), "storage.cap_gb": (0, 100000), "storage.warn_percent": (0, 50), "storage.warn_gb": (0, 100000), "storage.offload_percent": (0, 100), "storage.stopped_days": (0, 365), "compute.local_workers": (0, 4), "compute.processing_cores": (1, os.cpu_count() or 1), "compute.remote_workers": (0, 16), "compute.idle_minutes": (1, 240),
           "compute.aws.volume_gb": (30, 2000), "volunteers.per_hour": (1, 15), "volunteers.per_day": (1, 200),
           "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 200),
+          "volunteers.check_new": (0, 1), "volunteers.check_trusted": (0, 1),
           "registration.per_address_day": (1, 100), "registration.max_waiting": (1, 1000),
           "videos.give_up_hours": (0.5, 240), "videos.hold_alert_hours": (0, 240)}
 for _key in ("site.textures", "site.sources", "youtube.via"):    # a public copy's starting points, from its .env

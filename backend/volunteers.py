@@ -6,7 +6,8 @@ and registers it here (registration.py): provisional until approved on the admin
 meanwhile given work only as the admin page's settings allow. A token made on the admin page works at once. It asks for work, fetches one video at a time from its own address, at least as cautiously as this server
 would, and sends each back in parts. Work names a video only by its YouTube id, a search only by its words and a
 channel only by its id, which the script turns into a youtube.com address itself, so it can't be made to fetch
-anything else. A search sends back each result's id, title, description, length and channel; a channel its name and
+anything else; a storyboard (YouTube's small frames of a video, storyboards.py) by addresses the script checks are
+i.ytimg.com's, of that video. A search sends back each result's id, title, description, length and channel; a channel its name and
 description.
 
 The broker keeps its own database (volunteers.sqlite), apart from the site's, which deploy/ship.sh replaces, and the
@@ -19,6 +20,8 @@ from __future__ import annotations
 import html
 import ipaddress
 import json
+import os
+import random
 import re
 import secrets
 import shutil
@@ -34,20 +37,27 @@ from urllib.parse import parse_qs, urlparse
 import dbconn
 import presence
 import registration
+import storyboards
+import zipfile
 
 PER_HOUR = 15               # videos a volunteer, or an address, may be given in an hour (hal's refusals came after 20-30)
 PER_DAY = 200
 # Searches and channels' pages: an allowance of their own, apart from videos and videos' details, which go through
 # YouTube's player, where its bot check is. hal's searches went on through every spell of its refusals.
 PAGES_PER_HOUR, PAGES_PER_DAY = 30, 200
-PAGE_KINDS = ("search", "channel")
+PAGE_KINDS = ("search", "channel", "storyboard")    # storyboards: a request to i.ytimg.com, counted with pages
 SCRIPT_DEFAULTS = (15, 200)     # what the script fetches at most without being told less, from version 10 (100 a day before)
+PAGE_SQL = "(" + ",".join(f"'{k}'" for k in PAGE_KINDS) + ")"
 ONE = {"videos": "video", "searches": "search"}
 # what the admin page's settings say by default (volunteers.* there): a provisional volunteer's limits, whether one gets
 # work at all before it's approved, and how many may register
 RULES = {"per_hour": PER_HOUR, "per_day": PER_DAY, "provisional_per_hour": 3, "provisional_per_day": 10,
          "provisional_work": True, "registrations_per_address": 5, "max_waiting": 30,
-         "yt_dlp": "nightly"}  # which yt-dlp volunteers' scripts install: its nightly builds (PyPI's pre-releases) or stable
+         "yt_dlp": "nightly",  # which yt-dlp volunteers' scripts install: its nightly builds (PyPI's pre-releases) or stable
+         # the share of videos checked against their storyboards, fetched by a trusted volunteer (check()): of those from
+         # volunteers not trusted, and from trusted ones; and whether a trusted one may ask YouTube's player for a
+         # storyboard's addresses itself, when those the sender got don't work from another address
+         "check_new": 1.0, "check_trusted": 0.2, "check_fresh": True}
 BLOCK_HOURS = (1, 2, 4, 8)  # a volunteer YouTube refused rests this long, longer each time it's still refused
 THROTTLE_REST = 3600        # a volunteer YouTube throttled rests this long (seconds), without the refusals' growing rests
 TROUBLE = ("refused", "throttled", "degraded")   # how YouTube treats a volunteer, as its script sees it, worst first
@@ -76,12 +86,15 @@ FOR_GOOD = re.compile(r"video unavailable|video is unavailable|video is no longe
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 CHANNEL_ID = re.compile(r"UC[A-Za-z0-9_-]{22}")
 WORDS = re.compile(r"[^\x00-\x1f\x7f]{3,200}")
-KEYS = {"video": VIDEO_ID, "details": VIDEO_ID, "search": WORDS, "channel": CHANNEL_ID}   # what names each kind of task
+KEYS = {"video": VIDEO_ID, "details": VIDEO_ID, "search": WORDS, "channel": CHANNEL_ID, "storyboard": VIDEO_ID}   # what names each kind of task
 OLD_KINDS = ("video", "details")    # what a script that doesn't say does
 SEARCH_RESULTS = 15         # results a search asks for, as the server's own (youtube.MAX_RESULTS)
 DETAILS = {"title": 500, "uploader": 200, "channel": 200, "channel_id": 100, "channel_url": 300, "uploader_url": 300,
            "upload_date": 20, "description": 20000, "license": 200}     # yt-dlp's names, as youtube.details() reads them
 SCRIPT = Path(__file__).resolve().parents[1] / "volunteer" / "bouldermesh_volunteer.py"
+CHECK_DAYS = 2             # a check no trusted volunteer has done in this long is given up
+CHECK_KEEP_DAYS = 14        # what a check compared (the video's frames, the storyboard) is kept this long, to look at
+STORYBOARD_MAX = 8 * 2**20  # a storyboard's images, zipped, at most
 CLIENT_VERSION = 1          # the oldest script that speaks to this
 # Trials: how a volunteer's script runs yt-dlp, chosen for it on the admin page, to compare one way with another in
 # youtube_log (A/B tests). Each is a name and what it sets, from the few things scripts from version 14 let the server
@@ -170,10 +183,11 @@ class Broker:
                  widespread: Callable[[int, int, str], None] = lambda n, of, example: None,
                  came_went: Callable[[dict, str, str], None] = lambda v, state, why: None,
                  downloaded: Callable[[dict], None] = lambda info: None,
-                 leaderboard: Callable[[], dict] | None = None, rank: Callable[[str, str], float] = lambda purpose, ref: 0):
+                 leaderboard: Callable[[], dict] | None = None, rank: Callable[[str, str], float] = lambda purpose, ref: 0,
+                 checked: Callable[[dict, dict], None] = lambda check, sender: None):
         self.db_path, self.files, self.delivered, self.ready, self.probe = db_path, files, delivered, ready, probe
         self.paused, self.rules, self.registered, self.troubled, self.widespread = paused, rules, registered, troubled, widespread
-        self.came_went, self.downloaded, self.rank = came_went, downloaded, rank
+        self.came_went, self.downloaded, self.rank, self.checked = came_went, downloaded, rank, checked
         self.leaderboard = leaderboard or (lambda: {"volunteers": self.contributions(), "workers": []})
         self.widespread_said = 0.0      # when widespread() was last called
         self.lock = threading.RLock()
@@ -194,6 +208,10 @@ class Broker:
                 CREATE TABLE IF NOT EXISTS youtube_log(at REAL, volunteer TEXT, kind TEXT, status TEXT, health TEXT,
                   detail TEXT, yt_dlp TEXT, kbps REAL, pot TEXT);
                 CREATE INDEX IF NOT EXISTS youtube_log_at ON youtube_log(at);
+                CREATE TABLE IF NOT EXISTS checks(id TEXT PRIMARY KEY, video_id TEXT, volunteer TEXT, ip TEXT, video_task TEXT,
+                  spec TEXT, state TEXT, task TEXT, checker TEXT, mode TEXT, given_error TEXT, verdict TEXT, result TEXT,
+                  error TEXT, created REAL, finished REAL);
+                CREATE INDEX IF NOT EXISTS checks_task ON checks(task);
             """)
             if "kind" not in {r[1] for r in con.execute("PRAGMA table_info(given)")}:   # rows from before count as videos
                 con.execute("ALTER TABLE given ADD COLUMN kind TEXT")
@@ -218,6 +236,10 @@ class Broker:
                                ("trial", "TEXT")):
                 if name not in have:
                     con.execute(f"ALTER TABLE volunteers ADD COLUMN {name} {kind}")
+            if "trusted" not in have:  # whose storyboards check others' videos, and whose own are checked less (check())
+                con.execute("ALTER TABLE volunteers ADD COLUMN trusted INTEGER")
+                con.execute("UPDATE volunteers SET trusted=1 WHERE revoked IS NULL AND COALESCE(status,'approved')!='provisional' "
+                            "AND done>=100")
             presence.migrate(con, "volunteers", GONE_AFTER_OLD)
 
     def db(self) -> sqlite3.Connection:
@@ -256,6 +278,12 @@ class Broker:
         if trial is not None and trial not in TRIALS:
             raise ValueError(f"no such trial: {trial}")
         self.q("UPDATE volunteers SET trial=? WHERE id=?", trial, vid)
+        return self.get(vid)
+
+    def set_trusted(self, vid: str, trusted: bool) -> dict | None:
+        """Trust a volunteer, or stop: a trusted one fetches storyboards to check others' videos by, and its own videos
+        are checked less often (RULES' check_trusted)."""
+        self.q("UPDATE volunteers SET trusted=? WHERE id=? AND revoked IS NULL", 1 if trusted else None, vid)
         return self.get(vid)
 
     @staticmethod
@@ -311,11 +339,15 @@ class Broker:
         return bool(self.q("SELECT 1 FROM volunteers WHERE revoked IS NULL AND COALESCE(status,'approved')!='provisional' LIMIT 1"))
 
     # -- what's wanted --------------------------------------------------------------------------------------------
-    def next_task(self, kinds: list[str]) -> dict | None:
-        """The queued task of these kinds to give next: by rank() (the most urgent of what each is wanted for), then
-        searches and videos before details and channels, then oldest first."""
+    def next_task(self, kinds: list[str], v: dict | None = None, ip: str = "", fresh: bool = True) -> dict | None:
+        """The queued task of these kinds to give next: storyboards first (quick, and their addresses may not last),
+        then by rank() (the most urgent of what each is wanted for), then searches and videos before details and
+        channels, then oldest first. A storyboard isn't given to the volunteer whose video it checks, nor to its
+        address, nor one that needs YouTube's player (a "fresh" check) unless fresh."""
         rows = self.q(f"SELECT t.*, (SELECT group_concat(w.purpose || char(31) || w.ref, char(30)) FROM wants w WHERE w.task=t.id) "
-                      f"AS wanted FROM tasks t WHERE t.state='queued' AND t.kind IN ({','.join('?' * len(kinds))})", *kinds)
+                      f"AS wanted FROM tasks t WHERE t.state='queued' AND t.kind IN ({','.join('?' * len(kinds))}) "
+                      f"AND (t.kind!='storyboard' OR NOT EXISTS (SELECT 1 FROM checks c WHERE c.task=t.id AND "
+                      f"(c.volunteer=? OR c.ip=? OR (c.mode='fresh' AND ?=0))))", *kinds, (v or {}).get("id"), ip, int(fresh))
         if not rows:
             return None
 
@@ -326,7 +358,7 @@ class Broker:
             except Exception as e:  # noqa: BLE001 - oldest first, as before, rather than none given
                 print(f"volunteers: ranking a task failed: {e!r}", flush=True)
                 return 0
-        best = min(rows, key=lambda r: (rank(r), r["kind"] in ("details", "channel"), r["created"]))
+        best = min(rows, key=lambda r: (r["kind"] != "storyboard", rank(r), r["kind"] in ("details", "channel"), r["created"]))
         best.pop("wanted", None)
         return best
 
@@ -360,6 +392,7 @@ class Broker:
         self.q("UPDATE tasks SET state='queued', volunteer=NULL, tries=tries+1 WHERE state='assigned' AND COALESCE(touched, assigned)<?", cut)
         self.q("UPDATE tasks SET state='failed', finished=?, error='given out too often without coming back' "
                "WHERE state='queued' AND tries>=?", time.time(), MAX_TRIES)
+        self._expire_checks()
 
     # -- the volunteer's side ---------------------------------------------------------------------------------------
     def pending_tasks(self, purpose: str, refs) -> list[dict]:
@@ -383,7 +416,7 @@ class Broker:
         given and hasn't finished, then the oldest wanted of the kinds its script does or asks for now (videos and
         searches before details and channels), within its limits and its address's: videos' (with videos' details) and,
         apart, searches' (with channels' pages)."""
-        kinds = [k for k in (kinds or OLD_KINDS) if k in KEYS] or list(OLD_KINDS)
+        kinds = [k for k in (kinds or OLD_KINDS) if k in KEYS and (k != "storyboard" or v.get("trusted"))] or list(OLD_KINDS)
         now = time.time()
         with self.lock:
             self.requeue_stale()
@@ -413,17 +446,17 @@ class Broker:
                 for span, cap, per in ((3600, hour, "an hour"), (86400, day, "a day")):
                     for field, value, whose in (("volunteer", v["id"], "you"), ("ip", ip, "your address")):
                         rows = self.q(f"SELECT at FROM given WHERE {field}=? AND at>? AND COALESCE(kind,'video') {pages} "
-                                      f"('search','channel') ORDER BY at", value, now - span)
+                                      f"{PAGE_SQL} ORDER BY at", value, now - span)
                         if len(rows) >= cap and what not in held:
                             held[what] = {"wait": rows[len(rows) - cap]["at"] + span - now + 1,
                                           "why": f"{cap} {what if cap != 1 else ONE[what]} {per} is the most for {whose}"
                                                  + (" until you're approved" if waiting else "")}
             open_kinds = [k for k in kinds if ("searches" if k in PAGE_KINDS else "videos") not in held]
-            task = self.next_task(open_kinds) if open_kinds else None
+            task = self.next_task(open_kinds, v, ip, fresh="videos" not in held) if open_kinds else None
             if not task:
                 waiting_for = [h for what, h in held.items() if self.q(
                     f"SELECT 1 FROM tasks WHERE state='queued' AND kind IN ({','.join('?' * len(kinds))}) AND kind {'IN' if what == 'searches' else 'NOT IN'} "
-                    "('search','channel') LIMIT 1", *kinds, one=True)]
+                    f"{PAGE_SQL} LIMIT 1", *kinds, one=True)]
                 if not waiting_for:
                     return {"wait": IDLE_WAIT, "why": "nothing wanted now"}
                 soonest = min(waiting_for, key=lambda h: h["wait"])
@@ -457,6 +490,12 @@ class Broker:
             return {"id": t["id"], "kind": "search", "query": t["video_id"], "max_results": SEARCH_RESULTS}
         if t["kind"] == "channel":
             return {"id": t["id"], "kind": "channel", "channel_id": t["video_id"]}
+        if t["kind"] == "storyboard":
+            c = self.q("SELECT spec, mode FROM checks WHERE task=?", t["id"], one=True) or {}
+            if c.get("mode") == "fresh":
+                return {"id": t["id"], "kind": "storyboard", "video_id": t["video_id"], "fresh": True}
+            spec = json.loads(c.get("spec") or "{}")
+            return {"id": t["id"], "kind": "storyboard", "video_id": t["video_id"], "urls": [f["url"] for f in spec.get("fragments") or []]}
         return {"id": t["id"], "kind": t["kind"], "video_id": t["video_id"], "format": VIDEO_FORMAT,
                 "max_filesize": "500m", "part": PART_MAX}
 
@@ -482,9 +521,12 @@ class Broker:
         with self.lock:
             t = self._mine(v, task_id)
             ext = (ext or "").lower().lstrip(".")
-            if t["kind"] != "video":
-                raise ValueError("only videos come in parts")
-            if ext not in VIDEO_EXT or not 0 < size <= MAX_VIDEO:
+            if t["kind"] == "storyboard":
+                if ext != "zip" or not 0 < size <= STORYBOARD_MAX:
+                    raise ValueError(f"a storyboard as a zip file of up to {STORYBOARD_MAX // 2**20} MB")
+            elif t["kind"] != "video":
+                raise ValueError("only videos and storyboards come in parts")
+            elif ext not in VIDEO_EXT or not 0 < size <= MAX_VIDEO:
                 raise ValueError(f"a video of up to {MAX_VIDEO // 2**20} MB, as {', '.join(sorted(VIDEO_EXT))}")
             if t["size"] is not None and (t["size"], t["ext"]) != (size, ext):
                 raise ValueError("that's another file than the one being sent")
@@ -524,13 +566,23 @@ class Broker:
             if health == "throttled":   # it rests, without the refusals' growing rests; what it fetched still counts
                 until = max(v.get("refused_until") or 0, now + THROTTLE_REST)
                 self.q("UPDATE volunteers SET refused_until=?, rest_why='throttled' WHERE id=?", until, v["id"])
+            if t["kind"] == "storyboard" and status == "failed" and report.get("denied") and self._given_refused(t, report):
+                f.unlink(missing_ok=True)
+                return {"ok": True}
             if status != "ok":
                 error = str(report.get("error") or "failed")[:500]
                 self._failed(t, error, bool(report.get("permanent"))
                              or bool(FOR_GOOD.search(error) and not re.search(r"try again later", error, re.I)))
                 f.unlink(missing_ok=True)
+                if t["kind"] == "storyboard":
+                    self.q("UPDATE checks SET state='failed', error=?, finished=? WHERE task=? AND "
+                           "(SELECT state FROM tasks WHERE id=?)='failed'", error, now, task_id, task_id)
                 return {"ok": True}
-            if t["kind"] == "search":
+            check = None
+            if t["kind"] == "storyboard":
+                check = self._compare(v, t, f, report)
+                info = {"check": check["id"], "verdict": check["verdict"]}
+            elif t["kind"] == "search":
                 info = {"query": t["video_id"], "results": clean_results(report.get("results"))}
             elif t["kind"] == "channel":
                 info = clean_channel(report.get("info") or {}, t["video_id"])
@@ -551,10 +603,19 @@ class Broker:
                                  f"the file is {length:.0f} s long, the video {(listed if off(listed) else info['duration']):.0f} s"
                                  + (" by another's search" if off(listed) else ""), False)
                     return {"ok": False}
+                check = self._plan_check(v, t, path, report)
             self.q("UPDATE tasks SET state='done', finished=?, info=?, error=NULL WHERE id=?", now, json.dumps(info), task_id)
             self.q("UPDATE volunteers SET refusal_level=-1, done=done+1 WHERE id=?", v["id"])
             if health != "throttled":   # a throttled one's rest stands, though what it sent came
                 self.q("UPDATE volunteers SET refused_until=NULL WHERE id=?", v["id"])
+        if t["kind"] == "storyboard":
+            try:
+                self.checked(check, self.get(check["volunteer"]) or {})
+            except Exception as e:  # noqa: BLE001 - told or not, the check is kept
+                print(f"volunteers: telling of a check failed: {e!r}", flush=True)
+            return {"ok": True}
+        if check:
+            threading.Thread(target=self._prepare_check, args=(check,), daemon=True).start()
         try:
             self.delivered({**t, "state": "done"}, path, info)
         finally:
@@ -635,6 +696,120 @@ class Broker:
             return {"degraded": len(bad), "of": len(heard), "example": bad[0]["health_detail"]}
         return None
 
+    # -- checking volunteers' videos against their storyboards (storyboards.py) ------------------------------------
+    def _plan_check(self, v: dict, t: dict, path: Path, report: dict) -> str | None:
+        """Whether to check a video just sent, by its storyboard (RULES' check_new or check_trusted): if so, the new
+        check's id, with the video linked where _prepare_check() reads it. One with no storyboard is noted as such."""
+        rules = {**RULES, **self.rules()}
+        if random.random() >= float(rules["check_trusted" if v.get("trusted") else "check_new"]):
+            return None
+        spec = storyboards.pick(report.get("storyboards"), t["video_id"])
+        cid, now = secrets.token_hex(6), time.time()
+        self.q("INSERT INTO checks(id,video_id,volunteer,ip,video_task,spec,state,mode,error,created) VALUES(?,?,?,?,?,?,?,?,?,?)",
+               cid, t["video_id"], v["id"], t["ip"], t["id"], json.dumps(spec) if spec else None,
+               "preparing" if spec else "skipped", "given", None if spec else "no storyboard was sent with it", now)
+        if not spec:
+            return None
+        checks = self.files / "checks"
+        checks.mkdir(parents=True, exist_ok=True)
+        os.link(path, checks / f"{cid}.video")
+        return cid
+
+    def _prepare_check(self, cid: str) -> None:
+        """The video's frames at its storyboard's times kept (storyboards.video_frames()), then the storyboard asked of a
+        trusted volunteer."""
+        video = self.files / "checks" / f"{cid}.video"
+        try:
+            c = self.q("SELECT * FROM checks WHERE id=?", cid, one=True)
+            frames = storyboards.video_frames(video, json.loads(c["spec"]), self.probe(video))
+            storyboards.save_frames(frames, self.files / "checks" / f"{cid}.npz")
+            task = secrets.token_hex(6)
+            with self.lock:
+                self.q("INSERT INTO tasks(id,kind,video_id,state,created) VALUES(?,'storyboard',?,'queued',?)", task, c["video_id"], time.time())
+                self.q("UPDATE checks SET state='queued', task=? WHERE id=?", task, cid)
+        except Exception as e:  # noqa: BLE001 - the video is in already; only its check is lost
+            print(f"volunteers: preparing check {cid} failed: {e!r}", flush=True)
+            self.q("UPDATE checks SET state='failed', error=?, finished=? WHERE id=?", f"keeping its frames failed: {e}"[:300], time.time(), cid)
+        finally:
+            video.unlink(missing_ok=True)
+
+    def _given_refused(self, t: dict, report: dict) -> bool:
+        """The storyboard's addresses, as its sender got them, didn't work for the volunteer checking: noted, and (if
+        RULES' check_fresh) asked again of a trusted volunteer, who asks YouTube's player for them itself. Whether so."""
+        c = self.q("SELECT * FROM checks WHERE task=?", t["id"], one=True)
+        if not c or c["mode"] != "given":
+            return False
+        error = str(report.get("error") or "refused")[:300]
+        fresh = bool({**RULES, **self.rules()}["check_fresh"])
+        self.q("UPDATE checks SET given_error=?, mode=? WHERE id=?", error, "fresh" if fresh else "given", c["id"])
+        if fresh:
+            self.q("UPDATE tasks SET state='queued', volunteer=NULL, error=? WHERE id=?", error, t["id"])
+        return fresh
+
+    def _compare(self, v: dict, t: dict, f: Path, report: dict) -> dict:
+        """A storyboard come back, compared with its video's frames: the check, done, with its verdict.
+
+        Raises:
+            ValueError: it hasn't all come, or isn't a storyboard.
+        """
+        c = self.q("SELECT * FROM checks WHERE task=?", t["id"], one=True)
+        if not c:
+            raise LookupError("that check is gone")
+        if not f.exists() or t["size"] is None or f.stat().st_size != t["size"]:
+            raise ValueError("the storyboard hasn't all come: send it first")
+        spec = json.loads(c["spec"])
+        if c["mode"] == "fresh":
+            spec = storyboards.pick([report.get("storyboard")], t["video_id"])
+            if not spec:
+                raise ValueError("a storyboard of YouTube's, for that video, is wanted with it")
+        try:
+            with zipfile.ZipFile(f) as z:
+                names = sorted((n for n in z.namelist() if re.fullmatch(r"\d+\.img", n)), key=lambda n: int(n.split(".")[0]))
+                if sum(z.getinfo(n).file_size for n in names) > STORYBOARD_MAX:
+                    raise ValueError("too big")
+                images = [z.read(n) for n in names]
+            frames = storyboards.load_frames(self.files / "checks" / f"{c['id']}.npz")
+            board = storyboards.tiles(images, spec, frames["stretched"].shape[:0:-1])
+        except (zipfile.BadZipFile, ValueError) as e:
+            raise ValueError(f"that isn't the storyboard: {e}") from None
+        result = storyboards.compare(frames, board, spec["interval"])
+        f.rename(self.files / "checks" / f"{c['id']}.zip")       # kept a while, to look at (CHECK_KEEP_DAYS)
+        self.q("UPDATE checks SET state='done', checker=?, verdict=?, result=?, finished=? WHERE id=?",
+               v["id"], result["verdict"], json.dumps(result), time.time(), c["id"])
+        return self.q("SELECT * FROM checks WHERE id=?", c["id"], one=True)
+
+    def _expire_checks(self) -> None:
+        """Checks no trusted volunteer did in CHECK_DAYS given up, and what checks compared deleted after CHECK_KEEP_DAYS:
+        at most once an hour."""
+        now = time.time()
+        if now - getattr(self, "_expired_at", 0) < 3600:
+            return
+        self._expired_at = now
+        for c in self.q("SELECT id, task FROM checks WHERE state IN ('queued','preparing') AND created<?", now - CHECK_DAYS * 86400):
+            self.q("UPDATE checks SET state='expired', finished=? WHERE id=?", now, c["id"])
+            self.q("UPDATE tasks SET state='cancelled', finished=? WHERE id=? AND state='queued'", now, c["task"])
+        for f in (self.files / "checks").glob("*"):
+            try:
+                if f.suffix in (".npz", ".zip") and f.stat().st_mtime < now - CHECK_KEEP_DAYS * 86400:
+                    f.unlink()
+            except OSError:
+                pass
+
+    def check_summary(self, latest: int = 12) -> dict:
+        """For the admin page: each volunteer's checks' verdicts ({id: {match, mismatch, unclear, ...}}), and the
+        latest checks, with who sent and who checked, and whether the sender's storyboard addresses worked."""
+        per: dict[str, dict] = {}
+        for r in self.q("SELECT volunteer, COALESCE(verdict, state) AS v, count(*) AS n FROM checks GROUP BY volunteer, COALESCE(verdict, state)"):
+            per.setdefault(r["volunteer"], {})[r["v"]] = r["n"]
+        names = {v["id"]: v["name"] for v in self.q("SELECT id, name FROM volunteers")}
+        rows = self.q("SELECT * FROM checks WHERE state!='skipped' ORDER BY created DESC LIMIT ?", latest)
+        given = self.q("SELECT count(*) AS n, sum(given_error IS NULL AND mode='given') AS worked FROM checks "
+                       "WHERE state='done' OR given_error IS NOT NULL", one=True)
+        return {"per": per, "given": given,
+                "latest": [{**{k: r[k] for k in ("id", "video_id", "state", "mode", "given_error", "verdict", "error", "created", "finished")},
+                            "sender": names.get(r["volunteer"]), "checker": names.get(r["checker"]),
+                            "result": json.loads(r["result"]) if r["result"] else None} for r in rows]}
+
     def listed_duration(self, video_id: str, besides: str) -> float | None:
         """The video's length as someone other than this volunteer saw it: in a search's results, or its details,
         that another volunteer sent lately. The volunteer sending a video also says how long it is, which only catches
@@ -708,7 +883,7 @@ class Broker:
                 c["videos"], c["gb"] = r["n"], round(r["bytes"] / 2**30, 2)
             elif r["kind"] == "search":
                 c["searches"] = r["n"]
-            else:
+            elif r["kind"] in ("details", "channel"):
                 c["details"] += r["n"]
             c["last"] = max(c["last"], r["last"] or 0)
         rows = {v["id"]: v for v in self.q("SELECT id, name, created, revoked, registered_ip FROM volunteers")}
@@ -781,7 +956,7 @@ class Broker:
                          "pages_last_hour": sum(g["at"] > now - 3600 for g in pages), "pages_last_day": len(pages),
                          "health": v.get("health"), "health_detail": v.get("health_detail"), "health_at": v.get("health_at"),
                          "kbps": v.get("kbps"), "yt_dlp": v.get("yt_dlp"), "rest_why": v.get("rest_why"),
-                         "trial": v.get("trial")})
+                         "trial": v.get("trial"), "trusted": bool(v.get("trusted"))})
         counts = {f"{r['state']}_{r['kind']}": r["n"] for r in self.q("SELECT state, kind, count(*) AS n FROM tasks GROUP BY state, kind")}
         wanted = {r["purpose"]: r["n"] for r in self.q("SELECT w.purpose, count(DISTINCT w.task) AS n FROM wants w JOIN tasks t "
                                                          "ON t.id=w.task WHERE t.state IN ('queued','assigned') GROUP BY w.purpose")}
@@ -789,7 +964,7 @@ class Broker:
                         "ORDER BY finished DESC LIMIT 8")
         return {"volunteers": vols, "counts": counts, "wanted": wanted, "recent": recent,
                 "connected": sum(v["status"] in ("fetching", "waiting for work") for v in vols), "trouble": self.trouble(),
-                "youtube": self.youtube_log(), "trials": {k: t["what"] for k, t in TRIALS.items()}}
+                "youtube": self.youtube_log(), "trials": {k: t["what"] for k, t in TRIALS.items()}, "checks": self.check_summary()}
 
 
 class OffsetError(Exception):

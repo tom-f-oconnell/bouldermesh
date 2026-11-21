@@ -38,7 +38,9 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 # The script's version, which the server compares with the one it serves to tell a running copy to update itself. Keep
@@ -61,7 +63,9 @@ from pathlib import Path
 #     says which trial each task ran under
 # 15: no PO tokens: bgutil's plugin is uninstalled and its folder deleted, as tokens didn't stop YouTube's 403s, and
 #     with the mweb client (which uses one for every video) it was throttled three times as often (Nov 18, 2026)
-VERSION = 15
+# 16: sends a video's storyboard (YouTube's small seek-bar frames) with it, and fetches others' storyboards from
+#     i.ytimg.com when the server asks, to check that videos volunteers sent are the ones asked for
+VERSION = 16
 SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
 AGENT = "bouldermesh-volunteer"
 POT_PLUGIN = "bgutil-ytdlp-pot-provider"    # PO tokens' yt-dlp plugin, which scripts 13 and 14 installed: removed
@@ -70,11 +74,11 @@ TRIAL_KEYS = {"player_client": re.compile(r"-?[a-z_]{2,20}(,-?[a-z_]{2,20}){0,5}
 TRIAL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,40}")
 TOOLS_PYTHON = (3, 11)      # the oldest Python today's yt-dlp runs on (and Deno's package wants 3.10)
 FETCHED_PYTHON = "3.12"     # what uv fetches for them when this computer has none as new
-KINDS = ["video", "details", "search", "channel"]   # what this version does
+KINDS = ["video", "details", "search", "channel", "storyboard"]   # what this version does
 # Videos and their details go through YouTube's player, where its bot check is (it refused hal after hours at 20-30 an
 # hour, fetched in bursts): spread over each hour, an hour's share apart (3600 / per hour seconds) times a random number
 # in SPREAD. Searches and channels' pages never met it there, so they have their own allowance, PAGES_*.
-CLASS = {"video": "video", "details": "video", "search": "page", "channel": "page"}
+CLASS = {"video": "video", "details": "video", "search": "page", "channel": "page", "storyboard": "page"}
 GAP = (8.0, 15.0)           # seconds between one request to YouTube and the next, of any kind, at random in this range
 SPREAD = (0.9, 1.25)
 PER_HOUR, PER_DAY = 15, 200  # videos (and videos' details): the most, whatever the server allows
@@ -97,6 +101,12 @@ FOR_GOOD = re.compile(r"Video unavailable|video is unavailable|video is no longe
                       r"has been removed|members[- ]only|not available in your country|"
                       r"account associated with this video has been terminated|copyright|confirm your age|age[- ]restricted|"
                       r"is not a valid URL|larger than max-filesize", re.I)
+# Storyboards: YouTube's small frames of a video, from its image servers (not its video servers, and without the bot
+# check). One is sent with each video, and others' are fetched when the server asks, from i.ytimg.com only.
+STORYBOARD_HOSTS = ("i.ytimg.com", "i9.ytimg.com")
+STORYBOARD_MOST, STORYBOARD_WIDTH = 12, 64      # images in a storyboard at most; the narrowest tiles worth having
+STORYBOARD_BYTES = 8 * 2**20
+BROWSER = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 KEEP = ("title", "uploader", "channel", "channel_id", "channel_url", "uploader_url", "duration", "upload_date",
         "description", "license")
 # what --help and the prompt say of signing in to YouTube with an account's cookies (yt-dlp's wiki, "Extractors",
@@ -124,7 +134,8 @@ Before you start: what this does, and what it may cost you.
 
 - It asks {server} for YouTube videos of climbs, fetches them from this computer, and sends them there:
   one at a time, spread over each hour (about {spread:.0f} minutes apart), at most {per_hour} an hour and {per_day} a day.
-  Each is deleted here once it's sent. Only videos' YouTube ids come from the server. It also searches YouTube
+  Each is deleted here once it's sent. Only videos' YouTube ids come from the server, and, to check videos others
+  sent, addresses of YouTube's small seek-bar images of them, fetched only from i.ytimg.com. It also searches YouTube
   for climbs' videos, and reads channels' descriptions, from the server's words and ids: at most {pages_hour} an
   hour and {pages_day} a day, and nothing from YouTube comes less than {gap_lo:.0f}-{gap_hi:.0f} seconds after the last.
 - YouTube's terms of service don't allow downloading videos except through YouTube's own features. Using this
@@ -174,6 +185,32 @@ def signs(err: str, failed: bool) -> list[dict]:
             seen.add((kind, what))
             out.append({"kind": kind, "what": what})
     return out
+
+
+def storyboard_url(url, vid: str) -> bool:
+    """Whether an address is one of YouTube's storyboard images of this video."""
+    u = urllib.parse.urlparse(str(url))
+    return u.scheme == "https" and u.hostname in STORYBOARD_HOSTS and u.path.startswith(f"/sb/{vid}/") and len(str(url)) < 2000
+
+
+def storyboards(info: dict, vid: str) -> list[dict]:
+    """yt-dlp's storyboard formats of a video, cut to what the server reads: no other address of yt-dlp's."""
+    out = []
+    for f in info.get("formats") or []:
+        if not isinstance(f, dict) or not str(f.get("format_id") or "").startswith("sb"):
+            continue
+        frags = [{"url": x.get("url"), "duration": x.get("duration")} for x in f.get("fragments") or [] if isinstance(x, dict)]
+        if frags and all(storyboard_url(x["url"], vid) for x in frags):
+            out.append({k: f.get(k) for k in ("format_id", "width", "height", "rows", "columns", "fps")} | {"fragments": frags})
+    return out
+
+
+def best_storyboard(found: list[dict]) -> dict | None:
+    """The one to fetch, as the server picks (storyboards.pick()): the fewest images, with tiles wide enough, the largest
+    tiles among those."""
+    ok = [f for f in found if 1 <= len(f["fragments"]) <= STORYBOARD_MOST]
+    wide = [f for f in ok if (f.get("width") or 0) >= STORYBOARD_WIDTH] or ok
+    return min(wide, key=lambda f: (len(f["fragments"]), -(f.get("width") or 0))) if wide else None
 
 
 def python_version(exe) -> tuple[int, int]:
@@ -600,6 +637,8 @@ class Volunteer:
                 raise RuntimeError(f"the server asked for something this script doesn't do: {task}")
             return self.page(task, ["--flat-playlist", "--playlist-items", "0", f"https://www.youtube.com/channel/{cid}"],
                              f"reading the description of https://www.youtube.com/channel/{cid}")
+        if kind == "storyboard":
+            return self.storyboard(task)
         if not VIDEO_ID.fullmatch(vid) or kind not in ("video", "details"):
             raise RuntimeError(f"the server asked for something this script doesn't do: {task}")
         url = f"https://www.youtube.com/watch?v={vid}"
@@ -643,7 +682,8 @@ class Volunteer:
                 if slow:
                     found.append({"kind": "throttled", "what": f"the video came at {kbps:.0f} KB/s"})
                 self.send(task, video)
-            out = self.server.call(done, {"status": "ok", "info": {k: info.get(k) for k in KEEP}, "health": self.health(found, kbps)})
+            out = self.server.call(done, {"status": "ok", "info": {k: info.get(k) for k in KEEP}, "health": self.health(found, kbps),
+                                          "storyboards": storyboards(info, vid)})
             log("sent" if out.get("ok") else f"the server didn't take it: {out}")
             self.react(found)
         except KeyboardInterrupt:
@@ -694,6 +734,72 @@ class Volunteer:
             except Exception:  # noqa: S110 - stopping anyway
                 pass
             raise
+
+    def storyboard(self, task: dict) -> None:
+        """Another volunteer's video's storyboard, for the server to check that video by: the images at the addresses
+        given (YouTube's, for that video), or with "fresh", at those yt-dlp finds now (a request to YouTube's player,
+        taking a video's turn). Sent as one zip file."""
+        vid = str(task.get("video_id") or "")
+        done = f"/volunteer/api/tasks/{task['id']}/done"
+        urls = [str(u) for u in task.get("urls") or []]
+        if not VIDEO_ID.fullmatch(vid) or not all(storyboard_url(u, vid) for u in urls) or not (urls or task.get("fresh")):
+            raise RuntimeError(f"the server asked for something this script doesn't do: {task}")
+        work = self.home / "work"
+        shutil.rmtree(work, ignore_errors=True)
+        work.mkdir()
+        report = {}
+        try:
+            if task.get("fresh"):
+                self.wait_turn("video")
+                log(f"fetching the details of https://www.youtube.com/watch?v={vid}, for its storyboard")
+                self.fetched_now("video")
+                r = self.run_ytdlp(["-J", "--skip-download", "--no-playlist", f"https://www.youtube.com/watch?v={vid}"], work, trial=True)
+                err, found = (r.stderr or "").strip(), signs(r.stderr, bool(r.returncode))
+                if r.returncode:
+                    if REFUSAL.search(err):
+                        hours = self.refused()
+                        self.server.call(done, {"status": "refused", "error": refusal_report(err), "health": self.health(found)})
+                        log(f"YouTube refused: resting {hours} h")
+                        return
+                    why = last_error(err) or f"yt-dlp exited with {r.returncode}"
+                    self.server.call(done, {"status": "failed", "error": why[-300:], "health": self.health(found)})
+                    return
+                best = best_storyboard(storyboards(json.loads(r.stdout), vid))
+                if not best:
+                    self.server.call(done, {"status": "failed", "error": "YouTube has no storyboard of it", "health": self.health(found)})
+                    return
+                urls, report["storyboard"] = [x["url"] for x in best["fragments"]], best
+            self.wait_turn("page")
+            log(f"fetching {len(urls)} storyboard image(s) of https://www.youtube.com/watch?v={vid}")
+            self.fetched_now("page")
+            bundle = work / "storyboard.zip"
+            with zipfile.ZipFile(bundle, "w") as z:
+                for i, u in enumerate(urls):
+                    if i:
+                        time.sleep(random.uniform(1, 3))
+                    try:
+                        req = urllib.request.Request(u, headers={"User-Agent": BROWSER})
+                        with urllib.request.urlopen(req, timeout=60) as resp:
+                            z.writestr(f"{i}.img", resp.read(STORYBOARD_BYTES))
+                    except urllib.error.HTTPError as e:
+                        self.server.call(done, {"status": "failed", "denied": e.code in (401, 403, 404, 410),
+                                                "error": f"i.ytimg.com said HTTP {e.code} for image {i + 1} of {len(urls)}",
+                                                "health": self.health([])})
+                        log(f"i.ytimg.com said HTTP {e.code}")
+                        return
+            path = f"/volunteer/api/tasks/{task['id']}/part"
+            size = bundle.stat().st_size
+            self.server.call(f"{path}?offset=0&size={size}&ext=zip", bundle.read_bytes())
+            out = self.server.call(done, {"status": "ok", "health": self.health([]), **report})
+            log("sent" if out.get("ok") else f"the server didn't take it: {out}")
+        except KeyboardInterrupt:
+            try:
+                self.server.call(done, {"status": "released"}, tries=1)
+            except Exception:  # noqa: S110 - stopping anyway
+                pass
+            raise
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
     @staticmethod
     def video_file(work: Path) -> Path | None:
