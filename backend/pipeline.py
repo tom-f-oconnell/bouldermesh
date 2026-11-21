@@ -307,7 +307,36 @@ def mvs_gpu_choice(allowed: bool = True) -> tuple[bool, str]:
     return True, f"{free} MB of GPU memory free"
 
 
+COLMAP391 = shutil.which("colmap")     # the image's COLMAP 3.9.1, for A/B tests against 4.2.1 alone (use_colmap())
+_as_391 = False
+OPTIONS_391 = {"--FeatureExtraction.max_image_size": "--SiftExtraction.max_image_size", "--FeatureExtraction.use_gpu":
+               "--SiftExtraction.use_gpu", "--FeatureMatching.guided_matching": "--SiftMatching.guided_matching",
+               "--FeatureMatching.use_gpu": "--SiftMatching.use_gpu", "--default_random_seed": "--random_seed"}
+
+
+@contextlib.contextmanager
+def use_colmap(version: str):
+    """Within the block, COLMAP is the image's 3.9.1 ("3.9.1") or 4.2.1 ("4.2.1"), for comparing them on the same
+    photos (remote_job.py --task abtest): 3.9.1's option names are given it where 4.2.1's differ (OPTIONS_391)."""
+    global COLMAP, _as_391
+    was = COLMAP, _as_391
+    if version == "3.9.1":
+        if not COLMAP391:
+            raise RuntimeError("COLMAP 3.9.1 isn't in this image")
+        COLMAP, _as_391 = COLMAP391, True
+    elif version == "4.2.1":
+        COLMAP, _as_391 = COLMAP4, False
+    else:
+        raise ValueError(f"no COLMAP {version}")
+    try:
+        yield
+    finally:
+        COLMAP, _as_391 = was
+
+
 def _run(cmd: list[str], cwd: Path, log: Log, watch: Callable[[str], None] | None = None) -> None:
+    if _as_391 and cmd and cmd[0] == COLMAP:
+        cmd = [OPTIONS_391.get(a, a) for a in cmd]
     log("$ " + " ".join(cmd))
     proc = jobctl.popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     assert proc.stdout

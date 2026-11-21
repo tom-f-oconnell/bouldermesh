@@ -46,6 +46,45 @@ MADE = {"beta": re.compile(r"beta\.json|beta_poses\.json|beta_[0-9a-f]{8}\.jpg")
         "splat": re.compile(r"scene\.splat|scene-small\.splat|scene\.json|scene-pano\.webp")}
 
 
+def abtest_task(job: Path, gpu: bool, log) -> int:
+    """Mesh the same photos with each COLMAP named in task.json's "order" ("3.9.1", "4.2.1"), one after the other on
+    this machine, into out/<version>/ (the mesh, its records and timings) and out/summary.json: for each, how long it
+    took, its tools' times by step, photos placed, faces, and its model's check. Meshes nothing for the site."""
+    import time
+    import timings
+    args = json.loads((job / "task.json").read_text())
+    summary = {"order": args["order"], "runs": {}}
+    for version in args["order"]:
+        log(f"@@abtest {version}: starting")
+        out, lines = job / "out" / version, []
+        t0 = time.time()
+        said = lambda line, lines=lines: (lines.append(line), log(line))  # noqa: E731
+        run = {"version": version}
+        try:
+            with pipeline.use_colmap(version), meshopts.using(args.get("mapper")):
+                pipeline.reconstruct(job / "photos", job / f"work-{version}", out, said, gpu, internet=True,
+                                     tracker=PrintedTracker(pipeline.steps()))
+        except Exception as e:  # noqa: BLE001 - the other is still made
+            run["failed"] = f"{type(e).__name__}: {e}"
+        run["seconds"] = round(time.time() - t0)
+        rec = timings.record("\n".join(lines), None, t0, time.time(), "here", None, False)
+        run.update(tools_seconds=rec["tools_seconds"], cpu_seconds=rec["cpu_seconds"], placed=rec["placed"], photos_in=rec["photos_in"],
+                   faces=timings.face_count(out), steps=[(t["step"], t["seconds"]) for t in rec["tools"]])
+        for name in ("check.json", "pipeline.json", "fallbacks.json", "mapper.json"):
+            try:
+                run[name.split(".")[0]] = json.loads((out / name).read_text())
+            except (OSError, ValueError):
+                pass
+        if out.is_dir():
+            (out / "job.log").write_text("\n".join(lines) + "\n")
+        summary["runs"][version] = run
+        shutil.rmtree(job / f"work-{version}", ignore_errors=True)
+    (job / "out").mkdir(parents=True, exist_ok=True)
+    (job / "out" / "summary.json").write_text(json.dumps(summary, indent=1))
+    print("@@result " + json.dumps({"abtest": True}), flush=True)
+    return 0
+
+
 def splat_task(job: Path, log) -> int:
     """Fit a capture's scenery (splat.fit_capture()) into out/."""
     import gputurn
@@ -149,7 +188,7 @@ def task(job: Path, kind: str, log) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("job", type=Path)
-    ap.add_argument("--task", choices=("beta", "scale", "filter", "splat"))
+    ap.add_argument("--task", choices=("beta", "scale", "filter", "splat", "abtest"))
     ap.add_argument("--internet", action="store_true")
     ap.add_argument("--gpu", action="store_true")
     a = ap.parse_args()
@@ -158,6 +197,8 @@ def main() -> int:
         return filter_task(a.job, log)
     if a.task == "splat":
         return splat_task(a.job, log)
+    if a.task == "abtest":
+        return abtest_task(a.job, a.gpu, log)
     if a.task:
         return task(a.job, a.task, log)
     try:

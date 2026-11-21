@@ -14121,7 +14121,7 @@ def admin_state() -> dict:
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
             "stops": [dict(r) for r in q("SELECT at, kind, id, name, was FROM job_stops ORDER BY at DESC LIMIT 30")],
             "texture_again": texture_again_state(), "black_textures": black_textures(),
-            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "youtube_research": research_status(), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "video_holds": q("SELECT what, since, coming, notified FROM video_holds ORDER BY since"), "tiers": {k: v for k, v in mesh_tiers().items() if k != "ids"} | {"texture_ids": mesh_tiers()["ids"]["texture"]}, "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "youtube_research": research_status(), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "abtests": abtests_state(), "video_holds": q("SELECT what, since, coming, notified FROM video_holds ORDER BY since"), "tiers": {k: v for k, v in mesh_tiers().items() if k != "ids"} | {"texture_ids": mesh_tiers()["ids"]["texture"]}, "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q), "backup": backup_state(),
             "manifest": {**manifest_state(), "quiet": manifest_quiet(), "hours": MANIFEST_HOURS}, "lost_blocks": lost_blocks()}
 
@@ -14331,6 +14331,94 @@ def admin_retexture(_: dict) -> dict:
                       + (f"; {away} whose photos are in the backup weren't" if away else "")}
 
 
+# ------------------------------------------------------------------ A/B tests of meshing (remote_job.py --task abtest)
+ABTESTS = DATA / "abtests"      # <test>/request.json, and once done out/ (each COLMAP's mesh and records) and summary.json
+AB_VERSION = 30                 # the oldest machines' script that does one
+AB_DEFAULT = (("ce7571e0a4a3", "Drifter/Smoking Boulder: 240 photos, the benchmark's largest"),
+              ("9f3b4b740847", "9f3b: 150 photos no method placed alike"),
+              ("9fc4f1472128", "Double Orifice: 44 photos both COLMAPs placed wrong (Nov 20)"),
+              ("d917abd870b7", "39 photos 4.2.1's model of failed its check at 5.6 degrees, 3.9.1's passed at 4.9 (Nov 20)"))
+_ab_wake = threading.Event()
+
+
+def queue_abtests(pids: list[tuple[str, str]]) -> int:
+    """Queue A/B tests of meshing these projects' photos with COLMAP 3.9.1 and 4.2.1, each pair on one machine, which
+    goes first alternating from test to test. They run as machines' work after everyone's own and before meshes
+    made again as theirs are old (pullwork.PRIO_TEST); nothing is meshed for the site. Returns how many."""
+    ABTESTS.mkdir(parents=True, exist_ok=True)
+    n = len(list(ABTESTS.iterdir()))
+    for i, (pid, why) in enumerate(pids):
+        if not (PROJECTS / pid / "photos").is_dir():
+            raise ValueError(f"no project {pid} with photos")
+        order = ["4.2.1", "3.9.1"] if (n + i) % 2 == 0 else ["3.9.1", "4.2.1"]
+        d = ABTESTS / f"{time.strftime('%Y%m%d-%H%M%S')}-{pid}"
+        d.mkdir()
+        (d / "request.json").write_text(json.dumps({"project": pid, "why": why, "order": order, "queued": time.time()}, indent=1))
+    _ab_wake.set()
+    return len(pids)
+
+
+def abtest_worker() -> None:
+    """Hand each A/B test waiting to a machine, one at a time, and keep what it sends back."""
+    while True:
+        _ab_wake.wait(600)
+        _ab_wake.clear()
+        for d in sorted(ABTESTS.iterdir()) if ABTESTS.is_dir() else []:
+            if (d / "summary.json").exists() or not (d / "request.json").exists():
+                continue
+            req = json.loads((d / "request.json").read_text())
+
+            def log(line: str, d=d) -> None:
+                with open(d / "job.log", "a") as f:
+                    f.write(line.rstrip() + "\n")
+            try:
+                if _executor is not MACHINES:
+                    raise compute.ComputeUnavailable("A/B tests run on machines that connect here")
+                need_back([req["project"]], "an A/B test")
+                pdir = PROJECTS / req["project"]
+                files = {part: pdir / part for part in ("photos", "masks") if (pdir / part).is_dir()}
+                with pullwork.priority(pullwork.PRIO_TEST):
+                    _, back = MACHINES.task("abtest", files, {"order": req["order"], "mapper": meshopts.given()},
+                                            f"A/B test: {req['project']}", log, version=AB_VERSION)
+                try:
+                    shutil.rmtree(d / "out", ignore_errors=True)
+                    shutil.move(str(back / "out"), str(d / "out"))
+                    shutil.copyfile(d / "out" / "summary.json", d / "summary.json")
+                finally:
+                    shutil.rmtree(back, ignore_errors=True)
+                log("done")
+            except (compute.ComputeUnavailable, PhotosAway) as e:
+                log(f"waiting: {e}")
+                break       # tried again in a while
+            except Exception as e:  # noqa: BLE001 - kept as failed, the next one tried
+                log(f"FAILED: {type(e).__name__}: {e}")
+                (d / "summary.json").write_text(json.dumps({"failed": f"{type(e).__name__}: {e}"}))
+
+
+def abtests_state() -> list[dict]:
+    """The A/B tests, newest first, for the admin page: each run's time, photos placed, faces and check."""
+    out = []
+    for d in sorted(ABTESTS.iterdir(), reverse=True)[:20] if ABTESTS.is_dir() else []:
+        req, summ = _read_json(d / "request.json") or {}, _read_json(d / "summary.json")
+        runs = {}
+        for v, r in ((summ or {}).get("runs") or {}).items():
+            runs[v] = {k: r.get(k) for k in ("seconds", "tools_seconds", "placed", "photos_in", "faces", "failed")} | {
+                "check": (r.get("check") or {}).get("ok"), "check_why": ((r.get("check") or {}).get("why") or "")[:160],
+                "placings": 2 if any(f.get("step") == "plain_sift" for f in r.get("fallbacks") or []) else 1}
+        out.append({"id": d.name, "project": req.get("project"), "why": req.get("why"), "order": req.get("order"),
+                    "state": "done" if summ and not summ.get("failed") else "failed" if summ else "waiting",
+                    "failed": (summ or {}).get("failed"), "runs": runs})
+    return out
+
+
+def admin_abtest(body: dict) -> dict:
+    """Queue A/B tests of COLMAP 3.9.1 against 4.2.1 (queue_abtests()): {"projects": "<project ids>"}, or none for the
+    usual set (AB_DEFAULT)."""
+    ids = [i for i in re.split(r"[\s,]+", str(body.get("projects") or "")) if i]
+    n = queue_abtests([(i, "asked for") for i in ids] if ids else list(AB_DEFAULT))
+    return {"result": f"queued {n} A/B test(s): each runs on a machine when nothing of anyone's own is waiting"}
+
+
 def admin_remake_tier(body: dict) -> dict:
     """Queue the meshes of one of mesh_tiers()'s tiers to be made again at low priority (queue_remakes()):
     {"tier": "pipeline" | "fallback" | "new_data", "add": true to add new photos to meshes' models rather than remake}."""
@@ -14394,6 +14482,7 @@ def main() -> None:
     threading.Thread(target=adopt_old_pools, daemon=True).start()
     threading.Thread(target=retire_all_covered, daemon=True, name="retire-covered").start()
     threading.Thread(target=holds_worker, daemon=True, name="video-holds").start()
+    threading.Thread(target=abtest_worker, daemon=True, name="abtests").start()
     threading.Thread(target=rest_existing_meshes, daemon=True).start()
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
     threading.Thread(target=shape_existing_meshes, daemon=True).start()
@@ -14435,7 +14524,7 @@ def main() -> None:
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rejected-check": rejected_check, "backup-now": admin_backup_now, "texture-again": admin_texture_again, "rest": admin_rest,
                                        "remesh-untied": admin_remesh_untied, "inputs-check": admin_inputs_check,
-                                       "old-decide": admin_old_decide, "lost-decide": admin_lost_decide, "remake-tier": admin_remake_tier,
+                                       "old-decide": admin_old_decide, "lost-decide": admin_lost_decide, "remake-tier": admin_remake_tier, "abtest": admin_abtest,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteer-trial": admin_volunteer_trial, "volunteer-trust": admin_volunteer_trust,

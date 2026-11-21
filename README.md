@@ -298,6 +298,14 @@ CPU-SIFT ones last), on an area's climb of each: a climb's mesh by rebuilding it
 again, a pool's by meshing its climbs together again. Raise `PIPELINE_VERSION` with any change to how photos are
 placed or meshed, and `TEXTURE_VERSION` with any change to texturing alone.
 
+**A/B tests of COLMAP.** *Queue A/B tests of COLMAP* on the admin page meshes projects' photos with COLMAP 3.9.1 and
+4.2.1, one after the other on one machine (which goes first alternates from test to test), as machines' work after
+everyone's own and before meshes made again as theirs are old; nothing is meshed for the site. Empty, it queues the
+usual set: Drifter/Smoking Boulder, 9f3b, Double Orifice and a 39-photo climb whose 4.2.1 model just failed its check.
+Results (each run's tool time, photos placed, faces, its check, and whether it was placed twice) show beside the button;
+each test's folder in `data/abtests/` keeps both meshes, their logs and `summary.json`. Machines do them from script
+version 30 on.
+
 **Adding photos to a model.** *Add new photos* on the admin page adds the photos a mesh wasn't made from to its model
 (backend/incremental.py, through pycolmap 4.2.1 in the machines' image), rather than placing every photo again: the new
 photos' features made as the mesh's were, matched with every photo, registered with the model's cameras and lenses held
@@ -1582,6 +1590,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_terrain.py     # offline: elevation squares, with stand-ins for USGS's and IGN's services
     python3 tests/test_skyline.py     # offline: facing from a made-up skyline, and each way it gives up early
     python3 tests/test_incremental.py # offline: adding photos to a kept model: the re-solve gates, the pipeline's side
+    python3 tests/test_abtest.py      # offline: A/B tests of COLMAP 3.9.1 against 4.2.1: options, a machine's job, the queue
     python3 tests/test_video_holds.py # offline: boulders and climbs held up by videos, given up on, the phone told, a boulder at a time
     python3 tests/test_tiers.py       # offline: what made each mesh, what's out of date by tier, remaking a tier
     python3 tests/test_textmask.py    # offline: text masked for texturing (the detector itself only if cached, or MODELS=1)

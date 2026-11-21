@@ -177,6 +177,9 @@
     <div class="row"><button class="sec" id="remesh-untied">Mesh again the boulders meshed before ties were recorded</button><span class="note" id="remesh-note"></span></div>
     <div id="old-meshes" class="note"></div>
     <div id="tiers" class="note"></div>
+    <div class="row"><input type="text" id="ab-ids" placeholder="project ids (empty: Drifter, 9f3b, Double Orifice and one more)" style="flex:1;min-width:200px">
+      <button class="sec" id="ab-queue" title="Mesh each project's photos with COLMAP 3.9.1 and 4.2.1, one after the other on one machine, after everyone's own work and before meshes made again as theirs are old. Nothing is meshed for the site">Queue A/B tests of COLMAP</button></div>
+    <div id="abtests" class="note"></div>
     <div class="row">
       <button class="sec" id="tier-texture" title="Colour them again from their photos as meshes are textured now, keeping their shape and cleanup: a minute or two each">Texture again</button>
       <button class="sec" id="tier-pipeline" title="Make them again from the photos they have, as meshes are made now, at low priority: only when no area has anything else, after old meshes">Remake, low priority</button>
@@ -479,6 +482,15 @@ function addsNote(a){
     ${(a.resolves || []).length ? `<details><summary>The latest re-solves, with what each gate measured</summary><ul>${a.resolves.map(r =>
       `<li>${esc(r.mesh)} (to ${esc(r.to)}): ${esc(r.gate)} <small>${esc(JSON.stringify(r.measured))}</small></li>`).join('')}</ul></details>` : ''}`;
 }
+// A/B tests of COLMAP 3.9.1 against 4.2.1 (server abtests_state()): each run's time, photos placed, faces and check
+function abNote(tests){
+  if (!tests?.length) return '';
+  const run = r => !r ? '–' : r.failed ? `<span class="bad">failed</span>` : `${Math.round((r.tools_seconds || 0) / 60)} min, ${r.placed ?? '?'} of ${r.photos_in ?? '?'} placed,
+    ${r.faces != null ? Math.round(r.faces / 1000) + 'k faces' : '?'}, check <span class="${r.check ? 'ok' : 'bad'}" title="${esc(r.check_why)}">${r.check ? 'passed' : 'failed'}</span>${r.placings > 1 ? ', placed twice' : ''}`;
+  return `<b>A/B tests</b><table><tr><th>Project</th><th>State</th><th>COLMAP 3.9.1</th><th>COLMAP 4.2.1</th></tr>${tests.map(t =>
+    `<tr><td title="${esc(t.why)}">${esc(t.project)}<br><small>${esc((t.order || []).join(' then '))}</small></td><td>${esc(t.state)}${t.failed ? `: ${esc(t.failed)}` : ''}</td>
+      <td>${run(t.runs?.['3.9.1'])}</td><td>${run(t.runs?.['4.2.1'])}</td></tr>`).join('')}</table>`;
+}
 // What's out of date, by tier (server mesh_tiers()): what each button remakes or textures again, and how many
 function tiersNote(t){
   if (!t) return '';
@@ -723,6 +735,7 @@ function render(s){
   $('#wide-retry').checked = v['youtube.wide_retry'];
   $('#old-meshes').innerHTML = oldMeshesNote(s.old_meshes);
   $('#tiers').innerHTML = tiersNote(s.tiers);
+  $('#abtests').innerHTML = abNote(s.abtests);
   $('#tier-texture').disabled = !s.tiers?.texture; $('#tier-pipeline').disabled = !s.tiers?.pipeline;
   $('#tier-fallback').disabled = !s.tiers?.fallback?.n; $('#tier-new').disabled = $('#tier-add').disabled = !s.tiers?.new_data;
   $('#rest-auto').checked = v['boulders.rest_auto'];
@@ -1145,6 +1158,7 @@ $('#texblack').onclick = async () => {
   if (!ids.length || !confirm(`Texture again the ${ids.length} mesh(es) whose textures are black-patched? A minute or two each, at low priority.`)) return;
   try { msg((await call('/api/admin/actions/texture-again', { ids: ids.join(' ') })).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); }
 };
+$('#ab-queue').onclick = async () => { try { msg((await call('/api/admin/actions/abtest', { projects: $('#ab-ids').value })).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };
 $('#tier-texture').onclick = async () => {
   const ids = state?.tiers?.texture_ids || [];
   if (!ids.length || !confirm(`Texture again the ${ids.length} mesh(es) textured by older texturing? A minute or two each, at low priority.`)) return;

@@ -344,7 +344,7 @@ gpu, tasks, small, said = fit(GPU, "auto", "NVIDIA GeForce GTX 1060 3GB", 3072, 
 assert gpu == [] and tasks == worker.CPU_TASKS and small == "NVIDIA GeForce GTX 1060 3GB (3.0 GB)" and "on the CPU" in said[0], "Gerty"
 gpu, tasks, small, said = fit(GPU, "auto", "NVIDIA GeForce RTX 2060", 6144, ())
 assert gpu == GPU and tasks == ("beta", "scale", "filter") and small is None, tasks
-assert said == ["NVIDIA GeForce RTX 2060 (6.0 GB in all) can't hold reconstruct (7.4 GB), splat (7.8 GB): not taking those"], said
+assert said == ["NVIDIA GeForce RTX 2060 (6.0 GB in all) can't hold reconstruct (7.4 GB), splat (7.8 GB), abtest (7.4 GB): not taking those"], said
 gpu, tasks, _, said = fit(GPU, "auto", "NVIDIA GeForce RTX 2070", 8192, ())
 assert gpu == GPU and tasks == worker.TASKS and said == [], "blackbox: the server fits each job to what's free"
 gpu, tasks, _, said = fit(GPU, "auto", "NVIDIA GeForce RTX 2060", 6144, ("reconstruct",))

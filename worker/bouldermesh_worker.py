@@ -110,14 +110,16 @@ from pathlib import Path
 # 26: on a Mac, --check offers to start it by itself as a launchd agent; checks the room on Docker Desktop's disk
 # 27: takes a scenery job's frames (scenery/), which before it refused as something a job shouldn't hold
 # 29: takes a mesh's kept reconstruction and features (kept/), for adding photos to its model (incremental.py)
-VERSION = 29
+# 30: does A/B tests of meshing (remote_job.py --task abtest), with a GPU
+VERSION = 30
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
-TASKS = ("reconstruct", "beta", "scale", "filter", "splat")    # remote_job.py's: meshing a climb, finding its beta, finding its size,
-                                                    # filtering a harvest's photos, fitting a capture's scenery
+TASKS = ("reconstruct", "beta", "scale", "filter", "splat", "abtest")    # remote_job.py's: meshing a climb, finding its beta, finding
+                                                    # its size, filtering a harvest's photos, fitting a capture's scenery,
+                                                    # meshing photos with two COLMAPs to compare them
 # the least GPU memory the server reckons each kind of job may need (pullwork.gpu_need_mb(task, 0)), in MB: a GPU with
 # less than that in all is never given one, so it doesn't take it; with less than any, it works on the CPU instead
-GPU_LEAST_MB = {"reconstruct": 7600, "beta": 4000, "scale": 4000, "filter": 4000, "splat": 8000}
+GPU_LEAST_MB = {"reconstruct": 7600, "beta": 4000, "scale": 4000, "filter": 4000, "splat": 8000, "abtest": 7600}
 SMALL_GPU_MB = min(GPU_LEAST_MB.values())
 BOOT_GRACE = 300            # seconds after the computer starts in which a GPU's driver that doesn't answer yet is waited for
 CPU_TASKS = ("filter", "beta")     # what a machine without a GPU takes, unless --tasks says otherwise

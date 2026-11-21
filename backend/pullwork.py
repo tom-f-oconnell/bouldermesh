@@ -81,6 +81,7 @@ STATES = ("working", "idle", "held back", "awaiting approval", "offline")
 # moderators', then what users added that's been approved, then meshes made again as theirs are old, then what users
 # added that nobody has approved yet (meshed for them to see, when there's nothing else to do)
 PRIO_OWNER, PRIO_MODERATOR, PRIO_USER, PRIO_BACKFILL, PRIO_UNAPPROVED = range(5)
+PRIO_TEST = 2.5     # the site's A/B tests of meshing: after everyone's own work, before meshes made again as theirs are old
 _prio = threading.local()
 
 
@@ -1059,7 +1060,7 @@ def gpu_need_mb(kind: str, photos: int) -> int:
     fewer), its largest use, should COLMAP not place them; for the others, OTHER_GPU_MB."""
     if kind == "splat":
         return SPLAT_GPU_MB
-    if kind != "reconstruct":
+    if kind not in ("reconstruct", "abtest"):
         return OTHER_GPU_MB
     n = max(vggt_place.MIN_PHOTOS, min(photos, GPU_NEED_PHOTOS))
     return vggt_place.GPU_BASE_MB + vggt_place.GPU_SPARE_MB + vggt_place.GPU_PER_PHOTO_MB * n
