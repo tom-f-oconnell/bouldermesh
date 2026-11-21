@@ -6,6 +6,7 @@ import platform.Foundation.NSDate
 import platform.Foundation.timeIntervalSince1970
 import platform.AudioToolbox.AudioServicesPlaySystemSound
 import platform.UIKit.UIColor
+import platform.UIKit.navigationController
 import platform.UIKit.UIModalPresentationFullScreen
 import platform.UIKit.UITextField
 import platform.UIKit.secondaryLabelColor
@@ -80,6 +81,7 @@ class Home(private val app: App) : Form("boulderme.sh") {
     override fun appear() {
         app.uploader.onChange = { rebuild() }
         app.statuses.refresh { rebuild() }      // each time Home comes up: whether what was sent is meshed yet
+        BetaSync.send(app) { rebuild() }        // beta marked with no signal, sent
         app.meshUpdates.refresh { rebuild() }   // and whether the meshes kept here changed on the server
     }
 
@@ -98,18 +100,19 @@ class Home(private val app: App) : Form("boulderme.sh") {
      * Starts a capture. Before the phone's first outdoor one, while the compass hasn't been calibrated, asks whether to
      * do that first (`compass`); then says how its kind goes (`guide`), unless that was said not to be shown again.
      */
-    fun capture(mesh: String?, name: String, set: String? = null, guide: Boolean = true, gym: Boolean = false, compass: Boolean = true) {
+    fun capture(mesh: String?, name: String, set: String? = null, guide: Boolean = true, gym: Boolean = false, compass: Boolean = true,
+                focus: sh.boulderme.core.Focus? = null) {
         if (compass && !gym && !app.store.compassAsked && app.store.magNote.isEmpty()) {
             app.store.compassAsked = true
             return screen.confirm(CaptureGuide.COMPASS_TITLE, CaptureGuide.COMPASS_TEXT, "Calibrate first", "Not now", then = { push(Calibrate(app)) },
-                otherwise = { capture(mesh, name, set, guide, gym, compass = false) })
+                otherwise = { capture(mesh, name, set, guide, gym, compass = false, focus = focus) })
         }
         val kind = CaptureGuide.kind(mesh, set, gym)
         if (guide && kind.key !in CaptureGuide.hidden(app.store.guidesHidden)) return screen.guide(CaptureGuide.title(kind), CaptureGuide.text(kind)) { hide ->
             if (hide) app.store.guidesHidden = CaptureGuide.hide(app.store.guidesHidden, kind)
-            capture(mesh, name, set, false, gym, compass = false)
+            capture(mesh, name, set, false, gym, compass = false, focus = focus)
         }
-        val c = CaptureController(app, mesh, name, set, gym = gym) { id -> if (id != null) push(Done(app, id)) }
+        val c = CaptureController(app, mesh, name, set, focus, gym = gym) { id -> if (id != null) push(Done(app, id)) }
         c.modalPresentationStyle = UIModalPresentationFullScreen
         screen.presentViewController(c, animated = true, completion = null)
     }
@@ -179,9 +182,10 @@ class Home(private val app: App) : Form("boulderme.sh") {
                     .apply { setContentCompressionResistancePriority(1000f, forAxis = UILayoutConstraintAxisHorizontal) },     // on one line
                 makeButton("View") { push(ViewerController(app, p.mesh, p.name.ifEmpty { p.mesh })) },
                 makeButton("Remove", Look.PLAIN) { app.store.removePlan(p.mesh); rebuild() })
-            // for one of its sets of beta: that set's holds from close, all round, as a replica of them needs
-            if (p.setsWithHolds.isNotEmpty()) text("Or for a set of beta, its holds in detail:", small = true)
-            for (set in p.setsWithHolds) button("Capture hold closeups${set.name?.takeIf { p.setsWithHolds.size > 1 }?.let { ": $it" } ?: ""} (${set.targets.size} hold${if (set.targets.size == 1) "" else "s"})") { capture(p.mesh, p.name.ifEmpty { p.mesh }, set.id) }
+            // for sets of beta: the holds chosen of them (FocusForm), from close, all round, as a replica of them needs
+            if (p.setsWithHolds.isNotEmpty()) button("Capture hold closeups… (${p.setsWithHolds.size} set${if (p.setsWithHolds.size == 1) "" else "s"} of beta)") {
+                push(FocusForm(p) { f -> screen.navigationController?.popToViewController(screen, animated = true); capture(p.mesh, p.name.ifEmpty { p.mesh }, sh.boulderme.core.BetaDrafts.FOCUS, focus = f) })
+            }
         }
         app.meshUpdates.error?.let { text(it, BAD, small = true) }
         button("Get meshes…") { push(Browse(app)) }
@@ -506,7 +510,8 @@ fun Form.reopenButton(app: App, id: String, u: UploadState) {
     val record = Reopen.record(Files.readText("${app.store.captureDir(id)}/capture.json"))
     Reopen.cannot(record, u.mesh?.let { app.store.plan(it)?.key }, sent)?.let { text(it, UIColor.secondaryLabelColor, small = true); return }
     button("Add more: scenery, a panorama or photos") {
-        val c = CaptureController(app, u.mesh, u.name, record?.detail?.set, reopen = id) { rebuild() }
+        val focus = record?.detail?.takeIf { it.set == sh.boulderme.core.BetaDrafts.FOCUS }?.let { sh.boulderme.core.Focus(it.sets, it.left) }
+        val c = CaptureController(app, u.mesh, u.name, record?.detail?.set, focus, reopen = id) { rebuild() }
         c.modalPresentationStyle = UIModalPresentationFullScreen
         screen.presentViewController(c, animated = true, completion = null)
     }

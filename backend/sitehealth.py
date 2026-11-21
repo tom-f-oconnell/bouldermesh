@@ -60,7 +60,7 @@ def summary(views: list[dict], errors: list[dict], slow: list[dict], since: str,
     left = [v for v in vs if v.get("event") == "left"]
     frames = [v for v in vs if v.get("event") == "frames" and isinstance(v.get("frames"), dict)]
     jerky = [v for v in frames if (v["frames"].get("median_ms") or 0) > SLOW_FRAMES_MS]
-    every = [e for e in errors if within(e) and not NOISE.search(e.get("message") or "")]
+    every = [e for e in errors if within(e) and not (NOISE.search(e.get("message") or "") and not (e.get("app") and "WKWebView" in (e.get("message") or "")))]
     errs = [e for e in every if not e.get("old")]     # from pages older than the one served then: what's live may have fixed it
     old = [e for e in every if e.get("old")]
     before = {(e.get("kind"), e.get("message")) for e in errors if e.get("time", "") < since}

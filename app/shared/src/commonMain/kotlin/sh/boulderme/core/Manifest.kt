@@ -84,7 +84,8 @@ data class RecordHold(
 )
 
 /** The set of beta a capture was for, and what it got of each of its holds. */
-@Serializable data class RecordDetail(val set: String, val holds: List<RecordHold>)
+// sets, left: for the phone's FOCUS set (BetaDrafts.focused()), the sets chosen and the holds (targets) of theirs left out
+@Serializable data class RecordDetail(val set: String, val holds: List<RecordHold>, val sets: List<String> = emptyList(), val left: List<String> = emptyList())
 
 /**
  * A frame for the scenery round the rock (SceneryWalk, PanoTurn), not for its mesh: its file (in the capture's

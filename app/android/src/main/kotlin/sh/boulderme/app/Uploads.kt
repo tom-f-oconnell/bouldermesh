@@ -283,8 +283,9 @@ fun ViewerScreen(a: MainActivity, s: Screen.Viewer, go: (Screen) -> Unit) {
                         if (request.isForMainFrame) failed = error.description?.toString() ?: "no connection"
                     }
                 }
-                // a WebView has no navigator.share: the page's Share sends its links to the phone's share sheet through this
-                addJavascriptInterface(ShareSheet(ctx), "BoulderMeshApp")
+                // a WebView has no navigator.share: the page's Share sends its links to the phone's share sheet through this;
+                // and the page's beta changed with no signal is kept by the app through it (BetaDrafts)
+                addJavascriptInterface(ShareSheet(ctx, a.store), "BoulderMeshApp")
                 // the page keeps its token in the site's own storage: put this phone's there, then open the mesh, in the
                 // site's viewer alone (app)
                 val page = "$server/m/${s.mesh}?app=android" + if (copy != null && !copy.textures) "&notex=1" else ""
@@ -295,8 +296,22 @@ fun ViewerScreen(a: MainActivity, s: Screen.Viewer, go: (Screen) -> Unit) {
     }
 }
 
-/** What the viewer's page may ask of the app (as window.BoulderMeshApp): a link, to the phone's share sheet. */
-class ShareSheet(private val ctx: android.content.Context) {
+/**
+ * What the viewer's page may ask of the app (as window.BoulderMeshApp): a link, to the phone's share sheet; and to keep
+ * the sets of beta it changed with no signal (BetaDrafts), and give them back.
+ */
+class ShareSheet(private val ctx: android.content.Context, private val store: Store) {
+    private val mesh = Regex("[0-9a-f]{6,32}")
+
+    @JavascriptInterface
+    fun keptBeta(mesh: String): String = if (this.mesh.matches(mesh)) sh.boulderme.core.BetaDrafts.write(store.drafts(mesh)) else "[]"
+
+    @JavascriptInterface
+    fun keepBeta(mesh: String, drafts: String) {
+        if (!this.mesh.matches(mesh) || drafts.length > 2_000_000) return
+        store.saveDrafts(mesh, sh.boulderme.core.BetaDrafts.parse(drafts))
+    }
+
     @JavascriptInterface
     fun share(title: String, url: String) {
         if (!url.startsWith("https://") && !url.startsWith("http://")) return

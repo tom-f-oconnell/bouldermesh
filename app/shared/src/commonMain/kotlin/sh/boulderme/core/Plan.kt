@@ -47,6 +47,8 @@ data class Plan(
 
         /** Reads a plan. Throws SerializationException if it isn't one. */
         fun parse(text: String): Plan = json.decodeFromString(serializer(), text)
+        /** A plan as text, as parse() reads it: one changed on the phone (BetaDrafts), kept with a capture. */
+        fun write(plan: Plan): String = json.encodeToString(serializer(), plan)
     }
 }
 
@@ -79,9 +81,13 @@ data class Need(@SerialName("gsd_mm") val gsdMm: Double? = null, val views: Int 
                 @SerialName("close_m") val closeM: Double? = null, @SerialName("view_deg") val viewDeg: Double? = null,
                 @SerialName("sides_deg") val sidesDeg: Double? = null, val ties: Int = 0, @SerialName("facing_deg") val facingDeg: Double? = null)
 
-/** A set of beta made by hand on the site: its name, the climb it's for if it says, and which of the plan's targets are its holds. */
+/**
+ * A set of beta made by hand on the site: its name, the climb it's for if it says, and which of the plan's targets are
+ * its holds. The phone's FOCUS set (BetaDrafts.focused()) also says which sets it's of, and which of their holds it left out.
+ */
 @Serializable
-data class PlanSet(val id: String, val name: String? = null, val climb: String? = null, val targets: List<String> = emptyList())
+data class PlanSet(val id: String, val name: String? = null, val climb: String? = null, val targets: List<String> = emptyList(),
+                   val of: List<String> = emptyList(), val left: List<String> = emptyList())
 
 /** How near where an earlier photo was taken (a "view" target) a photo has to be taken to count as the same view again. */
 @Serializable

@@ -152,6 +152,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
     var guiding by remember { mutableStateOf<Screen.Capture?>(null) }
     var compass by remember { mutableStateOf<Screen.Capture?>(null) }
     var showCaptures by remember { mutableStateOf(false) }
+    var focusing by remember { mutableStateOf<sh.boulderme.core.Plan?>(null) }     // a mesh whose holds in detail are being chosen
     val begin: (Screen.Capture) -> Unit = { c ->
         if (a.has(Manifest.permission.CAMERA) && a.has(Manifest.permission.ACCESS_FINE_LOCATION)) go(c)
         else { wanted = c; ask.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
@@ -172,7 +173,7 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
     val sent by Statuses.sent.collectAsState()
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { Statuses.refresh(a.store, a.api) }      // each time Home comes up: whether what was sent is meshed yet
-    LaunchedEffect(Unit) { MeshUpdates.refresh(a) }                 // and whether the meshes kept here changed on the server
+    LaunchedEffect(Unit) { BetaSync.send(a); tick++; MeshUpdates.refresh(a) }   // beta marked with no signal sent; whether the meshes kept here changed
     val fresh by MeshUpdates.state.collectAsState()
     val updating by MeshUpdates.busy.collectAsState()
     val updateFailed by MeshUpdates.error.collectAsState()
@@ -217,10 +218,10 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                     OutlinedButton(onClick = { go(Screen.Viewer(p.mesh, p.name.ifEmpty { p.mesh })) }) { Text("View") }
                     TextButton(onClick = { a.store.removePlan(p.mesh); tick++ }) { Text("Remove") }
                 }
-                // for one of its sets of beta: that set's holds from close, all round, as a replica of them needs
-                if (p.setsWithHolds.isNotEmpty()) Text("Or for a set of beta, its holds in detail:", style = MaterialTheme.typography.bodySmall)
-                for (set in p.setsWithHolds) OutlinedButton(onClick = { start(Screen.Capture(p.mesh, p.name.ifEmpty { p.mesh }, set.id)) }) {
-                    Text("Capture hold closeups${set.name?.takeIf { p.setsWithHolds.size > 1 }?.let { ": $it" } ?: ""} (${set.targets.size} hold${if (set.targets.size == 1) "" else "s"})")
+                // for sets of beta: the holds chosen of them (FocusDialog), from close, all round, as a replica of them needs
+                if (p.setsWithHolds.isNotEmpty()) OutlinedButton(onClick = { focusing = p }) {
+                    val n = p.setsWithHolds.size
+                    Text("Capture hold closeups… ($n set${if (n == 1) "" else "s"} of beta)")
                 }
             }
         }
@@ -283,6 +284,12 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                     if (server.meshed != null) Text(VIEW_HINT, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+        }
+    }
+    focusing?.let { p ->
+        FocusDialog(p, dismiss = { focusing = null }) { f ->
+            focusing = null
+            start(Screen.Capture(p.mesh, p.name.ifEmpty { p.mesh }, sh.boulderme.core.BetaDrafts.FOCUS, focus = f))
         }
     }
     guiding?.let { c ->

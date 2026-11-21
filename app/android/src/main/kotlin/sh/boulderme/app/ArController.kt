@@ -73,7 +73,7 @@ class ArController(
 ) : GLSurfaceView.Renderer {
     val id: String = reopen ?: (java.lang.Long.toString(System.currentTimeMillis() / 1000, 36) + (100..999).random())
     private val dir = store.captureDir(id)
-    init { plan?.let { store.keepPlan(id, it.mesh) } }
+    init { plan?.let { store.keepPlan(id, it) } }
     private val guide = guide.takeIf { plan != null }
     private val core = CaptureSession(plan, this.guide, id, BuildInfo.APP, "${Build.MANUFACTURER} ${Build.MODEL}", System.currentTimeMillis() / 1000.0)
     private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = store.credit.ifBlank { null } }, set, store.anonFirst, store.levelLimit, store.levelTilts, gym = gym && plan == null,

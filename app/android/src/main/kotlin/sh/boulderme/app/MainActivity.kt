@@ -48,6 +48,7 @@ sealed interface Screen {
     data object Calibrate : Screen
     /** mesh: the mesh being added to, or null for a rock with none. */
     data class Capture(val mesh: String?, val name: String, val set: String? = null,      // set: the set of beta it's for
+                       val focus: sh.boulderme.core.Focus? = null,                         // for BetaDrafts.FOCUS: the sets and holds chosen
                        val reopen: String? = null,                                         // a capture finished earlier, to carry on (Reopen)
                        val gym: Boolean = false) : Screen                                  // a gym climb, its holds found by their colour
     data class Done(val id: String) : Screen

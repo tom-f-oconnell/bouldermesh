@@ -208,14 +208,15 @@ private fun machine(): String = memScoped { val u = alloc<utsname>(); uname(u.pt
  */
 @OptIn(NativeRuntimeApi::class)
 class CaptureController(private val app: App, mesh: String?, private val name: String, set: String? = null,
+                        focus: sh.boulderme.core.Focus? = null,     // for BetaDrafts.FOCUS: the sets and holds chosen
                         reopen: String? = null,     // the id of a capture finished earlier, to carry on (Reopen)
                         gym: Boolean = false,       // a gym climb: its holds found by their colour (CaptureFlow's gym)
                         private val done: (String?) -> Unit) : UIViewController(nibName = null, bundle = null) {
-    private val plan = mesh?.let { app.store.plan(it) }
+    private val plan = mesh?.let { app.store.plan(it) }?.let { p -> focus?.let { sh.boulderme.core.BetaDrafts.focused(p, it) } ?: p }
     private val guide: GuideMesh? = if (plan != null && mesh != null) app.store.guide(mesh) else null
     val id: String = reopen ?: ((NSDate().timeIntervalSince1970.toLong()).toString(36) + (100..999).random())
     private val dir = app.store.captureDir(id)
-    init { plan?.let { app.store.keepPlan(id, it.mesh) } }
+    init { plan?.let { app.store.keepPlan(id, it) } }
     private val core = CaptureSession(plan.takeIf { guide != null }, guide, id, IosStore.APP, machine(), NSDate().timeIntervalSince1970)
     private val flow = CaptureFlow(core.apply { licence = LICENCE; credit = this@CaptureController.app.store.credit.ifBlank { null } }, set, app.store.anonFirst,
         app.store.levelLimit, app.store.levelTilts, gym = gym && mesh == null,

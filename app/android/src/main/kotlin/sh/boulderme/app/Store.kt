@@ -16,6 +16,8 @@ import sh.boulderme.core.GuideMesh
 import sh.boulderme.core.SentCapture
 import sh.boulderme.core.UploadStatus
 import sh.boulderme.core.Plan
+import sh.boulderme.core.BetaDrafts
+import sh.boulderme.core.DraftSet
 import java.io.File
 
 /** What the app keeps on the phone: its settings, the plans and guides downloaded for use with no signal, and captures. */
@@ -142,10 +144,20 @@ class Store(context: Context) {
         File(plans, "$mesh.json").writeText(plan)       // last, so that a plan there is one with its guide
     }
 
-    fun plan(mesh: String): Plan? = runCatching { Plan.parse(File(plans, "$mesh.json").readText()) }.getOrNull()
+    /** A mesh's plan, with the sets of beta changed on the phone and not yet sent in it (BetaDrafts). */
+    fun plan(mesh: String): Plan? = runCatching { BetaDrafts.applied(Plan.parse(File(plans, "$mesh.json").readText()), drafts(mesh)) }.getOrNull()
     fun guide(mesh: String): GuideMesh? = runCatching { GuideMesh.parse(File(plans, "$mesh.bin").readBytes()) }.getOrNull()
     /** A copy of the plan a capture goes by, kept with it: what each of its photos was for is told from it, after the plan's gone. */
-    fun keepPlan(id: String, mesh: String) = runCatching { File(plans, "$mesh.json").copyTo(File(captureDir(id), "plan.json"), overwrite = true) }
+    fun keepPlan(id: String, plan: Plan) = runCatching { File(captureDir(id), "plan.json").writeText(Plan.write(plan)) }
+
+    // ---- sets of beta changed in the viewer with no signal, to send once there is (BetaDrafts): beside the plans,
+    // and kept when a mesh is removed, until they're sent
+    fun drafts(mesh: String): List<DraftSet> = BetaDrafts.parse(runCatching { File(plans, "$mesh.drafts").readText() }.getOrNull())
+    @Synchronized fun saveDrafts(mesh: String, drafts: List<DraftSet>) {
+        val f = File(plans, "$mesh.drafts")
+        if (drafts.isEmpty()) f.delete() else File(plans, "$mesh.drafts.tmp").apply { writeText(BetaDrafts.write(drafts)) }.renameTo(f)
+    }
+    fun draftMeshes(): List<String> = (plans.listFiles { f -> f.name.endsWith(".drafts") } ?: emptyArray()).map { it.name.removeSuffix(".drafts") }
 
     /** A mesh's locate pack, kept beside its plan once fetched (PackLocator); null if none is kept or it can't be read. */
     fun locatePack(mesh: String): sh.boulderme.core.LocatePack? =
@@ -158,7 +170,7 @@ class Store(context: Context) {
     /** Meshes kept for the viewer with no signal. */
     val offline = OfflineStore(File(root, "viewer"))
     fun downloaded(): List<Plan> = (plans.listFiles { f -> f.name.endsWith(".json") } ?: emptyArray())
-        .mapNotNull { f -> runCatching { Plan.parse(f.readText()) }.getOrNull() }.sortedBy { it.name.lowercase() }
+        .mapNotNull { f -> plan(f.name.removeSuffix(".json")) }.sortedBy { it.name.lowercase() }
 
     // ---- captures -----------------------------------------------------------------------------------------------------
     /** Reports of the app crashing, written as it did (Crashes), each sent with the next capture uploaded and then gone. */

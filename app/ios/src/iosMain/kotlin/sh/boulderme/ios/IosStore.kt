@@ -86,10 +86,19 @@ class IosStore {
         Files.write("$plans/$mesh.json", plan)       // last, so that a plan there is one with its guide
     }
 
-    fun plan(mesh: String): Plan? = Files.readText("$plans/$mesh.json")?.let { runCatching { Plan.parse(it) }.getOrNull() }
+    /** A mesh's plan, with the sets of beta changed on the phone and not yet sent in it (BetaDrafts). */
+    fun plan(mesh: String): Plan? = Files.readText("$plans/$mesh.json")?.let { runCatching { sh.boulderme.core.BetaDrafts.applied(Plan.parse(it), drafts(mesh)) }.getOrNull() }
     fun guide(mesh: String): GuideMesh? = Files.readBytes("$plans/$mesh.bin")?.let { runCatching { GuideMesh.parse(it) }.getOrNull() }
     /** A copy of the plan a capture goes by, kept with it: what each of its photos was for is told from it, after the plan's gone. */
-    fun keepPlan(id: String, mesh: String) { Files.readBytes("$plans/$mesh.json")?.let { Files.write("${captureDir(id)}/plan.json", it) } }
+    fun keepPlan(id: String, plan: Plan) { Files.write("${captureDir(id)}/plan.json", Plan.write(plan)) }
+
+    // ---- sets of beta changed in the viewer with no signal, to send once there is (BetaDrafts): beside the plans,
+    // and kept when a mesh is removed, until they're sent
+    fun drafts(mesh: String): List<sh.boulderme.core.DraftSet> = sh.boulderme.core.BetaDrafts.parse(Files.readText("$plans/$mesh.drafts"))
+    fun saveDrafts(mesh: String, drafts: List<sh.boulderme.core.DraftSet>) {
+        if (drafts.isEmpty()) Files.delete("$plans/$mesh.drafts") else Files.write("$plans/$mesh.drafts", sh.boulderme.core.BetaDrafts.write(drafts))
+    }
+    fun draftMeshes(): List<String> = Files.list(plans).filter { it.endsWith(".drafts") }.map { it.removeSuffix(".drafts") }
 
     /** A mesh's locate pack, kept beside its plan once fetched (fetchLocatePack()); null if none is kept or it can't be read. */
     fun locatePack(mesh: String): sh.boulderme.core.LocatePack? =

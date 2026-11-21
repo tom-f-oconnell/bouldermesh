@@ -2113,7 +2113,8 @@ def offline_bundle(mid: str) -> dict | None:
         if prefix:
             libs.append(imports[prefix] + spec[len(prefix):] if prefix.endswith("/") else imports[prefix])
     files += [{"url": u, "lib": True} for u in dict.fromkeys(libs)]
-    files += [{"url": u} for u in OFFLINE_API + ("/api/climbs?limit=100&offset=0", "/api/climbs?meshed=1&limit=100&offset=0",
+    # and who's signed in (the phone's account, fetched with its token), so that beta can be marked with no signal
+    files += [{"url": u} for u in OFFLINE_API + ("/api/account", "/api/climbs?limit=100&offset=0", "/api/climbs?meshed=1&limit=100&offset=0",
                                                  f"/api/meshes/{mid}/cleanup", f"/api/meshes/{mid}/beta")]
     files.append(got["glb"])
     if got["faces"]:
@@ -4859,7 +4860,9 @@ def mesh_files_fields(r: dict) -> None:
         r["orientation"] = orientation.load(MESHES / r["id"])
         r["sources"] = provenance.summary(mesh_record(MESHES / r["id"]))
         r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
-        r["marked"] = sum(len(one["holds"]) for one in beta_mod.load_sets(MESHES / r["id"]))
+        sets = beta_mod.load_sets(MESHES / r["id"])
+        r["marked"] = sum(len(one["holds"]) for one in sets)
+        r["beta_sets"] = len(beta_mod.visible(sets))     # shared ones: the view's Beta (n) counts these and videos with holds
         r["scale"] = scale_mod.summary(scale_mod.load(MESHES / r["id"]))
         r["tie"] = mesh_tie(r["id"]) if r.get("adds_to") else None
     except Exception as e:

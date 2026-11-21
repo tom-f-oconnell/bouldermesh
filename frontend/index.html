@@ -124,7 +124,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   body.readonly .rec,body.readonly .retry,body.readonly #p-interrupted,body.readonly button.back,body.readonly button.all,body.readonly label.file,
   body.readonly .stopnow,body.readonly .stoplater,body.readonly .resume,body.readonly .retryfailed,body.readonly .checknew,body.readonly .refilter,body.readonly .rebuildchanged,
   body.readonly .rebuildall,body.readonly .boulders,body.readonly .meshboulder,body.readonly .setll,body.readonly #pieces .edit,body.readonly #pieces .redo,body.readonly .rebuild,
-  body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly:not(.account) button.mark,body.readonly:not(.account) .clearmine,body.readonly:not(.account) #vmark,
+  body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly:not(.account) button.mark,body.readonly:not(.account) .clearmine,body.readonly:not(.account) #vbadd,
   body.readonly .tryskipped,body.readonly .editopt,body.readonly .pause,body.readonly .unpause,body.readonly #pieces .undo,
   body.readonly #nearby [data-save],body.readonly #nearby [data-unedit],
   body.readonly .tabs button[data-tab=projects],body.readonly .projs{display:none!important}
@@ -276,9 +276,11 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   /* Beta at the bottom left, one height in each layout, so the stray pieces sit above it with the gap between buttons */
   #viewer{--vbeta-h:22px} #vbl{position:absolute;left:12px;bottom:12px;z-index:3;display:flex;align-items:center;gap:10px}
   /* the view's bottom row of buttons (Beta, Rate, the notes' and report buttons) all one height */
-  #vbeta,#ratebtn,#vcorner>button{height:var(--vbeta-h);box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;padding-top:0;padding-bottom:0}
-  #vbeta[hidden],#vcorner>button[hidden]{display:none}
-  #vbeta[aria-pressed=true]{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
+  #vbeta,#vbadd,#ratebtn,#vcorner>button{height:var(--vbeta-h);box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;padding-top:0;padding-bottom:0}
+  #vbeta[hidden],#vbadd[hidden],#vcorner>button[hidden]{display:none}
+  #vbeta[aria-pressed=true],#vbadd[aria-pressed=true]{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
+  #vbadd{min-width:var(--vbeta-h);padding-left:6px;padding-right:6px;font-weight:600;margin-left:-6px}
+  #vbeta.none{opacity:.75;cursor:default}
   /* above it while beta shows: the videos its holds came from, each shown or not, and one picked out */
   #vbetavids{position:absolute;left:12px;bottom:52px;z-index:3;max-width:min(360px,calc(100% - 24px));max-height:40%;overflow:auto;
     background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12px} #vbetavids[hidden]{display:none}
@@ -414,7 +416,6 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   .bholds{max-height:230px;overflow:auto;margin-top:6px}
   .bhold{gap:6px;padding:2px 4px;border-radius:5px;font-size:12px;cursor:pointer} .bhold.on{outline:1px solid var(--acc);outline-offset:-1px}
   .bhold select{width:auto;padding:2px 4px;font-size:12px}
-  #vmark.on{background:var(--acc);color:var(--acc-fg)}
   .phone{display:none}
   /* A phone's progress loading a mesh, over whichever view is showing until the mesh is ready to see */
   #loading{position:fixed;inset:0;z-index:2500;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.3);pointer-events:none}
@@ -447,7 +448,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
     #toctl{padding:3px 10px;border:1px solid transparent} #toctl .arrow{font-size:17px;line-height:0;vertical-align:-1px}
     #viewing{display:none!important}
     /* back, Random, Nearby and Map at the left (then what shows only now and then), and share and settings at the right */
-    #vnearby{order:1} #vmap{order:2} #vmark,#vfrom,#detail{order:3} #vshare{order:4;margin-left:auto}
+    #vnearby{order:1} #vmap{order:2} #vfrom,#detail{order:3} #vshare{order:4;margin-left:auto}
     #nearby.turning .list,#nearby.turning .note{display:none}     /* turning one: only that, so the view shows */
     #nearby.turning{top:auto;bottom:12px;max-height:45%} #vfrom{flex:0 1 auto;min-width:0} #vprefs{order:5}
     #code,#admin,#hdonate{display:none!important}
@@ -459,7 +460,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
     #vtop{display:flex;flex-direction:column;align-items:stretch;gap:6px;position:absolute;top:6px;left:8px;right:8px;max-height:calc(100% - 60px);z-index:3;pointer-events:none}
     #vtop>*{pointer-events:auto} #vtopr{position:static;max-width:none;min-height:44px;pointer-events:none}
     #pieces{max-width:100%;max-height:35vh} #vtop #orient,#vtop #viewnote{position:static;flex:none}
-    #viewer{--vbeta-h:30px} #vbl{left:8px} #vbeta{font-size:14px;padding:0 12px}
+    #viewer{--vbeta-h:30px} #vbl{left:8px} #vbeta{font-size:14px;padding:0 12px} #vbadd{font-size:16px}
     #vbetavids{left:8px;bottom:56px;max-height:30%;font-size:13px}
     #ratebtn{font-size:14px;padding:0 12px} #vcorner #vinfo,#vcorner #vreport{padding:0 10px}
     /* the rating box above the corner's buttons, its right edge at theirs, not off the screen to the left of Rate */
@@ -480,7 +481,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   html.app #orient,html.app #viewnote{top:54px} html.app #vtopr{top:54px} html.app #vtop{top:50px} html.app #vtopr{min-height:0}
   /* its buttons all one height, a finger's: Rate and Beta with their words, the icons' scaled up as they are drawn
      elsewhere (a little wider than high), and share at the left of settings */
-  html.app #ratebtn,html.app #vbeta{font-size:14px;height:34px;padding:0 12px;box-sizing:border-box} html.app #viewer{--vbeta-h:34px}
+  html.app #ratebtn,html.app #vbeta,html.app #vbadd{font-size:14px;height:34px;padding:0 12px;box-sizing:border-box} html.app #viewer{--vbeta-h:34px}
   html.app #vcorner #vinfo,html.app #vcorner #vreport,html.app #appbar>button:not([hidden]){height:34px;min-width:39px;padding:0 10px;box-sizing:border-box;
     display:inline-flex;align-items:center;justify-content:center}
   html.app #vinfo svg,html.app #vreport svg,html.app #vshare svg{width:16px;height:16px;vertical-align:0}
@@ -720,7 +721,6 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
       <button class="sm sec" id="vrandom" title="Another mesh, picked at random"><span class="long">Random mesh</span><span class="short">Random</span></button>
       <button class="sec sm" id="vnearby" disabled title="Shows the meshes near this one around it, placed by their coordinates, at their real size and facing as best known" aria-expanded="false">Nearby</button>
       <button class="sec sm" id="vmap">Map</button>
-      <button class="sec sm" id="vmark" style="display:none" title="Click the rock to add a start hold, and a hold again for hand, finish, foot, then none">Mark holds</button>
       <!-- put away for now: its code stays -->
       <button class="sec sm" id="vsway" hidden disabled title="Rocks the view a few degrees either way from where it is now, to show off that it's 3D. Dragging or scrolling stops it.">Sway</button>
       <select id="vfrom" style="display:none;width:auto" title="A boulder's own mesh is made from the photos of every climb on it: this looks at it from where one climb's own photos (its page's and its videos') were taken"></select>
@@ -769,6 +769,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
       <div id="vbetadbg" hidden></div>
       <div id="vbl">
         <button class="sm sec" id="vbeta" hidden aria-pressed="false" title="Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.">Beta</button>
+        <button class="sm sec" id="vbadd" hidden aria-pressed="false" aria-label="Add beta" title="Add beta: click the rock to mark a start hold, then click a hold again for hand, finish, foot, then none. Press again to stop.">+</button>
         <div id="vold" hidden title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</div>
       </div>
       <div id="vcorner">
@@ -840,6 +841,16 @@ let account = null, accountInfo = null;
 const mayBeta = () => editor || !!account?.accepted;
 // whether a set of beta is this browser's to change; with none, whether marking may make one
 const maySet = s => editor || (!!account?.accepted && (!s || s.owner === account.id));
+// the apps' keeping of beta changed with no signal (below, by keepDrafts())
+const appBeta = window.BoulderMeshApp?.keepBeta ? {
+  kept: mid => { try { return JSON.parse(window.BoulderMeshApp.keptBeta(mid) || '[]'); } catch { return []; } },
+  keep: (mid, d) => window.BoulderMeshApp.keepBeta(mid, JSON.stringify(d)) }
+  : window.webkit?.messageHandlers?.bmBeta ? {
+  kept: mid => (window.BM_BETA_DRAFTS || {})[mid] || [],
+  keep: (mid, d) => { (window.BM_BETA_DRAFTS ||= {})[mid] = d; window.webkit.messageHandlers.bmBeta.postMessage(JSON.stringify({ mesh: mid, drafts: d })); } }
+  : null;
+const noSignal = e => !!appBeta && e instanceof TypeError;
+const isDraftOnly = s => !!s && String(s.id).startsWith('local-');
 // the changes api() sends from a browser that isn't an editor's: an account's own, its sets of beta, and what it added
 // (deleted from its panel)
 const accountMay = url => /^\/api\/account\//.test(url) || (!!account && /^\/api\/(meshes\/[0-9a-f]+\/beta\/sets(\/|$)|projects\/[0-9a-f]+$)/.test(url));
@@ -883,6 +894,7 @@ const api = async (url, opt={}) => {
   if (opt.sent) return apiSend(url, opt);
   const r = await fetch(url, opt);
   const j = await r.json().catch(()=>({}));
+  if (APP && r.status === 503) throw new TypeError('no connection');     // the apps' copy kept for no signal answers so
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 };
@@ -5152,13 +5164,19 @@ async function findBeta(mid){
   if (betaState?.mid === mid) { await loadBeta(); watchBeta(); }
 }
 async function loadBeta(){
-  const st = betaState, r = await api(`/api/meshes/${st.mid}/beta`);
+  const st = betaState;
+  let r;
+  try { r = await api(`/api/meshes/${st.mid}/beta`); }
+  catch (e) { if (!noSignal(e)) throw e; r = { found: st.found, available: false, sets: st.loaded || [], offline: true }; }     // the app's copy kept with none
   if (betaState !== st) return;     // hidden, or another mesh's started, while it came
   const fresh = !betaState.found || (r.found?.videos || []).length !== (betaState.found?.videos || []).length;
   Object.assign(betaState, { found: r.found, available: r.available });
-  if (!betaState.unsaved) {     // not over holds on their way to the server
-    betaState.sets = r.sets || [];
-    chooseSet(betaState.sets.some(s => s.id === betaState.sid) ? betaState.sid : betaChosen[betaState.mid], false);
+  if (!betaState.unsaved && !betaState.syncing) {     // not over holds on their way to the server
+    betaState.loaded = r.sets || [];
+    betaState.sets = withDrafts(betaState, betaState.loaded);
+    if (!(betaState.marking && betaState.sid === null))     // marking into a set still to be made
+      chooseSet(betaState.sets.some(s => s.id === betaState.sid) ? betaState.sid : betaChosen[betaState.mid], false);
+    if (!r.offline && betaState.sets.some(s => s.draft) || betaState.gone?.length && !r.offline) sendDrafts(betaState);
   }
   if (fresh) betaState.shown = new Set((r.found?.videos || []).filter(v => v.holds?.length).map(v => v.tag));
   drawBeta(); renderBetaPanel(); showBetaButton();
@@ -5506,19 +5524,45 @@ addEventListener('keydown', ev => {
   else if (ev.key === 'Escape') closeBetaDebug();
 });
 const hasBeta = m => !!(m && (m.marked || m.beta?.holds));
-// the view's Beta button: there when the mesh in view has beta, or to whoever may mark holds on it (an editor, or a
-// signed-in account: a new mesh has none to show, and this is the way in to marking them), pressed while it's drawn
-function showBetaButton(){
-  const b = $('#vbeta'), m = shownMesh && meshesById[shownMesh];
-  b.hidden = !m || !(hasBeta(m) || (mayBeta() && !APP)) || thumbMode;     // the apps' viewer has no marking: there only to show it
-  const found = betaState?.mid === shownMesh && betaState.found ? betaState.found.videos.filter(v => v.holds?.length).length : m?.beta?.listed;
-  b.innerHTML = (betaState?.mid === shownMesh && betaState.loading ? 'Beta…' : 'Beta') + (found ? ` <span class="n" aria-label="${plural(found, 'video')} with holds">${found}</span>` : '');
-  b.title = hasBeta(m) ? 'Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.'
-    : 'Mark holds on this mesh, as a set of beta of your own. Press again to hide it.';
-  b.setAttribute('aria-pressed', String(!!betaState && betaState.mid === shownMesh));
+// how many sets of beta the view's Beta button counts: the shared sets and the videos holds were found in (the
+// mesh's own as loaded, once its beta's shown)
+function betaN(m){
+  const b = m && betaState?.mid === m.id && !betaState.loading ? betaState : null;
+  if (b) return b.sets.filter(s => s.shared !== false || maySet(s)).length + (b.found?.videos || []).filter(v => v.holds?.length).length;
+  const drafts = m ? (appBeta?.kept(m.id) || []).filter(d => !d.deleted && isDraftOnly(d)).length : 0;     // made with no signal, not sent yet
+  return (m?.beta_sets ?? (m?.marked ? 1 : 0)) + (m?.beta?.listed || 0) + drafts;
 }
+// the view's Beta button, with how many sets of beta the mesh has (none: it does nothing), and beside it '+' for whoever
+// may add beta (an editor, or an account: from an invite), which marks holds on the rock, in a set of their own
+function showBetaButton(){
+  const b = $('#vbeta'), add = $('#vbadd'), m = shownMesh && meshesById[shownMesh];
+  const open = !!betaState && betaState.mid === shownMesh, n = betaN(m);
+  b.hidden = !m || thumbMode;
+  add.hidden = b.hidden || !mayBeta();
+  b.innerHTML = (open && betaState.loading ? 'Beta…' : 'Beta') + ` <span class="n" aria-label="${plural(n, 'set')} of beta">${n}</span>`;
+  b.classList.toggle('none', !n && !open);
+  b.title = n || open ? 'Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.'
+    : 'No beta on this mesh yet' + (mayBeta() ? ': + adds some' : '');
+  b.setAttribute('aria-pressed', String(open));
+  add.setAttribute('aria-pressed', String(open && !!betaState.marking));
+  add.title = open && betaState.marking ? 'Stop marking holds' : 'Add beta: click the rock to mark a start hold, then click a hold again for hand, finish, foot, then none. Press again to stop.';
+}
+$('#vbadd').onclick = async () => {
+  if (!shownMesh || !mayBeta()) return;
+  if (betaState?.mid === shownMesh && betaState.marking) return setMarking(false);
+  if (betaState?.mid !== shownMesh) {
+    await startBeta(shownMesh);
+    if (betaState?.mid !== shownMesh) return;
+  }
+  const b = betaState;
+  if (!maySet(chosenSet(b))) {      // another's set: marking goes in one of this browser's own, or a new one
+    const own = b.sets.find(s => maySet(s));
+    if (own) chooseSet(own.id); else { b.sid = null; b.marked = []; b.sel = null; }
+  }
+  setMarking(true); drawBeta();
+};
 // pressed while the mesh still loads, its beta is fetched at once and drawn as the mesh appears (loadMeshUrl())
-$('#vbeta').onclick = () => betaState?.mid === shownMesh ? stopBeta() : shownMesh && startBeta(shownMesh);
+$('#vbeta').onclick = () => betaState?.mid === shownMesh ? stopBeta() : shownMesh && betaN(meshesById[shownMesh]) && startBeta(shownMesh);
 // whether the mesh in view is the one beta is for: not the one before it, still shown while beta's loads
 const betaInView = () => !!betaState && !!current && current.userData.meshId === betaState.mid;
 function closeBeta(id){
@@ -5660,9 +5704,8 @@ function renderBetaPanel(){
     ${set && can ? `<label class="row" style="margin-top:6px;gap:6px;font-size:12px" title="Unticked, only ${account ? 'you and the site\'s owner see' : 'the site\'s owner sees'} it: its holds are still used, unnamed, to guide captures"><input type="checkbox" class="setshared" ${set.shared === false ? '' : 'checked'}> Shared with everyone</label>` : ''}
     ${set && make && !can ? `<div class="notice" style="margin-top:6px">This set is ${set.author ? esc(set.author) + '\'s' : 'the site\'s'}: Duplicate it for a copy of your own to change.</div>` : ''}
     <div class="meta" style="margin-top:6px"><b>Its holds:</b> ${roleCounts(b.marked)}</div>
-    <div class="row" style="margin-top:4px">${can ? `<button class="sm mark">${b.marking ? 'Stop marking' : 'Mark holds'}</button>` : ''}
-      ${b.marked.length && can ? '<button class="sm sec clearmine">Clear its holds</button>' : ''}</div>
-    <div class="notice${w}" style="margin-top:6px">Marking: click the rock to add a start hold, then click a hold again for hand, finish, foot, then none. A hold's size is how much of the rock round it is the hold.</div>
+    ${b.marked.length && can ? '<div class="row" style="margin-top:4px"><button class="sm sec clearmine">Clear its holds</button></div>' : ''}
+    <div class="notice${make ? '' : ' w'}" style="margin-top:6px">${b.marking ? 'Marking: click' : 'To mark holds, press + by the Beta button, then click'} the rock to add a start hold, then click a hold again for hand, finish, foot, then none. A hold's size is how much of the rock round it is the hold.</div>
     <div class="bholds">${b.marked.map((h, i) => `<div class="row bhold${i === b.sel ? ' on' : ''}" data-i="${i}">
       <span class="swatch" style="background:${ROLES[h.role].color}"></span><span class="grow">${i + 1}${can ? '' : ` · ${ROLES[h.role].name} · ${sizeOf(h)}`}</span>
       <select class="role${w}" title="What it's for">${ROLE_CYCLE.map(r => `<option value="${r}" ${r === h.role ? 'selected' : ''}>${ROLES[r].name}</option>`).join('')}</select>
@@ -5681,7 +5724,6 @@ function renderBetaPanel(){
     </div>`).join('')}
   </div>`;
   el.querySelector('.close').onclick = () => { closeBeta(null); };
-  el.querySelector('.mark')?.addEventListener('click', () => setMarking(!b.marking));
   el.querySelector('.setshared')?.addEventListener('change', ev => setDo('share', ev.target.checked));
   el.querySelector('.clearmine')?.addEventListener('click', () => { if (ask('Remove the holds of this set?', can)) { b.marked.length = 0; b.sel = null; saveMarked(); } });
   if (scrolled) el.querySelector('.bholds').scrollTop = scrolled;
@@ -5702,18 +5744,12 @@ function renderBetaPanel(){
   el.querySelectorAll('[data-tag]').forEach(c => c.onchange = () => { c.checked ? b.shown.add(c.dataset.tag) : b.shown.delete(c.dataset.tag); drawBeta(); });
   showMarkButton();
 }
-function showMarkButton(){
-  const btn = $('#vmark');
-  btn.style.display = betaState && maySet(chosenSet(betaState)) ? '' : 'none';
-  btn.classList.toggle('on', !!betaState?.marking);
-  btn.textContent = betaState?.marking ? 'Stop marking' : 'Mark holds';
-}
+const showMarkButton = () => showBetaButton();
 function setMarking(on){
   if (!betaState || (on && !maySet(chosenSet(betaState)))) return;
   if (on && pieces?.editing) { pieces.editing = false; applyPieces(); renderPieces(); }
   betaState.marking = on; renderBetaPanel();
 }
-$('#vmark').onclick = () => setMarking(!betaState?.marking);
 const chosenSet = b => b.sets.find(s => s.id === b.sid) || null;
 function rememberSet(b){
   betaChosen[b.mid] = b.sid;
@@ -5731,13 +5767,69 @@ function betaCount(b){
   const m = meshesById[b.mid];
   if (m) { m.marked = b.sets.reduce((n, s) => n + s.holds.length, 0); renderBetaList(); }
 }
+// ---- beta changed in the apps with no signal: each set as it was last, handed to the app (window.BoulderMeshApp on
+// Android, the bmBeta message on iOS, which gives them back as BM_BETA_DRAFTS), which keeps them per mesh, captures
+// their holds and sends them once there's signal (app/shared's BetaDrafts); this page sends them too, opened with signal
+const localSet = (name = 'Marked on the phone', holds = []) => ({ id: 'local-' + Math.random().toString(16).slice(2, 10), name, holds, shared: true, draft: true,
+  owner: account?.id, author: account?.name, created: Date.now() / 1000 });
+function keepDrafts(b){
+  appBeta?.keep(b.mid, [...b.sets.filter(s => s.draft).map(s => ({ id: s.id, name: s.name, holds: s.holds, shared: s.shared !== false, local: isDraftOnly(s) })),
+                        ...(b.gone || [])]);
+}
+const keepLater = (b, s) => { s.draft = true; setTimeout(() => keepDrafts(b)); };
+// the server's sets with the app's drafts over them: each draft in place of its set (one deleted gone), new ones after
+function withDrafts(b, sets){
+  const drafts = appBeta?.kept(b.mid) || [];
+  if (!drafts.length) return sets;
+  b.gone = drafts.filter(d => d.deleted);
+  const out = sets.filter(s => !b.gone.some(d => d.id === s.id)).map(s => ({ ...s }));
+  for (const d of drafts.filter(d => !d.deleted)) {
+    const was = out.find(s => s.id === d.id);
+    if (was) Object.assign(was, { name: d.name ?? was.name, holds: d.holds, shared: d.shared, draft: true });
+    else out.push({ ...localSet(d.name, d.holds), id: d.id, shared: d.shared });
+  }
+  return out;
+}
+// a set's changes to the server; with no signal (or one the server hasn't yet), kept as a draft
+async function patchSet(b, s, changes){
+  if (!isDraftOnly(s)) try {
+    const got = await api(`/api/meshes/${b.mid}/beta/sets/${s.id}`, { method: 'PATCH', json: changes });
+    if (s.draft) { s.draft = false; keepDrafts(b); }
+    return got;
+  } catch (e) { if (!noSignal(e)) throw e; }
+  Object.assign(s, changes, { draft: true }); keepDrafts(b);
+  return s;
+}
+// the drafts, sent: once a page with signal has them (as the app does from its Home)
+async function sendDrafts(b){
+  if (b.syncing) return;
+  b.syncing = true;
+  try {
+    for (const s of b.sets.filter(s => s.draft)) {
+      await realSet(b, s);
+      if (isDraftOnly(s)) return;     // no signal after all
+      await patchSet(b, s, { holds: s.holds, name: s.name, shared: s.shared !== false });
+    }
+    for (const g of [...(b.gone || [])]) {
+      try { await api(`/api/meshes/${b.mid}/beta/sets/${g.id}`, { method: 'DELETE' }); }
+      catch (e) { if (noSignal(e)) return; }
+      b.gone = b.gone.filter(x => x !== g);
+    }
+  } catch (e) { toast('Couldn\'t send the beta marked with no signal: ' + e.message, 6000); }
+  finally { b.syncing = false; keepDrafts(b); if (betaState === b) { betaCount(b); renderBetaPanel(); showBetaButton(); } }
+}
 // A set the server keeps as one, to change: `s`, or one made for holds marked on a mesh with none. Holds from before
 // there were sets read as a set "marked", which the old route for holds makes a real one of (once: it keeps that id)
 const betaKept = new Set();
 async function realSet(b, s){
   if (!s) {
-    s = await api(`/api/meshes/${b.mid}/beta/sets`, { method: 'POST', json: {} });
+    try { s = await api(`/api/meshes/${b.mid}/beta/sets`, { method: 'POST', json: {} }); }
+    catch (e) { if (!noSignal(e)) throw e; s = localSet(); }
     s.holds = b.marked; b.sets.push(s); sharedNotice();
+  } else if (isDraftOnly(s)) {      // made with no signal: the server's own now, if there's signal
+    try { Object.assign(s, { id: (await api(`/api/meshes/${b.mid}/beta/sets`, { method: 'POST', json: { name: s.name, shared: s.shared !== false } })).id }); }
+    catch (e) { if (!noSignal(e)) throw e; return s; }
+    keepDrafts(b);
   } else if (s.id === 'marked' && !betaKept.has(b.mid)) {
     await api(`/api/meshes/${b.mid}/holds`, { method: 'POST', json: { holds: s.holds } });
     Object.assign(s, (await api(`/api/meshes/${b.mid}/beta`)).sets[0], { holds: s.holds });
@@ -5754,7 +5846,7 @@ function saveMarked(){
   return b.saving = (b.saving || Promise.resolve()).then(async () => {
     try {
       const s = await realSet(b, b.sets.includes(set) ? set : chosenSet(b)), at = b.edits;
-      const kept = (await api(`/api/meshes/${b.mid}/beta/sets/${s.id}`, { method: 'PATCH', json: { holds: s.holds } })).holds;
+      const kept = (await patchSet(b, s, { holds: s.holds })).holds;
       if (b.edits === at) { s.holds = kept; if (b.sid === s.id) b.marked = kept; }    // else a later save follows, with those changes
     }
     catch (e) { toast('Couldn\'t save the holds: ' + e.message, 6000); }
@@ -5782,7 +5874,16 @@ async function setDo(what, from){
     let s = chosenSet(b);
     if (what === 'new') {
       if (from?.set) from = { set: maySet(s) ? (await realSet(b, s)).id : s.id };
-      const made = await api(`/api/meshes/${b.mid}/beta/sets`, { method: 'POST', json: from ? { from } : {} });
+      let made;
+      try { if (isDraftOnly(s) && from?.set) throw new TypeError('not on the server yet'); made = await api(`/api/meshes/${b.mid}/beta/sets`, { method: 'POST', json: from ? { from } : {} }); }
+      catch (e) {     // with no signal: a set of this phone's, kept until there is (BetaDrafts in app/shared)
+        if (!noSignal(e)) throw e;
+        const video = from?.video && (b.found?.videos || []).find(v => v.url === from.video || v.tag === from.video);
+        const like = from?.set ? b.sets.find(x => x.id === from.set) : null;
+        made = localSet(like ? `${like.name} (copy)` : video ? (video.title || 'From a video') : undefined,
+                        (like?.holds || video?.holds || []).map(h => ({ p: h.p, role: h.role || 'hand', ...(h.r_m ? { r_m: h.r_m } : {}) })));
+        keepLater(b, made);
+      }
       b.sets.push(made); chooseSet(made.id); sharedNotice();
     }
     else if (!s) return;
@@ -5790,19 +5891,22 @@ async function setDo(what, from){
       const name = prompt('Its name:', s.name);
       if (!name?.trim()) return;
       s = await realSet(b, s);
-      s.name = (await api(`/api/meshes/${b.mid}/beta/sets/${s.id}`, { method: 'PATCH', json: { name } })).name;
+      s.name = (await patchSet(b, s, { name })).name;
     }
     else if (what === 'share') {      // from: whether everyone sees it
       s = await realSet(b, s);
-      s.shared = (await api(`/api/meshes/${b.mid}/beta/sets/${s.id}`, { method: 'PATCH', json: { shared: !!from } })).shared;
+      s.shared = (await patchSet(b, s, { shared: !!from })).shared;
       toast(s.shared === false ? 'Not shared now: its holds still guide captures, unnamed.' : 'Shared with everyone now.', 5000);
     }
     else if (what === 'delete') {
       const n = s.holds.length;
       if (!await askDanger(`Delete "${s.name}"?`, n ? `Its ${n} hold${n === 1 ? ' goes' : 's go'} with it.` : 'It has no holds.', 'Delete', maySet(s))) return;
-      s = await realSet(b, s);
-      await api(`/api/meshes/${b.mid}/beta/sets/${s.id}`, { method: 'DELETE' });
-      b.sets = b.sets.filter(x => x !== s); chooseSet(null);
+      if (!isDraftOnly(s)) {
+        s = await realSet(b, s);
+        try { await api(`/api/meshes/${b.mid}/beta/sets/${s.id}`, { method: 'DELETE' }); }
+        catch (e) { if (!noSignal(e)) throw e; (b.gone ||= []).push({ id: s.id, deleted: true }); }
+      }
+      b.sets = b.sets.filter(x => x !== s); chooseSet(null); keepDrafts(b);
     }
   }
   catch (e) { toast(e.message, 6000); }
@@ -5829,7 +5933,9 @@ renderer.domElement.addEventListener('click', ev => {
   }
   const hit = surfaceUnder(ev);
   if (!hit) return;
-  b.marked.push({ p: b.node.worldToLocal(hit.point.clone()).toArray().map(x => +x.toFixed(6)), role: ROLE_CYCLE[0] });
+  // with which way the rock faces there, for the apps' captures of a set made with no signal (the server works it out)
+  const n = hit.face && hit.face.normal.clone().transformDirection(hit.object.matrixWorld).transformDirection(b.node.matrixWorld.clone().invert());
+  b.marked.push({ p: b.node.worldToLocal(hit.point.clone()).toArray().map(x => +x.toFixed(6)), role: ROLE_CYCLE[0], ...(n ? { n: n.toArray().map(x => +x.toFixed(4)) } : {}) });
   b.sel = b.marked.length - 1;
   saveMarked();
 });
@@ -6642,14 +6748,14 @@ async function runCompare(c, what){
 // that won't load at full size, which the viewer works around and notes. A few a page, each once.
 // Not those of browser extensions and in-app browsers (their scripts run in the page), nor a script elsewhere's, which
 // the browser says nothing of but "Script error.". With the editing token, so that the server tells editors' apart.
-const reported = new Set(), NOT_OURS = /^Script error\.?$|window\.ethereum|__firefox__|WKWebView|ResizeObserver loop/;
+const reported = new Set(), NOT_OURS = APP ? /^Script error\.?$|ResizeObserver loop/ : /^Script error\.?$|window\.ethereum|__firefox__|WKWebView|ResizeObserver loop/;
 function reportHeaders(){ return { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }; }
 function reportError(kind, error, extra = {}){
   const message = String(error?.message || error || '').slice(0, 1000), key = kind + message;
   if (!message || NOT_OURS.test(message) || reported.has(key) || reported.size >= 10) return;
   reported.add(key);
   fetch('/api/client-errors', { method: 'POST', headers: reportHeaders(), keepalive: true,
-    body: JSON.stringify({ kind, message, page: location.pathname + location.hash, build: PAGE_BUILD, ...extra }) }).catch(() => {});
+    body: JSON.stringify({ kind, message, page: location.pathname + location.hash, build: PAGE_BUILD, ...(APP ? { app: true } : {}), ...extra }) }).catch(() => {});
 }
 addEventListener('error', ev => { if (!/^(chrome|moz|safari)-extension:/.test(ev.filename || '')) reportError('page', ev.error || ev.message, { source: `${ev.filename || ''}:${ev.lineno || ''}` }); });
 addEventListener('unhandledrejection', ev => reportError('page', ev.reason));
@@ -7062,7 +7168,12 @@ editor = !!statusCache.editor;
 document.body.classList.toggle('readonly', !editor);
 const inviteCode = new URLSearchParams(location.search).get('invite');
 if (statusCache.editing === 'token' && !thumbMode) {      // accounts are only on a site with an editing token
-  try { accountInfo = await api('/api/account'); } catch {}
+  try {
+    accountInfo = await api('/api/account');
+    if (APP) try { localStorage.setItem('bm_app_account', JSON.stringify(accountInfo)); } catch {}
+  } catch (e) {     // the apps with no signal: as it was last, so that beta can be marked there too
+    if (APP && e instanceof TypeError) try { accountInfo = JSON.parse(localStorage.getItem('bm_app_account') || 'null'); } catch {}
+  }
   if (accountInfo?.accounts) account = accountInfo.user || null; else accountInfo = null;
 }
 if (statusCache.editing === 'none') $('#viewonly').style.display = '';

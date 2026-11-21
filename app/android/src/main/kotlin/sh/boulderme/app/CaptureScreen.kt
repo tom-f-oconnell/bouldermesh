@@ -45,6 +45,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import sh.boulderme.core.ReviewHold
+import sh.boulderme.core.BetaDrafts
+import sh.boulderme.core.Focus
 import sh.boulderme.core.CaptureUi
 import sh.boulderme.core.GymUi
 import sh.boulderme.core.LevelUi
@@ -163,7 +165,13 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
     var leaving by remember { mutableStateOf(false) }
     var skipping by remember { mutableStateOf<String?>(null) }     // what going without the turn costs, while that's asked
     var checking by remember { mutableStateOf<List<ReviewHold>?>(null) }    // a gym climb's holds found, being checked
-    val plan = remember { what.mesh?.let { a.store.plan(it) } }
+    // for chosen holds of sets of beta (FOCUS): those, as one set; carried on, as the capture chose them
+    val plan = remember {
+        what.mesh?.let { a.store.plan(it) }?.let { p ->
+            val focus = what.focus ?: what.reopen?.takeIf { what.set == BetaDrafts.FOCUS }?.let { a.store.contents(it).second?.detail }?.let { Focus(it.sets, it.left) }
+            focus?.let { BetaDrafts.focused(p, it) } ?: p
+        }
+    }
     val guide = remember { what.mesh?.let { a.store.guide(it) } }
     if (what.mesh != null && (plan == null || guide == null)) {
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

@@ -68,6 +68,10 @@ class IosApi(private val store: IosStore) {
 
     private fun quoted(s: String) = JsonPrimitive(s).toString()
 
+    /** A request for a set of beta (BetaSync): its status (0: none came) and body, or why not. */
+    fun beta(method: String, path: String, body: String?, done: (Int, String?, String?) -> Unit) =
+        fetch(path, method, body?.encodeToByteArray()?.toData(), body?.let { "application/json" }, 60.0) { bytes, why, code -> done(code, bytes?.decodeToString(), why) }
+
     /**
      * Frames placed against a mesh on the server (ServerLocate's request): its answer's text, or null with why, within
      * `seconds`.

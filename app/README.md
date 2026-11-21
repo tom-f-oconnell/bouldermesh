@@ -45,7 +45,11 @@ phone yet**: see [What's been checked](#whats-been-checked).
    the card, tying to the old photos, the scenery), with what's been sent ticked, and *View its mesh*. With no signal, the viewer shows the copy kept on the phone (as
    a wireframe if it was kept without textures); an upload's mesh can be kept too (*Keep for viewing with no signal*,
    on its screen).
-7. **Captures no longer on the phone** (deleted, sent from another phone, or lost when the app was uninstalled) are
+7. **Adding beta**, signed in from an invite: *View* a mesh, then **+** beside *Beta* and tap the rock, as on the site.
+   With no signal it's kept on the phone, shown in the viewer and used by captures, and sent once Home comes up with
+   signal. *Capture hold closeups…* on a mesh asks which of its sets of beta (any of them, with those not sent yet), then
+   which of their holds, each ticked to start with, before the capture photographs those in detail.
+8. **Captures no longer on the phone** (deleted, sent from another phone, or lost when the app was uninstalled) are
    listed under *Your captures on the server*, with how each stands, once the phone is signed in to
    your account. Uninstalling deletes the captures on the phone: on Android 10 and later, tick *Keep app data* in the
    uninstall prompt to keep them. Updating keeps them.
@@ -131,11 +135,10 @@ in Terms.kt), from the next start (or at once when signing in). The phone's own 
   needs photographing from about 70 cm or nearer. An iPhone gives its full 12 megapixels while tracking, and its
   shutter is kept to 1/120 s or shorter.
 - A capture's mesh is new, beside the one it adds to, and linked to the same climbs: which to keep is yours.
-- **Adding a JavaScript bridge to the web views** (an iOS `WKScriptMessageHandler`, or Android's
-  `addJavascriptInterface`) needs a change in the site too. The page's error reports drop messages naming `WKWebView`
-  (`NOT_OURS` in frontend/index.html, `NOISE` in backend/sitehealth.py), since Brave on iOS throws "The WKWebView was
-  deallocated before the message was delivered" from its own bridge. Once the app has a bridge of its own, that error
-  could be ours, so narrow the pattern to Brave's (or drop it) at the same time. Neither app has a bridge as of Nov 2026.
+- **The web views' JavaScript bridges**: Android's `window.BoulderMeshApp` (the share sheet, and keeping beta marked
+  with no signal) and iOS's `bmBeta` message (`WKScriptMessageHandler`, with the drafts given back as
+  `BM_BETA_DRAFTS`). The page's error reports drop messages naming `WKWebView` (Brave on iOS throws one from its own
+  bridge) only outside the apps (`NOT_OURS` in frontend/index.html, `NOISE` in backend/sitehealth.py).
 
 ## Building
 

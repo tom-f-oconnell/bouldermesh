@@ -337,6 +337,7 @@ class ViewerController(private val app: App, private val mesh: String, private v
     private val note = UILabel()
     private val column = UIStackView()
     private var pages: OfflinePages? = null     // held here: the web view holds its scheme's handler, but not past this
+    private val bridge = BetaBridge(app.store)
     private val delegate = ViewerDelegate(server) { why ->       // held here: the web view holds its delegate weakly
         note.text = "The mesh couldn't be shown: $why. " + if (pages == null) "Viewing needs signal, or a copy kept on the phone (Get meshes)." else ""
         note.textColor = BAD
@@ -371,6 +372,9 @@ class ViewerController(private val app: App, private val mesh: String, private v
         config.userContentController.addUserScript(WKUserScript(
             "if (location.href.indexOf(${JsonPrimitive(own)}) === 0) { try { $keep } catch (e) {} }",
             WKUserScriptInjectionTime.WKUserScriptInjectionTimeAtDocumentStart, true))
+        // beta changed with no signal: the page hands it to the app (bmBeta), and starts with what the app keeps (BetaDrafts)
+        config.userContentController.addScriptMessageHandler(bridge, name = "bmBeta")
+        config.userContentController.addUserScript(WKUserScript(bridge.script(mesh), WKUserScriptInjectionTime.WKUserScriptInjectionTimeAtDocumentStart, true))
         if (kept != null) OfflinePages(app.store.offline, kept, server).also { pages = it; config.setURLSchemeHandler(it, forURLScheme = Offline.SCHEME) }
         val web = WKWebView(frame = CGRectZero.readValue(), configuration = config)
         web.navigationDelegate = delegate

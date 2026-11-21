@@ -492,7 +492,7 @@ class CaptureSession(val plan: Plan?, val guide: GuideMesh?, val id: String, val
                 .sorted().let { if (it.isEmpty()) null else it[it.size / 2] },
             skipped = cov?.states?.filter { it.skipped != null }?.associate { it.target.id to it.skipped!! } ?: emptyMap(),
             progress = p?.let { RecordProgress(it.total, it.done, it.skipped, it.holds, it.holdsDone) },
-            detail = set?.let { id -> cov?.let { RecordDetail(id, it.reached()) } }, licence = licence, credit = credit,
+            detail = set?.let { id -> cov?.let { c -> plan?.sets?.firstOrNull { it.id == id }.let { s -> RecordDetail(id, c.reached(), s?.of.orEmpty(), s?.left.orEmpty()) } } }, licence = licence, credit = credit,
             shots = shots.toList(), scenery = scenery.toList(),
             marked = marked.map { h -> RecordMarked(h.id, spellName(h.spell), h.world.toList(), h.mesh?.toList()) } +
                 (gym?.let { g -> g.holds.map { RecordMarked(it.id, spellName(g.spell), it.p.toList()) } } ?: emptyList()),

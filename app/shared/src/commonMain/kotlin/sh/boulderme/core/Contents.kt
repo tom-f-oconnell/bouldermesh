@@ -31,7 +31,9 @@ object CaptureContents {
         val climbNames = plan?.climbs?.associate { c -> c.id to listOfNotNull(c.name ?: c.id, c.grade).joinToString(" ") } ?: emptyMap()
         val shots = record?.shots?.associateBy { it.name } ?: emptyMap()
         val detailTargets = record?.detail?.holds?.map { it.target }?.toSet() ?: emptySet()
-        val setName = record?.detail?.set?.let { s -> plan?.sets?.firstOrNull { it.id == s }?.name ?: "A set of beta" }
+        val setName = record?.detail?.let { d ->
+            plan?.sets?.firstOrNull { it.id == d.set }?.name
+                ?: plan?.sets?.filter { it.id in d.sets }?.mapNotNull { it.name }?.takeIf { it.isNotEmpty() }?.joinToString(" + ") ?: "A set of beta" }
         val by = LinkedHashMap<String, MutableList<String>>()
 
         fun purpose(name: String): String {
