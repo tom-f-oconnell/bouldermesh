@@ -761,7 +761,10 @@ private fun DebugTools(a: MainActivity, go: (Screen) -> Unit) {
         OutlinedButton(onClick = { go(Screen.Capture(m.mesh, m.name.ifEmpty { m.mesh }, locateOnly = "phone")) }) { Text("Line up: phone only") }
         OutlinedButton(onClick = { go(Screen.Capture(m.mesh, m.name.ifEmpty { m.mesh }, locateOnly = "server")) }) { Text("Server only") }
     }
-    Text("Lines up as a capture does, by that way alone; nothing is kept or sent.", style = MaterialTheme.typography.bodySmall,
+    Text("Lines up as a capture does, by that way alone. Leave keeps it on the phone, with its log and any photos, named as a line-up test: it's sent only if you upload it.", style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant)
-    OutlinedButton(onClick = { go(Screen.HoldLab) }) { Text("Hold finding: colour and model, in a photo…") }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { go(Screen.HoldLab) }) { Text("Hold finding in a photo…") }
+        OutlinedButton(onClick = { go(Screen.HoldLive) }) { Text("Live") }
+    }
 }

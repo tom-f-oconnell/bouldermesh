@@ -92,6 +92,7 @@ fun HoldLabScreen(a: MainActivity, go: (Screen) -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { runCatching { take.launch(FileProvider.getUriForFile(a, "${a.packageName}.files", shot)) }.onFailure { said = it.message } }) { Text("Take a photo") }
             OutlinedButton(onClick = { capture = ""; file = null }) { Text("A capture's photo…") }
+            OutlinedButton(onClick = { go(Screen.HoldLive) }) { Text("Live") }
         }
         said?.let { Text(it, color = BAD) }
         val c = capture

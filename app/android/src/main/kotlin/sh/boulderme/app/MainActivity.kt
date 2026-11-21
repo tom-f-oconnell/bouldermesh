@@ -45,6 +45,8 @@ sealed interface Screen {
     data object Settings : Screen
     /** The owner's look at how holds are found in a photo (HoldLabScreen): one of a capture's, or one taken now. */
     data object HoldLab : Screen
+    /** The same, drawn live over the camera (HoldLiveScreen). */
+    data object HoldLive : Screen
     /** On first opening, not signed in: how to sign in from where the account was joined. */
     data object SignIn : Screen
     data object Calibrate : Screen
@@ -70,6 +72,7 @@ fun backOf(s: Screen): Screen = when (s) {
     is Screen.Holds -> Screen.Done(s.id)
     is Screen.Viewer -> s.back
     Screen.HoldLab -> Screen.Settings
+    Screen.HoldLive -> Screen.HoldLab
     else -> Screen.Home
 }
 
@@ -112,6 +115,7 @@ class MainActivity : ComponentActivity() {
                     if (!accepted) TermsScreen { store.terms = TERMS_VERSION; accepted = true; ensureArCore() }
                     else when (val s = screen) {
                         is Screen.Capture -> CaptureScreen(this@MainActivity, s, go)       // the camera, edge to edge
+                        Screen.HoldLive -> HoldLiveScreen(this@MainActivity, go)
                         else -> Box(Modifier.fillMaxSize().safeDrawingPadding()) {
                             when (s) {
                                 Screen.Home -> HomeScreen(this@MainActivity, go)
@@ -125,7 +129,7 @@ class MainActivity : ComponentActivity() {
                                 is Screen.Upload -> UploadScreen(this@MainActivity, s.id, go)
                                 is Screen.Photo -> PhotoScreen(this@MainActivity, s, go)
                                 is Screen.Viewer -> ViewerScreen(this@MainActivity, s, go)
-                                is Screen.Capture -> {}
+                                is Screen.Capture, Screen.HoldLive -> {}
                             }
                         }
                     }
