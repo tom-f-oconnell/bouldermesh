@@ -65,7 +65,8 @@ from pathlib import Path
 #     with the mweb client (which uses one for every video) it was throttled three times as often (Nov 18, 2026)
 # 16: sends a video's storyboard (YouTube's small seek-bar frames) with it, and fetches others' storyboards from
 #     i.ytimg.com when the server asks, to check that videos volunteers sent are the ones asked for
-VERSION = 16
+# 17: 16's storyboards without a dict union (|), which stopped it on Python 3.8 as it sent a video
+VERSION = 17
 SCRIPT_PATH = "/volunteer/bouldermesh_volunteer.py"     # where the server serves it
 AGENT = "bouldermesh-volunteer"
 POT_PLUGIN = "bgutil-ytdlp-pot-provider"    # PO tokens' yt-dlp plugin, which scripts 13 and 14 installed: removed
@@ -201,7 +202,7 @@ def storyboards(info: dict, vid: str) -> list[dict]:
             continue
         frags = [{"url": x.get("url"), "duration": x.get("duration")} for x in f.get("fragments") or [] if isinstance(x, dict)]
         if frags and all(storyboard_url(x["url"], vid) for x in frags):
-            out.append({k: f.get(k) for k in ("format_id", "width", "height", "rows", "columns", "fps")} | {"fragments": frags})
+            out.append({**{k: f.get(k) for k in ("format_id", "width", "height", "rows", "columns", "fps")}, "fragments": frags})     # not |: Python 3.8 has none for dicts
     return out
 
 
