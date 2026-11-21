@@ -142,6 +142,16 @@ try:
                                                                  ("this server", "80+", 1)], rows
     assert rows[0]["vggt"] == 3 and rows[0]["waited"] == 166 and rows[0]["wall_minutes"] == round(400 / 60, 1) and rows[0]["from_log"] == 1
     assert [r["n"] for r in timings.summarize(recs, since=1500)] == [2], "only those since"
+    # a mesh's size from its GLB's header, and the summary's medians of it and of photos placed
+    import struct as _st
+    gl = json.dumps({"accessors": [{"count": 30}, {"count": 9}], "meshes": [{"primitives": [{"indices": 0}, {"indices": 1}]}]}).encode()
+    gl += b" " * (-len(gl) % 4)
+    (tmp / "sized").mkdir()
+    (tmp / "sized" / "mesh.glb").write_bytes(_st.pack("<4sII", b"glTF", 2, 20 + len(gl)) + _st.pack("<II", len(gl), 0x4E4F534A) + gl)
+    assert timings.face_count(tmp / "sized") == 13 and timings.face_count(tmp / "nonesuch") is None
+    rows = timings.summarize([{**rec, "faces": 100, "placed": 10}, {**rec, "faces": 300, "placed": 20}])
+    assert rows[0]["faces"] == 200 and rows[0]["placed"] == 15, rows
+    print("sizes OK")
     print("ALL TIMINGS TESTS PASSED")
 finally:
     shutil.rmtree(tmp, ignore_errors=True)

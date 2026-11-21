@@ -106,6 +106,25 @@ def repair_placing(rec: dict) -> bool:
     return True
 
 
+def face_count(mesh_dir: Path) -> int | None:
+    """How many triangles a mesh's mesh.glb has, from its header alone (its primitives' index counts); None without one."""
+    import struct
+    f = Path(mesh_dir) / "mesh.glb"
+    try:
+        with open(f, "rb") as fh:
+            magic, _, _ = struct.unpack("<4sII", fh.read(12))
+            length, kind = struct.unpack("<II", fh.read(8))
+            if magic != b"glTF" or kind != 0x4E4F534A:
+                return None
+            j = json.loads(fh.read(length))
+    except (OSError, ValueError, struct.error):
+        return None
+    acc = j.get("accessors") or []
+    n = sum(acc[p["indices"]]["count"] for m in j.get("meshes") or [] for p in m.get("primitives") or []
+            if p.get("indices") is not None and p.get("mode", 4) == 4)
+    return n // 3 or None
+
+
 def save(mesh_dir: Path, rec: dict) -> None:
     (Path(mesh_dir) / FILE).write_text(json.dumps(rec, indent=1))
 
@@ -179,7 +198,8 @@ def band(photos: int | None) -> str | None:
 def summarize(recs: list[dict], since: float | None = None) -> list[dict]:
     """Medians for the admin page, by what made them and how many photos went in: [{where, photos, n, minutes (the
     tools' time), cpu_minutes, wall_minutes (from starting to the mesh saved, with any wait and transfer), waited
-    (seconds, for a machine), vggt (how many VGGT placed), vggt_seconds}], those since `since` only if given."""
+    (seconds, for a machine), vggt (how many VGGT placed), vggt_seconds, placed (photos), faces}], those since `since`
+    only if given."""
     groups: dict[tuple, list[dict]] = {}
     for r in recs:
         if since and (r.get("ended") or 0) < since:
@@ -196,6 +216,8 @@ def summarize(recs: list[dict], since: float | None = None) -> list[dict]:
                     "waited": med([r["waited"] for r in rs if r.get("waited") is not None]),
                     "vggt": sum(r.get("vggt_seconds") is not None for r in rs),
                     "vggt_seconds": med([r["vggt_seconds"] for r in rs if r.get("vggt_seconds") is not None]),
+                    "placed": med([r["placed"] for r in rs if r.get("placed") is not None]),
+                    "faces": med([r["faces"] for r in rs if r.get("faces")]),
                     "from_log": sum(bool(r.get("from_log")) for r in rs)})
     return out
 
