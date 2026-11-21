@@ -152,7 +152,6 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
     var guiding by remember { mutableStateOf<Screen.Capture?>(null) }
     var compass by remember { mutableStateOf<Screen.Capture?>(null) }
     var showCaptures by remember { mutableStateOf(false) }
-    var focusing by remember { mutableStateOf<sh.boulderme.core.Plan?>(null) }     // a mesh whose holds in detail are being chosen
     val begin: (Screen.Capture) -> Unit = { c ->
         if (a.has(Manifest.permission.CAMERA) && a.has(Manifest.permission.ACCESS_FINE_LOCATION)) go(c)
         else { wanted = c; ask.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
@@ -218,8 +217,8 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
                     OutlinedButton(onClick = { go(Screen.Viewer(p.mesh, p.name.ifEmpty { p.mesh })) }) { Text("View") }
                     TextButton(onClick = { a.store.removePlan(p.mesh); tick++ }) { Text("Remove") }
                 }
-                // for sets of beta: the holds chosen of them (FocusDialog), from close, all round, as a replica of them needs
-                if (p.setsWithHolds.isNotEmpty()) OutlinedButton(onClick = { focusing = p }) {
+                // for sets of beta: the holds chosen of them in the viewer (?choose), from close, all round, as a replica of them needs
+                if (p.setsWithHolds.isNotEmpty()) OutlinedButton(onClick = { go(Screen.Viewer(p.mesh, p.name.ifEmpty { p.mesh }, choose = true)) }) {
                     val n = p.setsWithHolds.size
                     Text("Capture hold closeups… ($n set${if (n == 1) "" else "s"} of beta)")
                 }
@@ -286,12 +285,8 @@ fun HomeScreen(a: MainActivity, go: (Screen) -> Unit) {
             }
         }
     }
-    focusing?.let { p ->
-        FocusDialog(p, dismiss = { focusing = null }) { f ->
-            focusing = null
-            start(Screen.Capture(p.mesh, p.name.ifEmpty { p.mesh }, sh.boulderme.core.BetaDrafts.FOCUS, focus = f))
-        }
-    }
+    // the holds chosen in the viewer for closeups (ViewerScreen's ?choose): started as any capture is
+    LaunchedEffect(Unit) { ChosenCapture.take()?.let { start(it) } }
     guiding?.let { c ->
         GuideDialog(CaptureGuide.kind(c.mesh, c.set, c.gym), "Start", starting = true, dismiss = { guiding = null }) { hide ->
             guiding = null

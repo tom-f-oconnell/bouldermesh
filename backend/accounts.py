@@ -81,8 +81,11 @@ class Accounts:
                     expires REAL, used_by TEXT, used_at REAL);
                 CREATE TABLE IF NOT EXISTS pairings(hash TEXT PRIMARY KEY, user_id TEXT, expires REAL);
             """)
-            if "mesh_next" not in {r[1] for r in con.execute("PRAGMA table_info(users)")}:
+            have = {r[1] for r in con.execute("PRAGMA table_info(users)")}
+            if "mesh_next" not in have:
                 con.execute("ALTER TABLE users ADD COLUMN mesh_next INTEGER DEFAULT 0")
+            if "beta_anon" not in have:     # its beta shown to others as anonymous (1) or under its name (0); null: not asked yet
+                con.execute("ALTER TABLE users ADD COLUMN beta_anon INTEGER")
 
     def _con(self):
         con = sqlite3.connect(self.path, timeout=30)
@@ -99,7 +102,8 @@ class Accounts:
         if row is None:
             return None
         return {**row, "areas": json.loads(row["areas"]) if row.get("areas") else [], "disabled": bool(row["disabled"]),
-                "mesh_next": bool(row.get("mesh_next")), "accepted": row.get("terms") == TERMS_VERSION}
+                "mesh_next": bool(row.get("mesh_next")), "accepted": row.get("terms") == TERMS_VERSION,
+                "beta_anon": None if row.get("beta_anon") is None else bool(row["beta_anon"])}
 
     # ---- invites -------------------------------------------------------------------------------------------------------
     def invite(self, role: str = "user", areas: list | None = None, note: str | None = None, days: float = INVITE_DAYS,
@@ -191,6 +195,8 @@ class Accounts:
             self._q("UPDATE users SET quota_mb=? WHERE id=?", quota, uid)
         if "mesh_next" in changes:
             self._q("UPDATE users SET mesh_next=? WHERE id=?", int(bool(changes["mesh_next"])), uid)
+        if "beta_anon" in changes:
+            self._q("UPDATE users SET beta_anon=? WHERE id=?", int(bool(changes["beta_anon"])), uid)
         if "disabled" in changes:
             self._q("UPDATE users SET disabled=? WHERE id=?", int(bool(changes["disabled"])), uid)
             if changes["disabled"]:
@@ -269,4 +275,4 @@ def may_moderate(user: dict | None, area: str | None) -> bool:
 
 def public(user: dict) -> dict:
     """An account as it's told about itself."""
-    return {k: user.get(k) for k in ("id", "name", "role", "areas", "accepted", "quota_mb", "created")}
+    return {k: user.get(k) for k in ("id", "name", "role", "areas", "accepted", "quota_mb", "created", "beta_anon")}

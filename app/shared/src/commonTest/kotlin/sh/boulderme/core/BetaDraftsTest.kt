@@ -39,6 +39,9 @@ class BetaDraftsTest {
         assertTrue(BetaDrafts.FOCUS in p.targets.first { it.id == "h2" }.sets)
         assertTrue(BetaDrafts.FOCUS !in p.targets.first { it.id == "h0" }.sets)
         assertEquals(plan, BetaDrafts.focused(plan, Focus(listOf("s1"), left = listOf("h0", "h1"))))     // nothing left: as it was
+        val byHold = BetaDrafts.focused(plan, Focus(listOf("s1", "s2"), left = listOf("c")))             // a hold's own id, as the viewer has it
+        assertEquals(setOf("h0", "h1"), byHold.sets.first { it.id == BetaDrafts.FOCUS }.targets.toSet())
+        assertEquals(Focus(listOf("video:t1"), listOf("t1/3")), BetaDrafts.focus("""{"sets":["video:t1"],"left":["t1/3"]}"""))
     }
 
     @Test fun requestsForEachDraft() {

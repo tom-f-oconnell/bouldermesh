@@ -57,8 +57,8 @@ sealed interface Screen {
     /** A capture on this phone: what it holds, by what each part was for; and one of its photos (or scenery's frames). */
     data class Upload(val id: String) : Screen
     data class Photo(val id: String, val name: String, val scenery: Boolean, val group: String) : Screen
-    /** A mesh in the site's own viewer; back: where Back goes. */
-    data class Viewer(val mesh: String, val name: String, val back: Screen = Home) : Screen
+    /** A mesh in the site's own viewer; back: where Back goes; choose: its sets and holds chosen there for hold closeups (?choose). */
+    data class Viewer(val mesh: String, val name: String, val back: Screen = Home, val choose: Boolean = false) : Screen
 }
 
 /** Where Back goes from a screen. */

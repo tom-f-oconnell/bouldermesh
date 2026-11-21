@@ -281,6 +281,8 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   #vbeta[aria-pressed=true],#vbadd[aria-pressed=true]{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
   #vbadd{min-width:var(--vbeta-h);padding-left:6px;padding-right:6px;font-weight:600;margin-left:-6px}
   #vbeta.none{opacity:.75;cursor:default}
+  hr.bsep{border:0;border-top:1px solid var(--line);margin:6px 0}
+  #vbetavids .bv.set .who{font-weight:600;white-space:nowrap} #vbetavids .go{width:100%;margin-top:6px}
   /* above it while beta shows: the videos its holds came from, each shown or not, and one picked out */
   #vbetavids{position:absolute;left:12px;bottom:52px;z-index:3;max-width:min(360px,calc(100% - 24px));max-height:40%;overflow:auto;
     background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12px} #vbetavids[hidden]{display:none}
@@ -2568,6 +2570,13 @@ async function loadMeshUrl(url, filename, label, id, local = false){
   shownMesh = id || null;
   $('#vshare').disabled = !shownMesh || !linkable;
   showRate(true); showBetaButton();
+  if (CHOOSE && id && betaState?.mid !== id) startBeta(id).then(() => {
+    const b = betaState;
+    if (b?.mid !== id) return;
+    const all = [...b.sets.filter(x => x.holds?.length).map(x => x.id), ...videoSets(b).map(x => x.id)];
+    b.choose = { sets: new Set(all.length === 1 ? all : []), left: new Set() };
+    betaVidsOpen = true; drawBeta(); renderBetaVids();
+  });
   const began = performance.now(), via = viewVia;
   viewVia = '';
   leftLoading('other'); flushFrames();
@@ -4800,7 +4809,7 @@ function viewLink(id, from){
 // in the apps' viewer, its own parameters stay on the address, for a reload
 function setLink(id, from){
   let u = viewLink(id, from);
-  const q = new URLSearchParams(location.search), keep = APP ? ['app', 'notex'].filter(k => q.has(k)) : [];
+  const q = new URLSearchParams(location.search), keep = APP ? ['app', 'notex', 'choose'].filter(k => q.has(k)) : [];
   if (keep.length) u += (u.includes('?') ? '&' : '?') + keep.map(k => `${k}=${encodeURIComponent(q.get(k))}`).join('&');
   try { history.replaceState(null, '', u); } catch {}
 }
@@ -5213,19 +5222,30 @@ async function startBeta(mid){
 // back), and it stays as last left on every mesh until changed.
 let betaVidsOpen = true;
 function renderBetaVids(){
-  const el = $('#vbetavids'), b = betaState, vids = (b?.found?.videos || []).filter(v => v.holds?.length);
-  el.hidden = !b || b.mid !== shownMesh || !vids.length || thumbMode;
+  const el = $('#vbetavids'), b = betaState, vids = (b?.found?.videos || []).filter(v => v.holds?.length), sets = (b?.sets || []).filter(x => x.holds?.length);
+  el.hidden = !b || b.mid !== shownMesh || !(vids.length || sets.length || b.choose) || thumbMode;
   if (el.hidden) return;
-  const all = vids.every(v => b.shown.has(v.tag)), some = vids.some(v => b.shown.has(v.tag));
+  const all = vids.every(v => b.shown.has(v.tag)), some = vids.some(v => b.shown.has(v.tag)), ch = b.choose;
+  const vset = Object.fromEntries(videoSets(b).map(x => [x.tag, x]));
   el.innerHTML = `<button class="bvhead meta" aria-expanded="${betaVidsOpen}" title="Click to ${betaVidsOpen ? 'fold the list away' : 'show the list'}">`
-    + `Holds from videos${betaVidsOpen ? ': tick to show, pick one to see it alone' : ` (${vids.filter(v => b.shown.has(v.tag)).length} of ${vids.length} shown)`}`
+    + (ch ? `Hold closeups: tick the sets, then tap any hold to leave it out` : `Beta${betaVidsOpen ? ': pick a set to see it' : ''}`)
     + `<span class="fold" aria-hidden="true">${betaVidsOpen ? '▾' : '▴'}</span></button>`;
-  if (betaVidsOpen) el.innerHTML += (vids.length > 1 ? `<label class="bv all"><input type="checkbox" ${all ? 'checked' : ''}><span class="t">Show all</span></label>` : '') + vids.map(v =>
-    `<div class="bv${b.focus === v.tag ? ' on' : ''}" data-tag="${v.tag}" title="${esc(v.title || v.url)}${v.uploader ? ` · ${esc(v.uploader)}` : ''}">
-      <input type="checkbox" ${b.shown.has(v.tag) ? 'checked' : ''} aria-label="Show its holds">
-      <span class="t">${esc(v.title || v.url)}</span><small>${v.holds.length} hold${v.holds.length === 1 ? '' : 's'}</small>
-      ${editor ? `<button class="sm sec dbg" title="Play the video with the climber the pose model found and the holds it called drawn over it, the view following along">Debug</button>` : ''}
-      <a href="${esc(v.url)}" target="_blank" rel="noopener" title="Open the video">▶</a></div>`).join('');
+  const n = k => `${k} hold${k === 1 ? '' : 's'}`;
+  if (betaVidsOpen) el.innerHTML += sets.map(x => `<div class="bv set${!ch && x.id === b.sid ? ' on' : ''}" data-set="${esc(x.id)}">
+      ${ch ? `<input type="checkbox" ${ch.sets.has(x.id) ? 'checked' : ''} aria-label="Capture its holds">` : ''}
+      <span class="who">${esc(labelOf(b, x))}</span><span class="t">${esc(x.name)}</span><small>${n(x.holds.length)}${x.draft ? ' · not sent' : ''}</small></div>`).join('')
+    + (sets.length && vids.length ? '<hr class="bsep">' : '')
+    + (vids.length > 1 && !ch ? `<label class="bv all"><input type="checkbox" ${all ? 'checked' : ''}><span class="t">Show all from videos</span></label>` : '') + vids.map(v =>
+    `<div class="bv${!ch && b.focus === v.tag ? ' on' : ''}" data-tag="${v.tag}" title="${esc(v.title || v.url)}">
+      <input type="checkbox" ${(ch ? ch.sets.has('video:' + v.tag) : b.shown.has(v.tag)) ? 'checked' : ''} aria-label="${ch ? 'Capture its holds' : 'Show its holds'}">
+      <span class="who">${esc(vset[v.tag]?.label || '')}</span><span class="t">${esc(v.title || v.url)}</span><small>${n(v.holds.length)}</small>
+      ${editor && !ch ? `<button class="sm sec dbg" title="Play the video with the climber the pose model found and the holds it called drawn over it, the view following along">Debug</button>` : ''}
+      ${ch ? '' : `<a href="${esc(v.url)}" target="_blank" rel="noopener" title="Open the video">▶</a>`}</div>`).join('');
+  if (ch) {
+    const k = chosenHolds(b).filter(h => !ch.left.has(h.id)).length;
+    el.innerHTML += `<button class="sm go"${k ? '' : ' disabled'}>${k ? `Capture ${n(k)}` : 'Tick a set of beta'}</button>`;
+    el.querySelector('.go').onclick = () => appCapture(b.mid, { sets: [...ch.sets], left: chosenHolds(b).filter(h => ch.left.has(h.id)).map(h => h.id) });
+  }
   el.querySelector('.bvhead').onclick = () => { betaVidsOpen = !betaVidsOpen; renderBetaVids(); };
   const every = el.querySelector('.bv.all input');
   if (every) {
@@ -5236,21 +5256,46 @@ function renderBetaVids(){
       drawBeta(); renderBetaPanel();
     };
   }
+  el.querySelectorAll('.bv[data-set]').forEach(row => {
+    const id = row.dataset.set;
+    row.onclick = ev => {
+      if (ch) { if (ev.target.tagName !== 'INPUT') return; ev.target.checked ? ch.sets.add(id) : ch.sets.delete(id); }
+      else chooseSet(id);
+      drawBeta(); renderBetaPanel(); renderBetaVids();
+    };
+  });
   el.querySelectorAll('.bv[data-tag]').forEach(row => {
     const tag = row.dataset.tag;
     row.querySelector('input').onchange = ev => {
+      if (ch) { ev.target.checked ? ch.sets.add('video:' + tag) : ch.sets.delete('video:' + tag); drawBeta(); return renderBetaVids(); }
       ev.target.checked ? b.shown.add(tag) : b.shown.delete(tag);
       if (!ev.target.checked && b.focus === tag) b.focus = null;
       drawBeta(); renderBetaPanel();
     };
     row.querySelector('.dbg')?.addEventListener('click', () => openBetaDebug(tag));
     row.onclick = ev => {
-      if (ev.target.closest('input, a, button')) return;
+      if (ch || ev.target.closest('input, a, button')) return;
       b.focus = b.focus === tag ? null : tag;
       if (b.focus) b.shown.add(tag);
       drawBeta(); renderBetaPanel();
     };
   });
+}
+// ---- choosing holds for a capture of them in detail, in the apps (?choose, from Home's Capture hold closeups): the sets
+// ticked (any of the hand-made ones and the videos'), each hold of theirs drawn, one tapped left out (faint), and the
+// capture started with what's left (the app's BetaDrafts.Focus: sets and the ids of holds left out)
+const CHOOSE = APP && new URLSearchParams(location.search).has('choose');
+function chosenHolds(b){
+  const ch = b.choose, out = [], seen = new Set();
+  for (const x of b.sets) if (ch.sets.has(x.id)) for (const h of x.holds) if (h.id && !seen.has(h.id)) { seen.add(h.id); out.push({ ...h, kind: 'marked' }); }
+  for (const v of b.found?.videos || []) if (ch.sets.has('video:' + v.tag)) for (const h of v.holds || []) out.push({ ...h, id: `${v.tag}/${h.id}`, kind: 'found' });
+  return out;
+}
+function appCapture(mid, focus){
+  const json = JSON.stringify(focus);
+  if (window.BoulderMeshApp?.capture) window.BoulderMeshApp.capture(mid, json);
+  else if (window.webkit?.messageHandlers?.bmCapture) window.webkit.messageHandlers.bmCapture.postMessage(JSON.stringify({ mesh: mid, focus }));
+  else toast('Only the phone apps capture.', 4000);
 }
 function stopBeta(){
   if (!betaState) return;
@@ -5633,6 +5678,13 @@ function drawBeta(){
     sprite.renderOrder = kind === 'marked' ? 4 : 3;
     g.add(sprite); return sprite;
   };
+  if (betaState.choose) {     // each chosen hold, faint where it's left out: tapped to leave it out or put it back
+    const left = betaState.choose.left;
+    for (const h of chosenHolds(betaState)) if (!onHiddenFace(h.p, node)) ring(h.p, h.role || 'hand', h.kind, left.has(h.id)).userData.choice = h.id;
+    node.add(g);
+    Object.assign(betaState, { group: g, node, rings: g.children.filter(o => o.isSprite), markers: [] });
+    return liftRings(), renderBetaVids();
+  }
   for (const v of betaState.found?.videos || []) {
     if (!betaState.shown.has(v.tag)) continue;
     // each limb's track in pieces; beta not yet redrawn (beta.redraw_lines()) has one, unfiltered
@@ -5698,7 +5750,7 @@ function renderBetaPanel(){
   el.innerHTML = `<div class="card active">
     <div class="row"><b class="grow">${esc(m?.name || '')}</b><button class="sm sec close">✕ close</button></div>
     <div class="meta" style="margin-top:6px"><b>Sets of beta:</b>${b.sets.length ? '' : ' none'}</div>
-    ${b.sets.length ? `<select class="bset" style="margin-top:4px" title="The set whose holds are shown">${b.sets.map(s => `<option value="${esc(s.id)}" ${s.id === b.sid ? 'selected' : ''}>${esc(s.name)}${s.author ? ` · by ${esc(s.author)}` : ''} · ${count(s.holds.length)}${s.shared === false ? ' · not shared' : ''}</option>`).join('')}</select>` : ''}
+    ${b.sets.length ? `<select class="bset" style="margin-top:4px" title="The set whose holds are shown">${b.sets.map(s => `<option value="${esc(s.id)}" ${s.id === b.sid ? 'selected' : ''}>${esc(labelOf(b, s))} · ${esc(s.name)} · ${count(s.holds.length)}${s.shared === false ? ' · not shared' : ''}</option>`).join('')}</select>` : ''}
     <div class="row${make ? '' : ' w'}" style="margin-top:4px;gap:4px;flex-wrap:wrap"><button class="sm sec setnew" title="A set with no holds yet${account ? ', of your own' : ''}">New</button>
       ${set ? `<button class="sm sec setdup" title="A copy of this set, ${account ? 'of your own, ' : ''}to change">Duplicate</button>${can ? '<button class="sm sec setname">Rename</button><button class="sm sec setdel">Delete</button>' : ''}` : ''}</div>
     ${set && can ? `<label class="row" style="margin-top:6px;gap:6px;font-size:12px" title="Unticked, only ${account ? 'you and the site\'s owner see' : 'the site\'s owner sees'} it: its holds are still used, unnamed, to guide captures"><input type="checkbox" class="setshared" ${set.shared === false ? '' : 'checked'}> Shared with everyone</label>` : ''}
@@ -5711,13 +5763,13 @@ function renderBetaPanel(){
       <select class="role${w}" title="What it's for">${ROLE_CYCLE.map(r => `<option value="${r}" ${r === h.role ? 'selected' : ''}>${ROLES[r].name}</option>`).join('')}</select>
       <select class="size${w}" title="How far round its point the hold reaches: what a close capture of it covers">${sizes(h)}</select>
       <button class="sm sec unmark${w}" title="Remove this hold">✕</button></div>`).join('')}</div>
-    <div class="meta" style="margin-top:8px"><b>From videos:</b> ${busy ? (f.status === 'queued' ? 'queued…' : f.at ? `finding it${f.at.where === 'machine' ? ' on a machine' : ''}…` : `${esc(f.progress || 'starting')}…`) : m ? betaLine(m) : ''}
+    <hr class="bsep"><div class="meta" style="margin-top:8px"><b>From videos (the pose model's), each a set:</b> ${busy ? (f.status === 'queued' ? 'queued…' : f.at ? `finding it${f.at.where === 'machine' ? ' on a machine' : ''}…` : `${esc(f.progress || 'starting')}…`) : m ? betaLine(m) : ''}
       ${canFind ? `<button class="sm sec find" style="margin-left:6px">${f?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}
       ${f?.status === 'running' ? betaBarHtml(f.at) : ''}</div>
     ${!b.available && n ? '<div class="notice">Finding beta needs rtmlib and onnxruntime, which the Docker image has.</div>' : ''}
     ${(f?.videos || []).map(v => `<div class="bvid">
       <label class="row" style="gap:6px"><input type="checkbox" data-tag="${v.tag}" ${b.shown.has(v.tag) ? 'checked' : ''}>
-        <span class="grow"><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.title || v.url)}</a>${v.uploader ? ` <small>· ${esc(v.uploader)}</small>` : ''}</span></label>
+        <span class="grow"><b>${esc(videoSets(b).find(x => x.tag === v.tag)?.label || '')}</b> · <a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.title || v.url)}</a></span></label>
       <div class="meta">${v.holds ? roleCounts(v.holds) : ''} ${v.holds?.length ? `<button class="sm sec tocopy${make ? '' : ' w'}" data-video="${esc(v.url)}" title="A set of these holds, to change" style="margin-left:4px">Copy to a set</button>` : ''} ${v.frames ? `<small>· climber in ${v.with_climber} of ${v.frames} frames, ${v.placed_frames} placed on the mesh${v.approximate_lens ? ', lens approximate' : ''}</small>` : ''}
         ${v.status && v.status !== 'done' ? `<small>· ${esc(v.status)}</small>` : ''}</div>
       ${v.image ? `<img src="/meshes/${b.mid}/${v.image}?v=${f.finished || ''}" alt="" title="The climber's hands (white) and feet (yellow), and the holds they stayed on, drawn on this video's frame placed in the mesh">` : ''}
@@ -5854,18 +5906,45 @@ function saveMarked(){
     if (betaState === b) { betaCount(b); renderBetaPanel(); }
   });
 }
-// once, to an account, when it first makes a set of beta: that it's shared unless they say not (kept in this browser)
-let sharedTold = false;
+// whether an account's beta shows to others as anonymous: its setting (asked when it first adds beta), or as chosen in
+// this browser with no signal, to send once there is; anonymous until it's said
+function betaAnon(){
+  if (account?.beta_anon != null) return account.beta_anon;
+  try { const kept = localStorage.getItem('bm_beta_anon'); if (kept) return kept === '1'; } catch {}
+  return true;
+}
+async function setBetaAnon(on){
+  try { localStorage.setItem('bm_beta_anon', on ? '1' : '0'); } catch {}
+  if (account) account.beta_anon = on;
+  try { account = (await api('/api/account/settings', { method: 'POST', json: { beta_anon: on } })).user; try { localStorage.removeItem('bm_beta_anon'); } catch {} }
+  catch (e) { if (!noSignal(e) && !(e instanceof TypeError)) toast('Couldn\'t save that: ' + e.message, 6000); }
+  if (betaState) loadBeta().catch(() => {});
+}
+// once, to an account, when it first adds beta: whether others see it under its name or anonymously (anonymous unless
+// it says), and that a set is shared unless it says not
 function sharedNotice(){
-  if (!account || sharedTold) return;
-  sharedTold = true;
-  try { if (localStorage.getItem('bm_shared_told')) return; localStorage.setItem('bm_shared_told', '1'); } catch {}
+  if (!account || account.beta_anon != null) return;
+  try { if (localStorage.getItem('bm_beta_anon')) return; } catch {}
   const dlg = document.createElement('dialog'); dlg.className = 'danger-ask';
-  dlg.innerHTML = `<p style="margin-top:0">Your beta is shared with everyone by default, under your name. Untick 'Shared with everyone' on a set to keep it to yourself: its holds are still used, unnamed, to guide captures.</p><div class="row"><span class="grow"></span><button class="sm">OK</button></div>`;
-  dlg.querySelector('button').onclick = () => dlg.close();
-  dlg.onclose = () => dlg.remove();
+  dlg.innerHTML = `<p style="margin-top:0">Show the beta you add to others under your name (${esc(account.name)}), or anonymously (as anonymous-1, anonymous-2…)?
+    You can change this later in your account (your name, at the top).</p>
+    <p>Each set is also shared with everyone unless you untick 'Shared with everyone' on it: its holds still guide captures, unnamed.</p>
+    <div class="row" style="gap:8px"><span class="grow"></span><button class="sm sec named">Under my name</button><button class="sm anon">Anonymously</button></div>`;
+  let chose = true;
+  dlg.querySelector('.named').onclick = () => { chose = false; dlg.close(); };
+  dlg.querySelector('.anon').onclick = () => dlg.close();
+  dlg.onclose = () => { dlg.remove(); setBetaAnon(chose); };
   document.body.append(dlg); dlg.showModal();
 }
+// what a set of beta is shown as: this account's "yours" (numbered if it has several), "anonymous-N", or its author
+function labelOf(b, s){
+  if (s.video) return s.label;
+  const own = b.sets.filter(x => (account && x.owner === account.id) || isDraftOnly(x));
+  if (own.includes(s)) return own.length > 1 ? `yours (${own.indexOf(s) + 1})` : 'yours';
+  return s.anon_n ? `anonymous-${s.anon_n}` : s.author || 'the site';
+}
+// each video's holds, as a set of their own (as if each were someone's): by its uploader, else video-N
+const videoSets = b => (b?.found?.videos || []).filter(v => v.holds?.length).map((v, i) => ({ id: 'video:' + v.tag, tag: v.tag, video: v, label: v.uploader || `video-${i + 1}` }));
 // a new set (blank, or from: {set} or {video}), the chosen one renamed, shared or not (from: which), or deleted
 async function setDo(what, from){
   const b = betaState;
@@ -5915,9 +5994,14 @@ async function setDo(what, from){
 renderer.domElement.addEventListener('click', ev => {
   const b = betaState;
   if (!betaInView() || ev.detail > 1 || !pressedAt || Math.hypot(ev.clientX - pressedAt[0], ev.clientY - pressedAt[1]) > 5) return;
-  if (!b.marking && !b.markers?.length && !dbg) return;
+  if (!b.marking && !b.markers?.length && !dbg && !b.choose) return;
   const r = renderer.domElement.getBoundingClientRect();
   raycaster.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, 1 - (ev.clientY - r.top) / r.height * 2), camera);
+  if (b.choose) {
+    const on = raycaster.intersectObjects(b.rings || [], false)[0]?.object.userData.choice;
+    if (on) { b.choose.left.has(on) ? b.choose.left.delete(on) : b.choose.left.add(on); drawBeta(); }
+    return;
+  }
   if (dbg && !b.marking && debugHoldClick()) return;
   if (!b.marking && !b.markers?.length) return;
   const onMarker = raycaster.intersectObjects(b.markers || [], false)[0];
@@ -5935,7 +6019,7 @@ renderer.domElement.addEventListener('click', ev => {
   if (!hit) return;
   // with which way the rock faces there, for the apps' captures of a set made with no signal (the server works it out)
   const n = hit.face && hit.face.normal.clone().transformDirection(hit.object.matrixWorld).transformDirection(b.node.matrixWorld.clone().invert());
-  b.marked.push({ p: b.node.worldToLocal(hit.point.clone()).toArray().map(x => +x.toFixed(6)), role: ROLE_CYCLE[0], ...(n ? { n: n.toArray().map(x => +x.toFixed(4)) } : {}) });
+  b.marked.push({ id: Math.random().toString(16).slice(2, 10), p: b.node.worldToLocal(hit.point.clone()).toArray().map(x => +x.toFixed(6)), role: ROLE_CYCLE[0], ...(n ? { n: n.toArray().map(x => +x.toFixed(4)) } : {}) });
   b.sel = b.marked.length - 1;
   saveMarked();
 });
@@ -7124,11 +7208,13 @@ function appsHtml(){
 function openAccount(){
   const role = account.role === 'user' ? '' : ` (${account.role === 'owner' ? 'an editor' : esc(account.role)})`;
   const dlg = acctDlg(`<p>Signed in as <b>${esc(account.name)}</b>${role}: what you add is credited to this name.</p>
+    <label class="row" style="gap:6px;margin:0 0 10px"><input type="checkbox" class="betaanon" ${betaAnon() ? 'checked' : ''}> Show my beta to others anonymously (as anonymous-1, anonymous-2…), not under my name</label>
     ${account.accepted ? '' : '<p>You haven\'t accepted the site\'s terms yet, so nothing can be added. <button class="sm sec toterms">Read them</button></p>'}
     ${appsHtml()}<p style="margin-bottom:4px"><b>What I've added</b></p><div class="mine" style="margin:0 0 10px"><p>Loading…</p></div>
     <div class="pair"></div><p class="err"></p>
     <div class="row" style="gap:8px;justify-content:flex-end;flex-wrap:wrap"><button class="sm sec pairgo">Sign in another device</button><button class="sm sec out">Sign out</button><button class="sm close">Close</button></div>`);
   dlg.querySelector('.toterms')?.addEventListener('click', openTerms);
+  dlg.querySelector('.betaanon').onchange = ev => setBetaAnon(ev.target.checked);
   bindApps(dlg);
   showAdded(dlg);
   dlg.querySelector('.out').onclick = () => { if (confirm('Sign out of this browser? Signing in again needs a code from another of your devices, or a new invite.')) signOut(); };

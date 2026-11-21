@@ -22,7 +22,7 @@ import struct
 import time
 from pathlib import Path
 
-VERSION = 4             # goes up when a plan or guide made before would be read wrongly, or should be made again
+VERSION = 5             # goes up when a plan or guide made before would be read wrongly, or should be made again
 DIR, PLAN_FILE, GUIDE_FILE = "capture", "plan.json", "guide.bin"
 GUIDE_FACES = 60000     # at most, in the light mesh: fine enough for the small model to show holds, zoomed in on
 PATCH_CELLS = 10        # a patch: a box this share of the mesh's size, and the way its faces face
@@ -412,7 +412,7 @@ def build(V, F, cams: list[dict], holds: list[dict], climbs: list[dict], metres_
                       "metres_per_unit": round(mpu, 6), "scale_guessed": guessed},
             "guide": {"vertices": len(V), "faces": len(F), "patches": n_patches, "sha1": hashlib.sha1(guide).hexdigest()[:16]},
             "need": NEED, "bridge": BRIDGE, "view_deg": VIEW_DEG, "facing_deg": FACING_DEG,
-            "sets": [{"id": one["id"], "name": one.get("name"), "climb": one.get("climb"),
+            "sets": [{"id": one["id"], "name": one.get("name"), "climb": one.get("climb"), **({"video": True} if one.get("video") else {}),
                       "targets": [t["id"] for t in targets if t["kind"] == "hold" and one["id"] in t["sets"]]} for one in sets or []],
             "roles": ROLE_COLORS,
             "cameras": shown, "targets": targets,

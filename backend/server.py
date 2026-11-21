@@ -1903,10 +1903,17 @@ def capture_plan(mid: str) -> dict | None:
                                              "AND COALESCE(l.note,'') NOT LIKE ?", mid, SHARED + "%")}
             for c in boulder_climbs(m["boulder"]) if m["boulder"] else []:
                 climbs.setdefault(c["id"], {"id": c["id"], "name": c["name"], "grade": c["grade"]})
-            holds = []
+            holds, found = [], []
             for v in (beta_mod.load(d) or {}).get("videos", []):
                 of = [r["climb_id"] for r in q("SELECT climb_id FROM climb_videos WHERE url=?", v.get("url"))]
-                holds += [{"p": h["p"], "role": h.get("role"), "from": "video", "climbs": [c for c in of if c in climbs]} for h in v.get("holds") or []]
+                # each video's holds a set of their own, as the viewer lists them, to choose for a capture: video:<tag>,
+                # each hold <tag>/<its id>
+                vs = f"video:{v.get('tag')}" if v.get("tag") and v.get("holds") else None
+                if vs:
+                    found.append({"id": vs, "name": v.get("uploader") or f"video-{len(found) + 1}", "climb": None, "video": True})
+                holds += [{"p": h["p"], "role": h.get("role"), "from": "video", "climbs": [c for c in of if c in climbs],
+                           "sets": [vs] if vs else [], "ids": [f"{v.get('tag')}/{h.get('id')}"] if vs and h.get("id") is not None else []}
+                          for h in v.get("holds") or []]
             sets = beta_mod.load_sets(d)     # the sets of beta made by hand: each hold with the sets it's in, and its set's climb
             for one in sets:
                 if not one.get("shared", True):     # not shared: its holds are still worth photographing, as spots with no name, role or set
@@ -1916,7 +1923,7 @@ def capture_plan(mid: str) -> dict | None:
                            "r_m": h.get("r_m"), "climbs": [one["climb"]] if one.get("climb") in climbs else []} for h in one["holds"]]
             sets = [one for one in sets if one.get("shared", True)]
             plan = captureplan.make(d, holds, [{**c, "view": views.get(c["id"])} for c in climbs.values()], scale, want,
-                                    sets=[{"id": one["id"], "name": one["name"], "climb": one.get("climb")} for one in sets])
+                                    sets=[{"id": one["id"], "name": one["name"], "climb": one.get("climb")} for one in sets] + found)
     facing = mesh_heading(mid)
     frame = {**plan["frame"], "scale_sd": scale_sd(mid) if not plan["frame"].get("scale_guessed") else None}
     return {**plan, "frame": frame, "mesh": mid, "name": m["name"], "lat": m["lat"], "lng": m["lng"], "heading_deg": facing["deg"] if facing else None,
@@ -2330,6 +2337,21 @@ def phone_holds(mid: str, pid: str, log=None, target: str | None = None) -> dict
     say(f"capture: {len(holds)} of the {plural(len(marked), 'hold')} marked on the phone put on "
         + " and ".join(f"mesh {s['mesh']}" for s in out["sets"]) + f", as the set of beta \"{name}\""
         + (f"; {len(marked) - len(holds)} left out, too few photos of their spell of the tracking placed" if len(holds) < len(marked) else ""))
+    return out
+
+
+def anonymised(sets: list[dict], me: dict | None) -> list[dict]:
+    """Sets of beta as someone sees them: those of accounts whose beta is anonymous (beta_anon) numbered, anon_n, in the
+    order they were made (whoever made them), and without their author or owner, but to their owner and the site's."""
+    anon = {u["id"] for u in ACCOUNTS.users() if u.get("beta_anon")} if ACCOUNTS else set()
+    out, n = [], 0
+    for s in sorted(sets, key=lambda s: s.get("created") or 0):
+        if s.get("owner") in anon:
+            n += 1
+            s = {**s, "anon_n": n}
+            if not me or (me.get("id") != s["owner"] and me.get("role") != "owner"):
+                s = {k: v for k, v in s.items() if k not in ("author", "owner")}
+        out.append(s)
     return out
 
 
@@ -11797,6 +11819,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "that needs an account's own token"}, 401)
             if p == "/api/account/terms":
                 return self.send_json({"user": accounts_mod.public(ACCOUNTS.accept(user["id"], body.get("version")))})
+            if p == "/api/account/settings":    # its own choices: {beta_anon}, whether others see its beta as anonymous
+                changes = {k: bool(body[k]) for k in ("beta_anon",) if k in body}
+                return self.send_json({"user": accounts_mod.public(ACCOUNTS.change(user["id"], changes) if changes else user)})
             if p == "/api/account/pair":     # with a link to it, and that as a QR: for the phone app's Scan, or a phone's camera
                 made = ACCOUNTS.pair_code(user["id"])
                 link = f"{SITE_URL or 'http://' + self.headers.get('Host', '127.0.0.1')}/#signin={made['code']}"
@@ -12291,6 +12316,7 @@ class Handler(BaseHTTPRequestHandler):
                         v.update(url=None, title="a video that isn't clearly free to copy", uploader=None)
                 me = self.who()     # sets not shared are their owner's alone to see, and the site's owner's
                 sets = beta_mod.visible(beta_mod.load_sets(MESHES / m[1]), (me or {}).get("id"), bool(me) and me["role"] == "owner")
+                sets = anonymised(sets, me)
                 return self.send_json({"found": found, "marked": {"holds": sets[0]["holds"], "updated": sets[0].get("updated")} if sets else {"holds": []},
                                        "sets": sets, "available": beta_mod.available()})
             if p == "/api/account/projects":    # what this account added, and what it holds against its quota

@@ -23,8 +23,9 @@ data class DraftHold(val id: String? = null, val p: List<Double>, val role: Stri
                      val n: List<Double>? = null)
 
 /**
- * What a capture of holds in detail is for: the sets of beta chosen (`sets`), less the holds of theirs left out (`left`:
- * target ids). Its plan has these as one set, FOCUS (focused()).
+ * What a capture of holds in detail is for: the sets of beta chosen (`sets`: a video's as video:<tag>), less the holds of
+ * theirs left out (`left`: the holds' own ids, as the viewer has them, or targets' ids), as chosen in the site's viewer
+ * (its ?choose). Its plan has these as one set, FOCUS (focused()).
  */
 @Serializable
 data class Focus(val sets: List<String>, val left: List<String> = emptyList())
@@ -40,6 +41,8 @@ object BetaDrafts {
     /** The page's drafts, as it hands them over; empty if they can't be read. */
     fun parse(text: String?): List<DraftSet> = text?.let { runCatching { json.decodeFromString(list, it) }.getOrNull() } ?: emptyList()
     fun write(drafts: List<DraftSet>): String = json.encodeToString(list, drafts)
+    /** The capture the viewer's page asked for (?choose's Capture: its focus, as JSON); null if it isn't one. */
+    fun focus(text: String?): Focus? = text?.let { runCatching { json.decodeFromString(Focus.serializer(), it) }.getOrNull() }?.takeIf { it.sets.isNotEmpty() }
 
     /**
      * A plan with the phone's drafts in: each set as the draft has it (one deleted gone), its holds targets (one of the
@@ -80,18 +83,12 @@ object BetaDrafts {
      */
     fun focused(plan: Plan, focus: Focus): Plan {
         val chosen = plan.sets.filter { it.id in focus.sets }
-        val ids = chosen.flatMap { it.targets }.distinct().filter { it !in focus.left }.toSet()
+        val byId = plan.targets.associateBy { it.id }
+        val ids = chosen.flatMap { it.targets }.distinct().filter { id -> id !in focus.left && byId[id]?.holds.orEmpty().none { it in focus.left } }.toSet()
         if (ids.isEmpty()) return plan
-        val name = chosen.mapNotNull { it.name }.joinToString(" + ").ifEmpty { "Chosen holds" }
+        val name = chosen.mapNotNull { it.name }.joinToString(" + ").ifEmpty { "Chosen holds" }.take(120)
         return plan.copy(sets = plan.sets.filter { it.id != FOCUS } + PlanSet(FOCUS, name, targets = ids.toList(), of = focus.sets, left = focus.left),
                          targets = plan.targets.map { t -> if (t.id in ids) t.copy(sets = (t.sets + FOCUS).distinct()) else t })
-    }
-
-    /** A hold's line in a list of them: its role and the sets it's in. */
-    fun label(plan: Plan, t: Target, sets: Collection<String>): String {
-        val role = t.role?.replaceFirstChar { it.uppercase() } ?: "Hold"
-        val of = plan.sets.filter { it.id in sets && it.id in t.sets }.mapNotNull { it.name }
-        return role + if (of.isEmpty()) "" else " · " + of.joinToString(", ")
     }
 
     /**

@@ -2,8 +2,6 @@ package sh.boulderme.ios
 
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import platform.UIKit.UIColor
-import platform.UIKit.secondaryLabelColor
 import platform.WebKit.WKScriptMessage
 import platform.WebKit.WKScriptMessageHandlerProtocol
 import platform.WebKit.WKUserContentController
@@ -11,54 +9,23 @@ import platform.darwin.NSObject
 import sh.boulderme.core.BetaDrafts
 import sh.boulderme.core.DraftSet
 import sh.boulderme.core.Focus
-import sh.boulderme.core.Plan
-
-/**
- * Before a capture of holds in detail: which of the mesh's sets of beta it's for (any of them), and then which of their
- * holds, each ticked to begin with, to leave out. `start` gets what was chosen (BetaDrafts.focused() makes it one set).
- */
-class FocusForm(private val plan: Plan, private val start: (Focus) -> Unit) : Form("Hold closeups") {
-    private val sets = plan.setsWithHolds
-    private var chosen = if (sets.size == 1) setOf(sets[0].id) else emptySet()
-    private var left = emptySet<String>()
-
-    override fun build() {
-        val byId = plan.targets.associateBy { it.id }
-        section("Sets of beta to photograph the holds of")
-        for (s in sets) {
-            val unsent = s.id.startsWith(BetaDrafts.LOCAL) || plan.targets.any { it.id.startsWith("d-${s.id}-") }
-            button((if (s.id in chosen) "☑ " else "☐ ") + "${s.name ?: "A set of beta"} (${s.targets.size} hold${if (s.targets.size == 1) "" else "s"})" +
-                if (unsent) " · not sent yet" else "", Look.PLAIN) { chosen = if (s.id in chosen) chosen - s.id else chosen + s.id; rebuild() }
-        }
-        val holds = sets.filter { it.id in chosen }.flatMap { it.targets }.distinct().mapNotNull { byId[it] }
-        if (holds.isNotEmpty()) {
-            section("Its holds")
-            text("Untick any to leave out.", UIColor.secondaryLabelColor, small = true)
-        }
-        for ((i, t) in holds.withIndex()) button((if (t.id in left) "☐ " else "☑ ") + "${i + 1}. " + BetaDrafts.label(plan, t, chosen), Look.PLAIN) {
-            left = if (t.id in left) left - t.id else left + t.id; rebuild()
-        }
-        val n = holds.count { it.id !in left }
-        button(if (n > 0) "Capture $n hold${if (n == 1) "" else "s"}" else "Choose some holds", Look.FILLED, enabled = n > 0) {
-            start(Focus(sets.map { it.id }.filter { it in chosen }, left.filter { l -> holds.any { it.id == l } }))
-        }
-    }
-}
 
 /**
  * The viewer's page keeping the sets of beta it changed with no signal (its bmBeta message: {mesh, drafts}), for the app
  * to capture and send (BetaDrafts); they're given back to the page as BM_BETA_DRAFTS (script()).
  */
-class BetaBridge(private val store: IosStore) : NSObject(), WKScriptMessageHandlerProtocol {
+class BetaBridge(private val store: IosStore, private val chosen: (String, Focus) -> Unit = { _, _ -> }) : NSObject(), WKScriptMessageHandlerProtocol {
     private val meshId = Regex("[0-9a-f]{6,32}")
 
+    /** bmBeta: {mesh, drafts} to keep; bmCapture: {mesh, focus}, ?choose's Capture of the sets and holds chosen. */
     override fun userContentController(userContentController: WKUserContentController, didReceiveScriptMessage: WKScriptMessage) {
         val text = didReceiveScriptMessage.body as? String ?: return
         if (text.length > 2_000_000) return
         val obj = runCatching { IosStore.json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
         val mesh = obj["mesh"]?.jsonPrimitive?.content ?: return
         if (!meshId.matches(mesh)) return
-        store.saveDrafts(mesh, BetaDrafts.parse(obj["drafts"]?.toString()))
+        if (didReceiveScriptMessage.name == "bmCapture") BetaDrafts.focus(obj["focus"]?.toString())?.let { chosen(mesh, it) }
+        else store.saveDrafts(mesh, BetaDrafts.parse(obj["drafts"]?.toString()))
     }
 
     /** What the page starts with: this mesh's drafts kept on the phone. */

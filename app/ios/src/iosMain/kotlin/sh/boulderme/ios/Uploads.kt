@@ -332,12 +332,13 @@ class ViewerDelegate(private val server: String, private val failed: (String) ->
  * wireframe (?notex).
  */
 @OptIn(ExperimentalForeignApi::class)
-class ViewerController(private val app: App, private val mesh: String, private val name: String) : UIViewController(nibName = null, bundle = null) {
+class ViewerController(private val app: App, private val mesh: String, private val name: String, private val choose: Boolean = false,
+                       chosen: (sh.boulderme.core.Focus) -> Unit = {}) : UIViewController(nibName = null, bundle = null) {
     private val server = app.store.server.trimEnd('/')
     private val note = UILabel()
     private val column = UIStackView()
     private var pages: OfflinePages? = null     // held here: the web view holds its scheme's handler, but not past this
-    private val bridge = BetaBridge(app.store)
+    private val bridge = BetaBridge(app.store) { m, focus -> if (m == mesh) chosen(focus) }     // ?choose's Capture
     private val delegate = ViewerDelegate(server) { why ->       // held here: the web view holds its delegate weakly
         note.text = "The mesh couldn't be shown: $why. " + if (pages == null) "Viewing needs signal, or a copy kept on the phone (Get meshes)." else ""
         note.textColor = BAD
@@ -374,6 +375,7 @@ class ViewerController(private val app: App, private val mesh: String, private v
             WKUserScriptInjectionTime.WKUserScriptInjectionTimeAtDocumentStart, true))
         // beta changed with no signal: the page hands it to the app (bmBeta), and starts with what the app keeps (BetaDrafts)
         config.userContentController.addScriptMessageHandler(bridge, name = "bmBeta")
+        config.userContentController.addScriptMessageHandler(bridge, name = "bmCapture")
         config.userContentController.addUserScript(WKUserScript(bridge.script(mesh), WKUserScriptInjectionTime.WKUserScriptInjectionTimeAtDocumentStart, true))
         if (kept != null) OfflinePages(app.store.offline, kept, server).also { pages = it; config.setURLSchemeHandler(it, forURLScheme = Offline.SCHEME) }
         val web = WKWebView(frame = CGRectZero.readValue(), configuration = config)
@@ -384,7 +386,7 @@ class ViewerController(private val app: App, private val mesh: String, private v
         note.hidden = kept == null
         column.addArrangedSubview(web)
         // the site's viewer alone (app)
-        val address = if (kept != null) own + "m/$mesh?app=ios" + (if (kept.textures) "" else "&notex=1") else "$server/m/$mesh?app=ios"
+        val address = (if (kept != null) own + "m/$mesh?app=ios" + (if (kept.textures) "" else "&notex=1") else "$server/m/$mesh?app=ios") + if (choose) "&choose=1" else ""
         NSURL.URLWithString(address)?.let { web.loadRequest(NSURLRequest.requestWithURL(it)) }
     }
 }

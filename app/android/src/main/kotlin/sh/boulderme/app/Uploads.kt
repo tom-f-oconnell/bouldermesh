@@ -285,10 +285,13 @@ fun ViewerScreen(a: MainActivity, s: Screen.Viewer, go: (Screen) -> Unit) {
                 }
                 // a WebView has no navigator.share: the page's Share sends its links to the phone's share sheet through this;
                 // and the page's beta changed with no signal is kept by the app through it (BetaDrafts)
-                addJavascriptInterface(ShareSheet(ctx, a.store), "BoulderMeshApp")
+                addJavascriptInterface(ShareSheet(ctx, a.store) { mesh, focus ->
+                    // ?choose's Capture: Home starts it, as any capture (its permissions, guide and compass first)
+                    if (mesh == s.mesh) post { ChosenCapture.set(Screen.Capture(mesh, s.name, sh.boulderme.core.BetaDrafts.FOCUS, focus = focus)); go(Screen.Home) }
+                }, "BoulderMeshApp")
                 // the page keeps its token in the site's own storage: put this phone's there, then open the mesh, in the
                 // site's viewer alone (app)
-                val page = "$server/m/${s.mesh}?app=android" + if (copy != null && !copy.textures) "&notex=1" else ""
+                val page = "$server/m/${s.mesh}?app=android" + (if (copy != null && !copy.textures) "&notex=1" else "") + if (s.choose) "&choose=1" else ""
                 val keep = if (a.store.token.isEmpty()) "localStorage.removeItem('bm_token')" else "localStorage.setItem('bm_token',${JsonPrimitive(a.store.token)})"
                 loadDataWithBaseURL("$server/", "<!doctype html><script>try{$keep}catch(e){};location.replace(${JsonPrimitive(page)})</script>", "text/html", "utf-8", null)
             }
@@ -300,8 +303,15 @@ fun ViewerScreen(a: MainActivity, s: Screen.Viewer, go: (Screen) -> Unit) {
  * What the viewer's page may ask of the app (as window.BoulderMeshApp): a link, to the phone's share sheet; and to keep
  * the sets of beta it changed with no signal (BetaDrafts), and give them back.
  */
-class ShareSheet(private val ctx: android.content.Context, private val store: Store) {
+class ShareSheet(private val ctx: android.content.Context, private val store: Store,
+                 private val chosen: (String, sh.boulderme.core.Focus) -> Unit = { _, _ -> }) {
     private val mesh = Regex("[0-9a-f]{6,32}")
+
+    /** ?choose's Capture: the sets and holds chosen for closeups of them. */
+    @JavascriptInterface
+    fun capture(mesh: String, focus: String) {
+        if (this.mesh.matches(mesh)) sh.boulderme.core.BetaDrafts.focus(focus)?.let { chosen(mesh, it) }
+    }
 
     @JavascriptInterface
     fun keptBeta(mesh: String): String = if (this.mesh.matches(mesh)) sh.boulderme.core.BetaDrafts.write(store.drafts(mesh)) else "[]"
@@ -318,6 +328,13 @@ class ShareSheet(private val ctx: android.content.Context, private val store: St
         val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, url).putExtra(Intent.EXTRA_SUBJECT, title)
         runCatching { ctx.startActivity(Intent.createChooser(send, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
     }
+}
+
+/** The capture chosen in the viewer (?choose), for Home to start once it's back. */
+object ChosenCapture {
+    @Volatile private var next: Screen.Capture? = null
+    fun set(c: Screen.Capture) { next = c }
+    fun take(): Screen.Capture? = next.also { next = null }
 }
 
 /** Keeps an upload's mesh for the viewer with no signal: asks how (with textures or without) once the server says what each takes. */

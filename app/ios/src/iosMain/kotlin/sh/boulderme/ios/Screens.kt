@@ -182,9 +182,12 @@ class Home(private val app: App) : Form("boulderme.sh") {
                     .apply { setContentCompressionResistancePriority(1000f, forAxis = UILayoutConstraintAxisHorizontal) },     // on one line
                 makeButton("View") { push(ViewerController(app, p.mesh, p.name.ifEmpty { p.mesh })) },
                 makeButton("Remove", Look.PLAIN) { app.store.removePlan(p.mesh); rebuild() })
-            // for sets of beta: the holds chosen of them (FocusForm), from close, all round, as a replica of them needs
+            // for sets of beta: the holds chosen of them in the viewer (?choose), from close, all round, as a replica of them needs
             if (p.setsWithHolds.isNotEmpty()) button("Capture hold closeups… (${p.setsWithHolds.size} set${if (p.setsWithHolds.size == 1) "" else "s"} of beta)") {
-                push(FocusForm(p) { f -> screen.navigationController?.popToViewController(screen, animated = true); capture(p.mesh, p.name.ifEmpty { p.mesh }, sh.boulderme.core.BetaDrafts.FOCUS, focus = f) })
+                push(ViewerController(app, p.mesh, p.name.ifEmpty { p.mesh }, choose = true) { f ->
+                    screen.navigationController?.popToViewController(screen, animated = true)
+                    capture(p.mesh, p.name.ifEmpty { p.mesh }, sh.boulderme.core.BetaDrafts.FOCUS, focus = f)
+                })
             }
         }
         app.meshUpdates.error?.let { text(it, BAD, small = true) }

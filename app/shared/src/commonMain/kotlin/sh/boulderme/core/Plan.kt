@@ -87,7 +87,8 @@ data class Need(@SerialName("gsd_mm") val gsdMm: Double? = null, val views: Int 
  */
 @Serializable
 data class PlanSet(val id: String, val name: String? = null, val climb: String? = null, val targets: List<String> = emptyList(),
-                   val of: List<String> = emptyList(), val left: List<String> = emptyList())
+                   val of: List<String> = emptyList(), val left: List<String> = emptyList(),
+                   val video: Boolean = false)     // a video's holds, as the pose model found them (video:<tag>)
 
 /** How near where an earlier photo was taken (a "view" target) a photo has to be taken to count as the same view again. */
 @Serializable

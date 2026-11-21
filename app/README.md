@@ -47,8 +47,11 @@ phone yet**: see [What's been checked](#whats-been-checked).
    on its screen).
 7. **Adding beta**, signed in from an invite: *View* a mesh, then **+** beside *Beta* and tap the rock, as on the site.
    With no signal it's kept on the phone, shown in the viewer and used by captures, and sent once Home comes up with
-   signal. *Capture hold closeups…* on a mesh asks which of its sets of beta (any of them, with those not sent yet), then
-   which of their holds, each ticked to start with, before the capture photographs those in detail.
+   signal. The first time, it asks whether others see your beta under your name or anonymously (as anonymous-1, …;
+   anonymous unless you say), which your account (your name at the top of the site) changes later.
+   *Capture hold closeups…* on a mesh opens it in the viewer: tick any of its sets of beta (yours, others', and each
+   video's as found by the pose model, below a line), tap any hold on the rock to leave it out (it goes faint), then
+   *Capture N holds*.
 8. **Captures no longer on the phone** (deleted, sent from another phone, or lost when the app was uninstalled) are
    listed under *Your captures on the server*, with how each stands, once the phone is signed in to
    your account. Uninstalling deletes the captures on the phone: on Android 10 and later, tick *Keep app data* in the
