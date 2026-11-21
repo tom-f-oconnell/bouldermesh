@@ -94,6 +94,17 @@ class Api(internal val store: Store) {
         return read(c)
     }
 
+    /** A file kept on the phone for debugging (the owner's), to the server's debug/<kind>/<session>/<name>. */
+    fun debugFile(kind: String, session: String, name: String, body: ByteArray) {
+        val q = { s: String -> java.net.URLEncoder.encode(s, "UTF-8") }
+        val c = open("/api/debug/files?kind=${q(kind)}&session=${q(session)}&name=${q(name)}", "POST")
+        c.doOutput = true
+        c.setRequestProperty("Content-Type", "application/octet-stream")
+        c.setFixedLengthStreamingMode(body.size)
+        c.outputStream.use { it.write(body) }
+        read(c)
+    }
+
     /** A mesh's plan and guide, as text and bytes, to keep. */
     fun plan(mesh: String): Pair<String, ByteArray> {
         val text = read(open("/api/capture/plan/$mesh")).decodeToString()

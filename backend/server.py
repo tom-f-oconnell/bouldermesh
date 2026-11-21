@@ -11094,6 +11094,8 @@ def admin_machine_diagnostics(body: dict) -> dict:
 
 
 # ----------------------------------------------------------------- errors in visitors' browsers
+DEBUG = DATA / "debug"      # what the owner's phone sends for debugging (POST /api/debug/files): <kind>/<session>/<file>
+DEBUG_FILE_MAX = 30 * 2**20
 CLIENT_ERRORS = DATA / "client-errors.jsonl"   # one report a line; the one before it, client-errors.jsonl.1, once it's full
 CLIENT_ERRORS_BYTES = 2 * 2**20                # how big the file gets before that
 CLIENT_REPORT_MAX = 8192                       # the largest report taken
@@ -11724,6 +11726,25 @@ class Handler(BaseHTTPRequestHandler):
         """Whether this request carries the editing token (EDIT_TOKEN), as "Authorization: Bearer <token>"."""
         got = self.headers.get("Authorization", "")
         return bool(EDIT_TOKEN) and hmac.compare_digest(got.encode(), f"Bearer {EDIT_TOKEN}".encode())
+
+    def debug_file(self) -> None:
+        """POST /api/debug/files?kind=<what>&session=<its folder>&name=<file>: a file the owner's phone kept for debugging
+        (the apps' live hold finding: each frame's JPEG and JSON), to DEBUG/<kind>/<session>/<name>, replacing one there."""
+        if not self.is_editor():
+            return self.send_json({"error": "only the site's owner sends debug files"}, 403)
+        qs = parse_qs(urlparse(self.path).query)
+        parts = [(qs.get(k) or [""])[0] for k in ("kind", "session", "name")]
+        if not all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}", x) for x in parts):
+            return self.send_json({"error": "kind, session and name: letters, digits, '.', '_' or '-'"}, 400)
+        n = int(self.headers.get("Content-Length") or 0)
+        if not 0 < n <= DEBUG_FILE_MAX:
+            return self.send_json({"error": f"a file of up to {DEBUG_FILE_MAX // 2**20} MB"}, 413)
+        d = DEBUG / parts[0] / parts[1]
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / (parts[2] + ".partial")
+        tmp.write_bytes(self.rfile.read(n))
+        tmp.replace(d / parts[2])
+        return self.send_json({"kept": f"{parts[0]}/{parts[1]}/{parts[2]}", "bytes": n})
 
     def is_editor(self) -> bool:
         """Whether this request may change what the editing token may: it carries that token, or an editor's (an
@@ -12568,6 +12589,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.pair()
         if p.startswith("/api/account/"):    # an account's own: joining, its terms, its devices
             return self.account(p)
+        if p == "/api/debug/files":     # the owner's phone's debug data (its live hold finding's frames), one file a request
+            return self.debug_file()
         m = re.fullmatch(r"/api/capture/locate/([0-9a-f]+)", p)
         if m:   # also from any visitor who may see the mesh: lining it up with no taps (locateapi.py)
             return self.locate_frames(m[1])

@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import sh.boulderme.core.Gym
 import sh.boulderme.core.HoldColour
@@ -102,7 +103,10 @@ fun HoldLabScreen(a: MainActivity, go: (Screen) -> Unit) {
                 val live = remember { (File(a.filesDir, "holdlive").listFiles() ?: emptyArray()).filter { d -> d.list()?.any { it.endsWith(".jpg") } == true }.sortedByDescending { it.name } }
                 if (ids.isEmpty() && live.isEmpty()) Text("No captures with photos on this phone.")
                 for (id in ids) TextButton(onClick = { capture = id }) { Text("${a.store.upload(id)?.name ?: id} (${File(a.store.captureDir(id), "photos").list()?.size ?: 0} photos)") }
-                for (d in live) TextButton(onClick = { capture = "live:" + d.name }) { Text("Live frames kept ${d.name} (${d.list()?.count { it.endsWith(".jpg") } ?: 0})") }
+                for (d in live) Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { capture = "live:" + d.name }) { Text("Live frames kept ${d.name} (${d.list()?.count { it.endsWith(".jpg") } ?: 0})") }
+                    DebugUpload(a, d)
+                }
             } else {
                 val folder = if (c.startsWith("live:")) File(a.filesDir, "holdlive/" + c.removePrefix("live:")) else File(a.store.captureDir(c), "photos")
                 val photos = remember(c) { (folder.listFiles() ?: emptyArray()).filter { it.name.endsWith(".jpg") }.sortedBy { it.name } }
@@ -160,6 +164,34 @@ fun HoldLabScreen(a: MainActivity, go: (Screen) -> Unit) {
             TextButton(onClick = { tap = null }) { Text("Clear the tap") }
         }
     }
+}
+
+/**
+ * Sends a folder of kept debug files (a live hold-finding session's) to the server's debug/holdlive/<its name>/, those
+ * not sent before (each noted in its .sent): for looking at there, without finding them on the phone.
+ */
+@Composable
+fun DebugUpload(a: MainActivity, d: File) {
+    var said by remember(d) { mutableStateOf<String?>(null) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val sentFile = File(d, ".sent")
+    TextButton(enabled = said == null || said!!.startsWith("Sent") || said!!.startsWith("Failed"), onClick = {
+        said = "Sending…"
+        scope.launch {
+            said = withContext(Dispatchers.IO) {
+                runCatching {
+                    val sent = sentFile.takeIf { it.exists() }?.readLines()?.toMutableSet() ?: mutableSetOf()
+                    val todo = (d.listFiles() ?: emptyArray()).filter { it.isFile && !it.name.startsWith(".") && it.name !in sent }.sortedBy { it.name }
+                    for ((i, f) in todo.withIndex()) {
+                        said = "Sending ${i + 1} of ${todo.size}…"
+                        a.api.debugFile("holdlive", d.name, f.name, f.readBytes())
+                        sent += f.name; sentFile.appendText(f.name + "\n")
+                    }
+                    "Sent: ${sent.size} files, in the server's debug/holdlive/${d.name}"
+                }.getOrElse { "Failed: ${it.message}" }
+            }
+        }
+    }) { Text(said ?: "Upload for debugging") }
 }
 
 @Composable

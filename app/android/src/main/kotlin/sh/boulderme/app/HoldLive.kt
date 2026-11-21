@@ -253,6 +253,7 @@ fun HoldLiveScreen(a: MainActivity, go: (Screen) -> Unit) {
                     label = { Text(if (controller.hasModel) "Model (B)" else "No model here") })
                 TextButton(onClick = { controller.clearTap() }) { Text("Clear the tap") }
                 TextButton(onClick = { controller.saveFrame() }) { Text("Keep frame") }
+                if (controller.saved > 0) DebugUpload(a, controller.dir)
                 TextButton(onClick = { go(Screen.HoldLab) }) { Text("Back") }
             }
             Text("Colour tolerance ×${HoldColour.TOLERANCES[tol]}", color = Color.White)
