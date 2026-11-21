@@ -1822,7 +1822,7 @@ function renderPieces(){
   const pct = 100 * hiddenFaces / r.faces, what = r.removed.length ? `${r.removed.length} stray piece${r.removed.length === 1 ? '' : 's'} hidden, ${pct < 0.1 ? 'under 0.1' : pct.toFixed(1)}% of faces.` : 'No pieces hidden.';
   if (!pieces.editing) {
     el.innerHTML = `${what}<div class="row"><button class="sm sec edit">Edit</button><button class="sm sec del" title="Show the whole mesh again. Its files were never changed.">Remove cleanup</button></div>`;
-    el.querySelector('.edit').onclick = () => { pieces.editing = true; applyPieces(); fitEverything(); renderPieces(); };
+    el.querySelector('.edit').onclick = () => { pieces.editing = true; applyPieces(); renderPieces(); };     // the view stays as it is: See everything frames it all
     el.querySelector('.del').onclick = deleteCleanup;
     return;
   }
@@ -1833,7 +1833,7 @@ function renderPieces(){
     ${needsAll ? '<div class="row"><small>This needs every face, and only a simplified copy is loaded.</small><button class="sm sec all">Load all faces</button></div>' : ''}
     <div class="row"><button class="sm done">Done</button><button class="sm sec undo" ${r.undo && !pieces.busy ? '' : 'disabled'} title="Take back the last change">Undo</button><button class="sm sec fit">See everything</button><button class="sm sec redo">Back to automatic</button></div>
     <div class="list">${r.pieces.slice(0, 200).map(p => `<span>${hide.has(p.id) ? '<s>' : ''}${pieceLabel(p)}${hide.has(p.id) ? '</s>' : ''}</span><button class="sm sec" data-piece="${p.id}">${hide.has(p.id) ? 'Show' : 'Hide'}</button>`).join('')}</div>`;
-  el.querySelector('.done').onclick = () => { pieces.editing = false; applyPieces(); frameMain(); renderPieces(); refreshMeshes(); };
+  el.querySelector('.done').onclick = () => { pieces.editing = false; applyPieces(); renderPieces(); refreshMeshes(); };
   el.querySelector('.undo').onclick = undoCleanup;
   el.querySelector('.fit').onclick = fitEverything;
   el.querySelector('.redo').onclick = redoCleanup;
