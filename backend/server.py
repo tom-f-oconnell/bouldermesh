@@ -13734,21 +13734,7 @@ def volunteer_rules() -> dict:
     return {"per_hour": s["volunteers.per_hour"], "per_day": s["volunteers.per_day"],
             "provisional_per_hour": s["volunteers.provisional_per_hour"], "provisional_per_day": s["volunteers.provisional_per_day"],
             "provisional_work": s["volunteers.provisional_work"], "registrations_per_address": s["registration.per_address_day"],
-            "max_waiting": s["registration.max_waiting"], "yt_dlp": s["volunteers.yt_dlp"],
-            "check_new": s["volunteers.check_new"], "check_trusted": s["volunteers.check_trusted"], "check_fresh": s["volunteers.check_fresh"]}
-
-
-def volunteer_checked(check: dict, sender: dict) -> None:
-    """A volunteer's video checked against its storyboard (volunteers.Broker's checks): a mismatch on your phone, as a
-    sign the volunteer sent something other than what was asked for."""
-    result = json.loads(check.get("result") or "{}")
-    print(f"volunteers: {sender.get('name')}'s video {check['video_id']} checked: {check['verdict']} {result}", flush=True)
-    if check["verdict"] == "mismatch":
-        threading.Thread(target=NOTIFIER.send, daemon=True, kwargs={"priority": 4, "tags": ["warning"]}, args=(
-            f"Volunteer {sender.get('name') or check['volunteer']}: a video didn't match its storyboard",
-            f"https://www.youtube.com/watch?v={check['video_id']}: {result.get('matched')} of {result.get('tiles')} storyboard frames "
-            "matched what it sent. It's in the cache and may be meshed: see the admin page's checks, and revoke the volunteer if "
-            "it was no accident.")).start()
+            "max_waiting": s["registration.max_waiting"], "yt_dlp": s["volunteers.yt_dlp"]}
 
 
 VOLUNTEER_RUN_DAYS = 7      # how far back a volunteer's usual runs of throttles and refusals are looked at
@@ -13862,7 +13848,7 @@ VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteer
                                    registered=lambda v: NOTIFIER.registered("volunteer", v, f" ({v['client'] or 'a volunteer script'})"),
                                    troubled=volunteer_troubled, widespread=volunteers_widespread, came_went=came_went("volunteer"),
                                    downloaded=script_downloaded("volunteer"), leaderboard=lambda: leaderboard(),
-                                   rank=volunteer_rank, checked=volunteer_checked)
+                                   rank=volunteer_rank)
 
 
 def notify_act(verb: str, kind: str, rid: str) -> str:
@@ -13952,15 +13938,6 @@ def admin_volunteer_trial(body: dict) -> dict:
         raise ValueError("no such volunteer")
     return {"result": f"{v['name']}: in the {v['trial']} trial from its next ask for work (script 14 on)" if v["trial"]
             else f"{v['name']}: in no trial"}
-
-
-def admin_volunteer_trust(body: dict) -> dict:
-    """Trust a volunteer, or stop ({id, trusted}): trusted ones fetch storyboards to check others' videos by."""
-    v = VOLUNTEERS.set_trusted(str(body.get("id") or ""), bool(body.get("trusted")))
-    if not v:
-        raise ValueError("no such volunteer")
-    return {"result": f"{v['name']}: trusted, to check others' videos by their storyboards" if v["trusted"]
-            else f"{v['name']}: not trusted; its videos are checked as a new volunteer's"}
 
 
 def admin_volunteer_revoke(body: dict) -> dict:
@@ -14438,7 +14415,7 @@ def main() -> None:
                                        "old-decide": admin_old_decide, "lost-decide": admin_lost_decide, "remake-tier": admin_remake_tier,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
-                                       "volunteer-trial": admin_volunteer_trial, "volunteer-trust": admin_volunteer_trust,
+                                       "volunteer-trial": admin_volunteer_trial,
                                        "volunteers-skipped": admin_volunteers_skipped, "volunteers-details": admin_volunteers_details,
                                        "page-views": admin_page_views,
                                        "volunteers-cancel": admin_volunteers_cancel, "youtube-research": admin_youtube_research, "user-invite": admin_user_invite, "user-rescind": admin_user_rescind, "user-change": admin_user_change,

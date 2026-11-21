@@ -278,7 +278,6 @@
     <div id="vol-trouble"></div>
     <div id="vol-list"></div>
     <div id="vol-youtube"></div>
-    <div id="vol-checks"></div>
     <div class="grid">
       <div><label>New volunteer's name</label><input type="text" id="vol-name" placeholder="who it is, for you"></div>
       <div><label>Its own limits, if any: videos an hour, and a day <small>(blank: the site's, below, as they change)</small></label>
@@ -303,11 +302,6 @@
     <div class="inline" style="margin-top:8px">Approved volunteers: at most <input type="number" id="vol-per-hour" min="1" max="15"> an hour and
       <input type="number" id="vol-per-day" min="1" max="200"> a day <small class="note">(the script's own limits are 15 and 200, its videos
       spread over each hour; searches and channels' pages count apart, 30 an hour and 200 a day)</small></div>
-    <div class="inline" style="margin-top:8px">Check videos against YouTube's storyboards (its small seek-bar frames), fetched by a trusted
-      volunteer: <input type="number" id="chk-new" min="0" max="100" style="width:64px">% of those from volunteers not trusted,
-      <input type="number" id="chk-trusted" min="0" max="100" style="width:64px">% of trusted ones'.
-      <label class="choice"><input type="checkbox" id="chk-fresh"> When the sender's storyboard addresses don't work from another address,
-      the checker may ask YouTube's player for them itself <small class="note">(one request, as for a video's details; no download)</small></label></div>
     <div class="inline" style="margin-top:8px">A boulder or climb whose videos volunteers are still fetching waits for them; tell the phone
       once one has waited <input type="number" id="vid-alert" min="0" max="240" step="0.5" style="width:70px"> h <small class="note">(0: never)</small>,
       and give up on videos none of which has moved on (been wanted, given out, or heard of) for
@@ -812,21 +806,6 @@ function render(s){
   const trials = vs.trials || {};
   const trialPick = x => Object.keys(trials).length || x.trial ? ` <select data-vtrial="${esc(x.id)}" title="Trial: how its script runs yt-dlp, to compare in the table below (script 14 on)">${
     ['', ...Object.keys(trials)].map(k => `<option value="${esc(k)}"${(x.trial || '') === k ? ' selected' : ''} title="${esc(trials[k] || 'As usual')}">${k ? esc(k) : 'no trial'}</option>`).join('')}</select>` : '';
-  // checks of volunteers' videos against YouTube's storyboards (storyboards.py): each one's verdicts, and the latest
-  const ck = vs.checks || { per: {}, latest: [], given: {} };
-  const checkLine = x => {
-    const c = ck.per[x.id];
-    if (!c) return '';
-    const parts = [['match', 'ok'], ['mismatch', 'bad'], ['unclear', 'warn']].filter(([k]) => c[k]).map(([k, cls]) => `<span class="${cls}">${c[k]} ${k}</span>`);
-    return parts.length ? `<div class="note">checked: ${parts.join(', ')}</div>` : '';
-  };
-  $('#vol-checks').innerHTML = ck.latest.length ? `<details${volChecksOpen ? ' open' : ''} id="vol-ck"><summary class="note">Videos checked against their storyboards${
-    ck.given.n ? ` (the sender's storyboard addresses worked from another address ${ck.given.worked || 0} of ${ck.given.n} times)` : ''}</summary><table>
-    <tr><th>When</th><th>Video</th><th>Sent by</th><th>Checked by</th><th>Verdict</th><th title="Tiles that matched, of those not flat; the median best correlation">Tiles</th><th></th></tr>${
-    ck.latest.map(r => `<tr><td>${when(r.created)}</td><td><a href="https://www.youtube.com/watch?v=${esc(r.video_id)}" target="_blank" rel="noopener">${esc(r.video_id)}</a></td><td>${esc(r.sender || '')}</td><td>${esc(r.checker || '')}</td><td class="${
-      r.verdict === 'match' ? 'ok' : r.verdict === 'mismatch' || r.state === 'failed' ? 'bad' : 'warn'}">${esc(r.verdict || r.state)}</td><td>${
-      r.result ? `${r.result.matched} / ${r.result.tiles} (${r.result.median ?? '–'})` : ''}</td><td class="note">${esc([r.mode === 'fresh' ? 'addresses asked afresh' : '', r.given_error || '', r.error || ''].filter(Boolean).join('; '))}</td></tr>`).join('')}</table></details>` : '';
-  if ($('#vol-ck')) $('#vol-ck').addEventListener('toggle', ev => { volChecksOpen = ev.target.open; });
   const tr = vs.trouble;
   $('#vol-trouble').innerHTML = tr ? `<div class="note warn">${tr.degraded} of the ${tr.of} volunteers heard from in the last few hours say YouTube is
     degrading them, as: ${esc(tr.example || '')}. That's likely YouTube changing something, which a newer yt-dlp usually fixes (volunteers
@@ -835,7 +814,7 @@ function render(s){
   if (!limitsEditing || volDrawnFor !== limitsEditing) {     // not redrawn while a volunteer's limits are being typed in
     volDrawnFor = limitsEditing;
     $('#vol-list').innerHTML = shownVol.length ? `<table><tr><th>Volunteer</th><th>Now</th><th>YouTube</th><th>Last seen</th><th>Address</th><th title="Videos (with videos' details), and searches (with channels' pages)">Last hour / day</th><th>Fetched</th><th></th></tr>${
-      shownVol.map(x => `<tr><td>${esc(x.name)}${x.provisional ? '<span class="tag">waiting for approval</span>' : ''}${x.trusted ? ' <span class="tag" title="Fetches storyboards to check others\' videos by; its own are checked less often">trusted</span>' : ''}${checkLine(x)}${x.registered ? `<div class="note">registered itself ${when(x.created)}</div>` : ''}</td><td class="${x.status === 'resting' || x.status === 'awaiting approval' ? 'warn' : gone(x.status) ? 'bad' : x.status === 'fetching' ? 'ok' : ''}">${esc(x.status)}${
+      shownVol.map(x => `<tr><td>${esc(x.name)}${x.provisional ? '<span class="tag">waiting for approval</span>' : ''}${x.registered ? `<div class="note">registered itself ${when(x.created)}</div>` : ''}</td><td class="${x.status === 'resting' || x.status === 'awaiting approval' ? 'warn' : gone(x.status) ? 'bad' : x.status === 'fetching' ? 'ok' : ''}">${esc(x.status)}${
         x.refused_until ? `${x.rest_why === 'throttled' ? ' (throttled)' : ''} until ${when(x.refused_until)}` : ''}${x.fetching ? `: ${esc(x.fetching.kind)} ${esc(x.fetching.video_id)}` : ''}</td><td>${yt(x)}${gone(x.status) ? (x.trial ? ` <span class="tag">${esc(x.trial)}</span>` : '') : trialPick(x)}</td><td>${when(x.last_seen)}</td><td>${esc(x.address || '')}</td>
         <td>${x.id === limitsEditing ? `<span class="inline"><input type="number" min="1" max="15" id="vl-hour" placeholder="site's" value="${x.own_per_hour ?? ''}" style="width:64px"> an hour,
           <input type="number" min="1" max="200" id="vl-day" placeholder="site's" value="${x.own_per_day ?? ''}" style="width:72px"> a day
@@ -843,7 +822,7 @@ function render(s){
           : `${x.last_hour} / ${x.last_day} (of ${x.per_hour} / ${x.per_day})${x.own_per_hour || x.own_per_day ? ` <span class="tag" title="Its own limits${x.own_per_hour ? `, ${x.own_per_hour} an hour` : ''}${x.own_per_day ? `, ${x.own_per_day} a day` : ''}, within the site's">own</span>` : ''}${scriptTag(x)}${
           gone(x.status) ? '' : ` <button class="sec" data-vlimits="${esc(x.id)}" title="Set this volunteer's own limits, or give it the site's">Limits…</button>`}`}${x.pages_last_day ? `<div class="note">searches ${x.pages_last_hour} / ${x.pages_last_day}</div>` : ''}</td><td>${x.done}</td><td>${gone(x.status) ? '' : x.provisional
           ? `<button data-vapprove="${esc(x.id)}">Approve</button> <button class="danger" data-vdeny="${esc(x.id)}">Deny</button>`
-          : `<button class="sec" data-vtrust="${esc(x.id)}" data-on="${x.trusted ? '' : '1'}" title="${x.trusted ? 'Stop trusting it: its videos are checked as a new volunteer\'s, and it checks no one\'s' : 'Trust it: it fetches storyboards to check others\' videos, and its own are checked less often'}">${x.trusted ? 'Untrust' : 'Trust'}</button> <button class="danger" data-revoke="${esc(x.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
+          : `<button class="danger" data-revoke="${esc(x.id)}">Revoke</button>`}</td></tr>`).join('')}</table>`
       : `<div class="note">${vs.volunteers.length ? 'No volunteers but revoked or turned-down ones.' : 'No volunteers yet.'}</div>`;
     $('#vol-list').innerHTML += goneLine('vol', vs.volunteers.filter(x => gone(x.status)), 'volunteer');
   }
@@ -869,8 +848,6 @@ function render(s){
   $('#reg-vol').checked = v['volunteers.provisional_work']; $('#reg-mach').checked = v['machines.provisional_work'];
   keep('#reg-vol-hour', v['volunteers.provisional_per_hour']); keep('#reg-vol-day', v['volunteers.provisional_per_day']);
   keep('#vol-per-hour', v['volunteers.per_hour']); keep('#vol-per-day', v['volunteers.per_day']);
-  keep('#chk-new', Math.round(v['volunteers.check_new'] * 100)); keep('#chk-trusted', Math.round(v['volunteers.check_trusted'] * 100));
-  $('#chk-fresh').checked = v['volunteers.check_fresh'];
   keep('#vid-alert', v['videos.hold_alert_hours']); keep('#vid-giveup', v['videos.give_up_hours']);
   const holds = s.video_holds || [];
   $('#vid-holds').innerHTML = holds.length ? `Held up by videos now: ${holds.map(h => `${esc(h.what)} (${((Date.now() / 1000 - h.since) / 3600).toFixed(1)} h,
@@ -1212,7 +1189,7 @@ $('#vol-list').addEventListener('change', async ev => {
   if (!id) return;
   try { msg((await call('/api/admin/actions/volunteer-trial', { id, trial: ev.target.value || null })).result); refresh(); } catch (e) { msg(e.message, 8000); }
 });
-let limitsEditing = null, volDrawnFor = null, volChecksOpen = false;     // the volunteer whose limits are being edited: the table isn't redrawn meanwhile
+let limitsEditing = null, volDrawnFor = null;     // the volunteer whose limits are being edited: the table isn't redrawn meanwhile
 $('#vol-list').addEventListener('click', async ev => {
   const d = ev.target.dataset;
   if (d.vlimits || d.vlcancel) { limitsEditing = d.vlimits || null; volDrawnFor = undefined; return refresh(); }
@@ -1224,10 +1201,6 @@ $('#vol-list').addEventListener('click', async ev => {
     } catch (e) { msg(e.message, 8000); }
     return;
   }
-  if (d.vtrust) {
-    try { msg((await call('/api/admin/actions/volunteer-trust', { id: d.vtrust, trusted: !!d.on })).result); volDrawnFor = undefined; refresh(); } catch (e) { msg(e.message, 8000); }
-    return;
-  }
   const [action, id, ask] = d.vapprove ? ['volunteer-approve', d.vapprove] : d.vdeny ? ['volunteer-deny', d.vdeny, 'Turn down this volunteer? Their token stops working.']
     : d.revoke ? ['volunteer-revoke', d.revoke, 'Revoke this volunteer? Their token stops working at once.'] : [];
   if (!action || (ask && !confirm(ask))) return;
@@ -1237,11 +1210,8 @@ const regSave = () => save({ 'volunteers.provisional_work': $('#reg-vol').checke
   'volunteers.provisional_per_hour': +$('#reg-vol-hour').value, 'volunteers.provisional_per_day': +$('#reg-vol-day').value,
   'volunteers.per_hour': +$('#vol-per-hour').value, 'volunteers.per_day': +$('#vol-per-day').value,
   'volunteers.yt_dlp': $('#vol-ytdlp').value,
-  'volunteers.check_new': +$('#chk-new').value / 100, 'volunteers.check_trusted': +$('#chk-trusted').value / 100,
-  'volunteers.check_fresh': $('#chk-fresh').checked,
   'registration.per_address_day': +$('#reg-addr').value, 'registration.max_waiting': +$('#reg-wait').value });
-for (const id of ['#reg-vol', '#reg-mach', '#reg-vol-hour', '#reg-vol-day', '#vol-per-hour', '#vol-per-day', '#vol-ytdlp', '#reg-addr', '#reg-wait',
-                  '#chk-new', '#chk-trusted', '#chk-fresh']) $(id).onchange = regSave;
+for (const id of ['#reg-vol', '#reg-mach', '#reg-vol-hour', '#reg-vol-day', '#vol-per-hour', '#vol-per-day', '#vol-ytdlp', '#reg-addr', '#reg-wait']) $(id).onchange = regSave;
 $('#vid-alert').onchange = () => save({ 'videos.hold_alert_hours': +$('#vid-alert').value });
 $('#vid-giveup').onchange = () => save({ 'videos.give_up_hours': +$('#vid-giveup').value });
 $('#lb-names').onchange = () => save({ 'leaderboard.names': $('#lb-names').value });
