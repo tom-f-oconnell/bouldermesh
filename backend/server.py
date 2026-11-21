@@ -2340,6 +2340,15 @@ def phone_holds(mid: str, pid: str, log=None, target: str | None = None) -> dict
     return out
 
 
+def climb_names(mid: str) -> dict[str, str]:
+    """The climbs a mesh is of (mesh_climbs(): linked to it, or placed by a boulder's or a group's), {id: "name grade"},
+    by name."""
+    m = q("SELECT boulder FROM meshes WHERE id=?", mid, one=True) or {}
+    ids = sorted(mesh_climbs(mid, m.get("boulder")))
+    rows = q(f"SELECT id, name, grade FROM climbs WHERE id IN ({','.join('?' * len(ids)) or 'NULL'}) ORDER BY name", *ids)
+    return {r["id"]: " ".join(x for x in (r["name"], r["grade"]) if x) or r["id"] for r in rows}
+
+
 def anonymised(sets: list[dict], me: dict | None) -> list[dict]:
     """Sets of beta as someone sees them: those of accounts whose beta is anonymous (beta_anon) numbered, anon_n, in the
     order they were made (whoever made them), and without their author or owner, but to their owner and the site's."""
@@ -12340,8 +12349,11 @@ class Handler(BaseHTTPRequestHandler):
                 me = self.who()     # sets not shared are their owner's alone to see, and the site's owner's
                 sets = beta_mod.visible(beta_mod.load_sets(MESHES / m[1]), (me or {}).get("id"), bool(me) and me["role"] == "owner")
                 sets = anonymised(sets, me)
+                climbs = climb_names(m[1])
+                for v in (found or {}).get("videos", []):     # the climbs each video is of, of those on the mesh, for the lists' headings
+                    v["climbs"] = [r["climb_id"] for r in q("SELECT climb_id FROM climb_videos WHERE url=?", v.get("url")) if r["climb_id"] in climbs] if v.get("url") else []
                 return self.send_json({"found": found, "marked": {"holds": sets[0]["holds"], "updated": sets[0].get("updated")} if sets else {"holds": []},
-                                       "sets": sets, "available": beta_mod.available()})
+                                       "sets": sets, "climbs": climbs, "available": beta_mod.available()})
             if p == "/api/account/projects":    # what this account added, and what it holds against its quota
                 me = self.who()
                 if not me or me["id"] is None:
