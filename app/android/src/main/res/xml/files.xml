@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- what the camera app may write to for the owner's hold-finding look (HoldLabScreen): a photo just taken -->
+<paths><cache-path name="lab" path="lab/" /></paths>

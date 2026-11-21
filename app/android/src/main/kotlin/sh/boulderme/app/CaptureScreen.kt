@@ -180,7 +180,7 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
         }
         return
     }
-    val controller = remember { ArController(a, a.store, a.sensors, plan, guide, if (what.reopen != null) what.name else what.name + " (capture)", what.set, what.reopen, locators(a, plan), what.gym) { ui = it } }
+    val controller = remember { ArController(a, a.store, a.sensors, plan, guide, if (what.reopen != null) what.name else what.name + " (capture)", what.set, what.reopen, locators(a, plan).filter { what.locateOnly == null || it.first == what.locateOnly }, what.gym) { ui = it } }
     val view = remember {
         GLSurfaceView(a).apply {
             preserveEGLContextOnPause = true
@@ -331,7 +331,8 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
         text = { Text((if (ui.kept > 0) "${ui.kept} photos kept" + (if (ui.total > 0 && ui.done < ui.total) ", with ${ui.total - ui.done} of ${ui.total} still to do. What's there is still worth sending." else ".") else "No photos have been kept.") + ui.unplacedSaid()) },
         confirmButton = { TextButton(onClick = {
             leaving = false
-            if (ui.kept > 0) { controller.finish(); go(Screen.Done(controller.id)) } else { a.store.deleteCapture(controller.id); go(Screen.Home) }
+            if (what.locateOnly != null) { a.store.deleteCapture(controller.id); go(Screen.Settings) }     // a test of lining up: kept nowhere
+            else if (ui.kept > 0) { controller.finish(); go(Screen.Done(controller.id)) } else { a.store.deleteCapture(controller.id); go(Screen.Home) }
         }) { Text(if (ui.kept > 0) "Finish" else "Leave") } },
         dismissButton = { TextButton(onClick = { leaving = false }) { Text("Carry on") } })
 }

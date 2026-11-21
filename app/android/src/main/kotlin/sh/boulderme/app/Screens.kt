@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -504,7 +505,10 @@ fun SettingsScreen(a: MainActivity, go: (Screen) -> Unit) {
     var hidden by remember { mutableStateOf(a.store.guidesHidden) }
     val update by Updates.state.collectAsState()
     val scope = rememberCoroutineScope()
+    var owner by remember { mutableStateOf(a.store.owner) }
+    LaunchedEffect(Unit) { if (a.store.token.isNotEmpty() && a.store.online()) withContext(Dispatchers.IO) { a.api.accountName() }; owner = a.store.owner }
     Page("Settings", back = { go(Screen.Home) }) {
+        if (owner) DebugTools(a, go)
         Section("This app")
         Text("boulderme.sh ${BuildInfo.VERSION}, build ${BuildInfo.BUILD}, commit ${BuildInfo.COMMIT}")
         val newer = update.newer
@@ -735,4 +739,29 @@ fun scanQr(a: MainActivity, done: (String?, String?) -> Unit) {
         .addOnSuccessListener { done(it.rawValue, if (it.rawValue == null) "That QR has no text in it." else null) }
         .addOnCanceledListener { done(null, null) }
         .addOnFailureListener { done(null, "The scanner couldn't start (${it.message}): type the code instead.") }
+}
+
+
+/**
+ * The site owner's tools, at the top of Settings: lining up one of the meshes kept here by the phone alone or the server
+ * alone (a capture kept nowhere: Leave ends it), and a look at how a gym climb's holds are found, in a photo (HoldLab).
+ */
+@Composable
+private fun DebugTools(a: MainActivity, go: (Screen) -> Unit) {
+    val plans = remember { a.store.downloaded() }
+    var mesh by remember { mutableStateOf(plans.firstOrNull()?.mesh) }
+    Section("Debug (the site's owner)")
+    if (plans.isEmpty()) Text("No meshes kept here: get one to try lining up.", style = MaterialTheme.typography.bodySmall)
+    for (p in plans) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { mesh = p.mesh }) {
+        androidx.compose.material3.RadioButton(selected = mesh == p.mesh, onClick = { mesh = p.mesh })
+        Text(p.name.ifEmpty { p.mesh }, maxLines = 1)
+    }
+    val m = plans.firstOrNull { it.mesh == mesh }
+    if (m != null) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { go(Screen.Capture(m.mesh, m.name.ifEmpty { m.mesh }, locateOnly = "phone")) }) { Text("Line up: phone only") }
+        OutlinedButton(onClick = { go(Screen.Capture(m.mesh, m.name.ifEmpty { m.mesh }, locateOnly = "server")) }) { Text("Server only") }
+    }
+    Text("Lines up as a capture does, by that way alone; nothing is kept or sent.", style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant)
+    OutlinedButton(onClick = { go(Screen.HoldLab) }) { Text("Hold finding: colour and model, in a photo…") }
 }

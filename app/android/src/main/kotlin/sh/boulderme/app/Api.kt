@@ -132,6 +132,8 @@ class Api(internal val store: Store) {
         val user = json.parseToJsonElement(read(open("/api/account")).decodeToString()).jsonObject["user"]
         val u = (user as? JsonObject)
         store.topHalf = u?.get("role")?.jsonPrimitive?.content == HALF_ROLE
+        // the owner's (an owner account, or the site's own token, which is no account's): Settings' debug tools
+        store.owner = store.token.isNotEmpty() && (u == null || u["role"]?.jsonPrimitive?.content == "owner")
         u?.get("name")?.jsonPrimitive?.content
     }.getOrNull()?.takeIf { it.isNotBlank() }
 

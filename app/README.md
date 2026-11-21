@@ -102,6 +102,11 @@ in Terms.kt), from the next start (or at once when signing in). The phone's own 
 
 ## More
 
+- **The site owner's debug tools** (Android; at the top of *Settings* when the phone is signed in as the owner):
+  *Line up: phone only* / *Server only* on a kept mesh lines up as a capture does by that way alone (nothing kept or
+  sent), and *Hold finding* shows each finder's patches (colour, A; the model, B) in a photo taken then or one of a
+  capture's, with the colour's tolerance, the model's margin and mask; a tap starts again from that hold.
+
 - **What counts as done** comes with each mesh from the server (`need` in its plan): a hold seen at 0.5 mm of rock a
   pixel from 4 directions at least 15° apart, other rock on a climb at 1.5 mm from 3, and each edge where the mesh
   ends from 3. What the mesh's existing photos already gave counts. *Doing: its climbs / whole rock* switches between

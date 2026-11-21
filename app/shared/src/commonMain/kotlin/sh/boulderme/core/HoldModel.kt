@@ -44,12 +44,12 @@ object HoldModel {
         return out
     }
 
-    /** Where the model's best score is a hold's. */
-    fun mask(logits: FloatArray, w: Int, h: Int): BooleanArray {
+    /** Where the model's best score is a hold's, by at least `margin` (0: any; the owner's debug screen tries others). */
+    fun mask(logits: FloatArray, w: Int, h: Int, margin: Float = 0f): BooleanArray {
         val n = w * h
         return BooleanArray(n) { i ->
             val hold = logits[HOLD * n + i]
-            (0 until CLASSES).all { k -> k == HOLD || logits[k * n + i] < hold }
+            (0 until CLASSES).all { k -> k == HOLD || logits[k * n + i] + margin < hold }
         }
     }
 

@@ -59,6 +59,9 @@ class Store(context: Context) {
         get() = prefs.getBoolean("top_half", false)
         set(v) { prefs.edit().putBoolean("top_half", v).apply(); onTopHalf?.invoke(v) }
     var onTopHalf: ((Boolean) -> Unit)? = null      // the activity, to redraw at once
+    var owner: Boolean      // the phone's token is the site owner's (an account of that role, or the site's own): Settings' debug tools
+        get() = prefs.getBoolean("owner", false)
+        set(v) = prefs.edit().putBoolean("owner", v).apply()
     var credit: String      // who photos are credited to, under the licence they're sent with
         get() = prefs.getString("credit", "") ?: ""
         set(v) = prefs.edit().putString("credit", v.trim()).apply()

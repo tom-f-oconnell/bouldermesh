@@ -43,6 +43,8 @@ sealed interface Screen {
     /** getFirst: download the first mesh listed, with its textures, without being asked anything (for trying it in an emulator). */
     data class Browse(val getFirst: Boolean = false) : Screen
     data object Settings : Screen
+    /** The owner's look at how holds are found in a photo (HoldLabScreen): one of a capture's, or one taken now. */
+    data object HoldLab : Screen
     /** On first opening, not signed in: how to sign in from where the account was joined. */
     data object SignIn : Screen
     data object Calibrate : Screen
@@ -50,7 +52,8 @@ sealed interface Screen {
     data class Capture(val mesh: String?, val name: String, val set: String? = null,      // set: the set of beta it's for
                        val focus: sh.boulderme.core.Focus? = null,                         // for BetaDrafts.FOCUS: the sets and holds chosen
                        val reopen: String? = null,                                         // a capture finished earlier, to carry on (Reopen)
-                       val gym: Boolean = false) : Screen                                  // a gym climb, its holds found by their colour
+                       val gym: Boolean = false,                                           // a gym climb, its holds found by their colour
+                       val locateOnly: String? = null) : Screen                            // the owner's test of lining up by one way alone ("phone", "server"): kept nowhere
     data class Done(val id: String) : Screen
     /** Before uploading: the holds the app found by itself, to keep or leave out (HoldReview). */
     data class Holds(val id: String) : Screen
@@ -66,6 +69,7 @@ fun backOf(s: Screen): Screen = when (s) {
     is Screen.Photo -> Screen.Upload(s.id)
     is Screen.Holds -> Screen.Done(s.id)
     is Screen.Viewer -> s.back
+    Screen.HoldLab -> Screen.Settings
     else -> Screen.Home
 }
 
@@ -113,6 +117,7 @@ class MainActivity : ComponentActivity() {
                                 Screen.Home -> HomeScreen(this@MainActivity, go)
                                 is Screen.Browse -> BrowseScreen(this@MainActivity, s.getFirst, go)
                                 Screen.Settings -> SettingsScreen(this@MainActivity, go)
+                                Screen.HoldLab -> HoldLabScreen(this@MainActivity, go)
                                 Screen.SignIn -> SignInScreen(this@MainActivity, go)
                                 Screen.Calibrate -> CalibrateScreen(this@MainActivity, go)
                                 is Screen.Done -> DoneScreen(this@MainActivity, s.id, go)
