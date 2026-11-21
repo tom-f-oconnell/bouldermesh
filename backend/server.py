@@ -5286,6 +5286,60 @@ def mesh_boulder(boulder: str) -> tuple[dict, int]:
     return {"queued": True, "project_id": pid, "position": jobs.qsize()}, 202
 
 
+WHOLE_REDO = {"harvest": "harvest+rebuild", "new": "new+rebuild", "rebuild": "rebuild"}
+
+
+def reprocess_whole(climb_id: str, what: str, sources: list[str] | None = None) -> tuple[dict, int]:
+    """Harvest a climb again (what "harvest": from scratch; "new": only what's new) or mesh it again ("rebuild"), with its
+    boulder's or group's mesh made again after, from every climb's photos. In an area that has it, as that area's redo
+    of it: its boulder meshed whole again with it, and the pools it's in, worked out again once it's through, so that
+    climbs its new photos now match join them. Outside an area: harvested, then its boulder meshed (run_boulder(),
+    which harvests its climbs that haven't been first); a group is meshed together only within an area.
+
+    Returns:
+        The response, and its HTTP status.
+    """
+    if what not in WHOLE_REDO:
+        raise ValueError(f"what must be one of {', '.join(WHOLE_REDO)}")
+    climb = climb_row(climb_id)
+    boulder = boulder_of(climb["area_path"]) if climb else None
+    if not boulder:
+        return {"error": "which boulder it's on isn't known, so there's no boulder or group to do with it"}, 409
+    item = q("SELECT ci.campaign_id, ci.source_id, ci.status, ci.boulder, ci.climb_id, p.status pstatus FROM campaign_items ci "
+             "JOIN campaigns c ON c.id=ci.campaign_id LEFT JOIN projects p ON p.id=ci.project_id WHERE ci.climb_id=? "
+             "ORDER BY c.created DESC LIMIT 1", climb_id, one=True)
+    if item:
+        cid = item["campaign_id"]
+        if item["status"] not in ("done", "skipped", "failed") or item["pstatus"] in ("queued", "running", "harvesting"):
+            return {"error": "its area is working on it now: try again once it's through"}, 409
+        redo = WHOLE_REDO[what]
+        if what == "rebuild" and rebuild_boulders(cid, [item]):
+            redo = "boulder+again"
+        mark_pools(cid, [climb_id])
+        set_item(cid, item["source_id"], status="pending", retry=1, redo=redo, was=item["status"], redo_started=0,
+                 note=f"queued to {REDO_NAMES[redo]}, its boulder's or group's mesh made again after")
+        q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status IN ('stopped','done')", cid, write=True)
+        return {"queued": True, "area": cid, "how": REDO_NAMES[redo]}, 202
+    if leaf_kind(boulder) == "group":
+        return {"error": "its area holds several boulders, whose climbs are meshed together only by an area's job: start one for "
+                         "its area in the Areas tab"}, 409
+    if what == "rebuild":
+        return mesh_boulder(boulder)
+    pid = new_id()
+    (PROJECTS / pid / "photos").mkdir(parents=True)
+    q("INSERT INTO projects(id,name,created,kind,climb_id,status) VALUES(?,?,?,?,?,'queued')",
+      pid, f"{climb['name']} (harvest)"[:80], time.time(), "harvest", climb_id, write=True)
+    had = climb_harvests(climb_id) if what == "new" else []
+    if had:     # added to its newest harvest, as Check for new photos does
+        q("DELETE FROM projects WHERE id=?", pid, write=True)
+        shutil.rmtree(PROJECTS / pid, ignore_errors=True)
+        pid = had[0]
+        q("UPDATE projects SET status='queued' WHERE id=?", pid, write=True)
+    queue_job({"type": "harvest", "pid": pid, "sources": sources or HARVEST_SOURCES, "reconstruct": False, "filter": True,
+               "then_boulder": boulder, **({"again": True, "add": True, "refresh": True} if had else {})})
+    return {"project_id": pid, "queued": True, "how": "harvested, then its boulder meshed from every climb's photos"}, 202
+
+
 def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better: bool = False, add_to: str | None = None) -> None:
     """Mesh a whole boulder from every photo its climbs' harvests found, in a project and mesh of its own, which
     take nothing from any climb's own; then work out where on it each climb is seen from (viewpoints.py), by the
@@ -9271,6 +9325,10 @@ def _run_job(job: dict, low: bool) -> None:
     elif job["type"] == "harvest":
         run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True), resume=job.get("resume", False),
                     again=job.get("again", False), add=job.get("add", False), refresh=job.get("refresh", False))
+        if job.get("then_boulder"):     # reprocess_whole(): its boulder's mesh made again with it
+            said, _ = mesh_boulder(job["then_boulder"])
+            append_log(job["pid"], "its boulder queued to be meshed from every climb's photos" if said.get("queued") else
+                       f"its boulder wasn't meshed: {said.get('error')}")
     elif job["type"] == "retry":
         run_retry(job["pid"])
     elif job["type"] == "boulder":
@@ -12896,6 +12954,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "not found"}, 404)
                 boulder_read(climb)
                 return self.send_json({"boulder": boulder_info(climb)})
+            m = re.fullmatch(r"/api/climbs/([0-9a-f]+)/whole", p)
+            if m:   # harvest or mesh it again with its boulder or group (reprocess_whole())
+                body = self.read_json()
+                try:
+                    return self.send_json(*reprocess_whole(m[1], body.get("what") or "",
+                                                            [s for s in body.get("sources") or [] if s in HARVEST_SOURCES] or None))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/climbs/([0-9a-f]+)/boulder", p)
             if m:   # mesh its boulder from every photo of its climbs, harvesting those that haven't been first (run_boulder())
                 climb = climb_row(m[1])

@@ -1591,6 +1591,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_terrain.py     # offline: elevation squares, with stand-ins for USGS's and IGN's services
     python3 tests/test_skyline.py     # offline: facing from a made-up skyline, and each way it gives up early
     python3 tests/test_incremental.py # offline: adding photos to a kept model: the re-solve gates, the pipeline's side
+    python3 tests/test_whole.py       # offline: harvesting or meshing a climb again with its boulder or group
     python3 tests/test_abtest.py      # offline: A/B tests of COLMAP 3.9.1 against 4.2.1: options, a machine's job, the queue
     python3 tests/test_video_holds.py # offline: boulders and climbs held up by videos, given up on, the phone told, a boulder at a time
     python3 tests/test_tiers.py       # offline: what made each mesh, what's out of date by tier, remaking a tier

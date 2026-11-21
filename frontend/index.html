@@ -886,6 +886,27 @@ function askDanger(title, body, go, may = editor){
     document.body.append(dlg); dlg.showModal(); dlg.querySelector('.no').focus();
   });
 }
+// For what does a climb again (harvesting it, meshing it): whether to do its boulder or group with it, when others are
+// known on it. Resolves "climb", "whole" or null (cancelled); "climb" at once when it's alone on its rock.
+function askWhole(b, doing){
+  const others = b ? Math.max((b.known || 0), (b.routes || 0)) - 1 : 0;
+  if (!b || others < 1) return Promise.resolve('climb');
+  return new Promise(done => {
+    const dlg = document.createElement('dialog'); dlg.className = 'danger-ask';
+    const group = b.kind === 'group';
+    dlg.innerHTML = `<b></b><p></p><div class="row"><span class="grow"></span><button class="sec no">Cancel</button><button class="sec one">This climb only</button><button class="all">With the whole ${group ? 'group' : 'boulder'}</button></div>`;
+    dlg.querySelector('b').textContent = `${doing}: this climb only, or with ${b.name}?`;
+    dlg.querySelector('p').textContent = `${b.name} has ${others} other climb${others === 1 ? '' : 's'}${b.routes ? ' on its Mountain Project page' : ' known here'}. `
+      + `With the whole ${group ? 'group' : 'boulder'}, its ${group ? 'group\'s meshes are' : 'mesh is'} made again after, from every climb's photos, `
+      + `and climbs whose photos now match join ${group ? 'the climbs they match' : 'it'}${group ? '' : ' (those never harvested are harvested first)'}.`;
+    const end = v => { dlg.close(); dlg.remove(); done(v); };
+    dlg.querySelector('.no').onclick = () => end(null);
+    dlg.querySelector('.one').onclick = () => end('climb');
+    dlg.querySelector('.all').onclick = () => end('whole');
+    dlg.addEventListener('cancel', ev => { ev.preventDefault(); end(null); });
+    document.body.append(dlg); dlg.showModal(); dlg.querySelector('.all').focus();
+  });
+}
 // confirm() for a change: on a copy this browser can't change, says why instead, and goes no further
 function ask(msg, may = editor){
   if (!may) { alert(viewOnlyNote()); return false; }
@@ -3591,6 +3612,15 @@ async function openClimb(id, focus=true){
   // with a harvest already: Check for new photos adds to it (incremental), Harvest from scratch makes another beside it
   d.querySelectorAll('.harvest').forEach(b => b.onclick = async () => {
     const sources = [...d.querySelectorAll('input[name=src]:checked')].map(i => i.value);
+    const scratch = !harvests.length || b.classList.contains('scratch');
+    const how = harvests.length ? await askWhole(c.boulder, scratch ? 'Harvest from scratch' : 'Check for new photos') : 'climb';
+    if (!how) return;
+    if (how === 'whole') {
+      try { const r = await api(`/api/climbs/${id}/whole`, { method: 'POST', json: { what: scratch ? 'harvest' : 'new', sources } });
+            toast(`Queued: ${r.how}` + (r.area ? ' (in its area, on the Areas tab)' : ' → see Projects tab'), 8000); if (r.project_id) active = r.project_id; openClimb(id, false); poll(); }
+      catch (e) { toast(e.message, 8000); }
+      return;
+    }
     const r = await api(`/api/climbs/${id}/harvest`, { method: 'POST', json: { sources, reconstruct: d.querySelector('.autorec').checked, filter: d.querySelector('.relfilter').checked,
                                                                               new_only: !!harvests.length && !b.classList.contains('scratch') } });
     toast('Harvest queued → see Projects tab'); active = r.project_id;
@@ -3723,6 +3753,18 @@ async function refreshProjects(){
       catch(e){ toast('Upload failed: ' + e.message, 8000); }
     };
     d.querySelector('.rec').onclick = async () => {
+      if (p.climb_id && p.kind === 'harvest') {
+        let b = null;
+        try { b = (await api(`/api/climbs/${p.climb_id}`)).boulder; } catch {}
+        const how = await askWhole(b, 'Reconstruct');
+        if (!how) return;
+        if (how === 'whole') {
+          try { const r = await api(`/api/climbs/${p.climb_id}/whole`, { method: 'POST', json: { what: 'rebuild' } });
+                toast(`Queued: ${r.how || 'its boulder meshed again'}` + (r.area ? ' (in its area, on the Areas tab)' : ''), 8000); if (r.project_id) active = r.project_id; poll(); }
+          catch (e) { toast(e.message, 8000); }
+          return;
+        }
+      }
       try { await api(`/api/projects/${p.id}/reconstruct`, {method:'POST'}); toast('Reconstruction queued'); active = p.id; poll(); }
       catch(e){ toast(e.message); }
     };
