@@ -4543,6 +4543,15 @@ def place_climbs(mid: str, pid: str, log) -> None:
         log(f"placing its climbs failed ({type(e).__name__}: {e})")
 
 
+def job_identity(inputs: dict | None, add_to: str | None = None) -> dict:
+    """What a machine's meshing job is taken up again by after a restart (pullwork's same): MESH_RULES, its inputs'
+    fingerprint, or where that can't be told (a project whose filter report predates the filter's version being kept)
+    its photos' digest, so that such jobs are kept too (until Nov 21 they weren't, and each restart began them again),
+    and the mesh it adds photos to, if any."""
+    fp = inputs_fingerprint(inputs) or ("photos:" + inputs["photos"]["digest"] if isinstance((inputs or {}).get("photos"), dict) else None)
+    return {"rules": MESH_RULES, "fingerprint": fp, **({"add_to": add_to} if add_to else {})}
+
+
 def kept_for_add(mid: str, pdir: Path, remote: bool, log) -> Path | None:
     """What adding photos to a mesh's model needs (its kept reconstruction and features, its check and how it was made):
     its own folder here, or for a machine a folder of those alone in the project (kept/), sent as the job's kept/. None,
@@ -4614,7 +4623,7 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
                 tracker.end(st["key"])
         tracker.at("machine" if remote else "server")
         # on machines that connect here, the job outlasts a restart, and is taken up again under the same rules and inputs
-        same = {"same": {"rules": MESH_RULES, "fingerprint": inputs_fingerprint(inputs)}} if remote and _executor is MACHINES else {}
+        same = {"same": job_identity(inputs, add_to)} if remote and _executor is MACHINES else {}
         kept = kept_for_add(add_to, pdir, remote, log) if add_to else None
         try:
             mesh_path, demo = build(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker, **same,

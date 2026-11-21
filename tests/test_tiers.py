@@ -162,6 +162,14 @@ try:
         (server.PROJECTS / "h1" / "photos" / n).write_bytes(b"jpg")
     assert server._new_photos({**rec, "pooled": ["a.jpg", "b.jpg", "c.jpg"]}, now - 100) == 3, "the frame and the newer harvest"
     print("a boulder's new photos OK")
+
+    # a machine's job is kept over a restart by its inputs' fingerprint, or by its photos where that can't be told
+    whole = {"photos": {"n": 1, "digest": "d1", "at": 0, "files": {}}, "filter": "none", "unknown": {}}
+    assert server.job_identity(whole)["fingerprint"] == server.inputs_fingerprint(whole)
+    old_filter = {**whole, "filter": {"version": None, "settings": "s", "methods": []}}
+    assert server.inputs_fingerprint(old_filter) is None and server.job_identity(old_filter)["fingerprint"] == "photos:d1"
+    assert server.job_identity(None)["fingerprint"] is None and server.job_identity(whole, "m1")["add_to"] == "m1"
+    print("jobs kept over a restart OK")
     print("ALL TIERS TESTS PASSED")
 finally:
     import shutil
