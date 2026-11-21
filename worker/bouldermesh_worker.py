@@ -111,7 +111,8 @@ from pathlib import Path
 # 27: takes a scenery job's frames (scenery/), which before it refused as something a job shouldn't hold
 # 29: takes a mesh's kept reconstruction and features (kept/), for adding photos to its model (incremental.py)
 # 30: does A/B tests of meshing (remote_job.py --task abtest), with a GPU
-VERSION = 30
+# 31: sends an A/B test's results even if it exits non-zero after them
+VERSION = 31
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter", "splat", "abtest")    # remote_job.py's: meshing a climb, finding its beta, finding
@@ -1360,6 +1361,9 @@ class Worker:
             self.container = None
             if code == DOCKER_FAILED:   # Docker couldn't start it (a full disk, the daemon restarting): this machine's
                 raise NotHere(f"Docker couldn't run it: {self.docker_said or last}")    # trouble, not the job's
+            if code and task == "abtest" and self.result_seen:     # its summary written: what failed after is no loss
+                log(f"job {jid} exited with {code} after its result: sending what it made")
+                code = 0
             if code:
                 self.server.call(f"{api}/done", {"status": "failed", "error": last or f"the job exited with {code}", **used},
                                  patience=AWAY_MAX)
@@ -1447,7 +1451,7 @@ class Worker:
 
         threading.Thread(target=read, daemon=True).start()
         pending, last, sent, ended = [first], "", 0.0, False
-        self.docker_said = None
+        self.docker_said, self.result_seen = None, False
         away, wait = None, SEND_EVERY     # since when the server's been out of reach, and the wait before trying again
         try:
             while not ended:
@@ -1458,6 +1462,7 @@ class Worker:
                     else:
                         pending.append(line)
                         last = line if line and not line.startswith("@@") else last
+                        self.result_seen = self.result_seen or line.startswith("@@result ")
                         if line.startswith("docker: "):     # Docker's own complaint, before its "Run 'docker run --help'"
                             self.docker_said = line[:400]
                         if "FALLBACK:" in line:     # a step fell back to the CPU (pipeline.py, _fell_back()): said here too

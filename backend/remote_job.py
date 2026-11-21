@@ -23,6 +23,7 @@ import argparse
 import json
 import re
 import shutil
+import os
 import sys
 from pathlib import Path
 
@@ -197,8 +198,10 @@ def main() -> int:
         return filter_task(a.job, log)
     if a.task == "splat":
         return splat_task(a.job, log)
-    if a.task == "abtest":
-        return abtest_task(a.job, a.gpu, log)
+    if a.task == "abtest":     # its summary sent, nothing in the process's teardown fails it (9f3b's, on atlas, Nov 21:
+        code = abtest_task(a.job, a.gpu, log)     # both meshes made, yet the job exited non-zero and its results were lost)
+        sys.stdout.flush()
+        os._exit(code)
     if a.task:
         return task(a.job, a.task, log)
     try:
