@@ -67,6 +67,7 @@ CONNECTED = 120             # seconds since a machine last asked or reported for
 APPROVAL_WAIT = 90          # seconds a machine awaiting approval waits between asks: under CONNECTED, not to count as gone
 QUIET = 15 * 60             # a job whose machine hasn't been heard from for this long is lost
 POLL = 15                   # seconds a machine with nothing to do waits before asking again
+LASTING = ("reconstruct", "abtest")     # the kinds of job kept over a restart, for what asked for them to take up again
 ORPHAN_AFTER = 24 * 3600   # a meshing job kept over a restart that no climb takes up again in this long goes
 AGE_FIRST = 1800            # a beta or size job queued this long goes ahead of meshing (not of filtering), so it isn't starved
 GONE_AFTER = 600            # a machine not heard from for this long has left (presence.py), unless it said goodbye before
@@ -888,7 +889,7 @@ class Board:
         return held["result"], tar
 
     def task(self, kind: str, files: dict[str, Path], args: dict, label: str, log, tracker=None,
-             version: int | None = None, take_within: float | None = None) -> tuple[dict, Path]:
+             version: int | None = None, take_within: float | None = None, same: dict | None = None) -> tuple[dict, Path]:
         """Run another kind of job (remote_job.py's --task: "beta", "scale" or "filter") on a machine that connects here.
 
         Args:
@@ -898,6 +899,7 @@ class Board:
             version: the oldest machines' script that does it, if newer than task.json needs.
             take_within: seconds a machine has to take it, else it's given up (ComputeUnavailable), as when one
                 that could do it here instead is better than waiting.
+            same: as reconstruct()'s, for a job kept over a restart and taken up again after it (an A/B test's).
 
         Returns:
             What the job said it made, and a new folder holding its out/, which is the caller's to delete.
@@ -907,7 +909,7 @@ class Board:
                 it within take_within.
         """
         self.files.mkdir(parents=True, exist_ok=True)
-        result, back, job = self._run(kind, files, args, label, self.files, log, tracker, version, take_within)
+        result, back, job = self._run(kind, files, args, label, self.files, log, tracker, version, take_within, same)
         try:
             safe_extract(job.output, back, ("out",))
         except BaseException:
@@ -998,7 +1000,7 @@ class Board:
         photos = sum(1 for _ in files["photos"].iterdir()) if "photos" in files and files["photos"].is_dir() else 0
         job = Job(id=jid, label=label, input=path, size=path.stat().st_size, internet=bool(args.get("internet")), image=image,
                   task=kind, version=max(2 if told else 1, version or 1), gpu_mb=gpu_need_mb(kind, photos),
-                  same=dict(same) if same and kind == "reconstruct" else None, prio=getattr(_prio, "value", PRIO_OWNER))
+                  same=dict(same) if same and kind in LASTING else None, prio=getattr(_prio, "value", PRIO_OWNER))
         with self.cond:
             self.jobs[jid] = job
         self.q("INSERT OR REPLACE INTO machine_jobs(id, task, label, created) VALUES(?,?,?,?)", jid, kind, label, job.created)

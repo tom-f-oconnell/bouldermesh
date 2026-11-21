@@ -9483,8 +9483,10 @@ def deploy_state() -> dict:
                 eta = typical - elapsed     # past the usual time, there's no telling
         if mine and mine["type"] != "scale":
             lost = "ends; its job is queued again after, carrying on from the last step it finished"
-        lasting = bool(j.get("lasting")) and j["task"] == "reconstruct"
-        if lasting:
+        lasting = bool(j.get("lasting")) and j["task"] in pullwork.LASTING
+        if lasting and j["task"] == "abtest":
+            lost = "carries on on its machine, and the A/B tests take it up after, unless the new version changes AB_VERSION"
+        elif lasting:
             lost = ("carries on on its machine, and its job, queued again after the restart, takes it up" if mine else
                     "carries on on its machine, and its climb takes it up after") + \
                 ", unless the new version changes MESH_RULES or what it's made from"
@@ -14418,8 +14420,10 @@ def abtest_worker() -> None:
                 pdir = PROJECTS / req["project"]
                 files = {part: pdir / part for part in ("photos", "masks") if (pdir / part).is_dir()}
                 with pullwork.priority(pullwork.PRIO_TEST):
+                    # kept over a restart, and taken up again after it by the same test made the same way
                     _, back = MACHINES.task("abtest", files, {"order": req["order"], "mapper": meshopts.given()},
-                                            f"A/B test: {req['project']}", log, version=AB_VERSION)
+                                            f"A/B test: {req['project']}", log, version=AB_VERSION,
+                                            same={"rules": AB_VERSION, "fingerprint": f"{req['project']}|{','.join(req['order'])}|{json.dumps(meshopts.given(), sort_keys=True)}"})
                 try:
                     shutil.rmtree(d / "out", ignore_errors=True)
                     shutil.move(str(back / "out"), str(d / "out"))
@@ -14522,6 +14526,7 @@ def main() -> None:
     threading.Thread(target=adopt_old_pools, daemon=True).start()
     threading.Thread(target=retire_all_covered, daemon=True, name="retire-covered").start()
     threading.Thread(target=holds_worker, daemon=True, name="video-holds").start()
+    _ab_wake.set()      # at once: an A/B test kept over the restart is taken up again (pullwork.LASTING)
     threading.Thread(target=abtest_worker, daemon=True, name="abtests").start()
     threading.Thread(target=rest_existing_meshes, daemon=True).start()
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
